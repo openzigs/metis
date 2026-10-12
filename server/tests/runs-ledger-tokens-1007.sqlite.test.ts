@@ -52,6 +52,10 @@ const OLD = "an-old";
 /** The reviewer's reproduction: its own project, one analysis session. */
 const REVIEW_PROJECT = "p-review";
 const REVIEWED = "an-reviewed";
+/** Sessions of the mixed-project `listRuns` page. */
+const MIXED = "s-mixed";
+const MIXED_OTHER = "s-mixed-other";
+const MIXED_SYSTEM = "s-mixed-system";
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#1007 run token figures read the ledger (real SQLite)",
@@ -308,6 +312,44 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         costCents: 50,
         createdAt: at(4),
       });
+
+      // ── one page of `listRuns` holding runs of two projects and a
+      // project-less (system) run, where one session id has ledger rows under
+      // BOTH projects (review of #1112, cycle 2) ──
+      for (const run of [
+        { id: "run-mix-a", sessionId: MIXED, projectId: "p-a" },
+        { id: "run-mix-other", sessionId: MIXED_OTHER, projectId: "p-other" },
+        { id: "run-mix-system", sessionId: MIXED_SYSTEM, projectId: null },
+      ]) {
+        await db.agentRun.create({
+          data: {
+            ...run,
+            kind: "analysis",
+            status: "completed",
+            startedAt: at(0),
+            completedAt: at(9),
+          },
+        });
+      }
+      // The session's own project, then the same session id under the other one.
+      await usage({ projectId: "p-a", sessionId: MIXED, inputTokens: 100, createdAt: at(1) });
+      await usage({ projectId: "p-other", sessionId: MIXED, inputTokens: 7_000, createdAt: at(2) });
+      await usage({
+        projectId: "p-other",
+        sessionId: MIXED_OTHER,
+        inputTokens: 30,
+        createdAt: at(3),
+      });
+      // And the other project's run's session id under the first project.
+      await usage({ projectId: "p-a", sessionId: MIXED_OTHER, inputTokens: 900, createdAt: at(3) });
+      // A system run has no project: every row of its session is its own.
+      await usage({ projectId: "p-a", sessionId: MIXED_SYSTEM, inputTokens: 5, createdAt: at(4) });
+      await usage({
+        projectId: "p-other",
+        sessionId: MIXED_SYSTEM,
+        inputTokens: 6,
+        createdAt: at(5),
+      });
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -424,6 +466,41 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(listed).toMatchObject({ status: "running", totalTokens: 0, tokens: sql });
       expect(pastRun).toMatchObject({ status: "running", totalTokens: 0, ledgerTokens: sql });
       expect((await getRun(runIds.get(GOING)!))!.run.tokens).toEqual(sql);
+    });
+
+    describe("one page holding runs of two projects and a project-less run", () => {
+      const figures = (runs: Awaited<ReturnType<typeof listRuns>>) =>
+        Object.fromEntries(
+          runs
+            .filter((r) => r.id.startsWith("run-mix-"))
+            .map((r) => [r.id, r.tokens?.withoutCache]),
+        );
+
+      it("each run is billed its own project's rows of its session, an admin's unfiltered list", async () => {
+        const runs = await listRuns({});
+        // All three are on the one page, with runs of a third project too.
+        expect(new Set(runs.map((r) => r.projectId))).toEqual(
+          new Set(["p-a", "p-other", REVIEW_PROJECT, null]),
+        );
+        expect(figures(runs)).toEqual({
+          // Not 7,100: the 7,000 are the same session id under `p-other`.
+          "run-mix-a": 100,
+          // Not 930.
+          "run-mix-other": 30,
+          // No project to scope by: both rows.
+          "run-mix-system": 11,
+        });
+        // The same as each run's own page.
+        for (const id of ["run-mix-a", "run-mix-other", "run-mix-system"]) {
+          expect((await getRun(id))!.run.tokens!.withoutCache).toBe(figures(runs)[id]);
+        }
+      });
+
+      it("and a member's list of both projects, where the read names the two projects", async () => {
+        const runs = await listRuns({ accessibleProjectIds: ["p-a", "p-other"] });
+        expect(runs.some((r) => r.projectId === null)).toBe(false);
+        expect(figures(runs)).toEqual({ "run-mix-a": 100, "run-mix-other": 30 });
+      });
     });
 
     it("a run with no ledger rows reads zero from the ledger and keeps its stored total", async () => {

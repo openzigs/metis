@@ -83,7 +83,8 @@ export function runsRouter(): Router {
   //   • OWNERSHIP: only turns of chat sessions the caller owns, for an admin
   //     too. A chat session is owner-only everywhere else
   //     (`loadAuthorizedSession`), so a `?sessionId=` that is someone else's
-  //     surfaces nothing.
+  //     surfaces nothing. Unlike `loadAuthorizedSession`, a chat its owner
+  //     DELETED is still listed to them: it is still their spend.
   // Registered before `/:id`.
   r.get(
     "/chat-turns",

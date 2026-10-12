@@ -154,6 +154,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "uRate2",
         "uRate3",
         "uRate4",
+        "uRate5",
       ];
       for (const id of users) {
         await db.user.create({
@@ -170,6 +171,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ["wsA", "uRate2"],
         ["wsA", "uRate3"],
         ["wsA", "uRate4"],
+        ["wsA", "uRate5"],
       ] as const) {
         await db.workspaceMember.create({ data: { workspaceId, userId } });
       }
@@ -335,7 +337,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       token.admin = mk("uAdmin", "admin", []);
       // The token still claims the workspace the user has left.
       token.left = mk("uLeft", "developer", ["wsA"]);
-      for (const n of [1, 2, 3, 4]) token[`rate${n}`] = mk(`uRate${n}`, "developer", ["wsA"]);
+      for (const n of [1, 2, 3, 4, 5]) token[`rate${n}`] = mk(`uRate${n}`, "developer", ["wsA"]);
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -699,6 +701,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           .get("/api/runs/chat-turns")
           .set("Authorization", "Bearer not-a-token-we-signed");
         expect(forged.status).toBe(429);
+      });
+
+      it("an exhausted peer bucket refuses anonymous callers only: a signed-in user is still served", async () => {
+        // The guard's key for a signed-in request is the user inside its token,
+        // not the TCP peer it shares with every anonymous caller. Were it the
+        // peer, anyone could lock every user out of these routes from outside.
+        process.env.RUNS_PREAUTH_LIMIT_MAX = "3";
+        const anonymous: number[] = [];
+        for (let i = 0; i < 5; i += 1) anonymous.push((await get("/api/runs/chat-turns")).status);
+        expect(anonymous.slice(-2)).toEqual([429, 429]);
+        // Same peer, same instant, a token this server signed: served, on every
+        // route (the by-id routes answer this user 404, which is a served request).
+        const served: number[] = [];
+        for (const path of ROUTES.slice(0, 3)) served.push((await get(path, "rate5")).status);
+        expect(served).toEqual([200, 200, 404]);
+        // The peer is still refused.
+        expect((await get("/api/runs/chat-turns")).status).toBe(429);
       });
     });
   },

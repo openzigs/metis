@@ -1385,12 +1385,13 @@ async function readAnalysisLedgerUsage(
     // from ONE summary of the session's rows (`summariseLedgerRows`), so this
     // header and `/runs` cannot differ. The snapshot is polled every 2.5 s
     // while a run goes: the rows are loaded only when the aggregate above says
-    // the session's ledger moved (it is append-only), not on every poll.
-    const summary = await sessionLedgerSummary(
-      projectId,
-      analysisId,
-      `${t.calls}:${t.totalTokens}`,
-    ).catch(() => undefined);
+    // the session's ledger moved, not on every poll. The signature is the ROW
+    // COUNT alone: the ledger is append-only (no code updates a `token_usages`
+    // row), so a session's stored total cannot move while its count stands
+    // still, and a second term would be one no test could pin.
+    const summary = await sessionLedgerSummary(projectId, analysisId, String(t.calls)).catch(
+      () => undefined,
+    );
     return summary
       ? {
           totalTokens: t.totalTokens,

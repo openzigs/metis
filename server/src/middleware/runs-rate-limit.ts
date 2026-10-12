@@ -1,8 +1,10 @@
 /**
- * #1007 — rate limiters for `/api/runs` (the run list, the chat-turn list, a
- * run, its replay and its sandbox sessions). The router had none and the app
- * has no global one, so every route on it was CodeQL `js/missing-rate-limiting`
- * (alert 520 on the list; 562 on `GET /chat-turns`, a failing check on #1112).
+ * #1007 — rate limiters for the five routes of `runsRouter` (the run list, the
+ * chat-turn list, a run, its replay and its sandbox sessions). The router had
+ * none and the app has no global one, so every route on it was CodeQL
+ * `js/missing-rate-limiting` (alert 520 on the list; 562 on `GET /chat-turns`,
+ * a failing check on #1112). `backgroundRunsRouter` shares the `/api/runs`
+ * prefix and is NOT covered by these (#1116).
  *
  * Every route requires a signed-in user, so THE BUDGET IS THE USER'S:
  *
@@ -27,11 +29,12 @@
  *        database read). An expired token still counts as its user's, so a
  *        browser whose token just ran out gets the 401 `TOKEN_EXPIRED` it
  *        refreshes on, never a 429. Spending this budget needs the user's own
- *        token.
+ *        token — any of them, however old: the age is not bounded yet (#1117).
  *      • every other request — no token, or one we did not sign — is keyed on
  *        the TCP peer (the UI server or the proxy; never a header). All of
  *        those are requests `requireAuth` answers 401 anyway, so exhausting
- *        that bucket refuses nobody who would have been served.
+ *        that bucket refuses nobody who would have been served — though a
+ *        browser with no token at all is then told 429, not 401 (#1117).
  *
  *    The spec-kit guard keys the first case on a digest of the PRESENTED token
  *    without checking it; a caller inventing a token per request then mints a
@@ -75,11 +78,20 @@ function presentedAccessToken(req: Request): string | undefined {
   return typeof cookie === "string" && cookie ? cookie : undefined;
 }
 
-/** {@link runsPreAuthRateLimiter}'s key. Exported for its test. */
+/**
+ * {@link runsPreAuthRateLimiter}'s key. Exported for its test.
+ *
+ * Always under `preauth:`, so it is never the key {@link runsUserKey} gives
+ * the same request. Both limiters use the one store class, and
+ * express-rate-limit takes "same store class, same key, one request" for a
+ * double count: with `user:<id>` from both it logged `ERR_ERL_DOUBLE_COUNT` on
+ * the first signed-in request of every process, though the two stores count
+ * apart (their own prefixes, `runs-preauth` and `runs-user`).
+ */
 export function runsPreAuthKey(req: Request): string {
   const token = presentedAccessToken(req);
   const userId = token ? signedAccessTokenUserId(token) : null;
-  return userId ? `user:${userId}` : peerKey(req);
+  return `preauth:${userId ? `user:${userId}` : peerKey(req)}`;
 }
 
 /** {@link runsUserRateLimiter}'s key. Exported for its test. */

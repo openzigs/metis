@@ -33,8 +33,15 @@
  * too: a chat session is owner-only everywhere else (`loadAuthorizedSession`),
  * and this list carries a session's id with each turn's time, model, tokens
  * and cost. Per-user totals stay where they were, `GET
- * /projects/:id/usage?groupBy=user`. A session that no longer exists (deleted
- * for good) cannot be tied to anyone and is not listed.
+ * /projects/:id/usage?groupBy=user`.
+ *
+ * ONE DIFFERENCE FROM SESSION ACCESS, on purpose: a chat the owner DELETED
+ * (`ai_sessions.deletedAt` set) is still listed here, to its owner only.
+ * `loadAuthorizedSession` hides it, so it cannot be opened, read or continued;
+ * but what it spent is still the owner's spend and still in the project's
+ * ledger, and dropping it would make this list add up to less than the usage
+ * pages do. Only a session whose row no longer exists (deleted for good)
+ * cannot be tied to anyone and is not listed.
  *
  * Chat in a session with no project is not in the project ledger (it is in
  * `ai_token_usages` alone) and is not listed.
@@ -80,12 +87,24 @@ export const CHAT_TURN_DEFAULT_LIMIT = 50;
 export const CHAT_TURN_MAX_LIMIT = 200;
 
 /**
- * The most of a caller's sessions one read considers, newest activity first.
- * It keeps the `sessionId IN (…)` list well inside a statement's parameter
- * limit on both engines; a caller with more chat sessions than this in the
- * projects asked for sees the turns of the newest ones.
+ * How many of the caller's session ids one ledger statement names.
+ *
+ * Prisma refuses a statement that binds more values than the engine takes —
+ * 999 on the better-sqlite3 adapter, 32,766 on Postgres — with P2029 ("The
+ * query parameter limit supported by your database is exceeded"), and it does
+ * not split a read that has an `orderBy` or a `take`, which the page read has.
+ * (Measured on Prisma 7.10: 993 session ids, one project, three steps and
+ * LIMIT/OFFSET bind exactly 999 and pass; 994 fail. The 5,000-session cap this
+ * replaces was a 500 for a caller with about 1,000 sessions.)
+ *
+ * So the caller's sessions are read {@link CHAT_TURN_SESSION_BATCH} at a time.
+ * Every value a statement binds counts, not only the ids: the page read binds
+ * a batch's session ids, their projects (at most one per session), the three
+ * steps, the two dates and LIMIT/OFFSET — at most 400 + 400 + 3 + 2 + 2 = 807.
+ * There is no cap on the sessions themselves: a caller with several thousand
+ * gets the same page, in one more statement per 400 sessions.
  */
-export const CHAT_TURN_MAX_SESSIONS = 5_000;
+export const CHAT_TURN_SESSION_BATCH = 400;
 
 export interface ChatTurnFilter {
   /** The caller. Only sessions this user owns are read. */
@@ -161,76 +180,107 @@ function spend(rows: readonly LedgerUsageRow[]): ChatSpend {
   };
 }
 
-/** The caller's chat sessions the filter admits: id and project. */
-async function ownedSessions(
-  filter: ChatTurnFilter,
-): Promise<Array<{ id: string; projectId: string }>> {
-  let projectId: string | { in: string[] } | { not: null };
-  if (filter.accessibleProjectIds) {
-    projectId = {
-      in: filter.projectId
-        ? filter.accessibleProjectIds.filter((id) => id === filter.projectId)
-        : filter.accessibleProjectIds,
-    };
-  } else {
-    projectId = filter.projectId ?? { not: null };
-  }
+interface OwnedSession {
+  id: string;
+  projectId: string;
+}
+
+/**
+ * The caller's chat sessions the filter admits: id and project, grouped by
+ * project so a batch of them names few projects.
+ *
+ * No `deletedAt` term: a chat its owner deleted is still listed to them (see
+ * WHOSE in the file comment). And no `IN` list: the caller's reachable
+ * projects are an unbounded per-user set, so they are applied here rather
+ * than bound into the statement, which binds three values at most.
+ */
+async function ownedSessions(filter: ChatTurnFilter): Promise<OwnedSession[]> {
   const rows = await prisma.aISession.findMany({
     where: {
       userId: filter.userId,
-      projectId,
+      projectId: filter.projectId ?? { not: null },
       ...(filter.sessionId ? { id: filter.sessionId } : {}),
     },
     select: { id: true, projectId: true },
-    orderBy: { updatedAt: "desc" },
-    take: CHAT_TURN_MAX_SESSIONS,
+    orderBy: [{ projectId: "asc" }, { id: "asc" }],
   });
-  return rows.filter((s): s is { id: string; projectId: string } => s.projectId !== null);
+  const reachable = filter.accessibleProjectIds ? new Set(filter.accessibleProjectIds) : null;
+  return rows.filter(
+    (s): s is OwnedSession =>
+      s.projectId !== null && (reachable === null || reachable.has(s.projectId)),
+  );
+}
+
+/** `items` in consecutive runs of at most `size`. */
+function inBatches<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/** Newest first; rows written in the same millisecond by id, so the order is total. */
+function newestFirst(
+  a: { createdAt: Date; id: string },
+  b: { createdAt: Date; id: string },
+): number {
+  const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+  if (byTime !== 0) return byTime;
+  return a.id < b.id ? 1 : -1;
 }
 
 /**
  * The caller's newest chat turns, with each listed session's whole chat spend.
  *
- * Two indexed reads and one bounded one. The caller's sessions come off
- * `ai_sessions(userId)`. The ledger read names their projects, so it searches
+ * The caller's sessions come off `ai_sessions(userId)`. The ledger is then
+ * read one batch of sessions at a time ({@link CHAT_TURN_SESSION_BATCH}), and
+ * every statement names the batch's projects, so it searches
  * `token_usages(projectId, createdAt)` and never scans the table — for an
- * admin with no filter as well, whose list used to be a full scan plus a sort.
- * The session subtotals read only the sessions on the page.
+ * admin with no filter as well.
+ *
+ * THE PAGE ACROSS BATCHES. Each batch returns its own newest `take` rows in
+ * the order {@link newestFirst} sorts by; the page is the newest `take` of
+ * those together. Any row of the true page is among its own batch's newest
+ * `take`, so nothing is missed, and the order is the one a single statement
+ * would give. The session subtotals read only the sessions on the page.
  */
 export async function listChatTurns(filter: ChatTurnFilter): Promise<ChatTurnPage> {
   const owned = await ownedSessions(filter);
   if (owned.length === 0) return { items: [], sessions: [] };
-  const projectIds = [...new Set(owned.map((s) => s.projectId))];
   const sessionProject = new Map(owned.map((s) => [s.id, s.projectId]));
+  const take = pageSize(filter.limit, CHAT_TURN_DEFAULT_LIMIT, CHAT_TURN_MAX_LIMIT);
 
-  const where: Record<string, unknown> = {
-    projectId: { in: projectIds },
-    sessionId: { in: owned.map((s) => s.id) },
-    agentStep: { in: [...CHAT_TURN_LEDGER_STEPS] },
-  };
-  if (filter.from || filter.to) {
-    const createdAt: { gte?: Date; lte?: Date } = {};
-    if (filter.from) createdAt.gte = filter.from;
-    if (filter.to) createdAt.lte = filter.to;
-    where.createdAt = createdAt;
+  const createdAt: { gte?: Date; lte?: Date } = {};
+  if (filter.from) createdAt.gte = filter.from;
+  if (filter.to) createdAt.lte = filter.to;
+
+  const found = [];
+  for (const batch of inBatches(owned, CHAT_TURN_SESSION_BATCH)) {
+    found.push(
+      ...(await prisma.tokenUsage.findMany({
+        where: {
+          projectId: { in: [...new Set(batch.map((s) => s.projectId))] },
+          sessionId: { in: batch.map((s) => s.id) },
+          agentStep: { in: [...CHAT_TURN_LEDGER_STEPS] },
+          ...(filter.from || filter.to ? { createdAt } : {}),
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take,
+        select: {
+          ...LEDGER_USAGE_SELECT,
+          id: true,
+          sessionId: true,
+          projectId: true,
+          agentStep: true,
+          createdAt: true,
+        },
+      })),
+    );
   }
-  const found = await prisma.tokenUsage.findMany({
-    where,
-    orderBy: { createdAt: "desc" },
-    take: pageSize(filter.limit, CHAT_TURN_DEFAULT_LIMIT, CHAT_TURN_MAX_LIMIT),
-    select: {
-      ...LEDGER_USAGE_SELECT,
-      id: true,
-      sessionId: true,
-      projectId: true,
-      agentStep: true,
-      createdAt: true,
-    },
-  });
   // A ledger row is the session's only under the session's own project.
-  const rows = found.filter(
-    (r) => r.sessionId !== null && sessionProject.get(r.sessionId) === r.projectId,
-  );
+  const rows = found
+    .filter((r) => r.sessionId !== null && sessionProject.get(r.sessionId) === r.projectId)
+    .sort(newestFirst)
+    .slice(0, take);
   const items = rows.map((row) => {
     const one = spend([row]);
     return {
@@ -255,7 +305,12 @@ export async function listChatTurns(filter: ChatTurnFilter): Promise<ChatTurnPag
   };
 }
 
-/** Each listed session's turn rows, other chat rows and their sum, from the whole ledger. */
+/**
+ * Each listed session's turn rows, other chat rows and their sum, from the
+ * whole ledger. `listed` is ONE PAGE's sessions, so the statement binds at most
+ * {@link CHAT_TURN_MAX_LIMIT} ids, as many projects and six steps (406) and
+ * needs no batching. It has no `orderBy` or `take` either.
+ */
 async function sessionSpend(
   listed: readonly string[],
   sessionProject: ReadonlyMap<string, string>,

@@ -102,3 +102,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [New route: own limiter, keyed on user](project_new-route-needs-its-own-limiter-keyed-on-user.md) — no global one; CodeQL lands late (#1007)
 - [Run tokens: 2 values; chat row ≠ turn](project_run-tokens-two-values-and-chat-row-is-not-the-turn.md) — stored cost, one definition
 - [`analysis.read`: every role has it](project_analysis-read-is-held-by-every-role.md) — no 403 test; test scoping + ownership
+- [SQLite: 999 binds, no chunk w/ take](project_sqlite-adapter-999-bind-values-in-list-needs-batching.md) — batch IN lists; test >1,000 (#1112)

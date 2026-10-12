@@ -279,8 +279,9 @@ export default function RunsPage() {
             model&apos;s calls in that turn. A turn that used a sub-agent or apply-diff, or that was
             followed by a conversation summary, spent more than its row; that spend is recorded
             against the session, not the turn, and is shown per session below. Only chat sessions
-            you own are listed. Chat in a session with no project is not in a project&apos;s ledger
-            and is not listed.
+            you own are listed, including chats you have deleted: you can no longer open those, but
+            what they spent is still your spend. Chat in a session with no project is not in a
+            project&apos;s ledger and is not listed.
           </p>
         </div>
         {chatTurns.isLoading ? (

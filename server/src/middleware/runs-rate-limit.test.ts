@@ -63,8 +63,12 @@ describe("runsUserKey — the budget is the signed-in user's", () => {
 describe("runsPreAuthKey — nothing a caller chooses", () => {
   it("a token this server signed is its user, from the header or the cookie", () => {
     const { accessToken } = tokensFor("u-alice");
-    expect(runsPreAuthKey(req({ authorization: `Bearer ${accessToken}` }))).toBe("user:u-alice");
-    expect(runsPreAuthKey(req({ cookie: accessToken, peer: "10.9.9.9" }))).toBe("user:u-alice");
+    expect(runsPreAuthKey(req({ authorization: `Bearer ${accessToken}` }))).toBe(
+      "preauth:user:u-alice",
+    );
+    expect(runsPreAuthKey(req({ cookie: accessToken, peer: "10.9.9.9" }))).toBe(
+      "preauth:user:u-alice",
+    );
   });
 
   it("an EXPIRED token we signed is still its user's, so it reaches the 401 it refreshes on", () => {
@@ -76,13 +80,15 @@ describe("runsPreAuthKey — nothing a caller chooses", () => {
       process.env.JWT_SECRET as string,
     );
     expect(() => jwt.verify(expired, process.env.JWT_SECRET as string)).toThrow(/expired/);
-    expect(runsPreAuthKey(req({ authorization: `Bearer ${expired}` }))).toBe("user:u-alice");
+    expect(runsPreAuthKey(req({ authorization: `Bearer ${expired}` }))).toBe(
+      "preauth:user:u-alice",
+    );
   });
 
   it("a token we did NOT sign is no key of its own: every one of them is the peer", () => {
     const forged = jwt.sign({ userId: "u-alice", role: "admin" }, "x".repeat(40));
     const peer = runsPreAuthKey(req({ peer: "10.0.0.1" }));
-    expect(peer).toBe("peer:10.0.0.1");
+    expect(peer).toBe("preauth:peer:10.0.0.1");
     for (const presented of [forged, "garbage", "a.b.c", `${forged}x`]) {
       expect(runsPreAuthKey(req({ authorization: `Bearer ${presented}`, peer: "10.0.0.1" }))).toBe(
         peer,
@@ -96,8 +102,16 @@ describe("runsPreAuthKey — nothing a caller chooses", () => {
     const { refreshToken } = tokensFor("u-alice");
     expect(signedAccessTokenUserId(refreshToken)).toBeNull();
     expect(runsPreAuthKey(req({ authorization: `Bearer ${refreshToken}`, peer: "10.0.0.1" }))).toBe(
-      "peer:10.0.0.1",
+      "preauth:peer:10.0.0.1",
     );
+  });
+
+  it("is never the user limiter's key for the same request (ERR_ERL_DOUBLE_COUNT)", () => {
+    const { accessToken } = tokensFor("u-alice");
+    const signedIn = req({ authorization: `Bearer ${accessToken}`, userId: "u-alice" });
+    expect(runsPreAuthKey(signedIn)).not.toBe(runsUserKey(signedIn));
+    const anonymous = req({ peer: "10.0.0.1" });
+    expect(runsPreAuthKey(anonymous)).not.toBe(runsUserKey(anonymous));
   });
 });
 

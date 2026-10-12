@@ -143,8 +143,9 @@ const summaryCache = new Map<string, { signature: string; summary: LedgerUsageSu
 /**
  * One session's summary for a reader that POLLS (the analysis header, every
  * 2.5 s while a run goes). `signature` is anything that changes when the
- * session's rows do — the ledger is append-only, so its row count and stored
- * total are enough, and the caller has both from an aggregate it runs anyway.
+ * session's rows do — the ledger is append-only (nothing in `server/src`
+ * updates a `token_usages` row), so its row count is enough, and the caller
+ * has it from an aggregate it runs anyway.
  * The rows are loaded only when the signature moved; an unchanged session costs
  * no row read. At most {@link SUMMARY_CACHE_MAX} sessions are remembered, per
  * process; a miss is only a re-read.
@@ -176,9 +177,18 @@ export function clearSessionLedgerSummaryCache(): void {
 }
 
 /**
- * The ledger tokens of each of a PROJECT's sessions, from one read. A session
- * with no ledger rows has no entry. Scoped to `projectId` as well as the
- * session ids, so a session id from another project matches nothing.
+ * How many session ids one {@link sessionLedgerTokens} statement names. The
+ * better-sqlite3 adapter takes 999 bound values a statement (P2029 past it);
+ * with the project that is 501 here. See `CHAT_TURN_SESSION_BATCH`.
+ */
+export const LEDGER_SESSION_BATCH = 500;
+
+/**
+ * The ledger tokens of each of a PROJECT's sessions. A session with no ledger
+ * rows has no entry. Scoped to `projectId` as well as the session ids, so a
+ * session id from another project matches nothing. The ids are a per-project
+ * set with no upper bound (every analysis of the project), so they are read
+ * {@link LEDGER_SESSION_BATCH} at a time.
  */
 export async function sessionLedgerTokens(
   projectId: string,
@@ -186,10 +196,15 @@ export async function sessionLedgerTokens(
 ): Promise<Map<string, LedgerTokens>> {
   const out = new Map<string, LedgerTokens>();
   if (sessionIds.length === 0) return out;
-  const rows = await prisma.tokenUsage.findMany({
-    where: { projectId, sessionId: { in: [...sessionIds] } },
-    select: { ...LEDGER_USAGE_SELECT, sessionId: true },
-  });
+  const rows = [];
+  for (let i = 0; i < sessionIds.length; i += LEDGER_SESSION_BATCH) {
+    rows.push(
+      ...(await prisma.tokenUsage.findMany({
+        where: { projectId, sessionId: { in: sessionIds.slice(i, i + LEDGER_SESSION_BATCH) } },
+        select: { ...LEDGER_USAGE_SELECT, sessionId: true },
+      })),
+    );
+  }
   const bySession = new Map<string, LedgerUsageRow[]>();
   for (const row of rows) {
     if (row.sessionId === null) continue;

@@ -262,7 +262,10 @@ describe("/runs chat turns (#1007)", () => {
     const card = screen.getByTestId("runs-chat-turns");
     expect(card).toHaveTextContent("A chat turn is not a run: it has no timeline to replay.");
     // Whose turns these are, and that a row is not always the whole turn.
-    expect(card).toHaveTextContent("Only chat sessions you own are listed.");
+    // A chat the owner deleted is still theirs to see here (not "same as session access").
+    expect(card).toHaveTextContent(
+      "Only chat sessions you own are listed, including chats you have deleted: you can no longer open those, but what they spent is still your spend.",
+    );
     expect(card).toHaveTextContent(
       "A turn that used a sub-agent or apply-diff, or that was followed by a conversation summary, spent more than its row",
     );
