@@ -6,15 +6,21 @@
 //   - interfaces:       every exported interface type, by import path;
 //   - interfaceMembers: for every exported non-generic concrete type, the
 //     exported fields whose type is an exported standard-library interface
-//     (`Body`), and the methods that return one, with the result positions
-//     (`Context(0)`);
+//     (`Body`), the methods that return one, with the result positions
+//     (`Context(0)`), and the methods the type does not declare itself but has
+//     PROMOTED from an embedded interface, marked `*` (`ReadAt*` on
+//     `debug/elf.Section`, which embeds `io.ReaderAt`): a call to one of those
+//     is dispatched at run time like any interface method;
 //   - interfaceVars:    exported package-level variables of such a type
-//     (`io.Discard`).
+//     (`io.Discard`);
+//   - funcVars:         exported package-level variables of a FUNC type
+//     (`flag.Usage`): calling one calls whatever was assigned to it.
 //
 // The output is checked in as
-// `server/src/lib/code-graph/go-stdlib.snapshot.json`; a test compares the lists
-// in `go-stdlib.ts` with it and never runs Go. Regenerate with
-// `scripts/gen-go-stdlib-snapshot.sh` when moving to a new Go release.
+// `server/src/lib/code-graph/go-stdlib.snapshot.json`, and again as the
+// constants of `server/src/lib/code-graph/go-stdlib.data.ts`; a test compares
+// the two and never runs Go. Regenerate both with
+// `node scripts/gen-go-stdlib-snapshot.mjs` when moving to a new Go release.
 //
 // Only the standard library is imported, and nothing is written but stdout.
 package main
@@ -49,6 +55,7 @@ type snapshot struct {
 	Interfaces       map[string][]string `json:"interfaces"`
 	InterfaceMembers map[string][]string `json:"interfaceMembers"`
 	InterfaceVars    map[string][]string `json:"interfaceVars"`
+	FuncVars         map[string][]string `json:"funcVars"`
 	// Packages the host could not type-check (they build on another platform
 	// only): listed in Packages, with no interface facts.
 	Unchecked []string `json:"unchecked"`
@@ -111,6 +118,7 @@ func main() {
 		Interfaces:       map[string][]string{},
 		InterfaceMembers: map[string][]string{},
 		InterfaceVars:    map[string][]string{},
+		FuncVars:         map[string][]string{},
 		Unchecked:        []string{},
 	}
 	for path := range seen {
@@ -139,6 +147,9 @@ func main() {
 				if stdInterface(o.Type()) {
 					snap.InterfaceVars[path] = append(snap.InterfaceVars[path], name)
 				}
+				if _, isFunc := o.Type().Underlying().(*types.Signature); isFunc {
+					snap.FuncVars[path] = append(snap.FuncVars[path], name)
+				}
 			case *types.TypeName:
 				if types.IsInterface(o.Type()) {
 					snap.Interfaces[path] = append(snap.Interfaces[path], name)
@@ -165,7 +176,16 @@ func main() {
 					if !isFunc || !fn.Exported() {
 						continue
 					}
-					results := fn.Type().(*types.Signature).Results()
+					sig := fn.Type().(*types.Signature)
+					// A method whose own receiver is an interface is not this
+					// type's: it is promoted from an embedded interface (of the
+					// standard library, or predeclared as `error` is), and
+					// whatever value sits in that field runs.
+					mark := ""
+					if recv := sig.Recv(); recv != nil && types.IsInterface(recv.Type()) {
+						mark = "*"
+					}
+					results := sig.Results()
 					var at []string
 					for r := 0; r < results.Len(); r++ {
 						if stdInterface(results.At(r).Type()) {
@@ -173,7 +193,9 @@ func main() {
 						}
 					}
 					if len(at) > 0 {
-						members = append(members, fn.Name()+"("+strings.Join(at, ",")+")")
+						members = append(members, fn.Name()+mark+"("+strings.Join(at, ",")+")")
+					} else if mark != "" {
+						members = append(members, fn.Name()+mark)
 					}
 				}
 				if len(members) > 0 {

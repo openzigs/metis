@@ -351,8 +351,24 @@
     "crypto/cipher.StreamWriter": ["S", "W"],
     "crypto/ecdh.PrivateKey": ["Curve(0)", "Public(0)"],
     "crypto/ecdh.PublicKey": ["Curve(0)"],
-    "crypto/ecdsa.PrivateKey": ["Public(0)"],
-    "crypto/ecdsa.PublicKey": ["Curve"],
+    "crypto/ecdsa.PrivateKey": [
+      "Add*",
+      "Double*",
+      "IsOnCurve*",
+      "Params*",
+      "Public(0)",
+      "ScalarBaseMult*",
+      "ScalarMult*"
+    ],
+    "crypto/ecdsa.PublicKey": [
+      "Add*",
+      "Curve",
+      "Double*",
+      "IsOnCurve*",
+      "Params*",
+      "ScalarBaseMult*",
+      "ScalarMult*"
+    ],
     "crypto/ed25519.PrivateKey": ["Public(0)"],
     "crypto/mlkem.DecapsulationKey1024": ["Encapsulator(0)"],
     "crypto/mlkem.DecapsulationKey768": ["Encapsulator(0)"],
@@ -390,13 +406,13 @@
     "debug/dwarf.StructField": ["Type"],
     "debug/dwarf.TypedefType": ["Type"],
     "debug/elf.FileHeader": ["ByteOrder"],
-    "debug/elf.Prog": ["Open(0)", "ReaderAt"],
-    "debug/elf.Section": ["Open(0)", "ReaderAt"],
+    "debug/elf.Prog": ["Open(0)", "ReadAt*", "ReaderAt"],
+    "debug/elf.Section": ["Open(0)", "ReadAt*", "ReaderAt"],
     "debug/macho.File": ["ByteOrder"],
-    "debug/macho.Section": ["Open(0)", "ReaderAt"],
-    "debug/macho.Segment": ["Open(0)", "ReaderAt"],
-    "debug/pe.Section": ["Open(0)", "ReaderAt"],
-    "debug/plan9obj.Section": ["Open(0)", "ReaderAt"],
+    "debug/macho.Section": ["Open(0)", "ReadAt*", "ReaderAt"],
+    "debug/macho.Segment": ["Open(0)", "ReadAt*", "ReaderAt"],
+    "debug/pe.Section": ["Open(0)", "ReadAt*", "ReaderAt"],
+    "debug/plan9obj.Section": ["Open(0)", "ReadAt*", "ReaderAt"],
     "embed.FS": ["Open(0)"],
     "encoding/json.Decoder": ["Buffered(0)", "Token(0)"],
     "encoding/json.InvalidUnmarshalError": ["Type"],
@@ -595,6 +611,9 @@
     "log/slog": ["DiscardHandler"],
     "net/http": ["DefaultTransport"],
     "os": ["Interrupt", "Kill"]
+  },
+  "funcVars": {
+    "flag": ["Usage"]
   },
   "unchecked": ["syscall/js"]
 }

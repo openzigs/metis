@@ -22,11 +22,13 @@ import {
   GO_STDLIB_VERSION,
   goStdlibInterfaceMember,
   isGoStdlibInterface,
+  isGoStdlibFuncVar,
   isGoStdlibInterfaceVar,
 } from "../../../src/lib/code-graph/go-stdlib.js";
 import {
   GO_STDLIB_INTERFACE_MEMBERS,
   GO_STDLIB_INTERFACE_TYPES,
+  GO_STDLIB_FUNC_VARS,
   GO_STDLIB_INTERFACE_VARS,
   GO_STDLIB_PACKAGE_LIST,
   GO_STDLIB_SNAPSHOT_VERSION,
@@ -44,6 +46,7 @@ interface Snapshot {
   interfaces: Record<string, string[]>;
   interfaceMembers: Record<string, string[]>;
   interfaceVars: Record<string, string[]>;
+  funcVars: Record<string, string[]>;
   unchecked: string[];
 }
 const snapshot = JSON.parse(readFileSync(SNAPSHOT_PATH, "utf8")) as Snapshot;
@@ -84,6 +87,7 @@ describe("go-stdlib.data.ts is the checked-in snapshot of `go list std`", () => 
     expect(asRecord(GO_STDLIB_INTERFACE_TYPES)).toEqual(sorted(snapshot.interfaces));
     expect(asRecord(GO_STDLIB_INTERFACE_MEMBERS)).toEqual(sorted(snapshot.interfaceMembers));
     expect(asRecord(GO_STDLIB_INTERFACE_VARS)).toEqual(sorted(snapshot.interfaceVars));
+    expect(asRecord(GO_STDLIB_FUNC_VARS)).toEqual(sorted(snapshot.funcVars));
   });
 
   it("the script that regenerates both files is where the header says", () => {
@@ -150,29 +154,52 @@ describe("what go-stdlib.ts answers is what the snapshot holds", () => {
   it("an interface-typed member is a field, or a method with the result positions that are one", () => {
     let fields = 0;
     let methods = 0;
+    let promoted = 0;
     for (const [type, members] of Object.entries(snapshot.interfaceMembers)) {
       const dot = type.lastIndexOf(".");
       const importPath = type.slice(0, dot);
       const typeName = type.slice(dot + 1);
       for (const token of members) {
         const open = token.indexOf("(");
-        const name = open === -1 ? token : token.slice(0, open);
+        const head = open === -1 ? token : token.slice(0, open);
+        // `Name*`: promoted from an embedded interface.
+        const starred = head.endsWith("*");
+        const name = starred ? head.slice(0, -1) : head;
         const got = goStdlibInterfaceMember(importPath, typeName, name);
-        if (open === -1) {
+        if (open === -1 && !starred) {
           expect(got, `${type}.${token}`).toEqual({ kind: "field" });
           fields += 1;
-        } else {
-          const results = token
-            .slice(open + 1, -1)
-            .split(",")
-            .map(Number);
-          expect(got, `${type}.${token}`).toEqual({ kind: "method", results });
-          methods += 1;
+          continue;
         }
+        const results =
+          open === -1
+            ? []
+            : token
+                .slice(open + 1, -1)
+                .split(",")
+                .map(Number);
+        expect(got, `${type}.${token}`).toEqual(
+          starred ? { kind: "method", results, promoted: true } : { kind: "method", results },
+        );
+        methods += 1;
+        if (starred) promoted += 1;
       }
     }
     expect(fields).toBeGreaterThan(50);
     expect(methods).toBeGreaterThan(50);
+    // The panel's case, and that it is not the only one.
+    expect(promoted).toBeGreaterThan(10);
+    expect(goStdlibInterfaceMember("debug/elf", "Section", "ReadAt")).toEqual({
+      kind: "method",
+      results: [],
+      promoted: true,
+    });
+    // `Open` is the type's own method (it returns an interface); `Data` its own and plain.
+    expect(goStdlibInterfaceMember("debug/elf", "Section", "Open")).toEqual({
+      kind: "method",
+      results: [0],
+    });
+    expect(goStdlibInterfaceMember("debug/elf", "Section", "Data")).toBeUndefined();
     expect(goStdlibInterfaceMember("net/http", "Response", "Body")).toEqual({ kind: "field" });
     expect(goStdlibInterfaceMember("net/http", "Server", "Handler")).toEqual({ kind: "field" });
     expect(goStdlibInterfaceMember("net/http", "Request", "Context")).toEqual({
@@ -184,6 +211,16 @@ describe("what go-stdlib.ts answers is what the snapshot holds", () => {
     expect(goStdlibInterfaceMember("net/http", "Request", "Bod")).toBeUndefined();
     expect(goStdlibInterfaceMember("net/url", "URL", "Query")).toBeUndefined();
     expect(goStdlibInterfaceMember("github.com/acme/http", "Response", "Body")).toBeUndefined();
+  });
+
+  it("a package variable of a func type is one, and a function is not", () => {
+    for (const [importPath, names] of Object.entries(snapshot.funcVars)) {
+      for (const name of names) expect(isGoStdlibFuncVar(importPath, name)).toBe(true);
+    }
+    expect(isGoStdlibFuncVar("flag", "Usage")).toBe(true);
+    expect(isGoStdlibFuncVar("flag", "Parse")).toBe(false);
+    expect(isGoStdlibFuncVar("fmt", "Usage")).toBe(false);
+    expect(isGoStdlibFuncVar("github.com/acme/flag", "Usage")).toBe(false);
   });
 
   it("an interface-typed package variable is one, and a concrete one is not", () => {

@@ -68,7 +68,7 @@ function exprDepth(expr: GoExpr): number {
   while (cur) {
     depth += 1;
     cur =
-      cur.e === "sel" || cur.e === "elem" || cur.e === "key"
+      cur.e === "sel" || cur.e === "elem" || cur.e === "key" || cur.e === "indexed"
         ? cur.x
         : cur.e === "call"
           ? cur.fn
@@ -502,16 +502,42 @@ export function walkGo(
       if (t?.type === "struct_type") {
         facts.types.push({ name: id.text, form: "struct", fields: structFields(t) });
       } else if (t?.type === "interface_type") {
-        const methods = t.namedChildren
-          .filter((m) => m.type === "method_elem" || m.type === "method_spec")
-          .map((m) => m.childForFieldName("name")?.text ?? "")
-          .filter(Boolean);
-        facts.types.push({ name: id.text, form: "interface", methods });
+        const methods: string[] = [];
+        const embeds: Array<GoType | null> = [];
+        for (const m of t.namedChildren) {
+          if (m.type === "method_elem" || m.type === "method_spec") {
+            const method = m.childForFieldName("name")?.text;
+            if (method) methods.push(method);
+          } else if (m.type !== "comment") {
+            // An embedded interface. Anything else written here — a union,
+            // `~int` — is a constraint this walker does not read: null, so the
+            // interface's method set is not known in full.
+            embeds.push(embeddedInterface(m));
+          }
+        }
+        facts.types.push({
+          name: id.text,
+          form: "interface",
+          methods,
+          ...(embeds.length > 0 ? { embeds } : {}),
+        });
       } else {
         facts.types.push({ name: id.text, form: "defined", target: typeOf(t) });
       }
       typeParams = outerParams;
     }
+  };
+
+  /** The type an interface embeds, as one element of its body; null when it is not a single named type. */
+  const embeddedInterface = (elem: SyntaxNode): GoType | null => {
+    const only =
+      elem.type !== "type_elem"
+        ? elem
+        : elem.namedChildren.length === 1
+          ? elem.namedChildren[0]
+          : null;
+    const type = typeOf(only);
+    return type?.k === "named" ? type : null;
   };
 
   const structFields = (struct: SyntaxNode): GoFieldFact[] => {
@@ -578,17 +604,35 @@ export function walkGo(
     return local.e === "local-type" ? GO_LOCAL_TYPE : { e: "local" };
   };
 
+  /**
+   * What is called when the callee is INDEXED — `f[T](a, b)`, `handlers[i]()`.
+   * The grammar cannot tell a generic function given one plain type argument
+   * from an element of a slice of functions, so the walker does not either:
+   * the resolver decides by what the indexed name IS. A local stays what a
+   * bare local callee is (a func value, or a local type).
+   */
+  const indexed = (callee: GoExpr): GoExpr =>
+    callee.e === "local" || callee.e === "local-type"
+      ? callee
+      : capped({ e: "indexed", x: callee });
+
   const recordCall = (n: SyntaxNode): void => {
-    const fn = n.childForFieldName("function");
+    let fn = n.childForFieldName("function");
     if (!fn) return;
     const line = n.startPosition.row + 1;
+    let wrap = (callee: GoExpr): GoExpr => callee;
+    if (fn.type === "index_expression") {
+      fn = fn.childForFieldName("operand");
+      if (!fn) return;
+      wrap = indexed;
+    }
     if (fn.type === "identifier") {
       edges.push({
         kind: "calls",
         fromQualifiedName: enclosing,
         toQualifiedName: fn.text,
         line,
-        goCallee: calleeOfName(fn.text),
+        goCallee: wrap(calleeOfName(fn.text)),
       });
       return;
     }
@@ -602,7 +646,49 @@ export function walkGo(
       toQualifiedName: field.text,
       line,
       receiver: legacyReceiver(operand),
-      goCallee: capped({ e: "sel", x: exprOf(operand), name: field.text }),
+      goCallee: wrap(capped({ e: "sel", x: exprOf(operand), name: field.text })),
+    });
+  };
+
+  /**
+   * `F[T](x)` with ONE argument reads as a conversion to the generic type
+   * `F[T]` — which it is when F is a type, and a call of the generic function F
+   * when it is not. Recorded as an indexed callee either way.
+   */
+  const recordGenericConversion = (n: SyntaxNode): void => {
+    const type = n.childForFieldName("type");
+    if (type?.type !== "generic_type") return;
+    const base = type.childForFieldName("type");
+    const line = n.startPosition.row + 1;
+    if (base?.type === "type_identifier") {
+      // A conversion to a type parameter is not a call of anything declared.
+      if (typeParams.has(base.text)) return;
+      edges.push({
+        kind: "calls",
+        fromQualifiedName: enclosing,
+        toQualifiedName: base.text,
+        line,
+        goCallee: indexed(calleeOfName(base.text)),
+      });
+      return;
+    }
+    if (base?.type !== "qualified_type") return;
+    const pkg = base.childForFieldName("package");
+    const name = base.childForFieldName("name");
+    if (!pkg || !name) return;
+    const local = lookup(pkg.text);
+    const x: GoExpr = !local
+      ? { e: "name", name: pkg.text }
+      : local.e === "local-type"
+        ? GO_UNKNOWN
+        : local;
+    edges.push({
+      kind: "calls",
+      fromQualifiedName: enclosing,
+      toQualifiedName: name.text,
+      line,
+      receiver: pkg.text,
+      goCallee: indexed(capped({ e: "sel", x, name: name.text })),
     });
   };
 
@@ -727,6 +813,10 @@ export function walkGo(
         return;
       case "call_expression":
         recordCall(n);
+        visitChildren(n);
+        return;
+      case "type_conversion_expression":
+        recordGenericConversion(n);
         visitChildren(n);
         return;
       default:

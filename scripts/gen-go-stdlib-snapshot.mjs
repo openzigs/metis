@@ -35,7 +35,8 @@ const dataPath = path.join(outDir, "go-stdlib.data.ts");
  * The TypeScript the resolver imports, from a parsed snapshot.
  *
  * @param {{ goVersion: string, packages: string[], interfaces: Record<string, string[]>,
- *   interfaceMembers: Record<string, string[]>, interfaceVars: Record<string, string[]> }} snap
+ *   interfaceMembers: Record<string, string[]>, interfaceVars: Record<string, string[]>,
+ *   funcVars: Record<string, string[]> }} snap
  */
 function renderData(snap) {
   const table = (record) =>
@@ -65,7 +66,8 @@ function renderData(snap) {
     "/**",
     " * `importPath.Type` → the members of that concrete type typed as an exported",
     " * standard-library interface: a field by name, a method as `Name(i,j)` with the",
-    " * positions of the results that are one.",
+    " * positions of the results that are one. A `*` after the name marks a method the",
+    " * type PROMOTES from an embedded interface (`ReadAt*`): dispatched at run time.",
     " */",
     "export const GO_STDLIB_INTERFACE_MEMBERS: ReadonlyArray<readonly [string, string]> = [",
     table(snap.interfaceMembers),
@@ -74,6 +76,11 @@ function renderData(snap) {
     "/** Import path → exported package-level variables typed as such an interface. */",
     "export const GO_STDLIB_INTERFACE_VARS: ReadonlyArray<readonly [string, string]> = [",
     table(snap.interfaceVars),
+    "];",
+    "",
+    "/** Import path → exported package-level variables of a func type (`flag.Usage`). */",
+    "export const GO_STDLIB_FUNC_VARS: ReadonlyArray<readonly [string, string]> = [",
+    table(snap.funcVars),
     "];",
     "",
   ].join("\n");

@@ -1,0 +1,11 @@
+{
+  "trees": [
+    { "name": "modules", "root": "corpus/modules", "mode": "modules" },
+    {
+      "name": "legacy",
+      "root": "corpus/legacy/src/example.org/legacy",
+      "mode": "gopath",
+      "gopath": ["corpus/legacy", "thirdparty/gopath"]
+    }
+  ]
+}

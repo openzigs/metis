@@ -26,3 +26,6 @@ graphify-out/
 *.sqlite3
 .env
 .env.*
+
+# ── Go oracle corpus (#1071): test fixture, not METIS source ──
+server/tests/fixtures/go-oracle/

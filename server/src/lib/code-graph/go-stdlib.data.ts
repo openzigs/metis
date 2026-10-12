@@ -269,7 +269,8 @@ export const GO_STDLIB_INTERFACE_TYPES: ReadonlyArray<readonly [string, string]>
 /**
  * `importPath.Type` → the members of that concrete type typed as an exported
  * standard-library interface: a field by name, a method as `Name(i,j)` with the
- * positions of the results that are one.
+ * positions of the results that are one. A `*` after the name marks a method the
+ * type PROMOTES from an embedded interface (`ReadAt*`): dispatched at run time.
  */
 export const GO_STDLIB_INTERFACE_MEMBERS: ReadonlyArray<readonly [string, string]> = [
   ["archive/tar.Header", "FileInfo(0)"],
@@ -283,8 +284,11 @@ export const GO_STDLIB_INTERFACE_MEMBERS: ReadonlyArray<readonly [string, string
   ["crypto/cipher.StreamWriter", "S W"],
   ["crypto/ecdh.PrivateKey", "Curve(0) Public(0)"],
   ["crypto/ecdh.PublicKey", "Curve(0)"],
-  ["crypto/ecdsa.PrivateKey", "Public(0)"],
-  ["crypto/ecdsa.PublicKey", "Curve"],
+  [
+    "crypto/ecdsa.PrivateKey",
+    "Add* Double* IsOnCurve* Params* Public(0) ScalarBaseMult* ScalarMult*",
+  ],
+  ["crypto/ecdsa.PublicKey", "Add* Curve Double* IsOnCurve* Params* ScalarBaseMult* ScalarMult*"],
   ["crypto/ed25519.PrivateKey", "Public(0)"],
   ["crypto/mlkem.DecapsulationKey1024", "Encapsulator(0)"],
   ["crypto/mlkem.DecapsulationKey768", "Encapsulator(0)"],
@@ -322,13 +326,13 @@ export const GO_STDLIB_INTERFACE_MEMBERS: ReadonlyArray<readonly [string, string
   ["debug/dwarf.StructField", "Type"],
   ["debug/dwarf.TypedefType", "Type"],
   ["debug/elf.FileHeader", "ByteOrder"],
-  ["debug/elf.Prog", "Open(0) ReaderAt"],
-  ["debug/elf.Section", "Open(0) ReaderAt"],
+  ["debug/elf.Prog", "Open(0) ReadAt* ReaderAt"],
+  ["debug/elf.Section", "Open(0) ReadAt* ReaderAt"],
   ["debug/macho.File", "ByteOrder"],
-  ["debug/macho.Section", "Open(0) ReaderAt"],
-  ["debug/macho.Segment", "Open(0) ReaderAt"],
-  ["debug/pe.Section", "Open(0) ReaderAt"],
-  ["debug/plan9obj.Section", "Open(0) ReaderAt"],
+  ["debug/macho.Section", "Open(0) ReadAt* ReaderAt"],
+  ["debug/macho.Segment", "Open(0) ReadAt* ReaderAt"],
+  ["debug/pe.Section", "Open(0) ReadAt* ReaderAt"],
+  ["debug/plan9obj.Section", "Open(0) ReadAt* ReaderAt"],
   ["embed.FS", "Open(0)"],
   ["encoding/json.Decoder", "Buffered(0) Token(0)"],
   ["encoding/json.InvalidUnmarshalError", "Type"],
@@ -521,3 +525,6 @@ export const GO_STDLIB_INTERFACE_VARS: ReadonlyArray<readonly [string, string]> 
   ["net/http", "DefaultTransport"],
   ["os", "Interrupt Kill"],
 ];
+
+/** Import path → exported package-level variables of a func type (`flag.Usage`). */
+export const GO_STDLIB_FUNC_VARS: ReadonlyArray<readonly [string, string]> = [["flag", "Usage"]];

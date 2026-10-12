@@ -1,0 +1,42 @@
+{
+  "modules": {
+    "calls": 511,
+    "boundByName": 19,
+    "boundByNameAgreeing": 3,
+    "boundByName_list": [
+      "app/blocks/blocks.go:320:Do -> app/blocks/blocks.go::P::Do [type checker: app/blocks/blocks.go::Q::Do]",
+      "app/closures/closures.go:119:Run -> app/closures/closures.go::A::Run [type checker: interface (project)]",
+      "app/closures/closures.go:124:Run -> app/closures/closures.go::A::Run [type checker: interface (project)]",
+      "app/closures/closures.go:129:Run -> app/closures/closures.go::A::Run [type checker: interface (project)]",
+      "app/closures/closures.go:130:Run -> app/closures/closures.go::A::Run [type checker: interface (project)]",
+      "app/closures/closures.go:45:Run -> app/closures/closures.go::A::Run [type checker: interface (project)]",
+      "app/closures/closures.go:78:Run -> app/closures/closures.go::A::Run [type checker: interface (project)]",
+      "app/ext/ext.go:132:Consume -> app/ext/ext.go::sink::Consume [type checker: interface (dependency)]",
+      "app/ext/ext.go:135:Write -> app/ext/ext.go::sink::Write [agrees]",
+      "app/ext/ext.go:136:Consume -> app/ext/ext.go::sink::Consume [agrees]",
+      "app/ext/ext.go:54:ServeHTTP -> app/ext/ext.go::sink::ServeHTTP [type checker: external (stdlib)]",
+      "app/ext/ext.go:98:Close -> app/ext/ext.go::sink::Close [agrees]",
+      "app/generics/generics.go:42:Do -> app/generics/generics.go::T::Do [type checker: interface (project)]",
+      "app/generics/generics.go:51:Do -> app/generics/generics.go::T::Do [type checker: interface (project)]",
+      "app/generics/generics.go:54:Do -> app/generics/generics.go::T::Do [type checker: interface (project)]",
+      "app/service/service.go:59:Run -> app/service/service.go::Thing::Run [type checker: interface (project)]",
+      "app/service/service.go:84:Run -> app/service/service.go::Thing::Run [type checker: app/model/model.go::Thing::Run]",
+      "app/values/values.go:37:Run -> app/values/values.go::Run [type checker: app/model/model.go::Thing::Run]",
+      "app/values/values.go:79:Run -> app/values/values.go::Run [type checker: app/model/model.go::Thing::Run]"
+    ]
+  },
+  "legacy-package-root": {
+    "calls": 7,
+    "boundByName": 1,
+    "boundByNameAgreeing": 1,
+    "boundByName_list": [
+      "cmd/app/main.go:16:Save -> mystore/mystore.go::Save [agrees]"
+    ]
+  },
+  "legacy-gopath-root": {
+    "calls": 7,
+    "boundByName": 0,
+    "boundByNameAgreeing": 0,
+    "boundByName_list": []
+  }
+}

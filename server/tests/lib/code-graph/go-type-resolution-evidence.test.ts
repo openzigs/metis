@@ -591,10 +591,12 @@ func use(raw []string) {
   });
 });
 
-describe("an embedded interface answers to any name at its depth", () => {
-  // Which methods an interface has (its own and those it embeds) is not worked
-  // out, so beside a struct at the same depth a name is not settled.
-  const v = () =>
+describe("an embedded interface holds the methods it declares and embeds, no others", () => {
+  // PR #1104 review cycle 3 (L5) and its third panel: the parser records an
+  // interface's own method names, so an embedded interface is not a type that
+  // "answers to any name". A method exactly one member of the level declares
+  // is that member's; only a real tie is ambiguous.
+  const v = (extra = "") =>
     verdicts({
       "p/p.go": `package p
 
@@ -613,15 +615,143 @@ func use(b both) {
 	b.Foo()
 	b.Bar()
 }
-`,
+${extra}`,
     });
 
-  it("a method a struct at the same depth declares is not bound past the interface", () => {
-    expect(v().get("p/p.go:15:Foo")).toBe("unbound ambiguous");
+  it("a method the STRUCT beside it declares binds to the struct's", () => {
+    expect(v().get("p/p.go:15:Foo")).toBe("receiver-type p/p.go::S::Foo");
   });
 
-  it("a method only the interface can have is dispatched", () => {
+  it("a method the interface declares is dispatched", () => {
     expect(v().get("p/p.go:16:Bar")).toBe("unbound interface");
+  });
+
+  it("two embedded interfaces: each method is the one interface's that declares it", () => {
+    const two = v(`
+type Store interface{ Save() }
+type Logger interface{ Log() }
+type Svc struct {
+	Store
+	Logger
+}
+func svc(s Svc) {
+	s.Save()
+	s.Log()
+	s.Neither()
+}
+`);
+    expect(two.get("p/p.go:26:Save")).toBe("unbound interface");
+    expect(two.get("p/p.go:27:Log")).toBe("unbound interface");
+    // Nobody declares it: nothing is decided, and nothing is guessed.
+    expect(two.get("p/p.go:28:Neither")).toBe("unknown");
+  });
+
+  it("an interface's methods include those of the interfaces it embeds, at its own depth", () => {
+    const nested = v(`
+type Reader interface{ Read() }
+type Closer interface{ Close() }
+type ReadCloser interface {
+	Reader
+	Closer
+	Flush()
+}
+type T struct{}
+func (T) Own() {}
+type W struct {
+	ReadCloser
+	T
+}
+func w(x W, rc ReadCloser) {
+	x.Read()
+	x.Close()
+	x.Flush()
+	x.Own()
+	rc.Read()
+}
+`);
+    expect(nested.get("p/p.go:33:Read")).toBe("unbound interface");
+    expect(nested.get("p/p.go:34:Close")).toBe("unbound interface");
+    expect(nested.get("p/p.go:35:Flush")).toBe("unbound interface");
+    expect(nested.get("p/p.go:36:Own")).toBe("receiver-type p/p.go::T::Own");
+    expect(nested.get("p/p.go:37:Read")).toBe("unbound interface");
+  });
+
+  it("a genuine tie — the interface AND the struct declare it — is ambiguous", () => {
+    const tie = v(`
+type J interface{ Foo() }
+type tied struct {
+	J
+	S
+}
+func t(x tied) {
+	x.Foo()
+}
+`);
+    expect(tie.get("p/p.go:25:Foo")).toBe("unbound ambiguous");
+  });
+
+  it("an interface whose method set is NOT known in full leaves a sibling's method undecided", () => {
+    // `io.Closer` is not read, a union is not a method set: the interface may
+    // hold any name. That is an open question, not a tie — so `unknown`, which
+    // a name-based reader may still follow, never the decided `ambiguous`.
+    const open = verdicts({
+      "p/p.go": `package p
+
+import "io"
+
+type S struct{}
+
+func (S) Foo() {}
+
+type Open interface {
+	io.Closer
+	Extra()
+}
+
+type Mixed struct {
+	Open
+	S
+}
+
+type Union interface{ ~int | ~string }
+
+func use(m Mixed) {
+	m.Foo()
+	m.Extra()
+	m.Close()
+}
+`,
+    });
+    expect(open.get("p/p.go:22:Foo")).toBe("unknown");
+    expect(open.get("p/p.go:23:Extra")).toBe("unbound interface");
+    // Only the open interface can hold a name nobody declares.
+    expect(open.get("p/p.go:24:Close")).toBe("unbound interface");
+  });
+
+  it("an interface that embeds itself, directly or in a ring, is read once", () => {
+    const ring = verdicts({
+      "p/p.go": `package p
+
+type A interface {
+	B
+	One()
+}
+
+type B interface {
+	A
+	Two()
+}
+
+type S struct{ A }
+
+func use(s S) {
+	s.One()
+	s.Two()
+}
+`,
+    });
+    expect(ring.get("p/p.go:16:One")).toBe("unbound interface");
+    expect(ring.get("p/p.go:17:Two")).toBe("unbound interface");
   });
 });
 
