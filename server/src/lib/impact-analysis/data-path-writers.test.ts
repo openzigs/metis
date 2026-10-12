@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   expandDataPathWriters,
+  isOrmMappingEdge,
   isSyntheticSqlOrigin,
   MAX_WRITER_SQL_CHARS,
   parseWriterText,
@@ -219,6 +220,117 @@ describe("resolveDataPathWriters — a MyBatis mapper statement is a writer (PR 
     expect(writers.map((w) => [w.qualifiedName, w.filePath, w.startLine])).toEqual([
       ["com.shop.OrderMapper.updateStatus", XML, 41],
     ]);
+  });
+
+  /**
+   * Every shape `createOriginSymbol` stores — all kind `method`, language `sql` —
+   * with the edges its extractor records, on one column the requirement names.
+   */
+  const origin = (id: string, qualifiedName: string, filePath: string, startLine: number): Sym => ({
+    id,
+    kind: "method",
+    name: qualifiedName.split(/[.:]/).pop()!,
+    qualifiedName,
+    filePath,
+    startLine,
+    endLine: startLine,
+    language: "sql",
+  });
+  const JAVA = "src/main/java/com/shop/OrderRepository.java";
+  const SHAPES: Array<{
+    sym: Sym;
+    edge: { kind: "writes" | "persists-to"; source: string };
+    writer: boolean;
+  }> = [
+    // MyBatis: `<update>` writes, `<insert>` persists — both are statements a change edits.
+    {
+      sym: origin("mb-update", "com.shop.OrderMapper.updateStatus", XML, 41),
+      edge: { kind: "writes", source: "mybatis" },
+      writer: true,
+    },
+    {
+      sym: origin("mb-insert", "com.shop.OrderMapper.insertOrder", XML, 12),
+      edge: { kind: "persists-to", source: "mybatis" },
+      writer: true,
+    },
+    // JPA `@Modifying @Query("update Order o set o.status = …")`.
+    {
+      sym: origin("jpa-query", `${JAVA}::markShipped#jpa-query`, JAVA, 30),
+      edge: { kind: "writes", source: "orm" },
+      writer: true,
+    },
+    // ORM mapping declarations: a Prisma `model` and a JPA `@Entity`.
+    {
+      sym: origin("prisma-model", "Order", "prisma/schema.prisma", 88),
+      edge: { kind: "persists-to", source: "orm" },
+      writer: false,
+    },
+    {
+      sym: origin("jpa-entity", "com.shop.Order", "src/main/java/com/shop/Order.java", 14),
+      edge: { kind: "persists-to", source: "orm" },
+      writer: false,
+    },
+    // Synthetic statement origins: a line, not code.
+    {
+      sym: origin(
+        "syn-sql",
+        "internal/storage/order.go::sql@600",
+        "internal/storage/order.go",
+        600,
+      ),
+      edge: { kind: "writes", source: "sqlglot" },
+      writer: false,
+    },
+    {
+      sym: origin("syn-exec", "db/OrderDao.java::exec@7", "db/OrderDao.java", 7),
+      edge: { kind: "writes", source: "sqlglot" },
+      writer: false,
+    },
+    {
+      sym: origin("syn-procsql", "etl/orders.sas::procsql@30", "etl/orders.sas", 30),
+      edge: { kind: "writes", source: "sqlglot" },
+      writer: false,
+    },
+  ];
+  const shapes = (list: typeof SHAPES): DataPathDataSource => ({
+    ...mybatis,
+    getWriterEdgesTo: async () =>
+      list.map(({ sym, edge }) => ({ fromSymbolId: sym.id, toSymbolId: "orders.status", ...edge })),
+    getCodeSymbolDetails: async (ids) => list.map((s) => s.sym).filter((s) => ids.includes(s.id)),
+  });
+  const resolve = (list: typeof SHAPES) =>
+    resolveDataPathWriters({
+      requirementText: "Set the order status to shipped when the parcel leaves.",
+      seedIds: [],
+      primaryTables: [table("orders")],
+      dataSource: shapes(list),
+      excludeIds: new Set(),
+      maxWriters: 50,
+    });
+
+  it("admits MyBatis statements and JPA @Query methods; never an entity declaration or a synthetic origin (PR #1090 review 2)", async () => {
+    const writers = await resolve(SHAPES);
+    expect(writers.map((w) => w.id).sort()).toEqual(
+      SHAPES.filter((s) => s.writer)
+        .map((s) => s.sym.id)
+        .sort(),
+    );
+    expect(writers.map((w) => w.id).sort()).toEqual(["jpa-query", "mb-insert", "mb-update"]);
+  });
+
+  it.each(SHAPES.map((s) => [s.sym.id, s] as const))("%s, alone", async (_id, shape) => {
+    // Alone, so the share-of-best cut cannot be what excludes it.
+    const writers = await resolve([shape]);
+    expect(writers.map((w) => w.id)).toEqual(shape.writer ? [shape.sym.id] : []);
+  });
+
+  it("isOrmMappingEdge is the ORM `persists-to` edge and no other", () => {
+    expect(isOrmMappingEdge({ kind: "persists-to", source: "orm" })).toBe(true);
+    expect(isOrmMappingEdge({ kind: "writes", source: "orm" })).toBe(false);
+    expect(isOrmMappingEdge({ kind: "persists-to", source: "mybatis" })).toBe(false);
+    expect(isOrmMappingEdge({ kind: "persists-to", source: "sqlglot" })).toBe(false);
+    expect(isOrmMappingEdge({ kind: "persists-to" })).toBe(false);
+    expect(isOrmMappingEdge({ kind: "persists-to", source: null })).toBe(false);
   });
 
   it("recognises a synthetic origin by its name, whatever the language says", () => {

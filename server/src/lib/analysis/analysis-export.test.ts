@@ -987,7 +987,7 @@ describe("serializeImpactAnalysisMarkdown (#963)", () => {
         ],
       }),
     );
-    const at = md.indexOf("#### Proposed, not checked (no existing write path to compare with)");
+    const at = md.indexOf("#### Proposed, not checked (each row says why)");
     expect(at).toBeGreaterThan(-1);
     expect(md.slice(at)).toContain(
       "- `users.mark_read_delay` (INTEGER). Not checked: the SQL lineage named no write path for this request.",

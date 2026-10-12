@@ -451,10 +451,14 @@ export function tokenizeCode(text: string): string[] {
  * `tokenizeCode(tokenizeCodeRoots(t).join(" "))` equals `tokenizeCode(t)`.
  */
 export function tokenizeCodeRoots(text: string): string[] {
-  // Split camelCase/PascalCase before lowercasing
+  // Split camelCase/PascalCase before lowercasing. The acronym split
+  // (`HTTPServer` → `HTTP Server`) is a lookahead over ONE capital: the earlier
+  // `/([A-Z]+)([A-Z][a-z])/g` produced the same splits and rescanned a run of
+  // capitals from each of its positions — 19 s on a 200 KB upper-case run (PR
+  // #1090 review 2). Equality of the two is asserted in `hybrid-search.test.ts`.
   const expanded = text
     .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
+    .replace(/([A-Z])(?=[A-Z][a-z])/g, "$1 ");
   return expanded
     .toLowerCase()
     .replace(/[^a-z0-9_]/g, " ")

@@ -2043,36 +2043,42 @@ takes the cut-off date as an argument. METIS checks each proposed column against
 the functions that write the affected data — what they take as parameters and
 what they filter on — before showing it:
 
-- A column the change genuinely needs (for example `entries.read_at`, set by the
-  code that marks an entry read) is shown under **Proposed column changes**, as
-  before.
-- A column that would only **remember a preferred value** for an operation that
-  already exists — because the request says the value should be configurable, or
-  the model itself classed it as a user preference — is an **optional settings
-  column**. It is kept apart from the proposed changes and is **not** part of the
-  migration the change needs.
-- A column that could hold a value an existing function already takes as an
-  argument — a number of days on the `users` table, for a function that already
-  filters entries by date — and that nothing asks to store, is **not proposed**.
+A request is **covered** when two things hold: it is bounded by an age or a date
+("older than 30 days", "before a given date"), and an existing function already
+filters the data it writes by a date or time. For a covered request:
 
-This check is made by rules over the code graph, not by the AI model, so it gives
-the same answer whatever the model called the column. It reads what the request
-*asks for* (its title, summary and proposed solution), not the background around
-it: a verb such as "track" or "store" in a problem statement or in an alternative
-you rejected does not turn an optional column into a required one.
+- METIS **never** adds a column the AI model proposed to the migration the
+  change needs — whatever the model called it, whichever table it put it on and
+  whatever type it gave it.
+- A column that would only copy the cut-off — a number of days on the `users`
+  table, for a function that already filters entries by date — is **not
+  proposed**.
+- Every other proposed column is an **optional settings column**: shown, kept
+  apart from the proposed changes, and **not** part of the migration.
+- If the change really does need a new column, **write it in the request** as
+  `ALTER TABLE <table> ADD COLUMN <column> <type>`. A statement you wrote is
+  always proposed.
 
-The check has limits, and the page says where it stopped:
+This check is made by rules over the code graph, not by the AI model, and no
+answer the model gives can turn a column into a required one. It reads what the
+request *asks for* (its title, summary and proposed solution), not the
+background around it.
 
-- It only recognises requests bounded by an age or a date ("older than 30 days",
-  "before a given date").
-- A new column on a *different* table from the one the existing function writes
-  is kept when it cannot be a copy of that bound (a timestamp such as
-  `feeds.last_pruned_at`, a date, a flag), or when the request asks to record,
-  store, save or keep it.
-- It needs the project's SQL to have been analysed. When METIS finds no existing
-  function that writes the affected data, there is nothing to compare a proposed
-  column with: the column is still proposed, and is listed again under
-  **Proposed, not checked**.
+That rule has a cost. Suppose a request says *"delete entries older than 30
+days, and record when each feed was last cleaned"*. The second half does need a
+new column, but METIS cannot tell it apart from a copy of the cut-off without
+guessing at intent, so it lists it as optional rather than required. Read the
+optional list for a covered request, or state the column as `ALTER TABLE`.
+
+For every other request the check does not rule, and the page says so:
+
+- the request is not bounded by an age or a date; or
+- METIS found no existing function that writes the affected data (this needs
+  the project's SQL to have been analysed); or
+- it found such functions, and none filters by a date or time.
+
+In those cases the proposed columns are still proposed, and each is listed again
+under **Proposed, not checked** with the reason.
 
 You can see what was ruled out, and why. Under the proposed column changes, each
 impacted requirement shows up to three more lists:
@@ -2083,7 +2089,7 @@ impacted requirement shows up to three more lists:
 - **Not proposed** — the columns an existing function appears to cover already.
   Each entry says what was checked.
 - **Proposed, not checked** — columns that *are* in the proposed changes above,
-  which METIS could not check against any existing function. Treat them as
+  which this check did not rule on. Each entry says why. Treat them as
   unverified.
 
 An entry names the existing function it was set against, with its file and line

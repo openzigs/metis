@@ -32,7 +32,8 @@ vi.mock("../prisma.js", () => ({
   },
 }));
 
-const { NO_WRITERS_REASON } = await import("./column-proposal-gate.js");
+const { NO_TIME_BOUND_REASON, NO_WRITERS_REASON, noTimeFilterReason } =
+  await import("./column-proposal-gate.js");
 const {
   bm25OnlyNotice,
   computeProjectImpact,
@@ -221,10 +222,10 @@ describe("computeProjectImpact — a schema seed reaches the lineage-writer look
   });
 });
 
-describe("computeProjectImpact — the proposer's declared covering writers reach the gate (#791, PR #1090 panel)", () => {
+describe("computeProjectImpact — nothing the proposer declares changes the gate's ruling (#791, PR #1090 reviews)", () => {
   // A lineage that records no time filter anywhere: structurally, nothing takes
-  // an age, so a `users` column is core unless the proposer's own answer says a
-  // listed write path already performs the request.
+  // an age, so the request is not covered and the gate does not rule — whatever
+  // the proposer's own answer says about a listed write path.
   const noPredicate = () =>
     schemaDataSource({
       getSchemaEdgesFrom: async (ids) =>
@@ -246,29 +247,20 @@ describe("computeProjectImpact — the proposer's declared covering writers reac
       coveringWriterIds,
     });
 
-  it("is core with no declaration", async () => {
-    const result = await run(ISSUE_4478, {
-      schemaDataSourceFor: noPredicate,
-      additiveColumnProposer: answer([]),
-    });
-    expect(addColumns(result.affectedTables)).toEqual(["users.mark_read_delay"]);
-    expect(result.optionalColumnProposals).toEqual([]);
-  });
-
-  it("moves OUT of core when the proposer declares a listed writer as covering", async () => {
-    const result = await run(ISSUE_4478, {
-      schemaDataSourceFor: noPredicate,
-      additiveColumnProposer: answer(["MarkAllAsReadBeforeDate"]),
-    });
-    expect(addColumns(result.affectedTables)).toEqual([]);
-    expect(result.optionalColumnProposals.map((o) => o.row.columnName)).toEqual([
-      "mark_read_delay",
-    ]);
-    expect(result.optionalColumnProposals[0]!.writer?.qualifiedName).toBe(
-      `${ENTRY}::MarkAllAsReadBeforeDate`,
-    );
-    expect(result.optionalColumnProposals[0]!.reason).toContain("was named by the proposer");
-  });
+  it.each([[[]], [["MarkAllAsReadBeforeDate"]], [["MarkAllAsRead", "ghost"]]])(
+    "uncovered: core and marked unchecked, with %j declared",
+    async (declared) => {
+      const result = await run(ISSUE_4478, {
+        schemaDataSourceFor: noPredicate,
+        additiveColumnProposer: answer(declared),
+      });
+      expect(addColumns(result.affectedTables)).toEqual(["users.mark_read_delay"]);
+      expect(result.optionalColumnProposals).toEqual([]);
+      expect(result.droppedColumnProposals).toEqual([]);
+      // Writers were named (MarkAllAsRead, MarkAllAsReadBeforeDate); none filters on a time.
+      expect(result.uncheckedColumnProposals.map((u) => u.reason)).toEqual([noTimeFilterReason(2)]);
+    },
+  );
 
   it("a declared writer on the proposal's OWN table does not make it core (the review repro, end to end)", async () => {
     // "`users` writers are plausible members of the list whenever `users` is a
@@ -368,13 +360,18 @@ describe("computeProjectImpact — lineage writers and growing tables reach role
     });
   });
 
+  // Seeded the same way, for a request with no age or date bound: the gate does
+  // not rule on it, so the proposed column is core.
+  const READ_AT_REQUEST =
+    "# [Feature]: Show when an entry was read\n\n### Feature Summary\n\nShow when an entry was read.\n\n### Proposed Solution\n\nA column in the entry list.";
+
   it("promotes the writers of a table that GAINS a column to edit candidates", async () => {
-    // Same seeding, same request; the proposer adds a column to `entries`, which
-    // both writers write. A column on the writer's own table is core.
-    const result = await run(ISSUE_4478, {
+    // The proposer adds a column to `entries`, which both writers write.
+    const result = await run(READ_AT_REQUEST, {
       additiveColumnProposer: async () => [column("entries", "read_at", "TIMESTAMP")],
     });
     expect(addColumns(result.affectedTables)).toEqual(["entries.read_at"]);
+    expect(result.uncheckedColumnProposals.map((u) => u.reason)).toEqual([NO_TIME_BOUND_REASON]);
     expect(writerRows(result)).toEqual({
       MarkAllAsRead: "edit-candidate",
       MarkAllAsReadBeforeDate: "edit-candidate",
@@ -384,6 +381,45 @@ describe("computeProjectImpact — lineage writers and growing tables reach role
       result.affectedSymbols.filter((s) => s.depth === 0).map((s) => s.filePath),
     );
     expect([...editFiles].sort()).toEqual([ENTRY, UI]);
+  });
+
+  it("THE ACCEPTED COST — in a covered request that same column is optional, and promotes nothing", async () => {
+    // #4478 is covered by MarkAllAsReadBeforeDate. A column the model proposes on
+    // the writer's own table is no longer core, so no table grows and the
+    // writers stay in the blast radius.
+    const result = await run(ISSUE_4478, {
+      additiveColumnProposer: async () => [column("entries", "read_at", "TIMESTAMP")],
+    });
+    expect(addColumns(result.affectedTables)).toEqual([]);
+    expect(result.optionalColumnProposals.map((o) => o.row.columnName)).toEqual(["read_at"]);
+    expect(result.uncheckedColumnProposals).toEqual([]);
+    expect(writerRows(result)).toEqual({
+      MarkAllAsRead: "blast-radius",
+      MarkAllAsReadBeforeDate: "blast-radius",
+    });
+  });
+
+  it("the user's own DDL is the one route to core in a covered request, and it does promote", async () => {
+    const text = ISSUE_4478.replace(
+      "Times could be configured in settings.",
+      "Times could be configured in settings.\n\nALTER TABLE entries ADD COLUMN read_at TIMESTAMPTZ;",
+    );
+    expect(text).not.toBe(ISSUE_4478);
+    const result = await run(text, {
+      // The model answers too, with a column of its own. It stays out.
+      additiveColumnProposer: async () => [column("users", "mark_read_delay", "INTEGER")],
+    });
+    // The fast path marks the TABLE row: the column is in its DDL, not its `columnName`.
+    const added = result.affectedTables.filter((t) => t.changeKind === "add-column");
+    expect(added.map((t) => t.tableName)).toEqual(["entries"]);
+    expect(added[0]!.suggestedDdl).toContain("ALTER TABLE entries ADD COLUMN read_at");
+    expect(result.optionalColumnProposals.map((o) => o.row.columnName)).toEqual([
+      "mark_read_delay",
+    ]);
+    expect(writerRows(result)).toEqual({
+      MarkAllAsRead: "edit-candidate",
+      MarkAllAsReadBeforeDate: "edit-candidate",
+    });
   });
 
   it("promotes a writer of a column the request names as an identifier, with no table growing", async () => {
@@ -462,7 +498,7 @@ describe("computeProjectImpact — the gate is fail-open, and the result says so
   });
 });
 
-describe("computeProjectImpact — a cue word in a context section does not reach the gate (#791, PR #1090 review)", () => {
+describe("computeProjectImpact — no sentence of a covered request makes the model's column core (#791, PR #1090 reviews)", () => {
   const proposer: Proposer = async () => [column("users", "mark_read_delay", "INTEGER")];
 
   it.each([
@@ -476,6 +512,14 @@ describe("computeProjectImpact — a cue word in a context section does not reac
       "be better in the UI",
       "That tool stores a read delay for every user.",
     ],
+    // Review 2: the sections that ARE read, one ordinary sentence each.
+    [
+      "the proposed solution, as an instruction",
+      "configured in settings",
+      "It should also store the read delay for every user.",
+    ],
+    ["the proposed solution", "configured in settings", "It would save users a lot of clicks."],
+    ["the summary", "Mark all as read older than X\n\n###", "I want to keep my read list tidy."],
   ])("stays optional with a record verb in %s", async (_where, anchor, sentence) => {
     const text = ISSUE_4478.replace(anchor, `${anchor}. ${sentence}`);
     expect(text).not.toBe(ISSUE_4478);
@@ -484,15 +528,6 @@ describe("computeProjectImpact — a cue word in a context section does not reac
     expect(result.optionalColumnProposals.map((o) => o.row.columnName)).toEqual([
       "mark_read_delay",
     ]);
-  });
-
-  it("is core when the request itself instructs it — the same sentence, in the proposed solution", async () => {
-    const text = ISSUE_4478.replace(
-      "configured in settings.",
-      "configured in settings. It should also store the read delay for every user.",
-    );
-    const result = await run(text, { additiveColumnProposer: proposer });
-    expect(addColumns(result.affectedTables)).toEqual(["users.mark_read_delay"]);
   });
 });
 

@@ -162,6 +162,24 @@ export function isSyntheticSqlOrigin(qualifiedName: string): boolean {
   return /(?:^|::)[a-z]{2,12}@\d{1,9}$/.test(qualifiedName);
 }
 
+/**
+ * True for an ORM MAPPING edge: the `persists-to` edge `orm-extractor.ts` records
+ * from a Prisma `model` or a JPA `@Entity` to its table and to each mapped
+ * column. The declaration says where a field is stored; it writes nothing, so
+ * the symbol it starts at is not a write path.
+ *
+ * That symbol is stored exactly like a MyBatis statement or a JPA `@Query`
+ * method (`createOriginSymbol`: kind `method`, language `sql`), so the symbol
+ * cannot tell them apart and the edge has to: a MyBatis `<insert>` also
+ * `persists-to`, from source `mybatis`; a JPA `@Query` is source `orm` too, and
+ * only ever `reads` or `writes`. With the old `language !== "sql"` filter gone,
+ * every requirement naming a column of a Prisma or JPA project listed the
+ * entity itself as a lineage writer (PR #1090 review 2).
+ */
+export function isOrmMappingEdge(edge: { kind: string; source?: string | null }): boolean {
+  return edge.kind === "persists-to" && edge.source === "orm";
+}
+
 export async function resolveDataPathWriters(
   input: ResolveDataPathWritersInput,
 ): Promise<DataPathWriter[]> {
@@ -203,6 +221,7 @@ export async function resolveDataPathWriters(
   const writesNamedColumn = new Set<string>();
   const candidates = new Set<string>();
   for (const e of await ds.getWriterEdgesTo([...lookup])) {
+    if (isOrmMappingEdge(e)) continue;
     candidates.add(e.fromSymbolId);
     const weight = named.get(e.toSymbolId);
     const p = WRITE_POINTS[e.kind];
@@ -486,7 +505,9 @@ export function parseWriterText(text: string): {
   const start = SYMBOL_TEXT_HEADER.test((lines[0] ?? "").trim()) ? 1 : 0;
   const declAt = lines.findIndex((l, i) => i >= start && l.trim() !== "");
   if (declAt === -1) return { signature: null, parameters: [], sql: null };
-  const signature = lines[declAt]!.trim().replace(/\s*[{:]\s*$/, "");
+  // Trimmed first: `\s*[{:]\s*$` on the untrimmed line retries a run of
+  // spaces from each of its positions.
+  const signature = lines[declAt]!.trim().replace(/\s{0,8}[{:]$/, "");
 
   let from = signature.indexOf("(");
   // `func (s *Storage) Name(` — the first group is the receiver.

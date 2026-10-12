@@ -890,10 +890,10 @@ function impactItemSection(item: ImpactItemView, ctx: ImpactItemLabelContext): s
       "#### Not proposed (an existing write path appears to cover it)",
       item.droppedColumnProposals,
     ),
-    // #791 — the gate is fail-open: these columns ARE proposed above, and nothing
-    // existed to check them against. Said here so the export does not read as vetted.
+    // #791 — these columns ARE proposed above, and the gate did not rule on them
+    // (each row says why). Said here so the export does not read as vetted.
     ...columnProposalSection(
-      "#### Proposed, not checked (no existing write path to compare with)",
+      "#### Proposed, not checked (each row says why)",
       item.uncheckedColumnProposals ?? [],
     ),
   );

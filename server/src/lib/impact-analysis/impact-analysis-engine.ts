@@ -170,10 +170,11 @@ export interface ProjectImpactResult {
    */
   optionalColumnProposals: GatedColumnProposal[];
   /**
-   * #791 — `add-column` rows that ARE in `affectedTables` and that the gate could
-   * not check: the lineage named no write path for this request, or describing
-   * the write paths failed. The gate is fail-open by design; this is the mark
-   * that says so, with the reason. Persisted and shown like the two lists above.
+   * #791 — `add-column` rows that ARE in `affectedTables` and that the gate did
+   * not rule on: describing the write paths failed, the lineage named none, the
+   * request has no age or date bound, or no named write path filters on a time.
+   * In such a request every proposed column passes; this is the mark that says
+   * so, with the reason. Persisted and shown like the two lists above.
    */
   uncheckedColumnProposals: GatedColumnProposal[];
   /**
@@ -594,8 +595,8 @@ export async function computeProjectImpact(
     // (parameters, written tables, predicate columns, SQL): the model sees the
     // existing write paths before it proposes new state. Best-effort throughout —
     // a profiling fault means the proposer sees no writers, and the gate below
-    // then has none to check anything against: its columns pass, marked
-    // `unchecked` with the reason.
+    // then cannot tell whether the request is covered: its columns pass, marked
+    // `unchecked` with the fault as the reason.
     if (deps.additiveColumnProposer && proposeOn.length > 0) {
       let writerProfiles: DataPathWriterProfile[] = [];
       try {
@@ -626,11 +627,13 @@ export async function computeProjectImpact(
         });
       }
 
-      // #791 — the deterministic gate. Whatever the model answered, a column that
-      // would only hold an INPUT of an operation an existing write path already
-      // performs is never a core migration: it is either "Optional: settings
-      // persistence" or not proposed, each with the covering writer and the
-      // reason (`column-proposal-gate.ts`). Neither list touches `affectedTables`.
+      // #791 — the deterministic gate (`column-proposal-gate.ts`). In a request an
+      // existing write path covers — bounded by an age or a date, with a lineage
+      // writer that filters on a time column — no column the model proposed is a
+      // core migration, whatever it answered: each is "Optional: settings
+      // persistence" or not proposed, with the covering writer and the reason,
+      // and neither list touches `affectedTables`. In any other request the gate
+      // does not rule: the columns pass, each marked `unchecked` with why.
       if (proposed.proposals.length > 0) {
         const gated = gateColumnProposals({
           request: gateText,
@@ -1643,7 +1646,7 @@ async function runImpactAnalysis(
         // in-memory result and in a log line, so a reviewer could not see what
         // was ruled out. Nothing is written when the gate ruled nothing out.
         // `unchecked` rows are different in kind: the column IS among the affected
-        // tables, and the row records that the gate had nothing to check it against.
+        // tables, and the row records why the gate did not rule on it.
         const ruledOut = [
           ...result.droppedColumnProposals.map((g) => ({ disposition: "rejected", g })),
           ...result.optionalColumnProposals.map((g) => ({ disposition: "optional", g })),

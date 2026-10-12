@@ -12,9 +12,9 @@
  *     DDL: a copyable `ALTER TABLE` under a "not proposed" heading would say the
  *     opposite of the heading.
  *   - `unchecked` — "Proposed, not checked". Different in kind: these columns ARE
- *     among the proposed changes above, and the gate had no existing write path
- *     to check them against (#791 is fail-open). Shown WITHOUT DDL, which is
- *     already in the table above; this section is the caveat on it.
+ *     among the proposed changes above, and the #791 gate did not rule on them;
+ *     each row says why. Shown WITHOUT DDL, which is already in the table above;
+ *     this section is the caveat on it.
  *
  * Each row names the covering write path and links it to its file and line when
  * the caller knows the project's repo. Renders nothing for an empty list.
@@ -31,7 +31,7 @@ export type ColumnProposalVariant = "optional" | "rejected" | "unchecked";
 const COPY: Record<ColumnProposalVariant, { title: string; note: string; testId: string }> = {
   optional: {
     title: "Optional: settings persistence",
-    note: "Not part of the migration this change needs. Add one only if you want to remember a user's preferred value.",
+    note: "Not part of the migration this change needs. An existing write path may already cover the request, so a column the model proposed is never added on its own. Add one only to remember a preferred value; if the change does need a column, write its ALTER TABLE statement in the request.",
     testId: "optional-column-proposals",
   },
   rejected: {
@@ -41,7 +41,7 @@ const COPY: Record<ColumnProposalVariant, { title: string; note: string; testId:
   },
   unchecked: {
     title: "Proposed, not checked",
-    note: "These columns are in the proposed changes above, but there was no existing write path to check them against. Treat them as unverified.",
+    note: "These columns are in the proposed changes above, but were not checked against the existing write paths. Each row says why. Treat them as unverified.",
     testId: "unchecked-column-proposals",
   },
 };

@@ -12,9 +12,6 @@ import { describe, expect, it } from "vitest";
 import {
   changeFromRequest,
   extractChangesByShape,
-  isImperativeStatement,
-  MAX_REQUEST_STATEMENTS,
-  MAX_STATEMENT_CHARS,
   parseChangeRequest,
   requestGateText,
   requestRetrievalText,
@@ -392,6 +389,90 @@ describe("parseChangeRequest — GitHub's stock markdown templates use bold line
   });
 });
 
+describe("a requirements document marked up in bold is not one issue (#1036, PR #1090 review 2)", () => {
+  const requirements = (mark: (label: string) => string) =>
+    [
+      "Release 4 requirements",
+      mark("Background"),
+      "The export is manual today.",
+      mark("Context"),
+      "Three teams depend on it.",
+      mark("REQ-1 Export"),
+      "The system shall export invoices as CSV.",
+      mark("REQ-2 Import"),
+      "The system shall import invoices from CSV.",
+      mark("REQ-3 Audit"),
+      "The system shall record who ran each export.",
+    ].join("\n\n");
+
+  it("goes to the splitter with `#` headings — the behaviour bold has to match", () => {
+    const text = requirements((label) => `### ${label}`);
+    expect(parseChangeRequest(text)).toBeNull();
+    expect(extractChangesByShape(text).length).toBeGreaterThan(1);
+  });
+
+  it.each([
+    ["**bold**", (label: string) => `**${label}**`],
+    ["__bold__", (label: string) => `__${label}__`],
+    ["**bold**:", (label: string) => `**${label}**:`],
+    ["**bold** with trailing spaces", (label: string) => `**${label}**   `],
+  ])(
+    "goes to the splitter with %s labels: unknown labels count against the template",
+    (_n, mark) => {
+      const text = requirements(mark);
+      expect(parseChangeRequest(text)).toBeNull();
+      const changes = extractChangesByShape(text);
+      expect(changes.length).toBeGreaterThan(1);
+      expect(changes.every((c) => c.request === undefined)).toBe(true);
+      // Each requirement is read, where one issue would have buried them in "Context".
+      const all = changes.map((c) => `${c.title}\n${c.body}`).join("\n");
+      for (const shall of ["export invoices as CSV", "import invoices from CSV", "who ran each"]) {
+        expect(all).toContain(shall);
+      }
+    },
+  );
+
+  it.each([
+    ["**bold**", (label: string) => `**${label}**`],
+    ["**bold**:", (label: string) => `**${label}**:`],
+    ["**bold** and twenty trailing spaces", (label: string) => `**${label}**${" ".repeat(20)}`],
+    ["**bold**: and twenty trailing spaces", (label: string) => `**${label}**:${" ".repeat(20)}`],
+    ["**bold** and a trailing tab", (label: string) => `**${label}**\t`],
+  ])("still reads a real bold-template bug report as ONE change, marked %s", (_n, mark) => {
+    const bug = [
+      "Counter does not update",
+      mark("Describe the bug"),
+      "Marking a page as read leaves the unread counter unchanged.",
+      mark("To Reproduce"),
+      "1. Open the unread page\n2. Click mark page as read",
+      mark("Expected behavior"),
+      "The counter drops by the number of entries on the page.",
+      mark("Additional context"),
+      "Seen on 2.3.3.",
+    ].join("\n\n");
+    const changes = extractChangesByShape(bug);
+    expect(changes).toHaveLength(1);
+    expect(changes[0]!.request!.kind).toBe("bug");
+    expect(changes[0]!.request!.subAspects.map((s) => s.heading)).toEqual(["Expected behavior"]);
+  });
+
+  it("one emphasised line in a real issue does not tip it: unknown labels must reach the known count", () => {
+    const text =
+      "# T\n\n### Summary\n\nDo it.\n\n**Important**\n\n### Problem\n\nIt is slow.\n\n### Proposed Solution\n\nCache it.";
+    const request = parseChangeRequest(text)!;
+    expect(request).not.toBeNull();
+    // …and the line stays prose in its section; it opens none.
+    expect(request.primaryRequest).toContain("**Important**");
+    expect(request.subAspects.map((s) => s.heading)).toEqual(["Proposed Solution"]);
+  });
+
+  it("does not count a bold line inside a code fence", () => {
+    const text =
+      "# T\n\n### Summary\n\nDo it.\n\n### Problem\n\n```md\n**One**\n\n**Two**\n\n**Three**\n```";
+    expect(parseChangeRequest(text)).not.toBeNull();
+  });
+});
+
 describe("requestGateText — what the request asks, without what surrounds it (#791, PR #1090 review)", () => {
   const ISSUE = [
     "# [Feature]: Prune old entries",
@@ -414,42 +495,14 @@ describe("requestGateText — what the request asks, without what surrounds it (
     expect(gateText.ask).not.toContain("ALTER TABLE");
   });
 
-  it("takes statements from the primary request, and from a sub-aspect only when it instructs", () => {
-    expect(gateText.statements).toEqual([
-      "Prune old entries",
-      "Delete entries older than 30 days.",
-      "Record on the feed when it was last pruned.",
-    ]);
+  it("is the ask and nothing else: no list of statements for a cue to be read from", () => {
+    // The record cue that read them is gone (PR #1090 review 2), and so are they.
+    expect(Object.keys(gateText)).toEqual(["ask"]);
   });
 
   it("reads all of a splitter-made change: one requirement is all ask", () => {
     const text = requestGateText({ title: "Refunds", body: "Refunds are audited. Keep a log." });
-    expect(text.ask).toBe("Refunds\nRefunds are audited. Keep a log.");
-    expect(text.statements).toEqual(["Refunds", "Refunds are audited.", "Keep a log."]);
-  });
-
-  it("bounds what it hands on, however long the request", () => {
-    const body = Array.from(
-      { length: MAX_REQUEST_STATEMENTS + 50 },
-      (_, i) => `Add item ${i}.`,
-    ).join(" ");
-    const many = requestGateText({ title: "T", body });
-    expect(many.statements).toHaveLength(MAX_REQUEST_STATEMENTS);
-    const long = requestGateText({ title: "T", body: "x".repeat(MAX_STATEMENT_CHARS * 3) });
-    expect(long.statements.map((s) => s.length)).toEqual([1, MAX_STATEMENT_CHARS]);
-  });
-
-  it.each([
-    ["Record on the feed when it was last pruned.", true],
-    ["- Also store the reason", true],
-    ["1. Please keep the date", true],
-    ["The feed should show the date.", true],
-    ["It needs to save the cutoff.", true],
-    ["The old script keeps a log.", false],
-    ["A nightly job.", false],
-    ["Common options are 24 hours and 1 week.", false],
-  ])("isImperativeStatement(%j) is %s", (sentence, expected) => {
-    expect(isImperativeStatement(sentence)).toBe(expected);
+    expect(text).toEqual({ ask: "Refunds\nRefunds are audited. Keep a log." });
   });
 });
 
@@ -475,6 +528,9 @@ describe("parsing stays linear on a 200 KB paste (PR #1090 review)", () => {
     "a section heading of question marks": `# T\n\n### Summary\n\nx\n\n### ${fill("?")}x\n\ny\n\n### Problem\n\nz`,
     "a heading followed by spaces": `#${fill(" ")}x`,
     "a bold line that never closes": `**${fill("a")}`,
+    // PR #1090 review 2: 23 s on the pattern this replaced, inside a recognised issue.
+    "a bold label, spaces, then a character": issueWith(`**a**${fill(" ")}x`),
+    "a bold label, a colon, spaces, then a character": issueWith(`**a**:${fill(" ")}x`),
     "minified JSON in an issue": issueWith(fill('{"a":[1,2],"b":"c"},')),
   };
 

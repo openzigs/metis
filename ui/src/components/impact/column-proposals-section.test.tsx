@@ -82,6 +82,9 @@ describe("ColumnProposalsSection — Optional: settings persistence (#1051)", ()
     const section = screen.getByTestId("optional-column-proposals");
     expect(within(section).getByText("Optional: settings persistence (1)")).toBeInTheDocument();
     expect(section.textContent).toContain("Not part of the migration this change needs.");
+    // …and says how to get a column the change does need (#791: in a covered
+    // request the model cannot add one; the user's own DDL can).
+    expect(section.textContent).toContain("write its ALTER TABLE statement in the request");
     expect(within(section).getByTestId("column-proposal-ddl").textContent).toBe(
       "ALTER TABLE users ADD COLUMN mark_read_delay INTEGER;",
     );
@@ -161,6 +164,11 @@ describe("ColumnProposalsSection — Proposed, not checked (#791)", () => {
     render(<ColumnProposalsSection variant="unchecked" proposals={[unchecked]} />);
     const section = screen.getByTestId("unchecked-column-proposals");
     expect(within(section).getByText("Proposed, not checked (1)")).toBeInTheDocument();
+    // The note must not claim "no existing write path": a column is also unchecked
+    // when write paths exist and the request has no age or date bound.
+    expect(section.textContent).toContain("were not checked against the existing write paths");
+    expect(section.textContent).toContain("Each row says why");
+    expect(section.textContent).not.toContain("there was no existing write path");
     expect(section.textContent).toContain("Treat them as unverified.");
     expect(within(section).getByTestId("column-proposal-column").textContent).toBe(
       "users.mark_read_delay",

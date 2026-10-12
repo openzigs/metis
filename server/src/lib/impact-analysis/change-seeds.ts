@@ -142,9 +142,30 @@ export function isSchemaSymbol(row: Pick<SeedSymbolRow, "kind" | "language">): b
 }
 
 /**
+ * Longest query handed to the code search. A request is accepted up to 500,000
+ * characters and the search tokenizes its whole query; retrieval gains nothing
+ * past the first few thousand (the six run-7 issues are 0.6 to 1.7 KB), and an
+ * uncapped query was the one route by which request text reached the search's
+ * tokenizer at full length (PR #1090 review 2).
+ */
+export const MAX_SEED_QUERY_CHARS = 4000;
+
+/**
+ * `text` cut to {@link MAX_SEED_QUERY_CHARS}: at the last whitespace when that
+ * costs under 100 characters (so no word is halved), by length otherwise.
+ */
+function capQuery(text: string): string {
+  if (text.length <= MAX_SEED_QUERY_CHARS) return text;
+  const head = text.slice(0, MAX_SEED_QUERY_CHARS);
+  const lastBreak = Math.max(head.lastIndexOf(" "), head.lastIndexOf("\n"));
+  return lastBreak >= MAX_SEED_QUERY_CHARS - 100 ? head.slice(0, lastBreak).trimEnd() : head;
+}
+
+/**
  * The queries a change is searched with: its title (short and specific), and the
  * whole request. For an issue the second is {@link requestRetrievalText}, which
- * leaves out rejected alternatives, code fences and links.
+ * leaves out rejected alternatives, code fences and links. Each is capped at
+ * {@link MAX_SEED_QUERY_CHARS}.
  */
 export function seedQueries(
   change: Pick<ChangedRequirement, "title" | "body" | "request">,
@@ -152,7 +173,7 @@ export function seedQueries(
   const whole = change.request
     ? requestRetrievalText(change.request)
     : `${change.title}\n\n${change.body}`.trim();
-  const queries = [change.title.trim(), whole].filter((q) => q.length > 0);
+  const queries = [change.title.trim(), whole].map(capQuery).filter((q) => q.length > 0);
   return [...new Set(queries)];
 }
 

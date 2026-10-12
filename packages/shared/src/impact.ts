@@ -445,14 +445,19 @@ export interface ImpactAffectedSymbolView {
 /**
  * #1051 — what became of a proposed column the #791 gate kept out of the
  * affected tables:
- *   - `rejected` — "Not proposed": an existing write path already takes the value
- *     as a parameter and nothing asks to store it;
- *   - `optional` — "Optional: settings persistence": it would only remember a
- *     preferred value. Not part of the migration the change needs.
+ *   - `rejected` — "Not proposed": an existing write path may already take the
+ *     value as a parameter, and the column could hold it;
+ *   - `optional` — "Optional: settings persistence": proposed by the model for a
+ *     request an existing write path may cover. Not part of the migration the
+ *     change needs.
  *   - `unchecked` — different in kind: the column IS among the affected tables,
- *     and the gate had nothing to check it against (the SQL lineage named no
- *     write path, or looking them up failed). The gate is fail-open; this is the
- *     mark that says so.
+ *     and the gate did not rule on it (looking up the write paths failed, the
+ *     SQL lineage named none, the request has no age or date bound, or no named
+ *     write path filters on a time). The reason says which.
+ *
+ * In a request an existing write path covers, a model-proposed column is always
+ * one of the first two: it reaches the affected tables only when the request
+ * itself states the `ALTER TABLE`.
  */
 export const IMPACT_COLUMN_PROPOSAL_DISPOSITIONS = ["rejected", "optional", "unchecked"] as const;
 export type ImpactColumnProposalDisposition = (typeof IMPACT_COLUMN_PROPOSAL_DISPOSITIONS)[number];
@@ -477,7 +482,7 @@ export interface ImpactColumnProposalView {
   columnType: string | null;
   suggestedDdl: string | null;
   reason: string;
-  /** Null when the ruling rests on no write path (a bare preference; an unchecked column). */
+  /** Null when the ruling rests on no write path: an unchecked column. */
   writer: ImpactColumnProposalWriter | null;
 }
 
@@ -628,8 +633,7 @@ export interface ImpactItemView {
   optionalColumnProposals: ImpactColumnProposalView[];
   /**
    * #791 — "Proposed, not checked": columns that ARE in {@link affectedTables}
-   * and that the gate could not check against any existing write path, each with
-   * the reason. A marker, not a second copy of the proposal: treat the matching
+   * and that the gate did not rule on, each with the reason. A marker, not a second copy of the proposal: treat the matching
    * `add-column` row as unverified. Empty for a run stored before this field.
    */
   uncheckedColumnProposals: ImpactColumnProposalView[];

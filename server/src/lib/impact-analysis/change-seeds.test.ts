@@ -9,6 +9,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tokenizeCodeRoots } from "../code-graph/hybrid-search.js";
 import { describe, expect, it, vi } from "vitest";
 import { extractChangesByShape } from "./change-request.js";
 import {
@@ -24,6 +25,7 @@ import {
   resolveChangeSeeds,
   SCHEMA_SEED_TOP,
   SEED_POOL_PER_QUERY,
+  MAX_SEED_QUERY_CHARS,
   seedQueries,
   type SeedSearcher,
   type SeedSearchHit,
@@ -78,6 +80,48 @@ function fixed(rows: SeedSymbolRow[], scores: Record<string, number>) {
 }
 
 const change = { title: "Do the thing", body: "Do the thing, properly." };
+
+describe("seedQueries — the query handed to the search is capped (PR #1090 review 2)", () => {
+  it("cuts a long request to MAX_SEED_QUERY_CHARS, at a word boundary", () => {
+    const body = "alpha beta gamma ".repeat(2000);
+    const [title, whole] = seedQueries({ title: "Mark all as read", body });
+    expect(title).toBe("Mark all as read");
+    expect(whole!.length).toBeLessThanOrEqual(MAX_SEED_QUERY_CHARS);
+    expect(whole!.length).toBeGreaterThan(MAX_SEED_QUERY_CHARS - 10);
+    expect(whole!.startsWith("Mark all as read\n\nalpha beta gamma")).toBe(true);
+    expect(/(alpha|beta|gamma)$/.test(whole!)).toBe(true);
+  });
+
+  it("cuts a whitespace-free token, and a long title, by length", () => {
+    const [title, whole] = seedQueries({ title: "Export", body: "A".repeat(200_000) });
+    expect(title).toBe("Export");
+    expect(whole).toHaveLength(MAX_SEED_QUERY_CHARS);
+    // A title past the cap: both queries are cut to the same text, so there is one.
+    const queries = seedQueries({ title: "T".repeat(9000), body: "x" });
+    expect(queries.map((q) => q.length)).toEqual([MAX_SEED_QUERY_CHARS]);
+  });
+
+  it("caps an issue's retrieval text too", () => {
+    const issue = `# [Feature]: Export\n\n### Feature Summary\n\nExport it.\n\n### Proposed Solution\n\n${"A".repeat(200_000)}`;
+    const [change] = extractChangesByShape(issue);
+    expect(change!.request).toBeDefined();
+    for (const query of seedQueries(change!)) {
+      expect(query.length).toBeLessThanOrEqual(MAX_SEED_QUERY_CHARS);
+    }
+  });
+
+  it("leaves a request under the cap exactly as it was: the six run-7 issues are 0.6 to 1.7 KB", () => {
+    const body = "word ".repeat(700).trim();
+    expect(seedQueries({ title: "T", body })).toEqual(["T", `T\n\n${body}`]);
+  });
+
+  it("keeps the search tokenizer off 200 KB: 200 KB of capitals is tokenized in well under a second", () => {
+    const queries = seedQueries({ title: "Export", body: "A".repeat(200_000) });
+    const start = performance.now();
+    for (const q of queries) tokenizeCodeRoots(q);
+    expect(performance.now() - start).toBeLessThan(500);
+  });
+});
 
 describe("seedQueries (#1036)", () => {
   it("searches an issue by its title and by the request without rejected alternatives", () => {

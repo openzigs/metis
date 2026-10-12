@@ -44,6 +44,8 @@ interface SchemaEdgeRow {
   fromSymbolId: string;
   toSymbolId: string;
   kind: SchemaEdgeKind;
+  /** The extractor that recorded the edge (`CodeEdge.source`), when selected. */
+  source?: string | null;
 }
 
 /**
@@ -1121,13 +1123,14 @@ export class PrismaSchemaImpactDataSource implements SchemaImpactDataSource {
           toSymbolId: { in: chunk },
           kind: { in: ["writes", "persists-to"] },
         },
-        select: { fromSymbolId: true, toSymbolId: true, kind: true },
+        select: { fromSymbolId: true, toSymbolId: true, kind: true, source: true },
       }),
     );
     return rows.map((e) => ({
       fromSymbolId: e.fromSymbolId,
       toSymbolId: e.toSymbolId as string,
       kind: e.kind as SchemaEdgeKind,
+      source: e.source,
     }));
   }
 

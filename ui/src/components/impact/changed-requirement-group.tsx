@@ -310,8 +310,8 @@ export function ChangedRequirementGroup({
         proposals={item.droppedColumnProposals}
         repo={repo}
       />
-      {/* #791 — the gate is fail-open: a proposed column it could not check is
-          kept, and named here so it does not read as vetted. */}
+      {/* #791 — a proposed column the gate did not rule on is kept, and named
+          here with the reason so it does not read as vetted. */}
       <ColumnProposalsSection
         variant="unchecked"
         proposals={item.uncheckedColumnProposals ?? []}

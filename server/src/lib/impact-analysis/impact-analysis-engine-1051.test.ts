@@ -196,9 +196,9 @@ describe("executeImpactAnalysis — ruled-out column proposals are stored and re
     expect(item.optionalColumnProposals.map((p) => p.columnName)).toEqual(["mark_read_default"]);
   });
 
-  it("stores an optional preference no writer relates to with a null writer", async () => {
+  it("stores an unchecked column with a null writer: it rests on no write path", async () => {
     const { proposals, item } = await runIssue(
-      // Not time-bounded, so no write path covers anything.
+      // Not time-bounded, so the gate does not rule: the column is core, and marked.
       "# [Feature]: Accent colour\n\n### Feature Summary\n\nLet a user pick an accent colour.\n\n### Proposed Solution\n\nA colour picker on the mark all as read page.",
       async () => ({
         proposals: [
@@ -212,14 +212,17 @@ describe("executeImpactAnalysis — ruled-out column proposals are stored and re
         coveringWriterIds: [],
       }),
     );
+    expect(proposals).toHaveLength(1);
     expect(proposals[0]).toMatchObject({
-      disposition: "optional",
+      disposition: "unchecked",
       writerQualifiedName: null,
       writerFilePath: null,
       writerStartLine: null,
       writerEndLine: null,
     });
-    expect(item.optionalColumnProposals[0]!.writer).toBeNull();
+    expect(proposals[0]!.reason).toMatch(/^Not checked: the request is not bounded/);
+    expect(item.optionalColumnProposals).toEqual([]);
+    expect(item.uncheckedColumnProposals[0]!.writer).toBeNull();
   });
 
   it("writes nothing when the gate rules nothing out", async () => {

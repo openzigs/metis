@@ -4,9 +4,8 @@ section: Fixed
 ---
 
 - Impact analysis no longer proposes a core `users` column for a request existing code already
-  performs (for example "mark all as read older than X"). Each proposed column is checked against
-  the functions that write the affected data — their parameters and the columns they filter on —
-  so the result no longer depends on what the model named the column. A column that would only
-  remember a preferred value is an optional settings column, outside the migration the change needs.
-  The check reads what the request asks, not its background sections, and a column it had no
-  existing function to compare with is still proposed and marked **Proposed, not checked**.
+  performs (for example "mark all as read older than X"). When a request is bounded by an age or a
+  date and an existing function already filters by one, no column the model proposes is added to
+  the migration, whatever the model answers: it is an optional settings column or not proposed.
+- To get a column into the migration for such a request, write its `ALTER TABLE` in the request.
+  Columns in any other request are proposed as before and marked **Proposed, not checked**.

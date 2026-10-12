@@ -174,11 +174,21 @@ const MIN_RECOGNISED_HEADINGS = 2;
 const HEADING_LINE = /^\s*(#{1,6})\s+(.*\S)\s*$/;
 /**
  * A whole line in bold — `**Describe the bug**` — which is how GitHub's stock
- * MARKDOWN issue templates (as opposed to issue forms) mark a section. Bounded,
- * and only ever a heading when its label is in the template vocabulary (see
+ * MARKDOWN issue templates (as opposed to issue forms) mark a section. It only
+ * ever OPENS a section when its label is in the template vocabulary (see
  * {@link splitSections}): a bold line in ordinary prose stays prose.
+ *
+ * Matched against the line with its trailing whitespace already removed
+ * ({@link boldHeadingLabel}). The pattern used to end in `\s*:?\s*$`: two
+ * adjacent unbounded runs, so `**a**` + 200 KB of spaces + `x` was tried at
+ * every split point and took 23 s (PR #1090 review 2).
  */
-const BOLD_HEADING_LINE = /^\s*(?:\*\*|__)([^*_\n]{1,120})(?:\*\*|__)\s*:?\s*$/;
+const BOLD_HEADING_LINE = /^\s{0,8}(?:\*\*|__)([^*_\n]{1,120})(?:\*\*|__)\s{0,8}:?$/;
+
+/** The label of a whole-line bold heading; null when the line is not one. */
+function boldHeadingLabel(line: string): string | null {
+  return line.trimEnd().match(BOLD_HEADING_LINE)?.[1] ?? null;
+}
 /** The level a bold-line heading is given: below a `#` title, like a form's `###`. */
 const BOLD_HEADING_LEVEL = 3;
 const FENCE_LINE = /^\s*(```|~~~)/;
@@ -231,26 +241,41 @@ function classifyHeading(heading: string): SectionClass {
   return "unknown";
 }
 
-/** Split into the text before the first heading and the headed sections. */
-function splitSections(text: string): { preamble: string[]; sections: RawSection[] } {
+/**
+ * Split into the text before the first heading and the headed sections.
+ *
+ * `unknownBoldLabels` counts the whole-line bold labels OUTSIDE the template
+ * vocabulary. They open no section — `**Note**` stays prose in the section it is
+ * in — but they are counted like an unknown `#` heading, so a requirements
+ * document marked up in bold (`**Background**`, `**Context**`, `**REQ-1 Export**`,
+ * …) is not read as one issue (PR #1090 review 2).
+ */
+function splitSections(text: string): {
+  preamble: string[];
+  sections: RawSection[];
+  unknownBoldLabels: number;
+} {
   const preamble: string[] = [];
   const sections: RawSection[] = [];
+  let unknownBoldLabels = 0;
   let inFence = false;
   for (const line of text.replace(/\r\n?/g, "\n").split("\n")) {
     if (FENCE_LINE.test(line)) inFence = !inFence;
     const heading = inFence ? null : line.match(HEADING_LINE);
-    const bold = inFence || heading ? null : line.match(BOLD_HEADING_LINE);
+    const bold = inFence || heading ? null : boldHeadingLabel(line);
     if (heading) {
       sections.push({ level: heading[1]!.length, heading: heading[2]!.trim(), lines: [] });
-    } else if (bold && classifyHeading(bold[1]!) !== "unknown") {
-      sections.push({ level: BOLD_HEADING_LEVEL, heading: bold[1]!.trim(), lines: [] });
-    } else if (sections.length > 0) {
-      sections[sections.length - 1]!.lines.push(line);
-    } else {
-      preamble.push(line);
+      continue;
     }
+    if (bold !== null && classifyHeading(bold) !== "unknown") {
+      sections.push({ level: BOLD_HEADING_LEVEL, heading: bold.trim(), lines: [] });
+      continue;
+    }
+    if (bold !== null) unknownBoldLabels++;
+    if (sections.length > 0) sections[sections.length - 1]!.lines.push(line);
+    else preamble.push(line);
   }
-  return { preamble, sections };
+  return { preamble, sections, unknownBoldLabels };
 }
 
 /** Why a single line carries no request; null when it is content. */
@@ -313,14 +338,14 @@ function sameText(a: string, b: string): boolean {
 /**
  * Parse `text` as one issue. Returns null when it is not recognisably one: fewer
  * than {@link MIN_RECOGNISED_HEADINGS} template headings, no more template
- * headings than unknown ones, more than one top-level title, or a heading that
- * introduces a requirement list.
+ * headings than unknown ones (unknown whole-line bold labels included), more
+ * than one top-level title, or a heading that introduces a requirement list.
  */
 export function parseChangeRequest(text: string | null | undefined): ChangeRequest | null {
   const trimmed = (text ?? "").trim();
   if (trimmed.length === 0) return null;
 
-  const { preamble, sections } = splitSections(trimmed);
+  const { preamble, sections, unknownBoldLabels } = splitSections(trimmed);
   if (sections.filter((s) => s.level === 1).length > 1) return null;
 
   // A leading `# Title` is the title, not a section.
@@ -332,8 +357,9 @@ export function parseChangeRequest(text: string | null | undefined): ChangeReque
   if (recognised < MIN_RECOGNISED_HEADINGS) return null;
   // A document with a "Background" and a "Problem" section and then one section
   // per requirement is still a requirements document: template headings have to
-  // outnumber the ones this parser does not know.
-  if (classes.length - recognised >= recognised) return null;
+  // outnumber the ones this parser does not know — `#` headings and whole-line
+  // bold labels alike.
+  if (classes.length - recognised + unknownBoldLabels >= recognised) return null;
 
   const ignored: IgnoredFragment[] = [];
   const preambleLines = titled ? sections[0]!.lines : preamble;
@@ -445,35 +471,6 @@ export function requestRetrievalText(request: ChangeRequest): string {
 
 // ── What the request ASKS, as opposed to what it says around it (#791) ───────
 
-/** Statements handed to the gate, at most, and the longest one kept whole. */
-export const MAX_REQUEST_STATEMENTS = 400;
-export const MAX_STATEMENT_CHARS = 600;
-
-/**
- * An obligation or a suggestion: "should record", "must keep", "could store".
- * Deliberately wide — a statement only matters to its reader when it also holds
- * the cue that reader looks for.
- */
-const OBLIGATION =
-  /\b(should|must|shall|will|would|could|can|needs?\s{1,4}to|ha(?:s|ve)\s{1,4}to)\b/i;
-/** A sentence that opens with an instruction verb, after any list marker. */
-const LEADING_INSTRUCTION =
-  /^(?:[-*+]\s{1,4}|\d{1,3}[.)]\s{1,4}|\[[ xX]\]\s{1,4}){0,3}(?:(?:also|then|and|please|additionally|finally)[,\s]{1,4}){0,2}(add|record|store|track|persist|audit|save|keep|log|write|remember|set|update|show|display|expose|return|include|create|introduce|populate|maintain|mark|delete|remove|allow|let|make|provide|support|ensure|send|use|change|rename|replace|implement)\b/i;
-
-/** Split prose into sentences and lines. Linear; no nested quantifier. */
-function sentencesOf(text: string): string[] {
-  return text
-    .split(/(?<=[.!?;])\s|\n/)
-    .map((sentence) => sentence.trim())
-    .filter((sentence) => sentence.length > 0);
-}
-
-/** True when a sentence instructs or obliges, rather than describes. */
-export function isImperativeStatement(sentence: string): boolean {
-  const head = sentence.slice(0, MAX_STATEMENT_CHARS);
-  return LEADING_INSTRUCTION.test(head) || OBLIGATION.test(head);
-}
-
 /** What the #791 gate and the `ALTER TABLE` fast path read of one change. */
 export interface RequestGateText {
   /**
@@ -482,14 +479,6 @@ export interface RequestGateText {
    * reporter rejected and the logs describe; they do not ask.
    */
   ask: string;
-  /**
-   * The sentences a "record this" cue is read from: every sentence of the
-   * primary request, and the IMPERATIVE sentences of the sub-aspects. One
-   * incidental verb in a context section ("I lose track of what I have read",
-   * "the tool keeps everything stored locally") used to flip a column to a core
-   * migration; context is not read at all, and a sub-aspect has to instruct.
-   */
-  statements: string[];
 }
 
 /**
@@ -500,25 +489,8 @@ export function requestGateText(
   change: Pick<ChangedRequirement, "title" | "body" | "request">,
 ): RequestGateText {
   const request = change.request;
-  if (!request) {
-    const ask = `${change.title}\n${change.body}`;
-    return {
-      ask,
-      statements: sentencesOf(ask)
-        .slice(0, MAX_REQUEST_STATEMENTS)
-        .map((sentence) => sentence.slice(0, MAX_STATEMENT_CHARS)),
-    };
-  }
-  const statements = [
-    ...sentencesOf(request.primaryRequest),
-    ...request.subAspects.flatMap((s) => sentencesOf(s.text).filter(isImperativeStatement)),
-  ];
-  return {
-    ask: [request.primaryRequest, ...request.subAspects.map((s) => s.text)].join("\n\n"),
-    statements: statements
-      .slice(0, MAX_REQUEST_STATEMENTS)
-      .map((sentence) => sentence.slice(0, MAX_STATEMENT_CHARS)),
-  };
+  if (!request) return { ask: `${change.title}\n${change.body}` };
+  return { ask: [request.primaryRequest, ...request.subAspects.map((s) => s.text)].join("\n\n") };
 }
 
 const REMOVED_RE =

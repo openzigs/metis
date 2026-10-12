@@ -7,10 +7,12 @@
  * returned across runs 3 to 7. The writer is Miniflux v2.3.3's
  * `MarkAllAsReadBeforeDate`, profiled as the run-7 lineage records it.
  *
- * A verbatim fixture is not enough on its own (PR #1090 review): the gate is
- * also probed with the model's own structured answer as an adversarial input,
- * and with one incidental cue word added to a context section of the fixture.
- * Both broke the first cut of this gate while every verbatim test stayed green.
+ * A verbatim fixture is not enough on its own, and neither is a probe of the one
+ * field the last review named (PR #1090, reviews 1 and 2): the model's structured
+ * answer broke the first cut, and its table, its column name and its type broke
+ * the second, each while every existing test stayed green. The invariant — in a
+ * covered request the model cannot produce a core column by any answer — is
+ * therefore asserted over a product of every field the model chooses.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -24,12 +26,14 @@ import {
 } from "./change-request.js";
 import {
   canHoldBound,
+  coveringWriters,
   gateColumnProposals,
   isTimeColumnName,
+  NO_TIME_BOUND_REASON,
   NO_WRITERS_REASON,
+  noTimeFilterReason,
   normalizeProposerOutput,
   requestAsksToConfigure,
-  requestAsksToRecord,
   requestHasTimeBound,
   timePredicates,
   type ColumnJustification,
@@ -131,21 +135,11 @@ const gate = (
   });
 
 const names = (rows: { row: AffectedTableInput }[]) => rows.map((r) => r.row.columnName);
-const coreNames = (result: { core: AffectedTableInput[] }) => result.core.map((r) => r.columnName);
 
 describe("what the verbatim #4478 request asks for (#791)", () => {
-  it("is bounded by an age", () => {
+  it("is bounded by an age, and asks for the value to be configurable", () => {
     expect(requestHasTimeBound(REQUEST_4478.ask)).toBe(true);
-  });
-
-  it("asks to configure the value, and does not ask to record anything", () => {
     expect(requestAsksToConfigure(REQUEST_4478.ask)).toBe(true);
-    expect(
-      requestAsksToRecord(
-        REQUEST_4478.statements,
-        proposal("users", "mark_read_delay", "INTEGER").row,
-      ),
-    ).toBe(false);
   });
 
   it("is read without its context sections", () => {
@@ -153,6 +147,15 @@ describe("what the verbatim #4478 request asks for (#791)", () => {
     expect(REQUEST_4478.ask).toContain("Times could be configured in settings.");
     expect(REQUEST_4478.ask).not.toContain("Right now you can either");
     expect(REQUEST_4478.ask).not.toContain("miniflux-sanity");
+  });
+
+  it("is covered: MarkAllAsReadBeforeDate filters entries.published_at", () => {
+    expect(coveringWriters(REQUEST_4478, [MARK_BEFORE_DATE, SET_STATUS]).map((w) => w.id)).toEqual([
+      "MarkAllAsReadBeforeDate",
+    ]);
+    // Not covered by a writer with no time filter, nor when the request has no bound.
+    expect(coveringWriters(REQUEST_4478, [SET_STATUS, UPDATE_USER])).toEqual([]);
+    expect(coveringWriters(plain("Add a dark theme."), [MARK_BEFORE_DATE])).toEqual([]);
   });
 });
 
@@ -200,15 +203,13 @@ describe("gateColumnProposals — the verbatim #4478 request, the columns runs 3
     }
   });
 
-  it("does not depend on what the column is called — the #1045 defect", () => {
-    // A name that shares no word with the writer or the request.
-    const result = gate(REQUEST_4478, [proposal("users", "zzz_qqq", "INTEGER")]);
-    expect(result.core).toEqual([]);
-    expect(names(result.optional)).toEqual(["zzz_qqq"]);
-  });
-
   it("holds when the stored symbol text is missing: the predicate alone covers it", () => {
-    const untexted = { ...MARK_BEFORE_DATE, signature: null, parameters: [], sql: null };
+    const untexted = {
+      ...MARK_BEFORE_DATE,
+      signature: null,
+      parameters: [],
+      sql: null,
+    };
     const result = gate(
       REQUEST_4478,
       [proposal("users", "mark_read_delay", "INTEGER")],
@@ -221,456 +222,434 @@ describe("gateColumnProposals — the verbatim #4478 request, the columns runs 3
   });
 });
 
-describe("gateColumnProposals — the model's own answer as an adversarial input (#791, PR #1090 review)", () => {
-  const WRITERS = [MARK_BEFORE_DATE, SET_STATUS, UPDATE_USER];
+/**
+ * THE INVARIANT, swept. In a covered request the model cannot produce a core
+ * column by any answer.
+ *
+ * Two reviews found a way from the model's answer, or from one ordinary sentence
+ * in the request, to a core `users` column — each time through the field or the
+ * wording the previous fix had not looked at. So this is a product over every
+ * field the model chooses and every request variant the reviews used, not a
+ * list of the cases that were reported.
+ */
+describe("gateColumnProposals — a covered request has no core column, whatever the model answers (#791, PR #1090 review 2)", () => {
+  /** `sentence` appended to the body of the section under `heading`. */
+  const inSection = (heading: string, sentence: string): string => {
+    const marker = `### ${heading}\n\n`;
+    const at = ISSUE_4478.indexOf(marker);
+    if (at === -1) throw new Error(`no section "${heading}" in the fixture`);
+    const bodyEnd = ISSUE_4478.indexOf("\n\n", at + marker.length);
+    return `${ISSUE_4478.slice(0, bodyEnd)} ${sentence}${ISSUE_4478.slice(bodyEnd)}`;
+  };
+  const SECTIONS = [
+    "Feature Summary",
+    "What problem does this feature solve?",
+    "Proposed Solution",
+    "Alternatives Considered",
+  ];
+  /** Every sentence a review used to flip a column to core, cycle 1 and cycle 2. */
+  const SENTENCES = [
+    "I want to keep my read list tidy.",
+    "This would save me from having to mark things as read by hand.",
+    "It would save users a lot of clicks.",
+    "This would save time when marking as read.",
+    "The dropdown should keep the mark as read button usable.",
+    "I lose track of what I have read.",
+    "The tool keeps everything stored locally.",
+    "It should also store the read delay for every user.",
+    "It must record on the user when entries were last marked as read.",
+    "Track and persist the mark read delay on users.",
+  ];
+  const REQUESTS: Array<readonly [label: string, request: RequestGateText]> = [
+    ["verbatim #4478", REQUEST_4478],
+    ["the title alone", plain("Mark all as read older than X")],
+    [
+      "#4478 minus the settings sentence",
+      issue(ISSUE_4478.replace(" Times could be configured in settings.", "")),
+    ],
+    ...SENTENCES.flatMap((sentence) =>
+      SECTIONS.map(
+        (section) => [`"${sentence}" in ${section}`, issue(inSection(section, sentence))] as const,
+      ),
+    ),
+    // …and each sentence as the whole of a one-requirement change.
+    ...SENTENCES.map(
+      (sentence) =>
+        [
+          `"${sentence}" after the title`,
+          plain(`Mark all as read older than X. ${sentence}`),
+        ] as const,
+    ),
+  ];
 
-  it("a declared writer on the proposal's OWN table does not move it into core (the review repro)", () => {
-    // Verbatim #4478, the MarkAllAsReadBeforeDate profile, one extra listed writer
-    // that writes `users`. Declaring it used to make `users` a covered table.
-    const without = gate(
-      REQUEST_4478,
-      [proposal("users", "mark_read_delay", "INTEGER", null)],
-      WRITERS,
+  // Everything the model chooses.
+  const TABLES = ["users", "entries", "feeds", "user_entry_state", "public.users", "user_settings"];
+  const TYPES = ["INTEGER", "TEXT", "TIMESTAMP", "DATE", "BOOLEAN", null, "", "TIMESTAMPTZ"];
+  const COLUMN_NAMES = [
+    "mark_read_delay",
+    "mark_read_older_than_days",
+    "mark_read_before",
+    "auto_mark_read",
+    // names made of words the request variants use
+    "read_list_tidy",
+    "saved_clicks",
+    "settings",
+    "users",
+    "last_marked_read_at",
+    // names that read as recorded state
+    "last_cleanup_at",
+    "snoozed_until",
+    "read_at",
+    "zzz_qqq",
+  ];
+  const JUSTIFICATIONS = [null, "operation-needs-new-data", "user-preference"] as const;
+  /** The covering writer, a `users` writer, one the lineage never named, none. */
+  const DECLARED = [null, "MarkAllAsReadBeforeDate", "UpdateUser", "no-such-writer"];
+  const DECLARED_LISTS: string[][] = [
+    [],
+    ["MarkAllAsReadBeforeDate"],
+    ["UpdateUser"],
+    ["no-such-writer"],
+    ["UpdateUser", "UpdateUser", "MarkAllAsReadBeforeDate", "no-such-writer"],
+  ];
+  const UNTEXTED = {
+    ...MARK_BEFORE_DATE,
+    signature: null,
+    parameters: [],
+    sql: null,
+  };
+  /** Writer sets that all hold a time-filtering writer: the request stays covered. */
+  const COVERED_WRITER_SETS: DataPathWriterProfile[][] = [
+    [MARK_BEFORE_DATE],
+    [MARK_BEFORE_DATE, SET_STATUS],
+    [SET_STATUS, UPDATE_USER, MARK_BEFORE_DATE],
+    [UNTEXTED, UPDATE_USER],
+  ];
+
+  const ANSWERS: ProposedColumn[] = TABLES.flatMap((table) =>
+    TYPES.flatMap((type) =>
+      COLUMN_NAMES.flatMap((name) =>
+        JUSTIFICATIONS.flatMap((justification) =>
+          DECLARED.map((coveredBy) => proposal(table, name, type, justification, coveredBy)),
+        ),
+      ),
+    ),
+  );
+
+  it("sweeps a real product of the model's fields, not a handful", () => {
+    expect(REQUESTS.length).toBe(3 + SENTENCES.length * SECTIONS.length + SENTENCES.length);
+    expect(ANSWERS.length).toBe(
+      TABLES.length * TYPES.length * COLUMN_NAMES.length * JUSTIFICATIONS.length * DECLARED.length,
     );
-    const withIt = gate(
-      REQUEST_4478,
-      [proposal("users", "mark_read_delay", "INTEGER", null)],
-      WRITERS,
-      ["UpdateUser"],
-    );
-    expect(without.core).toEqual([]);
-    expect(withIt.core).toEqual([]);
-    expect(names(withIt.optional)).toEqual(["mark_read_delay"]);
-    // And the writer it is set against is still the lineage one, not the declared one.
-    expect(withIt.optional[0]!.writer?.qualifiedName).toBe(`${ENTRY}::MarkAllAsReadBeforeDate`);
+    expect(ANSWERS.length).toBeGreaterThan(5000);
+    // Every variant really differs from the fixture, and is still one issue.
+    expect(new Set(REQUESTS.map(([, r]) => r.ask)).size).toBeGreaterThan(SENTENCES.length * 2);
   });
 
-  it("no structured answer makes #4478 a core users column: every type, label, coveredBy and declared set", () => {
-    const types = [
-      "INTEGER",
-      "BIGINT",
-      "TEXT",
-      "VARCHAR(255)",
-      "TIMESTAMP",
-      "DATE",
-      "BOOLEAN",
-      null,
-    ];
-    const labels = [null, "operation-needs-new-data", "user-preference"] as const;
-    const coveredBy = [null, "UpdateUser", "MarkAllAsReadBeforeDate", "no-such-writer"];
-    const declaredSets = [
-      [],
-      ["UpdateUser"],
-      ["no-such-writer"],
-      ["UpdateUser", "UpdateUser", "UpdateUser"],
-      ["MarkAllAsReadBeforeDate", "UpdateUser", "SetEntriesStatus", "no-such-writer"],
-    ];
-    let checked = 0;
-    for (const type of types) {
-      for (const label of labels) {
-        for (const covered of coveredBy) {
-          for (const declared of declaredSets) {
-            const result = gate(
-              REQUEST_4478,
-              [proposal("users", "mark_read_delay", type, label, covered)],
-              WRITERS,
-              declared,
+  it("core is empty in every combination, and nothing is passed unchecked", () => {
+    const failures: string[] = [];
+    let combinations = 0;
+    for (const [label, request] of REQUESTS) {
+      for (const writers of COVERED_WRITER_SETS) {
+        for (const coveringWriterIds of DECLARED_LISTS) {
+          const result = gateColumnProposals({
+            request,
+            proposals: ANSWERS,
+            coveringWriterIds,
+            writers,
+          });
+          combinations += ANSWERS.length;
+          if (
+            result.core.length > 0 ||
+            result.unchecked.length > 0 ||
+            result.optional.length + result.rejected.length !== ANSWERS.length
+          ) {
+            const first = result.core[0];
+            failures.push(
+              `${label} | writers ${writers.map((w) => w.id).join(",")} | declared [${coveringWriterIds.join(",")}]: ` +
+                `${result.core.length} core, ${result.unchecked.length} unchecked` +
+                (first
+                  ? ` — first ${first.tableName}.${first.columnName} ${first.columnType ?? "<untyped>"}`
+                  : ""),
             );
-            expect(result.core, JSON.stringify({ type, label, covered, declared })).toEqual([]);
-            expect(result.optional.length + result.rejected.length).toBe(1);
-            checked++;
           }
         }
       }
     }
-    expect(checked).toBe(8 * 3 * 4 * 5);
+    expect(failures).toEqual([]);
+    expect(combinations).toBeGreaterThan(1_000_000);
   });
 
-  it("a declaration only ever takes columns OUT of core, whatever it names", () => {
-    const requests = [
-      REQUEST_4478,
-      plain("Mark all as read older than X."),
-      plain("Delete entries older than 30 days and show the last cleanup time on each feed."),
-      plain("Let a user star every entry of a feed at once."),
-    ];
-    const proposals = [
-      proposal("users", "mark_read_delay", "INTEGER"),
-      proposal("users", "theme_accent", "TEXT"),
-      proposal("entries", "read_at", "TIMESTAMP"),
-      proposal("entries", "read_count", "INTEGER"),
-      proposal("feeds", "last_cleanup_at", "TIMESTAMP"),
-      proposal("feeds", "retention_days", "INTEGER"),
-    ];
-    const declaredSets = [
-      ["UpdateUser"],
-      ["SetEntriesStatus"],
-      ["SetEntriesStatus", "UpdateUser"],
-      ["MarkAllAsReadBeforeDate"],
-      ["UpdateUser", "UpdateUser"],
-      ["ghost", "UpdateUser", "SetEntriesStatus", "MarkAllAsReadBeforeDate"],
-    ];
-    for (const request of requests) {
-      for (const writers of [WRITERS, [SET_STATUS, UPDATE_USER]]) {
-        const floor = new Set(coreNames(gate(request, proposals, writers, [])));
-        for (const declared of declaredSets) {
-          for (const column of coreNames(gate(request, proposals, writers, declared))) {
-            expect(floor.has(column), `${column} with ${declared.join(",")}`).toBe(true);
-          }
-        }
+  it("each proposal alone gets the ruling it gets in a batch, and one that cites the lineage writer", () => {
+    // The batch above could hide a ruling that depends on a neighbour.
+    for (const [, request] of REQUESTS.slice(0, 3)) {
+      const batch = gate(request, ANSWERS, [MARK_BEFORE_DATE, SET_STATUS, UPDATE_USER]);
+      const rejectedRows = new Set(batch.rejected.map((r) => r.row));
+      for (const answer of ANSWERS.filter((_, i) => i % 37 === 0)) {
+        const alone = gate(
+          request,
+          [answer],
+          [MARK_BEFORE_DATE, SET_STATUS, UPDATE_USER],
+          ["UpdateUser"],
+        );
+        expect(alone.core).toEqual([]);
+        const ruled = [...alone.optional, ...alone.rejected];
+        expect(ruled).toHaveLength(1);
+        expect(alone.rejected.length === 1).toBe(rejectedRows.has(answer.row));
+        expect(ruled[0]!.writer?.qualifiedName).toBe(`${ENTRY}::MarkAllAsReadBeforeDate`);
       }
     }
   });
 
-  it("a duplicated or unknown declared id is the same as declaring it once, or not at all", () => {
-    const bare = plain("Mark all as read older than X.");
-    const proposals = [proposal("users", "mark_read_delay", "INTEGER")];
-    const writers = [SET_STATUS, UPDATE_USER];
-    const once = gate(bare, proposals, writers, ["SetEntriesStatus"]);
-    expect(gate(bare, proposals, writers, Array(5).fill("SetEntriesStatus"))).toEqual(once);
-    expect(gate(bare, proposals, writers, ["ghost", "", "__proto__"])).toEqual(
-      gate(bare, proposals, writers, []),
+  it("the sweep is not vacuous: the same answers ARE core once no writer filters on a time", () => {
+    const result = gate(REQUEST_4478, ANSWERS, [SET_STATUS, UPDATE_USER]);
+    expect(result.core).toHaveLength(ANSWERS.length);
+    expect(result.unchecked).toHaveLength(ANSWERS.length);
+    expect(result.optional).toEqual([]);
+    expect(result.rejected).toEqual([]);
+  });
+
+  it("the review-2 repros, one by one", () => {
+    const P = (table: string, name: string, type: string | null) => [proposal(table, name, type)];
+    // N2 — one ordinary sentence with `save` or `keep`.
+    for (const sentence of SENTENCES.slice(0, 5)) {
+      for (const section of ["Feature Summary", "Proposed Solution"]) {
+        const result = gate(
+          issue(inSection(section, sentence)),
+          P("users", "mark_read_delay", "INTEGER"),
+        );
+        expect(result.core, `${sentence} / ${section}`).toEqual([]);
+      }
+    }
+    // N3 — without the settings sentence, the model's type decided.
+    const noSettings = issue(ISSUE_4478.replace(" Times could be configured in settings.", ""));
+    for (const [name, type] of [
+      ["mark_read_before", "TIMESTAMP"],
+      ["mark_read_before", "DATE"],
+      ["auto_mark_read", "BOOLEAN"],
+    ] as const) {
+      expect(gate(noSettings, P("users", name, type)).core, `${name} ${type}`).toEqual([]);
+      expect(
+        gate("Mark all as read older than X", P("users", name, type)).core,
+        `${name} ${type}, title alone`,
+      ).toEqual([]);
+    }
+    // N4 — a copy of the bound on the covering writer's own table.
+    expect(gate(REQUEST_4478, P("entries", "mark_read_older_than_days", "INTEGER")).core).toEqual(
+      [],
     );
   });
 });
 
-describe("gateColumnProposals — an incidental cue word in a context section (#791, PR #1090 review)", () => {
-  const P = [proposal("users", "mark_read_delay", "INTEGER")];
-  const inProblem = (sentence: string) =>
-    ISSUE_4478.replace("24 hours, 1 week, 1 month", `24 hours, 1 week, 1 month. ${sentence}`);
-  const inAlternatives = (sentence: string) =>
-    ISSUE_4478.replace("be better in the UI", `be better in the UI. ${sentence}`);
-  const inSolution = (sentence: string) =>
-    ISSUE_4478.replace("configured in settings.", `configured in settings. ${sentence}`);
+describe("gateColumnProposals — optional or rejected, in a covered request (#791)", () => {
+  const REQUEST = "Mark every entry older than 30 days as read.";
 
-  it.each([
-    ["the review repro, a noun", inProblem("I lose track of what I have read.")],
-    [
-      "the review repro, an alternative",
-      inAlternatives("The tool keeps everything stored locally."),
-    ],
-    [
-      "a verb about this very column, in the problem",
-      inProblem("It should track what each user has read."),
-    ],
-    [
-      "a verb about this very column, in an alternative",
-      inAlternatives("That tool stores a read delay for every user."),
-    ],
-  ])("stays optional with %s", (_label, text) => {
-    expect(text).not.toBe(ISSUE_4478);
-    const result = gate(issue(text), P);
-    expect(result.core).toEqual([]);
-    expect(names(result.optional)).toEqual(["mark_read_delay"]);
-  });
-
-  it("does read the same sentence when the request itself makes it, as an instruction", () => {
-    const result = gate(
-      issue(inSolution("It should also store the read delay for every user.")),
-      P,
-    );
-    expect(coreNames(result)).toEqual(["mark_read_delay"]);
-  });
-
-  it("does not read a sub-aspect sentence that only describes", () => {
-    const result = gate(issue(inSolution("The old tool stores a read delay for every user.")), P);
-    expect(result.core).toEqual([]);
-  });
-
-  it("needs the statement to be about the proposal, not only to hold a verb", () => {
-    const result = gate(issue(inSolution("It should also keep the dropdown small.")), P);
-    expect(result.core).toEqual([]);
-  });
-});
-
-describe("gateColumnProposals — rejected, when nothing asks to store the value (#791)", () => {
-  // The same request without its "configured in settings" sentence.
-  const BARE =
-    "Mark all as read older than X. This gives people the option to just let things that are older than X days be marked as read.";
-
-  it("rejects the column with the writer, and a reason that says what was checked", () => {
-    const result = gate(BARE, [proposal("users", "mark_read_delay", "INTEGER")]);
+  it("rejects a column that restates the bound, with the writer and what was checked", () => {
+    const result = gate(REQUEST, [proposal("users", "mark_read_older_than_days", "INTEGER")]);
     expect(result.core).toEqual([]);
     expect(result.optional).toEqual([]);
-    expect(names(result.rejected)).toEqual(["mark_read_delay"]);
-    expect(result.rejected[0]!.writer?.qualifiedName).toBe(`${ENTRY}::MarkAllAsReadBeforeDate`);
-    const { reason } = result.rejected[0]!;
-    expect(reason).toMatch(/^An existing write path may cover this:/);
-    expect(reason).toContain("MarkAllAsReadBeforeDate (internal/storage/entry.go:523)");
-    expect(reason).toContain("already filters entries.published_at by its argument");
-    expect(reason).toContain("Checked: the request's wording, the write path's filter");
-    expect(reason).toContain("not whether that write path performs the rest of the request");
-    // The claim the first cut made and could not support.
-    expect(reason).not.toContain("an argument of that call");
+    expect(names(result.rejected)).toEqual(["mark_read_older_than_days"]);
+    const [rejected] = result.rejected;
+    expect(rejected!.writer?.qualifiedName).toBe(`${ENTRY}::MarkAllAsReadBeforeDate`);
+    expect(rejected!.reason).toMatch(/^An existing write path may cover this/);
+    expect(rejected!.reason).toContain("MarkAllAsReadBeforeDate (internal/storage/entry.go:523)");
+    expect(rejected!.reason).toContain("already filters entries.published_at");
+    expect(rejected!.reason).toContain("that write path's time filter");
+    expect(rejected!.reason).toContain("not whether that write path performs the rest");
   });
 
   it("rejects an untyped column too: it could hold anything", () => {
-    const result = gate(BARE, [proposal("users", "mark_read_delay", null)]);
-    expect(names(result.rejected)).toEqual(["mark_read_delay"]);
+    expect(names(gate(REQUEST, [proposal("users", "x", null)]).rejected)).toEqual(["x"]);
   });
 
-  it("still makes it optional when the proposer itself calls it a user preference", () => {
-    const result = gate(BARE, [proposal("users", "mark_read_delay", "INTEGER", "user-preference")]);
-    expect(names(result.optional)).toEqual(["mark_read_delay"]);
-    expect(result.optional[0]!.reason).toContain(
-      "the proposer classed this column as a user preference",
-    );
+  it("makes it optional when the proposer itself calls it a user preference", () => {
+    const result = gate(REQUEST, [proposal("users", "default_days", "INTEGER", "user-preference")]);
     expect(result.rejected).toEqual([]);
-  });
-});
-
-describe("gateColumnProposals — a new column on a table the bounded writer does not write (#791, PR #1090 review)", () => {
-  it.each([
-    // The reviewer's two repros.
-    [
-      "Delete entries older than 30 days and show the last cleanup time on each feed.",
-      proposal("feeds", "last_cleanup_at", "TIMESTAMP"),
-    ],
-    [
-      "A user can snooze an entry until a chosen date, and it comes back unread on that day.",
-      proposal("user_entry_state", "snoozed_until", "TIMESTAMP"),
-    ],
-    // The panel's wordings: none of the five verbs the first cut needed.
-    [
-      "Delete entries older than 30 days. Each feed should show when it was last pruned.",
-      proposal("feeds", "last_pruned_at", "TIMESTAMP"),
-    ],
-    [
-      "Delete entries older than 30 days. A feed must keep the time it was last pruned.",
-      proposal("feeds", "last_pruned_at", "TIMESTAMP"),
-    ],
-    ["Archive entries before a given date.", proposal("feeds", "has_archive", "BOOLEAN")],
-  ])("%s → not rejected", (text, p) => {
-    expect(requestHasTimeBound(text)).toBe(true);
-    const result = gate(text, [p]);
-    expect(result.rejected).toEqual([]);
-    expect(result.optional).toEqual([]);
-    expect(coreNames(result)).toEqual([p.row.columnName]);
+    expect(names(result.optional)).toEqual(["default_days"]);
+    expect(result.optional[0]!.reason).toContain("classed this column as a user preference");
   });
 
-  it.each(["save", "keep", "record", "store", "track", "persist", "audit"])(
-    "accepts '%s' as a request to record, even for a column that could hold the bound",
-    (verb) => {
-      const text = `Delete entries older than 30 days, and ${verb} the prune reason on the feed.`;
-      const result = gate(text, [proposal("feeds", "prune_reason", "TEXT")]);
-      expect(coreNames(result)).toEqual(["prune_reason"]);
+  it("makes it optional when the request asks for the value to be configurable", () => {
+    const result = gate(`${REQUEST} The number of days should be a per-user setting.`, [
+      proposal("users", "mark_read_days", "INTEGER"),
+    ]);
+    expect(names(result.optional)).toEqual(["mark_read_days"]);
+    expect(result.optional[0]!.reason).toContain("asks for the value to be configurable");
+  });
+
+  it.each(["TIMESTAMP", "DATE", "BOOLEAN"])(
+    "THE ACCEPTED COST — a genuinely new %s column is optional, not core, and says how to get it",
+    (type) => {
+      const result = gate(
+        "Delete entries older than 30 days and record on the feed when it was last cleaned.",
+        [proposal("feeds", "last_cleanup_at", type)],
+      );
+      expect(result.core).toEqual([]);
       expect(result.rejected).toEqual([]);
+      expect(names(result.optional)).toEqual(["last_cleanup_at"]);
+      const reason = result.optional[0]!.reason;
+      expect(reason).toMatch(/^Optional: settings persistence\./);
+      expect(reason).toContain("never added to the migration");
+      expect(reason).toContain("write its ALTER TABLE statement in the request");
+      // It must not claim a preference nobody stated.
+      expect(reason).not.toContain("user preference");
+      expect(reason).not.toContain("configurable");
     },
   );
 
-  it("without such a verb, that same column is ruled out", () => {
-    const result = gate("Delete entries older than 30 days.", [
-      proposal("feeds", "prune_reason", "TEXT"),
-    ]);
-    expect(names(result.rejected)).toEqual(["prune_reason"]);
-  });
-
-  it("cites the writer with the evidence, not the first in list order", () => {
-    // No stored text and a lower lineage rank, listed FIRST.
-    const weak = writer("PurgeOld", {
-      startLine: 900,
-      confidence: 0.5,
-      predicateColumns: ["entries.created_at"],
-    });
-    for (const writers of [
-      [weak, MARK_BEFORE_DATE],
-      [MARK_BEFORE_DATE, weak],
-    ]) {
+  it("the record verbs decide nothing: with or without one, the same ruling", () => {
+    for (const verb of ["save", "keep", "record", "store", "track", "persist", "audit"]) {
       const result = gate(
-        "Mark all as read older than X.",
-        [proposal("users", "mark_read_delay", "INTEGER")],
-        writers,
+        `Delete entries older than 30 days and ${verb} the feed's cleanup date.`,
+        [
+          proposal("feeds", "cleanup_days", "INTEGER"),
+          proposal("feeds", "last_cleanup_at", "TIMESTAMP"),
+        ],
       );
-      expect(result.rejected[0]!.writer?.qualifiedName).toBe(`${ENTRY}::MarkAllAsReadBeforeDate`);
-      expect(result.rejected[0]!.reason).toContain("MarkAllAsReadBeforeDate");
-      expect(result.rejected[0]!.reason).not.toContain("PurgeOld");
+      expect(result.core, verb).toEqual([]);
+      expect(names(result.rejected), verb).toEqual(["cleanup_days"]);
+      expect(names(result.optional), verb).toEqual(["last_cleanup_at"]);
     }
   });
 
-  it("between two writers with the same evidence, cites the one the lineage ranks higher", () => {
-    const low = writer("Aaa", { confidence: 0.5, predicateColumns: ["entries.created_at"] });
-    const high = writer("Zzz", { confidence: 0.9, predicateColumns: ["entries.created_at"] });
-    const result = gate(
-      "Mark all as read older than X.",
-      [proposal("users", "mark_read_delay", "INTEGER")],
-      [low, high],
-    );
-    expect(result.rejected[0]!.writer?.qualifiedName).toBe(`${ENTRY}::Zzz`);
-  });
-});
-
-describe("gateColumnProposals — what stays a core migration (#791)", () => {
-  it("keeps a column on the table the covering writer writes (#4336 read_at)", () => {
-    // Time-bounded wording AND a time-predicate writer, and still core: the
-    // operation records this on its own table.
-    const text = "Set read_at when an entry is marked read, including entries older than 30 days.";
-    const result = gate(text, [proposal("entries", "read_at", "TIMESTAMP")]);
-    expect(coreNames(result)).toEqual(["read_at"]);
-    expect(result.optional).toEqual([]);
-    expect(result.rejected).toEqual([]);
-  });
-
-  it("keeps a column on the writer's own table even when it could hold the bound", () => {
-    const result = gate("Archive entries older than 30 days.", [
-      proposal("entries", "archived_reason", "TEXT"),
+  it("a column on the covering writer's own table is ruled like any other (#4336's read_at shape)", () => {
+    const result = gate(REQUEST, [
+      proposal("entries", "read_at", "TIMESTAMP"),
+      proposal("entries", "mark_read_older_than_days", "INTEGER"),
     ]);
-    expect(coreNames(result)).toEqual(["archived_reason"]);
+    expect(result.core).toEqual([]);
+    expect(names(result.optional)).toEqual(["read_at"]);
+    expect(names(result.rejected)).toEqual(["mark_read_older_than_days"]);
   });
 
-  it("keeps a column on another table when the request asks to RECORD something", () => {
-    const text =
-      "Delete entries older than 30 days, and record on the feed when it was last pruned.";
-    const result = gate(text, [proposal("feeds", "last_pruned", null)]);
-    expect(coreNames(result)).toEqual(["last_pruned"]);
+  it("no ruling claims a table relation or a filter that was not checked", () => {
+    const result = gate(REQUEST, [
+      proposal("entries", "x_days", "INTEGER"),
+      proposal("users", "y_days", "INTEGER", "user-preference"),
+    ]);
+    for (const ruled of [...result.rejected, ...result.optional]) {
+      expect(ruled.reason).not.toContain("does not write");
+      expect(ruled.reason).not.toContain("named by the proposer");
+      expect(ruled.reason).not.toContain("the write path's filter");
+    }
   });
 
-  it("keeps everything when the request is not bounded by a time (#4511)", () => {
-    const text =
-      "Store and return the last time a feed was successfully refreshed. Add a Last Successful Refresh parameter to the Feed API.";
-    expect(requestHasTimeBound(text)).toBe(false);
-    const result = gate(text, [proposal("feeds", "last_successful_refresh_at", "TIMESTAMP")]);
-    expect(coreNames(result)).toEqual(["last_successful_refresh_at"]);
+  it("cites the writer with the evidence, not the first in list order", () => {
+    const untyped = writer("AaaPurge", {
+      predicateColumns: ["entries.created_at"],
+      confidence: 0.9,
+    });
+    const result = gate(
+      REQUEST,
+      [proposal("users", "d", "INTEGER")],
+      [untyped, SET_STATUS, MARK_BEFORE_DATE],
+    );
+    // A typed time argument outranks a higher lineage score and an earlier name.
+    expect(result.rejected[0]!.writer?.qualifiedName).toBe(`${ENTRY}::MarkAllAsReadBeforeDate`);
   });
 
-  it("keeps everything when no writer filters on a time column — checked, so not marked", () => {
+  it("between two writers with the same evidence, cites the one the lineage ranks higher", () => {
+    const low = writer("AaaLow", {
+      predicateColumns: ["entries.created_at"],
+      confidence: 0.5,
+    });
+    const high = writer("ZzzHigh", {
+      predicateColumns: ["entries.created_at"],
+      confidence: 0.7,
+    });
+    const result = gate(REQUEST, [proposal("users", "d", "INTEGER")], [low, high]);
+    expect(result.rejected[0]!.writer?.qualifiedName).toBe(`${ENTRY}::ZzzHigh`);
+  });
+
+  it("matches a camelCase predicate: a users column is not core on a Prisma project", () => {
+    const prismaWriter = writer("markReadBefore", {
+      writeTables: ["Entry"],
+      predicateColumns: ["Entry.publishedAt"],
+    });
     const result = gate(
       REQUEST_4478,
-      [proposal("users", "mark_read_delay", "INTEGER")],
-      [SET_STATUS],
+      [proposal("User", "markReadDelay", "INTEGER")],
+      [prismaWriter],
     );
-    expect(coreNames(result)).toEqual(["mark_read_delay"]);
-    expect(result.unchecked).toEqual([]);
-  });
-
-  it("one covering writer on an unrelated table does not cost a table its new column", () => {
-    const feedPruner = writer("PruneFeeds", {
-      writeTables: ["feeds"],
-      predicateColumns: ["feeds.checked_at"],
-    });
-    // `entries` IS written by a covering writer, so the column is not outside.
-    const result = gate(
-      "Archive entries older than 30 days.",
-      [proposal("entries", "archived_reason", "TEXT")],
-      [MARK_BEFORE_DATE, feedPruner],
-    );
-    expect(coreNames(result)).toEqual(["archived_reason"]);
-  });
-
-  it("matches a schema-qualified table to the writer's table", () => {
-    const result = gate("Mark entries older than 30 days as read.", [
-      proposal("public.entries", "read_count", "INTEGER"),
-    ]);
-    expect(coreNames(result)).toEqual(["read_count"]);
-  });
-});
-
-describe("gateColumnProposals — fail-open, and marked (#791, PR #1090 review)", () => {
-  const P = [proposal("users", "mark_read_delay", "INTEGER")];
-
-  it("passes a column when the lineage named no writer at all, and marks it unchecked", () => {
-    const result = gate(REQUEST_4478, P, []);
-    expect(coreNames(result)).toEqual(["mark_read_delay"]);
-    expect(result.unchecked).toEqual([{ row: P[0]!.row, writer: null, reason: NO_WRITERS_REASON }]);
-    expect(NO_WRITERS_REASON).toMatch(/^Not checked: the SQL lineage named no write path/);
-  });
-
-  it("carries the caller's reason when the writers could not be looked up", () => {
-    const result = gateColumnProposals({
-      request: REQUEST_4478,
-      proposals: P,
-      coveringWriterIds: [],
-      writers: [],
-      writersUnavailableReason: "Not checked: the lookup failed.",
-    });
-    expect(coreNames(result)).toEqual(["mark_read_delay"]);
-    expect(result.unchecked.map((u) => u.reason)).toEqual(["Not checked: the lookup failed."]);
-  });
-
-  it("does not mark a column it ruled on, with or without writers", () => {
-    const preference = [proposal("users", "theme_accent", "TEXT", "user-preference")];
-    const none = gate(REQUEST_4478, preference, []);
-    expect(none.core).toEqual([]);
-    expect(none.unchecked).toEqual([]);
-    expect(names(none.optional)).toEqual(["theme_accent"]);
-    expect(gate(REQUEST_4478, P).unchecked).toEqual([]);
-  });
-});
-
-describe("gateColumnProposals — the proposer's structured answer (#791)", () => {
-  const NO_TIME = "Let a user star every entry of a feed at once.";
-  const BOUNDED = "Mark all as read older than X.";
-
-  it("rejects a column the proposer says a listed writer already covers", () => {
-    const result = gate(NO_TIME, [
-      proposal("entries", "starred_all", "BOOLEAN", "operation-needs-new-data", "SetEntriesStatus"),
-    ]);
     expect(result.core).toEqual([]);
-    expect(names(result.rejected)).toEqual(["starred_all"]);
-    expect(result.rejected[0]!.writer?.qualifiedName).toBe(`${ENTRY}::SetEntriesStatus`);
-    expect(result.rejected[0]!.reason).toContain("by the proposer's own account");
-    expect(result.rejected[0]!.reason).toContain(
-      "SetEntriesStatus (internal/storage/entry.go:412)",
-    );
-    expect(result.rejected[0]!.reason).toContain("Checked: the proposer's answer only");
-  });
-
-  it("ignores a coveredBy that names no listed writer — it cannot invent one", () => {
-    const result = gate(NO_TIME, [
-      proposal("entries", "starred_all", "BOOLEAN", "operation-needs-new-data", "Nope"),
-    ]);
-    expect(coreNames(result)).toEqual(["starred_all"]);
-  });
-
-  it("a declared writer rules a column out when the lineage caught no time filter", () => {
-    // Bounded request, no time predicate on record anywhere: without the
-    // declaration nothing takes the bound, and the column is core.
-    const p = [proposal("users", "mark_read_delay", "INTEGER")];
-    expect(coreNames(gate(BOUNDED, p, [SET_STATUS]))).toEqual(["mark_read_delay"]);
-    const result = gate(BOUNDED, p, [SET_STATUS], ["SetEntriesStatus"]);
-    expect(result.core).toEqual([]);
-    expect(names(result.rejected)).toEqual(["mark_read_delay"]);
-    expect(result.rejected[0]!.writer?.qualifiedName).toBe(`${ENTRY}::SetEntriesStatus`);
-    // The reason says the evidence is the proposer's word, not the lineage.
-    expect(result.rejected[0]!.reason).toContain(
-      "was named by the proposer as already performing this request",
-    );
-    expect(result.rejected[0]!.reason).toContain("the lineage records no time filter for it");
-  });
-
-  it("a declared writer has no say over a column on a table it writes itself", () => {
-    const result = gate(
-      BOUNDED,
-      [proposal("entries", "read_count", "INTEGER")],
-      [SET_STATUS],
-      ["SetEntriesStatus"],
-    );
-    expect(coreNames(result)).toEqual(["read_count"]);
-  });
-
-  it("a declared writer decides nothing when the request is not bounded", () => {
-    // A column that COULD hold a bound, so only the missing bound keeps it core.
-    expect(canHoldBound("INTEGER")).toBe(true);
-    const result = gate(
-      NO_TIME,
-      [proposal("users", "star_all_limit", "INTEGER")],
-      [SET_STATUS],
-      ["SetEntriesStatus"],
-    );
-    expect(coreNames(result)).toEqual(["star_all_limit"]);
-    expect(result.rejected).toEqual([]);
-  });
-
-  it("routes a user preference with no covering writer to optional, without a writer", () => {
-    const result = gate(NO_TIME, [proposal("users", "theme_accent", "TEXT", "user-preference")]);
-    expect(names(result.optional)).toEqual(["theme_accent"]);
-    expect(result.optional[0]!.writer).toBeNull();
-    expect(result.optional[0]!.reason).toMatch(/^Optional: settings persistence\./);
+    expect(names(result.optional)).toEqual(["markReadDelay"]);
   });
 
   it("returns four empty lists for no proposals", () => {
-    expect(gate(REQUEST_4478, [])).toEqual({ core: [], optional: [], rejected: [], unchecked: [] });
+    expect(gate(REQUEST_4478, [])).toEqual({
+      core: [],
+      optional: [],
+      rejected: [],
+      unchecked: [],
+    });
   });
 });
 
+describe("gateColumnProposals — an uncovered request: core, and marked unchecked with a true reason (#791, PR #1090 review 2)", () => {
+  const P = [
+    proposal("users", "mark_read_delay", "INTEGER"),
+    proposal("users", "theme", "TEXT", "user-preference"),
+    proposal("feeds", "last_cleanup_at", "TIMESTAMP", null, "MarkAllAsReadBeforeDate"),
+  ];
+  const expectAllCoreUnchecked = (result: ReturnType<typeof gate>, reason: string) => {
+    expect(result.core).toEqual(P.map((p) => p.row));
+    expect(result.optional).toEqual([]);
+    expect(result.rejected).toEqual([]);
+    expect(result.unchecked).toEqual(P.map((p) => ({ row: p.row, writer: null, reason })));
+  };
+
+  it("the lineage named no writer at all", () => {
+    expectAllCoreUnchecked(gate(REQUEST_4478, P, []), NO_WRITERS_REASON);
+    expect(NO_WRITERS_REASON).toMatch(/^Not checked: the SQL lineage named no write path/);
+  });
+
+  it("the writers could not be looked up: the caller's reason is carried", () => {
+    const result = gateColumnProposals({
+      request: REQUEST_4478,
+      proposals: P,
+      writers: [],
+      writersUnavailableReason: "Not checked: looking up the existing write paths failed.",
+    });
+    expectAllCoreUnchecked(result, "Not checked: looking up the existing write paths failed.");
+  });
+
+  it("writers are named and NONE filters on a time column (the review's [SetEntriesStatus, UpdateUser])", () => {
+    const result = gate(REQUEST_4478, P, [SET_STATUS, UPDATE_USER]);
+    expectAllCoreUnchecked(result, noTimeFilterReason(2));
+    expect(noTimeFilterReason(2)).toBe(
+      "Not checked: the request is bounded by an age or a date, but none of the 2 write paths the SQL lineage named for this request filters on a time column, so there was no existing operation to compare this column with. Review it as an unverified proposal.",
+    );
+    expect(noTimeFilterReason(1)).toContain("the one write path the SQL lineage named");
+  });
+
+  it("the request is not bounded by an age or a date (#4511)", () => {
+    const result = gate("Store and return the last time a feed was successfully refreshed.", P, [
+      MARK_BEFORE_DATE,
+      SET_STATUS,
+    ]);
+    expectAllCoreUnchecked(result, NO_TIME_BOUND_REASON);
+  });
+
+  it("no reason claims a filter, a writer or a comparison that was not made", () => {
+    for (const reason of [NO_WRITERS_REASON, NO_TIME_BOUND_REASON, noTimeFilterReason(3)]) {
+      expect(reason).toMatch(/^Not checked: /);
+      expect(reason).not.toContain("the write path's filter");
+      expect(reason).not.toContain("Checked:");
+      expect(reason).toContain("Review it as an unverified proposal.");
+    }
+  });
+
+  it("nothing the proposer declares rules a column out here: the gate does not rule", () => {
+    // A self-declared cover, a preference label and a declared list change nothing.
+    const result = gate(
+      "Add a dark theme.",
+      P,
+      [MARK_BEFORE_DATE, UPDATE_USER],
+      ["MarkAllAsReadBeforeDate", "UpdateUser"],
+    );
+    expectAllCoreUnchecked(result, NO_TIME_BOUND_REASON);
+  });
+});
 describe("requestHasTimeBound / timePredicates / canHoldBound (#791)", () => {
   it("recognises an age or a point in time as the bound of an operation", () => {
     for (const text of [
@@ -729,20 +708,6 @@ describe("requestHasTimeBound / timePredicates / canHoldBound (#791)", () => {
     }
   });
 
-  it("a camelCase predicate covers a request: a users column is not core on such a project", () => {
-    const prismaWriter = writer("markReadBefore", {
-      writeTables: ["Entry"],
-      predicateColumns: ["Entry.publishedAt"],
-    });
-    const result = gate(
-      REQUEST_4478,
-      [proposal("User", "markReadDelay", "INTEGER")],
-      [prismaWriter],
-    );
-    expect(result.core).toEqual([]);
-    expect(names(result.optional)).toEqual(["markReadDelay"]);
-  });
-
   it("a timestamp, a date or a flag cannot hold an age; anything else, or no type, could", () => {
     expect(
       ["TIMESTAMP", "DATE", "BOOLEAN", " timestamp ", "TIMESTAMPTZ"].map(canHoldBound),
@@ -753,68 +718,17 @@ describe("requestHasTimeBound / timePredicates / canHoldBound (#791)", () => {
   });
 });
 
-describe("requestAsksToRecord (#791)", () => {
-  const row = proposal("feeds", "last_pruned_at", "TIMESTAMP").row;
-
-  it("needs a record verb and the proposal's table or a word of its column, in one statement", () => {
-    expect(requestAsksToRecord(["Record on the feed when it was last pruned."], row)).toBe(true);
-    expect(requestAsksToRecord(["Keep the pruning date."], row)).toBe(true);
-    expect(requestAsksToRecord(["Record everything."], row)).toBe(false);
-    expect(requestAsksToRecord(["Show the feed.", "Record everything."], row)).toBe(false);
-    expect(requestAsksToRecord(["Show the feed when it was last pruned."], row)).toBe(false);
-  });
-
-  it("does not count the column's generic words as naming it", () => {
-    // `last` and `at` say nothing about what is recorded.
-    expect(requestAsksToRecord(["Keep the last one at hand."], row)).toBe(false);
-  });
-
-  it("does not read the nouns 'track of' and 'keep track' as verbs", () => {
-    expect(requestAsksToRecord(["I lose track of my feeds."], row)).toBe(false);
-    expect(requestAsksToRecord(["It is hard to keep track of feeds."], row)).toBe(false);
-    expect(requestAsksToRecord(["Track when each feed was pruned."], row)).toBe(true);
-  });
-});
-
-describe("request text is accepted up to 500,000 characters — every pattern stays linear (#791, PR #1090 review)", () => {
-  /** Best of three, so one GC pause or a starved CPU does not fail a linear scan. */
-  function bestOf3(run: () => unknown): number {
-    let best = Infinity;
-    for (let i = 0; i < 3; i++) {
-      const start = performance.now();
-      run();
-      best = Math.min(best, performance.now() - start);
-    }
-    return best;
-  }
-  const SIZE = 200_000;
-  const fill = (unit: string) => unit.repeat(Math.ceil(SIZE / unit.length)).slice(0, SIZE);
-  // The first is the reviewer's: 14 s at 160 KB on the pattern this replaces.
-  const TOKENS: Record<string, string> = {
-    "a.a.a. dotted token": fill("a."),
-    "a URL": `https://example.org/${fill("ab/c?d=e&")}`,
-    "minified JSON": fill('{"a":[1,2],"b":"c"},'),
-    "one long word": fill("a"),
-    "digits and dots": fill("1."),
-    "spaces only": fill(" "),
-    "unit words": fill("days "),
-    "record verbs": fill("must keep "),
-  };
-
-  it.each(Object.keys(TOKENS))("%s, 200 KB: well under 100 ms", (name) => {
-    const text = TOKENS[name]!;
-    expect(text.length).toBe(name === "a URL" ? SIZE + "https://example.org/".length : SIZE);
-    const row = proposal("users", "mark_read_delay", "INTEGER").row;
-    expect(bestOf3(() => requestHasTimeBound(text))).toBeLessThan(100);
-    expect(bestOf3(() => requestAsksToConfigure(text))).toBeLessThan(100);
-    expect(bestOf3(() => requestAsksToRecord([text], row))).toBeLessThan(100);
-    expect(
-      bestOf3(() =>
-        gate(requestGateText({ title: "Mark all as read older than X", body: text }), [
-          proposal("users", "mark_read_delay", "INTEGER"),
-        ]),
-      ),
-    ).toBeLessThan(100);
+describe("the gate end to end on 200 KB of request text (#791)", () => {
+  // Pattern by pattern, every regex in this module is timed by
+  // `request-regex-fuzz.test.ts`. This is the whole call, on the reviewer's input.
+  it("rules in well under a second on a 200 KB dotted token", () => {
+    const text = "a.".repeat(100_000);
+    const start = performance.now();
+    const result = gate(requestGateText({ title: "Mark all as read older than X", body: text }), [
+      proposal("users", "mark_read_delay", "INTEGER"),
+    ]);
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(result.core).toEqual([]);
   });
 });
 

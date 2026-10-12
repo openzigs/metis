@@ -81,3 +81,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Next catch-all segments are decoded](project_next-catch-all-segments-are-decoded.md) — decide proxy policy on resolved pathname (#1069)
 - [Impact offline replay + pinned shapes](project_impact-offline-replay-and-pinned-shapes.md) — measure with no model; 4 far-away tests
 - [Gate over LLM output: probes](project_deterministic-gate-over-llm-output-probes.md) — adversarial answer, context cue, regex timing
+- [Fuzz every regex; sweep every model field](project_redos-fix-ships-beside-new-pattern-fuzz-all.md) — ReDoS fixes ship beside new ones (#1090)
