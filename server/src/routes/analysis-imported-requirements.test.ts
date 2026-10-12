@@ -329,7 +329,15 @@ describe("POST / with agentContext (#1027)", () => {
 
   it("refuses a context over the limit, an empty one and a non-string", async () => {
     const { MAX_ANALYSIS_AGENT_CONTEXT } = await import("@metis/shared");
-    for (const agentContext of ["x".repeat(MAX_ANALYSIS_AGENT_CONTEXT + 1), "", ["T01"], 7]) {
+    for (const agentContext of [
+      "x".repeat(MAX_ANALYSIS_AGENT_CONTEXT + 1),
+      "",
+      // Review of #1027 — whitespace only is empty, not a context.
+      "   ",
+      " \n\t ",
+      ["T01"],
+      7,
+    ]) {
       const res = await request(app)
         .post("/api/projects/proj-a/analyses")
         .send({ extraInstructions: "x", agentContext });
@@ -341,5 +349,108 @@ describe("POST / with agentContext (#1027)", () => {
       .post("/api/projects/proj-a/analyses")
       .send({ agentContext: "x".repeat(MAX_ANALYSIS_AGENT_CONTEXT) });
     expect(atLimit.status).toBe(202);
+  });
+
+  it("forwards the context trimmed, and measures the limit after trimming", async () => {
+    const { MAX_ANALYSIS_AGENT_CONTEXT } = await import("@metis/shared");
+    const padded = await request(app)
+      .post("/api/projects/proj-a/analyses")
+      .send({ agentContext: `\n  ${CONTEXT}  \n` });
+    expect(padded.status).toBe(202);
+    expect(start.mock.calls[0][0].agentContext).toBe(CONTEXT);
+    const atLimit = await request(app)
+      .post("/api/projects/proj-a/analyses")
+      .send({ agentContext: `  ${"x".repeat(MAX_ANALYSIS_AGENT_CONTEXT)}\n` });
+    expect(atLimit.status).toBe(202);
+    expect(start.mock.calls[1][0].agentContext).toHaveLength(MAX_ANALYSIS_AGENT_CONTEXT);
+  });
+
+  // Review of #1027 — the handoff record's "sent as context" labels are shown
+  // on the analysis page, and the caller writes them. The server refuses a
+  // record naming a component or task the context text does not hold.
+  describe("a handoff record's context labels are checked against the text", () => {
+    const record = (context: { components: string[]; tasks: string[]; omitted: string[] }) => ({
+      artifacts: ["spec.md", "plan.md", "tasks.md"],
+      sent: [],
+      omitted: [],
+      context,
+    });
+    const post = (body: Record<string, unknown>) =>
+      request(app)
+        .post("/api/projects/proj-a/analyses")
+        .send({ extraInstructions: "AC-1: Reject a duplicate feed.", ...body });
+
+    it("accepts labels the text holds", async () => {
+      const res = await post({
+        agentContext: `Plan components (plan.md):\n- FeedStore — x\n${CONTEXT}`,
+        specKitHandoff: record({
+          components: ["FeedStore"],
+          tasks: ["T01", "T02"],
+          omitted: ["T03"],
+        }),
+      });
+      expect(res.status).toBe(202);
+      expect(start.mock.calls[0][0].specKitHandoff).toMatchObject({
+        context: { tasks: ["T01", "T02"] },
+      });
+    });
+
+    it("refuses a task or component the text does not hold, naming no label", async () => {
+      for (const context of [
+        { components: [], tasks: ["T01", "T09"], omitted: [] },
+        { components: ["Harmless"], tasks: ["T01"], omitted: [] },
+      ]) {
+        const res = await post({ agentContext: CONTEXT, specKitHandoff: record(context) });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe("VALIDATION_ERROR");
+        expect(JSON.stringify(res.body)).toContain(
+          "1 context label(s) do not appear in agentContext",
+        );
+        expect(JSON.stringify(res.body)).not.toContain("T09");
+        expect(JSON.stringify(res.body)).not.toContain("Harmless");
+      }
+      expect(start).not.toHaveBeenCalled();
+    });
+
+    it("refuses a record that claims context when none was sent", async () => {
+      const res = await post({
+        specKitHandoff: record({ components: [], tasks: ["T01"], omitted: [] }),
+      });
+      expect(res.status).toBe(400);
+      expect(start).not.toHaveBeenCalled();
+    });
+
+    it("accepts a record with no context, or one that sent none", async () => {
+      const none = await post({
+        specKitHandoff: { artifacts: ["spec.md"], sent: ["AC-1"], omitted: [] },
+      });
+      expect(none.status).toBe(202);
+      const empty = await post({
+        specKitHandoff: record({ components: [], tasks: [], omitted: ["T01"] }),
+      });
+      expect(empty.status).toBe(202);
+      const unrecognised = await post({
+        specKitHandoff: {
+          ...record({ components: [], tasks: [], omitted: [] }),
+          context: { components: [], tasks: [], omitted: [], unrecognised: ["plan.md"] },
+        },
+      });
+      expect(unrecognised.status).toBe(202);
+      expect(start.mock.calls[2][0].specKitHandoff).toMatchObject({
+        context: { unrecognised: ["plan.md"] },
+      });
+    });
+
+    it("refuses an unrecognised file that is not plan.md or tasks.md", async () => {
+      const res = await post({
+        specKitHandoff: {
+          artifacts: ["spec.md"],
+          sent: [],
+          omitted: [],
+          context: { components: [], tasks: [], omitted: [], unrecognised: ["spec.md"] },
+        },
+      });
+      expect(res.status).toBe(400);
+    });
   });
 });

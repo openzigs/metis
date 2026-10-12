@@ -78,10 +78,50 @@ function sentAsContextNote(context: string[], sentAsContext: string[]): string {
     : "";
 }
 
+/** The two files the handoff reads context from (#1027). */
+export type HandoffContextFile = "plan.md" | "tasks.md";
+
+/**
+ * Why a file that WAS read sent nothing: its Markdown did not have the shape
+ * the handoff recognises. Saying "not read" there would be untrue, and would
+ * send the reader looking for a missing file instead of at its headings.
+ */
+export const CONTEXT_UNRECOGNISED_REASON: Record<HandoffContextFile, string> = {
+  "plan.md": "read, but no components were recognised",
+  "tasks.md": "read, but no tasks were recognised",
+};
+
+const isContextFile = (name: string): name is HandoffContextFile =>
+  name === "plan.md" || name === "tasks.md";
+
+/**
+ * `constitution.md (not read by this analysis)`, with each file under its own
+ * reason: `a.md (not read by this analysis); plan.md (read, but no components
+ * were recognised)`. "" when every artifact was sent.
+ *
+ * @param unrecognised the files read with nothing recognised in them
+ */
+export function notSentPhrase(
+  artifacts: string[],
+  sentAsContext: string[] = [],
+  unrecognised: readonly string[] = [],
+): string {
+  const byReason = new Map<string, string[]>();
+  for (const artifact of contextNotSent(artifacts, sentAsContext)) {
+    const name = baseName(artifact);
+    const reason =
+      isContextFile(name) && unrecognised.includes(name)
+        ? CONTEXT_UNRECOGNISED_REASON[name]
+        : CONTEXT_NOT_SENT_REASON;
+    byReason.set(reason, [...(byReason.get(reason) ?? []), artifact]);
+  }
+  return [...byReason].map(([reason, files]) => `${files.join(", ")} (${reason})`).join("; ");
+}
+
 /** ` Not sent: constitution.md (not read by this analysis).`, or "" when there are none. */
-function notSentNote(context: string[], sentAsContext: string[]): string {
-  const rest = contextNotSent(context, sentAsContext);
-  const note = rest.length > 0 ? ` Not sent: ${rest.join(", ")} (${CONTEXT_NOT_SENT_REASON}).` : "";
+function notSentNote(context: string[], sentAsContext: string[], unrecognised: string[]): string {
+  const phrase = notSentPhrase(context, sentAsContext, unrecognised);
+  const note = phrase.length > 0 ? ` Not sent: ${phrase}.` : "";
   return `${sentAsContextNote(context, sentAsContext)}${note}`;
 }
 
@@ -100,13 +140,16 @@ interface SpecRequirement {
 /**
  * @param sentAsContext the files context was sent from (`plan.md`, `tasks.md`),
  *   so the text never says a file was not sent when part of it was (#1027).
+ * @param unrecognised the files read with nothing recognised in them, so the
+ *   text gives that as the reason rather than "not read".
  */
 export function buildHandoffInstructions(
   context: string[],
   spec: string | null,
   sentAsContext: string[] = [],
+  unrecognised: string[] = [],
 ): HandoffInstructions {
-  const note = notSentNote(context, sentAsContext);
+  const note = notSentNote(context, sentAsContext, unrecognised);
   const body = spec?.trim() ?? "";
   if (body.length === 0) {
     const text = `Spec Kit handoff: no spec.md was available, so no requirements were sent.${note}`;
@@ -161,9 +204,17 @@ function cutAtBoundary(full: string): { text: string; truncated: boolean } {
   return { text: full.slice(0, at).trimEnd(), truncated: true };
 }
 
-const SECTION_RE = /^#{1,6}\s+(.*\S)\s*$/;
+/**
+ * A Markdown heading: its `#`s and its title. The title starts at a non-space
+ * character, so the spaces after the `#`s can only be read one way. The earlier
+ * `^#{1,6}\s+(.*\S)\s*$` let `\s+` and `.*` share them, and a heading line of
+ * 40,000 spaces took 700 ms (quadratic); it now also runs over plan.md.
+ */
+const HEADING_RE = /^(#{1,6})[ \t]+(\S(?:.*\S)?)\s*$/;
 const BULLET_RE = /^(\s*)(?:[-*+]|\d+[.)])\s+(.*)$/;
-const AC_START_RE = /^(?:[-*+]\s+|#{1,6}\s+)?\**\s*(AC-\d+)\s*\**\s*[:.—-]?\s*(.*)$/i;
+// One run of spaces and asterisks on each side of the id, for the same reason:
+// `\s+…\**\s*` shared the spaces after a bullet between three quantifiers.
+const AC_START_RE = /^(?:[-*+](?=\s)|#{1,6}(?=\s))?[\s*]*(AC-\d+)[\s*]*[:.—-]?\s*(.*)$/i;
 
 /** The acceptance criteria, then the non-functional requirements, of a spec. */
 export function specRequirements(spec: string): SpecRequirement[] {
@@ -177,10 +228,10 @@ export function specRequirements(spec: string): SpecRequirement[] {
 function splitSections(spec: string): Array<{ title: string; lines: string[] }> {
   const out: Array<{ title: string; lines: string[] }> = [];
   for (const line of spec.split(/\r?\n/)) {
-    const h = SECTION_RE.exec(line);
+    const h = HEADING_RE.exec(line);
     // `### AC-3` inside the criteria section is a criterion, not a section.
-    if (h && !(out.length > 0 && /^\**\s*AC-\d+/i.test(h[1]!))) {
-      out.push({ title: h[1]!.replace(/[*_`]/g, "").trim(), lines: [] });
+    if (h && !(out.length > 0 && /^\**\s*AC-\d+/i.test(h[2]!))) {
+      out.push({ title: h[2]!.replace(/[*_`]/g, "").trim(), lines: [] });
     } else if (out.length > 0) {
       out[out.length - 1]!.lines.push(line);
     }
@@ -234,12 +285,17 @@ function sentence(parts: string[]): string {
 export interface HandoffContext {
   /** The text for `agentContext`, or null when there was nothing to send. */
   text: string | null;
-  /** The plan components sent, by name. */
+  /**
+   * The plan components sent, by name. Every label is text that appears in
+   * `text`, so the server can check the list against what was sent
+   * (`specKitHandoffLabelsNotInContext`).
+   */
   components: string[];
-  /** The tasks sent, by id (`T01`, …). */
+  /** The tasks sent, by id (`T01`, …). Each appears in `text`, as above. */
   tasks: string[];
   /**
-   * The components and tasks left out for {@link MAX_ANALYSIS_AGENT_CONTEXT},
+   * The components and tasks left out for {@link MAX_ANALYSIS_AGENT_CONTEXT}
+   * or for the record's {@link SPEC_KIT_HANDOFF_MAX_LABELS} labels per list,
    * capped like {@link HandoffInstructions.omitted}.
    */
   omitted: string[];
@@ -247,6 +303,11 @@ export interface HandoffContext {
   omittedCount: number;
   /** The files something was sent from: `plan.md`, `tasks.md`. */
   files: string[];
+  /**
+   * The files that had content but nothing the handoff recognises as a
+   * component or a task, so a reader is told that rather than "not read".
+   */
+  unrecognised: HandoffContextFile[];
 }
 
 interface ContextItem {
@@ -257,14 +318,47 @@ interface ContextItem {
 const COMPONENTS_HEADING = "Plan components (plan.md):";
 const TASKS_HEADING = "Tasks (tasks.md):";
 const LABEL_MAX = 64;
-const TASK_ID_RE = /\bT\d{1,4}\b/i;
-const TASK_BULLET_RE = /^\s*[-*+]\s*(?:\[[ xX]\]\s*)?(?=T\d)/;
 const TABLE_RULE_RE = /^\s*\|[\s|:-]+\|\s*$/;
+/**
+ * The plan section that lists components: `Components`, `2. Components`,
+ * `Component breakdown`, `Architecture and components`. A title must start
+ * with the word or end with it, so `Non-component concerns` is not one.
+ */
+const COMPONENTS_TITLE_RE = /^(?:\d+(?:\.\d+)*[.)]?[ \t]+)?(?:components?\b|.*\bcomponents$)/i;
+/**
+ * A task line: a bullet (with or without a checkbox), a numbered item or a
+ * heading whose first word is a task id, plain or in bold or code. The id is
+ * an upper-case `T` and digits, here and in a table cell alike (as the server's
+ * bullet form requires): `- t2 instances …` is not a task. Nor is
+ * `- Task T03: …`, which is prose about one.
+ */
+const TASK_LINE_RE =
+  /^[ \t]*(?:[-*+][ \t]*|\d{1,9}[.)][ \t]+|#{1,6}[ \t]+)(?:\[[ xX]\][ \t]*)?(?:\*\*|__|`)?(T\d{1,4})(?![A-Za-z0-9])(.*)$/;
+/** A table cell that is a task id and nothing else. */
+const TASK_ID_CELL_RE = /^T\d{1,4}$/;
+
+const stripEmphasis = (text: string): string => text.replace(/\*\*|__/g, "").trim();
+
+/** At most {@link LABEL_MAX} UTF-16 units, never ending inside a surrogate pair. */
+function clipLabel(text: string): string {
+  const cut = text.slice(0, LABEL_MAX);
+  const last = cut.charCodeAt(cut.length - 1);
+  return (last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut).trim();
+}
+
+/** The cells of a Markdown table row, or null when the line is not one. */
+function tableCells(raw: string): string[] | null {
+  if (!raw.trim().startsWith("|")) return null;
+  return raw
+    .split("|")
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
+}
 
 /**
  * The context a handoff sends from plan.md and tasks.md: one line per component
- * of the plan's `## Components` section and one per task (its id and title, not
- * the description beneath it). An item that does not fit the limit is left out
+ * of the plan's components section and one per task (its id and title, not the
+ * description beneath it). An item that does not fit the limit is left out
  * whole and named. Components may take at most half the limit when the tasks
  * would otherwise be crowded out; whatever one list leaves, the other may use.
  */
@@ -294,7 +388,10 @@ export function buildHandoffContext(plan: string | null, tasks: string | null): 
         item.line.length +
         1 +
         (sent.length === 0 ? heading.length + (lines.length > 0 ? 1 : 0) : 0);
-      if (length + extra > room) {
+      // The run's record holds at most SPEC_KIT_HANDOFF_MAX_LABELS labels per
+      // list. 600 tasks with no title fit the character limit, and the record
+      // naming all of them was refused whole with a 400, so no run started.
+      if (length + extra > room || sent.length >= SPEC_KIT_HANDOFF_MAX_LABELS) {
         omitted.push(item.label);
         continue;
       }
@@ -318,54 +415,148 @@ export function buildHandoffContext(plan: string | null, tasks: string | null): 
       ...(sentComponents.length > 0 ? ["plan.md"] : []),
       ...(sentTasks.length > 0 ? ["tasks.md"] : []),
     ],
+    unrecognised: [
+      ...((plan ?? "").trim().length > 0 && components.length === 0 ? (["plan.md"] as const) : []),
+      ...((tasks ?? "").trim().length > 0 && taskItems.length === 0 ? (["tasks.md"] as const) : []),
+    ],
   };
 }
 
-/** The top-level bullets of the plan's `## Components` section, one line each. */
+/** A component before it is a line: the name it was given, if any, and its text. */
+interface ComponentDraft {
+  name: string | null;
+  parts: string[];
+}
+
+/**
+ * The components of a plan, one line each. The plan is model-written Markdown,
+ * so the section is found by its title ({@link COMPONENTS_TITLE_RE}) at any
+ * heading level and read in the three shapes a plan uses: top-level bullets
+ * (the template's), a `### Name` sub-heading per component, and a table with
+ * the name in its first column. The section ends at the next heading of its
+ * own level or above.
+ */
 function planComponents(plan: string): ContextItem[] {
-  const lines = splitSections(plan).find((s) => /^components\b/i.test(s.title))?.lines ?? [];
-  const items: string[][] = [];
-  for (const raw of lines) {
-    if (raw.trim().length === 0) continue;
+  const lines = plan.split(/\r?\n/);
+  const drafts: ComponentDraft[] = [];
+  let sectionLevel = 0;
+  // The component a sub-heading opened: it takes the first line beneath it.
+  // Only headings of the first level seen beneath the section are components;
+  // a deeper one is detail of the component above it.
+  let componentLevel = 0;
+  let underHeading: ComponentDraft | null = null;
+  // The indent of the section's first bullet: bullets at it are components,
+  // deeper ones are detail of the component above.
+  let bulletIndent: number | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i]!;
+    const heading = HEADING_RE.exec(raw);
+    if (heading) {
+      const level = heading[1]!.length;
+      const title = heading[2]!.replace(/[*_`]/g, "").trim();
+      if (sectionLevel === 0) {
+        // Never the document's own `# Title`: a plan called "… components"
+        // would make every section of it a component.
+        if (level > 1 && COMPONENTS_TITLE_RE.test(title)) sectionLevel = level;
+      } else if (level <= sectionLevel) {
+        break;
+      } else if (componentLevel === 0 || level <= componentLevel) {
+        componentLevel = level;
+        underHeading = { name: title, parts: [] };
+        drafts.push(underHeading);
+      }
+      continue;
+    }
+    if (sectionLevel === 0 || raw.trim().length === 0) continue;
     const bullet = BULLET_RE.exec(raw);
-    if (bullet && bullet[1]!.length === 0) items.push([bullet[2]!]);
-    else if (items.length > 0) items[items.length - 1]!.push(bullet?.[2] ?? raw.trim());
+    if (underHeading) {
+      const text = bullet?.[2] ?? raw.trim();
+      // One line per component: the first line of prose or the first bullet.
+      if (underHeading.parts.length === 0 && !/^(?:```|~~~|\|)/.test(text)) {
+        underHeading.parts.push(text);
+      }
+      continue;
+    }
+    const cells = tableCells(raw);
+    if (cells) {
+      // The row above a rule is the table's header; the rule is not a row.
+      if (TABLE_RULE_RE.test(raw) || TABLE_RULE_RE.test(lines[i + 1] ?? "")) continue;
+      if (cells.length > 0) drafts.push({ name: cells[0]!, parts: cells.slice(1, 2) });
+      continue;
+    }
+    if (bullet && bulletIndent === null) bulletIndent = bullet[1]!.length;
+    if (bullet && bullet[1]!.length <= bulletIndent!) {
+      drafts.push({ name: null, parts: [bullet[2]!] });
+    } else if (drafts.length > 0) {
+      drafts[drafts.length - 1]!.parts.push(bullet?.[2] ?? raw.trim());
+    }
   }
-  return items.map((parts, i) => {
-    const first = parts[0]!;
-    const named = /^\*\*(.+?)\*\*/.exec(first)?.[1] ?? /^`([^`]+)`/.exec(first)?.[1];
-    const label = (named ?? `component ${i + 1}`).trim().slice(0, LABEL_MAX);
-    return {
-      label: label.length > 0 ? label : `component ${i + 1}`,
-      line: `- ${parts.map((p) => p.replace(/\*\*|__/g, "").trim()).join(" ")}`,
-    };
+  return drafts.flatMap((draft) => {
+    const body = draft.parts.map(stripEmphasis).filter((p) => p.length > 0);
+    const name = draft.name === null ? null : stripEmphasis(draft.name);
+    const text = [...(name ? [name] : []), ...body].join(name ? " — " : " ");
+    if (text.length === 0) return [];
+    // A bullet names its component in bold or in code: `- **FeedStore** — …`.
+    const first = draft.parts[0] ?? "";
+    const named =
+      name ?? /^\*\*(.+?)\*\*/.exec(first)?.[1] ?? /^`([^`]+)`/.exec(first)?.[1] ?? null;
+    const candidate = named === null ? "" : clipLabel(stripEmphasis(named));
+    // The label must be text of the line it names; an unnamed component is
+    // labelled by the start of its line.
+    const label = candidate.length > 0 && text.includes(candidate) ? candidate : clipLabel(text);
+    return [{ label, line: `- ${text}` }];
   });
 }
 
-/** One `- T01: title` line per task of a tasks.md, bullet or table form. */
+/**
+ * One `- T01: title` line per task of a tasks.md.
+ *
+ * This is a second tasks.md parser. The first is
+ * `server/src/lib/spec-kit/tasks-parser.ts`, which `/speckit.taskstoissues`
+ * uses to build issues and which reads far more of a row (dependencies, files,
+ * story, `[P]`, `satisfies`). This one lives in the UI because the handoff is
+ * assembled in the browser from artifacts the page already holds, the server
+ * module is not part of `@metis/shared`, and all it needs is an id and a
+ * title. It is deliberately the more forgiving of the two, since a line it
+ * misses is context the code agent does not get: it also takes a bold id, a
+ * numbered item and a `### T01` heading. A change to the task line format
+ * belongs in both.
+ */
 function taskLines(tasks: string): ContextItem[] {
   const out: ContextItem[] = [];
+  const seen = new Set<string>();
   for (const raw of tasks.split(/\r?\n/)) {
     if (TABLE_RULE_RE.test(raw)) continue;
-    let rest: string | null = null;
-    if (raw.trim().startsWith("|")) {
-      const cells = raw
-        .split("|")
-        .map((c) => c.trim())
-        .filter((c) => c.length > 0);
-      // A row whose first cell holds no task id (the header) is dropped below.
-      if (cells.length >= 2) rest = `${cells[0]} ${cells[1]}`;
-    } else if (TASK_BULLET_RE.test(raw)) {
-      rest = raw.replace(TASK_BULLET_RE, "").trim();
+    let id: string | null = null;
+    let rest = "";
+    const cells = tableCells(raw);
+    if (cells) {
+      // Only a row whose FIRST cell is a task id and nothing else is a task. A
+      // traceability row (`| AC-1 | T01, T02 |`) names tasks without being one.
+      const first = stripEmphasis(cells[0] ?? "").replace(/`/g, "");
+      if (TASK_ID_CELL_RE.test(first)) {
+        id = first;
+        rest = cells[1] ?? "";
+      }
+    } else {
+      const line = TASK_LINE_RE.exec(raw);
+      if (line) {
+        id = line[1]!;
+        rest = line[2]!;
+      }
     }
-    const id = rest === null ? null : TASK_ID_RE.exec(rest);
-    if (rest === null || !id) continue;
+    if (id === null) continue;
+    // The first line of a task wins; a later line with the same id is not a
+    // second task.
+    if (seen.has(id)) continue;
+    seen.add(id);
     const title = rest
-      .slice(id.index + id[0].length)
+      // The marker that closed a bold or code id, and one closing a bold title.
+      .replace(/^(?:\*\*|__|`)/, "")
+      .replace(/(?:\*\*|__)$/, "")
       .replace(/^[\s:.—–-]+/, "")
       .trim();
-    const label = id[0].toUpperCase();
-    out.push({ label, line: title.length > 0 ? `- ${label}: ${title}` : `- ${label}` });
+    out.push({ label: id, line: title.length > 0 ? `- ${id}: ${title}` : `- ${id}` });
   }
   return out;
 }

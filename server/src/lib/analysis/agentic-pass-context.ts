@@ -46,7 +46,7 @@ import {
   type AnalysisFusedCodeDeps,
   type FusedCodeContext,
 } from "./fused-code-chunks.js";
-import { buildAgenticCodePrompt } from "./prompts.js";
+import { buildAgenticCodePrompt, normalizeAgentContext } from "./prompts.js";
 import { estimateTokens } from "./context-window-manager.js";
 import { resolveReasoningSetting } from "../docs-gen/docs-gen-reasoning.js";
 import type { ChatOptions } from "../ai/types.js";
@@ -180,8 +180,8 @@ export interface AgenticPassSeeds {
 
 /** #1027 — the plan-context seed for a run's stored `agentContext`, or undefined. */
 export function planContextSeed(agentContext: string | undefined): AgenticPassSeeds["planContext"] {
-  const block = agentContext?.trim() ?? "";
-  return block.length > 0 ? { block, tokens: estimateTokens(block) } : undefined;
+  const block = normalizeAgentContext(agentContext);
+  return block ? { block, tokens: estimateTokens(block) } : undefined;
 }
 
 /**

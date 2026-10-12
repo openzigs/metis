@@ -11,9 +11,11 @@ import { describe, expect, it } from "vitest";
 import {
   PLAN_CONTEXT_RULE,
   buildAgenticCodePrompt,
+  buildDocumentExtractionPrompt,
   buildRequirementGroundedPrompt,
   buildSpecialistPrompt,
   buildSynthesisPrompt,
+  normalizeAgentContext,
 } from "./prompts.js";
 
 const CONTEXT = [
@@ -130,14 +132,65 @@ describe("the code agent's PLAN CONTEXT block (#1027)", () => {
     expect(PLAN_CONTEXT_RULE).toContain("not evidence that any code exists");
   });
 
-  // The document agent extracts requirements from what it reads, and those feed
-  // the code pass; the database and web agents have no use for planned work.
-  for (const agentKey of ["document", "database", "web"] as const) {
+  // The database and web agents have no use for planned work. The code-only
+  // gate in `buildSpecialistPrompt` is what keeps it from them: without it,
+  // these two fail.
+  for (const agentKey of ["database", "web"] as const) {
     it(`never reaches the ${agentKey} agent`, () => {
       expect(specialist(agentKey, CONTEXT)).toEqual(specialist(agentKey));
       expect(JSON.stringify(specialist(agentKey, CONTEXT))).not.toContain("FeedStore");
     });
   }
+
+  // The document agent is the one that matters: what it extracts as
+  // requirements is what the code pass reads. That gate is NOT what protects
+  // it (a test of the gate through the document agent passed with the gate
+  // removed). Its prompt is built by `buildDocumentExtractionPrompt`, which
+  // `buildSpecialistPrompt` hands an explicit list of fields without the
+  // context, and which has no way to render one. Both are pinned here;
+  // `plan-context-pipeline-1027.test.ts` pins the third layer, that
+  // `runOneAgent` never hands the document agent the field at all.
+  describe("the document agent is isolated by construction", () => {
+    it("builds its prompt through the extraction prompt, from a fixed list of fields", () => {
+      const viaSpecialist = specialist("document", CONTEXT);
+      expect(viaSpecialist).toEqual(
+        buildDocumentExtractionPrompt({
+          ...base,
+          retrievedContext: "[1] spec.md#0\ntext",
+          extraInstructions: "Reject a duplicate feed URL.",
+        }),
+      );
+      expect(viaSpecialist).toEqual(specialist("document"));
+      const text = JSON.stringify(viaSpecialist);
+      for (const word of ["FeedStore", "T01", "PLAN CONTEXT", "tasks.md"]) {
+        expect(text).not.toContain(word);
+      }
+    });
+
+    it("has no context to render even when handed one directly", () => {
+      const input = {
+        ...base,
+        retrievedContext: "[1] spec.md#0\ntext",
+        extraInstructions: "Reject a duplicate feed URL.",
+      };
+      const handed = buildDocumentExtractionPrompt({ ...input, agentContext: CONTEXT } as never);
+      expect(handed).toEqual(buildDocumentExtractionPrompt(input));
+      expect(JSON.stringify(handed)).not.toContain("FeedStore");
+    });
+  });
+
+  // Review of #1027 — a whitespace-only context is no context, in every builder.
+  it("treats a whitespace-only context as none, and trims one that has text", () => {
+    for (const build of Object.values(builders)) {
+      expect(build("   ")).toEqual(build());
+      expect(build(" \n\t ")).toEqual(build());
+      expect(build(`\n  ${CONTEXT}  \n`)).toEqual(build(CONTEXT));
+    }
+    expect(normalizeAgentContext("  x  ")).toBe("x");
+    for (const value of [undefined, null, "", "  ", 7, ["x"]]) {
+      expect(normalizeAgentContext(value)).toBeUndefined();
+    }
+  });
 
   it("has no way into the synthesis prompt, which writes the requirements", () => {
     const input = { projectName: "Miniflux", findingsTable: "[0] (code) title :: body" };

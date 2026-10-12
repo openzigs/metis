@@ -13,13 +13,20 @@
  * Reads `metadata.specKitHandoff` (persisted when the run started), so it shows
  * while the run is still going and on every later visit. Renders nothing for a
  * run that was not started from a Spec Kit handoff.
+ *
+ * The record is written by whoever started the run. The server checks the
+ * component and task labels against the context text it stored
+ * (`specKitHandoffLabelsNotInContext`), so those name text the code agent was
+ * given; it cannot check the list of what was left out, which is therefore
+ * shown as reported. The text itself is on the page in `AgentContextDisclosure`,
+ * for every run that has one, handoff or not.
  */
 import {
   MAX_ANALYSIS_AGENT_CONTEXT,
   specKitHandoffSchema,
   type SpecKitHandoffRecord,
 } from "@metis/shared";
-import { CONTEXT_NOT_SENT_REASON, contextNotSent } from "@/lib/spec-kit-handoff";
+import { notSentPhrase } from "@/lib/spec-kit-handoff";
 
 /** The persisted record, or null when absent or malformed. */
 export function specKitHandoffOf(
@@ -56,10 +63,16 @@ export function SpecKitHandoffNotice({
   const contextSent = context ? contextSummary(context) : "";
   // A file nothing was read from is named as not sent; naming it without saying
   // so would imply it was (#994). A handoff from before #1027 sent no context.
-  const notSent = contextNotSent(handoff.artifacts, [
-    ...(context && context.components.length > 0 ? ["plan.md"] : []),
-    ...(context && context.tasks.length > 0 ? ["tasks.md"] : []),
-  ]);
+  // A file that was read with nothing recognised in it says so: "not read"
+  // would be untrue, and would hide that its Markdown is off the template.
+  const notSent = notSentPhrase(
+    handoff.artifacts,
+    [
+      ...(context && context.components.length > 0 ? ["plan.md"] : []),
+      ...(context && context.tasks.length > 0 ? ["tasks.md"] : []),
+    ],
+    context?.unrecognised ?? [],
+  );
   return (
     <div data-testid="spec-kit-handoff-notice" className="space-y-1 text-xs">
       <p className="text-muted-foreground">
@@ -75,14 +88,15 @@ export function SpecKitHandoffNotice({
       ) : null}
       {context && context.omitted.length > 0 ? (
         <p className="text-warning" role="status" data-testid="spec-kit-handoff-context-omitted">
-          Left out of the context — {context.omitted.length === 1 ? "it" : "they"} did not fit the{" "}
+          Left out of the context, as reported by the Spec Kit page —{" "}
+          {context.omitted.length === 1 ? "it" : "they"} did not fit the{" "}
           {MAX_ANALYSIS_AGENT_CONTEXT.toLocaleString("en-US")}-character context limit:{" "}
           {context.omitted.join(", ")}.
         </p>
       ) : null}
       {notSent.length > 0 ? (
         <p className="text-muted-foreground" data-testid="spec-kit-handoff-context-not-sent">
-          Not sent: {notSent.join(", ")} ({CONTEXT_NOT_SENT_REASON}).
+          Not sent: {notSent}.
         </p>
       ) : null}
       {omitted.length > 0 ? (

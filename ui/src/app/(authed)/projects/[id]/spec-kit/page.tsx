@@ -707,7 +707,12 @@ export default function SpecKitPage() {
       // #1027 — plan.md's components and tasks.md's task titles go as context
       // for the code agent, apart from the requirements text.
       const context = buildHandoffContext(read("plan.md"), read("tasks.md"));
-      const instructions = buildHandoffInstructions(h.context, read("spec.md"), context.files);
+      const instructions = buildHandoffInstructions(
+        h.context,
+        read("spec.md"),
+        context.files,
+        context.unrecognised,
+      );
       const started = await analysisApi.start(projectId, {
         extraInstructions: instructions.text,
         ...(context.text ? { agentContext: context.text } : {}),
@@ -720,6 +725,7 @@ export default function SpecKitPage() {
             components: context.components,
             tasks: context.tasks,
             omitted: context.omitted,
+            ...(context.unrecognised.length > 0 ? { unrecognised: context.unrecognised } : {}),
           },
         },
       });

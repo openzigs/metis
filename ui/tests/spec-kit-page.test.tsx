@@ -1508,6 +1508,88 @@ describe("SpecKitPage — #789", () => {
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Analysis started."));
   });
 
+  // Review of #1027 — the toast's branch for context items left out was never
+  // run with a count above zero.
+  async function handOff(files: { spec: string; plan: string; tasks: string }, id: string) {
+    m.listFiles!.mockResolvedValue({
+      enabled: true,
+      artifacts: [
+        artifact("spec.md", files.spec),
+        artifact("plan.md", files.plan),
+        artifact("tasks.md", files.tasks),
+      ],
+    });
+    m.runCommand!.mockResolvedValue({
+      message: "handoff",
+      artifactName: null,
+      artifact: {
+        context: ["spec.md", "plan.md", "tasks.md"],
+        orchestratorRoute: "/api/projects/p1/analyses",
+      },
+    });
+    startAnalysis.mockResolvedValue({ id });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+    await waitFor(() => expect(screen.getByTestId("spec-kit-content")).toBeInTheDocument());
+    typeAndRun("/speckit.implement");
+    fireEvent.click(await screen.findByTestId("spec-kit-start-analysis"));
+    await waitFor(() => expect(startAnalysis).toHaveBeenCalledTimes(1));
+    return startAnalysis.mock.calls[0]![1] as {
+      extraInstructions: string;
+      agentContext?: string;
+      specKitHandoff: {
+        omitted: string[];
+        context: { tasks: string[]; omitted: string[]; unrecognised?: string[] };
+      };
+    };
+  }
+  const ONE_AC = "# Spec\n\n## Acceptance criteria\n\n- **AC-1**: Reject a duplicate feed\n";
+  const LONG_TASKS = Array.from(
+    { length: 60 },
+    (_, i) => `- [ ] T${String(i + 1).padStart(2, "0")} — ${"t".repeat(90)}`,
+  ).join("\n");
+
+  it("says in the toast how many context items were left out (#1027)", async () => {
+    const body = await handOff({ spec: ONE_AC, plan: "", tasks: LONG_TASKS }, "an_left");
+    const leftOut = body.specKitHandoff.context.omitted.length;
+    expect(leftOut).toBeGreaterThan(0);
+    expect(body.specKitHandoff.context.tasks.length + leftOut).toBe(60);
+    expect(body.specKitHandoff.omitted).toEqual([]);
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith(
+        `Analysis started. ${leftOut} plan or task item(s) of the context did not fit and were not sent; the analysis page lists them.`,
+      ),
+    );
+  });
+
+  it("names both in the toast when requirements and context items were left out (#1027)", async () => {
+    const bigSpec = `## Acceptance criteria\n${Array.from(
+      { length: 8 },
+      (_, i) => `- **AC-${i + 1}**: ${"z".repeat(1000)}`,
+    ).join("\n")}\n`;
+    const body = await handOff({ spec: bigSpec, plan: "", tasks: LONG_TASKS }, "an_both");
+    const requirements = body.specKitHandoff.omitted.length;
+    const context = body.specKitHandoff.context.omitted.length;
+    expect(requirements).toBeGreaterThan(0);
+    expect(context).toBeGreaterThan(0);
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith(
+        `Analysis started. ${requirements} part(s) of spec.md and ${context} plan or task item(s) of the context did not fit and were not sent; the analysis page lists them.`,
+      ),
+    );
+  });
+
+  it("records a plan that was read with nothing recognised, and says so in the text (#1027)", async () => {
+    const body = await handOff(
+      { spec: ONE_AC, plan: "# Plan\n\n## Design\nProse only.\n", tasks: "- [ ] T01 — One" },
+      "an_unrec",
+    );
+    expect(body.specKitHandoff.context.unrecognised).toEqual(["plan.md"]);
+    expect(body.extraInstructions).toContain(
+      "Sent separately as context, not as requirements: tasks.md. Not sent: plan.md (read, but no components were recognised).",
+    );
+    expect(body.agentContext).toBe("Tasks (tasks.md):\n- T01: One");
+  });
+
   it("hands off a feature's own spec.md when the implement ran in a feature", async () => {
     m.runCommand!.mockResolvedValue({
       message: "handoff",

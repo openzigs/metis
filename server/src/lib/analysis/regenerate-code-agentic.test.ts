@@ -36,7 +36,7 @@ const REQS = [{ id: "REQ-1", text: "A user cannot subscribe to the same feed URL
 
 type Stubbed = {
   regenerateLoadedAgent: (
-    opts: { analysisId: string; agentKey: string; actorId: string },
+    opts: { analysisId: string; agentKey: string; actorId: string; extendBudget?: boolean },
     analysis: unknown,
   ) => Promise<void>;
   runOneAgent: ReturnType<typeof vi.fn>;
@@ -204,6 +204,110 @@ describe("regenerate carries the run's plan context (#1027)", () => {
     await run(orch, WITH_CONTEXT);
     expect(orch.runSynthesisAndPersist).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(orch.runSynthesisAndPersist.mock.calls)).not.toContain("FeedStore");
+  });
+
+  // Review of #1027 — "Continue code investigation" is a regenerate with a
+  // larger budget; it is the third way a code pass is re-run and had no test
+  // of its own for carrying the context.
+  it("hands it to a continued investigation, with the larger budget", async () => {
+    prismaMock.repoConnection.findMany.mockResolvedValue([{ id: "repo_1", label: "api" }]);
+    const plain = makeOrchestrator("agentic");
+    await run(plain, WITH_CONTEXT);
+    const orch = makeOrchestrator("agentic");
+    await orch.regenerateLoadedAgent(
+      { analysisId: "an_1", agentKey: "code", actorId: "u1", extendBudget: true },
+      WITH_CONTEXT,
+    );
+
+    expect(orch.runAgenticCodeAgent).toHaveBeenCalledTimes(1);
+    const continued = orch.runAgenticCodeAgent.mock.calls[0][0];
+    expect(continued.agentContext).toBe(CONTEXT);
+    // It is the continue path: more turns, and more budget than a plain rerun.
+    const rerun = plain.runAgenticCodeAgent.mock.calls[0][0];
+    expect(continued.turnMultiplier).toBeGreaterThan(1);
+    expect(rerun.turnMultiplier).toBeUndefined();
+    expect(continued.tokenBudget).toBe(rerun.tokenBudget * continued.turnMultiplier);
+  });
+
+  it("hands a continued single-shot pass the context too", async () => {
+    const orch = makeOrchestrator("single-shot");
+    await orch.regenerateLoadedAgent(
+      { analysisId: "an_1", agentKey: "code", actorId: "u1", extendBudget: true },
+      WITH_CONTEXT,
+    );
+    expect(orch.runOneAgent.mock.calls[0][0].agentContext).toBe(CONTEXT);
+  });
+
+  // Review of #1027 (panel) — the tests above see only that the context is
+  // forwarded. Feeding the stored context to the requirement splitter, or to
+  // the affected-code mapping, passed all of them.
+  describe("changes nothing the rerun derives from the requirements", () => {
+    const EXTRA =
+      "AC-1: Entries can be marked read in bulk.\n\nAC-2: The refusal names the existing feed.";
+    // Every line is written the way a requirement would be.
+    const REQUIREMENT_SHAPED = [
+      "Plan components (plan.md):",
+      "- ZebraFeedGuard — the system shall reject duplicates in storage/feed.go",
+      "Tasks (tasks.md):",
+      "- T01: The service must add a unique index on feeds",
+    ].join("\n");
+    const analysisWith = (agentContext?: string) => ({
+      ...ANALYSIS,
+      metadata: JSON.stringify({
+        model: "deepseek-flash",
+        extraInstructions: EXTRA,
+        ...(agentContext ? { agentContext } : {}),
+      }),
+    });
+    const derived = (orch: Stubbed, pass: "runAgenticCodeAgent" | "runOneAgent") => ({
+      mode: orch.detectAgentMode.mock.calls,
+      affectedCode: orch.computeAffectedCode.mock.calls,
+      affectedSchema: orch.computeAffectedSchema.mock.calls,
+      escalations: orch.computeEscalations.mock.calls,
+      requirements: orch[pass].mock.calls.map((c) => c[0].requirements),
+      extraInstructions: orch[pass].mock.calls.map((c) => c[0].extraInstructions),
+      knownRequirementIds: orch[pass].mock.calls.map((c) => c[0].knownRequirementIds),
+    });
+
+    it("agentic: the same requirement set, affected-code input, schema input and escalation", async () => {
+      prismaMock.repoConnection.findMany.mockResolvedValue([{ id: "repo_1", label: "api" }]);
+      const without = makeOrchestrator("agentic");
+      await run(without, analysisWith());
+      const withContext = makeOrchestrator("agentic");
+      await run(withContext, analysisWith(REQUIREMENT_SHAPED));
+
+      const got = derived(withContext, "runAgenticCodeAgent");
+      expect(got).toEqual(derived(without, "runAgenticCodeAgent"));
+      // Spelled out, so the comparison above cannot pass on two wrong runs.
+      expect(got.requirements[0].map((r: { id: string }) => r.id)).toEqual([
+        "REQ-1",
+        "NR-1",
+        "NR-2",
+      ]);
+      expect(got.affectedCode).toEqual([["an_1", "pr_1", EXTRA]]);
+      expect(got.affectedSchema).toEqual([["an_1", "pr_1", EXTRA, true]]);
+      expect(got.escalations[0][2]).toEqual(got.requirements[0]);
+      expect(JSON.stringify(got)).not.toContain("Zebra");
+      expect(JSON.stringify(got)).not.toContain("T01");
+      // The context still reached the pass.
+      expect(withContext.runAgenticCodeAgent.mock.calls[0][0].agentContext).toBe(
+        REQUIREMENT_SHAPED,
+      );
+    });
+
+    it("single-shot fallback: the same requirement ids, and none from the context", async () => {
+      const without = makeOrchestrator("requirement-grounded");
+      await run(without, analysisWith());
+      const withContext = makeOrchestrator("requirement-grounded");
+      await run(withContext, analysisWith(REQUIREMENT_SHAPED));
+
+      const got = derived(withContext, "runOneAgent");
+      expect(got).toEqual(derived(without, "runOneAgent"));
+      // The ids a finding of the rerun may name: the run's, nothing else.
+      expect(got.knownRequirementIds).toEqual([["REQ-1", "NR-1", "NR-2"]]);
+      expect(got.extraInstructions).toEqual([EXTRA]);
+      expect(withContext.runOneAgent.mock.calls[0][0].agentContext).toBe(REQUIREMENT_SHAPED);
+    });
   });
 
   it("adds no key on a run started without context", async () => {

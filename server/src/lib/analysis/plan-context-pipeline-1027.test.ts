@@ -106,6 +106,20 @@ vi.mock("./approval-checkpoint.js", () => ({
   canCreateTickets: vi.fn(async () => false),
 }));
 
+// Review of #1027 — what each specialist's model call was built from, so the
+// isolation of the document agent is asserted where it is enforced.
+const runAgentInputs = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock("./agent-runner.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./agent-runner.js")>();
+  return {
+    ...actual,
+    runAgent: vi.fn((...args: Parameters<typeof actual.runAgent>) => {
+      runAgentInputs.push(args[1] as unknown as Record<string, unknown>);
+      return actual.runAgent(...args);
+    }),
+  };
+});
+
 const { AnalysisOrchestrator } = await import("./orchestrator.js");
 const { agenticPassEffectiveBudget, buildAgenticPassPrompt, planContextSeed } =
   await import("./agentic-pass-context.js");
@@ -204,8 +218,82 @@ const BEGIN = "BEGIN PLAN CONTEXT (BACKGROUND, NOT REQUIREMENTS)";
 
 const holding = (calls: CapturedCall[], text: string) => calls.filter((c) => c.includes(text));
 
+/**
+ * Review of #1027 — the same pipeline with the REAL retrieval code and doubles
+ * that RECORD what they are asked. `runPipeline` above cannot show that the
+ * context is never a search query: its `retrieve` seam replaces the retrieval
+ * call whole and ignores its argument, and fused retrieval is switched off, so
+ * a build that joined the context into every query passed every test.
+ */
+async function runRecording(
+  opts: { extraInstructions?: string; agentContext?: string },
+  agentKeys: string[] = ["document", "code"],
+) {
+  process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "true";
+  process.env.ANALYSIS_SCHEMA_CONTEXT = "false";
+  __resetConfigSingleton();
+  const calls: CapturedCall[] = [];
+  /** Every query handed to a document or code search. */
+  const queries: string[] = [];
+  /** Every requirement handed to the affected-code mapper. */
+  const mapped: string[] = [];
+  const orch = new AnalysisOrchestrator({
+    provider: makeProvider(calls) as never,
+    knowledge: {
+      search: async (_projectId: string, query: string) => {
+        queries.push(query);
+        return { hits: [] };
+      },
+    } as never,
+    fusedCode: {
+      searcher: {
+        search: async (query: string) => {
+          queries.push(query);
+          return [];
+        },
+      },
+      lineLookup: { resolve: async () => new Map() },
+    },
+    affectedCode: {
+      mapRequirement: async (req, ...rest) => {
+        mapped.push(JSON.stringify(req));
+        return mapEveryRequirement!(req, ...rest);
+      },
+      dataSourceFor: emptyGraphSource,
+    },
+  });
+  await (
+    orch as unknown as {
+      runPipeline: (
+        analysisId: string,
+        projectName: string,
+        projectDescription: string,
+        agentKeys: string[],
+        opts: Record<string, unknown>,
+      ) => Promise<void>;
+    }
+  ).runPipeline(ANALYSIS_ID, "Metis", "A test project", agentKeys, {
+    projectId: PROJECT_ID,
+    startedById: "u1",
+    model: "test-model",
+    ...opts,
+  });
+  const capability = persisted.capability.at(-1);
+  if (!capability) throw new Error("capability was never persisted");
+  return { calls, queries, mapped, capability };
+}
+
+/** Words that occur only in CONTEXT, one from each of its lines. */
+const CONTEXT_ONLY = [MARK, "Plan components", "storage/feed.go", "T01", "unique index", "T02"];
+const expectNoContextIn = (texts: string[]) => {
+  for (const text of texts) {
+    for (const word of CONTEXT_ONLY) expect(text).not.toContain(word);
+  }
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
+  runAgentInputs.length = 0;
   state.codeGraphPresent = true;
   state.connectors = [];
   persisted.capability = [];
@@ -216,6 +304,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.ANALYSIS_FUSED_CODE_RETRIEVAL;
+  delete process.env.ANALYSIS_SCHEMA_CONTEXT;
   __resetConfigSingleton();
 });
 
@@ -304,10 +393,97 @@ describe("#1027 — plan context through the pipeline", () => {
     const absent = await runPipeline({ extraInstructions: REQUIREMENTS });
     const undef = await runPipeline({ extraInstructions: REQUIREMENTS, agentContext: undefined });
     const blank = await runPipeline({ extraInstructions: REQUIREMENTS, agentContext: "" });
+    const spaces = await runPipeline({ extraInstructions: REQUIREMENTS, agentContext: " \n " });
 
     expect(undef.calls).toEqual(absent.calls);
     expect(blank.calls).toEqual(absent.calls);
+    expect(spaces.calls).toEqual(absent.calls);
     expect(holding(absent.calls, "PLAN CONTEXT")).toEqual([]);
+  });
+});
+
+describe("#1027 — the plan context is never a retrieval query", () => {
+  it("agentic: the code search is asked for the requirements, never the context", async () => {
+    const without = await runRecording({ extraInstructions: REQUIREMENTS });
+    const run = await runRecording({ extraInstructions: REQUIREMENTS, agentContext: CONTEXT });
+
+    expect(run.capability.agentMode).toBe("agentic");
+    // The recorder sees real queries: the requirements text is in them.
+    expect(run.queries.length).toBeGreaterThan(0);
+    expect(run.queries.some((q) => q.includes("feed URL the user already follows"))).toBe(true);
+    expectNoContextIn(run.queries);
+    expect(run.queries).toEqual(without.queries);
+    // …and the context did reach the agent, so this is not a run without it.
+    expect(holding(run.calls, MARK).length).toBeGreaterThan(0);
+  });
+
+  it("requirement-grounded: neither the per-requirement search nor the code search sees it", async () => {
+    state.codeGraphPresent = false;
+    const without = await runRecording({ extraInstructions: REQUIREMENTS });
+    const run = await runRecording({ extraInstructions: REQUIREMENTS, agentContext: CONTEXT });
+
+    expect(run.capability.agentMode).toBe("requirement-grounded");
+    // One document search per requirement, and the fused code search.
+    expect(run.queries.length).toBeGreaterThanOrEqual(3);
+    expect(run.queries.some((q) => q.includes("feed URL the user already follows"))).toBe(true);
+    expectNoContextIn(run.queries);
+    expect(run.queries).toEqual(without.queries);
+    expect(holding(run.calls, MARK)).toHaveLength(1);
+  });
+
+  it("single-shot: the document, code and fused searches are asked nothing from it", async () => {
+    const without = await runRecording({});
+    const run = await runRecording({ agentContext: CONTEXT });
+
+    expect(run.capability.agentMode).toBe("single-shot");
+    expect(run.queries.length).toBeGreaterThan(0);
+    // The queries are derived from the project, as they are without a context.
+    expect(run.queries.some((q) => q.includes("Metis"))).toBe(true);
+    expectNoContextIn(run.queries);
+    expect(run.queries).toEqual(without.queries);
+    expect(holding(run.calls, MARK)).toHaveLength(1);
+  });
+
+  it("is not a requirement to the affected-code mapper, in any mode", async () => {
+    for (const codeGraphPresent of [true, false]) {
+      state.codeGraphPresent = codeGraphPresent;
+      const without = await runRecording({ extraInstructions: REQUIREMENTS });
+      const run = await runRecording({ extraInstructions: REQUIREMENTS, agentContext: CONTEXT });
+      expect(run.mapped).toHaveLength(2);
+      expectNoContextIn(run.mapped);
+      expect(run.mapped).toEqual(without.mapped);
+    }
+    // Alone, it gives the mapper nothing to map.
+    expect((await runRecording({ agentContext: CONTEXT })).mapped).toEqual([]);
+  });
+});
+
+describe("#1027 — only the code agent's model call is built from the context", () => {
+  const inputsFor = (agentKey: string) => runAgentInputs.filter((i) => i.agentKey === agentKey);
+
+  it("hands it to the single-shot code agent and to no other specialist", async () => {
+    await runPipeline({ agentContext: CONTEXT }, ["document", "code", "database"]);
+
+    expect(inputsFor("code")).toHaveLength(1);
+    expect(inputsFor("code")[0]!.agentContext).toBe(CONTEXT);
+    expect(inputsFor("document")).toHaveLength(1);
+    expect(inputsFor("database")).toHaveLength(1);
+    for (const input of [...inputsFor("document"), ...inputsFor("database")]) {
+      expect(input).not.toHaveProperty("agentContext");
+    }
+  });
+
+  // Without a code agent the document agent is not run ahead of the others: it
+  // goes through the same fan-out the code agent uses, which is handed the
+  // run's context. `runOneAgent` is what keeps it from the document agent
+  // there, and what it extracts as requirements is what the code pass reads.
+  it("keeps it from the document agent on a run that fans every specialist out together", async () => {
+    await runPipeline({ agentContext: CONTEXT }, ["document", "database"]);
+
+    expect(inputsFor("document")).toHaveLength(1);
+    expect(inputsFor("database")).toHaveLength(1);
+    for (const input of runAgentInputs) expect(input).not.toHaveProperty("agentContext");
+    expect(JSON.stringify(runAgentInputs)).not.toContain(MARK);
   });
 });
 
@@ -344,6 +520,23 @@ describe("#1027 — start() stores the context and runs the pipeline with it", (
   it("persists no context key on a run started without one", async () => {
     await start({});
     expect(createAnalysis.mock.calls[0]![0]).not.toHaveProperty("agentContext");
+  });
+
+  // Review of #1027 — a whitespace-only value used to be stored, fenced as an
+  // empty block by two builders, trimmed away by the third and dropped on a
+  // regenerate. It is no context, everywhere.
+  it("treats a whitespace-only context as none: not stored, not sent", async () => {
+    const calls = await start({ agentContext: "  \n\t " });
+    expect(createAnalysis.mock.calls[0]![0]).not.toHaveProperty("agentContext");
+    expect(holding(calls, "PLAN CONTEXT")).toEqual([]);
+  });
+
+  it("stores and sends the context trimmed", async () => {
+    const calls = await start({ agentContext: `\n  ${CONTEXT}\n\n` });
+    expect(createAnalysis.mock.calls[0]![0]).toMatchObject({ agentContext: CONTEXT });
+    expect(
+      holding(calls, `${BEGIN} ===METIS-DATA-BOUNDARY===\\n${CONTEXT.split("\n")[0]}`).length,
+    ).toBeGreaterThan(0);
   });
 });
 

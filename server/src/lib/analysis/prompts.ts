@@ -324,9 +324,22 @@ export const PLAN_CONTEXT_RULE = [
   "evidence that any code exists.",
 ].join(" ");
 
+/**
+ * #1027 — the one reading of a run's `agentContext`: the trimmed text, or
+ * undefined when it is absent, not a string, or blank. The request schema, the
+ * stored metadata, the budget seed and all three prompt builders go through it,
+ * so a whitespace-only value is "no context" everywhere.
+ */
+export function normalizeAgentContext(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 /** The fenced PLAN CONTEXT section, or "" when the run carries no context. */
 function planContextSection(agentContext: string | undefined): string {
-  const safe = agentContext ? escapeContext(agentContext) : "";
+  const context = normalizeAgentContext(agentContext);
+  const safe = context ? escapeContext(context) : "";
   return safe
     ? `\n${FENCE} BEGIN ${PLAN_CONTEXT_FENCE_LABEL} ${FENCE}\n${safe}\n${FENCE} END PLAN CONTEXT ${FENCE}`
     : "";
@@ -512,8 +525,14 @@ export function buildSpecialistPrompt(input: AgentPromptInput): {
   // byte-identical. An empty block ⇒ the section + guidance are omitted.
   const wantsSchema = input.agentKey === "database" && Boolean(input.affectedSchema);
   const safeSchema = wantsSchema ? escapeContext(input.affectedSchema as string) : "";
-  // #1027 — only the code agent reads the plan context: the document agent
-  // extracts requirements from what it reads, and those feed the code pass.
+  // #1027 — only the code agent reads the plan context. This gate is what keeps
+  // it from the DATABASE and WEB agents. It is not what protects the document
+  // agent: that one never reaches this line (it returned above into
+  // `buildDocumentExtractionPrompt`, which is handed an explicit field list
+  // without `agentContext`), and `runOneAgent` does not pass it the field. The
+  // document agent matters most, because what it extracts as requirements feeds
+  // the code pass: anyone adding a field to the extraction prompt must keep
+  // this one out of it.
   const planContext = input.agentKey === "code" ? planContextSection(input.agentContext) : "";
 
   const systemMessage = [

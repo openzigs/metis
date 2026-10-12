@@ -225,6 +225,64 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     expect(JSON.stringify(runSynthesisAndPersist.mock.calls)).not.toContain("unique index");
   });
 
+  // Review of #1027 (panel) — the test above sees only that the context is
+  // forwarded. Feeding the stored context to the requirement splitter or to
+  // the affected-code mapping on a resume passed it.
+  it("#1027 — derives the same requirements and affected-code input with a context as without", async () => {
+    const extraInstructions =
+      "AC-1: A user cannot subscribe to the same feed URL twice.\n\nAC-2: The refusal names the existing feed.";
+    // Every line is written the way a requirement would be.
+    const agentContext = [
+      "Tasks (tasks.md):",
+      "- T01: The service must add a ZebraIndex on feeds",
+      "- T02: Users can see the ZebraNotice message",
+    ].join("\n");
+    const resume = async (context?: string) => {
+      state.status = "completed";
+      state.metadata = JSON.stringify({
+        ...JSON.parse(capabilityMeta([{ connectorId: "c2", label: "worker" }])),
+        extraInstructions,
+        ...(context ? { agentContext: context } : {}),
+      });
+      state.connectors = [{ id: "c2", label: "worker" }];
+      const { orch, runAgenticCodeAgent } = makeOrch();
+      await orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" });
+      const spies = orch as never as Record<
+        "computeAffectedCode" | "computeEscalations",
+        { mock: { calls: unknown[][] } }
+      >;
+      const pass = runAgenticCodeAgent.mock.calls[0]![0] as {
+        requirements: Array<{ id: string }>;
+        extraInstructions?: string;
+        agentContext?: string;
+      };
+      return {
+        pass,
+        derived: {
+          requirements: pass.requirements,
+          extraInstructions: pass.extraInstructions,
+          affectedCode: spies.computeAffectedCode.mock.calls,
+          escalations: spies.computeEscalations.mock.calls,
+        },
+      };
+    };
+
+    const without = await resume();
+    const withContext = await resume(agentContext);
+
+    expect(withContext.derived).toEqual(without.derived);
+    // Spelled out, so the comparison cannot pass on two wrong runs.
+    expect(withContext.derived.requirements.map((r) => r.id)).toEqual(["REQ-001", "NR-1", "NR-2"]);
+    expect(withContext.derived.affectedCode).toEqual([
+      [ANALYSIS_ID, PROJECT_ID, extraInstructions],
+    ]);
+    expect(withContext.derived.escalations[0]![2]).toEqual(withContext.derived.requirements);
+    expect(JSON.stringify(withContext.derived)).not.toContain("Zebra");
+    // The context still reached the resumed pass.
+    expect(withContext.pass.agentContext).toBe(agentContext);
+    expect(without.pass).not.toHaveProperty("agentContext");
+  });
+
   it("#1027 — adds no context key when the run was started without one", async () => {
     state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
     state.connectors = [{ id: "c2", label: "worker" }];

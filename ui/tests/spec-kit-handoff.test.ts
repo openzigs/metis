@@ -7,6 +7,7 @@ import {
   MAX_ANALYSIS_AGENT_CONTEXT,
   MAX_EXTRA_INSTRUCTIONS,
   SPEC_KIT_HANDOFF_MAX_LABELS,
+  specKitHandoffLabelsNotInContext,
   specKitHandoffSchema,
   startAnalysisSchema,
 } from "@metis/shared";
@@ -14,9 +15,11 @@ import {
   buildHandoffContext,
   buildHandoffInstructions,
   contextNotSent,
+  notSentPhrase,
   specRequirements,
   SPEC_TAIL_OMITTED,
 } from "@/lib/spec-kit-handoff";
+import { expectLinearTime } from "./helpers/linear-time";
 
 /** A spec in the shape METIS's `/speckit.specify` writes. */
 const METIS_SPEC = [
@@ -281,11 +284,18 @@ describe("buildHandoffContext (#1027)", () => {
       ].join("\n"),
     );
     expect(context).toMatchObject({
-      components: ["FeedStore", "NoticeView", "component 3"],
+      // A component with no name of its own is labelled by the start of its
+      // line, so every label is text the context holds.
+      components: [
+        "FeedStore",
+        "NoticeView",
+        "A plain bullet with no name (AC-2) a nested bullet of it",
+      ],
       tasks: ["T01", "T02", "T03"],
       omitted: [],
       omittedCount: 0,
       files: ["plan.md", "tasks.md"],
+      unrecognised: [],
     });
     // Only the Components section and the task lines: no diagram, ADR or task detail.
     expect(context.text).not.toContain("mermaid");
@@ -295,20 +305,33 @@ describe("buildHandoffContext (#1027)", () => {
   });
 
   it("sends nothing when neither file has components or tasks to read", () => {
+    const nothing = {
+      text: null,
+      components: [],
+      tasks: [],
+      omitted: [],
+      omittedCount: 0,
+      files: [],
+    };
+    // A file that is missing or blank was not read at all.
     for (const [plan, tasks] of [
       [null, null],
       ["", ""],
-      ["# Plan\n## ADRs\n- Decision", "# Tasks\nNothing yet."],
+      ["  \n", "\n"],
     ] as const) {
-      expect(buildHandoffContext(plan, tasks)).toEqual({
-        text: null,
-        components: [],
-        tasks: [],
-        omitted: [],
-        omittedCount: 0,
-        files: [],
-      });
+      expect(buildHandoffContext(plan, tasks)).toEqual({ ...nothing, unrecognised: [] });
     }
+    // One with content and nothing recognised in it is named, per file.
+    expect(buildHandoffContext("# Plan\n## ADRs\n- Decision", "# Tasks\nNothing yet.")).toEqual({
+      ...nothing,
+      unrecognised: ["plan.md", "tasks.md"],
+    });
+    expect(
+      buildHandoffContext("# Plan\n## ADRs\n- Decision", "- [ ] T01 — One").unrecognised,
+    ).toEqual(["plan.md"]);
+    expect(buildHandoffContext("## Components\n- **A** x", "Nothing yet.").unrecognised).toEqual([
+      "tasks.md",
+    ]);
   });
 
   it("names only the file something was sent from", () => {
@@ -423,5 +446,400 @@ describe("the requirements text names what went as context (#1027)", () => {
     ]);
     expect(contextNotSent(artifacts)).toEqual(artifacts.slice(1));
     expect(contextNotSent(["spec.md", "plan.md"], ["plan.md"])).toEqual([]);
+  });
+});
+
+// ── Review of #1027 ────────────────────────────────────────────────────────
+
+const lines = (...l: string[]) => l.join("\n");
+const componentsOf = (plan: string) => buildHandoffContext(plan, null);
+const tasksOf = (tasks: string) => buildHandoffContext(null, tasks);
+
+describe("plan.md written off the template still yields its components (#1027 review)", () => {
+  // The plan is model-written Markdown. Each of these gave `components: []`,
+  // and the page then said plan.md was "not read by this analysis".
+  it.each([
+    ["a numbered heading", "## 2. Components"],
+    ["a numbered heading with a bracket", "## 3) Components"],
+    ["`Component breakdown`", "## Component breakdown"],
+    ["a title ending in components", "## Architecture and components"],
+    ["a deeper heading level", "### Components"],
+    ["an emphasised title", "## **Components**"],
+  ])("reads the section under %s", (_name, heading) => {
+    const context = componentsOf(lines("# Plan", heading, "- **FeedStore** — storage", "## Risks"));
+    expect(context.text).toBe("Plan components (plan.md):\n- FeedStore — storage");
+    expect(context.components).toEqual(["FeedStore"]);
+    expect(context.unrecognised).toEqual([]);
+  });
+
+  it.each([
+    ["the document's own title", "# Plan for the feed components"],
+    ["a title that only contains the word", "## Non-component concerns"],
+    ["an unrelated section", "## Risks"],
+  ])("does not take %s for the components section", (_name, heading) => {
+    const context = componentsOf(lines(heading, "- **FeedStore** — storage", "## Notes", "- n"));
+    expect(context.components).toEqual([]);
+    expect(context.unrecognised).toEqual(["plan.md"]);
+  });
+
+  it("reads a sub-heading per component, with the first line beneath it", () => {
+    const context = componentsOf(
+      lines(
+        "## Components",
+        "### FeedStore",
+        "",
+        "Extends storage/feed.go (AC-1)",
+        "More about it that is detail.",
+        "#### Notes",
+        "- a deeper heading is detail of FeedStore, not a component",
+        "### `Notice`",
+        "- new UI (AC-2)",
+        "- second bullet",
+        "### Bare",
+        "## Risks",
+        "### NotAComponent",
+      ),
+    );
+    expect(context.text).toBe(
+      lines(
+        "Plan components (plan.md):",
+        "- FeedStore — Extends storage/feed.go (AC-1)",
+        "- Notice — new UI (AC-2)",
+        "- Bare",
+      ),
+    );
+    expect(context.components).toEqual(["FeedStore", "Notice", "Bare"]);
+  });
+
+  it("reads a components table, skipping its header row", () => {
+    const context = componentsOf(
+      lines(
+        "## Components",
+        "| Component | Responsibility | Files |",
+        "|---|---|---|",
+        "| **FeedStore** | Extends feed.go | storage/feed.go |",
+        "| Notice | |",
+      ),
+    );
+    expect(context.text).toBe(
+      lines("Plan components (plan.md):", "- FeedStore — Extends feed.go", "- Notice"),
+    );
+    expect(context.components).toEqual(["FeedStore", "Notice"]);
+  });
+
+  it("reads bullets indented as a block, keeping deeper ones as detail", () => {
+    const context = componentsOf(
+      lines("## Components", "  - **A** one", "    - detail of A", "  - **B** two"),
+    );
+    expect(context.components).toEqual(["A", "B"]);
+    expect(context.text).toBe(
+      lines("Plan components (plan.md):", "- A one detail of A", "- B two"),
+    );
+  });
+
+  it("ends the section at the next heading of its own level, not at a deeper one", () => {
+    const context = componentsOf(
+      lines("### Components", "- **A** one", "#### Sub", "body", "### Next", "- **B** two"),
+    );
+    expect(context.components).toEqual(["A", "Sub"]);
+  });
+});
+
+describe("tasks.md written off the template still yields its tasks (#1027 review)", () => {
+  it.each([
+    [
+      "a bold id in a checkbox bullet",
+      "- [ ] **T01** — Build login form",
+      "- T01: Build login form",
+    ],
+    ["a bold id with a colon", "- **T02**: Wire the API", "- T02: Wire the API"],
+    ["an underscored bold id", "- __T03__ Add tests", "- T03: Add tests"],
+    ["a code id", "- `T04` — Ship", "- T04: Ship"],
+    ["a bold id and title", "- **T05: Wire**", "- T05: Wire"],
+    ["a numbered item", "1. T06 — Build", "- T06: Build"],
+    ["a numbered item with a bracket", "2) T07 — Wire", "- T07: Wire"],
+    ["a heading", "### T08 — Build", "- T08: Build"],
+    ["a bold id in a heading", "## **T09** Build", "- T09: Build"],
+    [
+      "an upstream Spec Kit row",
+      "- [ ] T010 [P] [US1] Create model",
+      "- T010: [P] [US1] Create model",
+    ],
+    ["a bullet with no space", "*T11", "- T11"],
+    ["a bold id in a table cell", "| **T12** | Title |", "- T12: Title"],
+  ])("reads %s", (_name, line, expected) => {
+    const context = tasksOf(line);
+    expect(context.text).toBe(`Tasks (tasks.md):\n${expected}`);
+    expect(context.unrecognised).toEqual([]);
+  });
+
+  it.each([
+    ["prose that mentions a task", "- Task T03: do it"],
+    ["a paragraph", "T01 is the first task."],
+    ["a lower-case id in a bullet", "- t2 instances are cheaper"],
+    ["a lower-case id in a table", "| t1 | lower |"],
+    ["an id with more digits than a task has", "- T12345 — five digits"],
+    ["an id run into a word", "- T01abc — not an id"],
+    ["a heading that only mentions a task", "### Notes on T01"],
+  ])("does not take %s for a task", (_name, line) => {
+    const context = tasksOf(line);
+    expect(context.tasks).toEqual([]);
+    expect(context.unrecognised).toEqual(["tasks.md"]);
+  });
+
+  // `| AC-1 | T01, T02 |` used to become a second, malformed `- T01: , T02`.
+  it("takes a table row only when its first cell is the id alone", () => {
+    const context = tasksOf(
+      lines(
+        "| ID | Title | Pts |",
+        "|---|---|---|",
+        "| T01 | Build login form | 3 |",
+        "| T02 | Wire the API | 2 |",
+        "",
+        "| AC | Tasks |",
+        "|---|---|",
+        "| AC-1 | T01, T02 |",
+        "| T03, T04 | AC-2 |",
+        "| AC-3 | T05 |",
+      ),
+    );
+    expect(context.text).toBe(
+      lines("Tasks (tasks.md):", "- T01: Build login form", "- T02: Wire the API"),
+    );
+    expect(context.tasks).toEqual(["T01", "T02"]);
+  });
+
+  it("lists a task once: the first line with its id wins", () => {
+    const context = tasksOf(
+      lines(
+        "- [ ] T01 — Build",
+        "- [x] T01 — Build (done)",
+        "| T01 | Build again |",
+        "- T02 — Wire",
+      ),
+    );
+    expect(context.text).toBe(lines("Tasks (tasks.md):", "- T01: Build", "- T02: Wire"));
+    expect(context.tasks).toEqual(["T01", "T02"]);
+  });
+
+  it("keeps code spans and emphasis inside a title", () => {
+    expect(tasksOf("- [ ] T01 — Change `Create` in **storage**/feed.go").text).toBe(
+      "Tasks (tasks.md):\n- T01: Change `Create` in **storage**/feed.go",
+    );
+  });
+});
+
+describe("the sent label lists fit the run's record (#1027 review)", () => {
+  // 600 tasks with no title fit the 4,096-character limit, the record named
+  // all of them, the schema allows 500, and the whole start was a 400.
+  it("caps the tasks sent at the schema's label limit and counts the rest as omitted", () => {
+    const n = 700;
+    const context = tasksOf(Array.from({ length: n }, (_, i) => `- T${i + 1}`).join("\n"));
+    expect(context.tasks).toHaveLength(SPEC_KIT_HANDOFF_MAX_LABELS);
+    expect(context.tasks.at(-1)).toBe(`T${SPEC_KIT_HANDOFF_MAX_LABELS}`);
+    expect(context.omittedCount).toBe(n - SPEC_KIT_HANDOFF_MAX_LABELS);
+    expect(context.omitted[0]).toBe(`T${SPEC_KIT_HANDOFF_MAX_LABELS + 1}`);
+    // The text holds exactly the tasks the record names.
+    expect(context.text!.split("\n")).toHaveLength(SPEC_KIT_HANDOFF_MAX_LABELS + 1);
+    expect(context.text!.length).toBeLessThanOrEqual(MAX_ANALYSIS_AGENT_CONTEXT);
+    const record = {
+      artifacts: ["spec.md", "tasks.md"],
+      sent: [],
+      omitted: [],
+      context: {
+        components: context.components,
+        tasks: context.tasks,
+        omitted: context.omitted,
+      },
+    };
+    expect(
+      startAnalysisSchema.safeParse({
+        agentContext: context.text,
+        specKitHandoff: record,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("caps the components sent the same way", () => {
+    const n = SPEC_KIT_HANDOFF_MAX_LABELS + 30;
+    const context = buildHandoffContext(
+      `## Components\n${Array.from({ length: n }, (_, i) => `- c${i}`).join("\n")}`,
+      null,
+    );
+    expect(context.components).toHaveLength(SPEC_KIT_HANDOFF_MAX_LABELS);
+    expect(context.omittedCount).toBe(30);
+    expect(specKitHandoffSchema.shape.context.safeParse(context).success).toBe(false);
+    expect(
+      specKitHandoffSchema.safeParse({
+        artifacts: ["plan.md"],
+        sent: [],
+        omitted: [],
+        context: {
+          components: context.components,
+          tasks: [],
+          omitted: context.omitted,
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("sends every item when a list is exactly at the limit", () => {
+    const context = tasksOf(
+      Array.from({ length: SPEC_KIT_HANDOFF_MAX_LABELS }, (_, i) => `- T${i + 1}`).join("\n"),
+    );
+    expect(context.tasks).toHaveLength(SPEC_KIT_HANDOFF_MAX_LABELS);
+    expect(context.omitted).toEqual([]);
+  });
+});
+
+describe("every label a handoff sends is text of its context (#1027 review)", () => {
+  // The server refuses a record whose labels are not in the context text, so
+  // the builder must never produce one.
+  const unbacked = (plan: string | null, tasks: string | null) => {
+    const context = buildHandoffContext(plan, tasks);
+    return specKitHandoffLabelsNotInContext(
+      {
+        artifacts: ["spec.md"],
+        sent: [],
+        omitted: [],
+        context: {
+          components: context.components,
+          tasks: context.tasks,
+          omitted: context.omitted,
+        },
+      },
+      context.text ?? undefined,
+    );
+  };
+
+  it.each([
+    ["named, coded and unnamed bullets", "## Components\n- **A** x\n- `B` y\n- plain bullet"],
+    ["a name holding emphasis markers", "## Components\n- **__init__** module\n- **a __b__ c** d"],
+    ["a name over the label length", `## Components\n- **${"N".repeat(200)}** long`],
+    ["an unnamed line over the label length", `## Components\n- ${"word ".repeat(40)}`],
+    ["a name padded with spaces", "## Components\n- ** Padded ** x"],
+    ["an astral character at the label cut", `## Components\n- ${"a".repeat(63)}\u{1F600} tail`],
+    ["sub-headings", "## Components\n### `Store` **v2**\nbody\n### Other"],
+    ["a table", "## Components\n| C | R |\n|---|---|\n| **Store** | does `x` |"],
+  ])("for %s", (_name, plan) => {
+    const context = buildHandoffContext(plan, "- [ ] **T01** — a\n1. T02 — b\n| T03 | c |");
+    expect(context.components.length).toBeGreaterThan(0);
+    expect(context.tasks).toEqual(["T01", "T02", "T03"]);
+    for (const label of context.components) {
+      expect(label.length).toBeGreaterThan(0);
+      expect(label.length).toBeLessThanOrEqual(64);
+      // Never half of a surrogate pair: that is not text the record can store.
+      expect(label).not.toMatch(/[\uD800-\uDBFF]$/);
+    }
+    expect(unbacked(plan, "- [ ] **T01** — a\n1. T02 — b\n| T03 | c |")).toEqual([]);
+  });
+
+  it("reports a label the text does not hold, and any label when there is no text", () => {
+    const record = {
+      artifacts: ["spec.md"],
+      sent: [],
+      omitted: ["T09"],
+      context: {
+        components: ["FeedStore"],
+        tasks: ["T01", "T02"],
+        omitted: ["T03"],
+      },
+    };
+    const text = "Plan components (plan.md):\n- FeedStore — x\nTasks (tasks.md):\n- T01: a";
+    expect(specKitHandoffLabelsNotInContext(record, text)).toEqual(["T02"]);
+    expect(specKitHandoffLabelsNotInContext(record, undefined)).toEqual([
+      "FeedStore",
+      "T01",
+      "T02",
+    ]);
+    // Nothing to check without a context record, or with empty lists.
+    expect(specKitHandoffLabelsNotInContext(undefined, text)).toEqual([]);
+    expect(
+      specKitHandoffLabelsNotInContext({ artifacts: [], sent: ["AC-1"], omitted: [] }, undefined),
+    ).toEqual([]);
+  });
+});
+
+describe("the requirements text gives the true reason a file sent nothing (#1027 review)", () => {
+  const artifacts = ["specs/001-a/spec.md", "specs/001-a/plan.md", "specs/001-a/tasks.md", "c.md"];
+
+  it("says read-but-unrecognised per file, and not-read for the rest", () => {
+    expect(notSentPhrase(artifacts, [], ["plan.md", "tasks.md"])).toBe(
+      "specs/001-a/plan.md (read, but no components were recognised); specs/001-a/tasks.md (read, but no tasks were recognised); c.md (not read by this analysis)",
+    );
+    expect(notSentPhrase(artifacts, ["tasks.md"], ["plan.md"])).toBe(
+      "specs/001-a/plan.md (read, but no components were recognised); c.md (not read by this analysis)",
+    );
+    // A file something was sent from is not "not sent", whatever else is said.
+    expect(notSentPhrase(artifacts, ["plan.md", "tasks.md"], ["plan.md"])).toBe(
+      "c.md (not read by this analysis)",
+    );
+    expect(notSentPhrase(["spec.md"], [], [])).toBe("");
+  });
+
+  it("is unchanged when nothing was unrecognised", () => {
+    expect(notSentPhrase(artifacts)).toBe(
+      "specs/001-a/plan.md, specs/001-a/tasks.md, c.md (not read by this analysis)",
+    );
+  });
+
+  it("carries the reason into the text the run is started with", () => {
+    const text = buildHandoffInstructions(
+      artifacts,
+      "## Acceptance criteria\n- **AC-1**: One\n",
+      ["tasks.md"],
+      ["plan.md"],
+    ).text;
+    expect(text.split("\n\n")[0]).toBe(
+      "# Spec Kit handoff: evaluate these requirements from spec.md against the current implementation. Only spec.md's requirements are sent. Sent separately as context, not as requirements: specs/001-a/tasks.md. Not sent: specs/001-a/plan.md (read, but no components were recognised); c.md (not read by this analysis).",
+    );
+  });
+});
+
+describe("the handoff parsers are linear in the artifact's length (#1027 review)", () => {
+  // `SECTION_RE` was `^#{1,6}\s+(.*\S)\s*$`: a heading line of 40,000 spaces
+  // took 700 ms and a 200,000-character one about 17 s, in the browser tab.
+  // Each case is the worst input for one pattern; `expectLinearTime` passes a
+  // fast call and otherwise compares the time at N with the time at N / 4.
+  const AC = "## Acceptance criteria\n- **AC-1**: One\n";
+  const cases: Array<[string, (n: number) => () => unknown]> = [
+    [
+      "a heading line of spaces in plan.md",
+      (n) => () => componentsOf(`#${" ".repeat(n)}\n## Components\n- **A** x`),
+    ],
+    [
+      "a heading line of spaces in spec.md",
+      (n) => () => buildHandoffInstructions(["spec.md"], `#${" ".repeat(n)}\n${AC}`),
+    ],
+    [
+      "a heading of spaces ending in a word",
+      (n) => () => componentsOf(`# a${" ".repeat(n)}b\n## Components\n- **A** x`),
+    ],
+    [
+      "a criterion bullet of spaces",
+      (n) => () => buildHandoffInstructions(["spec.md"], `${AC}- ${" ".repeat(n)}x\n`),
+    ],
+    [
+      "a criterion line of asterisks",
+      (n) => () => buildHandoffInstructions(["spec.md"], `${AC}${"*".repeat(n)}x\n`),
+    ],
+    [
+      "a line of spaces under Components",
+      (n) => () => componentsOf(`## Components\n${" ".repeat(n)}x\n- **A** x`),
+    ],
+    ["a table row of empty cells", (n) => () => tasksOf(`|${" |".repeat(n / 2)}x`)],
+    ["a task bullet of spaces", (n) => () => tasksOf(`-${" ".repeat(n)}x`)],
+    ["a numbered line of digits", (n) => () => tasksOf(`${"1".repeat(n)}. T01`)],
+    [
+      "an unclosed bold component name",
+      (n) => () => componentsOf(`## Components\n- **${"a".repeat(n)}`),
+    ],
+    [
+      "a components title of dots and digits",
+      (n) => () => componentsOf(`## ${"1.".repeat(n / 2)} x\n## Components\n- **A** x`),
+    ],
+  ];
+  it.each(cases)("%s", (label, at) => {
+    expectLinearTime(label, at);
   });
 });

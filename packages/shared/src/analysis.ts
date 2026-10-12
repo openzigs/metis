@@ -989,6 +989,15 @@ const specKitHandoffContextSchema = z
     components: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
     tasks: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
     omitted: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
+    /**
+     * The files that were read with no component or task recognised in them, so
+     * the analysis page says that instead of "not read". Absent when both
+     * files, where present, were recognised.
+     */
+    unrecognised: z
+      .array(z.enum(["plan.md", "tasks.md"]))
+      .max(2)
+      .optional(),
   })
   .strict();
 
@@ -1006,6 +1015,28 @@ export const specKitHandoffSchema = z
   })
   .strict();
 export type SpecKitHandoffRecord = z.infer<typeof specKitHandoffSchema>;
+
+/**
+ * Issue #1027 (review) — the component and task labels of a handoff record that
+ * do NOT appear in the context text sent with it. The analysis page shows these
+ * labels as "what the code agent was given", and they are written by the
+ * caller, so the start route refuses a record that names something the text
+ * does not hold (which includes any label at all when no context was sent).
+ *
+ * This checks the lists one way only: the text may hold more than the labels
+ * name, which is why the analysis page also shows the stored text itself. The
+ * `omitted` list names what was NOT sent, so nothing can be checked against the
+ * text; the page presents it as reported by the client.
+ */
+export function specKitHandoffLabelsNotInContext(
+  handoff: SpecKitHandoffRecord | undefined,
+  agentContext: string | undefined,
+): string[] {
+  const context = handoff?.context;
+  if (!context) return [];
+  const text = agentContext ?? "";
+  return [...context.components, ...context.tasks].filter((label) => !text.includes(label));
+}
 
 export const startAnalysisSchema = z.object({
   documentIds: z.array(idSchema).max(100).optional(),
@@ -1043,9 +1074,10 @@ export const startAnalysisSchema = z.object({
    * Issue #1027 — background for the code agent, kept apart from the
    * requirements: it is never split into requirements, never counted as one and
    * never used as a search query. Untrusted text; fenced in the prompt like
-   * every other data block.
+   * every other data block. Trimmed, so a whitespace-only value is refused like
+   * an empty one rather than stored and read three different ways.
    */
-  agentContext: z.string().min(1).max(MAX_ANALYSIS_AGENT_CONTEXT).optional(),
+  agentContext: z.string().trim().min(1).max(MAX_ANALYSIS_AGENT_CONTEXT).optional(),
 });
 export type StartAnalysisInput = z.infer<typeof startAnalysisSchema>;
 

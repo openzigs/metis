@@ -22,6 +22,7 @@ import {
   type ApiResponse,
   ANALYSIS_SPECIALIST_AGENT_KEYS,
   MAX_DOCUMENT_BYTES,
+  specKitHandoffLabelsNotInContext,
   startAnalysisSchema,
   regenerateAgentSchema,
   updateRequirementSchema,
@@ -392,6 +393,22 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       if (!parsed.success) {
         throw new AppError(400, "VALIDATION_ERROR", "Invalid analysis payload", {
           issues: parsed.error.flatten(),
+        });
+      }
+      // #1027 — the handoff record's "sent as context" labels are shown on the
+      // analysis page, so they must name text the code agent was really given.
+      const unbacked = specKitHandoffLabelsNotInContext(
+        parsed.data.specKitHandoff,
+        parsed.data.agentContext,
+      );
+      if (unbacked.length > 0) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid analysis payload", {
+          issues: {
+            formErrors: [],
+            fieldErrors: {
+              specKitHandoff: [`${unbacked.length} context label(s) do not appear in agentContext`],
+            },
+          },
         });
       }
       // Issue #1006 — imported requirements lead the new-requirements text, one

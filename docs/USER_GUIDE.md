@@ -3758,9 +3758,13 @@ The handoff to the Analysis pipeline is **manual**: `/implement` returns an orch
 **What "Start analysis with these artifacts" sends.** Two things, kept apart:
 
 - **Requirements, from `spec.md`** — each acceptance criterion and non-functional requirement as one requirement, within the 4,096-character requirements limit. A requirement that does not fit is left out whole.
-- **Context, from `plan.md` and `tasks.md`** — one line per component of the plan's `## Components` section and one per task (its id and title, not the detail beneath it), within a separate 4,096-character context limit. Only the code agent reads it, as background on where to look: a planned component or task is never analysed as a requirement, never counted as one, and never taken as proof that code exists. A component or task that does not fit is left out whole.
+- **Context, from `plan.md` and `tasks.md`** — one line per component of the plan's components section and one per task (its id and title, not the detail beneath it), within a separate 4,096-character context limit. Only the code agent reads it, as background on where to look: a planned component or task is never analysed as a requirement, never counted as one, and never taken as proof that code exists. If the model writes a finding against a task id or component name anyway, METIS clears that link before saving the finding, because only a requirement of the run can be named. A component or task that does not fit is left out whole.
 
-The analysis page says what was sent, in separate lines: the requirements from `spec.md`, the components and tasks sent as context, and anything left out of either. `constitution.md` and a feature's `plan-context.md` are not sent.
+  The components section is the first heading below the title that starts with "Component" or ends in "components" (`## Components`, `## 2. Components`, `## Component breakdown`, `## Architecture and components`). Its components may be top-level bullets, one sub-heading each, or the rows of a table. A task is a bullet, a numbered item or a heading that starts with a task id (`T01`, plain or in bold), or a table row whose first cell is the id alone; a task listed twice is sent once.
+
+The analysis page says what was sent, in separate lines: the requirements from `spec.md`, the components and tasks sent as context, and anything left out of either. `constitution.md` and a feature's `plan-context.md` are not sent. A `plan.md` or `tasks.md` that was read but has no components or tasks in a form METIS recognises is named as "read, but no components were recognised" (or "no tasks"), not as unread: check its headings against the forms above.
+
+Below that, **Context given to the code agent, not requirements** opens to show the context text exactly as it was stored, with its length. It appears on every run that was started with context, including one started through the API without a Spec Kit handoff, so the text the code agent read is never hidden from someone reading the run.
 
 ### Enabling Spec Kit
 

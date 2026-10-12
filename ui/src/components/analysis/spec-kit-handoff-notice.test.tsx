@@ -73,7 +73,12 @@ describe("SpecKitHandoffNotice (#994)", () => {
       "specs/001-a/tasks.md",
       "constitution.md",
     ];
-    const show = (context: { components: string[]; tasks: string[]; omitted: string[] }) =>
+    const show = (context: {
+      components: string[];
+      tasks: string[];
+      omitted: string[];
+      unrecognised?: Array<"plan.md" | "tasks.md">;
+    }) =>
       render(
         <SpecKitHandoffNotice
           metadata={{ specKitHandoff: { artifacts, sent: ["AC-1"], omitted: [], context } }}
@@ -100,7 +105,7 @@ describe("SpecKitHandoffNotice (#994)", () => {
     it("names what did not fit the context limit", () => {
       show({ components: ["FeedStore"], tasks: ["T01"], omitted: ["T02", "T03"] });
       expect(screen.getByTestId("spec-kit-handoff-context-omitted")).toHaveTextContent(
-        "Left out of the context — they did not fit the 4,096-character context limit: T02, T03.",
+        "Left out of the context, as reported by the Spec Kit page — they did not fit the 4,096-character context limit: T02, T03.",
       );
       // Context left out is not a requirement left out.
       expect(screen.queryByTestId("spec-kit-handoff-omitted")).toBeNull();
@@ -109,7 +114,31 @@ describe("SpecKitHandoffNotice (#994)", () => {
     it("speaks of one item left out", () => {
       show({ components: [], tasks: ["T01"], omitted: ["T02"] });
       expect(screen.getByTestId("spec-kit-handoff-context-omitted")).toHaveTextContent(
-        "Left out of the context — it did not fit",
+        "Left out of the context, as reported by the Spec Kit page — it did not fit",
+      );
+    });
+
+    // Review of #1027 — "not read by this analysis" was said of a file that
+    // was read and whose Markdown the handoff did not recognise.
+    it("says a file was read with nothing recognised, not that it was not read", () => {
+      show({ components: [], tasks: ["T01"], omitted: [], unrecognised: ["plan.md"] });
+      const notSent = screen.getByTestId("spec-kit-handoff-context-not-sent");
+      expect(notSent).toHaveTextContent(
+        "Not sent: specs/001-a/plan.md (read, but no components were recognised); constitution.md (not read by this analysis).",
+      );
+    });
+
+    it("gives each unrecognised file its own reason", () => {
+      show({ components: [], tasks: [], omitted: [], unrecognised: ["plan.md", "tasks.md"] });
+      expect(screen.getByTestId("spec-kit-handoff-context-not-sent")).toHaveTextContent(
+        "Not sent: specs/001-a/plan.md (read, but no components were recognised); specs/001-a/tasks.md (read, but no tasks were recognised); constitution.md (not read by this analysis).",
+      );
+    });
+
+    it("does not call a file unrecognised when something was sent from it", () => {
+      show({ components: ["A"], tasks: ["T01"], omitted: [], unrecognised: ["plan.md"] });
+      expect(screen.getByTestId("spec-kit-handoff-context-not-sent")).toHaveTextContent(
+        "Not sent: constitution.md (not read by this analysis).",
       );
     });
 
