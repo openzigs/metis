@@ -514,6 +514,7 @@ describe("provider routing on deep-ingest", () => {
         skipped: 640,
         resumedFiles: 0,
         incomplete: { files: 17, calls: 640 },
+        abandonedFiles: 0,
       },
       lineageBackfill: false,
       filesLineageRefreshed: 0,
