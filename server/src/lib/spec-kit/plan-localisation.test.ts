@@ -207,7 +207,7 @@ describe("buildPlanLocalisation — the files similarity cannot reach (#1060)", 
       { from: "h-refresh", to: "f-cat", kind: "calls", callee: "showCategoryEntriesPage" },
     );
     const r = await localise({ source: fakeSource(graph) });
-    const rows = (name: string) => r.block.match(new RegExp(`^- ${name} \\(`, "gm")) ?? [];
+    const rows = (name: string) => r.block.split("\n").filter((l) => l.startsWith(`- ${name} (`));
     // Retrieved: never a row, neither as a callee nor as a reader.
     expect(rows("refreshFeed")).toHaveLength(0);
     expect(rows("showFeedEntriesPage")).toHaveLength(0);
