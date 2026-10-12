@@ -14,6 +14,8 @@ import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { reviewsApi, type ReviewRequest } from "@/lib/reviews-api";
 import { queryKeys } from "@/lib/query-keys";
+import { useAuth } from "@/lib/auth-context";
+import { WithdrawReviewButton } from "@/components/reviews/WithdrawReviewButton";
 import { DueDateBadge, ReviewStatusBadge } from "@/components/reviews/review-badges";
 import { PageHeader } from "@/components/ui/page-header";
 
@@ -38,6 +40,7 @@ function tabFilters(tab: Tab): { assignee?: "me"; requester?: "me" } {
 
 export default function ReviewsPage() {
   const [tab, setTab] = useState<Tab>("assigned");
+  const { user } = useAuth();
 
   const list = useQuery({
     queryKey: queryKeys.reviews.list({ tab }),
@@ -88,11 +91,11 @@ export default function ReviewsPage() {
           ) : (
             <ul className="space-y-2" aria-label={TAB_LABELS[tab]}>
               {reviews.map((review) => (
-                <li key={review.id}>
+                <li key={review.id} className="flex items-center gap-2">
                   <Link
                     href={`/reviews/${review.id}`}
                     data-testid={`review-row-${review.id}`}
-                    className="block focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="block min-w-0 flex-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <Card className="space-y-1 p-4 transition hover:border-primary/60">
                       <div className="flex flex-wrap items-center gap-2">
@@ -103,6 +106,9 @@ export default function ReviewsPage() {
                       <p className="text-xs text-muted-foreground">{summarize(review)}</p>
                     </Card>
                   </Link>
+                  {/* #1032 — beside the row link, never inside it; renders
+                      nothing unless the server would accept the withdraw. */}
+                  <WithdrawReviewButton review={review} user={user} />
                 </li>
               ))}
             </ul>

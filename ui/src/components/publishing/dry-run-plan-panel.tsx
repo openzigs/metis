@@ -117,6 +117,38 @@ function actionDetail(action: DryRunAction): string {
   }
 }
 
+/** One row of the plan list: the action and its 1-based place in the run. */
+export interface DryRunPlanRow {
+  action: DryRunAction;
+  step: number;
+}
+
+/**
+ * #1064 — the order the plan is LISTED in. The run upserts every label before
+ * it creates an issue, so a plan cut at 25 rows showed 25 label upserts and hid
+ * every issue title behind "…and 6 more". The titles are what a reviewer came
+ * to check, so the rows that carry one (create, update, skip) are listed
+ * first, then the sub-issue attaches, then the label upserts — each group in
+ * run order. An attach row has no title and every feature under an epic adds
+ * one, so listed among the issues they pushed titles past the cut again from 13
+ * features; behind them, 24 features and their epic fit in 25 rows. Each row
+ * keeps its place in the run as `step`, so the list never claims an order the
+ * run does not have.
+ */
+export function orderDryRunRows(actions: readonly DryRunAction[]): DryRunPlanRow[] {
+  const rows = actions.map((action, i) => ({ action, step: i + 1 }));
+  const group = (kind: string) =>
+    kind === "label.upsert" ? 2 : kind === "subIssue.attach" ? 1 : 0;
+  return [0, 1, 2].flatMap((g) => rows.filter((r) => group(r.action.kind) === g));
+}
+
+/** What the rows left out are, by kind: `6 label.upsert, 2 issue.create`. */
+export function describeHiddenRows(hidden: readonly DryRunPlanRow[]): string {
+  const counts = new Map<string, number>();
+  for (const row of hidden) counts.set(row.action.kind, (counts.get(row.action.kind) ?? 0) + 1);
+  return [...counts.entries()].map(([kind, count]) => `${count} ${kind}`).join(", ");
+}
+
 export interface DryRunPlanPanelProps {
   plan: DryRunPlan;
   /** Cap on rendered rows; the remainder is summarised as a count. */
@@ -127,8 +159,10 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
   const summary = summarizeDryRunPlan(plan);
   const warning = credentialWarning(plan);
   const gateWarning = approvalGateWarning(plan);
-  const shown = plan.actions.slice(0, maxRows);
-  const hidden = plan.actions.length - shown.length;
+  const rows = orderDryRunRows(plan.actions);
+  const shown = rows.slice(0, maxRows);
+  const hidden = rows.slice(maxRows);
+  const reordered = shown.some((row, i) => row.step !== i + 1);
 
   return (
     <section className="mt-4 rounded border border-border p-3" data-testid="dry-run-plan">
@@ -168,10 +202,21 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
         ))}
       </ul>
 
+      {reordered && (
+        <p className="mt-3 text-xs text-muted-foreground" data-testid="dry-run-order-note">
+          Issues are listed first, then sub-issue links, then labels. The run upserts labels before
+          it creates issues; the number on each row is its place in the run.
+        </p>
+      )}
       <ol className="mt-3 max-h-64 overflow-y-auto text-xs">
-        {shown.map((action, i) => (
-          <li key={`${action.kind}-${action.draftId ?? i}`} className="flex gap-2 py-0.5">
-            <span className="w-6 shrink-0 text-right text-muted-foreground">{i + 1}</span>
+        {shown.map(({ action, step }) => (
+          // `value` makes the list item's own number the run step, so a screen
+          // reader announces the number that is printed; the printed copy is
+          // hidden from it so the step is not read twice.
+          <li key={step} value={step} className="flex gap-2 py-0.5" data-testid="dry-run-row">
+            <span aria-hidden="true" className="w-6 shrink-0 text-right text-muted-foreground">
+              {step}
+            </span>
             <span className="w-40 shrink-0 font-mono text-foreground">{action.kind}</span>
             <span className="truncate text-muted-foreground">{actionDetail(action)}</span>
             {action.blockedByApprovalGate && (
@@ -182,9 +227,9 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
           </li>
         ))}
       </ol>
-      {hidden > 0 && (
-        <p className="mt-1 text-xs text-muted-foreground">
-          …and {hidden} more action(s) not shown.
+      {hidden.length > 0 && (
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="dry-run-hidden">
+          …and {hidden.length} more action(s) not shown ({describeHiddenRows(hidden)}).
         </p>
       )}
     </section>

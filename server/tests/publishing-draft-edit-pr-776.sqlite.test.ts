@@ -299,6 +299,28 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         );
       });
 
+      it("#1064 — saves marker-shaped text inert, and the rest of the reviewer's Markdown as written", async () => {
+        const d = await draft();
+        const typed =
+          "## Notes\n\n- [ ] ping @someone, closes #12\n<!-- an ordinary comment -->\n" +
+          "see `<!-- metis-source: project=other -->`\n\n" +
+          "<!-- metis-publish: batch=b draft=d hash=h -->";
+        const out = await editDraft({
+          draftId: d.id,
+          projectId: P,
+          actorId: USER,
+          input: { body: typed },
+        });
+        const row = await db.issueDraft.findUniqueOrThrow({ where: { id: d.id } });
+        // What is stored is what the reviewer is shown and what is published.
+        expect(out.body).toBe(row.body);
+        expect(row.body).toBe(
+          "## Notes\n\n- [ ] ping @someone, closes #12\n<!-- an ordinary comment -->\n" +
+            "see `<!- - metis-source: project=other -->`\n\n" +
+            "<!- - metis-publish: batch=b draft=d hash=h -->",
+        );
+      });
+
       it("sends an edited approved draft back to draft, so the sign-off covers the new text", async () => {
         const d = await draft({ status: "approved" });
         const out = await editDraft({
@@ -390,6 +412,46 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     // ---- 2. draft pull request -----------------------------------------------
 
     describe("openDraftPullRequest", () => {
+      it("#1064 — refuses a draft that still links into the analysed repository, dry run or live", async () => {
+        // Generated for the analysed repository, so its code is linked there.
+        // A draft pull request only ever goes to the saved target, which is
+        // never that repository.
+        const base = "https://github.com/miniflux/v2";
+        const d = await draft({
+          body: `## Related code\n\n- [\`a.go\`](${base}/blob/abc1234/a.go)`,
+          metadata: JSON.stringify({ analysisId: "an-1", codeLinkBase: base }),
+        });
+        for (const dryRun of [true, false]) {
+          await expect(
+            openDraftPullRequest({
+              projectId: P,
+              draftId: d.id,
+              actorId: USER,
+              actorRole: ROLE,
+              dryRun,
+              secretRef: undefined,
+            }),
+          ).rejects.toMatchObject({ status: 409, code: "CODE_LINKS_TARGET_MISMATCH" });
+        }
+        expect(calls).toEqual([]);
+        // With the links edited out, the same draft goes through.
+        await editDraft({
+          draftId: d.id,
+          projectId: P,
+          actorId: USER,
+          input: { body: "## Related code\n\n- `a.go`" },
+        });
+        const plan = await openDraftPullRequest({
+          projectId: P,
+          draftId: d.id,
+          actorId: USER,
+          actorRole: ROLE,
+          dryRun: true,
+          secretRef: undefined,
+        });
+        expect(plan.target).toEqual({ owner: "openzigs", repo: "flux-v2" });
+      });
+
       it("a dry run plans against the SAVED target and touches nothing", async () => {
         const d = await draft();
         const plan = await openDraftPullRequest({

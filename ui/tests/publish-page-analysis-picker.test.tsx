@@ -112,7 +112,141 @@ describe("PublishingPage — analysis picker", () => {
         analysisId: "analysis_abcdef123456",
         targetOwner: "acme",
         targetRepo: "app",
+        // #1064 — the batch form's base URL is empty: public GitHub.
+        targetBaseUrl: null,
       }),
+    );
+  });
+
+  it("#1064 — Generate sends the host the batch form will publish to", async () => {
+    // The base URL field is prefilled from the primary connector (GitHub
+    // Enterprise here). Generate must name that host, or the server cannot
+    // tell the analysed repository from a same-named one elsewhere.
+    const getPrimary = repoConnectorsApi.getPrimary as unknown as ReturnType<typeof vi.fn>;
+    getPrimary.mockResolvedValueOnce({
+      ownerOrOrg: "acme",
+      repoName: "app",
+      apiBaseUrl: "https://ghe.example.com/api/v3",
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <PublishingPage />
+      </Wrapper>,
+    );
+    const select = await screen.findByTestId("publish-analysis-select");
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /completed/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(select, { target: { value: "analysis_abcdef123456" } });
+    fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "acme" } });
+    fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "app" } });
+    await waitFor(() =>
+      expect(screen.getByLabelText("GHE base URL (optional)")).toHaveValue(
+        "https://ghe.example.com/api/v3",
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+    await waitFor(() =>
+      expect(generateMock).toHaveBeenLastCalledWith(
+        "proj_1",
+        expect.objectContaining({ targetBaseUrl: "https://ghe.example.com/api/v3" }),
+      ),
+    );
+
+    // The user points the batch at another host: the next Generate follows it.
+    fireEvent.change(screen.getByLabelText("GHE base URL (optional)"), {
+      target: { value: "https://other.example.com/api/v3" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+    await waitFor(() =>
+      expect(generateMock).toHaveBeenLastCalledWith(
+        "proj_1",
+        expect.objectContaining({ targetBaseUrl: "https://other.example.com/api/v3" }),
+      ),
+    );
+  });
+
+  /** The page with an analysis picked and a target typed, ready to Generate. */
+  async function readyToGenerate() {
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <PublishingPage />
+      </Wrapper>,
+    );
+    const select = await screen.findByTestId("publish-analysis-select");
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /completed/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(select, { target: { value: "analysis_abcdef123456" } });
+    fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "acme" } });
+    fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "app" } });
+  }
+
+  it("#1064 — Generate does not fail on a base URL field that is not a URL, and says why code is text", async () => {
+    generateMock.mockResolvedValue({ summary: { upserted: 2, refreshed: 0 } });
+    await readyToGenerate();
+    const field = screen.getByLabelText("GHE base URL (optional)");
+    const generate = screen.getByRole("button", { name: "Generate" });
+    await waitFor(() => expect(generate).toBeEnabled());
+    const sent = () =>
+      (generateMock.mock.calls.at(-1)![1] as { targetBaseUrl: string | null }).targetBaseUrl;
+
+    // Half-typed: sent trimmed (the server lists code as text), with the reason shown.
+    fireEvent.change(field, { target: { value: "  github.example.com " } });
+    fireEvent.click(generate);
+    await waitFor(() => expect(generateMock).toHaveBeenCalledTimes(1));
+    expect(sent()).toBe("github.example.com");
+    expect(await screen.findByTestId("generate-base-url-warning")).toHaveTextContent(
+      "not an https URL, so these drafts list code as text, not links",
+    );
+    expect(screen.queryByTestId("generate-error")).not.toBeInTheDocument();
+
+    // Only spaces is an empty field: public GitHub, and nothing to warn about.
+    fireEvent.change(field, { target: { value: "   " } });
+    fireEvent.click(generate);
+    await waitFor(() => expect(generateMock).toHaveBeenCalledTimes(2));
+    expect(sent()).toBeNull();
+    await waitFor(() =>
+      expect(screen.queryByTestId("generate-base-url-warning")).not.toBeInTheDocument(),
+    );
+
+    // A URL with stray spaces is sent without them.
+    fireEvent.change(field, { target: { value: " https://ghe.example.com/api/v3 " } });
+    fireEvent.click(generate);
+    await waitFor(() => expect(generateMock).toHaveBeenCalledTimes(3));
+    expect(sent()).toBe("https://ghe.example.com/api/v3");
+    expect(screen.queryByTestId("generate-base-url-warning")).not.toBeInTheDocument();
+    // The card says which fields decide whether code is linked.
+    expect(screen.getByTestId("generate-links-hint")).toHaveTextContent("GHE base URL");
+  });
+
+  it("#1064 — Generate waits for the connector that prefills the base URL", async () => {
+    // Clicked before the connector loaded, Generate sent `null` for a GitHub
+    // Enterprise project: drafts for github.com, with the code as text.
+    let resolvePrimary: (value: unknown) => void = () => {};
+    const getPrimary = repoConnectorsApi.getPrimary as unknown as ReturnType<typeof vi.fn>;
+    getPrimary.mockImplementationOnce(() => new Promise((resolve) => (resolvePrimary = resolve)));
+    generateMock.mockResolvedValue({ summary: { upserted: 1, refreshed: 0 } });
+    await readyToGenerate();
+    const generate = screen.getByRole("button", { name: "Generate" });
+    expect(generate).toBeDisabled();
+    fireEvent.click(generate);
+    expect(generateMock).not.toHaveBeenCalled();
+
+    resolvePrimary({
+      ownerOrOrg: "acme",
+      repoName: "app",
+      apiBaseUrl: "https://ghe.example.com/api/v3",
+    });
+    await waitFor(() => expect(generate).toBeEnabled());
+    fireEvent.click(generate);
+    await waitFor(() =>
+      expect(generateMock).toHaveBeenLastCalledWith(
+        "proj_1",
+        expect.objectContaining({ targetBaseUrl: "https://ghe.example.com/api/v3" }),
+      ),
     );
   });
 
