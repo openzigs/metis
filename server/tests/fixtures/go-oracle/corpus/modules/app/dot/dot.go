@@ -2,6 +2,7 @@
 package dot
 
 import (
+	. "example.com/app/gen"
 	. "example.com/app/model"
 	. "unicode/utf8"
 )
@@ -18,4 +19,5 @@ func use() {
 	var l List
 	l[0].Run()
 	_ = Thing(Alias{})
+	Emit()
 }

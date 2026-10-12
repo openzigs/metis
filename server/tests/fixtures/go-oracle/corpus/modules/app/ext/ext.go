@@ -6,6 +6,7 @@ package ext
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"debug/elf"
 	"errors"
 	"flag"
@@ -67,6 +68,13 @@ func stdlibEmbedsInterface(sec *elf.Section) {
 	sec.Open().Seek(0, 0)
 }
 
+func stdlibChains(priv *ecdsa.PrivateKey, r *http.Request) {
+	x, _ := priv.Add(nil, nil, nil, nil)
+	_ = x.Sign()
+	resp, _ := http.DefaultTransport.RoundTrip(r)
+	resp.Body.Close()
+}
+
 func universe(err error, v any) {
 	_ = err.Error()
 	_ = len("x")
@@ -103,6 +111,7 @@ func thirdPartyElements(c *queue.Client, b queue.Batch, hd queue.Handler) {
 	c.Peers[0].Publish("p")
 	b[0].Publish("b")
 	_ = hd("x").Error()
+	_ = queue.Handlers[0]("x")
 	for _, peer := range c.Peers {
 		peer.Stats().Reset()
 	}

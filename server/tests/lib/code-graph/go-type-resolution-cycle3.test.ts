@@ -13,6 +13,8 @@ import {
   createGoResolver,
   GO_CALL_STEP_BUDGET,
   type GoCallVerdict,
+  goDefaultImportName,
+  parseGoModulePath,
 } from "../../../src/lib/code-graph/go-type-resolution.js";
 import { initCodeGraphParsers, parseSource } from "../../../src/lib/code-graph/parsers.js";
 import { GO_TEST_MODULE, goVerdicts, type GoTree } from "../../helpers/go-verdicts.js";
@@ -678,5 +680,335 @@ func use(o One, t Two) {
 
   it("two such types: which of them holds a name is not known", () => {
     expect(v().get("p/p.go:26:Anything")).toBe("unknown");
+  });
+});
+describe("walker rules a compiling corpus cannot state", () => {
+  it("a function declared without a body (implemented in assembly) is a symbol, and the file is still walked", () => {
+    const parsed = parseSource(
+      "p/p.go",
+      "package p\n\nfunc asm(x int) int\n\nfunc g() {}\n\nfunc f() {\n\tasm(1)\n\tg()\n}\n",
+      "go",
+    );
+    expect(parsed.unparseable).toBeFalsy();
+    expect(parsed.symbols.filter((s) => s.kind === "function").map((s) => s.name)).toEqual([
+      "asm",
+      "g",
+      "f",
+    ]);
+    const v = goVerdicts({
+      "p/p.go":
+        "package p\n\nfunc asm(x int) int\n\nfunc g() {}\n\nfunc f() {\n\tasm(1)\n\tg()\n}\n",
+    });
+    expect(v.get("p/p.go:8:asm")).toBe("same-package p/p.go::asm");
+    expect(v.get("p/p.go:9:g")).toBe("same-package p/p.go::g");
+  });
+
+  it("a doc comment that merely ends in the word `ignore` is not a build constraint", () => {
+    // `// Package ignore` is as long as `//go:build` plus ` ignore`: only the
+    // directive itself, matched as a word at the start of the line, counts.
+    for (const comment of ["// Package ignore", "// go:build ignore", "//go:buildx ignore"]) {
+      const v = goVerdicts({
+        "ignore/a.go": `${comment}\npackage ignore\n\nfunc helper() {}\n`,
+        "ignore/b.go": "package ignore\n\nfunc use() {\n\thelper()\n}\n",
+      });
+      expect(v.get("ignore/b.go:4:helper"), comment).toBe("same-package ignore/a.go::helper");
+    }
+    const ignored = goVerdicts({
+      "ignore/a.go": "//go:build ignore\n\npackage ignore\n\nfunc helper() {}\n",
+      "ignore/b.go": "package ignore\n\nfunc use() {\n\thelper()\n}\n",
+    });
+    expect(ignored.get("ignore/b.go:4:helper")).toBe("unbound external");
+  });
+
+  it("an import edge is recorded on the line of its spec", () => {
+    const parsed = parseSource(
+      "p/p.go",
+      'package p\n\nimport "fmt"\n\nimport (\n\t"os"\n\n\tq "example.com/app/q"\n)\n\nvar _ = fmt.Sprint\nvar _ = os.Args\nvar _ = q.X\n',
+      "go",
+    );
+    expect(
+      parsed.edges.filter((e) => e.kind === "imports").map((e) => `${e.line} ${e.toQualifiedName}`),
+    ).toEqual(["3 fmt", "6 os", "8 example.com/app/q"]);
+  });
+
+  describe("a value the walker does not model, assigned to an inferred local, drops what was inferred", () => {
+    // `x := NewT()` types x by the call. Assigning something the walker cannot
+    // read says nothing about the type: in Go that compiles it is the same
+    // type, but the rule is for the walker's own mistakes — undecided.
+    const after = (assignment: string, extra = ""): string | undefined =>
+      goVerdicts({
+        "p/p.go": `package p
+
+type T struct{}
+
+func (T) M() {}
+
+func NewT() *T { return nil }
+
+func fs() []func() *T { return nil }
+
+func ff() func() *T { return nil }
+${extra}
+func use(y *T) {
+	x := NewT()
+	${assignment}
+	x.M()
+}
+`,
+      }).get("p/p.go:16:M");
+
+    it("unchanged, and after an assignment the walker can read: still bound", () => {
+      expect(after("_ = y")).toBe("receiver-type p/p.go::T::M");
+      expect(after("x = NewT()")).toBe("receiver-type p/p.go::T::M");
+      expect(after("x = nil")).toBe("receiver-type p/p.go::T::M");
+    });
+
+    it.each([
+      ["a unary operation", "x = -y"],
+      ["a binary operation", "x = y + y"],
+      ["the result of calling a call result", "x = ff()()"],
+      ["the result of calling an indexed element", "x = fs()[0]()"],
+      ["the result of calling a parenthesised callee", "x = (NewT)()"],
+      ["a conversion to a type written in place", "x = interface{ M() }(y)"],
+      // A WRITTEN type, where the local was typed by a call: the two cannot be
+      // compared from here, so nothing is claimed.
+      ["a value of a written type", "x = y"],
+      [
+        "a func literal called on the spot, whose result type is written",
+        "x = func() *T { return nil }()",
+      ],
+    ])("%s", (_what, assignment) => {
+      expect(after(assignment)).toBe("unknown");
+    });
+  });
+});
+describe("reading a go.mod and guessing an import's name", () => {
+  it("the module path: the first `module` directive, however it is spaced or quoted", () => {
+    expect(parseGoModulePath("module example.com/app\n\ngo 1.22\n")).toBe("example.com/app");
+    expect(parseGoModulePath("// header\n\nmodule\texample.com/app // comment\n")).toBe(
+      "example.com/app",
+    );
+    expect(parseGoModulePath('module "example.com/app"\n')).toBe("example.com/app");
+    expect(parseGoModulePath("module `example.com/app`\n")).toBe("example.com/app");
+    // Not the directive: a word that merely starts like it, or nothing after it.
+    expect(parseGoModulePath("modules example.com/app\n")).toBeNull();
+    expect(parseGoModulePath("module\n")).toBeNull();
+    expect(parseGoModulePath('module ""\n')).toBeNull();
+    expect(parseGoModulePath("module // nothing\n")).toBeNull();
+    expect(parseGoModulePath("go 1.22\n")).toBeNull();
+    // The first directive wins over a later line.
+    expect(parseGoModulePath("modulex a\nmodule b\nmodule c\n")).toBe("b");
+  });
+
+  it("the default name of an import outside the tree: its last segment, past a version", () => {
+    expect(goDefaultImportName("github.com/go-chi/chi")).toBe("chi");
+    expect(goDefaultImportName("github.com/go-chi/chi/v5")).toBe("chi");
+    expect(goDefaultImportName("github.com/go-chi/chi/v0")).toBe("chi");
+    expect(goDefaultImportName("github.com/go-chi/chi/v19")).toBe("chi");
+    expect(goDefaultImportName("gopkg.in/yaml.v3")).toBe("yaml");
+    expect(goDefaultImportName("gopkg.in/yaml.v39")).toBe("yaml");
+    // Not versions: one segment only, a `v` with no digits, a letter after it.
+    expect(goDefaultImportName("v5")).toBe("v5");
+    expect(goDefaultImportName("example.com/v")).toBe("v");
+    expect(goDefaultImportName("example.com/tool/vx")).toBe("vx");
+    expect(goDefaultImportName("example.com/tool/v1a")).toBe("v1a");
+    expect(goDefaultImportName("example.com/v/")).toBe("");
+    expect(goDefaultImportName("example.com/tool/v:")).toBe("v:");
+    expect(goDefaultImportName("example.com/pkg.vx")).toBe("pkg.vx");
+    expect(goDefaultImportName("example.com/.v3")).toBe(".v3");
+    expect(goDefaultImportName("example.com/a.v")).toBe("a.v");
+  });
+});
+
+describe("more of what an embedded interface holds", () => {
+  it("an interface that embeds itself in a ring still holds only the ring's methods", () => {
+    const v = goVerdicts({
+      "p/p.go": `package p
+
+type A interface {
+	B
+	One()
+}
+
+type B interface {
+	A
+	Two()
+}
+
+type S struct{ A }
+
+func use(s S) {
+	s.One()
+	s.Two()
+	s.Neither()
+}
+`,
+    });
+    expect(v.get("p/p.go:16:One")).toBe("unbound interface");
+    expect(v.get("p/p.go:17:Two")).toBe("unbound interface");
+    // A ring read once is CLOSED: a name it does not hold is nobody's.
+    expect(v.get("p/p.go:18:Neither")).toBe("unknown");
+  });
+
+  it("an interface embedding something that is not an interface is not known in full", () => {
+    // `Num` is a constraint element here, not a method set this module reads.
+    const v = goVerdicts({
+      "p/p.go": `package p
+
+type Num int
+
+type N interface {
+	Num
+	M()
+}
+
+type S struct{}
+
+func (S) Foo() {}
+
+type Both struct {
+	N
+	S
+}
+
+func use(b Both) {
+	b.Foo()
+	b.M()
+}
+`,
+    });
+    expect(v.get("p/p.go:20:Foo")).toBe("unknown");
+    expect(v.get("p/p.go:21:M")).toBe("unbound interface");
+  });
+});
+
+describe("more of what a test file adds", () => {
+  it("test-file methods at two depths: the shallower one, not a tie", () => {
+    const v = goVerdicts({
+      "p/p.go": "package p\n\ntype S struct{ A }\n\ntype A struct{ B }\n\ntype B struct{}\n",
+      "p/export_test.go": "package p\n\nfunc (A) M() {}\n\nfunc (B) M() {}\n",
+      "p/p_test.go": "package p\n\nfunc probe(s S) {\n\ts.M()\n}\n",
+    });
+    expect(v.get("p/p_test.go:4:M")).toBe("receiver-type p/export_test.go::A::M");
+  });
+
+  it("…whichever of the two types the search meets first", () => {
+    // B is embedded directly AND through A: B.M sits at depth 1, A's at 1 too — a tie.
+    const tie = goVerdicts({
+      "p/p.go": "package p\n\ntype S struct {\n\tB\n\tA\n}\n\ntype A struct{}\n\ntype B struct{}\n",
+      "p/export_test.go": "package p\n\nfunc (A) M() {}\n\nfunc (B) M() {}\n",
+      "p/p_test.go": "package p\n\nfunc probe(s S) {\n\ts.M()\n}\n",
+    });
+    expect(tie.get("p/p_test.go:4:M")).toBe("unbound ambiguous");
+    // The deeper one is listed FIRST among the directory's types and still loses.
+    const deeperFirst = goVerdicts({
+      "p/p.go":
+        "package p\n\ntype S struct {\n\tC\n}\n\ntype C struct {\n\tB\n}\n\ntype B struct{}\n",
+      "p/export_test.go": "package p\n\nfunc (B) M() {}\n\nfunc (C) M() {}\n",
+      "p/p_test.go": "package p\n\nfunc probe(s S) {\n\ts.M()\n}\n",
+    });
+    expect(deeperFirst.get("p/p_test.go:4:M")).toBe("receiver-type p/export_test.go::C::M");
+  });
+
+  it("a function only another package's test file declares is nobody's from outside", () => {
+    const v = goVerdicts({
+      "b/b.go": "package b\n\nfunc Real() {}\n",
+      "b/export_test.go": "package b\n\nfunc Helper() {}\n",
+      "a/a_test.go":
+        'package a\n\nimport "example.com/app/b"\n\nfunc probe() {\n\tb.Helper()\n\tb.Real()\n}\n',
+    });
+    // Go does not compile this call; what matters is that it is not bound.
+    expect(v.get("a/a_test.go:6:Helper")).toBe("unbound external");
+    expect(v.get("a/a_test.go:7:Real")).toBe("package b/b.go::Real");
+  });
+});
+
+describe("a build-ignored file's own package", () => {
+  const GEN =
+    "//go:build ignore\n\npackage main\n\nfunc main() {\n\thelper()\n\tmissing()\n}\n\nfunc helper() {}\n";
+
+  it("the one ignored file of a directory is read in full: an undeclared name is nobody's", () => {
+    const v = goVerdicts({
+      "gen/gen.go": GEN,
+      "gen/lib.go": "package gen\n\nfunc missing() {}\n",
+    });
+    expect(v.get("gen/gen.go:6:helper")).toBe("same-package gen/gen.go::helper");
+    // The library's `missing` is another package's: not this program's.
+    expect(v.get("gen/gen.go:7:missing")).toBe("unbound external");
+  });
+
+  it("beside ANOTHER ignored file the program is whatever `go run` is given: undecided", () => {
+    const v = goVerdicts({
+      "gen/gen.go": GEN,
+      "gen/more.go": "//go:build ignore\n\npackage main\n\nfunc missing() {}\n",
+      "gen/lib.go": "package gen\n",
+    });
+    expect(v.get("gen/gen.go:6:helper")).toBe("same-package gen/gen.go::helper");
+    expect(v.get("gen/gen.go:7:missing")).toBe("unknown");
+  });
+});
+
+describe("an indexed name whose type is not known", () => {
+  it("a package variable is still a variable: an element of it is a func value", () => {
+    const v = goVerdicts({
+      "p/p.go": `package p
+
+func pick[T any]() T {
+	var zero T
+	return zero
+}
+
+var hs = pick[[]func()]()
+
+type T struct{ fs []func() }
+
+func use(t T) {
+	hs[0]()
+	t.unknown[0]()
+	t.fs[0]()
+}
+`,
+    });
+    expect(v.get("p/p.go:13:hs")).toBe("unbound func-value");
+    // A member nothing declares: nothing is decided.
+    expect(v.get("p/p.go:14:unknown")).toBe("unknown");
+    expect(v.get("p/p.go:15:fs")).toBe("unbound func-value");
+  });
+});
+
+describe("the depth limits are exact: twelve links, not thirteen", () => {
+  const chain = (links: number, link: (i: number) => string): string => {
+    let src = "";
+    for (let i = links; i >= 1; i -= 1) src += link(i);
+    return src;
+  };
+  const HEAD = "package p\n\ntype T struct{}\n\nfunc (T) M() {}\n\n";
+  const last = (tree: Record<string, string>): string => goVerdicts(tree).values().at(-1)!;
+  const BOUND = "receiver-type p/p.go::T::M";
+
+  it.each([12, 13])("a chain of %i defined types down to a struct", (links) => {
+    const src = `${HEAD}type D0 struct{ F *T }\n${chain(links, (i) => `type D${i} D${i - 1}\n`)}
+func use(x D${links}) {
+	x.F.M()
+}
+`;
+    expect(last({ "p/p.go": src })).toBe(links === 12 ? BOUND : "unknown");
+  });
+
+  it.each([12, 13])("a chain of %i defined types down to a slice", (links) => {
+    const src = `${HEAD}type L0 []*T\n${chain(links, (i) => `type L${i} L${i - 1}\n`)}
+func use(x L${links}) {
+	x[0].M()
+}
+`;
+    expect(last({ "p/p.go": src })).toBe(links === 12 ? BOUND : "unknown");
+  });
+
+  it.each([12, 13])("a method promoted through %i embeddings", (depth) => {
+    let src = HEAD;
+    for (let i = 0; i < depth; i += 1) src += `type S${i} struct{ S${i + 1} }\n`;
+    src += `type S${depth} struct{ T }\n\nfunc use(x S1) {\n\tx.M()\n}\n`;
+    // From S1, T sits `depth` levels down.
+    expect(last({ "p/p.go": src })).toBe(depth === 12 ? BOUND : "unknown");
   });
 });

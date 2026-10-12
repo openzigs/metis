@@ -20,6 +20,9 @@
 //   - `build-dependent` when the platforms listed below disagree — twins
 //     behind build constraints.
 //
+// It also lists every function, method and type the corpus DECLARES, with the
+// lines it spans: the symbols the walker must record.
+//
 // A vitest suite compares that with what the tree-sitter walker, the resolver
 // and ingest produce (`server/tests/lib/code-graph/go-oracle-corpus.test.ts`),
 // and never runs Go. The output is checked in as
@@ -116,10 +119,25 @@ type site struct {
 	Only []string `json:"only,omitempty"`
 }
 
+// symbol is one declaration: a function or method, or a type that is not an
+// alias (wherever it is declared — a type inside a function is one too).
+type symbol struct {
+	File string `json:"file"`
+	// Kind is `function`, or for a type what it is declared as: `struct`,
+	// `interface` or `type`.
+	Kind string `json:"kind"`
+	// Recv is the receiver's base type name for a method.
+	Recv    string `json:"recv,omitempty"`
+	Name    string `json:"name"`
+	Line    int    `json:"line"`
+	EndLine int    `json:"endLine"`
+}
+
 type treeOut struct {
-	Name  string `json:"name"`
-	Root  string `json:"root"`
-	Calls []site `json:"calls"`
+	Name    string   `json:"name"`
+	Root    string   `json:"root"`
+	Calls   []site   `json:"calls"`
+	Symbols []symbol `json:"symbols"`
 }
 
 type snapshot struct {
@@ -265,6 +283,9 @@ type recorder struct {
 	// ignored list, on some platform.
 	compiled map[string]bool
 	ignored  map[string]string
+	// symbols: every declaration of the tree's files, once per file.
+	symbols []symbol
+	indexed map[string]bool
 }
 
 func (r *recorder) rel(path string) string {
@@ -333,11 +354,54 @@ func (r *recorder) refOf(path string, decl *ast.FuncDecl) *fnRef {
 }
 
 func (r *recorder) index(path string, file *ast.File) {
+	if r.indexed[path] {
+		return
+	}
+	r.indexed[path] = true
+	line := func(pos token.Pos) int { return r.l.fset.Position(pos).Line }
 	for _, d := range file.Decls {
 		if fd, ok := d.(*ast.FuncDecl); ok {
-			r.decls[declKey(r.l.fset, fd.Name.Pos())] = r.refOf(path, fd)
+			ref := r.refOf(path, fd)
+			r.decls[declKey(r.l.fset, fd.Name.Pos())] = ref
+			r.symbols = append(r.symbols, symbol{
+				File: ref.File, Kind: "function", Recv: ref.Recv, Name: ref.Name,
+				Line: line(fd.Pos()), EndLine: line(fd.End() - 1),
+			})
 		}
 	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		spec, ok := n.(*ast.TypeSpec)
+		if !ok || spec.Assign.IsValid() {
+			return true
+		}
+		kind := "type"
+		switch spec.Type.(type) {
+		case *ast.StructType:
+			kind = "struct"
+		case *ast.InterfaceType:
+			kind = "interface"
+		}
+		r.symbols = append(r.symbols, symbol{
+			File: r.rel(path), Kind: kind, Name: spec.Name.Name,
+			Line: line(spec.Pos()), EndLine: line(spec.End() - 1),
+		})
+		return true
+	})
+}
+
+func (r *recorder) sortedSymbols() []symbol {
+	out := append([]symbol{}, r.symbols...)
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.File != b.File {
+			return a.File < b.File
+		}
+		if a.Line != b.Line {
+			return a.Line < b.Line
+		}
+		return a.Name < b.Name
+	})
+	return out
 }
 
 func (r *recorder) function(fn *types.Func) answer {
@@ -739,6 +803,7 @@ func main() {
 			sites:    map[string]map[string]*site{},
 			compiled: map[string]bool{},
 			ignored:  map[string]string{},
+			indexed:  map[string]bool{},
 		}
 		switch tree.Mode {
 		case "modules":
@@ -750,7 +815,9 @@ func main() {
 		default:
 			fatal("tree %s: unknown mode %q", tree.Name, tree.Mode)
 		}
-		snap.Trees = append(snap.Trees, treeOut{Name: tree.Name, Root: tree.Root, Calls: r.merged()})
+		snap.Trees = append(snap.Trees, treeOut{
+			Name: tree.Name, Root: tree.Root, Calls: r.merged(), Symbols: r.sortedSymbols(),
+		})
 	}
 	enc := json.NewEncoder(os.Stdout)
 	if err := enc.Encode(snap); err != nil {

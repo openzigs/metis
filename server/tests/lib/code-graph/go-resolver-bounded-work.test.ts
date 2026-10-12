@@ -585,3 +585,179 @@ describe("a type reached from the tests of many directories is still searched on
     expectLinearTime("Go resolver, test views of one type", (count) => resolveFan(count), 3_000);
   });
 });
+describe("what counts as a step, pinned exactly on small trees", () => {
+  // The budgets are large on purpose, so that no real file meets them — which
+  // also means no small fixture does. `GoResolverOptions.budgets` lowers them
+  // for a test: the count below each fixture is the number of steps it takes,
+  // and a budget of exactly that many is enough while one fewer is not.
+  type Tree = Record<string, string>;
+  const ask = (
+    tree: Tree,
+    budgets: { callSteps?: number; typeSteps?: number },
+    order: "forward" | "reverse" = "forward",
+  ): GoCallVerdict[] => {
+    const parsed = Object.entries(tree).map(([filePath, src]) => parseSource(filePath, src, "go"));
+    const resolver = createGoResolver(
+      parsed.map((p) => ({
+        filePath: p.filePath,
+        facts: p.goFacts!,
+        isTest: false,
+      })),
+      MODULE,
+      { budgets },
+    );
+    const calls = parsed.flatMap((p) =>
+      p.edges
+        .filter((e) => e.kind === "calls")
+        .map((e) => ({ file: p.filePath, callee: e.goCallee! })),
+    );
+    const list = order === "forward" ? calls : [...calls].reverse();
+    const out = list.map((c) => resolver.resolveCall(c.file, c.callee));
+    return order === "forward" ? out : out.reverse();
+  };
+  const BUDGET: GoCallVerdict = { kind: "unknown", why: "budget" };
+
+  describe("one call: a node of the callee, and each dot-imported package consulted for a bare name", () => {
+    /** `count` dot imports of DISTINCT project packages, none declaring `missing`. */
+    const dots = (count: number): Tree => {
+      const tree: Tree = {};
+      let src = "package p\n\nimport (\n";
+      for (let i = 0; i < count; i += 1) {
+        src += `\t. "example.com/app/d${i}"\n`;
+        tree[`d${i}/l.go`] = `package d${i}\n\nfunc L${i}() {}\n`;
+      }
+      tree["p/p.go"] =
+        `${src})\n\nfunc declared() {}\n\nfunc f() {\n\tmissing()\n\tdeclared()\n\tlen("x")\n\tL0()\n}\n`;
+      return tree;
+    };
+    const DECLARED: GoCallVerdict = {
+      kind: "bound",
+      qualifiedName: "p/p.go::declared",
+      via: "same-package",
+    };
+    const L0: GoCallVerdict = {
+      kind: "bound",
+      qualifiedName: "d0/l.go::L0",
+      via: "package",
+    };
+
+    it("1 + 7 steps in a budget of 8: every dot import is consulted, and the answer is plain", () => {
+      expect(ask(dots(7), { callSteps: 8 })).toEqual([
+        // Undecided because a dot import MAY declare it elsewhere — not for want of budget.
+        { kind: "unknown" },
+        DECLARED,
+        { kind: "unbound", reason: "external" },
+        L0,
+      ]);
+    });
+
+    it("1 + 8 steps in a budget of 8: undecided, and it says why", () => {
+      expect(ask(dots(8), { callSteps: 8 })).toEqual([
+        BUDGET,
+        // Found in the package itself, before any dot import is consulted.
+        DECLARED,
+        BUDGET,
+        // Found in the first dot import: 1 + 1 steps.
+        L0,
+      ]);
+    });
+
+    it("the budget is per call: a costly call does not use up the next one's, in either order", () => {
+      expect(ask(dots(8), { callSteps: 8 }, "reverse")).toEqual(ask(dots(8), { callSteps: 8 }));
+    });
+
+    it("a chain costs one step a link", () => {
+      const chain: Tree = {
+        "p/p.go":
+          "package p\n\ntype T struct{ F *T }\n\nfunc (T) M() {}\n\nfunc f(x T) {\n\tx.F.F.M()\n}\n",
+      };
+      // M, F, F and x: four nodes.
+      expect(ask(chain, { callSteps: 4 })).toEqual([
+        { kind: "bound", qualifiedName: "p/p.go::T::M", via: "receiver-type" },
+      ]);
+      expect(ask(chain, { callSteps: 3 })).toEqual([BUDGET]);
+    });
+
+    it("an import block one longer than the budget is not read; one that fits is", () => {
+      const named = (count: number): Tree => {
+        let src = "package p\n\nimport (\n";
+        for (let i = 0; i < count; i += 1) src += `\ta${i} "q/r${i}"\n`;
+        return { "p/p.go": `${src})\n\nfunc f() {\n\ta0.Go()\n}\n` };
+      };
+      expect(ask(named(6), { callSteps: 6 })).toEqual([{ kind: "unbound", reason: "external" }]);
+      expect(ask(named(7), { callSteps: 6 })).toEqual([BUDGET]);
+    });
+  });
+
+  describe("one type: each type, field, method, interface method and embedding visited", () => {
+    const STRUCTS: Tree = {
+      "p/p.go": `package p
+
+type E struct{}
+
+func (E) N() {}
+
+type T struct {
+	a int
+	b int
+	E
+}
+
+func (T) M1() {}
+
+func (T) M2() {}
+
+func use(t T) {
+	t.M1()
+	t.N()
+}
+`,
+    };
+    const M1: GoCallVerdict = {
+      kind: "bound",
+      qualifiedName: "p/p.go::T::M1",
+      via: "receiver-type",
+    };
+    const N: GoCallVerdict = {
+      kind: "bound",
+      qualifiedName: "p/p.go::E::N",
+      via: "receiver-type",
+    };
+
+    it("T: itself 1, fields a b E 3, methods 2, the embedding 1; E: itself 1, method 1 — nine", () => {
+      expect(ask(STRUCTS, { typeSteps: 9 })).toEqual([M1, N]);
+    });
+
+    it("eight is one too few: NOTHING about the type is decided, not even its own method", () => {
+      expect(ask(STRUCTS, { typeSteps: 8 })).toEqual([BUDGET, BUDGET]);
+      // And the same whichever call asks first.
+      expect(ask(STRUCTS, { typeSteps: 8 }, "reverse")).toEqual([BUDGET, BUDGET]);
+    });
+
+    it("the first level alone is six: a budget of five stops there", () => {
+      expect(ask(STRUCTS, { typeSteps: 6 })).toEqual([BUDGET, BUDGET]);
+      expect(ask(STRUCTS, { typeSteps: 5 })).toEqual([BUDGET, BUDGET]);
+    });
+
+    const INTERFACE: Tree = {
+      "p/p.go": `package p
+
+type I interface {
+	A()
+	B()
+}
+
+type S struct{ I }
+
+func use(s S) {
+	s.A()
+}
+`,
+    };
+
+    it("S: itself 1, field I 1, the embedding 1; I: itself 1, methods A B 2 — six", () => {
+      expect(ask(INTERFACE, { typeSteps: 6 })).toEqual([{ kind: "unbound", reason: "interface" }]);
+      expect(ask(INTERFACE, { typeSteps: 5 })).toEqual([BUDGET]);
+    });
+  });
+});

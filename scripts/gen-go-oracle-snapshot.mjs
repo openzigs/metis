@@ -136,6 +136,11 @@ snap.trees.forEach((tree, t) => {
     // One call per line, so a change of the corpus is a readable diff.
     lines.push(`    ${JSON.stringify(call)}${i === tree.calls.length - 1 ? "" : ","}`);
   });
+  lines.push("   ],");
+  lines.push('   "symbols": [');
+  tree.symbols.forEach((symbol, i) => {
+    lines.push(`    ${JSON.stringify(symbol)}${i === tree.symbols.length - 1 ? "" : ","}`);
+  });
   lines.push("   ]");
   lines.push(`  }${t === snap.trees.length - 1 ? "" : ","}`);
 });

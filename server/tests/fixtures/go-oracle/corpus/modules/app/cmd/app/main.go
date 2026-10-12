@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	root "example.com/app"
 	"example.com/app/embed"
 	"example.com/app/gen"
 	"example.com/app/generics"
@@ -38,4 +39,5 @@ func main() {
 	model.NewThing().Stop()
 	_ = generics.First[int]([]int{1})
 	_ = generics.Scale[int](1)
+	_ = root.Version()
 }

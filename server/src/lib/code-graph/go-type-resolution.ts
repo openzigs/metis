@@ -378,6 +378,13 @@ export interface GoResolverOptions {
    * that file, so it is never ruled out.
    */
   incompleteDirs?: ReadonlySet<string>;
+  /**
+   * The step budgets, when not the defaults ({@link GO_CALL_STEP_BUDGET},
+   * {@link GO_TYPE_STEP_BUDGET}). Ingest never sets them; the tests do, to pin
+   * what counts as a step on a tree of a dozen lines instead of a hundred
+   * thousand.
+   */
+  budgets?: { callSteps?: number; typeSteps?: number };
 }
 
 export interface GoResolver {
@@ -679,9 +686,9 @@ interface MemberTable {
   overBudget?: true;
   /**
    * Test directory → the members that differ for a caller built with that
-   * directory's `_test.go` files, worked out on first use. `null`: over budget.
+   * directory's `_test.go` files, worked out on first use.
    */
-  views?: Map<string, Map<string, Val> | null>;
+  views?: Map<string, Map<string, Val>>;
 }
 
 /** An interface's whole method set: its own names and those of the interfaces it embeds. */
@@ -717,6 +724,8 @@ export function createGoResolver(
   options: GoResolverOptions = {},
 ): GoResolver {
   const incompleteDirs = options.incompleteDirs ?? new Set<string>();
+  const callStepBudget = options.budgets?.callSteps ?? GO_CALL_STEP_BUDGET;
+  const typeStepBudget = options.budgets?.typeSteps ?? GO_TYPE_STEP_BUDGET;
   const pkgs = new Map<string, Pkg>();
   /**
    * Directory → the packages the go tool builds there (normally one, plus an
@@ -852,7 +861,7 @@ export function createGoResolver(
   let budgetHit = false;
   const step = (): void => {
     callSteps += 1;
-    if (callSteps > GO_CALL_STEP_BUDGET) throw CALL_OVER_BUDGET;
+    if (callSteps > callStepBudget) throw CALL_OVER_BUDGET;
   };
 
   /**
@@ -1015,8 +1024,7 @@ export function createGoResolver(
    * and whatever order calls arrive in, and a call that needed them is
    * undecided (`why: "budget"`). No hand-written file comes near it.
    */
-  const importsReadable = (ctx: FileCtx): boolean =>
-    ctx.facts.imports.length <= GO_CALL_STEP_BUDGET;
+  const importsReadable = (ctx: FileCtx): boolean => ctx.facts.imports.length <= callStepBudget;
 
   /** Local import name → target, for a file whose imports are read ({@link importsReadable}); else null. */
   const importsOf = (ctx: FileCtx): Map<string, ImportTarget> | null => {
@@ -1270,10 +1278,9 @@ export function createGoResolver(
     let open = false;
     let steps = 0;
     const seen = new Set<string>([typeId(start)]);
-    const queue: Array<{ named: ProjectNamed; depth: number }> = [{ named: start, depth: 0 }];
+    const queue: ProjectNamed[] = [start];
     for (let at = 0; at < queue.length && !open; at += 1) {
-      const { named, depth } = queue[at];
-      const decl = typeDecl(named);
+      const decl = typeDecl(queue[at]);
       if (decl?.fact.form !== "interface") {
         open = true;
         break;
@@ -1284,7 +1291,7 @@ export function createGoResolver(
       }
       for (const embedded of decl.fact.embeds ?? []) {
         steps += 1;
-        const inner = embedded ? resolveNamed(embedded, decl.file, depth + 1) : UNKNOWN_NAMED;
+        const inner = embedded ? resolveNamed(embedded, decl.file, 0) : UNKNOWN_NAMED;
         if (inner.n !== "project") {
           open = true;
           break;
@@ -1292,10 +1299,10 @@ export function createGoResolver(
         const id = typeId(inner);
         if (seen.has(id)) continue;
         seen.add(id);
-        queue.push({ named: inner, depth: depth + 1 });
+        queue.push(inner);
       }
       // Too large to read in budget: it may hold any name.
-      if (steps > GO_TYPE_STEP_BUDGET) open = true;
+      if (steps > typeStepBudget) open = true;
     }
     const out: InterfaceNames = { names, open };
     interfaceNameSets.set(key, out);
@@ -1386,8 +1393,7 @@ export function createGoResolver(
         }
         const wildcard = wildcardOf(info);
         if (wildcard) wildcards.push({ holder: i, val: wildcard });
-        if (steps > GO_TYPE_STEP_BUDGET)
-          return { ...done(UNKNOWN), names: new Map(), overBudget: true };
+        if (steps > typeStepBudget) return { ...done(UNKNOWN), names: new Map(), overBudget: true };
       }
       for (const [name, h] of hits) {
         if (names.has(name)) continue;
@@ -1441,21 +1447,20 @@ export function createGoResolver(
    * gain the methods their `_test.go` files declare. Such a method is the
    * member when it sits shallower than what the table holds for that name; at
    * the same depth the two collide; deeper, it loses. That costs the methods
-   * of the directory's types, not another search: a type reached from a
-   * thousand test directories is still searched once.
+   * of the directory's types — every one of which the search that built the
+   * table already counted against its budget — not another search: a type
+   * reached from a thousand test directories is still searched once.
    */
-  const viewMembers = (table: MemberTable, dir: string): Map<string, Val> | null => {
+  const viewMembers = (table: MemberTable, dir: string): Map<string, Val> => {
     const views = (table.views ??= new Map());
     const known = views.get(dir);
-    if (known !== undefined) return known;
+    if (known) return known;
     const gains = new Map<
       string,
       { depth: number; count: number; decls: Decl<GoFuncFact>[]; holder: string }
     >();
-    let steps = 0;
     for (const { named, depth } of table.byDir.get(dir) ?? []) {
       for (const [name, decls] of named.pkg.methods.get(named.name) ?? []) {
-        steps += 1;
         if (decls.all.length === decls.nonTest.length) continue;
         const had = gains.get(name);
         if (!had || depth < had.depth) {
@@ -1466,10 +1471,6 @@ export function createGoResolver(
             holder: typeId(named),
           });
         } else if (depth === had.depth) had.count += 1;
-      }
-      if (steps > GO_TYPE_STEP_BUDGET) {
-        views.set(dir, null);
-        return null;
       }
     }
     const out = new Map<string, Val>();
@@ -1508,12 +1509,7 @@ export function createGoResolver(
       return UNKNOWN;
     }
     if (view !== null && table.byDir.has(view)) {
-      const inView = viewMembers(table, view);
-      if (inView === null) {
-        budgetHit = true;
-        return UNKNOWN;
-      }
-      const differs = inView.get(name);
+      const differs = viewMembers(table, view).get(name);
       if (differs) return differs;
     }
     return table.names.get(name) ?? table.rest;

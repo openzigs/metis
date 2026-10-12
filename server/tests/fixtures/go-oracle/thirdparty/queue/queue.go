@@ -71,3 +71,6 @@ type Box[T any] struct{ V T }
 
 // Get returns the boxed value.
 func (b Box[T]) Get() T { return b.V }
+
+// Handlers is a package-level slice of func values.
+var Handlers []Handler

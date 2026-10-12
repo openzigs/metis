@@ -81,11 +81,21 @@ export interface OracleCall {
   only?: string[];
 }
 
+/** One declaration of the corpus: a function or method, or a type that is not an alias. */
+export interface OracleSymbol {
+  file: string;
+  kind: "function" | "struct" | "interface" | "type";
+  recv?: string;
+  name: string;
+  line: number;
+  endLine: number;
+}
+
 export interface OracleSnapshot {
   corpusHash: string;
   goVersion: string;
   platforms: string[];
-  trees: Array<{ name: string; root: string; calls: OracleCall[] }>;
+  trees: Array<{ name: string; root: string; calls: OracleCall[]; symbols: OracleSymbol[] }>;
 }
 
 export function loadGoOracle(): OracleSnapshot {
@@ -182,6 +192,42 @@ export function readOracleView(view: OracleView, fixture: string = GO_ORACLE_FIX
   };
   walk(root);
   return { goFiles, modules };
+}
+
+/** The code-graph kind the walker gives each kind of Go declaration. */
+const SYMBOL_KIND: Record<OracleSymbol["kind"], string> = {
+  function: "function",
+  struct: "class",
+  interface: "interface",
+  type: "type",
+};
+
+/**
+ * Every declaration the type checker's parser lists for a view, as the symbol
+ * the walker must record for it: `kind qualifiedName startLine-endLine`.
+ */
+export function oracleSymbolsFor(snapshot: OracleSnapshot, view: OracleView): string[] {
+  const tree = snapshot.trees.find((t) => t.name === view.tree);
+  if (!tree) throw new Error(`go-oracle: the snapshot has no tree "${view.tree}"`);
+  const prefix = `${view.root}/`;
+  return tree.symbols
+    .filter((s) => s.file.startsWith(prefix))
+    .map(
+      (s) =>
+        `${SYMBOL_KIND[s.kind]} ${buildCodeQualifiedName(s.file.slice(prefix.length), s.recv ?? "", s.name)} ${s.line}-${s.endLine}`,
+    )
+    .sort();
+}
+
+/** The symbols the walker records for a view, in the same form (the per-file `module` symbol aside). */
+export function metisSymbolsOfView(source: ViewSource): string[] {
+  const out: string[] = [];
+  for (const [filePath, src] of source.goFiles) {
+    for (const s of parseSource(filePath, src, "go").symbols) {
+      if (s.kind !== "module") out.push(`${s.kind} ${s.qualifiedName} ${s.startLine}-${s.endLine}`);
+    }
+  }
+  return out.sort();
 }
 
 /**
@@ -314,7 +360,7 @@ const BUILD_CONSTRAINT =
 export const GO_ORACLE_ALLOW: readonly OracleAllowance[] = [
   {
     view: "modules",
-    key: "app/ext/ext.go:91:OnError",
+    key: "app/ext/ext.go:99:OnError",
     metis: "unbound external",
     oracle: "func-value (dependency)",
     reason:

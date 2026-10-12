@@ -101,3 +101,23 @@ func compoundAssign() {
 	_ = n
 	v.Do()
 }
+
+// pairCommented has a comment inside its result list.
+func pairCommented() (*P /* the second */, *Q) { return nil, nil }
+
+// withComment has a comment inside its parameter list.
+func withComment(a *P /* the q */, b *Q) {
+	a.Do()
+	b.Do()
+}
+
+func commentedResults() {
+	_, q := pairCommented()
+	q.Do()
+}
+
+func writtenTypeStands() {
+	var d Doer = NewP()
+	d = &Q{}
+	d.Do()
+}

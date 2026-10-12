@@ -1,6 +1,6 @@
 {
   "modules": {
-    "calls": 588,
+    "calls": 604,
     "boundByName": 23,
     "boundByNameAgreeing": 7,
     "boundByName_list": [
@@ -11,11 +11,11 @@
       "app/closures/closures.go:130:Run -> app/closures/closures.go::A::Run [type checker: interface (project)]",
       "app/closures/closures.go:45:Run -> app/closures/closures.go::A::Run [type checker: interface (project)]",
       "app/closures/closures.go:78:Run -> app/closures/closures.go::A::Run [type checker: interface (project)]",
-      "app/ext/ext.go:141:Consume -> app/ext/ext.go::sink::Consume [type checker: interface (dependency)]",
-      "app/ext/ext.go:144:Write -> app/ext/ext.go::sink::Write [agrees]",
-      "app/ext/ext.go:145:Consume -> app/ext/ext.go::sink::Consume [agrees]",
-      "app/ext/ext.go:54:ServeHTTP -> app/ext/ext.go::sink::ServeHTTP [type checker: external (stdlib)]",
-      "app/ext/ext.go:98:Close -> app/ext/ext.go::sink::Close [agrees]",
+      "app/ext/ext.go:106:Close -> app/ext/ext.go::sink::Close [agrees]",
+      "app/ext/ext.go:150:Consume -> app/ext/ext.go::sink::Consume [type checker: interface (dependency)]",
+      "app/ext/ext.go:153:Write -> app/ext/ext.go::sink::Write [agrees]",
+      "app/ext/ext.go:154:Consume -> app/ext/ext.go::sink::Consume [agrees]",
+      "app/ext/ext.go:55:ServeHTTP -> app/ext/ext.go::sink::ServeHTTP [type checker: external (stdlib)]",
       "app/generics/generics.go:42:Do -> app/generics/generics.go::T::Do [type checker: interface (project)]",
       "app/generics/generics.go:51:Do -> app/generics/generics.go::T::Do [type checker: interface (project)]",
       "app/generics/generics.go:54:Do -> app/generics/generics.go::T::Do [type checker: interface (project)]",

@@ -32,10 +32,12 @@ import {
   loadGoOracle,
   type MetisCall,
   metisCallsOfView,
+  metisSymbolsOfView,
   type OracleAllowance,
   type OracleCall,
   type OracleComparison,
   oracleCallsFor,
+  oracleSymbolsFor,
   type OracleView,
   readOracleView,
   verdictTable,
@@ -71,7 +73,7 @@ describe("#1071 — the Go oracle corpus", () => {
     // Raising this number is a decision to accept a decided verdict the type
     // checker contradicts: say why in the entry, and in the PR.
     expect(GO_ORACLE_ALLOW.map((a) => `${a.view} ${a.key} ${a.metis}`)).toEqual([
-      "modules app/ext/ext.go:91:OnError unbound external",
+      "modules app/ext/ext.go:99:OnError unbound external",
       "modules app/platform/plat_linux.go:8:shared unbound ambiguous",
       "modules app/platform/plat_other.go:10:shared unbound ambiguous",
       "modules app/platform/plat_windows.go:8:shared unbound ambiguous",
@@ -119,6 +121,12 @@ describe("#1071 — the Go oracle corpus", () => {
 
     it("every call is recorded under the function it is written in", () => {
       expect(of(cmp, "from")).toEqual([]);
+    });
+
+    it("the walker's symbols are the declarations Go's parser lists: kind, name, lines", () => {
+      const mine = metisSymbolsOfView(readOracleView(view));
+      expect(mine.length).toBeGreaterThan(3);
+      expect(mine).toEqual(oracleSymbolsFor(snapshot, view));
     });
   });
 

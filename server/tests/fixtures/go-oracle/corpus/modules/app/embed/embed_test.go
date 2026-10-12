@@ -7,6 +7,7 @@ func TestPromotion(t *testing.T) {
 	s.M()
 	s.Deep()
 	s.Reset()
+	s.Probe2()
 	Helper().M()
 	var to TestOnly
 	to.M()

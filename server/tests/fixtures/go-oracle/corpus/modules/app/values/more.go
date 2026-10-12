@@ -46,3 +46,9 @@ func viaChosen() {
 	chosen().Run()
 	anyRunner.Run()
 }
+
+func negated() {
+	c := NewCelsius()
+	c = -c
+	_ = c.String()
+}
