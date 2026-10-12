@@ -591,7 +591,8 @@ measured rather than estimated.
 
 The "must surface" column stays as the continuity verdict for runs 3 to 6. It cannot tell a plan
 that names the right four functions from one that names them among forty wrong ones, so each
-output is also **scored on precision and recall** against a reference change set (#1042).
+output is also **scored on precision and recall** against a reference change set (#1042); an
+impact analysis's blast radius is scored on recall only (#1073, "Scoring a change plan").
 
 ### Upstream state of the six requests (checked 2026-10-10)
 
@@ -713,16 +714,42 @@ changes, cited at `v2.3.3`.
 
 ### Scoring a change plan
 
-Score each output on its own: wave E's impact analysis (**"directly affected" plus "probable
-call sites"**, together), its chat answer to "where would I implement this?", its Spec Kit plan,
-and wave F's J2.1 impact and J2.4 plan.
+Score each output on its own: wave E's impact analysis, its chat answer to "where would I
+implement this?", its Spec Kit plan, and wave F's J2.1 impact and J2.4 plan. A chat answer and a
+plan are each one list, scored on precision and recall. **An impact analysis is two lists,
+scored differently** (#1073, owner decision of 2026-10-10 in #1068):
 
-**Since #1036 the impact result has two lists**, and the old section names are gone from the
-page: **Files to edit** (the API item's `editCandidateFiles`) and **Blast radius**
-(`blastRadiusFiles`, which includes the files to edit). Until #1073 changes this rule, "impact
-analysis" above means **both lists together**, so a run stays comparable with runs 7 and
-earlier. Record the two lists separately as well: #1073 scores the files to edit on precision
-and recall, and the blast radius on recall only. A column listed under **Optional: settings
+| List | On the page | In the API item | Scored on | `run.json` row |
+|---|---|---|---|---|
+| **Edit candidates** | the **Files to edit** group (`[data-testid=edit-candidates]`) | `editCandidateFiles`; the `affectedSymbols` at `depth` 0 | file and function **precision and recall** | `"scope": "edit"`, counts `tp` / `fp` / `fn` |
+| **Blast radius** | **Files to edit and the Blast radius group together** (`[data-testid=blast-radius-impacts]`, collapsed: open it) | `blastRadiusFiles`; every `affectedSymbols` entry | file and function **recall only** | `"scope": "blast"`, counts `tp` / `fn`, no `fp` |
+
+- **The blast radius includes the edit candidates.** A file to edit is inside the blast radius by
+  definition, and `blastRadiusFiles` lists it, but the page's Blast radius group shows only what
+  lies beyond the files to edit. So count the blast row over **both groups**; its `tp` is never
+  below the edit row's.
+- **Why recall only.** A blast radius is the code to review, kept wide on purpose. Scored on
+  precision it reads as a failure for doing its job (run 7: impact file precision 1 to 3%). Do
+  not count its false positives and do not record an `fp`: `run.json` rejects one on a blast
+  row, and the deck shows "not scored" in its precision cells.
+- **An impact output is always the pair**, one `edit` row and one `blast` row, with the same
+  migration verdict on both (the verdict is the output's, not a list's).
+- **A result with no Files to edit list** (METIS before #1036, where the page reads "directly
+  affected" and "probable call sites"): score **"directly affected" as the edit candidates**, and
+  "directly affected" plus "probable call sites" as the blast radius. That is the same split:
+  #1036's edit candidates are the `depth` 0 symbols, which is what "directly affected" listed.
+- **A result with one undivided list** (an export or a saved answer that does not say which
+  entries were direct): do not guess a split. Score it by the rule before #1073, both lists
+  together on precision and recall, as **one row with no `scope`**, and say so in the results.
+- **Runs 1 to 7** scored both lists together, so their impact rows have no `scope`. They stay as
+  they are: the deck labels such a row "both lists together (rule before #1073)". Never add a
+  `scope` to an old row: its `fp` was counted over both lists. Its **recall** is comparable with
+  a later run's blast-radius recall (the same lists, counted the same way); its **precision** is
+  comparable with neither new row. To compare precision with an old run, re-count that run's
+  saved impact output by the rule above and replace the row with the pair, saying in the
+  results that it was re-scored.
+
+A column listed under **Optional: settings
 persistence** or **Not proposed** (#791, #1051) is **not** a proposed column and not a
 migration: for #4478 the owner decision in #1068 accepts an optional, labelled settings column
 and rejects only a column among the proposed changes. A column listed under **Proposed, not
@@ -735,7 +762,8 @@ it as proposed, and record that it was unchecked.
   listed) from a planning miss (it is listed and the plan does not name it).
 - **Files.** `tp` = set files the output names; `fp` = files it names that are neither in the
   set nor neutral; `fn` = set files it does not name. **Precision** = `tp / (tp + fp)`;
-  **recall** = `tp / (tp + fn)`. A file named twice counts once.
+  **recall** = `tp / (tp + fn)`. A file named twice counts once. For an impact row, "the output"
+  is the list the row scores; `tp + fn` is the size of the set on every row.
 - **Functions**, the same way at symbol level. A slot with alternatives (#4478's storage method)
   is one set item.
 - **Excluded from both sides:** test files (`*_test.go`, anything under a `tests` directory) and
@@ -752,27 +780,54 @@ it as proposed, and record that it was unchecked.
   migration is correct only where the set has none.
 - **Must-surface**: still record the table's verdict alongside, for continuity with runs 3 to 6.
 
-**Worked example.** J2.1's impact for #4336 names, across "directly affected" and "probable call
-sites": `internal/storage/entry.go`, `internal/database/migrations.go`,
-`internal/fever/handler.go`, `internal/model/feed.go` and `internal/storage/entry_test.go`; the
-symbols `SetEntriesStatus` in `internal/storage/entry.go`, `internal/storage/entry.go:510`, the
-bare `SetEntriesStatusAndCountVisible`, `model.Feed` and `handleWriteItems`; and proposes
-`ALTER TABLE entries ADD COLUMN read_at timestamptz`.
+**Worked example.** J2.1's impact for #4336 shows:
 
-- Files: the test file is excluded and the Fever handler is neutral. `entry.go` and
-  `migrations.go` are `tp` (2), `model/feed.go` is `fp` (1), and `model/entry.go`,
-  `entry_query_builder.go` and `client/model.go` are `fn` (3). Precision 2/3 = 67%, recall
-  2/5 = 40%.
-- Functions: `SetEntriesStatus` (rule a), `:510`, inside `MarkAllAsRead` at 506 to 520 (rule b),
-  and `SetEntriesStatusAndCountVisible` (rule c) are `tp` (3); `handleWriteItems` is neutral;
-  `model.Feed` is `fp` (1); the other 8 set items are `fn`. Precision 3/4 = 75%, recall
-  3/11 = 27%.
-- Migration correct: yes. Must-surface: weak (it misses `MarkAllAsReadBeforeDate` and the
-  Google Reader handlers: two or more).
+- **Files to edit:** `internal/storage/entry.go` (with `SetEntriesStatus` and `MarkAllAsRead`),
+  `internal/database/migrations.go` (with `migrations`) and `internal/model/feed.go` (with
+  `model.Feed`).
+- **Blast radius** (opened): `SetEntriesStatusAndCountVisible`, also in
+  `internal/storage/entry.go`; `internal/storage/entry_query_builder.go` and
+  `internal/reader/handler/handler.go`, each with symbols the set does not name;
+  `internal/fever/handler.go` with `handleWriteItems`; and `internal/storage/entry_test.go`.
+- It proposes `ALTER TABLE entries ADD COLUMN read_at timestamptz`.
 
-Recorded in `run.json` as `{ "issue": 4336, "output": "j2-impact", "source": "curated",
-"files": { "tp": 2, "fp": 1, "fn": 3 }, "functions": { "tp": 3, "fp": 1, "fn": 8 },
-"migrationCorrect": true }`. The report deck computes the ratios from these counts.
+The test file is excluded and the Fever handler and `handleWriteItems` are neutral, on both rows.
+
+**Edit candidates** (the Files to edit group alone), on precision and recall:
+
+- Files: `entry.go` and `migrations.go` are `tp` (2), `model/feed.go` is `fp` (1), and
+  `model/entry.go`, `entry_query_builder.go` and `client/model.go` are `fn` (3). Precision
+  2/3 = 67%, recall 2/5 = 40%.
+- Functions: `SetEntriesStatus`, `MarkAllAsRead` and `migrations`, each given with its file
+  (rule a), are `tp` (3); `model.Feed` is `fp` (1); the other 8 set items are `fn`. Precision
+  3/4 = 75%, recall 3/11 = 27%.
+
+**Blast radius** (both groups together), on recall only:
+
+- Files: `entry.go`, `migrations.go` and `entry_query_builder.go` are `tp` (3); `model/entry.go`
+  and `client/model.go` are `fn` (2). Recall 3/5 = 60%. `model/feed.go` and
+  `reader/handler/handler.go` are in neither count: a blast radius has no `fp`.
+- Functions: the three above and `SetEntriesStatusAndCountVisible` are `tp` (4); the other 7
+  set items are `fn`. Recall 4/11 = 36%. The symbols listed under `entry_query_builder.go` and
+  `reader/handler/handler.go` are in neither count.
+
+Migration correct: yes, on both rows. Must-surface: weak (it misses `MarkAllAsReadBeforeDate` and
+the Google Reader handlers: two or more).
+
+Recorded in `run.json` as two rows:
+
+```json
+{ "issue": 4336, "output": "j2-impact", "scope": "edit", "source": "curated",
+  "files": { "tp": 2, "fp": 1, "fn": 3 }, "functions": { "tp": 3, "fp": 1, "fn": 8 },
+  "migrationCorrect": true },
+{ "issue": 4336, "output": "j2-impact", "scope": "blast", "source": "curated",
+  "files": { "tp": 3, "fn": 2 }, "functions": { "tp": 4, "fn": 7 },
+  "migrationCorrect": true }
+```
+
+The report deck computes the ratios from these counts. By the rule before #1073 the same output
+was one row with no `scope`, `"files": { "tp": 3, "fp": 2, "fn": 2 }`: the recall the blast row
+has (60%), and a precision (60%) that neither new row reports.
 
 ## Journeys (wave F)
 
@@ -940,7 +995,7 @@ skill, section 7), and the report deck shows it on a "Build proof" slide.
 - [ ] `speckit.specify` and `speckit.plan` report **grounded on K > 0 retrieved chunks**.
 - [ ] 8/8 BA questions answered. Pass bar: **at least 6 correct with valid citations**.
 - [ ] 6/6 developer requests (#4478, #4511, #4336, #4479, #4386, #4456) have an impact analysis, a plan, and a sandbox draft, with a per-request ledger delta. For #4478, METIS surfaces `MarkAllAsReadBeforeDate`.
-- [ ] Every developer-issue output (impact, chat, plan, J2.1, J2.4) has file and function precision and recall and a migration verdict against its reference change set, recorded in `run.json` `changePlanAccuracy`.
+- [ ] Every developer-issue output (impact, chat, plan, J2.1, J2.4) has file and function precision and recall and a migration verdict against its reference change set, recorded in `run.json` `changePlanAccuracy`. Each impact output (impact, J2.1) is two rows: its edit candidates on precision and recall, and its blast radius on recall only (#1073).
 - [ ] Journeys 1 and 2 each have a verdict on the three journey pass bars (completed in the UI, no data lost between steps, within budget), with the step where any of them broke.
 - [ ] Nothing was published, commented or reviewed on `miniflux/v2`; verify with `gh` and attach the output.
 - [ ] Per-phase token/cost table posted; total spend within the project budget.

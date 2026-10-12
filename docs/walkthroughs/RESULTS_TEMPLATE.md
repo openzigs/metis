@@ -114,6 +114,8 @@ Lineage edges (reads + writes): {{…}}.
 | Useful: pass / weak / fail / n/a | 5 / 4 / 9 / 2 | | |
 | BA questions answered correctly | 8/8 (after #783) | | |
 | Developer-issue impact | 0/3 (#791) | | |
+| Impact edit candidates: file precision / recall | – (runs 1 to 7 scored both lists together) | | |
+| Impact blast radius: file recall (recall only, #1073) | – | | |
 | Total tokens | ≈ 11.2M (10.81M + 0.39M) | | |
 | Total cost | ≈ $5.77 (557¢ + 19.7¢) | | |
 | Docs-gen share of spend | 80% (8.86M tok / 485¢) | | |

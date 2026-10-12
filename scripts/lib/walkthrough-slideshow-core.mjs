@@ -261,6 +261,17 @@ export const CHANGE_PLAN_OUTPUTS = /** @type {const} */ ([
   "j2-plan",
 ]);
 
+/** The outputs that are an impact analysis, and so the only rows that may carry a `scope`. */
+const IMPACT_OUTPUTS = /** @type {readonly string[]} */ (["impact", "j2-impact"]);
+
+/**
+ * Which of an impact result's two lists a row scores (#1073, TEST_PLAN.md "Scoring a change
+ * plan"): `edit`, the files to edit, on precision and recall; `blast`, the whole blast radius
+ * (the files to edit included), on recall only. An impact row with no `scope` was scored by the
+ * rule before #1073, both lists together on precision and recall, and stays readable as that.
+ */
+export const CHANGE_PLAN_SCOPES = /** @type {const} */ (["edit", "blast"]);
+
 /** Where a reference change set comes from: a merged PR, unmerged candidate PRs, or curated. */
 export const CHANGE_SET_SOURCES = /** @type {const} */ (["upstream", "candidate", "curated"]);
 
@@ -334,12 +345,22 @@ export const LEDGER_SOURCE = "token_usages";
  */
 
 /**
+ * The counts of a row scored on recall only (#1073): no `fp`, so no precision can be read off it.
+ *
+ * @typedef {object} RecallCounts
+ * @property {number} tp named and in the change set
+ * @property {number} fn in the change set and not named
+ */
+
+/**
  * @typedef {object} ChangePlanScore
  * @property {number} issue the sample project's issue number, e.g. 4478
  * @property {(typeof CHANGE_PLAN_OUTPUTS)[number]} output
  * @property {(typeof CHANGE_SET_SOURCES)[number]} source
- * @property {MatchCounts} files
- * @property {MatchCounts} functions
+ * @property {(typeof CHANGE_PLAN_SCOPES)[number] | undefined} [scope] impact rows only (#1073);
+ *   absent on a chat or plan row, and on an impact row scored by the rule before #1073
+ * @property {MatchCounts | RecallCounts} files `RecallCounts` when `scope` is `blast`
+ * @property {MatchCounts | RecallCounts} functions `RecallCounts` when `scope` is `blast`
  * @property {boolean} migrationCorrect
  */
 
@@ -429,7 +450,15 @@ function checkTotal(obj, at, times, extra, errors) {
   }
 }
 
-const SCORE_FIELDS = ["issue", "output", "source", "files", "functions", "migrationCorrect"];
+const SCORE_FIELDS = [
+  "issue",
+  "output",
+  "scope",
+  "source",
+  "files",
+  "functions",
+  "migrationCorrect",
+];
 
 /**
  * Check `run.json`'s `changePlanAccuracy` rows (#1042); push errors naming the row and field.
@@ -437,12 +466,25 @@ const SCORE_FIELDS = ["issue", "output", "source", "files", "functions", "migrat
  * its change set (`tp + fn`, for files and for functions): the set is the same whichever output
  * is scored, so a disagreement means a row was counted against the wrong set.
  *
+ * Since #1073 an impact output is scored as two rows, `scope` `edit` and `scope` `blast`. A
+ * `blast` row is recall only, so it carries no `fp`. One issue and output has either the pair
+ * or a single row with no `scope` (the rule before #1073), never a mix: a reader could not tell
+ * which rule the unscoped row followed. Within a pair the blast radius contains the files to
+ * edit, so its `tp` cannot be lower, and the migration verdict belongs to the output, not a list.
+ *
  * @param {unknown[]} rows
  * @param {string[]} errors
  */
 function checkChangePlanAccuracy(rows, errors) {
   /** @type {Set<string>} */
   const seen = new Set();
+  /**
+   * Rows per issue and output, keyed by scope ("" for none), for the pair checks.
+   * @type {Map<string, Map<string, { at: string, files: number | null, functions: number | null, migrationCorrect: unknown }>>}
+   */
+  const perOutput = new Map();
+  /** @type {Set<string>} */
+  const badScope = new Set();
   /** @type {Map<number, { source: unknown, files: number | null, functions: number | null }>} */
   const perIssue = new Map();
   rows.forEach((row, i) => {
@@ -463,19 +505,47 @@ function checkChangePlanAccuracy(rows, errors) {
     if (!CHANGE_SET_SOURCES.includes(/** @type {any} */ (row.source))) {
       errors.push(`${at}: "source" must be one of ${CHANGE_SET_SOURCES.join(", ")}`);
     }
+    const scoped = row.scope !== undefined;
+    let scopeOk = !scoped || CHANGE_PLAN_SCOPES.includes(/** @type {any} */ (row.scope));
+    if (!scopeOk) {
+      errors.push(`${at}: "scope" must be one of ${CHANGE_PLAN_SCOPES.join(", ")}`);
+    } else if (scoped && outputOk && !IMPACT_OUTPUTS.includes(/** @type {string} */ (row.output))) {
+      errors.push(
+        `${at}: "scope" applies only to ${IMPACT_OUTPUTS.join(" and ")} rows, not ${row.output}`,
+      );
+      scopeOk = false;
+    }
+    const recallOnly = row.scope === "blast";
     const sizes = {
-      files: checkMatchCounts(row.files, at, "files", errors),
-      functions: checkMatchCounts(row.functions, at, "functions", errors),
+      files: checkMatchCounts(row.files, at, "files", errors, recallOnly),
+      functions: checkMatchCounts(row.functions, at, "functions", errors, recallOnly),
     };
     if (typeof row.migrationCorrect !== "boolean") {
       errors.push(`${at}: "migrationCorrect" must be true or false`);
     }
     if (!issueOk) return;
     const issue = Number(row.issue);
-    if (outputOk) {
-      const key = `${issue} ${row.output}`;
-      if (seen.has(key)) errors.push(`${at}: duplicate row for #${issue} ${row.output}`);
+    // A row whose scope was rejected is left out of the pair checks, and so is its output:
+    // "no edit row" about a row that has a misspelt scope would be a second error for one fault.
+    if (outputOk && !scopeOk) badScope.add(`#${issue} ${row.output}`);
+    if (outputOk && scopeOk) {
+      const scope = scoped ? String(row.scope) : "";
+      const output = `#${issue} ${row.output}`;
+      const key = scope ? `${output} ${scope}` : output;
+      if (seen.has(key)) errors.push(`${at}: duplicate row for ${key}`);
       seen.add(key);
+      const group = perOutput.get(output) ?? new Map();
+      perOutput.set(output, group);
+      if (!group.has(scope)) {
+        /** @param {unknown} c */
+        const tp = (c) => (isPlainObject(c) && isCount(c.tp) ? Number(c.tp) : null);
+        group.set(scope, {
+          at,
+          files: tp(row.files),
+          functions: tp(row.functions),
+          migrationCorrect: row.migrationCorrect,
+        });
+      }
     }
     const first = perIssue.get(issue);
     if (!first) {
@@ -497,6 +567,42 @@ function checkChangePlanAccuracy(rows, errors) {
       }
     }
   });
+  for (const [output, group] of perOutput) {
+    const edit = group.get("edit");
+    const blast = group.get("blast");
+    const scopedRow = edit ?? blast;
+    if (!scopedRow || badScope.has(output)) continue;
+    if (group.has("")) {
+      errors.push(
+        `${scopedRow.at}: ${output} has a row with a "scope" and a row without one; score it by one rule, the edit and blast pair or a single unscoped row`,
+      );
+      continue;
+    }
+    if (!edit || !blast) {
+      errors.push(
+        `${scopedRow.at}: ${output} has a "${edit ? "edit" : "blast"}" row but no "${edit ? "blast" : "edit"}" row; an impact output scored by list needs both`,
+      );
+      continue;
+    }
+    for (const kind of /** @type {const} */ (["files", "functions"])) {
+      const e = edit[kind];
+      const b = blast[kind];
+      if (e !== null && b !== null && b < e) {
+        errors.push(
+          `${blast.at}: ${output} blast ${kind} tp is ${b}, below the edit row's ${e}; the blast radius includes the files to edit`,
+        );
+      }
+    }
+    if (
+      typeof edit.migrationCorrect === "boolean" &&
+      typeof blast.migrationCorrect === "boolean" &&
+      edit.migrationCorrect !== blast.migrationCorrect
+    ) {
+      errors.push(
+        `${blast.at}: ${output} "migrationCorrect" differs between its edit and blast rows; the verdict is the output's, not a list's`,
+      );
+    }
+  }
 }
 
 const BUILD_PROOF_FIELDS = [
@@ -593,26 +699,35 @@ function checkBuildProof(proof, accuracy, errors) {
 
 /**
  * Check one `{ tp, fp, fn }` object; return the change-set size `tp + fn`, or null if invalid.
+ * A recall-only object (a blast-radius row, #1073) is `{ tp, fn }`: an `fp` there is an error,
+ * because a count nobody may turn into a precision should not be on the row.
  *
  * @param {unknown} counts
  * @param {string} at
  * @param {string} name
  * @param {string[]} errors
+ * @param {boolean} [recallOnly]
  * @returns {number | null}
  */
-function checkMatchCounts(counts, at, name, errors) {
+function checkMatchCounts(counts, at, name, errors, recallOnly = false) {
+  const keys = recallOnly ? ["tp", "fn"] : ["tp", "fp", "fn"];
   if (!isPlainObject(counts)) {
-    errors.push(`${at}: "${name}" must be an object { tp, fp, fn }`);
+    errors.push(`${at}: "${name}" must be an object { ${keys.join(", ")} }`);
     return null;
   }
   let ok = true;
   for (const key of Object.keys(counts)) {
-    if (!["tp", "fp", "fn"].includes(key)) {
+    if (recallOnly && key === "fp") {
+      errors.push(
+        `${at} ${name}: "fp" is not recorded on a blast row, which is scored on recall only`,
+      );
+      ok = false;
+    } else if (!keys.includes(key)) {
       errors.push(`${at} ${name}: unknown field "${key}"`);
       ok = false;
     }
   }
-  for (const key of ["tp", "fp", "fn"]) {
+  for (const key of keys) {
     if (!(Number.isSafeInteger(counts[key]) && Number(counts[key]) >= 0)) {
       errors.push(`${at} ${name}: "${key}" must be a non-negative integer`);
       ok = false;
@@ -1188,31 +1303,50 @@ function ratio(num, den) {
 }
 
 /**
- * The report's change-plan accuracy slide (#1042): one row per issue and output, with file and
- * function precision (`tp / (tp + fp)`) and recall (`tp / (tp + fn)`), computed here from the
- * counts `run.json` stores.
+ * What a change-plan row scored, for the deck's "Scored list" column (#1073). An impact row with
+ * no `scope` is labelled as the old combined scoring, never as either list: its precision is
+ * over both lists together and is not comparable with a files-to-edit precision.
+ *
+ * @param {Pick<ChangePlanScore, "output" | "scope">} row
+ * @returns {string}
+ */
+export function changePlanScopeLabel(row) {
+  if (row.scope === "edit") return "files to edit";
+  if (row.scope === "blast") return "blast radius";
+  return IMPACT_OUTPUTS.includes(row.output) ? "both lists together (rule before #1073)" : "–";
+}
+
+/**
+ * The report's change-plan accuracy slide (#1042): one row per issue, output and scope, with
+ * file and function precision (`tp / (tp + fp)`) and recall (`tp / (tp + fn)`), computed here
+ * from the counts `run.json` stores. A blast-radius row (#1073) has recall only; its precision
+ * cells read "not scored", so nobody reads a wide list's precision as a defect.
  *
  * @param {ChangePlanScore[]} rows
  * @returns {string}
  */
 function accuracySlide(rows) {
+  /** @param {ChangePlanScore} r */
+  const scopeRank = (r) => (r.scope ? CHANGE_PLAN_SCOPES.indexOf(r.scope) + 1 : 0);
   const sorted = [...rows].sort(
     (a, b) =>
       a.issue - b.issue ||
-      CHANGE_PLAN_OUTPUTS.indexOf(a.output) - CHANGE_PLAN_OUTPUTS.indexOf(b.output),
+      CHANGE_PLAN_OUTPUTS.indexOf(a.output) - CHANGE_PLAN_OUTPUTS.indexOf(b.output) ||
+      scopeRank(a) - scopeRank(b),
   );
-  /** @param {MatchCounts} c */
-  const pr = (c) => `<td>${ratio(c.tp, c.tp + c.fp)}</td><td>${ratio(c.tp, c.tp + c.fn)}</td>`;
+  /** @param {MatchCounts | RecallCounts} c */
+  const pr = (c) =>
+    `<td>${"fp" in c ? ratio(c.tp, c.tp + c.fp) : "not scored"}</td><td>${ratio(c.tp, c.tp + c.fn)}</td>`;
   return `<section class="slide slide--accuracy" aria-label="Change-plan accuracy">
   <h2>Change-plan accuracy</h2>
   <table class="waves">
-    <caption>Precision and recall against each issue's reference change set (TEST_PLAN.md, developer issues)</caption>
-    <thead><tr><th scope="col">Issue</th><th scope="col">Output</th><th scope="col">Source</th><th scope="col">File precision</th><th scope="col">File recall</th><th scope="col">Function precision</th><th scope="col">Function recall</th><th scope="col">Migration correct</th></tr></thead>
+    <caption>Precision and recall against each issue's reference change set (TEST_PLAN.md, developer issues). Impact: files to edit on precision and recall, blast radius on recall only (#1073)</caption>
+    <thead><tr><th scope="col">Issue</th><th scope="col">Output</th><th scope="col">Scored list</th><th scope="col">Source</th><th scope="col">File precision</th><th scope="col">File recall</th><th scope="col">Function precision</th><th scope="col">Function recall</th><th scope="col">Migration correct</th></tr></thead>
     <tbody>
 ${sorted
   .map(
     (r) =>
-      `      <tr><th scope="row"><a href="${SAMPLE_ISSUE_URL_BASE}${r.issue}" rel="noopener noreferrer" target="_blank">#${r.issue}</a></th><td>${escapeHtml(r.output)}</td><td>${escapeHtml(r.source)}</td>${pr(r.files)}${pr(r.functions)}<td>${r.migrationCorrect ? "yes" : "no"}</td></tr>`,
+      `      <tr><th scope="row"><a href="${SAMPLE_ISSUE_URL_BASE}${r.issue}" rel="noopener noreferrer" target="_blank">#${r.issue}</a></th><td>${escapeHtml(r.output)}</td><td>${escapeHtml(changePlanScopeLabel(r))}</td><td>${escapeHtml(r.source)}</td>${pr(r.files)}${pr(r.functions)}<td>${r.migrationCorrect ? "yes" : "no"}</td></tr>`,
   )
   .join("\n")}
     </tbody>

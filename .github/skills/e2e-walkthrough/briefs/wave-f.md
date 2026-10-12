@@ -38,7 +38,10 @@ No project, run or requirement IDs are given on purpose. Find everything through
 5. **Score J2.1 (impact) and J2.4 (Spec Kit plan)** against #4336's reference change set in
    the plan ("Reference change sets"), by its "Scoring a change plan" rules, exactly as wave E
    scores its outputs: file and function `tp` / `fp` / `fn`, migration correct, false
-   positives by name, and the step's "must hold" verdict beside them. Scoring reads the
+   positives by name, and the step's "must hold" verdict beside them. **J2.1 is two rows**
+   (#1073): its edit candidates (the **Files to edit** group) on precision and recall, and its
+   blast radius (Files to edit and the opened **Blast radius** group together) on **recall
+   only**, with `tp` and `fn` and no `fp`. J2.4's plan is one row, as before. Scoring reads the
    persona's own screen; it is not a non-UI action.
 
    **Swapping J2's request.** J2 stays on #4336 by default, so runs compare like for like. A
@@ -93,10 +96,12 @@ happened. A blocked step still gets a line and a screenshot of where the persona
 1. **Per journey**: completed in the UI (yes / no, and the step where it broke), data lost
    between steps (which handoff, what was lost), wall time and ledger cost against the budget.
 2. **Per step**: step | Works | Useful | handoff held? | evidence path.
-   Journey 2 adds its change-plan rows, one each for `j2-impact` (J2.1) and `j2-plan` (J2.4):
+   Journey 2 adds its change-plan rows: two for `j2-impact` (J2.1), scope `edit` and scope
+   `blast`, and one for `j2-plan` (J2.4), whose scope cell is `–`. A `blast` row gives recall
+   only: `tp` and `fn`, with `–` for `fp` and for the false positives.
 
-   | Issue | Output | File P/R (tp/fp/fn) | Function P/R (tp/fp/fn) | Migration correct | Must hold | False positives |
-   |---|---|---|---|---|---|---|
+   | Issue | Output | Scope | File P/R (tp/fp/fn) | Function P/R (tp/fp/fn) | Migration correct | Must hold | False positives |
+   |---|---|---|---|---|---|---|---|
 
    These go into `run.json` `changePlanAccuracy` (the skill, section 7).
 3. **Fix verification** — for each fix listed above: fix | PR | confirmed / partial / regressed /
