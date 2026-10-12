@@ -579,17 +579,32 @@ describe("seedQueries — the request is cut BEFORE it is cleaned, and the query
     expect(overCap).toBeGreaterThan(500);
   });
 
-  it("reads no more of a section than the pre-clean limit: the rest of 500,000 characters changes nothing", () => {
+  it("only the fence pass sees a whole 500,000-character section: every later replace gets the head", () => {
+    // Measured on what each `replace` is CALLED ON, not on the output: the
+    // output is the same whether or not the tail is read (the head alone fills
+    // the query), which is why an output-only version of this test passed with
+    // the cut removed (the adversarial panel on this change).
     const head = "alpha beta ".repeat(PART_LIMIT).slice(0, PART_LIMIT);
-    const short = request(head);
-    for (const tail of [
-      "x".repeat(484_000),
-      "[a](http://x".repeat(40_000),
-      "```".repeat(160_000),
-    ]) {
-      expect(now(request(head + tail))).toBe(now(short));
+    for (const tail of ["x".repeat(484_000), "[a](http://x".repeat(40_000)]) {
+      const original = String.prototype.replace;
+      const lengths: number[] = [];
+      const replace = vi.spyOn(String.prototype, "replace").mockImplementation(function (
+        this: string,
+        ...args: unknown[]
+      ) {
+        lengths.push(this.length);
+        return (original as (...a: unknown[]) => string).apply(this, args);
+      } as never);
+      let query: string;
+      try {
+        query = now(request(head + tail));
+      } finally {
+        replace.mockRestore();
+      }
+      expect(lengths.filter((n) => n > PART_LIMIT)).toHaveLength(1);
+      expect(lengths.length).toBeGreaterThan(1);
+      expect(query).toBe(now(request(head)));
     }
-    expect(now(short).length).toBeLessThanOrEqual(MAX_SEED_QUERY_CHARS);
   });
 
   it("stops cleaning sections once the query is full: 100,000 later sections cost nothing", () => {
@@ -613,11 +628,25 @@ describe("seedQueries — the request is cut BEFORE it is cleaned, and the query
     expect(query).toBe(before(many));
   });
 
-  it("a section longer than the limit is cleaned from its head alone (the documented difference)", () => {
-    // A fence that closes past the cut is read as unclosed: the text after it is
-    // lost to this query, where cleaning the whole section would have kept it.
-    const long = `intro\n\`\`\`\n${"x".repeat(PART_LIMIT)}\n\`\`\`\nafter the fence`;
-    expect(before(request(long))).toBe("intro\n \nafter the fence");
-    expect(now(request(long))).toBe("intro");
+  it("removes fences BEFORE the cut: prose after a fence longer than the limit still seeds (the panel's repro)", () => {
+    const fence = (mark: string) =>
+      `intro\n${mark}\n${"x".repeat(PART_LIMIT + 3000)}\n${mark}\nAdd a retry to FeedFetcher refreshFeed.`;
+    for (const mark of ["```", "~~~"]) {
+      const r = request(fence(mark));
+      expect(now(r)).toBe(before(r));
+      expect(now(r)).toContain("FeedFetcher refreshFeed");
+    }
+  });
+
+  it("a fence-free section longer than the limit is cleaned from its head alone (the documented difference)", () => {
+    // Only when the head cleans down to less than the cap: here it is all
+    // whitespace, so the words after it are lost to this query, where cleaning
+    // the whole section would have kept them.
+    const long = `${" ".repeat(PART_LIMIT)}after the padding`;
+    expect(before(request(long))).toBe("after the padding");
+    expect(now(request(long))).toBe("");
+    // With real text in the head, the first MAX_SEED_QUERY_CHARS are the same.
+    const wordy = `${"alpha beta ".repeat(PART_LIMIT)}after`;
+    expect(now(request(wordy))).toBe(before(request(wordy)));
   });
 });

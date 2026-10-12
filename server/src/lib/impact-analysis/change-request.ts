@@ -250,10 +250,11 @@ function classifyHeading(heading: string): SectionClass {
  * document marked up in bold (`**Background**`, `**Context**`, `**REQ-1 Export**`,
  * …) is not read as one issue (PR #1090 review 2).
  *
- * `boldSections` counts the sections a bold line OPENED. It says whether bold is
- * this document's section markup at all: in an issue form whose sections are
- * `###` headings, `**Note**` and `**Edit**` are emphasis, and three of them must
- * not outvote three template headings (PR #1090 review 3).
+ * `boldSections` counts the sections a bold line OPENED. It is one of the two
+ * signs that bold is this document's section markup (see `parseChangeRequest`):
+ * in an issue form whose sections are `###` headings, `**Note**` and `**Edit**`
+ * are emphasis, and three of them must not outvote three template headings
+ * (PR #1090 review 3).
  */
 function splitSections(text: string): {
   preamble: string[];
@@ -367,10 +368,14 @@ export function parseChangeRequest(text: string | null | undefined): ChangeReque
   // A document with a "Background" and a "Problem" section and then one section
   // per requirement is still a requirements document: template headings have to
   // outnumber the ones this parser does not know — `#` headings, and whole-line
-  // bold labels where bold is how this document marks a section (it opened at
-  // least one template section). Where every section is a `#` heading, a bold
-  // line is a remark in its section and is not counted.
-  const unknownBold = boldSections > 0 ? unknownBoldLabels : 0;
+  // bold labels where bold is how this document marks a section: it opened at
+  // least one template section, or there are MORE unknown bold labels than
+  // template headings (`### Background`, `### Context`, then `**REQ-1**`,
+  // `**REQ-2**`, `**REQ-3**` is a requirements document — the adversarial panel
+  // on this change). Otherwise every section is a `#` heading and a bold line
+  // is a remark in its section: as many remarks as headings do not outvote them.
+  const boldIsMarkup = boldSections > 0 || unknownBoldLabels > recognised;
+  const unknownBold = boldIsMarkup ? unknownBoldLabels : 0;
   if (classes.length - recognised + unknownBold >= recognised) return null;
 
   const ignored: IgnoredFragment[] = [];
@@ -450,14 +455,15 @@ export function renderRequestBody(request: ChangeRequest): string {
   ].join("\n\n");
 }
 
-/**
- * One section as search text: no code fences (JSON keys and SQL, not names of
- * code to find), no inline links, whitespace collapsed.
- */
+/** A section without its code fences (JSON keys and SQL, not names of code to find). */
+function stripFences(part: string): string {
+  return part.replace(/(```|~~~)[\s\S]*?(\1|$)/g, " ");
+}
+
+/** A fence-free section as search text: no inline links, whitespace collapsed. */
 function retrievalPart(part: string): string {
   return (
     part
-      .replace(/(```|~~~)[\s\S]*?(\1|$)/g, " ")
       // Bounded on both sides, and a label holds no `[`: unbounded, `[^\]]+` and
       // `[^)]*` are quadratic on a long run of `[` or of unclosed `[a](http://…`
       // (text is accepted up to 500,000 characters). A link longer than the
@@ -482,20 +488,25 @@ export const RETRIEVAL_PART_HEADROOM = 4;
  * without the alternatives the reporter rejected, code fences or inline links.
  *
  * `maxChars` is for a caller that will keep only the first `maxChars` characters
- * of the result (`seedQueries`, which caps its query). With it the work is
- * bounded by that limit, not by the request: each section is cut to
- * `maxChars × RETRIEVAL_PART_HEADROOM` before the replace chain, and sections
- * stop being read once the text is already longer than `maxChars`. Without it
- * the whole request went through the chain — up to 500,000 characters, twice
- * over for the worst input — to produce a query that was then cut to 4,000
- * (PR #1090 review 3).
+ * of the result (`seedQueries`, which caps its query). With it, each section
+ * has its fences removed (one linear pass), is cut to
+ * `maxChars × RETRIEVAL_PART_HEADROOM`, and only then goes through the link,
+ * URL and whitespace replaces; and sections stop being cleaned once the text is
+ * already longer than `maxChars`. Without it the whole request went through the
+ * chain — up to 500,000 characters, twice over for the worst input — to produce
+ * a query that was then cut to 4,000 (PR #1090 review 3).
  *
- * The result is IDENTICAL to the uncapped one whenever no section is longer
- * than `maxChars × RETRIEVAL_PART_HEADROOM` and the uncapped text is no longer
- * than `maxChars`; and when no section is over that length, its first
+ * Fences go BEFORE the cut on purpose: cut first, a fence that opens in the
+ * head and closes past it reads as unclosed and takes the prose after it out of
+ * the query (the adversarial panel on this change reproduced that).
+ *
+ * The result is IDENTICAL to the uncapped one whenever no fence-free section is
+ * longer than `maxChars × RETRIEVAL_PART_HEADROOM` and the uncapped text is no
+ * longer than `maxChars`; and when no section is over that length, its first
  * `maxChars` characters are identical whatever the total (stopping early drops
- * only text past the limit). A longer section is cleaned from its head alone,
- * so a fence or link that spans the cut is treated as unclosed.
+ * only text past the limit). A longer section is cleaned from its head alone:
+ * what is lost is text that only reaches the first `maxChars` because more than
+ * three quarters of that head is links, URLs or whitespace.
  */
 export function requestRetrievalText(
   request: ChangeRequest,
@@ -511,7 +522,7 @@ export function requestRetrievalText(
   ];
   if (maxChars === undefined) {
     return parts
-      .map(retrievalPart)
+      .map((p) => retrievalPart(stripFences(p)))
       .filter((p) => p.length > 0)
       .join("\n\n");
   }
@@ -519,7 +530,8 @@ export function requestRetrievalText(
   const cleaned: string[] = [];
   let length = 0;
   for (const part of parts) {
-    const text = retrievalPart(part.length > partLimit ? part.slice(0, partLimit) : part);
+    const bare = stripFences(part);
+    const text = retrievalPart(bare.length > partLimit ? bare.slice(0, partLimit) : bare);
     if (text.length === 0) continue;
     length += text.length + (cleaned.length > 0 ? 2 : 0);
     cleaned.push(text);

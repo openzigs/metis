@@ -165,9 +165,10 @@ function capQuery(text: string): string {
  * The queries a change is searched with: its title (short and specific), and the
  * whole request. For an issue the second is {@link requestRetrievalText}, which
  * leaves out rejected alternatives, code fences and links. Each is capped at
- * {@link MAX_SEED_QUERY_CHARS} — and the request is cut down BEFORE it is
- * cleaned, not after: `requestRetrievalText` is told the cap, so a 500,000
- * character request costs what a 16,000 character one does (PR #1090 review 3).
+ * {@link MAX_SEED_QUERY_CHARS} — and the request is cut down BEFORE the link,
+ * URL and whitespace replaces, not after: `requestRetrievalText` is told the
+ * cap, so of a 500,000 character request only one linear fence pass reads more
+ * than 16,000 characters of a section (PR #1090 review 3).
  */
 export function seedQueries(
   change: Pick<ChangedRequirement, "title" | "body" | "request">,

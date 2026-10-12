@@ -491,8 +491,9 @@ describe("a requirements document marked up in bold is not one issue (#1036, PR 
         .join("\n\n");
 
     it.each([
+      [2, ["**Note**", "**Important**"]],
       [3, ["**Note**", "**Important**", "**Edit**"]],
-      [5, ["**Note**", "**Important**", "**Edit**", "__Update__", "**Edit 2**:"]],
+      [3, ["**Note**", "__Update__", "**Edit**:"]],
     ])("%i remarks: still ONE change, each remark prose in its section", (_count, remarks) => {
       const text = withRemarks(remarks);
       const request = parseChangeRequest(text);
@@ -501,7 +502,36 @@ describe("a requirements document marked up in bold is not one issue (#1036, PR 
       expect(changes).toHaveLength(1);
       expect(request!.subAspects.map((s) => s.heading)).toEqual(["Proposed Solution"]);
       expect(request!.primaryRequest).toContain("**Note**");
-      expect(changes[0]!.body).toContain("**Edit**");
+      expect(changes[0]!.body).toContain(remarks.at(-1)!.replace(/:$/, ""));
+    });
+
+    it("MORE bold labels than template headings is bold used as markup: `###` context sections, then bold requirements, go to the splitter (the panel's repro)", () => {
+      // What cycle 2's N6 fixed for the all-bold form must hold for this one too.
+      const text = [
+        "# Release 4 requirements",
+        "### Background",
+        "The export is manual today.",
+        "### Context",
+        "Three teams depend on it.",
+        "**REQ-1 Export**",
+        "The system shall export invoices as CSV.",
+        "**REQ-2 Import**",
+        "The system shall import invoices from CSV.",
+        "**REQ-3 Audit**",
+        "The system shall record who ran each export.",
+      ].join("\n\n");
+      expect(parseChangeRequest(text)).toBeNull();
+      const changes = extractChangesByShape(text);
+      expect(changes.length).toBeGreaterThan(1);
+      const all = changes.map((c) => `${c.title}\n${c.body}`).join("\n");
+      for (const shall of ["export invoices as CSV", "import invoices from CSV", "who ran each"]) {
+        expect(all).toContain(shall);
+      }
+    });
+
+    it("…so the trade-off that remains is stated: FOUR remarks in a three-heading issue go to the splitter", () => {
+      const text = withRemarks(["**Note**", "**Important**", "**Edit**", "**Edit 2**"]);
+      expect(parseChangeRequest(text)).toBeNull();
     });
 
     it("the count still applies where bold IS the section markup: a bold-template report with as many unknown bold labels as known ones goes to the splitter", () => {

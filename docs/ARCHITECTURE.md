@@ -2876,8 +2876,9 @@ flowchart LR
   inputs up to 200 KB under 250 ms. A `new RegExp` whose source cannot be evaluated
   statically fails the test unless it is listed with what it is built from. The corpus
   is fixed, so a green run means "linear on these shapes", not "linear". The search query
-  built from a request is capped at 4,000 characters (`MAX_SEED_QUERY_CHARS`), and the
-  request is cut down before it is cleaned, not after. Timing tests assert the shape
+  built from a request is capped at 4,000 characters (`MAX_SEED_QUERY_CHARS`), and each
+  section is cut down (after one linear pass that removes code fences) before the link,
+  URL and whitespace replaces, not after. Timing tests assert the shape
   (`tests/helpers/linear-time.ts`: fast at full size, or a linear ratio against a quarter
   of it), never a wall-clock bound near the idle figure.
 - `optional` and `rejected` proposals never enter `affectedTables`, so neither is part of
