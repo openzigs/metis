@@ -912,6 +912,24 @@ Fitting happens before footnotes are numbered, so `[^src-N]` (#737)
 refer only to kept text. The #778 condensed digests are an input-side budget and are
 unchanged. Both caps are part of a section's reuse hash.
 
+**Planned before it is written (#1070, business requirements only).** Run 7's BRD still
+lost 87 topics: 53 to the section cap, because the four catalogue sections each overran
+60k, and 34 more to the document cap. Every one was at a section's tail, which is where
+the parts written from the lowest-ranked modules land. The topic plan
+(`document-plan.ts`) settles the length first, from the Phase-1 facts and with no model
+call: the document budget is shared among the sections, a catalogue section's share among
+its topics (one per module, owned by that section), and a topic that cannot have even 150
+characters is left out by priority and listed as `<module> (not planned)`. Each batch is
+told its modules' shares, and after generation each batch reply is held to its own budget
+(`fitPartsToBudgets`), so an overrun costs the tail of the part that overran, not the
+topics of the modules ranked last; what is cut is not fact-checked. The same step builds
+the canonical facts sheet (`canonical-facts.ts`: named constants and formulas read from
+the source, given to the sections that mention them, cited as `[facts:canon:<id>]`) and,
+at assembly, the consistency check (`fact-consistency.ts`) notes a value stated
+differently in two places. It adds no model call: on the run-7 inputs the plan took 0.1 s
+and the prompts grew by about 19k input tokens over 23 calls (1.4%). `DOCS_GEN_TOPIC_PLAN=off`
+turns it off.
+
 **Publication and scope limits.** A committed version queues the separate shared
 publication lifecycle described above. Generation `ready`/`degraded`/`failed`
 is distinct from publication/indexing state; revision fences and deletion cleanup

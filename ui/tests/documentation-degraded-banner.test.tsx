@@ -14,6 +14,8 @@ import { render, screen } from "@testing-library/react";
 import {
   classifyWarningSeverity,
   DegradedWarningsBanner,
+  FactConsistencyNote,
+  factConsistencyNotes,
   SchemaNamesNote,
   schemaNamesNotes,
 } from "@/app/(authed)/projects/[id]/documentation/page";
@@ -324,6 +326,59 @@ describe("names not matched to the database schema (#1061)", () => {
 
   it("is not classified as concerning", () => {
     expect(classifyWarningSeverity([schemaNames()])).toEqual({
+      reviewRecommended: false,
+      concerningSections: [],
+    });
+  });
+});
+
+// #1070 — what the cross-section consistency check found is information too:
+// it compares how values are written and changes nothing.
+describe("values stated differently in two places (#1070)", () => {
+  const MESSAGE =
+    "Consistency check: 1 value stated differently. `POLLING_FREQUENCY` is given 2 different " +
+    "values (`60 min` in Overview & Domain; `30 min` in Integrations & Glossary). Nothing was " +
+    "removed or changed: the check compares how values are written, so two spellings of one " +
+    "value can be reported. Compare the statements with the source.";
+  const inconsistent = (message = MESSAGE) => ({
+    kind: "fact-inconsistent" as const,
+    section: "Document",
+    message,
+    severity: "info" as const,
+  });
+
+  it("shows the server's sentence as a status note, not an alert", () => {
+    render(<FactConsistencyNote warnings={[inconsistent()]} />);
+    const note = screen.getByRole("status");
+    expect(note).toHaveTextContent("`POLLING_FREQUENCY` is given 2 different values");
+    expect(note).toHaveTextContent("Nothing was removed or changed");
+    expect(screen.queryByRole("alert")).toBeNull();
+    for (const alarm of [/code-fidelity bar/, /worth verifying/, /Degraded/i, /Needs review/i]) {
+      expect(note).not.toHaveTextContent(alarm);
+    }
+  });
+
+  it("renders nothing without one, and is not the schema note", () => {
+    for (const warnings of [undefined, null, [], [tierWarning("Business Rules", "literal")]]) {
+      const { container, unmount } = render(<FactConsistencyNote warnings={warnings} />);
+      expect(container).toBeEmptyDOMElement();
+      unmount();
+    }
+    expect(factConsistencyNotes([inconsistent("a"), inconsistent("b")])).toEqual(["a", "b"]);
+    expect(schemaNamesNotes([inconsistent()])).toEqual([]);
+  });
+
+  it("is kept out of the degraded-output banner and is not concerning", () => {
+    render(
+      <DegradedWarningsBanner
+        warnings={[inconsistent(), tierWarning("Business Rules", "literal")]}
+        errorMessage={null}
+      />,
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert).not.toHaveTextContent(/POLLING_FREQUENCY/);
+    expect(alert.querySelectorAll("li")).toHaveLength(1);
+    expect(classifyWarningSeverity([inconsistent()])).toEqual({
       reviewRecommended: false,
       concerningSections: [],
     });

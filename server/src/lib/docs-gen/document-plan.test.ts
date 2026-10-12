@@ -470,9 +470,7 @@ describe("fitPartsToBudgets", () => {
       const budgets = parts.map(() => 200 + Math.floor(next() * 3_000));
       const total = 300 + Math.floor(next() * sum(parts.map((p) => p.length)));
       const fit = fitPartsToBudgets(parts, budgets, total);
-      expect(sum(fit.parts.map((p) => p.length))).toBeLessThanOrEqual(
-        Math.max(total, sum(parts.map((p) => p.length)) <= total ? total : 0),
-      );
+      expect(sum(fit.parts.map((p) => p.length))).toBeLessThanOrEqual(total);
       fit.parts.forEach((kept, i) => {
         expect(parts[i].startsWith(kept)).toBe(true);
         if (kept !== parts[i]) expect(fit.omittedTopics[i].length + kept.length).toBeGreaterThan(0);

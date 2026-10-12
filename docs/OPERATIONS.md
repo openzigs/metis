@@ -427,6 +427,29 @@ when it adds up to its row's token columns; otherwise the row is priced as one c
 
 ---
 
+### 6.5 `DOCS_GEN_TOPIC_PLAN` (#1070): no upgrade step, one rewrite per document
+
+`DOCS_GEN_TOPIC_PLAN` (default `on`, registry tunable) plans a business-requirements
+document before it is written: budgets per section and per topic, the canonical facts
+sheet, and the consistency note. See the docs-gen section of `docs/ARCHITECTURE.md`.
+
+- **No migration and no backfill.** Nothing is stored in a new column or table. The note is
+  a warning of severity `info` in the existing `generated_documents.warnings` JSON, and
+  planned-out topics use the existing `omittedTopics` of the version manifest.
+- **The upgrade spends nothing.** Existing documents and versions are untouched and no
+  generation is started. The plan is part of each business-requirements section's reuse
+  inputs, so the first generation of a BRD after the upgrade (a **Regenerate**, or an
+  auto-update after an ingest) rewrites all of its sections once; the version summary
+  says the inputs changed. Architecture documents and user guides keep their stored
+  sections: their reuse inputs are unchanged.
+- **It adds no model call.** Planning, the facts sheet and the consistency check are
+  computed from the Phase-1 facts and the written text. Section prompts grow by the
+  facts block and the budget lines: 19k input tokens over 23 calls (1.4%) on the
+  walkthrough's Miniflux BRD. `DOCS_GEN_MAX_RUN_COST_CENTS` and
+  `DOCS_GEN_MAX_RUN_TOKENS` apply as before.
+- **To compare with and without it**, set `DOCS_GEN_TOPIC_PLAN=off` and regenerate. The
+  setting is part of the reuse inputs, so every section is rewritten on that run too.
+
 ## 7. Container Image Sizes
 
 The release pipeline ships three images:

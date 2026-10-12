@@ -86,6 +86,7 @@ import {
   CHARS_PER_WORD,
   fitSectionToBudget,
   fitSectionsToDocumentBudget,
+  NOTE_RESERVE,
   omissionNote,
   resolveDocumentMaxChars,
   resolveSectionMaxChars,
@@ -3621,7 +3622,7 @@ async function synthesizeBatchedSection(input: {
   /**
    * #1070 — set when the section is written under the document's topic plan
    * (`plan` then carries each module's planned share and `sectionMaxChars` is
-   * the section's planned budget). Each written part is held to the budget of
+   * the section's ceiling). Each written part is held to the budget of
    * the modules it covers before the parts are merged, so a part that overran
    * loses its own tail, not the section's; and each part is given the
    * canonical facts its modules mention.
@@ -4043,9 +4044,6 @@ async function synthesizeBatchedSection(input: {
   };
 }
 
-/** Room a planned section keeps for its closing note. */
-const PLANNED_NOTE_RESERVE = 900;
-
 /**
  * #1070 — what the parts of a planned section may total: the section's budget
  * less the room for its closing note and the little the merge adds (topic
@@ -4053,7 +4051,7 @@ const PLANNED_NOTE_RESERVE = 900;
  * stays a guard that does nothing.
  */
 function partsBudget(sectionBudgetChars: number): number {
-  return Math.max(0, Math.floor((sectionBudgetChars - PLANNED_NOTE_RESERVE) * 0.98));
+  return Math.max(0, Math.floor((sectionBudgetChars - NOTE_RESERVE) * 0.98));
 }
 
 /** #1070 — the words planned for each module of a batch, for its prompt. */
@@ -6361,7 +6359,14 @@ export function planDocumentTopics(input: {
       label: group.label,
       kind: "enumerative",
       topics: ranked.map(([module, estimatedChars], rank) => {
-        const id = `${group.id}/${repositoryPathIdentity(module.repository, module.modulePath || module.moduleName)}`;
+        const path = repositoryPathIdentity(
+          module.repository,
+          module.modulePath || module.moduleName,
+        );
+        // Two modules without repository provenance can share a path: each is
+        // still a topic of its own.
+        const base = `${group.id}/${path}`;
+        const id = topicModules.has(base) ? `${base}#${rank}` : base;
         topicModules.set(id, module);
         return {
           id,

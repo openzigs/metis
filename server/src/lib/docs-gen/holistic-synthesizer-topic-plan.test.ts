@@ -325,6 +325,17 @@ describe("planDocumentTopics", () => {
     );
   });
 
+  it("plans two modules that share a path as two topics, each with its budget", () => {
+    // Possible only without repository provenance (two repositories, one path).
+    const twins = [mod("shared", 6), mod("shared", 5)];
+    const { plan: p, budgets } = plan(twins);
+    const rules = p.sections.find((s) => s.sectionId === "rules")!;
+    expect(rules.topics).toHaveLength(2);
+    expect(new Set(rules.topics.map((t) => t.id)).size).toBe(2);
+    expect(rules.dropped).toEqual([]);
+    for (const twin of twins) expect(budgets.get("rules")!.get(twin)).toBeGreaterThan(0);
+  });
+
   it("treats a catalogue section as one call when batching is switched off", () => {
     vi.stubEnv("DOCS_GEN_BATCHED_SECTIONS", "off");
     expect(plan(project(4)).plan.sections.every((s) => s.kind === "single")).toBe(true);
