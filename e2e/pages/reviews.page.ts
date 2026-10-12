@@ -18,6 +18,8 @@ export class ReviewDetailPage {
   readonly approveButton: Locator;
   readonly rejectButton: Locator;
   readonly baselineLink: Locator;
+  readonly withdrawButton: Locator;
+  readonly withdrawDialog: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -28,6 +30,11 @@ export class ReviewDetailPage {
     this.rejectButton = page.getByTestId("decision-reject");
     // "Baseline created on approval: <name>" — the produced baseline link.
     this.baselineLink = page.getByTestId("review-header").getByRole("link", { name: /.+/ });
+    // #1032 — the header action and its confirmation (an alertdialog).
+    this.withdrawButton = page
+      .getByTestId("review-header")
+      .getByRole("button", { name: "Withdraw review" });
+    this.withdrawDialog = page.getByRole("alertdialog");
   }
 
   async goto(reviewId: string): Promise<void> {
@@ -54,6 +61,22 @@ export class ReviewDetailPage {
         { timeout: 30_000 },
       ),
       button.click(),
+    ]);
+  }
+
+  /** #1032 — withdraw through the confirmation, and wait for the request to settle. */
+  async withdraw(): Promise<void> {
+    await this.withdrawButton.click();
+    await expect(this.withdrawDialog).toBeVisible();
+    await Promise.all([
+      this.page.waitForResponse(
+        (res) =>
+          res.url().includes("/api/reviews/") &&
+          res.url().endsWith("/withdraw") &&
+          res.request().method() === "POST",
+        { timeout: 30_000 },
+      ),
+      this.withdrawDialog.getByRole("button", { name: "Withdraw review" }).click(),
     ]);
   }
 

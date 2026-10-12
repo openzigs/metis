@@ -10,7 +10,7 @@ import { type DryRunAction, type DryRunPlan } from "./internal-shared.js";
 import type { ApprovalGateCheckResult, CredentialCheckResult } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
 import { labelsToSync, publishableLabels } from "./label-sync.js";
-import { computeBodyHash, computeDedupHash, injectMarker } from "./dedup.js";
+import { computeBodyHash, computeDedupHash, injectMarker, type SourceMarker } from "./dedup.js";
 
 export interface DryRunInput {
   batchId: string;
@@ -25,6 +25,8 @@ export interface DryRunInput {
     labels: string[];
     parentDraftId: string | null;
     draftType: string;
+    /** #1064 — written as the hidden source marker, as the live run does. */
+    source?: SourceMarker;
   }>;
   additionalLabels: string[];
   /** dedupHash → existing issue number (from PublishedIssue rows). */
@@ -69,7 +71,11 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
   for (const d of ordered) {
     const hash = computeDedupHash(input.targetOwner, input.targetRepo, d.title);
     const existing = input.existingByHash.get(hash);
-    const stampedBody = injectMarker(d.body, { batchId: input.batchId, draftId: d.id, hash });
+    const stampedBody = injectMarker(
+      d.body,
+      { batchId: input.batchId, draftId: d.id, hash },
+      d.source,
+    );
     // bodyHash is computed on the raw user-supplied body (no marker) so dry
     // runs match the live publisher's dedup semantics.
     const bodyHash = computeBodyHash(d.body);

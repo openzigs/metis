@@ -65,6 +65,7 @@ import {
   computeDedupHash,
   injectMarker,
   parseMarker,
+  sourceMarkerForDraft,
   stripMarker,
 } from "./dedup.js";
 import { labelsToSync, publishableLabels, syncLabels } from "./label-sync.js";
@@ -174,6 +175,7 @@ export async function previewBatchPlan(input: PreviewBatchPlanInput): Promise<Dr
       labels: parseLabels(d.labels),
       parentDraftId: d.parentDraftId,
       draftType: d.draftType,
+      source: sourceMarkerForDraft(d),
     })),
     additionalLabels: input.additionalLabels,
     existingByHash,
@@ -289,6 +291,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
         labels: parseLabels(d.labels),
         parentDraftId: d.parentDraftId,
         draftType: d.draftType,
+        source: sourceMarkerForDraft(d),
       })),
       additionalLabels: extractAdditionalLabels(batch.metadata),
       existingByHash,
@@ -415,11 +418,13 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     const draft = ordered[i];
     const hash = computeDedupHash(target.owner, target.repo, draft.title);
     const existing = existingByHash.get(hash);
-    const stampedBody = injectMarker(draft.body, {
-      batchId: batch.id,
-      draftId: draft.id,
-      hash,
-    });
+    // #1064 — the project, analysis and requirement ids ride a hidden source
+    // marker beside the publish marker, not the visible body.
+    const stampedBody = injectMarker(
+      draft.body,
+      { batchId: batch.id, draftId: draft.id, hash },
+      sourceMarkerForDraft(draft),
+    );
     // Hash the user-supplied body (without the per-batch marker) so that
     // re-running an identical draft in a fresh batch dedup-skips instead of
     // appearing to "change" because the marker batchId differs.
