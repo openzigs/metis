@@ -984,6 +984,16 @@ jobs:
         working-directory: server
         run: pnpm test:integration requirement-set-replace-toctou-779-postgres
 
+      # Issue #1059 — the Spec Kit job table's rules are conditional UPDATEs, and
+      # staleness is judged with the DATABASE's clock in SQL that differs per
+      # engine (`clock_timestamp()` here, `strftime` on SQLite). Prove the same
+      # store contract the SQLite suite runs — every compare-and-set predicate,
+      # the one-clock staleness check, and one winner per race (cancel vs save,
+      # time limit vs save, owner vs sweep) under real concurrent statements.
+      - name: Prove the Spec Kit job store's compare-and-set rules and one-clock staleness on real Postgres
+        working-directory: server
+        run: pnpm test:integration spec-kit-job-store-1059-postgres
+
       - name: Remove the Postgres container
         if: always()
         run: docker rm -f "metis-ci-postgres-${GITHUB_JOB}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true

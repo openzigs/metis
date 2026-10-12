@@ -44,12 +44,15 @@ export interface SpecKitJobScope {
   /** Why the job was stopped, or `null` while it may continue. */
   stopError(): SpecKitJobStopError | null;
   /**
-   * The job is about to write its first artifact. Throws the stop error when
-   * the job was already stopped, so nothing is written; otherwise latches the
-   * job as saving, after which it can no longer be stopped: a command that
-   * writes several artifacts writes all of them or none.
+   * The job is about to write an artifact. Before its FIRST write this moves
+   * the job's row `running` → `saving` in the database, which succeeds only
+   * while the row is still this job's: a job that was cancelled, timed out or
+   * failed by another replica's sweep is refused here, throws its stop error
+   * and writes nothing. Before each later write it re-checks that the row is
+   * still its own. Once `saving`, a job can no longer be cancelled or timed
+   * out, so a command that writes several artifacts writes all of them.
    */
-  commitPoint(): void;
+  commitPoint(): Promise<void>;
   /** What the job is doing now; `progress` is 0-100 when the command knows it. */
   phase(text: string, progress?: number): void;
 }
@@ -73,8 +76,8 @@ export function throwIfSpecKitJobStopped(): void {
 }
 
 /** See {@link SpecKitJobScope.commitPoint}. A no-op outside a job. */
-export function specKitJobCommitPoint(): void {
-  store.getStore()?.commitPoint();
+export async function specKitJobCommitPoint(): Promise<void> {
+  await store.getStore()?.commitPoint();
 }
 
 /** See {@link SpecKitJobScope.phase}. A no-op outside a job. */

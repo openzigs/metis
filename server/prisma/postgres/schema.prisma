@@ -1637,10 +1637,12 @@ model SpecKitJob {
   command     String
   featureSlug String?
   /// `<projectId>:<featureSlug or empty>` while the job may still write, NULL
-  /// once it is terminal. UNIQUE, so the database refuses a second writer of
-  /// the same artifact set, on any replica.
+  /// once it is terminal. UNIQUE, so the database refuses a second job on the
+  /// same artifact set, on any replica. A job may write only after moving its
+  /// row `running` -> `saving` while it still holds this key.
   activeKey   String?   @unique
-  /// running | cancelling | succeeded | failed | cancelled.
+  /// running | cancelling | saving | succeeded | failed | cancelled. The first
+  /// three are live. Every change is one conditional UPDATE on the status.
   status      String    @default("running")
   /// What the job is doing now, for display.
   phase       String?
@@ -1650,7 +1652,8 @@ model SpecKitJob {
   error       String?
   startedById String?
   /// Refreshed while the owning process is alive; a live row whose heartbeat
-  /// stopped is failed as interrupted.
+  /// stopped is failed as interrupted. Written with the DATABASE's clock and
+  /// compared with it in the same statement, never with a replica's.
   heartbeatAt DateTime  @default(now())
   startedAt   DateTime  @default(now())
   finishedAt  DateTime?

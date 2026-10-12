@@ -93,3 +93,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [0 findings: read token_usages](project_zero-findings-read-token-usages-first.md) — output == cap + empty reply = reasoning (#1063)
 - [Synthesis field must fail soft](project_synthesis-optional-field-must-fail-soft.md) — one null discards every requirement (#1063)
 - [Spec Kit jobs: test seams](project_speckit-jobs-test-seams-and-runner-choice.md) — mock job-store; park the stub, no sleeps (#1059)
+- [Job tables: DB commit + one clock](project_heartbeat-sweep-tables-db-commit-and-one-clock.md) — in-memory stop misses other replicas (#1059)
+- [New Prisma model: 3 PG artefacts](project_new-prisma-model-three-postgres-artefacts.md) — baseline CREATE TABLE; run schema-parity (#1059)
+- [Lock key = resource width](project_lock-key-as-wide-as-the-resource.md) — creates share nothing; reserve first (#1059)

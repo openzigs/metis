@@ -9,6 +9,11 @@
  * No assertion here bounds how FAST something happened. Every wait is on a
  * state the test polls for, with a ceiling far above anything a loaded CI
  * runner needs.
+ *
+ * What is where: this file is the commands end to end. The job runner's rules
+ * race by race are `helpers/spec-kit-job-rules.ts`, run on this same real store
+ * (`spec-kit-job-rules-1059.sqlite.test.ts`); the store's statements one by one
+ * are `helpers/spec-kit-job-store-contract.ts`, run on SQLite and on Postgres.
  */
 import { createServer, request as httpRequest, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -33,6 +38,8 @@ interface StubReply {
   content: string;
   finishReason?: string;
   tokens?: number;
+  /** The provider call rejects with this instead of answering. */
+  throws?: unknown;
 }
 
 const state = vi.hoisted(() => {
@@ -50,6 +57,8 @@ const state = vi.hoisted(() => {
     commits: [] as unknown[],
     /** Every model call a stopped job tried to make and was refused. */
     refusedCalls: [] as unknown[],
+    /** Every audit event recorded. */
+    audits: [] as Array<Record<string, any>>,
   };
 });
 vi.mock("../src/lib/prisma.js", async () => {
@@ -62,7 +71,9 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({
-  audit: vi.fn(),
+  audit: vi.fn((event: Record<string, any>) => {
+    state.audits.push(event);
+  }),
   getAuditService: vi.fn(() => ({ record: vi.fn() })),
 }));
 // Retrieval is not what this suite is about, and the production wiring reaches
@@ -82,10 +93,10 @@ vi.mock("../src/lib/spec-kit/job-scope.js", async (importOriginal) => {
   const real = await importOriginal<typeof import("../src/lib/spec-kit/job-scope.js")>();
   return {
     ...real,
-    specKitJobCommitPoint: () => {
+    specKitJobCommitPoint: async () => {
       if (!real.currentSpecKitJob()) return real.specKitJobCommitPoint();
       try {
-        real.specKitJobCommitPoint();
+        await real.specKitJobCommitPoint();
         state.commits.push("ok");
       } catch (err) {
         state.commits.push(err);
@@ -120,6 +131,7 @@ vi.mock("../src/lib/ai/project-provider.js", () => ({
         };
       };
       const auto = state.auto.shift();
+      if (auto?.throws) return Promise.reject(auto.throws);
       if (auto) return Promise.resolve(respond(auto));
       return new Promise((resolve, reject) => {
         const signal = opts?.signal;
@@ -142,14 +154,19 @@ vi.mock("../src/lib/ai/project-provider.js", () => ({
 const { specKitRouter } = await import("../src/routes/spec-kit.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
-const { setSpecKitEnabled, writeArtifact } = await import("../src/lib/spec-kit/artifacts.js");
-const { createFeature } = await import("../src/lib/spec-kit/features.js");
+const { setSpecKitEnabled, writeArtifact, getArtifact } =
+  await import("../src/lib/spec-kit/artifacts.js");
+const { createFeature, listFeatures } = await import("../src/lib/spec-kit/features.js");
 const { writeFeatureArtifact, getFeatureArtifact, listFeatureArtifacts } =
   await import("../src/lib/spec-kit/feature-artifacts.js");
-const { failInterruptedSpecKitJobs, startSpecKitJob, SPEC_KIT_JOB_STALE_MS, _resetSpecKitJobs } =
+const { failInterruptedSpecKitJobs, startSpecKitJob, SPEC_KIT_JOB_STALE_MS } =
   await import("../src/lib/spec-kit/jobs.js");
 const { SpecKitJobStopError } = await import("../src/lib/spec-kit/job-scope.js");
-const { createJob, findJob, markJobCancelling } = await import("../src/lib/spec-kit/job-store.js");
+const { findJob, markJobCancelling } = await import("../src/lib/spec-kit/job-store.js");
+const { runPlan } = await import("../src/lib/spec-kit/commands/plan.js");
+const { resolveProjectProvider } = await import("../src/lib/ai/project-provider.js");
+const { AIProviderError } = await import("../src/lib/ai/errors.js");
+const { stopLiveSpecKitJobs } = await import("./helpers/spec-kit-jobs-reset.js");
 
 const PA = "proj-1059-a";
 const PB = "proj-1059-b";
@@ -169,6 +186,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let owner = "";
     let reader = "";
     let outsider = "";
+    /** Another member of the owner's project who may also start and cancel. */
+    let member = "";
+    /** A member no other test uses: their per-user budgets are untouched. */
+    let fresh = "";
     let nextSlug = 0;
 
     const app = () => {
@@ -217,7 +238,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite = createMigratedSqlite("1059-speckit-jobs");
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
-      for (const id of ["u-owner", "u-reader", "u-out"]) {
+      for (const id of ["u-owner", "u-reader", "u-out", "u-member", "u-fresh"]) {
         await db.user.create({
           data: { id, username: id, displayName: id, email: `${id}@example.test` },
         });
@@ -227,6 +248,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       for (const [workspaceId, userId] of [
         ["ws-a", "u-owner"],
         ["ws-a", "u-reader"],
+        ["ws-a", "u-member"],
+        ["ws-a", "u-fresh"],
         ["ws-b", "u-out"],
       ]) {
         await db.workspaceMember.create({ data: { workspaceId, userId, role: "member" } });
@@ -246,6 +269,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           .accessToken;
       owner = token("u-owner", "coordinator", ["ws-a"]);
       reader = token("u-reader", "reader", ["ws-a"]);
+      member = token("u-member", "coordinator", ["ws-a"]);
+      fresh = token("u-fresh", "coordinator", ["ws-a"]);
       // The same role as the owner, in the other workspace: only the project differs.
       outsider = token("u-out", "coordinator", ["ws-b"]);
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
@@ -256,7 +281,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     beforeEach(async () => {
-      _resetSpecKitJobs();
+      vi.useRealTimers();
+      stopLiveSpecKitJobs();
+      state.audits.length = 0;
       state.pending.length = 0;
       state.auto.length = 0;
       state.commits.length = 0;
@@ -869,19 +896,500 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await row()).toMatchObject({ status: "cancelled", activeKey: null });
         release({});
       });
+    });
 
-      it("passes on a database error that is not the unique-key refusal", async () => {
-        await expect(
-          createJob({
-            id: "bad",
-            projectId: undefined as never,
+    // ---- Review of PR #1105 ---------------------------------------------------
+
+    describe("a job that lost its row writes nothing (review M1)", () => {
+      const SWEPT = { status: 503, code: "SPEC_KIT_JOB_INTERRUPTED", message: "swept elsewhere" };
+      /** Exactly the update another replica's sweep (or finish) makes to a running row. */
+      const failFromAnotherReplica = (jobId: string) =>
+        db.specKitJob.updateMany({
+          where: { id: jobId, status: "running" },
+          data: {
+            status: "failed",
+            activeKey: null,
+            finishedAt: new Date(),
+            error: JSON.stringify(SWEPT),
+          },
+        });
+
+      it("a row failed by another replica: the owner saves nothing, and only the second job writes the feature", async () => {
+        const f = await planned();
+        const a = await startJob("speckit.tasks", { featureSlug: f.slug });
+        const jobA: string = a.body.data.jobId;
+        const callA = await nextCall();
+
+        expect((await failFromAnotherReplica(jobA)).count).toBe(1);
+        // The key is free, so a second job on the same feature is accepted.
+        const b = await startJob("speckit.tasks", { featureSlug: f.slug });
+        expect(b.status).toBe(202);
+        const callB = await nextCall();
+
+        // The first job's model call answers. Nothing told its process the row is gone.
+        callA.resolve({ content: `${TASKS} FROM-A` });
+        await vi.waitFor(() => expect(state.commits).toHaveLength(1), WAIT);
+
+        expect(state.commits[0]).toBeInstanceOf(SpecKitJobStopError);
+        expect((state.commits[0] as InstanceType<typeof SpecKitJobStopError>).reason).toBe(
+          "superseded",
+        );
+        expect(await getFeatureArtifact(f.id, "tasks.md")).toBeNull();
+        // The row it no longer owns is as the other replica left it.
+        expect((await get(`${base()}/jobs/${jobA}`)).body.data.job).toMatchObject({
+          status: "failed",
+          error: SWEPT,
+        });
+
+        callB.resolve({ content: `${TASKS} FROM-B` });
+        expect((await finished(b.body.data.jobId)).status).toBe("succeeded");
+        const artifact = await getFeatureArtifact(f.id, "tasks.md");
+        // One write, by the job that holds the feature — not v1 by A and v2 by B.
+        expect(artifact).toMatchObject({ version: 1, content: `${TASKS} FROM-B` });
+        expect(state.commits).toHaveLength(2);
+        expect(state.commits[1]).toBe("ok");
+      });
+
+      it("a five-artifact plan whose row was failed elsewhere writes none of the five", async () => {
+        const f = await planned();
+        const before = await listFeatureArtifacts(f.id);
+        const started = await startJob("speckit.plan", { featureSlug: f.slug });
+        const jobId: string = started.body.data.jobId;
+        const first = await nextCall();
+
+        await failFromAnotherReplica(jobId);
+        // The model answers all five calls; the job still believes it is running.
+        first.resolve({ content: "# Plan v2\n\n## Components\nNo REST surface change." });
+        for (const content of [
+          "# Research\n\n## Resolved Unknowns: none\n",
+          "# Data model\n\nNo change.",
+          "openapi: 3.0.0\ninfo:\n  title: x\n  version: '1'\npaths: {}\n",
+          "# Quickstart\n\nRun it.",
+        ]) {
+          (await nextCall()).resolve({ content });
+        }
+        await vi.waitFor(() => expect(state.commits.length).toBeGreaterThan(0), WAIT);
+
+        expect(state.commits).toHaveLength(1);
+        expect(state.commits[0]).toBeInstanceOf(SpecKitJobStopError);
+        expect(await listFeatureArtifacts(f.id)).toEqual(before);
+        expect((await get(`${base()}/jobs/${jobId}`)).body.data.job.error).toEqual(SWEPT);
+      });
+
+      it("marks a job saving once it writes, and answers a cancel from then on with 409", async () => {
+        // A job that another replica runs and that has passed its commit point:
+        // all this replica can see is the row.
+        const f = await planned();
+        await db.specKitJob.create({
+          data: {
+            id: "saving-elsewhere",
+            projectId: PA,
+            command: "speckit.plan",
+            featureSlug: f.slug,
+            activeKey: `${PA}:${f.slug}`,
+            status: "saving",
+            startedById: "u-owner",
+          },
+        });
+
+        const cancel = await post(`${base()}/jobs/saving-elsewhere/cancel`);
+
+        expect(cancel.status).toBe(409);
+        expect(cancel.body.error.code).toBe("SPEC_KIT_JOB_SAVING");
+        // Not `cancelling` followed by a success, and no audit row saying so.
+        expect((await findJob(PA, "saving-elsewhere"))?.status).toBe("saving");
+        expect(state.audits.filter((e) => e.action === "spec_kit.job.cancelled")).toEqual([]);
+        // It is live: listed, and it holds its feature.
+        expect((await get(`${base()}/jobs`)).body.data.jobs).toMatchObject([
+          { id: "saving-elsewhere", status: "saving" },
+        ]);
+        const refused = await startJob("speckit.tasks", { featureSlug: f.slug });
+        expect(refused.status).toBe(409);
+        expect(refused.body.error.code).toBe("SPEC_KIT_JOB_RUNNING");
+      });
+
+      it("stores the job as saving while its artifacts are being written", async () => {
+        const f = await planned();
+        state.auto.push({ content: TASKS });
+        const started = await startJob("speckit.tasks", { featureSlug: f.slug });
+        await finished(started.body.data.jobId);
+        // The commit point ran inside the job, against the real row.
+        expect(state.commits).toEqual(["ok"]);
+        expect(
+          await db.specKitJob.findUnique({ where: { id: started.body.data.jobId } }),
+        ).toMatchObject({ status: "succeeded", activeKey: null });
+      });
+    });
+
+    describe("the project-level commit point (legacy aliases write through writeArtifact)", () => {
+      const projectFiles = async () => ({
+        spec: await getArtifact(PA, "spec.md"),
+        plan: await getArtifact(PA, "plan.md"),
+      });
+
+      it("a cancelled legacy /plan writes nothing when the model answers late", async () => {
+        await writeArtifact({ projectId: PA, name: "spec.md", content: SPEC });
+        state.ignoreAbort = true; // the provider does not notice the abort
+        const before = await projectFiles();
+        const started = await startJob("plan");
+        expect(started.body.data.job).toMatchObject({ command: "speckit.plan", featureSlug: null });
+        const jobId: string = started.body.data.jobId;
+        const call = await nextCall();
+
+        await post(`${base()}/jobs/${jobId}/cancel`);
+        expect((await finished(jobId)).status).toBe("cancelled");
+
+        // The model answers now: the command reaches writeArtifact and is refused there.
+        call.resolve({ content: "# A late project plan" });
+        await vi.waitFor(() => expect(state.commits).toHaveLength(1), WAIT);
+        expect(state.commits[0]).toBeInstanceOf(SpecKitJobStopError);
+        expect(await projectFiles()).toEqual(before);
+      });
+
+      it("a cancelled legacy /specify writes nothing when the model answers late", async () => {
+        await writeArtifact({ projectId: PA, name: "spec.md", content: SPEC });
+        state.ignoreAbort = true;
+        const before = await projectFiles();
+        const started = await startJob("specify", { input: "Mark every entry read" });
+        const jobId: string = started.body.data.jobId;
+        const call = await nextCall();
+
+        await post(`${base()}/jobs/${jobId}/cancel`);
+        expect((await finished(jobId)).status).toBe("cancelled");
+
+        call.resolve({ content: "# A late spec\n\n## Acceptance criteria\n- **AC-1**: x" });
+        await vi.waitFor(() => expect(state.commits).toHaveLength(1), WAIT);
+        expect(state.commits[0]).toBeInstanceOf(SpecKitJobStopError);
+        expect(await projectFiles()).toEqual(before);
+      });
+
+      it("a legacy /plan stopped by its time limit writes nothing when the model answers late", async () => {
+        await writeArtifact({ projectId: PA, name: "spec.md", content: SPEC });
+        state.ignoreAbort = true;
+        const before = await projectFiles();
+        const provider = await resolveProjectProvider(PA);
+        const started = await startSpecKitJob({
+          projectId: PA,
+          command: "speckit.plan",
+          featureSlug: null,
+          actorId: "u-owner",
+          // Nothing can reach the commit point until the test answers the call.
+          timeoutMs: 20,
+          run: () => runPlan({ projectId: PA, actorId: "u-owner", deps: { provider } }),
+        });
+        const call = await nextCall();
+
+        const done = await started.done;
+        expect(done).toMatchObject({ status: "failed", error: { code: "SPEC_KIT_JOB_TIMEOUT" } });
+
+        call.resolve({ content: "# A late project plan" });
+        await vi.waitFor(() => expect(state.commits).toHaveLength(1), WAIT);
+        expect(state.commits[0]).toBeInstanceOf(SpecKitJobStopError);
+        expect((state.commits[0] as InstanceType<typeof SpecKitJobStopError>).reason).toBe(
+          "timeout",
+        );
+        expect(await projectFiles()).toEqual(before);
+      });
+
+      it("a legacy /plan whose row was failed by another replica writes nothing", async () => {
+        await writeArtifact({ projectId: PA, name: "spec.md", content: SPEC });
+        const before = await projectFiles();
+        const started = await startJob("plan");
+        const call = await nextCall();
+        await db.specKitJob.updateMany({
+          where: { id: started.body.data.jobId },
+          data: { status: "failed", activeKey: null, finishedAt: new Date(), error: "{}" },
+        });
+
+        call.resolve({ content: "# A project plan from a job that lost its row" });
+        await vi.waitFor(() => expect(state.commits).toHaveLength(1), WAIT);
+        expect(state.commits[0]).toBeInstanceOf(SpecKitJobStopError);
+        expect(await projectFiles()).toEqual(before);
+      });
+    });
+
+    describe("staleness is judged on the database's clock (review M2)", () => {
+      it("a replica whose clock is 100 s ahead does not fail a live job on a member's GET", async () => {
+        const f = await planned();
+        const started = await startJob("speckit.tasks", { featureSlug: f.slug });
+        const jobId: string = started.body.data.jobId;
+        const call = await nextCall();
+
+        // This process becomes the replica with the fast clock.
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date(Date.now() + 100_000));
+        const read = await get(`${base()}/jobs/${jobId}`, reader);
+        const list = await get(`${base()}/jobs`, reader);
+        const swept = await failInterruptedSpecKitJobs();
+        const second = await startJob("speckit.tasks", { featureSlug: f.slug });
+        vi.useRealTimers();
+
+        expect(read.body.data.job.status).toBe("running");
+        expect(list.body.data.jobs.map((j: any) => j.id)).toEqual([jobId]);
+        expect(swept).toBe(0);
+        // The live job still holds its feature.
+        expect(second.status).toBe(409);
+        expect(call.signal?.aborted).toBe(false);
+
+        call.resolve({ content: TASKS });
+        expect((await finished(jobId)).status).toBe("succeeded");
+      });
+    });
+
+    describe("the lock is as wide as what a command writes (review L1)", () => {
+      const specOf = (n: number) =>
+        `# Spec ${n}\n\n## Acceptance criteria\n- **AC-1**: feature ${n} works`;
+
+      it("lets two members each create a new feature at the same time", async () => {
+        const before = (await listFeatures(PA)).length;
+        const a = await startJob("speckit.specify", { input: "Mark every entry read" });
+        const b = await startJob(
+          "speckit.specify",
+          { input: "Export the feed list as OPML" },
+          member,
+        );
+
+        expect([a.status, b.status]).toEqual([202, 202]);
+        const [slugA, slugB] = [a.body.data.job.featureSlug, b.body.data.job.featureSlug];
+        // Each job is locked under the feature it creates, not under the project.
+        expect(slugA).toMatch(/^\d{3}-mark-every-entry-read$/);
+        expect(slugB).toMatch(/^\d{3}-export-the-feed-list-as-opml$/);
+        expect(slugA.slice(0, 3)).not.toBe(slugB.slice(0, 3));
+        const keys = (await db.specKitJob.findMany({ orderBy: { startedAt: "asc" } })).map(
+          (r) => r.activeKey,
+        );
+        expect(keys.sort()).toEqual([`${PA}:${slugA}`, `${PA}:${slugB}`].sort());
+
+        (await nextCall()).resolve({ content: specOf(1) });
+        (await nextCall()).resolve({ content: specOf(2) });
+        const [jobA, jobB] = [await finished(a.body.data.jobId), await finished(b.body.data.jobId)];
+        expect(jobA.result.feature.slug).toBe(slugA);
+        expect(jobB.result.feature.slug).toBe(slugB);
+        // Two features, each with its own spec.md v1: neither wrote the other's.
+        expect((await listFeatures(PA)).length).toBe(before + 2);
+        expect(jobA.result.artifact.version).toBe(1);
+        expect(jobB.result.artifact.version).toBe(1);
+        expect(jobA.result.artifact.content).not.toBe(jobB.result.artifact.content);
+      });
+
+      it("does not let a project-level command block a new feature, or the reverse", async () => {
+        await writeArtifact({ projectId: PA, name: "spec.md", content: SPEC });
+        const projectLevel = await startJob("plan"); // legacy: the project-level set
+        expect(projectLevel.status).toBe(202);
+        const planCall = await nextCall();
+
+        const creating = await startJob("speckit.specify", { input: "Star an entry" });
+        expect(creating.status).toBe(202);
+        const specCall = await nextCall();
+        // …and with a feature being created, the project-level set is still free
+        // to be refused only by its OWN holder.
+        const second = await startJob("speckit.tasks"); // project-level tasks
+        expect(second.status).toBe(409);
+        expect(second.body.error.details.jobId).toBe(projectLevel.body.data.jobId);
+
+        planCall.resolve({ content: "# Project plan" });
+        specCall.resolve({ content: specOf(3) });
+        expect((await finished(projectLevel.body.data.jobId)).status).toBe("succeeded");
+        expect((await finished(creating.body.data.jobId)).status).toBe("succeeded");
+      });
+
+      it("still refuses a second job on the feature a specify is creating", async () => {
+        const creating = await startJob("speckit.specify", { input: "Archive old entries" });
+        const slug: string = creating.body.data.job.featureSlug;
+        const call = await nextCall();
+
+        for (const res of [
+          await startJob("speckit.specify", { input: "something else", featureSlug: slug }),
+          await startJob("speckit.plan", { featureSlug: slug }),
+        ]) {
+          expect(res.status).toBe(409);
+          expect(res.body.error).toMatchObject({
+            code: "SPEC_KIT_JOB_RUNNING",
+            details: { jobId: creating.body.data.jobId, featureSlug: slug },
+          });
+        }
+        call.resolve({ content: specOf(4) });
+        await finished(creating.body.data.jobId);
+      });
+
+      it("keeps the project-level key for the commands that write the project-level set", async () => {
+        await writeArtifact({ projectId: PA, name: "spec.md", content: SPEC });
+        const first = await startJob("plan");
+        expect(first.status).toBe(202);
+        expect(first.body.data.job.featureSlug).toBeNull();
+        const call = await nextCall();
+        for (const cmd of ["specify", "speckit.tasks", "speckit.clarify", "speckit.analyze"]) {
+          const res = await startJob(cmd, { input: "x" });
+          expect([cmd, res.status, res.body.error?.code]).toEqual([
+            cmd,
+            409,
+            "SPEC_KIT_JOB_RUNNING",
+          ]);
+        }
+        await post(`${base()}/jobs/${first.body.data.jobId}/cancel`);
+        await finished(first.body.data.jobId);
+        expect(call.signal?.aborted).toBe(true);
+      });
+
+      it("refuses an empty brief before it creates a feature for it", async () => {
+        const before = (await listFeatures(PA, { includeArchived: true })).length;
+        for (const res of [
+          await startJob("speckit.specify", { input: "   " }),
+          await runSync("speckit.specify", {}),
+        ]) {
+          expect(res.status).toBe(400);
+          expect(res.body.error.code).toBe("SPECKIT_EMPTY_INPUT");
+        }
+        expect((await listFeatures(PA, { includeArchived: true })).length).toBe(before);
+        expect(await db.specKitJob.count()).toBe(0);
+      });
+
+      it("creates the feature the same way on the synchronous route", async () => {
+        state.auto.push({ content: specOf(5) });
+        const res = await runSync("speckit.specify", { input: "Mute a feed" });
+        expect(res.status).toBe(200);
+        expect(res.body.data.feature.slug).toMatch(/^\d{3}-mute-a-feed$/);
+        expect(res.body.data.feature.title).toBe("Mute a feed");
+        const row = await db.specKitJob.findUnique({ where: { id: res.body.data.jobId } });
+        expect(row).toMatchObject({ featureSlug: res.body.data.feature.slug, status: "succeeded" });
+      });
+    });
+
+    describe("a provider failure is stored without the provider's own words (review L3)", () => {
+      const UPSTREAM = "upstream said: request id req_011CS-secret, org acme-internal";
+      const providerFailure = () =>
+        new AIProviderError(`anthropic chat failed (APIError): ${UPSTREAM}`, 529, {
+          provider: "anthropic",
+          operation: "chat",
+          errorName: "APIError",
+        });
+
+      it("keeps the status and code, names the operation and class, and drops the upstream text", async () => {
+        const f = await planned();
+        state.auto.push({ content: "", throws: providerFailure() });
+        const started = await startJob("speckit.tasks", { featureSlug: f.slug });
+        const job = await finished(started.body.data.jobId);
+
+        expect(job.error).toEqual({
+          status: 502,
+          code: "AI_PROVIDER_KEY_UNAVAILABLE",
+          message:
+            "The AI provider call failed: anthropic chat (APIError, HTTP 529). The provider's own message is in the server log.",
+        });
+        // Not in what another member reads, and not in the row kept for a day.
+        const seenByReader = await get(`${base()}/jobs/${started.body.data.jobId}`, reader);
+        expect(JSON.stringify(seenByReader.body)).not.toContain("req_011CS");
+        const row = await db.specKitJob.findUnique({ where: { id: started.body.data.jobId } });
+        expect(JSON.stringify(row)).not.toContain("req_011CS");
+        expect(JSON.stringify(row)).not.toContain("acme-internal");
+      });
+
+      it("answers the synchronous caller with the same bounded message", async () => {
+        const f = await planned();
+        state.auto.push({ content: "", throws: providerFailure() });
+        const res = await runSync("speckit.tasks", { featureSlug: f.slug });
+        expect(res.status).toBe(502);
+        expect(res.body.error.code).toBe("AI_PROVIDER_KEY_UNAVAILABLE");
+        expect(res.body.error.message).toContain("anthropic chat (APIError, HTTP 529)");
+        expect(JSON.stringify(res.body)).not.toContain("req_011CS");
+      });
+    });
+
+    describe("who may cancel, and what is audited (review L6)", () => {
+      const cancels = () => state.audits.filter((e) => e.action === "spec_kit.job.cancelled");
+
+      it("lets another member with project.update cancel a job, and records who cancelled whose", async () => {
+        const f = await planned();
+        const started = await startJob("speckit.tasks", { featureSlug: f.slug });
+        const jobId: string = started.body.data.jobId;
+        await nextCall();
+
+        const cancel = await post(`${base()}/jobs/${jobId}/cancel`, {}, member);
+
+        expect(cancel.status).toBe(200);
+        expect((await finished(jobId)).status).toBe("cancelled");
+        expect(cancels()).toHaveLength(1);
+        expect(cancels()[0]).toMatchObject({
+          actor: { id: "u-member" },
+          target: { type: "project", id: PA },
+          metadata: {
+            jobId,
             command: "speckit.tasks",
-            featureSlug: null,
-            activeKey: "k",
-            startedById: null,
-            now: new Date(),
-          }),
-        ).rejects.toThrow();
+            featureSlug: f.slug,
+            startedById: "u-owner",
+          },
+        });
+      });
+
+      it("records no cancel for a job that had already finished, or that does not exist", async () => {
+        const f = await planned();
+        state.auto.push({ content: TASKS });
+        const started = await startJob("speckit.tasks", { featureSlug: f.slug });
+        await finished(started.body.data.jobId);
+
+        const again = await post(`${base()}/jobs/${started.body.data.jobId}/cancel`, {}, member);
+        await post(`${base()}/jobs/00000000-0000-4000-8000-000000000000/cancel`, {}, member);
+
+        expect(again.status).toBe(200);
+        expect(again.body.data.job.status).toBe("succeeded");
+        expect(cancels()).toEqual([]);
+      });
+
+      it("records one cancel for a job cancelled twice", async () => {
+        state.ignoreAbort = true;
+        const f = await planned();
+        const started = await startJob("speckit.tasks", { featureSlug: f.slug });
+        const jobId: string = started.body.data.jobId;
+        await nextCall();
+        await post(`${base()}/jobs/${jobId}/cancel`);
+        await post(`${base()}/jobs/${jobId}/cancel`, {}, member);
+        await finished(jobId);
+        expect(cancels()).toHaveLength(1);
+      });
+    });
+
+    describe("polling cannot spend the budget for starting and cancelling (review L5)", () => {
+      const restore = (): void => {
+        delete process.env.SPECKIT_JOB_LIMIT_MAX;
+        delete process.env.SPECKIT_JOB_USER_WRITE_LIMIT_MAX;
+      };
+
+      it("still accepts a cancel and a start when the read budget is spent", async () => {
+        const f = await planned();
+        try {
+          // Every request of this file comes from one address: its read budget is long spent.
+          process.env.SPECKIT_JOB_LIMIT_MAX = "1";
+          const poll = await get(`${base()}/jobs`);
+          expect(poll.status).toBe(429);
+          expect(poll.body.error.code).toBe("SPECKIT_JOB_RATE_LIMITED");
+
+          const started = await startJob("speckit.tasks", { featureSlug: f.slug });
+          expect(started.status).toBe(202);
+          await nextCall();
+          const cancel = await post(`${base()}/jobs/${started.body.data.jobId}/cancel`);
+          expect(cancel.status).toBe(200);
+        } finally {
+          restore();
+        }
+      });
+
+      it("limits starts per authenticated user, not per address", async () => {
+        const f = await planned();
+        try {
+          // The owner has started dozens of jobs in this file; `fresh` has started none.
+          process.env.SPECKIT_JOB_USER_WRITE_LIMIT_MAX = "2";
+          const spent = await startJob("speckit.tasks", { featureSlug: f.slug });
+          expect(spent.status).toBe(429);
+          expect(spent.body.error.code).toBe("SPECKIT_JOB_RATE_LIMITED");
+
+          state.auto.push({ content: TASKS });
+          const allowed = await startJob("speckit.tasks", { featureSlug: f.slug }, fresh);
+          expect(allowed.status).toBe(202);
+          restore();
+          await finished(allowed.body.data.jobId);
+        } finally {
+          restore();
+        }
       });
     });
 

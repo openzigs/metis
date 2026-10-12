@@ -5880,7 +5880,8 @@ server/src/lib/spec-kit/
 ├── rag-context.ts                # Phase 2 (#373): project-RAG context builder for /specify + /plan
 ├── plan-localisation.ts          # #1060: code-graph walk from the retrieved symbols to their data path (no model call)
 ├── jobs.ts                       # #1059: background-job runner (start, run, read, cancel, sweep) — §25.2.1
-├── job-store.ts                  # #1059: the spec_kit_jobs queries, all compare-and-set
+├── job-store.ts                  # #1059: the spec_kit_jobs queries — conditional UPDATEs, on the database's clock
+├── job-registry.ts               # #1059: the jobs this process runs (abort switch only; decides nothing)
 ├── job-scope.ts                  # #1059: AsyncLocalStorage scope — stop signal, commit point, phase
 └── commands/
     ├── runner.ts                 # shared agent executor: budget→constitution→RAG→safety→provider→safety→FinOps→audit
@@ -6086,20 +6087,22 @@ POST …/commands/:cmd/jobs ──► prepareCommand ──► startSpecKitJob �
                                                      └─► runJob (not awaited)
                                                            withSpecKitJobScope(control, dispatch…)
                                                            heartbeat 15 s · time limit · job:lifecycle
+                                                           first artifact write: running → saving (the commit point)
                                                            finishJob (compare-and-set) → succeeded|failed|cancelled
 GET  …/jobs/:jobId          ──► the row: status, phase, result | error
 GET  …/jobs                 ──► the project's live jobs
-POST …/jobs/:jobId/cancel   ──► stop the control (this process) or mark `cancelling` (another replica)
+POST …/jobs/:jobId/cancel   ──► running → cancelling in the row; 409 if the row is already saving
 POST …/commands/:cmd        ──► the same job, awaited: 200 result | the job's error as the HTTP error
 ```
 
 | File | Role |
 |---|---|
-| [`jobs.ts`](../server/src/lib/spec-kit/jobs.ts) | The runner: start, run to a terminal row, read, cancel, sweep. Owns the in-process registry of live jobs. |
-| [`job-store.ts`](../server/src/lib/spec-kit/job-store.ts) | Every `spec_kit_jobs` query. Each state change is a compare-and-set `updateMany`. |
+| [`jobs.ts`](../server/src/lib/spec-kit/jobs.ts) | The runner: start, run to a terminal row, read, cancel, sweep. |
+| [`job-store.ts`](../server/src/lib/spec-kit/job-store.ts) | Every `spec_kit_jobs` query. Each state change is one conditional `UPDATE`; timestamps and the staleness check use the database's clock, in raw SQL that differs per engine. |
+| [`job-registry.ts`](../server/src/lib/spec-kit/job-registry.ts) | The jobs this process runs, by id: an abort switch, so a cancel or sweep handled here stops the model call at once. It decides nothing. |
 | [`job-scope.ts`](../server/src/lib/spec-kit/job-scope.ts) | The AsyncLocalStorage scope command code asks: stopped? may I save? this is my phase. No database import, so the artifact stores can use it. |
-| [`spec-kit-job-rate-limit.ts`](../server/src/middleware/spec-kit-job-rate-limit.ts) | Per-address limiter on the job endpoints, ahead of auth. |
-| [`ui/src/lib/spec-kit-jobs.ts`](../ui/src/lib/spec-kit-jobs.ts) | The page's side: start, watch (a read every 3 s), re-attach after a reload. |
+| [`spec-kit-job-rate-limit.ts`](../server/src/middleware/spec-kit-job-rate-limit.ts) | Three limiters: reads per address, starts and cancels per address (both ahead of auth), starts and cancels per user (after it). |
+| [`ui/src/lib/spec-kit-jobs.ts`](../ui/src/lib/spec-kit-jobs.ts) | The page's side: start, watch (the job's socket events, with a read every 3 s as the fallback), pick up after a reload. |
 
 **What it is built on.** Docs generation (§ docs-gen, #50 and #855) is the model: a durable
 row, a fire-and-forget run, a heartbeat, a sweep that fails rows whose heartbeat stopped, an
@@ -6125,40 +6128,93 @@ same lock, and a caller whose connection dropped can read the outcome from the j
 
 - **The client leaving changes nothing.** Nothing in `runJob` holds the request. The job's
   state is the row.
-- **One writer per artifact set.** `activeKey` is `<projectId>:<featureSlug or empty>` while
-  the job is live and NULL once it is terminal, under a UNIQUE index. A second insert fails
-  with P2002 on any replica and the route answers `409 SPEC_KIT_JOB_RUNNING` with the
-  holder's id. The lock is per feature, not per command: `/speckit.tasks` reads the `plan.md`
-  a running `/speckit.plan` is about to replace. The project-level `.specify/` set (and a
-  `/speckit.specify` that creates a feature) is one key. The second request is refused rather
-  than handed the running job: its input may differ.
-- **Stop before saving, never during.** Cancel and the time limit (`SPEC_KIT_JOB_TIMEOUT_MS`)
-  call `control.stop()`, which aborts the provider call in flight (`runSpecKitAgent` passes
-  the scope's signal) and makes the next call fail before it is sent. `writeArtifact` and
-  `writeFeatureArtifact` call `specKitJobCommitPoint()` first: a stopped job throws there and
-  writes nothing; a job that passes is latched as saving and `stop()` is refused from then on
-  (`409 SPEC_KIT_JOB_SAVING` for a cancel). So #1065's "five artifacts or none" and #1057's
-  "a partial reply never replaces a complete version" hold under cancel and timeout with no
-  change to the commands. A stopped job is not waited for (`Promise.race` with the stop), so
-  a provider that ignores the abort cannot hold the job or its lock open; when its reply
+- **One job per artifact set.** `activeKey` is `<projectId>:<featureSlug or empty>` while
+  the job is live and NULL once it is terminal, under a UNIQUE index. A second insert is
+  refused by the database on any replica and the route answers `409 SPEC_KIT_JOB_RUNNING`
+  with the holder's id. The second request is refused rather than handed the running job:
+  its input may differ.
+- **The key is exactly as wide as what the job writes.** Per feature, not per command:
+  `/speckit.tasks` reads the `plan.md` a running `/speckit.plan` is about to replace. The
+  empty-slug key is the project-level `.specify/` set, held by the commands that write it:
+  the legacy short names, and `speckit.tasks`/`clarify`/`analyze` without a feature. A
+  `/speckit.specify` **without** a `featureSlug` writes none of that: it creates a new
+  feature. So the route creates the feature first (`startCommandJob` → `createFeature`,
+  which gives two concurrent creators different numbers by retrying on the unique slug) and
+  starts the job under the new feature's own slug. Any number of members can each create a
+  feature at once, a project-level command does not hold them up, and no second job can be
+  started on the feature being created. (A lock key shared by commands that share no
+  artifact refused the second member's new feature for minutes; before #1059 both ran.)
+- **The row decides, in one statement.** Every change of a job's state is a conditional
+  `UPDATE` in `job-store.ts`:
+
+  | Change | By | While the row is |
+  |---|---|---|
+  | `running` → `saving` (`beginSaving`) | the job, at its commit point | this job's id, `running`, holding its `activeKey` |
+  | `running` → `cancelling` (`markJobCancelling`) | a cancel, any replica | `running` |
+  | `running` → `failed` (timeout) | the time limit, owning process | `running` |
+  | `cancelling` → `cancelled` | the owner, once stopped | `cancelling` |
+  | `running`/`saving` → `succeeded`/`failed` | the owner, at the end | `running` or `saving` |
+  | live → `failed`/`cancelled` (`failStaleJobs`) | a sweep, any replica | live, heartbeat over 90 s behind the database's clock |
+
+  Two of these on one row are serialised by the database and one matches. Cancel against
+  save, time limit against save, and the owner finishing against a sweep therefore each have
+  exactly one winner, with no shared memory. The in-process registry (`job-registry.ts`)
+  only aborts a model call sooner; it is never asked whether a job may write.
+- **Nothing is written without the row.** `writeArtifact` (the project-level set) and
+  `writeFeatureArtifact` both `await specKitJobCommitPoint()` before they touch the
+  database, and those two functions are the only artifact writes a job command makes. The
+  first call is `running → saving`; a job whose row was cancelled, timed out, or failed by
+  another replica's sweep is refused there, throws its stop error and writes **nothing** —
+  whatever it believes in memory — and ends without touching the row it no longer owns.
+  Once `saving`, a job can no longer be cancelled (`409 SPEC_KIT_JOB_SAVING`) or timed out,
+  so #1065's "five artifacts or none" and #1057's "a partial reply never replaces a complete
+  version" hold under cancel and timeout with no change to the commands. Each later write
+  re-checks that the row is still this job's and still `saving` (`confirmSaving`), so a job
+  whose row is swept mid-save stops writing; that row then reads "interrupted while saving",
+  never "nothing was saved". A stopped job is not waited for (`Promise.race` with the stop),
+  so a provider that ignores the abort cannot hold the job or its lock open; when its reply
   arrives the command reaches the commit point and is refused.
 - **A restart.** The owner refreshes `heartbeatAt` every 15 s. A live row with a heartbeat
   older than 90 s is failed as `SPEC_KIT_JOB_INTERRUPTED` (or `cancelled`, if a cancel had
-  been asked for), compare-and-set on the status and heartbeat that were read: by the sweep
-  (startup, then every 30 s, `server.ts`), by any read of the job, and by a start that needs
-  its key. Never resumed. A job whose own row was failed under it (a long stall) sees its
-  next heartbeat return nothing, stops, and does not overwrite that outcome.
-- **Another replica.** Cancel marks the row `cancelling`; the owner's heartbeat sees it and
-  stops. Start and finish are database compare-and-sets, so they need no shared memory.
+  been asked for), in one statement: by the sweep (startup, then every 30 s, `server.ts`),
+  by any read of the job, and by a start that needs its key. A finished row never matches,
+  however old its heartbeat. Never resumed.
+- **One clock.** `heartbeatAt` and `finishedAt` are written with the database's time, and
+  staleness is `heartbeatAt < <database now> − 90 s` inside the sweep's own `UPDATE`
+  (`specKitJobClock`: `clock_timestamp()` on Postgres; on SQLite `strftime` of `'now'` in the
+  ISO-8601 text shape Prisma's driver adapter stores, which sorts in time order). No
+  replica's `new Date()` is compared with another's.
+- **Another replica.** A cancel is the row transition, so the owner needs no message: it
+  finds the row `cancelling` at its next heartbeat or at its commit point.
+- **The outcome is stored, or said to be unknown.** The terminal write is tried three times.
+  If it still fails the row stays live with no heartbeat and a sweep fails it within two
+  minutes — as "interrupted while saving" when the job had begun to save. A caller waiting
+  on that job is told its files may have been saved, never that nothing was. A job whose
+  scope cannot be recorded is removed before it starts, so no `running` row is left without
+  a runner.
+- **Who may cancel.** Any member with `project.update`, not only the member who started the
+  job (the page offers Cancel on the viewer's own jobs). Only a cancel that changed the row
+  is audited (`spec_kit.job.cancelled`, with the actor and the job's `startedById`).
 - **Errors keep their contract.** `toSpecKitJobError` (`routes/spec-kit.ts`) runs the route's
   own `rethrow` mapping and stores `{ status, code, message, details }`. A class the mapping
-  does not know is stored as a generic 500, never its message. The `job:lifecycle` `failed`
-  event stays generic (#254); the detail is read through the authorized `GET`.
+  does not know is stored as a generic 500, never its message. A provider failure
+  (`AIProviderError`) keeps its status and code but not its message, which can carry the
+  upstream service's own text: a job's error is kept for a day and readable by every member
+  who can read the project. What is stored is the provider, the operation, the error class
+  and the HTTP status (`describeProviderErrorSafely`); the full error is in the server log.
+  The `job:lifecycle` `failed` event stays generic (#254); the detail is read through the
+  authorized `GET`.
 - **Budget and usage are unchanged.** The job runs the same command functions, so
   `assertWithinBudget` runs before every model call and `recordUsage` after it, with
   `agentStep: spec-kit.<command>`, the project and the starting user. A plan that crosses the
   budget on its third call fails with `402 BUDGET_EXCEEDED` and saves nothing. A call the
-  job aborted is recorded as an estimate of its prompt under `spec-kit.<command>.aborted`.
+  job aborted is recorded as an estimate of its prompt under `spec-kit.<command>.aborted` —
+  only if it was sent: a call still waiting in the local model's queue (`onSlotQueued`
+  without `onSlotAcquired`) was never sent and records nothing.
+- **Rate limits.** Reads (`GET …/jobs…`) and writes (start, cancel) have separate budgets,
+  so polling cannot make a cancel answer 429. Both run ahead of auth and key by client
+  address (`req.ip`: the last `X-Forwarded-For` entry under `trust proxy = 1`, which through
+  the UI's proxy is the browser's address). Writes are limited again after auth, per user.
 - **Authorization on every endpoint.** Each job route runs `requireProjectAccess()`
   (workspace scope, 404 for another tenant whatever the role), then `requirePermission`
   (`project.read` to read, `project.update` to start or cancel), and reads the row only by
@@ -6170,18 +6226,41 @@ same lock, and a caller whose connection dropped can read the outcome from the j
 "Waiting for the model"), and a continuation of a cut-off reply (#944); `runPlanExpanded`
 names each artifact ("Generating research.md (2 of 5)").
 
-**The page.** `runSpecKitCommand` starts the job and `watchSpecKitJob` reads it until it is
-terminal, then resolves with `job.result` or rejects with an `ApiError` built from
-`job.error`, so the mutation callbacks and the #1037 error card are untouched. The watched
-job's id is kept in session storage; on mount `findSpecKitJobToAttach` returns the viewer's
-running job (or the watched one that finished meanwhile) and the page attaches to it. This
-replaced `spec-kit-recovery.ts` (#1069), which inferred a command's outcome from artifact
-versions and could not tell two writers apart. The proxy timeout from #1069
+**The page.** `runSpecKitCommand` starts the job and `watchSpecKitJob` watches it until it
+is terminal, then resolves with `job.result` or rejects with an `ApiError` built from
+`job.error`, so the mutation callbacks and the #1037 error card are untouched.
+
+- *Watching* is the job's `job:lifecycle` events (the page joins the job's room; each event
+  makes the watch read the job at once) with a read every 3 seconds as the fallback. No
+  event is relied on: a socket that is down or refused only makes the page a few seconds
+  slower.
+- *Busy is per feature.* The page reads the project's running jobs (`GET …/jobs`, metadata
+  only) every 10 seconds. Run is disabled only for the scope the typed command would lock
+  (`specKitCommandLockScope`) and only while a live job holds it — the viewer's or another
+  member's, which the page names. The command box is never disabled. Jobs on other features
+  are listed with a button to open them.
+- *Opening the page* (`findSpecKitJobsOnOpen`). The jobs this tab watches are kept in
+  session storage, each with where the page was when this tab started it. The viewer's
+  running jobs are watched again, without moving the page to them. A job this tab started
+  that finished up to ten minutes ago (`isFreshSpecKitResult`) is shown as if the page had
+  stayed open. Anything else that finished is one line saying what happened earlier.
+- *A result moves the page only where it was asked for.* The selection, the command box and
+  the saved `/speckit.implement` handoff change only when this tab started the command and
+  still shows where it was started. Otherwise the result is a toast and a line with a
+  button.
+
+This replaced `spec-kit-recovery.ts` (#1069), which inferred a command's outcome from
+artifact versions and could not tell two writers apart. The proxy timeout from #1069
 (`spec-kit-proxy-timeout.ts`) stays, for callers of the request/response route through the
 UI's `/api` path.
 
 **Not done.** A job does not survive its process, by design. `POST /spec-kit/constitution`
-("Generate constitution", one model call) is still request/response.
+("Generate constitution", one model call) is still request/response. The lock is between
+**jobs**: a manual `PUT`/`DELETE` of an artifact, `speckit.constitution`,
+`speckit.taskstoissues` and `POST /spec-kit/constitution` take none, so an edit made by hand
+while a job runs on the same file is overwritten when the job saves (as before #1059; the
+store keeps no history). Nothing caps how many jobs run at once across features. A job is
+checked before each artifact write, not in one transaction with it.
 
 ### 25.3 Phased status gate model
 

@@ -205,13 +205,16 @@ export function isSpecKitJobCommand(cmd: string): cmd is SpecKitJobCommand {
 }
 
 /**
- * #1059 — a job's state. `running` and `cancelling` are live; the other three
- * are terminal. A job whose server stopped, and one that ran past its time
- * limit, are `failed` with `SPEC_KIT_JOB_INTERRUPTED` / `SPEC_KIT_JOB_TIMEOUT`.
+ * #1059 — a job's state. `running`, `cancelling` and `saving` are live; the
+ * other three are terminal. `saving` is a job that has begun to write its
+ * artifacts: it can no longer be cancelled or timed out. A job whose server
+ * stopped, and one that ran past its time limit, are `failed` with
+ * `SPEC_KIT_JOB_INTERRUPTED` / `SPEC_KIT_JOB_TIMEOUT`.
  */
 export const SPEC_KIT_JOB_STATUSES = [
   "running",
   "cancelling",
+  "saving",
   "succeeded",
   "failed",
   "cancelled",
@@ -220,7 +223,7 @@ export type SpecKitJobStatus = (typeof SPEC_KIT_JOB_STATUSES)[number];
 
 /** True while the job may still finish: poll again. */
 export function isSpecKitJobActive(status: SpecKitJobStatus): boolean {
-  return status === "running" || status === "cancelling";
+  return status === "running" || status === "cancelling" || status === "saving";
 }
 
 /**
@@ -257,7 +260,10 @@ export interface SpecKitJobDto {
 
 /** Start refused: a job already holds this feature (or the project-level set). */
 export const SPEC_KIT_JOB_RUNNING_CODE = "SPEC_KIT_JOB_RUNNING";
-/** The server stopped while the job ran; nothing more was saved. */
+/**
+ * The server stopped while the job ran. The message says which case it was:
+ * stopped before saving (nothing was saved) or while saving (part-saved).
+ */
 export const SPEC_KIT_JOB_INTERRUPTED_CODE = "SPEC_KIT_JOB_INTERRUPTED";
 /** The job ran past `SPEC_KIT_JOB_TIMEOUT_MS` and was stopped before saving. */
 export const SPEC_KIT_JOB_TIMEOUT_CODE = "SPEC_KIT_JOB_TIMEOUT";

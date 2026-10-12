@@ -438,36 +438,95 @@ restart, crash, deploy or dev hot-reload ends it. It is **not** started again: t
 spend model tokens nobody asked for a second time. The job's row is failed instead, with
 `SPEC_KIT_JOB_INTERRUPTED`:
 
-- A running job refreshes `heartbeatAt` every 15 seconds. A row still marked `running` or
-  `cancelling` whose heartbeat is more than 90 seconds old has no process behind it.
+- A running job refreshes `heartbeatAt` every 15 seconds. A row still marked `running`,
+  `cancelling` or `saving` whose heartbeat is more than 90 seconds old has no process behind
+  it.
 - A sweep fails such rows at startup and every 30 seconds after that. It does not depend on
   the scheduler. The same check also runs whenever the job is read and whenever a new
   command needs the feature the dead job held, so neither waits for the sweep.
-- So for up to 90 seconds after a restart, a job that died with the old process still reads
-  as running, and a new command on the same feature is refused with
-  `409 SPEC_KIT_JOB_RUNNING`. After that it reads as failed and the feature is free.
-- Nothing is half-saved. A job writes its artifacts only at the end, and a process killed
-  during that last step is the one case that can leave some of a plan's five artifacts new
-  and some old (the store has no transaction). Run the command again.
+- **The 90-second dead-job window.** For up to 90 seconds after a restart, a job that died
+  with the old process still reads as running, and a new command on the same feature is
+  refused with `409 SPEC_KIT_JOB_RUNNING`. After that it reads as failed and the feature is
+  free.
+- **What the failed job says, and when it is true.** A job writes its artifacts only at the
+  end, and it may write only after its row has moved from `running` to `saving`. So:
+  - a job that died while `running` reads "interrupted before it saved anything". That is a
+    fact: no artifact write happens without that move.
+  - a job that died while `saving` reads "interrupted while it was saving its result. Some
+    of its files may have been saved and others not." That is the one case that can leave
+    some of a plan's five artifacts new and some old: the artifact store has no transaction
+    across files and keeps no history. Check the feature's files, then run the command again.
 
-With more than one replica the rule is the same, and is the reason it is a heartbeat rather
-than "this process just started": another replica's live job keeps its row fresh. A cancel
-handled by a replica that does not run the job marks the row `cancelling`, and the replica
-that does run it notices on its next heartbeat (within 15 seconds).
+**More than one replica.** The row in the database decides, not any server's memory. Each
+change of a job's state is one conditional `UPDATE`:
+
+| Change | Made by | Succeeds only while the row is |
+|---|---|---|
+| `running` → `saving` (the job may now write) | the job, before its first artifact write | still that job's, `running`, and holding its `activeKey` |
+| `running` → `cancelling` | a cancel, on any replica | `running` |
+| `running` → `failed` (`SPEC_KIT_JOB_TIMEOUT`) | the time limit, in the owning process | `running` |
+| `cancelling` → `cancelled` | the owning process, once it has stopped | `cancelling` |
+| `running`/`saving` → `succeeded`/`failed` | the owning process, at the end | `running` or `saving` |
+| any live status → `failed` (or `cancelled`, from `cancelling`) | a sweep, on any replica | live, with a heartbeat more than 90 s behind the database's clock |
+
+The database serialises two of these on one row and exactly one matches, so every race has
+one winner whichever replicas the two sides run on:
+
+- **A cancel against a save.** If the cancel wins, the job is refused at its first write and
+  saves nothing. If the save wins, the cancel is answered `409 SPEC_KIT_JOB_SAVING`. A cancel
+  is never answered "cancelling" and then followed by a saved result.
+- **The time limit against a save.** Either the job is failed with `SPEC_KIT_JOB_TIMEOUT` and
+  saves nothing, or it is already saving and finishes.
+- **The owning process against a sweep** (a job that stalled for 90 seconds, or whose
+  heartbeat writes failed for that long, and then woke up). If the sweep got there first, the
+  job's next write is refused and it leaves the row as the sweep wrote it. It never writes an
+  artifact over a job that has since taken the feature.
+
+A cancel handled by a replica that does not run the job stops it at the job's next heartbeat
+(within 15 seconds) or at its first write, whichever comes first.
+
+**Clocks.** Replica clocks do not need to agree. `heartbeatAt` and `finishedAt` are written
+with the **database's** clock, and a heartbeat is judged stale against the database's clock
+in the same statement (`clock_timestamp()` on Postgres, SQLite's `'now'`). A replica whose
+clock is minutes fast or slow neither fails a live job nor keeps a dead one alive. What
+remains is the database's own clock: if it jumps forward by more than 75 seconds between
+two heartbeats (a restored snapshot, a manual clock change on the database host), live jobs
+are failed as interrupted, and each then saves nothing. One narrower limit remains too: a
+job is checked immediately before each artifact write, not in the same transaction as it. A
+process frozen for more than 90 seconds between that check and the write (a suspended VM)
+could still write one artifact after its row was failed.
+
+**No limit on how many jobs run at once.** One job per feature, plus one on the
+project-level files, is the only bound: nothing caps the jobs of one user, one project or
+the whole server. Each is a retrieval and up to five model calls. The per-project token
+budget still applies to every call. Starts are rate limited per user (below), which bounds
+how fast jobs can be started, not how many run.
 
 **Settings.**
 
 | Setting | Default | What it does |
 |---|---|---|
 | `SPEC_KIT_JOB_TIMEOUT_MS` | `1800000` (30 minutes) | The longest one job may run; 60000 to 21600000. Past it the model call in flight is aborted and the job fails with `504 SPEC_KIT_JOB_TIMEOUT` before saving anything. Admin setting or environment variable, read when a job starts. |
-| `SPECKIT_JOB_LIMIT_MAX` | `6000` | Requests to the job endpoints allowed per client address per window. A page watching a job makes one every 3 seconds (300 per 15 minutes). Environment variable, read per request. |
-| `SPECKIT_JOB_LIMIT_WINDOW_MS` | `900000` (15 minutes) | The window for the limit above. Environment variable, read at startup. |
+| `SPECKIT_JOB_LIMIT_MAX` | `6000` | **Reads** of the job endpoints (`GET …/jobs`, `GET …/jobs/:jobId`) allowed per client address per window. An open Spec Kit page makes about 390 per 15 minutes (the watched job every 3 seconds, the running-jobs list every 10). Environment variable, read per request. |
+| `SPECKIT_JOB_WRITE_LIMIT_MAX` | `600` | **Starts and cancels** allowed per client address per window. A separate budget from the reads, so heavy polling cannot make a cancel or a start answer 429. Environment variable, read per request. |
+| `SPECKIT_JOB_USER_WRITE_LIMIT_MAX` | `120` | Starts and cancels allowed per **signed-in user** per window, whatever address they come from. Environment variable, read per request. |
+| `SPECKIT_JOB_LIMIT_WINDOW_MS` | `900000` (15 minutes) | The window for the three limits above. Environment variable, read at startup. |
 | `METIS_SPEC_KIT_PROXY_TIMEOUT_MS` | `900000` | Unchanged (#1069), on the **UI** server. It now matters only to API callers that send a command to the request/response route through the UI's `/api` path; the Spec Kit page starts jobs and no longer holds a request open. |
+
+**What the address limits key on.** The two per-address limits run before authentication,
+so they use the client address: under the default `TRUST_PROXY=1`, the last entry of
+`X-Forwarded-For`. Through the METIS UI that is the browser's address, not the UI server's:
+the UI's API proxy forwards the header Next sets from the browser's connection. Users
+therefore do not share one bucket merely by using the UI. They do share it behind one NAT
+address, or when another proxy in front of the UI appends its own hop — then every user
+appears as that proxy, and `TRUST_PROXY` must be raised by one. The per-user limit is not
+affected by either.
 
 **Housekeeping.** A finished job is deleted one day after it finished, by the same sweep. To
 see what is running: `SELECT "id", "command", "featureSlug", "status", "phase", "heartbeatAt"
-FROM "spec_kit_jobs" WHERE "status" IN ('running', 'cancelling');`. To free a feature by hand
-(it should never be needed), set the row's `status` to `failed` and its `activeKey` to NULL.
+FROM "spec_kit_jobs" WHERE "status" IN ('running', 'cancelling', 'saving');`. To free a
+feature by hand (it should never be needed), set the row's `status` to `failed` and its
+`activeKey` to NULL: the job, if it is in fact alive, is then refused at its next write.
 
 ---
 

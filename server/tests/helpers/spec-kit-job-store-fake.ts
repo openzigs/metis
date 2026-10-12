@@ -1,24 +1,45 @@
 /**
  * #1059 — an in-memory `spec_kit_jobs` table with the same contract as
- * `src/lib/spec-kit/job-store.ts`, for suites that stub Prisma. It keeps the
- * two properties the job runner relies on: `activeKey` is unique among rows
- * that hold one, and every state change is a compare-and-set.
+ * `src/lib/spec-kit/job-store.ts`, for suites that stub Prisma.
+ *
+ * It is a RE-IMPLEMENTATION, so by itself it proves nothing about the real
+ * store. What keeps it honest is `spec-kit-job-store-contract.ts`: one set of
+ * assertions about every compare-and-set predicate, run against this fake
+ * (`spec-kit-job-store-1059.test.ts`), against the real store on SQLite
+ * (`spec-kit-job-store-1059.sqlite.test.ts`) and against the real store on
+ * Postgres (`spec-kit-job-store-1059-postgres.integration.test.ts`, in CI's
+ * `postgres-adapter` job). The job runner's own rules run against both this
+ * fake and the real SQLite store (`spec-kit-job-rules.ts`).
  *
  * Use it as the module mock:
  *
  *   vi.mock("../src/lib/spec-kit/job-store.js", async () =>
  *     (await import("./helpers/spec-kit-job-store-fake.js")).fakeSpecKitJobStore);
  *
- * and call `resetFakeSpecKitJobStore()` between tests. The real table, its
- * unique index included, is exercised by `spec-kit-jobs-1059.sqlite.test.ts`.
+ * and call `resetFakeSpecKitJobStore()` between tests.
  */
-import type { JobOutcome, NewSpecKitJob, SpecKitJobRow } from "../../src/lib/spec-kit/job-store.js";
+import type {
+  JobOutcome,
+  NewSpecKitJob,
+  SpecKitJobRow,
+  StaleOutcomes,
+  StaleScope,
+  SweptJob,
+} from "../../src/lib/spec-kit/job-store.js";
 
-const LIVE_STATUSES = ["running", "cancelling"];
+const LIVE_STATUSES = ["running", "cancelling", "saving"];
 const rows = new Map<string, SpecKitJobRow>();
 const isLive = (row: SpecKitJobRow): boolean => LIVE_STATUSES.includes(row.status);
 const copy = (row: SpecKitJobRow | undefined | null): SpecKitJobRow | null =>
   row ? { ...row } : null;
+
+/**
+ * The fake DATABASE's clock. Captured once, so a test that moves this process's
+ * `Date` (a replica whose clock is wrong) does not move the database's with it
+ * — exactly the separation the real store has.
+ */
+const realNow = Date.now.bind(Date);
+const dbNow = (): Date => new Date(realNow());
 
 /** The rows themselves, for a test that needs to age a heartbeat or plant a job. */
 export const fakeSpecKitJobRows = rows;
@@ -29,7 +50,7 @@ export function resetFakeSpecKitJobStore(): void {
 
 /** Insert a row as another process would have left it. */
 export function plantFakeSpecKitJob(row: Partial<SpecKitJobRow> & { id: string }): SpecKitJobRow {
-  const now = new Date();
+  const now = dbNow();
   const full: SpecKitJobRow = {
     projectId: "p1",
     command: "speckit.plan",
@@ -56,6 +77,7 @@ export const fakeSpecKitJobStore = {
     for (const row of rows.values()) {
       if (row.activeKey === job.activeKey) return null;
     }
+    const now = dbNow();
     const row: SpecKitJobRow = {
       id: job.id,
       projectId: job.projectId,
@@ -67,8 +89,8 @@ export const fakeSpecKitJobStore = {
       result: null,
       error: null,
       startedById: job.startedById,
-      heartbeatAt: job.now,
-      startedAt: job.now,
+      heartbeatAt: now,
+      startedAt: now,
       finishedAt: null,
     };
     rows.set(row.id, row);
@@ -91,16 +113,31 @@ export const fakeSpecKitJobStore = {
       .map((row) => ({ ...row }));
   },
 
-  async beatJob(id: string, now: Date): Promise<string | null> {
+  async beatJob(id: string): Promise<string | null> {
     const row = rows.get(id);
     if (!row || !isLive(row)) return null;
-    row.heartbeatAt = now;
+    row.heartbeatAt = dbNow();
     return row.status;
   },
 
   async setJobPhase(id: string, phase: string): Promise<void> {
     const row = rows.get(id);
     if (row && isLive(row)) row.phase = phase;
+  },
+
+  async beginSaving(id: string, activeKey: string): Promise<boolean> {
+    const row = rows.get(id);
+    if (!row || row.status !== "running" || row.activeKey !== activeKey) return false;
+    row.status = "saving";
+    row.heartbeatAt = dbNow();
+    return true;
+  },
+
+  async confirmSaving(id: string, activeKey: string): Promise<boolean> {
+    const row = rows.get(id);
+    if (!row || row.status !== "saving" || row.activeKey !== activeKey) return false;
+    row.heartbeatAt = dbNow();
+    return true;
   },
 
   async markJobCancelling(projectId: string, id: string): Promise<boolean> {
@@ -110,40 +147,59 @@ export const fakeSpecKitJobStore = {
     return true;
   },
 
-  async finishJob(
-    id: string,
-    outcome: JobOutcome,
-    now: Date,
-    expect: { status?: string; heartbeatAt?: Date } = {},
-  ): Promise<boolean> {
+  async finishJob(id: string, outcome: JobOutcome, from: readonly string[]): Promise<boolean> {
     const row = rows.get(id);
-    if (!row) return false;
-    if (expect.status ? row.status !== expect.status : !isLive(row)) return false;
-    if (expect.heartbeatAt && row.heartbeatAt.getTime() !== expect.heartbeatAt.getTime()) {
-      return false;
-    }
+    if (!row || !from.includes(row.status)) return false;
     row.status = outcome.status;
     row.activeKey = null;
-    row.finishedAt = now;
+    row.finishedAt = dbNow();
     row.result = outcome.result ?? null;
     row.error = outcome.error ?? null;
     return true;
   },
 
-  async findStaleJobs(cutoff: Date): Promise<SpecKitJobRow[]> {
-    return [...rows.values()]
-      .filter((row) => isLive(row) && row.heartbeatAt.getTime() < cutoff.getTime())
-      .map((row) => ({ ...row }));
+  async failStaleJobs(
+    scope: StaleScope,
+    staleMs: number,
+    outcomes: StaleOutcomes,
+  ): Promise<SweptJob[]> {
+    const now = dbNow();
+    const swept: SweptJob[] = [];
+    for (const row of rows.values()) {
+      if (!isLive(row)) continue;
+      if (!(row.heartbeatAt.getTime() < now.getTime() - staleMs)) continue;
+      if (scope.id !== undefined && row.id !== scope.id) continue;
+      if (scope.projectId !== undefined && row.projectId !== scope.projectId) continue;
+      if (scope.activeKey !== undefined && row.activeKey !== scope.activeKey) continue;
+      const was = row.status;
+      row.status = was === "cancelling" ? "cancelled" : "failed";
+      row.error =
+        was === "cancelling"
+          ? null
+          : was === "saving"
+            ? outcomes.interruptedWhileSavingError
+            : outcomes.interruptedError;
+      row.activeKey = null;
+      row.result = null;
+      row.finishedAt = now;
+      swept.push({ id: row.id, projectId: row.projectId, status: row.status });
+    }
+    return swept;
   },
 
-  async pruneFinishedJobs(cutoff: Date): Promise<number> {
+  async pruneFinishedJobs(retentionMs: number): Promise<number> {
+    const cutoff = realNow() - retentionMs;
     let pruned = 0;
     for (const row of [...rows.values()]) {
-      if (!isLive(row) && row.finishedAt && row.finishedAt.getTime() < cutoff.getTime()) {
+      if (!isLive(row) && row.finishedAt && row.finishedAt.getTime() < cutoff) {
         rows.delete(row.id);
         pruned += 1;
       }
     }
     return pruned;
+  },
+
+  async discardJob(id: string): Promise<void> {
+    if (rows.get(id)?.status === "running") rows.delete(id);
   },
 };

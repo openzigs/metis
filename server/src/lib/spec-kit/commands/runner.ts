@@ -380,6 +380,10 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
           ];
     // #1059 — a stopped job makes no further call.
     throwIfSpecKitJobStopped();
+    // A provider that queues requests (the local model's concurrency limiter)
+    // says when this one has to wait and when it is let through. A call
+    // aborted while it was still waiting was never sent, and costs nothing.
+    let waitingForSlot = false;
     reportSpecKitJobPhase(
       continuations === 0
         ? phase
@@ -387,11 +391,22 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
       input.phaseProgress,
     );
     try {
-      response = await provider.chat(messages, chatOpts);
+      response = await provider.chat(messages, {
+        ...chatOpts,
+        onSlotQueued: () => {
+          waitingForSlot = true;
+        },
+        onSlotAcquired: () => {
+          waitingForSlot = false;
+        },
+      });
     } catch (err) {
       // A call its job aborted reported no usage, but the provider bills it:
-      // record an estimate of the prompt it had already been sent (as #855).
-      if (job?.signal.aborted) recordAbortedCall(input, provider, sessionId, fullSystem, messages);
+      // record an estimate of the prompt it had already been sent (as #855) —
+      // only for a call that WAS sent.
+      if (job?.signal.aborted && !waitingForSlot) {
+        recordAbortedCall(input, provider, sessionId, fullSystem, messages);
+      }
       throw err;
     }
     totalTokens += response.usage.totalTokens;

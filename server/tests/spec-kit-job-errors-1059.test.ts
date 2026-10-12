@@ -16,7 +16,11 @@ import { GateUnmetError } from "../src/lib/spec-kit/gates.js";
 import { SpecKitFeatureLifecycleError } from "../src/lib/spec-kit/features.js";
 import { BudgetExceededError } from "../src/lib/finops/budget-enforcer.js";
 import { SafetyDeniedError } from "../src/lib/safety/safety-hook.js";
-import { AIProviderError, AIProviderRetiredError } from "../src/lib/ai/errors.js";
+import {
+  AIProviderError,
+  AIProviderRetiredError,
+  describeProviderErrorSafely,
+} from "../src/lib/ai/errors.js";
 import {
   SPEC_KIT_EMPTY_OUTPUT_CODE,
   SPEC_KIT_OUTPUT_EXHAUSTED_CODE,
@@ -61,14 +65,84 @@ describe("toSpecKitJobError — the synchronous route's statuses and codes", () 
     });
   });
 
-  it("maps a provider that cannot be built to 502, and a retired one to 409", () => {
-    expect(toSpecKitJobError(new AIProviderError("no key for anthropic"))).toEqual({
-      status: 502,
-      code: "AI_PROVIDER_KEY_UNAVAILABLE",
-      message: "no key for anthropic",
-    });
+  it("maps a retired provider to 409, with the message that says what to change", () => {
     const retired = toSpecKitJobError(new AIProviderRetiredError("copilot-native"));
     expect(retired).toMatchObject({ status: 409, code: "AI_PROVIDER_RETIRED" });
+  });
+
+  // A job's error is stored for a day and readable by every member who can
+  // read the project. A provider failure can carry the upstream service's own
+  // text, which is not ours to vouch for: only its shape is stored.
+  describe("a provider failure — 502, and never the provider's own words", () => {
+    const UPSTREAM = "overloaded; request_id req_011CSabc; org acme-internal; key sk-ant-xyz";
+
+    it("names the provider, the operation, the error class and the HTTP status", () => {
+      const err = new AIProviderError(`anthropic chat failed (APIError): ${UPSTREAM}`, 529, {
+        provider: "anthropic",
+        operation: "chat",
+        errorName: "APIError",
+      });
+      const mapped = toSpecKitJobError(err);
+      expect(mapped).toEqual({
+        status: 502,
+        code: "AI_PROVIDER_KEY_UNAVAILABLE",
+        message:
+          "The AI provider call failed: anthropic chat (APIError, HTTP 529). The provider's own message is in the server log.",
+      });
+      for (const leaked of ["req_011CSabc", "acme-internal", "sk-ant-xyz", "overloaded"]) {
+        expect(JSON.stringify(mapped)).not.toContain(leaked);
+      }
+    });
+
+    it("says only that the provider failed when the error carries no structured detail", () => {
+      const mapped = toSpecKitJobError(new AIProviderError(`gateway said: ${UPSTREAM}`));
+      expect(mapped).toEqual({
+        status: 502,
+        code: "AI_PROVIDER_KEY_UNAVAILABLE",
+        message: "The AI provider call failed (HTTP 502). The detail is in the server log.",
+      });
+    });
+
+    it("does not trust structured detail that is not a plain token", () => {
+      const err = new AIProviderError("x", 500, {
+        provider: "anthropic",
+        operation: `chat ${UPSTREAM}`,
+        errorName: "APIError",
+      });
+      const mapped = toSpecKitJobError(err);
+      expect(mapped.message).toBe(
+        "The AI provider call failed (HTTP 500). The detail is in the server log.",
+      );
+    });
+
+    it("leaves out a status that is not an HTTP error status", () => {
+      const err = new AIProviderError("x", 0, {
+        provider: "anthropic",
+        operation: "chat",
+        errorName: "APIConnectionError",
+      });
+      expect(toSpecKitJobError(err).message).toBe(
+        "The AI provider call failed: anthropic chat (APIConnectionError). The provider's own message is in the server log.",
+      );
+      expect(describeProviderErrorSafely(new AIProviderError("x", 0))).toBe(
+        "The AI provider call failed. The detail is in the server log.",
+      );
+    });
+
+    it("keeps a message METIS wrote itself and marked safe, bounded", () => {
+      const ours = new AIProviderError(
+        'Provider credentials unavailable for project: AI provider "anthropic" is not configured on this server.',
+        502,
+        { clientSafe: true },
+      );
+      expect(toSpecKitJobError(ours)).toEqual({
+        status: 502,
+        code: "AI_PROVIDER_KEY_UNAVAILABLE",
+        message: ours.message,
+      });
+      const long = new AIProviderError("y".repeat(5_000), 502, { clientSafe: true });
+      expect(toSpecKitJobError(long).message).toHaveLength(400);
+    });
   });
 
   it("keeps a feature lifecycle error and an AppError thrown by the dispatcher", () => {

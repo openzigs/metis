@@ -26,12 +26,17 @@ import {
   SpecKitJobAbandonedError,
   SpecKitJobCancelledError,
   SpecKitJobUnreachableError,
-  findSpecKitJobToAttach,
+  SPEC_KIT_FRESH_RESULT_MS,
+  findSpecKitJobsOnOpen,
+  forgetWatchedJob,
   isFailedSend,
+  isFreshSpecKitResult,
   isLostResponse,
-  loadWatchedJob,
+  loadWatchedJobs,
+  rememberWatchedJob,
   runSpecKitCommand,
-  saveWatchedJob,
+  specKitCommandLockScope,
+  specKitJobHolding,
   watchSpecKitJob,
 } from "@/lib/spec-kit-jobs";
 
@@ -88,7 +93,7 @@ describe("runSpecKitCommand — a model-backed command is a job", () => {
         ...noWait,
         onUpdate: (j) => {
           seen.push([j.status, j.phase]);
-          if (j.status === "running") storedWhileRunning = loadWatchedJob("p1");
+          if (j.status === "running") storedWhileRunning = loadWatchedJobs("p1");
         },
       },
     );
@@ -108,13 +113,17 @@ describe("runSpecKitCommand — a model-backed command is a job", () => {
       ["running", "Generating research.md (2 of 5)"],
       ["succeeded", "Saving the plan artifacts"],
     ]);
-    // Kept while it runs, so a reload can re-attach; forgotten once it is over.
-    expect(storedWhileRunning).toEqual({
-      jobId: "job-1",
-      command: "speckit.plan",
-      featureSlug: "001-mark-read",
-    });
-    expect(loadWatchedJob("p1")).toBeNull();
+    // Kept while it runs, so a reload can pick it up — with where this tab
+    // started it from; forgotten once it is over.
+    expect(storedWhileRunning).toEqual([
+      {
+        jobId: "job-1",
+        command: "speckit.plan",
+        featureSlug: "001-mark-read",
+        origin: { scope: "001-mark-read" },
+      },
+    ]);
+    expect(loadWatchedJobs("p1")).toEqual([]);
   });
 
   it("rejects with the server's status, code, message and details when the job failed", async () => {
@@ -140,7 +149,7 @@ describe("runSpecKitCommand — a model-backed command is a job", () => {
       message: "spec.md is required",
       details: { required: "specGate" },
     });
-    expect(loadWatchedJob("p1")).toBeNull();
+    expect(loadWatchedJobs("p1")).toEqual([]);
   });
 
   it("does not look for a job when the start is refused with a code", async () => {
@@ -148,7 +157,7 @@ describe("runSpecKitCommand — a model-backed command is a job", () => {
     api.startCommandJob!.mockRejectedValue(refused);
     await expect(runSpecKitCommand("p1", "speckit.plan", {}, noWait)).rejects.toBe(refused);
     expect(api.listActiveJobs).not.toHaveBeenCalled();
-    expect(loadWatchedJob("p1")).toBeNull();
+    expect(loadWatchedJobs("p1")).toEqual([]);
   });
 
   describe("when the response to the START is lost", () => {
@@ -218,7 +227,7 @@ describe("runSpecKitCommand — a command that is not a job is one request", () 
       });
       expect(api.runCommand).toHaveBeenCalledWith("p1", command, { input: "x" });
       expect(api.startCommandJob).not.toHaveBeenCalled();
-      expect(loadWatchedJob("p1")).toBeNull();
+      expect(loadWatchedJobs("p1")).toEqual([]);
     },
   );
 
@@ -307,7 +316,7 @@ describe("watchSpecKitJob", () => {
   });
 
   it("stops after too many failed reads in a row, saying the job carries on — and stays re-attachable", async () => {
-    saveWatchedJob("p1", { jobId: "job-1", command: "speckit.plan", featureSlug: null });
+    rememberWatchedJob("p1", { jobId: "job-1", command: "speckit.plan", featureSlug: null });
     api.getJob!.mockRejectedValue(new TypeError("Failed to fetch"));
 
     const err = await watchSpecKitJob("p1", "job-1", { ...noWait, maxReadFailures: 3 }).catch(
@@ -317,20 +326,20 @@ describe("watchSpecKitJob", () => {
     expect(err).toBeInstanceOf(SpecKitJobUnreachableError);
     expect((err as Error).message).toBe(SPEC_KIT_JOB_UNREACHABLE);
     expect(api.getJob).toHaveBeenCalledTimes(3);
-    expect(loadWatchedJob("p1")?.jobId).toBe("job-1");
+    expect(loadWatchedJobs("p1").map((w) => w.jobId)).toEqual(["job-1"]);
   });
 
   it.each([404, 403, 401])("gives up at once on a %i and forgets the job", async (status) => {
-    saveWatchedJob("p1", { jobId: "job-1", command: "speckit.plan", featureSlug: null });
+    rememberWatchedJob("p1", { jobId: "job-1", command: "speckit.plan", featureSlug: null });
     const gone = new ApiError(status, "No such Spec Kit job", "SPEC_KIT_JOB_NOT_FOUND");
     api.getJob!.mockRejectedValue(gone);
     await expect(watchSpecKitJob("p1", "job-1", noWait)).rejects.toBe(gone);
     expect(api.getJob).toHaveBeenCalledTimes(1);
-    expect(loadWatchedJob("p1")).toBeNull();
+    expect(loadWatchedJobs("p1")).toEqual([]);
   });
 
   it("stops reading the moment the page is left, and leaves the job re-attachable", async () => {
-    saveWatchedJob("p1", { jobId: "job-1", command: "speckit.plan", featureSlug: null });
+    rememberWatchedJob("p1", { jobId: "job-1", command: "speckit.plan", featureSlug: null });
     const left = new AbortController();
     api.getJob!.mockImplementation(async () => {
       left.abort(); // the page is left while this read is in flight
@@ -344,7 +353,7 @@ describe("watchSpecKitJob", () => {
 
     expect(onUpdate).not.toHaveBeenCalled();
     expect(api.getJob).toHaveBeenCalledTimes(1);
-    expect(loadWatchedJob("p1")?.jobId).toBe("job-1");
+    expect(loadWatchedJobs("p1").map((w) => w.jobId)).toEqual(["job-1"]);
   });
 
   it("makes no read at all for a page already left", async () => {
@@ -390,89 +399,291 @@ describe("watchSpecKitJob", () => {
   });
 });
 
-describe("findSpecKitJobToAttach — what a freshly opened page picks up", () => {
-  it("returns nothing when the viewer has no job", async () => {
-    api.listActiveJobs!.mockResolvedValue({ jobs: [job({ startedById: "someone-else" })] });
-    expect(await findSpecKitJobToAttach("p1", "me")).toBeNull();
-    expect(api.getJob).not.toHaveBeenCalled();
-    expect(loadWatchedJob("p1")).toBeNull();
-  });
+describe("watchSpecKitJob — events, with the timed read as the fallback", () => {
+  /** A subscription the test fires by hand, as the page's socket would. */
+  const events = () => {
+    let fire: (() => void) | null = null;
+    const unsubscribe = vi.fn();
+    return {
+      subscribe: vi.fn((_jobId: string, onEvent: () => void) => {
+        fire = onEvent;
+        return unsubscribe;
+      }),
+      fire: () => fire?.(),
+      unsubscribe,
+    };
+  };
 
-  it("returns the viewer's running job, preferring the one this tab was watching", async () => {
-    saveWatchedJob("p1", { jobId: "b", command: "speckit.plan", featureSlug: null });
-    api.listActiveJobs!.mockResolvedValue({
-      jobs: [job({ id: "a" }), job({ id: "b", featureSlug: "002-b" }), job({ id: "c" })],
+  it("reads at once when the job's event arrives, without waiting out the interval", async () => {
+    const socket = events();
+    api
+      .getJob!.mockResolvedValueOnce({ job: job({ phase: "Generating plan.md (1 of 5)" }) })
+      .mockResolvedValueOnce({ job: job({ status: "succeeded", result: { message: "done" } }) });
+    // An interval far longer than the test: only the event can end the wait.
+    const watching = watchSpecKitJob("p1", "job-1", {
+      subscribe: socket.subscribe,
+      intervalMs: 3_600_000,
     });
-    expect((await findSpecKitJobToAttach("p1", "me"))?.id).toBe("b");
-    expect(loadWatchedJob("p1")).toEqual({
-      jobId: "b",
-      command: "speckit.plan",
-      featureSlug: "002-b",
-    });
+    await vi.waitFor(() => expect(api.getJob).toHaveBeenCalledTimes(1));
+
+    socket.fire();
+
+    await expect(watching).resolves.toEqual({ message: "done" });
+    expect(api.getJob).toHaveBeenCalledTimes(2);
+    expect(socket.subscribe).toHaveBeenCalledWith("job-1", expect.any(Function));
+    expect(socket.unsubscribe).toHaveBeenCalledTimes(1);
   });
 
-  it("returns a running job started from another tab, and remembers it", async () => {
-    api.listActiveJobs!.mockResolvedValue({ jobs: [job({ id: "elsewhere" })] });
-    expect((await findSpecKitJobToAttach("p1", "me"))?.id).toBe("elsewhere");
-    expect(loadWatchedJob("p1")?.jobId).toBe("elsewhere");
+  it("does not lose an event that arrives while a read is in flight", async () => {
+    const socket = events();
+    api
+      .getJob!.mockImplementationOnce(async () => {
+        socket.fire(); // the job finished while this read was on its way back
+        return { job: job() };
+      })
+      .mockResolvedValueOnce({ job: job({ status: "succeeded", result: { message: "done" } }) });
+
+    await expect(
+      watchSpecKitJob("p1", "job-1", { subscribe: socket.subscribe, intervalMs: 3_600_000 }),
+    ).resolves.toEqual({ message: "done" });
   });
 
-  it("returns the watched job that finished while the page was away", async () => {
-    saveWatchedJob("p1", { jobId: "job-1", command: "speckit.plan", featureSlug: null });
-    const finished = job({ status: "failed", error: { status: 502, code: "X", message: "m" } });
-    api.getJob!.mockResolvedValue({ job: finished });
-    expect(await findSpecKitJobToAttach("p1", "me")).toEqual(finished);
-    expect(api.getJob).toHaveBeenCalledWith("p1", "job-1");
+  it("still finishes on the timed read alone when no event ever arrives", async () => {
+    const socket = events();
+    api
+      .getJob!.mockResolvedValueOnce({ job: job() })
+      .mockResolvedValueOnce({ job: job({ status: "succeeded", result: { message: "ok" } }) });
+    await expect(
+      watchSpecKitJob("p1", "job-1", { subscribe: socket.subscribe, intervalMs: 1 }),
+    ).resolves.toEqual({ message: "ok" });
+    expect(socket.unsubscribe).toHaveBeenCalledTimes(1);
   });
 
-  it("still reads the watched job when the list cannot be read", async () => {
-    saveWatchedJob("p1", { jobId: "job-1", command: "speckit.plan", featureSlug: null });
-    api.listActiveJobs!.mockRejectedValue(new TypeError("Failed to fetch"));
-    api.getJob!.mockResolvedValue({ job: job() });
-    expect((await findSpecKitJobToAttach("p1", "me"))?.id).toBe("job-1");
-  });
-
-  it("forgets a watched job that is gone, and keeps one that merely could not be read", async () => {
-    saveWatchedJob("p1", { jobId: "job-1", command: "speckit.plan", featureSlug: null });
-    api.getJob!.mockRejectedValue(new TypeError("Failed to fetch"));
-    expect(await findSpecKitJobToAttach("p1", "me")).toBeNull();
-    expect(loadWatchedJob("p1")?.jobId).toBe("job-1");
-
+  it("unsubscribes when the watch fails or the page is left", async () => {
+    const failing = events();
     api.getJob!.mockRejectedValue(new ApiError(404, "gone", "SPEC_KIT_JOB_NOT_FOUND"));
-    expect(await findSpecKitJobToAttach("p1", "me")).toBeNull();
-    expect(loadWatchedJob("p1")).toBeNull();
+    await expect(
+      watchSpecKitJob("p1", "job-1", { ...noWait, subscribe: failing.subscribe }),
+    ).rejects.toBeInstanceOf(ApiError);
+    expect(failing.unsubscribe).toHaveBeenCalledTimes(1);
+
+    const left = new AbortController();
+    const leaving = events();
+    api.getJob!.mockReset();
+    api.getJob!.mockResolvedValue({ job: job() });
+    const watching = watchSpecKitJob("p1", "job-1", {
+      subscribe: leaving.subscribe,
+      signal: left.signal,
+      intervalMs: 3_600_000,
+    });
+    await vi.waitFor(() => expect(api.getJob).toHaveBeenCalledTimes(1));
+    left.abort();
+    await expect(watching).rejects.toBeInstanceOf(SpecKitJobAbandonedError);
+    expect(leaving.unsubscribe).toHaveBeenCalledTimes(1);
   });
 });
 
-describe("the watched job in session storage", () => {
-  it("round-trips per project", () => {
-    saveWatchedJob("p1", { jobId: "j", command: "speckit.tasks", featureSlug: "001-a" });
-    expect(loadWatchedJob("p1")).toEqual({
+describe("findSpecKitJobsOnOpen — what a freshly opened page picks up", () => {
+  it("finds nothing when the viewer has no job, and watches nobody else's", async () => {
+    api.listActiveJobs!.mockResolvedValue({ jobs: [job({ startedById: "someone-else" })] });
+    expect(await findSpecKitJobsOnOpen("p1", "me")).toEqual({ running: [], finished: [] });
+    expect(api.getJob).not.toHaveBeenCalled();
+    expect(loadWatchedJobs("p1")).toEqual([]);
+  });
+
+  it("returns EVERY running job of the viewer, each with the origin this tab recorded", async () => {
+    rememberWatchedJob("p1", {
+      jobId: "b",
+      command: "speckit.plan",
+      featureSlug: "002-b",
+      origin: { scope: "002-b" },
+    });
+    api.listActiveJobs!.mockResolvedValue({
+      jobs: [
+        job({ id: "a" }),
+        job({ id: "b", featureSlug: "002-b" }),
+        job({ id: "theirs", startedById: "someone-else" }),
+      ],
+    });
+
+    const found = await findSpecKitJobsOnOpen("p1", "me");
+
+    expect(found.finished).toEqual([]);
+    expect(found.running.map((r) => [r.job.id, r.origin])).toEqual([
+      ["a", undefined], // started in another tab: found, not started here
+      ["b", { scope: "002-b" }],
+    ]);
+    // Both are remembered, and the one found keeps no origin it never had.
+    expect(loadWatchedJobs("p1")).toEqual([
+      { jobId: "a", command: "speckit.plan", featureSlug: "001-mark-read" },
+      { jobId: "b", command: "speckit.plan", featureSlug: "002-b", origin: { scope: "002-b" } },
+    ]);
+    expect(api.getJob).not.toHaveBeenCalled();
+  });
+
+  it("returns the watched job that finished while the page was away", async () => {
+    rememberWatchedJob("p1", {
+      jobId: "job-1",
+      command: "speckit.plan",
+      featureSlug: null,
+      origin: { scope: null },
+    });
+    const finished = job({ status: "failed", error: { status: 502, code: "X", message: "m" } });
+    api.getJob!.mockResolvedValue({ job: finished });
+
+    expect(await findSpecKitJobsOnOpen("p1", "me")).toEqual({
+      running: [],
+      finished: [{ job: finished, origin: { scope: null } }],
+    });
+    expect(api.getJob).toHaveBeenCalledWith("p1", "job-1");
+  });
+
+  it("never reports as finished a job this tab was not watching", async () => {
+    // Nothing in this tab's storage: whatever finished, it is not this tab's news.
+    api.listActiveJobs!.mockResolvedValue({ jobs: [] });
+    expect(await findSpecKitJobsOnOpen("p1", "me")).toEqual({ running: [], finished: [] });
+    expect(api.getJob).not.toHaveBeenCalled();
+  });
+
+  it("still reads the watched jobs when the list cannot be read", async () => {
+    rememberWatchedJob("p1", { jobId: "job-1", command: "speckit.plan", featureSlug: null });
+    api.listActiveJobs!.mockRejectedValue(new TypeError("Failed to fetch"));
+    api.getJob!.mockResolvedValue({ job: job() });
+    const found = await findSpecKitJobsOnOpen("p1", "me");
+    expect(found.running.map((r) => r.job.id)).toEqual(["job-1"]);
+  });
+
+  it("forgets a watched job that is gone, and keeps one that merely could not be read", async () => {
+    rememberWatchedJob("p1", { jobId: "job-1", command: "speckit.plan", featureSlug: null });
+    api.getJob!.mockRejectedValue(new TypeError("Failed to fetch"));
+    expect(await findSpecKitJobsOnOpen("p1", "me")).toEqual({ running: [], finished: [] });
+    expect(loadWatchedJobs("p1").map((w) => w.jobId)).toEqual(["job-1"]);
+
+    api.getJob!.mockRejectedValue(new ApiError(404, "gone", "SPEC_KIT_JOB_NOT_FOUND"));
+    expect(await findSpecKitJobsOnOpen("p1", "me")).toEqual({ running: [], finished: [] });
+    expect(loadWatchedJobs("p1")).toEqual([]);
+  });
+});
+
+describe("isFreshSpecKitResult — news, or something that happened earlier", () => {
+  const NOW = Date.parse("2026-10-12T12:00:00.000Z");
+  const finishedAgo = (ms: number): SpecKitJobDto =>
+    job({ status: "succeeded", finishedAt: new Date(NOW - ms).toISOString() });
+
+  it("is fresh up to the window, and not after it", () => {
+    expect(isFreshSpecKitResult(finishedAgo(0), NOW)).toBe(true);
+    expect(isFreshSpecKitResult(finishedAgo(SPEC_KIT_FRESH_RESULT_MS), NOW)).toBe(true);
+    expect(isFreshSpecKitResult(finishedAgo(SPEC_KIT_FRESH_RESULT_MS + 1), NOW)).toBe(false);
+    // The review's case: a tab reopened the next morning.
+    expect(isFreshSpecKitResult(finishedAgo(18 * 60 * 60_000), NOW)).toBe(false);
+  });
+
+  it("is a few minutes, not hours", () => {
+    expect(SPEC_KIT_FRESH_RESULT_MS).toBeGreaterThanOrEqual(5 * 60_000);
+    expect(SPEC_KIT_FRESH_RESULT_MS).toBeLessThanOrEqual(15 * 60_000);
+  });
+
+  it("is never fresh without a readable finish time", () => {
+    expect(isFreshSpecKitResult(job({ status: "succeeded", finishedAt: null }), NOW)).toBe(false);
+    expect(isFreshSpecKitResult(job({ status: "succeeded", finishedAt: "soon" }), NOW)).toBe(false);
+  });
+});
+
+describe("which scope a command locks, and who holds it", () => {
+  it("a new-feature specify needs no lock; the constitution is the project's; the rest follow the selection", () => {
+    expect(specKitCommandLockScope("speckit.specify", null)).toBeUndefined();
+    expect(specKitCommandLockScope("speckit.specify", "001-a")).toBe("001-a");
+    expect(specKitCommandLockScope("speckit.constitution", "001-a")).toBeNull();
+    expect(specKitCommandLockScope("speckit.plan", "001-a")).toBe("001-a");
+    expect(specKitCommandLockScope("speckit.tasks", null)).toBeNull();
+  });
+
+  it("finds the live job on a scope — anyone's — and none on a scope that is free", () => {
+    const jobs = [
+      job({ id: "a", featureSlug: "001-a", startedById: "someone-else" }),
+      job({ id: "p", featureSlug: null, status: "saving" }),
+      job({ id: "done", featureSlug: "002-b", status: "succeeded" }),
+    ];
+    expect(specKitJobHolding(jobs, "001-a")?.id).toBe("a");
+    expect(specKitJobHolding(jobs, null)?.id).toBe("p");
+    expect(specKitJobHolding(jobs, "002-b")).toBeNull();
+    expect(specKitJobHolding(jobs, "003-c")).toBeNull();
+    expect(specKitJobHolding([], null)).toBeNull();
+  });
+});
+
+describe("the watched jobs in session storage", () => {
+  it("round-trips per project, several at once, oldest first", () => {
+    rememberWatchedJob("p1", {
       jobId: "j",
       command: "speckit.tasks",
       featureSlug: "001-a",
+      origin: { scope: "001-a" },
     });
-    expect(loadWatchedJob("p2")).toBeNull();
-    saveWatchedJob("p1", null);
-    expect(loadWatchedJob("p1")).toBeNull();
+    rememberWatchedJob("p1", { jobId: "k", command: "speckit.plan", featureSlug: null });
+    expect(loadWatchedJobs("p1")).toEqual([
+      { jobId: "j", command: "speckit.tasks", featureSlug: "001-a", origin: { scope: "001-a" } },
+      { jobId: "k", command: "speckit.plan", featureSlug: null },
+    ]);
+    expect(loadWatchedJobs("p2")).toEqual([]);
+    forgetWatchedJob("p1", "j");
+    expect(loadWatchedJobs("p1").map((w) => w.jobId)).toEqual(["k"]);
+    forgetWatchedJob("p1", "k");
+    expect(window.sessionStorage.getItem("metis:spec-kit-job:p1")).toBeNull();
+  });
+
+  it("keeps the origin already recorded when a job is remembered again without one", () => {
+    rememberWatchedJob("p1", {
+      jobId: "j",
+      command: "speckit.specify",
+      featureSlug: "004-new",
+      origin: { scope: null },
+    });
+    rememberWatchedJob("p1", { jobId: "j", command: "speckit.specify", featureSlug: "004-new" });
+    expect(loadWatchedJobs("p1")).toEqual([
+      { jobId: "j", command: "speckit.specify", featureSlug: "004-new", origin: { scope: null } },
+    ]);
+  });
+
+  it("reads the single job an earlier build stored, as one this tab did not start", () => {
+    window.sessionStorage.setItem(
+      "metis:spec-kit-job:p1",
+      JSON.stringify({ jobId: "j", command: "speckit.tasks", featureSlug: "001-a" }),
+    );
+    expect(loadWatchedJobs("p1")).toEqual([
+      { jobId: "j", command: "speckit.tasks", featureSlug: "001-a" },
+    ]);
   });
 
   it.each([
     ["not JSON", "{nope"],
-    ["no job id", JSON.stringify({ command: "speckit.plan" })],
-    ["a command that is not one", JSON.stringify({ jobId: "j", command: "rm -rf" })],
-    ["a non-string command", JSON.stringify({ jobId: "j", command: 7 })],
+    ["no job id", JSON.stringify([{ command: "speckit.plan" }])],
+    ["a command that is not one", JSON.stringify([{ jobId: "j", command: "rm -rf" }])],
+    ["a non-string command", JSON.stringify([{ jobId: "j", command: 7 }])],
+    ["not an object", JSON.stringify(["j", 7, null])],
   ])("ignores a stored value that is %s", (_name, raw) => {
     window.sessionStorage.setItem("metis:spec-kit-job:p1", raw);
-    expect(loadWatchedJob("p1")).toBeNull();
+    expect(loadWatchedJobs("p1")).toEqual([]);
   });
 
-  it("reads a missing feature as the project-level set", () => {
+  it("reads a missing feature as the project-level set, and a malformed origin scope as it", () => {
     window.sessionStorage.setItem(
       "metis:spec-kit-job:p1",
-      JSON.stringify({ jobId: "j", command: "speckit.specify" }),
+      JSON.stringify([{ jobId: "j", command: "speckit.specify", origin: { scope: 7 } }]),
     );
-    expect(loadWatchedJob("p1")?.featureSlug).toBeNull();
+    expect(loadWatchedJobs("p1")).toEqual([
+      { jobId: "j", command: "speckit.specify", featureSlug: null, origin: { scope: null } },
+    ]);
+  });
+
+  it("keeps the newest twenty", () => {
+    for (let i = 0; i < 25; i += 1) {
+      rememberWatchedJob("p1", { jobId: `j${i}`, command: "speckit.plan", featureSlug: null });
+    }
+    const ids = loadWatchedJobs("p1").map((w) => w.jobId);
+    expect(ids).toHaveLength(20);
+    expect(ids[0]).toBe("j5");
+    expect(ids[19]).toBe("j24");
   });
 
   it("survives storage that refuses to write", () => {
@@ -480,7 +691,7 @@ describe("the watched job in session storage", () => {
       throw new Error("QuotaExceededError");
     });
     expect(() =>
-      saveWatchedJob("p1", { jobId: "j", command: "speckit.plan", featureSlug: null }),
+      rememberWatchedJob("p1", { jobId: "j", command: "speckit.plan", featureSlug: null }),
     ).not.toThrow();
     setItem.mockRestore();
   });

@@ -134,7 +134,7 @@ import SpecKitPage from "@/app/(authed)/projects/[id]/spec-kit/page";
 import { ApiError } from "@/lib/api-client";
 import { createQueryClient } from "@/lib/query-client";
 import { loadHandoff } from "@/lib/spec-kit-display";
-import { loadWatchedJob } from "@/lib/spec-kit-jobs";
+import { loadWatchedJobs } from "@/lib/spec-kit-jobs";
 
 const collabMock = commentApi as unknown as {
   listForArtifact: ReturnType<typeof vi.fn>;
@@ -471,11 +471,14 @@ describe("SpecKitPage", () => {
         expect(toastWarning).not.toHaveBeenCalled();
         expect(routerReplace).not.toHaveBeenCalled();
         expect(invalidate).not.toHaveBeenCalled();
-        expect(loadWatchedJob("p1")).toEqual({
-          jobId: "job-1",
-          command: "speckit.specify",
-          featureSlug: null,
-        });
+        expect(loadWatchedJobs("p1")).toEqual([
+          {
+            jobId: "job-1",
+            command: "speckit.specify",
+            featureSlug: null,
+            origin: { scope: null },
+          },
+        ]);
       },
     );
 

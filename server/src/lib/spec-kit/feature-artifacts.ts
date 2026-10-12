@@ -120,9 +120,10 @@ export async function writeFeatureArtifact(
   input: WriteFeatureArtifactInput,
 ): Promise<FeatureArtifactDto> {
   const key = assertFeatureArtifactWritable(input.key, input.content);
-  // #1059 — inside a job this is where it starts saving: a job stopped before
-  // here writes nothing, and from here it can no longer be stopped.
-  specKitJobCommitPoint();
+  // #1059 — inside a job this is the gate every write passes: the job's row
+  // must still be its own in the DATABASE (not cancelled, timed out or failed
+  // by another replica), or this throws and nothing is written.
+  await specKitJobCommitPoint();
   const existing = await prisma.specKitFeatureArtifact.findUnique({
     where: { featureId_key: { featureId: input.featureId, key } },
   });

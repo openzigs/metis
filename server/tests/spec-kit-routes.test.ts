@@ -189,7 +189,11 @@ vi.mock("../src/lib/spec-kit/commands/implement.js", () => ({
 vi.mock("../src/lib/spec-kit/commands/constitution.js", () => ({
   runConstitution: vi.fn(async () => ({ ok: true })),
 }));
-vi.mock("../src/lib/spec-kit/commands/specify-feature.js", () => ({
+vi.mock("../src/lib/spec-kit/commands/specify-feature.js", async (importOriginal) => ({
+  // #1059 — the real title rule: the route reserves the new feature with it.
+  specifyFeatureTitle: (
+    await importOriginal<typeof import("../src/lib/spec-kit/commands/specify-feature.js")>()
+  ).specifyFeatureTitle,
   runSpecifyFeature: vi.fn(async () => ({
     feature: { slug: "001-x" },
     artifact: {},
@@ -230,6 +234,12 @@ const featureLifecycle = vi.hoisted(() => {
     restoreFeature: vi.fn(),
     listFeatures: vi.fn(),
     resolveFeatureBySlug: vi.fn(),
+    // #1059 — a slug-less specify has its feature created before the job starts.
+    createFeature: vi.fn(async (input: { title: string }) => ({
+      id: "f-new",
+      slug: "001-new-feature",
+      title: input.title,
+    })),
   };
 });
 
@@ -254,6 +264,7 @@ vi.mock("../src/lib/spec-kit/features.js", async (importOriginal) => ({
   restoreFeature: featureLifecycle.restoreFeature,
   listFeatures: featureLifecycle.listFeatures,
   resolveFeatureBySlug: featureLifecycle.resolveFeatureBySlug,
+  createFeature: featureLifecycle.createFeature,
   SpecKitFeatureLifecycleError: featureLifecycle.SpecKitFeatureLifecycleError,
 }));
 
@@ -644,6 +655,28 @@ describe("/api/projects/:projectId/spec-kit provider injection (#381)", () => {
     expect(resolveProjectProvider).toHaveBeenCalledWith("p1");
     expect(runSpecifyFeature).toHaveBeenCalledWith(
       expect.objectContaining({ deps: { provider: fakeProvider } }),
+    );
+    // #1059 — the feature was created first, from the brief's title, and the
+    // command then runs on that feature: its job is locked under the new slug.
+    expect(featureLifecycle.createFeature).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "p1", title: "build it" }),
+    );
+    expect(runSpecifyFeature).toHaveBeenCalledWith(
+      expect.objectContaining({ featureSlugOverride: "001-new-feature", prompt: "build it" }),
+    );
+  });
+
+  it("namespaced speckit.specify WITH a feature creates none: it runs on the one named", async () => {
+    const { runSpecifyFeature } = await import("../src/lib/spec-kit/commands/specify-feature.js");
+    (runSpecifyFeature as any).mockClear();
+    featureLifecycle.createFeature.mockClear();
+    const res = await request(makeApp())
+      .post("/api/projects/p1/spec-kit/commands/speckit.specify")
+      .send({ input: "build it", featureSlug: "007-existing" });
+    expect(res.status).toBe(200);
+    expect(featureLifecycle.createFeature).not.toHaveBeenCalled();
+    expect(runSpecifyFeature).toHaveBeenCalledWith(
+      expect.objectContaining({ featureSlugOverride: "007-existing" }),
     );
   });
 

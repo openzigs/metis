@@ -9,9 +9,14 @@
  *
  * The job lives on the server, so nothing here depends on one request staying
  * open — that was the bug: a `/speckit.plan` longer than the proxy's five
- * minutes showed "Internal Server Error" while the server finished. The id of
- * the job this tab is watching is kept in session storage, so a reload or a
- * trip to another page re-attaches to it ({@link findSpecKitJobToAttach}).
+ * minutes showed "Internal Server Error" while the server finished. The jobs
+ * this tab is watching are kept in session storage, so a reload or a trip to
+ * another page picks them up again ({@link findSpecKitJobsOnOpen}).
+ *
+ * Watching is a read every few seconds. Where the page has a socket it also
+ * hears the job's `job:lifecycle` events ({@link SpecKitJobHooks.subscribe}) and
+ * reads at once when one arrives; the timed read stays as the fallback, so a
+ * socket that is down, late or refused changes nothing but the delay.
  *
  * This replaces `spec-kit-recovery.ts` (#1069), which polled the ARTIFACTS for
  * a newer version after a lost response and so could not tell this command's
@@ -35,6 +40,13 @@ import { specKitApi, type SpecKitCommandResult, type SpecKitRunOptions } from "@
 
 /** Wait between two reads of a running job. */
 export const SPEC_KIT_JOB_POLL_INTERVAL_MS = 3_000;
+/**
+ * Wait between two reads of the project's running jobs, which is how the page
+ * knows a feature is busy with a job it is not watching (another member's, or
+ * one started in another tab). 90 reads per 15 minutes per open tab, against a
+ * read budget of 6000 per address.
+ */
+export const SPEC_KIT_ACTIVE_JOBS_POLL_MS = 10_000;
 /** Consecutive failed reads before the page stops watching: 20 × 3 s = 1 minute. */
 export const SPEC_KIT_JOB_MAX_READ_FAILURES = 20;
 
@@ -103,43 +115,114 @@ export function isFailedSend(elapsedMs: number): boolean {
   return offline || elapsedMs < SPEC_KIT_FAILED_SEND_MS;
 }
 
-/** The job this tab is watching, kept so a reload can re-attach to it. */
+/**
+ * Where the page was when THIS TAB started a command: the selected feature, or
+ * null for the project-level files. A finished command moves the page (opens
+ * the artifact it wrote, clears the command box) only when it was started from
+ * this tab and the page is still there. It is not always the job's own feature:
+ * a `/speckit.specify` started on the project-level files creates a new one.
+ */
+export interface SpecKitJobOrigin {
+  scope: string | null;
+}
+
+/** A job this tab is watching, kept so a reload can pick it up again. */
 export interface WatchedSpecKitJob {
   jobId: string;
   command: SpecKitNamespacedCommand;
   featureSlug: string | null;
+  /** Set when this tab started the job; absent for one it only found running. */
+  origin?: SpecKitJobOrigin;
 }
 
 const watchedKey = (projectId: string): string => `metis:spec-kit-job:${projectId}`;
+/** More than a tab ever watches; bounds what a bug could leave in storage. */
+const MAX_WATCHED_JOBS = 20;
 
-/** The job this tab was watching in the project, or null. */
-export function loadWatchedJob(projectId: string): WatchedSpecKitJob | null {
-  if (typeof window === "undefined") return null;
+function parseWatched(value: unknown): WatchedSpecKitJob | null {
+  if (!value || typeof value !== "object") return null;
+  const entry = value as Partial<WatchedSpecKitJob>;
+  if (typeof entry.jobId !== "string" || typeof entry.command !== "string") return null;
+  if (!isSpecKitNamespacedCommand(entry.command)) return null;
+  const scope = (entry.origin as Partial<SpecKitJobOrigin> | undefined)?.scope;
+  return {
+    jobId: entry.jobId,
+    command: entry.command,
+    featureSlug: typeof entry.featureSlug === "string" ? entry.featureSlug : null,
+    ...(entry.origin && typeof entry.origin === "object"
+      ? { origin: { scope: typeof scope === "string" ? scope : null } }
+      : {}),
+  };
+}
+
+/** The jobs this tab is watching in the project, oldest first. */
+export function loadWatchedJobs(projectId: string): WatchedSpecKitJob[] {
+  if (typeof window === "undefined") return [];
   try {
     const raw = window.sessionStorage.getItem(watchedKey(projectId));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<WatchedSpecKitJob>;
-    if (typeof parsed.jobId !== "string" || typeof parsed.command !== "string") return null;
-    if (!isSpecKitNamespacedCommand(parsed.command)) return null;
-    return {
-      jobId: parsed.jobId,
-      command: parsed.command,
-      featureSlug: typeof parsed.featureSlug === "string" ? parsed.featureSlug : null,
-    };
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    // A single object is what an earlier build of this page stored.
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+    return entries.flatMap((entry) => parseWatched(entry) ?? []);
   } catch {
-    return null;
+    return [];
   }
 }
 
-/** Remember (or, with null, forget) the job this tab is watching. */
-export function saveWatchedJob(projectId: string, job: WatchedSpecKitJob | null): void {
+function storeWatchedJobs(projectId: string, jobs: WatchedSpecKitJob[]): void {
   if (typeof window === "undefined") return;
   try {
-    if (job) window.sessionStorage.setItem(watchedKey(projectId), JSON.stringify(job));
-    else window.sessionStorage.removeItem(watchedKey(projectId));
+    if (jobs.length === 0) window.sessionStorage.removeItem(watchedKey(projectId));
+    else {
+      window.sessionStorage.setItem(
+        watchedKey(projectId),
+        JSON.stringify(jobs.slice(-MAX_WATCHED_JOBS)),
+      );
+    }
   } catch {
-    // Storage full or blocked: the job is still found through the active list.
+    // Storage full or blocked: a running job is still found through the active list.
   }
+}
+
+/** Remember a job this tab is watching. An origin already recorded for it is kept. */
+export function rememberWatchedJob(projectId: string, job: WatchedSpecKitJob): void {
+  const jobs = loadWatchedJobs(projectId);
+  const known = jobs.find((entry) => entry.jobId === job.jobId);
+  const origin = job.origin ?? known?.origin;
+  storeWatchedJobs(projectId, [
+    ...jobs.filter((entry) => entry.jobId !== job.jobId),
+    {
+      jobId: job.jobId,
+      command: job.command,
+      featureSlug: job.featureSlug,
+      ...(origin ? { origin } : {}),
+    },
+  ]);
+}
+
+/** Stop remembering a job: its outcome has been shown, or it is gone. */
+export function forgetWatchedJob(projectId: string, jobId: string): void {
+  storeWatchedJobs(
+    projectId,
+    loadWatchedJobs(projectId).filter((entry) => entry.jobId !== jobId),
+  );
+}
+
+/**
+ * How long after a job finished its result is still treated as news: shown as
+ * if the page had stayed open. A result older than this, met on opening the
+ * page, is shown as something that happened earlier and changes nothing on the
+ * page. Measured against the server's `finishedAt`, so a browser clock that is
+ * minutes off shifts the window by as much; ten minutes makes that immaterial.
+ */
+export const SPEC_KIT_FRESH_RESULT_MS = 10 * 60_000;
+
+/** True when a terminal job finished recently enough to be shown as news. */
+export function isFreshSpecKitResult(job: SpecKitJobDto, nowMs: number = Date.now()): boolean {
+  if (!job.finishedAt) return false;
+  const finished = Date.parse(job.finishedAt);
+  return Number.isFinite(finished) && nowMs - finished <= SPEC_KIT_FRESH_RESULT_MS;
 }
 
 export interface SpecKitJobHooks {
@@ -149,6 +232,15 @@ export interface SpecKitJobHooks {
   onUpdate?: (job: SpecKitJobDto) => void;
   /** The viewer, so a job found after a lost start is known to be theirs. */
   userId?: string;
+  /** Where the page was when it started the command; remembered with the job. */
+  origin?: SpecKitJobOrigin;
+  /**
+   * Hear about the job as it happens (the page's `job:lifecycle` socket
+   * events). `onEvent` makes the watch read the job at once instead of at its
+   * next timed read. Returns the unsubscribe. Optional: without it, or when no
+   * event ever arrives, the timed read alone watches the job.
+   */
+  subscribe?: (jobId: string, onEvent: () => void) => () => void;
   intervalMs?: number;
   maxReadFailures?: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -224,32 +316,56 @@ export async function watchSpecKitJob(
   };
   let current: SpecKitJobDto | null = first ?? null;
   let failures = 0;
-  for (;;) {
-    abandonIfLeft();
-    if (current === null) {
-      try {
-        current = (await specKitApi.getJob(projectId, jobId)).job;
-        failures = 0;
-      } catch (err) {
-        abandonIfLeft();
-        if (isFinalReadError(err)) {
-          saveWatchedJob(projectId, null);
-          throw err;
-        }
-        failures += 1;
-        if (failures >= maxReadFailures) throw new SpecKitJobUnreachableError();
-      }
+  // An event that arrives while a read is in flight is not lost: it is noted,
+  // and the next wait ends at once.
+  let eventPending = false;
+  let wake: (() => void) | null = null;
+  const unsubscribe = hooks.subscribe?.(jobId, () => {
+    eventPending = true;
+    wake?.();
+  });
+  try {
+    for (;;) {
       abandonIfLeft();
-    }
-    if (current !== null) {
-      onUpdate?.(current);
-      if (!isSpecKitJobActive(current.status)) {
-        saveWatchedJob(projectId, null);
-        return settle(current);
+      if (current === null) {
+        eventPending = false;
+        try {
+          current = (await specKitApi.getJob(projectId, jobId)).job;
+          failures = 0;
+        } catch (err) {
+          abandonIfLeft();
+          if (isFinalReadError(err)) {
+            forgetWatchedJob(projectId, jobId);
+            throw err;
+          }
+          failures += 1;
+          if (failures >= maxReadFailures) throw new SpecKitJobUnreachableError();
+        }
+        abandonIfLeft();
       }
-      current = null;
+      if (current !== null) {
+        onUpdate?.(current);
+        if (!isSpecKitJobActive(current.status)) {
+          forgetWatchedJob(projectId, jobId);
+          return settle(current);
+        }
+        current = null;
+      }
+      if (eventPending) continue;
+      // The timed read, cut short by an event or by leaving the page.
+      const waiting = new AbortController();
+      const stop = (): void => waiting.abort();
+      wake = stop;
+      signal?.addEventListener("abort", stop);
+      try {
+        await sleep(intervalMs, waiting.signal);
+      } finally {
+        wake = null;
+        signal?.removeEventListener("abort", stop);
+      }
     }
-    await sleep(intervalMs, signal);
+  } finally {
+    unsubscribe?.();
   }
 }
 
@@ -308,51 +424,99 @@ export async function runSpecKitCommand(
     if (!started) throw err;
     job = started;
   }
-  saveWatchedJob(projectId, {
+  rememberWatchedJob(projectId, {
     jobId: job.id,
     command: job.command,
     featureSlug: job.featureSlug,
+    origin: hooks.origin ?? { scope: options.featureSlug ?? null },
   });
   return watchSpecKitJob(projectId, job.id, hooks, job);
 }
 
+/** What a freshly opened page finds: see {@link findSpecKitJobsOnOpen}. */
+export interface SpecKitJobsOnOpen {
+  /**
+   * The viewer's own running jobs, each with the origin this tab recorded for
+   * it (absent for a job started in another tab or by an API client). The page
+   * WATCHES these; it does not move to them and does not stop the viewer
+   * running something else.
+   */
+  running: Array<{ job: SpecKitJobDto; origin?: SpecKitJobOrigin }>;
+  /** Jobs this tab was watching that ended while the page was away. */
+  finished: Array<{ job: SpecKitJobDto; origin?: SpecKitJobOrigin }>;
+}
+
 /**
- * The job a freshly opened page should attach to, or null: the viewer's own
- * running job (the one this tab was watching, when there are several), or the
- * job this tab was watching that finished while the page was away — so its
- * result or failure is still shown, once.
+ * What a freshly opened page picks up: the viewer's running jobs, and the jobs
+ * this tab was watching that finished meanwhile.
  *
- * Only the viewer's own jobs: another member's running command is theirs to
- * watch, and attaching to it would move this viewer's page when it finished.
+ * Only the viewer's own jobs are WATCHED: another member's running command is
+ * theirs to watch (the page shows it as busy from the active list, which holds
+ * no result). And only jobs this tab was watching are reported as finished: a
+ * tab that never saw a job has no business announcing its result.
  */
-export async function findSpecKitJobToAttach(
+export async function findSpecKitJobsOnOpen(
   projectId: string,
   userId: string,
-): Promise<SpecKitJobDto | null> {
-  const watched = loadWatchedJob(projectId);
-  let mine: SpecKitJobDto[] = [];
+): Promise<SpecKitJobsOnOpen> {
+  const watched = loadWatchedJobs(projectId);
+  const originOf = (jobId: string): { origin?: SpecKitJobOrigin } => {
+    const origin = watched.find((entry) => entry.jobId === jobId)?.origin;
+    return origin ? { origin } : {};
+  };
+  const found: SpecKitJobsOnOpen = { running: [], finished: [] };
+  let listed: SpecKitJobDto[] | null = null;
   try {
-    const { jobs } = await specKitApi.listActiveJobs(projectId);
-    mine = jobs.filter((job) => job.startedById === userId);
+    listed = (await specKitApi.listActiveJobs(projectId)).jobs;
   } catch {
-    // The list could not be read; the watched job can still be.
+    // The list could not be read; the watched jobs can still be, one by one.
   }
-  const running = mine.find((job) => job.id === watched?.jobId) ?? mine[0];
-  if (running) {
-    saveWatchedJob(projectId, {
-      jobId: running.id,
-      command: running.command,
-      featureSlug: running.featureSlug,
+  for (const job of listed ?? []) {
+    if (job.startedById !== userId) continue;
+    found.running.push({ job, ...originOf(job.id) });
+    rememberWatchedJob(projectId, {
+      jobId: job.id,
+      command: job.command,
+      featureSlug: job.featureSlug,
     });
-    return running;
   }
-  if (!watched) return null;
-  try {
-    return (await specKitApi.getJob(projectId, watched.jobId)).job;
-  } catch (err) {
-    // Gone (pruned after a day) or not readable: stop looking for it. Anything
-    // else may pass, so the job is kept for the next visit.
-    if (isFinalReadError(err)) saveWatchedJob(projectId, null);
-    return null;
+  for (const entry of watched) {
+    if (found.running.some((r) => r.job.id === entry.jobId)) continue;
+    try {
+      const { job } = await specKitApi.getJob(projectId, entry.jobId);
+      const slot = isSpecKitJobActive(job.status) ? found.running : found.finished;
+      slot.push({ job, ...originOf(job.id) });
+    } catch (err) {
+      // Gone (pruned after a day) or not readable: stop looking for it. Anything
+      // else may pass, so the job is kept for the next visit.
+      if (isFinalReadError(err)) forgetWatchedJob(projectId, entry.jobId);
+    }
   }
+  return found;
+}
+
+/** The live job that holds a scope's lock: a feature's, or (null) the project-level files'. */
+export function specKitJobHolding(
+  jobs: readonly SpecKitJobDto[],
+  scope: string | null,
+): SpecKitJobDto | null {
+  return jobs.find((job) => isSpecKitJobActive(job.status) && job.featureSlug === scope) ?? null;
+}
+
+/**
+ * The scope whose lock a command typed on the page needs: a feature slug, null
+ * for the project-level files, or `undefined` when it needs none.
+ *
+ * `/speckit.specify` typed with no feature selected creates a NEW feature and
+ * runs under that feature's own slug, so nothing running holds it up. The
+ * constitution is the project's whatever is selected. Everything else runs on
+ * the selected feature (or the project-level files).
+ */
+export function specKitCommandLockScope(
+  command: SpecKitNamespacedCommand,
+  selectedFeature: string | null,
+): string | null | undefined {
+  if (command === "speckit.specify" && selectedFeature === null) return undefined;
+  if (command === "speckit.constitution") return null;
+  return selectedFeature;
 }
