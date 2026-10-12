@@ -973,14 +973,70 @@ export const MAX_IMPORTED_REQUIREMENTS_PER_ANALYSIS = 25;
  */
 export const SPEC_KIT_HANDOFF_MAX_LABELS = 500;
 
+/**
+ * Issue #1027 — most characters accepted in `agentContext`: background the code
+ * agent reads next to the requirements (a Spec Kit handoff fills it from
+ * plan.md's components and tasks.md's task ids and titles). It is a separate
+ * limit from {@link MAX_EXTRA_INSTRUCTIONS} because the text is never split
+ * into requirements. About 1,024 tokens (characters / 4) on each code-agent
+ * model call that carries it.
+ */
+export const MAX_ANALYSIS_AGENT_CONTEXT = 4096;
+
+/** Issue #1027 — which plan.md components and tasks.md tasks went as context. */
+const specKitHandoffContextSchema = z
+  .object({
+    components: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
+    tasks: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
+    omitted: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
+    /**
+     * The files that were read with no component or task recognised in them, so
+     * the analysis page says that instead of "not read". Absent when both
+     * files, where present, were recognised.
+     */
+    unrecognised: z
+      .array(z.enum(["plan.md", "tasks.md"]))
+      .max(2)
+      .optional(),
+  })
+  .strict();
+
 export const specKitHandoffSchema = z
   .object({
     artifacts: z.array(z.string().min(1).max(200)).max(10),
     sent: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
     omitted: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
+    /**
+     * Issue #1027 — set when plan.md and tasks.md were read for `agentContext`:
+     * the components and tasks sent, and those left out for the limit. Absent on
+     * a handoff from before #1027, which sent no context.
+     */
+    context: specKitHandoffContextSchema.optional(),
   })
   .strict();
 export type SpecKitHandoffRecord = z.infer<typeof specKitHandoffSchema>;
+
+/**
+ * Issue #1027 (review) — the component and task labels of a handoff record that
+ * do NOT appear in the context text sent with it. The analysis page shows these
+ * labels as "what the code agent was given", and they are written by the
+ * caller, so the start route refuses a record that names something the text
+ * does not hold (which includes any label at all when no context was sent).
+ *
+ * This checks the lists one way only: the text may hold more than the labels
+ * name, which is why the analysis page also shows the stored text itself. The
+ * `omitted` list names what was NOT sent, so nothing can be checked against the
+ * text; the page presents it as reported by the client.
+ */
+export function specKitHandoffLabelsNotInContext(
+  handoff: SpecKitHandoffRecord | undefined,
+  agentContext: string | undefined,
+): string[] {
+  const context = handoff?.context;
+  if (!context) return [];
+  const text = agentContext ?? "";
+  return [...context.components, ...context.tasks].filter((label) => !text.includes(label));
+}
 
 export const startAnalysisSchema = z.object({
   documentIds: z.array(idSchema).max(100).optional(),
@@ -1014,6 +1070,14 @@ export const startAnalysisSchema = z.object({
     .optional(),
   /** Issue #994 — set by the Spec Kit handoff: what it sent and what it left out. */
   specKitHandoff: specKitHandoffSchema.optional(),
+  /**
+   * Issue #1027 — background for the code agent, kept apart from the
+   * requirements: it is never split into requirements, never counted as one and
+   * never used as a search query. Untrusted text; fenced in the prompt like
+   * every other data block. Trimmed, so a whitespace-only value is refused like
+   * an empty one rather than stored and read three different ways.
+   */
+  agentContext: z.string().trim().min(1).max(MAX_ANALYSIS_AGENT_CONTEXT).optional(),
 });
 export type StartAnalysisInput = z.infer<typeof startAnalysisSchema>;
 

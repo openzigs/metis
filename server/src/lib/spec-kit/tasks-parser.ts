@@ -20,6 +20,10 @@
  * Returned `Task` rows carry `{id, title, parallelizable, files[],
  * dependsOn[], userStorySlug?, satisfies[], text}`. The handler upserts GitHub
  * issues by `(featureSlug, taskId)`.
+ *
+ * #1027 — there is a second, smaller tasks.md reader in the UI: `taskLines` in
+ * `ui/src/lib/spec-kit-handoff.ts` takes each task's id and title for the
+ * analysis handoff's context. A change to the task line format belongs in both.
  */
 
 export interface ParsedTask {
