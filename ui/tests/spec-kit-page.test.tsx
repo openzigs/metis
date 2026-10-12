@@ -1436,11 +1436,76 @@ describe("SpecKitPage — #789", () => {
     await waitFor(() => expect(startAnalysis).toHaveBeenCalledTimes(1));
     const body = startAnalysis.mock.calls[0]![1] as { extraInstructions: string };
     expect(startAnalysis.mock.calls[0]![0]).toBe("p1");
-    expect(body.extraInstructions).toContain("Not sent: plan.md, tasks.md (context; see #1027).");
+    // Neither file was on the page, so nothing was read from them and none is sent.
+    expect(body.extraInstructions).toContain(
+      "Not sent: plan.md, tasks.md (not read by this analysis).",
+    );
     expect(body.extraInstructions).toContain("FR-1 project requirement");
+    expect(body).not.toHaveProperty("agentContext");
     await waitFor(() =>
       expect(routerPush).toHaveBeenCalledWith("/projects/p1/analysis?analysisId=an_1"),
     );
+  });
+
+  it("sends plan.md's components and tasks.md's tasks as context, apart from the requirements (#1027)", async () => {
+    m.listFiles!.mockResolvedValue({
+      enabled: true,
+      artifacts: [
+        artifact(
+          "spec.md",
+          "# Spec\n\n## Acceptance criteria\n\n- **AC-1**: Reject a duplicate feed\n",
+        ),
+        artifact(
+          "plan.md",
+          "# Plan\n\n## Components\n- **FeedStore** — Extends `storage/feed.go` (AC-1)\n\n## ADRs\n- Decision: index\n",
+        ),
+        artifact(
+          "tasks.md",
+          "# Tasks\n- [ ] T01 — Add the unique index (satisfies: AC-1)\n  Detail not sent.\n- [ ] T02 — Show the message\n",
+        ),
+      ],
+    });
+    m.runCommand!.mockResolvedValue({
+      message: "handoff",
+      artifactName: null,
+      artifact: {
+        context: ["spec.md", "plan.md", "tasks.md", "constitution.md"],
+        orchestratorRoute: "/api/projects/p1/analyses",
+      },
+    });
+    startAnalysis.mockResolvedValue({ id: "an_ctx" });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+    await waitFor(() => expect(screen.getByTestId("spec-kit-content")).toBeInTheDocument());
+    typeAndRun("/speckit.implement");
+    fireEvent.click(await screen.findByTestId("spec-kit-start-analysis"));
+    await waitFor(() => expect(startAnalysis).toHaveBeenCalledTimes(1));
+    const body = startAnalysis.mock.calls[0]![1] as {
+      extraInstructions: string;
+      agentContext: string;
+      specKitHandoff: { sent: string[]; context: unknown };
+    };
+    expect(body.agentContext).toBe(
+      [
+        "Plan components (plan.md):",
+        "- FeedStore — Extends `storage/feed.go` (AC-1)",
+        "Tasks (tasks.md):",
+        "- T01: Add the unique index (satisfies: AC-1)",
+        "- T02: Show the message",
+      ].join("\n"),
+    );
+    // The requirements text carries neither file's content.
+    expect(body.extraInstructions).not.toContain("FeedStore");
+    expect(body.extraInstructions).not.toContain("T01");
+    expect(body.extraInstructions).toContain(
+      "Sent separately as context, not as requirements: plan.md, tasks.md. Not sent: constitution.md (not read by this analysis).",
+    );
+    expect(body.specKitHandoff.sent).toEqual(["AC-1"]);
+    expect(body.specKitHandoff.context).toEqual({
+      components: ["FeedStore"],
+      tasks: ["T01", "T02"],
+      omitted: [],
+    });
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Analysis started."));
   });
 
   it("hands off a feature's own spec.md when the implement ran in a feature", async () => {
@@ -1460,6 +1525,43 @@ describe("SpecKitPage — #789", () => {
     expect(
       (startAnalysis.mock.calls[0]![1] as { extraInstructions: string }).extraInstructions,
     ).toContain("FR-1 mark entries read");
+  });
+
+  it("reads a feature's own plan.md and tasks.md for the context, and no other artifact (#1027)", async () => {
+    m.runCommand!.mockResolvedValue({
+      message: "handoff",
+      artifactName: null,
+      artifact: {
+        context: ["specs/001-a/spec.md", "specs/001-a/plan.md", "specs/001-a/tasks.md"],
+        orchestratorRoute: "/api/projects/p1/analyses",
+      },
+    });
+    startAnalysis.mockResolvedValue({ id: "an_f" });
+    await openFeature();
+    m.listFeatureArtifacts!.mockResolvedValue({
+      feature: FEATURE,
+      artifacts: [
+        fa("spec.md", "FR-1 mark entries read"),
+        fa("plan.md", "## Components\n- **BulkMarker** — New (AC-1)"),
+        fa("tasks.md", "- [ ] T07 — Add the endpoint"),
+        // METIS's record of the files the plan was given: never sent.
+        fa("plan-context.md", "# Plan context\n- internal/storage/entry.go"),
+      ],
+    });
+    typeAndRun("/speckit.implement");
+    fireEvent.click(await screen.findByTestId("spec-kit-start-analysis"));
+    await waitFor(() => expect(startAnalysis).toHaveBeenCalledTimes(1));
+    const body = startAnalysis.mock.calls[0]![1] as {
+      extraInstructions: string;
+      agentContext: string;
+    };
+    expect(body.agentContext).toBe(
+      "Plan components (plan.md):\n- BulkMarker — New (AC-1)\nTasks (tasks.md):\n- T07: Add the endpoint",
+    );
+    expect(JSON.stringify(body)).not.toContain("internal/storage/entry.go");
+    expect(body.extraInstructions).toContain(
+      "Sent separately as context, not as requirements: specs/001-a/plan.md, specs/001-a/tasks.md.",
+    );
   });
 
   it("records what the handoff sent and left out on the run, and says so (#994)", async () => {
@@ -1487,8 +1589,11 @@ describe("SpecKitPage — #789", () => {
     await waitFor(() => expect(startAnalysis).toHaveBeenCalledTimes(1));
     const body = startAnalysis.mock.calls[0]![1] as {
       extraInstructions: string;
-      specKitHandoff: { artifacts: string[]; sent: string[]; omitted: string[] };
+      specKitHandoff: { artifacts: string[]; sent: string[]; omitted: string[]; context: unknown };
     };
+    // No plan.md or tasks.md to read: the record says no context was sent.
+    expect(body.specKitHandoff.context).toEqual({ components: [], tasks: [], omitted: [] });
+    expect(body).not.toHaveProperty("agentContext");
     expect(body.specKitHandoff.artifacts).toEqual(["spec.md", "plan.md"]);
     expect(body.specKitHandoff.sent).toEqual(["AC-1", "AC-2", "AC-3", "AC-4", "AC-5", "AC-6"]);
     expect(body.specKitHandoff.omitted).toEqual(["AC-7", "AC-8"]);

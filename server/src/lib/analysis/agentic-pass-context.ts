@@ -47,6 +47,7 @@ import {
   type FusedCodeContext,
 } from "./fused-code-chunks.js";
 import { buildAgenticCodePrompt } from "./prompts.js";
+import { estimateTokens } from "./context-window-manager.js";
 import { resolveReasoningSetting } from "../docs-gen/docs-gen-reasoning.js";
 import type { ChatOptions } from "../ai/types.js";
 
@@ -170,6 +171,17 @@ export interface AgenticPassSeeds {
   fused: Pick<FusedCodeContext, "block" | "tokens">;
   affectedCode: Pick<AffectedCodeContext, "block" | "tokens">;
   affectedSchema: Pick<AffectedSchemaContext, "block" | "tokens">;
+  /**
+   * #1027 — the run's plan context (a Spec Kit handoff's plan components and
+   * task titles). Absent on a run started without one.
+   */
+  planContext?: { block: string; tokens: number };
+}
+
+/** #1027 — the plan-context seed for a run's stored `agentContext`, or undefined. */
+export function planContextSeed(agentContext: string | undefined): AgenticPassSeeds["planContext"] {
+  const block = agentContext?.trim() ?? "";
+  return block.length > 0 ? { block, tokens: estimateTokens(block) } : undefined;
 }
 
 /**
@@ -194,6 +206,7 @@ export function buildAgenticPassPrompt(input: {
     // #777 — tell the agent WHAT IT ACTUALLY HAS. Without this it plans around
     // reading files it can never open and spends turns discovering that.
     fileToolsAvailable: input.fileToolsAvailable,
+    ...(input.seeds.planContext ? { agentContext: input.seeds.planContext.block } : {}),
   });
 }
 
@@ -205,7 +218,11 @@ export function buildAgenticPassPrompt(input: {
 export function agenticPassEffectiveBudget(passBudget: number, seeds: AgenticPassSeeds): number {
   return Math.max(
     Math.floor(passBudget / 2),
-    passBudget - seeds.fused.tokens - seeds.affectedCode.tokens - seeds.affectedSchema.tokens,
+    passBudget -
+      seeds.fused.tokens -
+      seeds.affectedCode.tokens -
+      seeds.affectedSchema.tokens -
+      (seeds.planContext?.tokens ?? 0),
   );
 }
 

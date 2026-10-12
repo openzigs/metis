@@ -428,6 +428,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           enableWebResearch: parsed.data.enableWebResearch ?? false,
           enableClarification: parsed.data.enableClarification ?? false,
           ...(parsed.data.specKitHandoff ? { specKitHandoff: parsed.data.specKitHandoff } : {}),
+          // #1027 — never joined to `extraInstructions`: the requirement
+          // splitter, its cap and the input account do not see it.
+          ...(parsed.data.agentContext ? { agentContext: parsed.data.agentContext } : {}),
         });
         res.status(202).json(ok({ id: result.id }));
       } catch (err) {

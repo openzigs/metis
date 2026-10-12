@@ -168,3 +168,52 @@ describe("regenerate the code agent through its pipeline mode (#766)", () => {
     expect(prismaMock.agentResult.deleteMany).not.toHaveBeenCalled();
   });
 });
+
+// #1027 — a regenerate must read the run's plan context back from its stored
+// metadata, or the regenerated code pass works from less than the original.
+describe("regenerate carries the run's plan context (#1027)", () => {
+  const CONTEXT = "Plan components (plan.md):\n- FeedStore — Extends storage/feed.go (AC-1)";
+  const WITH_CONTEXT = {
+    ...ANALYSIS,
+    metadata: JSON.stringify({ model: "deepseek-flash", agentContext: CONTEXT }),
+  };
+  const run = (orch: Stubbed, analysis: unknown, agentKey = "code") =>
+    orch.regenerateLoadedAgent({ analysisId: "an_1", agentKey, actorId: "u1" }, analysis);
+
+  it("hands it to every agentic pass", async () => {
+    prismaMock.repoConnection.findMany.mockResolvedValue([
+      { id: "repo_1", label: "api" },
+      { id: "repo_2", label: "web" },
+    ]);
+    const orch = makeOrchestrator("agentic");
+    await run(orch, WITH_CONTEXT);
+    const calls = orch.runAgenticCodeAgent.mock.calls.map((c) => c[0]);
+    expect(calls).toHaveLength(2);
+    expect(calls.map((c) => c.agentContext)).toEqual([CONTEXT, CONTEXT]);
+  });
+
+  it("hands it to the single-shot path", async () => {
+    const orch = makeOrchestrator("single-shot");
+    await run(orch, WITH_CONTEXT);
+    expect(orch.runOneAgent.mock.calls[0][0].agentContext).toBe(CONTEXT);
+  });
+
+  it("never reaches the re-synthesis, which writes the requirements", async () => {
+    prismaMock.repoConnection.findMany.mockResolvedValue([{ id: "repo_1", label: "api" }]);
+    const orch = makeOrchestrator("agentic");
+    await run(orch, WITH_CONTEXT);
+    expect(orch.runSynthesisAndPersist).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(orch.runSynthesisAndPersist.mock.calls)).not.toContain("FeedStore");
+  });
+
+  it("adds no key on a run started without context", async () => {
+    prismaMock.repoConnection.findMany.mockResolvedValue([{ id: "repo_1", label: "api" }]);
+    const agentic = makeOrchestrator("agentic");
+    await run(agentic, ANALYSIS);
+    expect(agentic.runAgenticCodeAgent.mock.calls[0][0]).not.toHaveProperty("agentContext");
+
+    const single = makeOrchestrator("single-shot");
+    await run(single, { ...ANALYSIS, metadata: JSON.stringify({ agentContext: "   " }) });
+    expect(single.runOneAgent.mock.calls[0][0]).not.toHaveProperty("agentContext");
+  });
+});

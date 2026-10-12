@@ -4,13 +4,16 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  MAX_ANALYSIS_AGENT_CONTEXT,
   MAX_EXTRA_INSTRUCTIONS,
   SPEC_KIT_HANDOFF_MAX_LABELS,
   specKitHandoffSchema,
   startAnalysisSchema,
 } from "@metis/shared";
 import {
+  buildHandoffContext,
   buildHandoffInstructions,
+  contextNotSent,
   specRequirements,
   SPEC_TAIL_OMITTED,
 } from "@/lib/spec-kit-handoff";
@@ -119,7 +122,7 @@ describe("buildHandoffInstructions", () => {
       "constitution.md",
     ];
     const notSent =
-      "Not sent: specs/001-a/plan.md, specs/001-a/tasks.md, constitution.md (context; see #1027).";
+      "Not sent: specs/001-a/plan.md, specs/001-a/tasks.md, constitution.md (not read by this analysis).";
     const structured = buildHandoffInstructions(context, METIS_SPEC).text.split("\n\n")[0]!;
     expect(structured).toBe(
       `# Spec Kit handoff: evaluate these requirements from spec.md against the current implementation. Only spec.md's requirements are sent. ${notSent}`,
@@ -228,5 +231,197 @@ describe("buildHandoffInstructions", () => {
     expect(r.text).toBe(
       "Spec Kit handoff. Evaluate the requirements in this spec.md against the current implementation; only spec.md is sent.",
     );
+  });
+});
+
+describe("buildHandoffContext (#1027)", () => {
+  const PLAN = [
+    "# Plan",
+    "Summary.",
+    "",
+    "## Components",
+    "- **FeedStore** — Extends `storage/feed.go`:",
+    "  rejects a duplicate URL (AC-1)",
+    "- `NoticeView`: New template for the refusal (AC-2)",
+    "- A plain bullet with no name (AC-2)",
+    "  - a nested bullet of it",
+    "",
+    "## Architecture diagram",
+    "```mermaid",
+    "graph TD; A-->B",
+    "```",
+    "## ADRs",
+    "- Decision: a unique index (AC-1)",
+  ].join("\n");
+  const TASKS = [
+    "# Tasks",
+    "## Story US1",
+    "- [ ] T01 — Change `Create` in storage/feed.go (storage/feed.go:12-30) (satisfies: AC-1)",
+    "  Acceptance: the second insert fails.",
+    "- [x] T02 [P] Show the notice",
+    "- a note that is not a task",
+    "| # | Title | Story Points | Dependencies | Notes |",
+    "| --- | --- | --- | --- | --- |",
+    "| T03 | Write the migration | 2 | T01 | |",
+    "| Total | 3 tasks | | | |",
+  ].join("\n");
+
+  it("sends one line per plan component and per task, under a heading per file", () => {
+    const context = buildHandoffContext(PLAN, TASKS);
+    expect(context.text).toBe(
+      [
+        "Plan components (plan.md):",
+        "- FeedStore — Extends `storage/feed.go`: rejects a duplicate URL (AC-1)",
+        "- `NoticeView`: New template for the refusal (AC-2)",
+        "- A plain bullet with no name (AC-2) a nested bullet of it",
+        "Tasks (tasks.md):",
+        "- T01: Change `Create` in storage/feed.go (storage/feed.go:12-30) (satisfies: AC-1)",
+        "- T02: [P] Show the notice",
+        "- T03: Write the migration",
+      ].join("\n"),
+    );
+    expect(context).toMatchObject({
+      components: ["FeedStore", "NoticeView", "component 3"],
+      tasks: ["T01", "T02", "T03"],
+      omitted: [],
+      omittedCount: 0,
+      files: ["plan.md", "tasks.md"],
+    });
+    // Only the Components section and the task lines: no diagram, ADR or task detail.
+    expect(context.text).not.toContain("mermaid");
+    expect(context.text).not.toContain("Decision");
+    expect(context.text).not.toContain("Acceptance:");
+    expect(context.text).not.toContain("not a task");
+  });
+
+  it("sends nothing when neither file has components or tasks to read", () => {
+    for (const [plan, tasks] of [
+      [null, null],
+      ["", ""],
+      ["# Plan\n## ADRs\n- Decision", "# Tasks\nNothing yet."],
+    ] as const) {
+      expect(buildHandoffContext(plan, tasks)).toEqual({
+        text: null,
+        components: [],
+        tasks: [],
+        omitted: [],
+        omittedCount: 0,
+        files: [],
+      });
+    }
+  });
+
+  it("names only the file something was sent from", () => {
+    expect(buildHandoffContext(PLAN, null).files).toEqual(["plan.md"]);
+    const tasksOnly = buildHandoffContext(null, TASKS);
+    expect(tasksOnly.files).toEqual(["tasks.md"]);
+    expect(tasksOnly.text?.startsWith("Tasks (tasks.md):\n- T01")).toBe(true);
+  });
+
+  it("leaves a task that does not fit out whole, names it, and never passes the limit", () => {
+    const tasks = Array.from(
+      { length: 60 },
+      (_, i) => `- [ ] T${String(i + 1).padStart(2, "0")} — ${"t".repeat(90)}`,
+    ).join("\n");
+    const context = buildHandoffContext(null, tasks);
+    expect(context.text!.length).toBeLessThanOrEqual(MAX_ANALYSIS_AGENT_CONTEXT);
+    expect(context.tasks.length + context.omittedCount).toBe(60);
+    expect(context.tasks.length).toBeGreaterThan(30);
+    expect(context.omitted[0]).toBe(`T${context.tasks.length + 1}`);
+    // Every line sent is a whole task line.
+    for (const line of context.text!.split("\n").slice(1)) {
+      expect(line).toMatch(/^- T\d\d: t{90}$/);
+    }
+    // One more character of room would not have fitted the first task left out.
+    expect(context.text!.length + 1 + "- T01: ".length + 90).toBeGreaterThan(
+      MAX_ANALYSIS_AGENT_CONTEXT,
+    );
+  });
+
+  it("fills the limit exactly when the lines add up to it", () => {
+    const heading = "Tasks (tasks.md):".length;
+    const title = MAX_ANALYSIS_AGENT_CONTEXT - heading - 1 - "- T01: ".length;
+    const fits = buildHandoffContext(null, `- [ ] T01 — ${"x".repeat(title)}`);
+    expect(fits.text).toHaveLength(MAX_ANALYSIS_AGENT_CONTEXT);
+    expect(fits.tasks).toEqual(["T01"]);
+    const over = buildHandoffContext(null, `- [ ] T01 — ${"x".repeat(title + 1)}`);
+    expect(over).toMatchObject({ text: null, tasks: [], omitted: ["T01"], files: [] });
+  });
+
+  it("keeps half the limit for the tasks when the plan's components would crowd them out", () => {
+    const plan = `## Components\n${Array.from(
+      { length: 40 },
+      (_, i) => `- **C${i + 1}** — ${"c".repeat(180)}`,
+    ).join("\n")}`;
+    const tasks = Array.from({ length: 40 }, (_, i) => `- [ ] T${i + 1} — ${"t".repeat(180)}`).join(
+      "\n",
+    );
+    const context = buildHandoffContext(plan, tasks);
+    expect(context.text!.length).toBeLessThanOrEqual(MAX_ANALYSIS_AGENT_CONTEXT);
+    expect(context.components.length).toBeGreaterThan(5);
+    expect(context.tasks.length).toBeGreaterThan(5);
+    expect(context.omitted).toContain("C40");
+    expect(context.omitted).toContain("T40");
+    // A short task list leaves its unused share to the components.
+    const few = buildHandoffContext(plan, "- [ ] T1 — one");
+    expect(few.components.length).toBeGreaterThan(context.components.length);
+    expect(few.tasks).toEqual(["T1"]);
+  });
+
+  it("produces a record and a context the server's schema accepts, however long the files", () => {
+    const tasks = Array.from({ length: 900 }, (_, i) => `- [ ] T${i + 1} — ${"t".repeat(40)}`).join(
+      "\n",
+    );
+    const plan = `## Components\n- **${"N".repeat(200)}** — a very long name`;
+    const context = buildHandoffContext(plan, tasks);
+    expect(context.omitted).toHaveLength(SPEC_KIT_HANDOFF_MAX_LABELS);
+    expect(context.omitted.at(-1)).toMatch(/^\+\d+ more$/);
+    expect(context.components[0]).toHaveLength(64);
+    const parsed = startAnalysisSchema.safeParse({
+      agentContext: context.text,
+      specKitHandoff: {
+        artifacts: ["spec.md", "plan.md", "tasks.md"],
+        sent: [],
+        omitted: [],
+        context: {
+          components: context.components,
+          tasks: context.tasks,
+          omitted: context.omitted,
+        },
+      },
+    });
+    expect(parsed.success).toBe(true);
+    // A handoff record from before #1027 carries no context and still parses.
+    expect(
+      specKitHandoffSchema.safeParse({ artifacts: ["spec.md"], sent: [], omitted: [] }).success,
+    ).toBe(true);
+  });
+});
+
+describe("the requirements text names what went as context (#1027)", () => {
+  const artifacts = [
+    "specs/001-a/spec.md",
+    "specs/001-a/plan.md",
+    "specs/001-a/tasks.md",
+    "constitution.md",
+  ];
+
+  it("says plan.md and tasks.md were sent as context, in one heading line", () => {
+    const text = buildHandoffInstructions(artifacts, "## Acceptance criteria\n- **AC-1**: One\n", [
+      "plan.md",
+      "tasks.md",
+    ]).text;
+    expect(text.split("\n\n")[0]).toBe(
+      "# Spec Kit handoff: evaluate these requirements from spec.md against the current implementation. Only spec.md's requirements are sent. Sent separately as context, not as requirements: specs/001-a/plan.md, specs/001-a/tasks.md. Not sent: constitution.md (not read by this analysis).",
+    );
+  });
+
+  it("still names a file as not sent when nothing was read from it", () => {
+    expect(contextNotSent(artifacts, ["tasks.md"])).toEqual([
+      "specs/001-a/plan.md",
+      "constitution.md",
+    ]);
+    expect(contextNotSent(artifacts)).toEqual(artifacts.slice(1));
+    expect(contextNotSent(["spec.md", "plan.md"], ["plan.md"])).toEqual([]);
   });
 });

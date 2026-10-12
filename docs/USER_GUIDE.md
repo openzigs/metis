@@ -3755,6 +3755,13 @@ Spec Kit (BA/PM authors intent)              METIS analysis pipeline (downstream
 
 The handoff to the Analysis pipeline is **manual**: `/implement` returns an orchestrator handoff payload and points you at the project's **Analysis** tab — it does **not** auto-run the analysis → requirements → code-issue → reviewed-PR pipeline. You decide when to start that pipeline from the Analysis surface.
 
+**What "Start analysis with these artifacts" sends.** Two things, kept apart:
+
+- **Requirements, from `spec.md`** — each acceptance criterion and non-functional requirement as one requirement, within the 4,096-character requirements limit. A requirement that does not fit is left out whole.
+- **Context, from `plan.md` and `tasks.md`** — one line per component of the plan's `## Components` section and one per task (its id and title, not the detail beneath it), within a separate 4,096-character context limit. Only the code agent reads it, as background on where to look: a planned component or task is never analysed as a requirement, never counted as one, and never taken as proof that code exists. A component or task that does not fit is left out whole.
+
+The analysis page says what was sent, in separate lines: the requirements from `spec.md`, the components and tasks sent as context, and anything left out of either. `constitution.md` and a feature's `plan-context.md` are not sent.
+
 ### Enabling Spec Kit
 
 1. Open the project and click the **Spec Kit** primary tab (beside Analysis), or navigate directly to `/projects/[id]/spec-kit` — the URL is unchanged.

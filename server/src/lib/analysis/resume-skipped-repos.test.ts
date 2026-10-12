@@ -197,6 +197,44 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     ).toEqual(sourceRequirements);
   });
 
+  // #1027 — a resumed repo is analysed with the same plan context as its siblings.
+  it("#1027 — hands the run's plan context to each resumed repo, never to the re-synthesis", async () => {
+    const agentContext = "Tasks (tasks.md):\n- T01: Add the unique index on feeds";
+    state.metadata = JSON.stringify({
+      ...JSON.parse(
+        capabilityMeta([
+          { connectorId: "c2", label: "worker" },
+          { connectorId: "c3", label: "api" },
+        ]),
+      ),
+      agentContext,
+    });
+    state.connectors = [
+      { id: "c2", label: "worker" },
+      { id: "c3", label: "api" },
+    ];
+    const { orch, runAgenticCodeAgent, runSynthesisAndPersist } = makeOrch();
+
+    await orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" });
+
+    expect(runAgenticCodeAgent).toHaveBeenCalledTimes(2);
+    for (const call of runAgenticCodeAgent.mock.calls) {
+      expect((call[0] as { agentContext?: string }).agentContext).toBe(agentContext);
+    }
+    expect(runSynthesisAndPersist).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(runSynthesisAndPersist.mock.calls)).not.toContain("unique index");
+  });
+
+  it("#1027 — adds no context key when the run was started without one", async () => {
+    state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
+    state.connectors = [{ id: "c2", label: "worker" }];
+    const { orch, runAgenticCodeAgent } = makeOrch();
+
+    await orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" });
+
+    expect(runAgenticCodeAgent.mock.calls[0]![0]).not.toHaveProperty("agentContext");
+  });
+
   it("#1063 — hands the re-synthesis no imported items on any other run", async () => {
     state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
     state.connectors = [{ id: "c2", label: "worker" }];

@@ -60,7 +60,7 @@ import {
   parsePaletteCommand,
   suggestPaletteCommands,
 } from "@/lib/spec-kit-palette";
-import { buildHandoffInstructions } from "@/lib/spec-kit-handoff";
+import { buildHandoffContext, buildHandoffInstructions } from "@/lib/spec-kit-handoff";
 import { FeaturePanel } from "@/components/spec-kit/feature-panel";
 import { ArtifactContent } from "@/components/spec-kit/artifact-content";
 import { HoverHint } from "@/components/spec-kit/hover-hint";
@@ -695,28 +695,50 @@ export default function SpecKitPage() {
   // #789 — "Start analysis with these artifacts" after `/speckit.implement`.
   const analysisMutation = useMutation({
     mutationFn: async (h: { context: string[]; feature: string | null }) => {
-      const spec =
+      // The handoff's own files: the project's `.specify/`, or the feature's.
+      const feature =
         h.feature === null
-          ? (filesQuery.data?.artifacts.find((a) => a.name === "spec.md")?.content ?? null)
-          : ((await specKitApi.listFeatureArtifacts(projectId, h.feature)).artifacts.find(
-              (a) => a.key === "spec.md",
-            )?.content ?? null);
-      const instructions = buildHandoffInstructions(h.context, spec);
+          ? null
+          : (await specKitApi.listFeatureArtifacts(projectId, h.feature)).artifacts;
+      const read = (name: string): string | null =>
+        feature === null
+          ? (filesQuery.data?.artifacts.find((a) => a.name === name)?.content ?? null)
+          : (feature.find((a) => a.key === name)?.content ?? null);
+      // #1027 — plan.md's components and tasks.md's task titles go as context
+      // for the code agent, apart from the requirements text.
+      const context = buildHandoffContext(read("plan.md"), read("tasks.md"));
+      const instructions = buildHandoffInstructions(h.context, read("spec.md"), context.files);
       const started = await analysisApi.start(projectId, {
         extraInstructions: instructions.text,
+        ...(context.text ? { agentContext: context.text } : {}),
         // #994 — recorded on the run, so the analysis page names what was left out.
         specKitHandoff: {
           artifacts: h.context,
           sent: instructions.sent,
           omitted: instructions.omitted,
+          context: {
+            components: context.components,
+            tasks: context.tasks,
+            omitted: context.omitted,
+          },
         },
       });
-      return { id: started.id, omittedCount: instructions.omittedCount };
+      return {
+        id: started.id,
+        omittedCount: instructions.omittedCount,
+        contextOmittedCount: context.omittedCount,
+      };
     },
-    onSuccess: ({ id, omittedCount }) => {
+    onSuccess: ({ id, omittedCount, contextOmittedCount }) => {
+      const leftOut = [
+        ...(omittedCount > 0 ? [`${omittedCount} part(s) of spec.md`] : []),
+        ...(contextOmittedCount > 0
+          ? [`${contextOmittedCount} plan or task item(s) of the context`]
+          : []),
+      ];
       toast.success(
-        omittedCount > 0
-          ? `Analysis started. ${omittedCount} part(s) of spec.md did not fit and were not sent; the analysis page lists them.`
+        leftOut.length > 0
+          ? `Analysis started. ${leftOut.join(" and ")} did not fit and were not sent; the analysis page lists them.`
           : "Analysis started.",
       );
       setLastErrorMessage(null);

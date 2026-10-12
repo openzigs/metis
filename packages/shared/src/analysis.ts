@@ -973,11 +973,36 @@ export const MAX_IMPORTED_REQUIREMENTS_PER_ANALYSIS = 25;
  */
 export const SPEC_KIT_HANDOFF_MAX_LABELS = 500;
 
+/**
+ * Issue #1027 — most characters accepted in `agentContext`: background the code
+ * agent reads next to the requirements (a Spec Kit handoff fills it from
+ * plan.md's components and tasks.md's task ids and titles). It is a separate
+ * limit from {@link MAX_EXTRA_INSTRUCTIONS} because the text is never split
+ * into requirements. About 1,024 tokens (characters / 4) on each code-agent
+ * model call that carries it.
+ */
+export const MAX_ANALYSIS_AGENT_CONTEXT = 4096;
+
+/** Issue #1027 — which plan.md components and tasks.md tasks went as context. */
+const specKitHandoffContextSchema = z
+  .object({
+    components: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
+    tasks: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
+    omitted: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
+  })
+  .strict();
+
 export const specKitHandoffSchema = z
   .object({
     artifacts: z.array(z.string().min(1).max(200)).max(10),
     sent: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
     omitted: z.array(z.string().min(1).max(64)).max(SPEC_KIT_HANDOFF_MAX_LABELS),
+    /**
+     * Issue #1027 — set when plan.md and tasks.md were read for `agentContext`:
+     * the components and tasks sent, and those left out for the limit. Absent on
+     * a handoff from before #1027, which sent no context.
+     */
+    context: specKitHandoffContextSchema.optional(),
   })
   .strict();
 export type SpecKitHandoffRecord = z.infer<typeof specKitHandoffSchema>;
@@ -1014,6 +1039,13 @@ export const startAnalysisSchema = z.object({
     .optional(),
   /** Issue #994 — set by the Spec Kit handoff: what it sent and what it left out. */
   specKitHandoff: specKitHandoffSchema.optional(),
+  /**
+   * Issue #1027 — background for the code agent, kept apart from the
+   * requirements: it is never split into requirements, never counted as one and
+   * never used as a search query. Untrusted text; fenced in the prompt like
+   * every other data block.
+   */
+  agentContext: z.string().min(1).max(MAX_ANALYSIS_AGENT_CONTEXT).optional(),
 });
 export type StartAnalysisInput = z.infer<typeof startAnalysisSchema>;
 

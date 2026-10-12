@@ -296,3 +296,50 @@ describe("POST / with importedRequirementIds (#1006)", () => {
     expect(opts).not.toHaveProperty("sourceRequirements");
   });
 });
+
+// #1027 — the plan context travels beside the requirements text; the route never
+// joins the two, so the splitter and its cap see only the requirements.
+describe("POST / with agentContext (#1027)", () => {
+  const CONTEXT = "Tasks (tasks.md):\n- T01: Add a ninth requirement\n- T02: And a tenth";
+
+  it("forwards it apart from the requirements text", async () => {
+    const res = await request(app)
+      .post("/api/projects/proj-a/analyses")
+      .send({ extraInstructions: "AC-1: Reject a duplicate feed.", agentContext: CONTEXT });
+    expect(res.status).toBe(202);
+    const opts = start.mock.calls[0][0];
+    expect(opts.agentContext).toBe(CONTEXT);
+    expect(opts.extraInstructions).toBe("AC-1: Reject a duplicate feed.");
+  });
+
+  it("keeps it out of the text composed from imported requirements", async () => {
+    const res = await request(app)
+      .post("/api/projects/proj-a/analyses")
+      .send({ importedRequirementIds: [ID(1)], agentContext: CONTEXT });
+    expect(res.status).toBe(202);
+    const opts = start.mock.calls[0][0];
+    expect(opts.extraInstructions).toBe("- Mark all entries as read");
+    expect(opts.sourceRequirements).toHaveLength(1);
+  });
+
+  it("adds no key to a run started without it", async () => {
+    await request(app).post("/api/projects/proj-a/analyses").send({ extraInstructions: "x" });
+    expect(start.mock.calls[0][0]).not.toHaveProperty("agentContext");
+  });
+
+  it("refuses a context over the limit, an empty one and a non-string", async () => {
+    const { MAX_ANALYSIS_AGENT_CONTEXT } = await import("@metis/shared");
+    for (const agentContext of ["x".repeat(MAX_ANALYSIS_AGENT_CONTEXT + 1), "", ["T01"], 7]) {
+      const res = await request(app)
+        .post("/api/projects/proj-a/analyses")
+        .send({ extraInstructions: "x", agentContext });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("VALIDATION_ERROR");
+    }
+    expect(start).not.toHaveBeenCalled();
+    const atLimit = await request(app)
+      .post("/api/projects/proj-a/analyses")
+      .send({ agentContext: "x".repeat(MAX_ANALYSIS_AGENT_CONTEXT) });
+    expect(atLimit.status).toBe(202);
+  });
+});

@@ -246,6 +246,7 @@ import {
 import {
   agenticPassEffectiveBudget,
   buildAgenticPassPrompt,
+  planContextSeed,
   resolveAgentTokenBudget,
   resolveAgenticMaxTurns,
   resolveRecoveryReasoning,
@@ -653,6 +654,19 @@ export interface StartAnalysisOptions {
   sourceRequirements?: AnalysisSourceRequirement[];
   /** Issue #994 — a Spec Kit handoff's record of what it sent; persisted to metadata. */
   specKitHandoff?: SpecKitHandoffRecord;
+  /**
+   * Issue #1027 — background for the code agent (a Spec Kit handoff's plan
+   * components and task titles). Persisted to the analysis metadata so a
+   * regenerate or a resume reads the same text; never split into requirements
+   * and never used as a retrieval query.
+   */
+  agentContext?: string;
+}
+
+/** #1027 — the run's stored plan context, or undefined. */
+export function readAgentContext(metadata: Record<string, unknown>): string | undefined {
+  const value = metadata.agentContext;
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
 interface ActiveRun {
@@ -769,6 +783,7 @@ export class AnalysisOrchestrator {
       extraInstructions: opts.extraInstructions,
       sourceRequirements: opts.sourceRequirements,
       ...(opts.specKitHandoff ? { specKitHandoff: opts.specKitHandoff } : {}),
+      ...(opts.agentContext ? { agentContext: opts.agentContext } : {}),
     });
 
     audit({
@@ -785,6 +800,7 @@ export class AnalysisOrchestrator {
         documentCount: opts.documentIds?.length ?? null,
         model: opts.model ?? null,
         hasExtraInstructions: Boolean(opts.extraInstructions),
+        ...(opts.agentContext ? { agentContextChars: opts.agentContext.length } : {}),
         importedRequirementCount: opts.sourceRequirements?.length ?? 0,
       },
     });
@@ -916,6 +932,7 @@ export class AnalysisOrchestrator {
     );
     const extraInstructions =
       typeof metadata.extraInstructions === "string" ? metadata.extraInstructions : undefined;
+    const agentContext = readAgentContext(metadata);
     const controller = new AbortController();
     const active: ActiveRun = {
       analysisId: opts.analysisId,
@@ -960,6 +977,7 @@ export class AnalysisOrchestrator {
         documentIds,
         model,
         extraInstructions,
+        ...(agentContext ? { agentContext } : {}),
         signal: controller.signal,
         actorId: opts.actorId,
       };
@@ -1100,6 +1118,7 @@ export class AnalysisOrchestrator {
       projectDescription: input.projectDescription,
       requirements,
       extraInstructions: input.extraInstructions,
+      ...(input.agentContext ? { agentContext: input.agentContext } : {}),
       model: input.model,
       signal: input.signal,
       affectedCode,
@@ -1296,6 +1315,7 @@ export class AnalysisOrchestrator {
         );
         const extraInstructions =
           typeof metadata.extraInstructions === "string" ? metadata.extraInstructions : undefined;
+        const agentContext = readAgentContext(metadata);
 
         // Reconstruct the agentic-run inputs from persisted state (requirements
         // from the document agent, deterministic affected-code + escalation).
@@ -1333,6 +1353,7 @@ export class AnalysisOrchestrator {
             projectDescription: analysis.project.description,
             requirements,
             extraInstructions,
+            ...(agentContext ? { agentContext } : {}),
             model,
             signal: controller.signal,
             connectorId: connector.id,
@@ -1787,6 +1808,7 @@ export class AnalysisOrchestrator {
               documentIds: opts.documentIds,
               model: opts.model,
               extraInstructions: opts.extraInstructions,
+              ...(opts.agentContext ? { agentContext: opts.agentContext } : {}),
               signal: controller.signal,
               replayRunId,
               actorId: opts.startedById,
@@ -1824,6 +1846,7 @@ export class AnalysisOrchestrator {
                 projectDescription,
                 requirements: codeRequirements,
                 extraInstructions: opts.extraInstructions,
+                ...(opts.agentContext ? { agentContext: opts.agentContext } : {}),
                 model: opts.model,
                 signal: codeController.signal,
                 connectorId: connectors[0]?.id,
@@ -1878,6 +1901,7 @@ export class AnalysisOrchestrator {
                   projectDescription,
                   requirements: codeRequirements,
                   extraInstructions: opts.extraInstructions,
+                  ...(opts.agentContext ? { agentContext: opts.agentContext } : {}),
                   model: opts.model,
                   signal: codeController.signal,
                   connectorId: connector.id,
@@ -1921,6 +1945,7 @@ export class AnalysisOrchestrator {
               requirements: codeRequirements,
               documentIds: opts.documentIds,
               extraInstructions: opts.extraInstructions,
+              ...(opts.agentContext ? { agentContext: opts.agentContext } : {}),
               model: opts.model,
               signal: codeController.signal,
               affectedCode,
@@ -2386,6 +2411,8 @@ export class AnalysisOrchestrator {
      * agent so their prompts stay byte-identical.
      */
     affectedSchema?: string;
+    /** #1027 — the run's plan context; reaches the prompt ONLY for the code agent. */
+    agentContext?: string;
   }): Promise<AgentRunResult> {
     const startedAt = new Date();
     this.emit({
@@ -2431,6 +2458,11 @@ export class AnalysisOrchestrator {
           // #824 — only the database agent (Sally) renders the AFFECTED SCHEMA
           // block; the builder ignores it for every other specialist.
           affectedSchema: input.agentKey === "database" ? input.affectedSchema : undefined,
+          // #1027 — the document agent must not read it: what it extracts as
+          // requirements feeds the code pass.
+          ...(input.agentKey === "code" && input.agentContext
+            ? { agentContext: input.agentContext }
+            : {}),
           model:
             input.model ??
             (await this.selectModelForAgent(input.projectId, input.agentKey, retrieved)),
@@ -2581,6 +2613,8 @@ export class AnalysisOrchestrator {
     projectDescription: string;
     requirements: Array<{ id: string; text: string }>;
     extraInstructions?: string;
+    /** #1027 — the run's plan context, seeded into every pass and carved out of its budget. */
+    agentContext?: string;
     model?: string;
     signal: AbortSignal;
     connectorId?: string;
@@ -2753,7 +2787,13 @@ export class AnalysisOrchestrator {
         ): Promise<{ output: AgentOutput; usage: TokenUsage }> => {
           // #141 / #214 — the prompt and the budget carve-out are shared with the
           // tool-protocol eval harness, so #214 measures THIS pass.
-          const seeds = { fused, affectedCode, affectedSchema };
+          const planContext = planContextSeed(input.agentContext);
+          const seeds = {
+            fused,
+            affectedCode,
+            affectedSchema,
+            ...(planContext ? { planContext } : {}),
+          };
           const { systemMessage, userMessage } = buildAgenticPassPrompt({
             projectName: input.projectName,
             projectDescription: input.projectDescription,
@@ -3313,6 +3353,8 @@ export class AnalysisOrchestrator {
     requirements: Array<{ id: string; text: string }>;
     documentIds?: string[];
     extraInstructions?: string;
+    /** #1027 — the run's plan context. */
+    agentContext?: string;
     model?: string;
     signal: AbortSignal;
     /** #735 (Epic #726) — deterministic requirement→code mapping seeded into the gap prompt. */
@@ -3380,6 +3422,7 @@ export class AnalysisOrchestrator {
           projectName: input.projectName,
           projectDescription: input.projectDescription,
           extraInstructions: input.extraInstructions,
+          ...(input.agentContext ? { agentContext: input.agentContext } : {}),
           codeContext: fused.block || undefined,
           affectedCode: affectedCode.block || undefined,
           // #824 — the deterministic AFFECTED SCHEMA block (schema-change awareness).

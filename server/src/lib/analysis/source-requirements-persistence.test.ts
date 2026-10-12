@@ -78,3 +78,23 @@ describe("analysis source requirements (#1006)", () => {
     expect(snap?.sourceRequirements).toEqual([LINK]);
   });
 });
+
+describe("analysis plan context (#1027)", () => {
+  it("stores the context beside, never inside, the requirements text", async () => {
+    await createAnalysis({
+      ...base,
+      extraInstructions: "AC-1: Reject a duplicate feed.",
+      agentContext: "Tasks (tasks.md):\n- T01: Add the unique index",
+    });
+    const stored = JSON.parse(store.metadata ?? "{}") as Record<string, unknown>;
+    expect(stored.agentContext).toBe("Tasks (tasks.md):\n- T01: Add the unique index");
+    expect(stored.extraInstructions).toBe("AC-1: Reject a duplicate feed.");
+  });
+
+  it("writes a byte-identical row when no context is given", async () => {
+    await createAnalysis({ ...base, extraInstructions: "Export OPML." });
+    expect(store.metadata).toBe(
+      '{"agentKeys":["code"],"documentIds":[],"model":null,"extraInstructions":"Export OPML."}',
+    );
+  });
+});
