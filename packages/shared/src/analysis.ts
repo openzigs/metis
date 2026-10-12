@@ -726,6 +726,23 @@ export const synthesizedRequirementSchema = z.object({
    * generic Given/When/Then block that read as authored.
    */
   acceptanceCriteria: z.array(z.string().min(1).max(1024)).max(20).default([]),
+  /**
+   * Issue #1063 — on a run started from imported items, the `NR-*` ids of the
+   * items this requirement restates or refines. `[]` is the model saying the
+   * requirement is its own addition; ABSENT means it did not say, which must
+   * never be read as "added by the analysis". No default, for that reason.
+   * Model output: every id is checked against the run's own before it is kept
+   * (`cleanSourceIds`), which is also where unknown and over-long ids go.
+   *
+   * FAILS SOFT, and must: `runSynthesis` validates the whole reply with
+   * {@link synthesisOutputSchema}, so a strict schema here let one requirement's
+   * `sourceIds: null` discard every requirement of the reply, twice, for a field
+   * that only says where a card came from. Anything that is not a list (`null`,
+   * a bare string, a number) reads as ABSENT; an entry that is not a string
+   * reads as `""`, which is no run's id. No length caps: an id the run does not
+   * list is dropped whatever its length, so a cap could only reject the reply.
+   */
+  sourceIds: z.array(z.string().catch("")).optional().catch(undefined),
 });
 export type SynthesizedRequirement = z.infer<typeof synthesizedRequirementSchema>;
 
@@ -1283,6 +1300,13 @@ export interface AnalysisSnapshot {
      * panel, which is every flag-off and every pre-#1109 run.
      */
     supportConfidence: RequirementSupportConfidence | null;
+    /**
+     * Issue #1063 — the imported items this requirement came from, on a run
+     * started from imported items. `[]`: the analysis added it. `null` or
+     * absent: not recorded (a run not started from imported items, a row
+     * written before #1063, or a synthesis that did not say).
+     */
+    sourceItems?: AnalysisSourceRequirement[] | null;
   }>;
   /**
    * Epic #203 (#221) — first-class cross-document conflict / contradiction /

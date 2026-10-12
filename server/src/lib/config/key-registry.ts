@@ -536,6 +536,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Token budget for one agentic code-agent run, split across repos on multi-repo projects (#769). Default 100000. The bounded #769 final-answer retry may spend a small amount beyond this to serialize work already done.",
     sensitive: false,
   },
+  // ── Issue #1063 — reasoning on the degraded pass's two recovery calls ──
+  ANALYSIS_RECOVERY_REASONING: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.enum(["auto", "provider-default", "off", "low", "medium", "high"]),
+    description:
+      "#1063 — how much the code agent's two RECOVERY calls may reason: the final-answer retry and the evidence-only salvage, made when the tool loop stops on its turn or token budget without an answer. Same values as SPEC_KIT_REASONING. auto (default): low effort for a model that REASONS BY DEFAULT (DeepSeek deepseek-v4-pro / deepseek-flash, or a claude-* name sent to DeepSeek's Anthropic endpoint) and nothing for every other model. provider-default: send nothing. off: thinking disabled. low / medium / high: that effort for any model. In #706 run 7 both calls spent their whole 16384-token output cap reasoning and returned no text, so 64 tool calls ended in 0 findings. Does not change the loop's own turns. REACHES THE MODEL ONLY on the anthropic provider (thinking + output_config.effort) and local-gemma; the openai, azure and bedrock-gateway providers drop it, so it does nothing there and the degrade note says so. KEEP auto FOR REAL CLAUDE MODELS: auto leaves a Claude request unchanged, while an explicit low / medium / high / off sends thinking / output_config.effort fields that have NOT been verified per Claude model.",
+    sensitive: false,
+  },
   // ── Issue #1218 — the degraded-pass retry's OUTPUT cap ─────────────────
   ANALYSIS_FINAL_ANSWER_MAX_OUTPUT_TOKENS: {
     tier: "tunable",

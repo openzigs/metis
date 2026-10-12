@@ -260,6 +260,53 @@ describe("#1001 continue with a larger budget", () => {
   });
 });
 
+/**
+ * PR #1095 panel, T3 — a regenerate re-runs synthesis, which rewrites every
+ * requirement row. Without the run's imported items it cannot be asked which
+ * item each requirement restates, and every "Imported as" link is lost.
+ */
+describe("#1063 a regenerate hands the run's imported items to synthesis", () => {
+  const sourceRequirements = [
+    {
+      candidateId: "NR-1",
+      requirementId: "req-imported-1",
+      title: "Add a button to terminate all sessions",
+      externalSource: "github",
+      externalId: "4074",
+      externalUrl: "https://github.com/miniflux/v2/issues/4074",
+    },
+    {
+      candidateId: "NR-2",
+      requirementId: "req-imported-2",
+      title: "Mark all as read older than X",
+      externalSource: "github",
+      externalId: "3838",
+      externalUrl: null,
+    },
+  ];
+  const imported = {
+    ...ANALYSIS,
+    metadata: JSON.stringify({ model: "deepseek-flash", sourceRequirements }),
+  };
+  const regenerateOn = (orch: Stubbed, analysis: unknown, agentKey = "code") =>
+    orch.regenerateLoadedAgent({ analysisId: "an_1", agentKey, actorId: "u1" }, analysis);
+
+  it.each(["code", "document"])("on a %s regenerate", async (agentKey) => {
+    const orch = makeOrchestrator();
+    await regenerateOn(orch, imported, agentKey);
+    expect(orch.runSynthesisAndPersist).toHaveBeenCalledTimes(1);
+    expect(orch.runSynthesisAndPersist.mock.calls[0][0].sourceRequirements).toEqual(
+      sourceRequirements,
+    );
+  });
+
+  it("hands it none on a run that was not started from imported items", async () => {
+    const orch = makeOrchestrator();
+    await regenerateOn(orch, ANALYSIS);
+    expect(orch.runSynthesisAndPersist.mock.calls[0][0].sourceRequirements).toEqual([]);
+  });
+});
+
 describe("#1001 the banner describes the regenerated pass", () => {
   it("clears the cut-short reason once the continued pass finishes within budget", async () => {
     const orch = makeOrchestrator(health(false));

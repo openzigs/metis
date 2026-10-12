@@ -27,6 +27,8 @@ export interface JsonLlmCallInput {
   maxTokens?: number;
   /** Reasoning effort hint forwarded to the provider. */
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  /** #1063 — turn the model's thinking off for this call (`ChatOptions.disableThinking`). */
+  disableThinking?: boolean;
   /** Cancellation signal. */
   signal?: AbortSignal;
   /**
@@ -127,6 +129,7 @@ export async function callJsonLlm<T = unknown>(
     promptCaching: input.promptCaching ? { system: true, messages: true } : undefined,
     maxTokens: input.maxTokens,
     reasoningEffort: input.reasoningEffort,
+    ...(input.disableThinking ? { disableThinking: true } : {}),
     signal: input.signal,
   });
   // Metering is bookkeeping: a throw here must not read as a failed call (#718).

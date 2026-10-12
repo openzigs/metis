@@ -15,7 +15,7 @@
  * no-op.
  */
 import { describe, expect, it } from "vitest";
-import { loadReqMapFixture, type ReqMapFixture } from "./fixture.js";
+import { buildBm25Searcher, loadReqMapFixture, type ReqMapFixture } from "./fixture.js";
 import {
   checkThresholds,
   predictAffectedFiles,
@@ -98,5 +98,41 @@ describe("reqmap eval — precision/recall vs replayed PRs", () => {
     // And the configured floors are strictly positive (never a no-op gate).
     expect(REQMAP_EVAL_THRESHOLDS.macroF1).toBeGreaterThan(0);
     expect(REQMAP_EVAL_THRESHOLDS.macroF1).toBeLessThanOrEqual(aggregate.macroF1);
+  });
+});
+
+/**
+ * #1063 (PR #1095 panel) — this eval replays the analysis DISPLAY path, so its
+ * searcher must apply that path's rule by default. Switching the default back
+ * left every suite green: the floors sit below both arms' scores.
+ */
+describe("reqmap eval — the searcher replays the display path's rule", () => {
+  const sym = (name: string, filePath: string) => ({
+    id: `${filePath}::${name}`,
+    projectId: "p",
+    kind: "function",
+    name,
+    qualifiedName: `${filePath}::${name}`,
+    filePath,
+    startLine: 1,
+    endLine: 2,
+    language: "go",
+  });
+  const symbols = [
+    sym("InlineKeyboardButton", "internal/integration/telegrambot/client.go"),
+    sym("flushSessions", "internal/cli/flush_sessions.go"),
+    sym("markAllAsRead", "internal/ui/unread_mark_all_read.go"),
+  ];
+  const TERMINATE = "Add a button to terminate all sessions";
+
+  it("needs two shared name terms by default", async () => {
+    expect(await buildBm25Searcher(symbols).search(TERMINATE, "p")).toEqual([]);
+    const marked = await buildBm25Searcher(symbols).search("Mark all as read older than X", "p");
+    expect(marked.map((h) => h.name)).toEqual(["markAllAsRead"]);
+  });
+
+  it("is the pre-#1063 arm when asked for one shared term", async () => {
+    const hits = await buildBm25Searcher(symbols, { minSharedTerms: 1 }).search(TERMINATE, "p");
+    expect(hits.map((h) => h.name).sort()).toEqual(["InlineKeyboardButton", "flushSessions"]);
   });
 });
