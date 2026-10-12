@@ -103,6 +103,7 @@ import {
   outcomeRequirementCount,
 } from "@/components/analysis/AnalysisOutcomeCard";
 import { SpecKitHandoffNotice } from "@/components/analysis/spec-kit-handoff-notice";
+import { AgentContextDisclosure } from "@/components/analysis/agent-context-disclosure";
 import { FindingBody } from "@/components/analysis/FindingBody";
 import { RequirementBody } from "@/components/analysis/RequirementBody";
 import { RequirementSourceItems } from "@/components/analysis/RequirementSourceItems";
@@ -972,6 +973,9 @@ export default function AnalysisPage(): React.ReactElement {
               {/* Issue #994 — what a Spec Kit handoff sent and left out, on every
               tab and while the run is still going. Nothing for other runs. */}
               <SpecKitHandoffNotice metadata={detail.data.metadata} />
+              {/* Issue #1027 — the context text the code agent was given, for any
+              run that has one: the notice above names labels, this is the text. */}
+              <AgentContextDisclosure metadata={detail.data.metadata} />
 
               <AnalysisResultTabs
                 value={tab}

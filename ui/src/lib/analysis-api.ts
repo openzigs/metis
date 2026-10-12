@@ -389,6 +389,8 @@ export interface StartAnalysisInput {
   enableClarification?: boolean;
   /** Issue #994 — a Spec Kit handoff's record of what it sent and left out. */
   specKitHandoff?: SpecKitHandoffRecord;
+  /** Issue #1027 — background for the code agent, apart from the requirements (1..4096). */
+  agentContext?: string;
 }
 
 export interface UpdateRequirementInput {

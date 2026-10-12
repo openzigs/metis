@@ -129,6 +129,8 @@ export interface CreateAnalysisInput {
    * persisted as `metadata.specKitHandoff` for the analysis page to state.
    */
   specKitHandoff?: SpecKitHandoffRecord;
+  /** Issue #1027 — the code agent's plan context; persisted for regenerate and resume. */
+  agentContext?: string;
 }
 
 /**
@@ -208,6 +210,7 @@ export async function createAnalysis(input: CreateAnalysisInput) {
           ? { sourceRequirements: input.sourceRequirements }
           : {}),
         ...(input.specKitHandoff ? { specKitHandoff: input.specKitHandoff } : {}),
+        ...(input.agentContext ? { agentContext: input.agentContext } : {}),
       }),
     },
   });

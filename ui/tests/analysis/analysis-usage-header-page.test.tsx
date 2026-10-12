@@ -308,3 +308,28 @@ describe("analysis page usage header (#977)", () => {
     expect(tokens.join(" ")).not.toContain("439.2k");
   });
 });
+
+// Review of #1027 — the context text a run's code agent was given is on the
+// page for any run that has one, not only a Spec Kit handoff's.
+describe("analysis page shows the run's agent context (#1027)", () => {
+  it("shows the stored text, collapsed, on a run with no handoff record", async () => {
+    vi.mocked(analysisApi.get).mockResolvedValue({
+      ...RUNNING,
+      metadata: { agentContext: "Tasks (tasks.md):\n- T01: Add the unique index" },
+    } as never);
+    renderPage();
+    const details = (await screen.findByTestId("analysis-agent-context")) as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    expect(screen.getByTestId("analysis-agent-context-text").textContent).toBe(
+      "Tasks (tasks.md):\n- T01: Add the unique index",
+    );
+    expect(screen.queryByTestId("spec-kit-handoff-notice")).toBeNull();
+  });
+
+  it("shows nothing for a run without one", async () => {
+    vi.mocked(analysisApi.get).mockResolvedValue(RUNNING as never);
+    renderPage();
+    await screen.findByText(/^Started /);
+    expect(screen.queryByTestId("analysis-agent-context")).toBeNull();
+  });
+});
