@@ -768,8 +768,9 @@ type); a change to the file, or to any Go file, binds them again. The bound is c
 ingests because an ingest is the only thing that can make progress: on a nightly refresh
 Miniflux's 21,106 calls would be allowed 14 nights.
 
-**An ingest that stops half-way is taken up again.** Before its first row, an ingest that
-is going to bind Go calls sets `inFlight` in the record; the write that ends it removes it.
+**An ingest that stops half-way is taken up again.** Before its first row, an ingest in
+which a Go file changed or was deleted sets `inFlight` in the record; the write that ends it
+removes it.
 A run that crashed or threw in between has stored a changed file's new content hash, and
 perhaps name-based answers for calls its ceiling skipped, so the next ingest would find
 nothing changed. With the flag set it re-binds every Go file from its first call. (It

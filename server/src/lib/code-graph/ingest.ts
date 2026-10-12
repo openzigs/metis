@@ -562,12 +562,15 @@ export const GO_BINDING_RESUME_GRACE = 3;
  * keeps the answer it has until its turn comes. It restarts at 0 for every file
  * whenever a Go file changes, and does not hold the version back.
  *
- * `inFlight` is written BEFORE the first row of an ingest that binds Go calls
- * and removed by the write that ends it. An ingest that stops in between —
- * a crash, a throw in a later step — has stored the new content hash of a
- * changed file, and may have stored name-evidence answers for the calls its
- * ceiling skipped, with nothing else to say so: the next ingest would find no
- * changed file and resume nothing. With the flag it re-binds every Go file.
+ * `inFlight` is written BEFORE the first row of an ingest in which a Go file
+ * changed or was deleted, and removed by the write that ends it. An ingest
+ * that stops in between — a crash, a throw in a later step — has stored the
+ * new content hash of the changed file, and may have stored name-evidence
+ * answers for the calls its ceiling skipped, with nothing else to say so: the
+ * next ingest would find no changed file and resume nothing. With the flag it
+ * re-binds every Go file. (No other ingest needs it: one that only resumes
+ * leaves its record standing until Step 8 replaces it, an upgrade leaves the
+ * version unstamped, and a re-bind no Go change caused decides nothing anew.)
  *
  * `resumesLeft` and `abandoned`: {@link GO_BINDING_RESUME_GRACE}.
  *
@@ -792,9 +795,9 @@ export async function ingestCodeGraph(
   const goBindingLeft = new Map<string, number>();
   const goBindingAgainLeft = new Map<string, number>();
   const goBindingAbandoned = new Map(goBindingRecord.abandoned);
-  // #1071 — said BEFORE the first row that depends on it: this ingest binds Go
-  // calls, and until Step 8 replaces the record nobody can vouch for the rows
-  // it is writing ({@link GoBindingIncomplete.inFlight}).
+  // #1071 — said BEFORE the first row that depends on it: a Go file changed,
+  // and until Step 8 replaces the record nobody can vouch for the rows this
+  // ingest is writing ({@link GoBindingIncomplete.inFlight}).
   let goBindingMarked = false;
   const markGoBindingInFlight = async (): Promise<void> => {
     if (goBindingMarked) return;
@@ -1582,7 +1585,7 @@ interface IngestTreeState {
   goBindingAgainLeft: Map<string, number>;
   /** #1071 — files given up on; `persistParsed` removes those this run re-bound, rewrote or found deleted. */
   goBindingAbandoned: Map<string, number>;
-  /** #1071 — record on the graph that this run is binding Go calls; called before the first row that depends on it. */
+  /** #1071 — record on the graph that this run re-binds Go calls after a change; called before its first row. */
   markGoBindingInFlight: () => Promise<void>;
   /** #1071 — the pending work is the rest of an extractor upgrade (the version is not stamped yet). */
   goBindingResumesUpgrade: boolean;
@@ -1896,9 +1899,6 @@ async function persistParsed(
       tree.deletedPaths.some((p) => detectLanguage(p) === "go") ||
       [...affected].some((p) => tree.unchangedFiles.get(p)?.language === "go");
     if (goRebindAll) {
-      // No edge has been written yet, and no Go row at all unless a Go file
-      // changed (which said so before pass 0).
-      await tree.markGoBindingInFlight();
       for (const [relPath, file] of tree.unchangedFiles) {
         if (file.language === "go") affected.add(relPath);
       }

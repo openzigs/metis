@@ -756,6 +756,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect((await graphOf(projectId)).goBindingIncomplete).toBeNull();
       // A change to another language's file: no Go is bound, nothing is written to the record.
       const update = vi.spyOn(db.codeGraph, "update");
+      // Pass 1 opens by deleting the changed file's old symbols: the first row
+      // of the run that depends on the record.
+      const wipe = vi.spyOn(db.codeSymbol, "deleteMany");
       try {
         await touch(root, "web/util.ts");
         expect((await ingest(projectId, root)).goBinding).toBeNull();
@@ -769,8 +772,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(records).toEqual([null]);
         update.mockClear();
         // A change to a Go file: the flag first, then Step 8's.
+        wipe.mockClear();
         await touch(root, "api/b.go");
         await ingest(projectId, root);
+        // FIRST means before the changed file's rows are touched at all.
+        expect(wipe).toHaveBeenCalled();
+        const flagAt = update.mock.calls.findIndex(([arg]) =>
+          String(
+            (arg as { data: { goBindingIncomplete?: unknown } }).data.goBindingIncomplete,
+          ).includes('"inFlight":true'),
+        );
+        expect(flagAt).toBeGreaterThanOrEqual(0);
+        expect(update.mock.invocationCallOrder[flagAt]).toBeLessThan(
+          wipe.mock.invocationCallOrder[0],
+        );
         const goRecords = update.mock.calls
           .map(
             ([arg]) =>
@@ -783,6 +798,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ]);
       } finally {
         update.mockRestore();
+        wipe.mockRestore();
       }
     });
 

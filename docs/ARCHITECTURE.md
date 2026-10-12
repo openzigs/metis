@@ -3758,9 +3758,11 @@ like every other write of that upgrade — and nothing else does: an affected fi
 another language, or a step 2 re-bind, is a real change and reads as one.
 
 `inFlight` closes the window between the rows and the record. It is written before the
-first row of an ingest that binds Go calls (before pass 0 when a Go file changed or was
-deleted, otherwise in pass 1c before any edge) and removed by Step 8's write. A run that
-stops in between leaves it, and the next ingest re-binds every unchanged Go file.
+first row of an ingest in which a Go file changed or was deleted (before pass 0) and
+removed by Step 8's write. A run that stops in between leaves it, and the next ingest
+re-binds every unchanged Go file. No other ingest needs it: one that only resumes leaves
+its record standing, an upgrade leaves the version unstamped, and a re-bind that no Go
+change caused decides nothing anew.
 
 Progress does not depend on the clock: `GO_BINDING_MIN_CALLS` calls are resolved in every
 run before the ceiling is consulted, so N open calls take at most `ceil(N / 2,000)`
