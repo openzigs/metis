@@ -47,6 +47,8 @@ import {
   type FusedCodeContext,
 } from "./fused-code-chunks.js";
 import { buildAgenticCodePrompt } from "./prompts.js";
+import { resolveReasoningSetting } from "../docs-gen/docs-gen-reasoning.js";
+import type { ChatOptions } from "../ai/types.js";
 
 const log = createChildLogger("analysis-agentic-pass-context");
 
@@ -56,6 +58,32 @@ export const DEFAULT_AGENT_TOKEN_BUDGET = 100_000;
 /** The configured per-loop token budget (`ANALYSIS_AGENT_TOKEN_BUDGET`). */
 export function resolveAgentTokenBudget(): number {
   return getConfigService().getNumber("ANALYSIS_AGENT_TOKEN_BUDGET", DEFAULT_AGENT_TOKEN_BUDGET);
+}
+
+/** Config key for {@link resolveRecoveryReasoning}. */
+export const RECOVERY_REASONING_KEY = "ANALYSIS_RECOVERY_REASONING";
+
+/**
+ * Issue #1063 — how much the two RECOVERY calls of a degraded agentic pass may
+ * reason: the final-answer retry and the evidence-only salvage. Both only write
+ * up an investigation the loop already made, and a model that reasons by
+ * default draws its reasoning from the same output cap as the answer.
+ *
+ * Measured on #706 run 7 (`deepseek-flash`, analysis started from five imported
+ * items): the loop stopped on its token budget after 64 tool calls, the retry
+ * was billed 16,384 output tokens (its whole cap) and returned 0 characters with
+ * finish reason `max_tokens`, and the evidence-only call did exactly the same.
+ * So the run ended with 0 findings and every requirement "could not verify".
+ *
+ * Same values and the same `auto` rule as `SPEC_KIT_REASONING` (#1057), which
+ * fixed this failure for /speckit.plan: `low` effort for a model that reasons
+ * by default, nothing for any other model (Claude on api.anthropic.com is sent
+ * the same request as before). The loop's own turns are not affected.
+ */
+export function resolveRecoveryReasoning(
+  model: string | undefined,
+): Pick<ChatOptions, "reasoningEffort" | "disableThinking"> {
+  return resolveReasoningSetting(RECOVERY_REASONING_KEY, model);
 }
 
 /** Default max turns for the agentic loop (the FLOOR — see {@link resolveAgenticMaxTurns}). */

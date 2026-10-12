@@ -803,7 +803,9 @@ describe("#298 over-long findings fields — DeepSeek adapter loopback, both pro
     async (mode) => {
       const result = await run(mode, MALFORMED);
 
-      expect(result.finalAnswerRetry).toEqual({ attempted: true, succeeded: false });
+      // #1063 — an unusable retry also reports what it returned (asserted in
+      // agentic-recovery-reasoning.test.ts); this checks only that it did not succeed.
+      expect(result.finalAnswerRetry).toMatchObject({ attempted: true, succeeded: false });
       expect(result.hasFinalAnswer).toBe(false);
     },
   );

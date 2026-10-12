@@ -10,7 +10,9 @@
  * code. This panel renders that deterministic mapping: one collapsible section
  * per candidate, each listing the affected symbols with their
  * `filePath:startLine` locator, relation (direct vs blast-radius), and
- * confidence. Candidates with no mapped code show an explicit empty state.
+ * confidence. Candidates with no mapped code show an explicit empty state:
+ * since #1063 a symbol is linked only when its name shares two of the
+ * requirement's terms, so "no link" is an ordinary, honest outcome.
  *
  * Renders nothing when there is no mapping (plain runs / no new requirements /
  * no code graph), so it never adds noise to a standard analysis.
@@ -45,7 +47,9 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
         Affected code (deterministic mapping)
       </h4>
       <p className="text-xs text-muted-foreground">
-        Each new requirement mapped to existing code via Impact Analysis (mapper + blast radius).
+        Each new requirement mapped to existing code via Impact Analysis (mapper + blast radius). A
+        symbol is linked only when its name shares at least two of the requirement&apos;s terms;
+        confidence is relative to the best link for that requirement, not a probability.
         {affectedCode?.truncated
           ? " Some entries were omitted from the analysis prompt for length."
           : ""}
@@ -80,7 +84,9 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
                       data-testid={`affected-code-empty-${candidate.id}`}
                       className="text-xs text-muted-foreground"
                     >
-                      No code matched — see the coverage indicator.
+                      No code matched. No symbol name shares two of this requirement&apos;s terms,
+                      so nothing is linked rather than showing a weak guess. The code agent still
+                      investigates it; see the coverage indicator.
                     </p>
                   ) : (
                     <ul className="space-y-1.5">

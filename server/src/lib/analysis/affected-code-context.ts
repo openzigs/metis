@@ -46,6 +46,8 @@ import {
   PrismaCodeGraphDataSource,
 } from "../impact-analysis/impact-analysis-engine.js";
 import {
+  ANALYSIS_LINK_MIN_SHARED_TERMS,
+  MemoizingBm25CodeSymbolSearcher,
   mapRequirementToCode,
   type RequirementCodeMatch,
 } from "../traceability/requirement-code-mapping.js";
@@ -225,9 +227,16 @@ export async function computeAffectedCodeContext(opts: {
 
   const prisma = (opts.deps?.prisma ??
     (defaultPrisma as unknown as AffectedCodePrisma)) as AffectedCodePrisma;
+  // #1063 — these links are shown to a person as "affected code", so a symbol
+  // must share two of the requirement's terms; one shared word linked "terminate
+  // all sessions" to a Telegram keyboard button. One corpus build per run.
+  const searcher = new MemoizingBm25CodeSymbolSearcher(prisma, {
+    minSharedTerms: ANALYSIS_LINK_MIN_SHARED_TERMS,
+  });
+  const usesDefaultMapper = opts.deps?.mapRequirement === undefined;
   const mapRequirement: MapRequirementFn =
     opts.deps?.mapRequirement ??
-    ((req, projectId) => mapRequirementToCode(req, projectId, {}, { prisma }));
+    ((req, projectId) => mapRequirementToCode(req, projectId, {}, { prisma, searcher }));
   // One data source per project (the graph is project-scoped). `blastRadius`
   // only walks depth ≤ 2, so the per-hop Prisma reads are bounded.
   const dataSourceFor =
@@ -276,7 +285,16 @@ export async function computeAffectedCodeContext(opts: {
   // "(no code matched)" block that carries no signal. Per-candidate empty states
   // still render when SOME candidates matched and others did not.
   const hasAnySymbols = candidates.some((c) => c.symbols.length > 0);
-  if (!hasAnySymbols) return EMPTY_AFFECTED_CODE_CONTEXT;
+  if (!hasAnySymbols) {
+    // #1063 — "the project has code and none of it matched" is a result, and the
+    // page must say so. Only a project with NO code graph has nothing to report.
+    // Read from the corpus the mapper already loaded (no extra query); an
+    // injected mapper has no corpus to ask, and keeps the old behaviour. The
+    // prompt block stays empty either way: an all-empty list seeds nothing.
+    const hasCode = usesDefaultMapper && (await searcher.hasCodeGraph(opts.projectId));
+    if (!hasCode) return EMPTY_AFFECTED_CODE_CONTEXT;
+    return { result: { candidates, truncated: false }, block: "", tokens: 0, filePaths: [] };
+  }
 
   const rendered = renderAffectedCodeBlock(candidates, tokenBudget);
   const filePaths = [...new Set(candidates.flatMap((c) => c.symbols.map((s) => s.filePath)))];

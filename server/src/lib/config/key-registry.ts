@@ -537,6 +537,14 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     sensitive: false,
   },
   // ── Issue #1218 — the degraded-pass retry's OUTPUT cap ─────────────────
+  ANALYSIS_RECOVERY_REASONING: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.enum(["auto", "provider-default", "off", "low", "medium", "high"]),
+    description:
+      "#1063 — how much the code agent's two RECOVERY calls may reason: the final-answer retry and the evidence-only salvage, made when the tool loop stops on its turn or token budget without an answer. Same values as SPEC_KIT_REASONING. auto (default): low effort for a model that REASONS BY DEFAULT (DeepSeek deepseek-v4-pro / deepseek-flash, or a claude-* name sent to DeepSeek's Anthropic endpoint) and nothing for every other model. provider-default: send nothing. off: thinking disabled. low / medium / high: that effort for any model. In #706 run 7 both calls spent their whole 16384-token output cap reasoning and returned no text, so 64 tool calls ended in 0 findings. Does not change the loop's own turns.",
+    sensitive: false,
+  },
   ANALYSIS_FINAL_ANSWER_MAX_OUTPUT_TOKENS: {
     tier: "tunable",
     valueType: "int",

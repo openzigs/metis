@@ -207,7 +207,9 @@ describe("#141 native tool calls in runAgentLoop", () => {
       native,
       finalAnswerRetry: { instruction: "ANSWER NOW", isValidFinalAnswer: (t) => t.startsWith("{") },
     });
-    expect(result.finalAnswerRetry).toEqual({ attempted: true, succeeded: false });
+    // #1063 — an unusable retry also reports what it returned (asserted in
+    // agentic-recovery-reasoning.test.ts); this checks only that it did not succeed.
+    expect(result.finalAnswerRetry).toMatchObject({ attempted: true, succeeded: false });
     expect(result.hasFinalAnswer).toBe(false);
     expect(result.finalResponse).toMatch(/tool-call limit/);
     expect(result.salvageSource).toBe("still prose");

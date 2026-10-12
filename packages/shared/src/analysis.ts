@@ -726,6 +726,14 @@ export const synthesizedRequirementSchema = z.object({
    * generic Given/When/Then block that read as authored.
    */
   acceptanceCriteria: z.array(z.string().min(1).max(1024)).max(20).default([]),
+  /**
+   * Issue #1063 — on a run started from imported items, the `NR-*` ids of the
+   * items this requirement restates or refines. `[]` is the model saying the
+   * requirement is its own addition; ABSENT means it did not say, which must
+   * never be read as "added by the analysis". No default, for that reason.
+   * Model output: every id is checked against the run's own before it is kept.
+   */
+  sourceIds: z.array(z.string().min(1).max(32)).max(20).optional(),
 });
 export type SynthesizedRequirement = z.infer<typeof synthesizedRequirementSchema>;
 
@@ -1283,6 +1291,13 @@ export interface AnalysisSnapshot {
      * panel, which is every flag-off and every pre-#1109 run.
      */
     supportConfidence: RequirementSupportConfidence | null;
+    /**
+     * Issue #1063 — the imported items this requirement came from, on a run
+     * started from imported items. `[]`: the analysis added it. `null` or
+     * absent: not recorded (a run not started from imported items, a row
+     * written before #1063, or a synthesis that did not say).
+     */
+    sourceItems?: AnalysisSourceRequirement[] | null;
   }>;
   /**
    * Epic #203 (#221) — first-class cross-document conflict / contradiction /

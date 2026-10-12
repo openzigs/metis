@@ -21,6 +21,7 @@ import type { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import {
   BM25Index,
+  tokenizeCode,
   tokenizeCodeRoots,
   type SearchableSymbol,
 } from "../code-graph/hybrid-search.js";
@@ -463,16 +464,68 @@ async function buildBm25Corpus(
   return { index, byId: new Map(rows.map((r) => [r.id, r])), size: rows.length };
 }
 
+/**
+ * Issue #1063 — the fewest DISTINCT requirement terms a symbol's name must share
+ * with a requirement before the analysis results page shows the two as linked.
+ *
+ * BM25 scores only the terms that MATCHED: a query term no symbol carries costs
+ * a candidate nothing. So for "Add a button to terminate all sessions" (content
+ * terms `button`, `terminate`, `sessions`; no symbol name contains `terminate`)
+ * every hit shared exactly one word, the rarest word won (`button`, 7 symbols),
+ * and relative normalisation then reported the Telegram bot's
+ * `InlineKeyboardButton` at confidence 1.0. Raising the confidence floor could
+ * not have fixed that: the floor is relative to the best hit, and the best hit
+ * was the wrong one. One shared word is not evidence of a link, so two are
+ * required (or the only one, for a one-word requirement), and a requirement
+ * with no such symbol gets no link.
+ *
+ * PROVISIONAL and in-sample: chosen on the #706 run-7 Miniflux requirements and
+ * the two committed eval fixtures. It trades recall for precision (reqmap
+ * fixture: precision 0.71 to 0.87, recall 1.00 to 0.90), which suits a link a
+ * person reads. It is NOT applied to Impact Analysis seeding, where recall is
+ * the measure: on the impact-recall fixture it cut table recall from 0.91 to
+ * 0.50. So it is an option of the searcher, set only by the analysis path.
+ */
+export const ANALYSIS_LINK_MIN_SHARED_TERMS = 2;
+
+/** Options for the BM25 searchers. */
+export interface Bm25SearcherOptions {
+  /**
+   * Drop a candidate that shares fewer than this many DISTINCT terms with the
+   * (denoised) query. Default 1: any shared word is a candidate, as before
+   * #1063. See {@link ANALYSIS_LINK_MIN_SHARED_TERMS}.
+   */
+  minSharedTerms?: number;
+}
+
+/**
+ * The shared-term count a candidate needs for `denoisedQuery`: `minSharedTerms`,
+ * capped at the number of distinct terms the query has (a one-word requirement
+ * can only ever share one), and never below 1.
+ */
+export function requiredSharedTerms(denoisedQuery: string, minSharedTerms = 1): number {
+  const distinct = new Set(tokenizeCode(denoisedQuery)).size;
+  return Math.max(1, Math.min(Math.floor(minSharedTerms), distinct));
+}
+
 /** Score a query against a pre-built corpus into ranked candidates. */
-function scoreBm25Corpus(corpus: Bm25Corpus, query: string, limit: number): CodeSymbolCandidate[] {
+function scoreBm25Corpus(
+  corpus: Bm25Corpus,
+  query: string,
+  limit: number,
+  options: Bm25SearcherOptions = {},
+): CodeSymbolCandidate[] {
   if (corpus.size === 0) return [];
   // #943 — strip English function words + generic CRUD/attribute boilerplate from
   // the QUERY so the entity nouns anchor the seed instead of a rare-in-corpus
   // scaffolding token dominating it. Corpus/index untouched.
   const denoised = denoiseRequirementQuery(query);
+  // #1063 — applied BEFORE the limit, so a requirement whose top hits each share
+  // one word still reaches the two-word hits ranked below them.
+  const required = requiredSharedTerms(denoised, options.minSharedTerms);
   return corpus.index
     .score(denoised)
-    .filter((s) => s.score > 0)
+    .filter((s) => s.score > 0 && s.matchedTerms >= required)
     .slice(0, limit)
     .map((s) => {
       const row = corpus.byId.get(s.symbolId)!;
@@ -490,7 +543,10 @@ function scoreBm25Corpus(corpus: Bm25Corpus, query: string, limit: number): Code
 }
 
 export class Bm25CodeSymbolSearcher implements CodeSymbolSearcher {
-  constructor(private readonly prisma: Pick<PrismaClient, "codeSymbol">) {}
+  constructor(
+    private readonly prisma: Pick<PrismaClient, "codeSymbol">,
+    private readonly options: Bm25SearcherOptions = {},
+  ) {}
 
   async search(
     query: string,
@@ -498,7 +554,7 @@ export class Bm25CodeSymbolSearcher implements CodeSymbolSearcher {
     opts: { limit?: number } = {},
   ): Promise<CodeSymbolCandidate[]> {
     const corpus = await buildBm25Corpus(this.prisma, projectId);
-    return scoreBm25Corpus(corpus, query, opts.limit ?? DEFAULT_TOP_K);
+    return scoreBm25Corpus(corpus, query, opts.limit ?? DEFAULT_TOP_K, this.options);
   }
 }
 
@@ -515,7 +571,10 @@ export class Bm25CodeSymbolSearcher implements CodeSymbolSearcher {
  */
 export class MemoizingBm25CodeSymbolSearcher implements CodeSymbolSearcher {
   private readonly cache = new Map<string, Promise<Bm25Corpus>>();
-  constructor(private readonly prisma: Pick<PrismaClient, "codeSymbol">) {}
+  constructor(
+    private readonly prisma: Pick<PrismaClient, "codeSymbol">,
+    private readonly options: Bm25SearcherOptions = {},
+  ) {}
 
   async search(
     query: string,
@@ -527,7 +586,22 @@ export class MemoizingBm25CodeSymbolSearcher implements CodeSymbolSearcher {
       corpusP = buildBm25Corpus(this.prisma, projectId);
       this.cache.set(projectId, corpusP);
     }
-    return scoreBm25Corpus(await corpusP, query, opts.limit ?? DEFAULT_TOP_K);
+    return scoreBm25Corpus(await corpusP, query, opts.limit ?? DEFAULT_TOP_K, this.options);
+  }
+
+  /**
+   * #1063 — whether a project this instance has already searched has any code
+   * symbol to match. Answers from the cached corpus, so it costs no query; a
+   * project never searched (or whose load failed) reads as having none.
+   */
+  async hasCodeGraph(projectId: string): Promise<boolean> {
+    const corpusP = this.cache.get(projectId);
+    if (!corpusP) return false;
+    try {
+      return (await corpusP).size > 0;
+    } catch {
+      return false;
+    }
   }
 }
 

@@ -354,11 +354,108 @@ export function selectSalvageSource(
  * the investigation that DID happen, so the result is honest rather than a
  * silent, code-blind "success".
  */
+/**
+ * Issue #1063 — one recovery call a degraded pass made after its loop stopped:
+ * the final-answer retry, or the evidence-only call that follows it.
+ */
+export interface AgenticRecoveryAttempt {
+  step: "final-answer" | "evidence-only";
+  /** Verbatim from the provider (`max_tokens`, `length`, `end_turn`, ...). */
+  finishReason?: string;
+  /** Characters of visible text the call returned. */
+  responseLength: number;
+  /** Output tokens the call was billed, reasoning included. */
+  outputTokens: number;
+  /** The call's output cap, when one was sent. */
+  maxOutputTokens?: number;
+}
+
+const RECOVERY_STEP_TEXT: Record<AgenticRecoveryAttempt["step"], string> = {
+  "final-answer": "The final-answer call",
+  "evidence-only": "The evidence-only call",
+};
+
+/** Finish reasons that mean "stopped at the output cap" on the wire formats in use. */
+const OUTPUT_CAP_FINISH_REASONS = new Set(["max_tokens", "length"]);
+
+/**
+ * True when a recovery call returned NO text and stopped at its output cap: the
+ * signature of a model that spent the whole cap reasoning (#706 run 7: 16,384
+ * output tokens billed, 0 characters returned, twice).
+ */
+export function spentOutputCapWithoutText(attempt: AgenticRecoveryAttempt): boolean {
+  if (attempt.responseLength > 0) return false;
+  if (attempt.finishReason && OUTPUT_CAP_FINISH_REASONS.has(attempt.finishReason)) return true;
+  return attempt.maxOutputTokens !== undefined && attempt.outputTokens >= attempt.maxOutputTokens;
+}
+
+/**
+ * Issue #1063 — why a degraded pass recovered NOTHING, as notes a person can
+ * act on. Before this the run said only "0 finding(s) were recovered": the
+ * finish reason and token counts that explain it were in the server log and
+ * nowhere else. Built from counts and the provider's finish reason only, never
+ * from model text.
+ */
+export function describeRecoveryAttempts(attempts: readonly AgenticRecoveryAttempt[]): string[] {
+  return attempts.map((a) => {
+    const who = RECOVERY_STEP_TEXT[a.step];
+    const cap = a.maxOutputTokens !== undefined ? ` of ${a.maxOutputTokens}` : "";
+    if (spentOutputCapWithoutText(a)) {
+      return (
+        `${who} returned no text: it stopped at its output limit (${a.outputTokens}${cap} output tokens used). ` +
+        "A model that reasons by default spends that limit on reasoning first. " +
+        "ANALYSIS_RECOVERY_REASONING limits it (off turns reasoning off for these calls)."
+      );
+    }
+    return (
+      `${who} returned ${a.responseLength} character(s) with no usable finding ` +
+      `(finish reason ${a.finishReason ?? "unknown"}, ${a.outputTokens}${cap} output tokens used).`
+    );
+  });
+}
+
+/**
+ * The recovery calls a degraded pass made, from what the loop and the evidence
+ * salvage reported. A call that threw (no reply) or was never made is left out.
+ */
+export function collectRecoveryAttempts(
+  retry: AgentLoopResult["finalAnswerRetry"],
+  evidence:
+    { reply?: { finishReason?: string; responseLength: number; outputTokens: number } } | undefined,
+  caps: { maxOutputTokens: number },
+): AgenticRecoveryAttempt[] {
+  const attempts: AgenticRecoveryAttempt[] = [];
+  if (retry?.attempted && !retry.succeeded && retry.responseLength !== undefined) {
+    attempts.push({
+      step: "final-answer",
+      ...(retry.finishReason ? { finishReason: retry.finishReason } : {}),
+      responseLength: retry.responseLength,
+      outputTokens: retry.outputTokens ?? 0,
+      maxOutputTokens: retry.maxOutputTokens ?? caps.maxOutputTokens,
+    });
+  }
+  if (evidence?.reply) {
+    attempts.push({
+      step: "evidence-only",
+      ...(evidence.reply.finishReason ? { finishReason: evidence.reply.finishReason } : {}),
+      responseLength: evidence.reply.responseLength,
+      outputTokens: evidence.reply.outputTokens,
+      maxOutputTokens: caps.maxOutputTokens,
+    });
+  }
+  return attempts;
+}
+
 export function buildDegradedAgentOutput(input: {
   agentKey: AnalysisAgentKey;
   reason: AgenticDegradationReason;
   toolCalls: ReadonlyArray<{ tool: string }>;
   salvaged: AgentFindingPayload[];
+  /**
+   * #1063 — the recovery calls made. Reported only on a total loss; when
+   * findings were recovered the calls did their job and need no explanation.
+   */
+  recovery?: readonly AgenticRecoveryAttempt[];
 }): AgentOutput {
   const toolNames = [...new Set(input.toolCalls.map((c) => c.tool))].sort();
   const investigation =
@@ -379,6 +476,9 @@ export function buildDegradedAgentOutput(input: {
         0,
         512,
       ),
+      ...(input.salvaged.length === 0
+        ? describeRecoveryAttempts(input.recovery ?? []).map((n) => n.slice(0, 512))
+        : []),
     ],
   };
 }

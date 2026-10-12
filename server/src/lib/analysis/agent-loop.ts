@@ -136,6 +136,14 @@ export interface AgentLoopOptions {
      * can no longer see. Return "" for none. A throw is logged and ignored.
      */
     evidence?: (toolCalls: AgentLoopResult["toolCalls"]) => string;
+    /**
+     * #1063 — how much the retry may REASON. The retry only serialises an
+     * investigation that is already in the transcript, and a model that reasons
+     * by default draws that reasoning from the same output cap as the answer:
+     * in #706 run 7 `deepseek-flash` spent all 16,384 output tokens reasoning
+     * and returned no text. Applied to this call only, never to a loop turn.
+     */
+    reasoning?: Pick<ChatOptions, "reasoningEffort" | "disableThinking">;
   };
   /**
    * #1225 — bound the transcript the loop re-sends every turn.
@@ -316,7 +324,21 @@ export interface AgentLoopResult {
    */
   hasFinalAnswer: boolean;
   /** #769 — outcome of the bounded final-answer retry, when one was configured and needed. */
-  finalAnswerRetry?: { attempted: boolean; succeeded: boolean };
+  finalAnswerRetry?: {
+    attempted: boolean;
+    succeeded: boolean;
+    /**
+     * #1063 — what an unusable retry returned, so a caller can say WHY nothing
+     * was recovered. Absent when the retry succeeded or the call itself threw.
+     * `outputTokens` equal to `maxOutputTokens` with `responseLength` 0 is a
+     * model that spent its whole output cap reasoning.
+     */
+    outcome?: FinalAnswerKind;
+    finishReason?: string;
+    responseLength?: number;
+    outputTokens?: number;
+    maxOutputTokens?: number;
+  };
   /**
    * #1217 — the RAW model text this run produced, preserved before the
    * brace-free {@link buildBudgetExhaustedMessage} substitution overwrites
@@ -1826,6 +1848,8 @@ export async function runAgentLoop(
         maxTokens:
           options.finalAnswerRetry.maxOutputTokens ?? DEFAULT_FINAL_ANSWER_MAX_OUTPUT_TOKENS,
         ...(options.promptCaching ? { promptCaching: options.promptCaching } : {}),
+        // #1063 — before the caller spread, so an explicit caller option still wins.
+        ...(options.finalAnswerRetry.reasoning ?? {}),
         ...(options.providerChatOptions ?? {}),
         // #141 — the transcript holds native tool calls, which both wire formats
         // accept only alongside tool definitions; `none` keeps the call tool-free.
@@ -1851,6 +1875,16 @@ export async function runAgentLoop(
         salvageSource = retryResponse.content;
       }
       const retryOutcome = classifyFinalAnswer(retryResponse.content);
+      if (!retryMeta.succeeded) {
+        // #1063 — what an UNUSABLE retry returned, for the caller's degraded
+        // output. A retry that worked needs no explanation.
+        retryMeta.outcome = retryOutcome;
+        retryMeta.responseLength = retryResponse.content.length;
+        const retryOutputTokens = (retryResponse.usage as TokenUsage | undefined)?.completionTokens;
+        if (retryOutputTokens !== undefined) retryMeta.outputTokens = retryOutputTokens;
+        if (chatOpts.maxTokens !== undefined) retryMeta.maxOutputTokens = chatOpts.maxTokens;
+        if (retryResponse.finishReason) retryMeta.finishReason = retryResponse.finishReason;
+      }
       const diagnostics = {
         succeeded: retryMeta.succeeded,
         turnsExhausted,

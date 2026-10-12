@@ -179,3 +179,100 @@ describe("computeAffectedCodeContext", () => {
     expect(ctx.result.candidates[1].symbols).toEqual([]);
   });
 });
+
+/**
+ * Issue #1063 — with the DEFAULT mapper (no injected `mapRequirement`), a
+ * symbol is linked only when its name shares two of the requirement's terms,
+ * and "the project has code and none of it matched" is reported as such.
+ */
+describe("computeAffectedCodeContext — default mapper (#1063)", () => {
+  const symbols = [
+    ["InlineKeyboardButton", "internal/integration/telegrambot/client.go"],
+    ["restoreButtonState", "internal/ui/static/js/app.js"],
+    ["flushSessions", "internal/cli/flush_sessions.go"],
+    ["showSessionsPage", "internal/ui/session_list.go"],
+    ["CleanOldWebSessions", "internal/storage/web_session.go"],
+    ["WebSessionsByUserID", "internal/storage/web_session.go"],
+    ["ForceRefreshInterval", "internal/config/options.go"],
+    ["markAllAsRead", "internal/ui/unread_mark_all_read.go"],
+    ["markFeedAsRead", "internal/ui/feed_mark_as_read.go"],
+  ].map(([name, filePath], i) => ({
+    id: `sym-${i}`,
+    name,
+    qualifiedName: `${filePath}::${name}`,
+    kind: "function",
+    filePath,
+    startLine: 10 + i,
+    endLine: 20 + i,
+  }));
+
+  const prismaWith = (rows: typeof symbols) => {
+    const findMany = async (args: { where?: { projectId?: string } }) =>
+      args?.where?.projectId === "proj-miniflux" ? rows : [];
+    return { codeSymbol: { findMany } } as never;
+  };
+
+  const run = (extraInstructions: string, rows = symbols) =>
+    computeAffectedCodeContext({
+      projectId: "proj-miniflux",
+      extraInstructions,
+      enabled: true,
+      tokenBudget: 100000,
+      deps: { prisma: prismaWith(rows), dataSourceFor: emptyGraphFor },
+    });
+
+  it("links the requirement that shares two terms and leaves the others unlinked", async () => {
+    const ctx = await run(
+      "- Mark all as read older than X\n- Add a button to terminate all sessions\n- Ability to force IPv4 or IPv6 per feed",
+    );
+    const [mark, terminate, ipv] = ctx.result.candidates;
+    expect(mark!.symbols.map((s) => s.qualifiedName.split("::")[1])).toEqual(
+      expect.arrayContaining(["markAllAsRead", "markFeedAsRead"]),
+    );
+    // The two links reported in #706 run 7 are gone, and nothing replaces them.
+    expect(terminate!.symbols).toEqual([]);
+    expect(ipv!.symbols).toEqual([]);
+    expect(ctx.block).not.toContain("InlineKeyboardButton");
+    expect(ctx.block).not.toContain("ForceRefreshInterval");
+    expect(ctx.block).toContain("(no code matched — see coverage indicator)");
+  });
+
+  it("reports every requirement as unlinked when the project has code and none matched", async () => {
+    const ctx = await run(
+      "- Add a button to terminate all sessions\n- Ability to force IPv4 or IPv6 per feed",
+    );
+    expect(ctx.result.candidates.map((c) => [c.id, c.symbols.length])).toEqual([
+      ["NR-1", 0],
+      ["NR-2", 0],
+    ]);
+    // Nothing to seed the code agent with: its prompt is unchanged.
+    expect(ctx.block).toBe("");
+    expect(ctx.tokens).toBe(0);
+    expect(ctx.filePaths).toEqual([]);
+    expect(ctx.result.truncated).toBe(false);
+  });
+
+  it("stays a no-op when the project has no code graph at all", async () => {
+    const ctx = await run("- Add a button to terminate all sessions", []);
+    expect(ctx).toEqual(EMPTY_AFFECTED_CODE_CONTEXT);
+  });
+
+  it("stays a no-op when the code graph cannot be read", async () => {
+    const ctx = await computeAffectedCodeContext({
+      projectId: "proj-miniflux",
+      extraInstructions: "- Add a button to terminate all sessions",
+      enabled: true,
+      deps: {
+        prisma: {
+          codeSymbol: {
+            findMany: async () => {
+              throw new Error("database is locked");
+            },
+          },
+        } as never,
+        dataSourceFor: emptyGraphFor,
+      },
+    });
+    expect(ctx).toEqual(EMPTY_AFFECTED_CODE_CONTEXT);
+  });
+});

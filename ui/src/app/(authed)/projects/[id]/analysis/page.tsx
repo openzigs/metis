@@ -105,6 +105,7 @@ import {
 import { SpecKitHandoffNotice } from "@/components/analysis/spec-kit-handoff-notice";
 import { FindingBody } from "@/components/analysis/FindingBody";
 import { RequirementBody } from "@/components/analysis/RequirementBody";
+import { RequirementSourceItems } from "@/components/analysis/RequirementSourceItems";
 import { TraceabilityMatrix } from "@/components/analysis/traceability-matrix";
 import { GapReport } from "@/components/analysis/gap-report";
 import { RequirementDiff } from "@/components/analysis/requirement-diff";
@@ -1100,6 +1101,9 @@ export default function AnalysisPage(): React.ReactElement {
                               <div className="text-xs text-muted-foreground">
                                 {req.type} · {req.priority} · {req.reviewStatus}
                               </div>
+                              {/* #1063 — the imported item's own title and link, or
+                                "Added by the analysis"; nothing when not recorded. */}
+                              <RequirementSourceItems sourceItems={req.sourceItems} />
                             </div>
                             <div className="flex gap-1">
                               <Button
