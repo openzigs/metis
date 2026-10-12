@@ -1,9 +1,10 @@
 /**
  * #1070 — the cross-section consistency check of a generated document.
  *
- * After every section is written, the document is read once for the places it
- * STATES a named value — `` `NAME = 5` ``, `` `NAME` (default 5 min) ``, a
- * formula in `$…$` or `$$…$$` — and two things are looked for:
+ * After every section is written and fitted to the length caps, the document
+ * is read once for the places it STATES a named value — `` `NAME = 5` ``,
+ * `` `NAME` (default 5 min) ``, a formula in `$…$` or `$$…$$` — and two things
+ * are looked for:
  *
  *   - a CONFLICT: a name on the canonical facts sheet (`canonical-facts.ts`)
  *     stated with a value that differs from the sheet's, in the same kind (a
@@ -27,7 +28,12 @@
  *
  * Pure: no I/O and no model calls.
  */
-import { isDistinctiveName, type CanonicalFact, type FactSheet } from "./canonical-facts.js";
+import {
+  compareCodeUnits,
+  isDistinctiveName,
+  type CanonicalFact,
+  type FactSheet,
+} from "./canonical-facts.js";
 import { GROUNDING_RUN_SECTION, type DocWarning } from "./grounding/degraded-warnings.js";
 
 /** How a value was written. */
@@ -391,7 +397,9 @@ function restates(
 
 /**
  * Check the sections of one document against each other and against the sheet.
- * `markdown` is each section as drafted (citation markers do not matter).
+ * `markdown` is each section as it goes into the document, after the length
+ * fit and before its citations become footnotes (citation markers do not
+ * matter): a statement the fit removed is not there to be quoted (#1119).
  */
 export function checkFactConsistency(
   sections: ReadonlyArray<{ label: string; markdown: string }>,
@@ -464,7 +472,9 @@ export function checkFactConsistency(
       forms: new Set(matches.map((m) => m.statement.form)).size,
     });
   }
-  findings.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+  // By code unit, like the sheet: the note lists its findings in the same
+  // order on every machine, which `localeCompare` does not promise.
+  findings.sort((a, b) => compareCodeUnits(a.kind, b.kind) || compareCodeUnits(a.name, b.name));
   return { findings, statements: all.length };
 }
 

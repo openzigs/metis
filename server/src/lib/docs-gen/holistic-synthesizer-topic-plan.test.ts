@@ -22,6 +22,7 @@ vi.mock("../finops/index.js", async (importOriginal) => {
 });
 
 import type { AIProvider, ChatChunk, ChatMessage } from "../ai/types.js";
+import { logger } from "../logger.js";
 import { MIN_TOPIC_CHARS, SINGLE_CALL_SECTION_CHARS } from "./document-plan.js";
 import type { PersistedMinedRule } from "./fact-slices.js";
 import type { FaithfulnessResult } from "./grounding/citation-validator.js";
@@ -115,6 +116,8 @@ interface FakeOptions {
   overrun?: number | ((call: Call) => number);
   /** Extra text for a call's first paragraph. */
   inject?: (call: Call) => string;
+  /** Extra text for a call's LAST paragraph: the first text a length fit gives up. */
+  injectLast?: (call: Call) => string;
   /** Write a call's reply as ONE table, which a length fit cannot cut into. */
   table?: (call: Call) => boolean;
   /** Appended to every paragraph: a citation marker, long as drafted, short as rendered. */
@@ -145,7 +148,11 @@ function fakeModel(options: FakeOptions = {}, key = "anthropic"): AIProvider & {
         ...Array.from(
           { length: paragraphs },
           (_, p) =>
-            `${m} rule ${p}. ${p === 0 && i === 0 ? (options.inject?.(call) ?? "") : ""}${PARAGRAPH.repeat(2)}${options.marker ?? ""}`,
+            `${m} rule ${p}. ${p === 0 && i === 0 ? (options.inject?.(call) ?? "") : ""}${
+              p === paragraphs - 1 && i === modules.length - 1
+                ? (options.injectLast?.(call) ?? "")
+                : ""
+            }${PARAGRAPH.repeat(2)}${options.marker ?? ""}`,
         ),
       ].join("\n\n"),
     );
@@ -1282,5 +1289,221 @@ describe("the consistency check in a planned document", () => {
     vi.stubEnv("DOCS_GEN_TOPIC_PLAN", "off");
     const result = await run(facts(), fakeModel({ inject: disagree }));
     expect(result.warnings).toEqual([]);
+  });
+
+  it("#1119 — quotes only statements that are in the document: not one the length fit removed", async () => {
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
+    // Overview states a wrong value in its first paragraph, which stays. Every
+    // part of Rules runs to eight times its budget and states another wrong
+    // value in its LAST paragraph, which the document fit removes.
+    const CUT = "`maxPageSize` (default 999). ";
+    const provider = fakeModel({
+      overrun: (call) => (call.group === RULES ? 8 : 0.3),
+      inject: (call) => (call.group === label("overview") ? WRONG : ""),
+      injectLast: (call) => (call.group === RULES ? CUT : ""),
+    });
+    const result = await run(facts(), provider);
+    // The model wrote it, in every part of Rules, and the fit took every one.
+    expect(callsFor(provider, RULES).length).toBeGreaterThan(0);
+    for (const call of callsFor(provider, RULES)) expect(call.user).toContain("write at most");
+    expect(sectionOf(result.markdown, RULES)).toContain("**Shortened for length.**");
+    expect(result.markdown).not.toContain("default 999");
+    expect(result.markdown).toContain("default 250");
+    const notes = result.warnings.filter((w) => w.kind === "fact-inconsistent");
+    expect(notes).toHaveLength(1);
+    expect(notes[0].message).toContain("(`250` in Overview & Domain)");
+    expect(notes[0].message).not.toContain("999");
+    expect(notes[0].message).not.toContain(RULES);
+    // Reused, the same sections are fitted the same way and say the same thing.
+    const again = fakeModel();
+    const second = await run(facts(), again, { previous: result });
+    expect(again.calls).toEqual([]);
+    expect(second.warnings).toEqual(result.warnings);
+  });
+});
+
+describe("#1119 — what a planned run logs of each section's fit", () => {
+  interface FitLog {
+    message: string;
+    cut: string;
+    documentMaxChars: number;
+    bodyMaxChars: number;
+    unplannedWithinCap: boolean;
+    sections: Array<{
+      section: string;
+      cut: string;
+      keptChars: number;
+      planKeptChars: number;
+      unplannedKeptChars: number;
+    }>;
+  }
+  const FIT = "Planned document fit by section";
+  /** Every entry the synthesizer logged during `work`, as the logger was given it. */
+  async function logged(work: () => Promise<unknown>): Promise<Array<Record<string, unknown>>> {
+    const write = vi.spyOn(logger, "write");
+    try {
+      await work();
+      return write.mock.calls.map(([entry]) => entry as Record<string, unknown>);
+    } finally {
+      write.mockRestore();
+    }
+  }
+  const fitLogs = (entries: Array<Record<string, unknown>>): FitLog[] =>
+    (entries.filter((entry) => entry.message === FIT) as unknown as FitLog[]).map(
+      ({ message, cut, documentMaxChars, bodyMaxChars, unplannedWithinCap, sections }) => ({
+        message,
+        cut,
+        documentMaxChars,
+        bodyMaxChars,
+        unplannedWithinCap,
+        sections,
+      }),
+    );
+
+  it("logs every section's kept characters when the document is cut, with what no plan would have kept", async () => {
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "1000000000");
+    const provider = fakeModel({ overrun: (call) => (call.group === RULES ? 8 : 0.3) });
+    let result!: Result;
+    const entries = await logged(async () => {
+      result = await run(project(12), provider);
+    });
+    const logs = fitLogs(entries);
+    expect(logs).toHaveLength(1);
+    const [fit] = logs;
+    expect(fit.documentMaxChars).toBe(40_000);
+    expect(fit.bodyMaxChars).toBeLessThanOrEqual(40_000);
+    expect(fit.cut).toBe("plan");
+    expect(fit.unplannedWithinCap).toBe(true);
+    expect(fit.sections.map((s) => s.section)).toEqual(GROUPS.map((g) => g.id));
+    for (const section of fit.sections) {
+      // Only Rules is over; the others are whole under either cut.
+      const cut = section.section === "rules";
+      expect(section.cut, section.section).toBe(cut ? "plan" : "whole");
+      expect(section.planKeptChars).toBe(section.keptChars);
+      for (const figure of [section.keptChars, section.unplannedKeptChars]) {
+        expect(Number.isInteger(figure) && figure > 0).toBe(true);
+      }
+      if (!cut) expect(section.unplannedKeptChars).toBe(section.keptChars);
+      // What the section kept is what is in the document (its note aside; the
+      // last section runs into the footer, so it is not measured this way).
+      if (section.section === GROUPS[GROUPS.length - 1].id) continue;
+      const inDocument = sectionOf(result.markdown, label(section.section)).trimEnd();
+      const body = inDocument.split("\n\n> **Shortened for length.**")[0];
+      expect(Math.abs(body.length - section.keptChars), section.section).toBeLessThan(8);
+    }
+    // The guarantee: the document keeps no less than without a plan.
+    const total = (key: "keptChars" | "unplannedKeptChars"): number =>
+      fit.sections.reduce((n, s) => n + s[key], 0);
+    expect(total("keptChars")).toBeGreaterThanOrEqual(total("unplannedKeptChars"));
+    // Structured, and none of the model's text: ids and numbers only.
+    const text = JSON.stringify(fit);
+    expect(text).not.toContain("rule 0");
+    expect(text).not.toContain("This policy applies");
+    for (const section of fit.sections) {
+      expect(Object.keys(section).sort()).toEqual(
+        ["cut", "keptChars", "planKeptChars", "section", "unplannedKeptChars"].sort(),
+      );
+    }
+  });
+
+  it("logs, for a section shortened at the SECTION cap, what the plan and no plan kept of it as written", async () => {
+    // The default document cap leaves the section cap as the only limit that
+    // binds, so the document fit sees Rules already shortened and reports it
+    // whole: the loss is visible only on the section's own line.
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "20000");
+    const provider = fakeModel({ overrun: 3 });
+    let result!: Result;
+    const entries = await logged(async () => {
+      result = await run(project(12), provider);
+    });
+    expect(sectionOf(result.markdown, RULES)).toContain(
+      "This section is limited to about 20k characters (DOCS_GEN_SECTION_MAX_CHARS).",
+    );
+    const capped = entries.filter((entry) => entry.message === "Planned section over its cap");
+    const rules = capped.find((entry) => entry.group === "rules") as
+      | { cut: string; keptChars: number; planKeptChars: number; unplannedKeptChars: number }
+      | undefined;
+    expect(rules).toBeDefined();
+    expect(rules!.cut).toBe("plan");
+    for (const figure of [rules!.keptChars, rules!.planKeptChars, rules!.unplannedKeptChars]) {
+      expect(Number.isInteger(figure) && figure > 0).toBe(true);
+    }
+    // The plan-ordered cut is the one used, and it keeps no less than no plan.
+    expect(rules!.planKeptChars).toBe(rules!.keptChars);
+    expect(rules!.keptChars).toBeGreaterThan(rules!.unplannedKeptChars);
+    expect(rules!.keptChars).toBeLessThanOrEqual(20_000);
+    // What it kept is what the document carries of the section, its note aside.
+    const body = sectionOf(result.markdown, RULES)
+      .trimEnd()
+      .split("\n\n> **Shortened for length.**")[0];
+    expect(Math.abs(body.length - rules!.keptChars)).toBeLessThan(8);
+    // The document fit, measured after this cut, reports the section whole:
+    // without the section's own figures the shortening would not be in the log.
+    const [fit] = fitLogs(entries);
+    const inDocument = fit.sections.find((s) => s.section === "rules")!;
+    expect(inDocument.cut).toBe("whole");
+    expect(inDocument.unplannedKeptChars).toBe(inDocument.keptChars);
+    expect(inDocument.unplannedKeptChars).toBeGreaterThan(rules!.unplannedKeptChars);
+    // Ids and numbers only: no text of the section.
+    for (const entry of capped) {
+      // The logger's own envelope, the project and group ids, and the figures.
+      expect(Object.keys(entry).sort()).toEqual(
+        [
+          "cut",
+          "group",
+          "keptChars",
+          "level",
+          "message",
+          "module",
+          "planKeptChars",
+          "projectId",
+          "service",
+          "timestamp",
+          "unplannedKeptChars",
+        ].sort(),
+      );
+      const text = JSON.stringify(entry);
+      expect(text).not.toContain("rule 0");
+      expect(text).not.toContain("This policy applies");
+      expect(text).not.toContain("About ");
+    }
+  });
+
+  it("logs it on a planned run that cuts nothing, and on one that reuses every section", async () => {
+    const facts = project(6);
+    let first!: Result;
+    const written = fitLogs(
+      await logged(async () => {
+        first = await run(facts, fakeModel());
+      }),
+    );
+    expect(written).toHaveLength(1);
+    expect(written[0].cut).toBe("whole");
+    expect(first.markdown).not.toContain("Shortened for length");
+    for (const section of written[0].sections) {
+      expect(section.cut).toBe("whole");
+      expect(section.planKeptChars).toBe(section.keptChars);
+      expect(section.unplannedKeptChars).toBe(section.keptChars);
+    }
+    const again = fakeModel();
+    const reused = fitLogs(await logged(() => run(facts, again, { previous: first })));
+    expect(again.calls).toEqual([]);
+    expect(reused).toEqual(written);
+  });
+
+  it("logs nothing of the kind without the plan, or for a document type that is never planned", async () => {
+    const architecture = await logged(() =>
+      run(project(6), fakeModel(), { docType: "architecture" }),
+    );
+    expect(fitLogs(architecture)).toEqual([]);
+    vi.stubEnv("DOCS_GEN_TOPIC_PLAN", "off");
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
+    const off = await logged(() => run(project(12), fakeModel({ perModule: 3_000 })));
+    expect(fitLogs(off)).toEqual([]);
+    // The unplanned cut still logs what it always did.
+    expect(
+      off.some((entry) => String(entry.message).startsWith("Document over its length cap")),
+    ).toBe(true);
   });
 });

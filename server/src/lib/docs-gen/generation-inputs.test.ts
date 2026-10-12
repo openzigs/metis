@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { EvidencePolicy } from "./evidence-policy.js";
 import { captureGenerationInputs } from "./generation-inputs.js";
-import { isGraphRowsOnlyChange } from "./regeneration-plan.js";
+import { isGraphRowsOnlyChange, planRegeneration } from "./regeneration-plan.js";
 
 const mocks = vi.hoisted(() => ({
   symbols: vi.fn(),
@@ -716,6 +716,42 @@ describe("captureGenerationInputs", () => {
       vi.unstubAllEnvs();
     }
   });
+
+  it.each(["architecture", "business-requirements", "user-guide"])(
+    "#1119 — writing DOCS_GEN_TOPIC_PLAN into the environment changes the snapshot of a %s document, whatever the value",
+    async (docType) => {
+      // The variable is hashed because it is in the environment, not because of
+      // what it says: `off`, which is the default, and an empty value change
+      // the snapshot as `on` does, and for a document type the plan never
+      // touches. An auto-update document is therefore queued one run.
+      const of = () => captureGenerationInputs({ ...doc, docType }, policy);
+      expect(process.env.DOCS_GEN_TOPIC_PLAN).toBeUndefined();
+      const unset = await of();
+      const fingerprints = new Set([unset.fingerprint]);
+      for (const value of ["off", "on", ""]) {
+        vi.stubEnv("DOCS_GEN_TOPIC_PLAN", value);
+        const written = await of();
+        // Only the settings item moves, and that reads as changed inputs.
+        expect(
+          Object.keys(written.items).filter((key) => written.items[key] !== unset.items[key]),
+        ).toEqual(["settings"]);
+        expect(Object.keys(written.items)).toEqual(Object.keys(unset.items));
+        expect(planRegeneration(unset, written)).toEqual({
+          mode: "full",
+          changed: ["settings"],
+          reason: "Effective generation settings changed",
+        });
+        // The value never reaches the snapshot, only a hash that includes it.
+        expect(JSON.stringify(written)).not.toContain("DOCS_GEN_TOPIC_PLAN");
+        fingerprints.add(written.fingerprint);
+        vi.unstubAllEnvs();
+      }
+      // Each value is its own snapshot: changing `off` to `on` queues a run too.
+      expect(fingerprints.size).toBe(4);
+      // Unset again, nothing has changed and no run is queued.
+      expect(planRegeneration(unset, await of())).toEqual({ mode: "unchanged", changed: [] });
+    },
+  );
 
   it("#855 — a run ceiling bounds spend, not output, so it is not an input", async () => {
     const baseline = await capture();

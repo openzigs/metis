@@ -926,14 +926,19 @@ fits the document cap, exactly as without a plan. When a cap is exceeded, the ro
 filled by every part of the shortened sections together, in proportion to their budgets, so
 an overrun costs the tail of the part that overran rather than the topics of the modules
 ranked last, and room one section leaves unused goes to any other. The plan's cut is used
-only if it keeps at least as much as the cut without a plan keeps of the same text; replayed
+only if it keeps at least as much as the cut without a plan keeps of the same text. That is
+a guarantee on the document total, headings and rules counted, against a cut that is itself
+within the cap: there is no per-section floor, so one section can keep much less than it
+would have, and every planned run logs per section what was kept under either cut
+(`Planned document fit by section`; the precise limits are in `docs/OPERATIONS.md` §6.5). Replayed
 on run 7's stored sections it keeps 244,095 to 244,100 of the 244,100 available characters
 against the 243,942 that shipped, with 32 to 36 of Business Rules' topics against 31. The
 same step builds the canonical facts sheet (`canonical-facts.ts`: named constants and
 formulas read from the source, given to the sections that mention or own them, cited as
 `[facts:canon:<id>]`; 54 facts on the run-7 inputs) and, at assembly, the consistency check
 (`fact-consistency.ts`) notes a sheet value stated differently from the source and a sheet
-formula written out in several sections. It adds no model call: on the run-7 inputs the
+formula written out in several sections. It reads the sections after the length fit, so
+what the note quotes is in the document. It adds no model call: on the run-7 inputs the
 plan took about a tenth of a second and the prompts grew by about 18k input tokens over 23
 calls (1.3%). The setting is off until a model run has measured it; turning it on rewrites
 a BRD's sections once.

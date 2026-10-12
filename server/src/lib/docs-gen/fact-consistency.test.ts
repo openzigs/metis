@@ -428,6 +428,25 @@ describe("checkFactConsistency", () => {
     ]);
   });
 
+  it("lists its findings by code unit, not by the locale of the Node build", () => {
+    // `Z` (U+005A) is before `a` (U+0061) by code unit and after it in every
+    // locale's collation. Stated in the other order, so neither the order of
+    // the statements nor of the sheet gives the answer.
+    const report = checkFactConsistency(
+      [{ label: "API", markdown: "`aaaPageSize = 25` and `ZzzPageSize = 26`" }],
+      {
+        facts: [
+          fact({ name: "aaaPageSize", value: "50" }),
+          fact({ name: "ZzzPageSize", value: "50" }),
+        ],
+      },
+    );
+    expect(report.findings.map((f) => `${f.kind} ${f.name}`)).toEqual([
+      "conflict ZzzPageSize",
+      "conflict aaaPageSize",
+    ]);
+  });
+
   it("does not report one value spelled two ways", () => {
     const report = checkFactConsistency(
       [

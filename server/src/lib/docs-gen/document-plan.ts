@@ -46,21 +46,51 @@
  *   - the result is then compared with what the cap without a plan
  *     (`fitSectionToBudget`, `fitSectionsToDocumentBudget`) keeps of the same
  *     text, and the plan's is used only if it keeps AT LEAST as much — of
- *     content ({@link keptContentChars}) and of total length — and leaves no
+ *     kept text ({@link keptContentChars}) and of total length — and leaves no
  *     section bare that the other does not. Otherwise that cut is used. So a
  *     planned document never keeps less than an unplanned one would have kept
  *     of the same sections, and never stops short of its cap while it drops
  *     topics (#995). `document-plan.test.ts` holds this as a property over
  *     generated documents, for the document cap and for the section cap.
  *
- * "The same sections" is the whole of the claim. What a plan asks for differs
- * from what no plan asks for (a share per part; a module that cannot have even
- * the floor is not read), so the text written differs too: whether a planned
- * document is the better one is for a model run to say, not this module.
+ * WHAT THAT GUARANTEE IS, EXACTLY (#1119). Four limits on the sentence above:
+ *
+ *   - "The same sections" is the whole of the claim. What a plan asks for
+ *     differs from what no plan asks for (a share per part; a module that
+ *     cannot have even the floor is not read), so the text written differs
+ *     too: whether a planned document is the better one is for a model run to
+ *     say, not this module.
+ *   - It is a guarantee on the DOCUMENT (and, at the section cap, on the one
+ *     section being cut), not on each section of a document. A part is filled
+ *     in proportion to its budget and nothing bounds how little a shortened
+ *     section keeps, short of "not bare": in the #1113 review's seeded search
+ *     with adversarial budgets (1,348 cut documents) a section that kept
+ *     18,262 characters under the cut without a plan kept 65 under the plan,
+ *     with the document total no smaller. There is no
+ *     per-section floor. Whether there should be one is to be decided from
+ *     run data: every fit reports, per section, what it kept, what the
+ *     plan-ordered cut kept and what the cut without a plan would have kept
+ *     ({@link PlanFitResult.kept}), and the synthesizer logs it on every
+ *     planned run.
+ *   - "Kept" counts every character of the section's text as it renders,
+ *     HEADINGS AND RULES INCLUDED — everything but the closing note and a
+ *     heading or rule left at the very end with nothing under it
+ *     ({@link keptContentChars}). A plan cut keeps more topics, each with its
+ *     `---` and its heading, so counted in paragraphs alone it can keep
+ *     slightly less than the cut without a plan: 35 of the 1,348 documents
+ *     of that search, by at most 212 characters (0.35%).
+ *   - It compares with a cut that is ITSELF within the cap. Under a very small
+ *     document cap (near `MIN_DOCUMENT_MAX_CHARS`, with every section present)
+ *     the cut without a plan overruns the cap, because it never cuts a section
+ *     below two notes' length. The plan-ordered cut is within the cap and is
+ *     used with no comparison, so there the planned document is SHORTER than
+ *     the unplanned one — which is over its limit (13 of the 1,348).
+ *     {@link PlanFitResult.unplannedWithinCap} is false for such a fit.
  *
  * Pure: no I/O and no model calls.
  */
 import { getConfigService, type ConfigService } from "../config/config-service.js";
+import { compareCodeUnits } from "./canonical-facts.js";
 import {
   fitSectionToBudget,
   fitSectionsToDocumentBudget,
@@ -185,9 +215,12 @@ export interface DocumentPlan {
   unallocatedChars: number;
 }
 
-/** Highest priority first; ties by id, so the order never depends on input order. */
+/**
+ * Highest priority first; ties by id (by code unit, so on every machine alike),
+ * so the order never depends on input order.
+ */
 function byPriority<T extends TopicCandidate>(topics: readonly T[]): T[] {
-  return [...topics].sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
+  return [...topics].sort((a, b) => b.priority - a.priority || compareCodeUnits(a.id, b.id));
 }
 
 /**
@@ -386,6 +419,19 @@ export interface PlanFitLimit {
  */
 export type SectionCutKind = "whole" | "plan" | "tail";
 
+/**
+ * #1119 — what one section kept under a fit, in {@link keptContentChars}: the
+ * figures a per-section floor would be decided from. Numbers only.
+ */
+export interface SectionKept {
+  /** In the section as this fit returns it. */
+  chars: number;
+  /** In the plan-ordered cut, whether or not that is the cut that was used. */
+  planChars: number;
+  /** In the cut without a plan of the same text. */
+  unplannedChars: number;
+}
+
 export interface PlanFitResult {
   sections: string[];
   /** Sections that lost content to this fit. */
@@ -400,6 +446,17 @@ export interface PlanFitResult {
   mode: SectionCutKind;
   /** Characters kept, closing notes aside, as the fit measured them. */
   keptChars: number;
+  /**
+   * Per section, what it kept, against the plan-ordered cut and the cut
+   * without a plan. All three are the section's own length when nothing was
+   * cut.
+   */
+  kept: SectionKept[];
+  /**
+   * False when the cut without a plan overran the cap itself (a very small
+   * cap): the plan-ordered cut then stands without being compared with it.
+   */
+  unplannedWithinCap: boolean;
 }
 
 /**
@@ -428,6 +485,11 @@ export function splitClosingNote(markdown: string): { body: string; note: string
  * What a fitted section KEPT, in characters: its text without the closing
  * note, and without a heading or a rule left at its end with nothing under it
  * (a tail cut can end on a rule; that is not content kept).
+ *
+ * Every other heading and rule IS counted: this is the length of the kept
+ * text, not of its paragraphs. The comparison with the cut without a plan is
+ * made in this measure (see "what that guarantee is, exactly" in the module
+ * comment).
  */
 export function keptContentChars(section: string, measure: Measure): number {
   const { body } = splitClosingNote(section);
@@ -825,6 +887,9 @@ interface SectionCut {
   /** Characters the section counts for, note included. */
   length: number;
   cut: SectionCutKind;
+  /** Kept by the plan-ordered cut and by the cut without a plan; absent = `kept`. */
+  planKept?: number;
+  unplannedKept?: number;
 }
 
 /**
@@ -862,6 +927,7 @@ function cutSection(
   const plan = planOrderedFit([section], maxChars, measure, limit);
   const planKept = measure(plan.bodies[0]);
   const planLength = measure(plan.sections[0]);
+  const compared = { planKept, unplannedKept: tailKept };
   if (
     plan.trimmed > 0 &&
     planLength <= maxChars &&
@@ -876,6 +942,7 @@ function cutSection(
       kept: planKept,
       length: planLength,
       cut: "plan",
+      ...compared,
     };
   }
   return {
@@ -885,12 +952,19 @@ function cutSection(
     kept: tailKept,
     length: tailLength,
     cut: "tail",
+    ...compared,
   };
 }
 
-function resultOf(cuts: readonly SectionCut[]): PlanFitResult {
+function resultOf(cuts: readonly SectionCut[], unplannedWithinCap = true): PlanFitResult {
   const shortened = cuts.filter((c) => c.cut !== "whole");
   return {
+    kept: cuts.map((c) => ({
+      chars: c.kept,
+      planChars: c.planKept ?? c.kept,
+      unplannedChars: c.unplannedKept ?? c.kept,
+    })),
+    unplannedWithinCap,
     sections: cuts.map((c) => c.markdown),
     trimmed: shortened.length,
     omittedTopics: cuts.map((c) => c.omitted),
@@ -964,7 +1038,9 @@ export function fitDocumentToPlan(
   // filled together. It stands when it keeps at least what the fit without a
   // plan keeps of the document and leaves no section bare that the other
   // does not. (When that fit overruns a very small cap — it never cuts a
-  // section below two notes' length — the cap is the limit and this stands.)
+  // section below two notes' length — the cap is the limit and this stands
+  // WITHOUT that comparison: the planned document is then the shorter of the
+  // two, because the other is over its cap. `unplannedWithinCap` says so.)
   const plan = planOrderedFit(
     sections,
     maxChars,
@@ -975,6 +1051,11 @@ export function fitDocumentToPlan(
   const planKept = plan.sections.map((section) => keptContentChars(section, measure));
   const tailKept = tail.sections.map((section) => keptContentChars(section, measure));
   const planLength = sum(plan.sections.map((section) => measure(section)));
+  // #1119 — what each section kept under either cut, whichever one is used.
+  const compared = (i: number): Pick<SectionCut, "planKept" | "unplannedKept"> => ({
+    planKept: planKept[i],
+    unplannedKept: tailKept[i],
+  });
   if (
     planLength <= maxChars &&
     (!tailWithin ||
@@ -985,7 +1066,7 @@ export function fitDocumentToPlan(
     return resultOf(
       plan.sections.map((markdown, i) =>
         markdown === sections[i].markdown
-          ? whole(sections[i], plan.omittedTopics[i])
+          ? { ...whole(sections[i], plan.omittedTopics[i]), ...compared(i) }
           : {
               markdown,
               omitted: plan.omittedTopics[i],
@@ -993,14 +1074,18 @@ export function fitDocumentToPlan(
               kept: planKept[i],
               length: measure(markdown),
               cut: "plan" as const,
+              ...compared(i),
             },
       ),
+      tailWithin,
     );
   }
   // Otherwise the cut without a plan, which is what keeps more of this text.
   return resultOf(
     sections.map((section, i) => {
-      if (tail.sections[i] === section.markdown) return whole(section, tail.omittedTopics[i]);
+      if (tail.sections[i] === section.markdown) {
+        return { ...whole(section, tail.omittedTopics[i]), ...compared(i) };
+      }
       return {
         markdown: tailSections[i],
         omitted: tail.omittedTopics[i],
@@ -1008,8 +1093,10 @@ export function fitDocumentToPlan(
         kept: tailKept[i],
         length: tailLengths[i],
         cut: "tail" as const,
+        ...compared(i),
       };
     }),
+    tailWithin,
   );
 }
 
