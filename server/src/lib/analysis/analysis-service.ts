@@ -70,6 +70,11 @@ import {
 import type { Prisma } from "@prisma/client";
 import { prisma, resolveDatabaseProvider } from "../prisma.js";
 import {
+  readSourceRequirements,
+  resolveSourceItems,
+  serializeSourceCandidateIds,
+} from "./source-items.js";
+import {
   RequirementVersionError,
   updateRequirementWithHistory,
   type RequirementSnapshot,
@@ -963,6 +968,9 @@ async function replaceRequirementSet(
 
   await tx.requirement.deleteMany({ where: { analysisId: input.analysisId } });
 
+  // #1063 — the imported items this run was started from; `[]` on any other run,
+  // which leaves every row's `sourceCandidateIds` null.
+  const runSources = readSourceRequirements(metadata);
   const ids: string[] = [];
   for (let idx = 0; idx < input.synthesis.requirements.length; idx++) {
     const r = input.synthesis.requirements[idx];
@@ -992,6 +1000,10 @@ async function replaceRequirementSet(
         // Issue #773 — persist the verdict alongside coverage. Coverage says what
         // evidence exists; the verdict says whether we may tell the user to build it.
         verdict: input.verdicts?.[idx] ?? null,
+        // Issue #1063 — which imported item(s) this requirement restates, as
+        // checked `NR-*` ids. Null when the run was not started from imported
+        // items or synthesis did not say.
+        sourceCandidateIds: serializeSourceCandidateIds(r.sourceIds, runSources),
         ...(input.reviewStatus ? { reviewStatus: input.reviewStatus } : {}),
       },
     });
@@ -1682,6 +1694,8 @@ interface AnalysisRowWithIncludes {
     verdict?: string | null;
     /** Issue #1096 — JSON array column; optional so pre-#1096 fixtures still type. */
     acceptanceCriteria?: string | null;
+    /** Issue #1063 — JSON array of NR ids; optional so earlier fixtures still type. */
+    sourceCandidateIds?: string | null;
     version: number;
   }>;
 }
@@ -1764,6 +1778,8 @@ function toSnapshot(
       panelByFindingId.set(f.id, { title: f.title, supportPanel: f.supportPanel });
     }
   }
+  // #1063 — the run's imported items, to resolve each requirement's stored ids.
+  const runSourceRequirements = readSourceRequirements(metadata);
   const requirements = row.requirements.map((r) => {
     const labels = parseRequirementLabels(r.labels);
     const reviewStatus = resolveRequirementReviewStatus(r.reviewStatus, labels);
@@ -1802,6 +1818,10 @@ function toSnapshot(
       // #990 — an explicit clear, so the Edit dialog does not refill the list
       // from the body when the issue draft renders none.
       acceptanceCriteriaCleared: isAcceptanceCriteriaCleared(r.acceptanceCriteria),
+      // Issue #1063 — the imported item(s) this requirement came from: `[]` when
+      // the analysis added it, null when not recorded. Title and URL come from
+      // the analysis record, never from the model.
+      sourceItems: resolveSourceItems(r.sourceCandidateIds, runSourceRequirements),
       // Epic #34 (AC2) — surface the optimistic-lock version so the edit form
       // can submit the version it rendered and reliably 409 on a stale form.
       version: r.version,
@@ -1860,28 +1880,7 @@ function toSnapshot(
 function extractSourceRequirements(metadata: Record<string, unknown> | null): {
   sourceRequirements?: AnalysisSourceRequirement[];
 } {
-  const value = metadata?.sourceRequirements;
-  if (!Array.isArray(value)) return {};
-  const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
-  const items = value.flatMap((raw): AnalysisSourceRequirement[] => {
-    if (!raw || typeof raw !== "object") return [];
-    const r = raw as Record<string, unknown>;
-    const candidateId = str(r.candidateId);
-    const requirementId = str(r.requirementId);
-    const title = str(r.title);
-    const externalSource = str(r.externalSource);
-    if (!candidateId || !requirementId || title === null || !externalSource) return [];
-    return [
-      {
-        candidateId,
-        requirementId,
-        title,
-        externalSource,
-        externalId: str(r.externalId),
-        externalUrl: str(r.externalUrl),
-      },
-    ];
-  });
+  const items = readSourceRequirements(metadata);
   return items.length > 0 ? { sourceRequirements: items } : {};
 }
 

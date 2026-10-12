@@ -15,6 +15,7 @@
 import { synthesisOutputSchema, type SynthesisOutput } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
+import { readSourceRequirements, serializeSourceCandidateIds } from "./source-items.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import {
   CHECKPOINT_APPROVED_IDS_KEY,
@@ -377,6 +378,11 @@ async function appendNewlyApproved(input: {
           storyPoints: r.storyPoints ?? null,
           coverage: coverages[k] ?? null,
           verdict: verdicts[k] ?? null,
+          // Issue #1063 — same provenance `persistRequirements` writes.
+          sourceCandidateIds: serializeSourceCandidateIds(
+            r.sourceIds,
+            readSourceRequirements(locked.metadata),
+          ),
           // Issue #939 — approved in the checkpoint, as on the first promotion.
           reviewStatus: "approved",
         },

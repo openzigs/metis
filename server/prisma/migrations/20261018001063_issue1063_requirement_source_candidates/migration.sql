@@ -1,0 +1,21 @@
+-- Issue #1063 — link a requirement back to the imported item it came from.
+--
+-- An analysis started from imported items (#1006) records them on the analysis
+-- under `NR-*` ids. Synthesis then rewrites titles and adds requirements of its
+-- own: in #706 run 7 five imported items became seven requirements, none
+-- titled as imported and none linked back.
+--
+-- `sourceCandidateIds` holds, per requirement, the `NR-*` ids it restates, as a
+-- JSON array checked against the analysis's `metadata.sourceRequirements`.
+-- `[]` means the analysis added the requirement itself. NULL — every existing
+-- row, and every row of a run not started from imported items — means "not
+-- recorded" and is never shown as "added". Read through `resolveSourceItems`
+-- (`server/src/lib/analysis/source-items.ts`).
+--
+-- No backfill: which imported item an existing requirement came from was never
+-- stored. A nullable column with no default is a metadata-only change.
+--
+-- Rollback (documentation):
+--   ALTER TABLE "requirements" DROP COLUMN "sourceCandidateIds";
+-- After it the requirement cards show no imported-item line again.
+ALTER TABLE "requirements" ADD COLUMN "sourceCandidateIds" TEXT;

@@ -601,6 +601,65 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     expect(meta.checkpointApprovedRequirementIds).toEqual(["rq_1", "rq_3", "rq_new_1"]);
   });
 
+  it("#1063 — an appended requirement keeps the imported item it came from", async () => {
+    const sourceRequirements = [
+      {
+        candidateId: "NR-2",
+        requirementId: "req-imported-2",
+        title: "Validate reading speed",
+        externalSource: "github",
+        externalId: "4402",
+        externalUrl: "https://github.com/miniflux/v2/issues/4402",
+      },
+    ];
+    db.requirementCount = 2;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1", "REQ-3"], sourceRequirements }),
+    };
+    db.synthesisOutput = JSON.stringify({
+      summary: "s",
+      requirements: [
+        {
+          type: "feature",
+          title: "Reading speed validation",
+          body: "Reading speed validation.",
+          priority: "medium",
+          labels: [],
+          evidenceFindingIndexes: [],
+          acceptanceCriteria: [],
+          // NR-9 is not one of this run's ids and must not be stored.
+          sourceIds: ["NR-2", "NR-9"],
+        },
+      ],
+    });
+    db.approvals[1] = { itemId: "REQ-2", status: "approved" };
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    const data = (
+      lastTx!.requirement.create.mock.calls[0]?.[0] as { data: Record<string, unknown> }
+    ).data;
+    expect(data.title).toBe("Reading speed validation");
+    expect(data.sourceCandidateIds).toBe('["NR-2"]');
+  });
+
+  it("#1063 — an appended requirement of a run with no imported items records no source", async () => {
+    db.requirementCount = 2;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1", "REQ-3"] }),
+    };
+    db.approvals[1] = { itemId: "REQ-2", status: "approved" };
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    const data = (
+      lastTx!.requirement.create.mock.calls[0]?.[0] as { data: Record<string, unknown> }
+    ).data;
+    expect(data.sourceCandidateIds).toBeNull();
+  });
+
   it("takes #882's requirement-set lock on its own transaction before reading the record", async () => {
     db.requirementCount = 2;
     db.analysis = {

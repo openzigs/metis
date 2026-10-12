@@ -1395,6 +1395,14 @@ model Requirement {
   /// never back-filled with boilerplate. Re-runs recompute it (requirements are
   /// delete+recreated) and rows written before this column read `"[]"`.
   acceptanceCriteria String  @default("[]")
+  /// Issue #1063 — on a run started from imported items, the `NR-*` ids of the
+  /// imported item(s) this requirement restates, as a JSON array checked
+  /// against the analysis's `metadata.sourceRequirements`. `"[]"` means the
+  /// analysis added the requirement itself; NULL means not recorded (a run not
+  /// started from imported items, or a row written before this column) and is
+  /// never shown as "added". Deliberately NOT `externalSource`/`externalId`:
+  /// those mark a row that IS an imported item and are its re-import dedup key.
+  sourceCandidateIds String?
   storyPoints      Int?
   parentId         String?
   /// Epic #192 (A.5) — living-spec sync. Set when a PR linked to the

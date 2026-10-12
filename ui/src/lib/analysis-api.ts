@@ -235,6 +235,12 @@ export interface RequirementSummary {
    * and pre-#1109 run.
    */
   supportConfidence?: RequirementSupportConfidence | null;
+  /**
+   * Issue #1063 — the imported item(s) this requirement came from, on a run
+   * started from imported items. `[]`: the analysis added it. Null or absent:
+   * not recorded, and the card says nothing.
+   */
+  sourceItems?: AnalysisSourceRequirement[] | null;
 }
 
 export interface AnalysisListItem {

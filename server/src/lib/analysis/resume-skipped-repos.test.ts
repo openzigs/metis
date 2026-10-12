@@ -168,6 +168,48 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     expect(finalize?.totalTokens).toEqual({ increment: 30 });
   });
 
+  // PR #1095 panel, T3 — the re-synthesis rewrites every requirement row, so it
+  // must be given the run's imported items or every "Imported as" link is lost.
+  it("#1063 — hands the run's imported items to the re-synthesis", async () => {
+    const sourceRequirements = [
+      {
+        candidateId: "NR-1",
+        requirementId: "req-imported-1",
+        title: "Add a button to terminate all sessions",
+        externalSource: "github",
+        externalId: "4074",
+        externalUrl: "https://github.com/miniflux/v2/issues/4074",
+      },
+    ];
+    state.metadata = JSON.stringify({
+      ...JSON.parse(capabilityMeta([{ connectorId: "c2", label: "worker" }])),
+      sourceRequirements,
+    });
+    state.connectors = [{ id: "c2", label: "worker" }];
+    const { orch, runSynthesisAndPersist } = makeOrch();
+
+    await orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" });
+
+    expect(runSynthesisAndPersist).toHaveBeenCalledTimes(1);
+    expect(
+      (runSynthesisAndPersist.mock.calls[0]![0] as { sourceRequirements: unknown })
+        .sourceRequirements,
+    ).toEqual(sourceRequirements);
+  });
+
+  it("#1063 — hands the re-synthesis no imported items on any other run", async () => {
+    state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
+    state.connectors = [{ id: "c2", label: "worker" }];
+    const { orch, runSynthesisAndPersist } = makeOrch();
+
+    await orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" });
+
+    expect(
+      (runSynthesisAndPersist.mock.calls[0]![0] as { sourceRequirements: unknown })
+        .sourceRequirements,
+    ).toEqual([]);
+  });
+
   it("#943 — the analysis reads running until the re-synthesis has written its requirements", async () => {
     state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
     state.connectors = [{ id: "c2", label: "worker" }];
