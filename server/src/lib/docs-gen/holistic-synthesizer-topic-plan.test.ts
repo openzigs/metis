@@ -54,9 +54,9 @@ const bullets = (kind: string, name: string, n: number, extra = ""): string =>
 function mod(
   name: string,
   size: number,
-  over: Partial<ModuleFacts> & { rules?: string; workflows?: string } = {},
+  over: Partial<ModuleFacts> & { rules?: string; workflows?: string; integrations?: string } = {},
 ): ModuleFacts {
-  const { rules, workflows, ...rest } = over;
+  const { rules, workflows, integrations, ...rest } = over;
   const facts = [
     "PURPOSE",
     `${name} handles one business capability.`,
@@ -69,7 +69,7 @@ function mod(
     "ENTITIES",
     bullets("entity", name, Math.max(1, size >> 1)),
     "INTEGRATIONS",
-    bullets("integration", name, 1),
+    `${bullets("integration", name, 1)}${integrations ? `\n${integrations}` : ""}`,
     "KEY_APIS",
     bullets("api", name, 1),
   ].join("\n");
@@ -119,7 +119,7 @@ interface FakeOptions {
 
 const PARAGRAPH = "This policy applies to every request the capability receives today. ";
 
-function fakeModel(options: FakeOptions = {}): AIProvider & { calls: Call[] } {
+function fakeModel(options: FakeOptions = {}, key = "anthropic"): AIProvider & { calls: Call[] } {
   const calls: Call[] = [];
   const reply = (call: Call): string => {
     const limit = /write at most about (\d+) words/i.exec(call.user);
@@ -144,7 +144,7 @@ function fakeModel(options: FakeOptions = {}): AIProvider & { calls: Call[] } {
     return `## ${call.group}\n\n${topics.join("\n\n")}`;
   };
   const provider = {
-    key: "anthropic",
+    key,
     model: "fake-section-model",
     offline: false,
     calls,
@@ -242,16 +242,15 @@ function sectionOf(markdown: string, heading: string): string {
 const callsFor = (p: { calls: Call[] }, group: string): Call[] =>
   p.calls.filter((c) => c.group === group);
 
-const verified = (supported: number, total: number): FaithfulnessResult =>
-  ({
-    section: "s",
-    verified: true,
-    totalClaims: total,
-    supportedClaims: supported,
-    faithfulness: total === 0 ? 1 : supported / total,
-    unsupported: [],
-    supportedAttributions: [],
-  }) as unknown as FaithfulnessResult;
+const verified = (supported: number, total: number): FaithfulnessResult => ({
+  section: "s",
+  totalClaims: total,
+  supportedClaims: supported,
+  faithfulness: total === 0 ? 1 : supported / total,
+  verified: true,
+  unsupportedClaims: [],
+  supportedAttributions: [],
+});
 
 beforeEach(() => {
   scoreFaithfulnessMock.mockReset();
@@ -709,6 +708,85 @@ describe("the canonical facts sheet in a planned document", () => {
     expect(entry.groundingSourceIds.some((id) => id.startsWith("facts:canon:"))).toBe(true);
     const formulas = result.sections.find((s) => s.sectionLabel === label("formulas"))!;
     expect(formulas.groundingSourceIds.some((id) => id.startsWith("facts:canon:"))).toBe(false);
+  });
+});
+
+describe("judge-gated escalation of a planned document", () => {
+  function hybrid(local: AIProvider, cloud: AIProvider): Phase2Router {
+    const bundle = (kind: "local" | "anthropic", provider: AIProvider): Phase2ProviderBundle => {
+      const tuning = docsGenTuning(kind, provider.model);
+      return { kind, provider, supportsCaching: false, factsCharCap: tuning.factsCharCap, tuning };
+    };
+    const localBundle = bundle("local", local);
+    return {
+      primary: localBundle,
+      hybrid: { local: localBundle, escalation: bundle("anthropic", cloud) },
+    };
+  }
+
+  it("re-runs a section on the escalation provider with the same plan and the same facts", async () => {
+    vi.stubEnv("DOCS_GEN_JUDGE_ESCALATION", "1");
+    vi.stubEnv("DOCS_GEN_LOCAL_FACTS_CHAR_CAP", "6000");
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
+    const facts = project(6);
+    facts[0] = mod("m00", 12, {
+      rules: "- A page never holds more than `maxPageSize` entries.",
+      integrations: "- The export client pages by `maxPageSize`.",
+      minedRules: [constant("maxPageSize", "100")],
+    });
+    const local = fakeModel({ inject: () => "[local] " }, "local-gemma");
+    const cloud = fakeModel();
+    // The local drafts of two sections fall short (the run escalates at most
+    // three); their escalated versions are supported.
+    const judged: Array<{ section: string; local: boolean; canonical: number }> = [];
+    scoreFaithfulnessMock.mockImplementation(
+      async (section: string, markdown: string, ctx: GroundingContext) => {
+        const isLocal = markdown.includes("[local]");
+        judged.push({
+          section,
+          local: isLocal,
+          canonical: ctx.sources.filter((s) => s.sourceId.startsWith("facts:canon:")).length,
+        });
+        const weak = section === RULES || section === label("integrations-and-glossary");
+        return isLocal && weak ? verified(1, 10) : verified(10, 10);
+      },
+    );
+    const grounding = {
+      sources: [{ sourceId: "rag:doc:0", kind: "rag", label: "notes.md", text: "evidence" }],
+      sourceIds: new Set(["rag:doc:0"]),
+      isEmpty: false,
+    } as unknown as GroundingContext;
+    const result = await synthesizeFinalDocument(
+      facts,
+      META,
+      "business-requirements",
+      "BRD",
+      hybrid(local, cloud),
+      "p1",
+      grounding,
+    );
+
+    // A batched section: the escalation is planned to the same shares.
+    const rulesAgain = callsFor(cloud, RULES);
+    expect(rulesAgain.length).toBeGreaterThan(0);
+    for (const call of rulesAgain) expect(call.user).toContain("PLANNED SHARE of that limit");
+    const withFact = rulesAgain.find((c) => c.modules.includes("m00"))!;
+    expect(withFact.user).toMatch(/\[facts:canon:cf-[0-9a-f]{10}\] maxPageSize = 100/);
+    expect(withFact.user).not.toContain("[SOURCE id=facts:canon:");
+    expect(result.sections.find((s) => s.sectionLabel === RULES)!.providerKind).toBe("anthropic");
+
+    // A single-call section: the same length limit and facts block, the fact
+    // listed once (not again among the grounding sources), and the judge of
+    // the escalated text is given it.
+    const glossary = label("integrations-and-glossary");
+    const [again] = callsFor(cloud, glossary);
+    expect(again.user).toContain("=== LENGTH LIMIT ===");
+    expect(again.user).toMatch(/\[facts:canon:cf-[0-9a-f]{10}\] maxPageSize = 100/);
+    expect(again.user).not.toContain("[SOURCE id=facts:canon:");
+    expect(judged.filter((j) => j.section === glossary)).toEqual([
+      { section: glossary, local: true, canonical: 1 },
+      { section: glossary, local: false, canonical: 1 },
+    ]);
   });
 });
 
