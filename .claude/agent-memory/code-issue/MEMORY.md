@@ -88,6 +88,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Model-cannot claims: sweep at the engine](project_model-cannot-claims-need-engine-level-sweep.md) — every LLM dep on; no near-idle timing bound
 - [Spec Kit plan context: replay + graph gaps](project_speckit-plan-context-replay-and-graph-gaps.md) — misses are rank, not top-k (#1060)
 - [Cap claims: one fixture per MAX_*](project_never-dropped-silently-needs-a-fixture-per-cap.md) — upstream caps cut uncounted (#1094)
+- [Read live ≠ read completely](project_read-live-is-not-read-completely.md) — no completeness proof: mark, never delete (#1093)
 - [Mapper precision rule vs recall](project_mapper-precision-rules-halve-impact-recall.md) — run both evals; option, not global (#1063)
 - [0 findings: read token_usages](project_zero-findings-read-token-usages-first.md) — output == cap + empty reply = reasoning (#1063)
 - [Synthesis field must fail soft](project_synthesis-optional-field-must-fail-soft.md) — one null discards every requirement (#1063)

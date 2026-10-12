@@ -11,7 +11,12 @@
  */
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { DegradedWarningsBanner } from "@/app/(authed)/projects/[id]/documentation/page";
+import {
+  classifyWarningSeverity,
+  DegradedWarningsBanner,
+  SchemaNamesNote,
+  schemaNamesNotes,
+} from "@/app/(authed)/projects/[id]/documentation/page";
 
 type Tier = "narrative" | "reconstruction" | "literal";
 
@@ -258,5 +263,69 @@ describe("DegradedWarningsBanner — DOCS_GEN_GROUNDING off / sample (#186)", ()
     expect(alert).toHaveTextContent(/"Business Rules" falls short of the code-fidelity bar/);
     // The spot-checked section is listed, but never named as short of the bar.
     expect(alert).not.toHaveTextContent(/"Overview"[^.]*short of the code-fidelity bar/);
+  });
+});
+
+// #1061 — names the schema check could not match are INFORMATION. The check
+// only marks, a mark can be false, and the document is `ready`: the page shows
+// one neutral line and never the degraded-output banner's "falls short of the
+// code-fidelity bar" for them.
+describe("names not matched to the database schema (#1061)", () => {
+  const MESSAGE =
+    "4 names in Data Architecture could not be matched to the database schema (jobs, " +
+    "certificate_cache, feeds.error_counter, entries.category_id). Compared with the live " +
+    'schema of "miniflux-pg" (public). They are marked or listed in the section\'s Schema check ' +
+    "note; nothing was removed or changed. A database read can be incomplete, so an unmatched " +
+    "name can be real.";
+  const schemaNames = (message = MESSAGE) => ({
+    kind: "schema-unverified" as const,
+    section: "Data Architecture",
+    message,
+    severity: "info" as const,
+  });
+
+  it("shows the server's sentence as a status note, not an alert", () => {
+    render(<SchemaNamesNote warnings={[schemaNames()]} />);
+    const note = screen.getByRole("status");
+    expect(note).toHaveTextContent(
+      "4 names in Data Architecture could not be matched to the database schema",
+    );
+    expect(note).toHaveTextContent("nothing was removed or changed");
+    expect(screen.queryByRole("alert")).toBeNull();
+    for (const alarm of [/code-fidelity bar/, /worth verifying/, /Degraded/i, /Needs review/i]) {
+      expect(note).not.toHaveTextContent(alarm);
+    }
+  });
+
+  it("renders nothing without one", () => {
+    for (const warnings of [undefined, null, [], [tierWarning("Business Rules", "literal")]]) {
+      const { container, unmount } = render(<SchemaNamesNote warnings={warnings} />);
+      expect(container).toBeEmptyDOMElement();
+      unmount();
+    }
+    expect(schemaNamesNotes([tierWarning("Business Rules", "literal")])).toEqual([]);
+    expect(schemaNamesNotes([schemaNames("a"), schemaNames("b")])).toEqual(["a", "b"]);
+  });
+
+  it("is kept out of the degraded-output banner beside a section that is short of the bar", () => {
+    render(
+      <DegradedWarningsBanner
+        warnings={[schemaNames(), tierWarning("Business Rules", "literal")]}
+        errorMessage={null}
+      />,
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(/"Business Rules" falls short of the code-fidelity bar/);
+    expect(alert).not.toHaveTextContent(/Data Architecture/);
+    expect(alert).not.toHaveTextContent(/could not be matched to the database schema/);
+    // One listed warning: the one that degrades the document.
+    expect(alert.querySelectorAll("li")).toHaveLength(1);
+  });
+
+  it("is not classified as concerning", () => {
+    expect(classifyWarningSeverity([schemaNames()])).toEqual({
+      reviewRecommended: false,
+      concerningSections: [],
+    });
   });
 });

@@ -151,6 +151,22 @@ describe("#246 — the reuse record accepts every warning kind a section can car
     });
     expect(saved.warnings[0].kind).toBe("grounding-failed");
   });
+
+  // #1061 — the schema check's note is informational and is stored with the
+  // section, so a reused section still carries it.
+  it("records a section with an informational schema-unverified note", () => {
+    const note = {
+      kind: "schema-unverified" as const,
+      severity: "info" as const,
+      section: "Data Architecture",
+      message: "1 name in Data Architecture could not be matched to the database schema (jobs).",
+    };
+    const saved = recordSectionSynthesis("overview", hashSectionInputs(inputs), {
+      ...payload,
+      warnings: [note],
+    });
+    expect(saved.warnings).toEqual([note]);
+  });
 });
 
 describe("#262 — a stored snapshot from another contract version", () => {

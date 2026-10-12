@@ -195,7 +195,21 @@ import {
   NARRATIVE_FAITHFULNESS_THRESHOLD,
   RECONSTRUCTION_FAITHFULNESS_THRESHOLD,
   summarizeWarnings,
+  schemaUnverifiedWarning,
+  affectsDocStatus,
 } from "./grounding/degraded-warnings.js";
+import {
+  isTypedInventory,
+  NO_SCHEMA_INVENTORY,
+  renderSchemaCoverage,
+  renderSchemaPromptBlock,
+  type SchemaInventory,
+} from "./schema-inventory.js";
+import {
+  applySchemaGrounding,
+  schemaCheckFindings,
+  schemaCheckUnmatched,
+} from "./schema-claim-check.js";
 // #67 — the fixed, user-safe failure vocabulary a section's exception is mapped
 // through before it can reach a persisted, client-visible warning.
 import { generationFailureMessage, isConnectionDropped } from "./generation-failure-message.js";
@@ -1304,6 +1318,12 @@ async function runHolisticSynthesis(
     onPhase1Progress?: (update: { done: number; total: number }) => void;
     /** Repository-relative path prefixes limiting what is documented (path-scope.ts). */
     pathPrefixes?: readonly string[];
+    /**
+     * #1061 — the project's schema inventory, which the architecture document's
+     * Data Architecture section is grounded in and checked against. Omitted →
+     * the section is written as having no schema source, and says so.
+     */
+    schemaInventory?: SchemaInventory;
     benchmarkProviders?: {
       phase1?: ReturnType<typeof buildDocsGenProvider>;
       phase2Router?: Phase2Router;
@@ -1683,6 +1703,7 @@ async function runHolisticSynthesis(
       // Persist only hashes, never credentials or endpoint/source text.
       effectiveConfigHash: synthesisConfigHash(provenance, repoConnectorId),
     },
+    { schemaInventory: options?.schemaInventory },
   );
 
   // #330 — prepend the Phase-1 source-unavailability warning(s) so the document
@@ -1695,7 +1716,7 @@ async function runHolisticSynthesis(
     docType,
     markdownChars: markdown.length,
     warnings: warnings.length,
-    degraded: warnings.length > 0 ? summarizeWarnings(warnings) : undefined,
+    degraded: summarizeWarnings(warnings) || undefined,
   });
   const provenanceManifest = buildGeneratedDocVersionManifest({
     revision: provenance?.revision ?? { projectId, generatedDocumentId: "pending", version: 1 },
@@ -3188,7 +3209,26 @@ export interface SectionGroup {
    * one call over the modules that fit the facts cap.
    */
   batched?: boolean;
+  /**
+   * #1061 — set on the Data Architecture section: the schema inventory its
+   * prompt carries and its output is checked against (`schema-claim-check.ts`).
+   * Part of the group, so it is hashed into the section's reuse inputs: a
+   * schema change, or a change to the check, rewrites the section.
+   */
+  schemaGrounding?: { inventory: SchemaInventory; version: number };
 }
+
+/**
+ * Bumped when `applySchemaGrounding` changes what it does to a section.
+ * 2 — removal needed proof of what was read (#1061 review).
+ * 3 — the check only marks: nothing is removed, rewritten or corrected, and
+ * there is one note per section (#1061 second review).
+ * 4 — code is delimited as CommonMark does (fence lengths, code spans, raw HTML,
+ * indented blocks), a table without a column list is not judged by column, a
+ * dataset is not judged as a table, and the reference is never put inside an
+ * unclosed fence (#1061 third review).
+ */
+export const SCHEMA_GROUNDING_VERSION = 4;
 
 /** Outcome of post-validating one synthesized section against its grounding. */
 interface SectionGroundingOutcome {
@@ -3924,6 +3964,8 @@ export async function synthesizeFinalDocument(
     /** #855 / #856 — see {@link GenerationStepHook}. */
     beforeStep?: GenerationStepHook;
   },
+  /** #1061 — what the section definitions are built from (see {@link sectionGroupsFor}). */
+  sectionContext?: SectionGroupContext,
 ): Promise<
   HolisticSynthesisResult & {
     sections: Array<{
@@ -3978,7 +4020,7 @@ export async function synthesizeFinalDocument(
     };
   }
 
-  const groups = sectionGroupsFor(docType);
+  const groups = sectionGroupsFor(docType, sectionContext);
   const sectionMarkdowns: string[] = [];
   const manifestSections: Array<{
     sectionLabel: string;
@@ -4434,6 +4476,9 @@ export async function synthesizeFinalDocument(
         prompts: JSON.stringify(prompts),
       });
       const previous = previousRecords.get(group.id);
+      // #1061 — a stored section whose schema check left marks is reused like
+      // any other. Its `schema-unverified` note is informational and travels
+      // with the record; it neither blocks reuse nor forces a rewrite.
       const stillValid =
         previous != null && JSON.stringify(previous.inputs) === JSON.stringify(inputHashes);
       // #857 — say which inputs made a stored section stale, so a regenerate
@@ -4472,10 +4517,10 @@ export async function synthesizeFinalDocument(
         await checkpoint();
         reportSection({
           section: group.label,
-          status: previous.warnings.length ? "degraded" : "done",
+          status: previous.warnings.some(affectsDocStatus) ? "degraded" : "done",
           index: gi + 1,
           total: groups.length,
-          warning: previous.warnings[0],
+          warning: previous.warnings.find(affectsDocStatus),
         });
         continue;
       }
@@ -4770,6 +4815,43 @@ export async function synthesizeFinalDocument(
         continue;
       }
 
+      // #1061 — the Data Architecture section, after it is written and
+      // fact-checked: the table and column names it claims are compared with
+      // the schema inventory, a name that could not be matched is MARKED (never
+      // removed or rewritten), the schema reference is rendered in, and what
+      // the check found is said in one note at the top. Deterministic; no
+      // model call.
+      let schemaNote: DocWarning | undefined;
+      if (group.schemaGrounding) {
+        const { inventory } = group.schemaGrounding;
+        const grounded = applySchemaGrounding(finalOutcome.markdown, inventory);
+        if (grounded.markdown !== finalOutcome.markdown) {
+          // What the section cap left out still belongs to this output.
+          const capOmitted = sectionCapOmissions.get(finalOutcome.markdown.trim());
+          if (capOmitted) recordShortened(grounded.markdown, capOmitted);
+          finalOutcome = { ...finalOutcome, markdown: grounded.markdown };
+        }
+        // Informational: it is stored and shown, and the document's status
+        // does not depend on it (`affectsDocStatus`).
+        const unmatched = schemaCheckUnmatched(grounded.report);
+        if (unmatched.length > 0) {
+          schemaNote = schemaUnverifiedWarning(group.label, unmatched, inventory);
+        }
+        if (schemaCheckFindings(grounded.report) > 0) {
+          log.info("Schema check marked or listed names in the section", {
+            projectId,
+            docType,
+            group: group.id,
+            source: inventory.source,
+            unmatched: unmatched.length,
+            unresolvedTables: grounded.report.unresolvedTables.length,
+            flaggedColumns: grounded.report.flaggedColumns.length,
+            typeMismatches: grounded.report.typeMismatches.length,
+            notChecked: grounded.report.notChecked.length,
+          });
+        }
+      }
+
       sectionMarkdowns.push(finalOutcome.markdown);
       sectionOwners.push(manifestSections.length);
       for (const source of finalGrounding?.sources ?? []) {
@@ -4790,6 +4872,7 @@ export async function synthesizeFinalDocument(
       });
       contributed.push({ label: group.label, heading: firstH2Heading(finalOutcome.markdown) });
       if (finalOutcome.warning) warnings.push(finalOutcome.warning);
+      if (schemaNote) warnings.push(schemaNote);
       // #1226 — the section WAS produced but the model was cut off by the
       // output-token cap, so it is incomplete. Record it (error severity) so the
       // document degrades instead of shipping a half-written section as `ready`.
@@ -4814,6 +4897,7 @@ export async function synthesizeFinalDocument(
       // #243 — a section with an ungrounded-claims warning is `degraded`, not a
       // clean `done`; surface that live so the UI shows the warning during
       // generation, not after a manual refresh.
+      // #1061 — the schema note is informational: the section is `done`.
       const liveWarning = finalOutcome.warning ?? truncationWarning;
       // A failed/empty section or malformed legacy evidence cannot establish
       // completeness. Never let recording a reuse candidate break generation.
@@ -5267,7 +5351,8 @@ const SECTION_FACT_SLICES: Record<string, readonly FactSlice[]> = {
   "integrations-and-glossary": ["summary", "integrations", "capabilities", "entities"],
   // architecture
   "overview-and-context": ["summary", "integrations", "capabilities", "notes"],
-  "components-and-data": ["summary", "entities", "capabilities", "integrations"],
+  components: ["summary", "entities", "capabilities", "integrations"],
+  "data-architecture": ["summary", "entities", "capabilities", "integrations"],
   "concerns-and-integrations": ["summary", "integrations", "capabilities", "rules", "notes"],
   "ops-and-stack": ["summary", "formulas", "integrations", "notes"],
   // user-guide
@@ -6546,7 +6631,8 @@ const SECTION_TOPIC_KEYWORDS: Record<string, string[]> = {
   "data-model": ["entities", "data model", "schema", "relationships", "fields"],
   "integrations-and-glossary": ["integrations", "external systems", "APIs", "glossary", "terms"],
   "overview-and-context": ["architecture overview", "context", "components", "system design"],
-  "components-and-data": ["components", "modules", "data flow", "entities", "APIs"],
+  components: ["components", "modules", "data flow", "APIs"],
+  "data-architecture": ["database", "schema", "tables", "entities", "persistence", "migrations"],
   "concerns-and-integrations": [
     "cross-cutting concerns",
     "integrations",
@@ -6577,13 +6663,103 @@ export function buildSectionTopicQuery(
     .join(" ");
 }
 
+/** What {@link sectionGroupsFor} builds the section definitions from. */
+export interface SectionGroupContext {
+  /** #1061 — the project's schema inventory; absent means no schema source. */
+  schemaInventory?: SchemaInventory;
+}
+
+const DATA_ARCHITECTURE_NARRATIVE = `- Describe data stores (databases, caches, message queues) and why each was chosen. Something that is not a database table — an in-memory queue, a cache, a struct, a view, an external store — is described here as what it is, never as a table.
+- Document data lifecycle: creation triggers, mutation events, archival/deletion rules
+- Note any persistence patterns: event sourcing, CQRS, soft deletes, audit trails, versioning
+- Document indexes, constraints, and data integrity rules visible in the facts`;
+
+const DATA_DICTIONARY_SHAPE = `Include a Mermaid \`erDiagram\` for the main 8-15 tables and their relationships. Below the diagram:
+- For each table, an H3 heading of exactly this form — ### Entity: \`table_name\` — followed by a per-field table with columns: | Field | Type | Constraint | Default | Range/Allowed values | Description |. One row per column, the column name in backticks. Fill every column derivable from the facts; use \`—\` when genuinely unknown (do NOT invent). Note PK/FK/unique constraints.
+- For SAS / dataset-centric systems, treat each DATASET as an entity and use the DATA_LINEAGE / DATASET LINEAGE facts to record its producing and consuming steps.`;
+
+/**
+ * The architecture document's Data Architecture section (#1061), written for
+ * the schema source there is:
+ *
+ *  - **live schema or stored schema graph** — the schema reference (ER diagram
+ *    and column tables) is rendered from it after generation, so the model is
+ *    given the schema, told not to write either, and writes the narrative;
+ *  - **repository SQL** — names without types: the model writes the data
+ *    dictionary, restricted to those names;
+ *  - **none** — the model is told there is no schema and to name only what the
+ *    facts state.
+ *
+ * In every case the output goes through `applySchemaGrounding`.
+ */
+function dataArchitectureGroup(inventory: SchemaInventory): SectionGroup {
+  const schemaBlock = renderSchemaPromptBlock(inventory);
+  let body: string;
+  if (isTypedInventory(inventory)) {
+    body = `The persistence model. Open with 1-2 paragraphs on how the system stores its data.
+
+The database schema is given below, with a statement of what it covers. For the schemas it covers it is the authority for every table name, column name and type in this section. A schema reference — an ER diagram and one column table per table — is rendered from it and inserted into this section automatically, so:
+- Do NOT write a Mermaid \`erDiagram\`.
+- Do NOT write per-table field or column tables.
+
+Write what the schema cannot say, each under its own H3:
+- **Tables and Their Roles**: a table with columns | Table | Purpose | Written by |, one row per table of the schema that the facts say something about, the table name in backticks.
+${DATA_ARCHITECTURE_NARRATIVE}
+
+NAMING RULES:
+- Spell every table and column exactly as the schema does.
+- Within the schemas listed as covered, do not name a table or column that is not in the list. If the facts mention one that is not there, it was renamed or dropped, or it is not a table: leave it out, or say what the facts say it is.
+- The list is NOT the whole database. A table may be named from outside it in two cases only. (1) The facts give the NAME of another schema that holds it: write the table with that schema (\`audit.events\`). A package, module or struct path in the facts (\`worker.jobs\`, \`model.Job\`) is not a schema. (2) A database is marked NOT read and the facts state the table is in it: write the name as the facts give it and say which database it is in. In both cases say that its columns were not read, and list no columns for it.
+- Never state a column's type from memory.
+
+${renderSchemaCoverage(inventory)}
+
+${schemaBlock}`;
+  } else if (schemaBlock) {
+    body = `The persistence model, documented as a RECONSTRUCTION-GRADE DATA DICTIONARY. ${DATA_DICTIONARY_SHAPE}
+${DATA_ARCHITECTURE_NARRATIVE}
+
+NAMING RULES:
+- The table and column names found in the repository's SQL are listed below. Use a table or column name only when it is in that list or stated verbatim in the facts, spelled exactly as it is there.
+- Where neither gives a table's columns, say so instead of listing likely ones.
+
+${schemaBlock}`;
+  } else {
+    // A database that could not be read is still one the project has.
+    const unread = inventory.reads.filter((read) => read.how === "unread").length;
+    const unreadNote =
+      unread > 0
+        ? ` The project has ${unread} database(s) that could not be read, so tables can exist that the facts do not mention.`
+        : "";
+    body = `The persistence model, documented as a RECONSTRUCTION-GRADE DATA DICTIONARY. ${DATA_DICTIONARY_SHAPE}
+${DATA_ARCHITECTURE_NARRATIVE}
+
+NAMING RULES:
+- No database schema is available for this project.${unreadNote} Name a table or a column only when the facts state it verbatim, spelled exactly as the facts spell it.
+- Where the facts do not give a table's columns, say so instead of listing likely ones.`;
+  }
+  return {
+    id: "data-architecture",
+    factSlices: SECTION_FACT_SLICES["data-architecture"],
+    label: "Data Architecture",
+    schemaGrounding: { inventory, version: SCHEMA_GROUNDING_VERSION },
+    instructions: `Produce ONE section.
+
+## Data Architecture
+${body}`,
+  };
+}
+
 /**
  * The ordered section groups for a document type, each carrying its
  * instructions and (where applicable) its per-section faithfulness gating
  * (`faithfulnessThreshold` + `narrative`/`reconstruction`). Exported so the
  * per-section gating wiring is unit-testable without a live synthesis run.
  */
-export function sectionGroupsFor(docType: DocType): SectionGroup[] {
+export function sectionGroupsFor(
+  docType: DocType,
+  context: SectionGroupContext = {},
+): SectionGroup[] {
   switch (docType) {
     case "business-requirements":
       return [
@@ -6792,10 +6968,10 @@ graph TB
 The major logical layers/tiers (e.g., presentation, application, domain, persistence). Include a Mermaid \`graph TB\` showing layers with dependency direction. Describe each layer's responsibility in 1-2 sentences.`,
         },
         {
-          id: "components-and-data",
-          factSlices: SECTION_FACT_SLICES["components-and-data"],
-          label: "Components & Data Architecture",
-          instructions: `Produce two sections.
+          id: "components",
+          factSlices: SECTION_FACT_SLICES["components"],
+          label: "Component Breakdown",
+          instructions: `Produce ONE section.
 
 ## Component Breakdown
 Group the source modules into 4-8 logical components (NOT one entry per module — SYNTHESIZE related modules into cohesive components). Include a Mermaid \`graph LR\` component diagram (max 12 nodes) showing the components and their interactions.
@@ -6807,17 +6983,12 @@ For each component:
 - **Key classes/interfaces**: bullet list (top 5-8) with 1-sentence description of each
 - **Key algorithms/logic**: Any notable processing, transformation, or decision logic within this component
 - **Depends on**: which other components it uses and WHY
-- **API surface**: The main methods/endpoints other components call on this one
-
-## Data Architecture
-The persistence model, documented as a RECONSTRUCTION-GRADE DATA DICTIONARY. Include a Mermaid \`erDiagram\` for the main 8-15 entities and relationships. Below the diagram:
-- For each entity, give a per-field table with columns: | Field | Type | Constraint | Default | Range/Allowed values | Description |. Fill every column derivable from the facts; use \`—\` when genuinely unknown (do NOT invent). Note PK/FK/unique constraints.
-- Describe data stores (databases, caches, message queues) and why each was chosen
-- For SAS / dataset-centric systems, treat each DATASET as an entity and use the DATA_LINEAGE / DATASET LINEAGE facts to record its producing and consuming steps.
-- Document data lifecycle: creation triggers, mutation events, archival/deletion rules
-- Note any persistence patterns: event sourcing, CQRS, soft deletes, audit trails, versioning
-- Document indexes, constraints, and data integrity rules visible in the facts`,
+- **API surface**: The main methods/endpoints other components call on this one`,
         },
+        // #1061 — its own section, grounded in the schema inventory. It shared a
+        // section (and its length cap) with Component Breakdown, was written
+        // from prose facts alone, and named tables and columns that do not exist.
+        dataArchitectureGroup(context.schemaInventory ?? NO_SCHEMA_INVENTORY),
         {
           id: "concerns-and-integrations",
           factSlices: SECTION_FACT_SLICES["concerns-and-integrations"],
