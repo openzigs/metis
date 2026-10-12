@@ -251,3 +251,67 @@ describe("#782 — a partial generation checkpoint", () => {
     expect(checkpointSectionRecords(stored, ["overview"], true).size).toBe(0);
   });
 });
+
+// #1070 — a section written in parts under a topic plan records which part
+// wrote each block, so a reused section is cut as the written one was.
+describe("the parts of a planned section on its reuse record", () => {
+  const parts = {
+    budgets: [1200, 800],
+    runs: [
+      [0, 4],
+      [1, 3],
+    ] as Array<[number, number]>,
+  };
+  const planned = () =>
+    recordSectionSynthesis("overview", hashSectionInputs(inputs), { ...payload, parts });
+  const stored = (r: ReturnType<typeof record>) => ({
+    version: SECTION_SYNTHESIS_VERSION,
+    complete: true,
+    records: [r],
+  });
+
+  it("is absent from a record written without a plan, whose hash is what it always was", () => {
+    const plain = record();
+    expect(plain).not.toHaveProperty("parts");
+    expect(Object.keys(plain).sort()).toEqual(
+      [
+        "evidence",
+        "inputs",
+        "markdown",
+        "metadata",
+        "outputHash",
+        "score",
+        "sectionId",
+        "warnings",
+      ].sort(),
+    );
+    // The same output hashes differently once it carries parts: they are part of it.
+    expect(planned().outputHash).not.toBe(plain.outputHash);
+  });
+
+  it("is stored, survives the round trip and is reused", () => {
+    const saved = planned();
+    expect(saved.parts).toEqual(parts);
+    const again = JSON.parse(JSON.stringify(stored(saved)));
+    expect(reusableSectionRecords(again, ["overview"], false).get("overview")).toEqual(saved);
+  });
+
+  it("invalidates the record when the parts are changed or removed after it was stored", () => {
+    const saved = planned();
+    const tampered = { ...saved, parts: { ...parts, budgets: [800, 1200] } };
+    expect(reusableSectionRecords(stored(tampered), ["overview"], false).size).toBe(0);
+    const { parts: _parts, ...stripped } = saved;
+    expect(reusableSectionRecords(stored(stripped), ["overview"], false).size).toBe(0);
+  });
+
+  it("refuses parts that are not runs of whole units", () => {
+    for (const runs of [[[0, 0]], [[-1, 2]], [[0, 1.5]]]) {
+      expect(() =>
+        recordSectionSynthesis("overview", hashSectionInputs(inputs), {
+          ...payload,
+          parts: { budgets: [10], runs: runs as Array<[number, number]> },
+        }),
+      ).toThrow();
+    }
+  });
+});

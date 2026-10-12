@@ -84,6 +84,10 @@ const code = (s: string): string => `\`${s.replace(/`/g, "")}\``;
 /** The reference a reader can follow for one admitted grounding source. */
 export function readableSourceReference(source: GroundingSource): string {
   if (source.kind === "facts") {
+    // #1070 — a canonical fact: its label is the source line and the value.
+    if (source.sourceId.startsWith("facts:canon:")) {
+      return `${code(source.label)} (canonical fact, read from the source)`;
+    }
     const location = decodeSymbolLocation(source.sourceId);
     if (location) return `${code(location)} — ${code(source.label)}`;
     return `${code(decodeModulePath(source.sourceId) ?? source.label)} (module facts)`;

@@ -83,11 +83,13 @@ import { scopedToGeneration } from "./generation-control.js";
 import { isGenerationStop, throwIfGenerationStopped } from "./generation-scope.js";
 import {
   batchWordBudget,
+  CHARS_PER_WORD,
   fitSectionToBudget,
   fitSectionsToDocumentBudget,
   resolveDocumentMaxChars,
   resolveSectionMaxChars,
   sectionBudgetScale,
+  units as sectionUnits,
 } from "./section-size.js";
 import {
   condenseFactsEntry,
@@ -280,6 +282,7 @@ import {
   OUTPUT_CHARS_PER_MINED_RULE,
   OUTPUT_CHARS_PER_MODULE,
   OUTPUT_CHARS_PER_TOPIC_CHAR,
+  mergeBatchBlocks,
   mergeBatchSections,
   planBatches,
   shouldResplit,
@@ -287,6 +290,38 @@ import {
   splitBatch,
   type BatchCandidate,
 } from "./section-batching.js";
+import {
+  decodePartRuns,
+  droppedTopicLabel,
+  encodePartRuns,
+  fitDocumentToPlan,
+  fitSectionToPlan,
+  planDocument,
+  plannedOmissionNote,
+  readTopicPlanSetting,
+  summarizeDocumentPlan,
+  TOPIC_PLAN_KEY,
+  TOPIC_PLAN_VERSION,
+  type DocumentPlan,
+  type PlannedSection,
+  type SectionDemand,
+  type SectionParts,
+} from "./document-plan.js";
+import {
+  buildFactSheet,
+  canonicalFactSource,
+  FACT_SHEET_VERSION,
+  factSheetFingerprint,
+  factsGivenTo,
+  factsListedFor,
+  factsMentionedIn,
+  renderCanonicalFactsBlock,
+  withCanonicalSources,
+  type CanonicalFact,
+  type FactOwnerLookup,
+  type FactSheet,
+} from "./canonical-facts.js";
+import { checkFactConsistency, factInconsistentWarning } from "./fact-consistency.js";
 
 const log = createChildLogger("docs-gen:holistic");
 
@@ -3492,7 +3527,15 @@ export function batchNoteFor(
    * the whole section's. The part is then asked to summarise at business level
    * instead of documenting every item.
    */
-  budget?: { words: number; sectionWords: number },
+  budget?: {
+    words: number;
+    sectionWords: number;
+    /**
+     * #1070 — under a topic plan, the words planned for each module of this
+     * part, so the part's budget is spent where the plan put it.
+     */
+    topics?: ReadonlyArray<{ module: string; words: number }>;
+  },
 ): string {
   return [
     "=== BATCH INSTRUCTIONS ===",
@@ -3500,6 +3543,15 @@ export function batchNoteFor(
     ...(budget
       ? [
           `- LENGTH LIMIT: write at most about ${budget.words} words for THIS part (the whole section is limited to about ${budget.sectionWords} words). This overrides any instruction to document every item.`,
+          ...(budget.topics?.length
+            ? [
+                `- PLANNED SHARE of that limit by module (approximate words): ${budget.topics
+                  .map((t) => `${t.module} ${t.words}`)
+                  .join(
+                    "; ",
+                  )}. If the document comes out over its length limit, what this part wrote past its limit is the first text cut, from the END of this part: keep each module to about its share.`,
+              ]
+            : []),
           "- Write for a business analyst, not a code reviewer: state each rule as a business policy, merge related checks into one rule, and leave out implementation detail (parsing, encoding, sanitisation and validation internals, per-function steps). Keep the citations of the facts you use.",
           "- Cover the most significant rules first, so that if you run short it is the minor ones that are left out.",
         ]
@@ -3537,6 +3589,8 @@ interface BatchedSectionResult {
   warnings: DocWarning[];
   /** Base grounding plus every module's facts (for evidence and the manifest). */
   grounding: GroundingContext | undefined;
+  /** #1070 — under a topic plan: which part each unit of `markdown` came from. */
+  parts?: SectionParts;
 }
 
 /**
@@ -3573,6 +3627,22 @@ async function synthesizeBatchedSection(input: {
   onShortened?: (markdown: string, omittedTopics: string[]) => void;
   /** #855 / #856 — awaited before each batch call; a throw ends the run. */
   beforeBatch?: () => Promise<void>;
+  /**
+   * #1070 — set when the section is written under the document's topic plan
+   * (`plan` then carries each module's planned share). The parts are merged
+   * whole and the result says which part each block came from and what that
+   * part was planned, so that when a cap is exceeded — the section cap here,
+   * the document cap at assembly — the text given up is each overrunning
+   * part's own tail, not the section's. Each part is given the canonical
+   * facts its modules mention.
+   */
+  planned?: {
+    canonicalFacts: readonly CanonicalFact[];
+    /** The section that owns a fact in this document, if one can state it. */
+    ownerOf: FactOwnerLookup;
+    /** The document cap, for the note that lists modules the plan left out. */
+    documentMaxChars: number;
+  };
 }): Promise<BatchedSectionResult> {
   const { group, bundle, plan, projectId, claimExtractor, faithfulnessJudge } = input;
   let batchesTotal = plan.batches.length;
@@ -3591,6 +3661,23 @@ async function synthesizeBatchedSection(input: {
   const sources = batchFactsSources(plan);
   const sourceOf = new Map(plan.modules.map((m, i) => [m, sources[i]]));
   const lead = plan.modules[0];
+  const moduleKey = (m: { repository?: RepositoryIdentity; modulePath: string }): string =>
+    repositoryPathIdentity(m.repository, m.modulePath);
+  const readModules = new Set(plan.modules.map((m) => moduleKey(m.item)));
+  const canonicalFactsForBatch = (
+    planned: NonNullable<typeof input.planned>,
+    batch: readonly SectionBatchModule[],
+  ): CanonicalFact[] => {
+    const text = batch.map((m) => m.entry).join("\n\n---\n\n");
+    const mentioned = new Set(factsMentionedIn({ facts: planned.canonicalFacts }, text));
+    const here = new Set(batch.map((m) => moduleKey(m.item)));
+    return planned.canonicalFacts.filter((fact) => {
+      if (mentioned.has(fact)) return true;
+      if (planned.ownerOf(fact)?.id !== group.id) return false;
+      const from = moduleKey(fact);
+      return here.has(from) || (!readModules.has(from) && batch.includes(lead));
+    });
+  };
   // #178 — batches run through a bounded worker pool. Every counter below is
   // read and written only in synchronous code between awaits, so concurrent
   // batches cannot race on it: in particular the re-split budget is checked
@@ -3619,6 +3706,21 @@ async function synthesizeBatchedSection(input: {
       ? mergeFactsIntoContext(input.baseGrounding, batchSources, bundle.factsCharCap)
       : input.baseGrounding;
     const batchFacts = batch.map((m) => m.entry).join("\n\n---\n\n");
+    // #1070 — the canonical facts this part is given: the ones its modules
+    // mention, and the ones this section owns that come from its modules (the
+    // lead part takes an owned fact whose module no part reads), so the owner
+    // of a fact is always told of it. Listed in the part's prompt, and citable
+    // evidence for the judge of its reply.
+    const batchCanon = input.planned ? canonicalFactsForBatch(input.planned, batch) : [];
+    const canonicalBlock = input.planned
+      ? renderCanonicalFactsBlock(batchCanon, group, input.planned.ownerOf)
+      : "";
+    const judged = claimExtractor
+      ? withCanonicalSources(
+          grounding,
+          input.planned ? factsListedFor(batchCanon, group.id, input.planned.ownerOf) : [],
+        )
+      : grounding;
     let result: SectionGroupResult;
     // #855 / #856 — outside the batch's error handling: a stopped run rejects
     // the pool (and so the section) instead of recording a failed batch.
@@ -3640,18 +3742,24 @@ async function synthesizeBatchedSection(input: {
         // #168 — facts already in the batch's facts text are listed by id only.
         grounding ? renderGroundingBlock(grounding, { factsBlob: batchFacts }) : "",
         input.flowBlob,
-        batchNoteFor(
-          group,
-          batch.includes(lead),
-          batch.length,
-          plan.modules.length,
-          plan.sectionBudget
-            ? {
-                words: batchWordBudget(batchOutputChars(batch)),
-                sectionWords: batchWordBudget(plan.sectionBudget.maxChars),
-              }
-            : undefined,
-        ),
+        [
+          batchNoteFor(
+            group,
+            batch.includes(lead),
+            batch.length,
+            plan.modules.length,
+            plan.sectionBudget
+              ? {
+                  words: batchWordBudget(batchOutputChars(batch)),
+                  sectionWords: batchWordBudget(plan.sectionBudget.maxChars),
+                  ...(input.planned ? { topics: batchTopicWords(batch) } : {}),
+                }
+              : undefined,
+          ),
+          canonicalBlock,
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
         // A batch reply is never refined: it is one part of a section merged
         // deterministically, so a second full-length rewrite per batch (#118)
         // only doubles the section's wall time. Refine stays for single-call
@@ -3696,7 +3804,7 @@ async function synthesizeBatchedSection(input: {
         : undefined;
     batchesDone += 1;
     progress();
-    return [{ done: { batch, result, grounding, ...(keptWhole ? { keptWhole } : {}) } }];
+    return [{ done: { batch, result, grounding: judged, ...(keptWhole ? { keptWhole } : {}) } }];
   };
 
   const concurrency = resolvePhase2Concurrency(bundle.provider.key);
@@ -3740,21 +3848,77 @@ async function synthesizeBatchedSection(input: {
   if (done.length === 0) throw failed[0].err;
 
   const replies = done.filter((d) => d.result.markdown.trim().length > 0);
-  const merged =
-    replies.length > 0
+  // #1070 — under a topic plan the parts are merged whole, exactly as without
+  // one, and every block of the merged section is attributed to the part that
+  // wrote it (after the merge has removed what the parts repeat, so nothing is
+  // counted twice). A planned budget discards nothing: it is the order in
+  // which text is given up when a cap is exceeded.
+  const blocks =
+    input.planned && replies.length > 0
+      ? mergeBatchBlocks(
+          replies.map((d) => d.result.markdown),
+          group.label,
+        )
+      : null;
+  const merged = blocks
+    ? blocks.map((block) => block.text).join("\n\n")
+    : replies.length > 0
       ? mergeBatchSections(
           replies.map((d) => d.result.markdown),
           group.label,
         )
       : "";
-  // #741 — the batch budgets are requests; this is the guarantee.
-  // #995 — measured as the section will render, citations as footnotes.
-  const fit =
-    merged && input.sectionMaxChars !== undefined
-      ? fitSectionToBudget(merged, input.sectionMaxChars, [], renderedCitationLength)
-      : null;
-  if (fit?.trimmed) input.onShortened?.(fit.markdown, fit.omittedTopics);
-  const markdown = fit ? fit.markdown : merged;
+  let markdown = merged;
+  let parts: SectionParts | undefined;
+  if (blocks && input.planned) {
+    // Modules the plan left out were never read: they are listed, always.
+    const plannedOut = (plan.plannedOut ?? []).map((name) => droppedTopicLabel({ title: name }));
+    const partOf = blocks.flatMap((block) => sectionUnits(block.text).map(() => block.reply));
+    const attributed = partOf.length === sectionUnits(merged).length;
+    const offered = {
+      markdown:
+        plannedOut.length > 0
+          ? `${merged}
+
+${plannedOmissionNote(plannedOut, {
+  setting: "DOCS_GEN_DOCUMENT_MAX_CHARS",
+  maxChars: input.planned.documentMaxChars,
+})}`
+          : merged,
+      budgetChars: replies.reduce((n, d) => n + batchOutputChars(d.batch), 0),
+      ...(attributed
+        ? { parts: { budgets: replies.map((d) => batchOutputChars(d.batch)), partOf } }
+        : {}),
+      alreadyOmitted: plannedOut,
+    };
+    // #741 — the section cap is the guarantee, as it is without a plan.
+    // #995 — measured as the section will render, citations as footnotes.
+    const fit =
+      input.sectionMaxChars !== undefined
+        ? fitSectionToPlan(offered, input.sectionMaxChars, renderedCitationLength)
+        : null;
+    markdown = fit ? fit.sections[0] : offered.markdown;
+    parts = fit ? fit.parts[0] : offered.parts;
+    const omitted = fit ? fit.omittedTopics[0] : plannedOut;
+    if (omitted.length > 0 || (fit?.trimmed ?? 0) > 0) input.onShortened?.(markdown, omitted);
+    if (fit && fit.mode !== "whole") {
+      log.info("Planned section over its cap", {
+        projectId,
+        group: group.id,
+        cut: fit.mode,
+        keptChars: fit.keptChars,
+      });
+    }
+  } else {
+    // #741 — the batch budgets are requests; this is the guarantee.
+    // #995 — measured as the section will render, citations as footnotes.
+    const fit =
+      merged && input.sectionMaxChars !== undefined
+        ? fitSectionToBudget(merged, input.sectionMaxChars, [], renderedCitationLength)
+        : null;
+    if (fit?.trimmed) input.onShortened?.(fit.markdown, fit.omittedTopics);
+    markdown = fit ? fit.markdown : merged;
+  }
 
   const warnings: DocWarning[] = [];
   const names = (d: { batch: SectionBatchModule[] }) => [
@@ -3921,8 +4085,26 @@ async function synthesizeBatchedSection(input: {
     markdown,
     outcome,
     warnings,
-    grounding: batchedGroundingUnion(input.baseGrounding, sources, claimExtractor != null),
+    grounding: withCanonicalSources(
+      batchedGroundingUnion(input.baseGrounding, sources, claimExtractor != null),
+      claimExtractor ? (input.planned?.canonicalFacts ?? []) : [],
+    ),
+    ...(parts ? { parts } : {}),
   };
+}
+
+/** #1070 — the words planned for each module of a batch, for its prompt. */
+function batchTopicWords(
+  batch: readonly SectionBatchModule[],
+): Array<{ module: string; words: number }> {
+  const chars = new Map<string, number>();
+  for (const m of batch) {
+    chars.set(m.item.moduleName, (chars.get(m.item.moduleName) ?? 0) + m.outputChars);
+  }
+  return [...chars].map(([module, n]) => ({
+    module,
+    words: Math.max(25, Math.round(n / CHARS_PER_WORD / 25) * 25),
+  }));
 }
 
 // Exported for #334 escalation tests: the per-section synthesis loop is where
@@ -4047,6 +4229,11 @@ export async function synthesizeFinalDocument(
     return fit.markdown;
   };
   const selectedEvidenceById = new Map<string, GroundingSource>();
+  // #1070 — `sectionParts[i]` are the parts of `sectionMarkdowns[i]` when it
+  // was written in parts under the topic plan; `partsOfOutput` holds them by
+  // (trimmed) markdown until it is known which output is kept.
+  const sectionParts: Array<SectionParts | undefined> = [];
+  const partsOfOutput = new Map<string, SectionParts>();
   // #1226 — every group that actually contributed markdown, with the H2 heading
   // it led with. Compared against the ASSEMBLED body below so a section the
   // dedupe pass swallows is reported instead of vanishing silently.
@@ -4067,6 +4254,26 @@ export async function synthesizeFinalDocument(
   // #741 — length caps, read ONCE per document like the settings above.
   const sectionMaxChars = resolveSectionMaxChars();
   const documentMaxChars = resolveDocumentMaxChars();
+  // #1070 — the document's topic plan and canonical facts sheet, settled before
+  // any section is written, from the facts alone (no model call). Business
+  // requirements only; `null` leaves every other document type exactly as it was.
+  const planning = documentTypeIsPlanned(docType)
+    ? planDocumentTopics({ facts, groups, router, sectionMaxChars, documentMaxChars })
+    : null;
+  if (planning) {
+    log.info("Document topic plan", {
+      projectId,
+      docType,
+      budgetChars: planning.plan.budgetChars,
+      unallocatedChars: planning.plan.unallocatedChars,
+      sections: summarizeDocumentPlan(planning.plan),
+      canonicalFacts: planning.sheet.facts.length,
+      factCandidates: planning.sheet.candidates,
+      factsNotShared: planning.sheet.notShared,
+      factsAmbiguous: planning.sheet.ambiguous,
+      factsOverCap: planning.sheet.overCap,
+    });
+  }
   const sharedEscalationEnabled = escalationConfig.enabled && router.hybrid != null;
   const previousRecords = reusableSectionRecords(
     reuse?.effectiveConfigHash ? reuse.previousManifest?.sectionSynthesis : undefined,
@@ -4272,6 +4479,18 @@ export async function synthesizeFinalDocument(
       // #157 — an enumerative group is written in batches that together read
       // EVERY relevant module. A group with no relevant module at all keeps the
       // single-call path.
+      // #1070 — this section's share of the document's topic plan, if it has one.
+      const plannedSection: PlannedSection | undefined = planning?.plan.sections.find(
+        (s) => s.sectionId === group.id,
+      );
+      const moduleBudgets = planning?.budgets.get(group.id);
+      const topicBudgets: SectionTopicBudgets | undefined =
+        plannedSection && moduleBudgets
+          ? {
+              budgetChars: plannedSection.budgetChars,
+              budgetOf: (module) => moduleBudgets.get(module) ?? null,
+            }
+          : undefined;
       const plannedBatches =
         group.batched && batchedSectionsEnabled()
           ? planSectionBatches(
@@ -4280,6 +4499,7 @@ export async function synthesizeFinalDocument(
               factsCharCap,
               resolveSectionMaxOutputTokens(provider.model),
               sectionMaxChars,
+              topicBudgets,
             )
           : null;
       const batchPlan = plannedBatches && plannedBatches.modules.length > 0 ? plannedBatches : null;
@@ -4426,6 +4646,33 @@ export async function synthesizeFinalDocument(
       const groundingBlock = sectionGrounding
         ? renderGroundingBlock(sectionGrounding, { factsBlob })
         : "";
+      // #1070 — the canonical facts this section is given: the ones its input
+      // mentions and every one it owns. They are given in a block of their
+      // own, so the grounding block above is built before they join the
+      // section's citable sources: the judge reads a cited fact's source line
+      // as evidence, and the reader gets it as a footnote. A batched section
+      // gives each batch its own share.
+      const promptGrounding = sectionGrounding;
+      const sectionFacts = planning
+        ? factsGivenTo(planning.sheet, factsBlob, group.id, planning.ownerOf)
+        : [];
+      const listedFacts = batchPlan
+        ? sectionFacts
+        : factsListedFor(sectionFacts, group.id, planning?.ownerOf ?? (() => null));
+      if (claimExtractor) sectionGrounding = withCanonicalSources(sectionGrounding, listedFacts);
+      // A single-call section is told a length only when the plan could not
+      // give it what it asks for: with room in the document its own
+      // instructions stand, as they did before there was a plan.
+      const sectionAddendum = planning
+        ? [
+            !batchPlan && plannedSection && planning.lengthLimited.has(group.id)
+              ? lengthLimitNote(plannedSection.budgetChars)
+              : "",
+            renderCanonicalFactsBlock(sectionFacts, group, planning.ownerOf),
+          ]
+            .filter(Boolean)
+            .join("\n\n")
+        : "";
       const prompts = buildSectionPrompts(
         group,
         meta,
@@ -4436,6 +4683,7 @@ export async function synthesizeFinalDocument(
         tuning,
         groundingBlock,
         flowBlob,
+        sectionAddendum,
       );
       const inputHashes = hashSectionInputs({
         facts: factsBlob,
@@ -4448,7 +4696,37 @@ export async function synthesizeFinalDocument(
           isEmpty: sectionGrounding?.isEmpty ?? true,
           active: groundingActive,
         }),
-        context: JSON.stringify({ projectId, title, meta, group, docType, index: gi, factsBudget }),
+        context: JSON.stringify({
+          projectId,
+          title,
+          meta,
+          group,
+          docType,
+          index: gi,
+          factsBudget,
+          // #1070 — absent without a plan, so every other document type (and a
+          // BRD with the plan off) hashes exactly as before. With one:
+          //  - for a section written in parts, its budget: the modules' shares,
+          //    and so the batches and the words each prompt asks for, follow
+          //    from it and from the facts hashed above, by the rule the version
+          //    names. A single-call section's budget reaches it only as the
+          //    length note in its prompt, which `prompts` below already hashes;
+          //  - EVERY canonical fact the section is given — a batch may be given
+          //    one past the forty this section's own prompt lists.
+          // Nothing here is derived from a fact the section was NOT given (the
+          // budget is planned from the modules, never from the sheet), so a
+          // changed fact rewrites the sections given it, and no others.
+          ...(planning && plannedSection
+            ? {
+                topicPlan: {
+                  version: TOPIC_PLAN_VERSION,
+                  factSheetVersion: FACT_SHEET_VERSION,
+                  ...(batchPlan ? { budgetChars: plannedSection.budgetChars } : {}),
+                  facts: factSheetFingerprint(sectionFacts, planning.ownerOf),
+                },
+              }
+            : {}),
+        }),
         config: JSON.stringify({
           version: SECTION_SYNTHESIS_VERSION,
           effective: reuse?.effectiveConfigHash,
@@ -4475,6 +4753,16 @@ export async function synthesizeFinalDocument(
         }),
         prompts: JSON.stringify(prompts),
       });
+      // #1070 — a canonical fact the section was given renders as a footnote
+      // wherever the section cites it, whether or not fact-checking is on.
+      const admitCanonicalFacts = (): void => {
+        for (const fact of listedFacts) {
+          const source = canonicalFactSource(fact);
+          if (!selectedEvidenceById.has(source.sourceId)) {
+            selectedEvidenceById.set(source.sourceId, source);
+          }
+        }
+      };
       const previous = previousRecords.get(group.id);
       // #1061 — a stored section whose schema check left marks is reused like
       // any other. Its `schema-unverified` note is informational and travels
@@ -4509,6 +4797,12 @@ export async function synthesizeFinalDocument(
           if (!selectedEvidenceById.has(source.sourceId))
             selectedEvidenceById.set(source.sourceId, source);
         }
+        sectionParts.push(
+          previous.parts
+            ? { budgets: previous.parts.budgets, partOf: decodePartRuns(previous.parts.runs) }
+            : undefined,
+        );
+        admitCanonicalFacts();
         contributed.push({ label: group.label, heading: firstH2Heading(previous.markdown) });
         warnings.splice(warningStart);
         warnings.push(...previous.warnings);
@@ -4539,6 +4833,18 @@ export async function synthesizeFinalDocument(
       // whose truncation is reported per module in `batchWarnings`.
       let keptTruncation: SectionGroupResult | null = null;
       let validated: SectionGroundingOutcome;
+      // #1070 — a batched section under the topic plan says which part wrote
+      // what, and gives each part its canonical facts.
+      const plannedBatchInput =
+        planning && topicBudgets
+          ? {
+              planned: {
+                canonicalFacts: sectionFacts,
+                ownerOf: planning.ownerOf,
+                documentMaxChars,
+              },
+            }
+          : {};
       if (batchPlan) {
         const batched = await synthesizeBatchedSection({
           group,
@@ -4555,6 +4861,7 @@ export async function synthesizeFinalDocument(
           grounding: groundingPolicy,
           sectionMaxChars,
           onShortened: recordShortened,
+          ...plannedBatchInput,
           ...(reuse?.beforeStep
             ? {
                 beforeBatch: () => reuse.beforeStep!({ kind: "batch", section: group.label }),
@@ -4571,6 +4878,7 @@ export async function synthesizeFinalDocument(
         });
         validated = batched.outcome;
         batchWarnings = batched.warnings;
+        if (batched.parts) partsOfOutput.set(batched.markdown.trim(), batched.parts);
       } else {
         const generated = await generateSectionGroup(
           group,
@@ -4585,6 +4893,7 @@ export async function synthesizeFinalDocument(
           tuning,
           groundingBlock,
           flowBlob,
+          sectionAddendum,
         );
         keptTruncation = generated;
         // #741 — within the section cap before it is fact-checked: what is left
@@ -4655,6 +4964,7 @@ export async function synthesizeFinalDocument(
                 esc.factsCharCap,
                 resolveSectionMaxOutputTokens(esc.provider.model),
                 sectionMaxChars,
+                topicBudgets,
               )
             : null;
           if (escPlan) {
@@ -4675,12 +4985,16 @@ export async function synthesizeFinalDocument(
               grounding: groundingPolicy,
               sectionMaxChars,
               onShortened: recordShortened,
+              ...plannedBatchInput,
               ...(reuse?.beforeStep
                 ? {
                     beforeBatch: () => reuse.beforeStep!({ kind: "batch", section: group.label }),
                   }
                 : {}),
             });
+            if (escBatched.parts) {
+              partsOfOutput.set(escBatched.markdown.trim(), escBatched.parts);
+            }
             const escScore = escBatched.outcome.score?.faithfulness ?? null;
             const keptEscalated = escScore == null ? true : escScore >= localScore;
             finalOutcome = keptEscalated ? escBatched.outcome : validated;
@@ -4703,7 +5017,9 @@ export async function synthesizeFinalDocument(
             // and the citable facts/grounding to match — Sonnet can see more than
             // the local window, and its claims must resolve against the same set.
             const escFactsBlob = buildRelevantFactsBlob(facts, group, docType, esc.factsCharCap);
-            let escGrounding = sectionGrounding;
+            // #1070 — from the grounding the prompt was built from; the
+            // canonical facts rejoin it after the block is rendered.
+            let escGrounding = promptGrounding;
             if (escGrounder.claimExtractor) {
               escGrounding = mergeFactsIntoContext(
                 escGrounding,
@@ -4714,6 +5030,9 @@ export async function synthesizeFinalDocument(
             const escBlock = escGrounding
               ? renderGroundingBlock(escGrounding, { factsBlob: escFactsBlob })
               : "";
+            if (escGrounder.claimExtractor) {
+              escGrounding = withCanonicalSources(escGrounding, listedFacts);
+            }
             const escMd = await generateSectionGroup(
               group,
               meta,
@@ -4727,6 +5046,7 @@ export async function synthesizeFinalDocument(
               esc.tuning,
               escBlock,
               flowBlob,
+              sectionAddendum,
             );
             escMd.markdown = fitToSectionCap(escMd.markdown.trim(), sectionMaxChars);
             const escValidated = await validateSectionGrounding(
@@ -4859,6 +5179,9 @@ export async function synthesizeFinalDocument(
           selectedEvidenceById.set(source.sourceId, source);
         }
       }
+      const keptParts = partsOfOutput.get(finalOutcome.markdown.trim());
+      sectionParts.push(keptParts);
+      admitCanonicalFacts();
       // #995 — the topics the section cap left out of the output that was kept.
       const capOmitted = sectionCapOmissions.get(finalOutcome.markdown.trim());
       manifestSections.push({
@@ -4921,6 +5244,14 @@ export async function synthesizeFinalDocument(
                 evidenceClass: source.evidenceClass ?? null,
                 contentHash: evidenceContentHash({ text }),
               })),
+              ...(keptParts
+                ? {
+                    parts: {
+                      budgets: keptParts.budgets.map((n) => Math.max(0, Math.floor(n))),
+                      runs: encodePartRuns(keptParts.partOf),
+                    },
+                  }
+                : {}),
             }),
           );
         } catch {
@@ -4997,18 +5328,45 @@ export async function synthesizeFinalDocument(
     sectionMarkdowns.join("\n\n"),
     selectedEvidenceById.values(),
   );
-  const fittedSections = fitSectionsToDocumentBudget(
-    sectionMarkdowns,
-    Math.max(0, documentMaxChars - footnoteDefinitionsChars),
-    sectionOwners.map((owner) => manifestSections[owner].omittedTopics ?? []),
-    renderedCitationLength,
-  );
+  const bodyMaxChars = Math.max(0, documentMaxChars - footnoteDefinitionsChars);
+  const alreadyOmitted = sectionOwners.map((owner) => manifestSections[owner].omittedTopics ?? []);
+  // #1070 — under a topic plan the cap is the same and so is the rule that
+  // nothing is cut while the document fits; what differs is WHICH text goes
+  // when it does not: each part's tail past its planned share, from every
+  // section at once, instead of the tails of the longest sections. The plan
+  // fit never keeps less than the fit without a plan would have kept of the
+  // same sections (`document-plan.ts`).
+  const planFit = planning
+    ? fitDocumentToPlan(
+        sectionMarkdowns.map((markdown, i) => ({
+          markdown,
+          budgetChars:
+            planning.plan.sections.find(
+              (s) => s.sectionId === groups[manifestSections[sectionOwners[i]].sectionIndex]?.id,
+            )?.budgetChars ?? 1,
+          ...(sectionParts[i] ? { parts: sectionParts[i] } : {}),
+          alreadyOmitted: alreadyOmitted[i],
+        })),
+        bodyMaxChars,
+        renderedCitationLength,
+        documentMaxChars,
+      )
+    : null;
+  const fittedSections =
+    planFit ??
+    fitSectionsToDocumentBudget(
+      sectionMarkdowns,
+      bodyMaxChars,
+      alreadyOmitted,
+      renderedCitationLength,
+    );
   if (fittedSections.trimmed > 0) {
     log.info("Document over its length cap; longest sections shortened", {
       projectId,
       docType,
       documentMaxChars,
       sectionsShortened: fittedSections.trimmed,
+      ...(planFit ? { cut: planFit.mode, keptChars: planFit.keptChars } : {}),
     });
   }
   // Copies: the entries themselves are the reuse records' metadata, which hold
@@ -5036,6 +5394,27 @@ export async function synthesizeFinalDocument(
   // one document-level marker, since per-section markers can all be absent.
   const runWarning = groundingModeRunWarning(groundingRecord);
   if (runWarning) warnings.push(runWarning);
+  // #1070 — the sections read against each other and against the facts sheet,
+  // as drafted and before any length fit, so every run of the same sections
+  // reports the same thing. It only reports: an `info` note on the document,
+  // nothing removed or rewritten, no model call.
+  if (planning) {
+    const consistency = checkFactConsistency(
+      sectionMarkdowns.map((markdown, i) => ({
+        label: manifestSections[sectionOwners[i]].sectionLabel,
+        markdown,
+      })),
+      planning.sheet,
+    );
+    const inconsistent = factInconsistentWarning(consistency);
+    log.info("Fact consistency check", {
+      projectId,
+      docType,
+      statements: consistency.statements,
+      findings: consistency.findings.length,
+    });
+    if (inconsistent) warnings.push(inconsistent);
+  }
   // #1360 — last, so heading matching above sees exactly what each group produced.
   // #737 — cited ids of admitted sources become document-scoped footnotes with
   // readable definitions; anything left (an id no section admitted) is stripped.
@@ -5875,6 +6254,21 @@ export interface SectionBatchPlan {
    * rules rather than an exhaustive catalogue.
    */
   sectionBudget?: { maxChars: number; scale: number; estimatedChars: number };
+  /**
+   * #1070 — modules the topic plan left out of this section (lowest priority
+   * for its budget), by name, in relevance order. No batch reads them, and
+   * they are listed with the section's omitted topics.
+   */
+  plannedOut?: string[];
+}
+
+/**
+ * #1070 — what the document's topic plan gives one batched section: its budget
+ * and each module's share of it (`null` = the plan left the module out).
+ */
+export interface SectionTopicBudgets {
+  budgetChars: number;
+  budgetOf: (module: ModuleFacts) => number | null;
 }
 
 /**
@@ -5893,9 +6287,17 @@ export function planSectionBatches(
   maxTokens: number,
   /** #741 — the section's length cap; absent = unbounded (the #157 behaviour). */
   sectionMaxChars?: number,
+  /**
+   * #1070 — the topic plan's budgets for this section. Each module's entries
+   * are sized to the module's planned share, instead of every module shrinking
+   * by one factor, and a module the plan left out is not read.
+   */
+  topicBudgets?: SectionTopicBudgets,
 ): SectionBatchPlan {
   const modules: SectionBatchModule[] = [];
   const skipped: string[] = [];
+  const plannedOut: string[] = [];
+  let unplannedChars = 0;
   // A group whose topic is formulas (Calculations) also documents each batch's
   // EXTRACTED formulas, rendered per batch under FORMULAS_BLOCK_CAP: a module
   // carrying some is on topic, and a batch never holds more than its block
@@ -5910,19 +6312,42 @@ export function planSectionBatches(
       skipped.push(f.moduleName);
       continue;
     }
-    modules.push(
-      ...batchedModuleEntries(f, group, { inputCap: factsCharCap, outputBudget }, formulas),
+    const entries = batchedModuleEntries(
+      f,
+      group,
+      { inputCap: factsCharCap, outputBudget },
+      formulas,
     );
+    if (topicBudgets) {
+      const planned = topicBudgets.budgetOf(f);
+      const estimated = entries.reduce((n, m) => n + m.outputChars, 0);
+      unplannedChars += estimated;
+      if (planned === null) {
+        plannedOut.push(f.moduleName || f.modulePath || "(root)");
+        continue;
+      }
+      // The module's parts share its planned budget as they shared its estimate.
+      const share = estimated > 0 ? Math.min(1, planned / estimated) : 1;
+      for (const m of entries) m.outputChars = Math.max(1, Math.ceil(m.outputChars * share));
+    }
+    modules.push(...entries);
   }
   // #741 — a section estimated past its cap is planned to fit it: every
   // module's share shrinks by the same factor, which also lets one call carry
   // more modules (the output no longer bounds the batch, only the input does).
-  const estimatedChars = modules.reduce((n, m) => n + m.outputChars, 0);
-  const scale =
-    sectionMaxChars === undefined ? 1 : sectionBudgetScale(estimatedChars, sectionMaxChars);
-  if (scale < 1) {
+  // #1070 — under a topic plan the modules are already sized to their shares.
+  const estimatedChars = topicBudgets
+    ? unplannedChars
+    : modules.reduce((n, m) => n + m.outputChars, 0);
+  const scale = topicBudgets
+    ? sectionBudgetScale(estimatedChars, topicBudgets.budgetChars)
+    : sectionMaxChars === undefined
+      ? 1
+      : sectionBudgetScale(estimatedChars, sectionMaxChars);
+  if (scale < 1 && !topicBudgets) {
     for (const m of modules) m.outputChars = Math.max(1, Math.ceil(m.outputChars * scale));
   }
+  const budgetMaxChars = topicBudgets ? topicBudgets.budgetChars : sectionMaxChars;
   const batches = planBatches(modules, {
     inputCap: factsCharCap,
     outputBudget,
@@ -5933,10 +6358,199 @@ export function planSectionBatches(
     modules,
     skipped,
     outputBudget,
-    ...(scale < 1 && sectionMaxChars !== undefined
-      ? { sectionBudget: { maxChars: sectionMaxChars, scale, estimatedChars } }
+    ...(scale < 1 && budgetMaxChars !== undefined
+      ? { sectionBudget: { maxChars: budgetMaxChars, scale, estimatedChars } }
       : {}),
+    ...(plannedOut.length > 0 ? { plannedOut } : {}),
   };
+}
+
+/** #1070 — the topic plan and canonical facts sheet of one document run. */
+export interface DocumentPlanning {
+  plan: DocumentPlan;
+  sheet: FactSheet;
+  /** Per batched section id, each module's planned characters (`null` = left out). */
+  budgets: Map<string, Map<ModuleFacts, number | null>>;
+  /**
+   * The section that owns a fact in this document: the section its kind names,
+   * when that section is written and the plan did not leave the fact's module
+   * out of it. Null otherwise — the fact then has no owner, and no section is
+   * told to leave it to one.
+   */
+  ownerOf: FactOwnerLookup;
+  /**
+   * The single-call sections whose prompt states a length: those the plan
+   * could not give what they ask for. Never a catalogue section written in one
+   * call because batching is off, which keeps the instructions it had.
+   */
+  lengthLimited: Set<string>;
+}
+
+/** Characters one footnote definition adds beyond the path it names. */
+const FOOTNOTE_DEFINITION_OVERHEAD = 34;
+/** The most of the document budget the plan sets aside for footnote definitions. */
+const FOOTNOTE_RESERVE_SHARE = 0.05;
+
+/**
+ * #1070 — whether a document type is planned up front. Business requirements
+ * only: it is the document whose catalogue sections outgrow the budget (87
+ * topics cut in #706 run 7), and its sections are what the facts sheet's
+ * owners are named after. The architecture document and the user guide are
+ * generated exactly as before.
+ */
+export function documentTypeIsPlanned(docType: DocType): boolean {
+  if (docType !== "business-requirements") return false;
+  const setting = readTopicPlanSetting();
+  if (setting.unrecognised !== undefined) {
+    log.warn("Unrecognised topic-plan setting; the plan stays off", {
+      key: TOPIC_PLAN_KEY,
+      value: setting.unrecognised.slice(0, 40),
+      accepted: ["on", "off"],
+    });
+  }
+  return setting.enabled;
+}
+
+/**
+ * #1070 — plan a document before any section is written: one topic per module
+ * with content for each batched section (owned by that section), ranked as
+ * the section ranks its modules and sized by the batch planner's own output
+ * estimate; each other section as one topic. Deterministic, no model call:
+ * the inputs are the Phase-1 facts the sections are about to read.
+ */
+export function planDocumentTopics(input: {
+  facts: ModuleFacts[];
+  groups: readonly SectionGroup[];
+  router: Phase2Router;
+  sectionMaxChars: number;
+  documentMaxChars: number;
+}): DocumentPlanning {
+  const { facts, groups } = input;
+  const sheet = buildFactSheet(facts);
+  const topicModules = new Map<string, ModuleFacts>();
+  const demands: SectionDemand[] = groups.map((group) => {
+    const { bundle } = providerForSection(input.router, group);
+    const unbounded =
+      group.batched && batchedSectionsEnabled()
+        ? planSectionBatches(
+            facts,
+            group,
+            bundle.factsCharCap,
+            resolveSectionMaxOutputTokens(bundle.provider.model),
+          )
+        : null;
+    if (!unbounded || unbounded.modules.length === 0) {
+      return {
+        sectionId: group.id,
+        label: group.label,
+        kind: "single",
+        topics: [],
+        // With batching off a catalogue section is bounded by the section cap
+        // alone, as it always was: that is what it asks of the plan.
+        ...(group.batched && !batchedSectionsEnabled() ? { askChars: input.sectionMaxChars } : {}),
+      };
+    }
+    // One topic per module: a module split into parts is still one topic.
+    const estimates = new Map<ModuleFacts, number>();
+    for (const m of unbounded.modules) {
+      estimates.set(m.item, (estimates.get(m.item) ?? 0) + m.outputChars);
+    }
+    const ranked = [...estimates];
+    return {
+      sectionId: group.id,
+      label: group.label,
+      kind: "enumerative",
+      topics: ranked.map(([module, estimatedChars], rank) => {
+        const path = repositoryPathIdentity(
+          module.repository,
+          module.modulePath || module.moduleName,
+        );
+        // Two modules without repository provenance can share a path: each is
+        // still a topic of its own.
+        const base = `${group.id}/${path}`;
+        const id = topicModules.has(base) ? `${base}#${rank}` : base;
+        topicModules.set(id, module);
+        return {
+          id,
+          title: `${module.moduleName || module.modulePath || "(root)"} — ${group.label}`,
+          priority: ranked.length - rank,
+          estimatedChars,
+        };
+      }),
+    };
+  });
+  // Room for the footnote definitions, known only after generation: one per
+  // module if every one is cited, and never more than a twentieth of the
+  // document (the run-7 BRD's were 5.9k of 247k). It only shapes what the
+  // sections are ASKED for: the fit at assembly measures the definitions
+  // themselves, so room this over-estimates is used and a shortfall is cut.
+  // Nothing here reads the facts sheet — a section's budget must not move
+  // because a fact it was never given changed (see the reuse inputs).
+  const reservedChars = Math.min(
+    Math.floor(input.documentMaxChars * FOOTNOTE_RESERVE_SHARE),
+    facts.reduce((n, f) => n + f.modulePath.length + FOOTNOTE_DEFINITION_OVERHEAD, 0),
+  );
+  const plan = planDocument({
+    sections: demands,
+    documentMaxChars: input.documentMaxChars,
+    sectionMaxChars: input.sectionMaxChars,
+    reservedChars,
+  });
+  const budgets = new Map<string, Map<ModuleFacts, number | null>>();
+  /** Per section id, the modules the plan left out of it, by repository and path. */
+  const leftOut = new Map<string, Set<string>>();
+  for (const section of plan.sections) {
+    if (section.kind !== "enumerative") continue;
+    const byModule = new Map<ModuleFacts, number | null>();
+    for (const t of section.topics) byModule.set(topicModules.get(t.id)!, t.budgetChars);
+    for (const t of section.dropped) byModule.set(topicModules.get(t.id)!, null);
+    budgets.set(section.sectionId, byModule);
+    leftOut.set(
+      section.sectionId,
+      new Set(
+        section.dropped.map((t) => {
+          const module = topicModules.get(t.id)!;
+          return repositoryPathIdentity(module.repository, module.modulePath);
+        }),
+      ),
+    );
+  }
+  const labels = new Map(groups.map((g) => [g.id, g.label]));
+  const batchedOff = new Set(
+    groups.filter((g) => g.batched && !batchedSectionsEnabled()).map((g) => g.id),
+  );
+  return {
+    plan,
+    sheet,
+    budgets,
+    ownerOf: (fact) => {
+      const label = labels.get(fact.ownerSectionId);
+      if (label === undefined) return null;
+      const from = repositoryPathIdentity(fact.repository, fact.modulePath);
+      return leftOut.get(fact.ownerSectionId)?.has(from)
+        ? null
+        : { id: fact.ownerSectionId, label };
+    },
+    lengthLimited: new Set(
+      plan.sections
+        .filter(
+          (section) =>
+            section.kind === "single" &&
+            !batchedOff.has(section.sectionId) &&
+            section.budgetChars < section.demandChars,
+        )
+        .map((section) => section.sectionId),
+    ),
+  };
+}
+
+/** #1070 — the length a single-call section is asked to keep to, as a prompt block. */
+function lengthLimitNote(budgetChars: number): string {
+  return [
+    "=== LENGTH LIMIT ===",
+    `Write at most about ${batchWordBudget(budgetChars)} words for this section group. This overrides the word counts in your instructions and any instruction to document every item: cover the most significant points first, so that what is left out is the minor detail.`,
+    "=== END LENGTH LIMIT ===",
+  ].join("\n");
 }
 
 /**

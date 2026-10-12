@@ -618,6 +618,43 @@ presented token: a caller cannot create a new counter by inventing a token.
 
 ---
 
+### 6.5 `DOCS_GEN_TOPIC_PLAN` (#1070): off by default; turning it on costs one rewrite per BRD
+
+`DOCS_GEN_TOPIC_PLAN` (default `off`, registry tunable) plans a business-requirements
+document before it is written: budgets per section and per topic, the canonical facts
+sheet, and the consistency note. See the docs-gen section of `docs/ARCHITECTURE.md`. It
+ships off because no model run stands behind it yet: #1070 stays open until the walkthrough
+has measured a BRD generated with it on.
+
+- **The upgrade changes nothing.** With the setting off (or unset) a BRD's prompts, text
+  and reuse inputs are byte for byte what they were before the upgrade, so stored sections
+  are reused and no document is rewritten. Only `on` turns it on; any other value is off,
+  and is logged.
+- **No migration and no backfill.** Nothing is stored in a new column or table. The note is
+  a warning of severity `info` in the existing `generated_documents.warnings` JSON, and
+  planned-out topics use the existing `omittedTopics` of the version manifest.
+- **Turning it on rewrites each BRD once.** The plan is part of each business-requirements
+  section's reuse inputs, so the first generation of a BRD after `on` (a **Regenerate**, or
+  an auto-update after an ingest) rewrites all of its sections and fact-checks them again;
+  the version summary says the inputs changed. For scale: the walkthrough's Miniflux BRD
+  (102 modules, 23 synthesis calls) cost $0.67 to synthesize and $0.46 to fact-check on
+  DeepSeek in run 7, and more on a larger model. Later generations reuse sections as
+  before. Architecture documents and user guides keep their stored sections either way.
+  Turning it off again rewrites the BRD once more.
+- **It adds no model call.** Planning, the facts sheet and the consistency check are
+  computed from the Phase-1 facts and the written text. Section prompts grow by the
+  facts block and the budget lines: about 18k input tokens over 23 calls (1.3%) on the
+  walkthrough's Miniflux BRD. `DOCS_GEN_MAX_RUN_COST_CENTS` and
+  `DOCS_GEN_MAX_RUN_TOKENS` apply as before.
+- **A budget is a target.** The plan never cuts a document that fits
+  `DOCS_GEN_SECTION_MAX_CHARS` and `DOCS_GEN_DOCUMENT_MAX_CHARS`, and when one of them is
+  exceeded it never keeps less than the same text would have kept without a plan; it
+  changes which text goes (each overrunning part's own tail). In a tightly planned
+  document a section's budget depends on the other sections' estimates, so a module whose
+  facts change can move the budget of a catalogue section that reads nothing new from it
+  and rewrite that section too. Catalogue sections read every module with content for
+  them, so most were being rewritten for that module already.
+
 ## 7. Container Image Sizes
 
 The release pipeline ships three images:

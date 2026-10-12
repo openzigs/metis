@@ -503,9 +503,21 @@ describe("#855 / #856 — a stop on the batched path ends the run, not a batch",
   });
 });
 
-describe("#741 — a batched section is planned and fitted to its length cap", () => {
+// #1070 — every test here runs twice: without the topic plan (the default) and
+// under it. The caps are the same two limits either way, and so is what they
+// guarantee: a section and a document within their caps, measured as they
+// render, and a body that USES its budget while topics are being cut (#995).
+// A PR that moved these behind `DOCS_GEN_TOPIC_PLAN=off` hid a regression of
+// exactly that; they stay on both paths.
+describe.each([
+  { path: "without a topic plan", topicPlan: "off" },
+  { path: "under the topic plan", topicPlan: "on" },
+])("#741 — a batched section is planned and fitted to its length cap ($path)", ({ topicPlan }) => {
   const CAP = 20_000;
-  beforeEach(() => vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", String(CAP)));
+  beforeEach(() => {
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", String(CAP));
+    vi.stubEnv("DOCS_GEN_TOPIC_PLAN", topicPlan);
+  });
 
   it("asks each batch for its share in words, in fewer calls, still reading every module once", async () => {
     const facts = onyourleftSized();
@@ -519,7 +531,17 @@ describe("#741 — a batched section is planned and fitted to its length cap", (
     const calls = callsFor(provider, RULES);
     expect(calls.length).toBeLessThan(callsFor(uncapped, RULES).length);
     const read = calls.flatMap((c) => c.modules);
-    expect([...read].sort()).toEqual(facts.map((f) => f.moduleName).sort());
+    // #1070 — the one difference under the plan: a module that cannot have even
+    // the minimum share of the section's budget is left out when the document
+    // is planned, never read, and listed with the section's omitted topics.
+    // Read or listed, every module once (without a plan none is listed).
+    const notPlanned = (
+      result.sections.find((s) => s.sectionLabel === RULES.label)!.omittedTopics ?? []
+    )
+      .filter((topic) => topic.endsWith(" (not planned)"))
+      .map((topic) => topic.slice(0, -" (not planned)".length));
+    expect(notPlanned.length > 0).toBe(topicPlan === "on");
+    expect([...read, ...notPlanned].sort()).toEqual(facts.map((f) => f.moduleName).sort());
     for (const c of calls) {
       expect(c.user).toMatch(/LENGTH LIMIT: write at most about \d+ words for THIS part/);
       expect(c.user).toContain("Write for a business analyst");
@@ -597,6 +619,10 @@ describe("#741 — a batched section is planned and fitted to its length cap", (
   it("counts the footnote definitions against the document cap (#995)", async () => {
     vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "1000000000");
     vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "30000");
+    // Room to write past a budget without being cut off by the output cap: under
+    // the plan every part has one (its share of the document), as it has under a
+    // section cap, and this model ignores it.
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "100000");
     scoreFaithfulnessMock.mockResolvedValue(verified(1, 1));
     const ids = Array.from({ length: 60 }, (_, i) => `rag:doc${i}:0`);
     const grounding = {
