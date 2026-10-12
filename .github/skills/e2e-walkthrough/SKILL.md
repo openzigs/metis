@@ -386,7 +386,8 @@ before:
                            "migrationCorrect": true },
                          { "issue": 4336, "output": "j2-impact", "scope": "blast",
                            "source": "curated",
-                           "files": { "tp": 3, "fn": 2 }, "functions": { "tp": 4, "fn": 7 },
+                           "files": { "tp": 3, "fn": 2, "listed": 5 },
+                           "functions": { "tp": 4, "fn": 7, "listed": 9 },
                            "migrationCorrect": true }],
   "docQuality": { "brd": { "coverage": { "hit": 11, "total": 15 },
                            "accuracy": { "correct": 10, "stated": 11 }, "hallucinations": 2,
@@ -419,13 +420,20 @@ before:
   on `tp + fn` (the change set's size). **An impact output (`impact`, `j2-impact`) is two rows**
   (#1073): `"scope": "edit"`, its edit candidates, with `tp` / `fp` / `fn`; and
   `"scope": "blast"`, its blast radius, scored on recall only, with `tp` / `fn` and **no `fp`**
-  (an `fp` there is rejected). The pair must both be present and agree on `migrationCorrect`,
+  (an `fp` there is rejected). A blast row's `files` and `functions` may each carry `listed`,
+  a non-negative integer: how many distinct files / functions the blast radius listed after the
+  neutral and excluded items are removed. Record it on every blast row. It is the size of the
+  list, not a score: `listed` below `tp` is rejected, as is `listed` on any other row, and a
+  row without it is valid. `listed - tp` is what the rule before #1073 called `fp`. The pair must
+  both be present and agree on `migrationCorrect`,
   and the blast row's `tp` cannot be below the edit row's. `scope` is rejected on a `chat`,
   `plan` or `j2-plan` row. An impact row with **no** `scope` is still valid: it is how runs 1 to
   7 scored impact, both lists together, and the deck labels it "both lists together (rule
   before #1073)". Do not add a `scope` to such a row, and do not mix it with scoped rows for the
   same issue and output. The report deck adds a "Change-plan accuracy" slide before the
   new-issues slide, with a "Scored list" column and "not scored" for a blast row's precision.
+  When a blast row records `listed`, the slide has a "Listed" column that prints it as plain
+  numbers ("5 files · 9 functions"), never as a ratio.
 - `docQuality`: wave C's doc-quality scores, keyed `brd` and/or `architecture`, each with all
   four of `coverage` (`hit`/`total`), `accuracy` (`correct`/`stated`), `hallucinations` and
   `sectionGrades` (`A`/`B`/`C`/`F` counts), as non-negative integers. `hit ≤ total`,

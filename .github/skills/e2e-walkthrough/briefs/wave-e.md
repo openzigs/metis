@@ -32,9 +32,20 @@ UI, #4456 fetcher; #1044).
    **Impact is two rows** (#1073): its **edit candidates** (the **Files to edit** group,
    `[data-testid=edit-candidates]`) on precision and recall, and its **blast radius** (Files to
    edit **and** the opened Blast radius group together) on **recall only**: `tp` and `fn`, no
-   `fp`, and no false-positive list. If the page has no Files to edit group (METIS before
-   #1036), "directly affected" is the edit candidates and "directly affected" plus "probable
-   call sites" is the blast radius; say so in your return.
+   `fp`, and no false-positive list. **On every blast row also record `listed`** on `files`
+   and on `functions`: how many distinct files, and distinct functions, the blast radius listed
+   (both groups together) once the set's neutral items, test files and generated files are
+   removed. It is a count for the deck's "Listed" column, not a score: never turn it into a
+   ratio or a precision. It is never below `tp`.
+   **A page with no Files to edit group** is not by itself an old page: the page hides the group
+   whenever the edit list is empty. Decide by the old wording being present, not by the new
+   group being absent. If the card's headline reads "N directly affected across M files" and a
+   group is headed **Directly affected**, this is METIS before #1036: Directly affected is the
+   edit candidates, and Directly affected plus that page's Blast radius group is the blast
+   radius; say so in your return. If there is no "directly affected" wording (the headline
+   reads "0 files to edit"), the edit list is empty on current METIS: record the edit row as
+   `tp` 0, `fp` 0, `fn` = the set's size, score the blast row from the Blast radius group, and
+   say the edit list was empty.
    Keep the "must surface" verdict beside it, scored **N/6** from this run (runs 3 to 6 scored
    the first three only: 3/3 by the brief, 2/3 strictly, #4478 still proposing a `users`
    column; compare those three like for like). First re-check #4547 and #4552 with

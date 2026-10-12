@@ -346,10 +346,15 @@ export const LEDGER_SOURCE = "token_usages";
 
 /**
  * The counts of a row scored on recall only (#1073): no `fp`, so no precision can be read off it.
+ * `listed` is the size of the list the recall was read from, after the neutral and excluded
+ * items are removed. It is the cost side of the recall (a list naming the whole repository
+ * recalls everything) and is shown as a plain number, never as a ratio or a score. `listed - tp`
+ * is what the rule before #1073 counted as `fp`, so a new run can be restated for comparison.
  *
  * @typedef {object} RecallCounts
  * @property {number} tp named and in the change set
  * @property {number} fn in the change set and not named
+ * @property {number} [listed] distinct files or functions the blast radius listed; at least `tp`
  */
 
 /**
@@ -467,7 +472,8 @@ const SCORE_FIELDS = [
  * is scored, so a disagreement means a row was counted against the wrong set.
  *
  * Since #1073 an impact output is scored as two rows, `scope` `edit` and `scope` `blast`. A
- * `blast` row is recall only, so it carries no `fp`. One issue and output has either the pair
+ * `blast` row is recall only, so it carries no `fp`; it may carry `listed`, the size of the list,
+ * which no other row may. One issue and output has either the pair
  * or a single row with no `scope` (the rule before #1073), never a mix: a reader could not tell
  * which rule the unscoped row followed. Within a pair the blast radius contains the files to
  * edit, so its `tp` cannot be lower, and the migration verdict belongs to the output, not a list.
@@ -515,10 +521,13 @@ function checkChangePlanAccuracy(rows, errors) {
       );
       scopeOk = false;
     }
-    const recallOnly = row.scope === "blast";
+    // The counts' shape follows the scope only once the scope is accepted: a rejected scope is
+    // one fault, and an "fp" or "listed" complaint on top of it would report it again.
+    /** @type {CountsShape} */
+    const shape = !scopeOk ? "either" : row.scope === "blast" ? "recall" : "full";
     const sizes = {
-      files: checkMatchCounts(row.files, at, "files", errors, recallOnly),
-      functions: checkMatchCounts(row.functions, at, "functions", errors, recallOnly),
+      files: checkMatchCounts(row.files, at, "files", errors, shape),
+      functions: checkMatchCounts(row.functions, at, "functions", errors, shape),
     };
     if (typeof row.migrationCorrect !== "boolean") {
       errors.push(`${at}: "migrationCorrect" must be true or false`);
@@ -698,37 +707,67 @@ function checkBuildProof(proof, accuracy, errors) {
 }
 
 /**
+ * Which counts a row's `files` / `functions` object holds: `full` is `{ tp, fp, fn }`; `recall`
+ * (a blast-radius row, #1073) is `{ tp, fn }` with an optional `listed`; `either` is for a row
+ * whose `scope` was already rejected, where the shape cannot be known and is not reported twice.
+ *
+ * @typedef {"full" | "recall" | "either"} CountsShape
+ */
+
+/**
  * Check one `{ tp, fp, fn }` object; return the change-set size `tp + fn`, or null if invalid.
  * A recall-only object (a blast-radius row, #1073) is `{ tp, fn }`: an `fp` there is an error,
- * because a count nobody may turn into a precision should not be on the row.
+ * because a count nobody may turn into a precision should not be on the row. It may carry
+ * `listed`, the size of the list, which cannot be below the `tp` found in that list.
  *
  * @param {unknown} counts
  * @param {string} at
  * @param {string} name
  * @param {string[]} errors
- * @param {boolean} [recallOnly]
+ * @param {CountsShape} [shape]
  * @returns {number | null}
  */
-function checkMatchCounts(counts, at, name, errors, recallOnly = false) {
-  const keys = recallOnly ? ["tp", "fn"] : ["tp", "fp", "fn"];
+function checkMatchCounts(counts, at, name, errors, shape = "full") {
+  const required = shape === "full" ? ["tp", "fp", "fn"] : ["tp", "fn"];
   if (!isPlainObject(counts)) {
-    errors.push(`${at}: "${name}" must be an object { ${keys.join(", ")} }`);
+    errors.push(`${at}: "${name}" must be an object { ${required.join(", ")} }`);
     return null;
   }
   let ok = true;
   for (const key of Object.keys(counts)) {
-    if (recallOnly && key === "fp") {
-      errors.push(
-        `${at} ${name}: "fp" is not recorded on a blast row, which is scored on recall only`,
-      );
-      ok = false;
-    } else if (!keys.includes(key)) {
+    if (required.includes(key)) continue;
+    if (key === "fp") {
+      if (shape === "recall") {
+        errors.push(
+          `${at} ${name}: "fp" is not recorded on a blast row, which is scored on recall only`,
+        );
+        ok = false;
+      } else if (!isCount(counts.fp)) {
+        errors.push(`${at} ${name}: "fp" must be a non-negative integer`);
+        ok = false;
+      }
+    } else if (key === "listed") {
+      if (shape === "full") {
+        errors.push(
+          `${at} ${name}: "listed" is recorded only on a blast row, as the size of its list`,
+        );
+        ok = false;
+      } else if (!isCount(counts.listed)) {
+        errors.push(`${at} ${name}: "listed" must be a non-negative integer`);
+        ok = false;
+      } else if (isCount(counts.tp) && counts.listed < counts.tp) {
+        errors.push(
+          `${at} ${name}: "listed" is ${counts.listed}, below "tp" ${counts.tp}; the list holds every set item found in it`,
+        );
+        ok = false;
+      }
+    } else {
       errors.push(`${at} ${name}: unknown field "${key}"`);
       ok = false;
     }
   }
-  for (const key of keys) {
-    if (!(Number.isSafeInteger(counts[key]) && Number(counts[key]) >= 0)) {
+  for (const key of required) {
+    if (!isCount(counts[key])) {
       errors.push(`${at} ${name}: "${key}" must be a non-negative integer`);
       ok = false;
     }
@@ -1320,7 +1359,13 @@ export function changePlanScopeLabel(row) {
  * The report's change-plan accuracy slide (#1042): one row per issue, output and scope, with
  * file and function precision (`tp / (tp + fp)`) and recall (`tp / (tp + fn)`), computed here
  * from the counts `run.json` stores. A blast-radius row (#1073) has recall only; its precision
- * cells read "not scored", so nobody reads a wide list's precision as a defect.
+ * cells read "not scored", so nobody reads a wide list's precision as a defect. That is decided
+ * by the row's `scope`, not by what its counts hold, so a caller of the exported renderers that
+ * skipped the validator still gets no precision for a blast radius.
+ *
+ * When a blast row records `listed`, a "Listed" column shows the list's size as plain numbers:
+ * the cost side of the recall, never a ratio. A deck with no `listed` has no such column, so an
+ * earlier run's deck is unchanged.
  *
  * @param {ChangePlanScore[]} rows
  * @returns {string}
@@ -1334,19 +1379,41 @@ function accuracySlide(rows) {
       CHANGE_PLAN_OUTPUTS.indexOf(a.output) - CHANGE_PLAN_OUTPUTS.indexOf(b.output) ||
       scopeRank(a) - scopeRank(b),
   );
-  /** @param {MatchCounts | RecallCounts} c */
-  const pr = (c) =>
-    `<td>${"fp" in c ? ratio(c.tp, c.tp + c.fp) : "not scored"}</td><td>${ratio(c.tp, c.tp + c.fn)}</td>`;
+  /** @param {ChangePlanScore} r @param {"files" | "functions"} kind */
+  const pr = (r, kind) => {
+    const c = r[kind];
+    const precision = r.scope !== "blast" && "fp" in c ? ratio(c.tp, c.tp + c.fp) : "not scored";
+    return `<td>${precision}</td><td>${ratio(c.tp, c.tp + c.fn)}</td>`;
+  };
+  /** @param {ChangePlanScore} r @param {"files" | "functions"} kind @returns {number | null} */
+  const listedOf = (r, kind) => {
+    const c = /** @type {RecallCounts} */ (r[kind]);
+    return r.scope === "blast" && isCount(c.listed) ? c.listed : null;
+  };
+  const showListed = sorted.some(
+    (r) => listedOf(r, "files") !== null || listedOf(r, "functions") !== null,
+  );
+  /** @param {ChangePlanScore} r */
+  const listedCell = (r) => {
+    if (!showListed) return "";
+    const files = listedOf(r, "files");
+    const functions = listedOf(r, "functions");
+    const parts = [
+      ...(files === null ? [] : [plural(files, "file")]),
+      ...(functions === null ? [] : [plural(functions, "function")]),
+    ];
+    return `<td>${parts.length ? parts.join(" · ") : "–"}</td>`;
+  };
   return `<section class="slide slide--accuracy" aria-label="Change-plan accuracy">
   <h2>Change-plan accuracy</h2>
   <table class="waves">
-    <caption>Precision and recall against each issue's reference change set (TEST_PLAN.md, developer issues). Impact: files to edit on precision and recall, blast radius on recall only (#1073)</caption>
-    <thead><tr><th scope="col">Issue</th><th scope="col">Output</th><th scope="col">Scored list</th><th scope="col">Source</th><th scope="col">File precision</th><th scope="col">File recall</th><th scope="col">Function precision</th><th scope="col">Function recall</th><th scope="col">Migration correct</th></tr></thead>
+    <caption>Precision and recall against each issue's reference change set (TEST_PLAN.md, developer issues). Impact: files to edit on precision and recall, blast radius on recall only (#1073)${showListed ? ". Listed is the size of the blast radius, a count and not a score" : ""}</caption>
+    <thead><tr><th scope="col">Issue</th><th scope="col">Output</th><th scope="col">Scored list</th><th scope="col">Source</th><th scope="col">File precision</th><th scope="col">File recall</th><th scope="col">Function precision</th><th scope="col">Function recall</th>${showListed ? '<th scope="col">Listed</th>' : ""}<th scope="col">Migration correct</th></tr></thead>
     <tbody>
 ${sorted
   .map(
     (r) =>
-      `      <tr><th scope="row"><a href="${SAMPLE_ISSUE_URL_BASE}${r.issue}" rel="noopener noreferrer" target="_blank">#${r.issue}</a></th><td>${escapeHtml(r.output)}</td><td>${escapeHtml(changePlanScopeLabel(r))}</td><td>${escapeHtml(r.source)}</td>${pr(r.files)}${pr(r.functions)}<td>${r.migrationCorrect ? "yes" : "no"}</td></tr>`,
+      `      <tr><th scope="row"><a href="${SAMPLE_ISSUE_URL_BASE}${r.issue}" rel="noopener noreferrer" target="_blank">#${r.issue}</a></th><td>${escapeHtml(r.output)}</td><td>${escapeHtml(changePlanScopeLabel(r))}</td><td>${escapeHtml(r.source)}</td>${pr(r, "files")}${pr(r, "functions")}${listedCell(r)}<td>${r.migrationCorrect ? "yes" : "no"}</td></tr>`,
   )
   .join("\n")}
     </tbody>

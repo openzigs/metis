@@ -722,7 +722,7 @@ scored differently** (#1073, owner decision of 2026-10-10 in #1068):
 | List | On the page | In the API item | Scored on | `run.json` row |
 |---|---|---|---|---|
 | **Edit candidates** | the **Files to edit** group (`[data-testid=edit-candidates]`) | `editCandidateFiles`; the `affectedSymbols` at `depth` 0 | file and function **precision and recall** | `"scope": "edit"`, counts `tp` / `fp` / `fn` |
-| **Blast radius** | **Files to edit and the Blast radius group together** (`[data-testid=blast-radius-impacts]`, collapsed: open it) | `blastRadiusFiles`; every `affectedSymbols` entry | file and function **recall only** | `"scope": "blast"`, counts `tp` / `fn`, no `fp` |
+| **Blast radius** | **Files to edit and the Blast radius group together** (`[data-testid=blast-radius-impacts]`, collapsed: open it) | `blastRadiusFiles`; every `affectedSymbols` entry | file and function **recall only** | `"scope": "blast"`, counts `tp` / `fn`, no `fp`; plus `listed`, the list's size |
 
 - **The blast radius includes the edit candidates.** A file to edit is inside the blast radius by
   definition, and `blastRadiusFiles` lists it, but the page's Blast radius group shows only what
@@ -732,12 +732,40 @@ scored differently** (#1073, owner decision of 2026-10-10 in #1068):
   precision it reads as a failure for doing its job (run 7: impact file precision 1 to 3%). Do
   not count its false positives and do not record an `fp`: `run.json` rejects one on a blast
   row, and the deck shows "not scored" in its precision cells.
+- **Record how much the blast radius listed** (`listed`, PR #1125). Recall alone has no cost
+  side: a blast radius that names the whole repository recalls everything, and two runs at 60%
+  recall that list 12 files and 400 files would read the same. So on every blast row record
+  `listed` on `files` and on `functions`: the number of **distinct** files, and of distinct
+  functions, in the blast radius (both groups together, as for `tp`), **after the neutral and
+  excluded items are removed** (the reference set's Neutral list, test files and generated
+  files: the same exclusions as every other count). It needs no judgement on any entry beyond
+  those exclusions; from the API it is `blastRadiusFiles.length` less the excluded and neutral
+  files. `listed` is **a count, not a score**: the deck prints it as a plain number in its own
+  "Listed" column and never as a ratio or a precision, and nobody should turn it into one.
+  `listed - tp` is what the rule before #1073 called `fp`, which is how a new run is restated
+  for comparison with runs 1 to 7. `listed` is never below `tp`, is allowed on a blast row
+  only, and is optional in `run.json` so that a pair re-scored from an old run's saved output
+  can omit it when the list was not kept.
 - **An impact output is always the pair**, one `edit` row and one `blast` row, with the same
   migration verdict on both (the verdict is the output's, not a list's).
-- **A result with no Files to edit list** (METIS before #1036, where the page reads "directly
-  affected" and "probable call sites"): score **"directly affected" as the edit candidates**, and
-  "directly affected" plus "probable call sites" as the blast radius. That is the same split:
-  #1036's edit candidates are the `depth` 0 symbols, which is what "directly affected" listed.
+- **A page with no Files to edit group has two causes; tell them apart by the old wording being
+  present, never by the new group being absent.** The page hides a group whose list is empty
+  (`ui/src/components/impact/changed-requirement-group.tsx`: `editCandidates.length > 0`), so
+  an absent group does not say which METIS you are on.
+  - **METIS before #1036**: the card's headline (`[data-testid=impact-headline]`, always shown)
+    reads "N directly affected across M files · K callers", and the first group is headed
+    **Directly affected** (`[data-testid=direct-impacts]`). Score **Directly affected as the
+    edit candidates**, and Directly affected plus that page's Blast radius group (summarised
+    "callers/importers") as the blast radius. That is the same
+    split: #1036's edit candidates are the `depth` 0 symbols, which is what "directly affected"
+    listed.
+  - **Current METIS with an empty edit list**: the headline reads "0 files to edit · K more to
+    review" and there is no "directly affected" wording anywhere on the card. This happens with
+    a blast radius that is not empty, for example when every search hit is a schema or test
+    symbol (only production, non-schema hits can be files to edit). It is a result, not an old
+    page: record the **edit row as `tp` 0, `fp` 0, `fn` = the set's size** (precision reads
+    "–", recall 0%), for files and for functions, and score the **blast row from the Blast
+    radius group** as usual. Say in the results that the edit list was empty.
 - **A result with one undivided list** (an export or a saved answer that does not say which
   entries were direct): do not guess a split. Score it by the rule before #1073, both lists
   together on precision and recall, as **one row with no `scope`**, and say so in the results.
@@ -787,7 +815,7 @@ it as proposed, and record that it was unchecked.
   `model.Feed`).
 - **Blast radius** (opened): `SetEntriesStatusAndCountVisible`, also in
   `internal/storage/entry.go`; `internal/storage/entry_query_builder.go` and
-  `internal/reader/handler/handler.go`, each with symbols the set does not name;
+  `internal/reader/handler/handler.go`, each with two symbols the set does not name;
   `internal/fever/handler.go` with `handleWriteItems`; and `internal/storage/entry_test.go`.
 - It proposes `ALTER TABLE entries ADD COLUMN read_at timestamptz`.
 
@@ -810,6 +838,12 @@ The test file is excluded and the Fever handler and `handleWriteItems` are neutr
 - Functions: the three above and `SetEntriesStatusAndCountVisible` are `tp` (4); the other 7
   set items are `fn`. Recall 4/11 = 36%. The symbols listed under `entry_query_builder.go` and
   `reader/handler/handler.go` are in neither count.
+- Listed, a count and not a score. Files: `entry.go`, `migrations.go`, `model/feed.go`,
+  `entry_query_builder.go` and `reader/handler/handler.go`, so `listed` is 5; the Fever handler
+  (neutral) and the test file (excluded) are left out. Functions: `SetEntriesStatus`,
+  `MarkAllAsRead`, `migrations`, `model.Feed`, `SetEntriesStatusAndCountVisible`, and the two
+  symbols under each of `entry_query_builder.go` and `reader/handler/handler.go`, so `listed`
+  is 9; `handleWriteItems` (neutral) is left out.
 
 Migration correct: yes, on both rows. Must-surface: weak (it misses `MarkAllAsReadBeforeDate` and
 the Google Reader handlers: two or more).
@@ -821,13 +855,16 @@ Recorded in `run.json` as two rows:
   "files": { "tp": 2, "fp": 1, "fn": 3 }, "functions": { "tp": 3, "fp": 1, "fn": 8 },
   "migrationCorrect": true },
 { "issue": 4336, "output": "j2-impact", "scope": "blast", "source": "curated",
-  "files": { "tp": 3, "fn": 2 }, "functions": { "tp": 4, "fn": 7 },
+  "files": { "tp": 3, "fn": 2, "listed": 5 }, "functions": { "tp": 4, "fn": 7, "listed": 9 },
   "migrationCorrect": true }
 ```
 
-The report deck computes the ratios from these counts. By the rule before #1073 the same output
-was one row with no `scope`, `"files": { "tp": 3, "fp": 2, "fn": 2 }`: the recall the blast row
-has (60%), and a precision (60%) that neither new row reports.
+The report deck computes the ratios from these counts, and prints the blast row's Listed cell as
+"5 files · 9 functions". By the rule before #1073 the same output was one row with no `scope`,
+`"files": { "tp": 3, "fp": 2, "fn": 2 }`: the recall the blast row has (60%), and a precision
+(60%) that neither new row reports. Its `fp` of 2 is the blast row's `listed - tp` (5 - 3), and
+its function `fp` would have been 9 - 4 = 5: that subtraction is how a new run is compared with
+runs 1 to 7, without the deck ever showing a blast-radius precision.
 
 ## Journeys (wave F)
 

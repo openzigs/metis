@@ -41,8 +41,14 @@ No project, run or requirement IDs are given on purpose. Find everything through
    positives by name, and the step's "must hold" verdict beside them. **J2.1 is two rows**
    (#1073): its edit candidates (the **Files to edit** group) on precision and recall, and its
    blast radius (Files to edit and the opened **Blast radius** group together) on **recall
-   only**, with `tp` and `fn` and no `fp`. J2.4's plan is one row, as before. Scoring reads the
-   persona's own screen; it is not a non-UI action.
+   only**, with `tp` and `fn` and no `fp`. **Record `listed` on the blast row's `files` and
+   `functions`**: how many distinct files, and distinct functions, the blast radius listed (both
+   groups together) once the set's neutral items, test files and generated files are removed; a
+   count, never a ratio or a score, and never below `tp`. If the page has no Files to edit group
+   and no "directly affected" wording, the edit list is empty: record the edit row as `tp` 0,
+   `fp` 0, `fn` = the set's size and score the blast row from the Blast radius group (the plan's
+   "Scoring a change plan" has the rule for a page from before #1036). J2.4's plan is one row,
+   as before. Scoring reads the persona's own screen; it is not a non-UI action.
 
    **Swapping J2's request.** J2 stays on #4336 by default, so runs compare like for like. A
    run may swap it to one of the bug reports fixed upstream (#4479, #4386 or #4456, #1044), whose
