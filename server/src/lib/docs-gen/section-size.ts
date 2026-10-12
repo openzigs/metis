@@ -48,7 +48,7 @@ export const MIN_DOCUMENT_MAX_CHARS = 10_000;
 /** Markdown characters per English word, for the budget a prompt states. */
 export const CHARS_PER_WORD = 6;
 /** Room kept for the closing note, so a fitted section stays within its budget. */
-const NOTE_RESERVE = 900;
+export const NOTE_RESERVE = 900;
 /** Most omitted topic names the note lists. */
 const NOTE_TOPIC_LIMIT = 12;
 
@@ -107,7 +107,7 @@ function memoize(measure: Measure): Measure {
 }
 
 /** One indivisible piece of a section: a heading line, or a whole paragraph/fence/table. */
-interface Unit {
+export interface Unit {
   text: string;
   /** Heading depth (2–6) for a heading line; 0 for content. */
   depth: number;
@@ -121,7 +121,7 @@ const FENCE = /^\s*(```|~~~)/;
  * fence or a `$$` math block, which always stay whole; a heading line is its
  * own unit.
  */
-function units(markdown: string): Unit[] {
+export function units(markdown: string): Unit[] {
   const out: Unit[] = [];
   let buffer: string[] = [];
   let fence: string | null = null;
@@ -207,14 +207,21 @@ export interface FitResult {
   originalChars: number;
 }
 
-function omissionNote(omitted: readonly string[], maxChars: number): string {
+/** How every closing note of a shortened section opens. */
+export const SHORTENED_NOTE_LEAD = "> **Shortened for length.**";
+
+/** The sentence of a closing note that names the topics left out (leading space). */
+export function omittedTopicsSentence(omitted: readonly string[]): string {
   const listed = omitted.slice(0, NOTE_TOPIC_LIMIT).map((t) => t.replace(/\s+/g, " ").slice(0, 80));
   const more = omitted.length - listed.length;
-  const topics =
-    listed.length > 0
-      ? ` ${omitted.length} further topic${omitted.length === 1 ? " was" : "s were"} left out: ${listed.join("; ")}${more > 0 ? `; and ${more} more` : ""}.`
-      : " Its remaining detail was left out.";
-  return `> **Shortened for length.** This section is limited to about ${Math.round(maxChars / 1000)}k characters (DOCS_GEN_SECTION_MAX_CHARS / DOCS_GEN_DOCUMENT_MAX_CHARS).${topics} Narrow the document with path prefixes, or raise the limit, for the full detail.`;
+  return listed.length > 0
+    ? ` ${omitted.length} further topic${omitted.length === 1 ? " was" : "s were"} left out: ${listed.join("; ")}${more > 0 ? `; and ${more} more` : ""}.`
+    : " Its remaining detail was left out.";
+}
+
+function omissionNote(omitted: readonly string[], maxChars: number): string {
+  const topics = omittedTopicsSentence(omitted);
+  return `${SHORTENED_NOTE_LEAD} This section is limited to about ${Math.round(maxChars / 1000)}k characters (DOCS_GEN_SECTION_MAX_CHARS / DOCS_GEN_DOCUMENT_MAX_CHARS).${topics} Narrow the document with path prefixes, or raise the limit, for the full detail.`;
 }
 /** `first`, then whichever of `rest` it lacks, in order. */
 function mergeTopics(first: readonly string[], rest: readonly string[]): string[] {

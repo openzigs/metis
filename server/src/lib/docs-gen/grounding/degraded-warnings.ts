@@ -33,7 +33,14 @@ export type DocWarningKind =
    * the database schema. Informational (`severity: "info"`): the names are
    * marked in the section, and the document's status does not depend on it.
    */
-  | "schema-unverified";
+  | "schema-unverified"
+  /**
+   * #1070 — the consistency check found a value stated differently in two
+   * places, or a canonical formula written out in more than one section.
+   * Informational (`severity: "info"`): nothing is changed, and the document's
+   * status does not depend on it (`fact-consistency.ts`).
+   */
+  | "fact-inconsistent";
 
 /**
  * `info` is a note for the reader and nothing else: it does not make the

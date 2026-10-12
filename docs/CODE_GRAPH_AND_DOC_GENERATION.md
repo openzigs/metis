@@ -912,6 +912,32 @@ Fitting happens before footnotes are numbered, so `[^src-N]` (#737)
 refer only to kept text. The #778 condensed digests are an input-side budget and are
 unchanged. Both caps are part of a section's reuse hash.
 
+**Planned before it is written (#1070, business requirements only; off by default).** Run
+7's BRD still lost 87 topics: 53 to the section cap, because the four catalogue sections
+each overran 60k, and 34 more to the document cap. Every one was at a section's tail, which
+is where the parts written from the lowest-ranked modules land. With
+`DOCS_GEN_TOPIC_PLAN=on` the topic plan (`document-plan.ts`) settles first what each part is
+asked for, from the Phase-1 facts and with no model call: the document budget is shared
+among the sections, a catalogue section's share among its topics (one per module, owned by
+that section), and a topic that cannot have even 150 characters is left out by priority and
+listed as `<module> (not planned)`. Each batch is told its modules' shares. **A budget is a
+target, not a limit**: nothing is cut while a section fits the section cap and the document
+fits the document cap, exactly as without a plan. When a cap is exceeded, the room is
+filled by every part of the shortened sections together, in proportion to their budgets, so
+an overrun costs the tail of the part that overran rather than the topics of the modules
+ranked last, and room one section leaves unused goes to any other. The plan's cut is used
+only if it keeps at least as much as the cut without a plan keeps of the same text; replayed
+on run 7's stored sections it keeps 244,095 to 244,100 of the 244,100 available characters
+against the 243,942 that shipped, with 32 to 36 of Business Rules' topics against 31. The
+same step builds the canonical facts sheet (`canonical-facts.ts`: named constants and
+formulas read from the source, given to the sections that mention or own them, cited as
+`[facts:canon:<id>]`; 54 facts on the run-7 inputs) and, at assembly, the consistency check
+(`fact-consistency.ts`) notes a sheet value stated differently from the source and a sheet
+formula written out in several sections. It adds no model call: on the run-7 inputs the
+plan took about a tenth of a second and the prompts grew by about 18k input tokens over 23
+calls (1.3%). The setting is off until a model run has measured it; turning it on rewrites
+a BRD's sections once.
+
 **Publication and scope limits.** A committed version queues the separate shared
 publication lifecycle described above. Generation `ready`/`degraded`/`failed`
 is distinct from publication/indexing state; revision fences and deletion cleanup
