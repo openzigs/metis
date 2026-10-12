@@ -269,6 +269,7 @@ export function regexesIn(file: string, code: string): { found: FoundRegex[]; ba
  */
 function scanMs(regex: FoundRegex, text: string): number {
   const flags = regex.flags.includes("g") ? regex.flags : `${regex.flags}g`;
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- test-only: `regex.source` is a pattern this suite extracted from the checked-in files in FUZZED_FILES, never request input; compiling it and timing it against adversarial text is the ReDoS check itself.
   const re = new RegExp(regex.source, flags);
   const start = performance.now();
   text.replace(re, "");
