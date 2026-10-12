@@ -3527,32 +3527,65 @@ name. Each call ends in one verdict, written to `CodeEdge.metadata` as
 | `goResolution` | `toSymbolId` | Meaning |
 | --- | --- | --- |
 | `receiver-type` / `package` / `same-package` | set | Bound by declarations: a method of the receiver's inferred type, `pkg.Func()` through an import, or a bare call inside the package. |
-| `name` | set | Bound by the name-evidence rules of `call-resolution.ts`, because no type could be inferred. |
-| `external` | null | Decided: the callee is **positively known** to be outside the project (see below). No name-based reader may bind it. |
-| `func-value` / `conversion` / `ambiguous` | null | Decided: a call through a function value, a type conversion, or build-tagged twins (functions or methods). No name-based reader may bind it. |
-| `interface` | null | Dispatched at run time, through a project interface or a standard-library one (`http.Handler`, `io.Writer`). Left open: the impact fallback may bind it by name. |
-| *(absent)* | null | Undecided: the receiver's type or the package a name belongs to could not be determined, or resolving the call failed. Left open. |
+| `name` | set | Bound by the name-evidence rules of `call-resolution.ts`, because no type could be inferred — or because the type resolver could not finish the call (it threw, ran out of budget, or the step's time ceiling was reached): such a call is undecided **by type**, not unbound. |
+| `external` | null | Decided: the callee is **positively known** to be declared outside the project (see below). No name-based reader may bind it. |
+| `external-assumed` | null | Decided, on a weaker footing that the label states: the receiver is a value from outside the project whose own type was not examined. No name-based reader may bind it. |
+| `func-value` / `conversion` / `ambiguous` | null | Decided: a call through a function value, a type conversion, or twins behind build constraints (two functions, two methods, a function and a variable or type of one name, a field and a method of one name). No name-based reader may bind it. |
+| `interface` | null | Dispatched at run time, through a project interface or a standard-library one (`http.Handler`, `io.Writer`), reached directly or through a standard-library member (`resp.Body.Close()`, `r.Context().Done()`). Left open: the impact fallback may bind it by name. |
+| *(absent)* | null | Undecided: the receiver's type or the package a name belongs to could not be determined, or the resolver could not finish the call and no name evidence bound it. Left open. |
 
-**`external` needs positive evidence**, because every later reader treats it as decided and
-skips the edge for good. Positive means: a predeclared identifier; an import path that is the
-standard library ([`go-stdlib.ts`](../server/src/lib/code-graph/go-stdlib.ts), a list, never a
-guess from the path's shape) or lies outside every `go.mod` module of the tree, and a member
-of a value whose type such a package declares; or a name that the one package Go's scoping
-lets it mean does not declare, when every Go file of that package's directory was read.
-Everything short of that is undecided: an import path inside a project module whose directory
-holds no determinable package, a name its package does not declare while a file of that
-directory could not be parsed, two imports that would bind one local name, and — in a tree
-with no `go.mod`, or for Go code outside every module — an import path matched to a directory
-by spelling, which binds only on a GOPATH layout or two trailing segments and is otherwise
-unknown. One `external` is weaker and kept on purpose: a method called on a value of a
-**third-party** type, which may be an interface a project type implements; this module
-cannot tell without reading the dependency (181 of Miniflux's 11,457).
+**`external` on positive evidence; `external-assumed` where the receiver is external but its
+type is unexamined.** Every later reader treats both as decided and skips the edge for good,
+so each says exactly what is known. `external` means one of: a predeclared identifier; a
+function of a package whose import path is the standard library
+([`go-stdlib.ts`](../server/src/lib/code-graph/go-stdlib.ts), a list, never a guess from the
+path's shape) or lies outside every `go.mod` module of the tree; a method called on a value
+whose type the project's own declarations name and which is a standard-library type that is
+**not an interface** (`db *sql.DB`) — the list of standard-library interfaces is complete for
+its Go release, so any other type there declares its own methods; or a name that the one
+package Go's scoping lets it mean does not declare, when every Go file of that package's
+directory was read. `external-assumed` is a method on a value of a **third-party** type, which
+may be an interface a project type implements (the dependency is not read), and a member of a
+member, of a call result or of an element of an external value (`r.URL.Query()`,
+`w.Header().Set()`), whose type in between nothing examined. It is kept decided on purpose:
+opened to the name fallback, four such calls of four bound to the wrong function on the
+Miniflux sample. Where the member in between is known to be a standard-library interface the
+call is `interface` instead.
+
+Everything short of evidence is undecided: an import path inside a project module whose
+directory holds no determinable package; a name its package does not declare while a file of
+that directory was not read — unparseable, unreadable, or hidden by `.metisignore`
+(`*_gen.go`, `*.pb.go`); a build-ignored file's call to a name of a sibling build-ignored
+file (`go run gen.go gen_helpers.go`); a type name its project package does not declare; two
+imports that would bind one local name; an import path that two `go.mod` files of the tree
+both declare, from a file in neither; and — in a tree with no `go.mod`, or for Go code outside
+every module — an import path matched to a directory by spelling, which binds only on a
+GOPATH layout or two trailing segments and is otherwise unknown. An import is resolved in the
+importing file's **own module** first (the nearest `go.mod` above it), then by the most
+specific module path, so in a monorepo of services that are each `module app`, `app/storage`
+means the importer's own `storage/`.
+
+**The standard-library lists are generated, not hand-kept.** `node
+scripts/gen-go-stdlib-snapshot.mjs` runs a Go toolchain (`go list std` over several
+platforms, and the type checker over the standard library) and writes
+`go-stdlib.snapshot.json` and `go-stdlib.data.ts`: 177 packages, 197 exported interface
+types and 372 members of concrete types that are typed as one, for the Go release named in
+both (go1.26.0). `tests/lib/code-graph/go-stdlib-snapshot.test.ts` fails when the two files,
+or the version, drift apart; nothing in the build or the tests runs Go. A missing entry costs
+this: an unlisted package is treated as any import outside the tree's modules (still
+`external` under a `go.mod`; in a tree with Go code outside every module it can be matched to
+a project directory of that path — the one wrong binding a stale list can cause), and an
+unlisted interface makes a call through it `external` where it should be `interface`, so an
+edge to the project type that implements it is lost. Regenerate when the Go release the
+project's sources target moves on.
 
 Build constraints are read as far as naming a directory's package needs: a file opening
 with `//go:build ignore` (or a lone `// +build ignore`) is not part of the package — it is
-resolved as a single-file package of its own — and `package main` beside one library
-package is never what an import of that directory means. Other constraints are not
-evaluated, so twins behind them stay `ambiguous`. A file is a test file by Go's rule,
+resolved as a single-file package of its own, and beside another ignored file not even
+that is known in full — and `package main` beside one library package is never what an
+import of that directory means. The constraint is matched exactly: `//go:build
+!ignore_autogenerated` and `//go:buildignore` leave a file in its package. Other
+constraints are not evaluated, so twins behind them stay `ambiguous`. A file is a test file by Go's rule,
 `_test.go`, not by the code-graph's directory convention: `tests/util/util.go` is visible to
 the packages that import it.
 
@@ -3561,7 +3594,10 @@ is bound (`a, b := b, a` swaps); `x, err := f()` declares only the names new in 
 a name the scope already holds (a parameter, a named result, `var s Store`) keeps its type;
 and an assignment never changes a written type. A type that was only inferred survives an
 assignment unless the assigned value contradicts it or is not modelled, and then the name is
-unknown.
+unknown. A name of a type the walker does not model — a type parameter, an interface or
+struct literal — is bound to unknown rather than left to resolve as the package-level name
+or imported package it shadows, and a type parameter is never read as the package type of
+the same name.
 
 What is deliberately **not** inferred: the concrete type behind an interface value, type
 parameters, method expressions, and the result of a third-party function (it may be generic).
@@ -3572,14 +3608,38 @@ directly); it names methods the same way but records no calls, so the tree-sitte
 authoritative, and `ingestCodeGraph` always initialises it. Every reader of unresolved calls
 by name — `loadResolvedGoCalls`, `search_code_graph`'s "probable call sites", Spec Kit's
 caller list — filters with `goUndecidedCallWhere()` / `isGoFallbackCandidate()`, so none of
-them contradicts ingest. Resolving one call cannot fail the ingest: a throw leaves that call
-undecided and is counted (`IngestStats.goBinding.errors`), and one evaluation carries a single
-depth counter through every re-entry, so a cycle of package variables (`var a = b; var b = a`)
-ends as unknown. Measured on Miniflux v2.3.3 (21,100 Go call edges): resolved in the graph
-4,967 → 8,348; of the 12,752 left, 11,457 are `external` (4,592 standard-library functions,
-5,277 methods on standard-library concrete types, 1,247 builtins and undeclared bare names,
-160 third-party functions, 181 methods on third-party types), 170 `interface`, 137
-`func-value`, 4 `conversion` and 984 undecided.
+them contradicts ingest.
+
+**The resolver bounds the work of a call, not only its depth.** One evaluation carries a
+single depth counter through every re-entry, so a cycle of package variables (`var a = b; var
+b = a`) ends as unknown. That alone was not enough: promotion used to look through every
+embedded field of every type a receiver could reach, for every call, and keep nothing, so a
+generated 665 KB file (100 types a level, each embedding all 100 of the next, 3,000 calls)
+took the Go binding step of an ingest from 0.47 s to 36.8 s. Whatever depends only on the
+declarations is now worked out once per resolver and kept — what a type name means in a
+file, a type's struct, its whole member set (own and promoted), what an import path names —
+so a call costs its own length and a tree costs declarations plus calls (the same file:
+0.4 s). Three ceilings bound what is left, and each is counted rather than guessed:
+
+| Ceiling | Constant | When it is reached |
+| --- | --- | --- |
+| Steps for one call | `GO_CALL_STEP_BUDGET` (10,000; `go-type-resolution.ts`) | The call is left undecided by type; counted in `IngestStats.goBinding.overBudget`. |
+| Steps for one type's member set | `GO_TYPE_STEP_BUDGET` (100,000) | No member of that type is decided, for any call; counted in `overBudget`. |
+| Time resolving Go calls in one ingest | `GO_BINDING_MAX_MS` (30 s; `ingest.ts`, per run `IngestOptions.goBindingMaxMs`) | Every remaining call of the run is left undecided by type; counted in `goBinding.skipped`, and the next ingest that touches a Go file tries again. |
+
+Resolving one call cannot fail the ingest either: a throw leaves that call undecided, is
+counted (`goBinding.errors`) and named (`goBinding.failures`, `file:line callee`, up to 50).
+A call left undecided for any of these reasons goes on to the name-evidence rules exactly as
+before #1071, so it can still be bound and is then labelled `name`. A warning log line
+carries all four counters.
+
+Measured on Miniflux v2.3.3 (21,100 Go call edges): resolved in the graph 4,967 → 8,348
+(3,985 `receiver-type`, 2,286 `same-package`, 2,076 `package`, 1 `name`). Of the 12,752 left:
+10,873 `external` (4,592 standard-library functions, 160 third-party functions, 1,247 builtins
+and bare names a fully read package does not declare, 4,874 methods on a standard-library
+type that is not an interface); 533 `external-assumed` (122 methods on a third-party type,
+411 members of a member, result or element of an external value); 221 `interface`; 137
+`func-value`; 4 `conversion`; 984 undecided.
 
 **Extractor version and in-place upgrade (#1071).** An incremental ingest skips a file whose
 content hash matches, so a parser change reached a stored graph only when its files changed.
@@ -3600,24 +3660,48 @@ a symbol renames the two stored TEXT copies of its qualified name
 re-run does not report every renamed method as removed and added.
 `generated_document_versions.changedSymbols` is history and is left as written.
 
-**The version is stamped only when every file was brought up to it.** A file of an upgraded
-language that cannot be re-parsed (unreadable, or the current parser gives up on it) keeps its
-old rows, is named in `IngestStats.filesUpgradeFailed` and in a warning log line, and leaves
-`extractorVersion` where it was, so the next ingest tries the upgrade again. Files the parser
-gives up on are named the same way whether or not an upgrade is running
-(`IngestStats.filesUnparseable`, up to 50 names; the count is never capped).
+**An upgrade that cannot reach a file is still done once.** A file of an upgraded language
+that cannot be re-parsed (unreadable, or the current parser gives up on it) keeps its old
+rows, is named in `IngestStats.filesUpgradeFailed` and in a warning log line, and is
+remembered on the graph: `CodeGraph.extractorUpgradeFailed` holds `{ path: hash of the
+content that failed }` (null for a file that could not be read). The version is stamped for
+the rest of the tree, so the upgrade is not repeated on every ingest — on Miniflux that was
+420 files and 26,000 edges each time while one file was broken. A remembered file is named in
+every ingest's result and is tried again only when its content is no longer the one that
+failed. Files the parser gives up on are named the same way whether or not an upgrade is
+running (`IngestStats.filesUnparseable`, up to 50 names; the count is never capped). The
+renames of `impact_column_proposals` are matched from one read of that table per upgrade
+(it has no index on the writer columns), by primary key.
 
-**An upgrade spends no model calls by itself.** The scheduled repository refresh runs an
-incremental ingest and then schedules regeneration of auto-updating generated documents,
-whose inputs snapshot identifies every symbol and edge by qualified name; the upgrade would
-therefore regenerate each of them with no repository change. The snapshot carries the
-extractor version as its own item, and two snapshots that differ in that item and otherwise
-only in graph rows (`symbol:`, `edge:`, `finding:`) — every source file, SQL file, evidence
-chunk and setting identical — are treated as unchanged by the scheduled check, by an automatic
-run about to start, and by the mid-run and commit fences of a run already in flight
-(`isExtractorOnlyChange`, `docs-gen/regeneration-plan.ts`). The document regenerates against
-the upgraded graph the next time something it reads really changes. A graph-row difference
-under the same extractor (a lineage backfill, a schema re-introspection) still regenerates.
+**An upgrade spends no model calls by itself — and is acknowledged once.** The scheduled
+repository refresh runs an incremental ingest and then schedules regeneration of
+auto-updating generated documents, whose inputs snapshot identifies every symbol and edge by
+qualified name; the upgrade would therefore regenerate each of them with no repository
+change. The rule that prevents it rests on positive evidence
+([`docs-gen/extractor-upgrade.ts`](../server/src/lib/docs-gen/extractor-upgrade.ts)):
+
+1. the ingest that rewrites a graph for an upgrade marks it — `CodeGraph.extractorUpgradedAt`
+   moves in the same transaction as every write of the rewrite, and only then;
+2. a difference between a document's baseline and its current inputs is put down to the
+   upgrade only when it is confined to graph rows (`symbol:`, `edge:`, `finding:`; every
+   source file, SQL file, evidence chunk and setting identical) **and** a graph the document
+   reads carries a mark newer than the document's latest version and than the last mark
+   acknowledged for it;
+3. it is then acknowledged, once: the current inputs are recorded beside the version
+   (`GeneratedDocumentVersion.acknowledgedInputs`; the version's manifest is not touched,
+   nothing is published, no model is called) and every later check compares against them.
+
+So the next change confined to graph rows — a lineage backfill, a re-introspection of the
+live schema, new rationale findings — differs from the acknowledged inputs with no new mark,
+and regenerates. A project whose graph no upgrade rewrote has no mark, and every check there
+is exactly what it was before #1071: the snapshot itself carries nothing about the extractor.
+The same test is applied by the scheduled check, by an automatic run about to start (a task
+queued for the rewrite alone settles it instead of running), and by the mid-run and commit
+fences of a run in flight: a run that an upgrade overtakes goes on only when the mark moved
+past where it stood when the run captured its inputs, and it records what it then stands for
+beside the version it publishes. (The first form of this rule inferred the upgrade from the
+baseline lacking a field newer snapshots carried — true of every document published before
+the deploy, in every project, for ever — and so swallowed every later graph-only change.)
 
 **Cost.** Go declarations are not persisted, so an incremental ingest that parses, deletes or
 re-binds any Go file re-parses every unchanged Go file for its declarations and re-binds its

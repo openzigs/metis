@@ -23,3 +23,6 @@ In `server/src/lib/code-graph/go-type-resolution.ts` the verdict `external` mean
 - Completeness is evidence: "the package does not declare it" decides only when every file of that directory was read (`incompleteDirs`).
 - Measure on a tree that HAS the awkward layout. A clean sample project hides the whole class.
 - A test that the decided verdict is not issued must put a name-bindable candidate where the fallback would find it (the caller's own file), or it passes whatever the code does.
+- Where the evidence is weaker than the label, change the LABEL, not the reader: a member or result of an external value whose type was never examined is `external-assumed`, still decided, and the breakdown says how many of each there are. "11,276 proven external" in the first PR body was about 6,000 proven.
+- A hand-kept "known interfaces" list is not positive evidence for "everything else is concrete". Generate the complete list (`scripts/gen-go-stdlib-snapshot.mjs`) and test that it cannot drift.
+- A directory with files the resolver did not read is incomplete whatever the reason: unparseable, unreadable, hidden by `.metisignore`, or a build-ignored sibling.

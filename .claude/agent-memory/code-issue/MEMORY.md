@@ -95,4 +95,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Binding more edges: check fallback consumers](project_binding-more-edges-check-fallback-consumers.md) — diff replay `tables:` + per-seed (#1071)
 - [Identifier shape change: old fixtures stay green](project_identifier-shape-change-rerun-other-features-probes.md) — re-probe real graph (#1071)
 - [Decided verdict needs positive evidence](project_decided-verdicts-need-positive-evidence.md) — else stay undecided for the fallback (#1071)
-- [Code-graph extractor version](project_code-graph-extractor-version.md) — bump + EXTRACTOR_UPGRADES; upgrade spends no model calls (#1071)
+- [Code-graph extractor version](project_code-graph-extractor-version.md) — bump + EXTRACTOR_UPGRADES; upgrade marks the graph (#1071)
+- [Recursion audit: bound work, not depth](project_recursion-audit-must-bound-work-not-depth.md) — lattice + scaling ratio (#1071)
+- [Test helper keys must be unique](project_test-helper-keys-must-be-unique.md) — throw on a duplicate key (#1071)
+- [Suppression needs evidence, once](project_suppression-rule-needs-positive-evidence-acknowledged-once.md) — not a missing field (#1071)
