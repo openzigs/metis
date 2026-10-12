@@ -26,10 +26,26 @@ UI, #4456 fetcher; #1044).
    analysis, and Spec Kit `/specify` → `/plan`. Paste a request's title and body as the
    requirement; for the three closed ones, take them from a read-only
    `gh issue view <n> -R miniflux/v2` and never their fixing PR, which would hand METIS the
-   answer. Score **each output** (impact "directly
-   affected" plus "probable call sites", chat answer, plan) against the issue's **reference
+   answer. Score **each output** (impact, chat answer, plan) against the issue's **reference
    change set** in the plan ("Reference change sets"), using its "Scoring a change plan" rules:
    file and function `tp` / `fp` / `fn`, migration correct, and the false positives by name.
+   **Impact is two rows** (#1073): its **edit candidates** (the **Files to edit** group,
+   `[data-testid=edit-candidates]`) on precision and recall, and its **blast radius** (Files to
+   edit **and** the opened Blast radius group together) on **recall only**: `tp` and `fn`, no
+   `fp`, and no false-positive list. **On every blast row also record `listed`** on `files`
+   and on `functions`: how many distinct files, and distinct functions, the blast radius listed
+   (both groups together) once the set's neutral items, test files and generated files are
+   removed. It is a count for the deck's "Listed" column, not a score: never turn it into a
+   ratio or a precision. It is never below `tp`.
+   **A page with no Files to edit group** is not by itself an old page: the page hides the group
+   whenever the edit list is empty. Decide by the old wording being present, not by the new
+   group being absent. If the card's headline reads "N directly affected across M files" and a
+   group is headed **Directly affected**, this is METIS before #1036: Directly affected is the
+   edit candidates, and Directly affected plus that page's Blast radius group is the blast
+   radius; say so in your return. If there is no "directly affected" wording (the headline
+   reads "0 files to edit"), the edit list is empty on current METIS: record the edit row as
+   `tp` 0, `fp` 0, `fn` = the set's size, score the blast row from the Blast radius group, and
+   say the edit list was empty.
    Keep the "must surface" verdict beside it, scored **N/6** from this run (runs 3 to 6 scored
    the first three only: 3/3 by the brief, 2/3 strictly, #4478 still proposing a `users`
    column; compare those three like for like). First re-check #4547 and #4552 with
@@ -40,7 +56,7 @@ UI, #4456 fetcher; #1044).
    ledger before and after each request (chat, impact and plan together) for its
    **per-request ledger delta**. A sandbox draft only if the run's cap of 2 is not
    used up. Open the collapsed **Blast radius** group (`[data-testid=blast-radius-toggle]`)
-   before you screenshot the "Writes affected data" rows.
+   before you score the blast radius or screenshot the "Writes affected data" rows.
 3. **Phase 17 is "Tested by"** (#812), not the removed Test Coverage page; the plan has its
    steps. Its ledger delta must be 0.
 4. Phase 18: compare the Usage page, the **All projects** view and `GET /api/admin/usage`
@@ -127,12 +143,14 @@ as plain text.
    |---|---|---|---|---|---|---|---|---|
 
    Works / Useful: ✅ pass · ⚠️ partial or weak · ❌ fail · 🚫 blocked (with reason) · – n/a.
-3. **Developer-issue change plans**: one row per issue and output (`impact`, `chat`, `plan`),
-   eighteen rows in all (six requests: #4478, #4511, #4336, #4479, #4386, #4456), with counts
-   so the ratios can be checked:
+3. **Developer-issue change plans**: per issue, two rows for `impact` (scope `edit` and scope
+   `blast`, #1073) and one each for `chat` and `plan` (scope `–`), twenty-four rows in all (six
+   requests: #4478, #4511, #4336, #4479, #4386, #4456), with counts so the ratios can be
+   checked. A `blast` row gives recall only: `tp` and `fn`, with `–` for `fp` and for the false
+   positives.
 
-   | Issue | Output | File P/R (tp/fp/fn) | Function P/R (tp/fp/fn) | Migration correct | Must-surface | False positives |
-   |---|---|---|---|---|---|---|
+   | Issue | Output | Scope | File P/R (tp/fp/fn) | Function P/R (tp/fp/fn) | Migration correct | Must-surface | False positives |
+   |---|---|---|---|---|---|---|---|
 
    "False positives" lists each by name, `must not` items first. These rows go into `run.json`
    `changePlanAccuracy` (the skill, section 7), with `source` `upstream` for #4479, #4386 and

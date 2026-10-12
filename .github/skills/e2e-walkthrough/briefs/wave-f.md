@@ -38,8 +38,17 @@ No project, run or requirement IDs are given on purpose. Find everything through
 5. **Score J2.1 (impact) and J2.4 (Spec Kit plan)** against #4336's reference change set in
    the plan ("Reference change sets"), by its "Scoring a change plan" rules, exactly as wave E
    scores its outputs: file and function `tp` / `fp` / `fn`, migration correct, false
-   positives by name, and the step's "must hold" verdict beside them. Scoring reads the
-   persona's own screen; it is not a non-UI action.
+   positives by name, and the step's "must hold" verdict beside them. **J2.1 is two rows**
+   (#1073): its edit candidates (the **Files to edit** group) on precision and recall, and its
+   blast radius (Files to edit and the opened **Blast radius** group together) on **recall
+   only**, with `tp` and `fn` and no `fp`. **Record `listed` on the blast row's `files` and
+   `functions`**: how many distinct files, and distinct functions, the blast radius listed (both
+   groups together) once the set's neutral items, test files and generated files are removed; a
+   count, never a ratio or a score, and never below `tp`. If the page has no Files to edit group
+   and no "directly affected" wording, the edit list is empty: record the edit row as `tp` 0,
+   `fp` 0, `fn` = the set's size and score the blast row from the Blast radius group (the plan's
+   "Scoring a change plan" has the rule for a page from before #1036). J2.4's plan is one row,
+   as before. Scoring reads the persona's own screen; it is not a non-UI action.
 
    **Swapping J2's request.** J2 stays on #4336 by default, so runs compare like for like. A
    run may swap it to one of the bug reports fixed upstream (#4479, #4386 or #4456, #1044), whose
@@ -93,10 +102,12 @@ happened. A blocked step still gets a line and a screenshot of where the persona
 1. **Per journey**: completed in the UI (yes / no, and the step where it broke), data lost
    between steps (which handoff, what was lost), wall time and ledger cost against the budget.
 2. **Per step**: step | Works | Useful | handoff held? | evidence path.
-   Journey 2 adds its change-plan rows, one each for `j2-impact` (J2.1) and `j2-plan` (J2.4):
+   Journey 2 adds its change-plan rows: two for `j2-impact` (J2.1), scope `edit` and scope
+   `blast`, and one for `j2-plan` (J2.4), whose scope cell is `–`. A `blast` row gives recall
+   only: `tp` and `fn`, with `–` for `fp` and for the false positives.
 
-   | Issue | Output | File P/R (tp/fp/fn) | Function P/R (tp/fp/fn) | Migration correct | Must hold | False positives |
-   |---|---|---|---|---|---|---|
+   | Issue | Output | Scope | File P/R (tp/fp/fn) | Function P/R (tp/fp/fn) | Migration correct | Must hold | False positives |
+   |---|---|---|---|---|---|---|---|
 
    These go into `run.json` `changePlanAccuracy` (the skill, section 7).
 3. **Fix verification** — for each fix listed above: fix | PR | confirmed / partial / regressed /

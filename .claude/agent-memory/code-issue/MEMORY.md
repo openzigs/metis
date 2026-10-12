@@ -107,3 +107,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [requirementId guard; recording doubles](project_requirement-id-guard-and-recording-doubles.md) — agentic+single-shot unchecked (#1027)
 - [Before-fixture pins only its scenario](project_before-fixture-pins-only-its-scenario.md) — regenerate on base, mutate each off-path line
 - [Count the delimiter, not the split](project_count-the-delimiter-not-the-split.md) — `split(" | ")` misses `a | | b`; test edge bars
+- [Absent page group is ambiguous](project_absent-page-group-is-ambiguous-when-ui-hides-empty.md) — UI hides empty groups
