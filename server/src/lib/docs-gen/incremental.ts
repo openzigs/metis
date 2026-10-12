@@ -7,7 +7,12 @@ import { getSchedulerBootstrap } from "../scheduler/index.js";
 import { resolveEvidencePolicy } from "./evidence-policy.js";
 import { captureGenerationInputs } from "./generation-inputs.js";
 import { parseGeneratedDocVersionManifest } from "./generated-doc-provenance.js";
-import { inputHash, planRegeneration, type RegenerationTask } from "./regeneration-plan.js";
+import {
+  inputHash,
+  isExtractorOnlyChange,
+  planRegeneration,
+  type RegenerationTask,
+} from "./regeneration-plan.js";
 export { regenerationTaskSchema, type RegenerationTask } from "./regeneration-plan.js";
 
 export const REGENERATE_DOCUMENT_TASK = "regenerate-generated-document";
@@ -94,6 +99,15 @@ export async function checkIncrementalRegeneration(
         continue;
       }
       if (planRegeneration(previous, snapshot).mode === "unchanged") continue;
+      // #1071 — a code-graph extractor upgrade renamed symbols and re-bound
+      // edges with no repository change. That alone never spends model calls.
+      if (isExtractorOnlyChange(previous, snapshot)) {
+        log.info("Skipping automatic regeneration: only the code-graph extractor changed", {
+          projectId,
+          generatedDocumentId: doc.id,
+        });
+        continue;
+      }
       const payload: RegenerationTask = {
         projectId,
         generatedDocumentId: doc.id,

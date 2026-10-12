@@ -18,8 +18,22 @@
  *
  * Local inference follows Go's scoping, not source order alone: a variable's
  * static type is fixed where it is declared, so an inner `x := …` shadows the
- * outer `x` for its block only, and an assignment (`x = …`) changes nothing. A
- * name bound to something this walker does not model (a `select` receive, a
+ * outer `x` for its block only. Three rules keep that honest:
+ *
+ *  - every right-hand side of a declaration is read before any name is bound
+ *    (`a, b := b, a` swaps, as Go evaluates it);
+ *  - `x, err := f()` DECLARES only the names new in that scope. A name the scope
+ *    already holds — a parameter or named result included, which share the
+ *    function body's scope — is assigned, and keeps the type it was given;
+ *  - an assignment never changes a type that was WRITTEN (`var s Store`, a
+ *    parameter). A type this walker only inferred from an initialiser survives
+ *    an assignment unless the assigned value contradicts it: a value of another
+ *    written type, a written type where the initialiser was a call, or a value
+ *    this walker does not model. Then the name is "unknown" from there on. In
+ *    Go that compiles the types always agree; the rule is for the walker's own
+ *    mistakes, and when in doubt the answer is unknown.
+ *
+ * A name bound to something this walker does not model (a `select` receive, a
  * struct-literal type) is bound to "unknown" rather than left to resolve as a
  * package-level name.
  *
@@ -68,6 +82,29 @@ function capped(expr: GoExpr): GoExpr {
   return exprDepth(expr) > MAX_EXPR_DEPTH ? GO_UNKNOWN : expr;
 }
 
+/**
+ * True when the file opens with a build constraint that excludes it from every
+ * build: `//go:build ignore`, or a `// +build ignore` line naming nothing else
+ * (terms on one `+build` line are alternatives, so `ignore linux` still builds).
+ * Constraints sit above the package clause.
+ */
+function isBuildIgnored(root: SyntaxNode): boolean {
+  for (const c of root.children) {
+    if (c.type === "package_clause") return false;
+    if (c.type !== "comment") continue;
+    for (const raw of c.text.split("\n")) {
+      const line = raw.trim();
+      if (line.startsWith("//go:build")) {
+        if (line.slice("//go:build".length).trim() === "ignore") return true;
+        continue;
+      }
+      const plus = line.startsWith("//") ? line.slice(2).trim() : "";
+      if (plus.startsWith("+build") && plus.slice("+build".length).trim() === "ignore") return true;
+    }
+  }
+  return false;
+}
+
 /** The receiver recorded for the name-evidence fallback (`call-resolution.ts`). */
 function legacyReceiver(operand: SyntaxNode | null): string {
   return operand?.type === "identifier" ? operand.text : COMPLEX_RECEIVER;
@@ -81,9 +118,12 @@ export function walkGo(
   edges: ParsedEdge[],
 ): GoFileFacts {
   const facts: GoFileFacts = { package: "", imports: [], types: [], funcs: [], vars: [] };
+  if (isBuildIgnored(root)) facts.buildIgnored = true;
 
   /** Innermost last. A name maps to the expression it was bound to. */
   const scopes: Array<Map<string, GoExpr>> = [];
+  /** Bindings whose type was written in the source: no assignment changes them. */
+  const writtenTypes = new WeakSet<GoExpr>();
   /** Type parameters in scope: a type written with one of these names is not a declared type. */
   let typeParams: ReadonlySet<string> = new Set();
   /** The function or method the walk is inside; calls outside one come from the module. */
@@ -99,6 +139,26 @@ export function walkGo(
   const bind = (name: string, expr: GoExpr): void => {
     if (name === "_" || scopes.length === 0) return;
     scopes[scopes.length - 1].set(name, capped(expr));
+  };
+  /** Bind a name whose type the source writes (`var x T`, a parameter, a type-switch case). */
+  const bindWritten = (name: string, type: GoType | null): void => {
+    if (!type) return bind(name, GO_UNKNOWN);
+    const expr: GoExpr = { e: "typed", type };
+    writtenTypes.add(expr);
+    bind(name, expr);
+  };
+  /**
+   * `name = value` on a local. A written type stands. An inferred one stands
+   * unless `value` contradicts it or is not modelled — see the file header.
+   */
+  const assign = (name: string, value: GoExpr): void => {
+    for (let i = scopes.length - 1; i >= 0; i -= 1) {
+      const held = scopes[i].get(name);
+      if (!held) continue;
+      if (held.e === "unknown" || held.e === "local-type" || writtenTypes.has(held)) return;
+      if (!agrees(held, value)) scopes[i].set(name, GO_UNKNOWN);
+      return;
+    }
   };
   const scoped = (fn: () => void): void => {
     scopes.push(new Map());
@@ -217,6 +277,9 @@ export function walkGo(
         if (!local) return { e: "name", name: n.text };
         return local.e === "local-type" ? GO_UNKNOWN : local;
       }
+      case "nil":
+        // Assignable to any pointer, interface, map, slice, channel or func type.
+        return { e: "name", name: "nil" };
       case "selector_expression": {
         const field = n.childForFieldName("field");
         if (!field) return GO_UNKNOWN;
@@ -271,19 +334,44 @@ export function walkGo(
     return { e: "call", fn: exprOf(fn), i };
   };
 
-  /** Bind the names of `left` to the values of `right` (`a, b := f()` / `a, b := x, y`). */
-  const bindAll = (names: SyntaxNode[], values: SyntaxNode[], declared: GoType | null): void => {
+  /**
+   * What each of `count` names on the left receives from `values` (`a, b = f()`
+   * / `a, b = x, y`). Read in full BEFORE any name is bound: Go evaluates every
+   * right-hand operand first, so `a, b := b, a` swaps.
+   */
+  const valuesFor = (count: number, values: SyntaxNode[]): GoExpr[] => {
+    const out: GoExpr[] = [];
+    for (let i = 0; i < count; i += 1) {
+      if (values.length === count) out.push(exprOf(values[i]));
+      else if (values.length === 1) {
+        const v = values[0];
+        if (v.type === "call_expression") out.push(callResult(v, i));
+        // `v, ok := x.(T)`, `v, ok := m[k]`, `v, ok := <-ch`: only the first is the value.
+        else out.push(i === 0 ? exprOf(v) : GO_UNKNOWN);
+      } else out.push(GO_UNKNOWN);
+    }
+    return out;
+  };
+
+  /**
+   * Bind the names of `left` to the values of `right`.
+   *
+   * @param short a short variable declaration (`:=`): a name the CURRENT scope
+   *   already holds is assigned, not declared, and keeps its type.
+   */
+  const bindAll = (
+    names: SyntaxNode[],
+    values: SyntaxNode[],
+    declared: GoType | null,
+    short = false,
+  ): void => {
+    const exprs = declared ? [] : valuesFor(names.length, values);
+    const current = scopes[scopes.length - 1];
     names.forEach((id, i) => {
       if (id.type !== "identifier") return;
-      if (declared) return bind(id.text, typed(declared));
-      if (values.length === names.length) return bind(id.text, exprOf(values[i]));
-      if (values.length === 1) {
-        const v = values[0];
-        if (v.type === "call_expression") return bind(id.text, callResult(v, i));
-        // `v, ok := x.(T)`, `v, ok := m[k]`, `v, ok := <-ch`: only the first is the value.
-        return bind(id.text, i === 0 ? exprOf(v) : GO_UNKNOWN);
-      }
-      bind(id.text, GO_UNKNOWN);
+      if (declared) return bindWritten(id.text, declared);
+      if (short && current?.has(id.text)) return assign(id.text, exprs[i]);
+      bind(id.text, exprs[i]);
     });
   };
 
@@ -359,17 +447,18 @@ export function walkGo(
     enclosing = sym.qualifiedName;
     scoped(() => {
       if (receiver?.name) {
-        bind(receiver.name, typed({ k: "named", name: receiver.typeName }));
+        bindWritten(receiver.name, { k: "named", name: receiver.typeName });
       }
       for (const p of parameters(n.childForFieldName("parameters"))) {
-        if (p.name) bind(p.name, typed(p.type));
+        if (p.name) bindWritten(p.name, p.type);
       }
       const result = n.childForFieldName("result");
       if (result?.type === "parameter_list") {
-        for (const p of parameters(result)) if (p.name) bind(p.name, typed(p.type));
+        for (const p of parameters(result)) if (p.name) bindWritten(p.name, p.type);
       }
+      // The body block IS the scope of the parameters, not one inside it.
       const body = n.childForFieldName("body");
-      if (body) visit(body);
+      if (body) visitChildren(body);
     });
     enclosing = outerEnclosing;
     typeParams = outerParams;
@@ -532,7 +621,7 @@ export function walkGo(
       case "short_var_declaration": {
         const values = listChildren(n.childForFieldName("right"));
         for (const v of values) visit(v);
-        bindAll(listChildren(n.childForFieldName("left")), values, null);
+        bindAll(listChildren(n.childForFieldName("left")), values, null, true);
         return;
       }
       case "range_clause": {
@@ -575,7 +664,8 @@ export function walkGo(
                 // One type in the case narrows the alias to it; otherwise it keeps the operand's.
                 const types =
                   clause.type === "type_case" ? (clause.childrenForFieldName?.("type") ?? []) : [];
-                bind(alias.text, types.length === 1 ? typed(typeOf(types[0])) : operand);
+                if (types.length === 1) bindWritten(alias.text, typeOf(types[0]));
+                else bind(alias.text, operand);
               }
               for (const c of clause.namedChildren) {
                 if (clause.type === "type_case" && isTypeNode(c)) continue;
@@ -589,14 +679,25 @@ export function walkGo(
       case "func_literal": {
         scoped(() => {
           for (const p of parameters(n.childForFieldName("parameters"))) {
-            if (p.name) bind(p.name, typed(p.type));
+            if (p.name) bindWritten(p.name, p.type);
           }
           const result = n.childForFieldName("result");
           if (result?.type === "parameter_list") {
-            for (const p of parameters(result)) if (p.name) bind(p.name, typed(p.type));
+            for (const p of parameters(result)) if (p.name) bindWritten(p.name, p.type);
           }
           const body = n.childForFieldName("body");
-          if (body) visit(body);
+          if (body) visitChildren(body);
+        });
+        return;
+      }
+      case "assignment_statement": {
+        visitChildren(n);
+        // `+=` and the like keep the operand's type; only `=` can contradict it.
+        if (n.childForFieldName("operator")?.text !== "=") return;
+        const left = listChildren(n.childForFieldName("left"));
+        const exprs = valuesFor(left.length, listChildren(n.childForFieldName("right")));
+        left.forEach((id, i) => {
+          if (id.type === "identifier") assign(id.text, exprs[i]);
         });
         return;
       }
@@ -642,6 +743,19 @@ export function walkGo(
 
   visit(root);
   return facts;
+}
+
+/**
+ * Whether assigning `value` leaves a local's INFERRED binding `held` standing.
+ * Any modelled expression does — `nil`, another call, a field (Go requires the
+ * types to agree, and the resolver cannot be asked from here); a written type
+ * must equal the one held; and an unmodelled value says nothing, so the binding
+ * is dropped.
+ */
+function agrees(held: GoExpr, value: GoExpr): boolean {
+  if (value.e === "unknown" || value.e === "local-type") return false;
+  if (value.e !== "typed") return true;
+  return held.e === "typed" && JSON.stringify(held.type) === JSON.stringify(value.type);
 }
 
 /** A node that spells a type inside a `type_case` (as opposed to one of its statements). */

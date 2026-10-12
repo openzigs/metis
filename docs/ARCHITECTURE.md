@@ -1012,7 +1012,7 @@ All three share `retrieveFusedCodeContext` / `retrieveFusedCodeChunks`, which de
 
 **Input-side requirement coverage (#1112, Epic #1107)** — `RequirementCoverage` (#736, below) grades **outputs**; nothing graded **inputs**, which is how #1101 happened: a user pasted seven requirements, six were mapped, the seventh was sliced off by `ANALYSIS_AFFECTED_CODE_MAX_CANDIDATES` (default 8) and the run reported success. The raw text never reaches the synthesis prompt, so nothing downstream could notice the absence — the loss was unobservable *by construction*. Three stages could discard user input silently: the candidate-cap `.slice()` in `extractNewRequirementCandidates`, the Jaccard ≥ `DUPLICATE_REQUIREMENT_OVERLAP` de-dupe in `mergeRequirementSets`, and the free-text box's own character cap. Each now **reports** instead. `server/src/lib/analysis/new-requirements.ts` gains accounted variants — `extractNewRequirementCandidatesWithAccount` (returns `parsedCount` + a `dropped[]` naming `candidate-cap` / `unparseable` + an `inputTruncated` flag when the paste arrived at `MAX_EXTRA_INSTRUCTIONS`) and `mergeRequirementSetsWithAccount` (returns `merged[]`, each naming the **survivor** it was folded into) — which `buildRequirementInputAccount` composes into a `RequirementInputAccount` on #733's capability record (`metadata.capability.requirementInputAccount`, additive, no migration). The invariant `parsedCount === analyzedIds.length + merged.length + dropped.length` (`isRequirementInputAccountBalanced`) is what makes "nothing vanished" checkable rather than assumed. **Merge and drop are deliberately distinct**: a duplicate folded into a named survivor is accounted for and does **not** raise a degradation reason, while a genuine loss derives the `requirement-inputs-dropped` capability reason — placed **outside** the `codeAnalysisRequested` gate, because the loss is of the user's own words regardless of which agents ran. **The cap is not raised**: a bigger cap that truncates in silence is the same bug at a different number. UI: `RequirementInputAccountPanel` ("Requirements you supplied", one line per merged/dropped input) on the results page, plus an explicit *"your text was cut at N characters"* notice in `EvaluateRequirementsPanel` — the textarea dropped its `maxLength` so the overflow is observable in `onChange` at all (the browser used to swallow it before React saw it) while the controlled value stays clamped. `MAX_EXTRA_INSTRUCTIONS` now lives in `@metis/shared` so the Zod cap, the textarea and the truncation check cannot drift.
 
-**Two shared name terms before a link is shown (#1063)** — BM25 scores only the query terms that match, so a term no symbol carries costs a candidate nothing, and `normalizeConfidence` is relative to the best hit. In #706 run 7 *"Add a button to terminate all sessions"* (content terms `button`, `terminate`, `sessions`; no symbol name contains `terminate`) therefore mapped to the Telegram bot's `InlineKeyboardButton` at confidence 1.0, because `button` is the rarest of the words that did match (7 of 3,845 symbols); *"Ability to force IPv4 or IPv6 per feed"* mapped to `ForceRefreshInterval` the same way. Raising the confidence floor could not fix it: the floor is relative to the best hit, and the best hit was the wrong one. The BM25 searchers take `{ minSharedTerms }`, applied before the result limit, and `ANALYSIS_LINK_MIN_SHARED_TERMS` is 2 (capped at the requirement's own term count). **The terms are counted against the symbol's name, not the BM25 document** (`symbolNameTerms`): the document is `name + qualifiedName`, and `qualifiedName` is `<filePath>::<name>`, so counting document terms let a directory or the file extension be the second shared term (*"…in the web client…"* brought `InlineKeyboardButton` back through `telegrambot/client.go`). Counted: the name, its enclosing type or table (`KeyboardHandler::listen`, `user_sessions.ip`; for a dotted name only the owner next to the member), and for a module row the file's base name without its extension. Never counted: directories, the file a non-module symbol lives in, extensions. Path terms still rank. **The rule filters what is persisted and shown, and nothing else.** `computeAffectedCodeContext` reads one corpus load twice (`MemoizingBm25CodeSymbolSearcher.withOptions`): with the rule for `result` (the persisted `metadata.affectedCode` and the Affected code panel), and without it for `block` and `filePaths`, the code agent's AFFECTED CODE seed block and its citation-provenance list, which are therefore what they were before #1063. A requirement whose hits each share one word gets **no link** on the page while the agent is still seeded; a run where the project has code but nothing matched at all is persisted with empty candidates rather than dropped, so the page can say so. Impact Analysis seeding, the schema-impact producer, the escalation context, the LLM seeder and the entity-seed union never set the option: on the impact-recall fixture the rule cut table recall from 0.91 to 0.50. The rule is **provisional and in-sample**. On the reqmap fixture, which replays the display path, macro precision went 0.71 to 0.87 and macro recall 1.00 to 0.90. There is no stemming (`session` does not share `sessions`), and a symbol whose only second term was its file name (`markAllAsRead` in `unread_mark_all_read.go`, for a requirement that says "unread") is no longer shown. Confidence is still relative to the best surviving link. Moving the mapper onto `HybridCodeSearch`, and an absolute confidence, are tracked in #1097.
+**Two shared name terms before a link is shown (#1063)** — BM25 scores only the query terms that match, so a term no symbol carries costs a candidate nothing, and `normalizeConfidence` is relative to the best hit. In #706 run 7 *"Add a button to terminate all sessions"* (content terms `button`, `terminate`, `sessions`; no symbol name contains `terminate`) therefore mapped to the Telegram bot's `InlineKeyboardButton` at confidence 1.0, because `button` is the rarest of the words that did match (7 of 3,845 symbols); *"Ability to force IPv4 or IPv6 per feed"* mapped to `ForceRefreshInterval` the same way. Raising the confidence floor could not fix it: the floor is relative to the best hit, and the best hit was the wrong one. The BM25 searchers take `{ minSharedTerms }`, applied before the result limit, and `ANALYSIS_LINK_MIN_SHARED_TERMS` is 2 (capped at the requirement's own term count). **The terms are counted against the symbol's name, not the BM25 document** (`symbolNameTerms`): the document is `name + qualifiedName`, and `qualifiedName` is `<filePath>::<name>`, so counting document terms let a directory or the file extension be the second shared term (*"…in the web client…"* brought `InlineKeyboardButton` back through `telegrambot/client.go`). Counted: the name, its enclosing type or table (`KeyboardHandler::listen`, `user_sessions.ip`; for a dotted name only the owner next to the member), and for a module row the file's base name without its extension. Never counted: directories, the file a non-module symbol lives in, extensions. Path terms still rank. **An enclosing type may supply shared terms, never all of them (#1071)**: a member links only when at least one shared term comes from its own name (`symbolOwnNameTerms`). Once a Go method's qualified name carried its receiver type, *"OIDC provider display name"* shared `oidc` and `provider` with all seven methods of `oidcProvider`, whatever each was called, and they pushed the one right symbol (`configOptions::OAuth2OIDCProviderName`) out of the ten links kept; with the rule that requirement links exactly what it linked before the rename. The type still counts for one term, so `Client::Users` links for *"Let users go to the client settings"* (`users` its own, `client` its type's), which the `<file>::Users` name did not. Measured on the run-7 Miniflux project over 11 probes and 23 stored requirements against the graph before #1071: 217 links unchanged, 20 added (11 right, 9 wrong by hand), 9 removed; without the rule 210 unchanged, 39 added, 16 removed. **The rule filters what is persisted and shown, and nothing else.** `computeAffectedCodeContext` reads one corpus load twice (`MemoizingBm25CodeSymbolSearcher.withOptions`): with the rule for `result` (the persisted `metadata.affectedCode` and the Affected code panel), and without it for `block` and `filePaths`, the code agent's AFFECTED CODE seed block and its citation-provenance list, which are therefore what they were before #1063. A requirement whose hits each share one word gets **no link** on the page while the agent is still seeded; a run where the project has code but nothing matched at all is persisted with empty candidates rather than dropped, so the page can say so. Impact Analysis seeding, the schema-impact producer, the escalation context, the LLM seeder and the entity-seed union never set the option: on the impact-recall fixture the rule cut table recall from 0.91 to 0.50. The rule is **provisional and in-sample**. On the reqmap fixture, which replays the display path, macro precision went 0.71 to 0.87 and macro recall 1.00 to 0.90. There is no stemming (`session` does not share `sessions`), and a symbol whose only second term was its file name (`markAllAsRead` in `unread_mark_all_read.go`, for a requirement that says "unread") is no longer shown. Confidence is still relative to the best surviving link. Moving the mapper onto `HybridCodeSearch`, and an absolute confidence, are tracked in #1097.
 
 **The block splitter's subordination contract (#1136)** — #1112 accounted honestly for a population the parser had inflated ~4×. `extractChangesHeuristically` (`server/src/lib/impact-analysis/extract-changes.ts`) promoted **every acceptance-criteria bullet to its own requirement candidate**: a measured walkthrough of ten requirements × three bullets produced `parsedCount: 40` and *"6 of 40 requirements you supplied were analyzed"*, with `Roles: owner, editor, viewer` arriving as `NR-10`. Since `ANALYSIS_AFFECTED_CODE_MAX_CANDIDATES` defaults to 8, an ordinary **three**-requirement paste with criteria already overflowed the cap — which is what actually produced #1101's "R7 was silently dropped". **The defect was the unit being counted, not the threshold, so the cap is unchanged.** The contract, derived from the existing #964 fixture rather than invented: **a bullet list is a requirement *set* only when it is introduced as one** — standing alone (`- A\n- B`, the headline paste shape, still one requirement per bullet), or under a heading / `Label:` lead-in that names a group. `Numbered requirements:` and `Notification channels:` in that fixture each introduce lists of genuinely distinct requirements and **still split**, which is precisely why a purely structural rule ("a lead-in label means subordinate") was not available and the discriminator has to include the label's *meaning*. A list that **continues the requirement just stated** — directly with no intervening label, or under a `SUBORDINATING_LABELS` entry (`acceptance criteria`, `success criteria`, `definition of done`, `AC`, `DoD`, `examples`, `notes`; matched through ATX-heading, `Label:` and `**emphasized**` forms, and through a trailing `(qualifier)`) — is that requirement's **detail** and is folded into it. The list is deliberately narrow: every entry describes how a requirement is *verified or illustrated*, never what the system must do, so `constraints` / `assumptions` / `rules` are excluded. Folding **appends** the detail to the parent's `body` (updating `bodyDelta`) rather than discarding it, so the criteria still reach the code agent and still seed #735's BM25 mapping; `title` and the `added`/`modified`/`removed` classification are **not** recomputed, so a criterion like *"the archived workspace is removed from the sidebar"* cannot retype an `added` requirement as a removal. Two guards keep the change loss-free: with no preceding requirement to attach to (a paste that *opens* with `Acceptance criteria:`), the pre-#1136 promotion is kept; and only the block **immediately** after a stated requirement is claimed as its detail, so a second adjacent bullet block stays a requirement set. #1101's own seven-requirement paste now parses to **7, all analyzed, nothing dropped**; the walkthrough's paste to **10, not 40**. #1112's accounting is unchanged and now grades the corrected population.
 
@@ -2767,10 +2767,30 @@ calls are bound by declared types" below), so
 (same directory, or a package the caller's package imports; only an unambiguous name binds)
 for the blast-radius graph and the downstream schema walk. It never binds a call ingest
 decided has no project callee. In the downstream schema walk a symbol reached only through a
-call made on a receiver or struct field — bound by ingest (`goResolution: "receiver-type"`)
-or by the fallback — contributes its writes, not its reads: a handler's incidental reads are
-fan-out. That rule predates #1071 and is kept on the same calls now that they are exact;
-without it the six replayed Miniflux issues gained up to five unrelated tables each. Schema symbols
+call that steps from one layer into another contributes its writes, not its reads: a
+handler's incidental reads are fan-out (#791). Two kinds of call carry that rule: one the
+fallback bound by name, and one ingest bound through the receiver's type
+(`goResolution: "receiver-type"`) **into another file** (`receiverCallCrossesLayer`). A
+method calling a helper of its own type in its own file is one unit of data access, and a
+full edge, as it was before #1071. The flag is about the shape of the call, not the strength
+of the binding: an exact cross-file receiver call loses its callee's reads while a call
+bound by name evidence keeps them, as both did before. Measured on Miniflux v2.3.3 with
+each of the 1,414 non-test Go functions as a single seed, against the graph before #1071:
+
+| Receiver-type edges that keep their reads | Seeds unchanged | Seeds gaining tables | Seeds losing tables |
+| --- | --- | --- | --- |
+| none (every one writes-only) | 1,390 | 21 (29 links) | 3 (3 links) |
+| **same file (shipped)** | 1,393 | 21 (29 links) | 0 |
+| same package (directory) | 1,386 | 28 (36 links) | 0 |
+| all | 1,252 | 162 (433 links) | 0 |
+
+The 21 gains are calls a name could not bind (two candidates) and a type can
+(`createCategoryHandler` → `categories`), so the set of flagged calls is not identical to the
+pre-#1071 one. Same package is the more Go-like boundary and was measured too: it changes
+nothing on the six replayed issues and adds seven links here (four right, `enclosures` for
+the entry query builder; two a lineage artifact). It was not taken because it has no measured
+benefit and, in a project that keeps handlers and storage in one package, it is the "all"
+row. Schema symbols
 are `language: "sql"` rows only, so an application `function` is never a DB routine. A
 writer is any `function` or `method` that is not a synthetic `sql@<line>` origin — so a
 MyBatis mapper statement or a JPA `@Query` method, stored as a `method` with language
@@ -3508,9 +3528,40 @@ name. Each call ends in one verdict, written to `CodeEdge.metadata` as
 | --- | --- | --- |
 | `receiver-type` / `package` / `same-package` | set | Bound by declarations: a method of the receiver's inferred type, `pkg.Func()` through an import, or a bare call inside the package. |
 | `name` | set | Bound by the name-evidence rules of `call-resolution.ts`, because no type could be inferred. |
-| `external` / `func-value` / `conversion` / `ambiguous` | null | Decided: there is no project callee (standard library, third-party module or builtin; a function value; a type conversion; build-tagged twins). No name-based reader may bind it. |
-| `interface` | null | Dispatched at run time. Left open: the impact fallback may bind it by name. |
-| *(absent)* | null | Undecided: the receiver's type could not be inferred. Left open. |
+| `external` | null | Decided: the callee is **positively known** to be outside the project (see below). No name-based reader may bind it. |
+| `func-value` / `conversion` / `ambiguous` | null | Decided: a call through a function value, a type conversion, or build-tagged twins (functions or methods). No name-based reader may bind it. |
+| `interface` | null | Dispatched at run time, through a project interface or a standard-library one (`http.Handler`, `io.Writer`). Left open: the impact fallback may bind it by name. |
+| *(absent)* | null | Undecided: the receiver's type or the package a name belongs to could not be determined, or resolving the call failed. Left open. |
+
+**`external` needs positive evidence**, because every later reader treats it as decided and
+skips the edge for good. Positive means: a predeclared identifier; an import path that is the
+standard library ([`go-stdlib.ts`](../server/src/lib/code-graph/go-stdlib.ts), a list, never a
+guess from the path's shape) or lies outside every `go.mod` module of the tree, and a member
+of a value whose type such a package declares; or a name that the one package Go's scoping
+lets it mean does not declare, when every Go file of that package's directory was read.
+Everything short of that is undecided: an import path inside a project module whose directory
+holds no determinable package, a name its package does not declare while a file of that
+directory could not be parsed, two imports that would bind one local name, and — in a tree
+with no `go.mod`, or for Go code outside every module — an import path matched to a directory
+by spelling, which binds only on a GOPATH layout or two trailing segments and is otherwise
+unknown. One `external` is weaker and kept on purpose: a method called on a value of a
+**third-party** type, which may be an interface a project type implements; this module
+cannot tell without reading the dependency (181 of Miniflux's 11,457).
+
+Build constraints are read as far as naming a directory's package needs: a file opening
+with `//go:build ignore` (or a lone `// +build ignore`) is not part of the package — it is
+resolved as a single-file package of its own — and `package main` beside one library
+package is never what an import of that directory means. Other constraints are not
+evaluated, so twins behind them stay `ambiguous`. A file is a test file by Go's rule,
+`_test.go`, not by the code-graph's directory convention: `tests/util/util.go` is visible to
+the packages that import it.
+
+Local inference follows Go's declaration rules: every right-hand side is read before any name
+is bound (`a, b := b, a` swaps); `x, err := f()` declares only the names new in that scope, so
+a name the scope already holds (a parameter, a named result, `var s Store`) keeps its type;
+and an assignment never changes a written type. A type that was only inferred survives an
+assignment unless the assigned value contradicts it or is not modelled, and then the name is
+unknown.
 
 What is deliberately **not** inferred: the concrete type behind an interface value, type
 parameters, method expressions, and the result of a third-party function (it may be generic).
@@ -3521,8 +3572,14 @@ directly); it names methods the same way but records no calls, so the tree-sitte
 authoritative, and `ingestCodeGraph` always initialises it. Every reader of unresolved calls
 by name — `loadResolvedGoCalls`, `search_code_graph`'s "probable call sites", Spec Kit's
 caller list — filters with `goUndecidedCallWhere()` / `isGoFallbackCandidate()`, so none of
-them contradicts ingest. Measured on Miniflux v2.3.3 (21,100 Go call edges): resolved in the
-graph 4,967 → 8,348; of the 12,752 left, 11,594 are `external`, and 984 are undecided.
+them contradicts ingest. Resolving one call cannot fail the ingest: a throw leaves that call
+undecided and is counted (`IngestStats.goBinding.errors`), and one evaluation carries a single
+depth counter through every re-entry, so a cycle of package variables (`var a = b; var b = a`)
+ends as unknown. Measured on Miniflux v2.3.3 (21,100 Go call edges): resolved in the graph
+4,967 → 8,348; of the 12,752 left, 11,457 are `external` (4,592 standard-library functions,
+5,277 methods on standard-library concrete types, 1,247 builtins and undeclared bare names,
+160 third-party functions, 181 methods on third-party types), 170 `interface`, 137
+`func-value`, 4 `conversion` and 984 undecided.
 
 **Extractor version and in-place upgrade (#1071).** An incremental ingest skips a file whose
 content hash matches, so a parser change reached a stored graph only when its files changed.
@@ -3534,11 +3591,44 @@ edges (`source` null) deleted and re-derived. Symbol ids survive, so findings,
 requirement/spec mappings and embeddings stay linked, exactly as for a lineage backfill;
 `IngestStats.filesUpgraded` counts the files. The upgraded graph equals a full re-ingest row
 for row (checked on Miniflux: 3,432 Go symbols, 26,265 parser edges, 3.8 s for 421 files).
-Go declarations are not persisted, so an incremental ingest that parses, deletes or re-binds
-any Go file re-parses every unchanged Go file for its declarations and re-binds its edges in
-place (`filesRebound`); an ingest that touches no Go file reads none. This mechanism covers a
-change that renames or re-binds — a change to *which* symbols a file yields needs a full
-re-ingest.
+A file's old edges are deleted in the same transaction as its first batch of new ones, one
+file at a time, so a reader never sees a project whose Go files have symbols and no edges and
+a failure mid-upgrade leaves every file either old or new. The same transaction that renames
+a symbol renames the two stored TEXT copies of its qualified name
+(`impact_affected_symbols.qualifiedName` by symbol id, and
+`impact_column_proposals.writerQualifiedName` by file, old name and line), so an impact
+re-run does not report every renamed method as removed and added.
+`generated_document_versions.changedSymbols` is history and is left as written.
+
+**The version is stamped only when every file was brought up to it.** A file of an upgraded
+language that cannot be re-parsed (unreadable, or the current parser gives up on it) keeps its
+old rows, is named in `IngestStats.filesUpgradeFailed` and in a warning log line, and leaves
+`extractorVersion` where it was, so the next ingest tries the upgrade again. Files the parser
+gives up on are named the same way whether or not an upgrade is running
+(`IngestStats.filesUnparseable`, up to 50 names; the count is never capped).
+
+**An upgrade spends no model calls by itself.** The scheduled repository refresh runs an
+incremental ingest and then schedules regeneration of auto-updating generated documents,
+whose inputs snapshot identifies every symbol and edge by qualified name; the upgrade would
+therefore regenerate each of them with no repository change. The snapshot carries the
+extractor version as its own item, and two snapshots that differ in that item and otherwise
+only in graph rows (`symbol:`, `edge:`, `finding:`) — every source file, SQL file, evidence
+chunk and setting identical — are treated as unchanged by the scheduled check, by an automatic
+run about to start, and by the mid-run and commit fences of a run already in flight
+(`isExtractorOnlyChange`, `docs-gen/regeneration-plan.ts`). The document regenerates against
+the upgraded graph the next time something it reads really changes. A graph-row difference
+under the same extractor (a lineage backfill, a schema re-introspection) still regenerates.
+
+**Cost.** Go declarations are not persisted, so an incremental ingest that parses, deletes or
+re-binds any Go file re-parses every unchanged Go file for its declarations and re-binds its
+edges in place (`filesRebound`); an ingest that touches no Go file reads none. That is
+O(Go files) per ingest whatever the size of the change: 0.45 s of a 0.98 s ingest on
+Miniflux's 421 files, about 1 ms and 26 KB retained per file, so roughly 45 s and 520 MB at
+20,000 files. It yields to the event loop but is not capped and cannot be cancelled.
+`IngestStats.goBinding` (`files`, `calls`, `durationMs`, `errors`) and an info log line report
+it on every ingest that binds Go; persisting the per-file facts by content hash and a
+cancellable ingest are tracked in #1107. This mechanism covers a change that renames or
+re-binds — a change to *which* symbols a file yields needs a full re-ingest.
 
 The query-time SELECT validator (`connectors/db/sql-validator.ts`, `node-sql-parser`)
 is unchanged — it remains the read-only guard for live DB queries.

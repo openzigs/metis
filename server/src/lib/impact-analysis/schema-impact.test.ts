@@ -8,6 +8,7 @@ import {
   DOWNSTREAM_DATA_LAYER_DECAY,
   entityTypeKeysForTable,
   PrismaSchemaImpactDataSource,
+  receiverCallCrossesLayer,
   suggestDdl,
   type SchemaImpactDataSource,
 } from "./schema-impact.js";
@@ -1468,32 +1469,99 @@ describe("PrismaSchemaImpactDataSource — downstream call edges (#928)", () => 
 });
 
 describe("PrismaSchemaImpactDataSource — Go calls bound at ingest (#1071)", () => {
-  it("keeps the writes-only rule on a call bound through its receiver's type, and on no other", async () => {
-    const meta = (resolution: string) => JSON.stringify({ goResolution: resolution });
+  const meta = (resolution: string) => JSON.stringify({ goResolution: resolution });
+  /** An edge row as the query returns it: the caller's file on the edge, the callee's on its symbol. */
+  const edge = (to: string, metadata: string | null, callerFile: string, calleeFile: string) => ({
+    fromSymbolId: "caller",
+    toSymbolId: to,
+    metadata,
+    filePath: callerFile,
+    toSymbol: { filePath: calleeFile },
+  });
+  const downstream = async (rows: unknown[]) => {
     const prisma = {
       codeSymbol: { findMany: vi.fn().mockResolvedValue([]) },
-      codeEdge: {
-        findMany: vi.fn().mockResolvedValue([
-          // `h.store.SetEntriesStatus()`: exact since #1071, still a handler's call into storage.
-          { fromSymbolId: "handler", toSymbolId: "storage", metadata: meta("receiver-type") },
-          { fromSymbolId: "handler", toSymbolId: "pkg-func", metadata: meta("package") },
-          { fromSymbolId: "handler", toSymbolId: "helper", metadata: meta("same-package") },
-          { fromSymbolId: "handler", toSymbolId: "by-name", metadata: meta("name") },
-          { fromSymbolId: "handler", toSymbolId: "plain", metadata: null },
-          // Another writer's edge metadata is not a Go verdict.
-          { fromSymbolId: "handler", toSymbolId: "other", metadata: '{"via":"CALL"}' },
-        ]),
-      },
+      codeEdge: { findMany: vi.fn().mockResolvedValue(rows) },
     };
     const ds = new PrismaSchemaImpactDataSource(prisma as never, "proj-1");
-    expect(await ds.getDownstreamCallEdgesFrom!(["handler"])).toEqual([
-      { fromSymbolId: "handler", toSymbolId: "storage", inferred: true },
-      { fromSymbolId: "handler", toSymbolId: "pkg-func" },
-      { fromSymbolId: "handler", toSymbolId: "helper" },
-      { fromSymbolId: "handler", toSymbolId: "by-name" },
-      { fromSymbolId: "handler", toSymbolId: "plain" },
-      { fromSymbolId: "handler", toSymbolId: "other" },
+    return { rows: await ds.getDownstreamCallEdgesFrom!(["caller"]), prisma };
+  };
+
+  it("applies the writes-only rule to a receiver-type call into ANOTHER file, and to no other binding", async () => {
+    const { rows } = await downstream([
+      // `h.store.SetEntriesStatus()`: exact since #1071, still a handler's call into storage.
+      edge("storage", meta("receiver-type"), "api/handler.go", "storage/entry.go"),
+      edge("pkg-func", meta("package"), "api/handler.go", "storage/entry.go"),
+      edge("helper", meta("same-package"), "api/handler.go", "api/util.go"),
+      edge("by-name", meta("name"), "api/handler.go", "storage/entry.go"),
+      edge("plain", null, "api/handler.go", "storage/entry.go"),
+      // Another writer's edge metadata is not a Go verdict.
+      edge("other", '{"via":"CALL"}', "api/handler.go", "storage/entry.go"),
     ]);
+    expect(rows).toEqual([
+      { fromSymbolId: "caller", toSymbolId: "storage", inferred: true },
+      { fromSymbolId: "caller", toSymbolId: "pkg-func" },
+      { fromSymbolId: "caller", toSymbolId: "helper" },
+      { fromSymbolId: "caller", toSymbolId: "by-name" },
+      { fromSymbolId: "caller", toSymbolId: "plain" },
+      { fromSymbolId: "caller", toSymbolId: "other" },
+    ]);
+  });
+
+  it("keeps a receiver-type call to a helper in the caller's OWN file a full edge", async () => {
+    // `e.getEntry()` inside entry_pagination_builder.go: one unit of data
+    // access, and a full edge before #1071 (the same-file member rule).
+    const { rows } = await downstream([
+      edge("same-file", meta("receiver-type"), "storage/pager.go", "storage/pager.go"),
+      // The same package is not the same file: this one crosses.
+      edge("same-dir", meta("receiver-type"), "storage/pager.go", "storage/entry.go"),
+      // A file of the same name in another directory is another file.
+      edge("same-name", meta("receiver-type"), "storage/pager.go", "cache/pager.go"),
+    ]);
+    expect(rows).toEqual([
+      { fromSymbolId: "caller", toSymbolId: "same-file" },
+      { fromSymbolId: "caller", toSymbolId: "same-dir", inferred: true },
+      { fromSymbolId: "caller", toSymbolId: "same-name", inferred: true },
+    ]);
+  });
+
+  it("treats a receiver-type edge whose callee file is not known as crossing", async () => {
+    const { rows, prisma } = await downstream([
+      {
+        fromSymbolId: "caller",
+        toSymbolId: "x",
+        metadata: meta("receiver-type"),
+        filePath: "a.go",
+      },
+      {
+        fromSymbolId: "caller",
+        toSymbolId: "y",
+        metadata: meta("receiver-type"),
+        filePath: "a.go",
+        toSymbol: null,
+      },
+    ]);
+    expect(rows).toEqual([
+      { fromSymbolId: "caller", toSymbolId: "x", inferred: true },
+      { fromSymbolId: "caller", toSymbolId: "y", inferred: true },
+    ]);
+    // The two file paths the rule needs are asked for.
+    expect(prisma.codeEdge.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          filePath: true,
+          toSymbol: { select: { filePath: true } },
+        }),
+      }),
+    );
+  });
+});
+
+describe("receiverCallCrossesLayer (#1071)", () => {
+  it("is false only for one and the same file", () => {
+    expect(receiverCallCrossesLayer("storage/pager.go", "storage/pager.go")).toBe(false);
+    expect(receiverCallCrossesLayer("storage/pager.go", "storage/entry.go")).toBe(true);
+    expect(receiverCallCrossesLayer("storage/pager.go", null)).toBe(true);
   });
 });
 

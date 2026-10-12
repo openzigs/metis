@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { EvidencePolicy } from "./evidence-policy.js";
 import { captureGenerationInputs } from "./generation-inputs.js";
+import { EXTRACTOR_INPUT_KEY, isExtractorOnlyChange } from "./regeneration-plan.js";
 
 const mocks = vi.hoisted(() => ({
   symbols: vi.fn(),
@@ -159,6 +160,81 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true });
+});
+
+describe("captureGenerationInputs — the code-graph extractor version (#1071)", () => {
+  const withVersion = (extractorVersion: number | null | undefined) =>
+    mocks.repositories.mockResolvedValue(
+      new Map([
+        [
+          "g",
+          {
+            codeGraphId: "g",
+            repoConnectorId: "a",
+            root,
+            commitSha: "head",
+            ...(extractorVersion === undefined ? {} : { extractorVersion }),
+          },
+        ],
+      ]),
+    );
+
+  it("records the extractor version as one item, and nothing else moves with it", async () => {
+    mocks.symbols.mockResolvedValue([symbol()]);
+    await file("src/mod.ts", "source");
+    withVersion(null);
+    const before = await capture();
+    withVersion(1);
+    const after = await capture();
+
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+    const differing = Object.keys({ ...before.items, ...after.items }).filter(
+      (key) => before.items[key] !== after.items[key],
+    );
+    expect(differing).toEqual([EXTRACTOR_INPUT_KEY]);
+    // A graph with no version recorded and one that predates the column are the same.
+    withVersion(undefined);
+    expect((await capture()).fingerprint).toBe(before.fingerprint);
+  });
+
+  it("an in-place upgrade (renamed symbol, re-bound edge) is an extractor-only change", async () => {
+    await file("src/mod.ts", "source");
+    const callee = symbol({
+      id: "t",
+      name: "save",
+      qualifiedName: "src/mod.ts::save",
+      startLine: 5,
+    });
+    const edge = (toSymbol: unknown, metadata: string | null) => ({
+      fromSymbol: symbol(),
+      toSymbol,
+      toQualifiedName: "save",
+      kind: "calls",
+      filePath: "src/mod.ts",
+      line: 2,
+      metadata,
+      source: null,
+    });
+    mocks.symbols.mockResolvedValue([symbol(), callee]);
+    mocks.edges.mockResolvedValue([edge(null, null)]);
+    mocks.findings.mockResolvedValue([finding({ symbolId: "t" })]);
+    withVersion(null);
+    const before = await capture();
+
+    // What #1071 does to the rows: the method is renamed, the call is bound.
+    const renamed = { ...callee, qualifiedName: "src/mod.ts::Store::save" };
+    mocks.symbols.mockResolvedValue([symbol(), renamed]);
+    mocks.edges.mockResolvedValue([edge(renamed, '{"goResolution":"receiver-type"}')]);
+    withVersion(1);
+    const after = await capture();
+
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+    expect(isExtractorOnlyChange(before, after)).toBe(true);
+
+    // The same rows after an edit to the file: a real change.
+    await file("src/mod.ts", "source, edited");
+    expect(isExtractorOnlyChange(before, await capture())).toBe(false);
+  });
 });
 
 describe("captureGenerationInputs", () => {

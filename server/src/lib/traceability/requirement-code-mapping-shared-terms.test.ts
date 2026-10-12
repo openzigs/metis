@@ -9,6 +9,14 @@
  * 3,845), so the "before" assertions reproduce the two reported links. BM25 scores only the terms that match, so when a
  * requirement's most distinctive word (`terminate`, `IPv4`) is in no symbol
  * name, every hit shares one word and the rarest word wins.
+ *
+ * The qualified names are in the shape the graph has SINCE #1071: a Go method
+ * is `<file>::<ReceiverType>::<name>` (`client/client.go::Client::RefreshFeed`),
+ * read off the upgraded run-7 graph. The first version of these tests kept the
+ * older `<file>::<name>` shape after #1071 changed it, so they stayed green
+ * while production linked every method of a type whose NAME shared two words
+ * with a requirement (review of PR #1104). Fixtures that pin a rule about names
+ * have to carry the names production sees.
  */
 import { describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
@@ -21,40 +29,58 @@ import {
   mapRequirementToCode,
   requiredSharedTerms,
   symbolNameTerms,
+  symbolOwnNameTerms,
 } from "./requirement-code-mapping.js";
 
 const PROJECT = "proj-miniflux";
 
-/** [name, filePath, kind] — names as ingested from Miniflux v2.3.3. */
-const MINIFLUX: Array<[string, string, string]> = [
+/**
+ * [name, filePath, kind, receiver type] — as ingested from Miniflux v2.3.3. A
+ * Go method carries its receiver type, exactly as the upgraded graph names it.
+ */
+const MINIFLUX: Array<[string, string, string, string?]> = [
   ["InlineKeyboardButton", "internal/integration/telegrambot/client.go", "class"],
   ["restoreButtonState", "internal/ui/static/js/app.js", "function"],
   ["setButtonToLoadingState", "internal/ui/static/js/app.js", "function"],
   ["flushSessions", "internal/cli/flush_sessions.go", "function"],
   ["user_sessions", "internal/database/migrations.go", "table"],
   ["web_sessions", "internal/storage/web_session.go", "table"],
-  ["FlushAllSessions", "internal/storage/web_session.go", "function"],
-  ["showSessionsPage", "internal/ui/session_list.go", "function"],
-  ["CleanOldWebSessions", "internal/storage/web_session.go", "function"],
-  ["WebSessionsByUserID", "internal/storage/web_session.go", "function"],
-  ["CleanupRemoveSessionsInterval", "internal/config/options.go", "function"],
-  ["ForceRefreshInterval", "internal/config/options.go", "function"],
-  ["LastForceRefresh", "internal/model/web_session.go", "function"],
-  ["MarkForceRefreshed", "internal/model/web_session.go", "function"],
+  ["FlushAllSessions", "internal/storage/web_session.go", "function", "Storage"],
+  ["showSessionsPage", "internal/ui/session_list.go", "function", "handler"],
+  ["CleanOldWebSessions", "internal/storage/web_session.go", "function", "Storage"],
+  ["WebSessionsByUserID", "internal/storage/web_session.go", "function", "Storage"],
+  ["CleanupRemoveSessionsInterval", "internal/config/options.go", "function", "configOptions"],
+  ["ForceRefreshInterval", "internal/config/options.go", "function", "configOptions"],
+  ["LastForceRefresh", "internal/model/web_session.go", "function", "WebSession"],
+  ["MarkForceRefreshed", "internal/model/web_session.go", "function", "WebSession"],
   ["Feed", "internal/model/feed.go", "class"],
   ["FeedCounters", "internal/model/feed.go", "class"],
-  ["UpdateFeed", "internal/storage/feed.go", "function"],
-  ["markAllAsRead", "internal/ui/unread_mark_all_read.go", "function"],
-  ["markFeedAsRead", "internal/ui/feed_mark_as_read.go", "function"],
-  ["MarkCategoryAsRead", "client/client.go", "function"],
-  ["refreshFeedHandler", "internal/api/feed_handlers.go", "function"],
-  ["RefreshFeed", "client/client.go", "function"],
+  ["UpdateFeed", "internal/storage/feed.go", "function", "Storage"],
+  ["markAllAsRead", "internal/ui/unread_mark_all_read.go", "function", "handler"],
+  ["markFeedAsRead", "internal/ui/feed_mark_as_read.go", "function", "handler"],
+  ["MarkCategoryAsRead", "client/client.go", "function", "Client"],
+  ["refreshFeedHandler", "internal/api/feed_handlers.go", "function", "handler"],
+  ["RefreshFeed", "client/client.go", "function", "Client"],
   ["parseDescriptors", "internal/reader/sanitizer/srcset.go", "function"],
   ["Entries", "internal/model/entry.go", "class"],
   ["Client", "client/client.go", "class"],
   ["NewClient", "client/client.go", "function"],
+  ["Users", "client/client.go", "function", "Client"],
+  ["UsersContext", "client/client.go", "function", "Client"],
   ["client.go", "client/client.go", "module"],
   ["flush_sessions.go", "internal/cli/flush_sessions.go", "module"],
+  // #1071 — a type whose NAME shares two words with "OIDC provider display name".
+  ["oidcProvider", "internal/oauth2/oidc.go", "class"],
+  ["NewOidcProvider", "internal/oauth2/oidc.go", "function"],
+  ["Config", "internal/oauth2/oidc.go", "function", "oidcProvider"],
+  ["Profile", "internal/oauth2/oidc.go", "function", "oidcProvider"],
+  ["UserExtraKey", "internal/oauth2/oidc.go", "function", "oidcProvider"],
+  ["UserProfileID", "internal/oauth2/oidc.go", "function", "oidcProvider"],
+  ["UnsetUserProfileID", "internal/oauth2/oidc.go", "function", "oidcProvider"],
+  ["PopulateUserWithProfileID", "internal/oauth2/oidc.go", "function", "oidcProvider"],
+  ["PopulateUserCreationWithProfileID", "internal/oauth2/oidc.go", "function", "oidcProvider"],
+  ["OAuth2OIDCProviderName", "internal/config/options.go", "function", "configOptions"],
+  ["WebAuthnDisplayName", "internal/ui/webauthn.go", "function", "WebAuthnUser"],
 ];
 
 /** Rows whose qualified name is not `<filePath>::<name>`, as ingested. */
@@ -71,10 +97,18 @@ const QUALIFIED: Array<[string, string, string, string]> = [
 ];
 
 const rows = [
-  ...MINIFLUX.map(([name, filePath, kind]) => ({
+  ...MINIFLUX.map(([name, filePath, kind, receiver]) => ({
     name,
-    // As ingested: a table is its own name, a module row is its path.
-    qualifiedName: kind === "table" ? name : kind === "module" ? filePath : `${filePath}::${name}`,
+    // As ingested: a table is its own name, a module row is its path, a Go
+    // method is `<file>::<ReceiverType>::<name>` (#1071).
+    qualifiedName:
+      kind === "table"
+        ? name
+        : kind === "module"
+          ? filePath
+          : receiver
+            ? `${filePath}::${receiver}::${name}`
+            : `${filePath}::${name}`,
     kind,
     filePath,
   })),
@@ -225,6 +259,187 @@ describe("symbolNameTerms — what a symbol is CALLED (#1063, PR #1095 review)",
   });
 });
 
+describe("symbolOwnNameTerms — a member's own name, apart from its type (#1071)", () => {
+  const own = (row: { name: string; qualifiedName: string; filePath: string }) => {
+    const terms = symbolOwnNameTerms(row);
+    return terms === null ? null : [...terms].sort();
+  };
+
+  it("is the method's name for a Go method named after its receiver type", () => {
+    expect(
+      own({
+        name: "UserExtraKey",
+        qualifiedName: "internal/oauth2/oidc.go::oidcProvider::UserExtraKey",
+        filePath: "internal/oauth2/oidc.go",
+      }),
+    ).toEqual(["extra", "key", "user"]);
+  });
+
+  it("is the column's name for a column, and the member's for a dotted member", () => {
+    expect(
+      own({
+        name: "ip",
+        qualifiedName: "user_sessions.ip",
+        filePath: "internal/database/migrations.go",
+      }),
+    ).toEqual(["ip"]);
+    expect(
+      own({
+        name: "create",
+        qualifiedName: "com.acme.billing.InvoiceService.create",
+        filePath: "src/main/java/com/acme/billing/InvoiceService.java",
+      }),
+    ).toEqual(["create"]);
+  });
+
+  it("is null for a symbol with no enclosing type: a function, a type, a table, a file", () => {
+    expect(
+      own({
+        name: "NewOidcProvider",
+        qualifiedName: "internal/oauth2/oidc.go::NewOidcProvider",
+        filePath: "internal/oauth2/oidc.go",
+      }),
+    ).toBeNull();
+    expect(
+      own({
+        name: "oidcProvider",
+        qualifiedName: "internal/oauth2/oidc.go::oidcProvider",
+        filePath: "internal/oauth2/oidc.go",
+      }),
+    ).toBeNull();
+    expect(
+      own({ name: "web_sessions", qualifiedName: "web_sessions", filePath: "internal/x.go" }),
+    ).toBeNull();
+    expect(
+      own({ name: "client.go", qualifiedName: "client/client.go", filePath: "client/client.go" }),
+    ).toBeNull();
+    // A path segment written differently from filePath is still a path, not an owner.
+    expect(
+      own({ name: "run", qualifiedName: "./cmd/main.go::run", filePath: "cmd/main.go" }),
+    ).toBeNull();
+  });
+});
+
+/**
+ * #1071 (review of PR #1104) — once a Go method's qualified name carried its
+ * receiver type, a type whose NAME shares two words with a requirement made
+ * every one of its methods a two-shared-terms link, whatever the method is
+ * called. On the upgraded run-7 graph "OIDC provider display name" gained seven
+ * `oidcProvider::*` methods, which pushed the one right symbol
+ * (`configOptions::OAuth2OIDCProviderName`) out of the ten links kept.
+ */
+describe("an enclosing type cannot supply every shared term (#1071)", () => {
+  const gated = () =>
+    new Bm25CodeSymbolSearcher(fakePrisma().prisma, {
+      minSharedTerms: ANALYSIS_LINK_MIN_SHARED_TERMS,
+    });
+  const OIDC = "OIDC provider display name";
+  const METHODS = [
+    "Config",
+    "Profile",
+    "UserExtraKey",
+    "UserProfileID",
+    "UnsetUserProfileID",
+    "PopulateUserWithProfileID",
+    "PopulateUserCreationWithProfileID",
+  ].map((m) => `internal/oauth2/oidc.go::oidcProvider::${m}`);
+
+  it("the premise: by name terms alone each method of the type shares two words", () => {
+    for (const method of METHODS) {
+      expect(sharedNameTerms(OIDC, method).sort()).toEqual(["oidc", "provider"]);
+    }
+    // And without the rule every one of them is a hit.
+    const plain = new Bm25CodeSymbolSearcher(fakePrisma().prisma);
+    return plain.search(OIDC, PROJECT, { limit: 50 }).then((hits) => {
+      expect(hits.map((h) => h.qualifiedName)).toEqual(expect.arrayContaining(METHODS));
+    });
+  });
+
+  it("links none of the type's methods: none shares a word through its own name", async () => {
+    const linked = (await gated().search(OIDC, PROJECT, { limit: 50 })).map((h) => h.qualifiedName);
+    for (const method of METHODS) expect(linked).not.toContain(method);
+  });
+
+  it("still links the type itself and its constructor, which ARE called that", async () => {
+    const linked = (await gated().search(OIDC, PROJECT, { limit: 10 })).map((h) => h.qualifiedName);
+    expect(linked.sort()).toEqual([
+      "internal/oauth2/oidc.go::NewOidcProvider",
+      "internal/oauth2/oidc.go::oidcProvider",
+    ]);
+  });
+
+  it("the type's methods no longer take the places of the symbol the requirement is about", async () => {
+    // The stored run-7 requirement, title and body. Four links are kept here
+    // (ten in production, where the seven methods filled places three to nine).
+    const q =
+      `${OIDC} The OAuth2/OIDC provider display name must default to 'OpenID Connect' ` +
+      "and be overridable via OAUTH2_OIDC_PROVIDER_NAME.";
+    const KEEP = 4;
+    const right = "internal/config/options.go::configOptions::OAuth2OIDCProviderName";
+    const linked = (await gated().search(q, PROJECT, { limit: KEEP })).map((h) => h.qualifiedName);
+    expect(linked).toContain(right);
+    for (const method of METHODS) expect(linked).not.toContain(method);
+    // Without the rule the methods outrank it: this is what production showed.
+    const typeTermsOnly = (
+      await new Bm25CodeSymbolSearcher(fakePrisma().prisma).search(q, PROJECT, {
+        limit: KEEP,
+      })
+    ).map((h) => h.qualifiedName);
+    expect(typeTermsOnly).not.toContain(right);
+    expect(typeTermsOnly.filter((n) => METHODS.includes(n)).length).toBeGreaterThan(0);
+  });
+
+  it("a member links when ONE shared word is its own and the other its type's", async () => {
+    // `handler::showSessionsPage`: "sessions" is the method's, "handler" the type's.
+    const linked = (await gated().search("The handler lists sessions", PROJECT, { limit: 50 })).map(
+      (h) => h.qualifiedName,
+    );
+    expect(linked).toContain("internal/ui/session_list.go::handler::showSessionsPage");
+    // Same type, no word of its own in the requirement.
+    expect(linked).not.toContain("internal/ui/feed_mark_as_read.go::handler::markFeedAsRead");
+  });
+
+  it("a member links on two words of its own name, whatever its type is called", async () => {
+    const linked = (await gated().search(MARK, PROJECT, { limit: 50 })).map((h) => h.qualifiedName);
+    expect(linked).toContain("client/client.go::Client::MarkCategoryAsRead");
+  });
+
+  it("applies to a table's columns the same way: the table's name alone links the table, not each column", async () => {
+    const linked = (
+      await gated().search("Purge the user_sessions table", PROJECT, { limit: 50 })
+    ).map((h) => h.qualifiedName);
+    expect(linked).toContain("user_sessions");
+    // `ip` shares nothing of its own with the requirement.
+    expect(linked).not.toContain("user_sessions.ip");
+    // `user_agent` does: `user` is a word of the column's own name.
+    expect(linked).toContain("user_sessions.user_agent");
+  });
+
+  it("a one-word requirement links a member only on its own name", async () => {
+    const linked = (await gated().search("Provider", PROJECT, { limit: 50 })).map(
+      (h) => h.qualifiedName,
+    );
+    expect(linked).toEqual(
+      expect.arrayContaining([
+        "internal/oauth2/oidc.go::oidcProvider",
+        "internal/config/options.go::configOptions::OAuth2OIDCProviderName",
+      ]),
+    );
+    for (const method of METHODS) expect(linked).not.toContain(method);
+  });
+
+  it("is off with the shared-terms rule: the code agent's seeds are unchanged", async () => {
+    const plain = await new Bm25CodeSymbolSearcher(fakePrisma().prisma).search(OIDC, PROJECT, {
+      limit: 50,
+    });
+    const explicitOne = await new Bm25CodeSymbolSearcher(fakePrisma().prisma, {
+      minSharedTerms: 1,
+    }).search(OIDC, PROJECT, { limit: 50 });
+    expect(explicitOne).toEqual(plain);
+    expect(plain.map((h) => h.qualifiedName)).toEqual(expect.arrayContaining(METHODS));
+  });
+});
+
 describe("requiredSharedTerms (#1063)", () => {
   it("is 1 by default, whatever the query", () => {
     expect(requiredSharedTerms("button terminate sessions")).toBe(1);
@@ -334,17 +549,23 @@ describe("the two-shared-terms rule (#1063)", () => {
   });
 
   it("is applied before the limit, so one-word hits do not crowd out two-word ones", async () => {
-    // `category` is in one name only, so that one-word hit outranks the symbols
-    // whose NAMES carry the two commoner words `web` and `sessions`.
-    const q = "category web sessions";
+    // `descriptors` is in one name only, so that one-word hit ranks among the
+    // symbols whose NAMES carry the two commoner words `web` and `sessions`.
+    const q = "descriptors web sessions";
+    const LIMIT = 2;
     const ungated = await new Bm25CodeSymbolSearcher(fakePrisma().prisma).search(q, PROJECT, {
-      limit: 1,
+      limit: LIMIT,
     });
-    expect(names(ungated)).toEqual(["MarkCategoryAsRead"]);
-    // Filtering after cutting to the limit would leave nothing here.
-    const hits = await gated().search(q, PROJECT, { limit: 1 });
-    expect(hits).toHaveLength(1);
-    expect(sharedNameTerms(q, hits[0]!.qualifiedName).sort()).toEqual(["sessions", "web"]);
+    expect(names(ungated)).toContain("parseDescriptors");
+    expect(sharedNameTerms(q, "internal/reader/sanitizer/srcset.go::parseDescriptors")).toEqual([
+      "descriptors",
+    ]);
+    // Filtering after cutting to the limit would leave one hit here, not two.
+    const hits = await gated().search(q, PROJECT, { limit: LIMIT });
+    expect(hits).toHaveLength(LIMIT);
+    for (const h of hits) {
+      expect(sharedNameTerms(q, h.qualifiedName).sort()).toEqual(["sessions", "web"]);
+    }
   });
 
   it("a one-word requirement links on its word in the NAME, not in the path", async () => {
@@ -402,7 +623,7 @@ describe("path terms are not shared terms (PR #1095 review)", () => {
       minSharedTerms: ANALYSIS_LINK_MIN_SHARED_TERMS,
     });
   const TELEGRAM = "internal/integration/telegrambot/client.go::InlineKeyboardButton";
-  const FORCE = "internal/config/options.go::ForceRefreshInterval";
+  const FORCE = "internal/config/options.go::configOptions::ForceRefreshInterval";
 
   it("the document really does carry the path and the extension", () => {
     expect(tokenizeCode(rowOf(TELEGRAM).qualifiedName)).toEqual(
@@ -443,7 +664,7 @@ describe("path terms are not shared terms (PR #1095 review)", () => {
       limit: 50,
     });
     expect(plain.map((h) => h.qualifiedName)).toEqual(
-      expect.arrayContaining([TELEGRAM, "client/client.go::RefreshFeed"]),
+      expect.arrayContaining([TELEGRAM, "client/client.go::Client::RefreshFeed"]),
     );
     const hits = await gated().search(q, PROJECT, { limit: 50 });
     for (const h of hits) {
@@ -451,13 +672,23 @@ describe("path terms are not shared terms (PR #1095 review)", () => {
     }
     const linked = hits.map((h) => h.qualifiedName);
     expect(linked).not.toContain(TELEGRAM);
-    expect(linked).not.toContain("client/client.go::RefreshFeed");
-    expect(linked).not.toContain("client/client.go::MarkCategoryAsRead");
+    expect(linked).not.toContain("client/client.go::Client::RefreshFeed");
+    expect(linked).not.toContain("client/client.go::Client::MarkCategoryAsRead");
     // `Client` and `NewClient` are called "client", but that is one word.
     expect(linked).not.toContain("client/client.go::Client");
     expect(linked).not.toContain("client/client.go::NewClient");
     // The module row is `client.go`: its extension is not a word either.
     expect(linked).not.toContain("client/client.go");
+    // #1071 — what the probe DOES link now that a Go method carries its
+    // receiver type: `Client::Users` is called "client users", two of the
+    // requirement's words, one of them the method's own. On the pre-#1071 name
+    // (`client/client.go::Users`) this probe linked nothing. The link is weak,
+    // and it is the rule working as written, so it is pinned rather than hidden:
+    // the type may supply one shared term, never both (next describe).
+    expect(linked.sort()).toEqual([
+      "client/client.go::Client::Users",
+      "client/client.go::Client::UsersContext",
+    ]);
   });
 
   it("probe 4: adding 'in the internal model' does not bring ForceRefreshInterval back", async () => {

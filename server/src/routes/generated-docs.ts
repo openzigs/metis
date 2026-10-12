@@ -98,7 +98,9 @@ import {
   parseGeneratedDocVersionManifest,
 } from "../lib/docs-gen/generated-doc-provenance.js";
 import {
+  isExtractorOnlyChange,
   planRegeneration,
+  sameGenerationInputs,
   type GenerationInputSnapshot,
 } from "../lib/docs-gen/regeneration-plan.js";
 import type { RegenerationTask } from "../lib/docs-gen/incremental.js";
@@ -1260,6 +1262,9 @@ export async function generateDocumentAsync(
     const previous = previousManifest?.inputSnapshot ?? null;
     const plan = inputSnapshot ? planRegeneration(previous, inputSnapshot) : null;
     if (automatic && plan?.mode === "unchanged") return;
+    // #1071 — neither does an automatic run start because the code-graph
+    // extractor was upgraded and nothing else changed.
+    if (automatic && inputSnapshot && isExtractorOnlyChange(previous, inputSnapshot)) return;
     const acquired = await prisma.generatedDocument.updateMany({
       where: {
         id: docId,
@@ -1309,8 +1314,11 @@ export async function generateDocumentAsync(
       else if (row.status === "cancelling") run.stop("aborted");
       else if (
         inputSnapshot &&
-        (await captureGenerationInputs(row, await resolveEvidencePolicy(row))).fingerprint !==
-          inputSnapshot.fingerprint
+        // #1071 — an extractor upgrade landing mid-run is not changed inputs.
+        !sameGenerationInputs(
+          inputSnapshot,
+          await captureGenerationInputs(row, await resolveEvidencePolicy(row)),
+        )
       ) {
         log.warn("Generation inputs changed mid-run; stopping it", {
           docId,
@@ -1820,8 +1828,7 @@ export async function generateDocumentAsync(
       throw new UnpublishableGenerationError("aborted", "Regeneration aborted");
     if (
       inputSnapshot &&
-      (await captureGenerationInputs(current, currentPolicy)).fingerprint !==
-        inputSnapshot.fingerprint
+      !sameGenerationInputs(inputSnapshot, await captureGenerationInputs(current, currentPolicy))
     ) {
       throw new UnpublishableGenerationError(
         "inputs-changed",

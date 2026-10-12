@@ -28,6 +28,32 @@ import { goResolutionMetadata } from "../code-graph/go-type-resolution.js";
 
 /** `CodeEdge.metadata` of a Go call ingest bound through its receiver's type (#1071). */
 const RECEIVER_TYPE_METADATA = goResolutionMetadata("receiver-type");
+
+/**
+ * #1071 — whether a Go call ingest bound through its receiver's type
+ * (`goResolution: "receiver-type"`) reaches INTO another layer, and so carries
+ * the #791 writes-only rule ({@link DownstreamCodeEdgeRow.inferred}).
+ *
+ * It does unless caller and callee are declared in the same FILE. A method
+ * calling its own type's helper (`e.getEntry()` inside `entry_pagination_builder.go`)
+ * is one unit of data access: the helper's reads are the caller's reads, and
+ * before #1071 ingest bound exactly these calls (the same-file member rule) as
+ * ordinary full edges. A call into another file is the handler-into-storage
+ * shape #791 was written for — bound by name then, by type now.
+ *
+ * Measured on Miniflux v2.3.3, each of the 1,414 non-test Go functions as a
+ * single seed, against the graph before #1071: with this rule 0 seeds lose a
+ * table and 21 gain (29 links, all calls a name could not bind and a type can);
+ * flagging every receiver-type edge loses tables on 3 seeds; flagging none
+ * gains 433 links. The same PACKAGE instead of the same file is the more Go-like
+ * boundary and also loses nothing (28 seeds gain, 36 links; the six replayed
+ * issues are unchanged). It is not taken: it has no measured benefit, and in a
+ * project that keeps handlers and storage in one package it flags nothing at
+ * all, which is the 433-link case. See docs/ARCHITECTURE.md.
+ */
+export function receiverCallCrossesLayer(callerFile: string, calleeFile: string | null): boolean {
+  return calleeFile === null || callerFile !== calleeFile;
+}
 import { isTestFilePath } from "../code-graph/call-resolution.js";
 import { LIVE_SCHEMA_FILE } from "../code-graph/schema-graph.js";
 
@@ -74,15 +100,22 @@ interface DownstreamCodeEdgeRow {
   fromSymbolId: string;
   toSymbolId: string;
   /**
-   * #791 — true for a Go call made through a receiver or struct field
-   * (`h.store.X()`): one ingest bound by the receiver's type (#1071,
-   * `goResolution: "receiver-type"`), or one it left undecided and impact bound
-   * by name (go-call-resolution.ts). A symbol reached only this way contributes
-   * what it WRITES, not what it reads: a handler's incidental reads (the user,
-   * the session, the integrations row) are fan-out, what it writes is the change
-   * surface. The rule predates #1071, when every such call was name-bound; it is
-   * kept on the same calls now that most are exact, because the reason for it
-   * was never the binding.
+   * #791 — true for a Go call that steps from one layer into another through a
+   * receiver or struct field (`h.store.X()`): one ingest left undecided and
+   * impact bound by name (go-call-resolution.ts), or one ingest bound by the
+   * receiver's type into ANOTHER file (#1071, {@link receiverCallCrossesLayer}).
+   * A symbol reached only this way contributes what it WRITES, not what it
+   * reads: a handler's incidental reads (the user, the session, the
+   * integrations row) are fan-out, what it writes is the change surface.
+   *
+   * The flag is about the shape of the call, not the strength of the binding,
+   * which makes it look backwards in two places, both deliberate: an exact
+   * receiver-type edge across files loses its callee's reads, while a call
+   * ingest bound by NAME evidence (`goResolution: "name"`, the weakest ingest
+   * binding) and a same-file receiver call keep them — as both did before
+   * #1071, when ingest bound them the same way. The set of flagged calls is not
+   * identical to the pre-#1071 one: calls a name could not bind (two candidates)
+   * and a type can are new edges, and their callees' writes are new rows.
    */
   inferred?: boolean;
 }
@@ -1091,15 +1124,25 @@ export class PrismaSchemaImpactDataSource implements SchemaImpactDataSource {
           kind: { in: [...DOWNSTREAM_CALL_EDGE_KINDS] },
           toSymbolId: { not: null },
         },
-        select: { fromSymbolId: true, toSymbolId: true, metadata: true },
+        select: {
+          fromSymbolId: true,
+          toSymbolId: true,
+          metadata: true,
+          filePath: true,
+          toSymbol: { select: { filePath: true } },
+        },
       }),
     );
     const out: DownstreamCodeEdgeRow[] = rows.map((e) => ({
       fromSymbolId: e.fromSymbolId,
       toSymbolId: e.toSymbolId as string,
       // #1071 — ingest now binds `h.store.X()` itself. The edge is exact, but
-      // what #791 said of the handler still holds: its reads are fan-out.
-      ...(e.metadata === RECEIVER_TYPE_METADATA ? { inferred: true } : {}),
+      // what #791 said of the handler still holds: its reads are fan-out. A
+      // method's call to a helper in its own file is not that call.
+      ...(e.metadata === RECEIVER_TYPE_METADATA &&
+      receiverCallCrossesLayer(e.filePath, e.toSymbol?.filePath ?? null)
+        ? { inferred: true }
+        : {}),
     }));
     // #791 — a Go handler reaches storage through calls the ingest left
     // unresolved; follow the ones that bind unambiguously.

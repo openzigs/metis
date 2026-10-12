@@ -2,7 +2,12 @@
 import { prisma } from "../prisma.js";
 import { assertEvidencePolicy, type EvidencePolicy } from "./evidence-policy.js";
 import { filterPrimaryEvidence } from "./evidence-filter.js";
-import { fingerprintInputs, inputHash, type GenerationInputSnapshot } from "./regeneration-plan.js";
+import {
+  EXTRACTOR_INPUT_KEY,
+  fingerprintInputs,
+  inputHash,
+  type GenerationInputSnapshot,
+} from "./regeneration-plan.js";
 import {
   PHASE1_PROMPT_VERSION,
   buildDocsGenProvider,
@@ -131,6 +136,14 @@ export async function captureGenerationInputs(
     entries.set(key, bucket);
   };
   const repositories = await loadRepositorySources(where);
+  // #1071 — which extractor wrote each graph. An upgrade rewrites symbol and
+  // edge rows with no source change; this item is how a later comparison tells
+  // that from a real change (`isExtractorOnlyChange`).
+  items[EXTRACTOR_INPUT_KEY] = hash(
+    [...repositories.values()]
+      .map((r) => [r.repoConnectorId, r.codeGraphId, r.extractorVersion ?? null])
+      .sort((a, b) => String(a[1]).localeCompare(String(b[1]))),
+  );
   const symbolKey = (s: (typeof symbols)[number]): unknown[] => [
     s.graph.repoConnectionId,
     s.codeGraphId,

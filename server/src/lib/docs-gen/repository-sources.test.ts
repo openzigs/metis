@@ -35,6 +35,8 @@ describe("#1354 repository sources", () => {
     findMany.mockResolvedValue(
       ["a", "b"].map((id) => ({
         id: `graph-${id}`,
+        // #1071 — a graph an older extractor wrote has no version recorded.
+        extractorVersion: id === "a" ? 1 : null,
         repoConnection: { id, projectId: "p", deletedAt: null },
       })),
     );
@@ -45,6 +47,7 @@ describe("#1354 repository sources", () => {
         repoConnectorId: id,
         root: path.join(root, id),
         commitSha: null,
+        extractorVersion: id === "a" ? 1 : null,
       })),
     );
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { projectId: "p" } }));

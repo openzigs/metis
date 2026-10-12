@@ -92,3 +92,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Mapper precision rule vs recall](project_mapper-precision-rules-halve-impact-recall.md) — run both evals; option, not global (#1063)
 - [0 findings: read token_usages](project_zero-findings-read-token-usages-first.md) — output == cap + empty reply = reasoning (#1063)
 - [Synthesis field must fail soft](project_synthesis-optional-field-must-fail-soft.md) — one null discards every requirement (#1063)
+- [Binding more edges: check fallback consumers](project_binding-more-edges-check-fallback-consumers.md) — diff replay `tables:` + per-seed (#1071)
+- [Identifier shape change: old fixtures stay green](project_identifier-shape-change-rerun-other-features-probes.md) — re-probe real graph (#1071)
+- [Decided verdict needs positive evidence](project_decided-verdicts-need-positive-evidence.md) — else stay undecided for the fallback (#1071)
+- [Code-graph extractor version](project_code-graph-extractor-version.md) — bump + EXTRACTOR_UPGRADES; upgrade spends no model calls (#1071)

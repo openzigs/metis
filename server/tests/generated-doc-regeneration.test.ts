@@ -13,6 +13,8 @@ const state = vi.hoisted(() => ({
   activeUser: true,
   failCommit: false,
   failTask: false,
+  /** `CodeGraph.extractorVersion` of the one graph (#1071). */
+  extractorVersion: null as number | null,
   mutation: null as null | (() => void),
   stream: vi.fn(),
   search: vi.fn(),
@@ -69,6 +71,7 @@ vi.mock("../src/lib/prisma.js", () => {
         {
           id: "g-r",
           commitSha: "sha",
+          extractorVersion: state.extractorVersion,
           repoConnection: { id: "r", projectId: "p", deletedAt: null },
         },
       ]),
@@ -342,6 +345,7 @@ beforeEach(() => {
   state.edges = [];
   state.chunks = [];
   state.activeUser = true;
+  state.extractorVersion = null;
   state.failCommit = false;
   state.failTask = false;
   state.mutation = null;
@@ -410,6 +414,154 @@ beforeEach(() => {
 afterEach(async () => {
   await scheduler.shutdown();
   vi.unstubAllEnvs();
+});
+
+/**
+ * #1071 (review of PR #1104) — the first refresh after a deploy that changes the
+ * code-graph extractor rewrites symbol names and edge bindings with no
+ * repository change. `refreshRepoConnector` runs unattended, and its inputs
+ * snapshot keys every symbol and edge by qualified name, so without a rule this
+ * queued a `regenerate-generated-document` task for every auto-updating
+ * document: model spend caused by an upgrade alone.
+ */
+describe("a code-graph extractor upgrade spends no model calls by itself (#1071)", () => {
+  /** What the #1071 upgrade does to stored rows: methods renamed, a call newly bound. */
+  const rewriteGraph = () => {
+    for (const s of state.symbols.slice(1)) {
+      s.qualifiedName = String(s.qualifiedName).replace("Api.", "src/api.ts::Api::");
+    }
+    state.edges.push({
+      fromSymbol: state.symbols[1],
+      toSymbol: state.symbols[2],
+      toQualifiedName: "fn2",
+      kind: "calls",
+      filePath: "src/api.ts",
+      line: 3,
+      metadata: '{"goResolution":"receiver-type"}',
+      source: null,
+    });
+  };
+  const upgrade = () => {
+    rewriteGraph();
+    state.extractorVersion = 1;
+  };
+  const snapshot = async () =>
+    captureGenerationInputs(document(), await resolveEvidencePolicy(document()));
+
+  it("the scheduled refresh after the upgrade queues no regeneration and calls no model", async () => {
+    await baseline();
+    const before = await snapshot();
+    upgrade();
+    // The premise: the upgrade does move the inputs fingerprint.
+    expect((await snapshot()).fingerprint).not.toBe(before.fingerprint);
+
+    await ingest();
+
+    expect(state.tasks.size).toBe(0);
+    expect(state.stream).not.toHaveBeenCalled();
+    expect(state.versions).toHaveLength(1);
+    // And every later refresh of the unchanged repository stays quiet too.
+    await ingest();
+    expect(state.tasks.size).toBe(0);
+    expect(state.stream).not.toHaveBeenCalled();
+  });
+
+  it("control: the same rewrite of the graph with NO extractor change regenerates", async () => {
+    await baseline();
+    rewriteGraph();
+    await ingest();
+    expect(state.versions).toHaveLength(2);
+    expect(state.stream).toHaveBeenCalled();
+  });
+
+  it("an upgrade that lands together with a real change still regenerates", async () => {
+    await baseline();
+    upgrade();
+    state.chunks.push({
+      id: "c",
+      documentId: "ref",
+      position: 0,
+      text: "changed reference",
+      metadata: "{}",
+      aclSubjects: "[]",
+      document: {
+        filename: "connector:repo:r:README.md",
+        source: "repo",
+        storagePath: "ref",
+        aclSubjects: "[]",
+      },
+    });
+    await ingest();
+    expect(state.versions).toHaveLength(2);
+  });
+
+  it("the next real change after a quiet upgrade regenerates against the upgraded graph", async () => {
+    await baseline();
+    upgrade();
+    await ingest();
+    expect(state.versions).toHaveLength(1);
+
+    state.symbols[25].contentHash = "edited";
+    state.chunks.push({
+      id: "c2",
+      documentId: "ref",
+      position: 0,
+      text: "edited source",
+      metadata: "{}",
+      aclSubjects: "[]",
+      document: {
+        filename: "connector:repo:r:src/api.ts",
+        source: "repo",
+        storagePath: "ref",
+        aclSubjects: "[]",
+      },
+    });
+    await ingest();
+    expect(state.versions).toHaveLength(2);
+    // The new version's baseline carries the current extractor: nothing is masked after it.
+    const after = parseGeneratedDocVersionManifest(state.versions[1].provenanceManifest);
+    expect(after.inputSnapshot?.fingerprint).toBe((await snapshot()).fingerprint);
+    rewriteGraph();
+    await ingest();
+    expect(state.versions).toHaveLength(3);
+  });
+
+  it("a regeneration task already queued for the upgrade alone does nothing when it runs", async () => {
+    // A task an older server version queued for exactly this change, picked up
+    // after the deploy: its fingerprint is current, so only the plan can stop it.
+    await baseline();
+    upgrade();
+    const current = await snapshot();
+    await runRegenerationTask(
+      {
+        projectId: "p",
+        generatedDocumentId: "d",
+        expectedVersion: 1,
+        fingerprint: current.fingerprint,
+      },
+      new AbortController().signal,
+    );
+    expect(state.stream).not.toHaveBeenCalled();
+    expect(state.versions).toHaveLength(1);
+    expect(state.doc.status).toBe("ready");
+  });
+
+  it("an upgrade that lands while a document is generating does not stop or restart the run", async () => {
+    const before = await snapshot();
+    state.mutation = upgrade;
+    await ingest();
+    // One run, published once, with the inputs it captured — not fenced as changed.
+    expect(state.versions).toHaveLength(1);
+    expect(state.publications).toHaveBeenCalledTimes(1);
+    expect(
+      parseGeneratedDocVersionManifest(state.versions[0].provenanceManifest).inputSnapshot
+        ?.fingerprint,
+    ).toBe(before.fingerprint);
+    const calls = state.stream.mock.calls.length;
+    await ingest();
+    expect(state.stream).toHaveBeenCalledTimes(calls);
+    expect(state.versions).toHaveLength(1);
+  });
 });
 
 describe("successful ingest regeneration (#1356)", () => {

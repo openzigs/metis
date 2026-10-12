@@ -11,7 +11,6 @@
  * edge feeds the impact blast radius, Tested-by and the plan localisation walk.
  */
 import { beforeAll, describe, expect, it } from "vitest";
-import { isTestFilePath } from "../../../src/lib/code-graph/call-resolution.js";
 import {
   createGoResolver,
   goDefaultImportName,
@@ -34,7 +33,8 @@ function verdicts(tree: Tree, modules: GoModule[] = MODULE): Map<string, string>
     parsed.map((p) => ({
       filePath: p.filePath,
       facts: p.goFacts!,
-      isTest: isTestFilePath(p.filePath),
+      // Go's own rule, as ingest applies it: `_test.go` and nothing else.
+      isTest: p.filePath.endsWith("_test.go"),
     })),
     modules,
   );
@@ -845,7 +845,9 @@ func handle(w http.ResponseWriter, r *http.Request) {
 `,
     });
     // The project declares `Header` and `Set` too; the receiver says they are not these.
-    expect(v.get("p/t.go:Header")).toBe("unbound external");
+    // `http.ResponseWriter` is an interface, so `Header` is dispatched at run time;
+    // what it returns is a standard-library type, so `Set` is outside the project.
+    expect(v.get("p/t.go:Header")).toBe("unbound interface");
     expect(v.get("p/t.go:Set")).toBe("unbound external");
     expect(v.get("p/t.go:Query")).toBe("unbound external");
   });
