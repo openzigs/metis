@@ -32,6 +32,8 @@ interface StepRow {
 
 interface UsageRow {
   sessionId: string | null;
+  projectId: string;
+  requestTokens: string | null;
   provider: string;
   model: string;
   inputTokens: number;
@@ -136,11 +138,13 @@ vi.mock("../src/lib/prisma.js", () => ({
         }: {
           where: {
             sessionId?: string | null | { in: string[] };
+            projectId?: string;
             createdAt?: { gt?: Date; gte?: Date; lte?: Date };
           };
         }) => {
           if (usageReadFails) throw new Error("ledger unavailable");
           return usage.filter((u) => {
+            if (where.projectId !== undefined && u.projectId !== where.projectId) return false;
             const sid = where.sessionId;
             if (sid && typeof sid === "object") {
               if (u.sessionId === null || !sid.in.includes(u.sessionId)) return false;
@@ -211,6 +215,8 @@ function seedUsage(row: Partial<UsageRow> & { sessionId: string | null; createdA
         (row.cacheReadTokens ?? 0) +
         (row.cacheWriteTokens ?? 0),
     sessionId: row.sessionId,
+    projectId: row.projectId ?? "p-default",
+    requestTokens: row.requestTokens ?? null,
     createdAt: row.createdAt,
   });
 }
@@ -332,7 +338,12 @@ describe("replay/runs-service", () => {
 describe("replay/runs-service computeRunCost", () => {
   it("returns zero (no throw) when the run does not exist", async () => {
     const cost = await computeRunCost("missing");
-    expect(cost).toEqual({ costCents: 0, costUsd: 0, totalTokens: 0 });
+    expect(cost).toEqual({
+      costCents: 0,
+      costUsd: 0,
+      totalTokens: 0,
+      tokens: { withCache: 0, withoutCache: 0 },
+    });
   });
 
   it("returns zero when no usage rows fall in the run window", async () => {
@@ -347,7 +358,12 @@ describe("replay/runs-service computeRunCost", () => {
       outputTokens: 1000,
     });
     const cost = await computeRunCost(runId);
-    expect(cost).toEqual({ costCents: 0, costUsd: 0, totalTokens: 0 });
+    expect(cost).toEqual({
+      costCents: 0,
+      costUsd: 0,
+      totalTokens: 0,
+      tokens: { withCache: 0, withoutCache: 0 },
+    });
   });
 
   it("attributes no cost to an unpriced model but still counts its tokens (#22)", async () => {
@@ -370,7 +386,12 @@ describe("replay/runs-service computeRunCost", () => {
       outputTokens: 1_000_000,
     });
     const cost = await computeRunCost(runId);
-    expect(cost).toEqual({ costCents: 6, costUsd: 0.06, totalTokens: 2_012_000 });
+    expect(cost).toEqual({
+      costCents: 6,
+      costUsd: 0.06,
+      totalTokens: 2_012_000,
+      tokens: { withCache: 2_012_000, withoutCache: 2_012_000 },
+    });
   });
 
   it("aggregates in-window usage grouped by provider+model into integer cents", async () => {
@@ -803,5 +824,174 @@ describe("replay/runs-service — exact, unrounded run cost (#977)", () => {
     const items = await listRuns({});
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ id: a, costCents: 4, costUsd: null });
+  });
+});
+
+describe("replay/runs-service — run tokens read the ledger (#1007)", () => {
+  async function run(
+    sessionId: string,
+    opts: { kind?: "analysis" | "chat"; projectId?: string; running?: boolean } = {},
+  ): Promise<string> {
+    const id = await startRun({ sessionId, kind: opts.kind, projectId: opts.projectId });
+    const row = runs.find((r) => r.id === id)!;
+    row.startedAt = new Date("2026-01-01T00:00:00Z");
+    row.completedAt = opts.running ? null : new Date("2026-01-01T01:00:00Z");
+    if (!opts.running) row.status = "completed";
+    return id;
+  }
+  const at = (minute: number) => new Date(Date.UTC(2026, 0, 1, 0, minute));
+
+  it("reports tokens with and without cache, each cached token once", async () => {
+    const id = await run("tok-1");
+    // Native Anthropic: input excludes the cache fields.
+    seedUsage({
+      sessionId: "tok-1",
+      createdAt: at(10),
+      inputTokens: 1_000,
+      outputTokens: 200,
+      cacheReadTokens: 3_000,
+      cacheWriteTokens: 500,
+    });
+    // OpenAI convention: the 800 prompt tokens INCLUDE the 600 cache reads.
+    seedUsage({
+      sessionId: "tok-1",
+      provider: "openai",
+      model: "gpt-4o",
+      createdAt: at(11),
+      inputTokens: 800,
+      outputTokens: 50,
+      cacheReadTokens: 600,
+    });
+    const cost = await computeRunCost(id);
+    expect(cost.tokens).toEqual({
+      withoutCache: 1_000 + 200 + (800 - 600) + 50,
+      withCache: 1_000 + 200 + 3_000 + 500 + 800 + 50,
+    });
+    expect(cost.totalTokens).toBe(cost.tokens.withCache);
+  });
+
+  it("listRuns reads each run's tokens from the ledger, not the stored column", async () => {
+    const id = await run("tok-list", { kind: "analysis" });
+    runs.find((r) => r.id === id)!.totalTokens = 439_244;
+    seedUsage({ sessionId: "tok-list", createdAt: at(10), inputTokens: 400, outputTokens: 57 });
+    seedUsage({ sessionId: "tok-list", createdAt: at(11), inputTokens: 1, cacheReadTokens: 87 });
+    // After the run finished: an analysis run still counts it (#943).
+    seedUsage({
+      sessionId: "tok-list",
+      createdAt: new Date("2026-01-02T00:00:00Z"),
+      inputTokens: 2,
+    });
+    const [item] = await listRuns({});
+    expect(item!.tokens).toEqual({ withoutCache: 460, withCache: 547 });
+    expect(item!.totalTokens).toBe(439_244);
+  });
+
+  it("a run that is going shows its ledger total so far; one with no row yet shows zero", async () => {
+    const going = await run("tok-going", { running: true });
+    const quiet = await run("tok-quiet", { running: true });
+    seedUsage({
+      sessionId: "tok-going",
+      createdAt: new Date(Date.now() - 1_000),
+      inputTokens: 700,
+      cacheReadTokens: 50,
+    });
+    // The fake stamps `startedAt` at creation; open the window for the row.
+    runs.find((r) => r.id === going)!.startedAt = new Date(Date.now() - 60_000);
+    const items = await listRuns({});
+    const byId = new Map(items.map((r) => [r.id, r]));
+    expect(byId.get(going)).toMatchObject({
+      status: "running",
+      totalTokens: 0,
+      tokens: { withoutCache: 700, withCache: 750 },
+    });
+    expect(byId.get(quiet)!.tokens).toEqual({ withoutCache: 0, withCache: 0 });
+  });
+
+  it("windows a chat-kind run's tokens exactly as its cost", async () => {
+    const id = await run("tok-win", { kind: "chat" });
+    seedUsage({ sessionId: "tok-win", createdAt: at(10), inputTokens: 100 });
+    seedUsage({
+      sessionId: "tok-win",
+      createdAt: new Date("2026-01-01T02:00:00Z"),
+      inputTokens: 9_000,
+    });
+    const [item] = await listRuns({});
+    expect(item!.id).toBe(id);
+    expect(item!.tokens).toEqual({ withoutCache: 100, withCache: 100 });
+    expect((await computeRunCost(id)).tokens).toEqual(item!.tokens);
+  });
+
+  it("counts only the run's own project's rows, in the list and for one run", async () => {
+    const id = await run("tok-scope", { kind: "analysis", projectId: "p-a" });
+    seedUsage({ sessionId: "tok-scope", projectId: "p-a", createdAt: at(10), inputTokens: 300 });
+    // The same session id billed to another project.
+    seedUsage({
+      sessionId: "tok-scope",
+      projectId: "p-other",
+      createdAt: at(11),
+      inputTokens: 7_000,
+    });
+    const [item] = await listRuns({});
+    expect(item!.tokens).toEqual({ withoutCache: 300, withCache: 300 });
+    expect(item!.costUsd).toBeCloseTo(0.0009, 10);
+    const cost = await computeRunCost(id);
+    expect(cost.tokens).toEqual({ withoutCache: 300, withCache: 300 });
+    expect(cost.costUsd).toBeCloseTo(0.0009, 10);
+  });
+
+  it("a project-less run is not narrowed by project", async () => {
+    const id = await run("tok-system", { kind: "analysis" });
+    seedUsage({ sessionId: "tok-system", projectId: "p-x", createdAt: at(10), inputTokens: 40 });
+    expect((await computeRunCost(id)).tokens.withCache).toBe(40);
+    expect((await listRuns({}))[0]!.tokens!.withCache).toBe(40);
+  });
+
+  it("getRun carries the ledger tokens for every kind of run", async () => {
+    const analysis = await run("tok-get-a", { kind: "analysis" });
+    const chat = await run("tok-get-c", { kind: "chat" });
+    seedUsage({ sessionId: "tok-get-a", createdAt: at(10), inputTokens: 10, cacheReadTokens: 5 });
+    seedUsage({ sessionId: "tok-get-c", createdAt: at(10), inputTokens: 20, outputTokens: 1 });
+    expect((await getRun(analysis))!.run.tokens).toEqual({ withoutCache: 10, withCache: 15 });
+    expect((await getRun(chat))!.run.tokens).toEqual({ withoutCache: 21, withCache: 21 });
+  });
+
+  it("getRun keeps a non-analysis run's stored cost; only its tokens are read live", async () => {
+    const chat = await run("tok-cost-c", { kind: "chat" });
+    runs.find((r) => r.id === chat)!.costCents = 7;
+    // 100,000 input tokens: 30¢ at the current rate card, not the stored 7¢.
+    seedUsage({ sessionId: "tok-cost-c", createdAt: at(10), inputTokens: 100_000 });
+    const detail = await getRun(chat);
+    expect(detail!.run.costCents).toBe(7);
+    expect(detail!.run.tokens).toEqual({ withoutCache: 100_000, withCache: 100_000 });
+  });
+
+  it("tokens are null, and the run still loads, when the ledger cannot be read", async () => {
+    const id = await run("tok-down", { kind: "analysis" });
+    runs.find((r) => r.id === id)!.costCents = 4;
+    usageReadFails = true;
+    const [item] = await listRuns({});
+    expect(item).toMatchObject({ id, tokens: null, costUsd: null });
+    const detail = await getRun(id);
+    expect(detail!.run).toMatchObject({ id, tokens: null, costCents: 4 });
+  });
+
+  it("splits a summed row into its requests for the tokens as for the cost (#1080)", async () => {
+    const id = await run("tok-summed", { kind: "analysis" });
+    // One row summing two Haiku 5.5 requests of 60,000 prompt tokens each.
+    seedUsage({
+      sessionId: "tok-summed",
+      model: "claude-haiku-5-5",
+      createdAt: at(10),
+      inputTokens: 120_000,
+      outputTokens: 200,
+      requestTokens: JSON.stringify([
+        [60_000, 100, 0, 0],
+        [60_000, 100, 0, 0],
+      ]),
+    });
+    const cost = await computeRunCost(id);
+    expect(cost.tokens).toEqual({ withoutCache: 120_200, withCache: 120_200 });
+    // 120,000 × $0.10/M + 200 × $0.50/M: each request under the 100,000 threshold.
+    expect(cost.costUsd).toBeCloseTo(0.0121, 10);
   });
 });

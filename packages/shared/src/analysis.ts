@@ -1152,9 +1152,24 @@ export function isAgentPhaseResultKey(key: unknown): key is AgentRef {
   return typeof key === "string" && AGENT_PHASE_KEY_RE.test(key);
 }
 
+/**
+ * Issue #1007 — a run's tokens as the project ledger (`token_usages`) has them,
+ * the one definition every run surface shows. `withoutCache` is fresh input +
+ * output; `withCache` adds cache reads and cache writes, each counted once.
+ */
+export interface LedgerTokens {
+  withCache: number;
+  withoutCache: number;
+}
+
 /** #977 — an analysis's ledger spend so far; see {@link AnalysisSnapshot.ledgerUsage}. */
 export interface AnalysisLedgerUsage {
   totalTokens: number;
+  /**
+   * #1007 — the same rows as {@link LedgerTokens}, which is what the page
+   * shows. Absent when only the totals could be read.
+   */
+  tokens?: LedgerTokens;
   /** Unrounded USD of the priced calls; `null` when none was priced. */
   costUsd: number | null;
   unpricedTokens: number;

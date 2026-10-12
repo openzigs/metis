@@ -2,6 +2,7 @@
  * Epic #158 — typed wrappers around `/api/runs` (replay) and
  * `/api/projects/:id/agents-md` (interop) endpoints.
  */
+import type { LedgerTokens } from "@metis/shared";
 import { apiFetch } from "@/lib/api-client";
 
 export type AgentRunStatus = "running" | "completed" | "failed" | "cancelled";
@@ -22,7 +23,33 @@ export interface AgentRunSummary {
    * or absent when it could not be read; the view falls back to `costCents`.
    */
   costUsd?: number | null;
+  /**
+   * #1007 — the run's tokens from the ledger, with and without cache; they
+   * move while the run goes. `null` or absent when the ledger could not be
+   * read. `totalTokens` is the total stored when the run finished.
+   */
+  tokens?: LedgerTokens | null;
   stepCount: number;
+}
+
+/**
+ * #1007 — a chat turn as the usage ledger recorded it. A chat turn is not a
+ * run (it has no replay timeline); this is where its cost is read.
+ */
+export interface ChatTurnSummary {
+  id: string;
+  sessionId: string | null;
+  projectId: string;
+  /** `chat`, `chat-estimated` or `chat-failed`. */
+  step: string;
+  provider: string;
+  model: string;
+  createdAt: string;
+  /** Model calls in the turn; more than one when it ran a tool loop. */
+  requests: number;
+  tokens: LedgerTokens;
+  /** Unrounded USD from the ledger; `null` when the model is unpriced. */
+  costUsd: number | null;
 }
 
 export interface AgentRunStep {
@@ -57,6 +84,15 @@ export const runsApi = {
     }
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return apiFetch<{ items: AgentRunSummary[] }>(`/runs${suffix}`);
+  },
+  /** #1007 — chat turns from the usage ledger, under the same filters. */
+  chatTurns(filters: AgentRunListFilters = {}): Promise<{ items: ChatTurnSummary[] }> {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(filters)) {
+      if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
+    }
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return apiFetch<{ items: ChatTurnSummary[] }>(`/runs/chat-turns${suffix}`);
   },
   get(id: string): Promise<AgentRunDetail> {
     return apiFetch<AgentRunDetail>(`/runs/${encodeURIComponent(id)}`);

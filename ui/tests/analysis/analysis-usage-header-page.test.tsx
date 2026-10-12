@@ -65,7 +65,12 @@ const { RUNNING, USAGE } = vi.hoisted(() => ({
     totalTokens: 0,
     inputTokens: 0,
     outputTokens: 0,
-    ledgerUsage: { totalTokens: 41_000, costUsd: 0.0123, unpricedTokens: 0 },
+    ledgerUsage: {
+      totalTokens: 52_300,
+      costUsd: 0.0123,
+      unpricedTokens: 0,
+      tokens: { withoutCache: 41_000, withCache: 52_300 },
+    },
     errorMessage: null,
     metadata: null,
     agentResults: [],
@@ -96,7 +101,29 @@ vi.mock("@/lib/analysis-api", () => ({
   analysisApi: {
     listForProject: vi.fn().mockResolvedValue({
       items: [
-        { id: "an-1", status: "running", startedAt: new Date().toISOString(), totalTokens: 0 },
+        {
+          id: "an-1",
+          status: "running",
+          startedAt: new Date().toISOString(),
+          totalTokens: 0,
+          ledgerTokens: { withoutCache: 41_000, withCache: 52_300 },
+        },
+        // Going, nothing spent yet.
+        {
+          id: "an-0",
+          status: "running",
+          startedAt: new Date(Date.now() - 60_000).toISOString(),
+          totalTokens: 0,
+          ledgerTokens: { withoutCache: 0, withCache: 0 },
+        },
+        // Finished: the stored total (439.2k) is not what is shown.
+        {
+          id: "an-done",
+          status: "completed",
+          startedAt: new Date(Date.now() - 120_000).toISOString(),
+          totalTokens: 439_244,
+          ledgerTokens: { withoutCache: 457_901, withCache: 545_197 },
+        },
       ],
     }),
     get: vi.fn().mockResolvedValue(RUNNING),
@@ -214,7 +241,25 @@ describe("analysis page usage header (#977)", () => {
   it("shows a running analysis's ledger tokens and cost, not 0 tok", async () => {
     renderPage();
     const started = await screen.findByText(/^Started /);
-    await waitFor(() => expect(started).toHaveTextContent("41.0k tok · $0.0123"));
+    await waitFor(() =>
+      expect(started).toHaveTextContent("41.0k tok without cache · 52.3k with cache · $0.0123"),
+    );
     expect(started.textContent).not.toMatch(/· 0 tok/);
+  });
+
+  it("the run list shows the same ledger figures as the header, and never 0 tok for a run that is going (#1007)", async () => {
+    renderPage();
+    await screen.findByText(/^Started /);
+    const tokens = (await screen.findAllByTestId("analysis-past-run-tokens")).map(
+      (el) => el.textContent,
+    );
+    expect(tokens).toEqual([
+      "41.0k tok without cache · 52.3k with cache",
+      "in progress",
+      "457.9k tok without cache · 545.2k with cache",
+    ]);
+    // The selected run's header and its list row give the same two figures.
+    expect(screen.getByTestId("analysis-run-spend").textContent).toContain(tokens[0]);
+    expect(tokens.join(" ")).not.toContain("439.2k");
   });
 });

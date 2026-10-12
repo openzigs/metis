@@ -27,6 +27,7 @@ import type {
   GapReport,
   RequirementDiff,
   SpecKitHandoffRecord,
+  LedgerTokens,
 } from "@metis/shared";
 
 export type {
@@ -251,6 +252,12 @@ export interface AnalysisListItem {
   startedAt: string;
   completedAt: string | null;
   totalTokens: number;
+  /**
+   * #1007 — the run's tokens from the ledger, the figure the run header and
+   * `/runs` show; `totalTokens` is the total stored when the run finished.
+   * Null or absent when the ledger could not be read.
+   */
+  ledgerTokens?: LedgerTokens | null;
   errorMessage: string | null;
   /** #999 — how many of this run's requirements sit in each review status. */
   requirementCounts: Record<RequirementReviewStatus, number>;

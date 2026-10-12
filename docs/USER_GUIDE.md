@@ -1982,6 +1982,10 @@ sequence number and the date-time it started — for example **"Run #3 — Jun 2
 glance which is newer. The run's short id is still shown beneath the label as a muted
 secondary token for copy / deep-link purposes; it is no longer the primary label.
 
+**Token figures on a run.** A run's tokens read the usage ledger everywhere they are shown — this list, the run's header, the **Agent Runs** page (`/runs`) and a run's own page — and always as two named figures, for example **"457.9k tok without cache · 545.2k with cache"**. *Without cache* is fresh input plus output. *With cache* adds the tokens read from and written to the prompt cache, each counted once. The figures move while a run is going; a run that has not made its first model call reads **in progress**. A run from before analysis spend was metered has no ledger rows and reads **"… tok recorded at finish (not in the ledger)"**.
+
+**Chat turns.** A chat turn is not a run and has no timeline to replay, so it is not in the runs table. The **Agent Runs** page lists chat turns in their own **Chat turns** table, read from the usage ledger: one row per turn with its model, the number of model calls it made, its tokens with and without cache and its exact cost to four decimal places. The Project ID, Session ID and date filters apply to both tables. You see the chat turns of the projects you can open. Chat in a session that belongs to no project is not in a project's ledger and is not listed.
+
 Permission required: `analysis.run` to trigger, `analysis.read` to view results.
 
 ### 13.9 Multi-Project Impact Analysis

@@ -5,6 +5,9 @@
  * returns the same payload as `:id`; the alternate name is purely for UI
  * clarity.
  *
+ * `GET /chat-turns` (#1007) reads the usage ledger instead: a chat turn is not
+ * a run, and its cost is the ledger row the turn already wrote.
+ *
  * Tenant isolation: every `:id*` route runs through `requireRunProjectAccess`
  * which loads the run, enforces project membership, and stashes the result
  * on `res.locals.run` so handlers re-use it without a second DB hit (#419).
@@ -15,6 +18,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireRunProjectAccess } from "../middleware/require-run-project-access.js";
 import { listRuns } from "../lib/replay/runs-service.js";
+import { listChatTurns } from "../lib/ai/conversation/chat-turn-ledger.js";
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import { isAdminActor, listAccessibleProjectIds } from "../lib/acp/authz.js";
 import { AppError } from "../middleware/error-handler.js";
@@ -49,6 +53,33 @@ export function runsRouter(): Router {
       ? undefined
       : await listAccessibleProjectIds(req.user);
     const items = await listRuns({ projectId, sessionId, from, to, limit, accessibleProjectIds });
+    res.json(ok({ items }));
+  });
+
+  // #1007 — chat turns are not runs; this lists them from the usage ledger so
+  // a chat turn's cost can be read on `/runs`. Project-scoped exactly like the
+  // list above: an explicit `?projectId=` must be reachable (404 otherwise) and
+  // a non-admin is always narrowed to their own projects, so `?sessionId=`
+  // cannot surface another tenant's spend. Registered before `/:id`.
+  r.get("/chat-turns", requireAuth, requirePermission("analysis.read"), async (req, res) => {
+    if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+    const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
+    const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
+    const from = parseDate(req.query.from);
+    const to = parseDate(req.query.to);
+    const limit = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : undefined;
+    if (projectId) await assertProjectAccess(req.user, projectId);
+    const accessibleProjectIds = isAdminActor(req.user)
+      ? undefined
+      : await listAccessibleProjectIds(req.user);
+    const items = await listChatTurns({
+      projectId,
+      sessionId,
+      from,
+      to,
+      limit,
+      accessibleProjectIds,
+    });
     res.json(ok({ items }));
   });
 

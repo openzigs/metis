@@ -84,6 +84,7 @@ import { asDocumentSource, type DocumentSource } from "../documents/document-sou
 import type { TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { sumLedgerUsage } from "../finops/ledger-totals.js";
+import { sessionLedgerTokens } from "../finops/ledger-usage-summary.js";
 import { isServerAuthored } from "./server-authored.js";
 import { CODE_GRAPH_DOCUMENT_PREFIX } from "./fused-code-chunks.js";
 import type { ToolCallTelemetry } from "./tool-telemetry.js";
@@ -1309,7 +1310,25 @@ export async function listAnalysesForProject(projectId: string) {
     projectId,
     runs.map((r) => r.id),
   );
-  return runs.map((r) => ({ ...r, requirementCounts: counts.get(r.id) as RequirementCounts }));
+  // #1007 — each run's tokens from the ledger, the figure the run header and
+  // `/runs` show. `totalTokens` is written when a run finishes: it read "0 tok"
+  // for a running one and missed spend after the run. `null` when the ledger
+  // could not be read — accounting never fails the list.
+  const ledger = await sessionLedgerTokens(
+    projectId,
+    runs.map((r) => r.id),
+  ).catch((err: unknown) => {
+    log.warn("analysis list ledger tokens could not be read", {
+      projectId,
+      error: (err as Error).message,
+    });
+    return null;
+  });
+  return runs.map((r) => ({
+    ...r,
+    requirementCounts: counts.get(r.id) as RequirementCounts,
+    ledgerTokens: ledger ? (ledger.get(r.id) ?? { withCache: 0, withoutCache: 0 }) : null,
+  }));
 }
 
 export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot | null> {
@@ -1353,7 +1372,17 @@ async function readAnalysisLedgerUsage(
 ): Promise<AnalysisSnapshot["ledgerUsage"]> {
   try {
     const t = await sumLedgerUsage({ projectId, sessionId: analysisId });
-    return { totalTokens: t.totalTokens, costUsd: t.costUsd, unpricedTokens: t.unpricedTokens };
+    const usage = {
+      totalTokens: t.totalTokens,
+      costUsd: t.costUsd,
+      unpricedTokens: t.unpricedTokens,
+    };
+    // #1007 — the tokens as the run lists show them, from the same rows.
+    const tokens = await sessionLedgerTokens(projectId, [analysisId]).then(
+      (bySession) => bySession.get(analysisId) ?? { withCache: 0, withoutCache: 0 },
+      () => undefined,
+    );
+    return tokens ? { ...usage, tokens } : usage;
   } catch (err) {
     log.warn("analysis ledger usage could not be read", {
       analysisId,

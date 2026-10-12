@@ -10,6 +10,7 @@ vi.mock("@/lib/runs-api", () => ({
     list: vi.fn(),
     get: vi.fn(),
     replay: vi.fn(),
+    chatTurns: vi.fn(async () => ({ items: [] })),
   },
   agentsMdApi: {
     getMarkdown: vi.fn(),

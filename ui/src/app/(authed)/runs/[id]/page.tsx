@@ -14,6 +14,7 @@ import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { Card } from "@/components/ui/card";
 import { runsApi, type AgentRunStep } from "@/lib/runs-api";
+import { runTokensLabel } from "@/lib/run-tokens";
 import { SandboxStatusBadge } from "@/components/sandbox/SandboxStatusBadge";
 import { SandboxSessionTable } from "@/components/sandbox/SandboxSessionTable";
 import { PageHeader } from "@/components/ui/page-header";
@@ -148,8 +149,14 @@ export default function RunDetailPage() {
               </div>
             </div>
             <div>
-              <div className="text-xs uppercase text-muted-foreground">Total tokens</div>
-              <div className="font-medium">{detail.data.run.totalTokens ?? "—"}</div>
+              <div className="text-xs uppercase text-muted-foreground">Tokens (usage ledger)</div>
+              <div className="font-medium" data-testid="run-tokens">
+                {runTokensLabel({
+                  tokens: detail.data.run.tokens,
+                  storedTotal: detail.data.run.totalTokens,
+                  status: detail.data.run.status,
+                })}
+              </div>
             </div>
           </Card>
 
