@@ -21,8 +21,19 @@ const state = vi.hoisted(() => ({
   laterMutations: [] as Array<() => void>,
   /** What the next (mocked) ingest does to the graph before it returns, as the real one would. */
   duringIngest: null as null | (() => void),
-  /** A clock that only moves forward, one second a tick: versions and upgrade marks are ordered. */
+  /** The one `GeneratedDocumentAcknowledgement` row of the document, when there is one. */
+  ack: null as null | {
+    documentId: string;
+    version: number;
+    upgradedAt: Date;
+    fingerprint: string;
+  },
+  /**
+   * A clock that only moves forward, one second a tick, so versions and upgrade
+   * marks are ordered. Inside the #1071 block it is also what `new Date()` reads.
+   */
   clock: 0,
+  tick: (): Date => new Date(),
   mutation: null as null | (() => void),
   stream: vi.fn(),
   search: vi.fn(),
@@ -149,18 +160,16 @@ vi.mock("../src/lib/prisma.js", () => {
       findFirst: vi.fn(async () => state.versions.at(-1) ?? null),
       create: vi.fn(async ({ data }) => {
         // What the database adds to a new row.
-        const row = {
-          createdAt: new Date((state.clock += 1000)),
-          acknowledgedInputs: null,
-          ...data,
-        };
+        const row = { createdAt: state.tick(), ...data };
         state.versions.push(row);
         return row;
       }),
-      updateMany: vi.fn(async ({ where, data }) => {
-        const rows = state.versions.filter((v) => v.version === where.version);
-        for (const row of rows) Object.assign(row, data);
-        return { count: rows.length };
+    },
+    generatedDocumentAcknowledgement: {
+      findUnique: vi.fn(async () => (state.ack ? { ...state.ack } : null)),
+      upsert: vi.fn(async ({ create, update }) => {
+        state.ack = state.ack ? { ...state.ack, ...update } : { ...create };
+        return { ...state.ack };
       }),
     },
     task: {
@@ -359,8 +368,7 @@ async function baseline() {
   );
   state.versions.push({
     version: 1,
-    createdAt: new Date((state.clock += 1000)),
-    acknowledgedInputs: null,
+    createdAt: state.tick(),
     provenanceManifest: JSON.stringify({
       ...legacyGeneratedDocVersionManifest({
         projectId: "p",
@@ -382,7 +390,13 @@ beforeEach(() => {
   state.otherGraphUpgradedAt = null;
   state.laterMutations = [];
   state.duringIngest = null;
+  state.ack = null;
   state.clock = Date.UTC(2026, 0, 1);
+  state.tick = () => {
+    state.clock += 1000;
+    if (vi.isFakeTimers()) vi.setSystemTime(state.clock);
+    return new Date(state.clock);
+  };
   state.failCommit = false;
   state.failTask = false;
   state.mutation = null;
@@ -494,7 +508,7 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
   const upgradeOnNextIngest = (prefix?: string) => {
     state.duringIngest = () => {
       rewriteGraph(prefix);
-      state.extractorUpgradedAt = new Date((state.clock += 1000));
+      state.extractorUpgradedAt = state.tick();
     };
   };
   /** A change of graph rows with no source change and no upgrade: a lineage backfill, say. */
@@ -512,13 +526,18 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
   };
   const snapshot = async () =>
     captureGenerationInputs(document(), await resolveEvidencePolicy(document()));
-  const acknowledged = (version = 0) =>
-    state.versions[version].acknowledgedInputs
-      ? (JSON.parse(String(state.versions[version].acknowledgedInputs)) as {
-          upgradedAt: string;
-          snapshot: { fingerprint: string };
-        })
-      : null;
+  // The tests own the clock: `new Date()` in the code under test reads it, so
+  // "before" and "after" are what the test says, never a race against the wall.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(state.clock);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  /** What version `index` is acknowledged to stand for; null when nothing is, or only an older version was. */
+  const acknowledged = (index = 0) =>
+    state.ack && state.ack.version === state.versions[index].version ? state.ack : null;
   const quiet = () => {
     expect(state.tasks.size).toBe(0);
     expect(state.stream).not.toHaveBeenCalled();
@@ -542,8 +561,8 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
         ?.fingerprint,
     ).toBe(before.fingerprint);
     // …and beside it the upgraded inputs are acknowledged, against that upgrade's mark.
-    expect(acknowledged()?.snapshot.fingerprint).toBe(after.fingerprint);
-    expect(acknowledged()?.upgradedAt).toBe(state.extractorUpgradedAt!.toISOString());
+    expect(acknowledged()?.fingerprint).toBe(after.fingerprint);
+    expect(acknowledged()?.upgradedAt).toEqual(state.extractorUpgradedAt);
 
     // Every later refresh of the unchanged repository stays quiet too.
     await ingest();
@@ -593,7 +612,7 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
 
   it("a mark OLDER than the document's version is not evidence for a later change", async () => {
     // The graph was upgraded, and the document was generated from it afterwards.
-    state.extractorUpgradedAt = new Date((state.clock += 1000));
+    state.extractorUpgradedAt = state.tick();
     await baseline();
     graphOnlyChange(1);
     await ingest();
@@ -614,11 +633,9 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
     quiet();
     expect(state.versions).toHaveLength(1);
     const second = acknowledged()!;
-    expect(second.snapshot.fingerprint).not.toBe(first.snapshot.fingerprint);
-    expect(new Date(second.upgradedAt).getTime()).toBeGreaterThan(
-      new Date(first.upgradedAt).getTime(),
-    );
-    expect(second.snapshot.fingerprint).toBe((await snapshot()).fingerprint);
+    expect(second.fingerprint).not.toBe(first.fingerprint);
+    expect(second.upgradedAt.getTime()).toBeGreaterThan(first.upgradedAt.getTime());
+    expect(second.fingerprint).toBe((await snapshot()).fingerprint);
 
     // Once, not for good: the next graph-only change regenerates.
     graphOnlyChange(1);
@@ -631,7 +648,7 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
     await ingest();
     expect(state.versions).toHaveLength(2);
     expect(state.stream).not.toHaveBeenCalled();
-    expect(acknowledged(1)?.snapshot.fingerprint).toBe((await snapshot()).fingerprint);
+    expect(acknowledged(1)?.fingerprint).toBe((await snapshot()).fingerprint);
     graphOnlyChange(2);
     await ingest();
     expect(state.versions).toHaveLength(3);
@@ -695,7 +712,7 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
     // the rule, picked up afterwards: its fingerprint is current.
     await baseline();
     rewriteGraph();
-    state.extractorUpgradedAt = new Date((state.clock += 1000));
+    state.extractorUpgradedAt = state.tick();
     const current = await snapshot();
     await runRegenerationTask(
       {
@@ -709,7 +726,7 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
     expect(state.stream).not.toHaveBeenCalled();
     expect(state.versions).toHaveLength(1);
     expect(state.doc.status).toBe("ready");
-    expect(acknowledged()?.snapshot.fingerprint).toBe(current.fingerprint);
+    expect(acknowledged()?.fingerprint).toBe(current.fingerprint);
   });
 
   it("control: the same queued task with no upgrade mark regenerates", async () => {
@@ -734,7 +751,7 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
     // The first model call of the run is when the upgrade's rewrite lands.
     state.mutation = () => {
       rewriteGraph();
-      state.extractorUpgradedAt = new Date((state.clock += 1000));
+      state.extractorUpgradedAt = state.tick();
     };
     await ingest();
     // One run, published once. Its manifest says what it captured…
@@ -745,7 +762,7 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
         ?.fingerprint,
     ).toBe(before.fingerprint);
     // …and the upgraded inputs it stands for are recorded beside it.
-    expect(acknowledged()?.snapshot.fingerprint).toBe((await snapshot()).fingerprint);
+    expect(acknowledged()?.fingerprint).toBe((await snapshot()).fingerprint);
     const calls = state.stream.mock.calls.length;
     await ingest();
     expect(state.stream).toHaveBeenCalledTimes(calls);
@@ -759,7 +776,7 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
   it("an upgrade of ANOTHER repository's graph is not evidence for this document", async () => {
     await baseline();
     // The project's other repository was upgraded just now; this document reads only `r`.
-    state.otherGraphUpgradedAt = new Date((state.clock += 1000));
+    state.otherGraphUpgradedAt = state.tick();
     graphOnlyChange(1);
     await ingest();
     expect(state.versions).toHaveLength(2);
@@ -768,7 +785,7 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
 
   it("a mark that was already there when the run started is not evidence for a change DURING it", async () => {
     // The graph was upgraded some time ago. Now a lineage backfill lands mid-run.
-    state.extractorUpgradedAt = new Date((state.clock += 1000));
+    state.extractorUpgradedAt = state.tick();
     state.mutation = () => graphOnlyChange(1);
     await ingest();
     // Changed inputs: that run published nothing, and the replanned one stands for the current inputs.
@@ -783,7 +800,7 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
   it("after an upgrade is tolerated mid-run, a LATER graph-only change with no new mark still stops the run", async () => {
     state.mutation = () => {
       rewriteGraph();
-      state.extractorUpgradedAt = new Date((state.clock += 1000));
+      state.extractorUpgradedAt = state.tick();
     };
     state.laterMutations = [() => graphOnlyChange(1)];
     await ingest();
@@ -800,7 +817,7 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
   it("an upgrade AND a source change landing mid-run are changed inputs", async () => {
     state.mutation = () => {
       rewriteGraph();
-      state.extractorUpgradedAt = new Date((state.clock += 1000));
+      state.extractorUpgradedAt = state.tick();
       state.symbols[25].contentHash = "edited";
       state.chunks.push({
         id: "c3",

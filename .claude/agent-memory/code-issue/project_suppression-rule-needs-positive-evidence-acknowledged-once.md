@@ -15,7 +15,7 @@ A suppression rule ("skip X when only Y changed") needs positive evidence that Y
 
 - The thing that DOES Y leaves the evidence: the ingest that rewrites a graph for an upgrade moves `CodeGraph.extractorUpgradedAt`, in the same transaction as each write, and only then (`code-graph/ingest.ts`).
 - The rule reads that evidence and nothing else: a difference is put down to Y only when it is of the right kind AND the mark is newer than what this record has already seen (`docs-gen/extractor-upgrade.ts`).
-- Acknowledge once: record the new state as the baseline to compare against (`GeneratedDocumentVersion.acknowledgedInputs`), without doing X. The next difference of the same kind has no new mark and is NOT suppressed.
+- Acknowledge once: record the new state as the baseline to compare against (`GeneratedDocumentAcknowledgement`, one small row per document — NOT a column on a table every reader selects and four tests build by hand), without doing X. The next difference of the same kind has no new mark and is NOT suppressed.
 - Do not add the evidence to the compared record itself: an item that every record gains makes every legacy baseline differ. A project Y never touched must behave exactly as before.
 - Tests, through the real handler: Y → suppressed and acknowledged; next change of the same kind → not suppressed; a record Y never touched with an old-format baseline → not suppressed; Y a second time → suppressed once more; evidence that predates the record, or belongs to another scope, → not evidence.
 - Ask of every suppression: what closes the window, and what does a record look like that existed before this code did?

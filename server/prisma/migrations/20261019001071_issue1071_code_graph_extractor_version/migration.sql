@@ -31,8 +31,19 @@ ALTER TABLE "code_graphs" ADD COLUMN "extractorUpgradeFailed" TEXT;
 -- "extractorUpgradedAt"; an upgrade refresh then regenerates documents.
 ALTER TABLE "code_graphs" ADD COLUMN "extractorUpgradedAt" DATETIME;
 
--- The generation inputs last acknowledged for a published document version
--- without regenerating it (JSON; NULL: none — every existing row). Rollback:
--- DROP COLUMN "acknowledgedInputs"; the next check compares against the
--- version's own manifest again, as before.
-ALTER TABLE "generated_document_versions" ADD COLUMN "acknowledgedInputs" TEXT;
+-- The inputs a generated document's latest version was acknowledged to stand
+-- for without being regenerated: at most one row per document, written when a
+-- check finds that an extractor upgrade rewrote the graph and nothing else the
+-- document reads changed. A table of its own, not a column on
+-- "generated_document_versions": every reader of a version row would otherwise
+-- carry it, and a version's provenance stays as published. New, empty table:
+-- no backfill. Rollback: DROP TABLE "generated_document_acknowledgements"; the
+-- next check then compares against each version's own manifest again.
+CREATE TABLE "generated_document_acknowledgements" (
+    "documentId" TEXT NOT NULL PRIMARY KEY,
+    "version" INTEGER NOT NULL,
+    "upgradedAt" DATETIME NOT NULL,
+    "fingerprint" TEXT NOT NULL,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "generated_document_acknowledgements_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "generated_documents" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);

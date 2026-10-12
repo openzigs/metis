@@ -98,15 +98,16 @@ import {
   parseGeneratedDocVersionManifest,
 } from "../lib/docs-gen/generated-doc-provenance.js";
 import {
+  isGraphRowsOnlyChange,
   planRegeneration,
   type GenerationInputSnapshot,
 } from "../lib/docs-gen/regeneration-plan.js";
 import {
+  acknowledgeExtractorUpgrade,
   extractorUpgradeMark,
-  isUnseenExtractorUpgrade,
-  serializeAcknowledgedInputs,
+  isUnseenUpgradeMark,
   settleExtractorUpgrade,
-  type AcknowledgedInputs,
+  type AcknowledgedUpgrade,
 } from "../lib/docs-gen/extractor-upgrade.js";
 import type { RegenerationTask } from "../lib/docs-gen/incremental.js";
 import {
@@ -1282,13 +1283,12 @@ export async function generateDocumentAsync(
       if (settled.outcome !== "changed") return;
     }
     // #1071 — an upgrade that rewrites the graph WHILE this run is going is
-    // not changed inputs either. The evidence is the graph's own mark moving
-    // past where it stood when the inputs were captured; what the run then
-    // stands for is recorded beside the version it publishes.
-    const upgrade: { mark: Date | null; acknowledged: AcknowledgedInputs | null } = {
-      mark: inputSnapshot
-        ? await extractorUpgradeMark({ projectId, codeGraphId: policy.codeGraphId })
-        : null,
+    // not changed inputs either. The evidence is the graph's own mark, newer
+    // than the moment the inputs were captured (and than any mark this run has
+    // already tolerated); what the run then stands for is recorded when it
+    // publishes. The graph is read only when the inputs differ in graph rows.
+    const upgrade: { seen: Date; acknowledged: AcknowledgedUpgrade | null } = {
+      seen: new Date(),
       acknowledged: null,
     };
     const inputsStand = async (
@@ -1299,9 +1299,10 @@ export async function generateDocumentAsync(
       const fresh = await captureGenerationInputs(row, rowPolicy);
       const standsFor = upgrade.acknowledged?.snapshot ?? inputSnapshot;
       if (fresh.fingerprint === standsFor.fingerprint) return true;
+      if (!isGraphRowsOnlyChange(standsFor, fresh)) return false;
       const mark = await extractorUpgradeMark({ projectId, codeGraphId: rowPolicy.codeGraphId });
-      if (!isUnseenExtractorUpgrade(standsFor, fresh, mark, upgrade.mark)) return false;
-      upgrade.mark = mark;
+      if (!isUnseenUpgradeMark(mark, upgrade.seen)) return false;
+      upgrade.seen = mark;
       upgrade.acknowledged = { upgradedAt: mark, snapshot: fresh };
       return true;
     };
@@ -1911,11 +1912,6 @@ export async function generateDocumentAsync(
           version: nextVersion,
           revisionId,
           provenanceManifest,
-          // #1071 — the manifest says what the run captured; when an extractor
-          // upgrade rewrote the graph meanwhile, this says what it stands for.
-          ...(upgrade.acknowledged
-            ? { acknowledgedInputs: serializeAcknowledgedInputs(upgrade.acknowledged) }
-            : {}),
           content: markdown,
           diffSummary:
             regeneration?.mode === "sections"
@@ -1933,6 +1929,15 @@ export async function generateDocumentAsync(
           ...(plan ? { changedSymbols: JSON.stringify(plan.changed) } : {}),
         },
       });
+      // #1071 — the manifest says what the run captured. When an extractor
+      // upgrade rewrote the graph meanwhile, this says what the version stands
+      // for, so the next check does not take that rewrite for a change.
+      if (upgrade.acknowledged) {
+        await acknowledgeExtractorUpgrade(tx, docId, nextVersion, {
+          upgradedAt: upgrade.acknowledged.upgradedAt,
+          fingerprint: upgrade.acknowledged.snapshot.fingerprint,
+        });
+      }
       return persistGeneratedDocTask(
         tx,
         { projectId, generatedDocumentId: docId, version: nextVersion, revisionId },

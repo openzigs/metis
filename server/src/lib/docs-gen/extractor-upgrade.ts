@@ -12,62 +12,29 @@
  * The rule is narrow, and rests on POSITIVE evidence rather than on what an
  * older record happens to lack:
  *
- *  1. the ingest that rewrites a graph for an upgrade says so on the graph
- *     (`CodeGraph.extractorUpgradedAt`, set only when it upgraded a file);
+ *  1. the ingest that rewrites a graph for an upgrade says so on the graph:
+ *     `CodeGraph.extractorUpgradedAt` moves with every write of the rewrite,
+ *     and only then;
  *  2. a difference between a document's baseline and its current inputs is put
  *     down to the upgrade only when it is confined to graph rows
  *     ({@link isGraphRowsOnlyChange}) AND a graph the document reads carries a
  *     mark the document has not seen yet — newer than its latest version, and
  *     newer than the last mark acknowledged for that version;
- *  3. it is acknowledged ONCE: the current inputs are recorded beside the
- *     version (`GeneratedDocumentVersion.acknowledgedInputs`) and every later
- *     check compares against them. Nothing is published and no model is
- *     called. The next change of the graph — a lineage backfill, a schema
- *     re-introspection, new rationale findings — differs from the acknowledged
- *     inputs with no new mark, and regenerates.
+ *  3. it is acknowledged ONCE: the fingerprint of the current inputs is
+ *     recorded for the document (`GeneratedDocumentAcknowledgement`) and every
+ *     later check treats it as a baseline beside the version's own manifest.
+ *     Nothing is published and no model is called. The next change of the
+ *     graph — a lineage backfill, a schema re-introspection, new rationale
+ *     findings — matches neither baseline and has no new mark, so it
+ *     regenerates.
  *
- * A project whose graph no upgrade rewrote has no mark (or an old one), so
- * every check there behaves exactly as it did before this rule existed.
+ * A project whose graph no upgrade rewrote has no mark, so every check there
+ * behaves exactly as it did before this rule existed — and reads nothing more:
+ * the acknowledgement and the mark are looked up only for a difference that is
+ * confined to graph rows.
  */
-import { z } from "zod";
 import { prisma } from "../prisma.js";
-import {
-  generationInputSnapshotSchema,
-  isGraphRowsOnlyChange,
-  type GenerationInputSnapshot,
-} from "./regeneration-plan.js";
-
-const acknowledgedInputsSchema = z
-  .object({
-    /** The `CodeGraph.extractorUpgradedAt` this acknowledgement answers (ISO 8601). */
-    upgradedAt: z.string().min(1),
-    snapshot: generationInputSnapshotSchema,
-  })
-  .strict();
-
-/** `GeneratedDocumentVersion.acknowledgedInputs`, parsed. */
-export interface AcknowledgedInputs {
-  upgradedAt: Date;
-  snapshot: GenerationInputSnapshot;
-}
-
-/** Null for an absent or unreadable value: the version's own manifest is then the baseline. */
-export function parseAcknowledgedInputs(
-  stored: string | null | undefined,
-): AcknowledgedInputs | null {
-  if (!stored) return null;
-  try {
-    const parsed = acknowledgedInputsSchema.parse(JSON.parse(stored));
-    const upgradedAt = new Date(parsed.upgradedAt);
-    return Number.isNaN(upgradedAt.getTime()) ? null : { upgradedAt, snapshot: parsed.snapshot };
-  } catch {
-    return null;
-  }
-}
-
-export function serializeAcknowledgedInputs(value: AcknowledgedInputs): string {
-  return JSON.stringify({ upgradedAt: value.upgradedAt.toISOString(), snapshot: value.snapshot });
-}
+import { isGraphRowsOnlyChange, type GenerationInputSnapshot } from "./regeneration-plan.js";
 
 /**
  * When an extractor upgrade last rewrote a graph in this scope — the same
@@ -90,29 +57,48 @@ export async function extractorUpgradeMark(scope: {
 }
 
 /**
- * Whether the difference between `baseline` and `current` is an extractor
- * upgrade the holder of `baseline` has not seen: confined to graph rows, with
- * a mark newer than `seen`.
+ * Whether `mark` is an upgrade its reader has not seen yet: there is one, and
+ * it is newer than `seen`. This is only the evidence THAT an upgrade rewrote
+ * the graph; the caller has already established that the difference it is
+ * looking at is confined to graph rows ({@link isGraphRowsOnlyChange}).
  */
-export function isUnseenExtractorUpgrade(
-  baseline: GenerationInputSnapshot | null,
-  current: GenerationInputSnapshot,
-  mark: Date | null,
-  seen: Date | null,
-): mark is Date {
-  if (!mark || !isGraphRowsOnlyChange(baseline, current)) return false;
-  return seen === null || mark.getTime() > seen.getTime();
+export function isUnseenUpgradeMark(mark: Date | null, seen: Date): mark is Date {
+  return mark !== null && mark.getTime() > seen.getTime();
 }
 
 /** The latest published version of a document, as far as this rule reads it. */
 export interface LatestVersion {
   version: number;
   createdAt: Date;
-  acknowledgedInputs?: string | null;
+}
+
+/** What a run that an upgrade overtook stands for when it publishes. */
+export interface AcknowledgedUpgrade {
+  upgradedAt: Date;
+  snapshot: GenerationInputSnapshot;
+}
+
+/**
+ * Record, for a document, the inputs its version `version` is acknowledged to
+ * stand for. One row per document: a later acknowledgement replaces it, and a
+ * row left behind by an older version is ignored by {@link settleExtractorUpgrade}.
+ */
+export async function acknowledgeExtractorUpgrade(
+  db: Pick<typeof prisma, "generatedDocumentAcknowledgement">,
+  documentId: string,
+  version: number,
+  upgrade: { upgradedAt: Date; fingerprint: string },
+): Promise<void> {
+  const data = { version, upgradedAt: upgrade.upgradedAt, fingerprint: upgrade.fingerprint };
+  await db.generatedDocumentAcknowledgement.upsert({
+    where: { documentId },
+    create: { documentId, ...data },
+    update: data,
+  });
 }
 
 export type UpgradeSettlement =
-  /** The inputs are the baseline's: nothing to do. */
+  /** The inputs are the published or the acknowledged ones: nothing to do. */
   | { outcome: "unchanged" }
   /** They differ only by an upgrade seen now for the first time: recorded, nothing to regenerate. */
   | { outcome: "acknowledged" }
@@ -121,7 +107,7 @@ export type UpgradeSettlement =
 
 /**
  * Compare a document's current inputs with what its latest version is known
- * to stand for — the inputs acknowledged for it, else its manifest's — and
+ * to stand for — its manifest's inputs, or the ones acknowledged for it — and
  * acknowledge an extractor upgrade seen for the first time.
  *
  * @param published the latest version's manifest snapshot (null: none recorded).
@@ -134,21 +120,22 @@ export async function settleExtractorUpgrade(args: {
   current: GenerationInputSnapshot;
 }): Promise<UpgradeSettlement> {
   const { latest, published, current } = args;
-  const acknowledged = parseAcknowledgedInputs(latest?.acknowledgedInputs);
-  const baseline = acknowledged?.snapshot ?? published;
-  if (baseline?.fingerprint === current.fingerprint) return { outcome: "unchanged" };
-  // Without a published version there is nothing an upgrade could be told from.
-  if (!latest || !baseline || !isGraphRowsOnlyChange(baseline, current)) {
-    return { outcome: "changed" };
-  }
+  if (published?.fingerprint === current.fingerprint) return { outcome: "unchanged" };
+  // Anything but a difference confined to graph rows is a change, whatever was
+  // acknowledged: an acknowledgement only ever covers graph rows. Without a
+  // published version there is nothing an upgrade could be told from.
+  if (!latest || !isGraphRowsOnlyChange(published, current)) return { outcome: "changed" };
+  const row = await prisma.generatedDocumentAcknowledgement.findUnique({
+    where: { documentId: args.documentId },
+  });
+  const acknowledged = row && row.version === latest.version ? row : null;
+  if (acknowledged?.fingerprint === current.fingerprint) return { outcome: "unchanged" };
   const mark = await extractorUpgradeMark(args.scope);
   const seen = acknowledged?.upgradedAt ?? latest.createdAt;
-  if (!isUnseenExtractorUpgrade(baseline, current, mark, seen)) return { outcome: "changed" };
-  await prisma.generatedDocumentVersion.updateMany({
-    where: { documentId: args.documentId, version: latest.version },
-    data: {
-      acknowledgedInputs: serializeAcknowledgedInputs({ upgradedAt: mark, snapshot: current }),
-    },
+  if (!isUnseenUpgradeMark(mark, seen)) return { outcome: "changed" };
+  await acknowledgeExtractorUpgrade(prisma, args.documentId, latest.version, {
+    upgradedAt: mark,
+    fingerprint: current.fingerprint,
   });
   return { outcome: "acknowledged" };
 }

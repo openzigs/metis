@@ -83,7 +83,6 @@ export async function checkIncrementalRegeneration(
           version: true,
           createdAt: true,
           provenanceManifest: true,
-          acknowledgedInputs: true,
         },
       });
       let previous;

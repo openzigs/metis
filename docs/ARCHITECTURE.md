@@ -3687,19 +3687,21 @@ change. The rule that prevents it rests on positive evidence
    source file, SQL file, evidence chunk and setting identical) **and** a graph the document
    reads carries a mark newer than the document's latest version and than the last mark
    acknowledged for it;
-3. it is then acknowledged, once: the current inputs are recorded beside the version
-   (`GeneratedDocumentVersion.acknowledgedInputs`; the version's manifest is not touched,
-   nothing is published, no model is called) and every later check compares against them.
+3. it is then acknowledged, once: the fingerprint of the current inputs is recorded for the
+   document (`GeneratedDocumentAcknowledgement`, one row per document; the version's manifest
+   is not touched, nothing is published, no model is called) and every later check treats it
+   as a baseline beside the manifest's.
 
 So the next change confined to graph rows — a lineage backfill, a re-introspection of the
-live schema, new rationale findings — differs from the acknowledged inputs with no new mark,
-and regenerates. A project whose graph no upgrade rewrote has no mark, and every check there
-is exactly what it was before #1071: the snapshot itself carries nothing about the extractor.
+live schema, new rationale findings — matches neither baseline and has no new mark, and
+regenerates. A project whose graph no upgrade rewrote has no mark, and every check there is
+exactly what it was before #1071: the snapshot itself carries nothing about the extractor,
+and the acknowledgement and the mark are read only for a difference confined to graph rows.
 The same test is applied by the scheduled check, by an automatic run about to start (a task
 queued for the rewrite alone settles it instead of running), and by the mid-run and commit
-fences of a run in flight: a run that an upgrade overtakes goes on only when the mark moved
-past where it stood when the run captured its inputs, and it records what it then stands for
-beside the version it publishes. (The first form of this rule inferred the upgrade from the
+fences of a run in flight: a run that an upgrade overtakes goes on only when the mark is
+newer than the moment the run captured its inputs, and it records what it then stands for
+when it publishes. (The first form of this rule inferred the upgrade from the
 baseline lacking a field newer snapshots carried — true of every document published before
 the deploy, in every project, for ever — and so swallowed every later graph-only change.)
 

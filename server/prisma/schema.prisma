@@ -3960,6 +3960,8 @@ model GeneratedDocument {
 
   project             Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
   versions            GeneratedDocumentVersion[]
+  /// Issue #1071 — the inputs the latest version was acknowledged to stand for.
+  acknowledgement     GeneratedDocumentAcknowledgement?
   /// Epic #207 — this document acting as a "spec" in the traceability spine.
   requirementMappings RequirementSpecMapping[]
   codeMappings        SpecCodeMapping[]
@@ -3981,13 +3983,6 @@ model GeneratedDocumentVersion {
   revisionId     String?
   /// JSON-encoded immutable generation provenance manifest (#1355).
   provenanceManifest String?
-  /// Issue #1071 — the generation inputs last ACKNOWLEDGED for this version
-  /// without regenerating: JSON `{ upgradedAt, snapshot }`. Written once per
-  /// code-graph extractor upgrade, when a refresh found that the upgrade
-  /// rewrote the graph and nothing else the document reads had changed. Later
-  /// checks compare against `snapshot` instead of the manifest's, so the next
-  /// real change of the graph regenerates. The manifest itself is immutable.
-  acknowledgedInputs String?
   content        String
   /// Human-readable summary of what changed (for incremental regen)
   diffSummary    String?
@@ -4001,6 +3996,30 @@ model GeneratedDocumentVersion {
   @@index([revisionId])
   @@index([documentId, version])
   @@map("generated_document_versions")
+}
+
+/// Issue #1071 — the inputs a document's latest version was ACKNOWLEDGED to
+/// stand for without being regenerated. At most one row per document, written
+/// when a check finds that a code-graph extractor upgrade rewrote the graph
+/// (`CodeGraph.extractorUpgradedAt`) and nothing else the document reads
+/// changed. Later checks treat `fingerprint` as the document's baseline beside
+/// its version's own manifest, so the upgrade is acknowledged exactly once and
+/// the next change of the graph regenerates. A row whose `version` is not the
+/// document's latest is stale and ignored. The version's manifest is immutable
+/// and is never touched.
+model GeneratedDocumentAcknowledgement {
+  documentId  String   @id
+  /// The published version this acknowledgement belongs to.
+  version     Int
+  /// The `CodeGraph.extractorUpgradedAt` it answers: a later mark is a new upgrade.
+  upgradedAt  DateTime
+  /// Fingerprint of the acknowledged generation inputs.
+  fingerprint String
+  updatedAt   DateTime @updatedAt
+
+  document GeneratedDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@map("generated_document_acknowledgements")
 }
 
 /// Phase-1 fact-extraction cache for the holistic doc synthesizer.

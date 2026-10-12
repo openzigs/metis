@@ -15,20 +15,20 @@ import { fingerprintInputs } from "./regeneration-plan.js";
 
 const db = vi.hoisted(() => ({
   graphs: vi.fn(),
-  updateVersion: vi.fn(),
+  findAck: vi.fn(),
+  upsertAck: vi.fn(),
 }));
 vi.mock("../prisma.js", () => ({
   prisma: {
     codeGraph: { findMany: db.graphs },
-    generatedDocumentVersion: { updateMany: db.updateVersion },
+    generatedDocumentAcknowledgement: { findUnique: db.findAck, upsert: db.upsertAck },
   },
 }));
 
 const {
+  acknowledgeExtractorUpgrade,
   extractorUpgradeMark,
-  isUnseenExtractorUpgrade,
-  parseAcknowledgedInputs,
-  serializeAcknowledgedInputs,
+  isUnseenUpgradeMark,
   settleExtractorUpgrade,
 } = await import("./extractor-upgrade.js");
 
@@ -61,26 +61,35 @@ const edited = fingerprintInputs({
   settings: "s",
 });
 const scope = { projectId: "p", codeGraphId: "g" };
-const version = (extra: { acknowledgedInputs?: string | null } = {}) => ({
-  version: 3,
-  createdAt: at(10),
-  acknowledgedInputs: null,
-  ...extra,
-});
-const settle = (args: Partial<Parameters<typeof settleExtractorUpgrade>[0]>) =>
+/** The document's latest version is 3, published at second 10. */
+const latest = { version: 3, createdAt: at(10) };
+const settle = (args: Partial<Parameters<typeof settleExtractorUpgrade>[0]> = {}) =>
   settleExtractorUpgrade({
     documentId: "d",
     scope,
-    latest: version(),
+    latest,
     published,
     current: rewritten,
     ...args,
   });
+const ackRow = (version: number, seconds: number, fingerprint: string) => ({
+  documentId: "d",
+  version,
+  upgradedAt: at(seconds),
+  fingerprint,
+  updatedAt: at(seconds),
+});
+const upserted = (version: number, seconds: number, fingerprint: string) => ({
+  where: { documentId: "d" },
+  create: { documentId: "d", version, upgradedAt: at(seconds), fingerprint },
+  update: { version, upgradedAt: at(seconds), fingerprint },
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
   db.graphs.mockResolvedValue([{ extractorUpgradedAt: null }]);
-  db.updateVersion.mockResolvedValue({ count: 1 });
+  db.findAck.mockResolvedValue(null);
+  db.upsertAck.mockResolvedValue({});
 });
 
 describe("extractorUpgradeMark", () => {
@@ -119,146 +128,123 @@ describe("extractorUpgradeMark", () => {
   });
 });
 
-describe("isUnseenExtractorUpgrade", () => {
-  it("needs a mark: without one a graph-rows-only difference is a real change", () => {
-    expect(isUnseenExtractorUpgrade(published, rewritten, null, at(10))).toBe(false);
-    expect(isUnseenExtractorUpgrade(published, rewritten, null, null)).toBe(false);
+describe("isUnseenUpgradeMark", () => {
+  it("needs a mark: a graph no upgrade ever rewrote gives no evidence", () => {
+    expect(isUnseenUpgradeMark(null, at(10))).toBe(false);
   });
 
   it("needs the mark to be NEWER than what was already seen", () => {
-    expect(isUnseenExtractorUpgrade(published, rewritten, at(11), at(10))).toBe(true);
-    expect(isUnseenExtractorUpgrade(published, rewritten, at(10), at(10))).toBe(false);
-    expect(isUnseenExtractorUpgrade(published, rewritten, at(9), at(10))).toBe(false);
-    // Nothing seen yet: any mark is new.
-    expect(isUnseenExtractorUpgrade(published, rewritten, at(1), null)).toBe(true);
-  });
-
-  it("needs the difference to be confined to graph rows", () => {
-    expect(isUnseenExtractorUpgrade(published, edited, at(11), at(10))).toBe(false);
-    expect(isUnseenExtractorUpgrade(published, published, at(11), at(10))).toBe(false);
-    expect(isUnseenExtractorUpgrade(null, rewritten, at(11), at(10))).toBe(false);
+    expect(isUnseenUpgradeMark(at(11), at(10))).toBe(true);
+    expect(isUnseenUpgradeMark(new Date(at(10).getTime() + 1), at(10))).toBe(true);
+    expect(isUnseenUpgradeMark(at(10), at(10))).toBe(false);
+    expect(isUnseenUpgradeMark(at(9), at(10))).toBe(false);
   });
 });
 
-describe("acknowledged inputs", () => {
-  it("round-trips", () => {
-    const stored = serializeAcknowledgedInputs({ upgradedAt: at(20), snapshot: rewritten });
-    expect(parseAcknowledgedInputs(stored)).toEqual({ upgradedAt: at(20), snapshot: rewritten });
-  });
-
-  it.each([
-    ["absent", null],
-    ["undefined", undefined],
-    ["empty", ""],
-    ["not JSON", "{oops"],
-    ["a JSON scalar", "7"],
-    ["no snapshot", JSON.stringify({ upgradedAt: at(20).toISOString() })],
-    ["no mark", JSON.stringify({ snapshot: rewritten })],
-    ["a mark that is no date", JSON.stringify({ upgradedAt: "soon", snapshot: rewritten })],
-    [
-      "a malformed snapshot",
-      JSON.stringify({ upgradedAt: at(20).toISOString(), snapshot: { items: {} } }),
-    ],
-    [
-      "an unknown field",
-      JSON.stringify({ upgradedAt: at(20).toISOString(), snapshot: rewritten, extra: 1 }),
-    ],
-  ])("reads %s as nothing acknowledged", (_label, stored) => {
-    expect(parseAcknowledgedInputs(stored)).toBeNull();
+describe("acknowledgeExtractorUpgrade", () => {
+  it("keeps one row per document: creates it, or replaces what an earlier version left", async () => {
+    await acknowledgeExtractorUpgrade(
+      { generatedDocumentAcknowledgement: { upsert: db.upsertAck } } as never,
+      "d",
+      4,
+      { upgradedAt: at(20), fingerprint: "f" },
+    );
+    expect(db.upsertAck).toHaveBeenCalledExactlyOnceWith(upserted(4, 20, "f"));
   });
 });
 
 describe("settleExtractorUpgrade", () => {
-  it("unchanged: the inputs are the published ones — no graph is even read", async () => {
-    expect(await settle({ current: published })).toEqual({ outcome: "unchanged" });
-    expect(db.graphs).not.toHaveBeenCalled();
-    expect(db.updateVersion).not.toHaveBeenCalled();
-  });
+  describe("a project no upgrade rewrote reads nothing more than before", () => {
+    it("unchanged: the inputs are the published ones", async () => {
+      expect(await settle({ current: published })).toEqual({ outcome: "unchanged" });
+      expect(db.findAck).not.toHaveBeenCalled();
+      expect(db.graphs).not.toHaveBeenCalled();
+      expect(db.upsertAck).not.toHaveBeenCalled();
+    });
 
-  it("changed: a graph-rows-only difference with NO mark — every project no upgrade rewrote", async () => {
-    expect(await settle({})).toEqual({ outcome: "changed" });
-    expect(db.updateVersion).not.toHaveBeenCalled();
-  });
+    it("changed: more than graph rows differ — neither the acknowledgement nor the graph is read", async () => {
+      db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(20) }]);
+      expect(await settle({ current: edited })).toEqual({ outcome: "changed" });
+      expect(db.findAck).not.toHaveBeenCalled();
+      expect(db.graphs).not.toHaveBeenCalled();
+      expect(db.upsertAck).not.toHaveBeenCalled();
+    });
 
-  it("changed: the mark is older than the version, which was generated after that upgrade", async () => {
-    db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(9) }]);
-    expect(await settle({})).toEqual({ outcome: "changed" });
-    db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(10) }]);
-    expect(await settle({})).toEqual({ outcome: "changed" });
-    expect(db.updateVersion).not.toHaveBeenCalled();
-  });
-
-  it("acknowledged: a newer mark and a graph-rows-only difference — recorded beside the version", async () => {
-    db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(20) }]);
-    expect(await settle({})).toEqual({ outcome: "acknowledged" });
-    expect(db.updateVersion).toHaveBeenCalledExactlyOnceWith({
-      where: { documentId: "d", version: 3 },
-      data: {
-        acknowledgedInputs: serializeAcknowledgedInputs({
-          upgradedAt: at(20),
-          snapshot: rewritten,
-        }),
-      },
+    it("changed: a graph-rows-only difference with NO mark on the graph", async () => {
+      expect(await settle()).toEqual({ outcome: "changed" });
+      expect(db.upsertAck).not.toHaveBeenCalled();
     });
   });
 
-  it("changed: a newer mark, but more than graph rows differ", async () => {
+  it("changed: the mark is not newer than the version, which was generated after that upgrade", async () => {
+    db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(9) }]);
+    expect(await settle()).toEqual({ outcome: "changed" });
+    db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(10) }]);
+    expect(await settle()).toEqual({ outcome: "changed" });
+    expect(db.upsertAck).not.toHaveBeenCalled();
+  });
+
+  it("acknowledged: a newer mark and a graph-rows-only difference — recorded for the document's version", async () => {
     db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(20) }]);
-    expect(await settle({ current: edited })).toEqual({ outcome: "changed" });
-    // The mark is not even needed to know that.
-    expect(db.graphs).not.toHaveBeenCalled();
-    expect(db.updateVersion).not.toHaveBeenCalled();
+    expect(await settle()).toEqual({ outcome: "acknowledged" });
+    expect(db.findAck).toHaveBeenCalledExactlyOnceWith({ where: { documentId: "d" } });
+    expect(db.upsertAck).toHaveBeenCalledExactlyOnceWith(upserted(3, 20, rewritten.fingerprint));
   });
 
   describe("once acknowledged", () => {
-    const acknowledged = version({
-      acknowledgedInputs: serializeAcknowledgedInputs({ upgradedAt: at(20), snapshot: rewritten }),
+    beforeEach(() => {
+      db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(20) }]);
+      db.findAck.mockResolvedValue(ackRow(3, 20, rewritten.fingerprint));
     });
 
-    it("unchanged: the acknowledged inputs are the baseline now, not the manifest's", async () => {
-      db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(20) }]);
-      expect(await settle({ latest: acknowledged })).toEqual({ outcome: "unchanged" });
-      expect(db.updateVersion).not.toHaveBeenCalled();
+    it("unchanged: the acknowledged inputs are a baseline too, and the graph is not read again", async () => {
+      expect(await settle()).toEqual({ outcome: "unchanged" });
+      expect(db.graphs).not.toHaveBeenCalled();
+      expect(db.upsertAck).not.toHaveBeenCalled();
     });
 
     it("changed: the NEXT graph-rows-only difference, under the same mark, regenerates", async () => {
-      db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(20) }]);
-      expect(await settle({ latest: acknowledged, current: rewrittenAgain })).toEqual({
-        outcome: "changed",
-      });
-      expect(db.updateVersion).not.toHaveBeenCalled();
+      expect(await settle({ current: rewrittenAgain })).toEqual({ outcome: "changed" });
+      expect(db.upsertAck).not.toHaveBeenCalled();
     });
 
-    it("changed: going back to the manifest's inputs is a change too", async () => {
-      db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(20) }]);
-      expect(await settle({ latest: acknowledged, current: published })).toEqual({
-        outcome: "changed",
-      });
+    it("unchanged: back at the manifest's own inputs", async () => {
+      expect(await settle({ current: published })).toEqual({ outcome: "unchanged" });
     });
 
     it("acknowledged again: a SECOND upgrade leaves a newer mark", async () => {
       db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(30) }]);
-      expect(await settle({ latest: acknowledged, current: rewrittenAgain })).toEqual({
-        outcome: "acknowledged",
-      });
-      expect(db.updateVersion).toHaveBeenCalledExactlyOnceWith({
-        where: { documentId: "d", version: 3 },
-        data: {
-          acknowledgedInputs: serializeAcknowledgedInputs({
-            upgradedAt: at(30),
-            snapshot: rewrittenAgain,
-          }),
-        },
-      });
+      expect(await settle({ current: rewrittenAgain })).toEqual({ outcome: "acknowledged" });
+      expect(db.upsertAck).toHaveBeenCalledExactlyOnceWith(
+        upserted(3, 30, rewrittenAgain.fingerprint),
+      );
     });
 
-    it("an unreadable acknowledgement falls back to the manifest", async () => {
-      db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(20) }]);
-      const corrupt = version({ acknowledgedInputs: "{oops" });
-      expect(await settle({ latest: corrupt, current: published })).toEqual({
-        outcome: "unchanged",
-      });
-      expect(await settle({ latest: corrupt })).toEqual({ outcome: "acknowledged" });
+    it("changed: a second upgrade together with a source change", async () => {
+      db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(30) }]);
+      expect(await settle({ current: edited })).toEqual({ outcome: "changed" });
+      expect(db.upsertAck).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("an acknowledgement left by an OLDER version is stale", () => {
+    beforeEach(() => {
+      // Version 2 was acknowledged at second 5; version 3 was published at second 10.
+      db.findAck.mockResolvedValue(ackRow(2, 5, rewritten.fingerprint));
+    });
+
+    it("its fingerprint is not a baseline for the new version", async () => {
+      expect(await settle()).toEqual({ outcome: "changed" });
+    });
+
+    it("its mark is not what the new version has seen: the version's own date is", async () => {
+      // An upgrade between the stale acknowledgement and the version: already seen.
+      db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(8) }]);
+      expect(await settle()).toEqual({ outcome: "changed" });
+      // One after the version: new.
+      db.graphs.mockResolvedValue([{ extractorUpgradedAt: at(12) }]);
+      expect(await settle()).toEqual({ outcome: "acknowledged" });
+      expect(db.upsertAck).toHaveBeenCalledExactlyOnceWith(upserted(3, 12, rewritten.fingerprint));
     });
   });
 
@@ -267,6 +253,7 @@ describe("settleExtractorUpgrade", () => {
     expect(await settle({ latest: null, published: null })).toEqual({ outcome: "changed" });
     // A version whose manifest recorded no snapshot.
     expect(await settle({ published: null })).toEqual({ outcome: "changed" });
-    expect(db.updateVersion).not.toHaveBeenCalled();
+    expect(db.findAck).not.toHaveBeenCalled();
+    expect(db.upsertAck).not.toHaveBeenCalled();
   });
 });

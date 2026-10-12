@@ -4316,3 +4316,19 @@ CREATE INDEX "impact_column_proposals_impactItemId_idx" ON "impact_column_propos
 
 -- AddForeignKey
 ALTER TABLE "impact_column_proposals" ADD CONSTRAINT "impact_column_proposals_impactItemId_fkey" FOREIGN KEY ("impactItemId") REFERENCES "impact_items"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- Issue #1071 — the inputs a generated document's latest version was
+-- acknowledged to stand for without being regenerated (extractor upgrade).
+-- CreateTable
+CREATE TABLE "generated_document_acknowledgements" (
+    "documentId" TEXT NOT NULL,
+    "version" INTEGER NOT NULL,
+    "upgradedAt" TIMESTAMP(3) NOT NULL,
+    "fingerprint" TEXT NOT NULL,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "generated_document_acknowledgements_pkey" PRIMARY KEY ("documentId")
+);
+
+-- AddForeignKey
+ALTER TABLE "generated_document_acknowledgements" ADD CONSTRAINT "generated_document_acknowledgements_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "generated_documents"("id") ON DELETE CASCADE ON UPDATE CASCADE;

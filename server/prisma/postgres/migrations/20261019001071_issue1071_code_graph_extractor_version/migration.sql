@@ -31,8 +31,25 @@ ALTER TABLE "code_graphs" ADD COLUMN IF NOT EXISTS "extractorUpgradeFailed" TEXT
 -- "extractorUpgradedAt"; an upgrade refresh then regenerates documents.
 ALTER TABLE "code_graphs" ADD COLUMN IF NOT EXISTS "extractorUpgradedAt" TIMESTAMP(3);
 
--- The generation inputs last acknowledged for a published document version
--- without regenerating it (JSON; NULL: none — every existing row). Rollback:
--- DROP COLUMN "acknowledgedInputs"; the next check compares against the
--- version's own manifest again, as before.
-ALTER TABLE "generated_document_versions" ADD COLUMN IF NOT EXISTS "acknowledgedInputs" TEXT;
+-- The inputs a generated document's latest version was acknowledged to stand
+-- for without being regenerated (see the SQLite migration of the same name):
+-- at most one row per document. Idempotent DDL, as every Postgres migration
+-- here: `IF NOT EXISTS`, and the FK behind a pg_constraint existence guard.
+-- Rollback: DROP TABLE "generated_document_acknowledgements";
+CREATE TABLE IF NOT EXISTS "generated_document_acknowledgements" (
+    "documentId" TEXT NOT NULL,
+    "version" INTEGER NOT NULL,
+    "upgradedAt" TIMESTAMP(3) NOT NULL,
+    "fingerprint" TEXT NOT NULL,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "generated_document_acknowledgements_pkey" PRIMARY KEY ("documentId")
+);
+
+DO $idem$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'generated_document_acknowledgements_documentId_fkey') THEN
+    EXECUTE 'ALTER TABLE "generated_document_acknowledgements" ADD CONSTRAINT "generated_document_acknowledgements_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "generated_documents"("id") ON DELETE CASCADE ON UPDATE CASCADE';
+  END IF;
+END
+$idem$;
