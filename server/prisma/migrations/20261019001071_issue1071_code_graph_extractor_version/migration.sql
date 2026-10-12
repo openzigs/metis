@@ -1,0 +1,18 @@
+-- Issue #1071 — record which parser version wrote a code graph.
+--
+-- An incremental ingest skips a file whose content hash matches, so a parser
+-- change (here: a Go method named after its receiver type, and Go calls bound
+-- by declared types) never reached a stored graph. `extractorVersion` holds the
+-- `CODE_GRAPH_EXTRACTOR_VERSION` (`server/src/lib/code-graph/ingest.ts`) the
+-- graph's parser rows were last written with; the next incremental ingest of a
+-- graph recorded with an older one upgrades the affected files in place.
+--
+-- NULL — every existing row — means "built before #1071" and reads as older
+-- than any version. No backfill: that is exactly what the existing graphs are,
+-- and their next ingest sets it. A nullable column with no default is a
+-- metadata-only change.
+--
+-- Rollback (documentation):
+--   ALTER TABLE "code_graphs" DROP COLUMN "extractorVersion";
+-- After it no stored graph is upgraded on ingest; a full re-ingest still is.
+ALTER TABLE "code_graphs" ADD COLUMN "extractorVersion" INTEGER;

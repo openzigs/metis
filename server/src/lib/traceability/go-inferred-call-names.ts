@@ -2,12 +2,14 @@
  * #1034 — which Go callee names "Tested by" may follow through a call the ingest
  * left unresolved.
  *
- * The Go parser stores only the bare field name of every selector call, the
- * standard library's included: `resp.Body.Close()`, `errors.New(…)` and
- * `t.Run(…)` are unresolved `Close` / `New` / `Run` edges, with no receiver kept.
- * The impact-analysis resolver (`impact-analysis/go-call-resolution.ts`) binds
- * such an edge whenever exactly one project function of that name is visible
- * from the caller's package. Over-approximating a blast radius is safe; here a
+ * Since #1071 ingest binds a Go call by the declared types and marks the calls
+ * it decided have no project callee (`resp.Body.Close()`, `errors.New(…)`,
+ * `t.Run(…)` are `external`), so what reaches this rule is the remainder: a
+ * call through an interface, or one whose receiver type could not be inferred,
+ * stored under the bare callee name. The fallback resolver
+ * (`impact-analysis/go-call-resolution.ts`) binds such an edge whenever exactly
+ * one project function of that name is visible from the caller's package. On a
+ * graph ingested before #1071 that remainder is every selector call. Over-approximating a blast radius is safe; here a
  * bound edge is a positive claim, "this test tests that code", so one stray
  * `Close` in a handler test made `storage.go::Close` read as tested.
  *

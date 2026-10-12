@@ -1,9 +1,15 @@
 /**
- * #791 — Go call binding for impact analysis. Shapes are Miniflux v2.3.3's:
- * handlers call `h.store.X(…)`, recorded by the parser as a bare `X` with no
- * `toSymbolId`, and the storage method is a plain `function` symbol.
+ * #791 — the name-based Go call binder. Shapes are Miniflux v2.3.3's as the
+ * pre-#1071 ingest left them: handlers call `h.store.X(…)`, recorded as a bare
+ * `X` with no `toSymbolId`. Since #1071 ingest binds those itself, and this
+ * binder is the fallback for the calls it left undecided (see the #1071 block).
  */
 import { describe, expect, it, vi } from "vitest";
+import {
+  goResolutionMetadata,
+  goUndecidedCallWhere,
+  isGoFallbackCandidate,
+} from "../code-graph/go-type-resolution.js";
 import {
   goPackageDir,
   loadResolvedGoCalls,
@@ -222,6 +228,8 @@ describe("loadResolvedGoCalls", () => {
         toSymbolId: null,
         filePath: { endsWith: ".go" },
         toQualifiedName: { in: ["MarkAllAsReadBeforeDate"] },
+        // #1071 — and never a call ingest decided has no project callee.
+        ...goUndecidedCallWhere(),
       });
       // Candidates and imports stay whole: ambiguity is judged over them.
       expect(prisma.codeSymbol.findMany.mock.calls[0][0].where).not.toHaveProperty("name");
@@ -249,10 +257,17 @@ type Clause = Record<string, unknown>;
 function matches(row: Row, where: Clause): boolean {
   return Object.entries(where).every(([key, want]) => {
     if (key === "OR") return (want as Clause[]).some((w) => matches(row, w));
-    const value = row[key];
+    const value = row[key] ?? null;
     if (want === null || typeof want !== "object") return value === want;
-    const cond = want as { in?: string[]; endsWith?: string; startsWith?: string };
-    if (cond.in) return value !== null && value !== undefined && cond.in.includes(value);
+    const cond = want as {
+      in?: string[];
+      notIn?: string[];
+      endsWith?: string;
+      startsWith?: string;
+    };
+    if (cond.in) return value !== null && cond.in.includes(value);
+    // SQL: `NULL NOT IN (…)` is not true.
+    if (cond.notIn) return value !== null && !cond.notIn.includes(value);
     if (cond.endsWith !== undefined) return (value ?? "").endsWith(cond.endsWith);
     if (cond.startsWith !== undefined) return (value ?? "").startsWith(cond.startsWith);
     throw new Error(`unsupported where: ${JSON.stringify(want)}`);
@@ -265,6 +280,70 @@ function inMemoryGraph(symbols: Row[], edges: Row[]) {
   });
   return { codeSymbol: table(symbols), codeEdge: table(edges) };
 }
+
+describe("#1071 — the fallback only speaks where ingest did not", () => {
+  const fn = (id: string, filePath: string, name: string): Row => ({
+    id,
+    projectId: "p",
+    language: "go",
+    kind: "function",
+    name,
+    qualifiedName: `${filePath}::${name}`,
+    filePath,
+  });
+  const call = (toQualifiedName: string, metadata: string | null): Row => ({
+    projectId: "p",
+    kind: "calls",
+    fromSymbolId: "caller",
+    toSymbolId: null,
+    filePath: "internal/api/handler.go",
+    toQualifiedName,
+    metadata,
+  });
+  // One candidate per name, in the caller's own package: by name alone, every
+  // one of these calls binds.
+  const symbols = [
+    fn("caller", "internal/api/handler.go", "serve"),
+    ...["Get", "Read", "Convert", "Twin", "Hook", "Plain", "Old"].map((n) =>
+      fn(`t-${n}`, "internal/api/targets.go", n),
+    ),
+  ];
+  const edges = [
+    call("Get", goResolutionMetadata("external")),
+    call("Convert", goResolutionMetadata("conversion")),
+    call("Twin", goResolutionMetadata("ambiguous")),
+    call("Hook", goResolutionMetadata("func-value")),
+    call("Read", goResolutionMetadata("interface")),
+    call("Plain", null),
+    // Metadata another writer put there is not a verdict.
+    call("Old", JSON.stringify({ via: "CALL" })),
+  ];
+  const bound = (rows: Array<{ toSymbolId: string }>) => rows.map((r) => r.toSymbolId).sort();
+
+  it("never binds a call ingest decided has no project callee", async () => {
+    const whole = await loadResolvedGoCalls(inMemoryGraph(symbols, edges) as never, "p");
+    expect(bound(whole)).toEqual(["t-Old", "t-Plain", "t-Read"]);
+  });
+
+  it("holds for the caller-scoped loader too", async () => {
+    const scoped = await loadResolvedGoCallsFrom(inMemoryGraph(symbols, edges) as never, "p", [
+      "caller",
+    ]);
+    expect(bound(scoped)).toEqual(["t-Old", "t-Plain", "t-Read"]);
+  });
+
+  it("isGoFallbackCandidate agrees with the query filter, row by row", () => {
+    for (const e of edges) {
+      expect(isGoFallbackCandidate(e.metadata), String(e.toQualifiedName)).toBe(
+        matches(e, goUndecidedCallWhere()),
+      );
+    }
+    expect(isGoFallbackCandidate(undefined)).toBe(true);
+    expect(isGoFallbackCandidate("")).toBe(true);
+    expect(isGoFallbackCandidate("not json")).toBe(true);
+    expect(isGoFallbackCandidate(goResolutionMetadata("receiver-type"))).toBe(true);
+  });
+});
 
 describe("loadResolvedGoCallsFrom (#1060)", () => {
   const fn = (id: string, filePath: string, name: string): Row => ({

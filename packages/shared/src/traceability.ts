@@ -220,9 +220,11 @@ export interface RequirementTraceabilityChain {
  * - `exercises` — a test symbol has a `calls`/`references` edge into a mapped symbol;
  * - `naming` — a test in the conventional sibling test file is named for a mapped
  *   symbol, or (file-only target) shares a requirement token;
- * - `inferred-call` — Go only (#1034): the ingest left the test's call unresolved
+ * - `inferred-call` — Go only (#1034): the ingest left the test's call undecided
+ *   (a call through an interface, or a receiver whose type it could not infer)
  *   and it was bound afterwards by callee NAME, so it is a guess. The weakest
- *   relation, and never a strict (`direct` / `exercises`) link.
+ *   relation, and never a strict (`direct` / `exercises`) link. Since #1071 a
+ *   call ingest binds by the declared types is an `exercises` link.
  */
 export const TEST_LINK_RELATIONS = ["direct", "exercises", "naming", "inferred-call"] as const;
 export type TestLinkRelation = (typeof TEST_LINK_RELATIONS)[number];
@@ -231,7 +233,7 @@ export type TestLinkRelation = (typeof TEST_LINK_RELATIONS)[number];
 export interface TraceabilityTestNode {
   codeSymbolId: string | null;
   filePath: string;
-  /** Qualified name (`file::Name`), or the file path for a file-only `direct` hit. */
+  /** Qualified name (`file::Name`, `file::Type::Name` for a member), or the file path for a file-only `direct` hit. */
   symbol: string;
   name: string;
   startLine: number | null;

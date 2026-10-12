@@ -30,6 +30,7 @@ import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getConfigService } from "../config/config-service.js";
 import { isTestPath } from "../code-graph/test-conventions.js";
+import { goUndecidedCallWhere } from "../code-graph/go-type-resolution.js";
 import {
   buildFusedCodeBlock,
   extractRepoRelPath,
@@ -627,10 +628,16 @@ const prismaCallerLookup: CallerLookup = {
           { toSymbolId: { in: callees.map((c) => c.id) } },
           {
             toSymbolId: null,
-            OR: names.flatMap((n) => [
-              { toQualifiedName: n },
-              { toQualifiedName: { endsWith: `.${n}` } },
-            ]),
+            // #1071 — not a call ingest decided has no project callee.
+            AND: [
+              {
+                OR: names.flatMap((n) => [
+                  { toQualifiedName: n },
+                  { toQualifiedName: { endsWith: `.${n}` } },
+                ]),
+              },
+              goUndecidedCallWhere(),
+            ],
           },
         ],
       },

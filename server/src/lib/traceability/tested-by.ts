@@ -230,10 +230,19 @@ function boundaryAfter(original: string, foldedLength: number): boolean {
   return isSeparator(ch) || /[A-Z0-9]/.test(ch);
 }
 
-/** The keys a symbol can be matched by: its name, and its `Type.method` tail. */
+/**
+ * The keys a symbol can be matched by: its name, and its `Type.method` form.
+ * The parsers name a member `<file>::<Type>::<method>` (Go methods too, since
+ * #1071), so the form is built from the last two segments; a tail that already
+ * carries a dot is kept as it is.
+ */
 function symbolKeys(sym: Pick<SymbolRow, "name" | "qualifiedName">): string[] {
-  const tail = sym.qualifiedName.slice(sym.qualifiedName.lastIndexOf("::") + 2);
-  return tail && tail !== sym.name ? [sym.name, tail] : [sym.name];
+  const segments = sym.qualifiedName.split("::");
+  const tail = segments[segments.length - 1];
+  const keys = [sym.name];
+  if (tail && tail !== sym.name) keys.push(tail);
+  if (segments.length >= 3 && tail) keys.push(`${segments[segments.length - 2]}.${tail}`);
+  return keys;
 }
 
 /**
@@ -404,11 +413,13 @@ function goSimpleName(sym: Pick<SymbolRow, "qualifiedName">): string {
 
 /**
  * #1034 — the test callers behind the Go `calls` edges the ingest left
- * unresolved, keyed by the target they reach. Three reads for the resolver, one
- * more for the callers when something bound; none when no target is Go.
+ * undecided, keyed by the target they reach. Three reads for the resolver, one
+ * more for the callers when something bound; none when no target is Go. Since
+ * #1071 ingest binds most Go calls itself (those are `exercises` links), so this
+ * covers only a call through an interface or an uninferred receiver.
  *
  * The unresolved-calls read is narrowed to the targets' own names, so its size
- * follows the batch and not the project (16.5k rows on Miniflux otherwise).
+ * follows the batch and not the project.
  *
  * A bound call is kept only when its NAME is evidence (see
  * `go-inferred-call-names.ts`): the name is distinctive, or the test is named

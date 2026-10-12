@@ -1467,6 +1467,36 @@ describe("PrismaSchemaImpactDataSource — downstream call edges (#928)", () => 
   });
 });
 
+describe("PrismaSchemaImpactDataSource — Go calls bound at ingest (#1071)", () => {
+  it("keeps the writes-only rule on a call bound through its receiver's type, and on no other", async () => {
+    const meta = (resolution: string) => JSON.stringify({ goResolution: resolution });
+    const prisma = {
+      codeSymbol: { findMany: vi.fn().mockResolvedValue([]) },
+      codeEdge: {
+        findMany: vi.fn().mockResolvedValue([
+          // `h.store.SetEntriesStatus()`: exact since #1071, still a handler's call into storage.
+          { fromSymbolId: "handler", toSymbolId: "storage", metadata: meta("receiver-type") },
+          { fromSymbolId: "handler", toSymbolId: "pkg-func", metadata: meta("package") },
+          { fromSymbolId: "handler", toSymbolId: "helper", metadata: meta("same-package") },
+          { fromSymbolId: "handler", toSymbolId: "by-name", metadata: meta("name") },
+          { fromSymbolId: "handler", toSymbolId: "plain", metadata: null },
+          // Another writer's edge metadata is not a Go verdict.
+          { fromSymbolId: "handler", toSymbolId: "other", metadata: '{"via":"CALL"}' },
+        ]),
+      },
+    };
+    const ds = new PrismaSchemaImpactDataSource(prisma as never, "proj-1");
+    expect(await ds.getDownstreamCallEdgesFrom!(["handler"])).toEqual([
+      { fromSymbolId: "handler", toSymbolId: "storage", inferred: true },
+      { fromSymbolId: "handler", toSymbolId: "pkg-func" },
+      { fromSymbolId: "handler", toSymbolId: "helper" },
+      { fromSymbolId: "handler", toSymbolId: "by-name" },
+      { fromSymbolId: "handler", toSymbolId: "plain" },
+      { fromSymbolId: "handler", toSymbolId: "other" },
+    ]);
+  });
+});
+
 describe("entityTypeKeysForTable (#1036)", () => {
   it("gives the table name and its singular, separators removed", () => {
     expect(entityTypeKeysForTable("entries")).toEqual(["entries", "entry"]);

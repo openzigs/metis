@@ -21,6 +21,7 @@ import {
   indexSymbol,
   isKotlinConstructorCandidate,
   isRuntimeOrTestModule,
+  isTestFilePath,
   KOTLIN_CONSTRUCTIBLE_LANGUAGES,
   reclassifyKotlinConstructorCall,
   resolveEdgeTarget,
@@ -28,6 +29,16 @@ import {
   type ResolvableSymbol,
 } from "./call-resolution.js";
 import { createEventLoopYielder, type MaybeYield } from "./event-loop-yield.js";
+import {
+  createGoResolver,
+  GO_RESOLUTION_NAME,
+  goResolutionMetadata,
+  parseGoModulePath,
+  type GoResolution,
+  type GoModule,
+  type GoResolver,
+  type GoResolverFile,
+} from "./go-type-resolution.js";
 import type { DbDependencyInfo, DbPackageInfo, DbRoutineInfo } from "@metis/shared";
 import { extractRoutineDependencies } from "./routine-dependency-extractor.js";
 import { extractPlsqlPackageLineage, type PackageBodyFetcher } from "./plsql-package-lineage.js";
@@ -236,6 +247,13 @@ export interface IngestStats {
    */
   filesRebound: number;
   /**
+   * #1071 — unchanged files brought up to {@link CODE_GRAPH_EXTRACTOR_VERSION}
+   * in place: their symbols keep their ids (only a changed qualified name is
+   * rewritten) and their parser edges are re-derived. Zero unless the graph was
+   * built by an older extractor.
+   */
+  filesUpgraded: number;
+  /**
    * #721 — true when an incremental ingest re-extracted the lineage of every
    * file because the SQL-lineage inputs (lineage decision or introspected
    * schema) differ from the ones the graph was last built with, so lineage
@@ -316,6 +334,44 @@ export function stripNulBytes(s: string): string {
  *   change the edges an unchanged file produces. That test does NOT guard them.
  */
 export const LINEAGE_EXTRACTOR_VERSION = 3;
+
+/**
+ * #1071 — version of what the PARSERS write for an unchanged file: a symbol's
+ * qualified name, and how a parser edge is bound. An incremental ingest skips a
+ * file whose content hash matches, so a parser change reaches a stored graph
+ * only through this number: a graph recorded with an older one (or none — every
+ * graph built before #1071) has the files of the languages that changed since
+ * ({@link EXTRACTOR_UPGRADES}) upgraded in place on its next ingest.
+ *
+ * "In place" is the point (#856): the files are re-parsed, but their symbol
+ * rows are kept — a changed qualified name is rewritten on the existing row —
+ * so every finding, requirement mapping and embedding that points at a symbol
+ * id survives. Only the file's parser edges (`calls` / `imports` / `defines` /
+ * `references`, `source` null) are deleted and re-derived. This works for a
+ * change that renames or re-binds; a change to WHICH symbols a file yields
+ * needs a full re-ingest (`incremental: false`) instead.
+ *
+ * History: unversioned = before #1071; 1 = #1071 (a Go method is named
+ * `<file>::<ReceiverType>::<name>`, and Go calls are bound by declared types).
+ */
+export const CODE_GRAPH_EXTRACTOR_VERSION = 1;
+
+/** The languages whose stored rows each extractor version changed. */
+const EXTRACTOR_UPGRADES: ReadonlyArray<{ version: number; languages: readonly string[] }> = [
+  { version: 1, languages: ["go"] },
+];
+
+/** The languages a graph recorded at `storedVersion` must have upgraded in place. */
+export function extractorUpgradeLanguages(storedVersion: number | null): Set<string> {
+  const out = new Set<string>();
+  for (const u of EXTRACTOR_UPGRADES) {
+    if (u.version > (storedVersion ?? 0)) for (const l of u.languages) out.add(l);
+  }
+  return out;
+}
+
+/** Bytes of a `go.mod` read for its `module` line, which sits at the top. */
+const GO_MOD_READ_LIMIT = 64 * 1024;
 
 /**
  * #721 — fingerprint of the inputs that decide what the SQL-lineage pass
@@ -442,6 +498,7 @@ export async function ingestCodeGraph(
     schemaEdges: 0,
     routineEdges: 0,
     filesRebound: 0,
+    filesUpgraded: 0,
     lineageBackfill,
     filesLineageRefreshed: 0,
     filesUnchanged: 0,
@@ -488,6 +545,9 @@ export async function ingestCodeGraph(
   // `struct {` / GORM finisher verbs, so a non-GORM `.go` file yields zero
   // models and zero edges — capturing it here unconditionally is harmless.
   const goSources = new Map<string, string>();
+  // #1071 — `go.mod` files: the module path is what tells a project package
+  // from a third-party one of the same directory name.
+  const goModules: GoModule[] = [];
   // #900 — C#/.NET source files (`.cs`) mapped to their source for the EF Core
   // lineage pass. Captured after parsing (mirroring the JPA/jOOQ `.java`
   // capture below); `extractEfCoreSchema` itself gates on the presence of a
@@ -509,6 +569,10 @@ export async function ingestCodeGraph(
     walkedPaths.add(path.relative(rootDir, filePath).split(path.sep).join("/"));
     const lang = detectLanguage(filePath);
     if (!lang) {
+      if (path.basename(filePath) === "go.mod") {
+        const goModule = await readGoModule(rootDir, filePath);
+        if (goModule) goModules.push(goModule);
+      }
       // ORM schema files (`schema.prisma`) are not a tree-sitter language but still
       // map to tables/columns — capture their source for the ORM pass (#849). Always
       // read (no persisted hash exists) so an existing graph populates on next ingest.
@@ -607,6 +671,10 @@ export async function ingestCodeGraph(
       unchangedFiles,
       previousPaths: new Set(existingFiles.keys()),
       deletedPaths: [...existingFiles.keys()].filter((p) => !walkedPaths.has(p)),
+      goModules,
+      upgradeLanguages: incremental
+        ? extractorUpgradeLanguages(graph.extractorVersion)
+        : new Set<string>(),
     },
   );
 
@@ -815,6 +883,7 @@ export async function ingestCodeGraph(
       languageStats: JSON.stringify(langStatsRecord),
       lastIndexedAt: new Date(),
       lineageFingerprint: recordedFingerprint,
+      extractorVersion: CODE_GRAPH_EXTRACTOR_VERSION,
       // #758 — the commit label moves only when the graph is complete.
       ...(commitSha ? { commitSha } : {}),
     },
@@ -872,7 +941,7 @@ async function upsertCodeGraph(
   prisma: PrismaClient,
   projectId: string,
   repoConnectionId: string | undefined,
-): Promise<{ id: string; lineageFingerprint: string | null }> {
+): Promise<{ id: string; lineageFingerprint: string | null; extractorVersion: number | null }> {
   // #758 — the commit label is written by Step 8, not here: a run that fails
   // part-way must not relabel a graph it never finished rebuilding.
   const existing = await prisma.codeGraph.findFirst({
@@ -884,8 +953,28 @@ async function upsertCodeGraph(
       projectId,
       repoConnectionId: repoConnectionId ?? null,
     },
-    select: { id: true, lineageFingerprint: true },
+    select: { id: true, lineageFingerprint: true, extractorVersion: true },
   });
+}
+
+/** #1071 — a `go.mod`'s directory and `module` path; null when it cannot be read or names none. */
+async function readGoModule(rootDir: string, filePath: string): Promise<GoModule | null> {
+  try {
+    const handle = await fs.open(filePath, "r");
+    try {
+      const buf = Buffer.alloc(GO_MOD_READ_LIMIT);
+      const { bytesRead } = await handle.read(buf, 0, GO_MOD_READ_LIMIT, 0);
+      const modulePath = parseGoModulePath(buf.toString("utf8", 0, bytesRead));
+      if (!modulePath) return null;
+      const dir = path.relative(rootDir, path.dirname(filePath)).split(path.sep).join("/");
+      return { dir, path: modulePath };
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    // Unreadable go.mod — imports then resolve by directory suffix.
+    return null;
+  }
 }
 
 async function loadExistingFiles(
@@ -915,6 +1004,10 @@ interface IngestTreeState {
   previousPaths: ReadonlySet<string>;
   /** Files the graph holds that the walk no longer finds. */
   deletedPaths: string[];
+  /** #1071 — the tree's `go.mod` files. */
+  goModules: readonly GoModule[];
+  /** #1071 — languages whose unchanged files an older extractor wrote ({@link extractorUpgradeLanguages}). */
+  upgradeLanguages: ReadonlySet<string>;
 }
 
 async function persistParsed(
@@ -1052,6 +1145,23 @@ async function persistParsed(
     }
   }
 
+  // ── Pass 1a (#1071): unchanged files an older extractor wrote. Re-parse them
+  // and rewrite, on the EXISTING rows, the qualified names the current parser
+  // gives their symbols — before pass 1b reads those rows into the indices.
+  const upgradedFiles: ParsedFile[] = [];
+  if (tree.upgradeLanguages.size > 0) {
+    for (const [relPath, file] of tree.unchangedFiles) {
+      if (!tree.upgradeLanguages.has(file.language)) continue;
+      await maybeYield();
+      const reparsed = await reparseUnchanged(tree, relPath);
+      if (!reparsed) continue;
+      await renameSymbolsInPlace(prisma, codeGraphId, reparsed);
+      upgradedFiles.push(reparsed);
+    }
+    stats.filesUpgraded += upgradedFiles.length;
+  }
+  const upgradedPaths = new Set(upgradedFiles.map((f) => f.filePath));
+
   // ── Pass 1b (#313): the unchanged files join the indices, so an edge resolves
   // against the whole tree exactly as a full ingest would. Only parser-written
   // symbols are loaded — a full ingest's pass 2 runs before the schema passes
@@ -1121,7 +1231,24 @@ async function persistParsed(
         if (was !== now) affected.add(imp.filePath);
       }
     }
+    // #1071 — a Go call binds through declarations anywhere in the tree (the
+    // field `store` in one file, the methods of its type in another package),
+    // none of which is persisted. So when any Go file is parsed, deleted or
+    // re-bound, every unchanged Go file is re-parsed for its declarations and
+    // has its edges re-bound — which changes nothing where nothing moved.
+    const goTouched =
+      parsedFiles.some((f) => f.language === "go") ||
+      upgradedFiles.some((f) => f.language === "go") ||
+      tree.deletedPaths.some((p) => detectLanguage(p) === "go") ||
+      [...affected].some((p) => tree.unchangedFiles.get(p)?.language === "go");
+    if (goTouched) {
+      for (const [relPath, file] of tree.unchangedFiles) {
+        if (file.language === "go") affected.add(relPath);
+      }
+    }
     for (const relPath of affected) {
+      // An upgraded file is already re-parsed, and its edges are rewritten below.
+      if (upgradedPaths.has(relPath)) continue;
       await maybeYield();
       const reparsed = await reparseUnchanged(tree, relPath);
       if (reparsed) affectedFiles.push(reparsed);
@@ -1131,8 +1258,12 @@ async function persistParsed(
 
   // ── Pass 2: build import-target index and persist edges. ────────────────
   const { importTargets, runtimeImports } = buildFileImportIndex(
-    [...parsedFiles, ...affectedFiles],
+    [...parsedFiles, ...affectedFiles, ...upgradedFiles],
     importCtx,
+  );
+  const goResolver = buildGoResolver(
+    [...parsedFiles, ...affectedFiles, ...upgradedFiles],
+    tree.goModules,
   );
   const persistedClassNames = await loadPersistedClassNames(
     prisma,
@@ -1156,6 +1287,26 @@ async function persistParsed(
       // A copybook name is a file, never a symbol: an unresolved COPY stays unbound.
       const copybook = resolveCopybook(edge.toQualifiedName, file.filePath, importCtx.copybooks);
       toId = copybook ? (qnameToId.get(copybook) ?? null) : null;
+    } else if (!toId && goResolver && edge.goCallee && edge.kind === "calls") {
+      // #1071 — a Go call is decided by the declared types first; the
+      // name-evidence rules apply only where no type could be inferred.
+      const verdict = goResolver.resolveCall(file.filePath, edge.goCallee);
+      let resolution: GoResolution | null = null;
+      if (verdict.kind === "bound") {
+        toId = qnameToId.get(verdict.qualifiedName) ?? null;
+        if (toId) resolution = verdict.via;
+      } else if (verdict.kind === "unbound") {
+        resolution = verdict.reason;
+      } else {
+        toId = resolveEdgeTarget(edge.toQualifiedName, edge.receiver, site, index);
+        if (toId) resolution = GO_RESOLUTION_NAME;
+      }
+      return {
+        fromSymbolId: fromId,
+        kind: edge.kind as string,
+        toSymbolId: toId,
+        metadata: resolution ? goResolutionMetadata(resolution) : null,
+      };
     } else if (!toId) {
       toId = resolveEdgeTarget(edge.toQualifiedName, edge.receiver, site, index);
     }
@@ -1174,7 +1325,23 @@ async function persistParsed(
     };
   };
 
-  for (const file of parsedFiles) {
+  // #1071 — an upgraded file's parser edges are rewritten whole rather than
+  // matched row by row (pass 3): the older extractor could file an edge under
+  // the wrong source symbol (two Go methods of one name in a file shared a
+  // qualified name), which no (from, target, line) match would repair. Rows
+  // other passes wrote for the file carry a `source` and are left alone.
+  for (const file of upgradedFiles) {
+    await prisma.codeEdge.deleteMany({
+      where: {
+        codeGraphId,
+        filePath: file.filePath,
+        source: null,
+        kind: { in: [...PARSER_EDGE_KINDS] },
+      },
+    });
+  }
+
+  for (const file of [...parsedFiles, ...upgradedFiles]) {
     // Edges carry no ids anyone needs back, so they go in multi-row inserts:
     // one statement (and one commit) per EDGE_INSERT_BATCH rows (#16).
     let batch: Prisma.CodeEdgeCreateManyInput[] = [];
@@ -1251,6 +1418,63 @@ async function persistParsed(
     }
     if (updates.length > 0) await prisma.$transaction(updates);
   }
+}
+
+/** The edge kinds the language parsers write (every other kind comes from a schema pass). */
+const PARSER_EDGE_KINDS: ReadonlySet<string> = new Set([
+  "calls",
+  "imports",
+  "defines",
+  "references",
+]);
+
+/**
+ * #1071 — the type resolver over every Go file whose declarations are in hand,
+ * or null when there are none. Files are test files by the code-graph's own
+ * convention (`_test.go`).
+ */
+function buildGoResolver(
+  files: readonly ParsedFile[],
+  modules: readonly GoModule[],
+): GoResolver | null {
+  const goFiles: GoResolverFile[] = [];
+  for (const f of files) {
+    if (f.language === "go" && f.goFacts) {
+      goFiles.push({ filePath: f.filePath, facts: f.goFacts, isTest: isTestFilePath(f.filePath) });
+    }
+  }
+  return goFiles.length > 0 ? createGoResolver(goFiles, modules) : null;
+}
+
+/**
+ * #1071 — give a file's stored symbols the qualified names the current parser
+ * produces, on the existing rows. A stored symbol is matched to a re-parsed one
+ * by kind, name and start line — all three unchanged, since the file's content
+ * is. Rows a schema pass wrote for the file (`source` set, or another language)
+ * match nothing.
+ */
+async function renameSymbolsInPlace(
+  prisma: PrismaClient,
+  codeGraphId: string,
+  file: ParsedFile,
+): Promise<void> {
+  const rows = await prisma.codeSymbol.findMany({
+    where: { codeGraphId, filePath: file.filePath, source: null, language: file.language },
+    select: { id: true, kind: true, name: true, startLine: true, qualifiedName: true },
+  });
+  const wanted = new Map<string, string>();
+  for (const sym of file.symbols) {
+    wanted.set(`${sym.kind}\u0000${sym.name}\u0000${sym.startLine}`, sym.qualifiedName);
+  }
+  const updates: Prisma.PrismaPromise<unknown>[] = [];
+  for (const row of rows) {
+    const next = wanted.get(`${row.kind}\u0000${row.name}\u0000${row.startLine}`);
+    if (next === undefined || next === row.qualifiedName) continue;
+    updates.push(
+      prisma.codeSymbol.update({ where: { id: row.id }, data: { qualifiedName: next } }),
+    );
+  }
+  if (updates.length > 0) await prisma.$transaction(updates);
 }
 
 function edgeRowKey(fromSymbolId: string, toQualifiedName: string | null, line: number): string {

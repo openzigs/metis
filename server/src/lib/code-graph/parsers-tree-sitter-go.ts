@@ -1,0 +1,650 @@
+/**
+ * Go walker for the tree-sitter code-graph parser.
+ *
+ * Besides the symbols and edges every walker emits, this one records what the
+ * source says about TYPES (#1071), so that ingest can bind a method call to the
+ * method it statically reaches (`go-type-resolution.ts`):
+ *
+ *  - a method is named after its receiver type — `func (s *Storage) Save()` in
+ *    `storage/entry.go` is `storage/entry.go::Storage::Save`, the shape every
+ *    other language already uses for a member. Two methods of one name on
+ *    different types in one file no longer share a qualified name;
+ *  - the file's {@link GoFileFacts}: package clause, imports with their aliases,
+ *    struct fields, function result types, package-level variables;
+ *  - on every `calls` edge, the callee as a {@link GoExpr} in which the
+ *    function's own locals are already replaced by what they were bound to:
+ *    parameters and the receiver by their declared types, `x := NewFoo()` by the
+ *    call, `x := &Foo{}` by the literal's type.
+ *
+ * Local inference follows Go's scoping, not source order alone: a variable's
+ * static type is fixed where it is declared, so an inner `x := …` shadows the
+ * outer `x` for its block only, and an assignment (`x = …`) changes nothing. A
+ * name bound to something this walker does not model (a `select` receive, a
+ * struct-literal type) is bound to "unknown" rather than left to resolve as a
+ * package-level name.
+ *
+ * Bounded: one pass over the tree; a substituted expression is capped at
+ * {@link MAX_EXPR_DEPTH} links, beyond which it is "unknown".
+ *
+ * TODO(#383): Go emits `calls` edges only. `references` for composite literals
+ * (`Foo{...}`), type assertions and unqualified type usages are deferred.
+ */
+import { createHash } from "node:crypto";
+import { COMPLEX_RECEIVER } from "./call-resolution.js";
+import {
+  GO_LOCAL_TYPE,
+  GO_UNKNOWN,
+  type GoExpr,
+  type GoFieldFact,
+  type GoFileFacts,
+  type GoType,
+} from "./go-type-resolution.js";
+import { buildCodeQualifiedName } from "./qualified-name.js";
+import type { SyntaxNode } from "./parsers-tree-sitter-more.js";
+import type { ParsedEdge, ParsedSymbol, SymbolKind } from "./parsers.js";
+
+/** Longest chain of selections/calls a substituted callee expression may hold. */
+const MAX_EXPR_DEPTH = 64;
+
+const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
+
+function exprDepth(expr: GoExpr): number {
+  let depth = 0;
+  let cur: GoExpr | undefined = expr;
+  while (cur) {
+    depth += 1;
+    cur =
+      cur.e === "sel" || cur.e === "elem" || cur.e === "key"
+        ? cur.x
+        : cur.e === "call"
+          ? cur.fn
+          : undefined;
+  }
+  return depth;
+}
+
+/** Cap an expression's chain so a long run of `a := b.x` bindings cannot grow without bound. */
+function capped(expr: GoExpr): GoExpr {
+  return exprDepth(expr) > MAX_EXPR_DEPTH ? GO_UNKNOWN : expr;
+}
+
+/** The receiver recorded for the name-evidence fallback (`call-resolution.ts`). */
+function legacyReceiver(operand: SyntaxNode | null): string {
+  return operand?.type === "identifier" ? operand.text : COMPLEX_RECEIVER;
+}
+
+export function walkGo(
+  root: SyntaxNode,
+  source: string,
+  moduleQname: string,
+  symbols: ParsedSymbol[],
+  edges: ParsedEdge[],
+): GoFileFacts {
+  const facts: GoFileFacts = { package: "", imports: [], types: [], funcs: [], vars: [] };
+
+  /** Innermost last. A name maps to the expression it was bound to. */
+  const scopes: Array<Map<string, GoExpr>> = [];
+  /** Type parameters in scope: a type written with one of these names is not a declared type. */
+  let typeParams: ReadonlySet<string> = new Set();
+  /** The function or method the walk is inside; calls outside one come from the module. */
+  let enclosing = moduleQname;
+
+  const lookup = (name: string): GoExpr | undefined => {
+    for (let i = scopes.length - 1; i >= 0; i -= 1) {
+      const hit = scopes[i].get(name);
+      if (hit) return hit;
+    }
+    return undefined;
+  };
+  const bind = (name: string, expr: GoExpr): void => {
+    if (name === "_" || scopes.length === 0) return;
+    scopes[scopes.length - 1].set(name, capped(expr));
+  };
+  const scoped = (fn: () => void): void => {
+    scopes.push(new Map());
+    try {
+      fn();
+    } finally {
+      scopes.pop();
+    }
+  };
+
+  // ── Types ────────────────────────────────────────────────────────────────
+
+  const typeOf = (n: SyntaxNode | null | undefined): GoType | null => {
+    if (!n) return null;
+    switch (n.type) {
+      case "type_identifier":
+        // A type parameter, or a type declared inside the function, is not a
+        // package-level declaration of that name.
+        if (typeParams.has(n.text) || lookup(n.text)) return null;
+        return { k: "named", name: n.text };
+      case "qualified_type": {
+        const pkg = n.childForFieldName("package");
+        const name = n.childForFieldName("name");
+        if (!pkg || !name || lookup(pkg.text)) return null;
+        return { k: "named", pkg: pkg.text, name: name.text };
+      }
+      case "pointer_type":
+      case "parenthesized_type":
+        return typeOf(n.namedChildren[0]);
+      case "generic_type": {
+        const base = typeOf(n.childForFieldName("type"));
+        return base?.k === "named" ? { ...base, generic: true } : null;
+      }
+      case "slice_type":
+      case "array_type":
+      case "implicit_length_array_type":
+        return { k: "list", elem: typeOf(n.childForFieldName("element")) };
+      case "map_type":
+        return {
+          k: "map",
+          key: typeOf(n.childForFieldName("key")),
+          elem: typeOf(n.childForFieldName("value")),
+        };
+      case "channel_type":
+        return { k: "chan", elem: typeOf(n.childForFieldName("value")) };
+      case "function_type":
+        return { k: "func", results: resultTypes(n.childForFieldName("result")) };
+      default:
+        return null;
+    }
+  };
+
+  /** One entry per declared parameter NAME (`a, b T` is two), or per unnamed type. */
+  const parameters = (
+    list: SyntaxNode | null | undefined,
+  ): Array<{ name: string | null; type: GoType | null }> => {
+    const out: Array<{ name: string | null; type: GoType | null }> = [];
+    if (!list) return out;
+    for (const p of list.namedChildren) {
+      if (p.type !== "parameter_declaration" && p.type !== "variadic_parameter_declaration") {
+        continue;
+      }
+      const base = typeOf(p.childForFieldName("type"));
+      const type: GoType | null =
+        p.type === "variadic_parameter_declaration" ? { k: "list", elem: base } : base;
+      const names = p.namedChildren.filter((c) => c.type === "identifier");
+      if (names.length === 0) out.push({ name: null, type });
+      else for (const id of names) out.push({ name: id.text, type });
+    }
+    return out;
+  };
+
+  const resultTypes = (result: SyntaxNode | null | undefined): Array<GoType | null> => {
+    if (!result) return [];
+    if (result.type === "parameter_list") return parameters(result).map((p) => p.type);
+    return [typeOf(result)];
+  };
+
+  const typeParamNames = (list: SyntaxNode | null | undefined): string[] => {
+    const out: string[] = [];
+    if (!list) return out;
+    for (const decl of list.namedChildren) {
+      for (const c of decl.namedChildren) if (c.type === "identifier") out.push(c.text);
+    }
+    return out;
+  };
+
+  // ── Expressions ──────────────────────────────────────────────────────────
+
+  const typed = (type: GoType | null): GoExpr => (type ? { e: "typed", type } : GO_UNKNOWN);
+
+  /**
+   * Chain links already evaluated, by source span. A fluent chain of N calls is
+   * N nested nodes, and each call's callee needs its operand's expression: without
+   * this every call would re-walk the chain below it, N² steps for one statement.
+   * A node is only ever evaluated before the statement that follows it binds
+   * anything, so its expression does not change between two readings.
+   */
+  const chainMemo = new Map<string, GoExpr>();
+
+  const exprOf = (n: SyntaxNode | null | undefined): GoExpr => {
+    if (!n) return GO_UNKNOWN;
+    if (n.type !== "selector_expression" && n.type !== "call_expression") return exprOfNode(n);
+    const key = `${n.startIndex}:${n.endIndex}:${n.type}`;
+    const known = chainMemo.get(key);
+    if (known) return known;
+    const expr = capped(exprOfNode(n));
+    chainMemo.set(key, expr);
+    return expr;
+  };
+
+  const exprOfNode = (n: SyntaxNode): GoExpr => {
+    switch (n.type) {
+      case "identifier": {
+        const local = lookup(n.text);
+        if (!local) return { e: "name", name: n.text };
+        return local.e === "local-type" ? GO_UNKNOWN : local;
+      }
+      case "selector_expression": {
+        const field = n.childForFieldName("field");
+        if (!field) return GO_UNKNOWN;
+        return { e: "sel", x: exprOf(n.childForFieldName("operand")), name: field.text };
+      }
+      case "call_expression":
+        return callResult(n, 0);
+      case "parenthesized_expression":
+        return exprOf(n.namedChildren[0]);
+      case "unary_expression": {
+        const op = n.childForFieldName("operator")?.text ?? n.children[0]?.text;
+        const operand = n.childForFieldName("operand");
+        if (op === "&" || op === "*") return exprOf(operand);
+        if (op === "<-") return { e: "elem", x: exprOf(operand) };
+        return GO_UNKNOWN;
+      }
+      case "composite_literal":
+        return typed(typeOf(n.childForFieldName("type")));
+      case "type_assertion_expression":
+      case "type_conversion_expression":
+        return typed(typeOf(n.childForFieldName("type")));
+      case "index_expression":
+        return { e: "elem", x: exprOf(n.childForFieldName("operand")) };
+      case "slice_expression":
+        return exprOf(n.childForFieldName("operand"));
+      case "func_literal":
+        return typed({ k: "func", results: resultTypes(n.childForFieldName("result")) });
+      default:
+        return GO_UNKNOWN;
+    }
+  };
+
+  /** Result `i` of a call expression, with the builtins that return their argument's type. */
+  const callResult = (call: SyntaxNode, i: number): GoExpr => {
+    const fn = call.childForFieldName("function");
+    if (!fn) return GO_UNKNOWN;
+    const args = call.childForFieldName("arguments")?.namedChildren ?? [];
+    if (fn.type === "identifier" && !lookup(fn.text)) {
+      if (fn.text === "new" || fn.text === "make")
+        return i === 0 ? typed(typeOf(args[0])) : GO_UNKNOWN;
+      if (fn.text === "append") return i === 0 ? exprOf(args[0]) : GO_UNKNOWN;
+    }
+    if (fn.type !== "identifier" && fn.type !== "selector_expression") {
+      // `(*T)(x)`, `[]byte(x)`, `f[int](x)`, `func() T {…}()`.
+      if (fn.type === "func_literal") {
+        const results = resultTypes(fn.childForFieldName("result"));
+        return typed(results[i] ?? null);
+      }
+      const parenType = fn.type === "parenthesized_expression" ? null : typeOf(fn);
+      return i === 0 ? typed(parenType) : GO_UNKNOWN;
+    }
+    return { e: "call", fn: exprOf(fn), i };
+  };
+
+  /** Bind the names of `left` to the values of `right` (`a, b := f()` / `a, b := x, y`). */
+  const bindAll = (names: SyntaxNode[], values: SyntaxNode[], declared: GoType | null): void => {
+    names.forEach((id, i) => {
+      if (id.type !== "identifier") return;
+      if (declared) return bind(id.text, typed(declared));
+      if (values.length === names.length) return bind(id.text, exprOf(values[i]));
+      if (values.length === 1) {
+        const v = values[0];
+        if (v.type === "call_expression") return bind(id.text, callResult(v, i));
+        // `v, ok := x.(T)`, `v, ok := m[k]`, `v, ok := <-ch`: only the first is the value.
+        return bind(id.text, i === 0 ? exprOf(v) : GO_UNKNOWN);
+      }
+      bind(id.text, GO_UNKNOWN);
+    });
+  };
+
+  const listChildren = (n: SyntaxNode | null | undefined): SyntaxNode[] =>
+    !n ? [] : n.type === "expression_list" ? n.namedChildren : [n];
+
+  // ── Symbols ──────────────────────────────────────────────────────────────
+
+  const recordSymbol = (
+    node: SyntaxNode,
+    name: string,
+    kind: SymbolKind,
+    owner = "",
+  ): ParsedSymbol => {
+    const sym: ParsedSymbol = {
+      kind,
+      name,
+      qualifiedName: buildCodeQualifiedName(moduleQname, owner, name),
+      startLine: node.startPosition.row + 1,
+      endLine: node.endPosition.row + 1,
+      contentHash: sha256(source.slice(node.startIndex, node.endIndex)),
+    };
+    symbols.push(sym);
+    edges.push({
+      kind: "defines",
+      fromQualifiedName: moduleQname,
+      toQualifiedName: sym.qualifiedName,
+      line: sym.startLine,
+    });
+    return sym;
+  };
+
+  /** `(s *Storage)` / `(l List[T])` → the receiver's name, base type and type parameters. */
+  const receiverOf = (
+    list: SyntaxNode | null,
+  ): { name: string | null; typeName: string; params: string[] } | null => {
+    const decl = list?.namedChildren.find((c) => c.type === "parameter_declaration");
+    if (!decl) return null;
+    let t = decl.childForFieldName("type");
+    while (t && (t.type === "pointer_type" || t.type === "parenthesized_type")) {
+      t = t.namedChildren[0] ?? null;
+    }
+    let params: string[] = [];
+    if (t?.type === "generic_type") {
+      const args = t.childForFieldName("type_arguments");
+      params = (args?.namedChildren ?? []).map((a) => a.text);
+      t = t.childForFieldName("type");
+    }
+    if (t?.type !== "type_identifier") return null;
+    const id = decl.namedChildren.find((c) => c.type === "identifier");
+    return { name: id?.text ?? null, typeName: t.text, params };
+  };
+
+  const declareFunction = (n: SyntaxNode): void => {
+    const id = n.childForFieldName("name");
+    if (!id) return;
+    const receiver =
+      n.type === "method_declaration" ? receiverOf(n.childForFieldName("receiver")) : null;
+    const sym = recordSymbol(n, id.text, "function", receiver?.typeName);
+    const outerParams = typeParams;
+    typeParams = new Set([
+      ...(receiver?.params ?? []),
+      ...typeParamNames(n.childForFieldName("type_parameters")),
+    ]);
+    const results = resultTypes(n.childForFieldName("result"));
+    facts.funcs.push({
+      name: id.text,
+      ...(receiver ? { receiver: receiver.typeName } : {}),
+      qualifiedName: sym.qualifiedName,
+      results,
+    });
+    const outerEnclosing = enclosing;
+    enclosing = sym.qualifiedName;
+    scoped(() => {
+      if (receiver?.name) {
+        bind(receiver.name, typed({ k: "named", name: receiver.typeName }));
+      }
+      for (const p of parameters(n.childForFieldName("parameters"))) {
+        if (p.name) bind(p.name, typed(p.type));
+      }
+      const result = n.childForFieldName("result");
+      if (result?.type === "parameter_list") {
+        for (const p of parameters(result)) if (p.name) bind(p.name, typed(p.type));
+      }
+      const body = n.childForFieldName("body");
+      if (body) visit(body);
+    });
+    enclosing = outerEnclosing;
+    typeParams = outerParams;
+  };
+
+  const declareTypes = (n: SyntaxNode): void => {
+    for (const spec of n.namedChildren) {
+      const id = spec.childForFieldName("name");
+      const t = spec.childForFieldName("type");
+      if (!id) continue;
+      const local = scopes.length > 0;
+      // A type declared inside a function shadows the package's for that scope:
+      // it is a symbol, as it always was, but not a package-level declaration.
+      if (local) bind(id.text, GO_LOCAL_TYPE);
+      if (spec.type === "type_alias") {
+        if (!local) facts.types.push({ name: id.text, form: "alias", target: typeOf(t) });
+        continue;
+      }
+      if (spec.type !== "type_spec") continue;
+      const kind: SymbolKind =
+        t?.type === "interface_type" ? "interface" : t?.type === "struct_type" ? "class" : "type";
+      recordSymbol(spec, id.text, kind);
+      if (local) continue;
+      const outerParams = typeParams;
+      typeParams = new Set(typeParamNames(spec.childForFieldName("type_parameters")));
+      if (t?.type === "struct_type") {
+        facts.types.push({ name: id.text, form: "struct", fields: structFields(t) });
+      } else if (t?.type === "interface_type") {
+        const methods = t.namedChildren
+          .filter((m) => m.type === "method_elem" || m.type === "method_spec")
+          .map((m) => m.childForFieldName("name")?.text ?? "")
+          .filter(Boolean);
+        facts.types.push({ name: id.text, form: "interface", methods });
+      } else {
+        facts.types.push({ name: id.text, form: "defined", target: typeOf(t) });
+      }
+      typeParams = outerParams;
+    }
+  };
+
+  const structFields = (struct: SyntaxNode): GoFieldFact[] => {
+    const out: GoFieldFact[] = [];
+    const list = struct.namedChildren.find((c) => c.type === "field_declaration_list");
+    for (const f of list?.namedChildren ?? []) {
+      if (f.type !== "field_declaration") continue;
+      const type = typeOf(f.childForFieldName("type"));
+      const names = f.namedChildren.filter((c) => c.type === "field_identifier");
+      if (names.length > 0) {
+        for (const id of names) out.push({ name: id.text, type });
+      } else if (type?.k === "named") {
+        out.push({ name: type.name, type, embedded: true });
+      } else {
+        // An embedded type this walker cannot name still occupies a promotion depth.
+        out.push({ name: "", type: null, embedded: true });
+      }
+    }
+    return out;
+  };
+
+  /** `var` / `const` specs: package-level ones become facts, local ones bindings. */
+  const declareVars = (n: SyntaxNode): void => {
+    const specs: SyntaxNode[] = [];
+    for (const c of n.namedChildren) {
+      if (c.type === "var_spec" || c.type === "const_spec") specs.push(c);
+      else if (c.type === "var_spec_list") specs.push(...c.namedChildren);
+    }
+    // In a `const (…)` block a spec with neither type nor value repeats the previous one.
+    let carried: GoType | null = null;
+    for (const spec of specs) {
+      const names = spec.namedChildren.filter((c) => c.type === "identifier");
+      const typeNode = spec.childForFieldName("type");
+      const values = listChildren(spec.childForFieldName("value"));
+      for (const v of values) visit(v);
+      const declared: GoType | null = typeNode
+        ? typeOf(typeNode)
+        : values.length === 0
+          ? carried
+          : null;
+      if (spec.type === "const_spec") carried = declared;
+      if (scopes.length > 0) {
+        if (typeNode && !declared) names.forEach((id) => bind(id.text, GO_UNKNOWN));
+        else bindAll(names, values, declared);
+        continue;
+      }
+      names.forEach((id, i) => {
+        if (id.text === "_") return;
+        if (declared || typeNode) return void facts.vars.push({ name: id.text, type: declared });
+        let value: GoExpr = GO_UNKNOWN;
+        if (values.length === names.length) value = exprOf(values[i]);
+        else if (values.length === 1 && values[0].type === "call_expression") {
+          value = callResult(values[0], i);
+        }
+        facts.vars.push({ name: id.text, value: capped(value) });
+      });
+    }
+  };
+
+  /** A bare callee: a local func value, a local type (a conversion), or a package-scope name. */
+  const calleeOfName = (name: string): GoExpr => {
+    const local = lookup(name);
+    if (!local) return { e: "name", name };
+    return local.e === "local-type" ? GO_LOCAL_TYPE : { e: "local" };
+  };
+
+  const recordCall = (n: SyntaxNode): void => {
+    const fn = n.childForFieldName("function");
+    if (!fn) return;
+    const line = n.startPosition.row + 1;
+    if (fn.type === "identifier") {
+      edges.push({
+        kind: "calls",
+        fromQualifiedName: enclosing,
+        toQualifiedName: fn.text,
+        line,
+        goCallee: calleeOfName(fn.text),
+      });
+      return;
+    }
+    if (fn.type !== "selector_expression") return;
+    const field = fn.childForFieldName("field");
+    if (!field) return;
+    const operand = fn.childForFieldName("operand");
+    edges.push({
+      kind: "calls",
+      fromQualifiedName: enclosing,
+      toQualifiedName: field.text,
+      line,
+      receiver: legacyReceiver(operand),
+      goCallee: capped({ e: "sel", x: exprOf(operand), name: field.text }),
+    });
+  };
+
+  // ── Statements ───────────────────────────────────────────────────────────
+
+  const visitChildren = (n: SyntaxNode): void => {
+    for (const c of n.namedChildren) visit(c);
+  };
+
+  function visit(n: SyntaxNode): void {
+    switch (n.type) {
+      case "package_clause": {
+        const id = n.namedChildren.find((c) => c.type === "package_identifier");
+        if (id) facts.package = id.text;
+        return;
+      }
+      case "import_declaration":
+        collectImports(n);
+        return;
+      case "function_declaration":
+      case "method_declaration":
+        declareFunction(n);
+        return;
+      case "type_declaration":
+        declareTypes(n);
+        return;
+      case "var_declaration":
+      case "const_declaration":
+        declareVars(n);
+        return;
+      case "short_var_declaration": {
+        const values = listChildren(n.childForFieldName("right"));
+        for (const v of values) visit(v);
+        bindAll(listChildren(n.childForFieldName("left")), values, null);
+        return;
+      }
+      case "range_clause": {
+        const right = n.childForFieldName("right");
+        if (right) visit(right);
+        // `for k, v = range x` assigns to existing variables: nothing is declared.
+        if (!n.children.some((c) => c.type === ":=")) return;
+        const names = listChildren(n.childForFieldName("left"));
+        const over = exprOf(right);
+        names.forEach((id, i) => {
+          if (id.type !== "identifier") return;
+          // One name over a slice is the index; the element is the second.
+          bind(id.text, i === 0 ? { e: "key", x: over } : { e: "elem", x: over });
+        });
+        return;
+      }
+      case "receive_statement": {
+        const right = n.childForFieldName("right");
+        if (right) visit(right);
+        if (!n.children.some((c) => c.type === ":=")) return;
+        listChildren(n.childForFieldName("left")).forEach((id, i) => {
+          if (id.type === "identifier") bind(id.text, i === 0 ? exprOf(right) : GO_UNKNOWN);
+        });
+        return;
+      }
+      case "type_switch_statement": {
+        scoped(() => {
+          const init = n.childForFieldName("initializer");
+          if (init) visit(init);
+          const value = n.childForFieldName("value");
+          if (value) visit(value);
+          const alias = listChildren(n.childForFieldName("alias")).find(
+            (c) => c.type === "identifier",
+          );
+          const operand = exprOf(value);
+          for (const clause of n.namedChildren) {
+            if (clause.type !== "type_case" && clause.type !== "default_case") continue;
+            scoped(() => {
+              if (alias) {
+                // One type in the case narrows the alias to it; otherwise it keeps the operand's.
+                const types =
+                  clause.type === "type_case" ? (clause.childrenForFieldName?.("type") ?? []) : [];
+                bind(alias.text, types.length === 1 ? typed(typeOf(types[0])) : operand);
+              }
+              for (const c of clause.namedChildren) {
+                if (clause.type === "type_case" && isTypeNode(c)) continue;
+                visit(c);
+              }
+            });
+          }
+        });
+        return;
+      }
+      case "func_literal": {
+        scoped(() => {
+          for (const p of parameters(n.childForFieldName("parameters"))) {
+            if (p.name) bind(p.name, typed(p.type));
+          }
+          const result = n.childForFieldName("result");
+          if (result?.type === "parameter_list") {
+            for (const p of parameters(result)) if (p.name) bind(p.name, typed(p.type));
+          }
+          const body = n.childForFieldName("body");
+          if (body) visit(body);
+        });
+        return;
+      }
+      case "block":
+      case "if_statement":
+      case "for_statement":
+      case "expression_switch_statement":
+      case "select_statement":
+      case "expression_case":
+      case "default_case":
+      case "communication_case":
+        scoped(() => visitChildren(n));
+        return;
+      case "call_expression":
+        recordCall(n);
+        visitChildren(n);
+        return;
+      default:
+        visitChildren(n);
+    }
+  }
+
+  const collectImports = (n: SyntaxNode): void => {
+    for (const c of n.namedChildren) {
+      if (c.type === "import_spec_list") {
+        collectImports(c);
+        continue;
+      }
+      if (c.type !== "import_spec") continue;
+      const pathNode = c.childForFieldName("path");
+      if (!pathNode) continue;
+      const target = pathNode.text.replace(/^["`]|["`]$/g, "");
+      edges.push({
+        kind: "imports",
+        fromQualifiedName: moduleQname,
+        toQualifiedName: target,
+        line: c.startPosition.row + 1,
+      });
+      const alias = c.childForFieldName("name")?.text;
+      facts.imports.push({ path: target, ...(alias ? { alias } : {}) });
+    }
+  };
+
+  visit(root);
+  return facts;
+}
+
+/** A node that spells a type inside a `type_case` (as opposed to one of its statements). */
+function isTypeNode(n: SyntaxNode): boolean {
+  return n.type === "type_identifier" || n.type === "qualified_type" || n.type.endsWith("_type");
+}

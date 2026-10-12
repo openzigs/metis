@@ -3565,6 +3565,10 @@ model CodeGraph {
   /// incremental ingest whose inputs differ re-parses every file so lineage
   /// backfills. Null on graphs built before #721.
   lineageFingerprint String?
+  /// Issue #1071 — `CODE_GRAPH_EXTRACTOR_VERSION` the graph's parser rows were
+  /// last written with. An incremental ingest of a graph recorded with an older
+  /// one (or null: built before #1071) upgrades the affected files in place.
+  extractorVersion   Int?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
@@ -3585,7 +3589,7 @@ model CodeSymbol {
   projectId     String // denormalised for fast (projectId, kind) reads from the MCP tools
   kind          String // function | class | interface | type | module | method | table | column
   name          String
-  qualifiedName String // e.g. "server/src/lib/x.ts::Foo.bar"
+  qualifiedName String // e.g. "server/src/lib/x.ts::Foo::bar"; a Go method is "<file>::<ReceiverType>::<name>" (#1071)
   filePath      String
   startLine     Int
   endLine       Int

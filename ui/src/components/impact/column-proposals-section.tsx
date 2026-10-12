@@ -55,7 +55,7 @@ export interface ColumnProposalsSectionProps {
   repo?: CodeCitationRepo | null;
 }
 
-/** `MarkAllAsReadBeforeDate` out of `internal/storage/entry.go::MarkAllAsReadBeforeDate`. */
+/** `MarkAllAsReadBeforeDate` out of `internal/storage/entry.go::Storage::MarkAllAsReadBeforeDate`. */
 function shortName(qualifiedName: string): string {
   const afterFile = qualifiedName.split("::").pop() ?? qualifiedName;
   return afterFile.slice(afterFile.lastIndexOf(".") + 1);

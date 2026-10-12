@@ -454,6 +454,7 @@ describe("provider routing on deep-ingest", () => {
       schemaEdges: 0,
       routineEdges: 0,
       filesRebound: 0,
+      filesUpgraded: 0,
       lineageBackfill: false,
       filesLineageRefreshed: 0,
       filesUnchanged: 39,

@@ -18,6 +18,7 @@
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { goResolutionMetadata } from "../src/lib/code-graph/go-type-resolution.js";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
   createMigratedSqlite,
@@ -37,6 +38,7 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 
 const { searchCodeGraphTool } = await import("../src/lib/analysis/tools/search-code-graph.js");
+const { buildSpecKitRagContext } = await import("../src/lib/spec-kit/rag-context.js");
 
 interface Sym {
   id: string;
@@ -360,6 +362,146 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(sites.content).toContain("handler.go:419 ");
       expect(sites.content).not.toContain("handler.go:420 ");
       expect(sites.content.trimEnd().endsWith("…")).toBe(true);
+    });
+
+    describe("#1071 — the graph ingest writes for Go since receiver types are resolved", () => {
+      beforeAll(async () => {
+        const graph = await db.codeGraph.findFirstOrThrow({ where: { projectId } });
+        const base = { codeGraphId: graph.id, projectId, language: "go", kind: "function" };
+        await db.codeSymbol.createMany({
+          data: [
+            {
+              ...base,
+              id: "st-archive",
+              name: "ArchiveEntries",
+              // The shape #1071 stores: `<file>::<ReceiverType>::<name>`.
+              qualifiedName: "internal/storage/entry.go::Storage::ArchiveEntries",
+              filePath: "internal/storage/entry.go",
+              startLine: 400,
+              endLine: 420,
+              contentHash: "st-archive",
+            },
+            {
+              ...base,
+              id: "cache-archive",
+              name: "ArchiveEntries",
+              qualifiedName: "internal/cache/cache.go::Cache::ArchiveEntries",
+              filePath: "internal/cache/cache.go",
+              startLine: 10,
+              endLine: 12,
+              contentHash: "cache-archive",
+            },
+            {
+              ...base,
+              id: "st-get",
+              name: "Fetch",
+              qualifiedName: "internal/storage/entry.go::Storage::Fetch",
+              filePath: "internal/storage/entry.go",
+              startLine: 500,
+              endLine: 510,
+              contentHash: "st-get",
+            },
+          ],
+        });
+        const call = (line: number, metadata: string | null) => ({
+          codeGraphId: graph.id,
+          projectId,
+          kind: "calls",
+          fromSymbolId: "refresh",
+          toSymbolId: null,
+          toQualifiedName: "Fetch",
+          filePath: "internal/reader/handler/handler.go",
+          line,
+          metadata,
+        });
+        await db.codeEdge.createMany({
+          data: [
+            // Ingest decided these are not calls to any project function.
+            call(601, goResolutionMetadata("external")),
+            call(602, goResolutionMetadata("func-value")),
+            call(603, goResolutionMetadata("conversion")),
+            call(604, goResolutionMetadata("ambiguous")),
+            // Left open: dispatched through an interface, or no verdict at all.
+            call(605, goResolutionMetadata("interface")),
+            call(606, null),
+            // One bound caller for each of the two same-named methods.
+            {
+              ...call(610, goResolutionMetadata("receiver-type")),
+              toSymbolId: "st-archive",
+              toQualifiedName: "ArchiveEntries",
+            },
+            {
+              ...call(41, goResolutionMetadata("receiver-type")),
+              fromSymbolId: "schedule-test",
+              toSymbolId: "cache-archive",
+              toQualifiedName: "ArchiveEntries",
+              filePath: "internal/model/feed_test.go",
+            },
+          ],
+        });
+      });
+
+      it("a `Type.member` reference resolves to the `::Type::member` symbol", async () => {
+        const res = await searchCodeGraphTool.execute({ calls: "Storage.ArchiveEntries" }, ctx());
+        expect(res.content).not.toContain("ambiguous");
+        // The storage method's caller, and not the cache method's.
+        expect(res.content).toContain("internal/reader/handler/handler.go::RefreshFeed");
+        expect(res.content).not.toContain("TestFeedScheduleNextCheckDefault");
+      });
+
+      it("the bare name shared by two receiver types is still reported as ambiguous", async () => {
+        const res = await searchCodeGraphTool.execute({ calls: "ArchiveEntries" }, ctx());
+        expect(res.content).toContain('"ArchiveEntries" is ambiguous: it matches 2 symbols');
+      });
+
+      it("a call ingest decided has no project callee is not a probable call site", async () => {
+        const res = await searchCodeGraphTool.execute({ calls: "Storage.Fetch" }, ctx());
+        expect(res.content).toContain("Probable (unresolved) call sites (2)");
+        expect(res.content).toContain("handler.go:605 ");
+        expect(res.content).toContain("handler.go:606 ");
+        for (const decided of [601, 602, 603, 604]) {
+          expect(res.content).not.toContain(`handler.go:${decided} `);
+        }
+      });
+    });
+
+    it("#1071 — Spec Kit's caller list leaves the same decided calls out", async () => {
+      const res = await buildSpecKitRagContext(projectId, "fetch entries", {
+        knowledgeService: { search: vi.fn(async () => ({ hits: [] })) },
+        fusedCode: {
+          searcher: {
+            search: vi.fn(async () => [
+              {
+                symbolId: "st-get",
+                filePath: "internal/storage/entry.go",
+                name: "Fetch",
+                kind: "function",
+                score: 1,
+              },
+            ]),
+          },
+          lineLookup: {
+            resolve: vi.fn(
+              async () =>
+                new Map([
+                  [
+                    "st-get",
+                    { filePath: "internal/storage/entry.go", startLine: 500, endLine: 510 },
+                  ],
+                ]),
+            ),
+          },
+        },
+        includeCode: true,
+        callers: {},
+      });
+      expect(res.context).toContain(
+        "- Fetch ← RefreshFeed at internal/reader/handler/handler.go:605 (probable)",
+      );
+      expect(res.context).toContain("handler.go:606 (probable)");
+      for (const decided of [601, 602, 603, 604]) {
+        expect(res.context).not.toContain(`handler.go:${decided}`);
+      }
     });
 
     it("a name matching nothing still says so", async () => {

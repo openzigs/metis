@@ -24,6 +24,10 @@ import type {
 import { SCHEMA_IMPACT_EDGE_KINDS, isLiveSchemaSource } from "@metis/shared";
 import type { LiveSchemaIndex } from "./live-schema-ingest.js";
 import { loadResolvedGoCalls, type ResolvedGoCall } from "./go-call-resolution.js";
+import { goResolutionMetadata } from "../code-graph/go-type-resolution.js";
+
+/** `CodeEdge.metadata` of a Go call ingest bound through its receiver's type (#1071). */
+const RECEIVER_TYPE_METADATA = goResolutionMetadata("receiver-type");
 import { isTestFilePath } from "../code-graph/call-resolution.js";
 import { LIVE_SCHEMA_FILE } from "../code-graph/schema-graph.js";
 
@@ -70,9 +74,15 @@ interface DownstreamCodeEdgeRow {
   fromSymbolId: string;
   toSymbolId: string;
   /**
-   * #791 — true for a call the ingest left unresolved and impact bound by name
-   * (Go, see go-call-resolution.ts). Weaker evidence than a resolved edge, so a
-   * symbol reached only this way contributes what it WRITES, not what it reads.
+   * #791 — true for a Go call made through a receiver or struct field
+   * (`h.store.X()`): one ingest bound by the receiver's type (#1071,
+   * `goResolution: "receiver-type"`), or one it left undecided and impact bound
+   * by name (go-call-resolution.ts). A symbol reached only this way contributes
+   * what it WRITES, not what it reads: a handler's incidental reads (the user,
+   * the session, the integrations row) are fan-out, what it writes is the change
+   * surface. The rule predates #1071, when every such call was name-bound; it is
+   * kept on the same calls now that most are exact, because the reason for it
+   * was never the binding.
    */
   inferred?: boolean;
 }
@@ -1081,12 +1091,15 @@ export class PrismaSchemaImpactDataSource implements SchemaImpactDataSource {
           kind: { in: [...DOWNSTREAM_CALL_EDGE_KINDS] },
           toSymbolId: { not: null },
         },
-        select: { fromSymbolId: true, toSymbolId: true },
+        select: { fromSymbolId: true, toSymbolId: true, metadata: true },
       }),
     );
     const out: DownstreamCodeEdgeRow[] = rows.map((e) => ({
       fromSymbolId: e.fromSymbolId,
       toSymbolId: e.toSymbolId as string,
+      // #1071 — ingest now binds `h.store.X()` itself. The edge is exact, but
+      // what #791 said of the handler still holds: its reads are fan-out.
+      ...(e.metadata === RECEIVER_TYPE_METADATA ? { inferred: true } : {}),
     }));
     // #791 — a Go handler reaches storage through calls the ingest left
     // unresolved; follow the ones that bind unambiguously.

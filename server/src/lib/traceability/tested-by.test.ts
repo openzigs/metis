@@ -250,6 +250,17 @@ describe("matchTestSubject", () => {
     expect(matchTestSubject("TestUser_Validate", "User", cands)).toEqual(cands[1]);
   });
 
+  it("matches a Go Type_Method test to a method stored as <file>::Type::method (#1071)", () => {
+    // What ingest writes for `func (u *User) Validate()` and `func (a *Admin) Validate()`.
+    const cands = [
+      c("User"),
+      c("Validate", "f.go::Admin::Validate"),
+      c("Validate", "f.go::User::Validate"),
+    ];
+    expect(matchTestSubject("TestUser_Validate", "User", cands)).toEqual(cands[2]);
+    expect(matchTestSubject("TestAdmin_ValidateRejectsEmpty", "Admin", cands)).toEqual(cands[1]);
+  });
+
   it("matches pytest snake_case names", () => {
     const cands = [c("validate_password")];
     expect(

@@ -489,7 +489,8 @@ async function buildBm25Corpus(
  *
  * The terms are counted against what the symbol is CALLED ({@link
  * symbolNameTerms}), not against the BM25 document. The document is
- * `name + qualifiedName`, and `qualifiedName` is `<filePath>::<name>`, so
+ * `name + qualifiedName`, and `qualifiedName` starts with the file path
+ * (`<filePath>::<name>`, or `<filePath>::<Type>::<name>` for a member), so
  * counting document terms let a directory (`internal`, `client`) or the file
  * extension (`go`) be the second "shared term": "Add a button in the web client
  * to terminate all sessions" reached `InlineKeyboardButton` again through

@@ -233,7 +233,7 @@ export function timePredicates(writer: DataPathWriterProfile): string[] {
   return writer.predicateColumns.filter((c) => isTimeColumnName(columnName(c)));
 }
 
-/** `MarkAllAsReadBeforeDate` out of `internal/storage/entry.go::MarkAllAsReadBeforeDate`. */
+/** `MarkAllAsReadBeforeDate` out of `internal/storage/entry.go::Storage::MarkAllAsReadBeforeDate`. */
 function shortName(qualifiedName: string): string {
   const afterFile = qualifiedName.split("::").pop() ?? qualifiedName;
   return afterFile.slice(afterFile.lastIndexOf(".") + 1);
