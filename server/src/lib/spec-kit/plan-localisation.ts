@@ -127,7 +127,7 @@ const EMPTY: PlanLocalisation = { block: "", files: [], tables: [], dropped: [],
 export const MAX_TABLES = 2;
 /** A table scoring under this share of the best one is not rendered. */
 export const MIN_TABLE_SHARE = 0.25;
-/** Writers listed per table. Miniflux `entries` has 15. */
+/** Writers listed per table. Miniflux `entries` has 16. */
 export const MAX_WRITERS_PER_TABLE = 16;
 /** Readers listed per table. */
 export const MAX_READERS_PER_TABLE = 10;
