@@ -40,6 +40,7 @@ import {
   type RunDeps,
 } from "./runner.js";
 import { SpecKitArtifactError } from "../artifacts.js";
+import { createChildLogger } from "../../logger.js";
 import {
   findContractPlanContradictions,
   NO_REST_SURFACE_EXTENSION,
@@ -56,12 +57,18 @@ import {
   type SpecKitKnowledgeService,
 } from "../rag-context.js";
 import {
+  describeContextDropped,
   describeGrounding,
   extractRequirementText,
   PINNED_REQUIREMENT_DOCUMENTS,
+  PLAN_CONTEXT_ARTIFACT,
+  renderPlanContext,
   verifyPlanPaths,
   type PlanPathLookup,
 } from "../grounding.js";
+import type { PlanLocalisationSource } from "../plan-localisation.js";
+
+const log = createChildLogger("spec-kit-plan");
 
 /**
  * #786 — the `/plan` contract (AC-id traceability, grounding in the existing
@@ -146,12 +153,16 @@ export interface PlanInput {
   /** #944 — injectable caller lookup. Defaults to the production wiring. */
   callerLookup?: CallerLookup;
   pathLookup?: PlanPathLookup;
+  /** #1060 — injectable code-graph source for the localisation. Defaults to the production wiring. */
+  localisationSource?: PlanLocalisationSource;
 }
 
 export interface PlanResult {
   artifacts: FeatureArtifactDto[];
   message: string;
   tokensUsed: number;
+  /** #1060 — every repository file the plan's context named; also stored as `plan-context.md`. */
+  retrievedFiles: string[];
   /**
    * #1057 — cut-off replies by artifact key, set only for those NOT saved
    * because a complete version already existed (that version stays current).
@@ -205,6 +216,10 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     // #944 — and the code that already calls them: a plan missed the
     // protocol-adapter writers of the table it changed.
     callers: { ...(input.callerLookup ? { lookup: input.callerLookup } : {}) },
+    // #1060 — and down the code graph to the data that code touches: the
+    // migration, the table's writers, the query builder and the client struct
+    // share no word with a spec, so similarity never retrieved them.
+    localise: { ...(input.localisationSource ? { source: input.localisationSource } : {}) },
   });
 
   const userBase = [
@@ -342,6 +357,11 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
   for (const item of staged) {
     if (!item.prior) assertFeatureArtifactWritable(item.key, item.content);
   }
+  // #1060 — record what this plan was given, beside it. Only when this run's
+  // plan.md is the one being saved: a kept earlier plan keeps its own record.
+  // The record is not checked with the set above: it is written after it, and a
+  // record that cannot be saved must not refuse a plan that can (see below).
+  const recordsContext = !staged[0]!.prior;
   // Write the set. plan.md goes last so it is the artifact the page opens on,
   // as before.
   const artifacts: FeatureArtifactDto[] = [];
@@ -357,6 +377,33 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     );
   }
   const plan = artifacts[artifacts.length - 1]!;
+
+  // #1060 — the record goes AFTER plan.md, and names the version it describes
+  // (#1094 review M4). The store has no transaction: written first, a failure
+  // among the five left a new record beside the old plan.md, saying it
+  // described "the current plan.md". Written last, a failure of this write
+  // leaves the new plan.md beside the older record, which names the older
+  // version and so cannot be mistaken for this plan's. It is not one of the
+  // five generated artifacts the result returns, and losing it does not fail a
+  // command whose plan is saved: the message says so instead.
+  let contextRecorded = false;
+  if (recordsContext) {
+    try {
+      await writeFeatureArtifact({
+        featureId: feature.id,
+        key: PLAN_CONTEXT_ARTIFACT,
+        content: renderPlanContext(rag, { planVersion: plan.version }),
+        actorId: input.actorId ?? null,
+      });
+      contextRecorded = true;
+    } catch (err) {
+      log.warn("plan-context.md could not be saved; the five plan artifacts were", {
+        projectId: input.projectId,
+        feature: feature.slug,
+        error: (err as Error).message,
+      });
+    }
+  }
 
   // #1057 — a cut-off plan.md does not make the feature `planned`.
   const planCut = truncated.includes("plan.md");
@@ -394,6 +441,15 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
         ? " The plan declares no REST surface, so the contract defines no endpoint."
         : "";
 
+  // #1060 — the message says where the files the plan was given are recorded:
+  // that record is how a reader checks a "not in the retrieved context" in the
+  // plan. With no record to point at, the note carries its own detail.
+  const contextNote = !recordsContext
+    ? ""
+    : contextRecorded
+      ? ` The ${rag.files.length} file${rag.files.length === 1 ? "" : "s"} the plan was given ${rag.files.length === 1 ? "is" : "are"} recorded in \`${PLAN_CONTEXT_ARTIFACT}\`.${describeContextDropped(rag.dropped, PLAN_CONTEXT_ARTIFACT)}`
+      : ` \`${PLAN_CONTEXT_ARTIFACT}\` (the record of the files this plan was given) could not be saved; an earlier one, if present, describes an earlier plan.md.${describeContextDropped(rag.dropped)}`;
+
   const kept = Object.keys(partialContent);
   const keptNote =
     kept.length > 0
@@ -403,8 +459,9 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
 
   return {
     artifacts,
-    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${pathNote}${noneNote}${mermaidNote}${contractNote}${truncationWarning(truncated)}${keptNote}${statusNote}`,
+    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${contextNote}${pathNote}${noneNote}${mermaidNote}${contractNote}${truncationWarning(truncated)}${keptNote}${statusNote}`,
     tokensUsed: totalTokens,
+    retrievedFiles: rag.files,
     ...(kept.length > 0 ? { partialContent } : {}),
   };
 }

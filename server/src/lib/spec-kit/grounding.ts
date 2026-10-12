@@ -14,6 +14,10 @@
  *     implementation task covering the same acceptance criterion.
  *   - `describeGrounding` reports code symbols alongside document chunks, which
  *     "grounded on N chunks" used to omit.
+ *   - `renderPlanContext` (#1060) records the files a plan was given beside the
+ *     plan, so a reader can check a "not in the retrieved context" statement by
+ *     looking. No code decides what such a sentence is about: a check that did
+ *     was wrong in two review cycles of #1094 and was removed.
  *
  * Every lookup is project-scoped and parameterised through Prisma; paths taken
  * from model output are only ever compared, never used to touch the filesystem.
@@ -173,6 +177,85 @@ export async function verifyPlanPaths(
     });
     return unchecked;
   }
+}
+
+/**
+ * The note a command's message carries for what the localisation left out (its
+ * token budget, a list cap, or a time limit). `""` when nothing was. With
+ * `recordedIn`, the note gives the count and points at the artifact that lists
+ * them; without it (the project-level `/plan`, which has no such artifact) it
+ * lists them itself.
+ */
+export function describeContextDropped(dropped: readonly string[], recordedIn?: string): string {
+  if (dropped.length === 0) return "";
+  if (recordedIn) {
+    const n = dropped.length;
+    return ` Left out of the plan's context (token budget, list cap or time limit): ${n} item${n === 1 ? "" : "s"}, listed in \`${recordedIn}\`.`;
+  }
+  return ` Left out of the plan's context (token budget, list cap or time limit): ${dropped.join("; ")}.`;
+}
+
+/** The feature artifact the plan's context is recorded in. */
+export const PLAN_CONTEXT_ARTIFACT = "plan-context.md";
+
+/**
+ * Feature artifacts METIS keeps for its own reader and that are NOT part of the
+ * Spec Kit set: never exported into a target repository's `specs/<slug>/`.
+ */
+export const METIS_INTERNAL_FEATURE_ARTIFACTS: ReadonlySet<string> = new Set([
+  PLAN_CONTEXT_ARTIFACT,
+]);
+
+/**
+ * #1060 — `plan-context.md`: the files `/speckit.plan` was given, and what was
+ * left out for the budget. Kept OUT of plan.md on purpose: the change-plan
+ * scoring (#1042) counts the files a plan names, and a list of everything
+ * retrieved is not a list of files to change.
+ *
+ * It is a METIS record, not a Spec Kit artifact: the installer does not write
+ * it into the target repository (`installer/skeleton.ts`).
+ *
+ * `planVersion` is the version of the `plan.md` it describes. The record is
+ * written after that `plan.md` with no transaction, so the two can part; naming
+ * the version makes a record left over from an earlier plan say so itself.
+ */
+export function renderPlanContext(
+  rag: {
+    usedChunks: number;
+    usedSymbols: number;
+    files: readonly string[];
+    dropped: readonly string[];
+  },
+  opts: { planVersion?: number } = {},
+): string {
+  const plan =
+    opts.planVersion === undefined ? "the current `plan.md`" : `\`plan.md\` v${opts.planVersion}`;
+  const lines = [
+    "# Plan context",
+    "",
+    `What \`/speckit.plan\` was given when it wrote ${plan}. This is the retrieved`,
+    "context, NOT the list of files to change: the plan names those. A file listed here was in",
+    "the planner's context; a file that is not listed was not retrieved.",
+    ...(opts.planVersion === undefined
+      ? []
+      : [
+          "If `plan.md` is at another version, this record was not rewritten with it and describes",
+          "the version named above.",
+        ]),
+    "",
+    `- Grounding: ${describeGrounding(rag)}`,
+    `- Files named in the context: ${rag.files.length}`,
+    "",
+    "## Files in the retrieved context",
+    "",
+    ...(rag.files.length > 0 ? rag.files.map((f) => `- \`${f}\``) : ["None."]),
+    "",
+    "## Left out (token budget, list cap or time limit)",
+    "",
+    ...(rag.dropped.length > 0 ? rag.dropped.map((d) => `- ${d}`) : ["Nothing."]),
+    "",
+  ];
+  return lines.join("\n");
 }
 
 const TEST_TASK_RE = /\b(?:tests?|testing)\b/i;

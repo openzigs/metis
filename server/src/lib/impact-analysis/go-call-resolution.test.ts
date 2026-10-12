@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   goPackageDir,
   loadResolvedGoCalls,
+  loadResolvedGoCallsFrom,
   resolveGoCalls,
   type GoCallable,
   type GoImport,
@@ -236,5 +237,179 @@ describe("loadResolvedGoCalls", () => {
       expect(prisma.codeSymbol.findMany).not.toHaveBeenCalled();
       expect(prisma.codeEdge.findMany).not.toHaveBeenCalled();
     });
+  });
+});
+
+// ── #1060 — the same decision, reading only the caller's side ────────────────
+
+type Row = Record<string, string | null>;
+type Clause = Record<string, unknown>;
+
+/** The handful of Prisma `where` shapes the two loaders use, over in-memory rows. */
+function matches(row: Row, where: Clause): boolean {
+  return Object.entries(where).every(([key, want]) => {
+    if (key === "OR") return (want as Clause[]).some((w) => matches(row, w));
+    const value = row[key];
+    if (want === null || typeof want !== "object") return value === want;
+    const cond = want as { in?: string[]; endsWith?: string; startsWith?: string };
+    if (cond.in) return value !== null && value !== undefined && cond.in.includes(value);
+    if (cond.endsWith !== undefined) return (value ?? "").endsWith(cond.endsWith);
+    if (cond.startsWith !== undefined) return (value ?? "").startsWith(cond.startsWith);
+    throw new Error(`unsupported where: ${JSON.stringify(want)}`);
+  });
+}
+
+function inMemoryGraph(symbols: Row[], edges: Row[]) {
+  const table = (rows: Row[]) => ({
+    findMany: vi.fn(async (args: { where: Clause }) => rows.filter((r) => matches(r, args.where))),
+  });
+  return { codeSymbol: table(symbols), codeEdge: table(edges) };
+}
+
+describe("loadResolvedGoCallsFrom (#1060)", () => {
+  const fn = (id: string, filePath: string, name: string): Row => ({
+    id,
+    projectId: "p",
+    language: "go",
+    kind: "function",
+    name,
+    qualifiedName: `${filePath}::${name}`,
+    filePath,
+  });
+  const call = (fromSymbolId: string, filePath: string, toQualifiedName: string): Row => ({
+    projectId: "p",
+    kind: "calls",
+    fromSymbolId,
+    toSymbolId: null,
+    filePath,
+    toQualifiedName,
+  });
+  const imp = (filePath: string, toQualifiedName: string): Row => ({
+    projectId: "p",
+    kind: "imports",
+    fromSymbolId: `m:${filePath}`,
+    toSymbolId: null,
+    filePath,
+    toQualifiedName,
+  });
+  const symbols = [
+    fn("ui-refresh", "internal/ui/feed_refresh.go", "refreshFeed"),
+    fn("ui-show", "internal/ui/feed_entries.go", "showFeedEntriesPage"),
+    fn("ui-helper", "internal/ui/helper.go", "pagination"),
+    fn("form-new", "internal/ui/form/feed.go", "NewFeedForm"),
+    fn("st-update", "internal/storage/feed.go", "UpdateFeed"),
+    fn("st-byid", "internal/storage/feed.go", "FeedByID"),
+    fn("st-dup", "internal/storage/a.go", "Dup"),
+    fn("model-dup", "internal/model/b.go", "Dup"),
+    fn("client-update", "client/client.go", "UpdateFeed"),
+    fn("root-main", "main.go", "main"),
+    fn("root-run", "run.go", "run"),
+    // Another project's function of the same name must never be a candidate.
+    { ...fn("other-update", "internal/storage/feed.go", "UpdateFeed"), projectId: "q" },
+  ];
+  const edges = [
+    call("ui-refresh", "internal/ui/feed_refresh.go", "h.store.UpdateFeed"),
+    call("ui-refresh", "internal/ui/feed_refresh.go", "pagination"),
+    // Already bound by the ingest: not an unresolved call, and never resolved again.
+    {
+      ...call("ui-refresh", "internal/ui/feed_refresh.go", "h.store.FeedByID"),
+      toSymbolId: "st-byid",
+    },
+    // Ambiguous: storage and model both declare Dup, and the package imports both.
+    call("ui-refresh", "internal/ui/feed_refresh.go", "Dup"),
+    call("ui-show", "internal/ui/feed_entries.go", "h.store.FeedByID"),
+    // Visible only through the sub-package's own import: not from internal/ui.
+    call("ui-show", "internal/ui/feed_entries.go", "NewFeedForm"),
+    call("form-new", "internal/ui/form/feed.go", "FeedByID"),
+    call("root-main", "main.go", "run"),
+    // From the root package (directory ""), through what `main.go` imports.
+    call("root-main", "main.go", "ui.pagination"),
+    call("st-update", "internal/storage/feed.go", "FeedByID"),
+    imp("internal/ui/handler.go", "miniflux.app/v2/internal/storage"),
+    imp("internal/ui/handler.go", "miniflux.app/v2/internal/model"),
+    imp("internal/ui/form/feed.go", "miniflux.app/v2/internal/storage"),
+    imp("main.go", "miniflux.app/v2/internal/ui"),
+  ];
+  const sorted = (rows: Array<{ fromSymbolId: string; toSymbolId: string }>) =>
+    [...rows].sort((a, b) =>
+      `${a.fromSymbolId}>${a.toSymbolId}`.localeCompare(`${b.fromSymbolId}>${b.toSymbolId}`),
+    );
+
+  it("gives, for any set of callers, what the whole-project resolution gives for them", async () => {
+    const whole = await loadResolvedGoCalls(inMemoryGraph(symbols, edges) as never, "p");
+    // The fixture exercises every rule: bound, ambiguous, invisible, same-package, root package.
+    expect(sorted(whole)).toEqual([
+      { fromSymbolId: "form-new", toSymbolId: "st-byid" },
+      { fromSymbolId: "root-main", toSymbolId: "root-run" },
+      { fromSymbolId: "root-main", toSymbolId: "ui-helper" },
+      { fromSymbolId: "st-update", toSymbolId: "st-byid" },
+      { fromSymbolId: "ui-refresh", toSymbolId: "st-update" },
+      { fromSymbolId: "ui-refresh", toSymbolId: "ui-helper" },
+      { fromSymbolId: "ui-show", toSymbolId: "st-byid" },
+    ]);
+    const callers = [
+      ...new Set(edges.filter((e) => e.kind === "calls").map((e) => e.fromSymbolId!)),
+    ];
+    const subsets = [
+      ...callers.map((c) => [c]),
+      ["ui-refresh", "ui-show"],
+      ["root-main", "form-new", "st-update"],
+      callers,
+    ];
+    for (const subset of subsets) {
+      const scoped = await loadResolvedGoCallsFrom(
+        inMemoryGraph(symbols, edges) as never,
+        "p",
+        subset,
+      );
+      expect(sorted(scoped), subset.join(",")).toEqual(
+        sorted(whole.filter((c) => subset.includes(c.fromSymbolId))),
+      );
+    }
+  });
+
+  it("reads the callers' calls, the candidates of their callee names and their packages' imports", async () => {
+    const graph = inMemoryGraph(symbols, edges);
+    await loadResolvedGoCallsFrom(graph as never, "p", ["ui-refresh"]);
+    expect(graph.codeEdge.findMany.mock.calls[0]![0].where).toEqual({
+      projectId: "p",
+      kind: "calls",
+      fromSymbolId: { in: ["ui-refresh"] },
+      filePath: { endsWith: ".go" },
+    });
+    expect(graph.codeSymbol.findMany.mock.calls[0]![0].where).toEqual({
+      projectId: "p",
+      language: "go",
+      kind: { in: ["function", "method"] },
+      name: { in: ["Dup", "UpdateFeed", "pagination"] },
+    });
+    expect(graph.codeEdge.findMany.mock.calls[1]![0].where).toEqual({
+      projectId: "p",
+      kind: "imports",
+      filePath: { endsWith: ".go" },
+      OR: [{ filePath: { startsWith: "internal/ui/" } }],
+    });
+  });
+
+  it("reads nothing for no caller, and no candidate for a caller with no unresolved call", async () => {
+    const graph = inMemoryGraph(symbols, edges);
+    expect(await loadResolvedGoCallsFrom(graph as never, "p", [])).toEqual([]);
+    expect(graph.codeEdge.findMany).not.toHaveBeenCalled();
+    expect(await loadResolvedGoCallsFrom(graph as never, "p", ["st-byid"])).toEqual([]);
+    expect(graph.codeSymbol.findMany).not.toHaveBeenCalled();
+    // No function of the project carries the name: the imports are not read either.
+    const none = inMemoryGraph([], edges);
+    expect(await loadResolvedGoCallsFrom(none as never, "p", ["ui-refresh"])).toEqual([]);
+    expect(none.codeEdge.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks in lists SQLite can bind, however many callers there are", async () => {
+    const many = Array.from({ length: 1_201 }, (_, i) => `c${i}`);
+    const graph = inMemoryGraph(symbols, edges);
+    await loadResolvedGoCallsFrom(graph as never, "p", [...many, "ui-refresh"]);
+    const callReads = graph.codeEdge.findMany.mock.calls.filter((c) => c[0].where.kind === "calls");
+    expect(callReads).toHaveLength(3);
+    const asked = callReads.flatMap((c) => (c[0].where.fromSymbolId as { in: string[] }).in);
+    expect(asked).toEqual([...many, "ui-refresh"]);
   });
 });

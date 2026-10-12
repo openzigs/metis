@@ -1023,9 +1023,9 @@ export function entityTypeKeysForTable(tableName: string): string[] {
 /** A `SchemaImpactDataSource` scoped to one project, backed by Prisma. */
 export class PrismaSchemaImpactDataSource implements SchemaImpactDataSource {
   constructor(
-    private readonly prisma: Pick<PrismaClient, "codeSymbol" | "codeEdge"> &
+    protected readonly prisma: Pick<PrismaClient, "codeSymbol" | "codeEdge"> &
       Partial<Pick<PrismaClient, "codeSymbolEmbedding">>,
-    private readonly projectId: string,
+    protected readonly projectId: string,
   ) {}
 
   /**
@@ -1090,10 +1090,7 @@ export class PrismaSchemaImpactDataSource implements SchemaImpactDataSource {
     }));
     // #791 — a Go handler reaches storage through calls the ingest left
     // unresolved; follow the ones that bind unambiguously.
-    const wanted = new Set(symbolIds);
-    for (const c of await this.goCalls()) {
-      if (wanted.has(c.fromSymbolId)) out.push({ ...c, inferred: true });
-    }
+    for (const c of await this.goCallsFrom(symbolIds)) out.push({ ...c, inferred: true });
     return out;
   }
 
@@ -1208,10 +1205,16 @@ export class PrismaSchemaImpactDataSource implements SchemaImpactDataSource {
 
   private goCallsP: Promise<ResolvedGoCall[]> | null = null;
 
-  /** The project's resolvable Go calls, loaded once per data source. */
-  private goCalls(): Promise<ResolvedGoCall[]> {
+  /**
+   * The resolvable Go calls out of `symbolIds`. Here: the whole project's,
+   * loaded once per data source and filtered, which suits impact analysis (it
+   * walks most of the graph). A subclass that walks from a
+   * handful of symbols on a request thread reads only those (#1060).
+   */
+  protected async goCallsFrom(symbolIds: string[]): Promise<ResolvedGoCall[]> {
     this.goCallsP ??= loadResolvedGoCalls(this.prisma, this.projectId);
-    return this.goCallsP;
+    const wanted = new Set(symbolIds);
+    return (await this.goCallsP).filter((c) => wanted.has(c.fromSymbolId));
   }
 
   async getSchemaSymbolsByIds(ids: string[]): Promise<SchemaSymbolRow[]> {

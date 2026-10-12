@@ -4506,6 +4506,7 @@ Design points:
 | `DOCS_GEN_REASONING_ALLOWANCE_TOKENS` | `32768` | Reasoning headroom added on top of every docs-gen output cap for a model that **thinks by default** and draws its reasoning from the same `max_tokens` (#25). Applies only to models on the documented allow-list in `docs-gen/output-caps.ts` — today DeepSeek `deepseek-v4-pro` / `deepseek-flash`, whose thinking mode is on by default. The section/facts caps then describe the ANSWER budget; the sum is still clamped to the model's ceiling (384K for DeepSeek V4). `0` opts out. |
 | `DOCS_GEN_PHASE1_REASONING` | `auto` | How much a Phase-1 fact-extraction call may reason (#25): `auto` asks a thinking-by-default model (the same allow-list) for `low` effort and sends nothing for any other model, so Claude is unchanged; `provider-default`, `off`, `low`, `medium`, `high` override it for every model. Sent by the `anthropic` provider as `thinking` + `output_config.effort` (`thinking: enabled` on DeepSeek's endpoint, `adaptive` elsewhere; `off` → `thinking: disabled`). |
 | `SPEC_KIT_MAX_OUTPUT_TOKENS` | `21333` | Output-token cap for one Spec Kit model call (#1057). Before #1057 none was sent, so the `anthropic` path used its `16000` non-streaming default. The default is the Anthropic SDK's non-streaming bound (ADR 0008), which that provider clamps to anyway; the value is clamped down to the model's known ceiling, and a model with no known ceiling gets `8192` unless this is set. Minimum `512`. |
+| `SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET` | `2500` | Input-token budget (4 characters per token) of the **Change Localisation** block `/plan` and `/speckit.plan` add to their context (#1060, §25.2). Locator rows are rendered first and excerpts while the budget lasts; what the budget, a list cap or a time limit leaves out is counted and named in the block, in the command's message and in `plan-context.md` (the per-limit table is in §25.2). The closing "left out" note and the file manifest are added on top of it. `0` switches off the code-graph walk and its block and nothing else: the file list at the end of the context, the plan prompt's two #1060 instructions, `plan-context.md` and the "not in the retrieved context" check stay, so `0` is not the pre-#1060 prompt byte for byte. |
 | `SPEC_KIT_REASONING` | `auto` | How much a Spec Kit model call may reason (#1057); same values and allow-list as `DOCS_GEN_PHASE1_REASONING`. In #706 run 7 `deepseek-flash` at its default (high) effort spent the whole cap reasoning. A reply that reaches the cap without one whole line of text now fails the command (`502 SPEC_KIT_OUTPUT_EXHAUSTED`) and keeps the previous artifact instead of saving a stub; an empty reply fails the same way (`502 SPEC_KIT_EMPTY_OUTPUT`). A plan reply cut off part-way never replaces a complete plan artifact (the partial text is returned as `partialContent`) and never marks the feature `planned`. |
 | `ANALYSIS_RECOVERY_REASONING` | `auto` | How much the code agent's two recovery calls may reason (#1063): the final-answer retry and the evidence-only salvage, made when the tool loop stops on its turn or token budget without an answer. Same values and allow-list as `DOCS_GEN_PHASE1_REASONING`. In #706 run 7 `deepseek-flash` spent the whole 16,384-token output cap of both calls reasoning and returned no text, so 64 tool calls ended in 0 findings. The loop's own turns are not affected. Sent only by the `anthropic` provider and `local-gemma`; `openai`, `azure` and `bedrock-gateway` drop it, and the degrade note then says so instead of advising it (`providerHonoursReasoningOptions`). `auto` leaves a real Claude model's request unchanged; an explicit `low`/`medium`/`high`/`off` sends `thinking` / `output_config.effort`, which is not verified per Claude model, so keep `auto` for Claude. |
 | `DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS` | `8192` | Output-token cap for Phase-1 fact extraction (#1226). Same floor and model-ceiling clamp as above. Fact extraction emits compact bullets, so the smaller default is deliberate. |
@@ -5875,6 +5876,7 @@ server/src/lib/spec-kit/
 │   ├── skeleton.ts               # SPECIFY_SKELETON + emitFeatureFiles + statusFile
 │   └── index.ts                  # runInstall + planInstall
 ├── rag-context.ts                # Phase 2 (#373): project-RAG context builder for /specify + /plan
+├── plan-localisation.ts          # #1060: code-graph walk from the retrieved symbols to their data path (no model call)
 └── commands/
     ├── runner.ts                 # shared agent executor: budget→constitution→RAG→safety→provider→safety→FinOps→audit
     ├── constitution.ts           # /speckit.constitution
@@ -5918,6 +5920,150 @@ feature's scope. `speckit.specify` and `speckit.plan` build the same RAG context
 `/specify` and `/plan` (`buildSpecKitRagContext`; the plan with code symbols, their
 same-file **sibling symbols** (#785) and pinned requirement documents, shared by all five
 plan artifacts), use the same spec and plan prompt contracts, and report their grounding.
+
+**Plan localisation (#1060).** Similarity retrieval gives a plan 8 document chunks and at
+most 12 code symbols, chosen by how closely they match the spec's wording, and until #1060
+the only expansion was upward, to their callers (#944). A spec is written in behavioural
+language, so the files a data change also edits rank far below those cut-offs or cannot
+rank at all: replayed offline on the #706 run-7 specs, `internal/storage/feed_query_builder.go`
+ranked 94th among code symbols and 27th among chunks, the client's `client/model.go` 101st,
+and `internal/database/migrations.go` (which holds only SQL table and column symbols)
+appeared in neither the top 500 symbols nor the top 200 chunks. Sending the whole spec
+instead of its first 2,048 characters did not move them. `plan-localisation.ts`
+(`buildPlanLocalisation`, enabled by `buildSpecKitRagContext`'s `localise` option, which
+both plan commands set) therefore walks the code graph down from the retrieved symbols,
+with no model call:
+
+1. A file-level (`module`) hit is replaced by the functions that file declares (the first
+   12 by line), since a module symbol has no call edge.
+2. `resolveDownstreamDataLayer` follows `calls` two hops (a Go `h.store.X()` bound by
+   name, #791) and the SQL-lineage edges (`reads` / `writes` / `persists-to`) name the
+   tables that code touches. Tables are ranked by how much of the retrieved code reaches
+   them times one plus how often the spec names the entity (`countEntityMentions`:
+   the table name, its singular, and the unseparated form); the best two within a
+   quarter of the top score are kept.
+3. For each: `getDataModelSymbols` gives where it is defined (the migrations file) and
+   the production types named for it; `getWriterEdgesTo` gives every function that writes
+   it (ORM mapping edges, synthetic `sql@line` origins and tests excluded), with its
+   signature and first SQL statement as an excerpt; `reads` edges give the readers: the
+   functions that read the table and do not write *that* table (one that reads `feeds` and
+   writes `entries` is a reader of `feeds` and a writer of `entries`).
+4. The functions the retrieved code and that data layer call, with a second hop taken only
+   inside the data layer's own directories. This is how a query builder is reached: lineage
+   cannot see SQL assembled from fragments.
+5. Structural twins of the retrieved functions (`findStructuralTwins`, #1036).
+
+Lists are ordered so every file gets one row before any file gets a second
+(`roundRobin`), then capped, and every list has a full tie-break (path, line, name): the
+block sits in the cached system prefix of five calls, so no order in it follows the order a
+query returned its rows in. The block is budgeted by
+`SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET`: locator rows first, excerpts while the budget
+lasts.
+
+**What is left out is said, cap by cap.** Each limit on this path adds a sentence to
+`dropped` with the count and kind of what it cut. `dropped` is rendered as the block's
+closing **Left out of this block** note (on top of the budget, and only when the block has
+at least one row), listed or counted in the command's message, and stored in
+`plan-context.md`. The limits applied where the block is rendered were always counted; the
+ones applied *upstream* (where tables are ranked, a retrieved file is expanded to its
+functions, and twins are found) cut before anything was counted until the #1094 review, and
+are reported now. `plan-localisation.test.ts` holds one fixture per constant that exceeds it:
+
+| Limit | Value | What the sentence says |
+|---|---|---|
+| `MAX_TABLES`, `MIN_TABLE_SHARE` | 2, 0.25 | `Tables: N more tables the retrieved code reaches were not followed (…)` |
+| `MAX_FUNCTIONS_PER_SEED_FILE` | 12 | `Retrieved files: N functions were not followed, past the first 12 of a retrieved file (…)` |
+| `MAX_WRITERS_PER_TABLE`, `MAX_READERS_PER_TABLE` | 16, 10 | `N more writers / readers not listed (in …)` |
+| `MAX_CALLEES`, `MAX_OTHER_CALLEES` | 16, 4 | `N more callees not listed (in …)` |
+| the callee step's second hop, outside the data layer | kept inside it only | `N callees one call further out, outside the data layer, not listed (in …)` |
+| `MAX_LISTED_TWINS`, and the finder's `MAX_TWINS_PER_SEED`, `MAX_TWINS` | 6, 4, 24 | `N more twins not listed (in …)`, counting what all three removed |
+| `MAX_TWIN_SEEDS` | 60 | `N retrieved functions were not compared for twins, past the first 60` |
+| `MAX_COLUMNS_PER_WRITER`, `MAX_NAMED_CALLERS` | 5, 3 | `+N more` on the row, and `N writers with more than 5 columns …` / `N callees with more than 3 callers …` |
+| `MAX_TYPE_EXCERPT_CHARS` | 1,600 | `N type declarations cut at 1,600 characters (…)` |
+| `MAX_SCANNED_SPEC_CHARS` | 20,000 | `Spec text: only the first 20,000 of N characters were read for table names` |
+| `MAX_NAMED_LEFT_OUT` | 8 | `+N more` inside each sentence above |
+| token budget | setting | `N not listed for the token budget (…)`, `Excerpts not shown for the token budget …` |
+| `TWIN_MAX_PROJECT_CALL_EDGES`, `TWIN_MAX_CANDIDATE_CALL_EDGES`, `TWIN_TIME_BUDGET_MS` | 2,000,000, 100,000, 1.5 s | `structural twins skipped: …` (the rest of the block is kept) |
+| `TWIN_MAX_POOLED_CALLEE_NAMES`, `TWIN_MAX_CANDIDATES` | 900, 2,000 | `N retrieved functions were not compared for twins …`, `more than 2,000 functions share callee names …` |
+| `LOCALISATION_TIME_BUDGET_MS`, an aborted signal | 5 s | `Change localisation skipped: …` (no block; the plan gets similarity retrieval alone) |
+
+The two depth bounds (`DEFAULT_MAX_DOWNSTREAM_DEPTH`, and the callee step's second hop) are
+different in kind: past them nothing is enumerated, so there is nothing to count. The block's
+header states how far the walk goes. One part of the second hop is not past the bound: it is
+taken from the callees inside the data layer, and what those call *outside* it has been read
+when it is discarded, so it is counted (the row above). A callee outside the data layer is
+not walked from at all.
+
+The mocked-Prisma tests of the scoped reads cannot show an excluded item coming back through
+a query whose mock returns `[]` (#1094 cycle 2: a retrieved function left out of the 900-name
+pool was returned by the candidate query and compared after all). Each scoped read therefore
+also has a case on a real migrated SQLite database:
+`server/tests/plan-localisation-scoped-reads-1060.sqlite.test.ts`.
+
+**The walk's cost is bounded.** It runs on a request thread, and with the SQLite driver
+(`better-sqlite3`) every query is synchronous, so a read that grows with the project stalls
+every other request. Measured on a synthetic Go project with 1,002,504 `calls` edges, one plan
+held the event loop for 5.9 s (peak RSS 1.86 GB): 4.8 s resolving every unresolved Go call of
+the project (`loadResolvedGoCalls`), 0.8 s reading every `calls` edge for the twin finder and
+0.3 s comparing. Three changes: (1) `LocalisationSchemaSource` resolves Go calls for the walk's
+frontier only (`loadResolvedGoCallsFrom`: the frontier's unresolved calls, the functions
+carrying one of their callee names, the imports of their packages; the same decision,
+checked on the run-7 graph for 408 caller sets); impact analysis keeps the whole-project
+loader. (2) The twin step reads the retrieved functions' callee names, finds candidates with
+one grouped query (a twin shares at least five of those names), and reads only the
+candidates' edges; under its limits the result is the whole-project one (408 of 408 seed
+sets on the run-7 graph). That grouped scan is the one read left that grows with the call
+edges (110 ms per million), so a project over `TWIN_MAX_PROJECT_CALL_EDGES` gets no twin step,
+and is told. (3) The walk has a clock: it checks it and yields to the event loop between
+steps (`event-loop-yield.ts`), abandons a query that does not return, and at
+`LOCALISATION_TIME_BUDGET_MS`, or when `signal` aborts, returns no block and one `dropped`
+sentence. After: 220 ms for the same plan, longest single block 110 ms, peak RSS 0.37 GB; on
+Miniflux (21,666 call edges) 62 ms before and 40 ms after. Still read whole: the project's
+table symbols and type symbols (`getDataModelSymbols`, 37 ms each for 200 tables and 20,200
+types), because a type is matched to a table by a normalised name the database cannot
+compare. No plan command passes a `signal` today: the commands have none to pass.
+
+The context then ends with **Files in the Retrieved Context**, built from the structured
+results (source excerpts, symbol locators, callers, localisation rows), and
+`buildSpecKitRagContext` returns it as `files`. The plan prompt reserves "not in the
+retrieved context" for a file absent from that list. Nothing in METIS checks the generated
+plan against it: whether such a sentence is about a given path is a question about English,
+and a pattern-based check reported correct plans in two review cycles of #1094 and was
+removed before release. The stored list is the check: a reader opens `plan-context.md` and
+looks.
+
+`/speckit.plan` records the list and what was left out as the feature artifact
+`plan-context.md` and returns `retrievedFiles`. The record is written only when this run's
+`plan.md` is saved, **after** it, and names the `plan.md` version it describes: the store has
+no transaction, and written first, a failure among the five left a new record beside the old
+plan. If the record itself cannot be saved the command still succeeds and its message says
+so. It is not one of the five artifacts the result returns, the UI's lost-response recovery
+does not treat it as a result (`spec-kit-recovery.ts`), and it is a METIS record rather than a
+Spec Kit artifact, so the installer does not write it into the target repository's
+`specs/<slug>/` (`METIS_INTERNAL_FEATURE_ARTIFACTS`, `installer/skeleton.ts`). The list is
+kept out of `plan.md` because the walkthrough's change-plan scoring counts the files a plan
+names. The legacy `/plan` has a closed set of artifact names and a frozen response shape, so
+it carries the full left-out list in its message and nothing else: `runPlan` returns
+`retrievedFiles`, the route (`routes/spec-kit.ts`) does not forward it, and no record is
+stored, so a `/plan` reader has no list to check the plan's statement against.
+
+A model-driven tool loop (chat's approach) was not used: the localisation adds no model call
+and 40 ms on the run-7 project to a command that already runs for minutes (#1059), and it is
+repeatable. Not reachable this way: a file that was never ingested (an HTML template, a
+README outside the indexed set), and code related to the spec only by wording that
+similarity ranked too low to seed the walk. A budget of `0` switches off the walk and its
+block and nothing else: the file list, the prompt's two instructions and `plan-context.md`
+stay, so `0` is not the pre-#1060 prompt byte for byte.
+
+**Comparing two builds offline.** The two time limits are wall-clock, so on a busy machine
+the same plan can get the twin section on one run and `structural twins skipped` on the
+next, or at 5 s no block at all. Nothing is silent (both are sentences in `dropped`), but a
+replay that scores context recall would then score a different block for a reason unrelated
+to the change under test. A replay therefore (1) passes `localise: { timeBudgetMs: Infinity,
+twinTimeBudgetMs: Infinity }` to `buildSpecKitRagContext`, which switches both limits off
+(the plan commands pass neither), and (2) asserts that no sentence in `dropped` contains
+`skipped` before it compares any number. The unit tests switch the limits off the same way,
+except the tests of the limits themselves.
 
 The legacy alias is preserved byte-for-byte in response shape (`{command, artifactName, artifact, message, tokensUsed}`) so existing v1.2 client integrations require no changes.
 

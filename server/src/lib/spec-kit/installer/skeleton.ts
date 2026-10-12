@@ -8,6 +8,7 @@ import type { SpecKitFeatureDto } from "../features.js";
 import type { FeatureArtifactDto } from "../feature-artifacts.js";
 import { computeStatus, statusJsonBody, type FeatureStatus } from "../gates.js";
 import { listFeatureArtifacts } from "../feature-artifacts.js";
+import { METIS_INTERNAL_FEATURE_ARTIFACTS } from "../grounding.js";
 
 export interface SkeletonFile {
   relPath: string;
@@ -47,10 +48,15 @@ export async function emitFeatureFiles(
   const artifacts = await listFeatureArtifacts(feature.id);
   const status = await computeStatus(feature.id);
   const dir = `specs/${feature.slug}`;
-  const files: SkeletonFile[] = artifacts.map((a) => ({
-    relPath: `${dir}/${a.key}`,
-    content: a.content,
-  }));
+  // #1060 — `plan-context.md` records what METIS's planner was given. It is not
+  // a Spec Kit artifact and means nothing to the tools that read `specs/<slug>/`
+  // in the target repository, so it stays in METIS.
+  const files: SkeletonFile[] = artifacts
+    .filter((a) => !METIS_INTERNAL_FEATURE_ARTIFACTS.has(a.key))
+    .map((a) => ({
+      relPath: `${dir}/${a.key}`,
+      content: a.content,
+    }));
   files.push({ relPath: `${dir}/status.json`, content: statusJsonBody(status) });
   return { files, status };
 }

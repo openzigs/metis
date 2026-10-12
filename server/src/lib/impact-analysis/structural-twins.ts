@@ -62,13 +62,42 @@ export interface TwinHit {
   similarity: number;
 }
 
-/** The twins of `seedIds` (best first), never one of the seeds themselves. */
-export function findStructuralTwins(
+/**
+ * #1060 — what the three caps of {@link findStructuralTwins} removed. The finder
+ * cuts before its caller sees anything, so a caller that promises to name what
+ * it left out cannot count these itself.
+ */
+export interface TwinCapReport {
+  /** Seeds past {@link MAX_TWIN_SEEDS}: never compared. */
+  seedsNotCompared: number;
+  /**
+   * Functions over the similarity threshold that {@link MAX_TWINS_PER_SEED} or
+   * {@link MAX_TWINS} removed and that are not in the result, best first.
+   */
+  cut: TwinHit[];
+}
+
+const byBestFirst = (a: TwinHit, b: TwinHit): number =>
+  b.similarity - a.similarity || a.id.localeCompare(b.id);
+
+function keepBest(into: Map<string, TwinHit>, hit: TwinHit): void {
+  const prev = into.get(hit.id);
+  if (!prev || hit.similarity > prev.similarity) into.set(hit.id, hit);
+}
+
+/**
+ * The scan behind both finders. Yields after each seed it compared, so the
+ * async variant can give the event loop a turn between two of them: one seed is
+ * compared with every other caller in the map, synchronously.
+ */
+function* scanStructuralTwins(
   seedIds: readonly string[],
   calleeNames: ReadonlyMap<string, ReadonlySet<string>>,
-): TwinHit[] {
+  report?: TwinCapReport,
+): Generator<void, TwinHit[]> {
   const seeds = new Set(seedIds);
   const best = new Map<string, TwinHit>();
+  const overPerSeed = new Map<string, TwinHit>();
   for (const seedId of seedIds.slice(0, MAX_TWIN_SEEDS)) {
     const mine = calleeNames.get(seedId);
     if (!mine || mine.size < MIN_CALLEES) continue;
@@ -81,15 +110,55 @@ export function findStructuralTwins(
       const similarity = jaccard(mine, theirs);
       if (similarity >= MIN_TWIN_SIMILARITY) forSeed.push({ id, seedId, similarity });
     }
-    forSeed.sort((a, b) => b.similarity - a.similarity || a.id.localeCompare(b.id));
-    for (const hit of forSeed.slice(0, MAX_TWINS_PER_SEED)) {
-      const prev = best.get(hit.id);
-      if (!prev || hit.similarity > prev.similarity) best.set(hit.id, hit);
-    }
+    forSeed.sort(byBestFirst);
+    forSeed.forEach((hit, i) => keepBest(i < MAX_TWINS_PER_SEED ? best : overPerSeed, hit));
+    yield;
   }
-  return [...best.values()]
-    .sort((a, b) => b.similarity - a.similarity || a.id.localeCompare(b.id))
-    .slice(0, MAX_TWINS);
+  const ranked = [...best.values()].sort(byBestFirst);
+  if (report) {
+    const cut = new Map<string, TwinHit>();
+    for (const hit of ranked.slice(MAX_TWINS)) keepBest(cut, hit);
+    // A function over one seed's cap may still be kept as another seed's twin.
+    for (const hit of overPerSeed.values()) if (!best.has(hit.id)) keepBest(cut, hit);
+    report.seedsNotCompared = Math.max(0, seedIds.length - MAX_TWIN_SEEDS);
+    report.cut = [...cut.values()].sort(byBestFirst);
+  }
+  return ranked.slice(0, MAX_TWINS);
+}
+
+/**
+ * The twins of `seedIds` (best first), never one of the seeds themselves.
+ * `report`, when given, receives what the caps removed.
+ */
+export function findStructuralTwins(
+  seedIds: readonly string[],
+  calleeNames: ReadonlyMap<string, ReadonlySet<string>>,
+  report?: TwinCapReport,
+): TwinHit[] {
+  const scan = scanStructuralTwins(seedIds, calleeNames, report);
+  let step = scan.next();
+  while (!step.done) step = scan.next();
+  return step.value;
+}
+
+/**
+ * #1060 — {@link findStructuralTwins} for a request thread: `betweenSeeds` is
+ * awaited after each seed compared (yield to the event loop there, or throw to
+ * stop a scan that has run past its time). The result is the same.
+ */
+export async function findStructuralTwinsYielding(
+  seedIds: readonly string[],
+  calleeNames: ReadonlyMap<string, ReadonlySet<string>>,
+  betweenSeeds: () => Promise<void>,
+  report?: TwinCapReport,
+): Promise<TwinHit[]> {
+  const scan = scanStructuralTwins(seedIds, calleeNames, report);
+  let step = scan.next();
+  while (!step.done) {
+    await betweenSeeds();
+    step = scan.next();
+  }
+  return step.value;
 }
 
 /**
