@@ -1093,8 +1093,9 @@ export function parseUpgradeFailures(
   const out = new Map<string, string | null>();
   if (!stored) return out;
   try {
-    const parsed: unknown = JSON.parse(stored);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return out;
+    // Anything that is not a path → hash object yields no entry the walk knows
+    // (or throws, for `null`): either way nothing is remembered.
+    const parsed = JSON.parse(stored) as Record<string, unknown>;
     for (const [file, hash] of Object.entries(parsed)) {
       out.set(file, typeof hash === "string" ? hash : null);
     }

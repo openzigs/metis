@@ -1294,7 +1294,8 @@ export function createGoResolver(
         return result ? { v: "value", type: result, file: fn.decl.file } : UNKNOWN;
       }
       case "type":
-        return i === 0 ? { v: "value", type: fn.type, file: fn.file } : UNKNOWN;
+        // A conversion: one result, of that type.
+        return { v: "value", type: fn.type, file: fn.file };
       case "value": {
         const under = underlying(fn.type, fn.file);
         if (under === "external") return EXTERNAL_ASSUMED;

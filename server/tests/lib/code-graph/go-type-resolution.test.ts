@@ -446,6 +446,28 @@ func use(e *Entry, raw []string) {
     expect(use("\tfor i := range rest {\n\t\ti.Touch()\n\t}")).toBe("unknown");
   });
 
+  it("`for _, e = range` and `case e = <-ch` assign: inside them `e` is still the outer variable", () => {
+    const tree = (body: string) =>
+      verdicts({
+        "model/entry.go": ENTRY,
+        "model/use.go": `package model\n\ntype Other struct{}\n\nfunc (o *Other) Touch() {}\n\nfunc use(in chan *Entry, rest []*Entry) {\n\tvar e *Other\n${body}\n}\n`,
+      }).get("model/use.go:Touch");
+    const OTHER = "receiver-type model/use.go::Other::Touch";
+    // Declared instead, `e` would be an *Entry inside the loop and the case.
+    expect(tree("\tfor _, e = range rest {\n\t\te.Touch()\n\t}")).toBe(OTHER);
+    expect(tree("\tselect {\n\tcase e = <-in:\n\t\te.Touch()\n\t}")).toBe(OTHER);
+    // Control: with `:=` they declare.
+    expect(tree("\tfor _, e := range rest {\n\t\te.Touch()\n\t}")).toBe(TOUCH);
+    expect(tree("\tselect {\n\tcase e := <-in:\n\t\te.Touch()\n\t}")).toBe(TOUCH);
+  });
+
+  it("the `ok` of a comma-ok receive in a select case is not the value", () => {
+    expect(use("\tselect {\n\tcase e, ok := <-in:\n\t\t_ = e\n\t\tok.Touch()\n\t}")).toBe(
+      "unknown",
+    );
+    expect(use("\tselect {\n\tcase e, ok := <-in:\n\t\t_ = ok\n\t\te.Touch()\n\t}")).toBe(TOUCH);
+  });
+
   it("assigning to existing variables in a range or a receive declares nothing", () => {
     const body =
       "\tvar e *Entry\n\tvar i any\n\tfor i, e = range rest {\n\t}\n\t_ = i\n\te.Touch()";
@@ -1202,9 +1224,12 @@ func main() {
 func shadow(storage int) {
 	var s storage.Storage
 	s.Close()
+	s.SetEntriesStatus(nil)
 }
 `,
     });
+    // Read as the package's type, this would be `Storage::SetEntriesStatus`.
+    expect(v.get("cmd/main.go:SetEntriesStatus")).toBe("unknown");
     // Line 11: the closure's named result. Line 15: the parenthesised conversion.
     expect(v.all("cmd/main.go:Mine")).toEqual([
       "receiver-type cmd/main.go::local::Mine",
@@ -1294,8 +1319,30 @@ func (l *L[T]) Add(v T) (out *L[T], err error) {
     };
     const calls = parsed.edges.filter((e) => e.kind === "calls");
     expect(calls).toHaveLength(200);
-    // No callee carries the whole chain below it, however long the chain is.
-    expect(Math.max(...calls.map((e) => depth(e.goCallee!)))).toBeLessThanOrEqual(66);
+    // No callee carries the whole chain below it, however long the chain is:
+    // none is longer than the cap (64 links), the callee's own selection included.
+    expect(Math.max(...calls.map((e) => depth(e.goCallee!)))).toBeLessThanOrEqual(64);
+    expect(Math.max(...calls.map((e) => depth(e.goCallee!)))).toBeGreaterThan(60);
+
+    // Index and range links count towards the cap like selections and calls.
+    const indexed = parseSource(
+      "p/t.go",
+      `package p\n\ntype L []L\n\nfunc (l L) Next() {}\n\nfunc use(x L) {\n\ty := x${"[0]".repeat(200)}\n\ty.Next()\n\tx${"[0]".repeat(40)}.Next()\n}\n`,
+      "go",
+    );
+    const indexedCalls = indexed.edges.filter((e) => e.kind === "calls");
+    expect(indexedCalls.map((e) => depth(e.goCallee!))).toEqual([2, 42]);
+
+    // A callee whose operand is exactly at the cap is one link over it.
+    const fields = (links: number) =>
+      parseSource(
+        "p/t.go",
+        `package p\n\ntype N struct{ a *N }\n\nfunc (n *N) M() {}\n\nfunc use(n *N) {\n\tn${".a".repeat(links)}.M()\n}\n`,
+        "go",
+      ).edges.filter((e) => e.kind === "calls")[0].goCallee!;
+    expect(depth(fields(62))).toBe(64);
+    expect(depth(fields(63))).toBeLessThanOrEqual(64);
+    expect(fields(63)).toEqual({ e: "unknown" });
     const resolver = createGoResolver(
       [{ filePath: "p/t.go", facts: parsed.goFacts!, isTest: false }],
       MODULE,

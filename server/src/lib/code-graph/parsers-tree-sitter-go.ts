@@ -342,8 +342,9 @@ export function walkGo(
         const results = resultTypes(fn.childForFieldName("result"));
         return typed(results[i] ?? null);
       }
-      const parenType = fn.type === "parenthesized_expression" ? null : typeOf(fn);
-      return i === 0 ? typed(parenType) : GO_UNKNOWN;
+      // Anything else called is an expression this walker does not model: the
+      // parser gives a conversion written with a type (`[]byte(x)`) its own node.
+      return GO_UNKNOWN;
     }
     return { e: "call", fn: exprOf(fn), i };
   };
@@ -719,7 +720,6 @@ export function walkGo(
       case "if_statement":
       case "for_statement":
       case "expression_switch_statement":
-      case "select_statement":
       case "expression_case":
       case "default_case":
       case "communication_case":

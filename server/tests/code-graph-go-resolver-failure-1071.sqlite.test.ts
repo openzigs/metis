@@ -191,6 +191,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ]);
     });
 
+    it("the name rules still know WHAT a call is made on: a package of the same file is not a member", async () => {
+      // `strings.Close()` is a call into an imported package. Left undecided by
+      // type, the name rules must not take it for a method of the same file.
+      failure.throwOn.add("Close");
+      const { calls } = await ingestTree({
+        ...TREE,
+        "internal/api/api.go": TREE["internal/api/api.go"]
+          .replace(
+            'import "example.com/app/internal/storage"',
+            'import (\n\t"strings"\n\n\t"example.com/app/internal/storage"\n)',
+          )
+          .replace("\th.store.Close()\n", "\tstrings.Close()\n"),
+      });
+      expect(calls).toContain("Close → NULL -");
+    });
+
     it("names at most NAMED_FILES_CAP failures; the count is never capped", async () => {
       failure.throwOn.add("Save");
       const many = NAMED_FILES_CAP + 3;

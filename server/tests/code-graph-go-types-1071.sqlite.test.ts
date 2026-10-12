@@ -1111,7 +1111,11 @@ func main() { storage.Deep() }
           qualifiedName: old,
         },
       });
-      const proposal = (impactItemId: string, writerStartLine: number) =>
+      const proposal = (
+        impactItemId: string,
+        writerStartLine: number,
+        writerFilePath = method.filePath,
+      ) =>
         db.impactColumnProposal.create({
           data: {
             impactItemId,
@@ -1120,13 +1124,14 @@ func main() { storage.Deep() }
             columnName: "read_at",
             reason: "r",
             writerQualifiedName: old,
-            writerFilePath: method.filePath,
+            writerFilePath,
             writerStartLine,
           },
         });
       const mine = await proposal(item.id, method.startLine);
       const otherLine = await proposal(item.id, method.startLine + 1);
       const otherProject = await proposal(elsewhere.id, method.startLine);
+      const otherFile = await proposal(item.id, method.startLine, "internal/cache/cache.go");
 
       await ingest(projectId, root);
 
@@ -1141,6 +1146,8 @@ func main() { storage.Deep() }
       // Another symbol of that name (another line), and another project's run, are not this symbol.
       expect(await writer(otherLine.id)).toBe(old);
       expect(await writer(otherProject.id)).toBe(old);
+      // Nor is a proposal recorded against another file.
+      expect(await writer(otherFile.id)).toBe(old);
     });
 
     it("an upgrade moves the graph's mark with EVERY write it makes, and reads the proposals table once", async () => {
