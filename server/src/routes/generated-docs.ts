@@ -1584,20 +1584,15 @@ export async function generateDocumentAsync(
       // or retrieval consumes it, never after generating the content.
       if (policy.allowWebResearch) {
         const afterResearch = await captureGenerationInputs(doc, policy);
-        // #1071 — against what the run stands for: an upgrade already
-        // acknowledged above is not a change made during the research.
-        const standsFor = upgrade.acknowledged?.snapshot ?? inputSnapshot;
         if (
-          standsFor &&
-          Object.keys({ ...standsFor.items, ...afterResearch.items }).some(
-            (key) => key !== "web" && standsFor.items[key] !== afterResearch.items[key],
+          inputSnapshot &&
+          Object.keys({ ...inputSnapshot.items, ...afterResearch.items }).some(
+            (key) => key !== "web" && inputSnapshot!.items[key] !== afterResearch.items[key],
           )
         ) {
           throw new Error("Generation inputs changed during web research");
         }
-        // The new capture IS what the run stands for from here on.
         inputSnapshot = afterResearch;
-        upgrade.acknowledged = null;
       }
       const grounding = await buildProjectGroundingContext({
         projectId,

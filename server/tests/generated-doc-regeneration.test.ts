@@ -15,6 +15,10 @@ const state = vi.hoisted(() => ({
   failTask: false,
   /** `CodeGraph.extractorUpgradedAt` of the one graph (#1071): set by an ingest that upgrades it. */
   extractorUpgradedAt: null as Date | null,
+  /** `extractorUpgradedAt` of ANOTHER repository's graph in the same project; null: there is none. */
+  otherGraphUpgradedAt: null as Date | null,
+  /** Run one at each later model call of a generation, after `mutation`. */
+  laterMutations: [] as Array<() => void>,
   /** What the next (mocked) ingest does to the graph before it returns, as the real one would. */
   duringIngest: null as null | (() => void),
   /** A clock that only moves forward, one second a tick: versions and upgrade marks are ordered. */
@@ -71,14 +75,26 @@ vi.mock("../src/lib/prisma.js", () => {
     },
     codeGraph: {
       findFirst: vi.fn(async ({ where }) => ({ id: `g-${where.repoConnectionId}` })),
-      findMany: vi.fn(async () => [
-        {
-          id: "g-r",
-          commitSha: "sha",
-          extractorUpgradedAt: state.extractorUpgradedAt,
-          repoConnection: { id: "r", projectId: "p", deletedAt: null },
-        },
-      ]),
+      findMany: vi.fn(async ({ where }: { where?: { id?: string } } = {}) =>
+        [
+          {
+            id: "g-r",
+            commitSha: "sha",
+            extractorUpgradedAt: state.extractorUpgradedAt,
+            repoConnection: { id: "r", projectId: "p", deletedAt: null },
+          },
+          ...(state.otherGraphUpgradedAt
+            ? [
+                {
+                  id: "g-other",
+                  commitSha: "sha",
+                  extractorUpgradedAt: state.otherGraphUpgradedAt,
+                  repoConnection: { id: "other", projectId: "p", deletedAt: null },
+                },
+              ]
+            : []),
+        ].filter((graph) => !where?.id || graph.id === where.id),
+      ),
     },
     codeSymbol: {
       findMany: vi.fn(async ({ where }) =>
@@ -363,6 +379,8 @@ beforeEach(() => {
   state.chunks = [];
   state.activeUser = true;
   state.extractorUpgradedAt = null;
+  state.otherGraphUpgradedAt = null;
+  state.laterMutations = [];
   state.duringIngest = null;
   state.clock = Date.UTC(2026, 0, 1);
   state.failCommit = false;
@@ -416,7 +434,7 @@ beforeEach(() => {
       const mutation = state.mutation;
       state.mutation = null;
       mutation();
-    }
+    } else state.laterMutations.shift()?.();
     const user = messages.at(-1).content as string;
     const label = user.match(/Section group: \*\*(.+?)\*\*/)?.[1];
     yield {
@@ -736,6 +754,76 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
     graphOnlyChange(1);
     await ingest();
     expect(state.versions).toHaveLength(2);
+  });
+
+  it("an upgrade of ANOTHER repository's graph is not evidence for this document", async () => {
+    await baseline();
+    // The project's other repository was upgraded just now; this document reads only `r`.
+    state.otherGraphUpgradedAt = new Date((state.clock += 1000));
+    graphOnlyChange(1);
+    await ingest();
+    expect(state.versions).toHaveLength(2);
+    expect(acknowledged()).toBeNull();
+  });
+
+  it("a mark that was already there when the run started is not evidence for a change DURING it", async () => {
+    // The graph was upgraded some time ago. Now a lineage backfill lands mid-run.
+    state.extractorUpgradedAt = new Date((state.clock += 1000));
+    state.mutation = () => graphOnlyChange(1);
+    await ingest();
+    // Changed inputs: that run published nothing, and the replanned one stands for the current inputs.
+    expect(state.versions).toHaveLength(1);
+    expect(
+      parseGeneratedDocVersionManifest(state.versions[0].provenanceManifest).inputSnapshot
+        ?.fingerprint,
+    ).toBe((await snapshot()).fingerprint);
+    expect(acknowledged()).toBeNull();
+  });
+
+  it("after an upgrade is tolerated mid-run, a LATER graph-only change with no new mark still stops the run", async () => {
+    state.mutation = () => {
+      rewriteGraph();
+      state.extractorUpgradedAt = new Date((state.clock += 1000));
+    };
+    state.laterMutations = [() => graphOnlyChange(1)];
+    await ingest();
+    expect(state.versions).toHaveLength(1);
+    // Published by the replanned run, from the inputs as they are now — not
+    // by the first run with the second change acknowledged away.
+    expect(
+      parseGeneratedDocVersionManifest(state.versions[0].provenanceManifest).inputSnapshot
+        ?.fingerprint,
+    ).toBe((await snapshot()).fingerprint);
+    expect(acknowledged()).toBeNull();
+  });
+
+  it("an upgrade AND a source change landing mid-run are changed inputs", async () => {
+    state.mutation = () => {
+      rewriteGraph();
+      state.extractorUpgradedAt = new Date((state.clock += 1000));
+      state.symbols[25].contentHash = "edited";
+      state.chunks.push({
+        id: "c3",
+        documentId: "ref",
+        position: 0,
+        text: "edited source",
+        metadata: "{}",
+        aclSubjects: "[]",
+        document: {
+          filename: "connector:repo:r:src/api.ts",
+          source: "repo",
+          storagePath: "ref",
+          aclSubjects: "[]",
+        },
+      });
+    };
+    await ingest();
+    expect(state.versions).toHaveLength(1);
+    expect(
+      parseGeneratedDocVersionManifest(state.versions[0].provenanceManifest).inputSnapshot
+        ?.fingerprint,
+    ).toBe((await snapshot()).fingerprint);
+    expect(acknowledged()).toBeNull();
   });
 
   it("control: a graph-only change mid-run with NO upgrade mark is changed inputs, as before", async () => {

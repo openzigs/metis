@@ -337,22 +337,25 @@ describe("what is kept between calls never changes an answer", () => {
     expect(forward.resolveAll("reverse").map(showGoVerdict)).toEqual(expected);
   });
 
-  it("a defined type over a long alias chain counts the links it adds", () => {
-    const src = `${chain}
+  it("a defined type over an alias chain counts the link it adds, kept answers or not", () => {
+    // `Base` has a field; a type DEFINED as an alias of it has that field too,
+    // one link further than the alias itself.
+    const src = `${chain.replace("type Base struct{}", "type Base struct{ self *Base }")}
+type D4 A4
 type D3 A3
-type D2 A2
 
-func (d D3) Own() {}
-
-func g(a D3, b D2) {
-	a.Own()
-	a.M()
-	b.M()
+func g(viaAlias A3, d4 D4, d3 D3) {
+	viaAlias.self.M()
+	d4.self.M()
+	d3.self.M()
 }
 `;
-    const v = parseOne(src, "p/p.go").resolveAll().map(showGoVerdict);
-    // A defined type has its OWN methods only; `M` is Base's, not D3's.
-    expect(v).toEqual(["receiver-type p/p.go::D3::Own", "unknown", "unknown"]);
+    const parsed = parseOne(src, "p/p.go");
+    // A3 → Base is 12 links: the alias resolves, and so does D4 (1 + 11).
+    // D3 would be 1 + 12.
+    const expected = [BOUND, BOUND, "unknown"];
+    expect(parsed.resolveAll("forward").map(showGoVerdict)).toEqual(expected);
+    expect(parsed.resolveAll("reverse").map(showGoVerdict)).toEqual(expected);
   });
 
   it("the same type asked from a test file and from a non-test file is answered for each", () => {
@@ -381,5 +384,41 @@ func g(a D3, b D2) {
       // A non-test file never reaches a method declared in a `_test.go` file.
       expect(got).toEqual({ test: "receiver-type p/t_test.go::T::OnlyInTest", code: "unknown" });
     }
+  });
+});
+
+describe("the walker costs what the file is long, whatever its shape", () => {
+  // The same question asked of the walker: is any work per identifier or per
+  // call proportional to the size of what surrounds it? A local is looked up
+  // through the scopes around it; the parser gives up on nesting long before
+  // that could matter, and these pin the shapes it does accept.
+  const parse = (src: string) => () => parseSource("p/t.go", src, "go");
+  const HEAD = "package p\n\ntype T struct{}\n\nfunc (t *T) M() {}\n\n";
+
+  it("calls on an outer local inside 200 nested blocks", () => {
+    const nested = (chars: number): string => {
+      const calls = Math.round(chars / 6);
+      return `${HEAD}func f(x *T) {\n${"{\n".repeat(200)}${"x.M()\n".repeat(calls)}${"}\n".repeat(200)}}\n`;
+    };
+    const parsed = parseSource("p/t.go", nested(6_000), "go");
+    expect(parsed.unparseable).toBeFalsy();
+    expect(parsed.edges.filter((e) => e.kind === "calls")).toHaveLength(1_000);
+    expectLinearTime("Go walker, nested scopes", (chars) => parse(nested(chars)), 400_000);
+  });
+
+  it("functions with hundreds of parameters, one call on each", () => {
+    const wide = (chars: number): string => {
+      const params = Math.max(4, Math.round(Math.sqrt(chars / 20)));
+      let src = HEAD;
+      for (let f = 0; f < params; f += 1) {
+        src += `func f${f}(`;
+        for (let p = 0; p < params; p += 1) src += `p${p} *T, `;
+        src += ") {\n";
+        for (let p = 0; p < params; p += 1) src += `p${p}.M()\n`;
+        src += "}\n";
+      }
+      return src;
+    };
+    expectLinearTime("Go walker, wide parameter lists", (chars) => parse(wide(chars)), 400_000);
   });
 });

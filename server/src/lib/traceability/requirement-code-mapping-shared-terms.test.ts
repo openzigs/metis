@@ -656,7 +656,7 @@ describe("path terms are not shared terms (PR #1095 review)", () => {
     expect(mapped.map((m) => m.qualifiedName)).not.toContain(TELEGRAM);
   });
 
-  it("probe 3: 'Let users go to the client settings' does not link a file's symbols through 'go' and 'client'", async () => {
+  it("probe 3: 'Let users go to the client settings' links nothing through 'go' and 'client' — only `Client::Users`, through 'client' and its own 'users'", async () => {
     const q = "Let users go to the client settings";
     // Without the rule the extension and the directory make every symbol of
     // client/client.go, and the Telegram class, a hit.

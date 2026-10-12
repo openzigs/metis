@@ -1032,10 +1032,6 @@ export async function ingestCodeGraph(
       extractorVersion: CODE_GRAPH_EXTRACTOR_VERSION,
       extractorUpgradeFailed:
         upgradeFailures.size > 0 ? JSON.stringify(Object.fromEntries(upgradeFailures)) : null,
-      // #1071 — the evidence that THIS run rewrote the graph for an upgrade
-      // (`docs-gen/extractor-upgrade.ts` reads it): only when it upgraded a
-      // file. Each write of the rewrite already moved it; this is the last.
-      ...(stats.filesUpgraded > 0 ? { extractorUpgradedAt: nextUpgradeMark() } : {}),
       // #758 — the commit label moves only when the graph is complete.
       ...(commitSha ? { commitSha } : {}),
     },

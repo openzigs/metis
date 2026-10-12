@@ -51,7 +51,7 @@ vi.mock("../src/lib/code-graph/go-type-resolution.js", async (importOriginal) =>
   };
 });
 
-const { ingestCodeGraph } = await import("../src/lib/code-graph/ingest.js");
+const { ingestCodeGraph, NAMED_FILES_CAP } = await import("../src/lib/code-graph/ingest.js");
 
 const TREE: Record<string, string> = {
   "go.mod": "module example.com/app\n\ngo 1.24\n",
@@ -117,13 +117,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       failure.build = false;
     });
 
-    const ingestTree = async () => {
+    const ingestTree = async (tree: Record<string, string> = TREE) => {
       seq += 1;
       const project = await db.project.create({
         data: { name: `pfail-${seq}`, slug: `pfail-${seq}`, createdById: "u-fail" },
       });
       const root = path.join(scratch, `tree-${seq}`);
-      for (const [rel, content] of Object.entries(TREE)) {
+      for (const [rel, content] of Object.entries(tree)) {
         await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });
         await fs.writeFile(path.join(root, rel), content, "utf8");
       }
@@ -189,6 +189,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "internal/api/api.go:12 Save",
         "internal/api/api.go:13 Close",
       ]);
+    });
+
+    it("names at most NAMED_FILES_CAP failures; the count is never capped", async () => {
+      failure.throwOn.add("Save");
+      const many = NAMED_FILES_CAP + 3;
+      const { stats } = await ingestTree({
+        ...TREE,
+        "internal/api/api.go": TREE["internal/api/api.go"].replace(
+          "\th.store.Save()\n",
+          "\th.store.Save()\n".repeat(many),
+        ),
+      });
+      expect(stats.goBinding?.errors).toBe(many);
+      expect(stats.goBinding!.failures).toHaveLength(NAMED_FILES_CAP);
+      expect(stats.goBinding!.failures[0]).toBe("internal/api/api.go:12 Save");
+      expect(stats.goBinding!.failures.at(-1)).toBe(
+        `internal/api/api.go:${12 + NAMED_FILES_CAP - 1} Save`,
+      );
     });
 
     it("a resolver that cannot be built leaves every call to the name rules, and is counted", async () => {

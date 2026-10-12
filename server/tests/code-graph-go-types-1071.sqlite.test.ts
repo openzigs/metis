@@ -24,7 +24,7 @@ import os from "node:os";
 import path from "node:path";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   CODE_GRAPH_EXTRACTOR_VERSION,
   extractorUpgradeLanguages,
@@ -776,6 +776,8 @@ func main() { storage.Deep() }
       expect(again.filesRebound).toBe(0);
       expect(again.filesUpgradeFailed).toEqual(["internal/storage/storage.go"]);
       expect(again.filesUpgradeFailedCount).toBe(1);
+      // The file is not even re-parsed: its content is the one that failed.
+      expect(again.filesUnparseable).toEqual([]);
       expect(await upgradeFailed(projectId)).toEqual({
         "internal/storage/storage.go": sha256(broken),
       });
@@ -859,6 +861,46 @@ func main() { storage.Deep() }
       await applyTree(fresh.root, BASE);
       await ingest(fresh.projectId, fresh.root, false);
       expect(await calls(projectId)).toEqual(await calls(fresh.projectId));
+    });
+
+    it("a file that cannot be READ during an upgrade is remembered without a hash, and retried next time", async () => {
+      const { projectId, root } = await newProject();
+      await applyTree(root, BASE);
+      await ingest(projectId, root, false);
+      await downgrade(projectId);
+      const target = path.join(root, "internal/storage/storage.go");
+      const real = fs.readFile.bind(fs);
+      const denied = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+
+      for (const failOnRead of [1, 2]) {
+        // 1: the walk cannot read it. 2: the walk can (unchanged), the upgrade's re-read cannot.
+        let reads = 0;
+        const spy = vi.spyOn(fs, "readFile").mockImplementation(((
+          file: unknown,
+          ...rest: unknown[]
+        ) => {
+          if (String(file) === target && (reads += 1) === failOnRead) return Promise.reject(denied);
+          return (real as (...args: unknown[]) => Promise<unknown>)(file, ...rest);
+        }) as typeof fs.readFile);
+        let stats;
+        try {
+          stats = await ingest(projectId, root);
+        } finally {
+          spy.mockRestore();
+        }
+        expect(stats.filesUpgradeFailed, `read ${failOnRead}`).toEqual([
+          "internal/storage/storage.go",
+        ]);
+        expect(stats.filesUpgraded, `read ${failOnRead}`).toBe(3);
+        // No content hash: nothing says the file would fail again.
+        expect(await upgradeFailed(projectId)).toEqual({ "internal/storage/storage.go": null });
+
+        const retry = await ingest(projectId, root);
+        expect(retry.filesUpgraded, `read ${failOnRead}`).toBe(1);
+        expect(retry.filesUpgradeFailed).toEqual([]);
+        expect(await upgradeFailed(projectId)).toBeNull();
+        await downgrade(projectId);
+      }
     });
 
     it("retries a remembered file recorded under ANOTHER content hash, and forgets a deleted one", async () => {
@@ -949,6 +991,19 @@ func main() { storage.Deep() }
       );
       expect(bound).toContain(
         "internal/use/u.go::U > Made → internal/ign/a_gen.go::Made (package)",
+      );
+
+      // Control: an ignored file that is not Go weakens nothing either.
+      const text = await newProject();
+      await applyTree(text.root, {
+        ...tree,
+        ".metisignore": "*.txt\n",
+        "internal/ign/a_gen.go": null,
+        "internal/ign/notes.txt": "not Go",
+      });
+      await ingest(text.projectId, text.root, false);
+      expect(await calls(text.projectId)).toContain(
+        "internal/ign/a.go::Hand > made → NULL (external)",
       );
 
       // Control: an ignored DIRECTORY is another package's and weakens nothing.
@@ -1086,6 +1141,57 @@ func main() { storage.Deep() }
       // Another symbol of that name (another line), and another project's run, are not this symbol.
       expect(await writer(otherLine.id)).toBe(old);
       expect(await writer(otherProject.id)).toBe(old);
+    });
+
+    it("an upgrade moves the graph's mark with EVERY write it makes, and reads the proposals table once", async () => {
+      const { projectId, root } = await newProject();
+      await applyTree(root, BASE);
+      await ingest(projectId, root, false);
+      await downgrade(projectId);
+      const marks: number[] = [];
+      let proposalReads = 0;
+      let proposalWrites = 0;
+      const watched = db.$extends({
+        query: {
+          codeGraph: {
+            update({ args, query }) {
+              const at = (args.data as { extractorUpgradedAt?: unknown }).extractorUpgradedAt;
+              if (at instanceof Date) marks.push(at.getTime());
+              return query(args);
+            },
+          },
+          impactColumnProposal: {
+            findMany({ args, query }) {
+              proposalReads += 1;
+              return query(args);
+            },
+            updateMany({ args, query }) {
+              proposalWrites += 1;
+              return query(args);
+            },
+          },
+        },
+      });
+
+      const stats = await ingestCodeGraph(watched as unknown as PrismaClient, {
+        projectId,
+        rootDir: root,
+        incremental: true,
+        sqlLineageOverride: false,
+      });
+
+      expect(stats.filesUpgraded).toBe(4);
+      // Three of the four files declare a method, whose name the upgrade
+      // rewrites; all four have parser edges, which it replaces. Seven writes,
+      // seven marks: whoever sees rows of this graph change sees the mark move.
+      expect(marks).toHaveLength(7);
+      for (let i = 1; i < marks.length; i += 1) expect(marks[i]).toBeGreaterThan(marks[i - 1]);
+      const graph = await db.codeGraph.findFirstOrThrow({ where: { projectId } });
+      expect(graph.extractorUpgradedAt?.getTime()).toBe(marks.at(-1));
+      // The proposals table has no index on the writer: one read for the whole
+      // upgrade, and no write at all when no proposal names a renamed symbol.
+      expect(proposalReads).toBe(1);
+      expect(proposalWrites).toBe(0);
     });
 
     it("a failure mid-upgrade leaves every file with edges, old or new, and the next ingest finishes", async () => {

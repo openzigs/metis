@@ -343,6 +343,50 @@ func main() {
     expect(v.get("svc2/cmd/main.go:6:Do")).toBe("unknown");
   });
 
+  it("the importer's own module wins over a MORE SPECIFIC module path declared elsewhere", () => {
+    // svc1 carves `storage` out as its own module, `app/storage`. From svc2
+    // that path still means svc2's own `storage/` directory.
+    const v = verdicts(tree, [...modules, { dir: "svc1/storage", path: "app/storage" }]);
+    expect(v.get("svc2/cmd/main.go:6:Open")).toBe("package svc2/storage/s.go::Open");
+    expect(v.get("svc2/cmd/main.go:7:Only1")).toBe("unbound external");
+    expect(v.get("svc1/cmd/main.go:7:Only1")).toBe("package svc1/storage/s.go::Only1");
+  });
+
+  it("a module nested in another of the same path: the NEAREST go.mod is the importer's own", () => {
+    const nested: GoModule[] = [
+      { dir: "", path: "app" },
+      { dir: "svc2", path: "app" },
+    ];
+    const v = verdicts(
+      {
+        "storage/s.go": "package storage\n\nfunc Open() {}\nfunc Only1() {}\n",
+        "svc2/storage/s.go": "package storage\n\nfunc Open() {}\n",
+        "cmd/main.go": caller,
+        "svc2/cmd/main.go": caller,
+      },
+      nested,
+    );
+    expect(v.get("cmd/main.go:7:Only1")).toBe("package storage/s.go::Only1");
+    expect(v.get("svc2/cmd/main.go:6:Open")).toBe("package svc2/storage/s.go::Open");
+    expect(v.get("svc2/cmd/main.go:7:Only1")).toBe("unbound external");
+  });
+
+  it("a path the importer's own module does NOT hold goes to the more specific module elsewhere", () => {
+    // `ex/app/tools` is a sibling checkout, not a directory under `app/`.
+    const v = verdicts(
+      {
+        "tools/gen/g.go": "package gen\n\nfunc Make() {}\n",
+        "app/cmd/main.go":
+          'package main\n\nimport "ex/app/tools/gen"\n\nfunc main() {\n\tgen.Make()\n}\n',
+      },
+      [
+        { dir: "app", path: "ex/app" },
+        { dir: "tools", path: "ex/app/tools" },
+      ],
+    );
+    expect(v.get("app/cmd/main.go:6:Make")).toBe("package tools/gen/g.go::Make");
+  });
+
   it("control: one go.mod per path resolves as before, nested modules included", () => {
     const v = verdicts(
       {
@@ -410,10 +454,24 @@ describe("a name declared as two kinds of thing is twins behind build constraint
   it("a function and a TYPE of one name are ambiguous the same way", () => {
     const v = verdicts({
       "tw/a_linux.go": "//go:build linux\n\npackage tw\n\nfunc Conn() {}\n",
-      "tw/a_other.go": "//go:build !linux\n\npackage tw\n\ntype Conn int\n",
+      "tw/a_other.go":
+        "//go:build !linux\n\npackage tw\n\ntype Conn int\n\nfunc conv() {\n\tConn(1)\n}\n",
       "tw/x.go": "package tw\n\nfunc untagged() {\n\tConn()\n}\n",
     });
     expect(v.get("tw/x.go:4:Conn")).toBe("unbound ambiguous");
+    // The file that declares the type sees a conversion.
+    expect(v.get("tw/a_other.go:8:Conn")).toBe("unbound conversion");
+  });
+
+  it("three twins of one name, two of them in ONE file's reach, stay ambiguous", () => {
+    const v = verdicts({
+      "tw/a.go": "//go:build a\n\npackage tw\n\nfunc Hook() {}\n\nfunc here() {\n\tHook()\n}\n",
+      "tw/b.go": "//go:build b\n\npackage tw\n\nfunc Hook() {}\n",
+      "tw/c.go": "//go:build c\n\npackage tw\n\nvar Hook = 1\n",
+      "tw/x.go": "package tw\n\nfunc untagged() {\n\tHook()\n}\n",
+    });
+    expect(v.get("tw/x.go:4:Hook")).toBe("unbound ambiguous");
+    expect(v.get("tw/a.go:8:Hook")).toBe("same-package tw/a.go::Hook");
   });
 
   it("a field and a method of one name on one type are ambiguous, not the field", () => {
@@ -434,5 +492,379 @@ describe("a name declared as two kinds of thing is twins behind build constraint
       "tw/t_linux.go": "//go:build linux\n\npackage tw\n\nfunc (t *T) Hook() {}\n",
     });
     expect(method.get("tw/t.go:6:Hook")).toBe("receiver-type tw/t_linux.go::T::Hook");
+  });
+});
+
+describe("a value from outside the tree whose type nothing examined", () => {
+  // Each method called is also declared on a project type; none may bind it,
+  // and none is proven external either.
+  const v = () =>
+    verdicts({
+      "p/p.go": `package p
+
+import (
+	"net/http"
+
+	"github.com/acme/queue"
+)
+
+type impl struct{}
+
+func (i *impl) Len() int      { return 0 }
+func (i *impl) GetBody()      {}
+func (i *impl) Run()          {}
+func (i *impl) Foo()          {}
+
+// A defined type over an external one keeps that type's FIELDS.
+type Req http.Request
+
+// A package variable of a third-party function type.
+var factory queue.Factory
+
+type A interface{ Foo() }
+type B interface{ Foo() }
+
+// Two project interfaces embedded at one depth.
+type both struct {
+	A
+	B
+}
+
+func use(r *http.Request, q *Req, hs []http.Header, s both) {
+	r.Header["Accept"].Len()
+	q.GetBody()
+	factory().Run()
+	hs[0].Get("a")
+	s.Foo()
+}
+`,
+    });
+
+  it("an ELEMENT of an external value", () => {
+    expect(v().get("p/p.go:32:Len")).toBe("unbound external-assumed");
+  });
+
+  it("a member of a defined type over an external type", () => {
+    expect(v().get("p/p.go:33:GetBody")).toBe("unbound external-assumed");
+  });
+
+  it("the result of calling a value of an external function type", () => {
+    expect(v().get("p/p.go:34:Run")).toBe("unbound external-assumed");
+  });
+
+  it("control: an element whose type IS named in the source is examined: external, proven", () => {
+    // `hs[0]` is an `http.Header`, a standard-library type that is not an interface.
+    expect(v().get("p/p.go:35:Get")).toBe("unbound external");
+  });
+
+  it("two embedded project interfaces at one depth: which one declares the method is not known", () => {
+    expect(v().get("p/p.go:36:Foo")).toBe("unbound ambiguous");
+  });
+});
+
+describe("walker rules: types as written", () => {
+  const TYPES = `package p
+
+type T struct{ next *T }
+
+func (t *T) M() *T { return t }
+
+type Other struct{}
+
+func (o *Other) M() {}
+`;
+  const body = (src: string, extra = "") =>
+    verdicts({
+      "p/t.go": TYPES,
+      "p/use.go": `package p\n\n${extra}\nfunc use(x *T, raw []any) {\n${src}\n}\n`,
+    });
+
+  it("a parenthesised type is the type inside it", () => {
+    const v = body("\tvar y (*T)\n\ty.M()");
+    expect(v.get("p/use.go:6:M")).toBe("receiver-type p/t.go::T::M");
+  });
+
+  it("a conversion written with a composite type yields that type", () => {
+    const v = body('\t[]*T(nil)[0].M()\n\tmap[string]*T(nil)["a"].M()');
+    expect(v.get("p/use.go:5:M")).toBe("receiver-type p/t.go::T::M");
+    expect(v.get("p/use.go:6:M")).toBe("receiver-type p/t.go::T::M");
+  });
+
+  it("a map's KEY and its VALUE are told apart", () => {
+    const v = body(
+      "\tvar m map[*Other]*T\n\tfor k, e := range m {\n\t\tk.M()\n\t\te.M()\n\t}\n\tm[nil].M()",
+    );
+    expect(v.get("p/use.go:7:M")).toBe("receiver-type p/t.go::Other::M");
+    expect(v.get("p/use.go:8:M")).toBe("receiver-type p/t.go::T::M");
+    expect(v.get("p/use.go:10:M")).toBe("receiver-type p/t.go::T::M");
+  });
+
+  it("a slice's index is not its element, and a channel carries its element", () => {
+    const v = body(
+      "\tvar xs []*T\n\tvar ch chan *T\n\tfor i, e := range xs {\n\t\t_ = i\n\t\te.M()\n\t}\n\t(<-ch).M()",
+    );
+    expect(v.get("p/use.go:9:M")).toBe("receiver-type p/t.go::T::M");
+    expect(v.get("p/use.go:11:M")).toBe("receiver-type p/t.go::T::M");
+  });
+
+  it("a function-typed value's result is the type its signature writes", () => {
+    const v = body(
+      "\tvar mk func() *T\n\tmk().M()\n\tvar pair func() (*Other, *T)\n\t_, b := pair()\n\tb.M()",
+    );
+    expect(v.get("p/use.go:6:M")).toBe("receiver-type p/t.go::T::M");
+    expect(v.get("p/use.go:9:M")).toBe("receiver-type p/t.go::T::M");
+  });
+
+  it("`a, b T` declares both names with that type, for parameters and for struct fields", () => {
+    const v = verdicts({
+      "p/t.go": TYPES,
+      "p/use.go": `package p
+
+type pair struct{ first, second *T }
+
+func use(a, b *T, p pair) {
+	b.M()
+	p.second.M()
+}
+`,
+    });
+    expect(v.get("p/use.go:6:M")).toBe("receiver-type p/t.go::T::M");
+    expect(v.get("p/use.go:7:M")).toBe("receiver-type p/t.go::T::M");
+  });
+
+  it("a method's receiver may be written in parentheses", () => {
+    const parsed = parseSource(
+      "p/x.go",
+      "package p\n\ntype S struct{}\n\nfunc (s (*S)) Save() {}\n",
+      "go",
+    );
+    expect(parsed.symbols.map((s) => s.qualifiedName)).toContain("p/x.go::S::Save");
+  });
+
+  it("a struct's type parameters end with the struct", () => {
+    const v = verdicts({
+      "p/use.go": `package p
+
+type Box[T any] struct{ item T }
+
+type T struct{}
+
+func (t T) Save() {}
+
+func use(x T) {
+	x.Save()
+}
+`,
+    });
+    // `T` after `Box[T any]` is the package type again.
+    expect(v.get("p/use.go:10:Save")).toBe("receiver-type p/use.go::T::Save");
+  });
+
+  it("an embedded field of a type-parameter type still occupies a promotion depth", () => {
+    const v = verdicts({
+      "p/use.go": `package p
+
+type Inner struct{}
+
+func (i Inner) Save() {}
+
+type Mid struct{ Inner }
+
+type Outer[T any] struct {
+	T
+	Mid
+}
+
+func use(o Outer[int]) {
+	o.Save()
+}
+`,
+    });
+    // `T` may declare `Save` at depth 1, which would win over Mid.Inner.Save at depth 2.
+    expect(v.get("p/use.go:15:Save")).toBe("unknown");
+  });
+});
+
+describe("walker rules: declarations", () => {
+  const TYPES = `package p
+
+type T struct{}
+
+func (t *T) M() {}
+
+type Other struct{}
+
+func (o *Other) M() {}
+
+func mk() *T                 { return nil }
+func two() (*Other, *T)      { return nil, nil }
+`;
+
+  it("a local named like a builtin is the local, not the builtin", () => {
+    const v = verdicts({
+      "p/t.go": TYPES,
+      "p/use.go": `package p
+
+func use() {
+	new := func(o *Other) *T { return nil }
+	x := new(nil)
+	x.M()
+	make := mk
+	y := make()
+	y.M()
+}
+`,
+    });
+    // Read as the builtin, `new(nil)` would be a value of the type `nil`.
+    expect(v.get("p/use.go:6:M")).toBe("receiver-type p/t.go::T::M");
+    expect(v.get("p/use.go:9:M")).toBe("receiver-type p/t.go::T::M");
+  });
+
+  it("a const block repeats the previous spec's TYPE only where a spec has no value of its own", () => {
+    const v = verdicts({
+      "p/use.go": `package p
+
+type Level int
+
+func (l Level) Name() string { return "" }
+
+const (
+	Low Level = iota
+	Mid
+	Label = "x"
+)
+
+func use() {
+	Low.Name()
+	Mid.Name()
+	Label.Name()
+}
+`,
+    });
+    expect(v.get("p/use.go:14:Name")).toBe("receiver-type p/use.go::Level::Name");
+    expect(v.get("p/use.go:15:Name")).toBe("receiver-type p/use.go::Level::Name");
+    // `Label` has its own value: it is not a Level.
+    expect(v.get("p/use.go:16:Name")).toBe("unknown");
+  });
+
+  it("a package variable takes the result at ITS position of a multi-result call", () => {
+    const v = verdicts({
+      "p/t.go": TYPES,
+      "p/use.go":
+        "package p\n\nvar first, second = two()\n\nfunc use() {\n\tfirst.M()\n\tsecond.M()\n}\n",
+    });
+    expect(v.get("p/use.go:6:M")).toBe("receiver-type p/t.go::Other::M");
+    expect(v.get("p/use.go:7:M")).toBe("receiver-type p/t.go::T::M");
+  });
+
+  it("a package variable of a type the walker does not model is not typed by its initialiser", () => {
+    const v = verdicts({
+      "p/t.go": TYPES,
+      "p/use.go":
+        "package p\n\nvar store interface{ M() } = &T{}\n\nfunc use() {\n\tstore.M()\n}\n",
+    });
+    // The variable is an interface value; `T::M` is only what it holds right now.
+    expect(v.get("p/use.go:6:M")).toBe("unknown");
+  });
+
+  it("records the calls made in a declaration's initialiser, and from where", () => {
+    const parsed = parseSource(
+      "p/use.go",
+      `package p
+
+func mk() int { return 0 }
+
+func first() {
+	x := mk()
+	var y = mk()
+	_, _ = x, y
+}
+
+var atPackageLevel = mk()
+
+func second() {}
+`,
+      "go",
+    );
+    const calls = parsed.edges
+      .filter((e) => e.kind === "calls")
+      .map((e) => `${e.line} ${e.fromQualifiedName} > ${e.toQualifiedName}`);
+    expect(calls).toEqual([
+      "6 p/use.go::first > mk",
+      "7 p/use.go::first > mk",
+      // After `first` ends, a call is the file's again — not the last function's.
+      "11 p/use.go > mk",
+    ]);
+  });
+
+  it("a call nested in another call's arguments is recorded too", () => {
+    const parsed = parseSource(
+      "p/use.go",
+      "package p\n\nfunc a(int) {}\nfunc b() int { return 0 }\n\nfunc use() {\n\ta(b())\n}\n",
+      "go",
+    );
+    expect(parsed.edges.filter((e) => e.kind === "calls").map((e) => e.toQualifiedName)).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+});
+
+describe("walker rules: every block is a scope", () => {
+  const TYPES = `package p
+
+type T struct{}
+
+func (t *T) M() {}
+
+type Other struct{}
+
+func (o *Other) M() {}
+
+func other() *Other { return nil }
+`;
+  const after = (block: string) =>
+    verdicts({
+      "p/t.go": TYPES,
+      "p/use.go": `package p\n\nfunc use(x *T, ch chan int) {\n${block}\n\tx.M()\n}\n`,
+    });
+  const last = (v: ReturnType<typeof after>) => v.all("p/use.go:M").at(-1);
+  const T_M = "receiver-type p/t.go::T::M";
+
+  // In each, `x := other()` inside the block must not outlive it.
+  it.each([
+    ["a bare block", "\t{\n\t\tx := other()\n\t\t_ = x\n\t}"],
+    ["an if body", "\tif true {\n\t\tx := other()\n\t\t_ = x\n\t}"],
+    ["an if initialiser", "\tif x := other(); x != nil {\n\t}"],
+    ["an else body", "\tif false {\n\t} else {\n\t\tx := other()\n\t\t_ = x\n\t}"],
+    ["a for body", "\tfor {\n\t\tx := other()\n\t\t_ = x\n\t\tbreak\n\t}"],
+    ["a for initialiser", "\tfor x := other(); x != nil; {\n\t\tbreak\n\t}"],
+    ["a range clause", "\tfor _, x := range []*Other{} {\n\t\t_ = x\n\t}"],
+    ["a switch initialiser", "\tswitch x := other(); {\n\tcase x != nil:\n\t}"],
+    ["a switch case", "\tswitch {\n\tcase true:\n\t\tx := other()\n\t\t_ = x\n\t}"],
+    ["a switch default", "\tswitch {\n\tdefault:\n\t\tx := other()\n\t\t_ = x\n\t}"],
+    ["a select case", "\tselect {\n\tcase <-ch:\n\t\tx := other()\n\t\t_ = x\n\t}"],
+    ["a select receive", "\tselect {\n\tcase x := <-ch:\n\t\t_ = x\n\t}"],
+    ["a select default", "\tselect {\n\tdefault:\n\t\tx := other()\n\t\t_ = x\n\t}"],
+    [
+      "a type-switch case",
+      "\tswitch any(nil).(type) {\n\tcase int:\n\t\tx := other()\n\t\t_ = x\n\t}",
+    ],
+    ["a closure body", "\tf := func() {\n\t\tx := other()\n\t\t_ = x\n\t}\n\t_ = f"],
+  ])("%s", (_label, block) => {
+    expect(last(after(block))).toBe(T_M);
+  });
+
+  it("control: the same declaration IN the function's own block does replace it", () => {
+    const v = verdicts({
+      "p/t.go": TYPES,
+      "p/use.go": "package p\n\nfunc use() {\n\tx := other()\n\tx.M()\n}\n",
+    });
+    expect(v.get("p/use.go:5:M")).toBe("receiver-type p/t.go::Other::M");
+  });
+
+  it("inside the block the inner declaration is the one in scope", () => {
+    const v = after("\tif true {\n\t\tx := other()\n\t\tx.M()\n\t}");
+    expect(v.all("p/use.go:M")).toEqual(["receiver-type p/t.go::Other::M", T_M]);
   });
 });

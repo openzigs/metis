@@ -575,6 +575,18 @@ export function symbolNameTerms(row: {
  * top ten. So the type may supply shared terms, but never all of them: a member
  * links only when at least one comes from its own name
  * ({@link sharesEnoughNameTerms}).
+ *
+ * A table is the enclosing type of its columns, deliberately. A requirement
+ * that names a table links the TABLE (which is what the schema crossing
+ * starts from); it links a column only when a word of the column's own name is
+ * in the requirement too (`user_sessions.user_agent` for "user"). Measured both
+ * ways on the Miniflux sample (PR #1104, review 2): on the 23 stored
+ * requirements the two readings give the same 210 links; they differ on one of
+ * the eleven probe sentences, "Add a button in the web client to terminate all
+ * sessions", where exempting columns adds all seven columns of `web_sessions`
+ * — none of which the sentence names — beside the table it already links. So
+ * this rule also applies, as a behaviour change, to every language with
+ * members and to every schema: a column no longer links on its table's name.
  */
 export function symbolOwnNameTerms(row: {
   name: string;

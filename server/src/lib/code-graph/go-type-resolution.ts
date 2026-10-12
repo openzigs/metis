@@ -833,11 +833,11 @@ export function createGoResolver(
     if (GO_STDLIB_PACKAGES.has(importPath)) return { t: "external", path: importPath };
     // The importing file's own module first: a path inside it means the
     // directory that module holds — whatever another `go.mod` of the tree calls
-    // itself. (Unless a nested module claims that directory, or it holds no Go:
-    // then the general rule below decides.)
+    // itself. (Unless that directory holds no Go: then the general rule below
+    // decides, and may find a more specific module elsewhere.)
     if (own) {
       const dir = dirInModule(own, importPath);
-      if (dir !== null && goDirs.has(dir) && moduleOf(dir) === own) return inDir(dir);
+      if (dir !== null && goDirs.has(dir)) return inDir(dir);
     }
     // Otherwise the most specific module path wins, as in Go.
     const best: GoModule[] = [];
@@ -848,12 +848,12 @@ export function createGoResolver(
     }
     if (best.length > 0) {
       // Two `go.mod` files declaring one module path (a monorepo of services
-      // that are each `module app`): only the importer's own settles which.
-      const m = best.length === 1 ? best[0] : own && best.includes(own) ? own : null;
-      if (!m) return UNKNOWN_IMPORT;
+      // that are each `module app`): only the importer's own could settle
+      // which, and it was tried above.
+      if (best.length > 1) return UNKNOWN_IMPORT;
       // Inside a project module: a directory the walk holds no package for
       // (ignored, unparsed, generated at build time) is not thereby external.
-      return inDir(dirInModule(m, importPath)!);
+      return inDir(dirInModule(best[0], importPath)!);
     }
     if (orphanDirs.length === 0) return { t: "external", path: importPath };
     return bySpelling(importPath);
@@ -1067,7 +1067,7 @@ export function createGoResolver(
   const memberTables = new Map<string, MemberTable>();
 
   /**
-   * Every member of a project type: its own (a field, then a method), else the
+   * Every member of a project type: its own (a field or a method), else the
    * one promoted from the shallowest embedded type that has it. Built level by
    * level, once per type.
    */
@@ -1147,9 +1147,6 @@ export function createGoResolver(
         for (const field of info.struct.fields) {
           if (!field.embedded) continue;
           steps += 1;
-          if (steps > GO_TYPE_STEP_BUDGET) {
-            return { names: new Map(), rest: UNKNOWN, overBudget: true };
-          }
           // An embedded type this module cannot see into may declare any name
           // at this depth, which would win over anything deeper.
           if (!field.type) return { names, rest: UNKNOWN };
