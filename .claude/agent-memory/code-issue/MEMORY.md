@@ -99,3 +99,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Test the STAMPED body](project_publishing-safety-is-tested-on-the-stamped-body.md) — strip split a code span; double honours status
 - [Title rule change: look up old hash](project_draft-title-rule-change-needs-old-title-lookup.md) — else 2nd draft, 2nd issue (#1064)
 - [`pgrep -f` loop matches itself](project_pgrep-f-wait-loop-matches-itself.md) — never exits; use ps + grep "node .*(vitest|tsc)"
+- [requirementId guard; recording doubles](project_requirement-id-guard-and-recording-doubles.md) — agentic+single-shot unchecked (#1027)

@@ -22,6 +22,7 @@ import {
   type ApiResponse,
   ANALYSIS_SPECIALIST_AGENT_KEYS,
   MAX_DOCUMENT_BYTES,
+  specKitHandoffLabelsNotInContext,
   startAnalysisSchema,
   regenerateAgentSchema,
   updateRequirementSchema,
@@ -394,6 +395,22 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           issues: parsed.error.flatten(),
         });
       }
+      // #1027 — the handoff record's "sent as context" labels are shown on the
+      // analysis page, so they must name text the code agent was really given.
+      const unbacked = specKitHandoffLabelsNotInContext(
+        parsed.data.specKitHandoff,
+        parsed.data.agentContext,
+      );
+      if (unbacked.length > 0) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid analysis payload", {
+          issues: {
+            formErrors: [],
+            fieldErrors: {
+              specKitHandoff: [`${unbacked.length} context label(s) do not appear in agentContext`],
+            },
+          },
+        });
+      }
       // Issue #1006 — imported requirements lead the new-requirements text, one
       // `NR-*` each, and the run records which imported item each id was.
       let extraInstructions = parsed.data.extraInstructions;
@@ -428,6 +445,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           enableWebResearch: parsed.data.enableWebResearch ?? false,
           enableClarification: parsed.data.enableClarification ?? false,
           ...(parsed.data.specKitHandoff ? { specKitHandoff: parsed.data.specKitHandoff } : {}),
+          // #1027 — never joined to `extraInstructions`: the requirement
+          // splitter, its cap and the input account do not see it.
+          ...(parsed.data.agentContext ? { agentContext: parsed.data.agentContext } : {}),
         });
         res.status(202).json(ok({ id: result.id }));
       } catch (err) {

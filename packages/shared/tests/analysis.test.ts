@@ -7,7 +7,10 @@ import {
   createFindingSchema,
   createRequirementSchema,
   findingSchema,
+  MAX_ANALYSIS_AGENT_CONTEXT,
   requirementSchema,
+  specKitHandoffLabelsNotInContext,
+  specKitHandoffSchema,
   startAnalysisSchema,
 } from "../src/analysis.js";
 
@@ -306,6 +309,74 @@ describe("analysis domain", () => {
       expect(() =>
         startAnalysisSchema.parse({ enableWebResearch: "yes" as unknown as boolean }),
       ).toThrow();
+    });
+
+    // Issue #1027 — background for the code agent, apart from the requirements.
+    it("trims agentContext and refuses one that is empty once trimmed", () => {
+      expect(startAnalysisSchema.parse({ agentContext: "  - T01: x \n" }).agentContext).toBe(
+        "- T01: x",
+      );
+      for (const agentContext of ["", "   ", " \n\t "]) {
+        expect(startAnalysisSchema.safeParse({ agentContext }).success).toBe(false);
+      }
+      expect(startAnalysisSchema.parse({})).not.toHaveProperty("agentContext");
+    });
+
+    it("measures the agentContext limit after trimming", () => {
+      const atLimit = "x".repeat(MAX_ANALYSIS_AGENT_CONTEXT);
+      expect(startAnalysisSchema.parse({ agentContext: ` ${atLimit}\n` }).agentContext).toBe(
+        atLimit,
+      );
+      expect(startAnalysisSchema.safeParse({ agentContext: `${atLimit}x` }).success).toBe(false);
+    });
+  });
+
+  describe("specKitHandoffLabelsNotInContext (#1027)", () => {
+    const handoff = (components: string[], tasks: string[]) => ({
+      artifacts: ["spec.md"],
+      sent: ["AC-1"],
+      omitted: [],
+      context: { components, tasks, omitted: ["T99"] },
+    });
+    const TEXT = "Plan components (plan.md):\n- FeedStore — x\nTasks (tasks.md):\n- T01: a";
+
+    it("returns the component and task labels the text does not hold, in order", () => {
+      expect(specKitHandoffLabelsNotInContext(handoff(["FeedStore"], ["T01"]), TEXT)).toEqual([]);
+      expect(
+        specKitHandoffLabelsNotInContext(handoff(["Ghost", "FeedStore"], ["T01", "T02"]), TEXT),
+      ).toEqual(["Ghost", "T02"]);
+    });
+
+    it("treats a missing context text as holding nothing", () => {
+      expect(specKitHandoffLabelsNotInContext(handoff(["FeedStore"], ["T01"]), undefined)).toEqual([
+        "FeedStore",
+        "T01",
+      ]);
+      expect(specKitHandoffLabelsNotInContext(handoff([], []), undefined)).toEqual([]);
+    });
+
+    it("does not check the omitted list, which names what was not sent", () => {
+      expect(specKitHandoffLabelsNotInContext(handoff([], ["T01"]), TEXT)).toEqual([]);
+    });
+
+    it("has nothing to check without a handoff or a context record", () => {
+      expect(specKitHandoffLabelsNotInContext(undefined, TEXT)).toEqual([]);
+      expect(
+        specKitHandoffLabelsNotInContext({ artifacts: [], sent: [], omitted: [] }, undefined),
+      ).toEqual([]);
+    });
+
+    it("records which files were read with nothing recognised, and only those two names", () => {
+      const record = (unrecognised: unknown) => ({
+        artifacts: ["spec.md"],
+        sent: [],
+        omitted: [],
+        context: { components: [], tasks: [], omitted: [], unrecognised },
+      });
+      expect(specKitHandoffSchema.safeParse(record(["plan.md", "tasks.md"])).success).toBe(true);
+      expect(specKitHandoffSchema.safeParse(record([])).success).toBe(true);
+      expect(specKitHandoffSchema.safeParse(record(["spec.md"])).success).toBe(false);
+      expect(specKitHandoffSchema.safeParse(record("plan.md")).success).toBe(false);
     });
   });
 });
