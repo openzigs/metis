@@ -143,6 +143,16 @@ describe("allocateTopicBudgets", () => {
     expect(kept.length + dropped.length).toBe(topics.length);
   });
 
+  it("#1119 — breaks a tie in priority by id, by code unit: the same on every machine", () => {
+    // ICU collation would put `rules/alpha` before `rules/Zeta`.
+    const tied = ["rules/alpha", "rules/Zeta", "rules/beta"].map((id) => topic(id, 5, 2_000));
+    const expected = { kept: ["rules/Zeta", "rules/alpha"], dropped: ["rules/beta"] };
+    for (const topics of [tied, [...tied].reverse()]) {
+      const { kept, dropped } = allocateTopicBudgets(topics, MIN_TOPIC_CHARS * 2 + 10);
+      expect({ kept: kept.map((t) => t.id), dropped: dropped.map((t) => t.id) }).toEqual(expected);
+    }
+  });
+
   it("drops by priority, not by size or by input order", () => {
     const big = topic("big", 1, 90_000);
     const small = topic("small", 9, 200);
@@ -768,6 +778,146 @@ describe("fitDocumentToPlan", () => {
     expect(modes.plan).toBeGreaterThan(modes.tail * 8);
     expect(modes.whole).toBeGreaterThan(0);
     expect(modes.tail).toBeGreaterThan(0);
+  });
+
+  describe("#1119 — the per-section figures a floor would be decided from", () => {
+    const measure = (markdown: string): number => markdown.length;
+    const unplanned = (sections: readonly PlanFitSection[], cap: number) =>
+      fitSectionsToDocumentBudget(
+        sections.map((s) => s.markdown),
+        cap,
+        sections.map((s) => s.alreadyOmitted ?? []),
+      );
+
+    it("reports what each section kept, under the plan-ordered cut and under the cut without a plan", () => {
+      let keptLessInOneSection = 0;
+      let cutDocuments = 0;
+      for (let seed = 1; seed <= 400; seed++) {
+        const { sections, cap } = randomDocument(seed);
+        const fit = fitDocumentToPlan(sections, cap);
+        const tail = unplanned(sections, cap);
+        const plan = planOrderedFit(
+          sections,
+          cap,
+          measure,
+          { setting: "DOCS_GEN_DOCUMENT_MAX_CHARS", maxChars: cap },
+          sections.map((s, i) => tail.sections[i] === s.markdown),
+        );
+        const label = `seed ${seed}`;
+        const fits = totalLength(sections.map((s) => s.markdown)) <= cap;
+        expect(fit.kept, label).toHaveLength(sections.length);
+        expect(sum(fit.kept.map((k) => k.chars)), label).toBe(fit.keptChars);
+        fit.kept.forEach((kept, i) => {
+          // As returned, and under each of the two cuts, measured alike.
+          expect(kept.chars, label).toBe(keptContentChars(fit.sections[i], measure));
+          expect(kept.unplannedChars, label).toBe(keptContentChars(tail.sections[i], measure));
+          if (fits) {
+            expect(kept, label).toEqual({
+              chars: kept.chars,
+              planChars: kept.chars,
+              unplannedChars: kept.chars,
+            });
+            return;
+          }
+          if (totalLength(tail.sections) <= cap) {
+            expect(kept.planChars, label).toBe(keptContentChars(plan.sections[i], measure));
+          }
+          if (fit.cuts[i] === "plan") expect(kept.planChars, label).toBe(kept.chars);
+          if (fit.cuts[i] === "tail") expect(kept.unplannedChars, label).toBe(kept.chars);
+          if (kept.chars < kept.unplannedChars) keptLessInOneSection += 1;
+        });
+        if (fits) continue;
+        cutDocuments += 1;
+        // The guarantee is on the document, when the other cut is within the cap.
+        // (Measured with its notes reworded, which can only shorten them.)
+        if (totalLength(tail.sections) <= cap) expect(fit.unplannedWithinCap, label).toBe(true);
+        if (fit.unplannedWithinCap) {
+          expect(sum(fit.kept.map((k) => k.chars)), label).toBeGreaterThanOrEqual(
+            sum(fit.kept.map((k) => k.unplannedChars)),
+          );
+        }
+      }
+      expect(cutDocuments).toBeGreaterThan(100);
+      // ... and NOT on a section: there is no per-section floor. This is what
+      // the figures are logged for.
+      expect(keptLessInOneSection).toBeGreaterThan(0);
+    });
+
+    it("says so when the cut without a plan is itself over a very small cap: the plan's cut is then the shorter", () => {
+      let overruns = 0;
+      let shorter = 0;
+      for (let seed = 1; seed <= 400; seed++) {
+        const { sections } = randomDocument(seed);
+        // Far below what the generator uses: a few hundred characters a section.
+        const cap = 350 * sections.length;
+        const tail = unplanned(sections, cap);
+        const fit = fitDocumentToPlan(sections, cap);
+        const label = `seed ${seed}`;
+        const fits = totalLength(sections.map((s) => s.markdown)) <= cap;
+        if (fits || totalLength(tail.sections) <= cap) {
+          expect(fit.unplannedWithinCap, label).toBe(true);
+        }
+        if (fit.unplannedWithinCap) continue;
+        expect(totalLength(tail.sections), label).toBeGreaterThan(cap);
+        overruns += 1;
+        if (fit.mode !== "plan") continue;
+        // The plan-ordered cut stands with no comparison: within the cap ...
+        expect(totalLength(fit.sections), label).toBeLessThanOrEqual(cap);
+        // ... and so it can keep LESS than the cut that is over it.
+        if (sum(fit.kept.map((k) => k.chars)) < sum(fit.kept.map((k) => k.unplannedChars))) {
+          shorter += 1;
+        }
+      }
+      expect(overruns).toBeGreaterThan(0);
+      expect(shorter).toBeGreaterThan(0);
+    });
+
+    it("reports the same three figures for a section held to the section cap", () => {
+      let cuts = 0;
+      for (let seed = 1; seed <= 100; seed++) {
+        const section = randomDocument(seed).sections[0];
+        const cap = Math.max(2_000, Math.floor(section.markdown.length * 0.6));
+        const fit = fitSectionToPlan(section, cap);
+        const tail = fitSectionToBudget(section.markdown, cap, section.alreadyOmitted ?? []);
+        const [kept] = fit.kept;
+        expect(fit.kept).toHaveLength(1);
+        expect(fit.unplannedWithinCap).toBe(true);
+        expect(kept.chars, `seed ${seed}`).toBe(fit.keptChars);
+        expect(kept.unplannedChars, `seed ${seed}`).toBe(keptContentChars(tail.markdown, measure));
+        expect(kept.chars, `seed ${seed}`).toBeGreaterThanOrEqual(kept.unplannedChars);
+        if (fit.mode === "plan") expect(kept.planChars).toBe(kept.chars);
+        if (fit.mode === "whole") expect(kept.planChars).toBe(kept.chars);
+        else cuts += 1;
+      }
+      expect(cuts).toBeGreaterThan(20);
+    });
+
+    it("counts headings and rules as kept: in paragraphs alone the plan's cut can keep less", () => {
+      // The precision the module comment states. A plan cut keeps more topics,
+      // each with its rule and heading.
+      const paragraphs = (section: string): number =>
+        sum(
+          units(splitClosingNote(section).body)
+            .filter((u) => u.depth === 0 && u.text.trim() !== "---")
+            .map((u) => u.text.length),
+        );
+      let less = 0;
+      let worst = 0;
+      for (let seed = 1; seed <= 400; seed++) {
+        const { sections, cap } = randomDocument(seed);
+        const fit = fitDocumentToPlan(sections, cap);
+        if (fit.mode !== "plan") continue;
+        const tail = unplanned(sections, cap);
+        // Kept text, headings and rules included: never less.
+        expect(keptOf(fit.sections), `seed ${seed}`).toBeGreaterThanOrEqual(keptOf(tail.sections));
+        const gap = sum(tail.sections.map(paragraphs)) - sum(fit.sections.map(paragraphs));
+        if (gap > 0) less += 1;
+        worst = Math.max(worst, gap);
+      }
+      expect(less).toBeGreaterThan(0);
+      // Small: a few headings' worth.
+      expect(worst).toBeLessThan(600);
+    });
   });
 
   it("is linear in the size of the document", () => {

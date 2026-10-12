@@ -33,9 +33,14 @@
  * canonical value as evidence for the claim, and the footnote shows the reader
  * the source line.
  *
- * A fact's name and value are text from an ingested repository. Before they are
- * placed in a prompt block that calls itself authoritative they are made unable
- * to close that block or forge one of its lines ({@link neutralize}).
+ * A fact's name, value and source path are text from an ingested repository.
+ * Before they are placed in a prompt block that calls itself authoritative they
+ * are made unable to close that block or forge one of its lines
+ * ({@link neutralize}); the value and the path are also put on one line.
+ *
+ * The sheet's order is part of every prompt that lists it, and so of the
+ * sections' reuse hashes: it is settled by code-unit comparison
+ * ({@link compareCodeUnits}), never by the locale data of the Node build.
  *
  * Pure: no I/O and no model calls.
  */
@@ -157,6 +162,24 @@ export function neutralize(text: string): string {
     .replace(/ \|(?= )/g, " ¦");
 }
 
+/**
+ * A source path as the sheet carries it: on one line and neutralised, like a
+ * value. A path is repository text too (#1119): one holding a newline and the
+ * block's end marker closed the block early, and put the newline in the
+ * footnote that cites the fact.
+ */
+function sourcePath(file: string): string {
+  return neutralize(file.replace(/\s+/g, " ").trim());
+}
+
+/**
+ * Order two strings by UTF-16 code unit: the same on every machine, which
+ * `localeCompare` is not (it follows the ICU data Node was built with).
+ */
+export function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function clip(value: string): string {
   const flat = neutralize(stripComment(value).replace(/\s+/g, " ").trim());
   if (flat.length <= FACT_VALUE_MAX_CHARS) return flat;
@@ -247,7 +270,7 @@ function candidatesOf(m: FactSheetModule): Candidate[] {
       name: neutralize(match[1]),
       kind,
       value: clip(match[2]),
-      file: rule.file,
+      file: sourcePath(rule.file),
       line: rule.line,
       terms: mentionTerms(match[1]),
     });
@@ -263,7 +286,7 @@ function candidatesOf(m: FactSheetModule): Candidate[] {
       name: neutralize(fn ? `${fn}.${f.name}` : f.name),
       kind,
       value: clip(raw),
-      file: f.filePath,
+      file: sourcePath(f.filePath),
       line: f.startLine,
       terms: mentionTerms(f.name, fn),
     });
@@ -373,8 +396,8 @@ export function buildFactSheet(
     (a, b) =>
       b.mentions - a.mentions ||
       KIND_ORDER[a.kind] - KIND_ORDER[b.kind] ||
-      a.name.localeCompare(b.name) ||
-      a.id.localeCompare(b.id),
+      compareCodeUnits(a.name, b.name) ||
+      compareCodeUnits(a.id, b.id),
   );
   return {
     version: FACT_SHEET_VERSION,

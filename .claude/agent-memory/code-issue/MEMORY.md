@@ -105,3 +105,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [SQLite: 999 binds, no chunk w/ take](project_sqlite-adapter-999-bind-values-in-list-needs-batching.md) — batch IN lists; test >1,000 (#1112)
 - [BRD plan (#1070)](project_brd-plan-tests-and-docs-gen-offline-replay.md) — run =off tests on the new path; budgets are targets; ships off
 - [requirementId guard; recording doubles](project_requirement-id-guard-and-recording-doubles.md) — agentic+single-shot unchecked (#1027)
+- [Before-fixture pins only its scenario](project_before-fixture-pins-only-its-scenario.md) — regenerate on base, mutate each off-path line
