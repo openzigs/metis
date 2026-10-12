@@ -59,9 +59,20 @@ export const LOW_CONFIDENCE_THRESHOLD = 0.5;
  */
 export const DEFAULT_SUGGEST_MAX_OUTPUT_TOKENS = 8_192;
 
-/** What a `chat()` call on this provider would get with `maxTokens` unset. */
-function inheritedMaxTokens(providerKey: string | undefined): number {
-  return providerKey === "anthropic"
+/**
+ * What a `chat()` call on this provider would get with `maxTokens` unset: the
+ * adapter's own figure when it states one (`AIProvider.defaultMaxTokens`).
+ *
+ * #1077 review — it used to be guessed from the provider key alone, as 4,096
+ * for every OpenAI-compatible adapter. On a DeepSeek host that adapter now
+ * inherits 65,536, so the "floor" of 8,192 LOWERED the limit — to a value
+ * between the 4,096 measured failing and the 16,000 measured passing there.
+ * The key-based guess remains only for a provider that states nothing.
+ */
+function inheritedMaxTokens(provider: Pick<AIProvider, "key" | "defaultMaxTokens">): number {
+  const own = provider.defaultMaxTokens;
+  if (typeof own === "number" && Number.isFinite(own) && own > 0) return own;
+  return provider.key === "anthropic"
     ? ANTHROPIC_DEFAULT_MAX_TOKENS
     : OPENAI_COMPATIBLE_DEFAULT_MAX_TOKENS;
 }
@@ -268,7 +279,7 @@ export async function suggestMappings(
     // explicit value is used as given, as `ANALYSIS_SYNTHESIS_MAX_OUTPUT_TOKENS` is.
     const requestedMaxTokens =
       config.maxOutputTokens ??
-      Math.max(DEFAULT_SUGGEST_MAX_OUTPUT_TOKENS, inheritedMaxTokens(provider.key));
+      Math.max(DEFAULT_SUGGEST_MAX_OUTPUT_TOKENS, inheritedMaxTokens(provider));
     const maxTokens = clampToModelOutputCeiling(requestedMaxTokens, provider.model, undefined, {
       knob: "DATA_MAPPING_SUGGEST_MAX_OUTPUT_TOKENS",
       nonStreamingProviderKey: provider.key,

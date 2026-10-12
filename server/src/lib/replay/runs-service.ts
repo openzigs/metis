@@ -11,7 +11,8 @@
 import { prisma } from "../prisma.js";
 import { currentSpanIds } from "../otel/genai-spans.js";
 import { getRate, canonicalTokenCounts } from "../finops/index.js";
-import { computeCostCentsExact } from "../finops/provider-rates.js";
+import { computeCostCentsExact, tierRate, type TokenRate } from "../finops/provider-rates.js";
+import { ledgerRowSummedRequests, ledgerTierShares } from "../finops/token-tracker.js";
 import { normalizeCents } from "../finops/ledger-cost.js";
 
 export type AgentRunKind = "analysis" | "chat" | "tool";
@@ -156,6 +157,7 @@ const RUN_USAGE_SELECT = {
   outputTokens: true,
   cacheReadTokens: true,
   cacheWriteTokens: true,
+  requestTokens: true,
 } as const;
 
 interface RunUsageRow {
@@ -165,6 +167,8 @@ interface RunUsageRow {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** #1080 — the requests a summed row is made of (`ledgerRowSummedRequests`). */
+  requestTokens?: string | null;
 }
 
 /** Whether a ledger row written at `at` belongs to `run` — {@link computeRunCost}'s window. */
@@ -180,48 +184,64 @@ function inRunWindow(
 /**
  * Price a run's ledger rows, grouped by (provider, model) at the current rate
  * card and left UNROUNDED (#977). Unpriced models add tokens, no cost (#22).
+ *
+ * #1080 — a model priced by prompt length (Claude Haiku 5.5) bills each
+ * REQUEST in one tier, so a row's tier is decided from that row's own prompt
+ * before it is summed: the groups are (provider, model, tier). Deciding it on
+ * the summed tokens would bill a run of many small requests at the long-prompt
+ * prices. A row is not always one request — a chat turn that ran a tool loop is
+ * one row summing its requests — so such a row is split into the requests it
+ * lists (`requestTokens`) first.
  */
 function priceRunUsage(rows: readonly RunUsageRow[]): { exactCents: number; totalTokens: number } {
   interface Group {
-    provider: string;
-    model: string;
+    rate: TokenRate | null;
+    longPrompt: boolean;
     freshInputTokens: number;
     outputTokens: number;
     cacheReadTokens: number;
     cacheWriteTokens: number;
   }
   const groups = new Map<string, Group>();
+  const rates = new Map<string, TokenRate | null>();
   let totalTokens = 0;
   for (const row of rows) {
-    const key = `${row.provider} ${row.model}`;
-    const g = groups.get(key) ?? {
-      provider: row.provider,
-      model: row.model,
-      freshInputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-    };
+    const modelKey = `${row.provider} ${row.model}`;
+    let rate = rates.get(modelKey);
+    if (rate === undefined) {
+      rate = getRate(row.provider, row.model);
+      rates.set(modelKey, rate);
+    }
+    // The canonical total, not the stored `totalTokens`: a row written before
+    // #248 stored a gateway total that counted cache reads twice.
+    totalTokens += canonicalTokenCounts(row.provider, row).totalTokens;
     // #264 — make each row's counts disjoint BEFORE summing (the same rule
     // `recordUsage` prices with), so a gateway row's cache reads are not billed
     // again at the input rate, and one row's clamp cannot borrow another's.
-    const c = canonicalTokenCounts(row.provider, row);
-    // The canonical total, not the stored `totalTokens`: a row written before
-    // #248 stored a gateway total that counted cache reads twice.
-    totalTokens += c.totalTokens;
-    g.freshInputTokens += c.freshInputTokens;
-    g.outputTokens += c.outputTokens;
-    g.cacheReadTokens += c.cacheReadTokens;
-    g.cacheWriteTokens += c.cacheWriteTokens;
-    groups.set(key, g);
+    // #1080 — `ledgerTierShares` does that, per request of a summed row.
+    for (const share of ledgerTierShares(row.provider, rate, row, ledgerRowSummedRequests(row))) {
+      const key = share.longPrompt ? `${modelKey} long-prompt` : modelKey;
+      const g = groups.get(key) ?? {
+        rate,
+        longPrompt: share.longPrompt,
+        freshInputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      };
+      g.freshInputTokens += share.counts.freshInputTokens;
+      g.outputTokens += share.counts.outputTokens;
+      g.cacheReadTokens += share.counts.cacheReadTokens;
+      g.cacheWriteTokens += share.counts.cacheWriteTokens;
+      groups.set(key, g);
+    }
   }
 
   let exactCents = 0;
   for (const g of groups.values()) {
-    const rate = getRate(g.provider, g.model);
     // #22 — an unpriced model has no cost to attribute; its tokens still count.
-    if (!rate) continue;
-    exactCents += computeCostCentsExact(rate, {
+    if (!g.rate) continue;
+    exactCents += computeCostCentsExact(tierRate(g.rate, g.longPrompt), {
       inputTokens: g.freshInputTokens,
       outputTokens: g.outputTokens,
       cacheReadTokens: g.cacheReadTokens,

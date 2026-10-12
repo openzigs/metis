@@ -67,6 +67,18 @@ describe("formatModelPrice", () => {
     );
     expect(formatModelPrice({ price: null })).toBeNull();
   });
+
+  it("names both prices of a model priced by prompt length (#1080)", () => {
+    expect(
+      formatModelPrice({
+        price: {
+          inputPerMTok: 0.1,
+          outputPerMTok: 0.5,
+          longPrompt: { overPromptTokens: 100_000, inputPerMTok: 0.5, outputPerMTok: 2.5 },
+        },
+      }),
+    ).toBe("$0.10 / $0.50 per MTok; $0.50 / $2.50 for prompts over 100,000 tokens");
+  });
 });
 
 describe("model settings page renders the catalog's router models", () => {

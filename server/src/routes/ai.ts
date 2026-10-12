@@ -79,6 +79,7 @@ import {
   TurnUsageMeter,
   billableTurnUsage,
 } from "../lib/ai/conversation/turn-usage.js";
+import { ledgerRequests } from "../lib/finops/summed-requests.js";
 import { collectGuardedStream } from "../lib/ai/tool-runtime/stream-collect.js";
 import type { ToolEvent } from "../lib/ai/tool-runtime/types.js";
 import { toolApprovalsRouter } from "./ai-tool-approvals.js";
@@ -1665,6 +1666,8 @@ export function aiRouter(): Router {
           outputTokens: billed.usage.completionTokens,
           cacheReadTokens: billed.usage.cacheReadTokens,
           cacheWriteTokens: billed.usage.cacheWriteTokens,
+          // #1080 — the row is the whole turn; price it model call by model call.
+          requests: ledgerRequests(turnMeter.requests),
         });
         turnMeter.markProjectRecorded();
       }
@@ -1718,6 +1721,8 @@ export function aiRouter(): Router {
         // the KPI/by-provider aggregates.
         projectId: session.projectId ?? undefined,
         breakdown,
+        // #1080 — as the project ledger row above.
+        requests: turnMeter.requests,
       });
       turnMeter.markPerUserRecorded();
 
@@ -2363,12 +2368,15 @@ export function aiRouter(): Router {
         prompt: turn.messages.map((m) => messageText(m)).join("\n"),
         // Issue #428 — stamp the direct projectId (see streaming path above).
         projectId: session.projectId ?? undefined,
+        // #1080 — the row is the whole turn; price it model call by model call.
+        requests: meter.requests,
       });
       meter.markPerUserRecorded();
       // #210 — the per-project store the budget gate reads, as /chat writes it.
       // `reportedUsage` is the whole turn: every model call of a code-tool loop
       // summed (sub-agent calls meter themselves through `bindSubAgents`, and a
       // compaction summary through its summariser, so neither is counted here).
+      // #1080 — so the row is priced from `requests`, each call in its own tier.
       if (session.projectId) {
         recordProjectUsage({
           projectId: session.projectId,
@@ -2381,6 +2389,7 @@ export function aiRouter(): Router {
           outputTokens: billed.usage.completionTokens,
           cacheReadTokens: billed.usage.cacheReadTokens,
           cacheWriteTokens: billed.usage.cacheWriteTokens,
+          requests: ledgerRequests(meter.requests),
         });
         meter.markProjectRecorded();
       }

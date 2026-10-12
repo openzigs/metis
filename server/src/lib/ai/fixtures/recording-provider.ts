@@ -71,6 +71,11 @@ export class RecordingProvider implements AIProvider {
     return this.inner.capabilities;
   }
 
+  /** #1077 — transparent: the output limit the inner adapter sends when a call sets none. */
+  get defaultMaxTokens(): number | undefined {
+    return this.inner.defaultMaxTokens;
+  }
+
   /** #512 — transparent, like {@link capabilities}: the inner adapter's answer. */
   servesRouterModel(modelId: string): boolean {
     return this.inner.servesRouterModel?.(modelId) === true;

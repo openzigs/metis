@@ -17,8 +17,11 @@ import { prisma } from "../prisma.js";
 import {
   computeCostCentsExact,
   familyPricePerMTok,
+  isLongPrompt,
   resolveRate,
+  tierRate,
 } from "../finops/provider-rates.js";
+import { summedRequests } from "../finops/summed-requests.js";
 import type { TokenUsage, UsageProvider } from "./types.js";
 
 const log = createChildLogger("ai-token-tracker");
@@ -65,6 +68,9 @@ export const CACHE_WRITE_MULTIPLIER_5M = 1.25;
  */
 export const CACHE_WRITE_MULTIPLIER_1H = 2.0;
 
+/** #1080 — a prompt-length price tier (Claude Haiku 5.5: over 100,000 prompt tokens is `long`). */
+export type PromptTier = "standard" | "long";
+
 /**
  * Estimate cost in USD for a token event, from the single pricing source
  * (`lib/finops/provider-rates.ts` — the same one `token_usages` uses, #22).
@@ -78,6 +84,11 @@ export const CACHE_WRITE_MULTIPLIER_1H = 2.0;
  *
  * Returns `null` when the model is UNPRICED (#22) — never `0`, which would read
  * as "free" rather than "unknown".
+ *
+ * #1080 — the counts are ONE request's: a model priced by prompt length (Claude
+ * Haiku 5.5) bills the whole request at the tier its prompt
+ * (`promptTokens` + cache reads + cache writes) falls in. A caller pricing a
+ * SUM of requests names the tier they were in with `cache.promptTier`.
  */
 export function estimateCostUsd(
   model: string,
@@ -96,10 +107,18 @@ export function estimateCostUsd(
     cacheWriteMultiplier?: number;
     /** Emitting provider, when known — enables provider-keyed prices. */
     provider?: string;
+    /**
+     * #1080 — the prompt-length tier every request in these counts was in,
+     * for counts summed over several requests. Unset: the counts are one
+     * request's and the tier is read from them.
+     */
+    promptTier?: PromptTier;
   } = {},
 ): number | null {
-  const rate = resolveRate(cache.provider, model);
-  if (!rate) return null;
+  const resolved = resolveRate(cache.provider, model);
+  if (!resolved) return null;
+  const rate =
+    cache.promptTier === undefined ? resolved : tierRate(resolved, cache.promptTier === "long");
   const cents = computeCostCentsExact(
     rate,
     {
@@ -109,7 +128,7 @@ export function estimateCostUsd(
       cacheWriteTokens: sanitize(cache.cacheWriteTokens),
     },
     cache.cacheWriteMultiplier !== undefined
-      ? { cacheWritePer1k: rate.inputPer1k * cache.cacheWriteMultiplier }
+      ? { cacheWriteMultiplier: cache.cacheWriteMultiplier }
       : {},
   );
   return cents / 100;
@@ -141,6 +160,8 @@ export function estimateUsageCostUsd(
   >,
   provider: UsageProvider,
   writeTtl: PromptCacheTtl = "5m",
+  /** #1080 — see `promptTier` on {@link estimateCostUsd}. */
+  promptTier?: PromptTier,
 ): number | null {
   const norm = normalizeTokenUsage({ ...usage, totalTokens: 0 }, conventionForProvider(provider));
   // Only the 1-hour TTL overrides the rate's own (5-minute) cache-write price.
@@ -150,7 +171,87 @@ export function estimateUsageCostUsd(
     cacheWriteTokens: norm.cacheWriteTokens,
     ...(oneHour ? { cacheWriteMultiplier: CACHE_WRITE_MULTIPLIER_1H } : {}),
     provider,
+    ...(promptTier ? { promptTier } : {}),
   });
+}
+
+/**
+ * #1080 — which prompt-length price tier ONE request's usage falls in:
+ * `"long"` when the model has such a tier and the request's whole prompt
+ * (uncached input, cache reads and cache writes, each counted once whatever
+ * the provider's usage convention) is over its threshold. `"standard"` for
+ * every other request, and for a model with no tier or no price.
+ */
+export function usagePromptTier(
+  model: string,
+  usage: Pick<
+    TokenUsage,
+    "promptTokens" | "completionTokens" | "cacheReadTokens" | "cacheWriteTokens"
+  >,
+  provider: UsageProvider,
+): PromptTier {
+  const rate = resolveRate(provider, model);
+  if (!rate?.longPrompt) return "standard";
+  const norm = normalizeTokenUsage({ ...usage, totalTokens: 0 }, conventionForProvider(provider));
+  const long = isLongPrompt(rate, {
+    inputTokens: norm.freshInputTokens,
+    outputTokens: 0,
+    cacheReadTokens: norm.cacheReadTokens,
+    cacheWriteTokens: norm.cacheWriteTokens,
+  });
+  return long ? "long" : "standard";
+}
+
+/** The four counts of {@link TokenUsage} that are priced. */
+type PricedUsage = Pick<
+  TokenUsage,
+  "promptTokens" | "completionTokens" | "cacheReadTokens" | "cacheWriteTokens"
+>;
+
+/**
+ * #1080 — {@link estimateUsageCostUsd} for a row that holds the SUM of several
+ * model requests (`requests`, which add up to `usage`): each request is put in
+ * the price tier its own prompt falls in, and each tier's share is priced at
+ * that tier. Exactly {@link estimateUsageCostUsd} when the row is one request
+ * (`requests` omitted, fewer than two, or not adding up to `usage`) or the
+ * model has no prompt-length tier — so every other model is priced as before.
+ */
+export function estimateSummedUsageCostUsd(
+  model: string,
+  usage: PricedUsage,
+  provider: UsageProvider,
+  writeTtl: PromptCacheTtl = "5m",
+  requests?: readonly PricedUsage[] | null,
+): number | null {
+  const stored = (u: PricedUsage) => ({
+    inputTokens: sanitize(u.promptTokens),
+    outputTokens: sanitize(u.completionTokens),
+    cacheReadTokens: sanitize(u.cacheReadTokens),
+    cacheWriteTokens: sanitize(u.cacheWriteTokens),
+  });
+  const parts = summedRequests(stored(usage), requests?.map(stored));
+  if (!parts || !resolveRate(provider, model)?.longPrompt) {
+    return estimateUsageCostUsd(model, usage, provider, writeTtl);
+  }
+  let costUsd = 0;
+  for (const tier of ["standard", "long"] as const) {
+    const share = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    for (const p of parts) {
+      const request = {
+        promptTokens: p.inputTokens,
+        completionTokens: p.outputTokens,
+        cacheReadTokens: p.cacheReadTokens,
+        cacheWriteTokens: p.cacheWriteTokens,
+      };
+      if (usagePromptTier(model, request, provider) !== tier) continue;
+      share.promptTokens += request.promptTokens;
+      share.completionTokens += request.completionTokens;
+      share.cacheReadTokens += request.cacheReadTokens;
+      share.cacheWriteTokens += request.cacheWriteTokens;
+    }
+    costUsd += estimateUsageCostUsd(model, share, provider, writeTtl, tier) ?? 0;
+  }
+  return costUsd;
 }
 
 export interface TokenEvent {
@@ -172,6 +273,14 @@ export interface TokenEvent {
    * Stored as JSON in the categoryBreakdown column.
    */
   breakdown?: Record<string, number>;
+  /**
+   * #1080 — for a caller that records the SUM of several model requests as one
+   * event (a chat turn that ran a tool loop, a discussion reply): each
+   * request's own usage, adding up to `usage`. The row's cost is then the sum
+   * of the requests' prices ({@link estimateSummedUsageCostUsd}). Omit it when
+   * `usage` is one request's.
+   */
+  requests?: readonly PricedUsage[];
 }
 
 export class TokenTracker {
@@ -237,11 +346,12 @@ export class TokenTracker {
         promptHash: event.prompt ? hashPrompt(event.prompt) : null,
         projectId: event.projectId ?? null,
         inferenceProfileArn: event.inferenceProfileArn ?? null,
-        estimatedCostUsd: estimateUsageCostUsd(
+        estimatedCostUsd: estimateSummedUsageCostUsd(
           event.model,
           { promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens },
           event.provider,
           resolveAnthropicCacheTtl(),
+          event.requests,
         ),
         agentStep: event.agentStep ?? null,
         breakdown: event.breakdown ?? null,

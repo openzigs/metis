@@ -46,6 +46,7 @@ import {
 } from "../ai/index.js";
 import { runChatToolTurn } from "../ai/tool-runtime/chat-turn.js";
 import { recordUsage as recordProjectUsage } from "../finops/token-tracker.js";
+import { ledgerRequests } from "../finops/summed-requests.js";
 import { assertWithinBudget, BudgetExceededError } from "../finops/budget-enforcer.js";
 import { buildAiMessageData } from "./message-invariant.js";
 import {
@@ -197,11 +198,19 @@ const ZERO_USAGE: TokenUsage = {
   cacheWriteTokens: 0,
 };
 
-/** Sum of usage across the reply's model calls; `null` until one reports. */
+/**
+ * Sum of usage across the reply's model calls; `null` until one reports.
+ *
+ * #1080 — a reply is ONE row per usage store, and a model priced by prompt
+ * length bills each call in one tier, so `requests` keeps each call's own usage
+ * for the recorders to price the row call by call.
+ */
 class ReplyMeter {
   spent: TokenUsage | null = null;
+  requests: TokenUsage[] = [];
   add(u: TokenUsage | undefined): void {
     if (!u) return;
+    this.requests.push({ ...u });
     const s = this.spent ?? { ...ZERO_USAGE };
     this.spent = {
       promptTokens: s.promptTokens + (u.promptTokens ?? 0),
@@ -218,6 +227,7 @@ class ReplyMeter {
       cacheReadTokens: u.cacheReadTokens ?? 0,
       cacheWriteTokens: u.cacheWriteTokens ?? 0,
     };
+    this.requests = [{ ...u }];
   }
 }
 
@@ -226,6 +236,7 @@ function recordToProjectLedger(
   scope: { projectId: string; sessionId: string; userId: string; provider: string; model: string },
   usage: TokenUsage,
   agentStep: string,
+  requests: readonly TokenUsage[],
 ): void {
   try {
     recordProjectUsage({
@@ -235,6 +246,7 @@ function recordToProjectLedger(
       outputTokens: usage.completionTokens,
       cacheReadTokens: usage.cacheReadTokens,
       cacheWriteTokens: usage.cacheWriteTokens,
+      requests: ledgerRequests(requests),
     });
   } catch (err) {
     log.error("Failed to record discussion usage to the project ledger", {
@@ -390,6 +402,7 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
           ...scope,
           usage: meter.spent,
           agentStep: DISCUSSION_FAILED_AGENT_STEP,
+          requests: meter.requests,
         });
       } catch (meterErr) {
         log.error("Failed to meter a failed discussion reply", {
@@ -397,7 +410,7 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
           error: meterErr instanceof Error ? meterErr.message : String(meterErr),
         });
       }
-      recordToProjectLedger(scope, meter.spent, DISCUSSION_FAILED_AGENT_STEP);
+      recordToProjectLedger(scope, meter.spent, DISCUSSION_FAILED_AGENT_STEP, meter.requests);
     }
     throw err;
   }
@@ -423,8 +436,9 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
     usage,
     prompt: messages.map((m) => messageText(m)).join("\n"),
     agentStep: DISCUSSION_AGENT_STEP,
+    requests: meter.requests,
   });
-  recordToProjectLedger(scope, usage, DISCUSSION_AGENT_STEP);
+  recordToProjectLedger(scope, usage, DISCUSSION_AGENT_STEP, meter.requests);
 
   return {
     message: {

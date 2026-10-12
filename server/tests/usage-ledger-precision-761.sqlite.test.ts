@@ -90,6 +90,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ["t-unpriced", "p-legacy", "anthropic", "deepseek-v4-pro", 900, null],
       );
       sqlite.apply(MIGRATION);
+      // The readers below are today's code, whose queries select columns added
+      // since (#1080's `token_usages.requestTokens`) — so the file must reach
+      // the head schema. No later migration rewrites a `token_usages` row: each
+      // adds a nullable column with no backfill, which the raw read below pins
+      // for `costUsd`.
+      sqlite.applyRemaining();
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {

@@ -60,6 +60,12 @@ describe("RecordingProvider", () => {
     );
   });
 
+  it("forwards the inner provider's default output limit (#1077)", () => {
+    const p = new RecordingProvider({ inner: inner({ defaultMaxTokens: 65_536 }), store });
+    expect(p.defaultMaxTokens).toBe(65_536);
+    expect(new RecordingProvider({ inner: inner(), store }).defaultMaxTokens).toBeUndefined();
+  });
+
   it("passes chat through and captures the response to a fixture", async () => {
     const i = inner();
     const p = new RecordingProvider({ inner: i, store });

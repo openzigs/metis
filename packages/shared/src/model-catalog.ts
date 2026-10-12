@@ -30,6 +30,18 @@ export interface ModelCatalogPrice {
   outputPerMTok: number;
   cacheReadPerMTok?: number;
   cacheWritePerMTok?: number;
+  /**
+   * #1080 — set for a model priced by prompt length (Claude Haiku 5.5): a
+   * request whose prompt is over `overPromptTokens` bills entirely at these
+   * prices, and any other request at the prices above.
+   */
+  longPrompt?: {
+    overPromptTokens: number;
+    inputPerMTok: number;
+    outputPerMTok: number;
+    cacheReadPerMTok?: number;
+    cacheWritePerMTok?: number;
+  };
 }
 
 /**

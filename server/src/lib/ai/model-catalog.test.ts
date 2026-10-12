@@ -69,6 +69,34 @@ describe("prices come from provider-rates.ts — one source", () => {
     });
   });
 
+  it("lists both of Haiku 5.5's prompt-length price tiers (#1080)", () => {
+    expect(catalogPrice("anthropic", "claude-haiku-5-5")).toEqual({
+      inputPerMTok: 0.1,
+      outputPerMTok: 0.5,
+      cacheReadPerMTok: 0.01,
+      cacheWritePerMTok: 0.125,
+      longPrompt: {
+        overPromptTokens: 100_000,
+        inputPerMTok: 0.5,
+        outputPerMTok: 2.5,
+        cacheReadPerMTok: 0.05,
+        cacheWritePerMTok: 0.625,
+      },
+    });
+    expect(catalogPrice("anthropic", "claude-sonnet-5-5")).toEqual({
+      inputPerMTok: 2,
+      outputPerMTok: 10,
+      cacheReadPerMTok: 0.1,
+      cacheWritePerMTok: 2.5,
+    });
+    expect(catalogPrice("anthropic", "claude-opus-5-5")).toEqual({
+      inputPerMTok: 4,
+      outputPerMTok: 20,
+      cacheReadPerMTok: 0.2,
+      cacheWritePerMTok: 5,
+    });
+  });
+
   it("an unpriced model is null, never zero; an internal stub is genuinely zero", () => {
     expect(catalogPrice("openai", "gpt-4.1")).toBeNull();
     expect(catalogPrice("offline-stub", "offline-stub")).toEqual({
@@ -381,6 +409,28 @@ describe("getModelCatalog", () => {
     expect(res.defaultModel).toBe("claude-sonnet-5");
     expect(res.models.map((m) => m.id)).toContain("claude-opus-4-8");
     expect(res.models.every((m) => m.provider === "anthropic")).toBe(true);
+  });
+
+  it("lists the 5.5 models for the anthropic provider, with 1M context and a 128K ceiling (#1080)", async () => {
+    const res = await getModelCatalog({
+      config: cfg({ provider: "anthropic", model: "claude-sonnet-5" }),
+      env: {},
+    });
+    const byId = new Map(res.models.map((m) => [m.id, m]));
+    for (const [id, name] of [
+      ["claude-sonnet-5-5", "Claude Sonnet 5.5"],
+      ["claude-haiku-5-5", "Claude Haiku 5.5"],
+      ["claude-opus-5-5", "Claude Opus 5.5"],
+    ] as const) {
+      expect(byId.get(id), id).toMatchObject({
+        provider: "anthropic",
+        displayName: name,
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
+        source: "builtin",
+      });
+      expect(byId.get(id)?.price, id).not.toBeNull();
+    }
   });
 
   it("marks every model json_schema-incapable behind DeepSeek's endpoint and adds the configured model", async () => {

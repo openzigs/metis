@@ -686,6 +686,14 @@ model TokenUsage {
   /// `impact.table-filter`, …) for the usage page's "by agent step" view.
   /// NULL on rows written before #792 and by callers that set none.
   agentStep        String?
+  /// #1080 — set only on a row that holds the SUM of several model requests (a
+  /// chat turn that ran a tool loop, a discussion reply): each request's own
+  /// counts, as a JSON array of `[input, output, cacheRead, cacheWrite]` in the
+  /// same convention as the columns above. NULL = the row is ONE request. A
+  /// model priced by prompt length (Claude Haiku 5.5) bills each request in one
+  /// tier, so pricing such a row from its summed columns would bill a run of
+  /// small requests at the long-prompt prices; every pricer reads this instead.
+  requestTokens    String?
   createdAt        DateTime @default(now())
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
