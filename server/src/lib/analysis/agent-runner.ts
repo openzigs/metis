@@ -84,6 +84,8 @@ export interface AgentRunInput {
    * consumed ONLY by the `database` agent (Sally). Empty/undefined ⇒ omitted.
    */
   affectedSchema?: string;
+  /** #1027 — plan context, rendered ONLY for the `code` agent. Empty/undefined ⇒ omitted. */
+  agentContext?: string;
 }
 
 export interface AgentRunResult {
@@ -568,6 +570,7 @@ export async function runAgent(
     retrievedContext: formatRetrievedContext(input.retrieved),
     extraInstructions: input.extraInstructions,
     affectedSchema: input.affectedSchema,
+    ...(input.agentContext ? { agentContext: input.agentContext } : {}),
   });
   const messages: ChatMessage[] = [{ role: "user", content: userMessage }];
 

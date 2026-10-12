@@ -210,7 +210,8 @@ import {
   type AgentTool,
   type ToolContext,
 } from "./tools/index.js";
-import { buildRequirementGroundedPrompt } from "./prompts.js";
+import { buildRequirementGroundedPrompt, normalizeAgentContext } from "./prompts.js";
+import { clearUnknownRequirementIds } from "./requirement-id-guard.js";
 import {
   buildRetrievalQueries,
   CODE_REQUIREMENTS_QUERY,
@@ -246,6 +247,7 @@ import {
 import {
   agenticPassEffectiveBudget,
   buildAgenticPassPrompt,
+  planContextSeed,
   resolveAgentTokenBudget,
   resolveAgenticMaxTurns,
   resolveRecoveryReasoning,
@@ -653,6 +655,18 @@ export interface StartAnalysisOptions {
   sourceRequirements?: AnalysisSourceRequirement[];
   /** Issue #994 — a Spec Kit handoff's record of what it sent; persisted to metadata. */
   specKitHandoff?: SpecKitHandoffRecord;
+  /**
+   * Issue #1027 — background for the code agent (a Spec Kit handoff's plan
+   * components and task titles). Persisted to the analysis metadata so a
+   * regenerate or a resume reads the same text; never split into requirements
+   * and never used as a retrieval query.
+   */
+  agentContext?: string;
+}
+
+/** #1027 — the run's stored plan context, or undefined. */
+export function readAgentContext(metadata: Record<string, unknown>): string | undefined {
+  return normalizeAgentContext(metadata.agentContext);
 }
 
 interface ActiveRun {
@@ -740,7 +754,12 @@ export class AnalysisOrchestrator {
    * Start a fresh analysis. Returns the persisted Analysis row immediately;
    * the heavy work runs in the background and progress streams over Socket.IO.
    */
-  async start(opts: StartAnalysisOptions): Promise<{ id: string }> {
+  async start(input: StartAnalysisOptions): Promise<{ id: string }> {
+    // #1027 — one reading of the context for the stored row, the audit event
+    // and the pipeline: trimmed, and absent when blank.
+    const { agentContext: rawAgentContext, ...rest } = input;
+    const agentContext = normalizeAgentContext(rawAgentContext);
+    const opts: StartAnalysisOptions = { ...rest, ...(agentContext ? { agentContext } : {}) };
     await assertCanStartAnalysis();
     const project = await prisma.project.findFirst({
       where: { id: opts.projectId, deletedAt: null },
@@ -769,6 +788,7 @@ export class AnalysisOrchestrator {
       extraInstructions: opts.extraInstructions,
       sourceRequirements: opts.sourceRequirements,
       ...(opts.specKitHandoff ? { specKitHandoff: opts.specKitHandoff } : {}),
+      ...(opts.agentContext ? { agentContext: opts.agentContext } : {}),
     });
 
     audit({
@@ -785,6 +805,7 @@ export class AnalysisOrchestrator {
         documentCount: opts.documentIds?.length ?? null,
         model: opts.model ?? null,
         hasExtraInstructions: Boolean(opts.extraInstructions),
+        ...(opts.agentContext ? { agentContextChars: opts.agentContext.length } : {}),
         importedRequirementCount: opts.sourceRequirements?.length ?? 0,
       },
     });
@@ -916,6 +937,7 @@ export class AnalysisOrchestrator {
     );
     const extraInstructions =
       typeof metadata.extraInstructions === "string" ? metadata.extraInstructions : undefined;
+    const agentContext = readAgentContext(metadata);
     const controller = new AbortController();
     const active: ActiveRun = {
       analysisId: opts.analysisId,
@@ -960,6 +982,7 @@ export class AnalysisOrchestrator {
         documentIds,
         model,
         extraInstructions,
+        ...(agentContext ? { agentContext } : {}),
         signal: controller.signal,
         actorId: opts.actorId,
       };
@@ -1064,7 +1087,9 @@ export class AnalysisOrchestrator {
       await extractNewRequirementCandidates(input.extraInstructions),
     );
     const mode = await this.detectAgentMode(input.projectId, "code", requirements);
-    if (mode !== "agentic") return this.runOneAgent(input);
+    if (mode !== "agentic") {
+      return this.runOneAgent({ ...input, knownRequirementIds: requirements.map((r) => r.id) });
+    }
 
     const startedAt = new Date();
     const connectors = await prisma.repoConnection.findMany({
@@ -1100,6 +1125,7 @@ export class AnalysisOrchestrator {
       projectDescription: input.projectDescription,
       requirements,
       extraInstructions: input.extraInstructions,
+      ...(input.agentContext ? { agentContext: input.agentContext } : {}),
       model: input.model,
       signal: input.signal,
       affectedCode,
@@ -1296,6 +1322,7 @@ export class AnalysisOrchestrator {
         );
         const extraInstructions =
           typeof metadata.extraInstructions === "string" ? metadata.extraInstructions : undefined;
+        const agentContext = readAgentContext(metadata);
 
         // Reconstruct the agentic-run inputs from persisted state (requirements
         // from the document agent, deterministic affected-code + escalation).
@@ -1333,6 +1360,7 @@ export class AnalysisOrchestrator {
             projectDescription: analysis.project.description,
             requirements,
             extraInstructions,
+            ...(agentContext ? { agentContext } : {}),
             model,
             signal: controller.signal,
             connectorId: connector.id,
@@ -1787,6 +1815,7 @@ export class AnalysisOrchestrator {
               documentIds: opts.documentIds,
               model: opts.model,
               extraInstructions: opts.extraInstructions,
+              ...(opts.agentContext ? { agentContext: opts.agentContext } : {}),
               signal: controller.signal,
               replayRunId,
               actorId: opts.startedById,
@@ -1824,6 +1853,7 @@ export class AnalysisOrchestrator {
                 projectDescription,
                 requirements: codeRequirements,
                 extraInstructions: opts.extraInstructions,
+                ...(opts.agentContext ? { agentContext: opts.agentContext } : {}),
                 model: opts.model,
                 signal: codeController.signal,
                 connectorId: connectors[0]?.id,
@@ -1878,6 +1908,7 @@ export class AnalysisOrchestrator {
                   projectDescription,
                   requirements: codeRequirements,
                   extraInstructions: opts.extraInstructions,
+                  ...(opts.agentContext ? { agentContext: opts.agentContext } : {}),
                   model: opts.model,
                   signal: codeController.signal,
                   connectorId: connector.id,
@@ -1921,6 +1952,7 @@ export class AnalysisOrchestrator {
               requirements: codeRequirements,
               documentIds: opts.documentIds,
               extraInstructions: opts.extraInstructions,
+              ...(opts.agentContext ? { agentContext: opts.agentContext } : {}),
               model: opts.model,
               signal: codeController.signal,
               affectedCode,
@@ -2386,6 +2418,14 @@ export class AnalysisOrchestrator {
      * agent so their prompts stay byte-identical.
      */
     affectedSchema?: string;
+    /** #1027 — the run's plan context; reaches the prompt ONLY for the code agent. */
+    agentContext?: string;
+    /**
+     * #1027 — the run's code requirement ids, for the CODE agent only. The
+     * pipeline reaches this path only when there are none; a regenerate that
+     * falls back to it passes the set it reconstructed. Absent ⇒ none.
+     */
+    knownRequirementIds?: readonly string[];
   }): Promise<AgentRunResult> {
     const startedAt = new Date();
     this.emit({
@@ -2431,10 +2471,33 @@ export class AnalysisOrchestrator {
           // #824 — only the database agent (Sally) renders the AFFECTED SCHEMA
           // block; the builder ignores it for every other specialist.
           affectedSchema: input.agentKey === "database" ? input.affectedSchema : undefined,
+          // #1027 — the document agent must not read it: what it extracts as
+          // requirements feeds the code pass.
+          ...(input.agentKey === "code" && input.agentContext
+            ? { agentContext: input.agentContext }
+            : {}),
           model:
             input.model ??
             (await this.selectModelForAgent(input.projectId, input.agentKey, retrieved)),
         });
+        // #1027 — the single-shot code prompt lists no requirement ids and does
+        // not ask for the field, so an id here is one the model lifted from the
+        // text it read (a task id, a `[NR-9]` line). Only a requirement of the
+        // run may be named; see `requirement-id-guard.ts`.
+        if (input.agentKey === "code") {
+          const guarded = clearUnknownRequirementIds(
+            result.output.findings,
+            new Set(input.knownRequirementIds ?? []),
+          );
+          if (guarded.cleared > 0) {
+            result.output.findings = guarded.findings;
+            log.warn("Code findings named a requirement id outside the run; cleared", {
+              analysisId: input.analysisId,
+              mode: "single-shot",
+              cleared: guarded.cleared,
+            });
+          }
+        }
         await persistAgentResult({
           analysisId: input.analysisId,
           agentKey: input.agentKey,
@@ -2581,6 +2644,8 @@ export class AnalysisOrchestrator {
     projectDescription: string;
     requirements: Array<{ id: string; text: string }>;
     extraInstructions?: string;
+    /** #1027 — the run's plan context, seeded into every pass and carved out of its budget. */
+    agentContext?: string;
     model?: string;
     signal: AbortSignal;
     connectorId?: string;
@@ -2727,6 +2792,9 @@ export class AnalysisOrchestrator {
         const { loadKnownDocuments, findKnownDocumentIds } = createRunDocumentLookup(
           projectDocumentQueries(prisma, input.projectId),
         );
+        // #1027 — the only ids a finding of this run may name (see
+        // `requirement-id-guard.ts` for why it is the run's set, not a pass's).
+        const runRequirementIds = new Set(input.requirements.map((r) => r.id));
 
         /**
          * #483/#734 — run ONE agentic loop over `passRequirements` with the given
@@ -2753,7 +2821,13 @@ export class AnalysisOrchestrator {
         ): Promise<{ output: AgentOutput; usage: TokenUsage }> => {
           // #141 / #214 — the prompt and the budget carve-out are shared with the
           // tool-protocol eval harness, so #214 measures THIS pass.
-          const seeds = { fused, affectedCode, affectedSchema };
+          const planContext = planContextSeed(input.agentContext);
+          const seeds = {
+            fused,
+            affectedCode,
+            affectedSchema,
+            ...(planContext ? { planContext } : {}),
+          };
           const { systemMessage, userMessage } = buildAgenticPassPrompt({
             projectName: input.projectName,
             projectDescription: input.projectDescription,
@@ -3007,7 +3081,21 @@ export class AnalysisOrchestrator {
             ...collectToolProvenance(loopResult.toolCalls),
             ...affectedCode.filePaths,
           ]);
-          validated.findings = validated.findings.map((f) => {
+          // #1027 — every way this pass can end up with findings (the loop's
+          // answer, the final-answer retry, the transcript salvage and its
+          // repair, the evidence-only salvage) has converged on `validated` by
+          // here, so this one check covers all of them. Before it, only the
+          // requirement-grounded path checked the id; this one persisted
+          // whatever the model wrote.
+          const guardedIds = clearUnknownRequirementIds(validated.findings, runRequirementIds);
+          if (guardedIds.cleared > 0) {
+            log.warn("Code findings named a requirement id outside the run; cleared", {
+              analysisId: input.analysisId,
+              mode: "agentic",
+              cleared: guardedIds.cleared,
+            });
+          }
+          validated.findings = guardedIds.findings.map((f) => {
             // #740 — capture THIS finding's drops locally (still forwarding to
             // the shared observability logger) so the verifier can tell "claimed
             // code, all of it dropped" from "made no code claim".
@@ -3313,6 +3401,8 @@ export class AnalysisOrchestrator {
     requirements: Array<{ id: string; text: string }>;
     documentIds?: string[];
     extraInstructions?: string;
+    /** #1027 — the run's plan context. */
+    agentContext?: string;
     model?: string;
     signal: AbortSignal;
     /** #735 (Epic #726) — deterministic requirement→code mapping seeded into the gap prompt. */
@@ -3380,6 +3470,7 @@ export class AnalysisOrchestrator {
           projectName: input.projectName,
           projectDescription: input.projectDescription,
           extraInstructions: input.extraInstructions,
+          ...(input.agentContext ? { agentContext: input.agentContext } : {}),
           codeContext: fused.block || undefined,
           affectedCode: affectedCode.block || undefined,
           // #824 — the deterministic AFFECTED SCHEMA block (schema-change awareness).
