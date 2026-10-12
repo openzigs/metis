@@ -67,7 +67,7 @@ import {
   type PlanPathLookup,
 } from "../grounding.js";
 import type { PlanLocalisationSource } from "../plan-localisation.js";
-import { reportSpecKitJobPhase } from "../job-scope.js";
+import { SpecKitJobStopError, reportSpecKitJobPhase } from "../job-scope.js";
 
 const log = createChildLogger("spec-kit-plan");
 
@@ -413,6 +413,9 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
       });
       contextRecorded = true;
     } catch (err) {
+      // A job that lost its row is stopped here like at any other write: that
+      // is not "the record could not be saved", and the command must not go on.
+      if (err instanceof SpecKitJobStopError) throw err;
       log.warn("plan-context.md could not be saved; the five plan artifacts were", {
         projectId: input.projectId,
         feature: feature.slug,

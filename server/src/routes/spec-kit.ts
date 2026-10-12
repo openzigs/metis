@@ -25,6 +25,7 @@ import {
   SPEC_KIT_JOB_RUNNING_CODE,
   SPEC_KIT_JOB_SAVING_CODE,
   SPEC_KIT_NOT_A_JOB_CODE,
+  SPEC_KIT_START_TOKEN_HEADER,
   isSpecKitArtifactName,
   isSpecKitJobCommand,
   type SpecKitCommand,
@@ -77,6 +78,7 @@ import { PublishError } from "../lib/publishing/types.js";
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import {
   createFeature,
+  discardEmptyDraftFeature,
   listFeatures,
   resolveFeatureBySlug,
   archiveFeature,
@@ -96,7 +98,8 @@ import {
   type GateName,
 } from "../lib/spec-kit/gates.js";
 import { featureArtifactScope, type ArtifactScope } from "../lib/spec-kit/artifact-scope.js";
-import { BudgetExceededError } from "../lib/finops/budget-enforcer.js";
+import { BudgetExceededError, assertWithinBudget } from "../lib/finops/budget-enforcer.js";
+import { audit } from "../lib/audit/audit-service.js";
 import { SafetyDeniedError } from "../lib/safety/safety-hook.js";
 import { resolveProjectProvider } from "../lib/ai/project-provider.js";
 import { AIProviderError, describeProviderErrorSafely } from "../lib/ai/errors.js";
@@ -110,20 +113,24 @@ import { ZodError } from "zod";
 import { zodErrorToFriendly } from "../middleware/error-handler.js";
 import { mapStatusCarryingError } from "../middleware/http-status-errors.js";
 import {
-  specKitJobReadRateLimiter,
+  specKitJobPreAuthRateLimiter,
+  specKitJobUserReadRateLimiter,
   specKitJobUserWriteRateLimiter,
-  specKitJobWriteRateLimiter,
 } from "../middleware/spec-kit-job-rate-limit.js";
 import { SPECKIT_FEATURE_SLUG_RE } from "../lib/spec-kit/features.js";
 import {
   SPEC_KIT_JOB_CANCELLED_MESSAGE,
   SPEC_KIT_JOB_INTERNAL_ERROR,
+  SPEC_KIT_JOB_START_TOKEN_RE,
+  SpecKitJobAlreadyStartedError,
   SpecKitJobConflictError,
   SpecKitJobSavingError,
   cancelSpecKitJob,
   extractCompletionMessage,
   getSpecKitJob,
   listActiveSpecKitJobs,
+  specKitJobHolding,
+  specKitJobIdForStart,
   startSpecKitJob,
   type StartedSpecKitJob,
 } from "../lib/spec-kit/jobs.js";
@@ -370,11 +377,74 @@ interface PreparedCommand {
    * not hold the project-level key: `reserve` creates the feature — the store
    * gives two concurrent creators different numbers — and the job is started
    * under that feature's own slug, running `run(slug)`.
+   *
+   * `preflight` is everything that can refuse the command without a model
+   * call and that used to be decided before a feature existed (the provider,
+   * the budget). It runs BEFORE `reserve`, so a project whose provider cannot
+   * be built answers its 502 / 409 and creates nothing, on every attempt.
    */
   newFeature?: {
-    reserve: () => Promise<string>;
+    preflight: () => Promise<void>;
+    reserve: () => Promise<ReservedFeature>;
     run: (featureSlug: string) => Promise<unknown>;
   };
+}
+
+/** A feature a command created for itself, before its job started. */
+interface ReservedFeature {
+  id: string;
+  slug: string;
+}
+
+/**
+ * The budget gate `runSpecKitAgent` applies before its model call, applied
+ * before a feature is created for the command. Same error, same audit event.
+ */
+async function assertSpecifyWithinBudget(projectId: string, actor: string): Promise<void> {
+  try {
+    await assertWithinBudget(projectId);
+  } catch (err) {
+    if (err instanceof BudgetExceededError) {
+      audit({
+        actor: { id: actor },
+        action: "spec_kit.command.specify.denied",
+        target: { type: "project", id: projectId },
+        metadata: { reason: "budget_exceeded" },
+      });
+    }
+    throw err;
+  }
+}
+
+/**
+ * Remove the feature a job reserved for itself when that job saved nothing.
+ * Never throws. Three things keep it from removing anything else:
+ *
+ *   - it waits for the job's own command to have ENDED (`work`), so nothing of
+ *     that job can still create or write the feature afterwards;
+ *   - it leaves a feature that a live job holds (somebody started a command on
+ *     the draft in the meantime);
+ *   - the delete itself is conditional on the feature still being an empty
+ *     draft (`discardEmptyDraftFeature`), and names the feature by the id this
+ *     job was given at the reservation, never by slug.
+ */
+async function discardReservedFeature(
+  projectId: string,
+  feature: ReservedFeature,
+  actor: string,
+  work?: Promise<unknown>,
+): Promise<void> {
+  try {
+    await work?.catch(() => undefined);
+    if (await specKitJobHolding(projectId, feature.slug)) return;
+    await discardEmptyDraftFeature(feature.id, actor);
+  } catch (err) {
+    log.warn("could not remove the empty feature a failed /speckit.specify created", {
+      projectId,
+      feature: feature.slug,
+      error: String(err),
+    });
+  }
 }
 
 /**
@@ -447,7 +517,14 @@ async function prepareCommand(req: Request, res: Response): Promise<PreparedComm
         actor,
         run: dispatch(body),
         newFeature: {
-          reserve: async () => (await createFeature({ projectId, title, actorId: actor })).slug,
+          preflight: async () => {
+            await resolveProvider();
+            await assertSpecifyWithinBudget(projectId, actor);
+          },
+          reserve: async () => {
+            const feature = await createFeature({ projectId, title, actorId: actor });
+            return { id: feature.id, slug: feature.slug };
+          },
           run: (slug) => dispatch({ ...body, featureSlug: slug })(),
         },
       };
@@ -473,14 +550,40 @@ async function prepareCommand(req: Request, res: Response): Promise<PreparedComm
  * The key is exactly as wide as what the command writes. A command that creates
  * a new feature has that feature created first and is locked under its slug,
  * so any number of members can each create a feature at the same time, and a
- * project-level command does not block them.
+ * project-level command does not block them. That feature is removed again if
+ * the job ends without having saved anything into it.
+ *
+ * `jobId` is set when the caller sent a start token: the start then creates
+ * that job or throws `SpecKitJobAlreadyStartedError` (nothing new is left).
  */
-async function startCommandJob(prepared: PreparedCommand): Promise<StartedSpecKitJob> {
+async function startCommandJob(
+  prepared: PreparedCommand,
+  jobId?: string,
+): Promise<StartedSpecKitJob> {
   let cmd = prepared;
+  let reserved: ReservedFeature | null = null;
+  /** The reserved feature's own command, once the job has started running it. */
+  let work: Promise<unknown> | undefined;
   if (prepared.newFeature) {
-    const { reserve, run } = prepared.newFeature;
-    const slug = await reserve();
-    cmd = { ...prepared, featureSlug: slug, run: () => run(slug) };
+    const { preflight, reserve, run } = prepared.newFeature;
+    try {
+      await preflight();
+    } catch (err) {
+      // Answered as the job would have stored it (a provider failure without
+      // the provider's own words), on this route and on the synchronous one.
+      const refused = toSpecKitJobError(err);
+      throw new AppError(refused.status, refused.code, refused.message, refused.details);
+    }
+    const feature = await reserve();
+    reserved = feature;
+    cmd = {
+      ...prepared,
+      featureSlug: feature.slug,
+      run: () => {
+        work = run(feature.slug);
+        return work;
+      },
+    };
   }
   // The slug is part of the lock key, so it is checked here rather than
   // minutes into the command (which refuses it with the same code).
@@ -492,7 +595,8 @@ async function startCommandJob(prepared: PreparedCommand): Promise<StartedSpecKi
     );
   }
   try {
-    return await startSpecKitJob({
+    const started = await startSpecKitJob({
+      ...(jobId !== undefined ? { id: jobId } : {}),
       projectId: cmd.projectId,
       command: cmd.canonical,
       featureSlug: cmd.featureSlug,
@@ -501,7 +605,20 @@ async function startCommandJob(prepared: PreparedCommand): Promise<StartedSpecKi
       run: cmd.run,
       mapError: toSpecKitJobError,
     });
+    if (reserved) {
+      const feature = reserved;
+      // `done` never rejects, and neither does the removal.
+      void started.done.then((job) =>
+        job.status === "succeeded"
+          ? undefined
+          : discardReservedFeature(cmd.projectId, feature, cmd.actor, work),
+      );
+    }
+    return started;
   } catch (err) {
+    // The job never ran (its scope could not be recorded, or this very start
+    // had already been made): the feature reserved for it is nobody's.
+    if (reserved) await discardReservedFeature(cmd.projectId, reserved, cmd.actor);
     if (err instanceof SpecKitJobConflictError) {
       throw new AppError(409, SPEC_KIT_JOB_RUNNING_CODE, err.message, {
         ...(err.holder
@@ -515,6 +632,36 @@ async function startCommandJob(prepared: PreparedCommand): Promise<StartedSpecKi
     }
     throw err;
   }
+}
+
+/**
+ * The id of the job the request's start token names for THIS caller in THIS
+ * project, or `undefined` when the request carries none. 400 for a token that
+ * is not 16 to 128 characters of `A-Z a-z 0-9 _ -`.
+ */
+function startTokenJobId(req: Request, projectId: string): string | undefined {
+  const token = req.header(SPEC_KIT_START_TOKEN_HEADER);
+  if (token === undefined) return undefined;
+  if (!SPEC_KIT_JOB_START_TOKEN_RE.test(token)) {
+    throw new AppError(
+      400,
+      "SPECKIT_INVALID_START_TOKEN",
+      "X-SpecKit-Start-Token must be 16 to 128 characters of A-Z, a-z, 0-9, _ or -",
+    );
+  }
+  return specKitJobIdForStart(projectId, actorId(req), token);
+}
+
+/** The job a repeated start names, provided it is a start of the same command. */
+function sameStart(job: SpecKitJobDto, cmd: PreparedCommand): SpecKitJobDto {
+  if (job.command !== cmd.canonical) {
+    throw new AppError(
+      409,
+      "SPECKIT_START_TOKEN_REUSED",
+      `This start token already started /${job.command}. Use a new token for each command you start.`,
+    );
+  }
+  return job;
 }
 
 export function specKitRouter(): Router {
@@ -695,16 +842,24 @@ export function specKitRouter(): Router {
   // scope first, so another tenant's caller gets a 404 whatever their role),
   // then the role, and reads a job only through `(projectId, jobId)`: a job id
   // from another project is indistinguishable from one that never existed.
+  //
+  // Rate limits, the same arrangement on all four (`spec-kit-job-rate-limit.ts`):
+  // a coarse limiter in front of `requireAuth` (CodeQL js/missing-rate-limiting)
+  // whose key no caller can aim at another, then — straight after `requireAuth`
+  // — the budget that matters, per signed-in user: one for reads, one for
+  // starts and cancels. Never the client address, which the client can choose.
+  //
+  // `X-SpecKit-Start-Token` makes a start repeatable: a second start carrying
+  // the same token, from the same user in the same project, is answered with
+  // the job the first one started — no second feature, no second run — so a
+  // client whose 202 was lost can find its job instead of guessing.
   r.post(
     "/commands/:cmd/jobs",
-    // In front of every auth check (CodeQL js/missing-rate-limiting). Starts
-    // and cancels have their own budget, apart from the polling reads below.
-    specKitJobWriteRateLimiter,
+    specKitJobPreAuthRateLimiter,
     requireAuth,
+    specKitJobUserWriteRateLimiter,
     requireProjectAccess(),
     requirePermission("project.update"),
-    // …and a per-user one, which nobody sharing the caller's address can spend.
-    specKitJobUserWriteRateLimiter,
     async (req, res) => {
       const cmd = await prepareCommand(req, res);
       if (!isSpecKitJobCommand(cmd.canonical)) {
@@ -714,13 +869,23 @@ export function specKitRouter(): Router {
           `/${cmd.canonical} does not run as a job — send it to POST /spec-kit/commands/${cmd.canonical}.`,
         );
       }
-      try {
-        const { job } = await startCommandJob(cmd);
+      const jobId = startTokenJobId(req, cmd.projectId);
+      const answer = (job: SpecKitJobDto): void => {
         res
           .status(202)
           .location(`/api/projects/${cmd.projectId}/spec-kit/jobs/${job.id}`)
           .json(ok({ jobId: job.id, job }));
+      };
+      try {
+        // Looked up first, so a repeat does not even reserve a feature; the
+        // primary key settles the two that arrive together (caught below).
+        const already = jobId ? await getSpecKitJob(cmd.projectId, jobId) : null;
+        answer(already ? sameStart(already, cmd) : (await startCommandJob(cmd, jobId)).job);
       } catch (err) {
+        if (err instanceof SpecKitJobAlreadyStartedError) {
+          answer(sameStart(err.job, cmd));
+          return;
+        }
         rethrow(err);
       }
     },
@@ -728,19 +893,32 @@ export function specKitRouter(): Router {
 
   r.get(
     "/jobs",
-    specKitJobReadRateLimiter,
+    specKitJobPreAuthRateLimiter,
     requireAuth,
+    specKitJobUserReadRateLimiter,
     requireProjectAccess(),
     requirePermission("project.read"),
     async (req, res) => {
-      res.json(ok({ jobs: await listActiveSpecKitJobs(projectIdFrom(req)) }));
+      const projectId = projectIdFrom(req);
+      // With a start token: also the job that token started for this caller,
+      // running or finished — how a client recovers a start whose 202 was lost.
+      const startedId = startTokenJobId(req, projectId);
+      res.json(
+        ok({
+          jobs: await listActiveSpecKitJobs(projectId),
+          ...(startedId !== undefined
+            ? { started: await getSpecKitJob(projectId, startedId) }
+            : {}),
+        }),
+      );
     },
   );
 
   r.get(
     "/jobs/:jobId",
-    specKitJobReadRateLimiter,
+    specKitJobPreAuthRateLimiter,
     requireAuth,
+    specKitJobUserReadRateLimiter,
     requireProjectAccess(),
     requirePermission("project.read"),
     async (req, res) => {
@@ -752,11 +930,11 @@ export function specKitRouter(): Router {
 
   r.post(
     "/jobs/:jobId/cancel",
-    specKitJobWriteRateLimiter,
+    specKitJobPreAuthRateLimiter,
     requireAuth,
+    specKitJobUserWriteRateLimiter,
     requireProjectAccess(),
     requirePermission("project.update"),
-    specKitJobUserWriteRateLimiter,
     async (req, res) => {
       try {
         const job = await cancelSpecKitJob(

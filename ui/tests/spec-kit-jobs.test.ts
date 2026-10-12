@@ -103,9 +103,12 @@ describe("runSpecKitCommand — a model-backed command is a job", () => {
       artifacts: [{ key: "plan.md" }],
     });
     expect(api.startCommandJob).toHaveBeenCalledTimes(1);
-    expect(api.startCommandJob).toHaveBeenCalledWith("p1", "speckit.plan", {
-      featureSlug: "001-mark-read",
-    });
+    expect(api.startCommandJob).toHaveBeenCalledWith(
+      "p1",
+      "speckit.plan",
+      { featureSlug: "001-mark-read" },
+      expect.stringMatching(/^[A-Za-z0-9_-]{16,128}$/),
+    );
     expect(api.runCommand).not.toHaveBeenCalled();
     expect(seen).toEqual([
       ["running", null],
@@ -161,15 +164,15 @@ describe("runSpecKitCommand — a model-backed command is a job", () => {
   });
 
   describe("when the response to the START is lost", () => {
-    it("watches the job it finds running for this command, feature and viewer — never starts a second", async () => {
+    /** The token the one start was sent with. */
+    const sentToken = (): string => api.startCommandJob!.mock.calls[0]![3] as string;
+
+    it("asks for the job by the token the start carried, and watches it — never starts a second", async () => {
       api.startCommandJob!.mockRejectedValue(lost());
       api.listActiveJobs!.mockResolvedValue({
-        jobs: [
-          job({ id: "theirs", startedById: "someone-else" }),
-          job({ id: "other-feature", featureSlug: "002-x" }),
-          job({ id: "other-command", command: "speckit.tasks" }),
-          job({ id: "mine" }),
-        ],
+        // Look-alikes: the same command, feature and viewer. None is asked about.
+        jobs: [job({ id: "look-alike" }), job({ id: "theirs", startedById: "someone-else" })],
+        started: job({ id: "mine" }),
       });
       api.getJob!.mockResolvedValue({
         job: job({ id: "mine", status: "succeeded", result: { message: "done" } }),
@@ -179,33 +182,85 @@ describe("runSpecKitCommand — a model-backed command is a job", () => {
         "p1",
         "speckit.plan",
         { featureSlug: "001-mark-read" },
-        { ...noWait, userId: "me" },
+        noWait,
       );
 
       expect(result.message).toBe("done");
+      expect(api.listActiveJobs).toHaveBeenCalledWith("p1", sentToken());
       expect(api.getJob).toHaveBeenCalledWith("p1", "mine");
+      expect(api.getJob).not.toHaveBeenCalledWith("p1", "look-alike");
       expect(api.startCommandJob).toHaveBeenCalledTimes(1);
     });
 
+    it("finds a NEW feature's specify, which runs under a slug the page was never told", async () => {
+      // The start reserved `007-star-an-entry` and its 202 was lost: the page
+      // sent no feature slug, so nothing about the job could be guessed.
+      api.startCommandJob!.mockRejectedValue(lost());
+      const created = job({
+        id: "created",
+        command: "speckit.specify",
+        featureSlug: "007-star-an-entry",
+      });
+      api.listActiveJobs!.mockResolvedValue({ jobs: [created], started: created });
+      api.getJob!.mockResolvedValue({
+        job: { ...created, status: "succeeded", result: { message: "Generated spec.md (v1)" } },
+      });
+
+      const result = await runSpecKitCommand(
+        "p1",
+        "speckit.specify",
+        { input: "Star an entry" },
+        { ...noWait, origin: { scope: null } },
+      );
+
+      expect(result.message).toBe("Generated spec.md (v1)");
+      expect(api.startCommandJob).toHaveBeenCalledTimes(1);
+      expect(api.getJob).toHaveBeenCalledWith("p1", "created");
+    });
+
+    it("picks up a job that had already FINISHED when the token was asked about", async () => {
+      api.startCommandJob!.mockRejectedValue(lost());
+      api.listActiveJobs!.mockResolvedValue({
+        jobs: [],
+        started: job({ id: "quick", status: "succeeded", result: { message: "already done" } }),
+      });
+
+      const result = await runSpecKitCommand("p1", "speckit.plan", {}, noWait);
+
+      expect(result.message).toBe("already done");
+      expect(api.getJob).not.toHaveBeenCalled();
+      expect(api.startCommandJob).toHaveBeenCalledTimes(1);
+      expect(loadWatchedJobs("p1")).toEqual([]);
+    });
+
     it.each([
-      ["no job is running", { jobs: [] }],
-      ["only someone else's is", { jobs: [job({ startedById: "someone-else" })] }],
+      ["the token started no job", { jobs: [], started: null }],
+      [
+        "only look-alikes are running: same command, feature and viewer, another start",
+        { jobs: [job({ id: "look-alike" })], started: null },
+      ],
+      ["the server does not answer for tokens", { jobs: [job({ id: "look-alike" })] }],
     ])("shows the start's own error when %s", async (_name, active) => {
       const failure = new TypeError("Failed to fetch");
       api.startCommandJob!.mockRejectedValue(failure);
       api.listActiveJobs!.mockResolvedValue(active);
       await expect(
-        runSpecKitCommand(
-          "p1",
-          "speckit.plan",
-          { featureSlug: "001-mark-read" },
-          {
-            ...noWait,
-            userId: "me",
-          },
-        ),
+        runSpecKitCommand("p1", "speckit.plan", { featureSlug: "001-mark-read" }, noWait),
       ).rejects.toBe(failure);
       expect(api.startCommandJob).toHaveBeenCalledTimes(1);
+      expect(api.getJob).not.toHaveBeenCalled();
+    });
+
+    it("uses a new token for every start", async () => {
+      api.startCommandJob!.mockRejectedValue(
+        new ApiError(409, "already running", "SPEC_KIT_JOB_RUNNING"),
+      );
+      await runSpecKitCommand("p1", "speckit.plan", {}, noWait).catch(() => undefined);
+      await runSpecKitCommand("p1", "speckit.plan", {}, noWait).catch(() => undefined);
+      const [first, second] = api.startCommandJob!.mock.calls.map((call) => call[3] as string);
+      expect(first).toMatch(/^[A-Za-z0-9_-]{16,128}$/);
+      expect(second).toMatch(/^[A-Za-z0-9_-]{16,128}$/);
+      expect(first).not.toBe(second);
     });
 
     it("shows the start's own error when the running jobs cannot be listed either", async () => {

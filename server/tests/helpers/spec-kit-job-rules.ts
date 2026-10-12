@@ -22,11 +22,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_SPEC_KIT_JOB_TIMEOUT_MS,
   SPEC_KIT_JOB_CANCELLED_MESSAGE,
+  SPEC_KIT_JOB_HEARTBEAT_MS,
   SPEC_KIT_JOB_INTERRUPTED_ERROR,
   SPEC_KIT_JOB_INTERRUPTED_SAVING_ERROR,
   SPEC_KIT_JOB_RETENTION_MS,
+  SPEC_KIT_JOB_SAVING_LIMIT_MS,
+  SPEC_KIT_JOB_SAVING_STALLED_ERROR,
   SPEC_KIT_JOB_STALE_MS,
+  SPEC_KIT_JOB_START_TOKEN_RE,
+  SPEC_KIT_JOB_SWEEP_INTERVAL_MS,
   SPEC_KIT_JOB_UNRECORDED_ERROR,
+  SpecKitJobAlreadyStartedError,
   SpecKitJobConflictError,
   SpecKitJobSavingError,
   cancelSpecKitJob,
@@ -37,6 +43,8 @@ import {
   liveSpecKitJobCount,
   resolveSpecKitJobTimeoutMs,
   specKitJobActiveKey,
+  specKitJobHolding,
+  specKitJobIdForStart,
   startSpecKitJob,
   startSpecKitJobSweeper,
   toSpecKitJobDto,
@@ -729,6 +737,62 @@ export function defineSpecKitJobRules(table: () => SpecKitJobTable): void {
       expect(jobEvents.completed).not.toHaveBeenCalled();
     });
 
+    it("stops a saving job whose key a SUCCESSOR took and is itself saving under", async () => {
+      // The store's `confirmSaving` matches on id, status and key. With the id
+      // dropped, the successor's row (same key, also saving) would answer for
+      // the swept job, and it would go on writing into the successor's set.
+      const afterFirst = deferred<void>();
+      const goOn = deferred<void>();
+      const secondWrite = vi.fn();
+      let refusal: unknown = "not attempted";
+      const started = await startSpecKitJob(
+        base({
+          heartbeatMs: 3_600_000,
+          run: async () => {
+            await specKitJobCommitPoint(); // artifact 1 of 5
+            afterFirst.resolve();
+            await goOn.promise;
+            try {
+              await specKitJobCommitPoint(); // artifact 2 of 5
+              secondWrite();
+            } catch (err) {
+              refusal = err;
+              throw err;
+            }
+            return {};
+          },
+        }),
+      );
+      await afterFirst.promise;
+      // Another replica swept the job…
+      await table().patch(started.job.id, {
+        status: "failed",
+        activeKey: null,
+        error: JSON.stringify(SPEC_KIT_JOB_INTERRUPTED_SAVING_ERROR),
+        finishedAt: new Date(),
+      });
+      // …and a successor was started on the same feature, through the store
+      // exactly as a start does, and has reached its own commit point.
+      const successor = await store().createJob({
+        id: "successor",
+        projectId: P1,
+        command: "speckit.plan",
+        featureSlug: SLUG,
+        activeKey: specKitJobActiveKey(P1, SLUG),
+        startedById: "u2",
+      });
+      expect(successor).not.toBeNull();
+      expect(await store().beginSaving("successor", specKitJobActiveKey(P1, SLUG))).toBe(true);
+
+      goOn.resolve();
+      await started.done;
+
+      await vi.waitFor(() => expect(refusal).not.toBe("not attempted"), WAIT);
+      expect(secondWrite).not.toHaveBeenCalled();
+      expect((refusal as SpecKitJobStopError).reason).toBe("superseded");
+      expect((await rowOf("successor")).status).toBe("saving");
+    });
+
     it("is a no-op outside a job", async () => {
       expect(() => {
         reportSpecKitJobPhase("nothing");
@@ -1098,6 +1162,213 @@ export function defineSpecKitJobRules(table: () => SpecKitJobTable): void {
         configValues.set("SPEC_KIT_JOB_TIMEOUT_MS", bad);
         expect(resolveSpecKitJobTimeoutMs()).toBe(DEFAULT_SPEC_KIT_JOB_TIMEOUT_MS);
       }
+    });
+  });
+
+  describe("the saving deadline — a hung write does not hold the feature for ever", () => {
+    it("fails a job still saving at the deadline, says it may be part-saved, and frees the feature", async () => {
+      const hung = deferred<void>();
+      const laterWrite = vi.fn();
+      let refusal: unknown = "not attempted";
+      const started = await startSpecKitJob(
+        base({
+          // The owner is alive: its heartbeat would keep the row from any sweep.
+          heartbeatMs: 3_600_000,
+          savingLimitMs: 25,
+          run: async () => {
+            await specKitJobCommitPoint(); // artifact 1 is written…
+            await hung.promise; // …and the write of artifact 2 never returns
+            try {
+              await specKitJobCommitPoint();
+              laterWrite();
+            } catch (err) {
+              refusal = err;
+              throw err;
+            }
+            return {};
+          },
+        }),
+      );
+
+      const done = await started.done;
+
+      expect(done).toMatchObject({ status: "failed", error: SPEC_KIT_JOB_SAVING_STALLED_ERROR });
+      expect(SPEC_KIT_JOB_SAVING_STALLED_ERROR.message).toContain("while it was saving");
+      expect(SPEC_KIT_JOB_SAVING_STALLED_ERROR.message).toContain(
+        "Some of its files may have been saved",
+      );
+      expect(await rowOf(started.job.id)).toMatchObject({ status: "failed", activeKey: null });
+      expect(await errorOf(started.job.id)).toEqual(SPEC_KIT_JOB_SAVING_STALLED_ERROR);
+      expect(jobEvents.failed).toHaveBeenCalledTimes(1);
+      expect(jobEvents.completed).not.toHaveBeenCalled();
+      expect(liveSpecKitJobCount()).toBe(0);
+      // The feature takes a new command…
+      const next = await startSpecKitJob(base());
+      expect((await next.done).status).toBe("succeeded");
+      // …and the job that hung writes nothing more when its write finally returns.
+      hung.resolve();
+      await vi.waitFor(() => expect(refusal).not.toBe("not attempted"), WAIT);
+      expect(laterWrite).not.toHaveBeenCalled();
+      expect((await rowOf(started.job.id)).status).toBe("failed");
+    });
+
+    it("does not touch a job that finishes saving first, and releases its timer", async () => {
+      const SAVING_MS = 76_543;
+      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+      const started = await startSpecKitJob(
+        base({
+          savingLimitMs: SAVING_MS,
+          run: async () => {
+            // Not armed before the job is saving.
+            expect(setTimeoutSpy.mock.calls.some((call) => call[1] === SAVING_MS)).toBe(false);
+            await specKitJobCommitPoint();
+            return { message: "saved" };
+          },
+        }),
+      );
+      expect((await started.done).status).toBe("succeeded");
+      const index = setTimeoutSpy.mock.calls.findIndex((call) => call[1] === SAVING_MS);
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(setTimeoutSpy.mock.results[index]?.value);
+    });
+
+    it("applies the deadline on a later attempt when its first write fails", async () => {
+      const hung = deferred<void>();
+      const real = store().finishJob;
+      let failures = 1;
+      vi.spyOn(store(), "finishJob").mockImplementation(async (...args) => {
+        if (args[2].length === 1 && args[2][0] === "saving" && failures > 0) {
+          failures -= 1;
+          throw new Error("database is locked");
+        }
+        return real(...args);
+      });
+      const started = await startSpecKitJob(
+        base({
+          heartbeatMs: 10, // the wait before the deadline is tried again
+          savingLimitMs: 10,
+          run: async () => {
+            await specKitJobCommitPoint();
+            await hung.promise;
+            return {};
+          },
+        }),
+      );
+      expect(await started.done).toMatchObject({
+        status: "failed",
+        error: SPEC_KIT_JOB_SAVING_STALLED_ERROR,
+      });
+      hung.resolve();
+    });
+
+    it("is generous: many times what a sweep needs, and never under a few minutes", () => {
+      expect(SPEC_KIT_JOB_SAVING_LIMIT_MS).toBeGreaterThanOrEqual(5 * 60_000);
+      expect(SPEC_KIT_JOB_SAVING_LIMIT_MS).toBeGreaterThan(SPEC_KIT_JOB_STALE_MS * 3);
+    });
+  });
+
+  describe("a live job is never mistaken for a dead one", () => {
+    it("lets several heartbeats be missed before a row is stale", () => {
+      // One late or failed beat must not fail a live job: the threshold is
+      // several intervals, and a sweep interval fits inside it.
+      expect(SPEC_KIT_JOB_STALE_MS).toBeGreaterThanOrEqual(SPEC_KIT_JOB_HEARTBEAT_MS * 4);
+      expect(SPEC_KIT_JOB_SWEEP_INTERVAL_MS).toBeLessThanOrEqual(SPEC_KIT_JOB_STALE_MS);
+    });
+  });
+
+  describe("a start that carries its own id — sent twice, it is one job", () => {
+    const ID = specKitJobIdForStart(P1, "u1", "token-0123456789abcdef");
+
+    it("starts the job under that id", async () => {
+      const started = await startSpecKitJob(base({ id: ID }));
+      expect(started.job.id).toBe(ID);
+      expect((await started.done).id).toBe(ID);
+    });
+
+    it("refuses the second start with the job the first one made, and runs nothing", async () => {
+      const reply = deferred();
+      const first = await startSpecKitJob(base({ id: ID, run: () => reply.promise }));
+      const secondRun = vi.fn(async () => ({}));
+
+      const again = await startSpecKitJob(base({ id: ID, run: secondRun })).catch(
+        (e: unknown) => e,
+      );
+
+      expect(again).toBeInstanceOf(SpecKitJobAlreadyStartedError);
+      expect((again as SpecKitJobAlreadyStartedError).job).toMatchObject({
+        id: ID,
+        status: "running",
+      });
+      // Also when it names another feature: the id decides, not the key.
+      const elsewhere = await startSpecKitJob(
+        base({ id: ID, featureSlug: "002-other", run: secondRun }),
+      ).catch((e: unknown) => e);
+      expect(elsewhere).toBeInstanceOf(SpecKitJobAlreadyStartedError);
+      expect(await table().ids(PROJECTS)).toEqual([ID]);
+      expect(recordJobScope).toHaveBeenCalledTimes(1);
+
+      reply.resolve({ message: "done" });
+      await first.done;
+      // …and once it has finished: the same job, not a new run.
+      const after = await startSpecKitJob(base({ id: ID, run: secondRun })).catch(
+        (e: unknown) => e,
+      );
+      expect((after as SpecKitJobAlreadyStartedError).job).toMatchObject({
+        id: ID,
+        status: "succeeded",
+      });
+      expect(secondRun).not.toHaveBeenCalled();
+    });
+
+    it("still answers a held FEATURE with the conflict, for a start that is new", async () => {
+      const reply = deferred();
+      const holder = await startSpecKitJob(base({ run: () => reply.promise }));
+      const err = await startSpecKitJob(base({ id: ID })).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(SpecKitJobConflictError);
+      expect((err as SpecKitJobConflictError).holder?.id).toBe(holder.job.id);
+      reply.resolve({});
+      await holder.done;
+    });
+
+    it("derives the id from the project, the user and the token — each one changes it", () => {
+      const id = specKitJobIdForStart("p", "u", "t-0123456789abcdef");
+      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(specKitJobIdForStart("p", "u", "t-0123456789abcdef")).toBe(id);
+      expect(specKitJobIdForStart("p2", "u", "t-0123456789abcdef")).not.toBe(id);
+      expect(specKitJobIdForStart("p", "u2", "t-0123456789abcdef")).not.toBe(id);
+      expect(specKitJobIdForStart("p", "u", "t-0123456789abcdeg")).not.toBe(id);
+      // No way to move a boundary between the three parts.
+      expect(specKitJobIdForStart("p:u", "", "t-0123456789abcdef")).not.toBe(
+        specKitJobIdForStart("p", "u:", "t-0123456789abcdef"),
+      );
+    });
+
+    it.each([
+      ["a UUID", "3f0c2a52-8d0b-4c56-9c7e-0a1b2c3d4e5f", true],
+      ["16 characters", "abcdefghij_-0123", true],
+      ["128 characters", "a".repeat(128), true],
+      ["15 characters", "a".repeat(15), false],
+      ["129 characters", "a".repeat(129), false],
+      ["a space", "abcdefghij 0123456", false],
+      ["a slash", "abcdefghij/0123456", false],
+      ["a newline", "abcdefghij0123456\n", false],
+      ["empty", "", false],
+    ])("bounds the token's length and characters: %s", (_name, token, allowed) => {
+      expect(SPEC_KIT_JOB_START_TOKEN_RE.test(token)).toBe(allowed);
+    });
+  });
+
+  describe("specKitJobHolding", () => {
+    it("is the live job on a feature, and nothing once it has ended", async () => {
+      const reply = deferred();
+      const started = await startSpecKitJob(base({ run: () => reply.promise }));
+      expect((await specKitJobHolding(P1, SLUG))?.id).toBe(started.job.id);
+      expect(await specKitJobHolding(P1, "002-other")).toBeNull();
+      expect(await specKitJobHolding(P2, SLUG)).toBeNull();
+      reply.resolve({});
+      await started.done;
+      expect(await specKitJobHolding(P1, SLUG)).toBeNull();
     });
   });
 

@@ -240,6 +240,7 @@ import { runAnalyze } from "../src/lib/spec-kit/commands/analyze.js";
 import { featureArtifactScope } from "../src/lib/spec-kit/artifact-scope.js";
 import { runChecklist } from "../src/lib/spec-kit/commands/checklist.js";
 import { runPlanExpanded } from "../src/lib/spec-kit/commands/plan-expanded.js";
+import { SpecKitJobStopError } from "../src/lib/spec-kit/job-scope.js";
 import { SPEC_KIT_TRUNCATION_NOTE } from "../src/lib/spec-kit/commands/runner.js";
 import { runSpecifyFeature } from "../src/lib/spec-kit/commands/specify-feature.js";
 import { computePlanDigest, runTasksToIssues } from "../src/lib/spec-kit/commands/taskstoissues.js";
@@ -1193,6 +1194,43 @@ describe("feature commands are grounded (#786, #785)", () => {
     expect(stored("plan.md")!.content).toBe("# Plan\nThe earlier plan.\n");
     expect(stored("plan-context.md")!.content).toBe("# Plan context\nThe earlier record.\n");
     expect(stored("plan-context.md")!.version).toBe(1);
+  });
+
+  it("#1059 — a job stopped at the record's write is stopped, not reported as a record that could not be saved", async () => {
+    process.env.SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET = "170";
+    __resetConfigSingleton();
+    const fid = seedFeature("p1", "013-stopped-record");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nRecord when an entry was read.");
+    const create = prismaMock.specKitFeatureArtifact.create;
+    const original = create.getMockImplementation()!;
+    const stop = new SpecKitJobStopError("superseded");
+    create.mockImplementation(async (args: any) => {
+      // What the write's commit point throws for a job that lost its row.
+      if (args.data.featureId === fid && args.data.key === "plan-context.md") throw stop;
+      return original(args);
+    });
+    try {
+      await expect(
+        runPlanExpanded({
+          projectId: "p1",
+          featureSlug: "013-stopped-record",
+          deps: {
+            provider: new RecordingProvider(
+              `# Plan\n\n\`${ENTRY}\` is not in the retrieved context.\n`,
+            ),
+          },
+          knowledgeService,
+          fusedCode,
+          siblingLookup,
+          callerLookup,
+          localisationSource: localisationSource(),
+        }),
+      ).rejects.toBe(stop);
+    } finally {
+      create.mockImplementation(original);
+      delete process.env.SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET;
+      __resetConfigSingleton();
+    }
   });
 
   it("#1060 — a record that cannot be saved does not fail a plan that was, and the message says so", async () => {

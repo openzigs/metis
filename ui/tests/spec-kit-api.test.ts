@@ -139,6 +139,25 @@ describe("specKitApi", () => {
         body: { input: "" },
       },
     );
+    // A start that names itself: the token travels as a header, not in the body.
+    await specKitApi.startCommandJob(
+      "p1",
+      "speckit.tasks",
+      { input: "x" },
+      "token-0123456789abcdef",
+    );
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "/projects/p1/spec-kit/commands/speckit.tasks/jobs",
+      {
+        method: "POST",
+        body: { input: "x" },
+        headers: { "X-SpecKit-Start-Token": "token-0123456789abcdef" },
+      },
+    );
+    await specKitApi.listActiveJobs("p1", "token-0123456789abcdef");
+    expect(mockFetch).toHaveBeenLastCalledWith("/projects/p1/spec-kit/jobs", {
+      headers: { "X-SpecKit-Start-Token": "token-0123456789abcdef" },
+    });
     await specKitApi.getJob("p1", "job/1");
     expect(mockFetch).toHaveBeenLastCalledWith("/projects/p1/spec-kit/jobs/job%2F1");
     await specKitApi.listActiveJobs("p1");

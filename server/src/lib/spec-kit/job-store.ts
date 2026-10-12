@@ -59,26 +59,31 @@ export function specKitJobSqlEngine(env: NodeJS.ProcessEnv = process.env): SpecK
  * The database's own clock, as SQL.
  *
  *   - SQLite: Prisma's driver adapter stores a `DateTime` as ISO-8601 text
- *     (`2026-10-12T09:44:56.729+00:00`), which sorts as text in time order.
- *     `strftime` renders "now" in exactly that shape.
+ *     (`2026-10-12T09:44:56.729+00:00`), and `strftime` renders "now" in
+ *     exactly that shape for the writes. AGES are compared as numbers
+ *     (`julianday`), not as text: the column's SQL default writes another
+ *     shape (`CURRENT_TIMESTAMP`, `2026-10-12 09:44:56`), which sorts before
+ *     every ISO text of the same day, so a row inserted by hand would be read
+ *     as stale at once under a text comparison. `julianday` parses both.
  *   - Postgres: the columns are `TIMESTAMP(3)` holding UTC. `clock_timestamp()`
  *     rather than `now()`, which is frozen at the start of a transaction.
  */
 export function specKitJobClock(engine: SpecKitJobSqlEngine): {
   now: Prisma.Sql;
-  ago: (ms: number) => Prisma.Sql;
+  /** True when the timestamp `column` is more than `ms` behind the database's clock. */
+  olderThan: (column: Prisma.Sql, ms: number) => Prisma.Sql;
 } {
   if (engine === "postgresql") {
     return {
       now: Prisma.sql`timezone('UTC', clock_timestamp())`,
-      ago: (ms) =>
-        Prisma.sql`(timezone('UTC', clock_timestamp()) - (CAST(${ms} AS double precision) * interval '1 millisecond'))`,
+      olderThan: (column, ms) =>
+        Prisma.sql`${column} < (timezone('UTC', clock_timestamp()) - (CAST(${ms} AS double precision) * interval '1 millisecond'))`,
     };
   }
   return {
     now: Prisma.sql`strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')`,
-    ago: (ms) =>
-      Prisma.sql`strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now', ${`-${(ms / 1000).toFixed(3)} seconds`})`,
+    olderThan: (column, ms) =>
+      Prisma.sql`julianday(${column}) < julianday('now', ${`-${(ms / 1000).toFixed(3)} seconds`})`,
   };
 }
 
@@ -108,7 +113,8 @@ export interface NewSpecKitJob {
 /**
  * Insert a running job, stamped with the database's time. `null` when another
  * live job holds `activeKey`: the unique index refused the row, which is how a
- * second writer is kept out.
+ * second writer is kept out. `null` too when a job with this `id` exists: the
+ * primary key is what makes a start that is sent twice one job.
  */
 export async function createJob(job: NewSpecKitJob): Promise<SpecKitJobRow | null> {
   const { now } = clock();
@@ -265,7 +271,7 @@ export async function failStaleJobs(
   staleMs: number,
   outcomes: StaleOutcomes,
 ): Promise<SweptJob[]> {
-  const { now, ago } = clock();
+  const { now, olderThan } = clock();
   const narrowed = [
     scope.id !== undefined ? Prisma.sql`AND "id" = ${scope.id}` : Prisma.empty,
     scope.projectId !== undefined ? Prisma.sql`AND "projectId" = ${scope.projectId}` : Prisma.empty,
@@ -281,17 +287,18 @@ export async function failStaleJobs(
         "status" = CASE "status" WHEN 'cancelling' THEN 'cancelled' ELSE 'failed' END,
         "activeKey" = NULL, "result" = NULL, "finishedAt" = ${now}
     WHERE "status" IN (${Prisma.join(LIVE_STATUSES)})
-      AND "heartbeatAt" < ${ago(staleMs)}
+      AND ${olderThan(Prisma.sql`"heartbeatAt"`, staleMs)}
       ${Prisma.join(narrowed, " ")}
     RETURNING "id", "projectId", "status"`;
 }
 
 /** Delete terminal jobs that finished more than `retentionMs` ago, by the database's clock. */
 export async function pruneFinishedJobs(retentionMs: number): Promise<number> {
-  const { ago } = clock();
+  const { olderThan } = clock();
   return prisma.$executeRaw`
     DELETE FROM "spec_kit_jobs"
-    WHERE "status" NOT IN (${Prisma.join(LIVE_STATUSES)}) AND "finishedAt" < ${ago(retentionMs)}`;
+    WHERE "status" NOT IN (${Prisma.join(LIVE_STATUSES)})
+      AND ${olderThan(Prisma.sql`"finishedAt"`, retentionMs)}`;
 }
 
 /**

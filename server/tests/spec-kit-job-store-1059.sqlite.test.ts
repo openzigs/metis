@@ -9,7 +9,7 @@
  * expressions are different SQL there, so SQLite passing says nothing about it.
  */
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
@@ -87,8 +87,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(raw?.heartbeatAt).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}\+00:00$/);
 
       // …and that IS what the typed client writes (a planted heartbeat, a test's
-      // aged one): if the adapter's format ever changes, the store's text
-      // comparison silently stops meaning "earlier than", and this says so.
+      // aged one).
       await db.specKitJob.update({
         where: { id: "c1059-shape" },
         data: { heartbeatAt: new Date("2026-01-02T03:04:05.678Z") },
@@ -98,6 +97,60 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       >`SELECT CAST("heartbeatAt" AS TEXT) AS "heartbeatAt" FROM "spec_kit_jobs" WHERE "id" = 'c1059-shape'`;
       expect(typed?.heartbeatAt).toBe("2026-01-02T03:04:05.678+00:00");
       await db.specKitJob.deleteMany({ where: { id: "c1059-shape" } });
+    });
+
+    describe("ages are compared as times, not as text (review, cycle 2)", () => {
+      const OUTCOMES = { interruptedError: "{}", interruptedWhileSavingError: "{}" };
+      const ids = ["c1059-hand-new", "c1059-hand-old", "c1059-iso-new", "c1059-done-hand"];
+      const clean = () => db.specKitJob.deleteMany({ where: { id: { in: ids } } });
+
+      it("does not sweep a row inserted by hand with the column's own default", async () => {
+        await clean();
+        // `CURRENT_TIMESTAMP` writes `2026-10-12 11:14:48`: a space where every
+        // other writer has a `T`, so as TEXT it sorts before any ISO time of the
+        // same day and such a row was failed by the next sweep.
+        await db.$executeRaw`
+          INSERT INTO "spec_kit_jobs" ("id", "projectId", "command", "activeKey", "status")
+          VALUES ('c1059-hand-new', 'c1059-pa', 'speckit.plan', 'c1059-pa:hand-new', 'running')`;
+        const [raw] = await db.$queryRaw<
+          Array<{ heartbeatAt: string }>
+        >`SELECT CAST("heartbeatAt" AS TEXT) AS "heartbeatAt" FROM "spec_kit_jobs" WHERE "id" = 'c1059-hand-new'`;
+        expect(raw?.heartbeatAt).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/);
+
+        expect(await store.failStaleJobs({ projectId: "c1059-pa" }, 90_000, OUTCOMES)).toEqual([]);
+        expect((await db.specKitJob.findUnique({ where: { id: "c1059-hand-new" } }))?.status).toBe(
+          "running",
+        );
+        await clean();
+      });
+
+      it("still sweeps a hand-inserted row that IS old, and only that one", async () => {
+        await clean();
+        await db.$executeRaw`
+          INSERT INTO "spec_kit_jobs" ("id", "projectId", "command", "activeKey", "status", "heartbeatAt")
+          VALUES ('c1059-hand-old', 'c1059-pa', 'speckit.plan', 'c1059-pa:hand-old', 'running',
+                  datetime('now', '-10 minutes'))`;
+        await store.createJob({
+          id: "c1059-iso-new",
+          projectId: "c1059-pa",
+          command: "speckit.plan",
+          featureSlug: null,
+          activeKey: "c1059-pa:iso-new",
+          startedById: null,
+        });
+        const swept = await store.failStaleJobs({ projectId: "c1059-pa" }, 90_000, OUTCOMES);
+        expect(swept.map((job) => job.id)).toEqual(["c1059-hand-old"]);
+        await clean();
+      });
+
+      it("prunes by the same comparison: a job finished a minute ago is kept, in either shape", async () => {
+        await clean();
+        await db.$executeRaw`
+          INSERT INTO "spec_kit_jobs" ("id", "projectId", "command", "status", "finishedAt")
+          VALUES ('c1059-done-hand', 'c1059-pa', 'speckit.plan', 'succeeded', datetime('now', '-1 minutes'))`;
+        expect(await store.pruneFinishedJobs(24 * 60 * 60 * 1000)).toBe(0);
+        expect(await store.pruneFinishedJobs(30_000)).toBe(1);
+      });
     });
   },
 );
@@ -114,13 +167,17 @@ describe("specKitJobSqlEngine / specKitJobClock", () => {
     const pg = store.specKitJobClock("postgresql");
     expect(pg.now.sql).toBe("timezone('UTC', clock_timestamp())");
     expect(pg.now.values).toEqual([]);
-    expect(pg.ago(90_000).sql).toContain("clock_timestamp()");
-    expect(pg.ago(90_000).values).toEqual([90_000]);
+    const column = Prisma.sql`"heartbeatAt"`;
+    expect(pg.olderThan(column, 90_000).sql).toMatch(/^"heartbeatAt" < \(.*clock_timestamp\(\)/);
+    expect(pg.olderThan(column, 90_000).values).toEqual([90_000]);
 
     const lite = store.specKitJobClock("sqlite");
     expect(lite.now.sql).toBe("strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')");
     expect(lite.now.values).toEqual([]);
-    expect(lite.ago(90_000).values).toEqual(["-90.000 seconds"]);
-    expect(lite.ago(1_500).values).toEqual(["-1.500 seconds"]);
+    expect(lite.olderThan(column, 90_000).sql).toBe(
+      `julianday("heartbeatAt") < julianday('now', ?)`,
+    );
+    expect(lite.olderThan(column, 90_000).values).toEqual(["-90.000 seconds"]);
+    expect(lite.olderThan(column, 1_500).values).toEqual(["-1.500 seconds"]);
   });
 });

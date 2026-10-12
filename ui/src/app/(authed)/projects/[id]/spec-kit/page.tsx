@@ -452,7 +452,6 @@ export default function SpecKitPage() {
     mutationFn: async (input: CommandRun) => {
       const hooks = {
         signal: leftPage.current?.signal,
-        userId: user?.id,
         origin: input.origin,
         subscribe: followJob,
         onUpdate: (job: SpecKitJobDto): void => {

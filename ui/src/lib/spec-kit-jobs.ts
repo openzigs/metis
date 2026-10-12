@@ -44,7 +44,7 @@ export const SPEC_KIT_JOB_POLL_INTERVAL_MS = 3_000;
  * Wait between two reads of the project's running jobs, which is how the page
  * knows a feature is busy with a job it is not watching (another member's, or
  * one started in another tab). 90 reads per 15 minutes per open tab, against a
- * read budget of 6000 per address.
+ * read budget of 6000 per user.
  */
 export const SPEC_KIT_ACTIVE_JOBS_POLL_MS = 10_000;
 /** Consecutive failed reads before the page stops watching: 20 × 3 s = 1 minute. */
@@ -230,8 +230,6 @@ export interface SpecKitJobHooks {
   signal?: AbortSignal;
   /** Every state of the job the watch reads, the terminal one included. */
   onUpdate?: (job: SpecKitJobDto) => void;
-  /** The viewer, so a job found after a lost start is known to be theirs. */
-  userId?: string;
   /** Where the page was when it started the command; remembered with the job. */
   origin?: SpecKitJobOrigin;
   /**
@@ -369,23 +367,32 @@ export async function watchSpecKitJob(
   }
 }
 
-/** The viewer's running job for this command and feature, after a start whose response was lost. */
+/**
+ * A name for one start, made up here and sent with it
+ * (`X-SpecKit-Start-Token`). The server derives the job from it, the user and
+ * the project, so the job a start created can be asked for by this token.
+ */
+export function newSpecKitStartToken(): string {
+  const c = globalThis.crypto;
+  if (typeof c?.randomUUID === "function") return c.randomUUID();
+  const bytes = c.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * The job that the start carrying `startToken` created, after its response was
+ * lost — running or already finished. Asked of the server by the token, never
+ * inferred from a job's command, feature or starter: a `/speckit.specify` that
+ * creates a feature runs under a slug the page has not been told yet, and a
+ * guess would attach to somebody else's command. `null` when that start
+ * created no job, or when it cannot be asked.
+ */
 async function findStartedJob(
   projectId: string,
-  command: SpecKitNamespacedCommand,
-  featureSlug: string | undefined,
-  userId: string | undefined,
+  startToken: string,
 ): Promise<SpecKitJobDto | null> {
   try {
-    const { jobs } = await specKitApi.listActiveJobs(projectId);
-    return (
-      jobs.find(
-        (job) =>
-          job.command === command &&
-          job.featureSlug === (featureSlug ?? null) &&
-          (userId === undefined || job.startedById === userId),
-      ) ?? null
-    );
+    return (await specKitApi.listActiveJobs(projectId, startToken)).started ?? null;
   } catch {
     return null;
   }
@@ -394,8 +401,8 @@ async function findStartedJob(
 /**
  * Run a Spec Kit command. A model-backed command is started as a job and
  * watched ({@link watchSpecKitJob}); the others are one request. Neither is
- * ever sent twice: when the response to a job's START is lost, the job is
- * looked for among the running ones instead.
+ * ever sent twice: when the response to a job's START is lost, the job that
+ * start created is asked for by the start's token instead.
  */
 export async function runSpecKitCommand(
   projectId: string,
@@ -416,11 +423,12 @@ export async function runSpecKitCommand(
     }
   }
   let job: SpecKitJobDto;
+  const startToken = newSpecKitStartToken();
   try {
-    job = (await specKitApi.startCommandJob(projectId, command, options)).job;
+    job = (await specKitApi.startCommandJob(projectId, command, options, startToken)).job;
   } catch (err) {
     if (!isLostResponse(err)) throw err;
-    const started = await findStartedJob(projectId, command, options.featureSlug, hooks.userId);
+    const started = await findStartedJob(projectId, startToken);
     if (!started) throw err;
     job = started;
   }

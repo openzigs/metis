@@ -6101,7 +6101,7 @@ POST …/commands/:cmd        ──► the same job, awaited: 200 result | the 
 | [`job-store.ts`](../server/src/lib/spec-kit/job-store.ts) | Every `spec_kit_jobs` query. Each state change is one conditional `UPDATE`; timestamps and the staleness check use the database's clock, in raw SQL that differs per engine. |
 | [`job-registry.ts`](../server/src/lib/spec-kit/job-registry.ts) | The jobs this process runs, by id: an abort switch, so a cancel or sweep handled here stops the model call at once. It decides nothing. |
 | [`job-scope.ts`](../server/src/lib/spec-kit/job-scope.ts) | The AsyncLocalStorage scope command code asks: stopped? may I save? this is my phase. No database import, so the artifact stores can use it. |
-| [`spec-kit-job-rate-limit.ts`](../server/src/middleware/spec-kit-job-rate-limit.ts) | Three limiters: reads per address, starts and cancels per address (both ahead of auth), starts and cancels per user (after it). |
+| [`spec-kit-job-rate-limit.ts`](../server/src/middleware/spec-kit-job-rate-limit.ts) | Three limiters: reads per user and starts/cancels per user (both straight after `requireAuth`), and a coarse guard ahead of auth keyed on the presented token or the connecting peer — never on the client address, which the client can choose. |
 | [`ui/src/lib/spec-kit-jobs.ts`](../ui/src/lib/spec-kit-jobs.ts) | The page's side: start, watch (the job's socket events, with a read every 3 s as the fallback), pick up after a reload. |
 
 **What it is built on.** Docs generation (§ docs-gen, #50 and #855) is the model: a durable
@@ -6212,14 +6212,36 @@ same lock, and a caller whose connection dropped can read the outcome from the j
   only if it was sent: a call still waiting in the local model's queue (`onSlotQueued`
   without `onSlotAcquired`) was never sent and records nothing.
 - **Rate limits.** Reads (`GET …/jobs…`) and writes (start, cancel) have separate budgets,
-  so polling cannot make a cancel answer 429. Both run ahead of auth and key by client
-  address (`req.ip`: the last `X-Forwarded-For` entry under `trust proxy = 1`, which through
-  the UI's proxy is the browser's address). Writes are limited again after auth, per user.
+  so polling cannot make a cancel answer 429. Both run straight after `requireAuth` and key
+  by the signed-in user. They do not key by client address: `req.ip` is the last
+  `X-Forwarded-For` entry under `trust proxy = 1`, and when the Next UI server is the edge
+  that entry is whatever the client sent (Next fills the header only when it is absent, and
+  the UI proxy forwards headers unchanged), so an address budget could be dodged, or spent
+  for somebody else without signing in. A coarse guard still precedes auth on all four
+  endpoints, keyed on a digest of the presented access token, or on the connecting peer for
+  a request that presents none (OPERATIONS §6.5).
+- **A start is repeatable.** `X-SpecKit-Start-Token` on the start names it. The job's id is a
+  digest of the project, the user and the token (`specKitJobIdForStart`), so a second start
+  with the same token hits the table's primary key and is answered with the first one's job:
+  no column stores the token, and another user presenting it derives a different id. `GET
+  …/jobs` with the header returns that job as `started`; the page uses it to find its job
+  after a lost `202` instead of matching on the job's command and feature, which a
+  new-feature `/speckit.specify` (run under a slug the page was never told) cannot be found by.
+- **A new feature is reserved after everything that can refuse cheaply, and released if
+  nothing was saved.** The provider and the budget are checked before the feature is created;
+  if the job then ends without saving, the route removes the feature it reserved, by id, only
+  while it is still an empty draft that no live job holds, and only after the job's own
+  command has ended.
+- **`saving` has a deadline.** `SPEC_KIT_JOB_SAVING_LIMIT_MS` (10 minutes, a constant): past
+  it the owning process fails the row (`saving` → `failed`, "interrupted while it was
+  saving") and the feature is free. Without it a write that hung without failing held the
+  feature until a restart: a `saving` job cannot be cancelled or timed out, and its heartbeat
+  keeps it from the sweep.
 - **Authorization on every endpoint.** Each job route runs `requireProjectAccess()`
   (workspace scope, 404 for another tenant whatever the role), then `requirePermission`
   (`project.read` to read, `project.update` to start or cancel), and reads the row only by
   `(projectId, jobId)`. Another project's job id is a 404 on that project's URL and on the
-  caller's own. Ids are `randomUUID()`.
+  caller's own. Ids are `randomUUID()`, or the digest above for a start that carries a token.
 
 **Progress.** `reportSpecKitJobPhase(text, percent?)` writes `phase` on the row and emits a
 `progress` lifecycle event. `runSpecKitAgent` reports its caller's `phase` (default

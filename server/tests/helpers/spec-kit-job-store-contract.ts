@@ -101,6 +101,18 @@ export function defineSpecKitJobStoreContract(table: () => SpecKitJobTable, ns: 
       expect(await table().ids(PROJECTS)).toEqual([id("a")]);
     });
 
+    it("refuses a second job with the same ID, whatever its key, and leaves the first as it was", async () => {
+      // The primary key is what makes a start that is sent twice one job.
+      await store().createJob(fresh("a"));
+      expect(await store().createJob(fresh("elsewhere", { id: id("a") }))).toBeNull();
+      expect(await table().ids(PROJECTS)).toEqual([id("a")]);
+      expect(await row("a")).toMatchObject({ featureSlug: "a", activeKey: key("a") });
+      // …also once that job has finished and released its key.
+      expect(await store().finishJob(id("a"), { status: "succeeded" }, ["running"])).toBe(true);
+      expect(await store().createJob(fresh("a"))).toBeNull();
+      expect((await row("a")).status).toBe("succeeded");
+    });
+
     it("accepts another key, and the same key again once its holder finished", async () => {
       await store().createJob(fresh("a"));
       expect(await store().createJob(fresh("b"))).not.toBeNull();
@@ -233,6 +245,21 @@ export function defineSpecKitJobStoreContract(table: () => SpecKitJobTable, ns: 
     it("refuses a saving row under another key", async () => {
       await plant("a", { status: "saving", activeKey: key("k") });
       expect(await store().confirmSaving(id("a"), key("other"))).toBe(false);
+    });
+
+    it("refuses a swept job whose key a SUCCESSOR now holds, saving: the row is not its own", async () => {
+      // X was swept mid-save; Y took the feature and is itself saving. The key
+      // and the status both match Y's row — only the id says it is not X's.
+      await plant("x", { status: "failed", activeKey: null, finishedAt: ago(1) });
+      const successor = await plant("y", {
+        status: "saving",
+        activeKey: key("k"),
+        heartbeatAt: ago(30_000),
+      });
+      expect(await store().confirmSaving(id("x"), key("k"))).toBe(false);
+      // …and X's check did not refresh Y's heartbeat either.
+      expect((await row("y")).heartbeatAt.getTime()).toBe(successor.heartbeatAt.getTime());
+      expect(await store().confirmSaving(id("y"), key("k"))).toBe(true);
     });
   });
 

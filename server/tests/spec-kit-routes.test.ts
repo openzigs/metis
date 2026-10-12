@@ -257,6 +257,14 @@ vi.mock("../src/lib/spec-kit/job-store.js", async () => {
   return fake.fakeSpecKitJobStore;
 });
 
+// #1059 — a slug-less specify checks the budget before it creates its feature.
+// The commands are stubs here, so nothing else asks; the real check on the real
+// tables is in the SQLite suite.
+vi.mock("../src/lib/finops/budget-enforcer.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  assertWithinBudget: vi.fn(async () => undefined),
+}));
+
 vi.mock("../src/lib/spec-kit/features.js", async (importOriginal) => ({
   // The real constants (the slug shape the job lock is keyed on, #1059).
   ...(await importOriginal<Record<string, unknown>>()),

@@ -5,6 +5,7 @@
  * `apiFetch` helper used by every other UI surface so the 401-refresh
  * dance works automatically.
  */
+import { SPEC_KIT_START_TOKEN_HEADER } from "@metis/shared";
 import { apiFetch } from "@/lib/api-client";
 import type {
   SpecKitArtifactDto,
@@ -195,20 +196,39 @@ export const specKitApi = {
     projectId: string,
     command: SpecKitJobCommand,
     options: SpecKitRunOptions = {},
+    /**
+     * Names this start (`X-SpecKit-Start-Token`): sent again with the same
+     * token it is answered with the same job, and
+     * {@link specKitApi.listActiveJobs} finds that job by it.
+     */
+    startToken?: string,
   ): Promise<{ jobId: string; job: SpecKitJobDto }> {
     const { input = "", ...rest } = options;
     return apiFetch(
       `/projects/${encodeURIComponent(projectId)}/spec-kit/commands/${encodeURIComponent(command)}/jobs`,
-      { method: "POST", body: { input, ...rest } },
+      {
+        method: "POST",
+        body: { input, ...rest },
+        ...(startToken ? { headers: { [SPEC_KIT_START_TOKEN_HEADER]: startToken } } : {}),
+      },
     );
   },
   /** #1059 — one job of the project; 404 `SPEC_KIT_JOB_NOT_FOUND` otherwise. */
   getJob(projectId: string, jobId: string): Promise<{ job: SpecKitJobDto }> {
     return apiFetch(`${jobsBase(projectId)}/${encodeURIComponent(jobId)}`);
   },
-  /** #1059 — the project's jobs that are still running, oldest first. */
-  listActiveJobs(projectId: string): Promise<{ jobs: SpecKitJobDto[] }> {
-    return apiFetch(jobsBase(projectId));
+  /**
+   * #1059 — the project's jobs that are still running, oldest first. With a
+   * `startToken`, also `started`: the job the viewer's start carrying that
+   * token created, running or finished, or `null` when it created none.
+   */
+  listActiveJobs(
+    projectId: string,
+    startToken?: string,
+  ): Promise<{ jobs: SpecKitJobDto[]; started?: SpecKitJobDto | null }> {
+    return startToken
+      ? apiFetch(jobsBase(projectId), { headers: { [SPEC_KIT_START_TOKEN_HEADER]: startToken } })
+      : apiFetch(jobsBase(projectId));
   },
   /** #1059 — cancel a job; 409 `SPEC_KIT_JOB_SAVING` once it is writing its result. */
   cancelJob(projectId: string, jobId: string): Promise<{ job: SpecKitJobDto }> {

@@ -27,6 +27,7 @@
  *         running | saving -> succeeded | failed   the owner, at the end
  *         running | cancelling | saving -> failed | cancelled   a sweep that
  *                                    finds the heartbeat stopped
+ *         saving     -> failed      the saving deadline, by the owning process
  *
  *     Two of these on one row are serialised by the database and one matches.
  *     So: cancel vs save, time limit vs save and owner-finishes vs sweep each
@@ -49,7 +50,7 @@
  * Budget, safety, usage recording and audit are untouched: the job runs the
  * same command functions, which call `runSpecKitAgent` as before.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   SPEC_KIT_JOB_INTERRUPTED_CODE,
   SPEC_KIT_JOB_TIMEOUT_CODE,
@@ -82,6 +83,14 @@ export const SPEC_KIT_JOB_HEARTBEAT_MS = 15_000;
  * beats, so a long synchronous stretch or a slow write never fails a live job.
  */
 export const SPEC_KIT_JOB_STALE_MS = 90_000;
+/**
+ * The longest a job may stay `saving`. Saving is a handful of database writes
+ * and no model call, so it takes seconds; a job still `saving` after this has a
+ * write that hung without failing (a lock wait with no statement timeout). It
+ * can be neither cancelled nor timed out and its heartbeat keeps it from the
+ * sweep, so without this limit it would hold its feature until a restart.
+ */
+export const SPEC_KIT_JOB_SAVING_LIMIT_MS = 10 * 60_000;
 /**
  * Waits between attempts to store a job's outcome (three attempts in all). A
  * single failed write would otherwise leave the feature locked, and the job
@@ -134,6 +143,18 @@ export const SPEC_KIT_JOB_INTERRUPTED_SAVING_ERROR: SpecKitJobError = {
 };
 
 /**
+ * Stored on a job that was still `saving` after
+ * {@link SPEC_KIT_JOB_SAVING_LIMIT_MS}, while its server was alive: a write
+ * hung. The writes it had made stay, and the hung one may yet land.
+ */
+export const SPEC_KIT_JOB_SAVING_STALLED_ERROR: SpecKitJobError = {
+  status: 503,
+  code: SPEC_KIT_JOB_INTERRUPTED_CODE,
+  message:
+    "The command was interrupted while it was saving its result: saving did not finish within its time limit. Some of its files may have been saved and others not. Check the files, then run the command again.",
+};
+
+/**
  * Answered to a caller waiting on a job that reached its commit point but
  * whose outcome could not be stored. Never claims that nothing was saved.
  */
@@ -171,6 +192,17 @@ export class SpecKitJobConflictError extends Error {
         : "Another Spec Kit command is already running here. Wait for it to finish.",
     );
     this.name = "SpecKitJobConflictError";
+  }
+}
+
+/**
+ * Start not needed: a job with this start's id already exists in the project —
+ * the same start, sent again (`StartSpecKitJobInput.id`). Nothing was started.
+ */
+export class SpecKitJobAlreadyStartedError extends Error {
+  constructor(readonly job: SpecKitJobDto) {
+    super("This Spec Kit command was already started.");
+    this.name = "SpecKitJobAlreadyStartedError";
   }
 }
 
@@ -240,6 +272,27 @@ export function specKitJobActiveKey(projectId: string, featureSlug: string | nul
   return `${projectId}:${featureSlug ?? ""}`;
 }
 
+/** What a start token may be: long enough not to be guessed, plain enough to log. */
+export const SPEC_KIT_JOB_START_TOKEN_RE = /^[A-Za-z0-9_-]{16,128}$/;
+
+/**
+ * The id of the job that the start carrying `token` creates: a digest of the
+ * project, the user and the token, laid out as a UUID. A start that is sent
+ * twice (its first response was lost) therefore names the SAME row, and the
+ * primary key — not a lookup that could race — is what refuses the second.
+ *
+ * The user and the project are part of the digest, so a token is only ever a
+ * name for the caller's own start in that project: another user (or the same
+ * user in another project) presenting it gets a different id, and no job.
+ */
+export function specKitJobIdForStart(projectId: string, userId: string, token: string): string {
+  const hex = createHash("sha256")
+    .update(JSON.stringify(["spec-kit-job-start", projectId, userId, token]))
+    .digest("hex");
+  // Version 8 ("custom") and the RFC 4122 variant, so it reads as a UUID.
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 const MAX_PHASE_CHARS = 200;
 
 /**
@@ -264,6 +317,8 @@ class SpecKitJobControl implements SpecKitJobScope, LiveSpecKitJob {
     readonly projectId: string,
     private readonly activeKey: string,
     private readonly onPhase: (text: string, progress?: number) => void,
+    /** Called once, when the row has become `saving`. */
+    private readonly onSaving: () => void,
   ) {
     this.whenStopped = new Promise<never>((_resolve, reject) => {
       this.rejectStopped = reject;
@@ -308,6 +363,7 @@ class SpecKitJobControl implements SpecKitJobScope, LiveSpecKitJob {
   private async beginSaving(): Promise<void> {
     if (await store.beginSaving(this.jobId, this.activeKey)) {
       this.saving = true;
+      this.onSaving();
       return;
     }
     // Refused. A cancel that won the row leaves it `cancelling` and still ours
@@ -357,6 +413,12 @@ async function failStale(scope: store.StaleScope): Promise<number> {
 }
 
 export interface StartSpecKitJobInput {
+  /**
+   * The job's id, when the caller derived it from a start token
+   * ({@link specKitJobIdForStart}). A start whose id already exists in the
+   * project throws {@link SpecKitJobAlreadyStartedError}. Default: a new UUID.
+   */
+  id?: string;
   projectId: string;
   command: SpecKitNamespacedCommand;
   /** The feature the command runs on; `null` for the project-level set. */
@@ -372,6 +434,8 @@ export interface StartSpecKitJobInput {
   timeoutMs?: number;
   /** Default {@link SPEC_KIT_JOB_HEARTBEAT_MS}. */
   heartbeatMs?: number;
+  /** Default {@link SPEC_KIT_JOB_SAVING_LIMIT_MS}. */
+  savingLimitMs?: number;
   /** Waits between attempts to store the outcome. Default {@link SPEC_KIT_JOB_OUTCOME_RETRY_MS}. */
   outcomeRetryMs?: readonly number[];
 }
@@ -387,12 +451,13 @@ export interface StartedSpecKitJob {
  * Start a command as a job. Resolves once the row exists and the job's scope is
  * recorded, so the id is usable the moment it leaves the server; the command
  * runs on after that. Throws {@link SpecKitJobConflictError} when a live job
- * already holds the same artifact set.
+ * already holds the same artifact set, and
+ * {@link SpecKitJobAlreadyStartedError} when `input.id` is already a job.
  */
 export async function startSpecKitJob(input: StartSpecKitJobInput): Promise<StartedSpecKitJob> {
   const activeKey = specKitJobActiveKey(input.projectId, input.featureSlug);
   const fresh = {
-    id: randomUUID(),
+    id: input.id ?? randomUUID(),
     projectId: input.projectId,
     command: input.command,
     featureSlug: input.featureSlug,
@@ -400,6 +465,13 @@ export async function startSpecKitJob(input: StartSpecKitJobInput): Promise<Star
     startedById: input.actorId,
   };
   let row = await store.createJob(fresh);
+  if (!row && input.id !== undefined) {
+    // Refused by the primary key, not by the feature's key: this very start
+    // already ran. (A job of another project can never have this id: the
+    // project is part of what the id is derived from.)
+    const same = await store.findJob(input.projectId, input.id);
+    if (same) throw new SpecKitJobAlreadyStartedError(toSpecKitJobDto(same));
+  }
   if (!row) {
     // The key is held. A holder with no process behind it is failed here, so a
     // restart never blocks a feature until the sweeper next runs; then try once
@@ -483,14 +555,57 @@ async function runJob(
   const heartbeatMs = input.heartbeatMs ?? SPEC_KIT_JOB_HEARTBEAT_MS;
   // Phase writes are chained so two quick phases cannot land out of order.
   let phaseWrites: Promise<void> = Promise.resolve();
-  const control = new SpecKitJobControl(id, projectId, activeKey, (text, progress) => {
-    phaseWrites = phaseWrites
-      .then(() => store.setJobPhase(id, text))
+  let settled = false;
+  // The saving deadline is a row transition too: `saving` → `failed`. It loses
+  // to the job's own outcome and to a sweep. When it wins, the feature is free
+  // again and the job's next write is refused; a write already in flight (the
+  // one that hung) is past its check and may still land, which is what the
+  // stored message says.
+  let savingDeadline: ReturnType<typeof setTimeout> | undefined;
+  const expireSaving = (): void => {
+    store
+      .finishJob(
+        id,
+        { status: "failed", error: JSON.stringify(SPEC_KIT_JOB_SAVING_STALLED_ERROR) },
+        ["saving"],
+      )
+      .then((won) => {
+        if (!won) return;
+        log.error("a Spec Kit job was still saving at its saving deadline", { id, projectId });
+        control.stop("superseded");
+        jobEvents.failed("spec-kit", id, projectId, genericFailureMessage("spec-kit"));
+      })
       .catch((err: unknown) => {
-        log.warn("could not record a job phase", { id, err: String(err) });
+        log.warn("could not apply a Spec Kit job's saving deadline; trying again", {
+          id,
+          err: String(err),
+        });
+        if (settled) return;
+        savingDeadline = setTimeout(expireSaving, heartbeatMs);
+        savingDeadline.unref?.();
       });
-    jobEvents.progress("spec-kit", id, projectId, progress ?? 50, text);
-  });
+  };
+  const control: SpecKitJobControl = new SpecKitJobControl(
+    id,
+    projectId,
+    activeKey,
+    (text, progress) => {
+      phaseWrites = phaseWrites
+        .then(() => store.setJobPhase(id, text))
+        .catch((err: unknown) => {
+          log.warn("could not record a job phase", { id, err: String(err) });
+        });
+      jobEvents.progress("spec-kit", id, projectId, progress ?? 50, text);
+    },
+    () => {
+      if (settled) return;
+      savingDeadline = setTimeout(
+        expireSaving,
+        input.savingLimitMs ?? SPEC_KIT_JOB_SAVING_LIMIT_MS,
+      );
+      savingDeadline.unref?.();
+    },
+  );
   liveSpecKitJobs.set(id, control);
 
   const beat = async (): Promise<void> => {
@@ -504,10 +619,9 @@ async function runJob(
   heartbeat.unref?.();
 
   // The time limit is a row transition like any other: `running` → `failed`.
-  // It loses to a job that is already `saving` (which then finishes) and to a
-  // cancel (which then closes the row itself); when it wins, the job's commit
-  // point is refused by the database whatever this process believes.
-  let settled = false;
+  // It loses to a job that is already `saving` (which has its own deadline,
+  // above) and to a cancel (which then closes the row itself); when it wins, the
+  // job's commit point is refused by the database whatever this process believes.
   let timeout: ReturnType<typeof setTimeout>;
   const expire = (): void => {
     store
@@ -562,6 +676,7 @@ async function runJob(
     settled = true;
     clearInterval(heartbeat);
     clearTimeout(timeout);
+    clearTimeout(savingDeadline);
     liveSpecKitJobs.delete(id);
   }
 
@@ -612,6 +727,16 @@ export async function getSpecKitJob(
   if (!store.LIVE_STATUSES.includes(row.status)) return toSpecKitJobDto(row);
   if ((await failStale({ id: jobId, projectId })) === 0) return toSpecKitJobDto(row);
   return toSpecKitJobDtoOrNull(await store.findJob(projectId, jobId));
+}
+
+/** The live job that holds a feature (or, `null`, the project-level set), if any. */
+export async function specKitJobHolding(
+  projectId: string,
+  featureSlug: string | null,
+): Promise<SpecKitJobDto | null> {
+  return toSpecKitJobDtoOrNull(
+    await store.findJobByActiveKey(specKitJobActiveKey(projectId, featureSlug)),
+  );
 }
 
 /** The project's live jobs, oldest first (dead ones are failed and left out). */

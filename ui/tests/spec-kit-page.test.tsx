@@ -366,9 +366,12 @@ describe("SpecKitPage", () => {
     });
     fireEvent.click(screen.getByTestId("spec-kit-run-button"));
     await waitFor(() =>
-      expect(m.startCommandJob).toHaveBeenCalledWith("p1", "speckit.specify", {
-        input: "go",
-      }),
+      expect(m.startCommandJob).toHaveBeenCalledWith(
+        "p1",
+        "speckit.specify",
+        { input: "go" },
+        expect.any(String),
+      ),
     );
   });
 

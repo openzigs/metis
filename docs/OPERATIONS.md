@@ -467,6 +467,7 @@ change of a job's state is one conditional `UPDATE`:
 | `running` → `failed` (`SPEC_KIT_JOB_TIMEOUT`) | the time limit, in the owning process | `running` |
 | `cancelling` → `cancelled` | the owning process, once it has stopped | `cancelling` |
 | `running`/`saving` → `succeeded`/`failed` | the owning process, at the end | `running` or `saving` |
+| `saving` → `failed` (`SPEC_KIT_JOB_INTERRUPTED`) | the saving deadline, in the owning process | `saving` |
 | any live status → `failed` (or `cancelled`, from `cancelling`) | a sweep, on any replica | live, with a heartbeat more than 90 s behind the database's clock |
 
 The database serialises two of these on one row and exactly one matches, so every race has
@@ -479,8 +480,23 @@ one winner whichever replicas the two sides run on:
   saves nothing, or it is already saving and finishes.
 - **The owning process against a sweep** (a job that stalled for 90 seconds, or whose
   heartbeat writes failed for that long, and then woke up). If the sweep got there first, the
-  job's next write is refused and it leaves the row as the sweep wrote it. It never writes an
-  artifact over a job that has since taken the feature.
+  job's next write is refused and it leaves the row as the sweep wrote it. In one process it
+  never writes an artifact over a job that has since taken the feature. With two replicas
+  there is one measured exception: a job frozen for more than 90 seconds *between* the check
+  and the write that follows it, while another replica runs a second job on the feature to
+  completion, lands that one write when it wakes. One file of the superseded job then sits
+  among the successor's (one of a plan's five, for example), and the successor still reads
+  `succeeded`. Nothing reports it; see **Clocks** below for why the check and the write are
+  two statements.
+
+**A job that is saving has its own deadline.** A `saving` job can be neither cancelled nor
+timed out, and its heartbeat keeps it from the sweep while its process is alive. Saving is a
+few database writes and takes seconds, so a job still `saving` after 10 minutes
+(`SPEC_KIT_JOB_SAVING_LIMIT_MS` in `jobs.ts`, a constant) has a write that hung without
+failing. It is then failed as "interrupted while it was saving its result … Some of its files
+may have been saved and others not", and the feature is free again. The files it had written
+stay, and the write that hung may still land afterwards: check the feature's files before
+running the command again.
 
 A cancel handled by a replica that does not run the job stops it at the job's next heartbeat
 (within 15 seconds) or at its first write, whichever comes first.
@@ -494,7 +510,35 @@ two heartbeats (a restored snapshot, a manual clock change on the database host)
 are failed as interrupted, and each then saves nothing. One narrower limit remains too: a
 job is checked immediately before each artifact write, not in the same transaction as it. A
 process frozen for more than 90 seconds between that check and the write (a suspended VM)
-could still write one artifact after its row was failed.
+still writes that one artifact after its row was failed. Measured: in one process the frozen
+job writes that artifact and is refused at the next, and the set a later job writes is
+entirely its own; with a second replica running a later job to completion meanwhile, that
+one artifact lands among the later job's files (above).
+
+**A new feature's `/speckit.specify`.** The feature is created before the job starts, so the
+job is locked under the new feature's own slug. Everything that can refuse the command
+without a model call is checked first (the brief, the AI provider, the budget), so a project
+whose provider is not configured answers `502`/`409` and creates nothing, however often it is
+tried. If the job then ends without saving (the model call failed, it was cancelled, it ran
+past its time limit, or it was swept as stalled), the empty feature is removed again, provided
+it is still an empty draft that no other job holds; the audit log records
+`speckit.feature.discarded`. Two cases still leave an empty draft feature behind: the server
+process itself stopping before the job saved (nothing is left running to remove it), and a
+`/speckit.specify` that names a `featureSlug` which does not exist yet (the command creates
+that feature itself, as it did before jobs). Either can be deleted or reused by running
+`/speckit.specify` on it.
+
+**A start can be sent twice.** `POST …/commands/:cmd/jobs` accepts an `X-SpecKit-Start-Token`
+header: 16 to 128 characters of `A-Z a-z 0-9 _ -`, made up by the client. A second start with
+the same token, from the same user in the same project, is answered `202` with the job the
+first one started, whether it is still running or has finished: no second feature, no second
+run. `GET …/jobs` with the header also returns that job as `started` (or `null`). The Spec
+Kit page sends a new token with every start and uses it to find its job when the `202` is
+lost. The token is not stored: the job's id is derived from the project, the user and the
+token, so the table's primary key is what refuses the duplicate, another user presenting the
+same token reaches nothing, and the answer lasts as long as the job row does (one day after
+it finished). A token reused for a different command is refused with
+`409 SPECKIT_START_TOKEN_REUSED`.
 
 **No limit on how many jobs run at once.** One job per feature, plus one on the
 project-level files, is the only bound: nothing caps the jobs of one user, one project or
@@ -507,26 +551,55 @@ how fast jobs can be started, not how many run.
 | Setting | Default | What it does |
 |---|---|---|
 | `SPEC_KIT_JOB_TIMEOUT_MS` | `1800000` (30 minutes) | The longest one job may run; 60000 to 21600000. Past it the model call in flight is aborted and the job fails with `504 SPEC_KIT_JOB_TIMEOUT` before saving anything. Admin setting or environment variable, read when a job starts. |
-| `SPECKIT_JOB_LIMIT_MAX` | `6000` | **Reads** of the job endpoints (`GET …/jobs`, `GET …/jobs/:jobId`) allowed per client address per window. An open Spec Kit page makes about 390 per 15 minutes (the watched job every 3 seconds, the running-jobs list every 10). Environment variable, read per request. |
-| `SPECKIT_JOB_WRITE_LIMIT_MAX` | `600` | **Starts and cancels** allowed per client address per window. A separate budget from the reads, so heavy polling cannot make a cancel or a start answer 429. Environment variable, read per request. |
-| `SPECKIT_JOB_USER_WRITE_LIMIT_MAX` | `120` | Starts and cancels allowed per **signed-in user** per window, whatever address they come from. Environment variable, read per request. |
+| `SPECKIT_JOB_LIMIT_MAX` | `6000` | **Reads** of the job endpoints (`GET …/jobs`, `GET …/jobs/:jobId`) allowed per **signed-in user** per window. An open Spec Kit page makes about 390 per 15 minutes (the watched job every 3 seconds, the running-jobs list every 10). Environment variable, read per request. |
+| `SPECKIT_JOB_USER_WRITE_LIMIT_MAX` | `120` | **Starts and cancels** allowed per signed-in user per window. A separate budget from the reads, so heavy polling cannot make a cancel or a start answer 429. Environment variable, read per request. |
+| `SPECKIT_JOB_PREAUTH_LIMIT_MAX` | `20000` | A coarse guard in front of authentication on the same four endpoints, per presented access token (or, for requests that present none, per connecting peer). Not a per-user budget: see below. Environment variable, read per request. |
 | `SPECKIT_JOB_LIMIT_WINDOW_MS` | `900000` (15 minutes) | The window for the three limits above. Environment variable, read at startup. |
 | `METIS_SPEC_KIT_PROXY_TIMEOUT_MS` | `900000` | Unchanged (#1069), on the **UI** server. It now matters only to API callers that send a command to the request/response route through the UI's `/api` path; the Spec Kit page starts jobs and no longer holds a request open. |
 
-**What the address limits key on.** The two per-address limits run before authentication,
-so they use the client address: under the default `TRUST_PROXY=1`, the last entry of
-`X-Forwarded-For`. Through the METIS UI that is the browser's address, not the UI server's:
-the UI's API proxy forwards the header Next sets from the browser's connection. Users
-therefore do not share one bucket merely by using the UI. They do share it behind one NAT
-address, or when another proxy in front of the UI appends its own hop — then every user
-appears as that proxy, and `TRUST_PROXY` must be raised by one. The per-user limit is not
-affected by either.
+**What the job limits key on, and why it is not the client address.** Every job endpoint
+requires a signed-in user, so the two budgets that matter run straight after authentication
+and count per user. Nobody else can spend them, and sending a different address with each
+request does not get round them. (`SPECKIT_JOB_WRITE_LIMIT_MAX`, a per-address limit in an
+earlier build of this feature, is no longer read.)
+
+The client address is not used because, when the METIS UI server is the first thing a
+browser reaches, the client chooses it. Under the default `TRUST_PROXY=1` the address is the
+last entry of `X-Forwarded-For`; the UI server sets that header only when the request has
+none, and its API proxy forwards request headers unchanged. A client that sends its own
+`X-Forwarded-For` is therefore seen at whatever address it wrote. For a limit keyed on the
+address that means two things: a new value per request is a new allowance, and a request
+that is not even signed in can spend the allowance of an address it names.
+
+The guard in front of authentication is there because a limiter must precede every
+authentication check. Its key is a digest of the access token the request presents; requests
+that present none share one allowance per connecting peer (the UI server or the proxy, never
+a header). Using up the first needs the user's own token; using up the second refuses only
+requests that would be answered `401` anyway. It does not bound a caller who invents a new
+token for every request; those are refused by the signature check, without a database read.
+
+**`TRUST_PROXY`.** Count the reverse proxies in front of the UI server that **append** the
+address of the peer they saw to `X-Forwarded-For`, and set `TRUST_PROXY` to that count,
+never below 1. With one such proxy the default 1 is already right: the proxy appends the
+real client address, the UI server adds nothing to a header that is present, and the last
+entry is the client. Raising it to 2 there would select the entry before that one, which the
+client wrote. Two appending proxies (a CDN and a load balancer) need 2. With **no** proxy in
+front of the UI server, the address is client-supplied as described above, and every limit
+in METIS that is keyed on the address before authentication (sign-in, uploads, the other
+Spec Kit limits) can be dodged or aimed in that way; put a proxy that sets the header in
+front of it. The app-wide fix is tracked in #1109.
 
 **Housekeeping.** A finished job is deleted one day after it finished, by the same sweep. To
 see what is running: `SELECT "id", "command", "featureSlug", "status", "phase", "heartbeatAt"
 FROM "spec_kit_jobs" WHERE "status" IN ('running', 'cancelling', 'saving');`. To free a
 feature by hand (it should never be needed), set the row's `status` to `failed` and its
 `activeKey` to NULL: the job, if it is in fact alive, is then refused at its next write.
+On SQLite the age checks compare times with `julianday()`, so a row edited or inserted by
+hand is judged by its real age whether its timestamp has Prisma's shape
+(`2026-10-12T11:14:48.568+00:00`) or SQLite's own (`2026-10-12 11:14:48`, what
+`CURRENT_TIMESTAMP` and the column default write). Do not set the SQLite adapter's
+`timestampFormat` to `unixepoch-ms`: an integer timestamp is not a date `julianday()` reads,
+and such rows would never be swept or pruned.
 
 ---
 

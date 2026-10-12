@@ -74,6 +74,7 @@ export const fakeSpecKitJobStore = {
   LIVE_STATUSES,
 
   async createJob(job: NewSpecKitJob): Promise<SpecKitJobRow | null> {
+    if (rows.has(job.id)) return null;
     for (const row of rows.values()) {
       if (row.activeKey === job.activeKey) return null;
     }

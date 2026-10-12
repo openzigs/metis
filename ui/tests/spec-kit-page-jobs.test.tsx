@@ -515,12 +515,80 @@ describe("Spec Kit page — a command as a background job (#1059)", () => {
       // A command here starts while the other one is still running.
       await run("/speckit.tasks");
       await waitFor(() =>
-        expect(m.startCommandJob).toHaveBeenCalledWith("p1", "speckit.tasks", {
-          input: "",
-        }),
+        expect(m.startCommandJob).toHaveBeenCalledWith(
+          "p1",
+          "speckit.tasks",
+          { input: "" },
+          expect.any(String),
+        ),
       );
       await waitFor(() => expect(progress()).toHaveTextContent("/speckit.tasks: starting…"));
       expect(screen.getByTestId("spec-kit-other-job-from-another-tab")).toBeInTheDocument();
+    });
+
+    describe("the feature's own buttons wait only for THAT feature's job", () => {
+      const FEATURES = [
+        { id: "f1", slug: "001-mark-read", title: "Mark read", status: "planned" },
+        { id: "f2", slug: "002-export-opml", title: "Export", status: "planned" },
+      ].map((feature) => ({ ...feature, branchName: null, updatedAt: "2026-10-12T00:00:00.000Z" }));
+      const select = async (slug: string): Promise<void> => {
+        await waitFor(() =>
+          expect(
+            screen.getByTestId("spec-kit-feature-select").querySelector(`option[value="${slug}"]`),
+          ).not.toBeNull(),
+        );
+        fireEvent.change(screen.getByTestId("spec-kit-feature-select"), {
+          target: { value: slug },
+        });
+        await screen.findByTestId("spec-kit-feature-actions");
+      };
+      beforeEach(() => {
+        m.listFeatures!.mockResolvedValue({ features: FEATURES });
+      });
+
+      it.each([
+        ["another feature", "001-mark-read"],
+        ["the project files", null],
+      ])("a job on %s leaves this feature's buttons enabled", async (_name, featureSlug) => {
+        plant({
+          id: "elsewhere",
+          command: "speckit.plan",
+          featureSlug,
+          startedById: "someone-else",
+        });
+        open();
+        await ready();
+        await select("002-export-opml");
+        // The job is known to the page (it is listed) and it is not this feature's.
+        await screen.findByTestId("spec-kit-other-job-elsewhere");
+
+        expect(screen.getByTestId("spec-kit-run-checklist")).not.toBeDisabled();
+        expect(screen.getByTestId("spec-kit-run-button")).not.toBeDisabled();
+      });
+
+      it("a job on this feature disables them until it ends", async () => {
+        plant({
+          id: "here",
+          command: "speckit.plan",
+          featureSlug: "002-export-opml",
+          startedById: "someone-else",
+        });
+        open();
+        await ready();
+        await select("002-export-opml");
+
+        await waitFor(() => expect(screen.getByTestId("spec-kit-run-checklist")).toBeDisabled());
+
+        patch("here", {
+          status: "succeeded",
+          finishedAt: minutesAgo(0),
+          result: { message: "ok" },
+        });
+        await waitFor(
+          () => expect(screen.getByTestId("spec-kit-run-checklist")).not.toBeDisabled(),
+          { timeout: 15_000 },
+        );
+      });
     });
 
     it("offers to open the job's feature, and there Run is held until it ends", async () => {
@@ -695,10 +763,49 @@ describe("Spec Kit page — a command as a background job (#1059)", () => {
 
       fireEvent.click(screen.getByTestId("spec-kit-run-button"));
       await waitFor(() =>
-        expect(m.startCommandJob).toHaveBeenCalledWith("p1", "speckit.specify", {
-          input: "Star an entry",
-        }),
+        expect(m.startCommandJob).toHaveBeenCalledWith(
+          "p1",
+          "speckit.specify",
+          { input: "Star an entry" },
+          expect.any(String),
+        ),
       );
+    });
+
+    it("picks up a new feature's specify whose 202 was lost, instead of reporting a failure", async () => {
+      // The server started the job under the slug it reserved; the response
+      // never arrived. The page asks by the start's token and watches that job.
+      m.startCommandJob!.mockImplementation(
+        async (_projectId: string, command: SpecKitJobDto["command"], _options, token: string) => {
+          plant({ id: "created", command, featureSlug: "007-star-an-entry" });
+          tokens.set(token, "created");
+          throw new ApiError(500, "Internal Server Error");
+        },
+      );
+      const tokens = new Map<string, string>();
+      m.listActiveJobs!.mockImplementation(async (_projectId: string, token?: string) => ({
+        jobs: [...server.jobs.values()].filter(isActive),
+        ...(token ? { started: server.jobs.get(tokens.get(token) ?? "") ?? null } : {}),
+      }));
+      open();
+      await run("/speckit.specify Star an entry");
+
+      await waitFor(() =>
+        expect(progress()).toHaveTextContent("/speckit.specify on 007-star-an-entry: starting…"),
+      );
+      expect(screen.queryByTestId("spec-kit-error")).not.toBeInTheDocument();
+      expect(toastError).not.toHaveBeenCalled();
+      expect(m.startCommandJob).toHaveBeenCalledTimes(1);
+
+      patch("created", {
+        status: "succeeded",
+        finishedAt: minutesAgo(0),
+        result: { message: "Generated spec.md (v1) for 007-star-an-entry." },
+      });
+      await waitFor(() =>
+        expect(toastSuccess).toHaveBeenCalledWith("Generated spec.md (v1) for 007-star-an-entry."),
+      );
+      expect(m.startCommandJob).toHaveBeenCalledTimes(1);
     });
 
     it("leaves another member's job on another feature in the list, and Run alone", async () => {

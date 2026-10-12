@@ -258,6 +258,16 @@ export interface SpecKitJobDto {
   error?: SpecKitJobError;
 }
 
+/**
+ * #1059 — the request header that names one START (`POST …/commands/:cmd/jobs`):
+ * 16 to 128 characters of `A-Z a-z 0-9 _ -`, made up by the client. A second
+ * start carrying the same token, from the same user in the same project, is
+ * answered with the job the first one started; `GET …/jobs` carrying it also
+ * returns that job as `started`. So a client whose `202` was lost finds its
+ * job by the token, and never has to guess it from the job's fields.
+ */
+export const SPEC_KIT_START_TOKEN_HEADER = "X-SpecKit-Start-Token";
+
 /** Start refused: a job already holds this feature (or the project-level set). */
 export const SPEC_KIT_JOB_RUNNING_CODE = "SPEC_KIT_JOB_RUNNING";
 /**
