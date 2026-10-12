@@ -789,12 +789,12 @@ describe("the canonical facts sheet in a planned document", () => {
     } as unknown as GroundingContext;
     const provider = fakeModel();
     const result = await run(withLimit("100"), provider, { grounding });
-    const judged = scoreFaithfulnessMock.mock.calls.map(
-      ([section, , ctx]: [string, string, GroundingContext]) => ({
-        section,
-        canonical: ctx.sources.filter((s) => s.sourceId.startsWith("facts:canon:")),
-      }),
-    );
+    const judged = scoreFaithfulnessMock.mock.calls.map((call) => ({
+      section: call[0] as string,
+      canonical: (call[2] as GroundingContext).sources.filter((s) =>
+        s.sourceId.startsWith("facts:canon:"),
+      ),
+    }));
     const withFact = judged.filter((j) => j.canonical.length > 0);
     expect([...new Set(withFact.map((j) => j.section))].sort()).toEqual(
       [label("capabilities"), RULES, label("workflows")].sort(),
