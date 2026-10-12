@@ -149,17 +149,71 @@ function stripComment(value: string): string {
   return line.length > 400 ? line : line.replace(LINE_COMMENT, "").trim();
 }
 
+/** The character between the fields of a fact line. A field never holds it. */
+export const FACT_FIELD_DELIMITER = "|";
+/** What a `|` in a field is written as: a broken bar, which is not the delimiter. */
+const FACT_FIELD_BAR = "¦";
+
+/** Characters that take no room on the line: zero-width space, joiners, word joiner, BOM. */
+function isZeroWidth(code: number): boolean {
+  return (
+    (code >= 0x200b && code <= 0x200d) || code === 0x2060 || code === 0xfeff || code === 0x180e
+  );
+}
+
+/**
+ * Characters that end or break a line and are not all in JavaScript's `\s`:
+ * the C0 and C1 controls (U+0085 NEXT LINE and the U+001C to U+001F
+ * separators among them), DELETE, and the Unicode line and paragraph
+ * separators.
+ */
+function isLineOrControl(code: number): boolean {
+  return code <= 0x1f || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029;
+}
+
+/**
+ * `text` with every zero-width character removed and every control or line
+ * separator made a space, so nothing in it can end the line it is written on
+ * or hide inside one of the block's markers. One pass; ordinary text is
+ * returned as it is.
+ */
+function printable(text: string): string {
+  let out = "";
+  let from = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    const zeroWidth = isZeroWidth(code);
+    if (!zeroWidth && !isLineOrControl(code)) continue;
+    out += zeroWidth ? text.slice(from, i) : `${text.slice(from, i)} `;
+    from = i + 1;
+  }
+  return from === 0 ? text : out + text.slice(from);
+}
+
 /**
  * Text from the source made unable to break out of the facts block: a run of
  * three or more `=` (the block's delimiters) is spaced out, the opening of a
- * citation id (`[facts:`) loses its bracket, and a ` | ` (the block's field
- * separator) becomes a broken bar. Everything else is kept as written.
+ * citation id (`[facts:`) loses its bracket, and EVERY `|` (the block's field
+ * delimiter) becomes a broken bar, wherever it is. A control or line
+ * separator becomes a space and a zero-width character is dropped
+ * ({@link printable}). Everything else is kept as written.
+ *
+ * The bar is replaced at every position, not only between two spaces (#1119
+ * review): the renderer puts a space on each side of its own delimiters, so a
+ * bar at the start or the end of a field met that space and read as one more
+ * field boundary (`100 | | owner: THIS section`). A neutralised field holds no
+ * delimiter at all, so a fact line always has exactly two.
  */
 export function neutralize(text: string): string {
-  return text
+  return printable(text)
     .replace(/={3,}/g, (run) => run.split("").join(" "))
     .replace(/\[(\s*facts:)/gi, "($1")
-    .replace(/ \|(?= )/g, " ¦");
+    .replaceAll(FACT_FIELD_DELIMITER, FACT_FIELD_BAR);
+}
+
+/** `text` on one line: {@link printable}, runs of white space as one space, trimmed. */
+function oneLine(text: string): string {
+  return printable(text).replace(/\s+/g, " ").trim();
 }
 
 /**
@@ -169,7 +223,7 @@ export function neutralize(text: string): string {
  * footnote that cites the fact.
  */
 function sourcePath(file: string): string {
-  return neutralize(file.replace(/\s+/g, " ").trim());
+  return neutralize(oneLine(file));
 }
 
 /**
@@ -181,7 +235,7 @@ export function compareCodeUnits(a: string, b: string): number {
 }
 
 function clip(value: string): string {
-  const flat = neutralize(stripComment(value).replace(/\s+/g, " ").trim());
+  const flat = neutralize(oneLine(stripComment(value)));
   if (flat.length <= FACT_VALUE_MAX_CHARS) return flat;
   let end = FACT_VALUE_MAX_CHARS - 1;
   // Never end on the first half of a surrogate pair.

@@ -688,7 +688,12 @@ has measured a BRD generated with it on.
   document), `planKeptChars` (under the plan-ordered cut) and `unplannedKeptChars` (what
   the cut without a plan would have kept of the same text). Numbers and section ids only:
   no document text. Compare `keptChars` with `unplannedKeptChars` per section across runs
-  before deciding whether a floor is needed; that decision waits for this data. In a tightly planned
+  before deciding whether a floor is needed; that decision waits for this data. Those
+  figures are measured on each section as it reaches the document, so a section already
+  shortened at `DOCS_GEN_SECTION_MAX_CHARS` appears there as whole. For such a section
+  read `Planned section over its cap` instead (same module and level, one line per
+  shortened section): `group` (the section id), `cut`, `keptChars`, `planKeptChars` and
+  `unplannedKeptChars`, measured on the section as it was written. In a tightly planned
   document a section's budget depends on the other sections' estimates, so a module whose
   facts change can move the budget of a catalogue section that reads nothing new from it
   and rewrite that section too. Catalogue sections read every module with content for

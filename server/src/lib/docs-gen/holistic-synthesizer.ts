@@ -3902,11 +3902,17 @@ ${plannedOmissionNote(plannedOut, {
     const omitted = fit ? fit.omittedTopics[0] : plannedOut;
     if (omitted.length > 0 || (fit?.trimmed ?? 0) > 0) input.onShortened?.(markdown, omitted);
     if (fit && fit.mode !== "whole") {
+      // #1119 — with what the plan-ordered cut kept and what the cut without a
+      // plan would have kept of the section AS WRITTEN. The document fit's own
+      // figures are measured on this already-shortened section, so for a
+      // section cut here they under-read the loss. Ids and numbers only.
       log.info("Planned section over its cap", {
         projectId,
         group: group.id,
         cut: fit.mode,
         keptChars: fit.keptChars,
+        planKeptChars: fit.kept[0].planChars,
+        unplannedKeptChars: fit.kept[0].unplannedChars,
       });
     }
   } else {

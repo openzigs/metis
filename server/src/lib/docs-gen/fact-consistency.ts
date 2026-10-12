@@ -28,7 +28,12 @@
  *
  * Pure: no I/O and no model calls.
  */
-import { isDistinctiveName, type CanonicalFact, type FactSheet } from "./canonical-facts.js";
+import {
+  compareCodeUnits,
+  isDistinctiveName,
+  type CanonicalFact,
+  type FactSheet,
+} from "./canonical-facts.js";
 import { GROUNDING_RUN_SECTION, type DocWarning } from "./grounding/degraded-warnings.js";
 
 /** How a value was written. */
@@ -467,7 +472,9 @@ export function checkFactConsistency(
       forms: new Set(matches.map((m) => m.statement.form)).size,
     });
   }
-  findings.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+  // By code unit, like the sheet: the note lists its findings in the same
+  // order on every machine, which `localeCompare` does not promise.
+  findings.sort((a, b) => compareCodeUnits(a.kind, b.kind) || compareCodeUnits(a.name, b.name));
   return { findings, statements: all.length };
 }
 

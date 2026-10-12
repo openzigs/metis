@@ -90,6 +90,7 @@
  * Pure: no I/O and no model calls.
  */
 import { getConfigService, type ConfigService } from "../config/config-service.js";
+import { compareCodeUnits } from "./canonical-facts.js";
 import {
   fitSectionToBudget,
   fitSectionsToDocumentBudget,
@@ -219,9 +220,7 @@ export interface DocumentPlan {
  * so the order never depends on input order.
  */
 function byPriority<T extends TopicCandidate>(topics: readonly T[]): T[] {
-  return [...topics].sort(
-    (a, b) => b.priority - a.priority || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-  );
+  return [...topics].sort((a, b) => b.priority - a.priority || compareCodeUnits(a.id, b.id));
 }
 
 /**

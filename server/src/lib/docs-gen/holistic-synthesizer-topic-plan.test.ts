@@ -1407,6 +1407,69 @@ describe("#1119 — what a planned run logs of each section's fit", () => {
     }
   });
 
+  it("logs, for a section shortened at the SECTION cap, what the plan and no plan kept of it as written", async () => {
+    // The default document cap leaves the section cap as the only limit that
+    // binds, so the document fit sees Rules already shortened and reports it
+    // whole: the loss is visible only on the section's own line.
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "20000");
+    const provider = fakeModel({ overrun: 3 });
+    let result!: Result;
+    const entries = await logged(async () => {
+      result = await run(project(12), provider);
+    });
+    expect(sectionOf(result.markdown, RULES)).toContain(
+      "This section is limited to about 20k characters (DOCS_GEN_SECTION_MAX_CHARS).",
+    );
+    const capped = entries.filter((entry) => entry.message === "Planned section over its cap");
+    const rules = capped.find((entry) => entry.group === "rules") as
+      | { cut: string; keptChars: number; planKeptChars: number; unplannedKeptChars: number }
+      | undefined;
+    expect(rules).toBeDefined();
+    expect(rules!.cut).toBe("plan");
+    for (const figure of [rules!.keptChars, rules!.planKeptChars, rules!.unplannedKeptChars]) {
+      expect(Number.isInteger(figure) && figure > 0).toBe(true);
+    }
+    // The plan-ordered cut is the one used, and it keeps no less than no plan.
+    expect(rules!.planKeptChars).toBe(rules!.keptChars);
+    expect(rules!.keptChars).toBeGreaterThan(rules!.unplannedKeptChars);
+    expect(rules!.keptChars).toBeLessThanOrEqual(20_000);
+    // What it kept is what the document carries of the section, its note aside.
+    const body = sectionOf(result.markdown, RULES)
+      .trimEnd()
+      .split("\n\n> **Shortened for length.**")[0];
+    expect(Math.abs(body.length - rules!.keptChars)).toBeLessThan(8);
+    // The document fit, measured after this cut, reports the section whole:
+    // without the section's own figures the shortening would not be in the log.
+    const [fit] = fitLogs(entries);
+    const inDocument = fit.sections.find((s) => s.section === "rules")!;
+    expect(inDocument.cut).toBe("whole");
+    expect(inDocument.unplannedKeptChars).toBe(inDocument.keptChars);
+    expect(inDocument.unplannedKeptChars).toBeGreaterThan(rules!.unplannedKeptChars);
+    // Ids and numbers only: no text of the section.
+    for (const entry of capped) {
+      // The logger's own envelope, the project and group ids, and the figures.
+      expect(Object.keys(entry).sort()).toEqual(
+        [
+          "cut",
+          "group",
+          "keptChars",
+          "level",
+          "message",
+          "module",
+          "planKeptChars",
+          "projectId",
+          "service",
+          "timestamp",
+          "unplannedKeptChars",
+        ].sort(),
+      );
+      const text = JSON.stringify(entry);
+      expect(text).not.toContain("rule 0");
+      expect(text).not.toContain("This policy applies");
+      expect(text).not.toContain("About ");
+    }
+  });
+
   it("logs it on a planned run that cuts nothing, and on one that reuses every section", async () => {
     const facts = project(6);
     let first!: Result;
