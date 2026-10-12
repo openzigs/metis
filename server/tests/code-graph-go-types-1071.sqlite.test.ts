@@ -46,6 +46,28 @@ import {
 
 type Tree = Record<string, string | null>;
 
+/**
+ * The lattice of PR #1104's second review: `types` struct types on each of
+ * `levels` levels, every one embedding EVERY type of the next level, a type
+ * `W` embedding the whole first level, and `calls` calls `w.N<i>()` that no
+ * type declares — so each has to look through all of them.
+ */
+function goLattice(types: number, levels: number, calls: number): string {
+  let src = "package wide\n\n";
+  for (let l = 0; l < levels; l += 1) {
+    for (let i = 0; i < types; i += 1) {
+      src += `type T${l}_${i} struct {\n`;
+      if (l + 1 < levels) for (let j = 0; j < types; j += 1) src += `\tT${l + 1}_${j}\n`;
+      src += "}\n";
+    }
+  }
+  src += "type W struct {\n";
+  for (let j = 0; j < types; j += 1) src += `\tT0_${j}\n`;
+  src += "}\n\nfunc f(w *W) {\n";
+  for (let i = 0; i < calls; i += 1) src += `\tw.N${i}()\n`;
+  return `${src}}\n`;
+}
+
 const GO_MOD = "module example.com/app\n\ngo 1.24\n";
 
 const STORAGE = `package storage
@@ -705,7 +727,12 @@ func main() { storage.Deep() }
       expect(stats.filesUnparseable).toHaveLength(NAMED_FILES_CAP);
     });
 
-    it("does not stamp the extractor version while a file is not upgraded, and names the file", async () => {
+    const upgradeFailed = async (projectId: string): Promise<unknown> => {
+      const graph = await db.codeGraph.findFirstOrThrow({ where: { projectId } });
+      return graph.extractorUpgradeFailed ? JSON.parse(graph.extractorUpgradeFailed) : null;
+    };
+
+    it("does the upgrade ONCE when a file cannot be upgraded: the file is remembered by content and named", async () => {
       const { projectId, root } = await newProject();
       await applyTree(root, BASE);
       await ingest(projectId, root, false);
@@ -725,8 +752,13 @@ func main() { storage.Deep() }
       expect(stats.filesUpgradeFailedCount).toBe(1);
       expect(stats.filesUnparseable).toEqual(["internal/storage/storage.go"]);
       expect(stats.filesUpgraded).toBe(3);
+      // The rest of the tree IS at the current version; the one file is listed
+      // beside it with the hash of the content that failed.
       const graph = await db.codeGraph.findFirstOrThrow({ where: { projectId } });
-      expect(graph.extractorVersion).toBeNull();
+      expect(graph.extractorVersion).toBe(CODE_GRAPH_EXTRACTOR_VERSION);
+      expect(await upgradeFailed(projectId)).toEqual({
+        "internal/storage/storage.go": sha256(broken),
+      });
       // Its rows are still the older extractor's.
       expect(
         (
@@ -736,16 +768,33 @@ func main() { storage.Deep() }
         ).qualifiedName,
       ).toBe("internal/storage/storage.go::SetEntriesStatus");
 
-      // The next ingest tries again; once the file parses, the graph is current.
-      const retry = await ingest(projectId, root);
-      expect(retry.filesUpgradeFailed).toEqual(["internal/storage/storage.go"]);
-      expect(
-        (await db.codeGraph.findFirstOrThrow({ where: { projectId } })).extractorVersion,
-      ).toBeNull();
+      // The next ingest does NOT redo the upgrade: nothing is re-parsed for it,
+      // no edge is rewritten, and the file is still named.
+      const again = await ingest(projectId, root);
+      expect(again.filesUpgraded).toBe(0);
+      expect(again.edgesUpserted).toBe(0);
+      expect(again.filesRebound).toBe(0);
+      expect(again.filesUpgradeFailed).toEqual(["internal/storage/storage.go"]);
+      expect(again.filesUpgradeFailedCount).toBe(1);
+      expect(await upgradeFailed(projectId)).toEqual({
+        "internal/storage/storage.go": sha256(broken),
+      });
 
+      // Neither does a change to ANOTHER file.
+      await applyTree(root, { "internal/api/entry.go": `${HANDLER}\nfunc extra() {}\n` });
+      const other = await ingest(projectId, root);
+      expect(other.filesUpgraded).toBe(0);
+      expect(other.filesParsed).toBe(1);
+      expect(other.filesUpgradeFailed).toEqual(["internal/storage/storage.go"]);
+      await applyTree(root, { "internal/api/entry.go": HANDLER });
+      await ingest(projectId, root);
+
+      // Once the file's content changes to something that parses, it is current.
       await applyTree(root, { "internal/storage/storage.go": STORAGE });
       const fixed = await ingest(projectId, root);
       expect(fixed.filesUpgradeFailed).toEqual([]);
+      expect(fixed.filesUpgradeFailedCount).toBe(0);
+      expect(await upgradeFailed(projectId)).toBeNull();
       expect((await db.codeGraph.findFirstOrThrow({ where: { projectId } })).extractorVersion).toBe(
         CODE_GRAPH_EXTRACTOR_VERSION,
       );
@@ -755,7 +804,7 @@ func main() { storage.Deep() }
       expect(await calls(projectId)).toEqual(await calls(fresh.projectId));
     });
 
-    it("does not stamp the version when a CHANGED file of an upgraded language cannot be parsed", async () => {
+    it("remembers a CHANGED file of an upgraded language that cannot be parsed", async () => {
       const { projectId, root } = await newProject();
       await applyTree(root, BASE);
       await ingest(projectId, root, false);
@@ -765,9 +814,207 @@ func main() { storage.Deep() }
       const stats = await ingest(projectId, root);
 
       expect(stats.filesUpgradeFailed).toEqual(["internal/storage/storage.go"]);
+      expect(stats.filesUpgraded).toBe(3);
+      expect(await upgradeFailed(projectId)).toEqual({
+        "internal/storage/storage.go": sha256(UNPARSEABLE),
+      });
+      // Still named on the next run, and the other three are not upgraded again.
+      const again = await ingest(projectId, root);
+      expect(again.filesUpgraded).toBe(0);
+      expect(again.filesUpgradeFailed).toEqual(["internal/storage/storage.go"]);
+    });
+
+    it("retries a remembered file whose content is no longer the one that failed, and only that file", async () => {
+      const { projectId, root } = await newProject();
+      await applyTree(root, BASE);
+      await ingest(projectId, root, false);
+      // storage.go alone is left in the older shape, remembered as UNREADABLE
+      // (no hash): the graph is otherwise current.
+      for (const sym of await db.codeSymbol.findMany({
+        where: { projectId, kind: "function", filePath: "internal/storage/storage.go" },
+      })) {
+        await db.codeSymbol.update({
+          where: { id: sym.id },
+          data: { qualifiedName: `${sym.filePath}::${sym.name}` },
+        });
+      }
+      await db.codeGraph.updateMany({
+        where: { projectId },
+        data: { extractorUpgradeFailed: JSON.stringify({ "internal/storage/storage.go": null }) },
+      });
+
+      const stats = await ingest(projectId, root);
+
+      expect(stats.filesUpgraded).toBe(1);
+      expect(stats.filesUpgradeFailed).toEqual([]);
+      expect(await upgradeFailed(projectId)).toBeNull();
       expect(
-        (await db.codeGraph.findFirstOrThrow({ where: { projectId } })).extractorVersion,
-      ).toBeNull();
+        (
+          await db.codeSymbol.findFirstOrThrow({
+            where: { projectId, name: "SetEntriesStatus", filePath: "internal/storage/storage.go" },
+          })
+        ).qualifiedName,
+      ).toBe("internal/storage/storage.go::Storage::SetEntriesStatus");
+      const fresh = await newProject();
+      await applyTree(fresh.root, BASE);
+      await ingest(fresh.projectId, fresh.root, false);
+      expect(await calls(projectId)).toEqual(await calls(fresh.projectId));
+    });
+
+    it("retries a remembered file recorded under ANOTHER content hash, and forgets a deleted one", async () => {
+      const { projectId, root } = await newProject();
+      await applyTree(root, BASE);
+      await ingest(projectId, root, false);
+      await db.codeGraph.updateMany({
+        where: { projectId },
+        data: {
+          extractorUpgradeFailed: JSON.stringify({
+            "internal/storage/storage.go": "0".repeat(64),
+            "internal/gone/gone.go": "1".repeat(64),
+          }),
+        },
+      });
+      const stats = await ingest(projectId, root);
+      expect(stats.filesUpgraded).toBe(1);
+      expect(stats.filesUpgradeFailed).toEqual([]);
+      expect(await upgradeFailed(projectId)).toBeNull();
+    });
+
+    it("ignores a corrupt failure list rather than failing the ingest", async () => {
+      const { projectId, root } = await newProject();
+      await applyTree(root, BASE);
+      await ingest(projectId, root, false);
+      for (const stored of ["{not json", "[1,2]", "null", '"text"']) {
+        await db.codeGraph.updateMany({
+          where: { projectId },
+          data: { extractorUpgradeFailed: stored },
+        });
+        const stats = await ingest(projectId, root);
+        expect(stats.filesUpgradeFailed).toEqual([]);
+        expect(await upgradeFailed(projectId)).toBeNull();
+      }
+    });
+
+    it("records WHEN an upgrade rewrote the graph, and only then", async () => {
+      const { projectId, root } = await newProject();
+      await applyTree(root, BASE);
+      await ingest(projectId, root, false);
+      const at = async () =>
+        (await db.codeGraph.findFirstOrThrow({ where: { projectId } })).extractorUpgradedAt;
+      // A full ingest writes the current shape: nothing was upgraded in place.
+      expect(await at()).toBeNull();
+      await ingest(projectId, root);
+      expect(await at()).toBeNull();
+      await downgrade(projectId);
+      const before = Date.now();
+      const stats = await ingest(projectId, root);
+      expect(stats.filesUpgraded).toBe(4);
+      const first = await at();
+      expect(first).not.toBeNull();
+      expect(first!.getTime()).toBeGreaterThanOrEqual(before);
+      // A later ingest that upgrades nothing leaves the mark where it was.
+      await applyTree(root, { "internal/api/entry.go": `${HANDLER}\nfunc extra() {}\n` });
+      await ingest(projectId, root);
+      expect((await at())!.getTime()).toBe(first!.getTime());
+    });
+
+    it("a Go file the ignore rules hide leaves its directory incomplete: nothing there is `external`", async () => {
+      const { projectId, root } = await newProject();
+      const tree: Tree = {
+        "go.mod": GO_MOD,
+        ".metisignore": "*_gen.go\n",
+        "internal/ign/a.go": 'package ign\n\nfunc Hand() {\n\tmade()\n\tMade()\n\tlen("x")\n}\n',
+        "internal/ign/a_gen.go": "package ign\n\nfunc made() {}\nfunc Made() {}\n",
+        "internal/use/u.go":
+          'package use\n\nimport "example.com/app/internal/ign"\n\nfunc U() {\n\tign.Made()\n\tign.Hand()\n}\n',
+      };
+      await applyTree(root, tree);
+      await ingest(projectId, root, false);
+      const got = await calls(projectId);
+      // The generated file declares them; the walk never read it.
+      expect(got).toContain("internal/ign/a.go::Hand > made → NULL (-)");
+      expect(got).toContain("internal/ign/a.go::Hand > Made → NULL (-)");
+      expect(got).toContain("internal/use/u.go::U > Made → NULL (-)");
+      // What the read files DO decide is unaffected.
+      expect(got).toContain("internal/ign/a.go::Hand > len → NULL (external)");
+      expect(got).toContain("internal/use/u.go::U > Hand → internal/ign/a.go::Hand (package)");
+
+      // Control: without the ignore rule the same names bind.
+      const open = await newProject();
+      await applyTree(open.root, { ...tree, ".metisignore": "# nothing\n" });
+      await ingest(open.projectId, open.root, false);
+      const bound = await calls(open.projectId);
+      expect(bound).toContain(
+        "internal/ign/a.go::Hand > made → internal/ign/a_gen.go::made (same-package)",
+      );
+      expect(bound).toContain(
+        "internal/use/u.go::U > Made → internal/ign/a_gen.go::Made (package)",
+      );
+
+      // Control: an ignored DIRECTORY is another package's and weakens nothing.
+      const dir = await newProject();
+      await applyTree(dir.root, {
+        ...tree,
+        ".metisignore": "gen/\n",
+        "internal/ign/a_gen.go": null,
+        "internal/ign/gen/x.go": "package gen\n\nfunc made() {}\n",
+      });
+      await ingest(dir.projectId, dir.root, false);
+      expect(await calls(dir.projectId)).toContain(
+        "internal/ign/a.go::Hand > made → NULL (external)",
+      );
+    });
+
+    it("leaves every remaining call undecided by type once the step's time ceiling is reached, and says so", async () => {
+      const { projectId, root } = await newProject();
+      await applyTree(root, BASE);
+      const stats = await ingestCodeGraph(db, {
+        projectId,
+        rootDir: root,
+        incremental: false,
+        sqlLineageOverride: false,
+        // Building the resolver alone takes more than no time at all.
+        goBindingMaxMs: -1,
+      });
+      expect(stats.goBinding).toMatchObject({ calls: 5, skipped: 5, errors: 0, overBudget: 0 });
+      const got = await calls(projectId);
+      // Nothing is decided by type: no verdict, and no type binding.
+      expect(
+        got.filter((c) => /\((receiver-type|package|same-package|external|interface)\)$/.test(c)),
+      ).toEqual([]);
+      // The name-evidence rules still ran, as before #1071, and say so.
+      expect(got).toContain(
+        "internal/api/entry.go::handler::updateEntries > describe → internal/api/entry.go::describe (name)",
+      );
+
+      // Control: with the default ceiling nothing is skipped, and the next
+      // ingest that touches a Go file decides what the short one left.
+      await applyTree(root, { "internal/api/entry.go": `${HANDLER}\nfunc extra() {}\n` });
+      const full = await ingest(projectId, root);
+      expect(full.goBinding).toMatchObject({ skipped: 0, errors: 0, overBudget: 0 });
+      expect(await calls(projectId)).toContain(
+        "internal/api/entry.go::handler::updateEntries > SetEntriesStatus → " +
+          "internal/storage/storage.go::Storage::SetEntriesStatus (receiver-type)",
+      );
+    });
+
+    it("counts a call the resolver gave up on (its step budget) apart from errors, and never decides it", async () => {
+      const { projectId, root } = await newProject();
+      await applyTree(root, {
+        "go.mod": GO_MOD,
+        // 330 types a level, three levels: W's member set is far past the budget.
+        "wide/wide.go": goLattice(330, 3, 4),
+        "wide/ok.go":
+          "package wide\n\ntype Small struct{}\n\nfunc (s *Small) N0() {}\n\nfunc g(s *Small) {\n\ts.N0()\n}\n",
+      });
+      const stats = await ingest(projectId, root, false);
+      expect(stats.goBinding).toMatchObject({ calls: 5, overBudget: 4, errors: 0, skipped: 0 });
+      expect(stats.goBinding!.failures).toEqual([]);
+      const got = await calls(projectId);
+      // `w.N0()` on the over-budget type: undecided by type. The one `N0` the
+      // FILE'S OWN package declares elsewhere is not in this file, so no name binds.
+      expect(got).toContain("wide/wide.go::f > N0 → NULL (-)");
+      expect(got).toContain("wide/ok.go::g > N0 → wide/ok.go::Small::N0 (receiver-type)");
     });
 
     it("stamps the version on a graph already current although a NEW file cannot be parsed", async () => {

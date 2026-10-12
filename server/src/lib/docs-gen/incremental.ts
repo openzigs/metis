@@ -7,12 +7,8 @@ import { getSchedulerBootstrap } from "../scheduler/index.js";
 import { resolveEvidencePolicy } from "./evidence-policy.js";
 import { captureGenerationInputs } from "./generation-inputs.js";
 import { parseGeneratedDocVersionManifest } from "./generated-doc-provenance.js";
-import {
-  inputHash,
-  isExtractorOnlyChange,
-  planRegeneration,
-  type RegenerationTask,
-} from "./regeneration-plan.js";
+import { settleExtractorUpgrade } from "./extractor-upgrade.js";
+import { inputHash, type RegenerationTask } from "./regeneration-plan.js";
 export { regenerationTaskSchema, type RegenerationTask } from "./regeneration-plan.js";
 
 export const REGENERATE_DOCUMENT_TASK = "regenerate-generated-document";
@@ -85,7 +81,9 @@ export async function checkIncrementalRegeneration(
         orderBy: { version: "desc" },
         select: {
           version: true,
+          createdAt: true,
           provenanceManifest: true,
+          acknowledgedInputs: true,
         },
       });
       let previous;
@@ -98,14 +96,22 @@ export async function checkIncrementalRegeneration(
         log.warn("Skipping automatic regeneration: invalid stored manifest");
         continue;
       }
-      if (planRegeneration(previous, snapshot).mode === "unchanged") continue;
-      // #1071 — a code-graph extractor upgrade renamed symbols and re-bound
-      // edges with no repository change. That alone never spends model calls.
-      if (isExtractorOnlyChange(previous, snapshot)) {
-        log.info("Skipping automatic regeneration: only the code-graph extractor changed", {
-          projectId,
-          generatedDocumentId: doc.id,
-        });
+      // #1071 — unchanged against what the latest version stands for; or
+      // changed only because an extractor upgrade rewrote the graph, seen here
+      // for the first time. That is acknowledged — once — and spends nothing.
+      const settled = await settleExtractorUpgrade({
+        documentId: doc.id,
+        scope: { projectId: doc.projectId, codeGraphId: policy.codeGraphId },
+        latest,
+        published: previous,
+        current: snapshot,
+      });
+      if (settled.outcome === "unchanged") continue;
+      if (settled.outcome === "acknowledged") {
+        log.info(
+          "Skipping automatic regeneration: a code-graph extractor upgrade rewrote the graph and nothing else changed; acknowledged",
+          { projectId, generatedDocumentId: doc.id, version: latest?.version },
+        );
         continue;
       }
       const payload: RegenerationTask = {

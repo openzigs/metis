@@ -10,8 +10,6 @@ export interface RepositorySource extends RepositoryIdentity {
   /** Null means unavailable; never resolve source against cwd or another connector. */
   root: string | null;
   commitSha: string | null;
-  /** #1071 — the extractor version that wrote the graph (`CodeGraph.extractorVersion`). */
-  extractorVersion?: number | null;
 }
 
 function contained(root: string, candidate: string): boolean {
@@ -77,7 +75,6 @@ export async function loadRepositorySources(scope: {
     select: {
       id: true,
       commitSha: true,
-      extractorVersion: true,
       repoConnection: { select: { id: true, projectId: true, deletedAt: true } },
     },
   });
@@ -90,7 +87,6 @@ export async function loadRepositorySources(scope: {
       repoConnectorId: connector?.id ?? null,
       root: active ? await resolveConnectorRoot(connector.id) : null,
       commitSha: graph.commitSha ?? null,
-      extractorVersion: graph.extractorVersion ?? null,
     });
   }
   return sources;

@@ -421,6 +421,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             call(602, goResolutionMetadata("func-value")),
             call(603, goResolutionMetadata("conversion")),
             call(604, goResolutionMetadata("ambiguous")),
+            call(607, goResolutionMetadata("external-assumed")),
             // Left open: dispatched through an interface, or no verdict at all.
             call(605, goResolutionMetadata("interface")),
             call(606, null),
@@ -459,7 +460,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(res.content).toContain("Probable (unresolved) call sites (2)");
         expect(res.content).toContain("handler.go:605 ");
         expect(res.content).toContain("handler.go:606 ");
-        for (const decided of [601, 602, 603, 604]) {
+        for (const decided of [601, 602, 603, 604, 607]) {
           expect(res.content).not.toContain(`handler.go:${decided} `);
         }
       });
@@ -499,7 +500,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "- Fetch ← RefreshFeed at internal/reader/handler/handler.go:605 (probable)",
       );
       expect(res.context).toContain("handler.go:606 (probable)");
-      for (const decided of [601, 602, 603, 604]) {
+      for (const decided of [601, 602, 603, 604, 607]) {
         expect(res.context).not.toContain(`handler.go:${decided}`);
       }
     });

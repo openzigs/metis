@@ -1,15 +1,8 @@
 import { describe, expect, it } from "vitest";
-import {
-  EXTRACTOR_INPUT_KEY,
-  fingerprintInputs,
-  isExtractorOnlyChange,
-  planRegeneration,
-  sameGenerationInputs,
-} from "./regeneration-plan.js";
+import { fingerprintInputs, isGraphRowsOnlyChange, planRegeneration } from "./regeneration-plan.js";
 
-describe("isExtractorOnlyChange (#1071)", () => {
+describe("isGraphRowsOnlyChange (#1071)", () => {
   const base = {
-    [EXTRACTOR_INPUT_KEY]: "v0",
     "symbol:aaa:0": "s1",
     "edge:bbb:0": "e1",
     "finding:ccc:0": "f1",
@@ -22,9 +15,8 @@ describe("isExtractorOnlyChange (#1071)", () => {
   };
   const before = fingerprintInputs(base);
   /** The graph rows as a newer extractor writes them: other keys, other values. */
-  const upgraded = {
+  const rewritten = {
     ...base,
-    [EXTRACTOR_INPUT_KEY]: "v1",
     "symbol:aaa:0": undefined,
     "symbol:zzz:0": "s1",
     "edge:bbb:0": "e2",
@@ -39,24 +31,19 @@ describe("isExtractorOnlyChange (#1071)", () => {
       >,
     );
 
-  it("is true when the extractor item and only graph rows differ", () => {
-    const after = snap(upgraded);
+  it("is true when graph rows, and only graph rows, differ — in either direction", () => {
+    const after = snap(rewritten);
     expect(planRegeneration(before, after).mode).toBe("full");
-    expect(isExtractorOnlyChange(before, after)).toBe(true);
-    expect(isExtractorOnlyChange(after, before)).toBe(true);
+    expect(isGraphRowsOnlyChange(before, after)).toBe(true);
+    expect(isGraphRowsOnlyChange(after, before)).toBe(true);
   });
 
-  it("is true for a baseline captured before the extractor item existed", () => {
-    const legacy = snap({ ...base, [EXTRACTOR_INPUT_KEY]: undefined });
-    expect(isExtractorOnlyChange(legacy, snap(upgraded))).toBe(true);
-    // The item alone, with identical graph rows, is the same: nothing to regenerate for.
-    expect(isExtractorOnlyChange(legacy, before)).toBe(true);
-  });
-
-  it("is false when graph rows differ under the SAME extractor: a real graph change", () => {
-    expect(isExtractorOnlyChange(before, snap({ ...upgraded, [EXTRACTOR_INPUT_KEY]: "v0" }))).toBe(
-      false,
-    );
+  it.each([
+    ["a symbol row", { "symbol:aaa:0": "s2" }],
+    ["an added edge row", { "edge:new:0": "e" }],
+    ["a removed finding row", { "finding:ccc:0": undefined }],
+  ])("is true for %s alone", (_label, change) => {
+    expect(isGraphRowsOnlyChange(before, snap({ ...base, ...change }))).toBe(true);
   });
 
   it.each([
@@ -68,26 +55,22 @@ describe("isExtractorOnlyChange (#1071)", () => {
     ["a repository became unavailable", { "repository:ggg:0": "false" }],
     ["the settings changed", { settings: "set2" }],
     ["the web research changed", { web: "w2" }],
-  ])("is false when, besides the upgrade, %s", (_label, change) => {
-    expect(isExtractorOnlyChange(before, snap({ ...upgraded, ...change }))).toBe(false);
+  ])("is false when, besides graph rows, %s", (_label, change) => {
+    expect(isGraphRowsOnlyChange(before, snap({ ...rewritten, ...change }))).toBe(false);
+    // And when that is the ONLY change.
+    expect(isGraphRowsOnlyChange(before, snap({ ...base, ...change }))).toBe(false);
   });
 
   it("is false for identical snapshots and for a document with no baseline", () => {
-    expect(isExtractorOnlyChange(before, before)).toBe(false);
-    expect(isExtractorOnlyChange(null, before)).toBe(false);
+    expect(isGraphRowsOnlyChange(before, before)).toBe(false);
+    expect(isGraphRowsOnlyChange(null, before)).toBe(false);
   });
 
   it("does not take a key that merely starts like a graph kind for a graph row", () => {
-    expect(isExtractorOnlyChange(before, snap({ ...upgraded, "symbols-export:1": "x" }))).toBe(
+    expect(isGraphRowsOnlyChange(before, snap({ ...rewritten, "symbols-export:1": "x" }))).toBe(
       false,
     );
-  });
-
-  it("sameGenerationInputs: identical, or apart by an extractor upgrade only", () => {
-    expect(sameGenerationInputs(before, before)).toBe(true);
-    expect(sameGenerationInputs(before, snap(upgraded))).toBe(true);
-    expect(sameGenerationInputs(before, snap({ ...upgraded, settings: "set2" }))).toBe(false);
-    expect(sameGenerationInputs(before, snap({ ...base, "symbol:aaa:0": "s2" }))).toBe(false);
+    expect(isGraphRowsOnlyChange(before, snap({ ...rewritten, "edges:1": "x" }))).toBe(false);
   });
 });
 

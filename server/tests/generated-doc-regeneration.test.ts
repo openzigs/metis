@@ -13,8 +13,12 @@ const state = vi.hoisted(() => ({
   activeUser: true,
   failCommit: false,
   failTask: false,
-  /** `CodeGraph.extractorVersion` of the one graph (#1071). */
-  extractorVersion: null as number | null,
+  /** `CodeGraph.extractorUpgradedAt` of the one graph (#1071): set by an ingest that upgrades it. */
+  extractorUpgradedAt: null as Date | null,
+  /** What the next (mocked) ingest does to the graph before it returns, as the real one would. */
+  duringIngest: null as null | (() => void),
+  /** A clock that only moves forward, one second a tick: versions and upgrade marks are ordered. */
+  clock: 0,
   mutation: null as null | (() => void),
   stream: vi.fn(),
   search: vi.fn(),
@@ -71,7 +75,7 @@ vi.mock("../src/lib/prisma.js", () => {
         {
           id: "g-r",
           commitSha: "sha",
-          extractorVersion: state.extractorVersion,
+          extractorUpgradedAt: state.extractorUpgradedAt,
           repoConnection: { id: "r", projectId: "p", deletedAt: null },
         },
       ]),
@@ -128,8 +132,19 @@ vi.mock("../src/lib/prisma.js", () => {
     generatedDocumentVersion: {
       findFirst: vi.fn(async () => state.versions.at(-1) ?? null),
       create: vi.fn(async ({ data }) => {
-        state.versions.push(data);
-        return data;
+        // What the database adds to a new row.
+        const row = {
+          createdAt: new Date((state.clock += 1000)),
+          acknowledgedInputs: null,
+          ...data,
+        };
+        state.versions.push(row);
+        return row;
+      }),
+      updateMany: vi.fn(async ({ where, data }) => {
+        const rows = state.versions.filter((v) => v.version === where.version);
+        for (const row of rows) Object.assign(row, data);
+        return { count: rows.length };
       }),
     },
     task: {
@@ -328,6 +343,8 @@ async function baseline() {
   );
   state.versions.push({
     version: 1,
+    createdAt: new Date((state.clock += 1000)),
+    acknowledgedInputs: null,
     provenanceManifest: JSON.stringify({
       ...legacyGeneratedDocVersionManifest({
         projectId: "p",
@@ -345,7 +362,9 @@ beforeEach(() => {
   state.edges = [];
   state.chunks = [];
   state.activeUser = true;
-  state.extractorVersion = null;
+  state.extractorUpgradedAt = null;
+  state.duringIngest = null;
+  state.clock = Date.UTC(2026, 0, 1);
   state.failCommit = false;
   state.failTask = false;
   state.mutation = null;
@@ -381,7 +400,12 @@ beforeEach(() => {
     language: "ts",
     source: null,
   }));
-  state.graphIngest.mockResolvedValue({ filesParsed: 1, symbolsUpserted: 30 });
+  state.graphIngest.mockImplementation(async () => {
+    const during = state.duringIngest;
+    state.duringIngest = null;
+    during?.();
+    return { filesParsed: 1, symbolsUpserted: 30 };
+  });
   state.sourceIngest.mockResolvedValue({ failures: 0, chunkCount: 2 });
   state.metadataIngest.mockResolvedValue({ failures: 0 });
   state.search.mockResolvedValue({ hits: [] });
@@ -417,18 +441,25 @@ afterEach(async () => {
 });
 
 /**
- * #1071 (review of PR #1104) — the first refresh after a deploy that changes the
- * code-graph extractor rewrites symbol names and edge bindings with no
- * repository change. `refreshRepoConnector` runs unattended, and its inputs
- * snapshot keys every symbol and edge by qualified name, so without a rule this
- * queued a `regenerate-generated-document` task for every auto-updating
- * document: model spend caused by an upgrade alone.
+ * #1071 (PR #1104, both reviews) — the first refresh after a deploy that
+ * changes the code-graph extractor rewrites symbol names and edge bindings
+ * with no repository change. `refreshRepoConnector` runs unattended, and a
+ * document's input snapshot keys every symbol and edge by qualified name, so
+ * without a rule this queued a `regenerate-generated-document` task for every
+ * auto-updating document: model spend caused by an upgrade alone.
+ *
+ * The rule must also be NARROW. Its first form inferred the upgrade from the
+ * baseline lacking a field that only newer snapshots carried — true of every
+ * document published before the deploy, in every project, for ever — and so
+ * swallowed every later change confined to graph rows. Here the evidence is
+ * positive (the ingest that upgrades a graph marks it) and it is acknowledged
+ * once.
  */
 describe("a code-graph extractor upgrade spends no model calls by itself (#1071)", () => {
   /** What the #1071 upgrade does to stored rows: methods renamed, a call newly bound. */
-  const rewriteGraph = () => {
+  const rewriteGraph = (prefix = "src/api.ts::Api::") => {
     for (const s of state.symbols.slice(1)) {
-      s.qualifiedName = String(s.qualifiedName).replace("Api.", "src/api.ts::Api::");
+      s.qualifiedName = String(s.qualifiedName).replace(/^.*(fn\d+)$/, `${prefix}$1`);
     }
     state.edges.push({
       fromSymbol: state.symbols[1],
@@ -436,47 +467,161 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
       toQualifiedName: "fn2",
       kind: "calls",
       filePath: "src/api.ts",
-      line: 3,
+      line: 3 + state.edges.length,
       metadata: '{"goResolution":"receiver-type"}',
       source: null,
     });
   };
-  const upgrade = () => {
-    rewriteGraph();
-    state.extractorVersion = 1;
+  /** The next ingest upgrades the graph in place: it rewrites the rows AND marks the graph. */
+  const upgradeOnNextIngest = (prefix?: string) => {
+    state.duringIngest = () => {
+      rewriteGraph(prefix);
+      state.extractorUpgradedAt = new Date((state.clock += 1000));
+    };
+  };
+  /** A change of graph rows with no source change and no upgrade: a lineage backfill, say. */
+  const graphOnlyChange = (n: number) => {
+    state.edges.push({
+      fromSymbol: state.symbols[3],
+      toSymbol: null,
+      toQualifiedName: `orders_${n}`,
+      kind: "references",
+      filePath: "src/api.ts",
+      line: 100 + n,
+      metadata: null,
+      source: "sql-lineage",
+    });
   };
   const snapshot = async () =>
     captureGenerationInputs(document(), await resolveEvidencePolicy(document()));
+  const acknowledged = (version = 0) =>
+    state.versions[version].acknowledgedInputs
+      ? (JSON.parse(String(state.versions[version].acknowledgedInputs)) as {
+          upgradedAt: string;
+          snapshot: { fingerprint: string };
+        })
+      : null;
+  const quiet = () => {
+    expect(state.tasks.size).toBe(0);
+    expect(state.stream).not.toHaveBeenCalled();
+  };
 
-  it("the scheduled refresh after the upgrade queues no regeneration and calls no model", async () => {
+  it("the upgrade refresh queues no task and calls no model, and acknowledges the new inputs", async () => {
     await baseline();
     const before = await snapshot();
-    upgrade();
-    // The premise: the upgrade does move the inputs fingerprint.
-    expect((await snapshot()).fingerprint).not.toBe(before.fingerprint);
+    upgradeOnNextIngest();
 
     await ingest();
 
-    expect(state.tasks.size).toBe(0);
-    expect(state.stream).not.toHaveBeenCalled();
+    // The premise: the upgrade did move the inputs fingerprint.
+    const after = await snapshot();
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+    quiet();
     expect(state.versions).toHaveLength(1);
-    // And every later refresh of the unchanged repository stays quiet too.
+    // Nothing was published: the version's manifest still says what it was generated from…
+    expect(
+      parseGeneratedDocVersionManifest(state.versions[0].provenanceManifest).inputSnapshot
+        ?.fingerprint,
+    ).toBe(before.fingerprint);
+    // …and beside it the upgraded inputs are acknowledged, against that upgrade's mark.
+    expect(acknowledged()?.snapshot.fingerprint).toBe(after.fingerprint);
+    expect(acknowledged()?.upgradedAt).toBe(state.extractorUpgradedAt!.toISOString());
+
+    // Every later refresh of the unchanged repository stays quiet too.
     await ingest();
-    expect(state.tasks.size).toBe(0);
-    expect(state.stream).not.toHaveBeenCalled();
+    await ingest();
+    quiet();
+    expect(state.versions).toHaveLength(1);
   });
 
-  it("control: the same rewrite of the graph with NO extractor change regenerates", async () => {
+  it("the NEXT refresh with a change confined to graph rows regenerates: the upgrade was acknowledged once", async () => {
     await baseline();
-    rewriteGraph();
+    upgradeOnNextIngest();
     await ingest();
+    quiet();
+
+    graphOnlyChange(1);
+    await ingest();
+
     expect(state.versions).toHaveLength(2);
     expect(state.stream).toHaveBeenCalled();
+    // And the one after that, against the new version, as any change does.
+    graphOnlyChange(2);
+    await ingest();
+    expect(state.versions).toHaveLength(3);
+  });
+
+  it("a project no upgrade rewrote behaves as before: an old baseline and a graph-only change regenerate", async () => {
+    // Every document published before this rule existed is in this state: no
+    // mark on its graph, nothing acknowledged. Not Go, nothing upgraded.
+    await baseline();
+    expect(state.extractorUpgradedAt).toBeNull();
+
+    graphOnlyChange(1);
+    await ingest();
+
+    expect(state.versions).toHaveLength(2);
+    expect(state.stream).toHaveBeenCalled();
+    expect(acknowledged()).toBeNull();
+  });
+
+  it("the same rewrite of the graph with NO upgrade mark regenerates", async () => {
+    await baseline();
+    state.duringIngest = () => rewriteGraph();
+    await ingest();
+    expect(state.versions).toHaveLength(2);
+    expect(acknowledged()).toBeNull();
+  });
+
+  it("a mark OLDER than the document's version is not evidence for a later change", async () => {
+    // The graph was upgraded, and the document was generated from it afterwards.
+    state.extractorUpgradedAt = new Date((state.clock += 1000));
+    await baseline();
+    graphOnlyChange(1);
+    await ingest();
+    expect(state.versions).toHaveLength(2);
+    expect(acknowledged()).toBeNull();
+  });
+
+  it("a second extractor upgrade later is suppressed once more, then changes regenerate again", async () => {
+    await baseline();
+    upgradeOnNextIngest();
+    await ingest();
+    const first = acknowledged()!;
+    quiet();
+
+    // A later release bumps the extractor again: another in-place rewrite.
+    upgradeOnNextIngest("src/api.ts::ApiV2::");
+    await ingest();
+    quiet();
+    expect(state.versions).toHaveLength(1);
+    const second = acknowledged()!;
+    expect(second.snapshot.fingerprint).not.toBe(first.snapshot.fingerprint);
+    expect(new Date(second.upgradedAt).getTime()).toBeGreaterThan(
+      new Date(first.upgradedAt).getTime(),
+    );
+    expect(second.snapshot.fingerprint).toBe((await snapshot()).fingerprint);
+
+    // Once, not for good: the next graph-only change regenerates.
+    graphOnlyChange(1);
+    await ingest();
+    expect(state.versions).toHaveLength(2);
+
+    // And an upgrade after a NEW version is suppressed against that version.
+    state.stream.mockClear();
+    upgradeOnNextIngest("src/api.ts::ApiV3::");
+    await ingest();
+    expect(state.versions).toHaveLength(2);
+    expect(state.stream).not.toHaveBeenCalled();
+    expect(acknowledged(1)?.snapshot.fingerprint).toBe((await snapshot()).fingerprint);
+    graphOnlyChange(2);
+    await ingest();
+    expect(state.versions).toHaveLength(3);
   });
 
   it("an upgrade that lands together with a real change still regenerates", async () => {
     await baseline();
-    upgrade();
+    upgradeOnNextIngest();
     state.chunks.push({
       id: "c",
       documentId: "ref",
@@ -493,11 +638,12 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
     });
     await ingest();
     expect(state.versions).toHaveLength(2);
+    expect(acknowledged()).toBeNull();
   });
 
   it("the next real change after a quiet upgrade regenerates against the upgraded graph", async () => {
     await baseline();
-    upgrade();
+    upgradeOnNextIngest();
     await ingest();
     expect(state.versions).toHaveLength(1);
 
@@ -518,19 +664,20 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
     });
     await ingest();
     expect(state.versions).toHaveLength(2);
-    // The new version's baseline carries the current extractor: nothing is masked after it.
+    // The new version stands for the current inputs: nothing is masked after it.
     const after = parseGeneratedDocVersionManifest(state.versions[1].provenanceManifest);
     expect(after.inputSnapshot?.fingerprint).toBe((await snapshot()).fingerprint);
-    rewriteGraph();
+    graphOnlyChange(1);
     await ingest();
     expect(state.versions).toHaveLength(3);
   });
 
-  it("a regeneration task already queued for the upgrade alone does nothing when it runs", async () => {
-    // A task an older server version queued for exactly this change, picked up
-    // after the deploy: its fingerprint is current, so only the plan can stop it.
+  it("a regeneration task already queued for the upgrade alone settles it when it runs: no model call", async () => {
+    // A task queued for exactly this change by a scheduler that did not know
+    // the rule, picked up afterwards: its fingerprint is current.
     await baseline();
-    upgrade();
+    rewriteGraph();
+    state.extractorUpgradedAt = new Date((state.clock += 1000));
     const current = await snapshot();
     await runRegenerationTask(
       {
@@ -544,23 +691,63 @@ describe("a code-graph extractor upgrade spends no model calls by itself (#1071)
     expect(state.stream).not.toHaveBeenCalled();
     expect(state.versions).toHaveLength(1);
     expect(state.doc.status).toBe("ready");
+    expect(acknowledged()?.snapshot.fingerprint).toBe(current.fingerprint);
+  });
+
+  it("control: the same queued task with no upgrade mark regenerates", async () => {
+    await baseline();
+    rewriteGraph();
+    const current = await snapshot();
+    await runRegenerationTask(
+      {
+        projectId: "p",
+        generatedDocumentId: "d",
+        expectedVersion: 1,
+        fingerprint: current.fingerprint,
+      },
+      new AbortController().signal,
+    );
+    expect(state.stream).toHaveBeenCalled();
+    expect(state.versions).toHaveLength(2);
   });
 
   it("an upgrade that lands while a document is generating does not stop or restart the run", async () => {
     const before = await snapshot();
-    state.mutation = upgrade;
+    // The first model call of the run is when the upgrade's rewrite lands.
+    state.mutation = () => {
+      rewriteGraph();
+      state.extractorUpgradedAt = new Date((state.clock += 1000));
+    };
     await ingest();
-    // One run, published once, with the inputs it captured — not fenced as changed.
+    // One run, published once. Its manifest says what it captured…
     expect(state.versions).toHaveLength(1);
     expect(state.publications).toHaveBeenCalledTimes(1);
     expect(
       parseGeneratedDocVersionManifest(state.versions[0].provenanceManifest).inputSnapshot
         ?.fingerprint,
     ).toBe(before.fingerprint);
+    // …and the upgraded inputs it stands for are recorded beside it.
+    expect(acknowledged()?.snapshot.fingerprint).toBe((await snapshot()).fingerprint);
     const calls = state.stream.mock.calls.length;
     await ingest();
     expect(state.stream).toHaveBeenCalledTimes(calls);
     expect(state.versions).toHaveLength(1);
+    // The window is closed: the next graph-only change regenerates.
+    graphOnlyChange(1);
+    await ingest();
+    expect(state.versions).toHaveLength(2);
+  });
+
+  it("control: a graph-only change mid-run with NO upgrade mark is changed inputs, as before", async () => {
+    state.mutation = () => graphOnlyChange(1);
+    await ingest();
+    // The run that saw its inputs change published nothing; the replanned one did.
+    expect(state.versions).toHaveLength(1);
+    expect(
+      parseGeneratedDocVersionManifest(state.versions[0].provenanceManifest).inputSnapshot
+        ?.fingerprint,
+    ).toBe((await snapshot()).fingerprint);
+    expect(acknowledged()).toBeNull();
   });
 });
 

@@ -825,11 +825,12 @@ func handle(w http.ResponseWriter, r *http.Request) {
 `,
     });
     // The project declares `Header` and `Set` too; the receiver says they are not these.
-    // `http.ResponseWriter` is an interface, so `Header` is dispatched at run time;
-    // what it returns is a standard-library type, so `Set` is outside the project.
+    // `http.ResponseWriter` is an interface, so `Header` is dispatched at run time.
+    // What it returns, and what the field `r.URL` holds, are types declared outside
+    // the tree that nothing here examined: decided, and said to be assumed.
     expect(v.get("p/t.go:Header")).toBe("unbound interface");
-    expect(v.get("p/t.go:Set")).toBe("unbound external");
-    expect(v.get("p/t.go:Query")).toBe("unbound external");
+    expect(v.get("p/t.go:Set")).toBe("unbound external-assumed");
+    expect(v.get("p/t.go:Query")).toBe("unbound external-assumed");
   });
 
   it("does not claim to know the result of a third-party function (it may be generic)", () => {

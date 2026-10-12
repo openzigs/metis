@@ -14,7 +14,13 @@ import * as path from "node:path";
 import { createHash } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { compileMetisignore, DEFAULT_METISIGNORE, isIgnored } from "./metisignore.js";
-import { detectLanguage, initCodeGraphParsers, parseSource, type ParsedFile } from "./parsers.js";
+import {
+  detectLanguage,
+  initCodeGraphParsers,
+  parseSource,
+  type ParsedEdge,
+  type ParsedFile,
+} from "./parsers.js";
 import { buildCopybookIndex, resolveCopybook, type CopybookIndex } from "./cobol-parser.js";
 import {
   createResolutionIndex,
@@ -127,6 +133,11 @@ export interface IngestOptions {
    * SHA256. Defaults to true. Set false to force a full re-ingest.
    */
   incremental?: boolean;
+  /**
+   * #1071 — the ceiling on time spent resolving Go calls by type for this run;
+   * defaults to {@link GO_BINDING_MAX_MS}.
+   */
+  goBindingMaxMs?: number;
   /**
    * User who triggered the ingest. Required for rationale-finding persistence
    * because the Finding→AgentResult→Analysis chain needs a User row. When
@@ -256,11 +267,15 @@ export interface IngestStats {
    */
   filesUpgraded: number;
   /**
-   * #1071 — files of a language being upgraded that could not be re-parsed
-   * (unreadable, or the current parser gives up on them), by path, up to
-   * {@link NAMED_FILES_CAP}. Their rows keep the old shape, so the graph keeps
-   * its old {@link CODE_GRAPH_EXTRACTOR_VERSION} and the next ingest tries the
-   * upgrade again. {@link filesUpgradeFailedCount} is the uncapped count.
+   * #1071 — files an extractor upgrade could not bring to
+   * {@link CODE_GRAPH_EXTRACTOR_VERSION} (unreadable, or the current parser
+   * gives up on them), by path, up to {@link NAMED_FILES_CAP}: the ones that
+   * failed in this run AND the ones an earlier run left behind that are still
+   * as they were. Their rows keep the old shape. They are remembered on the
+   * graph with the hash of the content that failed
+   * (`CodeGraph.extractorUpgradeFailed`), so the upgrade is not repeated for
+   * the rest of the tree, and a listed file is tried again only when its
+   * content changes. {@link filesUpgradeFailedCount} is the uncapped count.
    */
   filesUpgradeFailed: string[];
   filesUpgradeFailedCount: number;
@@ -274,14 +289,34 @@ export interface IngestStats {
   filesUnparseable: string[];
   filesUnparseableCount: number;
   /**
-   * #1071 — what binding Go calls by type cost this run. Any change to one Go
-   * file re-parses EVERY Go file of the tree for its declarations, so this is
-   * O(Go files) per ingest: `files` Go files held, `calls` call edges decided,
-   * `durationMs` spent parsing unchanged Go files and resolving. `errors`
-   * counts calls whose resolution threw — each left undecided, never failed.
-   * Null when the run resolved no Go call.
+   * #1071 — what binding Go calls by type cost this run, and what it could not
+   * do. Any change to one Go file re-parses EVERY Go file of the tree for its
+   * declarations, so this is O(Go files) per ingest: `files` Go files held,
+   * `calls` call edges decided, `durationMs` spent parsing unchanged Go files
+   * and resolving. Null when the run resolved no Go call.
+   *
+   * Three counters say how many calls were left UNDECIDED BY TYPE for a reason
+   * that is not in the source. Such a call is never given a decided verdict;
+   * it goes on to the name-evidence rules exactly as before #1071, so it can
+   * still be bound, labelled `name`.
+   *
+   *  - `errors` — resolving it threw (a resolver bug). `failures` names them,
+   *    `file:line callee`, up to {@link NAMED_FILES_CAP};
+   *  - `overBudget` — resolving it would have passed the resolver's step
+   *    budgets (`GO_CALL_STEP_BUDGET`, `GO_TYPE_STEP_BUDGET`);
+   *  - `skipped` — the whole step had already used {@link GO_BINDING_MAX_MS}
+   *    when the call came up. Non-zero means this ingest's Go binding is
+   *    INCOMPLETE; the next ingest that touches a Go file tries again.
    */
-  goBinding: { files: number; calls: number; durationMs: number; errors: number } | null;
+  goBinding: {
+    files: number;
+    calls: number;
+    durationMs: number;
+    errors: number;
+    failures: string[];
+    overBudget: number;
+    skipped: number;
+  } | null;
   /**
    * #721 — true when an incremental ingest re-extracted the lineage of every
    * file because the SQL-lineage inputs (lineage decision or introspected
@@ -401,6 +436,18 @@ export function extractorUpgradeLanguages(storedVersion: number | null): Set<str
 
 /** Most file paths one ingest names in a stats list or a log line; the count is never capped. */
 export const NAMED_FILES_CAP = 50;
+
+/**
+ * #1071 — the most time one ingest spends resolving Go calls by type (building
+ * the resolver and every `resolveCall`, summed; parsing and database writes
+ * are not counted). The resolver is linear in declarations plus calls and
+ * takes about 50 ms for a 21,000-call tree, so this is a ceiling for input
+ * nobody measured, not a working limit. Once it is reached the remaining calls
+ * are left undecided by type (`IngestStats.goBinding.skipped`), a warning
+ * names the count, and the ingest goes on: a slow resolver never holds an
+ * ingest for minutes. Overridable per run with `IngestOptions.goBindingMaxMs`.
+ */
+export const GO_BINDING_MAX_MS = 30_000;
 
 /** Bytes of a `go.mod` read for its `module` line, which sits at the top. */
 const GO_MOD_READ_LIMIT = 64 * 1024;
@@ -523,6 +570,24 @@ export async function ingestCodeGraph(
   const upgradeLanguages = incremental
     ? extractorUpgradeLanguages(graph.extractorVersion)
     : new Set<string>();
+  // #1071 — files an earlier upgrade could not reach, with the hash of the
+  // content that failed. A full re-ingest starts clean.
+  const rememberedFailures = incremental
+    ? parseUpgradeFailures(graph.extractorUpgradeFailed)
+    : new Map<string, string | null>();
+  // What this run leaves un-upgraded: path → the hash of the content that
+  // failed (null: unreadable). Written back in Step 8.
+  const upgradeFailures = new Map<string, string | null>();
+  // Remembered files whose content is no longer the one that failed: retried.
+  const upgradeRetryPaths = new Set<string>();
+  // #1071 — `CodeGraph.extractorUpgradedAt` for each write of an upgrade
+  // rewrite: strictly increasing, so a reader that saw one write and then
+  // another can always tell the mark moved.
+  let lastUpgradeMark = 0;
+  const nextUpgradeMark = (): Date => {
+    lastUpgradeMark = Math.max(Date.now(), lastUpgradeMark + 1);
+    return new Date(lastUpgradeMark);
+  };
 
   // Step 4 — walk the tree.
   const stats: IngestStats = {
@@ -602,7 +667,7 @@ export async function ingestCodeGraph(
   // #313 — every path the walk saw, and the files it skipped as unchanged: pass 2
   // resolves edges against the whole tree, not only the files re-parsed.
   const walkedPaths = new Set<string>();
-  const unchangedFiles = new Map<string, { language: string }>();
+  const unchangedFiles = new Map<string, { language: string; contentHash: string }>();
   // #856 — on a lineage backfill an unchanged file is NOT re-parsed: re-creating
   // its symbols would give them new ids and unlink every finding, mapping and
   // embedding that pointed at the old ones (#706 run 3 lost them on a same-SHA
@@ -610,7 +675,12 @@ export async function ingestCodeGraph(
   // that is redone; these carry what Step 6 reads — path, language and source.
   const lineageOnlyFiles: ParsedFile[] = [];
   const lineageOnlySources = new Map<string, string>();
-  for await (const filePath of walkTree(rootDir, ignoreRules)) {
+  // #1071 — a Go file the ignore rules hide (`*_gen.go`, `*.pb.go`) is still
+  // part of its directory's package: the resolver must know it did not read it.
+  const onIgnoredFile = (relPath: string): void => {
+    if (detectLanguage(relPath) === "go") unparsedGoPaths.push(relPath);
+  };
+  for await (const filePath of walkTree(rootDir, ignoreRules, onIgnoredFile)) {
     stats.filesScanned += 1;
     walkedPaths.add(path.relative(rootDir, filePath).split(path.sep).join("/"));
     const lang = detectLanguage(filePath);
@@ -654,15 +724,25 @@ export async function ingestCodeGraph(
       stats.filesSkipped += 1;
       if (lang === "go") unparsedGoPaths.push(relPath);
       // Rows the graph holds for it cannot be brought to the current shape (#1071).
-      if (existingFiles.has(relPath) && upgradeLanguages.has(lang)) {
-        noteUpgradeFailed(stats, relPath);
+      if (
+        existingFiles.has(relPath) &&
+        (upgradeLanguages.has(lang) || rememberedFailures.has(relPath))
+      ) {
+        noteUpgradeFailed(stats, upgradeFailures, relPath, null);
       }
       continue;
     }
     const fileHash = sha256(source);
     const existing = existingFiles.get(relPath);
     if (incremental && existing?.contentHash === fileHash) {
-      unchangedFiles.set(relPath, { language: existing.language });
+      unchangedFiles.set(relPath, { language: existing.language, contentHash: fileHash });
+      if (rememberedFailures.has(relPath) && !upgradeLanguages.has(lang)) {
+        // Same content as the one that failed: it would fail again. Anything
+        // else (it was unreadable then) is worth one more try.
+        if (rememberedFailures.get(relPath) === fileHash) {
+          noteUpgradeFailed(stats, upgradeFailures, relPath, fileHash);
+        } else upgradeRetryPaths.add(relPath);
+      }
       stats.filesSkipped += 1;
       stats.filesUnchanged += 1;
       if (lineageBackfill && (EMBEDDED_SQL_LANGUAGES.has(lang) || lang === "sas")) {
@@ -686,8 +766,10 @@ export async function ingestCodeGraph(
       noteUnparseable(stats, relPath);
       if (lang === "go") unparsedGoPaths.push(relPath);
       // Rows the graph already holds for it stay as an older extractor wrote
-      // them, so the graph is not at the current version (#1071).
-      if (existing && upgradeLanguages.has(lang)) noteUpgradeFailed(stats, relPath);
+      // them (#1071): remembered, and tried again when the content changes.
+      if (existing && (upgradeLanguages.has(lang) || rememberedFailures.has(relPath))) {
+        noteUpgradeFailed(stats, upgradeFailures, relPath, fileHash);
+      }
       continue;
     }
     parsedFiles.push(parsed);
@@ -730,6 +812,10 @@ export async function ingestCodeGraph(
       goModules,
       unparsedGoPaths,
       upgradeLanguages,
+      upgradeRetryPaths,
+      upgradeFailures,
+      nextUpgradeMark,
+      goBindingMaxMs: options.goBindingMaxMs ?? GO_BINDING_MAX_MS,
     },
   );
 
@@ -938,12 +1024,18 @@ export async function ingestCodeGraph(
       languageStats: JSON.stringify(langStatsRecord),
       lastIndexedAt: new Date(),
       lineageFingerprint: recordedFingerprint,
-      // #1071 — the version says every stored row has the current shape. A run
-      // that could not bring a file up to it leaves the version where it was,
-      // so the next ingest tries again.
-      ...(stats.filesUpgradeFailedCount === 0
-        ? { extractorVersion: CODE_GRAPH_EXTRACTOR_VERSION }
-        : {}),
+      // #1071 — the version says every stored row has the current shape,
+      // EXCEPT the files listed beside it: those an upgrade could not reach,
+      // each with the hash of the content that failed. The upgrade is then not
+      // repeated for the rest of the tree, and a listed file is retried only
+      // when its content changes.
+      extractorVersion: CODE_GRAPH_EXTRACTOR_VERSION,
+      extractorUpgradeFailed:
+        upgradeFailures.size > 0 ? JSON.stringify(Object.fromEntries(upgradeFailures)) : null,
+      // #1071 — the evidence that THIS run rewrote the graph for an upgrade
+      // (`docs-gen/extractor-upgrade.ts` reads it): only when it upgraded a
+      // file. Each write of the rewrite already moved it; this is the last.
+      ...(stats.filesUpgraded > 0 ? { extractorUpgradedAt: nextUpgradeMark() } : {}),
       // #758 — the commit label moves only when the graph is complete.
       ...(commitSha ? { commitSha } : {}),
     },
@@ -981,10 +1073,39 @@ function noteUnparseable(stats: IngestStats, relPath: string): void {
   if (stats.filesUnparseable.length < NAMED_FILES_CAP) stats.filesUnparseable.push(relPath);
 }
 
-/** Record a file an extractor upgrade could not reach, by name while the list has room. */
-function noteUpgradeFailed(stats: IngestStats, relPath: string): void {
+/**
+ * Record a file an extractor upgrade could not reach: by name while the list
+ * has room, and with the hash of the content that failed (null: unreadable) so
+ * the graph remembers it.
+ */
+function noteUpgradeFailed(
+  stats: IngestStats,
+  failures: Map<string, string | null>,
+  relPath: string,
+  contentHash: string | null,
+): void {
+  if (failures.has(relPath)) return;
+  failures.set(relPath, contentHash);
   stats.filesUpgradeFailedCount += 1;
   if (stats.filesUpgradeFailed.length < NAMED_FILES_CAP) stats.filesUpgradeFailed.push(relPath);
+}
+
+/** `CodeGraph.extractorUpgradeFailed` as a map; anything unreadable is "nothing remembered". */
+export function parseUpgradeFailures(
+  stored: string | null | undefined,
+): Map<string, string | null> {
+  const out = new Map<string, string | null>();
+  if (!stored) return out;
+  try {
+    const parsed: unknown = JSON.parse(stored);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return out;
+    for (const [file, hash] of Object.entries(parsed)) {
+      out.set(file, typeof hash === "string" ? hash : null);
+    }
+  } catch {
+    // A corrupt value costs one retry of the files it named, nothing else.
+  }
+  return out;
 }
 
 /**
@@ -1002,7 +1123,7 @@ function reportIngest(projectId: string, stats: IngestStats): void {
   }
   if (stats.filesUpgradeFailedCount > 0) {
     log.warn(
-      "Code graph extractor upgrade incomplete; the graph keeps its old version and the next ingest retries",
+      "Code graph extractor upgrade incomplete: these files keep rows an older extractor wrote until their content changes",
       {
         projectId,
         count: stats.filesUpgradeFailedCount,
@@ -1018,32 +1139,45 @@ function reportIngest(projectId: string, stats: IngestStats): void {
     });
   }
   if (stats.goBinding) {
-    const level = stats.goBinding.errors > 0 ? "warn" : "info";
-    log[level]("Go calls bound by type", {
-      projectId,
-      ...stats.goBinding,
-      filesRebound: stats.filesRebound,
-    });
+    const { errors, overBudget, skipped } = stats.goBinding;
+    const incomplete = errors + overBudget + skipped > 0;
+    log[incomplete ? "warn" : "info"](
+      incomplete
+        ? "Go calls bound by type; some were left undecided by type (errors: resolution threw, overBudget: a step budget ran out, skipped: the time ceiling was reached)"
+        : "Go calls bound by type",
+      {
+        projectId,
+        ...stats.goBinding,
+        filesRebound: stats.filesRebound,
+      },
+    );
   }
 }
 
 /**
  * Async generator that yields absolute paths for every file under `rootDir`
  * that survives the ignore rules. Directories are filtered before recursion
- * so `node_modules` etc. never get walked into.
+ * so `node_modules` etc. never get walked into. `onIgnoredFile` is told each
+ * FILE the rules hide inside a directory that is walked.
  */
 async function* walkTree(
   rootDir: string,
   rules: ReturnType<typeof compileMetisignore>,
+  onIgnoredFile: (relPath: string) => void = () => {},
   current: string = rootDir,
 ): AsyncGenerator<string> {
   const entries = await fs.readdir(current, { withFileTypes: true });
   for (const entry of entries) {
     const abs = path.join(current, entry.name);
     const rel = path.relative(rootDir, abs).split(path.sep).join("/");
-    if (isIgnored(rules, rel, entry.isDirectory())) continue;
+    if (isIgnored(rules, rel, entry.isDirectory())) {
+      // An ignored directory is another package's; an ignored FILE sits in a
+      // directory the walk does read, and is reported.
+      if (entry.isFile()) onIgnoredFile(rel);
+      continue;
+    }
     if (entry.isDirectory()) {
-      yield* walkTree(rootDir, rules, abs);
+      yield* walkTree(rootDir, rules, onIgnoredFile, abs);
     } else if (entry.isFile()) {
       yield abs;
     }
@@ -1054,7 +1188,12 @@ async function upsertCodeGraph(
   prisma: PrismaClient,
   projectId: string,
   repoConnectionId: string | undefined,
-): Promise<{ id: string; lineageFingerprint: string | null; extractorVersion: number | null }> {
+): Promise<{
+  id: string;
+  lineageFingerprint: string | null;
+  extractorVersion: number | null;
+  extractorUpgradeFailed: string | null;
+}> {
   // #758 — the commit label is written by Step 8, not here: a run that fails
   // part-way must not relabel a graph it never finished rebuilding.
   const existing = await prisma.codeGraph.findFirst({
@@ -1066,7 +1205,12 @@ async function upsertCodeGraph(
       projectId,
       repoConnectionId: repoConnectionId ?? null,
     },
-    select: { id: true, lineageFingerprint: true, extractorVersion: true },
+    select: {
+      id: true,
+      lineageFingerprint: true,
+      extractorVersion: true,
+      extractorUpgradeFailed: true,
+    },
   });
 }
 
@@ -1112,17 +1256,25 @@ async function loadExistingFiles(
 interface IngestTreeState {
   rootDir: string;
   /** Files skipped because their hash is unchanged, with their persisted language. */
-  unchangedFiles: ReadonlyMap<string, { language: string }>;
+  unchangedFiles: ReadonlyMap<string, { language: string; contentHash: string }>;
   /** Every file the graph held before this run. */
   previousPaths: ReadonlySet<string>;
   /** Files the graph holds that the walk no longer finds. */
   deletedPaths: string[];
   /** #1071 — the tree's `go.mod` files. */
   goModules: readonly GoModule[];
-  /** #1071 — changed Go files this run could not read or parse. */
+  /** #1071 — Go files of the tree this run did not read: unparseable, unreadable, or hidden by the ignore rules. */
   unparsedGoPaths: readonly string[];
   /** #1071 — languages whose unchanged files an older extractor wrote ({@link extractorUpgradeLanguages}). */
   upgradeLanguages: ReadonlySet<string>;
+  /** #1071 — unchanged files an earlier upgrade failed on whose content has changed since: tried again. */
+  upgradeRetryPaths: ReadonlySet<string>;
+  /** #1071 — files this run leaves un-upgraded, with the hash of the content that failed. */
+  upgradeFailures: Map<string, string | null>;
+  /** #1071 — the next value of `CodeGraph.extractorUpgradedAt`: later than every one before it. */
+  nextUpgradeMark: () => Date;
+  /** #1071 — the ceiling on time spent resolving Go calls by type ({@link GO_BINDING_MAX_MS}). */
+  goBindingMaxMs: number;
 }
 
 async function persistParsed(
@@ -1268,6 +1420,7 @@ async function persistParsed(
   let goParseMs = 0;
   // A file that failed once is not read again by a later pass of this run.
   const notReparsed = new Set<string>();
+  const notReparsedWhy = new Map<string, "unreadable" | "unparseable">();
   const reparse = async (relPath: string): Promise<ParsedFile | null> => {
     if (notReparsed.has(relPath)) return null;
     const isGo = tree.unchangedFiles.get(relPath)?.language === "go";
@@ -1276,20 +1429,33 @@ async function persistParsed(
     if (isGo) goParseMs += performance.now() - t0;
     if (typeof out !== "string") return out;
     notReparsed.add(relPath);
+    notReparsedWhy.set(relPath, out);
     if (out === "unparseable") noteUnparseable(stats, relPath);
     return null;
   };
-  if (tree.upgradeLanguages.size > 0) {
+  if (tree.upgradeLanguages.size > 0 || tree.upgradeRetryPaths.size > 0) {
+    // The one table that names a symbol by text and has no index to find it
+    // by: read once for the whole upgrade, not once per renamed symbol.
+    let proposals: ColumnProposalWriters | null = null;
     for (const [relPath, file] of tree.unchangedFiles) {
-      if (!tree.upgradeLanguages.has(file.language)) continue;
+      if (!tree.upgradeLanguages.has(file.language) && !tree.upgradeRetryPaths.has(relPath)) {
+        continue;
+      }
       await maybeYield();
       const reparsed = await reparse(relPath);
       if (!reparsed) {
-        // Its rows keep the old shape: named, and the version is not stamped.
-        noteUpgradeFailed(stats, relPath);
+        // Its rows keep the old shape: named, and remembered with this content's hash.
+        const unreadable = notReparsedWhy.get(relPath) === "unreadable";
+        noteUpgradeFailed(
+          stats,
+          tree.upgradeFailures,
+          relPath,
+          unreadable ? null : file.contentHash,
+        );
         continue;
       }
-      await renameSymbolsInPlace(prisma, codeGraphId, reparsed);
+      proposals ??= await loadColumnProposalWriters(prisma, projectId);
+      await renameSymbolsInPlace(prisma, codeGraphId, reparsed, proposals, tree.nextUpgradeMark);
       upgradedFiles.push(reparsed);
     }
     stats.filesUpgraded += upgradedFiles.length;
@@ -1405,21 +1571,40 @@ async function persistParsed(
     ],
   );
   const goResolver = goBuilt.resolver;
-  const goBinding = { files: goBuilt.files, calls: 0, errors: goBuilt.failed ? 1 : 0 };
+  const goBinding = {
+    files: goBuilt.files,
+    calls: 0,
+    errors: goBuilt.failed ? 1 : 0,
+    failures: goBuilt.failed ? ["(the resolver could not be built)"] : ([] as string[]),
+    overBudget: 0,
+    skipped: 0,
+  };
   let goResolveMs = performance.now() - goT0;
   /**
    * One Go call's verdict. Resolution is the only step between a resolver bug
-   * and a failed ingest, so a throw is counted and the call is left UNDECIDED
-   * (`unknown`) — never a decided verdict, which later readers would trust.
+   * and a failed ingest, so a throw is counted, NAMED, and the call is left
+   * UNDECIDED (`unknown`) — never a decided verdict, which later readers would
+   * trust. The same holds for a call the resolver gave up on (its step budget)
+   * and for every call that comes up after the step's time ceiling: undecided
+   * by type, counted, and left to the name-evidence rules.
    */
-  const goVerdict = (filePath: string, callee: GoExpr): GoCallVerdict => {
+  const goVerdict = (filePath: string, edge: ParsedEdge, callee: GoExpr): GoCallVerdict => {
     if (!goResolver) return { kind: "unknown" };
-    const t0 = performance.now();
     goBinding.calls += 1;
+    if (goResolveMs > tree.goBindingMaxMs) {
+      goBinding.skipped += 1;
+      return { kind: "unknown" };
+    }
+    const t0 = performance.now();
     try {
-      return goResolver.resolveCall(filePath, callee);
+      const verdict = goResolver.resolveCall(filePath, callee);
+      if (verdict.kind === "unknown" && verdict.why === "budget") goBinding.overBudget += 1;
+      return verdict;
     } catch {
       goBinding.errors += 1;
+      if (goBinding.failures.length < NAMED_FILES_CAP) {
+        goBinding.failures.push(`${filePath}:${edge.line} ${edge.toQualifiedName}`);
+      }
       return { kind: "unknown" };
     } finally {
       goResolveMs += performance.now() - t0;
@@ -1450,7 +1635,7 @@ async function persistParsed(
     } else if (!toId && goResolver && edge.goCallee && edge.kind === "calls") {
       // #1071 — a Go call is decided by the declared types first; the
       // name-evidence rules apply only where no type could be inferred.
-      const verdict = goVerdict(file.filePath, edge.goCallee);
+      const verdict = goVerdict(file.filePath, edge, edge.goCallee);
       let resolution: GoResolution | null = null;
       if (verdict.kind === "bound") {
         toId = qnameToId.get(verdict.qualifiedName) ?? null;
@@ -1499,22 +1684,37 @@ async function persistParsed(
     // Edges carry no ids anyone needs back, so they go in multi-row inserts:
     // one statement (and one commit) per EDGE_INSERT_BATCH rows (#16).
     let batch: Prisma.CodeEdgeCreateManyInput[] = [];
-    let replaceOld = upgradedPaths.has(file.filePath);
+    const upgrading = upgradedPaths.has(file.filePath);
+    let replaceOld = upgrading;
     const flush = async (): Promise<void> => {
       const insert = batch.length > 0 ? [prisma.codeEdge.createMany({ data: batch })] : [];
-      if (replaceOld) {
-        replaceOld = false;
-        await prisma.$transaction([
-          prisma.codeEdge.deleteMany({
-            where: {
-              codeGraphId,
-              filePath: file.filePath,
-              source: null,
-              kind: { in: [...PARSER_EDGE_KINDS] },
-            },
-          }),
-          ...insert,
-        ]);
+      if (upgrading) {
+        // Every write of the rewrite moves the graph's upgrade mark with it, so
+        // whoever sees the rows changed also sees WHY (`extractor-upgrade.ts`).
+        const writes: Prisma.PrismaPromise<unknown>[] = [];
+        if (replaceOld) {
+          replaceOld = false;
+          writes.push(
+            prisma.codeEdge.deleteMany({
+              where: {
+                codeGraphId,
+                filePath: file.filePath,
+                source: null,
+                kind: { in: [...PARSER_EDGE_KINDS] },
+              },
+            }),
+          );
+        }
+        writes.push(...insert);
+        if (writes.length > 0) {
+          writes.push(
+            prisma.codeGraph.update({
+              where: { id: codeGraphId },
+              data: { extractorUpgradedAt: tree.nextUpgradeMark() },
+            }),
+          );
+          await prisma.$transaction(writes);
+        }
       } else if (insert.length > 0) {
         await insert[0];
       }
@@ -1657,12 +1857,17 @@ function buildGoResolver(
  * names the symbol the graph does: `impact_affected_symbols.qualifiedName`
  * (by `codeSymbolId` — without this an impact re-run reports every renamed
  * method as removed and added) and `impact_column_proposals.writerQualifiedName`
- * (no symbol id: by file, old name and start line, within this project).
+ * (no symbol id: by file, old name and start line, within this project — and
+ * by primary key, from the one read {@link loadColumnProposalWriters} made).
+ * It also moves `CodeGraph.extractorUpgradedAt`, so a reader that sees the
+ * renamed rows sees that an upgrade made them.
  */
 async function renameSymbolsInPlace(
   prisma: PrismaClient,
   codeGraphId: string,
   file: ParsedFile,
+  proposals: ColumnProposalWriters,
+  nextUpgradeMark: () => Date,
 ): Promise<void> {
   const rows = await prisma.codeSymbol.findMany({
     where: { codeGraphId, filePath: file.filePath, source: null, language: file.language },
@@ -1679,6 +1884,7 @@ async function renameSymbolsInPlace(
   for (const sym of file.symbols) {
     wanted.set(`${sym.kind}\u0000${sym.name}\u0000${sym.startLine}`, sym.qualifiedName);
   }
+  const inFile = proposals.get(file.filePath);
   const updates: Prisma.PrismaPromise<unknown>[] = [];
   for (const row of rows) {
     const next = wanted.get(`${row.kind}\u0000${row.name}\u0000${row.startLine}`);
@@ -1689,18 +1895,66 @@ async function renameSymbolsInPlace(
         where: { codeSymbolId: row.id },
         data: { qualifiedName: next },
       }),
-      prisma.impactColumnProposal.updateMany({
-        where: {
-          writerQualifiedName: row.qualifiedName,
-          writerFilePath: file.filePath,
-          writerStartLine: row.startLine,
-          impactItem: { projectId: row.projectId },
-        },
-        data: { writerQualifiedName: next },
-      }),
     );
+    const ids = inFile?.get(proposalWriterKey(row.qualifiedName, row.startLine));
+    if (ids) {
+      updates.push(
+        prisma.impactColumnProposal.updateMany({
+          where: { id: { in: ids } },
+          data: { writerQualifiedName: next },
+        }),
+      );
+    }
   }
-  if (updates.length > 0) await prisma.$transaction(updates);
+  if (updates.length === 0) return;
+  // The rename and the graph's upgrade mark move together (`extractor-upgrade.ts`).
+  updates.push(
+    prisma.codeGraph.update({
+      where: { id: codeGraphId },
+      data: { extractorUpgradedAt: nextUpgradeMark() },
+    }),
+  );
+  await prisma.$transaction(updates);
+}
+
+/** Writer file → (`qualifiedName` + start line) → the ids of the column proposals naming that writer. */
+type ColumnProposalWriters = Map<string, Map<string, string[]>>;
+
+const proposalWriterKey = (qualifiedName: string, startLine: number | null): string =>
+  `${qualifiedName}\u0000${startLine ?? ""}`;
+
+/**
+ * #1071 — every column proposal of the project that names a writer, read
+ * ONCE. `impact_column_proposals` has no index on the writer columns, so
+ * looking a renamed symbol up there is a scan of the table — once per renamed
+ * symbol (904 on the Miniflux sample) before this.
+ */
+async function loadColumnProposalWriters(
+  prisma: PrismaClient,
+  projectId: string,
+): Promise<ColumnProposalWriters> {
+  const rows = await prisma.impactColumnProposal.findMany({
+    where: {
+      impactItem: { projectId },
+      writerQualifiedName: { not: null },
+      writerFilePath: { not: null },
+    },
+    select: { id: true, writerQualifiedName: true, writerFilePath: true, writerStartLine: true },
+  });
+  const out: ColumnProposalWriters = new Map();
+  for (const row of rows) {
+    if (row.writerQualifiedName === null || row.writerFilePath === null) continue;
+    let ofFile = out.get(row.writerFilePath);
+    if (!ofFile) {
+      ofFile = new Map();
+      out.set(row.writerFilePath, ofFile);
+    }
+    const key = proposalWriterKey(row.writerQualifiedName, row.writerStartLine);
+    const ids = ofFile.get(key);
+    if (ids) ids.push(row.id);
+    else ofFile.set(key, [row.id]);
+  }
+  return out;
 }
 
 function edgeRowKey(fromSymbolId: string, toQualifiedName: string | null, line: number): string {

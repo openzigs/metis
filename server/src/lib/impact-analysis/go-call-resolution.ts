@@ -8,9 +8,13 @@
  * (`metadata.goResolution`, see `GO_RESOLUTION_KEY`):
  *
  *  - **decided, no project callee** — `external` (the standard library, a
- *    third-party module, a builtin), `func-value`, `conversion`, `ambiguous`.
- *    This module never binds these: ingest has the declarations and ruled a
- *    project callee out, so a name match here could only contradict it.
+ *    third-party module, a builtin), `external-assumed` (a member or result of
+ *    an external value whose own type was not examined), `func-value`,
+ *    `conversion`, `ambiguous`. This module never binds these: ingest has the
+ *    declarations and ruled a project callee out, so a name match here could
+ *    only contradict it. (For `external-assumed` that ruling is an assumption,
+ *    kept closed on purpose: opened to this fallback, four calls of four bound
+ *    to the wrong function on the Miniflux sample.)
  *  - **undecided** — `interface` (dispatched at run time) and edges with no
  *    verdict (the receiver's type could not be inferred, or a graph ingested
  *    before #1071). These are bound here, by name, for the consumers that prefer

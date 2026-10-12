@@ -3571,6 +3571,18 @@ model CodeGraph {
   /// last written with. An incremental ingest of a graph recorded with an older
   /// one (or null: built before #1071) upgrades the affected files in place.
   extractorVersion   Int?
+  /// Issue #1071 — the files an extractor upgrade could NOT bring to
+  /// `extractorVersion`: JSON `{ "<path>": "<content hash that failed>" | null }`
+  /// (null: the file could not be read). Their rows keep the older shape. A
+  /// file listed here is retried only when its content differs from the
+  /// recorded hash, so one unparseable file does not make every ingest redo
+  /// the whole upgrade. Null when every file is at `extractorVersion`.
+  extractorUpgradeFailed String?
+  /// Issue #1071 — when an ingest last REWROTE this graph's rows in place for
+  /// an extractor upgrade (it upgraded at least one file). The evidence
+  /// automatic document regeneration needs to tell that rewrite from a real
+  /// change of the graph; null when no upgrade ever rewrote it.
+  extractorUpgradedAt DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
@@ -3971,6 +3983,13 @@ model GeneratedDocumentVersion {
   revisionId     String?
   /// JSON-encoded immutable generation provenance manifest (#1355).
   provenanceManifest String?
+  /// Issue #1071 — the generation inputs last ACKNOWLEDGED for this version
+  /// without regenerating: JSON `{ upgradedAt, snapshot }`. Written once per
+  /// code-graph extractor upgrade, when a refresh found that the upgrade
+  /// rewrote the graph and nothing else the document reads had changed. Later
+  /// checks compare against `snapshot` instead of the manifest's, so the next
+  /// real change of the graph regenerates. The manifest itself is immutable.
+  acknowledgedInputs String?
   content        String
   /// Human-readable summary of what changed (for incremental regen)
   diffSummary    String?

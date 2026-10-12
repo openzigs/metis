@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { EvidencePolicy } from "./evidence-policy.js";
 import { captureGenerationInputs } from "./generation-inputs.js";
-import { EXTRACTOR_INPUT_KEY, isExtractorOnlyChange } from "./regeneration-plan.js";
+import { isGraphRowsOnlyChange } from "./regeneration-plan.js";
 
 const mocks = vi.hoisted(() => ({
   symbols: vi.fn(),
@@ -162,8 +162,13 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-describe("captureGenerationInputs — the code-graph extractor version (#1071)", () => {
-  const withVersion = (extractorVersion: number | null | undefined) =>
+describe("captureGenerationInputs — a code-graph extractor upgrade (#1071)", () => {
+  it("carries nothing about the extractor: a graph's version does not move the snapshot", async () => {
+    // A project no upgrade rewrote must compare exactly as it did before #1071,
+    // so the snapshot holds no item that every graph gains on its next ingest.
+    mocks.symbols.mockResolvedValue([symbol()]);
+    await file("src/mod.ts", "source");
+    const before = await capture();
     mocks.repositories.mockResolvedValue(
       new Map([
         [
@@ -173,31 +178,18 @@ describe("captureGenerationInputs — the code-graph extractor version (#1071)",
             repoConnectorId: "a",
             root,
             commitSha: "head",
-            ...(extractorVersion === undefined ? {} : { extractorVersion }),
+            extractorVersion: 1,
+            extractorUpgradedAt: new Date(),
           },
         ],
       ]),
     );
-
-  it("records the extractor version as one item, and nothing else moves with it", async () => {
-    mocks.symbols.mockResolvedValue([symbol()]);
-    await file("src/mod.ts", "source");
-    withVersion(null);
-    const before = await capture();
-    withVersion(1);
     const after = await capture();
-
-    expect(after.fingerprint).not.toBe(before.fingerprint);
-    const differing = Object.keys({ ...before.items, ...after.items }).filter(
-      (key) => before.items[key] !== after.items[key],
-    );
-    expect(differing).toEqual([EXTRACTOR_INPUT_KEY]);
-    // A graph with no version recorded and one that predates the column are the same.
-    withVersion(undefined);
-    expect((await capture()).fingerprint).toBe(before.fingerprint);
+    expect(after).toEqual(before);
+    expect(Object.keys(after.items).filter((key) => key.startsWith("extractor"))).toEqual([]);
   });
 
-  it("an in-place upgrade (renamed symbol, re-bound edge) is an extractor-only change", async () => {
+  it("an in-place upgrade (renamed symbol, re-bound edge) moves graph-row items only", async () => {
     await file("src/mod.ts", "source");
     const callee = symbol({
       id: "t",
@@ -218,22 +210,24 @@ describe("captureGenerationInputs — the code-graph extractor version (#1071)",
     mocks.symbols.mockResolvedValue([symbol(), callee]);
     mocks.edges.mockResolvedValue([edge(null, null)]);
     mocks.findings.mockResolvedValue([finding({ symbolId: "t" })]);
-    withVersion(null);
     const before = await capture();
 
     // What #1071 does to the rows: the method is renamed, the call is bound.
     const renamed = { ...callee, qualifiedName: "src/mod.ts::Store::save" };
     mocks.symbols.mockResolvedValue([symbol(), renamed]);
     mocks.edges.mockResolvedValue([edge(renamed, '{"goResolution":"receiver-type"}')]);
-    withVersion(1);
     const after = await capture();
 
     expect(after.fingerprint).not.toBe(before.fingerprint);
-    expect(isExtractorOnlyChange(before, after)).toBe(true);
+    expect(isGraphRowsOnlyChange(before, after)).toBe(true);
+    const moved = Object.keys({ ...before.items, ...after.items })
+      .filter((key) => before.items[key] !== after.items[key])
+      .map((key) => key.slice(0, key.indexOf(":")));
+    expect([...new Set(moved)].sort()).toEqual(["edge", "finding", "symbol"]);
 
-    // The same rows after an edit to the file: a real change.
+    // The same rows after an edit to the file: more than graph rows moved.
     await file("src/mod.ts", "source, edited");
-    expect(isExtractorOnlyChange(before, await capture())).toBe(false);
+    expect(isGraphRowsOnlyChange(before, await capture())).toBe(false);
   });
 });
 

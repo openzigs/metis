@@ -18,11 +18,11 @@
  *
  *  - `bound` — one function or method is the static callee.
  *  - `unbound` — the declarations decide there is NO project function to bind:
- *    the callee is outside the project (`external`), it is dispatched at run
- *    time (`interface`, `func-value`), it is a type conversion (`conversion`),
- *    or two declarations claim it (`ambiguous`: build-tagged twins). Nothing is
- *    guessed, and a later name-based resolver must not guess on `external`,
- *    `func-value`, `conversion` or `ambiguous` either — see
+ *    the callee is outside the project (`external`, `external-assumed`), it is
+ *    dispatched at run time (`interface`, `func-value`), it is a type
+ *    conversion (`conversion`), or two declarations claim it (`ambiguous`:
+ *    build-tagged twins). Nothing is guessed, and a later name-based resolver
+ *    must not guess on any of these but `interface` either — see
  *    `impact-analysis/go-call-resolution.ts`.
  *  - `unknown` — nothing was decided: the receiver's type could not be inferred
  *    (the result of a third-party generic function, a struct literal type), or
@@ -30,39 +30,66 @@
  *    back to the name-evidence rules in `call-resolution.ts`, exactly as before
  *    this module existed.
  *
- * **`external` is recorded only when the callee is positively known to be
- * outside the project** — because every later reader treats it as decided and
- * never binds the call. Positive means one of:
+ * ## `external` on positive evidence; `external-assumed` where the receiver is external but its type is unexamined
+ *
+ * Every later reader treats both as decided and never binds the call, so each
+ * says exactly what is known.
+ *
+ * **`external`** — the callee is positively known to be declared outside the
+ * project. One of:
  *
  *  - a predeclared identifier (`len`, `string`);
- *  - an import path that is the standard library (`go-stdlib.ts`) or lies
- *    outside every `go.mod` module of the tree, and a member of a value whose
- *    type such a package declares;
+ *  - a function of a package whose import path is the standard library
+ *    (`go-stdlib.ts`) or lies outside every `go.mod` module of the tree;
+ *  - a method called on a value whose type the SOURCE NAMES and which is a
+ *    standard-library type that is not an interface (`db *sql.DB`,
+ *    `r *http.Request`): the list of standard-library interfaces is complete
+ *    for its Go release, so any other type there declares its own methods;
  *  - a name that the one package Go's scoping lets it mean does not declare,
  *    when EVERY Go file of that package's directory was read: a bare `f()` can
  *    only be the caller's own package (or a dot import, or a builtin), and
  *    `storage.F()` only package `storage`.
  *
- * Everything short of that is `unknown`: an import path inside a project
+ * **`external-assumed`** — the receiver is a value from outside the project,
+ * but its own type was never examined, so whether the method is a concrete one
+ * or is dispatched through an interface a project type implements is not known:
+ *
+ *  - a method on a value of a THIRD-PARTY type (`q queue.Consumer`): the
+ *    dependency is not read, and the type may be an interface;
+ *  - a member of a member, or of a call result, of an external value
+ *    (`r.URL.Query()`, `w.Header().Set()`, `rows.Close()` after
+ *    `rows, _ := db.Query()`), and an element of one.
+ *
+ * It is kept DECIDED on purpose: opened to the name fallback, four such calls
+ * of four bound to the wrong function on the Miniflux sample. Where the member
+ * in between is KNOWN to be a standard-library interface the call is not
+ * assumed at all but `interface`: `resp.Body.Close()`,
+ * `srv.Handler.ServeHTTP()`, `r.Context().Done()`, `io.Discard.Write()`.
+ *
+ * Everything short of evidence is `unknown`: an import path inside a project
  * module whose directory holds no determinable package (two library package
  * clauses, no parsed file); a name its package does not declare when a file of
- * that directory could not be parsed ({@link GoResolverOptions.incompleteDirs});
- * a tree with no `go.mod` where an import path only ends like a directory
- * name; and two imports that would bind the same local name.
+ * that directory was not read — unparseable, unreadable, or hidden by the
+ * ignore rules ({@link GoResolverOptions.incompleteDirs}); a type name its
+ * project package does not declare; an import path that two `go.mod` files of
+ * the tree both claim, from a file in neither; a tree with no `go.mod` where an
+ * import path only ends like a directory name; and two imports that would bind
+ * the same local name.
  *
- * One `external` is weaker than the rest and is kept deliberately: a method
- * called on a value of a THIRD-PARTY type. For a concrete type that is exact;
- * if the type is an interface the implementation may be a project type, and
- * this module cannot tell the two apart without reading the dependency. It does
- * tell them apart for the standard library, where the interfaces are listed
- * (`http.Handler`, `io.Writer`): a call through one is `interface`.
+ * An import is resolved from the importing file's OWN module first (the
+ * nearest `go.mod` above it), then by the most specific module path, as Go
+ * does. So in a monorepo of services that are each `module app`,
+ * `app/storage` means the importer's own `storage/`.
  *
  * Build constraints, as far as a reader needs them to name a directory's
  * package: a file tagged `//go:build ignore` (or `// +build ignore`) is not
  * part of its directory's package — it is resolved as a single-file package of
- * its own — and a `package main` beside one library package is never what an
- * import of that directory means. `_test` packages are a separate package.
- * Other constraints are not evaluated: twins behind them stay `ambiguous`.
+ * its own, and beside ANOTHER ignored file not even that is known in full
+ * (`go run gen.go gen_helpers.go`) — and a `package main` beside one library
+ * package is never what an import of that directory means. `_test` packages
+ * are a separate package. Other constraints are not evaluated: twins behind
+ * them stay `ambiguous`, whether they are two functions, a function and a
+ * variable or type of one name, or a field and a method of one name.
  *
  * Deliberately NOT inferred: which concrete type sits behind an interface value,
  * type parameters, method expressions (`T.Method`), and anything whose type is
@@ -70,15 +97,36 @@
  * resolved, by Go's own shallowest-depth rule, and stops at the first depth that
  * holds an embedded type this module cannot see into.
  *
- * Pure and bounded: no I/O. One call's evaluation carries ONE depth counter
- * through every re-entry (a selection, a call result, a package variable's
- * initialiser), so a cycle of package variables ends at {@link MAX_EVAL_DEPTH}
- * like any other chain. An expression is a chain — every node has one operand —
- * so that depth is also the number of steps. Type lookups (aliases, defined
- * types, embeddings) are a separate, self-contained recursion capped at
- * {@link MAX_DEPTH}, entered from an evaluation but never re-entering it.
+ * ## Bounded work
+ *
+ * Pure: no I/O. Bounded in DEPTH and in WORK, which are different things — a
+ * depth cap with a `seen` set still let one call look through every embedded
+ * field of every type it could reach, and every call do it again.
+ *
+ *  - Depth. One call's evaluation carries ONE depth counter through every
+ *    re-entry (a selection, a call result, a package variable's initialiser),
+ *    so a cycle of package variables ends at {@link MAX_EVAL_DEPTH} like any
+ *    other chain. An expression is a chain — every node has one operand — so
+ *    that depth is also its number of steps. Type lookups (aliases, defined
+ *    types, embeddings) are a separate recursion capped at {@link MAX_DEPTH}.
+ *  - Work. Whatever depends only on the DECLARATIONS is worked out once per
+ *    resolver and kept: what a type name means in a file, a type's struct, its
+ *    whole member set (own and promoted), what an import path names, which
+ *    declarations a viewer may see. A call then costs its own length, and the
+ *    whole tree costs declarations plus calls. Nothing kept depends on the
+ *    order calls arrive in.
+ *  - Budgets. What is left is counted: {@link GO_CALL_STEP_BUDGET} steps for
+ *    one call, {@link GO_TYPE_STEP_BUDGET} for one type's member set. Past
+ *    either the answer is `unknown` with `why: "budget"` — counted by the
+ *    caller, never a guess. Ingest adds a ceiling on the whole step
+ *    (`GO_BINDING_MAX_MS` in `ingest.ts`).
  */
-import { GO_STDLIB_PACKAGES, isGoStdlibInterface } from "./go-stdlib.js";
+import {
+  GO_STDLIB_PACKAGES,
+  goStdlibInterfaceMember,
+  isGoStdlibInterface,
+  isGoStdlibInterfaceVar,
+} from "./go-stdlib.js";
 
 /** A Go type as written in source, reduced to what member lookup needs. Pointers are dropped. */
 export type GoType =
@@ -183,7 +231,8 @@ export interface GoModule {
 }
 
 export type GoBinding = "package" | "same-package" | "receiver-type";
-export type GoUnboundReason = "external" | "interface" | "func-value" | "conversion" | "ambiguous";
+export type GoUnboundReason =
+  "external" | "external-assumed" | "interface" | "func-value" | "conversion" | "ambiguous";
 
 export type GoCallVerdict =
   | { kind: "bound"; qualifiedName: string; via: GoBinding }
@@ -202,6 +251,10 @@ export type GoCallVerdict =
  * callee out. Absent when nothing was decided (the receiver's type could not be
  * inferred and no name evidence bound it) and on every graph ingested before
  * #1071.
+ *
+ * `name` also labels a call the type resolver could not finish — it threw, ran
+ * out of budget, or came up after the ingest's time ceiling — that the name
+ * rules then bound: such a call is undecided BY TYPE, not unbound.
  */
 export const GO_RESOLUTION_KEY = "goResolution";
 
@@ -220,14 +273,19 @@ export function goResolutionMetadata(resolution: GoResolution): string {
  * callee. `interface` is not one: which implementation runs is open, so a
  * consumer that prefers a probable callee to none may still look for it by name.
  *
- * `external` covers a function of a package outside the project, a builtin, and
- * a method of a value whose type such a package declares. The last includes a
- * call through a THIRD-PARTY interface, which a project type may implement:
- * that edge is deliberately not guessed. Standard-library interfaces
- * (`http.Handler`, `io.Writer`) are told apart and recorded `interface`.
+ * `external` is a callee PROVEN to be declared outside the project: a function
+ * of a package outside it, a builtin, a method of a standard-library type that
+ * is not an interface. `external-assumed` is the weaker claim, said as such: a
+ * member or result of an external value whose own type was not examined, and a
+ * method on a third-party type — either may in truth be dispatched through an
+ * interface a project type implements. It is decided all the same, on purpose:
+ * that edge is not guessed. Standard-library interfaces (`http.Handler`,
+ * `io.Writer`), reached directly or through a standard-library member
+ * (`resp.Body`), are told apart and recorded `interface`.
  */
 const GO_DECIDED_UNBOUND: readonly GoUnboundReason[] = [
   "external",
+  "external-assumed",
   "func-value",
   "conversion",
   "ambiguous",
@@ -266,8 +324,9 @@ export interface GoResolverFile {
 export interface GoResolverOptions {
   /**
    * Directories holding a Go file whose declarations are NOT among the files
-   * given (it could not be read or parsed). A name such a directory's package
-   * does not declare may be declared in that file, so it is never ruled out.
+   * given: it could not be read or parsed, or the ingest's ignore rules hide
+   * it. A name such a directory's package does not declare may be declared in
+   * that file, so it is never ruled out.
    */
   incompleteDirs?: ReadonlySet<string>;
 }
@@ -471,10 +530,21 @@ type Val =
   | { v: "func"; decl: Decl<GoFuncFact>; via: GoBinding }
   /** A type name used as an expression: the callee of a conversion. */
   | { v: "type"; type: GoType; file: FileCtx }
-  /** A value of a type declared outside the tree: everything selected from it is external too. */
-  | { v: "external" }
-  /** A function declared outside the tree: an external callee whose result type is not known. */
-  | { v: "external-func" }
+  /**
+   * A member of a value whose type is declared outside the tree. Without
+   * `assumed` that is PROVEN to be declared outside it too: the type is a
+   * standard-library type that is not an interface, so its methods are its
+   * own. `assumed`: the receiver is external but its type was never examined
+   * (a third-party type, or the member or result of another external value),
+   * so whether this is a concrete method or one dispatched through an
+   * interface is not known. `interfaceResults`: a standard-library method, and
+   * the positions of its results that are standard-library interfaces.
+   */
+  | { v: "external"; assumed?: true; interfaceResults?: readonly number[] }
+  /** A function or variable of a package outside the tree; a function's result type is not known. */
+  | { v: "external-func"; path: string; name: string }
+  /** A value of a standard-library INTERFACE type, reached through a standard-library member (`resp.Body`). */
+  | { v: "outside-interface" }
   /**
    * A method reached through an interface. `outside`: the interface is declared
    * outside the tree, so what the method RETURNS is a type declared there too.
@@ -490,6 +560,8 @@ type Val =
 
 const UNKNOWN: Val = { v: "unknown" };
 const EXTERNAL: Val = { v: "external" };
+const EXTERNAL_ASSUMED: Val = { v: "external", assumed: true };
+const OUTSIDE_INTERFACE_METHOD: Val = { v: "interface-method", outside: true };
 const AMBIGUOUS: Val = { v: "ambiguous" };
 
 type ProjectNamed = { n: "project"; pkg: Pkg; name: string; viewer: FileCtx };
@@ -497,7 +569,8 @@ type ProjectNamed = { n: "project"; pkg: Pkg; name: string; viewer: FileCtx };
 /** A named type resolved against the tree. */
 type Named =
   | ProjectNamed
-  | { n: "external" }
+  /** A type declared outside the tree; `path` is its import path, absent for a predeclared type (`int`). */
+  | { n: "external"; path?: string; name?: string }
   /** `outside`: an interface of a package outside the tree (`http.ResponseWriter`). */
   | { n: "interface"; outside?: true }
   | { n: "unknown" };
@@ -568,6 +641,8 @@ export function createGoResolver(
   const pkgsByDir = new Map<string, Pkg[]>();
   /** Every directory holding a Go file, build-ignored ones included. */
   const goDirs = new Set<string>();
+  /** Directory → how many `//go:build ignore` files it holds. */
+  const ignoredInDir = new Map<string, number>();
   const ctxByFile = new Map<string, FileCtx>();
 
   const add = <T>(map: Map<string, Decls<T>>, key: string, decl: Decl<T>): void => {
@@ -583,6 +658,7 @@ export function createGoResolver(
   for (const f of files) {
     const dir = goDir(f.filePath);
     goDirs.add(dir);
+    if (f.facts.buildIgnored) ignoredInDir.set(dir, (ignoredInDir.get(dir) ?? 0) + 1);
     // A build-ignored file is a single-file package of its own (`go run gen.go`):
     // its calls resolve against its own declarations and never the directory's.
     const key = f.facts.buildIgnored
@@ -631,6 +707,27 @@ export function createGoResolver(
   }
 
   const sortedModules = [...modules].sort((a, b) => b.path.length - a.path.length);
+
+  /** Directory → the `go.mod` nearest above it (the module the directory belongs to), or null. */
+  const moduleOfDir = new Map<string, GoModule | null>();
+  const moduleOf = (dir: string): GoModule | null => {
+    const known = moduleOfDir.get(dir);
+    if (known !== undefined) return known;
+    let best: GoModule | null = null;
+    for (const m of modules) {
+      if (isUnderDir(dir, m.dir) && (best === null || m.dir.length > best.dir.length)) best = m;
+    }
+    moduleOfDir.set(dir, best);
+    return best;
+  };
+
+  /** The directory `importPath` names inside module `m`, or null when the path is not in it. */
+  const dirInModule = (m: GoModule, importPath: string): string | null => {
+    if (importPath === m.path) return m.dir;
+    if (!importPath.startsWith(`${m.path}/`)) return null;
+    const rel = importPath.slice(m.path.length + 1);
+    return m.dir ? `${m.dir}/${rel}` : rel;
+  };
 
   // ── Bounded work ─────────────────────────────────────────────────────────
   //
@@ -707,29 +804,56 @@ export function createGoResolver(
       : { t: "external", path: importPath };
   };
 
-  /** Import path → what it names, decided once: matching walks the modules and the orphan directories. */
-  const importTargets = new Map<string, ImportTarget>();
+  /**
+   * Importing module and import path → what the path names, decided once:
+   * matching walks the modules and the orphan directories.
+   */
+  const importTargets = new Map<GoModule | null, Map<string, ImportTarget>>();
 
-  /** What an import path names: a project package, a package outside the tree, or neither known. */
-  const resolveImport = (importPath: string): ImportTarget => {
-    const known = importTargets.get(importPath);
+  /**
+   * What an import path names FROM `importer`: a project package, a package
+   * outside the tree, or neither known.
+   */
+  const resolveImport = (importPath: string, importer: FileCtx): ImportTarget => {
+    const own = moduleOf(importer.dir);
+    let ofModule = importTargets.get(own);
+    if (!ofModule) {
+      ofModule = new Map();
+      importTargets.set(own, ofModule);
+    }
+    const known = ofModule.get(importPath);
     if (known) return known;
-    const target = resolveImportOnce(importPath);
-    importTargets.set(importPath, target);
+    const target = resolveImportOnce(importPath, own);
+    ofModule.set(importPath, target);
     return target;
   };
 
-  const resolveImportOnce = (importPath: string): ImportTarget => {
+  const resolveImportOnce = (importPath: string, own: GoModule | null): ImportTarget => {
     // The standard library is never a project directory, whatever the tree holds.
     if (GO_STDLIB_PACKAGES.has(importPath)) return { t: "external", path: importPath };
+    // The importing file's own module first: a path inside it means the
+    // directory that module holds — whatever another `go.mod` of the tree calls
+    // itself. (Unless a nested module claims that directory, or it holds no Go:
+    // then the general rule below decides.)
+    if (own) {
+      const dir = dirInModule(own, importPath);
+      if (dir !== null && goDirs.has(dir) && moduleOf(dir) === own) return inDir(dir);
+    }
+    // Otherwise the most specific module path wins, as in Go.
+    const best: GoModule[] = [];
     for (const m of sortedModules) {
-      const exact = importPath === m.path;
-      if (!exact && !importPath.startsWith(`${m.path}/`)) continue;
-      const rel = exact ? "" : importPath.slice(m.path.length + 1);
-      const dir = exact ? m.dir : m.dir ? `${m.dir}/${rel}` : rel;
+      if (dirInModule(m, importPath) === null) continue;
+      if (best.length > 0 && m.path !== best[0].path) break;
+      best.push(m);
+    }
+    if (best.length > 0) {
+      // Two `go.mod` files declaring one module path (a monorepo of services
+      // that are each `module app`): only the importer's own settles which.
+      const m = best.length === 1 ? best[0] : own && best.includes(own) ? own : null;
+      if (!m) return UNKNOWN_IMPORT;
       // Inside a project module: a directory the walk holds no package for
       // (ignored, unparsed, generated at build time) is not thereby external.
-      return inDir(dir);
+      return inDir(dirInModule(m, importPath)!);
     }
     if (orphanDirs.length === 0) return { t: "external", path: importPath };
     return bySpelling(importPath);
@@ -740,7 +864,7 @@ export function createGoResolver(
     const out = new Map<string, ImportTarget>();
     for (const imp of ctx.facts.imports) {
       if (imp.alias === "_" || imp.alias === ".") continue;
-      const target = resolveImport(imp.path);
+      const target = resolveImport(imp.path, ctx);
       const name =
         imp.alias ?? (target.t === "project" ? target.pkg.name : goDefaultImportName(imp.path));
       if (!name) continue;
@@ -764,7 +888,9 @@ export function createGoResolver(
   const dotImportsOf = (ctx: FileCtx): ImportTarget[] => {
     if (ctx.dotImports) return ctx.dotImports;
     const out: ImportTarget[] = [];
-    for (const imp of ctx.facts.imports) if (imp.alias === ".") out.push(resolveImport(imp.path));
+    for (const imp of ctx.facts.imports) {
+      if (imp.alias === ".") out.push(resolveImport(imp.path, ctx));
+    }
     ctx.dotImports = out;
     return out;
   };
@@ -812,7 +938,7 @@ export function createGoResolver(
         if (type.generic) return UNKNOWN_NAMED;
         // `http.Handler`, `io.Writer`: whatever implements it runs, often a project type.
         if (isGoStdlibInterface(target.path, type.name)) return { n: "interface", outside: true };
-        return { n: "external" };
+        return { n: "external", path: target.path, name: type.name };
       }
       pkg = target.pkg;
     }
@@ -933,8 +1059,9 @@ export function createGoResolver(
       // all dispatched at run time; which one is not worth telling apart.
       return { v: "interface-method" };
     }
-    // A defined type over a type outside the tree keeps that type's fields.
-    return info.struct === "external" ? EXTERNAL : null;
+    // A defined type over a type outside the tree keeps that type's fields,
+    // whose types are not examined.
+    return info.struct === "external" ? EXTERNAL_ASSUMED : null;
   };
 
   const memberTables = new Map<string, MemberTable>();
@@ -962,13 +1089,13 @@ export function createGoResolver(
       // Hits at this depth, per name: a name one type of the level holds is
       // that member, a name two hold is ambiguous.
       const hits = new Map<string, { count: number; val: Val; holders: Set<number> }>();
-      const hit = (name: string, val: Val, holder: number): void => {
+      const hit = (name: string, val: Val, holder: number, replace = false): void => {
         const had = hits.get(name);
         if (!had) hits.set(name, { count: 1, val, holders: new Set([holder]) });
         else if (!had.holders.has(holder)) {
           had.count += 1;
           had.holders.add(holder);
-        }
+        } else if (replace) had.val = val;
       };
       const wildcards: Array<{ holder: number; val: Val }> = [];
       const infos = level.map((named) => typeInfo(named));
@@ -987,8 +1114,12 @@ export function createGoResolver(
           for (const [name, decls] of info.methods) {
             steps += 1;
             const seenBy = named.viewer.isTest ? decls.all : decls.nonTest;
-            // A field of the name comes first: `hit` keeps the first per holder.
-            if (seenBy.length > 0) hit(name, methodVal(seenBy), i);
+            if (seenBy.length === 0) continue;
+            // A field AND a method of one name cannot be one type: they are
+            // twins behind build constraints, and neither is chosen.
+            const fieldToo =
+              info.struct && info.struct !== "external" && info.struct.byName.has(name);
+            hit(name, fieldToo ? AMBIGUOUS : methodVal(seenBy), i, fieldToo === true);
           }
         }
         const wildcard = wildcardOf(info);
@@ -1055,13 +1186,19 @@ export function createGoResolver(
     depth: number,
   ): Val => {
     if (target.t === "unknown") return UNKNOWN;
-    if (target.t === "external") return { v: "external-func" };
+    if (target.t === "external") return { v: "external-func", path: target.path, name };
     return (
       scopeMember(target.pkg, name, viewer, "package", depth) ?? {
         v: "undeclared",
         decided: !incompleteDirs.has(target.pkg.dir),
       }
     );
+  };
+
+  /** A package variable's value: its written type, else what its initialiser evaluates to. */
+  const varVal = ({ fact, file }: Decl<GoVarFact>, depth: number): Val => {
+    if (fact.type) return { v: "value", type: fact.type, file };
+    return fact.value ? evaluate(fact.value, file, depth + 1) : UNKNOWN;
   };
 
   /**
@@ -1077,20 +1214,27 @@ export function createGoResolver(
     depth: number,
   ): Val | null => {
     const funcs = visible(pkg.funcs, name, viewer);
+    const vars = visible(pkg.vars, name, viewer);
+    const types = visible(pkg.types, name, viewer);
+    // One package cannot declare a name twice, so a function AND a variable (or
+    // a type) of one name are twins behind build constraints this module does
+    // not evaluate. Only the caller's own file settles which it sees.
+    if ((funcs ? 1 : 0) + (vars ? 1 : 0) + (types ? 1 : 0) > 1) {
+      const ownFuncs = funcs ? declaredIn(pkg.funcs.get(name)!, viewer) : [];
+      const ownVars = vars ? declaredIn(pkg.vars.get(name)!, viewer) : [];
+      const ownTypes = types ? declaredIn(pkg.types.get(name)!, viewer) : [];
+      if (ownFuncs.length + ownVars.length + ownTypes.length !== 1) return AMBIGUOUS;
+      if (ownFuncs.length === 1) return { v: "func", decl: ownFuncs[0], via };
+      if (ownVars.length === 1) return varVal(ownVars[0], depth);
+      return { v: "type", type: { k: "named", name }, file: viewer };
+    }
     if (funcs) {
       if (funcs.length === 1) return { v: "func", decl: funcs[0], via };
       // Twins behind build tags: prefer the caller's own file, else refuse.
       const own = declaredIn(pkg.funcs.get(name)!, viewer);
       return own.length === 1 ? { v: "func", decl: own[0], via } : AMBIGUOUS;
     }
-    const vars = visible(pkg.vars, name, viewer);
-    if (vars) {
-      if (vars.length !== 1) return UNKNOWN;
-      const { fact, file } = vars[0];
-      if (fact.type) return { v: "value", type: fact.type, file };
-      return fact.value ? evaluate(fact.value, file, depth + 1) : UNKNOWN;
-    }
-    const types = visible(pkg.types, name, viewer);
+    if (vars) return vars.length === 1 ? varVal(vars[0], depth) : UNKNOWN;
     if (types) {
       const file = viewer.pkg === pkg ? viewer : (pkg.types.get(name)?.all[0]?.file ?? viewer);
       return { v: "type", type: { k: "named", name }, file };
@@ -1105,22 +1249,45 @@ export function createGoResolver(
       case "value": {
         if (x.type.k !== "named") return UNKNOWN;
         const named = resolveNamed(x.type, x.file, 0);
-        if (named.n === "external") return EXTERNAL;
+        if (named.n === "external") return externalMember(named, name);
         if (named.n === "interface") {
-          return named.outside
-            ? { v: "interface-method", outside: true }
-            : { v: "interface-method" };
+          return named.outside ? OUTSIDE_INTERFACE_METHOD : { v: "interface-method" };
         }
         return named.n === "project" ? member(named, name) : UNKNOWN;
       }
+      case "outside-interface":
+        // `resp.Body.Close()`: a method of a standard-library interface value.
+        return OUTSIDE_INTERFACE_METHOD;
       case "external":
+        // A member of a member (or of a result) of a value from outside the
+        // tree: the type in between was never examined.
+        return EXTERNAL_ASSUMED;
       case "external-func":
-        // A member of a value from outside the tree. `external-func` reaches
-        // here only as `pkg.Var.name`, a package-level variable of that package.
-        return EXTERNAL;
+        // Reached only as `pkg.Var.name`, a package-level variable of a package
+        // outside the tree. Known to hold an interface (`io.Discard`): its
+        // methods are dispatched. Otherwise the variable's type is unexamined.
+        return isGoStdlibInterfaceVar(x.path, x.name) ? OUTSIDE_INTERFACE_METHOD : EXTERNAL_ASSUMED;
       default:
         return UNKNOWN;
     }
+  };
+
+  /**
+   * `x.name` where x's type is declared outside the tree and named in the
+   * source. A standard-library type that is not an interface declares its own
+   * members — external, proven — and the listed ones are typed as an interface
+   * (`resp.Body`, `r.Context()`). A third-party type cannot be examined: it
+   * may itself be an interface a project type implements.
+   */
+  const externalMember = (named: Extract<Named, { n: "external" }>, name: string): Val => {
+    // A predeclared type (`int`, `string`) has no members to dispatch.
+    if (named.path === undefined || named.name === undefined) return EXTERNAL;
+    if (!GO_STDLIB_PACKAGES.has(named.path)) return EXTERNAL_ASSUMED;
+    const known = goStdlibInterfaceMember(named.path, named.name, name);
+    if (!known) return EXTERNAL;
+    return known.kind === "field"
+      ? { v: "outside-interface" }
+      : { v: "external", interfaceResults: known.results };
   };
 
   const resultOf = (fn: Val, i: number): Val => {
@@ -1133,29 +1300,31 @@ export function createGoResolver(
         return i === 0 ? { v: "value", type: fn.type, file: fn.file } : UNKNOWN;
       case "value": {
         const under = underlying(fn.type, fn.file);
-        if (under === "external") return EXTERNAL;
+        if (under === "external") return EXTERNAL_ASSUMED;
         if (!under || under.type.k !== "func") return UNKNOWN;
         const result = under.type.results[i];
         return result ? { v: "value", type: result, file: under.file } : UNKNOWN;
       }
       case "external":
         // A method of a non-generic type from outside the tree returns types
-        // declared outside it.
-        return EXTERNAL;
+        // declared outside it: a standard-library interface where that is
+        // known (`r.Context()`), otherwise a type nothing here examined.
+        return fn.interfaceResults?.includes(i) ? { v: "outside-interface" } : EXTERNAL_ASSUMED;
       case "interface-method":
         // `w.Header()` on an `http.ResponseWriter`: the standard library cannot
-        // name a project type, so the result's type is declared outside the tree.
-        return fn.outside ? EXTERNAL : UNKNOWN;
+        // name a project type, so the result's type is declared outside the
+        // tree — which type, nothing here examined.
+        return fn.outside ? EXTERNAL_ASSUMED : UNKNOWN;
       default:
         return UNKNOWN;
     }
   };
 
   const elementOf = (x: Val, which: "elem" | "key"): Val => {
-    if (x.v === "external") return EXTERNAL;
+    if (x.v === "external") return EXTERNAL_ASSUMED;
     if (x.v !== "value") return UNKNOWN;
     const under = underlying(x.type, x.file);
-    if (under === "external") return EXTERNAL;
+    if (under === "external") return EXTERNAL_ASSUMED;
     if (!under) return UNKNOWN;
     const t = under.type;
     let inner: GoType | null = null;
@@ -1186,12 +1355,16 @@ export function createGoResolver(
           if (hit) return hit;
         }
         // Nothing in scope declares it. That is decisive only when the caller's
-        // whole package was read and no dot import could have brought it in.
+        // whole package was read and no dot import could have brought it in. A
+        // build-ignored file is run with whichever of its ignored siblings the
+        // command names (`go run gen.go gen_helpers.go`), so beside another one
+        // its package is not known in full either.
         return {
           v: "undeclared",
           decided:
             dots.length === 0 &&
-            (file.facts.buildIgnored === true || !incompleteDirs.has(file.dir)),
+            !incompleteDirs.has(file.dir) &&
+            (file.facts.buildIgnored !== true || ignoredInDir.get(file.dir) === 1),
         };
       }
       case "sel":
@@ -1222,8 +1395,12 @@ export function createGoResolver(
           via: val.via,
         };
       case "external":
+        return unbound(val.assumed ? "external-assumed" : "external");
       case "external-func":
         return unbound("external");
+      case "outside-interface":
+        // An interface value is not callable; nothing is decided.
+        return { kind: "unknown" };
       case "interface-method":
         return unbound("interface");
       case "ambiguous":

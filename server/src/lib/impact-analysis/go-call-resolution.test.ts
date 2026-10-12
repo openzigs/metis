@@ -304,12 +304,14 @@ describe("#1071 — the fallback only speaks where ingest did not", () => {
   // one of these calls binds.
   const symbols = [
     fn("caller", "internal/api/handler.go", "serve"),
-    ...["Get", "Read", "Convert", "Twin", "Hook", "Plain", "Old"].map((n) =>
+    ...["Get", "Read", "Convert", "Twin", "Hook", "Plain", "Old", "Via"].map((n) =>
       fn(`t-${n}`, "internal/api/targets.go", n),
     ),
   ];
   const edges = [
     call("Get", goResolutionMetadata("external")),
+    // A member of an external value whose type was not examined: decided all the same.
+    call("Via", goResolutionMetadata("external-assumed")),
     call("Convert", goResolutionMetadata("conversion")),
     call("Twin", goResolutionMetadata("ambiguous")),
     call("Hook", goResolutionMetadata("func-value")),

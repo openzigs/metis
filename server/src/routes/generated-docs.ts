@@ -98,11 +98,16 @@ import {
   parseGeneratedDocVersionManifest,
 } from "../lib/docs-gen/generated-doc-provenance.js";
 import {
-  isExtractorOnlyChange,
   planRegeneration,
-  sameGenerationInputs,
   type GenerationInputSnapshot,
 } from "../lib/docs-gen/regeneration-plan.js";
+import {
+  extractorUpgradeMark,
+  isUnseenExtractorUpgrade,
+  serializeAcknowledgedInputs,
+  settleExtractorUpgrade,
+  type AcknowledgedInputs,
+} from "../lib/docs-gen/extractor-upgrade.js";
 import type { RegenerationTask } from "../lib/docs-gen/incremental.js";
 import {
   GENERATION_CANCELLED_MESSAGE,
@@ -1262,9 +1267,44 @@ export async function generateDocumentAsync(
     const previous = previousManifest?.inputSnapshot ?? null;
     const plan = inputSnapshot ? planRegeneration(previous, inputSnapshot) : null;
     if (automatic && plan?.mode === "unchanged") return;
-    // #1071 — neither does an automatic run start because the code-graph
-    // extractor was upgraded and nothing else changed.
-    if (automatic && inputSnapshot && isExtractorOnlyChange(previous, inputSnapshot)) return;
+    // #1071 — neither does an automatic run start for a code-graph extractor
+    // upgrade alone: a task queued for exactly that rewrite (by a scheduler
+    // that did not know the rule, or before the rewrite was acknowledged)
+    // settles here the way the scheduling check would have.
+    if (automatic && inputSnapshot && lastVersion) {
+      const settled = await settleExtractorUpgrade({
+        documentId: docId,
+        scope: { projectId, codeGraphId: policy.codeGraphId },
+        latest: lastVersion,
+        published: previous,
+        current: inputSnapshot,
+      });
+      if (settled.outcome !== "changed") return;
+    }
+    // #1071 — an upgrade that rewrites the graph WHILE this run is going is
+    // not changed inputs either. The evidence is the graph's own mark moving
+    // past where it stood when the inputs were captured; what the run then
+    // stands for is recorded beside the version it publishes.
+    const upgrade: { mark: Date | null; acknowledged: AcknowledgedInputs | null } = {
+      mark: inputSnapshot
+        ? await extractorUpgradeMark({ projectId, codeGraphId: policy.codeGraphId })
+        : null,
+      acknowledged: null,
+    };
+    const inputsStand = async (
+      row: Parameters<typeof captureGenerationInputs>[0],
+      rowPolicy: Parameters<typeof captureGenerationInputs>[1],
+    ): Promise<boolean> => {
+      if (!inputSnapshot) return true;
+      const fresh = await captureGenerationInputs(row, rowPolicy);
+      const standsFor = upgrade.acknowledged?.snapshot ?? inputSnapshot;
+      if (fresh.fingerprint === standsFor.fingerprint) return true;
+      const mark = await extractorUpgradeMark({ projectId, codeGraphId: rowPolicy.codeGraphId });
+      if (!isUnseenExtractorUpgrade(standsFor, fresh, mark, upgrade.mark)) return false;
+      upgrade.mark = mark;
+      upgrade.acknowledged = { upgradedAt: mark, snapshot: fresh };
+      return true;
+    };
     const acquired = await prisma.generatedDocument.updateMany({
       where: {
         id: docId,
@@ -1312,14 +1352,7 @@ export async function generateDocumentAsync(
       });
       if (!row || row.codeGraphHash !== claim) run.stop("superseded");
       else if (row.status === "cancelling") run.stop("aborted");
-      else if (
-        inputSnapshot &&
-        // #1071 — an extractor upgrade landing mid-run is not changed inputs.
-        !sameGenerationInputs(
-          inputSnapshot,
-          await captureGenerationInputs(row, await resolveEvidencePolicy(row)),
-        )
-      ) {
+      else if (!(await inputsStand(row, await resolveEvidencePolicy(row)))) {
         log.warn("Generation inputs changed mid-run; stopping it", {
           docId,
           projectId,
@@ -1551,15 +1584,20 @@ export async function generateDocumentAsync(
       // or retrieval consumes it, never after generating the content.
       if (policy.allowWebResearch) {
         const afterResearch = await captureGenerationInputs(doc, policy);
+        // #1071 — against what the run stands for: an upgrade already
+        // acknowledged above is not a change made during the research.
+        const standsFor = upgrade.acknowledged?.snapshot ?? inputSnapshot;
         if (
-          inputSnapshot &&
-          Object.keys({ ...inputSnapshot.items, ...afterResearch.items }).some(
-            (key) => key !== "web" && inputSnapshot!.items[key] !== afterResearch.items[key],
+          standsFor &&
+          Object.keys({ ...standsFor.items, ...afterResearch.items }).some(
+            (key) => key !== "web" && standsFor.items[key] !== afterResearch.items[key],
           )
         ) {
           throw new Error("Generation inputs changed during web research");
         }
+        // The new capture IS what the run stands for from here on.
         inputSnapshot = afterResearch;
+        upgrade.acknowledged = null;
       }
       const grounding = await buildProjectGroundingContext({
         projectId,
@@ -1826,10 +1864,7 @@ export async function generateDocumentAsync(
     const currentPolicy = await resolveEvidencePolicy(current);
     if (automatic?.signal.aborted)
       throw new UnpublishableGenerationError("aborted", "Regeneration aborted");
-    if (
-      inputSnapshot &&
-      !sameGenerationInputs(inputSnapshot, await captureGenerationInputs(current, currentPolicy))
-    ) {
+    if (!(await inputsStand(current, currentPolicy))) {
       throw new UnpublishableGenerationError(
         "inputs-changed",
         "Generation inputs changed; replay ingestion to regenerate the current revision",
@@ -1881,6 +1916,11 @@ export async function generateDocumentAsync(
           version: nextVersion,
           revisionId,
           provenanceManifest,
+          // #1071 — the manifest says what the run captured; when an extractor
+          // upgrade rewrote the graph meanwhile, this says what it stands for.
+          ...(upgrade.acknowledged
+            ? { acknowledgedInputs: serializeAcknowledgedInputs(upgrade.acknowledged) }
+            : {}),
           content: markdown,
           diffSummary:
             regeneration?.mode === "sections"

@@ -499,15 +499,86 @@ func (h *wrap) Set(k, v string)             {}
     expect(v.get("p/p.go:WriteHeader")).toBe("unbound interface");
   });
 
-  it("is `external` for a standard-library concrete type, and for what an interface method returns", () => {
-    const v = verdicts(tree);
-    expect(v.get("p/p.go:Do")).toBe("unbound external");
-    // `w.Header()` returns `http.Header`: the standard library cannot name a project type.
-    expect(v.get("p/p.go:Set")).toBe("unbound external");
+  it("is `external` for a method of a standard-library type that is not an interface: proven", () => {
+    // `*http.Client` is named in the source and is not an interface, so `Do` is its own.
+    expect(verdicts(tree).get("p/p.go:Do")).toBe("unbound external");
   });
 
-  it("stays `external` for a third-party type, which cannot be told from an interface (documented limit)", () => {
-    expect(verdicts(tree).get("p/p.go:Consume")).toBe("unbound external");
+  it("is `external-assumed` for what an interface method returns: its type was not examined", () => {
+    // `w.Header()` returns `http.Header`. The standard library cannot name a
+    // project type, so the call is decided — but which type it is, nothing read.
+    expect(verdicts(tree).get("p/p.go:Set")).toBe("unbound external-assumed");
+  });
+
+  it("is `external-assumed` for a third-party type, which cannot be told from an interface", () => {
+    expect(verdicts(tree).get("p/p.go:Consume")).toBe("unbound external-assumed");
+  });
+
+  describe("a standard-library interface reached through a standard-library member", () => {
+    // Every method called below is ALSO declared on a project type, which is
+    // what a decided `external` would wrongly rule out.
+    const v = () =>
+      verdicts({
+        "p/p.go": `package p
+
+import (
+	"database/sql"
+	"io"
+	"net/http"
+)
+
+type impl struct{}
+
+func (i *impl) Close() error                                    { return nil }
+func (i *impl) ServeHTTP(w http.ResponseWriter, r *http.Request) {}
+func (i *impl) Done() <-chan struct{}                            { return nil }
+func (i *impl) Write(p []byte) (int, error)                      { return 0, nil }
+func (i *impl) RoundTrip(r *http.Request) (*http.Response, error) { return nil, nil }
+func (i *impl) Query(q string)                                   {}
+func (i *impl) Get(k string) string                              { return "" }
+func (i *impl) Do(r *http.Request)                               {}
+func (i *impl) Len() int                                         { return 0 }
+
+func use(resp *http.Response, srv *http.Server, r *http.Request, db *sql.DB, c http.Client) {
+	resp.Body.Close()
+	srv.Handler.ServeHTTP(nil, r)
+	r.Context().Done()
+	io.Discard.Write(nil)
+	c.Transport.RoundTrip(r)
+	db.Query("select 1")
+	r.Header.Get("a")
+	http.DefaultClient.Do(r)
+	r.Context().Done().Len()
+}
+`,
+      });
+
+    it("a FIELD typed as an interface: `resp.Body.Close()`, `srv.Handler.ServeHTTP()`", () => {
+      expect(v().get("p/p.go:Close")).toBe("unbound interface");
+      expect(v().get("p/p.go:ServeHTTP")).toBe("unbound interface");
+      expect(v().get("p/p.go:RoundTrip")).toBe("unbound interface");
+    });
+
+    it("a METHOD that returns an interface: `r.Context().Done()`", () => {
+      expect(v().all("p/p.go:Done")).toEqual(["unbound interface", "unbound interface"]);
+    });
+
+    it("a package VARIABLE typed as an interface: `io.Discard.Write()`", () => {
+      expect(v().get("p/p.go:Write")).toBe("unbound interface");
+    });
+
+    it("the method that returns the interface is itself a concrete method: external", () => {
+      expect(v().all("p/p.go:Context")).toEqual(["unbound external", "unbound external"]);
+      expect(v().get("p/p.go:Query")).toBe("unbound external");
+    });
+
+    it("a member whose type is not a listed interface is unexamined: external-assumed", () => {
+      // `r.Header` is `http.Header`; `http.DefaultClient` is a `*http.Client`.
+      expect(v().get("p/p.go:Get")).toBe("unbound external-assumed");
+      expect(v().get("p/p.go:Do")).toBe("unbound external-assumed");
+      // What an interface method returns (`<-chan struct{}`) is unexamined too.
+      expect(v().get("p/p.go:Len")).toBe("unbound external-assumed");
+    });
   });
 
   it("does not read what a PROJECT interface's method returns as external", () => {

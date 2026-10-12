@@ -149,6 +149,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     it("control: with no failure both calls bind by type and nothing is counted", async () => {
       const { stats, calls } = await ingestTree();
       expect(stats.goBinding).toMatchObject({ files: 2, calls: 2, errors: 0 });
+      expect(stats.goBinding!.failures).toEqual([]);
       expect(calls).toEqual([
         'Close → internal/storage/storage.go::Storage::Close {"goResolution":"receiver-type"}',
         'Save → internal/storage/storage.go::Storage::Save {"goResolution":"receiver-type"}',
@@ -159,7 +160,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       failure.throwOn.add("Save");
       const { stats, calls } = await ingestTree();
 
-      expect(stats.goBinding).toMatchObject({ calls: 2, errors: 1 });
+      expect(stats.goBinding).toMatchObject({ calls: 2, errors: 1, overBudget: 0, skipped: 0 });
+      // Named, so a resolver bug can be found from the stats or the log line.
+      expect(stats.goBinding!.failures).toEqual(["internal/api/api.go:12 Save"]);
       expect(calls).toEqual([
         'Close → internal/storage/storage.go::Storage::Close {"goResolution":"receiver-type"}',
         // No verdict recorded: the fallback readers may still look for it by name.
@@ -177,11 +180,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(calls).toContain('Close → internal/api/api.go::conn::Close {"goResolution":"name"}');
     });
 
+    it("names both calls when both throw, in the order they were resolved", async () => {
+      failure.throwOn.add("Save");
+      failure.throwOn.add("Close");
+      const { stats } = await ingestTree();
+      expect(stats.goBinding?.errors).toBe(2);
+      expect(stats.goBinding!.failures).toEqual([
+        "internal/api/api.go:12 Save",
+        "internal/api/api.go:13 Close",
+      ]);
+    });
+
     it("a resolver that cannot be built leaves every call to the name rules, and is counted", async () => {
       failure.build = true;
       const { stats, calls } = await ingestTree();
 
       expect(stats.goBinding).toMatchObject({ files: 2, calls: 0, errors: 1 });
+      expect(stats.goBinding!.failures).toEqual(["(the resolver could not be built)"]);
       expect(calls).toEqual(["Close → internal/api/api.go::conn::Close -", "Save → NULL -"]);
     });
   },

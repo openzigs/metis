@@ -16,3 +16,23 @@
 --   ALTER TABLE "code_graphs" DROP COLUMN "extractorVersion";
 -- After it no stored graph is upgraded on ingest; a full re-ingest still is.
 ALTER TABLE "code_graphs" ADD COLUMN IF NOT EXISTS "extractorVersion" INTEGER;
+
+-- The files an upgrade could not reach, by path, with the hash of the content
+-- that failed (JSON; NULL: none). A listed file is retried only when its
+-- content changes, so one unparseable file does not make every ingest repeat
+-- the whole upgrade. Rollback: DROP COLUMN "extractorUpgradeFailed" — the next
+-- ingest then simply does not know which files still have the older shape.
+ALTER TABLE "code_graphs" ADD COLUMN IF NOT EXISTS "extractorUpgradeFailed" TEXT;
+
+-- When an ingest last rewrote this graph's rows in place for an extractor
+-- upgrade. Automatic document regeneration reads it as the evidence that a
+-- difference confined to graph rows IS that rewrite. NULL — every existing
+-- row — means no upgrade has rewritten the graph. Rollback: DROP COLUMN
+-- "extractorUpgradedAt"; an upgrade refresh then regenerates documents.
+ALTER TABLE "code_graphs" ADD COLUMN IF NOT EXISTS "extractorUpgradedAt" TIMESTAMP(3);
+
+-- The generation inputs last acknowledged for a published document version
+-- without regenerating it (JSON; NULL: none — every existing row). Rollback:
+-- DROP COLUMN "acknowledgedInputs"; the next check compares against the
+-- version's own manifest again, as before.
+ALTER TABLE "generated_document_versions" ADD COLUMN IF NOT EXISTS "acknowledgedInputs" TEXT;
