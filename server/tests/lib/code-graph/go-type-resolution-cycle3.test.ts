@@ -503,6 +503,22 @@ describe("with no go.mod, an import is matched by whole path SEGMENTS, never by 
   });
 });
 
+describe("a module path of one segment, or of one letter", () => {
+  it("is found like any other: the import's leading segments are tried down to the first", () => {
+    const tree = {
+      "lib/l.go": "package lib\n\nfunc L() {}\n",
+      "cmd/main.go": 'package main\n\nimport "x/lib"\n\nfunc main() {\n\tlib.L()\n}\n',
+    };
+    expect(goVerdicts(tree, [{ dir: "", path: "x" }]).get("cmd/main.go:6:L")).toBe(
+      "package lib/l.go::L",
+    );
+    // And a path that only STARTS with those letters is not in the module.
+    expect(goVerdicts(tree, [{ dir: "", path: "x/li" }]).get("cmd/main.go:6:L")).toBe(
+      "unbound external",
+    );
+  });
+});
+
 describe("dot imports are read once each", () => {
   it("one dot import past the budget: the import block is not read, and every call says so", () => {
     let src = "package p\n\nimport (\n";
@@ -796,6 +812,8 @@ describe("reading a go.mod and guessing an import's name", () => {
     expect(parseGoModulePath('module ""\n')).toBeNull();
     expect(parseGoModulePath("module // nothing\n")).toBeNull();
     expect(parseGoModulePath("go 1.22\n")).toBeNull();
+    // A comment whose seventh character is a space is not the directive either.
+    expect(parseGoModulePath("// the path\nmodule example.com/app\n")).toBe("example.com/app");
     // The first directive wins over a later line.
     expect(parseGoModulePath("modulex a\nmodule b\nmodule c\n")).toBe("b");
   });
@@ -817,6 +835,7 @@ describe("reading a go.mod and guessing an import's name", () => {
     expect(goDefaultImportName("example.com/pkg.vx")).toBe("pkg.vx");
     expect(goDefaultImportName("example.com/.v3")).toBe(".v3");
     expect(goDefaultImportName("example.com/a.v")).toBe("a.v");
+    expect(goDefaultImportName("example.com/a.v3")).toBe("a");
   });
 });
 
@@ -848,6 +867,36 @@ func use(s S) {
     expect(v.get("p/p.go:17:Two")).toBe("unbound interface");
     // A ring read once is CLOSED: a name it does not hold is nobody's.
     expect(v.get("p/p.go:18:Neither")).toBe("unknown");
+  });
+
+  it("a ring that does not pass through the interface asked about is read once too", () => {
+    const v = goVerdicts({
+      "p/p.go": `package p
+
+type A interface{ B }
+
+type B interface {
+	C
+	Two()
+}
+
+type C interface {
+	B
+	Three()
+}
+
+type S struct{ A }
+
+func use(s S) {
+	s.Two()
+	s.Three()
+	s.Neither()
+}
+`,
+    });
+    expect(v.get("p/p.go:18:Two")).toBe("unbound interface");
+    expect(v.get("p/p.go:19:Three")).toBe("unbound interface");
+    expect(v.get("p/p.go:20:Neither")).toBe("unknown");
   });
 
   it("an interface embedding something that is not an interface is not known in full", () => {
