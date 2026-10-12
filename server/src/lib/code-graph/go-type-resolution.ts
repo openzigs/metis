@@ -43,8 +43,11 @@
  *    (`go-stdlib.ts`) or lies outside every `go.mod` module of the tree;
  *  - a method called on a value whose type the SOURCE NAMES and which is a
  *    standard-library type that is not an interface (`db *sql.DB`,
- *    `r *http.Request`): the list of standard-library interfaces is complete
- *    for its Go release, so any other type there declares its own methods;
+ *    `r *http.Request`) — unless the type only PROMOTES that method from an
+ *    interface it embeds (`sec.ReadAt()` on an `*elf.Section`), which is
+ *    dispatched and so `interface`. The generated lists are complete for their
+ *    Go release in both respects: every exported interface, and for every
+ *    concrete type every such promoted method;
  *  - a name that the one package Go's scoping lets it mean does not declare,
  *    when EVERY Go file of that package's directory was read: a bare `f()` can
  *    only be the caller's own package (or a dot import, or a builtin), and
@@ -97,6 +100,31 @@
  * resolved, by Go's own shallowest-depth rule, and stops at the first depth that
  * holds an embedded type this module cannot see into.
  *
+ * ## Four rules the Go type checker corrected
+ *
+ * The verdicts of this module are compared, call by call, with what go/types
+ * says about a corpus that compiles (`tests/fixtures/go-oracle/`,
+ * `tests/lib/code-graph/go-oracle-corpus.test.ts`). Where they disagreed the
+ * resolver was wrong:
+ *
+ *  - An embedded project INTERFACE holds the methods it declares and embeds —
+ *    the walker records both — and no others. A name exactly one member of a
+ *    promotion depth declares is that member's; two declaring it are
+ *    `ambiguous`. Only a type whose members are NOT known in full (an interface
+ *    embedding `io.Closer` or a union; a defined type over a dependency's
+ *    struct) answers to any name, and beside one a sibling's member is
+ *    undecided, not a decided tie.
+ *  - A method declared in a `_test.go` file exists for the tests of ITS
+ *    directory — the package's own test files and its `_test` package — at any
+ *    depth of promotion, and for nobody else: the tests of another package are
+ *    built against this one as it ships.
+ *  - A function read out of a package VARIABLE (`var run = serve`) is called
+ *    through the value: `func-value`, never a binding. Its result is still the
+ *    function's.
+ *  - An INDEXED callee (`Make[int](x)`, `handlers[i]()`) is decided by what is
+ *    indexed: a generic function is the callee, a type converts, a value has an
+ *    element called.
+ *
  * ## Bounded work
  *
  * Pure: no I/O. Bounded in DEPTH and in WORK, which are different things — a
@@ -115,6 +143,12 @@
  *    declarations a viewer may see. A call then costs its own length, and the
  *    whole tree costs declarations plus calls. Nothing kept depends on the
  *    order calls arrive in.
+ *  - Placing. Finding a directory's module, an import's most specific module,
+ *    and — with no `go.mod` — the directory an import path is spelled like,
+ *    each cost the LENGTH of that path, through indices built once: scanning
+ *    the modules or the directories instead made one call cost imports ×
+ *    directories (PR #1104, review cycle 3). A file's import block is read
+ *    whole, or — longer than {@link GO_CALL_STEP_BUDGET} imports — not at all.
  *  - Budgets. What is left is counted: {@link GO_CALL_STEP_BUDGET} steps for
  *    one call, {@link GO_TYPE_STEP_BUDGET} for one type's member set. Past
  *    either the answer is `unknown` with `why: "budget"` — counted by the
@@ -267,7 +301,9 @@ export type GoCallVerdict =
  *
  * `name` also labels a call the type resolver could not finish — it threw, ran
  * out of budget, or came up after the ingest's time ceiling — that the name
- * rules then bound: such a call is undecided BY TYPE, not unbound.
+ * rules then bound: such a call is undecided BY TYPE, not unbound. That
+ * happens only for a file the ingest re-parsed; in an unchanged file a call
+ * left unresolved keeps the row it had (`ingest.ts`).
  */
 export const GO_RESOLUTION_KEY = "goResolution";
 
