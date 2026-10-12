@@ -476,6 +476,31 @@ export function compareWithOracle(
   return { findings, recallMisses, stats };
 }
 
+/**
+ * Every call of a view as one line: METIS's verdict beside the type checker's
+ * answer. The findings above say where the two CONTRADICT each other; this is
+ * the whole behaviour, for a diff — a call that goes from `interface` to
+ * undecided, or from `external` to `external-assumed`, contradicts nothing and
+ * still changes what later readers do with the edge.
+ */
+export function verdictTable(
+  view: OracleView,
+  oracle: readonly OracleCall[],
+  metis: ReadonlyMap<string, MetisCall>,
+): string[] {
+  const prefix = `${view.root}/`;
+  const lines: string[] = [];
+  for (const call of oracle) {
+    if (call.form === "other" || !call.file.startsWith(prefix)) continue;
+    const key = `${call.file.slice(prefix.length)}:${call.line}:${call.name}`;
+    const mine = metis.get(key);
+    lines.push(
+      `${key} = ${mine ? showVerdict(mine.verdict) : "(no edge)"} | go: ${showAnswer(call.answer, view)}`,
+    );
+  }
+  return lines.sort();
+}
+
 /** The oracle's calls for a view's tree. */
 export function oracleCallsFor(snapshot: OracleSnapshot, view: OracleView): OracleCall[] {
   const tree = snapshot.trees.find((t) => t.name === view.tree);

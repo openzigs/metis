@@ -17,10 +17,14 @@ func (s *Stats) Reset() {}
 
 // Client is a concrete type with an interface field and a func field.
 type Client struct {
-	Name string
-	Sink Consumer
-	Hook func() error
+	Name  string
+	Sink  Consumer
+	Hook  func() error
+	Peers []*Client
 }
+
+// Batch is a named slice of clients.
+type Batch []*Client
 
 // NewClient returns a concrete value.
 func NewClient() *Client { return &Client{} }

@@ -99,6 +99,15 @@ func thirdPartyPackage() {
 	_ = queue.Handler(func(string) error { return nil })
 }
 
+func thirdPartyElements(c *queue.Client, b queue.Batch, hd queue.Handler) {
+	c.Peers[0].Publish("p")
+	b[0].Publish("b")
+	_ = hd("x").Error()
+	for _, peer := range c.Peers {
+		peer.Stats().Reset()
+	}
+}
+
 // Wrapper embeds the dependency's interface.
 type Wrapper struct{ queue.Consumer }
 

@@ -7,6 +7,7 @@ import (
 
 	"example.com/app/embed"
 	"example.com/app/gen"
+	"example.com/app/generics"
 	"example.com/app/model"
 	"example.com/app/platform"
 )
@@ -35,4 +36,6 @@ func main() {
 	gen.Emit()
 	fmt.Println(platform.Start())
 	model.NewThing().Stop()
+	_ = generics.First[int]([]int{1})
+	_ = generics.Scale[int](1)
 }

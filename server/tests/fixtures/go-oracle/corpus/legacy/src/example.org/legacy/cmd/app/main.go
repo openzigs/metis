@@ -18,6 +18,10 @@ func main() {
 	dep.Save()
 	ext.Save()
 	local()
+	var c own.Conn
+	c.Open()
+	var bc bstore.Conn
+	bc.Open()
 }
 
 func local() {}

@@ -38,6 +38,7 @@ import {
   oracleCallsFor,
   type OracleView,
   readOracleView,
+  verdictTable,
 } from "../../helpers/go-oracle.js";
 
 const snapshot = loadGoOracle();
@@ -132,6 +133,20 @@ describe("#1071 — the Go oracle corpus", () => {
     }
     await expect(`${JSON.stringify(report, null, 2)}\n`).toMatchFileSnapshot(
       path.join(GO_ORACLE_FIXTURE, "recall.snapshot.json"),
+    );
+  });
+
+  it("every verdict, beside the type checker's answer, is a checked-in line", async () => {
+    // Not an assertion of correctness — the rules above are — but of SAMENESS:
+    // any verdict that changes, in either direction, is a diff to read against
+    // the type checker's answer printed next to it. Re-record with `vitest -u`.
+    const table: Record<string, string[]> = {};
+    for (const view of GO_ORACLE_VIEWS) {
+      const { calls } = metisCallsOfView(readOracleView(view));
+      table[view.name] = verdictTable(view, oracleCallsFor(snapshot, view), calls);
+    }
+    await expect(`${JSON.stringify(table, null, 1)}\n`).toMatchFileSnapshot(
+      path.join(GO_ORACLE_FIXTURE, "verdicts.snapshot.json"),
     );
   });
 

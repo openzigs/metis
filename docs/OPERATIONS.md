@@ -667,8 +667,17 @@ file the parser gave up on, upgrade or not.
 **Ingest cost on Go projects, and its ceilings.** Any change to one Go file makes that
 ingest re-parse every Go file of the repository to re-bind calls: about 1 ms and 26 KB of
 memory per file (0.5 s on 421 files; roughly 45 s and 520 MB at 20,000 files, which is
-parsing — #1107). Resolving the calls themselves is linear in declarations plus calls
-(50 ms for Miniflux's 21,100) and has three ceilings, so no input can hold an ingest:
+parsing — #1107). Resolving the calls themselves is linear in declarations plus calls on
+every shape measured (50 ms for Miniflux's 21,100), and has three ceilings. What the
+ceilings promise is a bound on **time**, not a complete answer: one call stops at its step
+budget, one type at its own, and the whole step at the clock — and what the clock leaves
+undone is finished by the ingests that follow (below). "Linear" is a measurement, not a
+proof: three review rounds each found a shape that was not (embedded-type lattices; import
+matching in a tree with no `go.mod`; tens of thousands of `go.mod` files), each is now
+indexed and pinned by a scaling test, and the time ceiling is there for the next one.
+One declared limit goes with them: a file whose import block is longer than 10,000 imports
+is not read for imports at all, so its calls through an import are left undecided
+(`overBudget`), the same on every ingest.
 
 | What is bounded | Constant | Default |
 | --- | --- | --- |

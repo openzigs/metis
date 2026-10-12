@@ -3550,10 +3550,13 @@ function of a package whose import path is the standard library
 ([`go-stdlib.ts`](../server/src/lib/code-graph/go-stdlib.ts), a list, never a guess from the
 path's shape) or lies outside every `go.mod` module of the tree; a method called on a value
 whose type the project's own declarations name and which is a standard-library type that is
-**not an interface** (`db *sql.DB`) — the list of standard-library interfaces is complete for
-its Go release, so any other type there declares its own methods; or a name that the one
+**not an interface** (`db *sql.DB`) — unless that type only *promotes* the method from an
+interface it embeds (`sec.ReadAt()` on an `*elf.Section`, which embeds `io.ReaderAt`): the
+generated lists name every exported interface and, for every concrete type, every such
+promoted method, and those calls are `interface`; or a name that the one
 package Go's scoping lets it mean does not declare, when every Go file of that package's
-directory was read. `external-assumed` is a method on a value of a **third-party** type, which
+directory was read. A call of a standard-library package **variable** of a func type
+(`flag.Usage()`) is `func-value`, from the same generated lists. `external-assumed` is a method on a value of a **third-party** type, which
 may be an interface a project type implements (the dependency is not read), and a member of a
 member, of a call result or of an element of an external value (`r.URL.Query()`,
 `w.Header().Set()`), whose type in between nothing examined. It is kept decided on purpose:
@@ -3578,8 +3581,9 @@ means the importer's own `storage/`.
 scripts/gen-go-stdlib-snapshot.mjs` runs a Go toolchain (`go list std` over several
 platforms, and the type checker over the standard library) and writes
 `go-stdlib.snapshot.json` and `go-stdlib.data.ts`: 177 packages, 197 exported interface
-types and 372 members of concrete types that are typed as one, for the Go release named in
-both (go1.26.0). `tests/lib/code-graph/go-stdlib-snapshot.test.ts` fails when the two files,
+types, 390 members of concrete types that are typed as one or promoted from an embedded one
+(18 of the latter, marked `*`), and the package variables of an interface or a func type,
+for the Go release named in both (go1.26.0). `tests/lib/code-graph/go-stdlib-snapshot.test.ts` fails when the two files,
 or the version, drift apart; nothing in the build or the tests runs Go. A missing entry costs
 this: an unlisted package is treated as any import outside the tree's modules (still
 `external` under a `go.mod`; in a tree with Go code outside every module it can be matched to
@@ -3611,7 +3615,31 @@ the same name.
 What is deliberately **not** inferred: the concrete type behind an interface value, type
 parameters, method expressions, and the result of a third-party function (it may be generic).
 Embedded-struct promotion is resolved by Go's shallowest-depth rule and stops at a depth
-holding an embedded type from outside the tree. The regex Go parser in `parsers.ts` is the
+holding an embedded type from outside the tree. Four rules of that member lookup were
+corrected against the Go type checker (below):
+
+- **An embedded project interface holds the methods it declares and embeds, no others.** A
+  method exactly one member of a promotion depth declares is that member's — `interface` if
+  it is the interface's, the struct's method otherwise; two members declaring it are
+  `ambiguous`. Only an interface whose method set is *not known in full* (it embeds
+  `io.Closer`, `error`, a union) answers to any name, and beside it a sibling's method is
+  undecided — open to the name-based readers — not a decided tie.
+- **A method declared in a `_test.go` file exists for the tests of its own directory, at any
+  depth of promotion, and for nobody else.** With `type S struct{ E }`, `type E struct{ F }`,
+  `func (F) M()` and `func (E) M()` in `export_test.go`, `s.M()` is `E.M` from that
+  package's tests (internal or `_test` package) and `F.M` from every other file — including
+  the tests of another package, which are built against this one as it ships. The member
+  set is still worked out once per type: a test caller only adds the test-file methods of
+  its own directory's types, compared by depth with what the set holds.
+- **A function read out of a variable is called through the value.** `var run = serve;
+  run()` is `func-value`, never a binding to `serve` (the variable can be reassigned); the
+  result type is still the function's, so `run().Close()` binds.
+- **An indexed callee is decided by what is indexed.** `Make[int](x)` and `handlers[i]()`
+  are the same shape to the grammar (and `F[T](x)` with one argument reads as a
+  conversion): the walker records the call under the indexed name, and the resolver binds a
+  generic function, calls a conversion what it is, and calls an element of a slice or map of
+  functions `func-value`. For a member of a package outside the tree nothing says which, so
+  it is `external-assumed`. The regex Go parser in `parsers.ts` is the
 fallback used only when tree-sitter is not initialised (unit tests that call `parseSource`
 directly); it names methods the same way but records no calls, so the tree-sitter walker is
 authoritative, and `ingestCodeGraph` always initialises it. Every reader of unresolved calls
@@ -3628,7 +3656,19 @@ took the Go binding step of an ingest from 0.47 s to 36.8 s. Whatever depends on
 declarations is now worked out once per resolver and kept — what a type name means in a
 file, a type's struct, its whole member set (own and promoted), what an import path names —
 so a call costs its own length and a tree costs declarations plus calls (the same file:
-0.4 s). Three ceilings bound what is left, and each is counted rather than guessed:
+0.4 s). The third review found the next two shapes of the same kind, in placing imports:
+with no `go.mod`, matching one import against the directories filtered **all** of them, for
+every import of a file, inside one call and outside every budget (one call: 5.8 s on a
+20,001-file tree, 23 s on 40,001); and with tens of thousands of `go.mod` files, finding a
+directory's module and an import's most specific module scanned every one (24,000 modules:
+1.2 s to build the resolver, 7.7 s to resolve). Both are indexed now — directories outside
+every module by the END of their paths, one segment per level, so an import is matched by
+walking its own segments (whole segments: `mystore` does not end in `store`); `go.mod` files
+by directory and by declared path — and a file's import block is read whole or, past
+10,000 imports, not at all, the same for every call. The dot imports of a file are kept
+once per package (10,000 dot imports of one package made every bare call spend its whole
+budget). `tests/lib/code-graph/go-resolver-bounded-work.test.ts` pins each as a scaling
+ratio. Three ceilings bound what is left, and each is counted rather than guessed:
 
 | Ceiling | Constant | When it is reached |
 | --- | --- | --- |
@@ -3684,6 +3724,51 @@ and bare names a fully read package does not declare, 4,874 methods on a standar
 type that is not an interface); 533 `external-assumed` (122 methods on a third-party type,
 411 members of a member, result or element of an external value); 221 `interface`; 137
 `func-value`; 4 `conversion`; 984 undecided.
+
+**How the binding is tested: against the Go type checker, not against fixtures.** Three
+independent mutation passes over this walker and resolver each found new one-edit mutants
+that bound a call to the *wrong* function with every suite green, after three
+implementers had each counted all mutants killed. The surface is a language, and a
+fixture per rule pins only the rules somebody thought of. So the expected binding is no
+longer written by hand:
+
+- [`server/tests/fixtures/go-oracle/`](../server/tests/fixtures/go-oracle/) holds a Go
+  **corpus that compiles** — two trees: `corpus/modules` (five modules, two of them both
+  `module app`, one importing another, a dependency reached through a `replace`) and
+  `corpus/legacy` (no `go.mod`, built in GOPATH mode, with dependencies whose import paths
+  end like project directories). It is written to exercise the constructs the resolver
+  claims: closures, every block form, redeclaration, same-named types in two packages
+  reached through aliases, defined and underlying types, embedding at several depths,
+  build-constraint twins, `//go:build ignore` beside a library, `_test.go` and `_test`
+  packages with an `export_test.go` method on an embedded type, dot imports, generics,
+  function values, and standard-library and third-party receivers.
+- `node scripts/gen-go-oracle-snapshot.mjs` (a developer tool: needs Go, run by nothing in
+  the build, the tests or CI) checks `gofmt` and `go vet`, then runs
+  [`scripts/go-oracle-snapshot/main.go`](../scripts/go-oracle-snapshot/main.go) — standard
+  library only: `go list` for the file sets of three platforms, `go/types` for the answers —
+  and writes `oracle.snapshot.json`: for every call expression, the project function it
+  statically resolves to (file, receiver, name) or why it has none (`interface`,
+  `func-value`, `conversion`, `builtin`, `external`, or `build-dependent` when the platforms
+  disagree).
+- [`tests/lib/code-graph/go-oracle-corpus.test.ts`](../server/tests/lib/code-graph/go-oracle-corpus.test.ts)
+  runs the real walker and resolver over the same files, and
+  [`tests/code-graph-go-oracle-1071.sqlite.test.ts`](../server/tests/code-graph-go-oracle-1071.sqlite.test.ts)
+  a real ingest, and compare call by call (`tests/helpers/go-oracle.ts`). **Soundness, zero
+  tolerance:** every call bound by type is bound to exactly the type checker's target.
+  **Decided verdicts agree in class**, with an exact, justified allow-list (four calls:
+  build constraints are not evaluated; a dependency's func variable cannot be told from
+  its function). **The walker saw the same calls**, on the same lines, in the same
+  functions. **Recall is a checked-in list**, not a threshold (`recall.snapshot.json`), and
+  so is every verdict beside the type checker's answer (`verdicts.snapshot.json`) and what
+  the name rules bound (`name-bound.snapshot.json`): losing a binding, or changing any
+  verdict, is a diff to read. A drift test fails when the corpus changes without the
+  snapshot being regenerated.
+
+To cover a construct, write it in the corpus and regenerate; when the type checker
+disagrees with the resolver, the resolver is wrong (when in doubt its answer is
+undecided), never the snapshot. The hand-written suites remain as the readable statement
+of each rule and for what a compiling corpus cannot hold: Go that does not compile (ties,
+twins), unreadable files, budgets.
 
 **Extractor version and in-place upgrade (#1071).** An incremental ingest skips a file whose
 content hash matches, so a parser change reached a stored graph only when its files changed.
