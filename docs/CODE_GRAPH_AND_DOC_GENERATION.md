@@ -926,7 +926,7 @@ topics of the modules ranked last; what is cut is not fact-checked. The same ste
 the canonical facts sheet (`canonical-facts.ts`: named constants and formulas read from
 the source, given to the sections that mention them, cited as `[facts:canon:<id>]`) and,
 at assembly, the consistency check (`fact-consistency.ts`) notes a value stated
-differently in two places. It adds no model call: on the run-7 inputs the plan took 0.1 s
+differently in two places. It adds no model call: on the run-7 inputs the plan took under half a second
 and the prompts grew by about 19k input tokens over 23 calls (1.4%). `DOCS_GEN_TOPIC_PLAN=off`
 turns it off.
 
