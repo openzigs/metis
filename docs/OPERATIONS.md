@@ -418,6 +418,13 @@ version serves traffic, as for any migration: the new version reads and writes t
 column. Rows that an old replica writes during a rolling deploy have it NULL and are
 priced as one call, as they were before.
 
+Two limits. A summed row written before the migration has no list, so anything
+that re-prices it from its token counts (the agent-run cost; the month projection
+for a row stored with no cost) still prices it as one call. And to roll back, roll
+the server back first: the new version selects `requestTokens`, so dropping the
+column under it fails the usage and budget queries. A stored list is used only
+when it adds up to its row's token columns; otherwise the row is priced as one call.
+
 ---
 
 ## 7. Container Image Sizes

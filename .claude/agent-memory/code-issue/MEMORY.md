@@ -81,3 +81,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Next catch-all segments are decoded](project_next-catch-all-segments-are-decoded.md) — decide proxy policy on resolved pathname (#1069)
 - [Tiered price = ONE request](project_tiered-price-needs-one-requests-usage.md) — split a sum by isLongPrompt, price with tierRate (#1080)
 - [Usage row ≠ one call](project_usage-row-is-not-always-one-call.md) — chat/discussion/failed rows sum calls; pass `requests` (#1092)
+- [Readers re-check side-columns](project_side-column-readers-apply-writer-invariant.md) — use ledgerRowSummedRequests, not shape-only (#1092)

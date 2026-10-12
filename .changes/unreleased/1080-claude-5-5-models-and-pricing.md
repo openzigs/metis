@@ -10,4 +10,5 @@ section: Added
   cache tokens) is over 100,000 tokens is charged at the higher price. A chat turn with tools,
   a discussion reply or a failed turn is one usage row and costs the sum of its calls.
 - A `MODEL_PRICES` entry wins over any built-in price, is one flat price, and now also covers
-  the model's dated and Amazon Bedrock ids (an exact entry still wins).
+  the model's dated and Amazon Bedrock ids at that flat price, without the Bedrock regional
+  premium (an entry keyed on the exact id still wins).

@@ -12,7 +12,7 @@ import { prisma } from "../prisma.js";
 import { currentSpanIds } from "../otel/genai-spans.js";
 import { getRate, canonicalTokenCounts } from "../finops/index.js";
 import { computeCostCentsExact, tierRate, type TokenRate } from "../finops/provider-rates.js";
-import { ledgerRowRequests, ledgerTierShares } from "../finops/token-tracker.js";
+import { ledgerRowSummedRequests, ledgerTierShares } from "../finops/token-tracker.js";
 import { normalizeCents } from "../finops/ledger-cost.js";
 
 export type AgentRunKind = "analysis" | "chat" | "tool";
@@ -167,7 +167,7 @@ interface RunUsageRow {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
-  /** #1080 — the requests a summed row is made of (`ledgerRowRequests`). */
+  /** #1080 — the requests a summed row is made of (`ledgerRowSummedRequests`). */
   requestTokens?: string | null;
 }
 
@@ -219,7 +219,7 @@ function priceRunUsage(rows: readonly RunUsageRow[]): { exactCents: number; tota
     // `recordUsage` prices with), so a gateway row's cache reads are not billed
     // again at the input rate, and one row's clamp cannot borrow another's.
     // #1080 — `ledgerTierShares` does that, per request of a summed row.
-    for (const share of ledgerTierShares(row.provider, rate, row, ledgerRowRequests(row))) {
+    for (const share of ledgerTierShares(row.provider, rate, row, ledgerRowSummedRequests(row))) {
       const key = share.longPrompt ? `${modelKey} long-prompt` : modelKey;
       const g = groups.get(key) ?? {
         rate,

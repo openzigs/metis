@@ -21,7 +21,7 @@
 import { prisma } from "../prisma.js";
 import { resolveRate } from "./provider-rates.js";
 import { LEDGER_COST_SELECT, ledgerRowCents, normalizeCents } from "./ledger-cost.js";
-import { ledgerRowRequests, priceLedgerTokensExact } from "./token-tracker.js";
+import { ledgerRowSummedRequests, priceLedgerTokensExact } from "./token-tracker.js";
 
 export class BudgetExceededError extends Error {
   readonly status = 402;
@@ -186,7 +186,12 @@ export async function projectMonthlyCostForCeiling(
     // #1080 — and request by request, when the row sums several.
     const rowCents =
       ledgerRowCents(r) ??
-      priceLedgerTokensExact(r.provider, resolveRate(r.provider, r.model), r, ledgerRowRequests(r));
+      priceLedgerTokensExact(
+        r.provider,
+        resolveRate(r.provider, r.model),
+        r,
+        ledgerRowSummedRequests(r),
+      );
     if (rowCents === null) unpricedTokens += r.totalTokens;
     else cents += rowCents;
   }

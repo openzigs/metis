@@ -25,11 +25,18 @@ import {
 import {
   encodeRequestTokens,
   ledgerRowRequests,
+  ledgerRowSummedRequests,
   summedRequests,
   type RequestTokenCounts,
 } from "./summed-requests.js";
 
-export { encodeRequestTokens, ledgerRowRequests, summedRequests, type RequestTokenCounts };
+export {
+  encodeRequestTokens,
+  ledgerRowRequests,
+  ledgerRowSummedRequests,
+  summedRequests,
+  type RequestTokenCounts,
+};
 
 const log = createChildLogger("finops-token-tracker");
 

@@ -119,3 +119,16 @@ export function ledgerRowRequests(row: {
   }
   return out;
 }
+
+/**
+ * #1080 — {@link ledgerRowRequests}, held to the same rule the writer applies:
+ * the stored list counts only when it adds up to the row's own columns.
+ * Readers that re-price from stored tokens use THIS, so a list that no longer
+ * matches its row (a hand edit, a bad restore, a backfill of the token
+ * columns) prices the row as one request instead of replacing its counts.
+ */
+export function ledgerRowSummedRequests(
+  row: StoredTokenCounts & { requestTokens?: string | null },
+): StoredTokenCounts[] | null {
+  return summedRequests(row, ledgerRowRequests(row));
+}

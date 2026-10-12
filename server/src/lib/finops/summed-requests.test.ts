@@ -29,6 +29,7 @@ import {
   encodeRequestTokens,
   ledgerRequests,
   ledgerRowRequests,
+  ledgerRowSummedRequests,
   summedRequests,
 } from "./summed-requests.js";
 import {
@@ -135,6 +136,28 @@ describe("ledgerRowRequests — the stored form", () => {
     ]) {
       expect(ledgerRowRequests({ requestTokens }), requestTokens).toBeNull();
     }
+  });
+});
+
+describe("ledgerRowSummedRequests — a stored list is held to its row", () => {
+  it("returns the list when it adds up to the row's own columns", () => {
+    const row = { ...sum(MIXED), requestTokens: encodeRequestTokens(MIXED) };
+    expect(ledgerRowSummedRequests(row)).toEqual(MIXED);
+  });
+
+  it("is null when the stored list does not add up, so the row is priced from its columns", () => {
+    // A 400,000-token row whose list claims two 1-token calls: trusted, it
+    // would price at a fraction of a cent instead of the row's real figure.
+    const row = { ...counts(400_000, 10_000), requestTokens: "[[1,1,0,0],[1,1,0,0]]" };
+    expect(ledgerRowSummedRequests(row)).toBeNull();
+    const asOne = priceLedgerTokensExact("anthropic", rate(HAIKU), row, null);
+    expect(
+      priceLedgerTokensExact("anthropic", rate(HAIKU), row, ledgerRowSummedRequests(row)),
+    ).toBe(asOne);
+    // And a list that overstates the row cannot inflate it either.
+    const big = Number.MAX_SAFE_INTEGER;
+    const tiny = { ...counts(10, 10), requestTokens: `[[${big},${big},0,0],[${big},${big},0,0]]` };
+    expect(ledgerRowSummedRequests(tiny)).toBeNull();
   });
 });
 
