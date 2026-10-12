@@ -33,17 +33,20 @@
     ]
   },
   "legacy-package-root": {
-    "calls": 11,
-    "boundByName": 1,
+    "calls": 12,
+    "boundByName": 2,
     "boundByNameAgreeing": 1,
     "boundByName_list": [
+      "cmd/app/gae.go:9:Main -> internal/appengine/appengine.go::Main [type checker: external (dependency)]",
       "cmd/app/main.go:17:Save -> mystore/mystore.go::Save [agrees]"
     ]
   },
   "legacy-gopath-root": {
-    "calls": 11,
-    "boundByName": 0,
+    "calls": 12,
+    "boundByName": 1,
     "boundByNameAgreeing": 0,
-    "boundByName_list": []
+    "boundByName_list": [
+      "src/example.org/legacy/cmd/app/gae.go:9:Main -> src/example.org/legacy/internal/appengine/appengine.go::Main [type checker: external (dependency)]"
+    ]
   }
 }

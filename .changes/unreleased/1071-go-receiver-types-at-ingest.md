@@ -12,4 +12,4 @@ section: Changed
   - Existing graphs upgrade in place on their next ingest, once, without regenerating documents.
   - Binding has reported ceilings on time and memory and stops itself before the heap runs out; what
     is left shows in the Sync result, is finished by later ingests, and never replaces a stored
-    binding (OPERATIONS §6.6). With no `go.mod`, an import binds only to a directory holding its whole path.
+    binding (OPERATIONS §6.6). With no `go.mod`, an import binds only to a directory holding its whole path; a type reaching over 64 embedded types is left undecided.

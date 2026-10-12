@@ -397,6 +397,31 @@ func main() {
     expect(v.get("cmd/main.go:Wrap")).toBe("unknown");
   });
 
+  // PR #1104, review cycle 6. A ONE-segment import path is its own tail: any
+  // directory of that name "ends in the whole path". `internal/appengine/`
+  // was bound for the dependency `appengine` (the oracle corpus holds the
+  // tree: `legacy-package-root`, `cmd/app/gae.go`, where the type checker
+  // says external).
+  it.each([
+    ["internal/appengine", "unknown"],
+    ["lib/appengine", "unknown"],
+    ["a/srcs/appengine", "unknown"],
+    // Where a one-segment import path can live: the tree root (a GOPATH `src`)…
+    ["appengine", "package appengine/store.go::Open"],
+    // …or directly under a `src` or a `vendor` directory.
+    ["src/appengine", "package src/appengine/store.go::Open"],
+    ["go/src/appengine", "package go/src/appengine/store.go::Open"],
+    ["vendor/appengine", "package vendor/appengine/store.go::Open"],
+    ["third_party/vendor/appengine", "package third_party/vendor/appengine/store.go::Open"],
+  ])("a one-segment import: the lone directory `%s` is %s", (dir, verdict) => {
+    expect(
+      importing("appengine", {
+        // (The package clause says `store`, which is the name the importer uses.)
+        [`${dir}/store.go`]: STORE,
+      }),
+    ).toBe(verdict);
+  });
+
   it("binds when the tree root is the GOPATH's `src`: the directory IS the whole import path", () => {
     expect(
       importing("github.com/acme/app/store", { "github.com/acme/app/store/store.go": STORE }),

@@ -736,8 +736,9 @@ is not read for imports at all, so its calls through an import are left undecide
 | Steps working out one type's members | `GO_TYPE_STEP_BUDGET` | 100,000 |
 | Embedded types one type is looked up through | `GO_TYPE_LAYER_BUDGET` | 64 |
 | Names a wider type may index, per member it declares | `GO_TYPE_RETAINED_PER_MEMBER` | 16 |
+| The most layer types or indexed names any one type may keep | `GO_TYPE_RETAINED_MAX` | 64 (so by default no type keeps an index: one reaching more than 64 embedded types is undecided) |
 | Time resolving Go calls in one ingest | `GO_BINDING_MAX_MS` | 30 s |
-| Heap growth during the step, read every 256 calls | `GO_BINDING_MAX_HEAP_GROWTH` | 512 MB, or a quarter of the heap limit if less |
+| Heap growth during the step, read every 256 calls and every 16,384 entries the resolver keeps (`GO_BINDING_HEAP_SAMPLE_ENTRIES`) | `GO_BINDING_MAX_HEAP_GROWTH` | 512 MB, or a quarter of the heap limit if less |
 | Ingests a graph may end incomplete, beyond those the floor needs | `GO_BINDING_RESUME_GRACE` | 3 |
 
 The ingest log reports the step as `Go calls bound by type` with `files`, `calls` and

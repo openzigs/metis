@@ -1,5 +1,5 @@
 {
- "corpusHash": "4d49d569be49209b732d6128bb537efa842c4c484afc4f54ef340a681f7aa5df",
+ "corpusHash": "49464ec419d3a094b971b5ed86c7b0f10ea1c73121ffd6e95f54a3a949640744",
  "goVersion": "go1.26.0",
  "platforms": ["linux/amd64","windows/amd64","darwin/arm64"],
  "trees": [
@@ -1004,6 +1004,7 @@
    "name": "legacy",
    "root": "corpus/legacy/src/example.org/legacy",
    "calls": [
+    {"file":"corpus/legacy/src/example.org/legacy/cmd/app/gae.go","line":9,"col":12,"callee":"appengine.Main","form":"selector","name":"Main","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/gae.go","name":"gae"},"answer":{"k":"external","origin":"dependency","detail":"appengine.Main"}},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","line":15,"col":6,"callee":"own.Save","form":"selector","name":"Save","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","name":"main"},"answer":{"k":"func","target":{"file":"corpus/legacy/src/example.org/legacy/store/store.go","name":"Save"}}},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","line":16,"col":9,"callee":"bstore.Save","form":"selector","name":"Save","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","name":"main"},"answer":{"k":"func","target":{"file":"corpus/legacy/src/example.org/legacy/b/store/store.go","name":"Save"}}},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","line":17,"col":10,"callee":"mystore.Save","form":"selector","name":"Save","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","name":"main"},"answer":{"k":"func","target":{"file":"corpus/legacy/src/example.org/legacy/mystore/mystore.go","name":"Save"}}},
@@ -1020,9 +1021,11 @@
     {"file":"corpus/legacy/src/example.org/legacy/b/store/store.go","kind":"function","name":"Save","line":4,"endLine":4},
     {"file":"corpus/legacy/src/example.org/legacy/b/store/store.go","kind":"struct","name":"Conn","line":7,"endLine":7},
     {"file":"corpus/legacy/src/example.org/legacy/b/store/store.go","kind":"function","recv":"Conn","name":"Open","line":10,"endLine":10},
+    {"file":"corpus/legacy/src/example.org/legacy/cmd/app/gae.go","kind":"function","name":"gae","line":8,"endLine":10},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","kind":"function","name":"main","line":14,"endLine":27},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","kind":"function","name":"local","line":29,"endLine":29},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/wrap.go","kind":"function","name":"wrap","line":7,"endLine":9},
+    {"file":"corpus/legacy/src/example.org/legacy/internal/appengine/appengine.go","kind":"function","name":"Main","line":8,"endLine":8},
     {"file":"corpus/legacy/src/example.org/legacy/internal/storage/storage.go","kind":"function","name":"Open","line":5,"endLine":5},
     {"file":"corpus/legacy/src/example.org/legacy/legacy/internal/storage/storage.go","kind":"function","name":"Open","line":5,"endLine":5},
     {"file":"corpus/legacy/src/example.org/legacy/mystore/mystore.go","kind":"function","name":"Save","line":6,"endLine":6},

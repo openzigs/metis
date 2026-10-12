@@ -36,6 +36,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   createGoResolver,
   GO_TYPE_LAYER_BUDGET,
+  GO_TYPE_RETAINED_MAX,
   GO_TYPE_RETAINED_PER_MEMBER,
   type GoCallVerdict,
   type GoModule,
@@ -290,9 +291,12 @@ describe("what a type may keep is decided from the type, and past it nothing is 
     expect(run.retained).toMatchObject({ tables: 2, overRetained: 1, layerTypes: 64 });
   });
 
+  // The per-member rule on its own, the absolute cap lifted (it is pinned below).
+  const UNCAPPED: GoResolverOptions = { budgets: { retainedMax: Number.POSITIVE_INFINITY } };
+
   it("a type wide by its own declaration keeps a name index, and every lookup is one step", () => {
     const embedded = 200;
-    const run = prepare(reach(embedded))();
+    const run = prepare(reach(embedded), UNCAPPED)();
     expect(run.verdicts.map(show)).toEqual([
       "receiver-type p/p.go::E0::M0",
       "unknown",
@@ -320,10 +324,10 @@ describe("what a type may keep is decided from the type, and past it nothing is 
       return { "p/p.go": src };
     };
     const own = GO_TYPE_LAYER_BUDGET + 6;
-    const full = prepare(wide(own, GO_TYPE_RETAINED_PER_MEMBER - 1))();
+    const full = prepare(wide(own, GO_TYPE_RETAINED_PER_MEMBER - 1), UNCAPPED)();
     expect(full.verdicts.map(show)).toEqual(["receiver-type p/p.go::E0::M0_0"]);
     expect(full.retained.indexedNames).toBe(own * GO_TYPE_RETAINED_PER_MEMBER);
-    const over = prepare(wide(own, GO_TYPE_RETAINED_PER_MEMBER))();
+    const over = prepare(wide(own, GO_TYPE_RETAINED_PER_MEMBER), UNCAPPED)();
     expect(over.verdicts.map(show)).toEqual(["unknown:budget"]);
     expect(over.retained).toMatchObject({ indexedNames: 0, layerTypes: 0, overRetained: 1 });
   });
@@ -350,12 +354,45 @@ describe("what a type may keep is decided from the type, and past it nothing is 
     };
     const allowance = GO_TYPE_RETAINED_PER_MEMBER * 21;
     // T, E and the rest: exactly the allowance, then one more.
-    const within = prepare(tree(allowance - 2))();
+    const within = prepare(tree(allowance - 2), UNCAPPED)();
     expect(within.verdicts.map(show)).toEqual(["receiver-type p/p.go::E::Own"]);
     expect(within.retained).toMatchObject({ layerTypes: allowance, overRetained: 0 });
-    const over = prepare(tree(allowance - 1))();
+    const over = prepare(tree(allowance - 1), UNCAPPED)();
     expect(over.verdicts.map(show)).toEqual(["unknown:budget"]);
     expect(over.retained).toMatchObject({ layerTypes: 0, indexedNames: 0, overRetained: 1 });
+
+    // The ABSOLUTE cap is on layer types as well, whatever the type declares:
+    // an allowance of 336 by its own members, capped at 100.
+    const capped: GoResolverOptions = { budgets: { retainedMax: 100 } };
+    const atCap = prepare(tree(100 - 2), capped)();
+    expect(atCap.verdicts.map(show)).toEqual(["receiver-type p/p.go::E::Own"]);
+    expect(atCap.retained).toMatchObject({ layerTypes: 100, overRetained: 0 });
+    const pastCap = prepare(tree(100 - 1), capped)();
+    expect(pastCap.verdicts.map(show)).toEqual(["unknown:budget"]);
+    expect(pastCap.retained).toMatchObject({ layerTypes: 0, indexedNames: 0, overRetained: 1 });
+  });
+
+  it("the allowance has an absolute cap: past it a type is undecided however much it declares itself", () => {
+    // PR #1104 review cycle 6. W declares its 200 embeddings itself — an
+    // allowance of 3,200 by the per-member rule — and is refused all the same.
+    expect(GO_TYPE_RETAINED_MAX).toBe(GO_TYPE_LAYER_BUDGET);
+    const run = prepare(reach(200))();
+    expect(run.verdicts.map(show)).toEqual([
+      "unknown:budget",
+      "unknown:budget",
+      "unknown:budget",
+      "unknown:budget",
+    ]);
+    expect(run.retained).toMatchObject({ layerTypes: 0, indexedNames: 0, overRetained: 2 });
+
+    // The cap is exact on the names of an index too. W with 70 embedded
+    // structs of one method each: 71 layer types and 140 names.
+    const names = (retainedMax: number): Resolved =>
+      prepare(reach(GO_TYPE_LAYER_BUDGET + 6), { budgets: { retainedMax } })();
+    expect(names(140).verdicts.map(show)[0]).toBe("receiver-type p/p.go::E0::M0");
+    expect(names(140).retained).toMatchObject({ indexedNames: 140, layerTypes: 71 });
+    expect(names(139).verdicts.map(show)[0]).toBe("unknown:budget");
+    expect(names(139).retained).toMatchObject({ indexedNames: 0, layerTypes: 0 });
   });
 
   it("gives the same verdicts whatever was asked first", () => {

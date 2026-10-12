@@ -553,7 +553,9 @@ export const GO_BINDING_MIN_CALLS = 2_000;
  * time 1 to 2 MB of Go ended the process: `JavaScript heap out of memory` is
  * an abort, not an exception, so nothing catches it and every ingest in the
  * process dies with it. This watchdog does not trust that accounting. It reads
- * the heap itself, every {@link GO_BINDING_HEAP_SAMPLE_CALLS} calls, and when
+ * the heap itself, every {@link GO_BINDING_HEAP_SAMPLE_CALLS} calls and
+ * whenever the resolver has kept {@link GO_BINDING_HEAP_SAMPLE_ENTRIES} more
+ * entries, and when
  * the heap has grown by more than this since the step began it stops the step
  * exactly as the time ceiling does: the remaining calls keep the answer they
  * have, the graph records where each file stopped and is not stamped, the
@@ -584,14 +586,41 @@ export const GO_BINDING_MIN_CALLS = 2_000;
 export const GO_BINDING_MAX_HEAP_GROWTH = 512 * 1024 * 1024;
 
 /**
- * #1071 — how often the heap watchdog reads the heap: before every 256th call
- * handed to the resolver (the first included, which covers building it). A
- * reading costs microseconds, so this adds well under a microsecond a call;
- * and at the worst growth yet measured for one call (111 KB, the copy of a
- * 3,000-field struct) 256 calls are 28 MB — what the heap may pass the limit
- * by before the next reading notices.
+ * #1071 — how often the heap watchdog reads the heap at least: before every
+ * 256th call handed to the resolver (the first included, which covers
+ * building it). A reading costs microseconds, so this adds well under a
+ * microsecond a call.
+ *
+ * On its own a call count bounds nothing: it is only as good as the worst
+ * single call. One call retained 25 MB — six member tables of 32,000 names —
+ * and the process aborted at call 144, before the second reading (PR #1104
+ * review cycle 6; the 28 MB this comment used to give assumed 111 KB a call).
+ * What the heap may pass the limit by is bounded by
+ * {@link GO_BINDING_HEAP_SAMPLE_ENTRIES}, not by this.
  */
 export const GO_BINDING_HEAP_SAMPLE_CALLS = 256;
+
+/**
+ * #1071 — the heap is ALSO read whenever the resolver has kept this many more
+ * entries than at the last reading (`GoResolver.retainedTotal`, a running
+ * sum: one comparison a call). So a reading cannot be outrun by calls that
+ * each keep a lot: between two readings the resolver adds fewer than this
+ * many entries plus what ONE call adds.
+ *
+ * That makes the overshoot — what the heap may have grown past the limit when
+ * a reading notices — at most about 8 MB: 16,384 entries are 0.4 to 2 MB at
+ * the 23 to 130 B an entry measured at 24,000 types (4 MB at the 250 B of a
+ * small tree), and one call's member tables are at most 1.5 MB
+ * (`GO_TYPE_RETAINED_MAX`). The one term no constant bounds is a call's first
+ * reading of the declarations it reaches, about 60 B a declared member, once
+ * per declaration; the reading after that call sees it.
+ *
+ * Reading the heap before EVERY call was measured and rejected: on Miniflux
+ * (21,106 calls, 5.6 ms of resolving) it adds 16 ms, nearly three times the
+ * step. This rule costs nothing measurable there — the same 83 readings as
+ * the count alone, the difference inside run-to-run noise.
+ */
+export const GO_BINDING_HEAP_SAMPLE_ENTRIES = 16_384;
 
 /**
  * The default for {@link IngestOptions.goBindingMaxHeapGrowth}:
@@ -2108,6 +2137,8 @@ async function persistParsed(
   let goResolveMs = now() - goT0;
   /** Calls handed to the resolver so far: the first `goBindingMinCalls` go whatever the clock says. */
   let goAttempted = 0;
+  /** What the resolver counted as kept when the heap was last read ({@link GO_BINDING_HEAP_SAMPLE_ENTRIES}). */
+  let goSampledAt = 0;
   /**
    * One Go call's verdict. Resolution is the only step between a resolver bug
    * and a failed ingest, so a throw is counted, NAMED, and the call is left
@@ -2123,9 +2154,16 @@ async function persistParsed(
     if (goStop.reason === null) {
       if (goAttempted >= tree.goBindingMinCalls && goResolveMs > tree.goBindingMaxMs) {
         goStop.reason = "time";
-      } else if (goAttempted % GO_BINDING_HEAP_SAMPLE_CALLS === 0) {
+      } else if (
+        goAttempted % GO_BINDING_HEAP_SAMPLE_CALLS === 0 ||
+        (goResolver !== null &&
+          goResolver.retainedTotal() - goSampledAt >= GO_BINDING_HEAP_SAMPLE_ENTRIES)
+      ) {
         // The last resort, independent of the resolver's own accounting: no
-        // floor, since the alternative is an abort nothing can catch.
+        // floor, since the alternative is an abort nothing can catch. (The
+        // resolver's count only says WHEN to look sooner than the call count
+        // would; what is compared with the limit is the heap.)
+        goSampledAt = goResolver?.retainedTotal() ?? 0;
         const growth = tree.goBindingHeapUsed() - goHeap0;
         if (growth > tree.goBindingMaxHeapGrowth) {
           goStop.reason = "memory";

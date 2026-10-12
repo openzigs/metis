@@ -626,6 +626,7 @@
   "tools/cmd/tool/main.go:20:Run = receiver-type app/model/model.go::Thing::Run | go: func app/model/model.go::Thing::Run"
  ],
  "legacy-package-root": [
+  "cmd/app/gae.go:9:Main = unknown | go: external (dependency)",
   "cmd/app/main.go:15:Save = unknown | go: func store/store.go::Save",
   "cmd/app/main.go:16:Save = unknown | go: func b/store/store.go::Save",
   "cmd/app/main.go:17:Save = unknown | go: func mystore/mystore.go::Save",
@@ -639,6 +640,7 @@
   "cmd/app/wrap.go:8:Wrap = unknown | go: external (dependency)"
  ],
  "legacy-gopath-root": [
+  "src/example.org/legacy/cmd/app/gae.go:9:Main = unknown | go: external (dependency)",
   "src/example.org/legacy/cmd/app/main.go:15:Save = package src/example.org/legacy/store/store.go::Save | go: func src/example.org/legacy/store/store.go::Save",
   "src/example.org/legacy/cmd/app/main.go:16:Save = package src/example.org/legacy/b/store/store.go::Save | go: func src/example.org/legacy/b/store/store.go::Save",
   "src/example.org/legacy/cmd/app/main.go:17:Save = package src/example.org/legacy/mystore/mystore.go::Save | go: func src/example.org/legacy/mystore/mystore.go::Save",

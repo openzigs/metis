@@ -25,6 +25,7 @@ import {
   GO_TYPE_STEP_BUDGET,
   type GoCallVerdict,
   type GoModule,
+  type GoResolverOptions,
 } from "../../../src/lib/code-graph/go-type-resolution.js";
 import { initCodeGraphParsers, parseSource } from "../../../src/lib/code-graph/parsers.js";
 import { showGoVerdict } from "../../helpers/go-verdicts.js";
@@ -64,6 +65,14 @@ interface Parsed {
   calls: number;
 }
 
+/**
+ * This file pins the STEP budgets. Its lattices reach hundreds of types, which
+ * the absolute cap on what a type may keep (`GO_TYPE_RETAINED_MAX`, pinned in
+ * `go-resolver-retained.test.ts`) now refuses before a step is counted — so
+ * that cap is lifted here, and the step budgets are what decides.
+ */
+const STEPS_DECIDE: GoResolverOptions = { budgets: { retainedMax: Number.POSITIVE_INFINITY } };
+
 function parseOne(src: string, filePath = "wide/wide.go"): Parsed {
   const parsed = parseSource(filePath, src, "go");
   if (!parsed.goFacts) throw new Error("the fixture did not parse");
@@ -74,6 +83,7 @@ function parseOne(src: string, filePath = "wide/wide.go"): Parsed {
       const resolver = createGoResolver(
         [{ filePath, facts: parsed.goFacts!, isTest: false }],
         MODULE,
+        STEPS_DECIDE,
       );
       const list = order === "forward" ? callees : [...callees].reverse();
       const out = list.map((c) => resolver.resolveCall(filePath, c));

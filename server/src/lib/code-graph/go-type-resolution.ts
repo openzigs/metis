@@ -150,7 +150,8 @@
  *    types it embeds, layer by layer — never a copy of their members — and
  *    for an interface a list of the interfaces it embeds, never a copy of
  *    their names. Both lists are capped by a property of the type alone
- *    ({@link GO_TYPE_LAYER_BUDGET}, {@link GO_TYPE_RETAINED_PER_MEMBER}), so
+ *    ({@link GO_TYPE_LAYER_BUDGET}, {@link GO_TYPE_RETAINED_PER_MEMBER},
+ *    {@link GO_TYPE_RETAINED_MAX}), so
  *    the whole resolver retains an amount linear in the source and the calls.
  *    A struct's fields are read once per DECLARATION and shared by every type
  *    that is that struct underneath. {@link GoResolver.retained} counts every
@@ -411,6 +412,8 @@ export interface GoResolverOptions {
     interfaceTypes?: number;
     /** {@link GO_TYPE_RETAINED_PER_MEMBER}. */
     retainedPerMember?: number;
+    /** {@link GO_TYPE_RETAINED_MAX}. */
+    retainedMax?: number;
   };
 }
 
@@ -467,8 +470,8 @@ export interface GoResolverRetained {
  * | `interfaces` | declared interface and view | its own method names, and the interfaces it embeds | 2 × (1 + declared methods + declared embeds) |
  * | `interfaceSets` | declared interface and view | references to the interfaces in reach | 2 × (1 + min(reach, {@link GO_TYPE_LAYER_BUDGET})) per interface asked about |
  * | `memberTables` | type asked about and view | one table object | 2 × types a call selects from |
- * | `layers` | (in a table) | references to the types a promotion search goes through, twice, and their depth index | 4 × max({@link GO_TYPE_LAYER_BUDGET}, {@link GO_TYPE_RETAINED_PER_MEMBER} × members the type declares ITSELF) per table |
- * | `indexedNames` | (in a table wider than the layer budget) member name | what it selects | {@link GO_TYPE_RETAINED_PER_MEMBER} × members the type declares itself |
+ * | `layers` | (in a table) | references to the types a promotion search goes through, twice, and their depth index | 4 × max({@link GO_TYPE_LAYER_BUDGET}, min({@link GO_TYPE_RETAINED_MAX}, {@link GO_TYPE_RETAINED_PER_MEMBER} × members the type declares ITSELF)) per table |
+ * | `indexedNames` | (in a table wider than the layer budget) member name | what it selects | min({@link GO_TYPE_RETAINED_MAX}, {@link GO_TYPE_RETAINED_PER_MEMBER} × members the type declares itself) |
  * | `askedNames` | (in a table) a member name a call selected | what it selects | one per name per call resolved |
  *
  * Not caches, and so not here: the per-call scratch sets marked `transient`
@@ -523,6 +526,12 @@ export interface GoResolver {
   resolveCall(filePath: string, callee: GoExpr): GoCallVerdict;
   /** What the resolver holds so far ({@link GoResolverRetained}). */
   retained(): GoResolverRetained;
+  /**
+   * {@link GoResolverRetained.total} alone, kept as a running sum: reading it
+   * allocates nothing, so a caller may read it before every call (ingest's
+   * heap watchdog does, to notice growth between two of its samples).
+   */
+  retainedTotal(): number;
 }
 
 /** Longest chain of aliases, defined types or embeddings followed. */
@@ -572,7 +581,8 @@ export const GO_TYPE_LAYER_BUDGET = 64;
  * through an index of its member names instead — one step a lookup however
  * wide a layer is — and may keep that index only while it pays for it: no more
  * layer types, and no more member names, than this many times the members the
- * type DECLARES ITSELF (its fields, embedded ones included, and its methods).
+ * type DECLARES ITSELF (its fields, embedded ones included, and its methods)
+ * — and never more than {@link GO_TYPE_RETAINED_MAX}, whatever it declares.
  * A struct that embeds two hundred others is wide because it says so, two
  * hundred times; a one-line struct that reaches two hundred types through
  * somebody else's embeddings is not, and is left undecided.
@@ -588,6 +598,52 @@ export const GO_TYPE_LAYER_BUDGET = 64;
  * is the same whatever was asked first.
  */
 export const GO_TYPE_RETAINED_PER_MEMBER = 16;
+
+/**
+ * The ABSOLUTE cap on {@link GO_TYPE_RETAINED_PER_MEMBER}'s allowance: no
+ * table lists more layer types, or indexes more member names, than this —
+ * however many members the type declares itself. Past it the type has no
+ * member decided (`{ kind: "unknown", why: "budget" }`), like any other type
+ * over its allowance.
+ *
+ * Without it the allowance was bounded only by the source, and fields are
+ * cheap to write (PR #1104 review cycle 6, real walker and resolver):
+ *
+ *  - `struct{ W; a0 … a1999 int; N *T }` earned a 32,000-name index, 5 MB a
+ *    table; one call `t.N.N.N.N.N.F()` builds six tables, so 160 calls ended
+ *    the process (`JavaScript heap out of memory`) between two samples of
+ *    ingest's heap watchdog;
+ *  - 24,000 types `struct{ W; a0 … a7 int }` over a `W` embedding 133 structs
+ *    kept a 143-name index each: 560 MB from 2.1 MB of Go, 1,091 MB with test
+ *    callers, 2,333 MB with forty fields (about 150 B a name, per type).
+ *
+ * 64 — the layer budget itself — because nothing real was found to need more
+ * and nothing larger met the memory target. Measured: the widest table in
+ * Miniflux (421 files, 21,106 calls) lists 8 layer types and the widest in
+ * about 4,200 files of Go's own toolchain and standard library (470,000
+ * calls) lists 4; none passes 64, so none has ever kept a name index, and the
+ * cap leaves eight times the widest real table. An indexed table costs about
+ * 150 B a name PER TYPE, so any cap above the layer budget lets N types keep
+ * N indexes: at 128 the shape above, re-tuned to the cap, still retains 443 MB
+ * at 24,000 types (857 MB with test callers). At 64 the three trees retain
+ * 40, 49 and 71 MB, and re-tuned to sit exactly at the cap 90, 149 and 121 MB
+ * (176 MB for forty fields with test callers).
+ * The cost: a type whose promotion search reaches more than 64 types is
+ * undecided even where it declares the embeddings itself. With this default
+ * the name index is not reached at all; it remains for a caller that raises
+ * both budgets.
+ *
+ * The worst ONE call can make the tables retain is therefore a constant: a
+ * callee is at most {@link MAX_EVAL_DEPTH} (64) selections, each a table of
+ * at most 64 layer types (4 entries each) and 64 names — 64 × 322 = 20,608
+ * entries, about 1.5 MB (150 B a name, 50 B a layer entry), a third of a
+ * percent of the watchdog's 512 MB; measured, a call through sixty types at
+ * the cap keeps 9,098 entries, 0.24 MB. What is NOT a constant is the first
+ * reading of the DECLARATIONS a call reaches — a struct's field index, built
+ * once per declaration: about 60 B a declared member, less than the parsed
+ * facts already held for it, and never repeated.
+ */
+export const GO_TYPE_RETAINED_MAX = 64;
 
 /**
  * Predeclared identifiers. A bare call to one that the package does not itself
@@ -957,6 +1013,7 @@ export function createGoResolver(
   const layerBudget = options.budgets?.layerTypes ?? GO_TYPE_LAYER_BUDGET;
   const interfaceBudget = options.budgets?.interfaceTypes ?? GO_TYPE_LAYER_BUDGET;
   const retainedPerMember = options.budgets?.retainedPerMember ?? GO_TYPE_RETAINED_PER_MEMBER;
+  const retainedMax = options.budgets?.retainedMax ?? GO_TYPE_RETAINED_MAX;
 
   // ── What the resolver holds, counted where it is created ─────────────────
   //
@@ -970,8 +1027,11 @@ export function createGoResolver(
     GoResolverCache,
     number
   >;
+  /** The sum of {@link cacheSizes}, kept as it moves ({@link GoResolver.retainedTotal}). */
+  let keptTotal = 0;
   const keep = (cache: GoResolverCache, entries = 1): void => {
     cacheSizes[cache] += entries;
+    keptTotal += entries;
   };
   // One counting function per cache, shared by every map of it: a closure per
   // map would itself be a per-type allocation.
@@ -980,6 +1040,7 @@ export function createGoResolver(
       c,
       (): void => {
         cacheSizes[c] += 1;
+        keptTotal += 1;
       },
     ]),
   ) as Record<GoResolverCache, () => void>;
@@ -1215,6 +1276,15 @@ export function createGoResolver(
    * meant. With nothing matched at all the path is outside the tree — unless
    * Go code sits at the tree root, whose import path is the unknown module
    * path itself.
+   *
+   * An import path of ONE segment (`import "appengine"`) is its own tail: "a
+   * directory ending in the whole path" is then any directory of that name,
+   * the same guess. `internal/appengine/` is `…/internal/appengine`, and was
+   * bound for the dependency `appengine` — a wrong target, by the type
+   * checker (PR #1104 review cycle 6). So one segment binds only where the
+   * directory sits where a one-segment path can live: at the tree root (the
+   * tree being a GOPATH `src`), or directly under a directory named `src` or
+   * `vendor`. Anywhere else it is undecided.
    */
   const bySpelling = (importPath: string): ImportTarget => {
     const segs = importPath.split("/");
@@ -1227,7 +1297,14 @@ export function createGoResolver(
       if (node?.dir && i > 0) tail = true;
     }
     const holding = node ? node.count : 0;
-    if (holding === 1 && !tail) return inDir(node!.first);
+    if (holding === 1 && !tail) {
+      const dir = node!.first;
+      if (segs.length === 1) {
+        const under = dir.split("/").at(-2);
+        if (under !== undefined && under !== "src" && under !== "vendor") return UNKNOWN_IMPORT;
+      }
+      return inDir(dir);
+    }
     if (holding > 0 || tail) return UNKNOWN_IMPORT;
     const rootImportable = (pkgsByDir.get("") ?? []).some(
       (p) => !p.name.endsWith("_test") && p.name !== "main",
@@ -1829,9 +1906,14 @@ export function createGoResolver(
         // account — N one-line types over a struct that embeds two hundred
         // others would each keep two hundred references and an index.
         if (depth === 0) {
-          wide =
+          // And never more than the absolute cap, however much it declares:
+          // sixteen names for each of 2,000 cheap fields was a 32,000-name
+          // index per type ({@link GO_TYPE_RETAINED_MAX}).
+          wide = Math.min(
+            retainedMax,
             retainedPerMember *
-            (info.decl?.fact.form === "defined" ? (info.methods?.size ?? 0) : own);
+              (info.decl?.fact.form === "defined" ? (info.methods?.size ?? 0) : own),
+          );
         }
         // One step for the type and one for each member it declares.
         steps += 1 + own;
@@ -2409,6 +2491,7 @@ export function createGoResolver(
   };
 
   return {
+    retainedTotal: () => keptTotal,
     retained(): GoResolverRetained {
       let total = 0;
       for (const cache of GO_RESOLVER_CACHES) total += cacheSizes[cache];

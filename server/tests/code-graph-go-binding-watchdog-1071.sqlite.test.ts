@@ -8,8 +8,9 @@
  * resolver's own accounting alone. Pinned here, through the real
  * `ingestCodeGraph` and a real SQLite database:
  *
- *   (a) the heap watchdog: sampled every `GO_BINDING_HEAP_SAMPLE_CALLS` calls,
- *       it stops the step when the heap has grown past the limit — exactly as
+ *   (a) the heap watchdog: sampled every `GO_BINDING_HEAP_SAMPLE_CALLS` calls
+ *       and whenever the resolver has kept `GO_BINDING_HEAP_SAMPLE_ENTRIES`
+ *       more entries (so one call that keeps a lot cannot outrun it), it stops the step when the heap has grown past the limit — exactly as
  *       the time ceiling does (stored answers kept, the graph recorded
  *       incomplete, the version not stamped) but with no floor, and says so
  *       (`goBinding.stopReason: "memory"`);
@@ -30,6 +31,7 @@ import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import { forceGc, retainedHeap } from "./helpers/force-gc.js";
+import { goSelectorChainShape } from "./helpers/go-wide-shapes.js";
 import {
   createMigratedSqlite,
   type MigratedSqlite,
@@ -39,6 +41,7 @@ import {
   CODE_GRAPH_EXTRACTOR_VERSION,
   defaultGoBindingHeapLimit,
   GO_BINDING_HEAP_SAMPLE_CALLS,
+  GO_BINDING_HEAP_SAMPLE_ENTRIES,
   GO_BINDING_MAX_HEAP_GROWTH,
   GO_BINDING_MIN_CALLS,
   GO_BINDING_RESUME_GRACE,
@@ -134,9 +137,10 @@ const ALIAS_TREE: Record<string, string> = {
 };
 
 describe("#1071 — the heap watchdog's default limit", () => {
-  it("is 512 MB, sampled every 256 calls, and a quarter of a smaller heap", () => {
+  it("is 512 MB, sampled every 256 calls and every 16,384 entries kept, and a quarter of a smaller heap", () => {
     expect(GO_BINDING_MAX_HEAP_GROWTH).toBe(512 * MB);
     expect(GO_BINDING_HEAP_SAMPLE_CALLS).toBe(256);
+    expect(GO_BINDING_HEAP_SAMPLE_ENTRIES).toBe(16_384);
     expect(defaultGoBindingHeapLimit(4096 * MB)).toBe(512 * MB);
     expect(defaultGoBindingHeapLimit(2048 * MB)).toBe(512 * MB);
     expect(defaultGoBindingHeapLimit(1024 * MB)).toBe(256 * MB);
@@ -466,6 +470,77 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect((await graphOf(projectId)).extractorVersion).toBe(CODE_GRAPH_EXTRACTOR_VERSION);
     }, 60_000);
 
+    // PR #1104 review cycle 6. A reading every 256 calls is only as good as
+    // the worst single call: 160 calls that each kept 25 MB aborted the
+    // process before the second reading. So the heap is read on GROWTH too —
+    // whenever the resolver has kept `GO_BINDING_HEAP_SAMPLE_ENTRIES` more
+    // entries — and both trees below, which make fewer than 256 calls in all,
+    // are stopped. On the head before this (`9df1109b`) each was read once,
+    // before its first call, and ran to the end.
+    it.each([
+      // The reviewer's tree, scaled: `t.N.N.N.N.N.F()` through types of 2,000
+      // fields over a W that embeds 3,000 structs. Past the absolute cap now,
+      // so what grows is each type's own field index.
+      // One type's fields are read per call: the first table is refused.
+      {
+        name: "the reviewer's chained selectors",
+        calls: 160,
+        fields: 2_000,
+        embedded: 3_000,
+        limitMb: 4,
+        perCall: 2_000 + 64,
+      },
+      // The same chain through types that sit exactly AT the cap, so every hop
+      // resolves and keeps a full table: the most one call can legitimately keep.
+      // Six types a call, each its fields and a table of 64 layer types.
+      {
+        name: "a chain of types at the cap",
+        calls: 100,
+        fields: 1_500,
+        embedded: 62,
+        limitMb: 16,
+        perCall: 6 * (1_500 + 6 * 64),
+      },
+    ])(
+      "the real heap, fewer than 256 calls ($name): stopped on growth, within the documented overshoot",
+      async ({ calls, fields, embedded, limitMb, perCall }) => {
+        expect(calls).toBeLessThan(GO_BINDING_HEAP_SAMPLE_CALLS);
+        const { projectId, root } = await newProject({
+          "go.mod": GO_MOD,
+          ...goSelectorChainShape(calls, 5, fields, embedded),
+        });
+        let readings = 0;
+        const stopped = await ingest(projectId, root, {
+          incremental: false,
+          goBindingHeapUsed: () => {
+            readings += 1;
+            return retainedHeap();
+          },
+          goBindingMaxHeapGrowth: limitMb * MB,
+        });
+        expect(stopped.goBinding).toMatchObject({ calls, stopReason: "memory" });
+        // Stopped part-way, by a reading the call count alone never asks for.
+        expect(stopped.goBinding!.skipped).toBeGreaterThan(0);
+        expect(stopped.goBinding!.skipped).toBeLessThan(calls);
+        expect(readings).toBeGreaterThan(2);
+        // …and no more often than the growth asks: the baseline, the reading
+        // before the first call, then one for every 16,384 entries kept — not
+        // one a call from the first threshold on.
+        const resolved = calls - stopped.goBinding!.skipped;
+        expect(readings).toBeLessThanOrEqual(
+          3 + Math.ceil((resolved * perCall) / GO_BINDING_HEAP_SAMPLE_ENTRIES),
+        );
+        expect(readings).toBeLessThan(resolved);
+        // What the heap may pass the limit by is documented on
+        // GO_BINDING_HEAP_SAMPLE_ENTRIES: about 8 MB. (Run to the end, either
+        // tree grows by several times limit + 8 MB.)
+        expect(stopped.goBinding!.heapGrowthMb).toBeGreaterThanOrEqual(limitMb);
+        expect(stopped.goBinding!.heapGrowthMb).toBeLessThanOrEqual(limitMb + 8);
+        expect((await graphOf(projectId)).extractorVersion).toBeNull();
+      },
+      120_000,
+    );
+
     it("the time ceiling says `time`", async () => {
       const { projectId, root } = await newProject(WIDE_TREE);
       let t = 0;
@@ -561,7 +636,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     // ── What a call given up on holds ───────────────────────────────────────
 
     /** A complete graph, then a change that moves every caller's callee, never re-bound: given up. */
-    const givenUpAfterMove = async (beforeLast?: (root: string) => Promise<void>) => {
+    const givenUpAfterMove = async (
+      beforeLast?: (root: string, projectId: string) => Promise<void>,
+    ) => {
       const { projectId, root } = await newProject(ALIAS_TREE);
       await ingest(projectId, root, { incremental: false });
       const before = await calls(projectId);
@@ -585,7 +662,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await ingest(projectId, root, stuck());
         expect(await calls(projectId)).toEqual(before);
       }
-      await beforeLast?.(root);
+      await beforeLast?.(root, projectId);
       const last = await ingest(projectId, root, stuck());
       expect(last.goBinding).toMatchObject({ abandonedFiles: 4, incomplete: null });
       return { projectId, root };
@@ -635,6 +712,50 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect([...(await recordOf(projectId)).abandoned.keys()].sort()).toEqual(
           CALLERS.map((c) => `api/${c}.go`),
         );
+      } finally {
+        if (rootDir) await fs.chmod(path.join(rootDir, unreadable), 0o644);
+      }
+    });
+
+    it("given up in a file that cannot be read: ANOTHER graph's rows for that path, and a row the name rules labelled, are not touched", async () => {
+      // Two where-clauses nothing pinned (PR #1104 review cycle 6): the graph
+      // — without it every project holding a file of that path loses its
+      // verdicts — and the type-metadata filter.
+      const unreadable = "api/d.go";
+      const other = await newProject(ALIAS_TREE);
+      await ingest(other.projectId, other.root, { incremental: false });
+      const otherBefore = await calls(other.projectId);
+      expect(otherBefore.filter((r) => r.startsWith(unreadable))).toHaveLength(3);
+      expect(otherBefore.every((r) => r.endsWith(BOUND_BY_TYPE))).toBe(true);
+
+      const BY_NAME = '{"goResolution":"name"}';
+      let rootDir = "";
+      let named = { id: "", toSymbolId: null as string | null };
+      try {
+        const { projectId } = await givenUpAfterMove(async (root, mine) => {
+          rootDir = root;
+          await fs.chmod(path.join(root, unreadable), 0o000);
+          // One of the file's rows as the NAME rules leave a row: bound, labelled `name`.
+          const row = await db.codeEdge.findFirstOrThrow({
+            where: { projectId: mine, filePath: unreadable, kind: "calls" },
+            orderBy: { line: "asc" },
+          });
+          expect(row.toSymbolId).not.toBeNull();
+          await db.codeEdge.update({ where: { id: row.id }, data: { metadata: BY_NAME } });
+          named = { id: row.id, toSymbolId: row.toSymbolId };
+        });
+        // The row no type verdict labelled keeps its target and its label…
+        const kept = await db.codeEdge.findUniqueOrThrow({ where: { id: named.id } });
+        expect({ toSymbolId: kept.toSymbolId, metadata: kept.metadata }).toEqual({
+          toSymbolId: named.toSymbolId,
+          metadata: BY_NAME,
+        });
+        // …while the file's type verdicts went.
+        const mine = (await calls(projectId)).filter((r) => r.startsWith(unreadable));
+        expect(mine).toHaveLength(3);
+        expect(mine.filter((r) => r.endsWith("→ NULL -"))).toHaveLength(2);
+        // And the other graph holds every answer it held, for the same path too.
+        expect(await calls(other.projectId)).toEqual(otherBefore);
       } finally {
         if (rootDir) await fs.chmod(path.join(rootDir, unreadable), 0o644);
       }

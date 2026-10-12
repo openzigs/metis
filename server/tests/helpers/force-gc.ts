@@ -28,3 +28,16 @@ export function retainedHeap(): number {
   forceGc();
   return process.memoryUsage().heapUsed;
 }
+
+/**
+ * The LEAST of three {@link retainedHeap} readings. One forced collection can
+ * leave garbage that the next one frees (what a finaliser released, a parse
+ * tree a weak reference still held), and a baseline read with that garbage in
+ * it makes the growth measured after it too SMALL — which fails a test that
+ * compares two growths, on code that did nothing wrong. Garbage only ever
+ * adds to a reading, so the least of several is the closest to what is held;
+ * a structure that is really retained is in all three.
+ */
+export function settledHeap(): number {
+  return Math.min(retainedHeap(), retainedHeap(), retainedHeap());
+}

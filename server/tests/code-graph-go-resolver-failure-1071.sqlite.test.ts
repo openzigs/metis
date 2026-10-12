@@ -40,6 +40,7 @@ vi.mock("../src/lib/code-graph/go-type-resolution.js", async (importOriginal) =>
       if (failure.build) throw new Error("resolver could not be built");
       const real = actual.createGoResolver(...args);
       return {
+        ...real,
         resolveCall(filePath: string, callee: Parameters<typeof real.resolveCall>[1]) {
           if (callee.e === "sel" && failure.throwOn.has(callee.name)) {
             throw new RangeError("Maximum call stack size exceeded");

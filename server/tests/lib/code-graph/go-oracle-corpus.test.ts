@@ -280,6 +280,25 @@ describe("#1071 — the Go oracle corpus", () => {
         verdictsOf("legacy-gopath-root").get("src/example.org/legacy/cmd/app/wrap.go:8:Wrap"),
       ).toBe("unbound external");
     });
+
+    it("a ONE-segment import path is not whichever lone directory has that name", () => {
+      // `import "appengine"`, in a tree with no go.mod whose only directory of
+      // that name is `internal/appengine/`. It was bound to the project's
+      // `Main` — a wrong target in BOTH views, by the type checker's answer,
+      // and SOUNDNESS above failed on it (PR #1104, review cycle 6). `unknown`
+      // is what no rule objects to, so it is stated here.
+      for (const [name, file] of [
+        ["legacy-package-root", "cmd/app/gae.go"],
+        ["legacy-gopath-root", "src/example.org/legacy/cmd/app/gae.go"],
+      ] as const) {
+        const view = GO_ORACLE_VIEWS.find((v) => v.name === name)!;
+        const oracle = oracleCallsFor(snapshot, view).find((c) =>
+          c.file.endsWith("cmd/app/gae.go"),
+        )!;
+        expect(showAnswer(oracle.answer, view)).toBe("external (dependency)");
+        expect(verdictsOf(name).get(`${file}:9:Main`)).toBe("unknown");
+      }
+    });
   });
 
   // ── The checker itself: each rule must be able to fail. ───────────────────

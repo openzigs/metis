@@ -38,18 +38,23 @@ import {
   createGoResolver,
   GO_RESOLVER_CACHES,
   GO_TYPE_LAYER_BUDGET,
+  GO_TYPE_RETAINED_MAX,
+  GO_TYPE_RETAINED_PER_MEMBER,
   type GoCallVerdict,
   type GoModule,
+  type GoResolverOptions,
   type GoResolverRetained,
 } from "../../../src/lib/code-graph/go-type-resolution.js";
 import { initCodeGraphParsers, parseSource } from "../../../src/lib/code-graph/parsers.js";
-import { retainedHeap } from "../../helpers/force-gc.js";
+import { settledHeap } from "../../helpers/force-gc.js";
 import { GO_ORACLE_VIEWS, readOracleView } from "../../helpers/go-oracle.js";
 import { type GoTree, showGoVerdict } from "../../helpers/go-verdicts.js";
 import {
   GO_WIDE_SHAPE_VERDICT,
   GO_WIDE_SHAPES,
   type GoWideShape,
+  goOwnFieldsShape,
+  goSelectorChainShape,
   goWideShape,
 } from "../../helpers/go-wide-shapes.js";
 
@@ -62,13 +67,19 @@ const show = (v: GoCallVerdict): string =>
 interface Measured {
   tally: Record<string, number>;
   retained: GoResolverRetained;
+  /** The most entries ONE call added to what the resolver keeps. */
+  maxCallEntries: number;
   /** Bytes the resolver holds after a forced collection, the parsed facts not counted. */
   heap: number;
   sourceBytes: number;
 }
 
 /** The real walker, then a resolver over its facts and every call of the tree resolved once. */
-function measure(tree: GoTree, modules: GoModule[] = MODULE): Measured {
+function measure(
+  tree: GoTree,
+  modules: GoModule[] = MODULE,
+  options?: GoResolverOptions,
+): Measured {
   const parsed = Object.entries(tree).map(([filePath, src]) => parseSource(filePath, src, "go"));
   const files = parsed.map((p) => {
     if (!p.goFacts) throw new Error(`${p.filePath} did not parse`);
@@ -79,19 +90,32 @@ function measure(tree: GoTree, modules: GoModule[] = MODULE): Measured {
       .filter((e) => e.kind === "calls")
       .map((e) => ({ file: p.filePath, callee: e.goCallee! })),
   );
-  const before = retainedHeap();
-  const resolver = createGoResolver(files, modules);
+  // Both readings are the least of three forced collections: a baseline that
+  // still held garbage made the growth read too small, and "the heap grows
+  // with the types" then failed once on code that had not changed (PR #1104
+  // review cycle 6). No bound below is any looser for it.
+  const before = settledHeap();
+  const resolver = createGoResolver(files, modules, options);
   const tally: Record<string, number> = {};
+  let maxCallEntries = 0;
+  let last = resolver.retainedTotal();
   for (const c of calls) {
     const key = show(resolver.resolveCall(c.file, c.callee));
     tally[key] = (tally[key] ?? 0) + 1;
+    const total = resolver.retainedTotal();
+    maxCallEntries = Math.max(maxCallEntries, total - last);
+    last = total;
   }
-  const heap = retainedHeap() - before;
+  const heap = settledHeap() - before;
   // The resolver is alive until here: `retained()` is read after the heap.
   const retained = resolver.retained();
+  // The running sum ingest's watchdog reads before every call is that total.
+  expect(resolver.retainedTotal()).toBe(retained.total);
+  expect(last).toBe(retained.total);
   return {
     tally,
     retained,
+    maxCallEntries,
     heap,
     sourceBytes: Object.values(tree).reduce((n, s) => n + s.length, 0),
   };
@@ -151,7 +175,9 @@ describe("every cache of the resolver is counted", () => {
     // No type of the corpus is wider than the layer budget, so none keeps an index…
     expect(empty).toEqual(["indexedNames"]);
     // …until every type is made to.
-    const indexed = all({ budgets: { layerTypes: 0, retainedPerMember: 1_000_000 } });
+    const indexed = all({
+      budgets: { layerTypes: 0, retainedPerMember: 1_000_000, retainedMax: 1_000_000 },
+    });
     expect(indexed.caches.indexedNames).toBeGreaterThan(100);
     expect(indexed.total).toBe(Object.values(indexed.caches).reduce((a, b) => a + b, 0));
     // The figures the cycle-4 suite pins are the reach-dependent part of the same count.
@@ -363,8 +389,12 @@ describe("a defined type is as wide as what IT declares, not as what it is defin
     expect(within.retained.overRetained).toBe(0);
   });
 
+  // The per-member rule on its own: the absolute cap ({@link GO_TYPE_RETAINED_MAX},
+  // pinned further down and in `go-resolver-retained.test.ts`) is lifted.
+  const UNCAPPED: GoResolverOptions = { budgets: { retainedMax: Number.POSITIVE_INFINITY } };
+
   it("past it the struct — which wrote its embeddings — keeps an index, and the one-line type over it is undecided", () => {
-    const past = measure(tree(GO_TYPE_LAYER_BUDGET + 6));
+    const past = measure(tree(GO_TYPE_LAYER_BUDGET + 6), MODULE, UNCAPPED);
     expect(past.tally).toEqual({ "receiver-type p/p.go::E0::M0": 1, "unknown:budget": 1 });
     expect(past.retained.overRetained).toBe(1);
     // W's index: its 70 embedded field names and their 70 methods.
@@ -374,8 +404,113 @@ describe("a defined type is as wide as what IT declares, not as what it is defin
   it("its own methods are its own: enough of them and it may keep the index too", () => {
     // 71 layer types and 150 names (70 fields, 70 promoted methods, its own
     // ten): ten methods allow 160 of each.
-    const own = measure(tree(GO_TYPE_LAYER_BUDGET + 6, 10));
+    const own = measure(tree(GO_TYPE_LAYER_BUDGET + 6, 10), MODULE, UNCAPPED);
     expect(own.tally).toEqual({ "receiver-type p/p.go::E0::M0": 2 });
     expect(own.retained.overRetained).toBe(0);
+  });
+});
+
+/**
+ * PR #1104 review cycle 6. Every shape above varies the width of the
+ * declaration UNDERNEATH; none reached the term that dominated — the
+ * allowance a type earns from the members it declares itself, times the
+ * tables one call builds. These two do.
+ */
+describe("N types × K cheap own fields over a W that embeds many structs", () => {
+  /** As many embedded structs as sixteen names a member used to allow a type with `fields` fields. */
+  const earned = (fields: number): number =>
+    GO_TYPE_RETAINED_PER_MEMBER * (fields + 1) - (fields + 1) - 2;
+  /** As many as put a type exactly AT the cap: itself, W and the rest. */
+  const AT_CAP = GO_TYPE_RETAINED_MAX - 2;
+  /** What one table may hold at most: four entries a layer type, a name each, itself. */
+  const TABLE = 5 * GO_TYPE_RETAINED_MAX + 2;
+
+  it.each([
+    ["8 fields, 133 embedded (560 MB at 24,000 types before the cap)", 8, earned(8), false],
+    ["40 fields, 613 embedded (2,333 MB)", 40, earned(40), false],
+    ["8 fields, 133 embedded, test callers (1,091 MB)", 8, earned(8), true],
+  ] as const)(
+    "%s: past the cap, undecided, and a few entries a type",
+    (_name, fields, embedded, tests) => {
+      const small = measure(goOwnFieldsShape(500, fields, embedded, tests));
+      const large = measure(goOwnFieldsShape(2_000, fields, embedded, tests));
+      expect(large.tally).toEqual({ "unknown:budget": tests ? 4_000 : 2_000 });
+      expect(large.retained).toMatchObject({ indexedNames: 0, layerTypes: 0 });
+      // Per type: its declaration and its own fields, indexed once. Before the
+      // cap it was a 143-name index and 135 layer types — 433 entries a type
+      // at eight fields, 1,937 at forty.
+      const perType = (large.retained.total - small.retained.total) / 1_500;
+      // (A test caller is a second view of the type: a second, empty, table.)
+      expect(perType).toBeLessThanOrEqual(fields + (tests ? 24 : 16));
+      expect(large.heap).toBeLessThan(16 * MB);
+      expect(large.heap).toBeLessThan(4 * small.heap + 4 * MB);
+    },
+    60_000,
+  );
+
+  it.each([
+    ["no test callers", false],
+    ["test callers: a second view of each type", true],
+  ] as const)(
+    "tuned to sit exactly AT the cap (%s): resolved, and one bounded table a type and view",
+    (_name, tests) => {
+      const small = measure(goOwnFieldsShape(500, 8, AT_CAP, tests));
+      const large = measure(goOwnFieldsShape(2_000, 8, AT_CAP, tests));
+      expect(large.tally).toEqual({ "unbound func-value": tests ? 4_000 : 2_000 });
+      expect(large.retained).toMatchObject({
+        indexedNames: 0,
+        overRetained: 0,
+        layerTypes: (tests ? 2 : 1) * 2_000 * GO_TYPE_RETAINED_MAX,
+      });
+      const perType = (large.retained.total - small.retained.total) / 1_500;
+      expect(perType).toBeLessThanOrEqual((tests ? 2 : 1) * TABLE);
+      // 24,000 such types measure 90 MB (149 MB with test callers): 4 to 7 KB each.
+      expect(large.heap).toBeLessThan(24 * MB);
+      expect(large.heap).toBeLessThan(4 * small.heap + 4 * MB);
+      // One more embedded struct and every type is past the cap.
+      const past = measure(goOwnFieldsShape(50, 8, AT_CAP + 1, tests));
+      expect(past.tally).toEqual({ "unknown:budget": tests ? 100 : 50 });
+    },
+    60_000,
+  );
+
+  it("the fields a type declares are counted once each — they multiply nothing", () => {
+    const few = measure(goOwnFieldsShape(1_000, 8, AT_CAP));
+    const many = measure(goOwnFieldsShape(1_000, 40, AT_CAP));
+    const perField = (many.retained.total - few.retained.total) / (1_000 * 32);
+    expect(perField).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("one call selecting through H wide types", () => {
+  it("the reviewer's chain, scaled: every type is past the cap, and a call keeps its types' own fields and no more", () => {
+    // `t.N.N.N.N.N.F()` through six types of 200 fields over a W embedding
+    // 3,000 structs. Sixteen names a member allowed each a 3,200-name index,
+    // six of them a call: 714,732 entries (33 MB) a call at the reviewer's size.
+    const HOPS = 5;
+    const FIELDS = 200;
+    const EMBEDDED = 3_000;
+    const run = measure(goSelectorChainShape(40, HOPS, FIELDS, EMBEDDED));
+    expect(run.tally).toEqual({ "unknown:budget": 40 });
+    expect(run.retained).toMatchObject({ indexedNames: 0, layerTypes: 0 });
+    // What a call keeps is the first reading of the declarations it reaches —
+    // each field once — and nothing per name per table.
+    expect(run.maxCallEntries).toBeLessThanOrEqual(3 * EMBEDDED + (HOPS + 1) * (FIELDS + 16));
+    expect(run.retained.total).toBeLessThanOrEqual(
+      3 * EMBEDDED + 40 * (HOPS + 1) * (FIELDS + 16) + 1_000,
+    );
+  });
+
+  it("the worst one call can keep in tables is the documented constant", () => {
+    // Sixty hops, each a type exactly at the cap that no earlier call reached:
+    // sixty-one tables from one call. `GO_TYPE_RETAINED_MAX`'s comment gives
+    // 64 tables × 322 entries; measured, 9,098.
+    const run = measure(goSelectorChainShape(20, 60, 8, GO_TYPE_RETAINED_MAX - 2));
+    expect(run.tally).toEqual({ "unbound func-value": 20 });
+    expect(run.retained.tables).toBe(20 * 61);
+    expect(run.maxCallEntries).toBeGreaterThan(61 * 2 * GO_TYPE_RETAINED_MAX);
+    expect(run.maxCallEntries).toBeLessThanOrEqual(64 * (5 * GO_TYPE_RETAINED_MAX + 2));
+    // And the bytes that go with it: under a megabyte a call.
+    expect(run.heap / 20).toBeLessThan(1 * MB);
   });
 });

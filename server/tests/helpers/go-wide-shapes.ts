@@ -166,3 +166,64 @@ export function goWideShape(shape: GoWideShape, count: number, width = 3_000): G
   }
   return { "p/p.go": src };
 }
+
+/**
+ * PR #1104 review cycle 6 — the two shapes the twelve above all missed. They
+ * vary only the width of the declaration underneath; what dominated was the
+ * allowance a type earns from the members it declares ITSELF, and how many
+ * tables one call builds.
+ *
+ * "N types × K cheap own fields": `type T<i> struct{ W; a0, …, a<K-1> int }`
+ * over a `W` that embeds `embedded` structs (`E0` holds `F`). Each T reaches
+ * `embedded + 2` layer types and `embedded + fields + 2` member names. With
+ * `testCallers` a `_test.go` file selects from every type as well, which is a
+ * second view of each.
+ */
+export function goOwnFieldsShape(
+  count: number,
+  fields: number,
+  embedded: number,
+  testCallers = false,
+): GoTree {
+  let src = "package p\n\ntype E0 struct{ F func() }\n\n";
+  for (let j = 1; j < embedded; j += 1) src += `type E${j} struct{}\n`;
+  src += "\ntype W struct {\n";
+  for (let j = 0; j < embedded; j += 1) src += `\tE${j}\n`;
+  src += "}\n\n";
+  const own = Array.from({ length: fields }, (_, k) => `a${k}`).join(", ");
+  for (let i = 0; i < count; i += 1) src += `type T${i} struct{ W; ${own} int }\n`;
+  for (let i = 0; i < count; i += 1) src += `func f${i}(t T${i}) { t.F() }\n`;
+  if (!testCallers) return { "p/p.go": src };
+  let test = "package p\n\n";
+  for (let i = 0; i < count; i += 1) test += `func probe${i}(t T${i}) { t.F() }\n`;
+  return { "p/p.go": src, "p/p_test.go": test };
+}
+
+/**
+ * "One call selecting through H wide types": `calls` calls
+ * `t.N.N.….F()` of `hops` selections of `N`, each through a different
+ * `type T<i> struct{ W; a0, …, a<K-1> int; N *T<i+1> }`. Every hop is a type
+ * no earlier call reached, so ONE call builds `hops + 1` member tables. `W`
+ * embeds `embedded` structs, as in {@link goOwnFieldsShape}.
+ */
+export function goSelectorChainShape(
+  calls: number,
+  hops: number,
+  fields: number,
+  embedded: number,
+): GoTree {
+  let src = "package p\n\ntype E0 struct{ F func() }\n\n";
+  for (let j = 1; j < embedded; j += 1) src += `type E${j} struct{}\n`;
+  src += "\ntype W struct {\n";
+  for (let j = 0; j < embedded; j += 1) src += `\tE${j}\n`;
+  src += "}\n\n";
+  const own = Array.from({ length: fields }, (_, k) => `a${k}`).join(", ");
+  const types = calls * (hops + 1) + 1;
+  for (let i = 0; i < types; i += 1) {
+    const next = i + 1 < types ? `; N *T${i + 1}` : "";
+    src += `type T${i} struct{ W; ${own} int${next} }\n`;
+  }
+  const chain = ".N".repeat(hops);
+  for (let c = 0; c < calls; c += 1) src += `func f${c}(t T${c * (hops + 1)}) { t${chain}.F() }\n`;
+  return { "p/p.go": src };
+}

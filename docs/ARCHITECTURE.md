@@ -3575,7 +3575,10 @@ imports that would bind one local name; an import path that two `go.mod` files o
 both declare, from a file in neither; and — in a tree with no `go.mod`, or for Go code outside
 every module — an import path matched to a directory by spelling, which binds in one case
 only: exactly one directory whose path ENDS in the whole import path (a GOPATH layout,
-`src/github.com/org/app/store`, or the tree root being that `src`). A directory the path
+`src/github.com/org/app/store`, or the tree root being that `src`). A ONE-segment path
+(`import "appengine"`) is its own tail, so it binds only to a directory at the tree root or
+directly under one named `src` or `vendor` — `internal/appengine/` was bound for the
+dependency, a wrong target by the type checker (review cycle 6; in the oracle corpus). A directory the path
 merely ends in is never bound, however many segments match: two trailing segments were once
 taken for evidence, and `errors.Wrap()` importing `github.com/pkg/errors` bound to the
 project's own `pkg/errors/e.go::Wrap`, which the type checker says is the dependency's
@@ -3730,21 +3733,50 @@ declaration (struct embedding, defined type, alias, pointer to a defined type, g
 instantiation, interface embedding, defined type over an interface, and five compound
 shapes) by the count at two sizes and by retained heap after a forced collection.
 
+**An absolute cap, and a watchdog that cannot be outrun (PR #1104, review cycle 6).** Every
+shape above varied the width of the declaration *underneath*. What dominated was the
+allowance a type earns from the members it declares **itself** — sixteen names for each
+field, and fields are cheap — times the tables **one call** builds. A struct of 2,000 fields
+earned a 32,000-name index (5 MB); `t.N.N.N.N.N.F()` builds six tables, and 160 such calls
+aborted the process between two readings of a watchdog that read every 256 calls. And 24,000
+types `struct{ W; a0 … a7 int }` over a `W` embedding 133 structs kept a 143-name index each:
+560 MB from 2.1 MB of Go (1,091 MB with test callers, 2,333 MB with forty fields). Two changes:
+
+- `GO_TYPE_RETAINED_MAX` (64) caps the allowance whatever a type declares. It equals the layer
+  budget, so at the defaults **no type keeps a name index**: a type whose promotion search
+  reaches more than 64 types is undecided (`overBudget`) even where it wrote the embeddings
+  itself. An index costs about 150 B a name *per type*, so any higher cap lets N types keep N
+  indexes (at 128 the same shape, re-tuned, still retains 443 MB). Nothing real was found to
+  need it: the widest table in Miniflux lists 8 layer types, the widest in about 4,200 files
+  of Go's own toolchain and standard library 4. The three trees now retain 40, 49 and 71 MB,
+  and 90, 149 and 121 MB re-tuned to sit exactly at the cap. One call's tables are then at
+  most 64 selections × 322 entries, about 1.5 MB.
+- the watchdog also reads the heap whenever the resolver has kept
+  `GO_BINDING_HEAP_SAMPLE_ENTRIES` (16,384) more entries than at its last reading
+  (`GoResolver.retainedTotal()`, a running sum), so what the heap may pass the limit by is
+  about 8 MB instead of whatever 256 calls keep. Reading the heap before every call was
+  measured and rejected (16 ms on Miniflux's 5.6 ms of resolving).
+
+`go-wide-shapes.ts` holds both shapes ("N types × K own fields", "one call selecting through
+H wide types"); `go-resolver-type-forms.test.ts` scales them and
+`code-graph-go-binding-watchdog-1071.sqlite.test.ts` runs the chain through `ingestCodeGraph`.
+
 Ceilings bound what is left, and each is counted rather than guessed:
 
 | Ceiling | Constant | When it is reached |
 | --- | --- | --- |
 | Steps for one call | `GO_CALL_STEP_BUDGET` (10,000; `go-type-resolution.ts`) | The call is left undecided by type; counted in `IngestStats.goBinding.overBudget`. |
 | Steps for one type's layers | `GO_TYPE_STEP_BUDGET` (100,000) | No member of that type is decided, for any call; counted in `overBudget`. |
-| What one type may keep | `GO_TYPE_LAYER_BUDGET` (64), `GO_TYPE_RETAINED_PER_MEMBER` (16) | The same: no member of that type is decided; counted in `overBudget`. |
+| What one type may keep | `GO_TYPE_LAYER_BUDGET` (64), `GO_TYPE_RETAINED_PER_MEMBER` (16), capped at `GO_TYPE_RETAINED_MAX` (64) | The same: no member of that type is decided; counted in `overBudget`. |
 | Time resolving Go calls in one ingest | `GO_BINDING_MAX_MS` (30 s; `ingest.ts`, per run `IngestOptions.goBindingMaxMs`) | Every remaining call of the run is left undecided by type and counted in `goBinding.skipped`; where each file stopped is recorded on the graph and the next ingest resumes there (below). At least `GO_BINDING_MIN_CALLS` (2,000) calls are resolved first whatever the clock says. `goBinding.stopReason` is `time`. |
-| Heap growth during the step | `GO_BINDING_MAX_HEAP_GROWTH` (512 MB, or a quarter of the process's heap limit if that is less; read every `GO_BINDING_HEAP_SAMPLE_CALLS` = 256 calls) | The same as the time ceiling, with **no floor**, and the resolver is released. `goBinding.stopReason` is `memory`, `heapGrowthMb` the growth read. |
+| Heap growth during the step | `GO_BINDING_MAX_HEAP_GROWTH` (512 MB, or a quarter of the process's heap limit if that is less; read every `GO_BINDING_HEAP_SAMPLE_CALLS` = 256 calls and every `GO_BINDING_HEAP_SAMPLE_ENTRIES` = 16,384 entries the resolver keeps) | The same as the time ceiling, with **no floor**, and the resolver is released. `goBinding.stopReason` is `memory`, `heapGrowthMb` the growth read. |
 
 **The heap watchdog is the last resort, and does not trust the resolver's own count.** Two
 reviews in a row found a structure `retained()` did not see, each a process abort from 1
 to 2 MB of Go. So the binding step reads `process.memoryUsage().heapUsed` itself before
-every 256th call and stops when the heap has grown by more than the limit since the step
-began. 512 MB is twice the worst growth measured for a shape that resolves correctly
+every 256th call — and whenever the resolver has kept 16,384 more entries, so that calls
+which each keep a lot cannot outrun it — and stops when the heap has grown by more than the
+limit since the step began. 512 MB is twice the worst growth measured for a shape that resolves correctly
 (48,000 types over one 3,000-member declaration: 65 to 240 MB), forty times what a real
 ingest of Miniflux reads (12 MB for 21,106 calls) and an eighth of Node's 4 GB default
 heap. A tree of the order of a million Go calls would reach it in one ingest and is then
