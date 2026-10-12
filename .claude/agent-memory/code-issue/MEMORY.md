@@ -82,3 +82,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Tiered price = ONE request](project_tiered-price-needs-one-requests-usage.md) — split a sum by isLongPrompt, price with tierRate (#1080)
 - [Usage row ≠ one call](project_usage-row-is-not-always-one-call.md) — chat/discussion/failed rows sum calls; pass `requests` (#1092)
 - [Readers re-check side-columns](project_side-column-readers-apply-writer-invariant.md) — use ledgerRowSummedRequests, not shape-only (#1092)
+- [Impact offline replay + pinned shapes](project_impact-offline-replay-and-pinned-shapes.md) — measure with no model; 4 far-away tests
+- [Gate over LLM output: probes](project_deterministic-gate-over-llm-output-probes.md) — adversarial answer, context cue, regex timing
+- [Fuzz every regex; sweep every model field](project_redos-fix-ships-beside-new-pattern-fuzz-all.md) — ReDoS fixes ship beside new ones (#1090)
+- [Model-cannot claims: sweep at the engine](project_model-cannot-claims-need-engine-level-sweep.md) — every LLM dep on; no near-idle timing bound

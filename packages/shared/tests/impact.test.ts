@@ -25,6 +25,8 @@ describe("impact domain", () => {
         "importer",
         "dependency",
         "data-writer", // #791
+        "data-model", // #1036
+        "related", // #1036
       ]);
     });
     it("exposes mapping sources", () => {

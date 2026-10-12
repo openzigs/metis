@@ -110,7 +110,15 @@ export interface RawCodeSymbolHit {
 
 /** Injectable code searcher — matches `HybridCodeSearch.search`'s signature. */
 export interface FusedCodeSearcher {
-  search(query: string, projectId: string, opts?: { limit?: number }): Promise<RawCodeSymbolHit[]>;
+  search(
+    query: string,
+    projectId: string,
+    opts?: {
+      limit?: number;
+      /** #1036 — told which channels answered (`hybrid` or `bm25-only`). */
+      onRetrievalMode?: (mode: "hybrid" | "bm25-only") => void;
+    },
+  ): Promise<RawCodeSymbolHit[]>;
 }
 
 /** Injectable line resolver — reads authoritative spans from `CodeSymbol`. */

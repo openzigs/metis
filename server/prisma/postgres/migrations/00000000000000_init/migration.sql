@@ -4290,3 +4290,29 @@ ALTER TABLE "code_symbol_embeddings" ADD CONSTRAINT "code_symbol_embeddings_symb
 
 -- AddForeignKey
 ALTER TABLE "code_symbol_embeddings" ADD CONSTRAINT "code_symbol_embeddings_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "projects"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- Issue #1051 — proposed columns the #791 gate kept out of an impact result.
+-- CreateTable
+CREATE TABLE "impact_column_proposals" (
+    "id" TEXT NOT NULL,
+    "impactItemId" TEXT NOT NULL,
+    "disposition" TEXT NOT NULL,
+    "tableName" TEXT NOT NULL,
+    "columnName" TEXT NOT NULL,
+    "columnType" TEXT,
+    "suggestedDdl" TEXT,
+    "reason" TEXT NOT NULL,
+    "writerQualifiedName" TEXT,
+    "writerFilePath" TEXT,
+    "writerStartLine" INTEGER,
+    "writerEndLine" INTEGER,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "impact_column_proposals_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE INDEX "impact_column_proposals_impactItemId_idx" ON "impact_column_proposals"("impactItemId");
+
+-- AddForeignKey
+ALTER TABLE "impact_column_proposals" ADD CONSTRAINT "impact_column_proposals_impactItemId_fkey" FOREIGN KEY ("impactItemId") REFERENCES "impact_items"("id") ON DELETE CASCADE ON UPDATE CASCADE;

@@ -11,6 +11,7 @@ import type {
   ImpactAffectedSymbolView,
   ImpactAffectedTableView,
   ImpactAnalysisDetail,
+  ImpactColumnProposalView,
   ImpactAnalysisStatus,
   ImpactAnalysisSummary,
   ImpactConsumerResolution,
@@ -28,6 +29,7 @@ import {
   DDL_CHANGE_KINDS,
   DDL_RISK_CLASSES,
   deriveMatchQualityDetailed,
+  impactFileLists,
   IMPACT_CONSUMER_RESOLUTIONS,
   IMPACT_CONSUMER_USAGES,
   IMPACT_TABLE_FEEDBACK_VERDICTS,
@@ -59,6 +61,8 @@ const ITEM_INCLUDE = {
   items: {
     include: {
       affectedSymbols: { orderBy: [{ depth: "asc" }, { confidence: "desc" }] },
+      // #1051 — the proposed columns the #791 gate ruled out, stable-sorted.
+      columnProposals: { orderBy: [{ tableName: "asc" }, { columnName: "asc" }] },
       affectedTables: {
         // #956 — the cross-project consumer children, stable-sorted for
         // deterministic rendering.
@@ -223,8 +227,52 @@ interface RawItem {
   requirement: { title: string } | null;
   affectedSymbols: RawAffectedSymbol[];
   affectedTables: RawAffectedTable[];
+  /**
+   * #1051 — proposed columns the #791 gate ruled out. Optional on the raw row:
+   * a caller that selects the item without the relation gets two empty lists.
+   */
+  columnProposals?: RawColumnProposal[];
   /** #966 — accumulated BA relevance feedback on this item's affected tables. */
   feedback: RawFeedback[];
+}
+
+interface RawColumnProposal {
+  id: string;
+  disposition: string;
+  tableName: string;
+  columnName: string;
+  columnType: string | null;
+  suggestedDdl: string | null;
+  reason: string;
+  writerQualifiedName: string | null;
+  writerFilePath: string | null;
+  writerStartLine: number | null;
+  writerEndLine: number | null;
+}
+
+/**
+ * #1051 — one stored ruled-out proposal as the API returns it. The writer is
+ * present only when the row carries both its name and its file: a location with
+ * no file cannot be shown or linked.
+ */
+function toColumnProposalView(p: RawColumnProposal): ImpactColumnProposalView {
+  return {
+    id: p.id,
+    tableName: p.tableName,
+    columnName: p.columnName,
+    columnType: p.columnType,
+    suggestedDdl: p.suggestedDdl,
+    reason: p.reason,
+    writer:
+      p.writerQualifiedName && p.writerFilePath
+        ? {
+            qualifiedName: p.writerQualifiedName,
+            filePath: p.writerFilePath,
+            startLine: p.writerStartLine,
+            endLine: p.writerEndLine,
+          }
+        : null,
+  };
 }
 
 function toAffectedSymbolView(s: RawAffectedSymbol): ImpactAffectedSymbolView {
@@ -330,6 +378,11 @@ function toItemView(item: RawItem): ImpactItemView {
   }
 
   const allSymbols = item.affectedSymbols.map(toAffectedSymbolView);
+  const productionSymbols = allSymbols.filter((s) => !isTestFilePath(s.filePath));
+  // #1036 — the two lists a caller scores differently, derived from the persisted
+  // depths by the one shared definition. A run stored before #1036 reads through
+  // the same rule: its mapper hits are its edit candidates.
+  const { editCandidateFiles, blastRadiusFiles } = impactFileLists(productionSymbols);
 
   // #961/#994 — derive the requirement→code match quality (+ WHY, when weak)
   // from the persisted DIRECT (seed) confidences+paths. The direct affected
@@ -369,11 +422,25 @@ function toItemView(item: RawItem): ImpactItemView {
     // keeps the prod symbols a BA scans unpolluted and gives QA a "tests covering
     // the impacted code" list with a count. `writePathGaps` is filled by the
     // async schema-graph pass in `getImpactAnalysisDetail` (empty otherwise).
-    affectedSymbols: allSymbols.filter((s) => !isTestFilePath(s.filePath)),
+    affectedSymbols: productionSymbols,
     affectedTests: allSymbols.filter((s) => isTestFilePath(s.filePath)),
+    editCandidateFiles,
+    blastRadiusFiles,
     writePathGaps: [],
     affectedTables,
     affectedTablesSecondary,
+    // #1051 — split by the stored disposition. An unknown disposition (a value a
+    // later version wrote) is shown under neither heading rather than guessed at.
+    droppedColumnProposals: (item.columnProposals ?? [])
+      .filter((p) => p.disposition === "rejected")
+      .map(toColumnProposalView),
+    optionalColumnProposals: (item.columnProposals ?? [])
+      .filter((p) => p.disposition === "optional")
+      .map(toColumnProposalView),
+    // #791 — columns that ARE among the affected tables, marked as not checked.
+    uncheckedColumnProposals: (item.columnProposals ?? [])
+      .filter((p) => p.disposition === "unchecked")
+      .map(toColumnProposalView),
     feedback: (item.feedback ?? []).map(toFeedbackView),
   };
 }

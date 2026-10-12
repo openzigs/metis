@@ -7,7 +7,11 @@
  * The multi-requirement fixture below is a realistic requirements-delta doc.
  */
 import { describe, expect, it } from "vitest";
-import { extractChangesHeuristically, heuristicChangeExtractor } from "./extract-changes.js";
+import {
+  extractChangesHeuristically,
+  heuristicChangeExtractor,
+  stripTrailingParenGroup,
+} from "./extract-changes.js";
 
 /**
  * A realistic multi-requirement change document exercising every branch:
@@ -377,5 +381,42 @@ describe("heuristicChangeExtractor — acceptance-criteria subordination (#1136)
       ].join("\n"),
     );
     expect(changes).toHaveLength(3);
+  });
+});
+
+describe("stripTrailingParenGroup — linear, and the same as the pattern it replaced (PR #1090 review 2)", () => {
+  const before = (text: string) => text.replace(/\([^)]*\)\s*$/, "");
+
+  it("drops a trailing group and the whitespace after it, and nothing else", () => {
+    expect(stripTrailingParenGroup("Acceptance criteria (draft)")).toBe("Acceptance criteria ");
+    expect(stripTrailingParenGroup("Acceptance criteria (draft)  ")).toBe("Acceptance criteria ");
+    expect(stripTrailingParenGroup("Scope (a) and more")).toBe("Scope (a) and more");
+    expect(stripTrailingParenGroup("f(a) (b)")).toBe("f(a) ");
+    expect(stripTrailingParenGroup("a (b (c)")).toBe("a ");
+    expect(stripTrailingParenGroup("no group)  ")).toBe("no group)  ");
+    expect(stripTrailingParenGroup("")).toBe("");
+  });
+
+  it("equals the previous pattern on every string of a seeded sweep", () => {
+    let seed = 0x51ed27;
+    const next = (n: number) => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed % n;
+    };
+    const alphabet = ["(", ")", "(", ")", "a", " ", "b", ":", "\t"];
+    for (let i = 0; i < 20_000; i++) {
+      const length = next(14);
+      let text = "";
+      for (let j = 0; j < length; j++) text += alphabet[next(alphabet.length)];
+      expect(stripTrailingParenGroup(text), JSON.stringify(text)).toBe(before(text));
+    }
+  });
+
+  it("is linear on 200 KB of open parentheses (15 s before)", () => {
+    const text = "(".repeat(200_000);
+    const start = performance.now();
+    expect(stripTrailingParenGroup(text)).toBe(text);
+    expect(stripTrailingParenGroup(`${text})`)).toBe("");
+    expect(performance.now() - start).toBeLessThan(500);
   });
 });

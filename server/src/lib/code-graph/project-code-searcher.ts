@@ -24,6 +24,7 @@
  * finished) has no vectors tagged with the active model, so the vector channel
  * simply contributes nothing and BM25 keeps serving — degraded, never broken.
  */
+import type { PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import { getEmbedder } from "../rag/embedder.js";
 import type {
@@ -219,6 +220,43 @@ export const prismaSymbolIndex: SymbolIndex = {
   },
 };
 
+/**
+ * #1036 — a {@link SymbolIndex} over a GIVEN Prisma client, for a caller that was
+ * handed one (the impact engine's `deps.prisma`). {@link prismaSymbolIndex} reads
+ * the module-global client, so a caller that injected its own used to search one
+ * database and hydrate from another.
+ *
+ * Deliberately simple: one load per project for the life of the index, no
+ * fingerprint and no shared cache. It is built per impact run, which is short
+ * and reads a graph that an ingest does not swap mid-run; the production client
+ * keeps {@link prismaSymbolIndex} and its cross-request cache.
+ */
+export function createRunScopedSymbolIndex(client: Pick<PrismaClient, "codeSymbol">): SymbolIndex {
+  const loads = new Map<string, Promise<readonly SearchableSymbol[]>>();
+  return {
+    getSymbols(projectId: string): Promise<readonly SearchableSymbol[]> {
+      let load = loads.get(projectId);
+      if (!load) {
+        load = client.codeSymbol
+          .findMany({ where: { projectId }, select: SYMBOL_SELECT, orderBy: { id: "asc" } })
+          .then((rows) => Object.freeze(rows.map(toSearchable)));
+        // A failed load is not remembered: the next query tries again.
+        load.catch(() => loads.delete(projectId));
+        loads.set(projectId, load);
+      }
+      return load;
+    },
+    async getSymbolsByIds(projectId: string, symbolIds: string[]): Promise<SearchableSymbol[]> {
+      if (symbolIds.length === 0) return [];
+      const rows = await client.codeSymbol.findMany({
+        where: { projectId, id: { in: symbolIds } },
+        select: SYMBOL_SELECT,
+      });
+      return rows.map(toSearchable);
+    },
+  };
+}
+
 export interface CodeSearcherDeps {
   vectorStore?: SymbolVectorStore;
   embedService?: EmbedService;
@@ -238,7 +276,10 @@ export function createDefaultCodeSearcher(deps: CodeSearcherDeps = {}): FusedCod
   );
   return {
     async search(query, projectId, opts): Promise<RawCodeSymbolHit[]> {
-      const results = await hybrid.search(query, projectId, { limit: opts?.limit ?? 20 });
+      const results = await hybrid.search(query, projectId, {
+        limit: opts?.limit ?? 20,
+        onRetrievalMode: opts?.onRetrievalMode,
+      });
       return results.map((r) => ({
         symbolId: r.symbolId,
         filePath: r.filePath,

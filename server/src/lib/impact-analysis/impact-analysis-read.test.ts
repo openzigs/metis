@@ -917,6 +917,11 @@ describe("#956 computeSharedTableImpacts (run-level rollup)", () => {
       affectedSymbols: [],
       affectedTests: [],
       writePathGaps: [],
+      editCandidateFiles: [],
+      blastRadiusFiles: [],
+      droppedColumnProposals: [],
+      optionalColumnProposals: [],
+      uncheckedColumnProposals: [],
       feedback: [],
       affectedTablesSecondary: [],
       affectedTables: tableNames.map((tableName) => ({
@@ -1220,6 +1225,46 @@ describe("#962 groups impacted test files out of the prod blast radius", () => {
       "org.jpetstore.mapper.AccountMapperTest.testUpdate",
       "org.jpetstore.service.AccountServiceTest.testUpdate",
     ]);
+  });
+
+  it("#1036 — reports the edit-candidate files apart from the whole blast radius, tests in neither", async () => {
+    const symbols = [
+      rawSymbol({ filePath: "internal/storage/entry.go", relation: "direct", depth: 0 }),
+      rawSymbol({ filePath: "internal/storage/entry.go", relation: "data-writer", depth: 0 }),
+      // A lineage writer the engine did NOT promote: review, not edit.
+      rawSymbol({ filePath: "internal/storage/feed.go", relation: "data-writer", depth: 1 }),
+      rawSymbol({ filePath: "internal/model/entry.go", relation: "data-model", depth: 0 }),
+      rawSymbol({ filePath: "internal/api/handlers.go", relation: "caller", depth: 2 }),
+      rawSymbol({ filePath: "internal/ui/page.go", relation: "related", depth: 1 }),
+      rawSymbol({ filePath: "internal/storage/entry_test.go", relation: "direct", depth: 0 }),
+    ];
+    const detail = await getImpactAnalysisDetail("ia-962", symbolItemPrisma(symbols) as never);
+    const item = detail!.items[0];
+    expect(item.editCandidateFiles).toEqual([
+      "internal/storage/entry.go",
+      "internal/model/entry.go",
+    ]);
+    expect(item.blastRadiusFiles).toEqual([
+      "internal/storage/entry.go",
+      "internal/model/entry.go",
+      "internal/storage/feed.go",
+      "internal/api/handlers.go",
+      "internal/ui/page.go",
+    ]);
+    // The new relations survive the read path.
+    expect(item.affectedSymbols.map((s) => s.relation)).toContain("data-model");
+    expect(item.affectedSymbols.map((s) => s.relation)).toContain("related");
+  });
+
+  it("#1036 — a run stored before the split reads its mapper hits as its edit candidates", async () => {
+    const symbols = [
+      rawSymbol({ filePath: "a.go", relation: "direct", depth: 0 }),
+      rawSymbol({ filePath: "w.go", relation: "data-writer", depth: 1 }),
+      rawSymbol({ filePath: "c.go", relation: "caller", depth: 2 }),
+    ];
+    const detail = await getImpactAnalysisDetail("ia-962", symbolItemPrisma(symbols) as never);
+    expect(detail!.items[0].editCandidateFiles).toEqual(["a.go"]);
+    expect(detail!.items[0].blastRadiusFiles).toEqual(["a.go", "w.go", "c.go"]);
   });
 
   it("emits an empty affectedTests list when no impacted symbol is a test file", async () => {
@@ -2210,5 +2255,111 @@ describe("#1013 read path resolves the per-item requirement title", () => {
       "Cancel an order within 24 hours.",
       "Support partial shipments.",
     ]);
+  });
+});
+
+describe("#1051 — stored column proposals on the read path", () => {
+  const proposal = (over: Record<string, unknown>) => ({
+    id: "cp-1",
+    disposition: "rejected",
+    tableName: "users",
+    columnName: "mark_read_delay",
+    columnType: "INTEGER",
+    suggestedDdl: "ALTER TABLE users ADD COLUMN mark_read_delay INTEGER;",
+    reason: "An existing write path covers this.",
+    writerQualifiedName: "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+    writerFilePath: "internal/storage/entry.go",
+    writerStartLine: 523,
+    writerEndLine: 533,
+    ...over,
+  });
+  /** One item carrying the given stored proposals (or none of the relation at all). */
+  function prismaWith(columnProposals: unknown[] | undefined) {
+    const base = symbolItemPrisma([rawSymbol({ filePath: "a.go", relation: "direct", depth: 0 })]);
+    return {
+      impactAnalysis: {
+        findFirst: vi.fn(async () => {
+          const row = await base.impactAnalysis.findFirst();
+          return {
+            ...row,
+            items: row.items.map((item: Record<string, unknown>) =>
+              columnProposals === undefined ? item : { ...item, columnProposals },
+            ),
+          };
+        }),
+      },
+    };
+  }
+
+  it("splits them by disposition and rebuilds the covering writer", async () => {
+    const detail = await getImpactAnalysisDetail(
+      "ia-962",
+      prismaWith([
+        proposal({ id: "cp-1" }),
+        proposal({ id: "cp-2", disposition: "optional", columnName: "mark_read_default" }),
+      ]) as never,
+    );
+    const item = detail!.items[0];
+    expect(item.droppedColumnProposals).toEqual([
+      {
+        id: "cp-1",
+        tableName: "users",
+        columnName: "mark_read_delay",
+        columnType: "INTEGER",
+        suggestedDdl: "ALTER TABLE users ADD COLUMN mark_read_delay INTEGER;",
+        reason: "An existing write path covers this.",
+        writer: {
+          qualifiedName: "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+          filePath: "internal/storage/entry.go",
+          startLine: 523,
+          endLine: 533,
+        },
+      },
+    ]);
+    expect(item.optionalColumnProposals.map((p) => p.id)).toEqual(["cp-2"]);
+  });
+
+  it("returns a null writer unless both its name and its file are stored", async () => {
+    const detail = await getImpactAnalysisDetail(
+      "ia-962",
+      prismaWith([
+        proposal({ id: "none", writerQualifiedName: null, writerFilePath: null }),
+        proposal({ id: "no-file", writerFilePath: null }),
+        proposal({ id: "no-name", writerQualifiedName: null }),
+      ]) as never,
+    );
+    expect(detail!.items[0].droppedColumnProposals.map((p) => p.writer)).toEqual([
+      null,
+      null,
+      null,
+    ]);
+  });
+
+  it("keeps a writer whose line is unknown", async () => {
+    const detail = await getImpactAnalysisDetail(
+      "ia-962",
+      prismaWith([proposal({ writerStartLine: null, writerEndLine: null })]) as never,
+    );
+    expect(detail!.items[0].droppedColumnProposals[0]!.writer).toEqual({
+      qualifiedName: "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+      filePath: "internal/storage/entry.go",
+      startLine: null,
+      endLine: null,
+    });
+  });
+
+  it("shows a disposition it does not know under neither heading", async () => {
+    const detail = await getImpactAnalysisDetail(
+      "ia-962",
+      prismaWith([proposal({ disposition: "deferred" })]) as never,
+    );
+    expect(detail!.items[0].droppedColumnProposals).toEqual([]);
+    expect(detail!.items[0].optionalColumnProposals).toEqual([]);
+  });
+
+  it("returns two empty lists for a run stored before #1051", async () => {
+    const detail = await getImpactAnalysisDetail("ia-962", prismaWith(undefined) as never);
+    expect(detail!.items[0].droppedColumnProposals).toEqual([]);
+    expect(detail!.items[0].optionalColumnProposals).toEqual([]);
   });
 });

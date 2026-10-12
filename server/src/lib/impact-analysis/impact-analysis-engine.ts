@@ -32,16 +32,40 @@ import {
 import type { CodeGraphDataSource, GraphEdge, GraphSymbol } from "../code-graph/query-service.js";
 import { randomUUID } from "node:crypto";
 import { blastRadius, type RadiusSymbol } from "./blast-radius.js";
-import { addDataPathWriters, pruneTangentialSchemaSeeds } from "./data-path-writers.js";
 import {
-  dropProposalsRestatingWriters,
-  type DroppedColumnProposal,
-} from "./additive-column-proposer.js";
+  expandDataPathWriters,
+  profileDataPathWriters,
+  pruneTangentialSchemaSeeds,
+  resolveDataPathWriters,
+  type DataPathWriter,
+  type DataPathWriterProfile,
+} from "./data-path-writers.js";
+import { assignImpactRoles, tablesGainingColumns } from "./impact-roles.js";
+import {
+  prismaSeedSymbolLoader,
+  resolveChangeSeeds,
+  type ChangeSeeds,
+  type RetrievalMode,
+} from "./change-seeds.js";
+import { requestGateText, shapeAwareChangeExtractor } from "./change-request.js";
+import { resolveStructuralTwins, type CalleeNameSource } from "./structural-twins.js";
+import {
+  createDefaultCodeSearcher,
+  createRunScopedSymbolIndex,
+  type CodeSearcherDeps,
+} from "../code-graph/project-code-searcher.js";
+import {
+  gateColumnProposals,
+  normalizeProposerOutput,
+  type GatedColumnProposal,
+  type ProposerOutput,
+} from "./column-proposal-gate.js";
 import { loadResolvedGoCalls } from "./go-call-resolution.js";
 import {
   crossToSchema,
   PrismaSchemaImpactDataSource,
   type AffectedTableInput,
+  type CodeSymbolDetail,
   type CrossProjectIdentityResolver,
   type SchemaImpactDataSource,
 } from "./schema-impact.js";
@@ -64,7 +88,6 @@ import type {
 } from "./impact-summarizer.js";
 import type { LiveSchemaIndex } from "./live-schema-ingest.js";
 import {
-  heuristicChangeExtractor,
   type ChangedRequirement,
   type ChangeExtractor,
   type ChangeType,
@@ -133,13 +156,40 @@ export interface ProjectImpactResult {
    */
   coverageGaps: ClauseCoverageGap[];
   /**
-   * #791 — `add-column` proposals removed because an existing writer already
-   * performs the operation and the requirement does not ask to store the value,
-   * each with that writer and the reason. Never part of `affectedTables`. Not
-   * persisted (no schema column). Empty when nothing was dropped.
+   * #791 — `add-column` proposals the deterministic gate kept OUT of the result
+   * because an existing write path already takes the value as a parameter and
+   * nothing asks to store it; each with that writer (file and line) and the
+   * reason. Never part of `affectedTables`. Persisted and shown since #1051.
    */
-  droppedColumnProposals: DroppedColumnProposal[];
+  droppedColumnProposals: GatedColumnProposal[];
+  /**
+   * #791 — "Optional: settings persistence": `add-column` proposals that would
+   * only remember a preferred value for an operation that already exists, or
+   * that the proposer itself classed as a user preference. Never part of
+   * `affectedTables`, so never part of "migration needed". Persisted and shown
+   * since #1051.
+   */
+  optionalColumnProposals: GatedColumnProposal[];
+  /**
+   * #791 — `add-column` rows that ARE in `affectedTables` and that the gate did
+   * not rule on: describing the write paths failed, the lineage named none, the
+   * request has no age or date bound, or no named write path filters on a time.
+   * In such a request every proposed column passes; this is the mark that says
+   * so, with the reason. Persisted and shown like the two lists above.
+   */
+  uncheckedColumnProposals: GatedColumnProposal[];
+  /**
+   * #1036 — how the default seeding searched: `hybrid` (BM25 fused with symbol
+   * embeddings), or `bm25-only` when the project's symbols were not embedded yet
+   * or the vector search failed. Null when the seeding did not report it (an
+   * injected mapper or searcher). A `bm25-only` run is named in the run summary.
+   */
+  retrievalMode: RetrievalMode | null;
 }
+
+/** Why a column passed unchecked when the write paths could not be described. */
+export const WRITERS_FAILED_REASON =
+  "Not checked: looking up the existing write paths failed, so there was nothing to compare this column with. Review it as an unverified proposal.";
 
 export const DEFAULT_MAX_DEPTH = 2;
 
@@ -148,8 +198,18 @@ type MapRequirementFn = (
   projectId: string,
 ) => Promise<RequirementCodeMatch[]>;
 
+/** #1036 — seed one change into a project. See {@link resolveChangeSeeds}. */
+export type SeedChangeFn = (change: ChangedRequirement, projectId: string) => Promise<ChangeSeeds>;
+
 export interface ComputeImpactDeps {
   mapRequirement: MapRequirementFn;
+  /**
+   * #1036 — hybrid-search seeding that SPLITS what it retrieves: the symbols in
+   * the files the change probably edits, and everything else it found. When set
+   * it replaces {@link mapRequirement} for this change. Must never throw (its own
+   * contract, `change-seeds.ts`).
+   */
+  seedChange?: SeedChangeFn;
   dataSourceFor: (projectId: string) => CodeGraphDataSource;
   maxDepth?: number;
   /** When set (and `includeSchemaImpact` is true), cross the blast radius into the schema graph. */
@@ -180,8 +240,16 @@ export interface ComputeImpactDeps {
      * #1003 — the project and its live schema, so the proposer can check each
      * column against everything that already exists, not only the crossed rows.
      */
-    context: { projectId: string; liveIndex: LiveSchemaIndex | null },
-  ) => Promise<AffectedTableInput[]>;
+    context: {
+      projectId: string;
+      liveIndex: LiveSchemaIndex | null;
+      /**
+       * #791 — the lineage writers of the data this requirement touches, with
+       * what each one does. Empty when the lineage named none.
+       */
+      writers: DataPathWriterProfile[];
+    },
+  ) => Promise<ProposerOutput>;
   /**
    * #1005 — optional CLAUSE-vs-IMPACT reconciler run LAST, once the surfaced set
    * is final. Given the requirement text plus every table on screen (primary AND
@@ -250,10 +318,42 @@ export async function computeProjectImpact(
 ): Promise<ProjectImpactResult> {
   const maxDepth = deps.maxDepth ?? DEFAULT_MAX_DEPTH;
 
-  const matches = await deps.mapRequirement(
-    { id: change.requirementId ?? "", title: change.title, body: change.body },
-    projectId,
-  );
+  // #1036 — seed with the split retrieval when it is wired: `matches` are then
+  // the EDIT CANDIDATES, and `related` is what else was retrieved, for review.
+  // Without it (an injected `mapRequirement`), every match is a seed, as before.
+  let matches: RequirementCodeMatch[];
+  let related: RequirementCodeMatch[] = [];
+  let schemaSeeds: RequirementCodeMatch[] = [];
+  let retrievalMode: RetrievalMode | null = null;
+  // #791 — what the request ASKS (primary statement + sub-aspects), without its
+  // context sections. Read by the `ALTER TABLE` fast path and by the gate: DDL
+  // quoted under "Alternatives considered" is not a request for that column.
+  const gateText = requestGateText(change);
+  if (deps.seedChange) {
+    const seeds = await deps.seedChange(change, projectId);
+    matches = seeds.editCandidates;
+    related = seeds.related;
+    schemaSeeds = seeds.schemaSeeds;
+    retrievalMode = seeds.retrievalMode ?? null;
+    // Functions built like a retrieved one are review material too. Best-effort.
+    try {
+      const twins = await resolveStructuralTwins(deps.dataSourceFor(projectId), [
+        ...matches,
+        ...related,
+      ]);
+      related = [...related, ...twins];
+    } catch (err) {
+      log.warn("structural-twin lookup failed; keeping retrieval", {
+        projectId,
+        error: String(err),
+      });
+    }
+  } else {
+    matches = await deps.mapRequirement(
+      { id: change.requirementId ?? "", title: change.title, body: change.body },
+      projectId,
+    );
+  }
 
   const topConfidence = matches.reduce((m, c) => Math.max(m, c.confidence), 0);
 
@@ -269,8 +369,25 @@ export async function computeProjectImpact(
     confidence: m.confidence,
   }));
 
+  // #1036 — a table or column among the best hits is not code to edit, but it is
+  // still a seed for the schema crossing and the lineage writers below.
+  const schemaRows: AffectedSymbolResult[] = schemaSeeds.map((m) => ({
+    codeSymbolId: m.codeSymbolId,
+    filePath: m.filePath,
+    qualifiedName: m.qualifiedName,
+    startLine: m.startLine,
+    endLine: m.endLine,
+    relation: "related" as const,
+    depth: 1,
+    confidence: m.confidence,
+  }));
+
   // Transitive blast radius from the resolved seed symbols.
   const seedIds = matches.map((m) => m.codeSymbolId).filter((id): id is string => Boolean(id));
+  const dataSeedIds = [
+    ...seedIds,
+    ...schemaSeeds.map((m) => m.codeSymbolId).filter((id): id is string => Boolean(id)),
+  ];
 
   let radius: RadiusSymbol[] = [];
   if (seedIds.length > 0) {
@@ -286,7 +403,7 @@ export async function computeProjectImpact(
 
   // Merge + dedupe (direct wins over radius).
   const byKey = new Map<string, AffectedSymbolResult>();
-  for (const d of direct) {
+  for (const d of [...direct, ...schemaRows]) {
     byKey.set(d.codeSymbolId ?? `path:${d.qualifiedName}`, d);
   }
   for (const r of radius) {
@@ -334,7 +451,14 @@ export async function computeProjectImpact(
   // schema-graph failure must never sink the code-impact result).
   let affectedTables: AffectedTableInput[] = [];
   let affectedTablesSecondary: AffectedTableInput[] = [];
-  let droppedColumnProposals: DroppedColumnProposal[] = [];
+  let droppedColumnProposals: GatedColumnProposal[] = [];
+  let optionalColumnProposals: GatedColumnProposal[] = [];
+  let uncheckedColumnProposals: GatedColumnProposal[] = [];
+  // #791 — true once a writer lookup or its profiling threw: the gate then has
+  // no writers because of a FAULT, and its `unchecked` rows say that.
+  let writerLookupFailed = false;
+  let dataPathWriters: DataPathWriter[] = [];
+  let dataModel: CodeSymbolDetail[] = [];
   if (deps.includeSchemaImpact !== false && deps.schemaDataSourceFor) {
     const impactedIds = affectedSymbols
       .map((s) => s.codeSymbolId)
@@ -354,12 +478,21 @@ export async function computeProjectImpact(
           expandDaoSiblings: deps.expandDaoSiblings ?? true,
           // #923 — feed the requirement text so an add-a-field requirement yields a
           // TEXT-ONLY ADD COLUMN suggestion even for source-only projects (no live DB).
-          requirementText: `${change.title}\n${change.body}`,
+          // The ASK only: this path is not gated, so it must not read a statement
+          // (or a literal `ALTER TABLE`) out of a context section.
+          requirementText: gateText.ask,
         },
       );
     } catch (err) {
       log.warn("schema impact crossing failed", { projectId, error: String(err) });
     }
+
+    // #791 — every table the crossing reached, kept as it is HERE: before the
+    // #936 filter (a model) sorts it into primary and secondary. The gate's
+    // writer lookup below reads this list, never the filtered one, so whether a
+    // request is covered does not turn on a model's answer (PR #1090 review 3).
+    const crossedTables = affectedTables;
+    let relevanceFilterApplied = false;
 
     // #936 — OUTPUT relevance filter: prune tangential (`unlikely`) tables into a
     // secondary bucket to raise precision without destroying the #928 recall win.
@@ -373,6 +506,7 @@ export async function computeProjectImpact(
         );
         affectedTables = filtered.primary;
         affectedTablesSecondary = filtered.secondary;
+        relevanceFilterApplied = true;
       } catch (err) {
         log.warn("table relevance filter failed; keeping unfiltered crossing", {
           projectId,
@@ -400,31 +534,10 @@ export async function computeProjectImpact(
       }
     }
 
-    // #1001 — ADDITIVE-COLUMN proposals. The #923 regex fast path only fires for a
-    // developer imperative ("add a status flag to account"); a business analyst
-    // writes obligations ("a cancelled order must record who cancelled it and
-    // when") and got only `-- Verify column …` noise. The proposer asks the model
-    // which NEW columns the requirement implies, grounded in the tables ALREADY in
-    // this result — so it can only ever APPEND `add-column` rows to tables the
-    // deterministic crossing surfaced. Runs after the #936 filter so nothing is
-    // proposed on a table judged tangential. Best-effort: the proposer never
-    // throws (its own contract), but guard anyway. The proposals are appended
-    // only after the #791 data-path writers are known (below).
-    let proposedColumns: AffectedTableInput[] = [];
-    if (deps.additiveColumnProposer && affectedTables.length > 0) {
-      try {
-        proposedColumns = await deps.additiveColumnProposer(
-          `${change.title}\n${change.body}`,
-          affectedTables,
-          { projectId, liveIndex: deps.liveIndexFor?.(projectId) ?? null },
-        );
-      } catch (err) {
-        log.warn("additive column proposer failed; keeping crossing output", {
-          projectId,
-          error: String(err),
-        });
-      }
-    }
+    // #1001 — the tables the additive-column proposer may propose on: the primary
+    // set as it stands after the #936 filter, BEFORE the #1029 recovery judge (which
+    // only runs when this is empty), so nothing is proposed on a recovered table.
+    const proposeOn = affectedTables;
 
     // #1029 — column-informed RECOVERY judge, GATED to the total-miss case: it runs
     // ONLY when the crossing + #936 filter surfaced NO primary table, which is exactly
@@ -457,54 +570,176 @@ export async function computeProjectImpact(
 
     // #791 — the functions that WRITE the data this change touches, found through
     // SQL lineage rather than a word match, plus their callers. Runs on the final
-    // primary set so a table the #936 filter judged tangential contributes none.
+    // primary set so a table the #936 filter judged tangential contributes none
+    // TO THE SYMBOLS LISTED. (The gate's coverage decision does not read this
+    // list when the filter ran — see `gateWriterProfiles` below.)
     // Best-effort: a failure leaves the code impact as it was.
     try {
-      affectedSymbols = await addDataPathWriters(affectedSymbols, {
+      const expanded = await expandDataPathWriters(affectedSymbols, {
         requirementText: `${change.title}\n${change.body}`,
-        seedIds,
+        seedIds: dataSeedIds,
         primaryTables: affectedTables,
         dataSource: schemaDataSource,
         graph: deps.dataSourceFor(projectId),
       });
+      affectedSymbols = expanded.symbols;
+      dataPathWriters = expanded.writers;
     } catch (err) {
+      writerLookupFailed = true;
       log.warn("data-path writer expansion failed; keeping code impact", {
         projectId,
         error: String(err),
       });
     }
 
-    // #791 — a proposed column that only restates what an existing writer already
-    // does ("mark all as read older than X days" → `users.mark_read_older_than_days`
-    // while `MarkAllAsReadBeforeDate` exists) is dropped onto the result's
-    // `droppedColumnProposals`, unless the requirement asks to persist the value
-    // (then it is kept at lower confidence with the reason). Checked here, against
-    // the writers the data names, so it holds whatever the model answered.
-    if (proposedColumns.length > 0) {
-      const { kept, dropped } = dropProposalsRestatingWriters(
-        `${change.title}\n${change.body}`,
-        proposedColumns,
-        affectedSymbols.filter((s) => s.relation === "data-writer").map((s) => s.qualifiedName),
-      );
-      droppedColumnProposals = dropped;
-      for (const d of dropped) {
-        log.info("dropped a proposed column an existing writer already covers", {
+    // #1001 — ADDITIVE-COLUMN proposals. The #923 regex fast path only fires for a
+    // developer imperative ("add a status flag to account"); a business analyst
+    // writes obligations ("a cancelled order must record who cancelled it and
+    // when") and got only `-- Verify column …` noise. The proposer asks the model
+    // which NEW columns the requirement implies, grounded in the tables ALREADY in
+    // this result — so it can only ever APPEND `add-column` rows to tables the
+    // deterministic crossing surfaced. Runs after the #936 filter so nothing is
+    // proposed on a table judged tangential.
+    //
+    // #791 — it runs ONCE per request (an issue is one change since #1036), AFTER
+    // the lineage writers are known, and is handed them with what each one does
+    // (parameters, written tables, predicate columns, SQL): the model sees the
+    // existing write paths before it proposes new state. Best-effort throughout —
+    // a profiling fault means the proposer sees no writers, and the gate below
+    // then cannot tell whether the request is covered: its columns pass, marked
+    // `unchecked` with the fault as the reason.
+    if (deps.additiveColumnProposer && proposeOn.length > 0) {
+      let writerProfiles: DataPathWriterProfile[] = [];
+      try {
+        writerProfiles = await profileDataPathWriters(dataPathWriters, schemaDataSource);
+      } catch (err) {
+        writerLookupFailed = true;
+        log.warn("data-path writer profiling failed; proposing without write paths", {
           projectId,
-          column: `${d.row.tableName}.${d.row.columnName}`,
-          writer: d.writer,
+          error: String(err),
         });
       }
-      // Same ordering the crossing itself emits (table, then column), so the
-      // proposals interleave with their table's existing rows.
-      if (kept.length > 0) {
-        affectedTables = [...affectedTables, ...kept].sort(
-          (a, b) =>
-            a.tableName.localeCompare(b.tableName) ||
-            (a.columnName ?? "").localeCompare(b.columnName ?? ""),
+
+      // #791 — the writers the GATE decides coverage from. `dataPathWriters` above
+      // was looked up on the primary set, which the #936 filter shaped: demote
+      // `entries` and `MarkAllAsReadBeforeDate` is never found, #4478 is
+      // "uncovered", and its `users` column is core on one model answer (PR #1090
+      // review 3). So when the filter ran, the gate gets its own lookup over
+      // every table the crossing reached. The symbols listed for review and the
+      // writers shown to the proposer stay scoped to the primary set. Without the
+      // filter the two lists are the same list, and nothing is looked up twice.
+      // A fault here is a failed lookup like any other: the gate says so.
+      let gateWriterProfiles = writerProfiles;
+      if (relevanceFilterApplied && !writerLookupFailed) {
+        try {
+          gateWriterProfiles = await profileDataPathWriters(
+            await resolveDataPathWriters({
+              requirementText: `${change.title}\n${change.body}`,
+              seedIds: dataSeedIds,
+              primaryTables: crossedTables,
+              dataSource: schemaDataSource,
+              excludeIds: new Set(),
+            }),
+            schemaDataSource,
+          );
+        } catch (err) {
+          writerLookupFailed = true;
+          gateWriterProfiles = [];
+          log.warn("gate writer lookup failed; proposed columns pass unchecked", {
+            projectId,
+            error: String(err),
+          });
+        }
+      }
+      let proposed: ReturnType<typeof normalizeProposerOutput> = {
+        proposals: [],
+        coveringWriterIds: [],
+      };
+      try {
+        proposed = normalizeProposerOutput(
+          await deps.additiveColumnProposer(`${change.title}\n${change.body}`, proposeOn, {
+            projectId,
+            liveIndex: deps.liveIndexFor?.(projectId) ?? null,
+            writers: writerProfiles,
+          }),
         );
+      } catch (err) {
+        log.warn("additive column proposer failed; keeping crossing output", {
+          projectId,
+          error: String(err),
+        });
+      }
+
+      // #791 — the deterministic gate (`column-proposal-gate.ts`). In a request an
+      // existing write path covers — bounded by an age or a date, with a lineage
+      // writer that filters on a time column — no column the model proposed is a
+      // core migration, whatever it answered: each is "Optional: settings
+      // persistence" or not proposed, with the covering writer and the reason,
+      // and neither list touches `affectedTables`. In any other request the gate
+      // does not rule: the columns pass, each marked `unchecked` with why — bar a
+      // column the proposer itself labelled a preference, which is optional there
+      // too (a demotion only; it can never add to `affectedTables`).
+      if (proposed.proposals.length > 0) {
+        const gated = gateColumnProposals({
+          request: gateText,
+          proposals: proposed.proposals,
+          coveringWriterIds: proposed.coveringWriterIds,
+          writers: writerLookupFailed ? [] : gateWriterProfiles,
+          writersUnavailableReason: writerLookupFailed ? WRITERS_FAILED_REASON : null,
+        });
+        droppedColumnProposals = gated.rejected;
+        optionalColumnProposals = gated.optional;
+        uncheckedColumnProposals = gated.unchecked;
+        for (const [outcome, list] of [
+          ["not proposed", gated.rejected],
+          ["optional", gated.optional],
+          ["unchecked", gated.unchecked],
+        ] as const) {
+          for (const g of list) {
+            log.info("gated a proposed column", {
+              projectId,
+              outcome,
+              column: `${g.row.tableName}.${g.row.columnName}`,
+              writer: g.writer?.qualifiedName ?? null,
+            });
+          }
+        }
+        // Same ordering the crossing itself emits (table, then column), so the
+        // proposals interleave with their table's existing rows.
+        if (gated.core.length > 0) {
+          affectedTables = [...affectedTables, ...gated.core].sort(
+            (a, b) =>
+              a.tableName.localeCompare(b.tableName) ||
+              (a.columnName ?? "").localeCompare(b.columnName ?? ""),
+          );
+        }
+      }
+    }
+
+    // #1036 — a table that gains a column has two more places to edit that no
+    // search finds from the request's wording: where the table is defined, and
+    // the types named for it. Best-effort.
+    const growingTables = tablesGainingColumns(affectedTables);
+    if (growingTables.length > 0 && schemaDataSource.getDataModelSymbols) {
+      try {
+        dataModel = await schemaDataSource.getDataModelSymbols(growingTables);
+      } catch (err) {
+        log.warn("data-model lookup failed; keeping code impact", {
+          projectId,
+          error: String(err),
+        });
       }
     }
   }
+
+  // #1036 — settle which symbols are EDIT CANDIDATES (depth 0) and which are
+  // BLAST RADIUS, then add what the seeding retrieved but did not select.
+  affectedSymbols = assignImpactRoles(affectedSymbols, {
+    writers: dataPathWriters,
+    growingTables: tablesGainingColumns(affectedTables),
+    dataModel,
+    related,
+  });
   const fileSet = new Set(affectedSymbols.map((s) => s.filePath));
   const { quality: matchQuality, reason: matchQualityReason } = deriveMatchQualityDetailed(
     affectedSymbols
@@ -551,6 +786,9 @@ export async function computeProjectImpact(
     affectedTablesSecondary,
     coverageGaps,
     droppedColumnProposals,
+    optionalColumnProposals,
+    uncheckedColumnProposals,
+    retrievalMode,
   };
 }
 
@@ -695,13 +933,18 @@ export class PrismaCodeGraphDataSource implements CodeGraphDataSource {
  * symbols and edges. All graph lookups become O(1) Map operations — eliminates
  * the N×changes×depth Prisma round-trips that make BFS slow on large graphs.
  */
-export class InMemoryCodeGraphDataSource implements CodeGraphDataSource {
+export class InMemoryCodeGraphDataSource implements CodeGraphDataSource, CalleeNameSource {
   private readonly byId: Map<string, GraphSymbol>;
   private readonly edgesFrom: Map<string, GraphEdge[]>;
   private readonly edgesTo: Map<string, GraphEdge[]>;
   private readonly byFile: Map<string, GraphSymbol[]>;
 
-  constructor(symbols: GraphSymbol[], edges: GraphEdge[]) {
+  constructor(
+    symbols: GraphSymbol[],
+    edges: GraphEdge[],
+    /** #1036 — per function, the names it calls (resolved or not). */
+    private readonly calleeNames: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
+  ) {
     this.byId = new Map(symbols.map((s) => [s.id, s]));
     this.byFile = new Map();
     for (const s of symbols) {
@@ -719,6 +962,10 @@ export class InMemoryCodeGraphDataSource implements CodeGraphDataSource {
       if (to) to.push(e);
       else this.edgesTo.set(e.toSymbolId, [e]);
     }
+  }
+
+  calleeNameSets(): ReadonlyMap<string, ReadonlySet<string>> {
+    return this.calleeNames;
   }
 
   async getSymbol(symbolId: string): Promise<GraphSymbol | null> {
@@ -750,13 +997,25 @@ export async function loadProjectGraph(
   prisma: Pick<PrismaClient, "codeSymbol" | "codeEdge">,
   projectId: string,
 ): Promise<InMemoryCodeGraphDataSource> {
-  const [symbolRows, edgeRows] = await Promise.all([
+  const [symbolRows, edgeRows, callRows] = await Promise.all([
     prisma.codeSymbol.findMany({ where: { projectId }, select: SYMBOL_SELECT }),
     prisma.codeEdge.findMany({
       where: { projectId, kind: { in: [...CODE_EDGE_KINDS] }, toSymbolId: { not: null } },
       select: { id: true, fromSymbolId: true, toSymbolId: true, kind: true },
     }),
+    // #1036 — every call by NAME, resolved or not, for structural twins. A Go
+    // `h.store.X()` has no target symbol, but it does have a name.
+    prisma.codeEdge.findMany({
+      where: { projectId, kind: "calls", toQualifiedName: { not: null } },
+      select: { fromSymbolId: true, toQualifiedName: true },
+    }),
   ]);
+  const calleeNames = new Map<string, Set<string>>();
+  for (const c of callRows) {
+    const names = calleeNames.get(c.fromSymbolId) ?? new Set<string>();
+    names.add(c.toQualifiedName as string);
+    calleeNames.set(c.fromSymbolId, names);
+  }
   const symbols = symbolRows.map(toGraphSymbol);
   const edges: GraphEdge[] = edgeRows.map((e) => ({
     id: e.id,
@@ -781,7 +1040,7 @@ export async function loadProjectGraph(
     symbols: symbols.length,
     edges: edges.length,
   });
-  return new InMemoryCodeGraphDataSource(symbols, edges);
+  return new InMemoryCodeGraphDataSource(symbols, edges, calleeNames);
 }
 
 // ---- Service API -----------------------------------------------------------
@@ -793,6 +1052,7 @@ type ImpactPrisma = Pick<
   | "impactAffectedSymbol"
   | "impactAffectedTable"
   | "impactAffectedTableConsumer"
+  | "impactColumnProposal"
   | "document"
   | "knowledgeChunk"
   | "quarantineChunk"
@@ -804,6 +1064,11 @@ export interface ImpactServiceDeps {
   prisma?: ImpactPrisma;
   extractor?: ChangeExtractor;
   mapRequirement?: MapRequirementFn;
+  /**
+   * #1036 — split hybrid seeding. Defaults to {@link defaultSeedChange} when no
+   * `mapRequirement` is injected; an injected `mapRequirement` is used as-is.
+   */
+  seedChange?: SeedChangeFn;
   dataSourceFor?: (projectId: string) => CodeGraphDataSource;
   maxDepth?: number;
   schemaDataSourceFor?: (projectId: string) => SchemaImpactDataSource;
@@ -893,6 +1158,33 @@ export interface TriggerImpactAnalysisInput {
   includeDependencies?: boolean;
 }
 
+/**
+ * #1036 — the production seeding: {@link resolveChangeSeeds} over the SAME fused
+ * searcher chat's `search_code_symbols` uses (`HybridCodeSearch`: BM25 fused with
+ * symbol embeddings). One searcher per run, so its lexical index is built once.
+ * A project whose symbols are not embedded yet degrades to BM25 inside the
+ * searcher; nothing here throws, and the seeds carry `retrievalMode` so the run
+ * can say so.
+ *
+ * The lexical index reads the SAME client the hits are hydrated from. The
+ * production client keeps the shared, fingerprinted index (and its BM25 cache);
+ * any other client — a test's, a script's — gets an index of its own, so a
+ * caller that injects `deps.prisma` no longer searches one database and
+ * hydrates from another.
+ */
+export function defaultSeedChange(
+  prisma: Pick<PrismaClient, "codeSymbol">,
+  searcherDeps: CodeSearcherDeps = {},
+): SeedChangeFn {
+  const sameClient = (prisma as unknown) === (defaultPrisma as unknown);
+  const searcher = createDefaultCodeSearcher({
+    ...(sameClient ? {} : { symbolIndex: createRunScopedSymbolIndex(prisma) }),
+    ...searcherDeps,
+  });
+  const loadSymbols = prismaSeedSymbolLoader(prisma);
+  return (change, projectId) => resolveChangeSeeds(change, projectId, { searcher, loadSymbols });
+}
+
 function resolvePrisma(deps: ImpactServiceDeps): ImpactPrisma {
   return (deps.prisma ?? (defaultPrisma as unknown as ImpactPrisma)) as ImpactPrisma;
 }
@@ -969,6 +1261,21 @@ async function resolveSourceText(
   return "";
 }
 
+/**
+ * #1036 — the sentence appended to a run's summary when its code search ran on
+ * keywords only. Names how many projects, not which: a project id means nothing
+ * to the reader, and the per-project results sit right below.
+ */
+export function bm25OnlyNotice(affected: number, total: number): string {
+  const scope =
+    total <= 1
+      ? "this project"
+      : affected === total
+        ? `all ${total} projects`
+        : `${affected} of ${total} projects`;
+  return `Code search ran on keywords only (BM25) for ${scope}: symbol embeddings were missing or still building, so the files to edit and the blast radius were chosen without semantic search. Re-run once embedding has finished to compare.`;
+}
+
 /** #932 — project a crossed affected-table row into a summarizer fact. */
 function toSummaryTableFact(t: AffectedTableInput): SummaryTableFact {
   return {
@@ -1005,9 +1312,15 @@ async function runImpactAnalysis(
   deps: ImpactServiceDeps = {},
 ): Promise<void> {
   const prisma = resolvePrisma(deps);
-  const extractor = deps.extractor ?? heuristicChangeExtractor;
+  // #1036 — an issue is read as ONE change with sub-aspects; anything else keeps
+  // the heuristic splitter (the shape-aware extractor falls back to it).
+  const extractor = deps.extractor ?? shapeAwareChangeExtractor;
   const mapRequirement: MapRequirementFn =
     deps.mapRequirement ?? ((req, projectId) => mapRequirementToCode(req, projectId));
+  // #1036 — seed with the chat path's hybrid search unless the caller chose a
+  // mapper of its own (the opt-in LLM seeding flags, and tests).
+  const seedChange: SeedChangeFn | undefined =
+    deps.seedChange ?? (deps.mapRequirement ? undefined : defaultSeedChange(prisma));
   const schemaDataSourceFor =
     deps.includeSchemaImpact === false
       ? undefined
@@ -1046,6 +1359,8 @@ async function runImpactAnalysis(
     const changes = await extractor.extract(text);
 
     let totalImpactedSymbols = 0;
+    // #1036 — projects whose code search ran on keywords only, for the summary.
+    const bm25OnlyProjects = new Set<string>();
     // #932 — per-item roll-ups fed into the run-level BA overview (best-effort).
     const runItems: RunItemFact[] = [];
 
@@ -1111,6 +1426,7 @@ async function runImpactAnalysis(
       for (const change of changes) {
         const result = await computeProjectImpact(change, projectId, {
           mapRequirement,
+          seedChange,
           dataSourceFor: dataSourceForProject,
           maxDepth: deps.maxDepth,
           schemaDataSourceFor,
@@ -1125,6 +1441,8 @@ async function runImpactAnalysis(
           clauseCoverageReconciler: deps.clauseCoverageReconciler,
           tableRecoveryJudge: deps.tableRecoveryJudge,
         });
+
+        if (result.retrievalMode === "bm25-only") bm25OnlyProjects.add(projectId);
 
         // Skip empty (no code hits) results to keep the report focused.
         if (result.affectedSymbolCount === 0) continue;
@@ -1367,6 +1685,36 @@ async function runImpactAnalysis(
           }
         }
 
+        // #1051 — the proposed columns the #791 gate kept OUT of the affected
+        // tables, each with the covering write path (file and line) and the
+        // reason. Stored in their own table: before this they lived only on the
+        // in-memory result and in a log line, so a reviewer could not see what
+        // was ruled out. Nothing is written when the gate ruled nothing out.
+        // `unchecked` rows are different in kind: the column IS among the affected
+        // tables, and the row records why the gate did not rule on it.
+        const ruledOut = [
+          ...result.droppedColumnProposals.map((g) => ({ disposition: "rejected", g })),
+          ...result.optionalColumnProposals.map((g) => ({ disposition: "optional", g })),
+          ...result.uncheckedColumnProposals.map((g) => ({ disposition: "unchecked", g })),
+        ];
+        if (ruledOut.length > 0) {
+          await prisma.impactColumnProposal.createMany({
+            data: ruledOut.map(({ disposition, g }) => ({
+              impactItemId: item.id,
+              disposition,
+              tableName: g.row.tableName,
+              columnName: g.row.columnName ?? "",
+              columnType: g.row.columnType,
+              suggestedDdl: g.row.suggestedDdl,
+              reason: g.reason,
+              writerQualifiedName: g.writer?.qualifiedName ?? null,
+              writerFilePath: g.writer?.filePath ?? null,
+              writerStartLine: g.writer?.startLine ?? null,
+              writerEndLine: g.writer?.endLine ?? null,
+            })),
+          });
+        }
+
         totalImpactedSymbols += result.affectedSymbolCount;
       }
     }
@@ -1402,6 +1750,13 @@ async function runImpactAnalysis(
     // result the analyst reads, rather than serving a deterministic baseline that
     // is indistinguishable from an enriched one. Best-effort: a notice fault must
     // never sink a completed run.
+    // #1036 — the same honesty for retrieval. Seeding degrades to BM25 when a
+    // project's symbols are not embedded yet (or the vector search faults), which
+    // is a sound fallback and a different result: say so on the run, where the
+    // page and the export both show it.
+    if (bm25OnlyProjects.size > 0) {
+      summary = `${summary}\n\n${bm25OnlyNotice(bm25OnlyProjects.size, projectIds.length)}`;
+    }
     if (deps.llmDegradationNotice) {
       try {
         const notice = deps.llmDegradationNotice();

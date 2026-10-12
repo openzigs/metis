@@ -165,6 +165,8 @@ describe("#103 getImpactAnalysisDetail query shape", () => {
           items: expect.objectContaining({
             include: {
               affectedSymbols: { orderBy: [{ depth: "asc" }, { confidence: "desc" }] },
+              // #1051 — the ruled-out column proposals are part of the detail.
+              columnProposals: { orderBy: [{ tableName: "asc" }, { columnName: "asc" }] },
               affectedTables: {
                 include: {
                   consumers: {

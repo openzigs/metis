@@ -62,6 +62,59 @@ describe("mdInline", () => {
 });
 
 describe("mdBlock", () => {
+  // PR #1090 review 3: the per-line strip was `/\s+$/g`, quadratic on a line of
+  // spaces that ends in a character. `trimEnd()` replaced it.
+  describe("strips trailing whitespace exactly as the pattern it replaced did", () => {
+    const esc = (line: string) =>
+      line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    /** `mdBlock` as it was before the change, line strip included. */
+    const before = (value: string) =>
+      value
+        .replace(/\r\n?/g, "\n")
+        .split("\n")
+        .map((line) => esc(line).replace(/\s+$/g, ""))
+        .join("\n")
+        .trim();
+
+    it("agrees on every UTF-16 code unit, trailing, leading and in the middle", () => {
+      const differing: number[] = [];
+      for (let code = 0; code <= 0xffff; code++) {
+        const ch = String.fromCharCode(code);
+        const samples = [`a${ch}`, `a${ch}${ch} `, `${ch}a`, `a${ch}b`, `a ${ch}\nb${ch}`];
+        if (samples.some((text) => mdBlock(text) !== before(text))) differing.push(code);
+      }
+      expect(differing).toEqual([]);
+    });
+
+    it("agrees on 20,000 generated strings of whitespace, text and markup", () => {
+      let seed = 1090;
+      const next = (n: number) => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed % n;
+      };
+      const alphabet = [
+        " ",
+        " ",
+        "\t",
+        "\n",
+        "\r",
+        "\r\n",
+        "\u00a0",
+        "\u2028",
+        "\ufeff",
+        "\v",
+        "\f",
+      ];
+      alphabet.push("a", "b", "<", "&", ">", "#", "\u200b", "\u180e", "\u0085");
+      for (let i = 0; i < 20_000; i++) {
+        const length = next(16);
+        let text = "";
+        for (let j = 0; j < length; j++) text += alphabet[next(alphabet.length)];
+        expect(mdBlock(text), JSON.stringify(text)).toBe(before(text));
+      }
+    });
+  });
+
   it("preserves line breaks but escapes each line", () => {
     expect(mdBlock("a <b>\nc & d")).toBe("a &lt;b&gt;\nc &amp; d");
   });
@@ -806,6 +859,11 @@ function impactItem(overrides: Partial<ImpactItemView> = {}): ImpactItemView {
     affectedTablesSecondary: [],
     affectedTests: [],
     writePathGaps: [],
+    editCandidateFiles: [],
+    blastRadiusFiles: [],
+    droppedColumnProposals: [],
+    optionalColumnProposals: [],
+    uncheckedColumnProposals: [],
     feedback: [],
     ...overrides,
   };
@@ -853,11 +911,150 @@ describe("serializeImpactAnalysisMarkdown (#963)", () => {
     expect(md).toContain("Rationale: Directly referenced by the changed requirement.");
     expect(md).toContain("Suggested DDL (review only, never executed):");
     expect(md).toContain("Consumers: Beta (reads)");
-    // Affected code.
-    expect(md).toContain("#### Affected code");
+    // Affected code: the one (direct, depth 0) symbol is an edit candidate.
+    expect(md).toContain("#### Files to edit (edit candidates)");
+    expect(md).not.toContain("#### Blast radius (for review)");
     expect(md).toContain("src/orders/service.ts:10-42");
     expect(md).toContain("OrderService.place");
     expect(md.endsWith("\n")).toBe(true);
+  });
+
+  it("#1036 — lists the code to edit apart from the code to review", () => {
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [
+          impactItem({
+            affectedSymbols: [
+              impactSymbol({ qualifiedName: "Storage.MarkAllAsReadBeforeDate", depth: 0 }),
+              impactSymbol({
+                id: "s-2",
+                qualifiedName: "greader.markAllAsReadHandler",
+                relation: "caller",
+                depth: 1,
+              }),
+              impactSymbol({
+                id: "s-3",
+                qualifiedName: "ui.showUnreadPage",
+                relation: "related",
+                depth: 1,
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+    const edit = md.indexOf("#### Files to edit (edit candidates)");
+    const radius = md.indexOf("#### Blast radius (for review)");
+    expect(edit).toBeGreaterThan(-1);
+    expect(radius).toBeGreaterThan(edit);
+    // Each symbol under its own heading, and only there.
+    expect(md.slice(edit, radius)).toContain("Storage.MarkAllAsReadBeforeDate");
+    expect(md.slice(edit, radius)).not.toContain("markAllAsReadHandler");
+    expect(md.slice(radius)).toContain("greader.markAllAsReadHandler");
+    expect(md.slice(radius)).toContain("ui.showUnreadPage");
+    expect(md.slice(radius)).not.toContain("Storage.MarkAllAsReadBeforeDate");
+    expect(md).toContain("not a claim that each one changes");
+  });
+
+  it("#1036 — a result with only blast-radius symbols has no edit-candidate heading", () => {
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [impactItem({ affectedSymbols: [impactSymbol({ relation: "caller", depth: 2 })] })],
+      }),
+    );
+    expect(md).not.toContain("#### Files to edit");
+    expect(md).toContain("#### Blast radius (for review)");
+  });
+
+  it("#1051 — lists the ruled-out column proposals with the covering writer, and never their DDL", () => {
+    const proposal = (id: string, columnName: string) => ({
+      id,
+      tableName: "users",
+      columnName,
+      columnType: "INTEGER",
+      suggestedDdl: `ALTER TABLE users ADD COLUMN ${columnName} INTEGER;`,
+      reason: "MarkAllAsReadBeforeDate already filters entries.published_at by its argument.",
+      writer: {
+        qualifiedName: "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+        filePath: "internal/storage/entry.go",
+        startLine: 523,
+        endLine: 533,
+      },
+    });
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [
+          impactItem({
+            optionalColumnProposals: [proposal("o1", "mark_read_default")],
+            droppedColumnProposals: [
+              proposal("d1", "mark_read_delay"),
+              { ...proposal("d2", "mark_read_times"), columnType: null, writer: null },
+            ],
+          }),
+        ],
+      }),
+    );
+    const optional = md.indexOf("#### Optional: settings persistence (not part of the migration)");
+    const dropped = md.indexOf("#### Not proposed (an existing write path appears to cover it)");
+    expect(optional).toBeGreaterThan(-1);
+    expect(dropped).toBeGreaterThan(optional);
+    expect(md.slice(optional, dropped)).toContain(
+      "- `users.mark_read_default` (INTEGER) — existing write path `internal/storage/entry.go::MarkAllAsReadBeforeDate` at `internal/storage/entry.go:523`. MarkAllAsReadBeforeDate already filters",
+    );
+    expect(md.slice(optional, dropped)).not.toContain("mark_read_delay");
+    expect(md.slice(dropped)).toContain(
+      "- `users.mark_read_delay` (INTEGER) — existing write path",
+    );
+    // No type and no writer: the bullet says only what is known.
+    expect(md.slice(dropped)).toContain(
+      "- `users.mark_read_times`. MarkAllAsReadBeforeDate already",
+    );
+    // A column that is not part of the change must not come with a copyable ALTER TABLE.
+    expect(md).not.toContain("ADD COLUMN mark_read");
+  });
+
+  it("#1051 — has neither heading when nothing was ruled out", () => {
+    const md = serializeImpactAnalysisMarkdown(impactDetail());
+    expect(md).not.toContain("Optional: settings persistence");
+    expect(md).not.toContain("#### Not proposed");
+    expect(md).not.toContain("#### Proposed, not checked");
+  });
+
+  it("#791 — says which proposed columns the gate could not check, and why", () => {
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [
+          impactItem({
+            uncheckedColumnProposals: [
+              {
+                id: "u1",
+                tableName: "users",
+                columnName: "mark_read_delay",
+                columnType: "INTEGER",
+                suggestedDdl: "ALTER TABLE users ADD COLUMN mark_read_delay INTEGER;",
+                reason:
+                  "Not checked: the SQL lineage named no write path on the tables this analysis reached for the request.",
+                writer: null,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    const at = md.indexOf("#### Proposed, not checked (each row says why)");
+    expect(at).toBeGreaterThan(-1);
+    expect(md.slice(at)).toContain(
+      "- `users.mark_read_delay` (INTEGER). Not checked: the SQL lineage named no write path on the tables this analysis reached for the request.",
+    );
+    // It sits with the other gate sections, before the code lists.
+    expect(at).toBeLessThan(md.indexOf("#### Files to edit"));
+  });
+
+  it("#791 — exports a stored run that has no unchecked list at all", () => {
+    const legacy = impactItem() as unknown as Record<string, unknown>;
+    delete legacy.uncheckedColumnProposals;
+    const md = serializeImpactAnalysisMarkdown(impactDetail({ items: [legacy as never] }));
+    expect(md).not.toContain("#### Proposed, not checked");
   });
 
   it("is deterministic — identical input yields byte-identical output", () => {

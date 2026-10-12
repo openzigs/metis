@@ -2087,6 +2087,8 @@ model ImpactItem {
 
   affectedSymbols ImpactAffectedSymbol[]
   affectedTables  ImpactAffectedTable[]
+  /// Issue #1051 — proposed columns the #791 gate kept out of `affectedTables`.
+  columnProposals ImpactColumnProposal[]
   /// Issue #966 (Epic #960) — BA relevance feedback on this item's affected tables.
   feedback        ImpactTableFeedback[]
 
@@ -2094,6 +2096,43 @@ model ImpactItem {
   @@index([projectId])
   @@index([requirementId])
   @@map("impact_items")
+}
+
+/// Issue #1051 — the #791 gate's ruling on a proposed `ADD COLUMN`, stored so a
+/// reviewer can see what was ruled out, or passed unchecked, and why.
+/// Deliberately its own table rather than more rows in `impact_affected_tables`:
+/// nothing that reads the affected tables (the page, the export, drift, the
+/// shared-table rollup, consumers) can then mistake one for a change the
+/// requirement needs. `disposition` is one of three values (TEXT, no CHECK):
+///   - `"rejected"` — an existing write path may already take the value as a
+///     parameter and nothing asks for it to be configurable ("Not proposed").
+///   - `"optional"` — proposed by the model for a request an existing write path
+///     may cover ("Optional: settings persistence"); not part of the migration.
+///   - `"unchecked"` — the column IS among the affected tables, and the gate
+///     could not check it ("Proposed, not checked"). A mark, not an exclusion.
+/// `writer*` locate the covering write path (file and line); all four are null
+/// on an `unchecked` row, which rests on no writer. `suggestedDdl` is
+/// TEXT ONLY and never executed, as everywhere else. `reason` is written by the
+/// deterministic gate, never by a model.
+model ImpactColumnProposal {
+  id                  String   @id @default(cuid())
+  impactItemId        String
+  disposition         String // rejected|optional|unchecked
+  tableName           String
+  columnName          String
+  columnType          String?
+  suggestedDdl        String?
+  reason              String
+  writerQualifiedName String?
+  writerFilePath      String?
+  writerStartLine     Int?
+  writerEndLine       Int?
+  createdAt           DateTime @default(now())
+
+  impactItem ImpactItem @relation(fields: [impactItemId], references: [id], onDelete: Cascade)
+
+  @@index([impactItemId])
+  @@map("impact_column_proposals")
 }
 
 /// A single affected code symbol within an ImpactItem — either a direct

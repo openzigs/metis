@@ -22,6 +22,8 @@ const RELATION_LABEL: Record<ImpactAffectedSymbolView["relation"], string> = {
   importer: "Importer",
   dependency: "Dependency",
   "data-writer": "Writes affected data",
+  "data-model": "Defines affected data",
+  related: "Related",
 };
 
 export interface AffectedSymbolRowProps {
