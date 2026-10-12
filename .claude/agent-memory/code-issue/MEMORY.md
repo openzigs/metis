@@ -79,3 +79,5 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Pin skipHtml on textContent](project_react-markdown-skiphtml-needs-textcontent-assert.md) — no-<img> passes anyway (#1086)
 - [Weak Tested-by: check counts](project_weak-tested-by-relation-check-every-count.md) — aggregates ignore weak vs strict (#1069)
 - [Next catch-all segments are decoded](project_next-catch-all-segments-are-decoded.md) — decide proxy policy on resolved pathname (#1069)
+- [Tiered price = ONE request](project_tiered-price-needs-one-requests-usage.md) — split a sum by isLongPrompt, price with tierRate (#1080)
+- [Usage row ≠ one call](project_usage-row-is-not-always-one-call.md) — chat/discussion/failed rows sum calls; pass `requests` (#1092)

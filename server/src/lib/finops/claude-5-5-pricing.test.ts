@@ -345,6 +345,117 @@ describe("#1080 MODEL_PRICES against a built-in rate — the administrator's pri
     ).toBeCloseTo(0.9, 12);
   });
 
+  // PR #1092 review — usage is recorded under the id the API reports back
+  // (`anthropic-provider.ts`: `message.model ?? model`), which can be the dated
+  // spelling of the alias the administrator priced.
+  describe("an entry keyed on the alias also prices the dated and region-prefixed spellings", () => {
+    const alias = prices({ "claude-haiku-5-5": { inputPerMTok: 9, outputPerMTok: 9 } });
+    const input = (provider: string | undefined, model: string, config = alias) =>
+      resolveRate(provider, model, { config, env: {} })?.inputPer1k;
+
+    it("applies to the dated id, the Bedrock ids and a mixed-case id — flat, no tier", () => {
+      for (const [provider, model] of [
+        ["anthropic", "claude-haiku-5-5-20261007"],
+        ["bedrock-gateway", "us.anthropic.claude-haiku-5-5-20261007-v1:0"],
+        ["bedrock-gateway", "eu.anthropic.claude-haiku-5-5"],
+        ["bedrock-gateway", "global.anthropic.claude-haiku-5-5-20261007-v1:0"],
+        ["bedrock-gateway", "anthropic.claude-haiku-5-5"],
+        ["anthropic", "Claude-Haiku-5-5-20261007"],
+        [undefined, "claude-haiku-5-5-20261007"],
+      ] as const) {
+        const rate = resolveRate(provider, model, { config: alias, env: {} })!;
+        expect(rate.inputPer1k, model).toBeCloseTo(0.9, 12);
+        expect(rate.longPrompt, model).toBeUndefined();
+      }
+    });
+
+    it("an exact entry for the dated id still wins over the alias entry", () => {
+      const config = prices({
+        "claude-haiku-5-5": { inputPerMTok: 9, outputPerMTok: 9 },
+        "claude-haiku-5-5-20261007": { inputPerMTok: 3, outputPerMTok: 3 },
+      });
+      expect(input("anthropic", "claude-haiku-5-5-20261007", config)).toBeCloseTo(0.3, 12);
+      // …and it does not travel the other way: the alias keeps its own entry.
+      expect(input("anthropic", "claude-haiku-5-5", config)).toBeCloseTo(0.9, 12);
+    });
+
+    it("order of precedence: exact provider:model, exact model, provider:alias, alias", () => {
+      const dated = "claude-haiku-5-5-20261007";
+      const all = {
+        [`anthropic:${dated}`]: { inputPerMTok: 1, outputPerMTok: 1 },
+        [dated]: { inputPerMTok: 2, outputPerMTok: 2 },
+        "anthropic:claude-haiku-5-5": { inputPerMTok: 3, outputPerMTok: 3 },
+        "claude-haiku-5-5": { inputPerMTok: 4, outputPerMTok: 4 },
+      };
+      const without = (...keys: string[]) =>
+        prices(Object.fromEntries(Object.entries(all).filter(([k]) => !keys.includes(k))));
+      expect(input("anthropic", dated, prices(all))).toBeCloseTo(0.1, 12);
+      expect(input("anthropic", dated, without(`anthropic:${dated}`))).toBeCloseTo(0.2, 12);
+      expect(input("anthropic", dated, without(`anthropic:${dated}`, dated))).toBeCloseTo(0.3, 12);
+      expect(
+        input(
+          "anthropic",
+          dated,
+          without(`anthropic:${dated}`, dated, "anthropic:claude-haiku-5-5"),
+        ),
+      ).toBeCloseTo(0.4, 12);
+    });
+
+    it("never reaches a different model", () => {
+      // An entry for Haiku 5 must not price Haiku 5.5, in any spelling: the
+      // built-in Haiku 5.5 price ($0.10 → 0.01¢/1k, or 0.011 at Bedrock's
+      // Regional SKU) still applies.
+      const haiku5 = prices({ "claude-haiku-5": { inputPerMTok: 9, outputPerMTok: 9 } });
+      for (const [model, builtIn] of [
+        ["claude-haiku-5-5", 0.01],
+        ["claude-haiku-5-5-20261007", 0.01],
+        ["us.anthropic.claude-haiku-5-5-20261007-v1:0", 0.011],
+      ] as const) {
+        expect(
+          resolveRate("anthropic", model, { config: haiku5, env: {} })?.longPrompt,
+          model,
+        ).toBeDefined();
+        expect(input(undefined, model, haiku5), model).toBeCloseTo(builtIn, 12);
+      }
+      // …but it does price Haiku 5's own dated id.
+      expect(input("anthropic", "claude-haiku-5-20260601", haiku5)).toBeCloseTo(0.9, 12);
+      // An entry for Haiku 5.5 does not price Haiku 5, a longer id, or a
+      // non-Claude model.
+      expect(input("anthropic", "claude-haiku-5")).toBeCloseTo(0.1, 12); // Haiku 4.5 family price
+      expect(input("anthropic", "claude-haiku-5-20260601")).toBeCloseTo(0.1, 12);
+      expect(input("anthropic", "claude-haiku-5-50")).toBeCloseTo(0.1, 12);
+      expect(input("anthropic", "claude-haiku-5-5-preview")).toBeCloseTo(0.01, 12); // built-in
+      expect(input("openai", "deepseek-flash")).toBeUndefined();
+    });
+
+    it("leaves an id with nothing to strip exactly as it was: deepseek-flash", () => {
+      const config = prices({ "deepseek-flash": { inputPerMTok: 5, outputPerMTok: 5 } });
+      expect(input("openai", "deepseek-flash", config)).toBeCloseTo(0.5, 12);
+      // Not a spelling of it: a different DeepSeek model stays unpriced.
+      expect(input("openai", "deepseek-flash-lite", config)).toBeUndefined();
+      expect(input("openai", "deepseek-v4-pro", config)).toBeUndefined();
+    });
+
+    it("is what a call recorded under the dated id is billed at", async () => {
+      vi.stubEnv(
+        "MODEL_PRICES",
+        JSON.stringify({ "claude-haiku-5-5": { inputPerMTok: 9, outputPerMTok: 9 } }),
+      );
+      tokenUsageCreate.mockClear();
+      await recordUsageAndFlush({
+        projectId: "p-1",
+        sessionId: "s-1",
+        provider: "anthropic",
+        model: "claude-haiku-5-5-20261007",
+        inputTokens: 200_000,
+        outputTokens: 0,
+      });
+      const row = tokenUsageCreate.mock.calls[0]?.[0] as { data: { costUsd: number } };
+      // 200,000 × $9/M = $1.80 — not the built-in long-prompt 200,000 × $0.50/M = $0.10.
+      expect(row.data.costUsd).toBeCloseTo(1.8, 12);
+    });
+  });
+
   it("an invalid MODEL_PRICES value is ignored and the built-in rate applies", () => {
     const config = configWith({ MODEL_PRICES: "{not json" });
     const rate = resolveRate("anthropic", "claude-haiku-5-5", { config, env: {} })!;

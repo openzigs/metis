@@ -25,13 +25,21 @@
  * So an administrator's `MODEL_PRICES` entry ALWAYS wins over a built-in rate
  * for the same model, and it is flat: it has no prompt-length tier, so an entry
  * for `claude-haiku-5-5` replaces BOTH of that model's built-in tiers (#1080).
+ * "The same model" is the entry's key, exactly, or else the id usage was
+ * recorded under with its region prefix, `anthropic.` namespace and dated
+ * snapshot suffix removed ({@link overrideRate}): an entry for
+ * `claude-haiku-5-5` also prices `claude-haiku-5-5-20261007` and
+ * `us.anthropic.claude-haiku-5-5-20261007-v1:0`, never `claude-haiku-5`.
  *
  * A rate may carry a prompt-length tier ({@link TokenRate.longPrompt}, #1080):
  * a request whose prompt is over the threshold bills ENTIRELY at the tier's
  * prices. {@link computeCostCentsExact} applies it, so the usage it is given
  * must be ONE request's. A caller that sums tokens over several requests first
  * must split them with {@link isLongPrompt} and price each share with
- * {@link tierRate} (`replay/runs-service.ts`, `docs-gen/run-cost.ts`).
+ * {@link tierRate} (`replay/runs-service.ts`, `docs-gen/run-cost.ts`). A usage
+ * ROW is not always one request either — a chat turn that ran a tool loop is
+ * one row — so rows are priced through `priceLedgerTokensExact`
+ * (`finops/token-tracker.ts`), which does that split from the row's requests.
  *
  * Cost is computed as integer cents. We round half-up at the cent boundary
  * to avoid systematic under-billing.
@@ -39,6 +47,7 @@
 import { getConfigService, type ConfigService } from "../config/config-service.js";
 import { MODEL_PRICES_KEY, modelPricesSchema, type ModelPrice } from "./model-prices-schema.js";
 import type { EmbeddingUsageProvider } from "../ai/types.js";
+import { normalizeModelId } from "../ai/model-output-limits.js";
 
 export { MODEL_PRICES_KEY, modelPricesSchema, type ModelPrice };
 
@@ -351,6 +360,16 @@ function parsePrices(raw: string): Record<string, ModelPrice> | null {
  * `undefined`. A stored value that no longer validates is ignored (the write
  * path validates, so this only guards a hand-edited env var) — it must never
  * throw inside usage accounting.
+ *
+ * #1080 — the exact id is tried first and always wins. Failing that, the id is
+ * reduced with {@link normalizeModelId} — a `us.` / `eu.` / `apac.` / `global.`
+ * prefix, the `anthropic.` namespace and a dated snapshot suffix (`-20261007`,
+ * `-20261007-v1:0`) removed, nothing else — and tried again, because usage is
+ * recorded under the id the API reports back (`anthropic-provider.ts`), which
+ * can be the dated spelling of the alias the administrator priced. Only those
+ * named spellings are removed, so an entry never reaches a different model:
+ * `claude-haiku-5-5` reduces to itself and cannot match a `claude-haiku-5`
+ * entry, and `deepseek-flash` is untouched.
  */
 function overrideRate(
   provider: string | undefined,
@@ -369,7 +388,9 @@ function overrideRate(
   // Own keys only: a model id such as "constructor" or "toString" must not
   // resolve to an Object.prototype member.
   const own = (key: string) => (Object.hasOwn(prices, key) ? prices[key] : undefined);
-  const price = (provider ? own(`${provider}:${model}`) : undefined) ?? own(model);
+  const lookup = (id: string) => (provider ? own(`${provider}:${id}`) : undefined) ?? own(id);
+  const bare = normalizeModelId(model);
+  const price = lookup(model) ?? (bare !== model ? lookup(bare) : undefined);
   return price ? toRate(price) : undefined;
 }
 

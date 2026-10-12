@@ -870,7 +870,7 @@ export class OpenAICompatibleProvider implements AIProvider {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly defaultModel: string;
-  private readonly defaultMaxTokens: number;
+  readonly defaultMaxTokens: number;
   private readonly defaultTemperature: number;
   private readonly defaultTopP?: number;
   private readonly defaultFrequencyPenalty?: number;

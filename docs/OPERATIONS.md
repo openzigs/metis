@@ -405,6 +405,19 @@ UPDATE "token_usages" SET "costUsd" = "costCents" / 100.0
                  LIMIT 10000);
 ```
 
+### 6.4 The `token_usages.requestTokens` column (#1080): no upgrade step
+
+Migration `20261017001080_issue1080_token_usage_request_tokens` only adds the nullable
+`token_usages.requestTokens` column, on SQLite and Postgres alike. It is a
+metadata-only change with no backfill. A chat turn that uses tools, a discussion
+reply and a failed turn are one usage row covering several model calls; the column
+lists each call's token counts for such a row, so the row can be priced call by call
+(Claude Haiku 5.5 is priced by prompt length, per call). NULL means the row is one
+call, which is every existing row. Apply the migration before the new server
+version serves traffic, as for any migration: the new version reads and writes the
+column. Rows that an old replica writes during a rolling deploy have it NULL and are
+priced as one call, as they were before.
+
 ---
 
 ## 7. Container Image Sizes

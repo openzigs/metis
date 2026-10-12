@@ -742,7 +742,9 @@ describe("replay/runs-service — exact, unrounded run cost (#977)", () => {
     // 50,000 × $0.50/M + 100,000 × $0.05/M = 2.5¢ + 0.5¢.
     row(12, 50_000, 100_000);
     const cost = await computeRunCost(runId);
-    // Pricing the 270,000 summed tokens as one request would give 11¢.
+    // Pricing the 270,000 summed tokens as one request gives 9¢:
+    // 170,000 × $0.50/M + 100,000 × $0.05/M = 8.5¢ + 0.5¢ (measured with
+    // `runs-service.ts` reverted to its base: `costUsd` 0.09).
     expect(cost.costUsd).toBeCloseTo(0.042, 10);
     expect(cost.costCents).toBe(4);
     expect(cost.totalTokens).toBe(270_000);

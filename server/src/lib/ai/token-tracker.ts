@@ -21,6 +21,7 @@ import {
   resolveRate,
   tierRate,
 } from "../finops/provider-rates.js";
+import { summedRequests } from "../finops/summed-requests.js";
 import type { TokenUsage, UsageProvider } from "./types.js";
 
 const log = createChildLogger("ai-token-tracker");
@@ -201,6 +202,58 @@ export function usagePromptTier(
   return long ? "long" : "standard";
 }
 
+/** The four counts of {@link TokenUsage} that are priced. */
+type PricedUsage = Pick<
+  TokenUsage,
+  "promptTokens" | "completionTokens" | "cacheReadTokens" | "cacheWriteTokens"
+>;
+
+/**
+ * #1080 — {@link estimateUsageCostUsd} for a row that holds the SUM of several
+ * model requests (`requests`, which add up to `usage`): each request is put in
+ * the price tier its own prompt falls in, and each tier's share is priced at
+ * that tier. Exactly {@link estimateUsageCostUsd} when the row is one request
+ * (`requests` omitted, fewer than two, or not adding up to `usage`) or the
+ * model has no prompt-length tier — so every other model is priced as before.
+ */
+export function estimateSummedUsageCostUsd(
+  model: string,
+  usage: PricedUsage,
+  provider: UsageProvider,
+  writeTtl: PromptCacheTtl = "5m",
+  requests?: readonly PricedUsage[] | null,
+): number | null {
+  const stored = (u: PricedUsage) => ({
+    inputTokens: sanitize(u.promptTokens),
+    outputTokens: sanitize(u.completionTokens),
+    cacheReadTokens: sanitize(u.cacheReadTokens),
+    cacheWriteTokens: sanitize(u.cacheWriteTokens),
+  });
+  const parts = summedRequests(stored(usage), requests?.map(stored));
+  if (!parts || !resolveRate(provider, model)?.longPrompt) {
+    return estimateUsageCostUsd(model, usage, provider, writeTtl);
+  }
+  let costUsd = 0;
+  for (const tier of ["standard", "long"] as const) {
+    const share = { promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    for (const p of parts) {
+      const request = {
+        promptTokens: p.inputTokens,
+        completionTokens: p.outputTokens,
+        cacheReadTokens: p.cacheReadTokens,
+        cacheWriteTokens: p.cacheWriteTokens,
+      };
+      if (usagePromptTier(model, request, provider) !== tier) continue;
+      share.promptTokens += request.promptTokens;
+      share.completionTokens += request.completionTokens;
+      share.cacheReadTokens += request.cacheReadTokens;
+      share.cacheWriteTokens += request.cacheWriteTokens;
+    }
+    costUsd += estimateUsageCostUsd(model, share, provider, writeTtl, tier) ?? 0;
+  }
+  return costUsd;
+}
+
 export interface TokenEvent {
   sessionId: string;
   userId: string;
@@ -220,6 +273,14 @@ export interface TokenEvent {
    * Stored as JSON in the categoryBreakdown column.
    */
   breakdown?: Record<string, number>;
+  /**
+   * #1080 — for a caller that records the SUM of several model requests as one
+   * event (a chat turn that ran a tool loop, a discussion reply): each
+   * request's own usage, adding up to `usage`. The row's cost is then the sum
+   * of the requests' prices ({@link estimateSummedUsageCostUsd}). Omit it when
+   * `usage` is one request's.
+   */
+  requests?: readonly PricedUsage[];
 }
 
 export class TokenTracker {
@@ -285,11 +346,12 @@ export class TokenTracker {
         promptHash: event.prompt ? hashPrompt(event.prompt) : null,
         projectId: event.projectId ?? null,
         inferenceProfileArn: event.inferenceProfileArn ?? null,
-        estimatedCostUsd: estimateUsageCostUsd(
+        estimatedCostUsd: estimateSummedUsageCostUsd(
           event.model,
           { promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens },
           event.provider,
           resolveAnthropicCacheTtl(),
+          event.requests,
         ),
         agentStep: event.agentStep ?? null,
         breakdown: event.breakdown ?? null,

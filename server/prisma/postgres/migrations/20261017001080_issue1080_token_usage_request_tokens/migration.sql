@@ -1,0 +1,22 @@
+-- Issue #1080 — let a ledger row that sums several model requests say so.
+--
+-- Most `token_usages` rows are one model request. A chat turn that runs a tool
+-- loop, a discussion reply and a failed-turn row are ONE row holding the sum of
+-- the turn's requests. Claude Haiku 5.5 is priced by prompt length, per
+-- request: a request whose prompt is over 100,000 tokens bills at 5x. Pricing
+-- a summed row from its summed columns put four 30,000-token requests (1.4
+-- cents) in the long-prompt tier (7 cents).
+--
+-- `requestTokens` holds each request's own counts for such a row, as a JSON
+-- array of `[input, output, cacheRead, cacheWrite]`. NULL — every existing row
+-- and every single-request row — means the row is one request, priced as
+-- before. Read through `ledgerRowRequests`
+-- (`server/src/lib/finops/token-tracker.ts`).
+--
+-- No backfill: the per-request counts of an existing summed row were never
+-- stored. A nullable column with no default is a metadata-only change.
+--
+-- Rollback (documentation):
+--   ALTER TABLE "token_usages" DROP COLUMN "requestTokens";
+-- After it, a summed row is re-priced from its summed columns again.
+ALTER TABLE "token_usages" ADD COLUMN IF NOT EXISTS "requestTokens" TEXT;
