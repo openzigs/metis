@@ -559,7 +559,10 @@ function isTableSeparator(row: string): boolean {
 
 interface MergedSubtopic {
   heading: string | null;
-  entries: string[];
+  /** Each entry with the index of the reply that wrote it. */
+  entries: Array<{ text: string; reply: number }>;
+  /** The reply that first wrote under this heading. */
+  reply: number;
   /** Some batch contributed an entry here (so an empty result means all were duplicates). */
   hadEntries: boolean;
 }
@@ -567,6 +570,14 @@ interface MergedSubtopic {
 interface MergedTopic {
   heading: string | null;
   subtopics: Map<string, MergedSubtopic>;
+  /** The reply that first wrote this topic. */
+  reply: number;
+}
+
+/** One block of a merged section, with the reply (by index) it came from. */
+export interface MergedBlock {
+  text: string;
+  reply: number;
 }
 
 /**
@@ -588,6 +599,21 @@ interface MergedTopic {
  * Thematic breaks are dropped and one `---` is placed before each topic.
  */
 export function mergeBatchSections(replies: readonly string[], fallbackHeading: string): string {
+  return mergeBatchBlocks(replies, fallbackHeading)
+    .map((block) => block.text)
+    .join("\n\n");
+}
+
+/**
+ * #1070 — {@link mergeBatchSections} as its blocks, in order, each with the
+ * reply it came from: an entry belongs to the reply that wrote it, a heading
+ * (and the rule before a topic) to the reply that first wrote under it. The
+ * merged section is the blocks' texts joined by a blank line.
+ */
+export function mergeBatchBlocks(
+  replies: readonly string[],
+  fallbackHeading: string,
+): MergedBlock[] {
   let h2: string | null = null;
   const topics = new Map<string, MergedTopic>();
   const seen = new Map<string, number>();
@@ -607,21 +633,21 @@ export function mergeBatchSections(replies: readonly string[], fallbackHeading: 
       const tk = t.heading === null ? "" : topicKey(t.heading);
       let topic = topics.get(tk);
       if (!topic) {
-        topic = { heading: t.heading, subtopics: new Map() };
+        topic = { heading: t.heading, subtopics: new Map(), reply: batch };
         topics.set(tk, topic);
       }
       for (const s of t.subtopics) {
         const sk = s.heading === null ? "" : topicKey(s.heading);
         let sub = topic.subtopics.get(sk);
         if (!sub) {
-          sub = { heading: s.heading, entries: [], hadEntries: false };
+          sub = { heading: s.heading, entries: [], hadEntries: false, reply: batch };
           topic.subtopics.set(sk, sub);
         }
         for (const e of s.entries) {
           sub.hadEntries = true;
           if (e.kind === "table") {
             const kept = mergeTableRows(e.parts[0].text, `${tk}\u0000${sk}`, batch, firstSeenBy);
-            if (kept !== null) sub.entries.push(kept);
+            if (kept !== null) sub.entries.push({ text: kept, reply: batch });
             continue;
           }
           const text = renderEntry(e.parts);
@@ -630,18 +656,18 @@ export function mergeBatchSections(replies: readonly string[], fallbackHeading: 
             key.length >= SECTION_WIDE_DEDUP_MIN_CHARS
               ? `*\u0000${key}`
               : `${tk}\u0000${sk}\u0000${key}`;
-          if (firstSeenBy(scoped, batch)) sub.entries.push(text);
+          if (firstSeenBy(scoped, batch)) sub.entries.push({ text, reply: batch });
         }
       }
     }
   });
 
-  const out: string[] = [`## ${h2 ?? fallbackHeading}`];
+  const out: MergedBlock[] = [{ text: `## ${h2 ?? fallbackHeading}`, reply: 0 }];
   for (const topic of topics.values()) {
-    const body: string[] = [];
+    const body: MergedBlock[] = [];
     for (const sub of topic.subtopics.values()) {
       if (sub.entries.length === 0 && sub.hadEntries) continue;
-      if (sub.heading !== null) body.push(`#### ${sub.heading}`);
+      if (sub.heading !== null) body.push({ text: `#### ${sub.heading}`, reply: sub.reply });
       body.push(...sub.entries);
     }
     if (topic.heading === null) {
@@ -649,10 +675,10 @@ export function mergeBatchSections(replies: readonly string[], fallbackHeading: 
       continue;
     }
     if (body.length === 0 && [...topic.subtopics.values()].some((s) => s.hadEntries)) continue;
-    if (out.length > 1) out.push("---");
-    out.push(`### ${topic.heading}`, ...body);
+    if (out.length > 1) out.push({ text: "---", reply: topic.reply });
+    out.push({ text: `### ${topic.heading}`, reply: topic.reply }, ...body);
   }
-  return out.join("\n\n");
+  return out;
 }
 
 /**

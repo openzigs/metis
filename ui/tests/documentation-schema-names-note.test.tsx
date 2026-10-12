@@ -114,3 +114,42 @@ describe("DocumentationPage — names not matched to the database schema (#1061)
     expect(alert).not.toHaveTextContent(/Data Architecture/);
   });
 });
+
+// #1070 — the consistency check's findings are shown the same way: with the
+// document, as information, whatever its status.
+describe("DocumentationPage — values stated differently in two places (#1070)", () => {
+  const INCONSISTENT = {
+    kind: "fact-inconsistent",
+    section: "Document",
+    severity: "info",
+    message:
+      "Consistency check: 1 value stated differently from the source. `POLLING_FREQUENCY` is " +
+      "stated with a value that is not the source's (`30 min` in Integrations & Glossary). The " +
+      "source has `60min` at config/options.go:41. Nothing was " +
+      "removed or changed.",
+  };
+
+  it("a ready document shows what the check found, and no degraded banner", async () => {
+    await open({ status: "ready", warnings: [INCONSISTENT] });
+    const note = screen.getByTestId("fact-consistency-note");
+    expect(note).toHaveAttribute("role", "status");
+    expect(note).toHaveTextContent(
+      "`POLLING_FREQUENCY` is stated with a value that is not the source's",
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByTestId("schema-names-note")).toBeNull();
+  });
+
+  it("a ready document without one shows no note", async () => {
+    await open({ status: "ready", warnings: [NOTE] });
+    expect(screen.queryByTestId("fact-consistency-note")).toBeNull();
+  });
+
+  it("a degraded document shows it beside the banner, which does not repeat it", async () => {
+    await open({ status: "degraded", warnings: [INCONSISTENT, SHORT] });
+    expect(screen.getByTestId("fact-consistency-note")).toHaveTextContent("POLLING_FREQUENCY");
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(/"Business Rules" falls short of the code-fidelity bar/);
+    expect(alert).not.toHaveTextContent(/POLLING_FREQUENCY/);
+  });
+});

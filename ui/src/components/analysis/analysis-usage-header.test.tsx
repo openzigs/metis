@@ -106,39 +106,83 @@ describe("DeploymentCapCard (#977)", () => {
   });
 });
 
-describe("runSpendLabel (#977)", () => {
-  it("shows a running run's live ledger tokens and unrounded cost, not totalTokens = 0", () => {
+describe("runSpendLabel (#977, #1007)", () => {
+  const ledger = (withoutCache: number, withCache: number, costUsd: number | null = 0.01234) => ({
+    totalTokens: withCache,
+    costUsd,
+    unpricedTokens: 0,
+    tokens: { withoutCache, withCache },
+  });
+
+  it("shows a running run's live ledger tokens, with and without cache, and unrounded cost", () => {
+    expect(
+      runSpendLabel({ totalTokens: 0, status: "running", ledgerUsage: ledger(41_000, 52_300) }),
+    ).toBe("41.0k tok without cache · 52.3k with cache · $0.0123");
+  });
+
+  it("shows the handoff run's two ledger figures, never the total stored at finish (#1007)", () => {
     expect(
       runSpendLabel({
-        totalTokens: 0,
-        ledgerUsage: { totalTokens: 41_000, costUsd: 0.01234, unpricedTokens: 0 },
+        totalTokens: 439_244,
+        status: "completed",
+        ledgerUsage: ledger(457_901, 545_197, 0.3352),
       }),
-    ).toBe("41.0k tok · $0.0123");
+    ).toBe("457.9k tok without cache · 545.2k with cache · $0.3352");
   });
 
   it("names unpriced tokens, and reads unpriced when nothing was priced", () => {
     expect(
       runSpendLabel({
         totalTokens: 0,
-        ledgerUsage: { totalTokens: 2_000, costUsd: 0.5, unpricedTokens: 900 },
+        ledgerUsage: { ...ledger(2_000, 2_000, 0.5), unpricedTokens: 900 },
       }),
-    ).toBe("2.0k tok · $0.5000 + 900 unpriced tok");
+    ).toBe("2.0k tok without cache · 2.0k with cache · $0.5000 + 900 unpriced tok");
     expect(
       runSpendLabel({
         totalTokens: 0,
-        ledgerUsage: { totalTokens: 900, costUsd: null, unpricedTokens: 900 },
+        ledgerUsage: { ...ledger(900, 900, null), unpricedTokens: 900 },
       }),
-    ).toBe("900 tok · unpriced");
+    ).toBe("900 tok without cache · 900 with cache · unpriced");
   });
 
-  it("falls back to the run's own totalTokens when the ledger has none or is unreadable", () => {
+  it("reads in progress, not 0 tok, for a run that is going with no ledger row yet", () => {
+    for (const status of ["running", "pending"]) {
+      expect(runSpendLabel({ totalTokens: 0, status, ledgerUsage: ledger(0, 0, 0) })).toBe(
+        "in progress",
+      );
+      expect(runSpendLabel({ totalTokens: 0, status, ledgerUsage: null })).toBe("in progress");
+    }
+  });
+
+  it("says a stored total is that, and WHY the ledger's figure is not shown", () => {
+    // The ledger was read and holds no row for the run.
+    const absent = "1.5k tok recorded at finish (not in the ledger)";
+    expect(
+      runSpendLabel({ totalTokens: 1_500, status: "completed", ledgerUsage: ledger(0, 0, 0) }),
+    ).toBe(absent);
+    // Read, empty, and sent without the two figures: still "not in the ledger".
     expect(
       runSpendLabel({
         totalTokens: 1_500,
         ledgerUsage: { totalTokens: 0, costUsd: 0, unpricedTokens: 0 },
       }),
-    ).toBe("1.5k tok");
-    expect(runSpendLabel({ totalTokens: 1_500, ledgerUsage: null })).toBe("1.5k tok");
-    expect(runSpendLabel({ totalTokens: 1_500 })).toBe("1.5k tok");
+    ).toBe(absent);
+    // The ledger could not be read: its rows may well be there.
+    const unread = "1.5k tok recorded at finish (ledger unavailable)";
+    expect(runSpendLabel({ totalTokens: 1_500, ledgerUsage: null })).toBe(unread);
+    expect(runSpendLabel({ totalTokens: 1_500 })).toBe(unread);
+    expect(runSpendLabel({ totalTokens: 0, status: "cancelled" })).toBe("ledger unavailable");
+    expect(
+      runSpendLabel({ totalTokens: 0, status: "cancelled", ledgerUsage: ledger(0, 0, 0) }),
+    ).toBe("0 tok");
+  });
+
+  it("labels a ledger total that came without the two figures as with cache", () => {
+    expect(
+      runSpendLabel({
+        totalTokens: 0,
+        ledgerUsage: { totalTokens: 41_000, costUsd: 0.01234, unpricedTokens: 0 },
+      }),
+    ).toBe("41.0k tok with cache · $0.0123");
   });
 });

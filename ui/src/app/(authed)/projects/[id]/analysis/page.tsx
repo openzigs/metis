@@ -159,9 +159,9 @@ import {
 import {
   DeploymentCapCard,
   ProjectBudgetCard,
-  formatTokens,
   runSpendLabel,
 } from "@/components/analysis/analysis-usage-header";
+import { runTokensLabel } from "@/lib/run-tokens";
 
 const SPECIALIST_AGENTS: AnalysisAgentKey[] = ["document", "code", "database", "web"];
 
@@ -923,7 +923,14 @@ export default function AnalysisPage(): React.ReactElement {
                     <StatusBadge status={item.status} />
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    {formatTokens(item.totalTokens)} tok ·{" "}
+                    <span data-testid="analysis-past-run-tokens">
+                      {runTokensLabel({
+                        tokens: item.ledgerTokens,
+                        storedTotal: item.totalTokens,
+                        status: item.status,
+                      })}
+                    </span>{" "}
+                    ·{" "}
                     <span className="font-mono" title={item.id}>
                       {runLabels.get(item.id)?.shortId}
                     </span>

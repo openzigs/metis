@@ -219,7 +219,9 @@ export interface DocSectionProgressEvent {
       | "grounding-failed"
       // #1061 — names in the section could not be matched to the database
       // schema. Informational: it does not make the section `degraded`.
-      | "schema-unverified";
+      | "schema-unverified"
+      // #1070 — a value stated differently in two places. Informational.
+      | "fact-inconsistent";
     severity: "info" | "warning" | "error";
     message: string;
   };

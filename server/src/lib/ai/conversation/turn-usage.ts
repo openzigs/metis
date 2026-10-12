@@ -44,6 +44,18 @@ export const FAILED_TURN_AGENT_STEP = "chat-failed";
  */
 export const ESTIMATED_TURN_AGENT_STEP = "chat-estimated";
 
+/**
+ * `agentStep` on the rows of a sub-agent call a chat turn delegated to
+ * (`routes/ai.ts`). It bills the chat's session but is NOT in the turn's row.
+ */
+export const SUBAGENT_AGENT_STEP = "subagent";
+
+/**
+ * `agentStep` on the row of a compaction summary (`async/compaction.ts`). It
+ * bills the chat's session but is NOT in any turn's row.
+ */
+export const COMPACTION_AGENT_STEP = "compaction";
+
 /** True when a provider reported any usage at all for a call or turn. */
 export function isReportedUsage(u: TokenUsage | null | undefined): u is TokenUsage {
   return (

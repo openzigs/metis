@@ -30,6 +30,7 @@ const warningSchema = z
       "grounding-sampled",
       "grounding-failed",
       "schema-unverified",
+      "fact-inconsistent",
     ]),
     section: z.string(),
     message: z.string(),
@@ -85,6 +86,20 @@ const outputSchema = z
       })
       .strict(),
     evidence: z.array(sectionEvidenceSchema),
+    /**
+     * #1070 — for a section written in parts under a topic plan: what each part
+     * was planned, and which part each unit of `markdown` came from, as runs of
+     * `[part, units]`. Absent for every other section, so a record written
+     * without a plan is byte for byte what it was. Last, and optional, so it
+     * joins `outputHash` only where it exists.
+     */
+    parts: z
+      .object({
+        budgets: z.array(z.number().int().min(0)),
+        runs: z.array(z.tuple([z.number().int().min(0), z.number().int().min(1)])),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -172,10 +187,20 @@ export function recordSectionSynthesis(
 
 /** True when the record's output still hashes to the `outputHash` it was saved with. */
 function recordIntact(record: SectionSynthesisRecord): boolean {
-  const { markdown, warnings, metadata, evidence } = record;
+  const { markdown, warnings, metadata, evidence, parts } = record;
   const { score } = record;
   return (
-    record.outputHash === hash(JSON.stringify({ markdown, warnings, score, metadata, evidence }))
+    record.outputHash ===
+    hash(
+      JSON.stringify({
+        markdown,
+        warnings,
+        score,
+        metadata,
+        evidence,
+        ...(parts ? { parts } : {}),
+      }),
+    )
   );
 }
 

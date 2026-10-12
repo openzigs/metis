@@ -84,6 +84,11 @@ import { asDocumentSource, type DocumentSource } from "../documents/document-sou
 import type { TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { sumLedgerUsage } from "../finops/ledger-totals.js";
+import {
+  sessionLedgerSummary,
+  sessionLedgerTokens,
+  summaryCostUsd,
+} from "../finops/ledger-usage-summary.js";
 import { isServerAuthored } from "./server-authored.js";
 import { CODE_GRAPH_DOCUMENT_PREFIX } from "./fused-code-chunks.js";
 import type { ToolCallTelemetry } from "./tool-telemetry.js";
@@ -1312,7 +1317,25 @@ export async function listAnalysesForProject(projectId: string) {
     projectId,
     runs.map((r) => r.id),
   );
-  return runs.map((r) => ({ ...r, requirementCounts: counts.get(r.id) as RequirementCounts }));
+  // #1007 — each run's tokens from the ledger, the figure the run header and
+  // `/runs` show. `totalTokens` is written when a run finishes: it read "0 tok"
+  // for a running one and missed spend after the run. `null` when the ledger
+  // could not be read — accounting never fails the list.
+  const ledger = await sessionLedgerTokens(
+    projectId,
+    runs.map((r) => r.id),
+  ).catch((err: unknown) => {
+    log.warn("analysis list ledger tokens could not be read", {
+      projectId,
+      error: (err as Error).message,
+    });
+    return null;
+  });
+  return runs.map((r) => ({
+    ...r,
+    requirementCounts: counts.get(r.id) as RequirementCounts,
+    ledgerTokens: ledger ? (ledger.get(r.id) ?? { withCache: 0, withoutCache: 0 }) : null,
+  }));
 }
 
 export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot | null> {
@@ -1356,7 +1379,30 @@ async function readAnalysisLedgerUsage(
 ): Promise<AnalysisSnapshot["ledgerUsage"]> {
   try {
     const t = await sumLedgerUsage({ projectId, sessionId: analysisId });
-    return { totalTokens: t.totalTokens, costUsd: t.costUsd, unpricedTokens: t.unpricedTokens };
+    const usage = {
+      totalTokens: t.totalTokens,
+      costUsd: t.costUsd,
+      unpricedTokens: t.unpricedTokens,
+    };
+    // #1007 — the tokens, cost and unpriced tokens as the run lists show them,
+    // from ONE summary of the session's rows (`summariseLedgerRows`), so this
+    // header and `/runs` cannot differ. The snapshot is polled every 2.5 s
+    // while a run goes: the rows are loaded only when the aggregate above says
+    // the session's ledger moved, not on every poll. The signature is the ROW
+    // COUNT alone: the ledger is append-only (no code updates a `token_usages`
+    // row), so a session's stored total cannot move while its count stands
+    // still, and a second term would be one no test could pin.
+    const summary = await sessionLedgerSummary(projectId, analysisId, String(t.calls)).catch(
+      () => undefined,
+    );
+    return summary
+      ? {
+          totalTokens: t.totalTokens,
+          tokens: summary.tokens,
+          costUsd: summaryCostUsd(summary),
+          unpricedTokens: summary.unpricedTokens,
+        }
+      : usage;
   } catch (err) {
     log.warn("analysis ledger usage could not be read", {
       analysisId,

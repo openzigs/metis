@@ -42,6 +42,15 @@ describe("runsApi", () => {
     expect(apiFetchMock).toHaveBeenLastCalledWith("/runs?sessionId=s1");
   });
 
+  it("chatTurns() reads the ledger listing under the same filters (#1007)", async () => {
+    await runsApi.chatTurns();
+    expect(apiFetchMock).toHaveBeenLastCalledWith("/runs/chat-turns");
+    await runsApi.chatTurns({ projectId: "p 1", sessionId: "chat-a", from: "", limit: 10 });
+    expect(apiFetchMock).toHaveBeenLastCalledWith(
+      "/runs/chat-turns?projectId=p+1&sessionId=chat-a&limit=10",
+    );
+  });
+
   it("get() / replay() URL-encode the id", async () => {
     await runsApi.get("run id 1");
     expect(apiFetchMock).toHaveBeenLastCalledWith("/runs/run%20id%201");

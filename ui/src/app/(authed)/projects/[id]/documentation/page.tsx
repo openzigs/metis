@@ -593,6 +593,11 @@ export default function DocumentationPage(): React.ReactElement {
               the reader on a document that is `ready`, not a degradation. */}
           <SchemaNamesNote warnings={docDetail.data.warnings} />
 
+          {/* #1070 — what the consistency check found (a value stated two
+              ways, a formula written out in several sections): information,
+              on a `ready` document too. Nothing in the document was changed. */}
+          <FactConsistencyNote warnings={docDetail.data.warnings} />
+
           {/* Document vs Schema Graph tabs (Epic #895 — database docs only).
               #268 — Radix Tabs: arrow keys / Home / End, roving tabindex, and
               aria-controls linking each tab to its panel. */}
@@ -1497,6 +1502,9 @@ export function classifyWarningSeverity(warnings: DocWarning[]): {
     // faithfulness score: nothing "falls short of the code-fidelity bar".
     // SchemaNamesNote shows them, outside this banner.
     if (w.kind === "schema-unverified") return false;
+    // #1070 — the consistency check's findings are information too
+    // (FactConsistencyNote): a heuristic over how values are written.
+    if (w.kind === "fact-inconsistent") return false;
     // A literal code-derived section below its bar is worth verifying.
     if (w.tier === "literal") return true;
     // Within-tolerance tiers (narrative/reconstruction) are NOT concerning.
@@ -1578,6 +1586,46 @@ export function SchemaNamesNote({
       className="p-4 text-sm text-muted-foreground"
       role="status"
       data-testid="schema-names-note"
+    >
+      {notes.map((note, i) => (
+        <p key={i} className={i > 0 ? "mt-2" : undefined}>
+          {note}
+        </p>
+      ))}
+    </Card>
+  );
+}
+
+/**
+ * #1070 — the lines of the consistency check ("`POLLING_FREQUENCY` is given 2
+ * different values …"). Empty without one. The server writes the whole
+ * sentence. Exported for unit testing.
+ */
+export function factConsistencyNotes(warnings: DocWarning[] | null | undefined): string[] {
+  return (warnings ?? [])
+    .filter((w) => !!w && w.kind === "fact-inconsistent" && typeof w.message === "string")
+    .map((w) => w.message);
+}
+
+/**
+ * #1070 — shows {@link factConsistencyNotes} as information: a neutral card
+ * with `role="status"`, never the degraded-output banner. The check compares
+ * how values are written and changes nothing, so two spellings of one value can
+ * be reported and the document stays `ready`. Renders nothing without a note.
+ * Exported for unit testing.
+ */
+export function FactConsistencyNote({
+  warnings,
+}: {
+  warnings?: DocWarning[] | null;
+}): React.ReactElement | null {
+  const notes = factConsistencyNotes(warnings);
+  if (notes.length === 0) return null;
+  return (
+    <Card
+      className="p-4 text-sm text-muted-foreground"
+      role="status"
+      data-testid="fact-consistency-note"
     >
       {notes.map((note, i) => (
         <p key={i} className={i > 0 ? "mt-2" : undefined}>
@@ -1811,9 +1859,10 @@ export function DegradedWarningsBanner({
   errorMessage?: string | null;
 }): React.ReactElement {
   // #1061 — a schema-name note is information and has its own card
-  // (SchemaNamesNote); it is not a degraded-output warning.
+  // (SchemaNamesNote); it is not a degraded-output warning. #1070 — nor is a
+  // consistency note (FactConsistencyNote).
   const warnings = resolveDocWarnings(structuredWarnings, errorMessage).filter(
-    (w) => w.kind !== "schema-unverified",
+    (w) => w.kind !== "schema-unverified" && w.kind !== "fact-inconsistent",
   );
 
   // Tier-aware headline. A doc is flagged `degraded` whenever ANY section misses
