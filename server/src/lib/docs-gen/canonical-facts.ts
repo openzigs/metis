@@ -16,12 +16,26 @@
  * a rule that exists only as control flow — is not on the sheet.
  *
  * The sheet holds the facts more than one part of the document is likely to
- * state: those whose name is mentioned in at least two places in the module
- * facts the sections are written from. Each has ONE owning section. A section
- * is given the facts its own input mentions, told to state a value only as
- * given and to leave the derivation to the owner, and cites a fact by its id
- * like any other source — so the fact-check judge reads the canonical value as
- * evidence for the claim, and the footnote shows the reader the source line.
+ * state: those mentioned BY THEIR OWN NAME in at least two places in the module
+ * facts the sections are written from ({@link mentionTerms}). What qualifies
+ * as a fact at all is narrow on purpose ({@link classifyFactValue}): a sum or a
+ * difference alone is an offset, a counter or a concatenation, not a business
+ * formula, and `0`, `1` or a one-character string is a flag, not a limit. On
+ * the #706 run-7 inputs the first version of these rules listed 30 formulas, of
+ * which about 18 were incidental arithmetic such as `len(e.args) + 1`.
+ *
+ * Each fact has ONE owning section, by kind — when that section is written in
+ * this document and reads the fact's module; otherwise the fact has no owner
+ * (the caller decides: {@link FactOwnerLookup}). A section is given the facts
+ * its own input mentions AND every fact it owns, told to state a value only as
+ * given and to leave an owned fact's derivation to its owner, and cites a fact
+ * by its id like any other source — so the fact-check judge reads the
+ * canonical value as evidence for the claim, and the footnote shows the reader
+ * the source line.
+ *
+ * A fact's name and value are text from an ingested repository. Before they are
+ * placed in a prompt block that calls itself authoritative they are made unable
+ * to close that block or forge one of its lines ({@link neutralize}).
  *
  * Pure: no I/O and no model calls.
  */
@@ -32,7 +46,7 @@ import type { GroundingContext, GroundingSource } from "./grounding/grounding-co
 import { repositoryPathIdentity, type RepositoryIdentity } from "./repository-identity.js";
 
 /** Bumped when what is on the sheet, or how it is worded to a section, changes. */
-export const FACT_SHEET_VERSION = 1;
+export const FACT_SHEET_VERSION = 2;
 
 /** Most facts one document's sheet holds; the rest are counted, not listed. */
 export const FACT_SHEET_MAX = 60;
@@ -65,7 +79,7 @@ export interface CanonicalFact {
   value: string;
   file: string;
   line: number;
-  /** The words whose presence in a text means the text is about this fact. */
+  /** The words that must ALL be in a text for the text to mention this fact. */
   terms: string[];
   ownerSectionId: string;
   modulePath: string;
@@ -102,8 +116,11 @@ const NUMBER_LITERAL = /^[-+]?\d[\d_]*(?:\.\d+)?(?:[eE][-+]?\d+)?$/;
 /** A number, optionally scaled by named units or other numbers: `20 * time.Second`, `4096 * 4096`. */
 const SCALED_NUMBER = /^[-+]?\d[\d_.]*(?:\s*(?:\*|<<)\s*[A-Za-z0-9_.]+){0,3}$/;
 const STRING_LITERAL = /^(?:"[^"\\$]*"|'[^'\\$]*')$/;
-/** An arithmetic operator between two operands (not the `*` of a `[]*T` type). */
-const ARITHMETIC = /[\w)]\s*[*/%+-]\s*[\w(]/;
+/**
+ * A multiplication, division or remainder between two operands (not the `*`
+ * of a `[]*T` type). A sum or difference alone does not make a formula.
+ */
+const MULTIPLICATIVE = /[\w)]\s*[*/%]\s*[\w(]/;
 /** A trailing line comment, which is not part of the value. */
 const LINE_COMMENT = /\s+(?:\/\/|#)\s.*$/;
 /** Sizing a container is not a business computation. */
@@ -127,25 +144,72 @@ function stripComment(value: string): string {
   return line.length > 400 ? line : line.replace(LINE_COMMENT, "").trim();
 }
 
-function clip(value: string): string {
-  const flat = stripComment(value).replace(/\s+/g, " ").trim();
-  return flat.length > FACT_VALUE_MAX_CHARS ? `${flat.slice(0, FACT_VALUE_MAX_CHARS - 1)}…` : flat;
+/**
+ * Text from the source made unable to break out of the facts block: a run of
+ * three or more `=` (the block's delimiters) is spaced out, the opening of a
+ * citation id (`[facts:`) loses its bracket, and a ` | ` (the block's field
+ * separator) becomes a broken bar. Everything else is kept as written.
+ */
+export function neutralize(text: string): string {
+  return text
+    .replace(/={3,}/g, (run) => run.split("").join(" "))
+    .replace(/\[(\s*facts:)/gi, "($1")
+    .replace(/ \|(?= )/g, " ¦");
 }
 
-/** What kind of fact a `name = value` is, or null when it is not one worth a line. */
+function clip(value: string): string {
+  const flat = neutralize(stripComment(value).replace(/\s+/g, " ").trim());
+  if (flat.length <= FACT_VALUE_MAX_CHARS) return flat;
+  let end = FACT_VALUE_MAX_CHARS - 1;
+  // Never end on the first half of a surrogate pair.
+  const last = flat.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return `${flat.slice(0, end)}…`;
+}
+
+/**
+ * What kind of fact a `name = value` is, or null when it is not one worth a
+ * line. The rules, in full:
+ *
+ *   - a number is a constant, unless it is a bare `0`, `1` or `-1` (a flag or
+ *     an identity, not a limit); a number scaled by a unit (`20 * time.Second`)
+ *     always is;
+ *   - a string constant is an enumeration value when it is at least two
+ *     characters long (`"a"` is a parameter letter);
+ *   - a computed value is a formula only when it multiplies, divides or takes a
+ *     remainder, holds a number or at least two names, and has no string or
+ *     allocation in it. `len(args) + 1`, `version + 1`, `prefix + suffix` and
+ *     `a - b` are not formulas.
+ */
 export function classifyFactValue(
   value: string,
   source: "constant" | "arithmetic",
 ): CanonicalFactKind | null {
   const v = stripComment(value);
   if (v.length === 0 || v.length > 400) return null;
-  if (NUMBER_LITERAL.test(v) || SCALED_NUMBER.test(v)) return "constant";
-  if (source === "constant") return STRING_LITERAL.test(v) && v.length > 2 ? "enumeration" : null;
-  // A computation: operators between operands, at least one number or two
-  // names — and no string in it, which is a path, a message or a query.
-  if (HAS_QUOTE.test(v) || ALLOCATION.test(v) || !ARITHMETIC.test(v)) return null;
+  if (NUMBER_LITERAL.test(v)) {
+    return Math.abs(Number(v.replace(/_/g, ""))) === 1 || Number(v.replace(/_/g, "")) === 0
+      ? null
+      : "constant";
+  }
+  if (SCALED_NUMBER.test(v)) return "constant";
+  if (source === "constant") return STRING_LITERAL.test(v) && v.length > 3 ? "enumeration" : null;
+  if (HAS_QUOTE.test(v) || ALLOCATION.test(v) || !MULTIPLICATIVE.test(v)) return null;
   const names = new Set(v.match(IDENTIFIER) ?? []);
   return HAS_DIGIT.test(v) || names.size >= 2 ? "formula" : null;
+}
+
+/**
+ * The words that must all be in a text for it to mention a fact — its OWN
+ * name: a constant's name; a formula's variable when that is distinctive
+ * (`weeklyCount`), otherwise the variable together with its function
+ * (`ScheduleNextCheck` and `interval`). Empty when the name is too general to
+ * mean anything on its own. The enclosing function's name alone never counts:
+ * that is how arithmetic incidental to a much-discussed function got listed.
+ */
+export function mentionTerms(name: string, fn: string | null = null): string[] {
+  if (isDistinctiveName(name)) return [name];
+  return fn && isDistinctiveName(fn) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? [fn, name] : [];
 }
 
 interface Candidate {
@@ -180,12 +244,12 @@ function candidatesOf(m: FactSheetModule): Candidate[] {
     if (!kind) continue;
     out.push({
       ...base,
-      name: match[1],
+      name: neutralize(match[1]),
       kind,
       value: clip(match[2]),
       file: rule.file,
       line: rule.line,
-      terms: isDistinctiveName(match[1]) ? [match[1]] : [],
+      terms: mentionTerms(match[1]),
     });
   }
   for (const f of m.formulas) {
@@ -196,12 +260,12 @@ function candidatesOf(m: FactSheetModule): Candidate[] {
     const fn = kind === "formula" ? functionOf(f.symbolContext) : null;
     out.push({
       ...base,
-      name: fn ? `${fn}.${f.name}` : f.name,
+      name: neutralize(fn ? `${fn}.${f.name}` : f.name),
       kind,
       value: clip(raw),
       file: f.filePath,
       line: f.startLine,
-      terms: [fn, f.name].filter((t): t is string => t != null && isDistinctiveName(t)),
+      terms: mentionTerms(f.name, fn),
     });
   }
   return out;
@@ -225,8 +289,11 @@ export function identifiersOf(text: string): Set<string> {
 
 /**
  * Build the sheet: every named, quantitative value the extractors read, less
- * the names that have two values in the source, kept when mentioned in at
- * least two (module, slice) places of the module facts, ranked by how many.
+ * the names that have two values in the source, kept when mentioned by name in
+ * at least two (module, slice) places of the module facts, ranked by how many.
+ *
+ * One pass over the module facts, whatever the number of candidates: each
+ * place's identifiers are looked up in an index of the candidates' terms.
  */
 export function buildFactSheet(
   modules: readonly FactSheetModule[],
@@ -234,38 +301,56 @@ export function buildFactSheet(
 ): FactSheet {
   const maxFacts = Math.max(0, options.maxFacts ?? FACT_SHEET_MAX);
   const byName = new Map<string, Candidate[]>();
+  const read = new Set<string>();
   let candidates = 0;
   for (const m of modules) {
     for (const c of candidatesOf(m)) {
-      const same = byName.get(c.name) ?? [];
       // One source line can be read by two extractors: count it once.
-      if (same.some((o) => o.file === c.file && o.line === c.line && o.value === c.value)) continue;
+      const key = `${c.name}\u0000${c.file}\u0000${c.line}\u0000${c.value}`;
+      if (read.has(key)) continue;
+      read.add(key);
       candidates += 1;
-      same.push(c);
-      byName.set(c.name, same);
-    }
-  }
-  // The places a term can be mentioned: each topic slice of each module.
-  const places: Array<Set<string>> = [];
-  for (const m of modules) {
-    const slices = sliceModuleFacts(m.facts);
-    for (const slice of FACT_SLICES) {
-      if (slices[slice]) places.push(identifiersOf(slices[slice]));
+      const same = byName.get(c.name);
+      if (same) same.push(c);
+      else byName.set(c.name, [c]);
     }
   }
   let ambiguous = 0;
   let notShared = 0;
-  const shared: CanonicalFact[] = [];
+  const unique: Candidate[] = [];
   for (const [, group] of byName) {
-    if (new Set(group.map((c) => c.value)).size > 1) {
-      ambiguous += group.length;
-      continue;
+    if (group.some((c) => c.value !== group[0].value)) ambiguous += group.length;
+    else unique.push(group[0]);
+  }
+  // first term → second term (or "" when the fact has one) → places counted.
+  const index = new Map<string, Map<string, { count: number }>>();
+  const counterOf = new Map<Candidate, { count: number }>();
+  for (const c of unique) {
+    if (c.terms.length === 0) continue;
+    const second = index.get(c.terms[0]) ?? new Map<string, { count: number }>();
+    index.set(c.terms[0], second);
+    const counter = second.get(c.terms[1] ?? "") ?? { count: 0 };
+    second.set(c.terms[1] ?? "", counter);
+    counterOf.set(c, counter);
+  }
+  // The places a fact can be mentioned: each topic slice of each module.
+  for (const m of modules) {
+    const slices = sliceModuleFacts(m.facts);
+    for (const slice of FACT_SLICES) {
+      if (!slices[slice]) continue;
+      const words = identifiersOf(slices[slice]);
+      for (const word of words) {
+        const second = index.get(word);
+        if (!second) continue;
+        for (const [also, counter] of second) {
+          if (also === "" || words.has(also)) counter.count += 1;
+        }
+      }
     }
-    const c = group[0];
-    const mentions =
-      c.terms.length === 0
-        ? 0
-        : places.reduce((n, place) => n + (c.terms.some((t) => place.has(t)) ? 1 : 0), 0);
+  }
+  const shared: CanonicalFact[] = [];
+  for (const c of unique) {
+    const mentions = counterOf.get(c)?.count ?? 0;
     if (mentions < 2) {
       notShared += 1;
       continue;
@@ -308,7 +393,43 @@ export function factsMentionedIn(
 ): CanonicalFact[] {
   if (!sheet || sheet.facts.length === 0) return [];
   const words = identifiersOf(text);
-  return sheet.facts.filter((f) => f.terms.some((t) => words.has(t)));
+  return sheet.facts.filter((f) => f.terms.length > 0 && f.terms.every((t) => words.has(t)));
+}
+
+/**
+ * The section that owns a fact IN THIS DOCUMENT, or null when none can state
+ * it: its owning section is not written, or does not read the fact's module.
+ */
+export type FactOwnerLookup = (fact: CanonicalFact) => { id: string; label: string } | null;
+
+/**
+ * The facts one section is given: those its input mentions and every fact it
+ * owns, in sheet order.
+ */
+export function factsGivenTo(
+  sheet: { facts: readonly CanonicalFact[] } | undefined,
+  text: string,
+  sectionId: string,
+  ownerOf: FactOwnerLookup,
+): CanonicalFact[] {
+  if (!sheet || sheet.facts.length === 0) return [];
+  const mentioned = new Set(factsMentionedIn(sheet, text));
+  return sheet.facts.filter((f) => mentioned.has(f) || ownerOf(f)?.id === sectionId);
+}
+
+/**
+ * The facts one CALL lists, at most `limit`: the ones its section owns first,
+ * so the owner is never the one left without a fact, then sheet order.
+ */
+export function factsListedFor(
+  facts: readonly CanonicalFact[],
+  sectionId: string,
+  ownerOf: FactOwnerLookup,
+  limit = FACT_SHEET_MAX_PER_CALL,
+): CanonicalFact[] {
+  const owned = facts.filter((f) => ownerOf(f)?.id === sectionId);
+  const others = facts.filter((f) => ownerOf(f)?.id !== sectionId);
+  return [...owned, ...others].slice(0, Math.max(0, limit));
 }
 
 export function canonicalSourceId(fact: Pick<CanonicalFact, "id">): string {
@@ -355,30 +476,46 @@ export function withCanonicalSources(
 
 /**
  * The prompt block that gives one call its canonical facts. At most
- * {@link FACT_SHEET_MAX_PER_CALL} are listed; the closing line counts the rest.
- * Empty when there is none, so a prompt without a sheet is unchanged.
+ * {@link FACT_SHEET_MAX_PER_CALL} are listed ({@link factsListedFor}); the
+ * closing line counts the rest. Empty when there is none, so a prompt without
+ * a sheet is unchanged.
+ *
+ * The block constrains what a section states; it does not ask for anything to
+ * be stated. "Do not re-derive it" is said only of a fact another section of
+ * this document really owns: a fact with no owner is marked so.
  */
 export function renderCanonicalFactsBlock(
   facts: readonly CanonicalFact[],
   section: { id: string; label: string },
-  ownerLabel: (sectionId: string) => string,
+  ownerOf: FactOwnerLookup,
   limit = FACT_SHEET_MAX_PER_CALL,
 ): string {
   if (facts.length === 0) return "";
-  const listed = facts.slice(0, Math.max(0, limit));
+  const listed = factsListedFor(facts, section.id, ownerOf, limit);
   const more = facts.length - listed.length;
+  const owners = listed.map((f) => ownerOf(f));
   return [
     "=== CANONICAL FACTS (read directly from the source code; every section is given the same values) ===",
     "Each line is: [citation id] name = value | source line | owning section.",
+    "- You are not asked to state these facts. The rules below apply to the ones your section does state.",
     "- State one of these values ONLY as it is given here. If your other material disagrees with a line, the line is right.",
     `- Cite the fact where you state it by writing its id in square brackets, e.g. [${canonicalSourceId(listed[0])}].`,
-    `- A fact owned by THIS section ("${section.label}"): state it once, completely.`,
+    `- A fact owned by THIS section ("${section.label}"): if you state it, state it once and completely.`,
     "- A fact owned by ANOTHER section: mention it in at most one sentence and name the owning section. Do not re-derive it, restate its formula or redefine its variables.",
+    ...(owners.some((owner) => owner === null)
+      ? [
+          "- A fact with NO owning section: no other section of this document states it. State it where it is relevant, once.",
+        ]
+      : []),
     "",
     ...listed.map(
-      (f) =>
+      (f, i) =>
         `[${canonicalSourceId(f)}] ${factStatement(f)} | ${f.file}:${f.line} | owner: ${
-          f.ownerSectionId === section.id ? "THIS section" : ownerLabel(f.ownerSectionId)
+          owners[i] === null
+            ? "none"
+            : owners[i].id === section.id
+              ? "THIS section"
+              : owners[i].label
         }`,
     ),
     ...(more > 0
@@ -388,7 +525,15 @@ export function renderCanonicalFactsBlock(
   ].join("\n");
 }
 
-/** What a section's reuse inputs record of the facts it was given. */
-export function factSheetFingerprint(facts: readonly CanonicalFact[]): string[] {
-  return facts.map((f) => `${f.id}|${f.name}|${f.value}|${f.file}:${f.line}|${f.ownerSectionId}`);
+/**
+ * What a section's reuse inputs record of the facts it was given: each one's
+ * value, source line and the section that owns it in this document.
+ */
+export function factSheetFingerprint(
+  facts: readonly CanonicalFact[],
+  ownerOf: FactOwnerLookup,
+): string[] {
+  return facts.map(
+    (f) => `${f.id}|${f.name}|${f.value}|${f.file}:${f.line}|${ownerOf(f)?.id ?? "-"}`,
+  );
 }

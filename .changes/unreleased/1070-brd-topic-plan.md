@@ -3,9 +3,13 @@ issue: 1070
 section: Changed
 ---
 
-- A Business Requirements document is planned before it is written: its length is shared among
-  sections and topics up front, a module that cannot fit is left out by priority and listed, and
-  an overrun costs each part its own tail instead of the section's last topics. Constants and
-  formulas read from the source are given to every section that mentions them, and a note says
-  where the finished document states one value two ways. No model call is added;
-  `DOCS_GEN_TOPIC_PLAN=off` turns it off.
+- `DOCS_GEN_TOPIC_PLAN` (new, **off by default**): a Business Requirements document can be
+  planned before it is written. Off, a BRD is generated exactly as before and nothing is
+  rewritten on upgrade.
+- Turned on, the document's length is shared among sections and topics up front and each
+  prompt states its share; a module that cannot fit is left out by priority and listed; and
+  when a length limit is exceeded each part loses its own tail instead of the section its
+  last topics, never keeping less than without a plan. Constants and formulas read from the
+  source are given to the sections that mention or own them, and a note says where the
+  document states one differently. No model call is added.
+- Turning it on rewrites every section of an existing BRD once, on its next generation.

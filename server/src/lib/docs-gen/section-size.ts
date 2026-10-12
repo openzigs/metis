@@ -107,7 +107,7 @@ function memoize(measure: Measure): Measure {
 }
 
 /** One indivisible piece of a section: a heading line, or a whole paragraph/fence/table. */
-interface Unit {
+export interface Unit {
   text: string;
   /** Heading depth (2–6) for a heading line; 0 for content. */
   depth: number;
@@ -121,7 +121,7 @@ const FENCE = /^\s*(```|~~~)/;
  * fence or a `$$` math block, which always stay whole; a heading line is its
  * own unit.
  */
-function units(markdown: string): Unit[] {
+export function units(markdown: string): Unit[] {
   const out: Unit[] = [];
   let buffer: string[] = [];
   let fence: string | null = null;
@@ -207,19 +207,21 @@ export interface FitResult {
   originalChars: number;
 }
 
-/**
- * The closing note of a shortened section: the limit, and the topics left out.
- * #1070 — exported for a section whose PARTS were fitted to their planned
- * budgets, which closes with one note for the section rather than one per part.
- */
-export function omissionNote(omitted: readonly string[], maxChars: number): string {
+/** How every closing note of a shortened section opens. */
+export const SHORTENED_NOTE_LEAD = "> **Shortened for length.**";
+
+/** The sentence of a closing note that names the topics left out (leading space). */
+export function omittedTopicsSentence(omitted: readonly string[]): string {
   const listed = omitted.slice(0, NOTE_TOPIC_LIMIT).map((t) => t.replace(/\s+/g, " ").slice(0, 80));
   const more = omitted.length - listed.length;
-  const topics =
-    listed.length > 0
-      ? ` ${omitted.length} further topic${omitted.length === 1 ? " was" : "s were"} left out: ${listed.join("; ")}${more > 0 ? `; and ${more} more` : ""}.`
-      : " Its remaining detail was left out.";
-  return `> **Shortened for length.** This section is limited to about ${Math.round(maxChars / 1000)}k characters (DOCS_GEN_SECTION_MAX_CHARS / DOCS_GEN_DOCUMENT_MAX_CHARS).${topics} Narrow the document with path prefixes, or raise the limit, for the full detail.`;
+  return listed.length > 0
+    ? ` ${omitted.length} further topic${omitted.length === 1 ? " was" : "s were"} left out: ${listed.join("; ")}${more > 0 ? `; and ${more} more` : ""}.`
+    : " Its remaining detail was left out.";
+}
+
+function omissionNote(omitted: readonly string[], maxChars: number): string {
+  const topics = omittedTopicsSentence(omitted);
+  return `${SHORTENED_NOTE_LEAD} This section is limited to about ${Math.round(maxChars / 1000)}k characters (DOCS_GEN_SECTION_MAX_CHARS / DOCS_GEN_DOCUMENT_MAX_CHARS).${topics} Narrow the document with path prefixes, or raise the limit, for the full detail.`;
 }
 /** `first`, then whichever of `rest` it lacks, in order. */
 function mergeTopics(first: readonly string[], rest: readonly string[]): string[] {
@@ -236,20 +238,13 @@ function mergeTopics(first: readonly string[], rest: readonly string[]): string[
  * is always last, and its own note lists both sets.
  *
  * #995 — `measure` is what counts against `maxChars` (see {@link Measure}).
- *
- * #1070 — `options.note: false` fits one PART of a section: nothing is appended
- * and no room is kept for a note, so the result may be empty when not even the
- * part's first paragraph fits. The caller writes the section's one note from
- * the `omittedTopics` of its parts.
  */
 export function fitSectionToBudget(
   markdown: string,
   maxChars: number,
   alreadyOmitted: readonly string[] = [],
   measure: Measure = rawLength,
-  options: { note?: boolean } = {},
 ): FitResult {
-  const withNote = options.note !== false;
   const originalChars = measure(markdown);
   if (originalChars <= maxChars) {
     return {
@@ -260,7 +255,7 @@ export function fitSectionToBudget(
     };
   }
   const all = units(markdown);
-  const room = Math.max(0, maxChars - (withNote ? NOTE_RESERVE : 0));
+  const room = Math.max(0, maxChars - NOTE_RESERVE);
   const kept: Unit[] = [];
   let used = 0;
   let cut = all.length;
@@ -291,20 +286,13 @@ export function fitSectionToBudget(
     }
   }
   const assemble = (): { markdown: string; omittedTopics: string[] } => {
-    // Never end on a heading with no content under it. A section keeps its
-    // first heading whatever happens; a part (#1070) with no content left is
-    // empty, since a bare heading would be merged in as a topic of its own.
-    while (kept.length > (withNote ? 1 : 0) && kept[kept.length - 1].depth > 0) {
+    // Never end on a heading with no content under it.
+    while (kept.length > 1 && kept[kept.length - 1].depth > 0) {
       kept.pop();
       cut -= 1;
     }
     const dropped = all.slice(Math.max(0, cut));
-    const allHeadings = dropped.filter((u) => u.depth > 0);
-    // A part cut whole lists its topics, not the section heading it opens with.
-    const droppedHeadings =
-      !withNote && cut <= 0 && allHeadings.length > 1 && all[0].depth > 0
-        ? allHeadings.filter((u) => u !== all[0])
-        : allHeadings;
+    const droppedHeadings = dropped.filter((u) => u.depth > 0);
     const level = droppedHeadings.reduce((min, u) => Math.min(min, u.depth), 7);
     const omittedTopics = mergeTopics(
       droppedHeadings.filter((u) => u.depth === level).map(headingText),
@@ -312,7 +300,7 @@ export function fitSectionToBudget(
     );
     const body = kept.map((u) => u.text).join("\n\n");
     return {
-      markdown: withNote ? `${body}\n\n${omissionNote(omittedTopics, maxChars)}` : body,
+      markdown: `${body}\n\n${omissionNote(omittedTopics, maxChars)}`,
       omittedTopics,
     };
   };

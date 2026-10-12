@@ -377,48 +377,87 @@ describe("checkFactConsistency", () => {
     expect(report.findings).toEqual([]);
   });
 
-  it("reports a name given two different values, with where each is", () => {
-    const report = checkFactConsistency([
-      { label: "Overview", markdown: "`POLLING_FREQUENCY` (default 60 min)" },
-      { label: "Glossary", markdown: "| `POLLING_FREQUENCY` (default 30 min) | cadence |" },
-    ]);
+  it("does not judge a name the sheet does not hold: a state change is not a conflict", () => {
+    // The four cases of the #1113 review: ordinary prose of a workflow section.
+    const sections = [
+      {
+        label: "Key Workflows",
+        markdown: [
+          'A new entry is stored with `entry_status = "unread"`.',
+          'Opening it sets `entry_status = "read"`.',
+          "The flag starts as `isRead = false` and becomes `isRead = true`.",
+          "A fetch begins with `retryCount = 0` and stops at `retryCount = 3`.",
+        ].join("\n\n"),
+      },
+      {
+        label: "Business Rules & Policies",
+        markdown: "Users get `pageSize` (default 50); admins get `pageSize` (default 100).",
+      },
+    ];
+    const report = checkFactConsistency(sections, { facts: [fact({})] });
+    expect(report.statements).toBe(8);
+    expect(report.findings).toEqual([]);
+    expect(factInconsistentWarning(report)).toBeNull();
+    // Nor without a sheet at all.
+    expect(checkFactConsistency(sections).findings).toEqual([]);
+  });
+
+  it("reports only the statements that differ from the sheet's value, with where each is", () => {
+    const pageSize = fact({ name: "defaultPageSize", value: "50", line: 31 });
+    const report = checkFactConsistency(
+      [
+        { label: "Overview", markdown: "`defaultPageSize` (default 50)" },
+        { label: "Glossary", markdown: "| `defaultPageSize` (default 100) | page length |" },
+        { label: "API", markdown: "`defaultPageSize = 25` and `otherPageSize = 7`" },
+      ],
+      { facts: [pageSize] },
+    );
     expect(report.findings).toEqual([
       {
         kind: "conflict",
-        name: "POLLING_FREQUENCY",
+        name: "defaultPageSize",
+        canonical: { value: "50", source: "internal/model/entry.go:31" },
         statements: [
-          { section: "Overview", line: 1, value: "60 min" },
-          { section: "Glossary", line: 1, value: "30 min" },
+          { section: "Glossary", line: 1, value: "100" },
+          { section: "API", line: 1, value: "25" },
         ],
         sections: 2,
-        forms: 2,
+        // 100, 25 and the source's 50.
+        forms: 3,
       },
     ]);
   });
 
   it("does not report one value spelled two ways", () => {
-    const report = checkFactConsistency([
-      { label: "A", markdown: "`POLLING_FREQUENCY` (default 60 min); `MaxEntryLimit = 1,000`" },
-      { label: "B", markdown: "`POLLING_FREQUENCY` (default 1 hour); `MaxEntryLimit = 1000`" },
-    ]);
+    const report = checkFactConsistency(
+      [
+        { label: "A", markdown: "`POLLING_FREQUENCY` (default 60 min); `MaxEntryLimit = 1,000`" },
+        { label: "B", markdown: "`POLLING_FREQUENCY` (default 1 hour); `MaxEntryLimit = 1000`" },
+      ],
+      { facts: [fact({}), fact({ name: "POLLING_FREQUENCY", value: "60min" })] },
+    );
     expect(report.findings).toEqual([]);
   });
 
   it("does not compare a bare number with a duration, or a value with an expression", () => {
     // 1440 (minutes) and 24h are the same setting: the check cannot know, so it says nothing.
-    const report = checkFactConsistency([
-      { label: "A", markdown: "`MAX_INTERVAL` (default 1440); `nextCheck = now`" },
-      { label: "B", markdown: "`MAX_INTERVAL` (default 24h); `nextCheck = now + interval`" },
+    const report = checkFactConsistency(
+      [
+        { label: "A", markdown: "`MAX_INTERVAL` (default 1440); `nextCheckAt = now`" },
+        { label: "B", markdown: "`MAX_INTERVAL` (default 24h); `nextCheckAt = now + interval`" },
+      ],
+      {
+        facts: [
+          fact({ name: "MAX_INTERVAL", value: "1440" }),
+          fact({ name: "nextCheckAt", value: "later" }),
+        ],
+      },
+    );
+    expect(report.findings.map((f) => [f.name, f.statements.map((s) => s.value)])).toEqual([
+      // `now` against `later` is a literal against a literal; `24h` and the
+      // expression are not compared with anything.
+      ["nextCheckAt", ["now"]],
     ]);
-    expect(report.findings).toEqual([]);
-  });
-
-  it("ignores a name too general to be one fact", () => {
-    const report = checkFactConsistency([
-      { label: "A", markdown: "`total = 5` and `limit` (default 3)" },
-      { label: "B", markdown: "`total = 9` and `limit` (default 4)" },
-    ]);
-    expect(report.findings).toEqual([]);
   });
 
   it("reports a value that differs from the sheet's, even when stated once", () => {
@@ -491,29 +530,31 @@ describe("the fact-inconsistent note", () => {
       checkFactConsistency(
         [
           ...RUN7_SECTIONS,
-          { label: "Overview", markdown: "`POLLING_FREQUENCY` (default 60 min)" },
-          { label: "Glossary", markdown: "`POLLING_FREQUENCY` (default 30 min)" },
+          { label: "API", markdown: "At most `MaxEntryLimit = 100` entries are returned." },
         ],
-        { facts: [INTERVAL] },
+        { facts: [INTERVAL, fact({})] },
       ),
     )!;
     expect(warning.message).toContain(
-      "Consistency check: 1 value stated differently and 1 formula written out in more than one section.",
+      "Consistency check: 1 value stated differently from the source and 1 formula written out in more than one section.",
     );
     expect(warning.message).toContain(
-      "`POLLING_FREQUENCY` is given 2 different values (`60 min` in Overview; `30 min` in Glossary).",
+      "`MaxEntryLimit` is stated with a value that is not the source's (`100` in API). The source has `1000` at internal/model/entry.go:20.",
     );
   });
 
   it("spells out a bounded number of findings and statements, and counts the rest", () => {
     // One fixture past each cap.
     const names = Array.from({ length: MAX_LISTED_FINDINGS + 3 }, (_, i) => `SETTING_NUMBER_${i}`);
+    const sheet = { facts: names.map((name) => fact({ name, value: "5" })) };
     const sections = [
-      { label: "A", markdown: names.map((n) => `\`${n}\` (default 1)`).join("\n") },
+      { label: "A", markdown: names.map((n) => `\`${n}\` (default 5)`).join("\n") },
       { label: "B", markdown: names.map((n) => `\`${n}\` (default 2)`).join("\n") },
     ];
-    const many = factInconsistentWarning(checkFactConsistency(sections))!;
-    expect(many.message).toContain(`${MAX_LISTED_FINDINGS + 3} values stated differently`);
+    const many = factInconsistentWarning(checkFactConsistency(sections, sheet))!;
+    expect(many.message).toContain(
+      `${MAX_LISTED_FINDINGS + 3} values stated differently from the source`,
+    );
     expect(many.message).toContain("And 3 more.");
     expect(many.message).toContain("`SETTING_NUMBER_0`");
     expect(many.message).not.toContain(`\`SETTING_NUMBER_${MAX_LISTED_FINDINGS + 2}\``);
@@ -522,17 +563,24 @@ describe("the fact-inconsistent note", () => {
       label: `S${i}`,
       markdown: `\`BATCH_SIZE_LIMIT\` (default ${i + 1})`,
     }));
-    const one = factInconsistentWarning(checkFactConsistency(repeated))!;
-    expect(one.message).toContain(`is given ${MAX_LISTED_STATEMENTS + 2} different values`);
+    const one = factInconsistentWarning(
+      checkFactConsistency(repeated, { facts: [fact({ name: "BATCH_SIZE_LIMIT", value: "500" })] }),
+    )!;
+    expect(one.message).toContain(
+      "`BATCH_SIZE_LIMIT` is stated with a value that is not the source's",
+    );
     expect(one.message).toContain("; and 2 more)");
   });
 
   it("cannot break out of its code span or run long", () => {
     const warning = factInconsistentWarning(
-      checkFactConsistency([
-        { label: "A", markdown: `\`\`LIMIT_VALUE = "a\`b${"x".repeat(300)}"\`\`` },
-        { label: "B", markdown: '`LIMIT_VALUE = "c"`' },
-      ]),
+      checkFactConsistency(
+        [
+          { label: "A", markdown: `\`\`LIMIT_VALUE = "a\`b${"x".repeat(300)}"\`\`` },
+          { label: "B", markdown: '`LIMIT_VALUE = "c"`' },
+        ],
+        { facts: [fact({ name: "LIMIT_VALUE", kind: "enumeration", value: '"c"' })] },
+      ),
     )!;
     const quoted = warning.message.match(/`[^`]*`/g) ?? [];
     for (const q of quoted) expect(q.length).toBeLessThanOrEqual(82);

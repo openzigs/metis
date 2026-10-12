@@ -1,9 +1,9 @@
 /**
  * #1070 — a business-requirements document written under the topic plan,
- * through `synthesizeFinalDocument`: budgets in the prompts, parts held to
- * their own budgets, planned-out and cut topics listed, the canonical facts
- * sheet in the prompts, the citable sources and the reuse inputs, and the
- * consistency note. The fake model writes one H3 topic per module it is given
+ * through `synthesizeFinalDocument`: budgets in the prompts as targets, nothing
+ * cut while the document fits, each part's own tail cut when it does not,
+ * planned-out and cut topics listed, the canonical facts sheet in the prompts,
+ * the citable sources and the reuse inputs, and the consistency note. The fake model writes one H3 topic per module it is given
  * and can be told to overrun the budget its prompt states. No network, no
  * database, no live model.
  */
@@ -22,7 +22,7 @@ vi.mock("../finops/index.js", async (importOriginal) => {
 });
 
 import type { AIProvider, ChatChunk, ChatMessage } from "../ai/types.js";
-import { MIN_TOPIC_CHARS } from "./document-plan.js";
+import { MIN_TOPIC_CHARS, SINGLE_CALL_SECTION_CHARS } from "./document-plan.js";
 import type { PersistedMinedRule } from "./fact-slices.js";
 import type { FaithfulnessResult } from "./grounding/citation-validator.js";
 import { deriveDocStatus } from "./grounding/degraded-warnings.js";
@@ -117,6 +117,8 @@ interface FakeOptions {
   inject?: (call: Call) => string;
   /** Write a call's reply as ONE table, which a length fit cannot cut into. */
   table?: (call: Call) => boolean;
+  /** Appended to every paragraph: a citation marker, long as drafted, short as rendered. */
+  marker?: string;
 }
 
 const PARAGRAPH = "This policy applies to every request the capability receives today. ";
@@ -143,7 +145,7 @@ function fakeModel(options: FakeOptions = {}, key = "anthropic"): AIProvider & {
         ...Array.from(
           { length: paragraphs },
           (_, p) =>
-            `${m} rule ${p}. ${p === 0 && i === 0 ? (options.inject?.(call) ?? "") : ""}${PARAGRAPH.repeat(2)}`,
+            `${m} rule ${p}. ${p === 0 && i === 0 ? (options.inject?.(call) ?? "") : ""}${PARAGRAPH.repeat(2)}${options.marker ?? ""}`,
         ),
       ].join("\n\n"),
     );
@@ -263,18 +265,28 @@ beforeEach(() => {
   // Two or three modules to a batch, so a catalogue section has several parts.
   vi.stubEnv("DOCS_GEN_ANTHROPIC_FACTS_CHAR_CAP", "6000");
   vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "16384");
+  // The plan ships off: every test here is about a document written with it on.
+  vi.stubEnv("DOCS_GEN_TOPIC_PLAN", "on");
 });
 afterEach(() => vi.unstubAllEnvs());
 
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe("which documents are planned", () => {
-  it("plans business requirements only, and not when switched off", () => {
+  it("plans business requirements only, and only when switched on", () => {
     expect(documentTypeIsPlanned("business-requirements")).toBe(true);
     expect(documentTypeIsPlanned("architecture")).toBe(false);
     expect(documentTypeIsPlanned("user-guide")).toBe(false);
     vi.stubEnv("DOCS_GEN_TOPIC_PLAN", "off");
     expect(documentTypeIsPlanned("business-requirements")).toBe(false);
+    // Off is the default, and a value that is not `on` does not turn it on.
+    vi.unstubAllEnvs();
+    expect(process.env.DOCS_GEN_TOPIC_PLAN).toBeUndefined();
+    expect(documentTypeIsPlanned("business-requirements")).toBe(false);
+    for (const other of ["true", "1", "yes"]) {
+      vi.stubEnv("DOCS_GEN_TOPIC_PLAN", other);
+      expect(documentTypeIsPlanned("business-requirements")).toBe(false);
+    }
   });
 });
 
@@ -323,6 +335,68 @@ describe("planDocumentTopics", () => {
     expect(10_000 - plan(project(40), 10_000).plan.budgetChars).toBe(500);
   });
 
+  it("sets that room aside from the modules alone: the facts sheet does not move a budget", () => {
+    // The same modules, with and without a shared constant of any length.
+    const withConstant = (value?: string): ModuleFacts[] => {
+      const facts = project(12);
+      facts[0] = mod("m00", 24, {
+        rules: "- A page never holds more than `maxPageSize` entries.",
+        workflows: "- Listing stops after `maxPageSize` entries.",
+        ...(value === undefined ? {} : { minedRules: [constant("maxPageSize", value)] }),
+      });
+      return facts;
+    };
+    expect(plan(withConstant("100"), 20_000).sheet.facts).toHaveLength(1);
+    for (const cap of [20_000, 250_000]) {
+      // What is shared among the sections is the cap less the modules' own
+      // footnotes: the same with no fact, a short one or a long one.
+      const shared = plan(withConstant(), cap).plan.budgetChars;
+      expect(plan(withConstant("100"), cap).plan.budgetChars).toBe(shared);
+      expect(plan(withConstant("2000000"), cap).plan.budgetChars).toBe(shared);
+    }
+    // And under a binding cap every section's budget is the same too.
+    const budgets = (facts: ModuleFacts[]): number[] =>
+      plan(facts, 20_000).plan.sections.map((s) => s.budgetChars);
+    expect(budgets(withConstant("100"))).toEqual(budgets(withConstant("2000000")));
+  });
+
+  it("names the section that owns a fact only when that section can state it", () => {
+    // An enumeration value read from the LOWEST-ranked module of 60, mentioned
+    // by two other modules. Data & Domain Model owns enumerations.
+    const facts = (count: number): ModuleFacts[] => {
+      const all = project(count);
+      const last = count - 1;
+      all[last] = mod(`m${last}`, 2 * count - last, {
+        minedRules: [constant("exportFormatName", '"ndjson"')],
+      });
+      all[0] = mod("m00", 2 * count, { rules: "- Exports use `exportFormatName`." });
+      all[1] = mod("m01", 2 * count - 1, { workflows: "- The job writes `exportFormatName`." });
+      return all;
+    };
+    // Room for every module: the data model reads m05 and owns the fact.
+    const roomy = plan(facts(6));
+    const [fact] = roomy.sheet.facts;
+    expect(fact).toEqual(
+      expect.objectContaining({ name: "exportFormatName", kind: "enumeration" }),
+    );
+    expect(roomy.ownerOf(fact)).toEqual({ id: "data-model", label: label("data-model") });
+    // A 30,000-character document cannot plan all 60 modules into the data
+    // model: m59 is left out, so no section can state the fact as its owner.
+    const tight = plan(facts(60), 30_000);
+    const dataModel = tight.plan.sections.find((s) => s.sectionId === "data-model")!;
+    expect(dataModel.dropped.map((t) => t.title)).toContain(`m59 — ${label("data-model")}`);
+    expect(tight.ownerOf(tight.sheet.facts[0])).toBeNull();
+    // Nor when the owning section is not part of the document at all.
+    const withoutOwner = planDocumentTopics({
+      facts: facts(6),
+      groups: GROUPS.filter((g) => g.id !== "data-model"),
+      router: routerFor(fakeModel()),
+      sectionMaxChars: 60_000,
+      documentMaxChars: 250_000,
+    });
+    expect(withoutOwner.ownerOf(withoutOwner.sheet.facts[0])).toBeNull();
+  });
+
   it("names a module at the repository root", () => {
     const { plan: p } = plan([mod("", 4, { modulePath: "", moduleName: "" })]);
     expect(p.sections.find((s) => s.sectionId === "rules")!.topics[0].title).toBe(
@@ -341,9 +415,38 @@ describe("planDocumentTopics", () => {
     for (const twin of twins) expect(budgets.get("rules")!.get(twin)).toBeGreaterThan(0);
   });
 
-  it("treats a catalogue section as one call when batching is switched off", () => {
+  it("treats a catalogue section as one call when batching is switched off, asking for the section cap", () => {
     vi.stubEnv("DOCS_GEN_BATCHED_SECTIONS", "off");
-    expect(plan(project(4)).plan.sections.every((s) => s.kind === "single")).toBe(true);
+    const planning = plan(project(4));
+    expect(planning.plan.sections.every((s) => s.kind === "single")).toBe(true);
+    // What bounded such a section before the plan: the section cap, not the
+    // 24,000 characters a section written in one call BY DESIGN asks for.
+    expect(
+      Object.fromEntries(planning.plan.sections.map((s) => [s.sectionId, s.demandChars])),
+    ).toEqual({
+      overview: SINGLE_CALL_SECTION_CHARS,
+      capabilities: SINGLE_CALL_SECTION_CHARS,
+      rules: 60_000,
+      workflows: 60_000,
+      formulas: 60_000,
+      "data-model": 60_000,
+      "integrations-and-glossary": SINGLE_CALL_SECTION_CHARS,
+    });
+    // 4 x 60,000 + 3 x 24,000 is more than the document: the catalogue
+    // sections are levelled below what they ask — and still told no length.
+    expect(planning.plan.sections.find((s) => s.sectionId === "rules")!.budgetChars).toBeLessThan(
+      60_000,
+    );
+    expect([...planning.lengthLimited]).toEqual([]);
+  });
+
+  it("marks a single-call section as length-limited only when the plan gave it less than it asks", () => {
+    expect([...plan(project(12)).lengthLimited]).toEqual([]);
+    expect([...plan(project(12), 40_000).lengthLimited].sort()).toEqual([
+      "capabilities",
+      "integrations-and-glossary",
+      "overview",
+    ]);
   });
 });
 
@@ -432,7 +535,144 @@ describe("a document written under the plan", () => {
     );
   });
 
-  it("holds each part to its own budget: no part's leading topic is lost to another's overrun", async () => {
+  it("issues a single-call section no length limit while the document has room, and none ever with batching off", async () => {
+    // The default caps and twelve small modules: nothing binds.
+    const facts = project(12);
+    const planned = fakeModel();
+    await run(facts, planned);
+    vi.stubEnv("DOCS_GEN_TOPIC_PLAN", "off");
+    const unplanned = fakeModel();
+    await run(facts, unplanned);
+    for (const id of ["overview", "capabilities", "integrations-and-glossary"]) {
+      const [withPlan] = callsFor(planned, label(id));
+      const [without] = callsFor(unplanned, label(id));
+      expect(withPlan.user).not.toContain("LENGTH LIMIT");
+      expect(withPlan.user).not.toContain("overrides");
+      // The very prompt it had before there was a plan.
+      expect(withPlan.user).toBe(without.user);
+      expect(withPlan.system).toBe(without.system);
+    }
+
+    // Batching off, and a document too small for four sections of 60,000: the
+    // catalogue sections, now written in one call each, keep the prompt they
+    // had — "document every item" is not overridden by a plan budget.
+    vi.stubEnv("DOCS_GEN_BATCHED_SECTIONS", "off");
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
+    const offUnplanned = fakeModel();
+    await run(facts, offUnplanned);
+    vi.stubEnv("DOCS_GEN_TOPIC_PLAN", "on");
+    const offPlanned = fakeModel();
+    await run(facts, offPlanned);
+    for (const id of ["rules", "workflows", "formulas", "data-model"]) {
+      const calls = callsFor(offPlanned, label(id));
+      expect(calls).toHaveLength(1);
+      expect(calls[0].user).not.toContain("LENGTH LIMIT");
+      expect(calls[0].user).toBe(callsFor(offUnplanned, label(id))[0].user);
+    }
+    // The sections that are single-call by design are the ones given a limit here.
+    expect(callsFor(offPlanned, label("overview"))[0].user).toContain("=== LENGTH LIMIT ===");
+  });
+
+  it("cuts nothing while the document fits its cap, however far a section ran past its budget", async () => {
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
+    const facts = project(12);
+    // Rules is written three times its budget; every other section a third of its own.
+    const provider = fakeModel({ overrun: (call) => (call.group === RULES ? 3 : 0.3) });
+    const result = await run(facts, provider);
+    const { plan } = planDocumentTopics({
+      facts,
+      groups: GROUPS,
+      router: routerFor(fakeModel()),
+      sectionMaxChars: 60_000,
+      documentMaxChars: 40_000,
+    });
+    const budget = plan.sections.find((s) => s.sectionId === "rules")!.budgetChars;
+    const rules = sectionOf(result.markdown, RULES);
+    expect(rules.length).toBeGreaterThan(budget * 2);
+    const body = result.markdown.slice(result.markdown.indexOf("\n## "));
+    expect(body.length).toBeLessThan(40_000);
+    // Under the cap: every paragraph every part wrote is in the document.
+    expect(result.markdown).not.toContain("Shortened for length");
+    expect(result.sections.every((s) => !s.omittedTopics)).toBe(true);
+    for (const call of callsFor(provider, RULES)) {
+      const words = Number(/write at most about (\d+) words/i.exec(call.user)![1]);
+      const each = Math.max(120, Math.floor((words * 6 * 3) / call.modules.length));
+      for (const m of call.modules) {
+        expect(rules.split(`\n\n${m} rule `).length - 1, m).toBe(
+          Math.max(1, Math.round(each / 150)),
+        );
+      }
+    }
+  });
+
+  it("gives an overrunning section the room the sections AFTER it left unused", async () => {
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
+    const facts = project(12);
+    // Rules is written eight times its budget — more than the document can
+    // hold; the four sections written after it stay far under theirs.
+    const provider = fakeModel({ overrun: (call) => (call.group === RULES ? 8 : 0.3) });
+    const result = await run(facts, provider);
+    const { plan } = planDocumentTopics({
+      facts,
+      groups: GROUPS,
+      router: routerFor(fakeModel()),
+      sectionMaxChars: 60_000,
+      documentMaxChars: 40_000,
+    });
+    const budget = plan.sections.find((s) => s.sectionId === "rules")!.budgetChars;
+    const rules = sectionOf(result.markdown, RULES);
+    const others = GROUPS.filter((g) => g.label !== RULES).map((g) =>
+      sectionOf(result.markdown, g.label),
+    );
+    // Only Rules is shortened, and it takes everything the others did not use:
+    // the body ends within a paragraph or two of the cap.
+    expect(rules).toContain("**Shortened for length.**");
+    expect(rules).toContain(
+      "The document is limited to about 40k characters (DOCS_GEN_DOCUMENT_MAX_CHARS).",
+    );
+    for (const other of others) expect(other).not.toContain("Shortened for length");
+    expect(rules.length).toBeGreaterThan(budget * 3);
+    const body = result.markdown.slice(result.markdown.indexOf("\n## "));
+    expect(body.length).toBeLessThanOrEqual(40_000 + 400);
+    expect(body.length).toBeGreaterThan(40_000 * 0.95);
+    // What was cut is the END of each part: every part still leads with its first module.
+    for (const call of callsFor(provider, RULES)) {
+      expect(rules).toContain(`### About ${call.modules[0]}\n`);
+    }
+  });
+
+  it("cuts each part in proportion to ITS planned budget when the document is over its cap", async () => {
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "1000000000");
+    const facts = project(12);
+    // Every part of Rules writes the same 12,000 characters whatever it was
+    // planned; the parts' budgets differ (the first reads the largest modules).
+    const words = (call: Call): number =>
+      Number(/write at most about (\d+) words/i.exec(call.user)![1]);
+    const provider = fakeModel({
+      overrun: (call) => (call.group === RULES ? 12_000 / (words(call) * 6) : 0.3),
+    });
+    const result = await run(facts, provider);
+    const rules = sectionOf(result.markdown, RULES);
+    expect(rules).toContain("**Shortened for length.**");
+    const parts = callsFor(provider, RULES).map((call) => ({
+      budget: words(call),
+      kept: call.modules.reduce((n, m) => n + rules.split(`\n\n${m} rule `).length - 1, 0),
+    }));
+    expect(parts.length).toBeGreaterThan(2);
+    const largest = parts.reduce((a, b) => (b.budget > a.budget ? b : a));
+    const smallest = parts.reduce((a, b) => (b.budget < a.budget ? b : a));
+    const planned = largest.budget / smallest.budget;
+    expect(planned).toBeGreaterThan(1.3);
+    // Every part wrote the same amount; what each KEPT follows its budget, to
+    // within a paragraph or two (equal weights would keep the same of each).
+    expect(smallest.kept).toBeGreaterThan(0);
+    const kept = largest.kept / smallest.kept;
+    expect(kept).toBeGreaterThan(1 + (planned - 1) * 0.6);
+    expect(kept).toBeLessThan(planned * 1.3);
+  });
+
+  it("cuts each part's own tail under both caps: no part's leading topic is lost, where no plan loses whole parts", async () => {
     vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
     vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "20000");
     const facts = project(12);
@@ -444,6 +684,7 @@ describe("a document written under the plan", () => {
     const leads = callsFor(planned, RULES).map((c) => c.modules[0]);
     expect(leads.length).toBeGreaterThan(2);
     for (const lead of leads) expect(rules).toContain(`### About ${lead}\n`);
+    expect(rules).toContain("**Shortened for length.**");
 
     // The same model without the plan: the section is cut at its tail, and the
     // parts written from the lowest-ranked modules go whole.
@@ -455,6 +696,34 @@ describe("a document written under the plan", () => {
       .map((c) => c.modules[0])
       .filter((lead) => !cut.includes(`### About ${lead}\n`));
     expect(lost.length).toBeGreaterThan(0);
+  });
+
+  it("holds a section to the section cap as it RENDERS, its note included (#995)", async () => {
+    // The default document cap leaves the section cap as the only limit that
+    // binds. The model writes three times what each part is asked: far past
+    // 20,000. Every paragraph cites a source: about 110 characters as drafted,
+    // a short footnote reference as rendered.
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "20000");
+    const marker = ` [facts:repo:${encodeURIComponent(JSON.stringify(["cmv1nna3w0001", "cmv1nnb0h0002", "src/m00"]))}:1]`;
+    const provider = fakeModel({ overrun: 3, marker });
+    const result = await run(project(12), provider);
+    const rules = sectionOf(result.markdown, RULES).trim();
+    expect(rules).not.toContain("facts:repo:");
+    expect(rules).toContain(
+      "This section is limited to about 20k characters (DOCS_GEN_SECTION_MAX_CHARS).",
+    );
+    // Within the cap, note and all — and full to it as rendered: a cap measured
+    // on the draft would stop at about 12,000.
+    expect(rules.length).toBeLessThanOrEqual(20_000);
+    expect(rules.length).toBeGreaterThan(20_000 * 0.9);
+    // Cut in plan order: every part still leads with its first module.
+    for (const call of callsFor(provider, RULES)) {
+      expect(rules).toContain(`### About ${call.modules[0]}\n`);
+    }
+    // The stored section is what was kept, with the parts of what was kept.
+    const stored = result.sectionSynthesis!.records.find((r) => r.sectionId === "rules")!;
+    expect(stored.markdown).toContain("**Shortened for length.**");
+    expect(stored.parts!.runs.reduce((n, [, units]) => n + units, 0)).toBeGreaterThan(50);
   });
 
   it("lists every topic a part lost, once, and loses none silently", async () => {
@@ -479,7 +748,7 @@ describe("a document written under the plan", () => {
     expect(body.length).toBeLessThanOrEqual(40_000 + 400);
   });
 
-  it("does not fact-check a part its budget cut whole, and lists what it held", async () => {
+  it("fact-checks every part as written, as without a plan, and lists a topic the cap left out", async () => {
     vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
     scoreFaithfulnessMock.mockResolvedValue(verified(1, 1));
     const grounding = {
@@ -489,24 +758,24 @@ describe("a document written under the plan", () => {
     } as unknown as GroundingContext;
     // One part of Rules answers with a single table larger than its budget.
     const provider = fakeModel({
-      overrun: 3,
+      overrun: 8,
       table: (call) => call.group === RULES && call.modules.includes("m05"),
     });
     const result = await run(project(12), provider, { grounding });
     const tabled = callsFor(provider, RULES).find((c) => c.modules.includes("m05"))!;
     const rules = sectionOf(result.markdown, RULES);
-    expect(rules).not.toContain(`Table of ${tabled.modules[0]}`.concat("\n\n|"));
     const entry = result.sections.find((s) => s.sectionLabel === RULES)!;
-    expect(entry.omittedTopics).toContain(`Table of ${tabled.modules[0]}`);
-    // The judge was never handed the part that did not reach the document.
+    const topic = `Table of ${tabled.modules[0]}`;
+    // The table is whole in the section or its topic is listed: never half of it.
+    expect(rules.includes("| limit 59 |") !== entry.omittedTopics!.includes(topic)).toBe(true);
+    expect(rules.includes("| limit 0 |")).toBe(rules.includes("| limit 59 |"));
+    // Nothing is discarded before the document is assembled, so every part is
+    // judged whole — exactly the calls a document without a plan makes.
     const judged = scoreFaithfulnessMock.mock.calls
       .filter(([section]) => section === RULES)
       .map(([, markdown]) => markdown as string);
-    expect(judged.length).toBe(callsFor(provider, RULES).length - 1);
-    for (const markdown of judged) {
-      expect(markdown.trim().length).toBeGreaterThan(0);
-      expect(markdown).not.toContain("Table of");
-    }
+    expect(judged.length).toBe(callsFor(provider, RULES).length);
+    expect(judged.some((markdown) => markdown.includes(topic))).toBe(true);
   });
 
   it("rewrites a planned section when its budget changes", async () => {
@@ -527,57 +796,25 @@ describe("a document written under the plan", () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it("gives a section the room an earlier one left unused", async () => {
+  it("cuts a REUSED document exactly as it cut the written one: the parts travel with the section", async () => {
     vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
     const facts = project(12);
-    // Rules overruns threefold; the single-call sections before it write little.
-    const result = await run(
-      facts,
-      fakeModel({ overrun: (call) => (call.group === RULES ? 3 : 0.3) }),
-    );
-    const { plan } = planDocumentTopics({
-      facts,
-      groups: GROUPS,
-      router: routerFor(fakeModel()),
-      sectionMaxChars: 60_000,
-      documentMaxChars: 40_000,
-    });
-    const budget = plan.sections.find((s) => s.sectionId === "rules")!.budgetChars;
-    const overviewBudget = plan.sections.find((s) => s.sectionId === "overview")!.budgetChars;
-    const overview = sectionOf(result.markdown, "Overview & Domain").length;
-    expect(overview).toBeLessThan(overviewBudget / 2);
-    // Rules ran past its own budget, into what the first two sections left.
-    const rules = sectionOf(result.markdown, RULES).length;
-    expect(rules).toBeGreaterThan(budget);
-    // And no further than its share of it: four sections were still to come.
-    const spare = 2 * overviewBudget;
-    expect(rules).toBeLessThanOrEqual(budget + Math.ceil(spare / 5));
-  });
-
-  it("counts the room a REUSED section left unused, too", async () => {
-    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
-    // A mined constant no other module mentions: changing it rewrites Rules only.
-    const withSolo = (value: string): ModuleFacts[] => {
-      const facts = project(12);
-      facts[0] = mod("m00", 24, { minedRules: [constant("soloLimit", value)] });
-      return facts;
-    };
-    const model = () => fakeModel({ overrun: (call) => (call.group === RULES ? 3 : 0.3) });
-    const first = await run(withSolo("5"), model());
-    const second = await run(withSolo("6"), model(), { previous: first });
-    expect(second.regeneration!.changed).toEqual(["rules"]);
-    // Rewritten alone, Rules still has what the reused sections before it left.
-    expect(sectionOf(second.markdown, RULES)).toBe(sectionOf(first.markdown, RULES));
-    const { plan } = planDocumentTopics({
-      facts: withSolo("6"),
-      groups: GROUPS,
-      router: routerFor(fakeModel()),
-      sectionMaxChars: 60_000,
-      documentMaxChars: 40_000,
-    });
-    expect(sectionOf(second.markdown, RULES).length).toBeGreaterThan(
-      plan.sections.find((s) => s.sectionId === "rules")!.budgetChars,
-    );
+    const model = () => fakeModel({ overrun: (call) => (call.group === RULES ? 8 : 0.3) });
+    const first = await run(facts, model());
+    const stored = first.sectionSynthesis!.records;
+    // A section written in parts stores which part wrote what; one written in a call does not.
+    const rules = stored.find((r) => r.sectionId === "rules")!;
+    expect(rules.parts!.budgets.length).toBeGreaterThan(2);
+    expect(rules.parts!.runs.length).toBeGreaterThanOrEqual(rules.parts!.budgets.length);
+    expect(stored.find((r) => r.sectionId === "overview")!.parts).toBeUndefined();
+    // What is stored is the section as written — nothing was discarded when it
+    // was — and the document cap is applied again on every run.
+    expect(rules.markdown).not.toContain("Shortened for length");
+    const again = model();
+    const second = await run(facts, again, { previous: first });
+    expect(again.calls).toEqual([]);
+    expect(second.markdown).toBe(first.markdown);
+    expect(second.sections).toEqual(first.sections);
   });
 
   it("leaves out the lowest-priority modules at planning time, never reads them, and lists them", async () => {
@@ -625,11 +862,16 @@ describe("a document written under the plan", () => {
     expect(entry.omittedTopics!.some((t) => t.endsWith("(not planned)"))).toBe(true);
   });
 
-  it("generates as before when the plan is switched off", async () => {
+  it("adds nothing to a prompt or to the notes when the plan is off, which is the default", async () => {
+    // Byte-for-byte equality with the code before #1070 is held by
+    // `holistic-synthesizer-topic-plan-off.test.ts`, against outputs that code produced.
+    vi.unstubAllEnvs();
+    vi.stubEnv("DOCS_GEN_ANTHROPIC_FACTS_CHAR_CAP", "6000");
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS", "16384");
     vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
-    vi.stubEnv("DOCS_GEN_TOPIC_PLAN", "off");
     const provider = fakeModel();
     const result = await run(project(12), provider);
+    expect(result.sectionSynthesis!.records.every((r) => r.parts === undefined)).toBe(true);
     for (const call of provider.calls) {
       expect(call.user).not.toContain("PLANNED SHARE");
       expect(call.user).not.toContain("=== LENGTH LIMIT ===");
@@ -712,6 +954,66 @@ describe("the canonical facts sheet in a planned document", () => {
     expect(workflows.user).toContain("Do not re-derive it");
   });
 
+  /**
+   * `exportFormatName` is an enumeration value (owned by Data & Domain Model)
+   * read from module `from`; m00's rules and m01's workflows mention it, and
+   * nothing the data model reads does.
+   */
+  const withEnumeration = (count: number, from: number): ModuleFacts[] => {
+    const facts = project(count);
+    facts[0] = mod("m00", 2 * count, { rules: "- Exports are written as `exportFormatName`." });
+    facts[1] = mod("m01", 2 * count - 1, {
+      workflows: "- The export job names its file after `exportFormatName`.",
+    });
+    const name = `m${String(from).padStart(2, "0")}`;
+    facts[from] = mod(name, 2 * count - from, {
+      minedRules: [constant("exportFormatName", '"ndjson"')],
+    });
+    return facts;
+  };
+  const FACT_LINE =
+    /\[facts:canon:cf-[0-9a-f]{10}\] exportFormatName = "ndjson" \| [^|]+ \| owner: (.+)/;
+
+  it("always gives a fact to the section that owns it, in the part that reads its module", async () => {
+    const provider = fakeModel();
+    await run(withEnumeration(6, 3), provider);
+    const dataModel = callsFor(provider, label("data-model"));
+    // No ENTITIES slice mentions the name: before, the owner never heard of it.
+    for (const call of dataModel) expect(call.user).not.toContain("`exportFormatName`");
+    const told = dataModel.filter((c) => c.user.includes("CANONICAL FACTS"));
+    expect(told).toHaveLength(1);
+    expect(told[0].modules).toContain("m03");
+    expect(FACT_LINE.exec(told[0].user)![1]).toBe("THIS section");
+    expect(told[0].user).toContain("if you state it, state it once and completely");
+    // The sections that mention it are told who owns it — a section that was told.
+    const rules = callsFor(provider, RULES).find((c) => c.user.includes("CANONICAL FACTS"))!;
+    expect(FACT_LINE.exec(rules.user)![1]).toBe(label("data-model"));
+    expect(given(provider).sort()).toEqual(
+      [label("capabilities"), RULES, label("workflows"), label("data-model")].sort(),
+    );
+  });
+
+  it("names no owner, and issues no 'do not re-derive', for a fact whose owner cannot state it", async () => {
+    // 60 modules in a 30,000-character document: the data model cannot plan
+    // them all, and the module the fact is read from (the lowest ranked) is left out.
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "30000");
+    const provider = fakeModel();
+    const result = await run(withEnumeration(60, 59), provider);
+    const entry = result.sections.find((s) => s.sectionLabel === label("data-model"))!;
+    expect(entry.omittedTopics).toContain("m59 (not planned)");
+    for (const call of callsFor(provider, label("data-model"))) {
+      expect(call.modules).not.toContain("m59");
+      expect(call.user).not.toContain("exportFormatName");
+    }
+    const told = provider.calls.filter((c) => FACT_LINE.test(c.user));
+    expect(told.length).toBeGreaterThan(0);
+    for (const call of told) {
+      expect(FACT_LINE.exec(call.user)![1]).toBe("none");
+      expect(call.user).toContain("A fact with NO owning section");
+      expect(call.user).not.toContain(`owner: ${label("data-model")}`);
+    }
+  });
+
   it("rewrites exactly the sections given a fact when its value changes", async () => {
     const first = await run(withLimit("100"), fakeModel());
     const same = fakeModel();
@@ -728,6 +1030,31 @@ describe("the canonical facts sheet in a planned document", () => {
     expect(callsFor(changed, RULES).some((c) => c.user.includes("maxPageSize = 200"))).toBe(true);
   });
 
+  it("rewrites exactly those sections when the value changes LENGTH under a binding cap", async () => {
+    // The variant the #1113 review showed failing: a cap small enough that the
+    // sections' budgets are levelled, and a value one character longer. The
+    // budgets are planned from the modules alone, so no other section moves.
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "20000");
+    const first = await run(withLimit("100"), fakeModel());
+    const { plan } = planDocumentTopics({
+      facts: withLimit("100"),
+      groups: GROUPS,
+      router: routerFor(fakeModel()),
+      sectionMaxChars: 60_000,
+      documentMaxChars: 20_000,
+    });
+    // Binding: the catalogue sections are given less than they ask for.
+    expect(plan.sections.find((s) => s.sectionId === "rules")!.budgetChars).toBeLessThan(
+      plan.sections.find((s) => s.sectionId === "rules")!.demandChars,
+    );
+    const changed = fakeModel();
+    const second = await run(withLimit("2000"), changed, { previous: first });
+    expect(second.regeneration!.changed.sort()).toEqual(["capabilities", "rules", "workflows"]);
+    expect([...new Set(changed.calls.map((c) => c.group))].sort()).toEqual(
+      [label("capabilities"), RULES, label("workflows")].sort(),
+    );
+  });
+
   it("rewrites a section for a fact its input mentions beyond the forty one call lists", async () => {
     // 45 shared limits, all mentioned by m00's rules and m01's workflows.
     const names = Array.from({ length: 45 }, (_, i) => `sharedLimit${String(i).padStart(2, "0")}`);
@@ -737,7 +1064,7 @@ describe("the canonical facts sheet in a planned document", () => {
       facts[0] = mod("m00", 12, {
         rules: mentions,
         minedRules: names.map((n, i) => ({
-          ...constant(n, i === names.length - 1 ? last : String(i + 1)),
+          ...constant(n, i === names.length - 1 ? last : String(i + 10)),
           line: i + 1,
         })),
       });
@@ -745,14 +1072,14 @@ describe("the canonical facts sheet in a planned document", () => {
       return facts;
     };
     const provider = fakeModel();
-    const first = await run(withLimits("45"), provider);
+    const first = await run(withLimits("54"), provider);
     // The call lists forty and counts the rest: the last-ranked fact is not shown.
     const shown = callsFor(provider, label("workflows")).find((c) =>
       c.user.includes("CANONICAL FACTS"),
     )!;
     expect(shown.user).toContain("(5 more canonical facts are not listed for this call.)");
     expect(shown.user).not.toContain("sharedLimit44 = ");
-    const second = await run(withLimits("4500"), fakeModel(), { previous: first });
+    const second = await run(withLimits("5400"), fakeModel(), { previous: first });
     expect(second.regeneration!.changed).toContain("workflows");
     expect(second.regeneration!.changed).not.toContain("formulas");
   });
@@ -895,44 +1222,65 @@ describe("judge-gated escalation of a planned document", () => {
 });
 
 describe("the consistency check in a planned document", () => {
+  /** `maxPageSize = 100` is on the facts sheet; `POLLING_FREQUENCY` is not. */
+  const facts = (): ModuleFacts[] => {
+    const all = project(6);
+    all[0] = mod("m00", 12, {
+      rules: "- A page never holds more than `maxPageSize` entries.",
+      minedRules: [constant("maxPageSize", "100")],
+    });
+    all[1] = mod("m01", 11, {
+      workflows: "- Listing stops after `maxPageSize` entries and returns a cursor.",
+    });
+    return all;
+  };
+  const WRONG = "`maxPageSize` (default 250). ";
+  const STATES = [
+    "`POLLING_FREQUENCY` (default 60 min). ",
+    "`POLLING_FREQUENCY` (default 30 min). ",
+  ];
   const disagree = (call: Call): string =>
     call.group === label("overview")
-      ? "`POLLING_FREQUENCY` (default 60 min). "
+      ? `${WRONG}${STATES[0]}`
       : call.group === label("integrations-and-glossary")
-        ? "`POLLING_FREQUENCY` (default 30 min). "
+        ? STATES[1]
         : "";
 
-  it("notes a value stated differently in two sections, and changes nothing", async () => {
-    const result = await run(project(6), fakeModel({ inject: disagree }));
+  it("notes a sheet value stated differently, not a name the sheet does not hold, and changes nothing", async () => {
+    const result = await run(facts(), fakeModel({ inject: disagree }));
     const notes = result.warnings.filter((w) => w.kind === "fact-inconsistent");
     expect(notes).toHaveLength(1);
     expect(notes[0].severity).toBe("info");
     expect(notes[0].message).toContain(
-      "`POLLING_FREQUENCY` is given 2 different values (`60 min` in Overview & Domain; `30 min` in Integrations & Glossary).",
+      "Consistency check: 1 value stated differently from the source.",
     );
+    expect(notes[0].message).toContain(
+      "`maxPageSize` is stated with a value that is not the source's (`250` in Overview & Domain). The source has `100` at src/m00/limits.go:12.",
+    );
+    // Two values of a name the sheet does not hold are not judged.
+    expect(notes[0].message).not.toContain("POLLING_FREQUENCY");
     // A note, not a degradation; and the document carries no mark of it.
     expect(deriveDocStatus(result.warnings)).toBe("ready");
     expect(result.markdown).not.toContain("Consistency check");
-    const quiet = await run(project(6), fakeModel());
+    const quiet = await run(facts(), fakeModel());
     expect(quiet.warnings).toEqual([]);
     const strip = (md: string) =>
-      md
-        .replaceAll("`POLLING_FREQUENCY` (default 60 min). ", "")
-        .replaceAll("`POLLING_FREQUENCY` (default 30 min). ", "");
+      [WRONG, ...STATES].reduce((text, inserted) => text.replaceAll(inserted, ""), md);
     expect(strip(result.markdown)).toBe(quiet.markdown);
   });
 
   it("reports the same thing when every section is reused", async () => {
-    const first = await run(project(6), fakeModel({ inject: disagree }));
+    const first = await run(facts(), fakeModel({ inject: disagree }));
+    expect(first.warnings.map((w) => w.kind)).toEqual(["fact-inconsistent"]);
     const again = fakeModel();
-    const second = await run(project(6), again, { previous: first });
+    const second = await run(facts(), again, { previous: first });
     expect(again.calls).toEqual([]);
     expect(second.warnings).toEqual(first.warnings);
   });
 
   it("does not run without the plan", async () => {
     vi.stubEnv("DOCS_GEN_TOPIC_PLAN", "off");
-    const result = await run(project(6), fakeModel({ inject: disagree }));
+    const result = await run(facts(), fakeModel({ inject: disagree }));
     expect(result.warnings).toEqual([]);
   });
 });

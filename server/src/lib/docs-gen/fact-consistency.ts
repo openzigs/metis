@@ -5,9 +5,12 @@
  * STATES a named value — `` `NAME = 5` ``, `` `NAME` (default 5 min) ``, a
  * formula in `$…$` or `$$…$$` — and two things are looked for:
  *
- *   - a CONFLICT: one name given two different values of the same kind (two
- *     numbers, two durations, two literals), or a value that differs from the
- *     canonical facts sheet's (`canonical-facts.ts`);
+ *   - a CONFLICT: a name on the canonical facts sheet (`canonical-facts.ts`)
+ *     stated with a value that differs from the sheet's, in the same kind (a
+ *     number against a number, a duration against a duration). A name the
+ *     sheet does not hold is never judged: two values of `status` or
+ *     `retryCount` in one document are a state change or two cases far more
+ *     often than a contradiction, and the check has no source to say which;
  *   - a RESTATEMENT: a formula on the sheet written out in more than one
  *     section, with how many different forms it took. #706 run 7 wrote the
  *     Miniflux scheduler interval in four sections.
@@ -185,9 +188,16 @@ function scanLine(text: string, line: number, out: StatedValue[]): void {
   let i = 0;
   let codeOpen = true;
   let mathOpen = true;
+  // The next backtick and dollar sign at or after `i`, searched for again only
+  // once passed: a line of one kind of delimiter must not re-scan for the
+  // other at every step (quadratic on 200 KB of dollar signs).
+  let tick = -2;
+  let dollar = -2;
   while (i < text.length) {
-    const tick = codeOpen ? text.indexOf("`", i) : -1;
-    const dollar = mathOpen ? text.indexOf("$", i) : -1;
+    if (!codeOpen) tick = -1;
+    else if (tick !== -1 && tick < i) tick = text.indexOf("`", i);
+    if (!mathOpen) dollar = -1;
+    else if (dollar !== -1 && dollar < i) dollar = text.indexOf("$", i);
     if (tick < 0 && dollar < 0) return;
     if (tick >= 0 && (dollar < 0 || tick < dollar)) {
       let run = tick;
@@ -325,11 +335,11 @@ export interface FindingStatement {
 }
 
 export interface ConsistencyFinding {
-  /** `conflict` — one name, different values. `restated` — one formula, several sections. */
+  /** `conflict` — a sheet value stated differently. `restated` — a sheet formula, several sections. */
   kind: "conflict" | "restated";
   name: string;
-  /** The sheet's value and source line, when the fact is on the sheet. */
-  canonical?: { value: string; source: string };
+  /** The sheet's value and source line. */
+  canonical: { value: string; source: string };
   statements: FindingStatement[];
   /** Distinct sections among the statements. */
   sections: number;
@@ -397,39 +407,36 @@ export function checkFactConsistency(
   const canonicalByName = new Map<string, CanonicalFact>();
   for (const fact of facts) if (fact.kind !== "formula") canonicalByName.set(fact.name, fact);
 
-  // Conflicts: one distinctive name, two values of one class.
-  const byName = new Map<string, Array<StatedValue & { section: string; value: string }>>();
+  // Conflicts: a name ON THE SHEET stated with a value that differs from the
+  // sheet's, in the same class (a number against a number). A name the sheet
+  // does not hold is not judged at all: a workflow that sets `status` to
+  // "unread" and later to "read" states two values and contradicts nothing.
+  const stated = new Map<string, Array<StatedValue & { section: string; value: string }>>();
   for (const s of all) {
-    if (s.kind === "expression" || !s.name || !isDistinctiveName(s.name)) continue;
+    if (s.kind === "expression" || !s.name || !canonicalByName.has(s.name)) continue;
     const value = comparableValue(s.form);
     if (!value) continue;
-    const list = byName.get(s.name) ?? [];
+    const list = stated.get(s.name) ?? [];
     list.push({ ...s, value });
-    byName.set(s.name, list);
+    stated.set(s.name, list);
   }
-  for (const [name, stated] of byName) {
-    const fact = canonicalByName.get(name);
-    const canonical = fact ? comparableValue(normalizeForm(fact.value)) : null;
-    const classes = new Map<string, Set<string>>();
-    const note = (value: string): void => {
-      const cls = value.slice(0, value.indexOf(":"));
-      classes.set(cls, (classes.get(cls) ?? new Set()).add(value));
-    };
-    for (const s of stated) note(s.value);
-    if (canonical) note(canonical);
-    const conflicting = new Set([...classes].filter(([, v]) => v.size > 1).map(([cls]) => cls));
-    if (conflicting.size === 0) continue;
-    const involved = stated.filter((s) => conflicting.has(s.value.slice(0, s.value.indexOf(":"))));
+  for (const [name, statements] of stated) {
+    const fact = canonicalByName.get(name)!;
+    const canonical = comparableValue(normalizeForm(fact.value));
+    if (!canonical) continue;
+    const cls = canonical.slice(0, canonical.indexOf(":"));
+    const differing = statements.filter(
+      (s) => s.value.slice(0, s.value.indexOf(":")) === cls && s.value !== canonical,
+    );
+    if (differing.length === 0) continue;
     findings.push({
       kind: "conflict",
       name,
-      ...(fact && canonical && conflicting.has(canonical.slice(0, canonical.indexOf(":")))
-        ? { canonical: { value: fact.value, source: `${fact.file}:${fact.line}` } }
-        : {}),
-      statements: involved.map((s) => ({ section: s.section, line: s.line, value: s.raw })),
-      sections: new Set(involved.map((s) => s.section)).size,
-      // Distinct values, the source's among them when it is one of the sides.
-      forms: [...conflicting].reduce((n, cls) => n + classes.get(cls)!.size, 0),
+      canonical: { value: fact.value, source: `${fact.file}:${fact.line}` },
+      statements: differing.map((s) => ({ section: s.section, line: s.line, value: s.raw })),
+      sections: new Set(differing.map((s) => s.section)).size,
+      // Distinct values: the ones stated, and the source's.
+      forms: new Set(differing.map((s) => s.value)).size + 1,
     });
   }
 
@@ -469,11 +476,9 @@ function describeFinding(f: ConsistencyFinding): string {
   const where = `${listed.map((s) => `${quote(s.value)} in ${s.section}`).join("; ")}${
     more > 0 ? `; and ${more} more` : ""
   }`;
-  const canonical = f.canonical
-    ? ` The source has ${quote(f.canonical.value)} at ${f.canonical.source}.`
-    : "";
+  const canonical = ` The source has ${quote(f.canonical.value)} at ${f.canonical.source}.`;
   return f.kind === "conflict"
-    ? `${quote(f.name)} is given ${f.forms} different values (${where}).${canonical}`
+    ? `${quote(f.name)} is stated with a value that is not the source's (${where}).${canonical}`
     : `the formula ${quote(f.name)} is written out ${f.statements.length} times in ${f.sections} sections, in ${f.forms} form${f.forms === 1 ? "" : "s"} (${where}).${canonical}`;
 }
 
@@ -487,7 +492,9 @@ export function factInconsistentWarning(report: ConsistencyReport): DocWarning |
   const conflicts = findings.filter((f) => f.kind === "conflict").length;
   const restated = findings.length - conflicts;
   const counts = [
-    conflicts > 0 ? `${conflicts} value${conflicts === 1 ? "" : "s"} stated differently` : "",
+    conflicts > 0
+      ? `${conflicts} value${conflicts === 1 ? "" : "s"} stated differently from the source`
+      : "",
     restated > 0
       ? `${restated} formula${restated === 1 ? "" : "s"} written out in more than one section`
       : "",

@@ -123,8 +123,9 @@ describe("DocumentationPage — values stated differently in two places (#1070)"
     section: "Document",
     severity: "info",
     message:
-      "Consistency check: 1 value stated differently. `POLLING_FREQUENCY` is given 2 different " +
-      "values (`60 min` in Overview & Domain; `30 min` in Integrations & Glossary). Nothing was " +
+      "Consistency check: 1 value stated differently from the source. `POLLING_FREQUENCY` is " +
+      "stated with a value that is not the source's (`30 min` in Integrations & Glossary). The " +
+      "source has `60min` at config/options.go:41. Nothing was " +
       "removed or changed.",
   };
 
@@ -132,7 +133,9 @@ describe("DocumentationPage — values stated differently in two places (#1070)"
     await open({ status: "ready", warnings: [INCONSISTENT] });
     const note = screen.getByTestId("fact-consistency-note");
     expect(note).toHaveAttribute("role", "status");
-    expect(note).toHaveTextContent("`POLLING_FREQUENCY` is given 2 different values");
+    expect(note).toHaveTextContent(
+      "`POLLING_FREQUENCY` is stated with a value that is not the source's",
+    );
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByTestId("schema-names-note")).toBeNull();
   });

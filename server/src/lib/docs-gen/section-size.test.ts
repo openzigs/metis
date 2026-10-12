@@ -9,12 +9,10 @@ import {
   DEFAULT_SECTION_MAX_CHARS,
   DOCUMENT_MAX_CHARS_KEY,
   MIN_SECTION_MAX_CHARS,
-  NOTE_RESERVE,
   SECTION_MAX_CHARS_KEY,
   batchWordBudget,
   fitSectionToBudget,
   fitSectionsToDocumentBudget,
-  omissionNote,
   resolveDocumentMaxChars,
   resolveSectionMaxChars,
   sectionBudgetScale,
@@ -365,70 +363,5 @@ describe("caps measured as the text renders (#995)", () => {
     expect(total).toBeGreaterThan(max - 3_000);
     const drafted = fitSectionsToDocumentBudget(sections, max);
     expect(drafted.sections.reduce((n, s) => n + rendered(s).length, 0)).toBeLessThan(max / 2);
-  });
-});
-
-describe("fitting one part of a section (#1070)", () => {
-  const part = rulesSection(8);
-
-  it("appends no note and keeps no room for one", () => {
-    const max = 3_000;
-    const withNote = fitSectionToBudget(part, max);
-    const bare = fitSectionToBudget(part, max, [], undefined, { note: false });
-    expect(bare.trimmed).toBe(true);
-    expect(bare.markdown).not.toContain("Shortened for length");
-    expect(bare.markdown.length).toBeLessThanOrEqual(max);
-    // The room a note would have taken holds content instead.
-    const paragraphs = (md: string): number => md.match(/Ends here\./g)?.length ?? 0;
-    expect(paragraphs(bare.markdown)).toBeGreaterThan(paragraphs(withNote.markdown));
-    // What is kept is the part's own leading text, and the rest is named.
-    expect(part.startsWith(bare.markdown)).toBe(true);
-    expect(bare.omittedTopics.at(-1)).toBe("Topic 8");
-    for (const topic of bare.omittedTopics) expect(bare.markdown).not.toContain(`### ${topic}\n`);
-  });
-
-  it("is empty when not even the first paragraph fits, and lists the topics, not the section heading", () => {
-    const table = [
-      "## Rules",
-      "### Limits",
-      `| a | b |\n|---|---|\n${"| 1 | 2 |\n".repeat(80)}`,
-      "### Timeouts",
-      "Thirty seconds.",
-    ].join("\n\n");
-    const fit = fitSectionToBudget(table, 200, [], undefined, { note: false });
-    expect(fit.markdown).toBe("");
-    expect(fit.trimmed).toBe(true);
-    expect(fit.omittedTopics).toEqual(["Limits", "Timeouts"]);
-    // With a note, the section keeps its heading and says so.
-    expect(table.length).toBeGreaterThan(600);
-    expect(fitSectionToBudget(table, 600).markdown.startsWith("## Rules\n\n> **Shortened")).toBe(
-      true,
-    );
-  });
-
-  it("lists the topics of a part that is headings only, not the heading it opens with", () => {
-    const headings = ["## Rules", "### Limits", "### Timeouts", "### Retries"].join("\n\n");
-    const fit = fitSectionToBudget(headings, 30, [], undefined, { note: false });
-    expect(fit.markdown).toBe("");
-    expect(fit.omittedTopics).toEqual(["Limits", "Timeouts", "Retries"]);
-  });
-
-  it("returns a part that fits unchanged", () => {
-    expect(fitSectionToBudget(part, 1_000_000, [], undefined, { note: false })).toMatchObject({
-      markdown: part,
-      trimmed: false,
-      omittedTopics: [],
-    });
-  });
-
-  it("writes the section's one note from the topics its parts lost", () => {
-    expect(omissionNote(["Limits", "Timeouts"], 41_000)).toBe(
-      "> **Shortened for length.** This section is limited to about 41k characters (DOCS_GEN_SECTION_MAX_CHARS / DOCS_GEN_DOCUMENT_MAX_CHARS). 2 further topics were left out: Limits; Timeouts. Narrow the document with path prefixes, or raise the limit, for the full detail.",
-    );
-    expect(omissionNote([], 41_000)).toContain("Its remaining detail was left out.");
-    // The room a section keeps for it covers a full list of planned-out topics.
-    const thirty = Array.from({ length: 30 }, (_, i) => `internal/reader/module${i} (not planned)`);
-    expect(omissionNote(thirty, 41_000).length).toBeLessThanOrEqual(NOTE_RESERVE);
-    expect(omissionNote(thirty, 41_000)).toContain("and 18 more");
   });
 });

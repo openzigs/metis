@@ -336,8 +336,9 @@ describe("names not matched to the database schema (#1061)", () => {
 // it compares how values are written and changes nothing.
 describe("values stated differently in two places (#1070)", () => {
   const MESSAGE =
-    "Consistency check: 1 value stated differently. `POLLING_FREQUENCY` is given 2 different " +
-    "values (`60 min` in Overview & Domain; `30 min` in Integrations & Glossary). Nothing was " +
+    "Consistency check: 1 value stated differently from the source. `POLLING_FREQUENCY` is " +
+    "stated with a value that is not the source's (`30 min` in Integrations & Glossary). The " +
+    "source has `60min` at config/options.go:41. Nothing was " +
     "removed or changed: the check compares how values are written, so two spellings of one " +
     "value can be reported. Compare the statements with the source.";
   const inconsistent = (message = MESSAGE) => ({
@@ -350,7 +351,9 @@ describe("values stated differently in two places (#1070)", () => {
   it("shows the server's sentence as a status note, not an alert", () => {
     render(<FactConsistencyNote warnings={[inconsistent()]} />);
     const note = screen.getByRole("status");
-    expect(note).toHaveTextContent("`POLLING_FREQUENCY` is given 2 different values");
+    expect(note).toHaveTextContent(
+      "`POLLING_FREQUENCY` is stated with a value that is not the source's",
+    );
     expect(note).toHaveTextContent("Nothing was removed or changed");
     expect(screen.queryByRole("alert")).toBeNull();
     for (const alarm of [/code-fidelity bar/, /worth verifying/, /Degraded/i, /Needs review/i]) {
