@@ -119,6 +119,8 @@ describe("what counts as a fact", () => {
     expect(classifyFactValue("make([]*optionPair, 0, len(sortedKeys))", "arithmetic")).toBeNull();
     expect(classifyFactValue("append(attrs, a+b)", "arithmetic")).toBeNull();
     expect(classifyFactValue("r.Header.Get(name)", "arithmetic")).toBeNull();
+    // An operator beside a string is a concatenation, whatever else is computed in it.
+    expect(classifyFactValue('prefix + strconv.Itoa(n*2) + "-suffix"', "arithmetic")).toBeNull();
   });
 
   it("does not read a trailing comment as part of the value", () => {

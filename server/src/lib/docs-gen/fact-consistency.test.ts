@@ -216,6 +216,10 @@ describe("scanFactStatements", () => {
 
   it("stops at an unclosed span and reads on from the next line", () => {
     const md = ["an unclosed `span and $math on one line", "`MaxEntryLimit = 1000`"].join("\n");
+    // A stray backtick does not hide the math that follows it on the line.
+    expect(scanFactStatements("a stray ` and then $total = a + b$ here")).toEqual([
+      expect.objectContaining({ name: "total", form: "a+b" }),
+    ]);
     expect(scanFactStatements(md).map((s) => s.line)).toEqual([2]);
   });
 
@@ -327,7 +331,7 @@ describe("checkFactConsistency", () => {
   it("does not match an expression on one shared name alone", () => {
     const report = checkFactConsistency(
       [
-        { label: "A", markdown: "`weeklyCount = total / 52`" },
+        { label: "A", markdown: "`total = weeklyCount / 52`" },
         { label: "B", markdown: "`limit = weeklyCount * 3`" },
       ],
       { facts: [INTERVAL] },

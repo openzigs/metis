@@ -115,6 +115,8 @@ interface FakeOptions {
   overrun?: number | ((call: Call) => number);
   /** Extra text for a call's first paragraph. */
   inject?: (call: Call) => string;
+  /** Write a call's reply as ONE table, which a length fit cannot cut into. */
+  table?: (call: Call) => boolean;
 }
 
 const PARAGRAPH = "This policy applies to every request the capability receives today. ";
@@ -129,6 +131,10 @@ function fakeModel(options: FakeOptions = {}, key = "anthropic"): AIProvider & {
     const total = limit
       ? Number(limit[1]) * 6 * factor
       : (options.perModule ?? 400) * modules.length;
+    if (options.table?.(call)) {
+      const rows = Array.from({ length: 60 }, (_, r) => `| ${modules[0]} | limit ${r} |`);
+      return `## ${call.group}\n\n### Table of ${modules[0]}\n\n| a | b |\n|---|---|\n${rows.join("\n")}`;
+    }
     const each = Math.max(120, Math.floor(total / modules.length));
     const paragraphs = Math.max(1, Math.round(each / 150));
     const topics = modules.map((m, i) =>
@@ -473,6 +479,46 @@ describe("a document written under the plan", () => {
     expect(body.length).toBeLessThanOrEqual(40_000 + 400);
   });
 
+  it("does not fact-check a part its budget cut whole, and lists what it held", async () => {
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
+    scoreFaithfulnessMock.mockResolvedValue(verified(1, 1));
+    const grounding = {
+      sources: [{ sourceId: "rag:doc:0", kind: "rag", label: "notes.md", text: "evidence" }],
+      sourceIds: new Set(["rag:doc:0"]),
+      isEmpty: false,
+    } as unknown as GroundingContext;
+    // One part of Rules answers with a single table larger than its budget.
+    const provider = fakeModel({
+      overrun: 3,
+      table: (call) => call.group === RULES && call.modules.includes("m05"),
+    });
+    const result = await run(project(12), provider, { grounding });
+    const tabled = callsFor(provider, RULES).find((c) => c.modules.includes("m05"))!;
+    const rules = sectionOf(result.markdown, RULES);
+    expect(rules).not.toContain(`Table of ${tabled.modules[0]}`.concat("\n\n|"));
+    const entry = result.sections.find((s) => s.sectionLabel === RULES)!;
+    expect(entry.omittedTopics).toContain(`Table of ${tabled.modules[0]}`);
+    // The judge was never handed the part that did not reach the document.
+    const judged = scoreFaithfulnessMock.mock.calls
+      .filter(([section]) => section === RULES)
+      .map(([, markdown]) => markdown as string);
+    expect(judged.length).toBe(callsFor(provider, RULES).length - 1);
+    for (const markdown of judged) {
+      expect(markdown.trim().length).toBeGreaterThan(0);
+      expect(markdown).not.toContain("Table of");
+    }
+  });
+
+  it("rewrites a planned section when its budget changes", async () => {
+    // The same reuse key on purpose: the plan itself must be in the inputs.
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
+    const facts = project(12);
+    const first = await run(facts, fakeModel());
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "30000");
+    const second = await run(facts, fakeModel(), { previous: first });
+    expect(second.regeneration!.changed.sort()).toEqual(GROUPS.map((g) => g.id).sort());
+  });
+
   it("cuts nothing and writes no note when the model keeps to its budgets", async () => {
     vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
     const result = await run(project(12), fakeModel());
@@ -506,6 +552,32 @@ describe("a document written under the plan", () => {
     // And no further than its share of it: four sections were still to come.
     const spare = 2 * overviewBudget;
     expect(rules).toBeLessThanOrEqual(budget + Math.ceil(spare / 5));
+  });
+
+  it("counts the room a REUSED section left unused, too", async () => {
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
+    // A mined constant no other module mentions: changing it rewrites Rules only.
+    const withSolo = (value: string): ModuleFacts[] => {
+      const facts = project(12);
+      facts[0] = mod("m00", 24, { minedRules: [constant("soloLimit", value)] });
+      return facts;
+    };
+    const model = () => fakeModel({ overrun: (call) => (call.group === RULES ? 3 : 0.3) });
+    const first = await run(withSolo("5"), model());
+    const second = await run(withSolo("6"), model(), { previous: first });
+    expect(second.regeneration!.changed).toEqual(["rules"]);
+    // Rewritten alone, Rules still has what the reused sections before it left.
+    expect(sectionOf(second.markdown, RULES)).toBe(sectionOf(first.markdown, RULES));
+    const { plan } = planDocumentTopics({
+      facts: withSolo("6"),
+      groups: GROUPS,
+      router: routerFor(fakeModel()),
+      sectionMaxChars: 60_000,
+      documentMaxChars: 40_000,
+    });
+    expect(sectionOf(second.markdown, RULES).length).toBeGreaterThan(
+      plan.sections.find((s) => s.sectionId === "rules")!.budgetChars,
+    );
   });
 
   it("leaves out the lowest-priority modules at planning time, never reads them, and lists them", async () => {
@@ -656,6 +728,35 @@ describe("the canonical facts sheet in a planned document", () => {
     expect(callsFor(changed, RULES).some((c) => c.user.includes("maxPageSize = 200"))).toBe(true);
   });
 
+  it("rewrites a section for a fact its input mentions beyond the forty one call lists", async () => {
+    // 45 shared limits, all mentioned by m00's rules and m01's workflows.
+    const names = Array.from({ length: 45 }, (_, i) => `sharedLimit${String(i).padStart(2, "0")}`);
+    const mentions = names.map((n) => `- Bounded by \`${n}\`.`).join("\n");
+    const withLimits = (last: string): ModuleFacts[] => {
+      const facts = project(6);
+      facts[0] = mod("m00", 12, {
+        rules: mentions,
+        minedRules: names.map((n, i) => ({
+          ...constant(n, i === names.length - 1 ? last : String(i + 1)),
+          line: i + 1,
+        })),
+      });
+      facts[1] = mod("m01", 11, { workflows: mentions });
+      return facts;
+    };
+    const provider = fakeModel();
+    const first = await run(withLimits("45"), provider);
+    // The call lists forty and counts the rest: the last-ranked fact is not shown.
+    const shown = callsFor(provider, label("workflows")).find((c) =>
+      c.user.includes("CANONICAL FACTS"),
+    )!;
+    expect(shown.user).toContain("(5 more canonical facts are not listed for this call.)");
+    expect(shown.user).not.toContain("sharedLimit44 = ");
+    const second = await run(withLimits("4500"), fakeModel(), { previous: first });
+    expect(second.regeneration!.changed).toContain("workflows");
+    expect(second.regeneration!.changed).not.toContain("formulas");
+  });
+
   it("without the plan, the same change reaches the rules section only", async () => {
     vi.stubEnv("DOCS_GEN_TOPIC_PLAN", "off");
     const first = await run(withLimit("100"), fakeModel());
@@ -773,7 +874,10 @@ describe("judge-gated escalation of a planned document", () => {
     const withFact = rulesAgain.find((c) => c.modules.includes("m00"))!;
     expect(withFact.user).toMatch(/\[facts:canon:cf-[0-9a-f]{10}\] maxPageSize = 100/);
     expect(withFact.user).not.toContain("[SOURCE id=facts:canon:");
-    expect(result.sections.find((s) => s.sectionLabel === RULES)!.providerKind).toBe("anthropic");
+    const escalated = result.sections.find((s) => s.sectionLabel === RULES)!;
+    expect(escalated.providerKind).toBe("anthropic");
+    // The escalated section's own sources carry the fact it was given.
+    expect(escalated.groundingSourceIds.some((id) => id.startsWith("facts:canon:"))).toBe(true);
 
     // A single-call section: the same length limit and facts block, the fact
     // listed once (not again among the grounding sources), and the judge of

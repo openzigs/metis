@@ -406,6 +406,13 @@ describe("fitting one part of a section (#1070)", () => {
     );
   });
 
+  it("lists the topics of a part that is headings only, not the heading it opens with", () => {
+    const headings = ["## Rules", "### Limits", "### Timeouts", "### Retries"].join("\n\n");
+    const fit = fitSectionToBudget(headings, 30, [], undefined, { note: false });
+    expect(fit.markdown).toBe("");
+    expect(fit.omittedTopics).toEqual(["Limits", "Timeouts", "Retries"]);
+  });
+
   it("returns a part that fits unchanged", () => {
     expect(fitSectionToBudget(part, 1_000_000, [], undefined, { note: false })).toMatchObject({
       markdown: part,

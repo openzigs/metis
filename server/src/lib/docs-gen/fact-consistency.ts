@@ -239,7 +239,8 @@ export function scanFactStatements(markdown: string): StatedValue[] {
   let fence: string | null = null;
   let math: { from: number; lines: string[] } | null = null;
   for (let n = 0; n < lines.length; n++) {
-    const text = lines[n].endsWith("\r") ? lines[n].slice(0, -1) : lines[n];
+    // A CRLF line keeps its `\r`: every pattern below reads up to it, never across.
+    const text = lines[n];
     const trimmed = text.trim();
     if (fence) {
       if (trimmed.startsWith(fence) && trimmed.replace(/[`~]/g, "").trim() === "") fence = null;

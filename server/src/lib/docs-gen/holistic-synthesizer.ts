@@ -4683,19 +4683,18 @@ export async function synthesizeFinalDocument(
           index: gi,
           factsBudget,
           // #1070 — absent without a plan, so every other document type hashes
-          // exactly as before. With one: the section's budget, each
-          // topic's share, the topics left out, and EVERY canonical fact the
-          // section's input mentions (a batch may be given one past the first
-          // forty) — so a changed fact rewrites the sections it was given to,
-          // and no others.
+          // exactly as before. With one: the section's budget (its topics'
+          // shares follow from it and from the facts hashed above, by the rule
+          // the version names), and EVERY canonical fact the section's input
+          // mentions — a batch may be given one past the forty this section's
+          // own prompt lists — so a changed fact rewrites the sections it was
+          // given to, and no others.
           ...(planning && plannedSection
             ? {
                 topicPlan: {
                   version: TOPIC_PLAN_VERSION,
                   factSheetVersion: FACT_SHEET_VERSION,
                   budgetChars: plannedSection.budgetChars,
-                  topics: plannedSection.topics.map((t) => [t.id, t.budgetChars]),
-                  dropped: plannedSection.dropped.map((t) => t.id),
                   facts: factSheetFingerprint(sectionFacts),
                 },
               }

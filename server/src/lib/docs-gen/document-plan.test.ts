@@ -335,6 +335,15 @@ describe("sectionCeilingChars", () => {
     expect(sectionCeilingChars(plan, "appendix", new Map(), 60_000)).toBe(60_000);
   });
 
+  it("counts a section being written again as still to come, whatever it wrote before", () => {
+    // Rules is re-run (an escalation): its earlier length is not room it left.
+    const written = new Map([
+      ["overview", 14_000],
+      ["rules", 5_000],
+    ]);
+    expect(sectionCeilingChars(plan, "rules", written, 60_000)).toBe(45_000);
+  });
+
   it("never lets the sections together pass the document budget (property)", () => {
     const next = rng(7);
     for (let run = 0; run < 200; run++) {
