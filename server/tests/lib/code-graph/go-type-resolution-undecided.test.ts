@@ -14,50 +14,20 @@
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import {
-  createGoResolver,
-  type GoCallVerdict,
   type GoModule,
   type GoResolverOptions,
 } from "../../../src/lib/code-graph/go-type-resolution.js";
 import { GO_STDLIB_PACKAGES, isGoStdlibInterface } from "../../../src/lib/code-graph/go-stdlib.js";
-import { initCodeGraphParsers, parseSource } from "../../../src/lib/code-graph/parsers.js";
+import { initCodeGraphParsers } from "../../../src/lib/code-graph/parsers.js";
+import { goVerdicts } from "../../helpers/go-verdicts.js";
 
 type Tree = Record<string, string>;
 
 const MODULE: GoModule[] = [{ dir: "", path: "example.com/app" }];
 
-function show(v: GoCallVerdict): string {
-  if (v.kind === "bound") return `${v.via} ${v.qualifiedName}`;
-  return v.kind === "unbound" ? `unbound ${v.reason}` : "unknown";
-}
-
-/** Every call of the tree as `file:line:callee` → its verdict. */
-function verdicts(
-  tree: Tree,
-  modules: GoModule[] = MODULE,
-  options?: GoResolverOptions,
-): Map<string, string> {
-  const parsed = Object.entries(tree).map(([filePath, src]) => parseSource(filePath, src, "go"));
-  const resolver = createGoResolver(
-    parsed.map((p) => ({
-      filePath: p.filePath,
-      facts: p.goFacts!,
-      isTest: p.filePath.endsWith("_test.go"),
-    })),
-    modules,
-    options,
-  );
-  const out = new Map<string, string>();
-  for (const p of parsed) {
-    for (const e of p.edges) {
-      if (e.kind !== "calls") continue;
-      const verdict = show(resolver.resolveCall(p.filePath, e.goCallee!));
-      out.set(`${p.filePath}:${e.line}:${e.toQualifiedName}`, verdict);
-      out.set(`${p.filePath}:${e.toQualifiedName}`, verdict);
-    }
-  }
-  return out;
-}
+/** Every call of the tree, uniquely keyed: see `tests/helpers/go-verdicts.ts`. */
+const verdicts = (tree: Tree, modules: GoModule[] = MODULE, options?: GoResolverOptions) =>
+  goVerdicts(tree, modules, options);
 
 const STORAGE = `package storage
 

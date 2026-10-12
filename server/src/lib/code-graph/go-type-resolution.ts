@@ -188,7 +188,12 @@ export type GoUnboundReason = "external" | "interface" | "func-value" | "convers
 export type GoCallVerdict =
   | { kind: "bound"; qualifiedName: string; via: GoBinding }
   | { kind: "unbound"; reason: GoUnboundReason }
-  | { kind: "unknown" };
+  /**
+   * `why: "budget"` — undecided because resolving it would have cost more than
+   * {@link GO_CALL_STEP_BUDGET} or {@link GO_TYPE_STEP_BUDGET} allow, not
+   * because the source leaves it open. The caller counts these.
+   */
+  | { kind: "unknown"; why?: "budget" };
 
 /**
  * `CodeEdge.metadata` key recording how ingest decided a Go `calls` edge. On a
@@ -280,6 +285,28 @@ const MAX_DEPTH = 12;
  * The walker caps what it emits at the same length (`MAX_EXPR_DEPTH`).
  */
 const MAX_EVAL_DEPTH = 64;
+
+/**
+ * Most steps ONE `resolveCall` may take: a step is one node of the callee
+ * expression evaluated, or one dot import consulted for a bare name. Lookups
+ * into the declarations are not steps — each is worked out once per resolver
+ * and kept. A real call takes its own length (a few steps, {@link MAX_EVAL_DEPTH}
+ * at most per chain); past the budget the call is left undecided
+ * (`{ kind: "unknown", why: "budget" }`), never guessed.
+ */
+export const GO_CALL_STEP_BUDGET = 10_000;
+
+/**
+ * Most steps working out ONE type's member set may take: a step is one field,
+ * one method or one embedded type visited while following promotion. That is
+ * work proportional to the declarations the type reaches, done once per type —
+ * not once per call, which is what made a file of K types each embedding K
+ * others cost calls × fields (PR #1104, review cycle 2). A type whose member
+ * set is larger than this (no hand-written Go comes near it) has NO member
+ * decided: every call selecting from it is `{ kind: "unknown", why: "budget" }`,
+ * at the cost of one lookup.
+ */
+export const GO_TYPE_STEP_BUDGET = 100_000;
 
 /**
  * Predeclared identifiers. A bare call to one that the package does not itself
@@ -388,17 +415,33 @@ interface FileCtx {
   facts: GoFileFacts;
   /** Lazily built: local import name → target. */
   imports?: Map<string, ImportTarget>;
+  /** Lazily built: what each dot import of the file names, in source order. */
+  dotImports?: ImportTarget[];
+  /** Type names written in this file, resolved once each ({@link NamedMemo}), by spelling. */
+  named: Map<string, NamedMemo>;
+  /** What a defined type written in this file is underneath, resolved once each, by spelling. */
+  underlying: Map<string, Underlying>;
+}
+
+/** The declarations of one name, split ONCE by who may see them. */
+interface Decls<T> {
+  all: Decl<T>[];
+  /** Those outside `_test.go` files: all that a non-test file can reach. */
+  nonTest: Decl<T>[];
+  /** Lazily built, for twins only: the declarations by declaring file. */
+  byFile?: Map<FileCtx, Decl<T>[]>;
 }
 
 /** A package: one directory and one package-clause name (`foo` and `foo_test` are two). */
 interface Pkg {
+  id: number;
   dir: string;
   name: string;
-  types: Map<string, Decl<GoTypeFact>[]>;
-  funcs: Map<string, Decl<GoFuncFact>[]>;
-  /** Keyed `Type.method`. */
-  methods: Map<string, Decl<GoFuncFact>[]>;
-  vars: Map<string, Decl<GoVarFact>[]>;
+  types: Map<string, Decls<GoTypeFact>>;
+  funcs: Map<string, Decls<GoFuncFact>>;
+  /** Receiver type name → method name → declarations. */
+  methods: Map<string, Map<string, Decls<GoFuncFact>>>;
+  vars: Map<string, Decls<GoVarFact>>;
 }
 
 interface Decl<T> {
@@ -447,14 +490,62 @@ type Val =
 
 const UNKNOWN: Val = { v: "unknown" };
 const EXTERNAL: Val = { v: "external" };
+const AMBIGUOUS: Val = { v: "ambiguous" };
+
+type ProjectNamed = { n: "project"; pkg: Pkg; name: string; viewer: FileCtx };
 
 /** A named type resolved against the tree. */
 type Named =
-  | { n: "project"; pkg: Pkg; name: string; viewer: FileCtx }
+  | ProjectNamed
   | { n: "external" }
   /** `outside`: an interface of a package outside the tree (`http.ResponseWriter`). */
   | { n: "interface"; outside?: true }
   | { n: "unknown" };
+
+const UNKNOWN_NAMED: Named = { n: "unknown" };
+
+/**
+ * A type name resolved from the file it is written in, kept for every later
+ * mention. `hops` is how many aliases were followed to reach it: a mention that
+ * is itself reached `depth` links into a chain stands only while
+ * `depth + hops` is within {@link MAX_DEPTH}.
+ */
+interface NamedMemo {
+  named: Named;
+  hops: number;
+}
+
+type StructInfo = {
+  fields: GoFieldFact[];
+  file: FileCtx;
+  byName: Map<string, GoFieldFact>;
+};
+
+/** What a composite type is underneath: the type itself, or what a defined type is defined as. */
+type Underlying = { type: GoType; file: FileCtx } | "external" | null;
+
+/** One project type's own declaration, read once: its struct (through `type A B`) and its methods. */
+interface TypeInfo {
+  decl: Decl<GoTypeFact> | null;
+  struct: StructInfo | "external" | null;
+  methods: Map<string, Decls<GoFuncFact>> | undefined;
+}
+
+/**
+ * Every member one project type has — its own and the promoted ones — worked
+ * out ONCE, by Go's shallowest-depth rule. `rest` is what any name not listed
+ * selects: unknown where promotion ran into a type this module cannot see into
+ * (or ran out), an interface method where the type is an interface.
+ */
+interface MemberTable {
+  names: Map<string, Val>;
+  rest: Val;
+  /** Building it passed {@link GO_TYPE_STEP_BUDGET}: nothing about the type's members is decided. */
+  overBudget?: true;
+}
+
+/** Thrown, and caught in `resolveCall`, when one call passes {@link GO_CALL_STEP_BUDGET}. */
+const CALL_OVER_BUDGET = Symbol("go-call-over-budget");
 
 /**
  * Build a resolver over every Go file of the tree.
@@ -479,10 +570,14 @@ export function createGoResolver(
   const goDirs = new Set<string>();
   const ctxByFile = new Map<string, FileCtx>();
 
-  const add = <T>(map: Map<string, Decl<T>[]>, key: string, decl: Decl<T>): void => {
-    const list = map.get(key);
-    if (list) list.push(decl);
-    else map.set(key, [decl]);
+  const add = <T>(map: Map<string, Decls<T>>, key: string, decl: Decl<T>): void => {
+    let decls = map.get(key);
+    if (!decls) {
+      decls = { all: [], nonTest: [] };
+      map.set(key, decls);
+    }
+    decls.all.push(decl);
+    if (!decl.file.isTest) decls.nonTest.push(decl);
   };
 
   for (const f of files) {
@@ -496,6 +591,7 @@ export function createGoResolver(
     let pkg = pkgs.get(key);
     if (!pkg) {
       pkg = {
+        id: pkgs.size,
         dir,
         name: f.facts.package,
         types: new Map(),
@@ -510,17 +606,48 @@ export function createGoResolver(
         else pkgsByDir.set(dir, [pkg]);
       }
     }
-    const ctx: FileCtx = { filePath: f.filePath, dir, pkg, isTest: f.isTest, facts: f.facts };
+    const ctx: FileCtx = {
+      filePath: f.filePath,
+      dir,
+      pkg,
+      isTest: f.isTest,
+      facts: f.facts,
+      named: new Map(),
+      underlying: new Map(),
+    };
     ctxByFile.set(f.filePath, ctx);
     for (const t of f.facts.types) add(pkg.types, t.name, { fact: t, file: ctx });
     for (const fn of f.facts.funcs) {
-      if (fn.receiver) add(pkg.methods, `${fn.receiver}.${fn.name}`, { fact: fn, file: ctx });
-      else add(pkg.funcs, fn.name, { fact: fn, file: ctx });
+      if (fn.receiver) {
+        let ofType = pkg.methods.get(fn.receiver);
+        if (!ofType) {
+          ofType = new Map();
+          pkg.methods.set(fn.receiver, ofType);
+        }
+        add(ofType, fn.name, { fact: fn, file: ctx });
+      } else add(pkg.funcs, fn.name, { fact: fn, file: ctx });
     }
     for (const v of f.facts.vars) add(pkg.vars, v.name, { fact: v, file: ctx });
   }
 
   const sortedModules = [...modules].sort((a, b) => b.path.length - a.path.length);
+
+  // ── Bounded work ─────────────────────────────────────────────────────────
+  //
+  // Everything a call looks up that depends only on the DECLARATIONS — what a
+  // type name means in a file, a type's struct, its full member set, what an
+  // import path names — is worked out once and kept, so a call costs its own
+  // length and never the size of the package it lands in. What is left per
+  // call is counted, and capped.
+
+  /** Steps the call being resolved has taken. */
+  let callSteps = 0;
+  /** The call being resolved met a type whose members could not be worked out in budget. */
+  let budgetHit = false;
+  const step = (): void => {
+    callSteps += 1;
+    if (callSteps > GO_CALL_STEP_BUDGET) throw CALL_OVER_BUDGET;
+  };
 
   /**
    * The package an importer sees in `dir`. An external `_test` package is never
@@ -580,8 +707,19 @@ export function createGoResolver(
       : { t: "external", path: importPath };
   };
 
+  /** Import path → what it names, decided once: matching walks the modules and the orphan directories. */
+  const importTargets = new Map<string, ImportTarget>();
+
   /** What an import path names: a project package, a package outside the tree, or neither known. */
   const resolveImport = (importPath: string): ImportTarget => {
+    const known = importTargets.get(importPath);
+    if (known) return known;
+    const target = resolveImportOnce(importPath);
+    importTargets.set(importPath, target);
+    return target;
+  };
+
+  const resolveImportOnce = (importPath: string): ImportTarget => {
     // The standard library is never a project directory, whatever the tree holds.
     if (GO_STDLIB_PACKAGES.has(importPath)) return { t: "external", path: importPath };
     for (const m of sortedModules) {
@@ -622,30 +760,56 @@ export function createGoResolver(
     return out;
   };
 
+  /** What each dot import of a file names. A dot import puts that package's names in the file's scope. */
+  const dotImportsOf = (ctx: FileCtx): ImportTarget[] => {
+    if (ctx.dotImports) return ctx.dotImports;
+    const out: ImportTarget[] = [];
+    for (const imp of ctx.facts.imports) if (imp.alias === ".") out.push(resolveImport(imp.path));
+    ctx.dotImports = out;
+    return out;
+  };
+
   /** Declarations of `key` a viewer may reach: a non-test file never sees a `_test.go` one. */
   const visible = <T>(
-    map: Map<string, Decl<T>[]>,
+    map: Map<string, Decls<T>> | undefined,
     key: string,
     viewer: FileCtx,
   ): Decl<T>[] | undefined => {
-    const all = map.get(key);
-    if (!all) return undefined;
-    if (viewer.isTest) return all;
-    const out = all.filter((d) => !d.file.isTest);
+    const decls = map?.get(key);
+    if (!decls) return undefined;
+    const out = viewer.isTest ? decls.all : decls.nonTest;
     return out.length > 0 ? out : undefined;
   };
 
-  /** Resolve a written type to the declaration it names. */
-  const resolveNamed = (type: GoType, file: FileCtx, depth: number): Named => {
-    if (type.k !== "named" || depth > MAX_DEPTH) return { n: "unknown" };
+  /** The declarations of a name made in `file` itself: how a caller picks its own twin. */
+  const declaredIn = <T>(decls: Decls<T>, file: FileCtx): Decl<T>[] => {
+    if (!decls.byFile) {
+      decls.byFile = new Map();
+      for (const d of decls.all) {
+        const list = decls.byFile.get(d.file);
+        if (list) list.push(d);
+        else decls.byFile.set(d.file, [d]);
+      }
+    }
+    return decls.byFile.get(file) ?? [];
+  };
+
+  const namedKey = (type: Extract<GoType, { k: "named" }>): string =>
+    `${type.pkg ?? ""}\u0000${type.name}${type.generic ? "\u0000g" : ""}`;
+
+  /** One link of {@link resolveNamed}: the declaration a written type names, or the alias to follow. */
+  const namedOnce = (
+    type: Extract<GoType, { k: "named" }>,
+    file: FileCtx,
+  ): Named | { alias: GoType | null | undefined; file: FileCtx } => {
     let pkg = file.pkg;
     if (type.pkg !== undefined) {
       const target = importsOf(file).get(type.pkg);
-      if (!target || target.t === "unknown") return { n: "unknown" };
+      if (!target || target.t === "unknown") return UNKNOWN_NAMED;
       if (target.t === "external") {
         // A generic type from outside the tree can hand back project types
         // (`atomic.Pointer[User]`), so its members are not known to be external.
-        if (type.generic) return { n: "unknown" };
+        if (type.generic) return UNKNOWN_NAMED;
         // `http.Handler`, `io.Writer`: whatever implements it runs, often a project type.
         if (isGoStdlibInterface(target.path, type.name)) return { n: "interface", outside: true };
         return { n: "external" };
@@ -654,44 +818,90 @@ export function createGoResolver(
     }
     const decls = visible(pkg.types, type.name, file);
     if (!decls) {
-      if (type.pkg !== undefined) return { n: "unknown" };
+      if (type.pkg !== undefined) return UNKNOWN_NAMED;
       if (GO_UNIVERSE_INTERFACES.has(type.name)) return { n: "interface" };
-      return GO_UNIVERSE.has(type.name) ? { n: "external" } : { n: "unknown" };
+      return GO_UNIVERSE.has(type.name) ? { n: "external" } : UNKNOWN_NAMED;
     }
-    if (decls.length > 1) return { n: "unknown" };
+    if (decls.length > 1) return UNKNOWN_NAMED;
     const decl = decls[0];
-    if (decl.fact.form === "alias") {
-      return decl.fact.target
-        ? resolveNamed(decl.fact.target, decl.file, depth + 1)
-        : { n: "unknown" };
-    }
+    if (decl.fact.form === "alias") return { alias: decl.fact.target, file: decl.file };
     return { n: "project", pkg, name: type.name, viewer: file };
   };
 
+  /** A type name as written in `file`, resolved once: aliases followed to the declaration. */
+  const namedMemo = (type: Extract<GoType, { k: "named" }>, file: FileCtx): NamedMemo => {
+    const key = namedKey(type);
+    const known = file.named.get(key);
+    if (known) return known;
+    let memo: NamedMemo = { named: UNKNOWN_NAMED, hops: 0 };
+    let cur: GoType | null | undefined = type;
+    let at = file;
+    for (let hops = 0; hops <= MAX_DEPTH; hops += 1) {
+      if (!cur || cur.k !== "named") break;
+      const one = namedOnce(cur, at);
+      if (!("alias" in one)) {
+        memo = { named: one, hops };
+        break;
+      }
+      cur = one.alias;
+      at = one.file;
+    }
+    file.named.set(key, memo);
+    return memo;
+  };
+
+  /**
+   * Resolve a written type to the declaration it names. `depth` is where in a
+   * chain of aliases, defined types or embeddings the mention sits.
+   */
+  const resolveNamed = (type: GoType, file: FileCtx, depth: number): Named => {
+    if (type.k !== "named" || depth > MAX_DEPTH) return UNKNOWN_NAMED;
+    const memo = namedMemo(type, file);
+    return depth + memo.hops > MAX_DEPTH ? UNKNOWN_NAMED : memo.named;
+  };
+
   /** The declaration behind a resolved type. `resolveNamed` already refused twins, so there is one. */
-  const typeDecl = (named: Extract<Named, { n: "project" }>): Decl<GoTypeFact> | null =>
+  const typeDecl = (named: ProjectNamed): Decl<GoTypeFact> | null =>
     visible(named.pkg.types, named.name, named.viewer)?.[0] ?? null;
 
+  const structInfo = (fields: GoFieldFact[], file: FileCtx): StructInfo => {
+    const byName = new Map<string, GoFieldFact>();
+    // The first field of a name is the one a selector reaches.
+    for (const f of fields) if (!byName.has(f.name)) byName.set(f.name, f);
+    return { fields, file, byName };
+  };
+
   /** The struct fields a type has, following `type A B` to B's struct. */
-  const structOf = (
-    named: Extract<Named, { n: "project" }>,
-    depth: number,
-  ): { fields: GoFieldFact[]; file: FileCtx } | "external" | null => {
+  const structAt = (named: ProjectNamed, depth: number): StructInfo | "external" | null => {
     const decl = typeDecl(named);
     if (!decl || depth > MAX_DEPTH) return null;
-    if (decl.fact.form === "struct") return { fields: decl.fact.fields ?? [], file: decl.file };
+    if (decl.fact.form === "struct") return structInfo(decl.fact.fields ?? [], decl.file);
     if (decl.fact.form !== "defined" || !decl.fact.target) return null;
     const under = resolveNamed(decl.fact.target, decl.file, depth + 1);
     if (under.n === "external") return "external";
-    return under.n === "project" ? structOf(under, depth + 1) : null;
+    return under.n === "project" ? structAt(under, depth + 1) : null;
   };
 
-  /** A composite type behind a value: the type itself, or what a defined type is defined as. */
-  const underlying = (
-    type: GoType,
-    file: FileCtx,
-    depth: number,
-  ): { type: GoType; file: FileCtx } | "external" | null => {
+  /** Package id, type name and who is looking → what the type declares, read once. */
+  const typeInfos = new Map<string, TypeInfo>();
+  const typeKey = (named: ProjectNamed): string =>
+    `${named.pkg.id}\u0000${named.name}\u0000${named.viewer.isTest ? 1 : 0}`;
+
+  const typeInfo = (named: ProjectNamed): TypeInfo => {
+    const key = typeKey(named);
+    let info = typeInfos.get(key);
+    if (!info) {
+      info = {
+        decl: typeDecl(named),
+        struct: structAt(named, 0),
+        methods: named.pkg.methods.get(named.name),
+      };
+      typeInfos.set(key, info);
+    }
+    return info;
+  };
+
+  const underlyingAt = (type: GoType, file: FileCtx, depth: number): Underlying => {
     if (type.k !== "named") return { type, file };
     if (depth > MAX_DEPTH) return null;
     const named = resolveNamed(type, file, depth);
@@ -699,62 +909,122 @@ export function createGoResolver(
     if (named.n !== "project") return null;
     const decl = typeDecl(named);
     if (!decl || decl.fact.form !== "defined" || !decl.fact.target) return null;
-    return underlying(decl.fact.target, decl.file, depth + 1);
+    return underlyingAt(decl.fact.target, decl.file, depth + 1);
   };
 
-  /** Own member of a project type: a field, then a method. */
-  const ownMember = (named: Extract<Named, { n: "project" }>, name: string): Val | null => {
-    const struct = structOf(named, 0);
-    if (struct && struct !== "external") {
-      const field = struct.fields.find((f) => f.name === name);
-      if (field) {
-        return field.type ? { v: "value", type: field.type, file: struct.file } : UNKNOWN;
-      }
-    }
-    const methods = visible(named.pkg.methods, `${named.name}.${name}`, named.viewer);
-    if (methods) {
-      return methods.length === 1
-        ? { v: "func", decl: methods[0], via: "receiver-type" }
-        : { v: "ambiguous" };
-    }
-    const decl = typeDecl(named);
-    if (decl?.fact.form === "interface") {
+  /** A composite type behind a value: the type itself, or what a defined type is defined as. */
+  const underlying = (type: GoType, file: FileCtx): Underlying => {
+    if (type.k !== "named") return { type, file };
+    const key = namedKey(type);
+    if (file.underlying.has(key)) return file.underlying.get(key) ?? null;
+    const out = underlyingAt(type, file, 0);
+    file.underlying.set(key, out);
+    return out;
+  };
+
+  /** A method of a project type, as one viewer sees it: bound, or refused when twins declare it. */
+  const methodVal = (decls: Decl<GoFuncFact>[]): Val =>
+    decls.length === 1 ? { v: "func", decl: decls[0], via: "receiver-type" } : AMBIGUOUS;
+
+  /** What selects from a type whatever the name: an interface's methods, a defined external type's members. */
+  const wildcardOf = (info: TypeInfo): Val | null => {
+    if (info.decl?.fact.form === "interface") {
       // An interface's own methods and those of the interfaces it embeds are
       // all dispatched at run time; which one is not worth telling apart.
       return { v: "interface-method" };
     }
     // A defined type over a type outside the tree keeps that type's fields.
-    if (struct === "external") return EXTERNAL;
-    return null;
+    return info.struct === "external" ? EXTERNAL : null;
   };
 
+  const memberTables = new Map<string, MemberTable>();
+
   /**
-   * `x.name` on a value of a project type: its own member, else the member
-   * promoted from the shallowest embedded type that has it.
+   * Every member of a project type: its own (a field, then a method), else the
+   * one promoted from the shallowest embedded type that has it. Built level by
+   * level, once per type.
    */
-  const member = (start: Extract<Named, { n: "project" }>, name: string): Val => {
-    let level: Array<Extract<Named, { n: "project" }>> = [start];
+  const memberTable = (start: ProjectNamed): MemberTable => {
+    const key = typeKey(start);
+    const known = memberTables.get(key);
+    if (known) return known;
+    const table = buildMemberTable(start);
+    memberTables.set(key, table);
+    return table;
+  };
+
+  const buildMemberTable = (start: ProjectNamed): MemberTable => {
+    const names = new Map<string, Val>();
+    let steps = 0;
+    let level: ProjectNamed[] = [start];
     const seen = new Set<string>();
     for (let depth = 0; depth <= MAX_DEPTH && level.length > 0; depth += 1) {
-      const hits: Val[] = [];
-      for (const named of level) {
-        const hit = ownMember(named, name);
-        if (hit) hits.push(hit);
+      // Hits at this depth, per name: a name one type of the level holds is
+      // that member, a name two hold is ambiguous.
+      const hits = new Map<string, { count: number; val: Val; holders: Set<number> }>();
+      const hit = (name: string, val: Val, holder: number): void => {
+        const had = hits.get(name);
+        if (!had) hits.set(name, { count: 1, val, holders: new Set([holder]) });
+        else if (!had.holders.has(holder)) {
+          had.count += 1;
+          had.holders.add(holder);
+        }
+      };
+      const wildcards: Array<{ holder: number; val: Val }> = [];
+      const infos = level.map((named) => typeInfo(named));
+      for (let i = 0; i < level.length; i += 1) {
+        const named = level[i];
+        const info = infos[i];
+        steps += 1;
+        if (info.struct && info.struct !== "external") {
+          const file = info.struct.file;
+          for (const [name, field] of info.struct.byName) {
+            steps += 1;
+            hit(name, field.type ? { v: "value", type: field.type, file } : UNKNOWN, i);
+          }
+        }
+        if (info.methods) {
+          for (const [name, decls] of info.methods) {
+            steps += 1;
+            const seenBy = named.viewer.isTest ? decls.all : decls.nonTest;
+            // A field of the name comes first: `hit` keeps the first per holder.
+            if (seenBy.length > 0) hit(name, methodVal(seenBy), i);
+          }
+        }
+        const wildcard = wildcardOf(info);
+        if (wildcard) wildcards.push({ holder: i, val: wildcard });
+        if (steps > GO_TYPE_STEP_BUDGET)
+          return { names: new Map(), rest: UNKNOWN, overBudget: true };
       }
-      if (hits.length === 1) return hits[0];
-      if (hits.length > 1) return { v: "ambiguous" };
-      const next: Array<Extract<Named, { n: "project" }>> = [];
-      for (const named of level) {
-        const struct = structOf(named, 0);
-        if (!struct || struct === "external") continue;
-        for (const field of struct.fields) {
+      for (const [name, h] of hits) {
+        if (names.has(name)) continue;
+        // A type that answers to any name adds a hit unless it holds this one itself.
+        let count = h.count;
+        for (const w of wildcards) if (!h.holders.has(w.holder)) count += 1;
+        names.set(name, count === 1 ? h.val : AMBIGUOUS);
+      }
+      // A type of this level that answers to every name ends the search here.
+      if (wildcards.length > 0) {
+        return {
+          names,
+          rest: wildcards.length === 1 ? wildcards[0].val : AMBIGUOUS,
+        };
+      }
+      const next: ProjectNamed[] = [];
+      for (const info of infos) {
+        if (!info.struct || info.struct === "external") continue;
+        for (const field of info.struct.fields) {
           if (!field.embedded) continue;
-          // An embedded type this module cannot see into may declare `name` at
-          // this depth, which would win over anything deeper.
-          if (!field.type) return UNKNOWN;
-          const embedded = resolveNamed(field.type, struct.file, 0);
-          if (embedded.n !== "project") return UNKNOWN;
-          const key = `${embedded.pkg.dir}\u0000${embedded.pkg.name}\u0000${embedded.name}`;
+          steps += 1;
+          if (steps > GO_TYPE_STEP_BUDGET) {
+            return { names: new Map(), rest: UNKNOWN, overBudget: true };
+          }
+          // An embedded type this module cannot see into may declare any name
+          // at this depth, which would win over anything deeper.
+          if (!field.type) return { names, rest: UNKNOWN };
+          const embedded = resolveNamed(field.type, info.struct.file, 0);
+          if (embedded.n !== "project") return { names, rest: UNKNOWN };
+          const key = `${embedded.pkg.id}\u0000${embedded.name}`;
           if (seen.has(key)) continue;
           seen.add(key);
           next.push(embedded);
@@ -762,7 +1032,20 @@ export function createGoResolver(
       }
       level = next;
     }
-    return UNKNOWN;
+    return { names, rest: UNKNOWN };
+  };
+
+  /**
+   * `x.name` on a value of a project type: its own member, else the member
+   * promoted from the shallowest embedded type that has it.
+   */
+  const member = (start: ProjectNamed, name: string): Val => {
+    const table = memberTable(start);
+    if (table.overBudget) {
+      budgetHit = true;
+      return UNKNOWN;
+    }
+    return table.names.get(name) ?? table.rest;
   };
 
   const packageMember = (
@@ -797,8 +1080,8 @@ export function createGoResolver(
     if (funcs) {
       if (funcs.length === 1) return { v: "func", decl: funcs[0], via };
       // Twins behind build tags: prefer the caller's own file, else refuse.
-      const own = funcs.filter((d) => d.file === viewer);
-      return own.length === 1 ? { v: "func", decl: own[0], via } : { v: "ambiguous" };
+      const own = declaredIn(pkg.funcs.get(name)!, viewer);
+      return own.length === 1 ? { v: "func", decl: own[0], via } : AMBIGUOUS;
     }
     const vars = visible(pkg.vars, name, viewer);
     if (vars) {
@@ -807,8 +1090,9 @@ export function createGoResolver(
       if (fact.type) return { v: "value", type: fact.type, file };
       return fact.value ? evaluate(fact.value, file, depth + 1) : UNKNOWN;
     }
-    if (visible(pkg.types, name, viewer)) {
-      const file = viewer.pkg === pkg ? viewer : (pkg.types.get(name)?.[0]?.file ?? viewer);
+    const types = visible(pkg.types, name, viewer);
+    if (types) {
+      const file = viewer.pkg === pkg ? viewer : (pkg.types.get(name)?.all[0]?.file ?? viewer);
       return { v: "type", type: { k: "named", name }, file };
     }
     return null;
@@ -848,7 +1132,7 @@ export function createGoResolver(
       case "type":
         return i === 0 ? { v: "value", type: fn.type, file: fn.file } : UNKNOWN;
       case "value": {
-        const under = underlying(fn.type, fn.file, 0);
+        const under = underlying(fn.type, fn.file);
         if (under === "external") return EXTERNAL;
         if (!under || under.type.k !== "func") return UNKNOWN;
         const result = under.type.results[i];
@@ -870,7 +1154,7 @@ export function createGoResolver(
   const elementOf = (x: Val, which: "elem" | "key"): Val => {
     if (x.v === "external") return EXTERNAL;
     if (x.v !== "value") return UNKNOWN;
-    const under = underlying(x.type, x.file, 0);
+    const under = underlying(x.type, x.file);
     if (under === "external") return EXTERNAL;
     if (!under) return UNKNOWN;
     const t = under.type;
@@ -882,6 +1166,7 @@ export function createGoResolver(
 
   function evaluate(expr: GoExpr, file: FileCtx, depth: number): Val {
     if (depth > MAX_EVAL_DEPTH) return UNKNOWN;
+    step();
     switch (expr.e) {
       case "typed":
         return { v: "value", type: expr.type, file };
@@ -891,9 +1176,9 @@ export function createGoResolver(
         const own = scopeMember(file.pkg, expr.name, file, "same-package", depth);
         if (own) return own;
         // A dot import puts another package's names in this file's scope.
-        for (const imp of file.facts.imports) {
-          if (imp.alias !== ".") continue;
-          const target = resolveImport(imp.path);
+        const dots = dotImportsOf(file);
+        for (const target of dots) {
+          step();
           const hit =
             target.t === "project"
               ? scopeMember(target.pkg, expr.name, file, "package", depth)
@@ -905,7 +1190,7 @@ export function createGoResolver(
         return {
           v: "undeclared",
           decided:
-            !file.facts.imports.some((i) => i.alias === ".") &&
+            dots.length === 0 &&
             (file.facts.buildIgnored === true || !incompleteDirs.has(file.dir)),
         };
       }
@@ -922,7 +1207,50 @@ export function createGoResolver(
     }
   }
 
-  const unbound = (reason: GoUnboundReason): GoCallVerdict => ({ kind: "unbound", reason });
+  const unbound = (reason: GoUnboundReason): GoCallVerdict => ({
+    kind: "unbound",
+    reason,
+  });
+
+  /** The verdict for what a callee expression evaluated to. */
+  const decide = (val: Val, callee: GoExpr, file: FileCtx): GoCallVerdict => {
+    switch (val.v) {
+      case "func":
+        return {
+          kind: "bound",
+          qualifiedName: val.decl.fact.qualifiedName,
+          via: val.via,
+        };
+      case "external":
+      case "external-func":
+        return unbound("external");
+      case "interface-method":
+        return unbound("interface");
+      case "ambiguous":
+        return unbound("ambiguous");
+      case "type":
+        return unbound("conversion");
+      case "value":
+        // A variable or field holding a function.
+        return unbound("func-value");
+      case "package":
+        return { kind: "unknown" };
+      case "undeclared":
+        // A bare predeclared name nothing in scope shadows is a builtin or a
+        // conversion to a basic type. Otherwise the name is ruled out only
+        // when the package that would declare it was read in full.
+        if (callee.e === "name" && GO_UNIVERSE.has(callee.name)) return unbound("external");
+        return val.decided ? unbound("external") : { kind: "unknown" };
+      case "unknown":
+        // A bare call to a package-level VARIABLE whose type could not be
+        // told (twin declarations, an unmodelled initialiser) is still a call
+        // through a function value, never to a function of that name.
+        if (callee.e === "name" && visible(file.pkg.vars, callee.name, file)) {
+          return unbound("func-value");
+        }
+        return { kind: "unknown" };
+    }
+  };
 
   return {
     resolveCall(filePath: string, callee: GoExpr): GoCallVerdict {
@@ -931,39 +1259,18 @@ export function createGoResolver(
       if (callee.e === "local") return unbound("func-value");
       if (callee.e === "local-type") return unbound("conversion");
       if (callee.e !== "name" && callee.e !== "sel") return { kind: "unknown" };
-      const val = evaluate(callee, file, 0);
-      switch (val.v) {
-        case "func":
-          return { kind: "bound", qualifiedName: val.decl.fact.qualifiedName, via: val.via };
-        case "external":
-        case "external-func":
-          return unbound("external");
-        case "interface-method":
-          return unbound("interface");
-        case "ambiguous":
-          return unbound("ambiguous");
-        case "type":
-          return unbound("conversion");
-        case "value":
-          // A variable or field holding a function.
-          return unbound("func-value");
-        case "package":
-          return { kind: "unknown" };
-        case "undeclared":
-          // A bare predeclared name nothing in scope shadows is a builtin or a
-          // conversion to a basic type. Otherwise the name is ruled out only
-          // when the package that would declare it was read in full.
-          if (callee.e === "name" && GO_UNIVERSE.has(callee.name)) return unbound("external");
-          return val.decided ? unbound("external") : { kind: "unknown" };
-        case "unknown":
-          // A bare call to a package-level VARIABLE whose type could not be
-          // told (twin declarations, an unmodelled initialiser) is still a call
-          // through a function value, never to a function of that name.
-          if (callee.e === "name" && visible(file.pkg.vars, callee.name, file)) {
-            return unbound("func-value");
-          }
-          return { kind: "unknown" };
+      callSteps = 0;
+      budgetHit = false;
+      let val: Val;
+      try {
+        val = evaluate(callee, file, 0);
+      } catch (err) {
+        if (err !== CALL_OVER_BUDGET) throw err;
+        return { kind: "unknown", why: "budget" };
       }
+      const verdict = decide(val, callee, file);
+      // Undecided BECAUSE a budget ran out is said so: the caller counts it.
+      return verdict.kind === "unknown" && budgetHit ? { kind: "unknown", why: "budget" } : verdict;
     },
   };
 }

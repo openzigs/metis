@@ -15,44 +15,20 @@ import {
   createGoResolver,
   goDefaultImportName,
   parseGoModulePath,
-  type GoCallVerdict,
   type GoExpr,
   type GoModule,
 } from "../../../src/lib/code-graph/go-type-resolution.js";
 import { initCodeGraphParsers, parseSource } from "../../../src/lib/code-graph/parsers.js";
+import { goVerdicts, showGoVerdict } from "../../helpers/go-verdicts.js";
 import { expectLinearTime } from "../../helpers/linear-time.js";
 
 type Tree = Record<string, string>;
 
 const MODULE: GoModule[] = [{ dir: "", path: "example.com/app" }];
 
-/** Every call of the tree as `file:callee` → what it was decided to be. */
-function verdicts(tree: Tree, modules: GoModule[] = MODULE): Map<string, string> {
-  const parsed = Object.entries(tree).map(([filePath, src]) => parseSource(filePath, src, "go"));
-  const resolver = createGoResolver(
-    parsed.map((p) => ({
-      filePath: p.filePath,
-      facts: p.goFacts!,
-      // Go's own rule, as ingest applies it: `_test.go` and nothing else.
-      isTest: p.filePath.endsWith("_test.go"),
-    })),
-    modules,
-  );
-  const out = new Map<string, string>();
-  for (const p of parsed) {
-    for (const e of p.edges) {
-      if (e.kind !== "calls") continue;
-      const v = resolver.resolveCall(p.filePath, e.goCallee!);
-      out.set(`${p.filePath}:${e.toQualifiedName}`, show(v));
-    }
-  }
-  return out;
-}
-
-function show(v: GoCallVerdict): string {
-  if (v.kind === "bound") return `${v.via} ${v.qualifiedName}`;
-  return v.kind === "unbound" ? `unbound ${v.reason}` : "unknown";
-}
+/** Every call of the tree, uniquely keyed: see `tests/helpers/go-verdicts.ts`. */
+const verdicts = (tree: Tree, modules: GoModule[] = MODULE) => goVerdicts(tree, modules);
+const show = showGoVerdict;
 
 const STORAGE = `package storage
 
@@ -456,7 +432,11 @@ func use(e *Entry, raw []string) {
 }
 `,
     });
-    expect(v.get("model/use.go:Join")).toBe("receiver-type model/entry.go::Tags::Join");
+    // Line 4 is the field of a defined slice type, line 5 the conversion.
+    expect(v.all("model/use.go:Join")).toEqual([
+      "receiver-type model/entry.go::Tags::Join",
+      "receiver-type model/entry.go::Tags::Join",
+    ]);
   });
 
   it("an unnamed result, a local constant and a second comma-ok name stay unknown", () => {
@@ -661,8 +641,8 @@ func local() {
 }
 `,
     });
-    // Both are the same callee text, so the map holds the last; neither may bind.
-    expect([...v.values()].filter((x) => x.startsWith("receiver-type"))).toEqual([]);
+    // Line 7 is the call on the type parameter, line 12 the one on the local type.
+    expect(v.all("p/t.go:Do")).toEqual(["unknown", "unknown"]);
   });
 });
 
@@ -1150,8 +1130,12 @@ func use() {
 }
 `,
     });
-    expect(v.get("p/t.go:Do")).toBe("receiver-type p/t.go::T::Do");
-    expect([...v.values()].filter((x) => x === "unknown")).toEqual([]);
+    // `second.Do()` (a second result) and `third.Do()` (a literal), each asserted.
+    expect(v.all("p/t.go:Do")).toEqual([
+      "receiver-type p/t.go::T::Do",
+      "receiver-type p/t.go::T::Do",
+    ]);
+    expect(v.values().filter((x) => x === "unknown")).toEqual([]);
   });
 
   it("a type switch with an initialiser keeps the operand's type in a multi-type or default case", () => {
@@ -1220,7 +1204,11 @@ func shadow(storage int) {
 }
 `,
     });
-    expect(v.get("cmd/main.go:Mine")).toBe("unknown");
+    // Line 11: the closure's named result. Line 15: the parenthesised conversion.
+    expect(v.all("cmd/main.go:Mine")).toEqual([
+      "receiver-type cmd/main.go::local::Mine",
+      "unknown",
+    ]);
     // `storage` is the int parameter here, so `storage.Storage` names no type.
     expect(v.get("cmd/main.go:Close")).toBe("unknown");
   });
