@@ -67,8 +67,18 @@ import {
   type PlanPathLookup,
 } from "../grounding.js";
 import type { PlanLocalisationSource } from "../plan-localisation.js";
+import { reportSpecKitJobPhase } from "../job-scope.js";
 
 const log = createChildLogger("spec-kit-plan");
+
+/** #1059 — the order the plan artifacts are generated in, for a job's phase text. */
+const PLAN_ARTIFACT_ORDER = [
+  "plan.md",
+  "research.md",
+  "data-model.md",
+  "contracts/api.openapi.yaml",
+  "quickstart.md",
+];
 
 /**
  * #786 — the `/plan` contract (AC-id traceability, grounding in the existing
@@ -207,6 +217,7 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
   // documents whole. One retrieval serves all five calls, and the block sits in
   // the cached system prefix right after the constitution. Empty or failed
   // retrieval ⇒ "" (ungrounded); never throws.
+  reportSpecKitJobPhase("Retrieving project context for the plan", 5);
   const rag = await buildSpecKitRagContext(input.projectId, extractRequirementText(spec.content), {
     knowledgeService: input.knowledgeService,
     fusedCode: input.fusedCode,
@@ -241,7 +252,11 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     context = userBase,
   ): Promise<string> => {
     const format = key.endsWith(".yaml") ? ("yaml" as const) : ("markdown" as const);
+    // #1059 — the five artifacts are the command's natural phases.
+    const step = PLAN_ARTIFACT_ORDER.indexOf(key) + 1;
     const run = await runSpecKitAgent({
+      phase: `Generating ${key} (${step} of ${PLAN_ARTIFACT_ORDER.length})`,
+      phaseProgress: 10 + Math.round(((step - 1) / PLAN_ARTIFACT_ORDER.length) * 80),
       command: "plan",
       project,
       systemPrompt,
@@ -357,6 +372,7 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
   for (const item of staged) {
     if (!item.prior) assertFeatureArtifactWritable(item.key, item.content);
   }
+  reportSpecKitJobPhase("Saving the plan artifacts", 95);
   // #1060 — record what this plan was given, beside it. Only when this run's
   // plan.md is the one being saved: a kept earlier plan keeps its own record.
   // The record is not checked with the set above: it is written after it, and a

@@ -9,6 +9,8 @@ import { apiFetch } from "@/lib/api-client";
 import type {
   SpecKitArtifactDto,
   SpecKitArtifactName,
+  SpecKitJobCommand,
+  SpecKitJobDto,
   SpecKitNamespacedCommand,
 } from "@metis/shared";
 
@@ -184,6 +186,37 @@ export const specKitApi = {
       { method: "POST", body: { input, ...rest } },
     );
   },
+  /**
+   * #1059 — start a model-backed command as a background job. Answers at once
+   * (202) with the running job; read it with {@link specKitApi.getJob} until it
+   * is terminal. 409 `SPEC_KIT_JOB_RUNNING` when a job already holds the feature.
+   */
+  startCommandJob(
+    projectId: string,
+    command: SpecKitJobCommand,
+    options: SpecKitRunOptions = {},
+  ): Promise<{ jobId: string; job: SpecKitJobDto }> {
+    const { input = "", ...rest } = options;
+    return apiFetch(
+      `/projects/${encodeURIComponent(projectId)}/spec-kit/commands/${encodeURIComponent(command)}/jobs`,
+      { method: "POST", body: { input, ...rest } },
+    );
+  },
+  /** #1059 — one job of the project; 404 `SPEC_KIT_JOB_NOT_FOUND` otherwise. */
+  getJob(projectId: string, jobId: string): Promise<{ job: SpecKitJobDto }> {
+    return apiFetch(`${jobsBase(projectId)}/${encodeURIComponent(jobId)}`);
+  },
+  /** #1059 — the project's jobs that are still running, oldest first. */
+  listActiveJobs(projectId: string): Promise<{ jobs: SpecKitJobDto[] }> {
+    return apiFetch(jobsBase(projectId));
+  },
+  /** #1059 — cancel a job; 409 `SPEC_KIT_JOB_SAVING` once it is writing its result. */
+  cancelJob(projectId: string, jobId: string): Promise<{ job: SpecKitJobDto }> {
+    return apiFetch(`${jobsBase(projectId)}/${encodeURIComponent(jobId)}/cancel`, {
+      method: "POST",
+      body: {},
+    });
+  },
   listFeatures(
     projectId: string,
     includeArchived: boolean,
@@ -217,6 +250,10 @@ export const specKitApi = {
     });
   },
 };
+
+function jobsBase(projectId: string): string {
+  return `/projects/${encodeURIComponent(projectId)}/spec-kit/jobs`;
+}
 
 function featuresBase(projectId: string): string {
   return `/projects/${encodeURIComponent(projectId)}/spec-kit/features`;

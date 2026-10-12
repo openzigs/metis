@@ -3727,7 +3727,31 @@ The Spec Kit page has three columns:
 
 Spec Kit commands are not run from the Workbench chat. Its `/` suggestions were removed (#789) because a picked command was sent to the model as plain text.
 
-**Long-running commands (#1069).** A command holds its request open until the model has answered. The UI's API proxy waits up to 15 minutes for a Spec Kit command; set `METIS_SPEC_KIT_PROXY_TIMEOUT_MS` on the UI server to change that (milliseconds, clamped to 5-60 minutes). Other requests keep the 5-minute default. If the response is lost anyway (a proxy error with no message from the server, or a dropped connection), the page does not resend the command. It checks the artifacts every 5 seconds for up to 3 minutes and opens the one the command saved. Only that command's own outputs count: in a feature, the files the command writes in that feature; at project level, its one project file (or, for `/speckit.specify`, a feature). A change someone else made to another artifact is ignored. If none appears it says the command may still be running: check the artifact list again shortly. An error the server reports itself (for example a missing provider key) is shown as it is. So is a failure that arrives within 3 seconds of sending, or while the browser is offline: the command never started, so nothing is checked. Leaving the page stops the checks. `/speckit.implement` and `/speckit.taskstoissues` save no artifact, so they are not polled for. The proxy holds at most 16 Spec Kit commands open at once; further ones wait their turn.
+**Commands run in the background (#1059).** A command that calls the model (`/speckit.specify`, `/speckit.clarify`, `/speckit.plan`, `/speckit.checklist`, `/speckit.tasks`, `/speckit.analyze`) runs on the server as a background job. The page starts it and then reads its state every 3 seconds, so no request is held open while the model works. A `/speckit.plan` longer than five minutes used to show "Internal Server Error" while the server finished.
+
+- **Progress.** The progress bar names the command, the feature and what the job is doing. `/speckit.plan` reports each of its five artifacts in turn ("Generating research.md (2 of 5)") and then "Saving the plan artifacts".
+- **Leaving and reloading.** The job carries on if you reload, close the tab or open another page. When you open the Spec Kit page again it picks up your running job, in the feature that job belongs to. A job that finished while you were away shows its result or its error once, as if you had stayed. Only your own jobs are picked up.
+- **Cancel.** **Cancel** stops the job and its model call. Nothing is saved and the previous version of every artifact is kept. Once the job has started saving, it can no longer be cancelled and the page says so. A cancelled `/speckit.specify` that was creating a feature leaves the new, empty feature in the list.
+- **One command per feature.** While a job runs on a feature, a second command on that feature is refused ("… is already running") whoever sends it. The project-level files count as one such set. Other features are not affected.
+- **Time limit.** A job that runs longer than `SPEC_KIT_JOB_TIMEOUT_MS` (default 30 minutes; 1 minute to 6 hours) is stopped before it saves anything and fails with `SPEC_KIT_JOB_TIMEOUT`.
+- **Server restart.** A job does not survive a restart of the server that ran it, and is not started again. Within about two minutes it shows as failed with `SPEC_KIT_JOB_INTERRUPTED`; nothing more was saved. Run the command again.
+- **Errors.** A failed job shows the same message and code as before (for example `SPEC_KIT_OUTPUT_EXHAUSTED`, `SPECKIT_GATE_UNMET`, `BUDGET_EXCEEDED`). The token budget is still checked before every model call and every call is still recorded on the usage page. A cancelled model call is recorded as an estimate under the step `spec-kit.<command>.aborted`.
+- **If the page loses contact with the server** for a minute, it stops reading and says so. The job carries on: reload the page to pick it up.
+
+`/speckit.constitution`, `/speckit.implement` and `/speckit.taskstoissues` make no model call and still answer on the request. If that response is lost, the page says the outcome is unknown; it never resends the command. The page no longer looks at the artifacts to guess whether a command finished (#1069): the job says what happened.
+
+**API clients.** `POST /api/projects/:id/spec-kit/commands/:cmd` still waits and answers with the result, with the same statuses and codes as before, for both the `speckit.*` names and the deprecated short names. Two things changed for it. It is refused with `409 SPEC_KIT_JOB_RUNNING` while another command holds the same feature. And its command now runs as a job too, so a caller whose connection dropped can read the outcome from the job endpoints. For a long command, start a job instead:
+
+| Request | Answer |
+|---|---|
+| `POST …/spec-kit/commands/:cmd/jobs` (same body and `x-speckit-force` header) | `202 { jobId, job }` at once. `409 SPEC_KIT_JOB_RUNNING` (with the running job's id) if the feature is busy; `400 SPEC_KIT_COMMAND_NOT_A_JOB` for the three commands above |
+| `GET …/spec-kit/jobs/:jobId` | `{ job }`: `status` is `running`, `cancelling`, `succeeded`, `failed` or `cancelled`; `phase` says what it is doing; a succeeded job carries `result` (the payload the first route returns), a failed one `error: { status, code, message, details }` |
+| `GET …/spec-kit/jobs` | The project's running jobs |
+| `POST …/spec-kit/jobs/:jobId/cancel` | `{ job }`; `409 SPEC_KIT_JOB_SAVING` once it is saving |
+
+Reading needs `project.read`; starting and cancelling need `project.update`. A job is visible only inside its own project: its id answers `404` anywhere else. A finished job is kept for one day.
+
+The UI's API proxy still waits up to 15 minutes for the request/response route (`METIS_SPEC_KIT_PROXY_TIMEOUT_MS` on the UI server, milliseconds, 5 to 60 minutes) and holds at most 16 such requests open at once. The Spec Kit page no longer depends on it; it matters only to a caller that uses that route through the UI's `/api` path.
 
 ### v1.3 additions (Epic #396)
 

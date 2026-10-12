@@ -4316,3 +4316,35 @@ CREATE INDEX "impact_column_proposals_impactItemId_idx" ON "impact_column_propos
 
 -- AddForeignKey
 ALTER TABLE "impact_column_proposals" ADD CONSTRAINT "impact_column_proposals_impactItemId_fkey" FOREIGN KEY ("impactItemId") REFERENCES "impact_items"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- Issue #1059 — one Spec Kit command run as a background job.
+-- CreateTable
+CREATE TABLE "spec_kit_jobs" (
+    "id" TEXT NOT NULL,
+    "projectId" TEXT NOT NULL,
+    "command" TEXT NOT NULL,
+    "featureSlug" TEXT,
+    "activeKey" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'running',
+    "phase" TEXT,
+    "result" TEXT,
+    "error" TEXT,
+    "startedById" TEXT,
+    "heartbeatAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "finishedAt" TIMESTAMP(3),
+
+    CONSTRAINT "spec_kit_jobs_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "spec_kit_jobs_activeKey_key" ON "spec_kit_jobs"("activeKey");
+
+-- CreateIndex
+CREATE INDEX "spec_kit_jobs_projectId_status_idx" ON "spec_kit_jobs"("projectId", "status");
+
+-- CreateIndex
+CREATE INDEX "spec_kit_jobs_status_heartbeatAt_idx" ON "spec_kit_jobs"("status", "heartbeatAt");
+
+-- CreateIndex
+CREATE INDEX "spec_kit_jobs_finishedAt_idx" ON "spec_kit_jobs"("finishedAt");

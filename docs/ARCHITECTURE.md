@@ -1114,7 +1114,8 @@ The UI consumes these via `ui/src/hooks/use-job-events.ts`: `useJobLifecycle`/`u
 
 - **Embeddings reindex** (`server/src/routes/admin/embeddings.ts`, kind `embeddings-reindex`) — **fire-and-forget**: `POST …/reindex` enqueues a background worker (`runReindexJob`) and returns `202 { jobId }` immediately (no gateway/idle-timeout risk on large corpora). The worker streams `started → progress` (0-100, from `reindexProject`'s `onProgress`) `→ completed/failed`. Because the work happens *after* the response, the client learns the terminal outcome ONLY from the bus.
 - **Repository Deep Ingest** (`server/src/routes/connectors.ts`, kind `repo-ingest`, #373) — **fire-and-forget**: `POST …/repos/:id/deep-ingest` takes the connector's ingest lease, answers `202 { jobId, connectorId, status }` and runs clone → code graph → RAG → metadata → discovery in the background, streaming `connector:progress` per step and `started → progress → completed/failed` on the bus. A click while that connector is busy gets `409 INGEST_IN_PROGRESS`, with `details.jobId` naming the running Deep Ingest when there is one, so the UI (`ui/src/hooks/use-deep-ingest.ts`) follows that job instead of reporting an error.
-- **Spec Kit commands** (`server/src/routes/spec-kit.ts`, kind `spec-kit`) and **overview regenerate** (`server/src/routes/projects.ts`, kind `overview-regenerate`) — **awaited**: the op runs in one server-side shot and the HTTP response carries the result (so the precise success payload + 4xx/5xx error contract are preserved). Lifecycle events are still emitted for the global indicator, but the surface drives its terminal toast from the mutation callback (a late `subscribe:job` would miss the already-fired terminal event). Spec Kit threads its grounded-completion line verbatim into `jobEvents.completed` via `extractCompletionMessage`.
+- **Overview regenerate** (`server/src/routes/projects.ts`, kind `overview-regenerate`) and the three Spec Kit commands that make no model call (`speckit.constitution`, `speckit.implement`, `speckit.taskstoissues`; kind `spec-kit`) — **awaited**: the op runs in one server-side shot and the HTTP response carries the result (so the precise success payload + 4xx/5xx error contract are preserved). Lifecycle events are still emitted for the global indicator, but the surface drives its terminal toast from the mutation callback (a late `subscribe:job` would miss the already-fired terminal event).
+- **Spec Kit commands that call the model** (kind `spec-kit`) — **a background job with a durable row** (#1059, §25.2.1): `POST …/commands/:cmd/jobs` answers `202` and the job runs on. Its state, result and error are read from `GET …/jobs/:jobId`, which is what the page watches; the lifecycle events (`started`, a `progress` per phase, `completed`/`failed`) feed the global indicator. The grounded-completion line is threaded verbatim into `jobEvents.completed` via `extractCompletionMessage`, and the `failed` event stays generic.
 
 Client surfaces use `useJobToast` (`ui/src/hooks/use-job-toast.ts`) for the fire-and-forget case (subscribe to one `jobId` → live progress + a terminal toast fired at most once) and the shared accessible `<JobProgress>` component (`ui/src/components/realtime/job-progress.tsx`, `role="progressbar"`; determinate bar from a 0-100 progress event, indeterminate animated bar for awaited ops). Terminal failure text always comes from `genericFailureMessage(kind)` / a generic client string — raw error detail never reaches the user. The same holds for a failed generated document's persisted `errorMessage` (#52): `generationFailureMessage(err)` (`server/src/lib/docs-gen/generation-failure-message.ts`) maps the error to one of a fixed set of user-safe reasons (restart, provider 402 balance, project budget, rate limit, credentials, generic), and `GET`/`PATCH /projects/:id/docs/:docId` re-classify rows written before #52 on read.
 
@@ -4505,6 +4506,7 @@ Design points:
 | `DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS` | `32768` | Output-token cap for each Phase-2 section call (#1226). Was hardcoded at `8192`, which silently truncated long section groups. Values below `512` are rejected back to the default, and the effective cap is clamped down to the selected model's own documented output ceiling — so `claude-3-5-haiku` still tops out at `8192` no matter what is configured. A section that hits the cap anyway now raises a `section-truncated` warning and puts the document into `degraded` status instead of `ready`. |
 | `DOCS_GEN_REASONING_ALLOWANCE_TOKENS` | `32768` | Reasoning headroom added on top of every docs-gen output cap for a model that **thinks by default** and draws its reasoning from the same `max_tokens` (#25). Applies only to models on the documented allow-list in `docs-gen/output-caps.ts` — today DeepSeek `deepseek-v4-pro` / `deepseek-flash`, whose thinking mode is on by default. The section/facts caps then describe the ANSWER budget; the sum is still clamped to the model's ceiling (384K for DeepSeek V4). `0` opts out. |
 | `DOCS_GEN_PHASE1_REASONING` | `auto` | How much a Phase-1 fact-extraction call may reason (#25): `auto` asks a thinking-by-default model (the same allow-list) for `low` effort and sends nothing for any other model, so Claude is unchanged; `provider-default`, `off`, `low`, `medium`, `high` override it for every model. Sent by the `anthropic` provider as `thinking` + `output_config.effort` (`thinking: enabled` on DeepSeek's endpoint, `adaptive` elsewhere; `off` → `thinking: disabled`). |
+| `SPEC_KIT_JOB_TIMEOUT_MS` | `1800000` | The longest one Spec Kit command may run as a background job (#1059, §25.2.1), in milliseconds; `60000` to `21600000`, and a value outside that range is ignored. Past it the model call in flight is aborted and the job fails with `504 SPEC_KIT_JOB_TIMEOUT` before saving anything. A job that has started saving is never stopped. Read when a job starts. |
 | `SPEC_KIT_MAX_OUTPUT_TOKENS` | `21333` | Output-token cap for one Spec Kit model call (#1057). Before #1057 none was sent, so the `anthropic` path used its `16000` non-streaming default. The default is the Anthropic SDK's non-streaming bound (ADR 0008), which that provider clamps to anyway; the value is clamped down to the model's known ceiling, and a model with no known ceiling gets `8192` unless this is set. Minimum `512`. |
 | `SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET` | `2500` | Input-token budget (4 characters per token) of the **Change Localisation** block `/plan` and `/speckit.plan` add to their context (#1060, §25.2). Locator rows are rendered first and excerpts while the budget lasts; what the budget, a list cap or a time limit leaves out is counted and named in the block, in the command's message and in `plan-context.md` (the per-limit table is in §25.2). The closing "left out" note and the file manifest are added on top of it. `0` switches off the code-graph walk and its block and nothing else: the file list at the end of the context, the plan prompt's two #1060 instructions, `plan-context.md` and the "not in the retrieved context" check stay, so `0` is not the pre-#1060 prompt byte for byte. |
 | `SPEC_KIT_REASONING` | `auto` | How much a Spec Kit model call may reason (#1057); same values and allow-list as `DOCS_GEN_PHASE1_REASONING`. In #706 run 7 `deepseek-flash` at its default (high) effort spent the whole cap reasoning. A reply that reaches the cap without one whole line of text now fails the command (`502 SPEC_KIT_OUTPUT_EXHAUSTED`) and keeps the previous artifact instead of saving a stub; an empty reply fails the same way (`502 SPEC_KIT_EMPTY_OUTPUT`). A plan reply cut off part-way never replaces a complete plan artifact (the partial text is returned as `partialContent`) and never marks the feature `planned`. |
@@ -5877,6 +5879,9 @@ server/src/lib/spec-kit/
 │   └── index.ts                  # runInstall + planInstall
 ├── rag-context.ts                # Phase 2 (#373): project-RAG context builder for /specify + /plan
 ├── plan-localisation.ts          # #1060: code-graph walk from the retrieved symbols to their data path (no model call)
+├── jobs.ts                       # #1059: background-job runner (start, run, read, cancel, sweep) — §25.2.1
+├── job-store.ts                  # #1059: the spec_kit_jobs queries, all compare-and-set
+├── job-scope.ts                  # #1059: AsyncLocalStorage scope — stop signal, commit point, phase
 └── commands/
     ├── runner.ts                 # shared agent executor: budget→constitution→RAG→safety→provider→safety→FinOps→audit
     ├── constitution.ts           # /speckit.constitution
@@ -6037,8 +6042,8 @@ looks.
 `plan.md` is saved, **after** it, and names the `plan.md` version it describes: the store has
 no transaction, and written first, a failure among the five left a new record beside the old
 plan. If the record itself cannot be saved the command still succeeds and its message says
-so. It is not one of the five artifacts the result returns, the UI's lost-response recovery
-does not treat it as a result (`spec-kit-recovery.ts`), and it is a METIS record rather than a
+so. It is not one of the five artifacts the result returns, so the page does not open on
+it, and it is a METIS record rather than a
 Spec Kit artifact, so the installer does not write it into the target repository's
 `specs/<slug>/` (`METIS_INTERNAL_FEATURE_ARTIFACTS`, `installer/skeleton.ts`). The list is
 kept out of `plan.md` because the walkthrough's change-plan scoring counts the files a plan
@@ -6066,6 +6071,117 @@ twinTimeBudgetMs: Infinity }` to `buildSpecKitRagContext`, which switches both l
 except the tests of the limits themselves.
 
 The legacy alias is preserved byte-for-byte in response shape (`{command, artifactName, artifact, message, tokensUsed}`) so existing v1.2 client integrations require no changes.
+
+### 25.2.1 Commands as background jobs (#1059)
+
+A command used to be awaited inside the request that started it. `/speckit.plan` is five
+model calls in sequence and regularly ran past the UI proxy's five minutes: the browser
+showed "Internal Server Error" while the server finished and saved the plan. A command that
+calls the model now runs as a **job** that outlives the request.
+
+```
+POST …/commands/:cmd/jobs ──► prepareCommand ──► startSpecKitJob ──► 202 { jobId, job }
+                                (validate, bind)     │  insert spec_kit_jobs row (activeKey UNIQUE)
+                                                     │  recordJobScope (#674)
+                                                     └─► runJob (not awaited)
+                                                           withSpecKitJobScope(control, dispatch…)
+                                                           heartbeat 15 s · time limit · job:lifecycle
+                                                           finishJob (compare-and-set) → succeeded|failed|cancelled
+GET  …/jobs/:jobId          ──► the row: status, phase, result | error
+GET  …/jobs                 ──► the project's live jobs
+POST …/jobs/:jobId/cancel   ──► stop the control (this process) or mark `cancelling` (another replica)
+POST …/commands/:cmd        ──► the same job, awaited: 200 result | the job's error as the HTTP error
+```
+
+| File | Role |
+|---|---|
+| [`jobs.ts`](../server/src/lib/spec-kit/jobs.ts) | The runner: start, run to a terminal row, read, cancel, sweep. Owns the in-process registry of live jobs. |
+| [`job-store.ts`](../server/src/lib/spec-kit/job-store.ts) | Every `spec_kit_jobs` query. Each state change is a compare-and-set `updateMany`. |
+| [`job-scope.ts`](../server/src/lib/spec-kit/job-scope.ts) | The AsyncLocalStorage scope command code asks: stopped? may I save? this is my phase. No database import, so the artifact stores can use it. |
+| [`spec-kit-job-rate-limit.ts`](../server/src/middleware/spec-kit-job-rate-limit.ts) | Per-address limiter on the job endpoints, ahead of auth. |
+| [`ui/src/lib/spec-kit-jobs.ts`](../ui/src/lib/spec-kit-jobs.ts) | The page's side: start, watch (a read every 3 s), re-attach after a reload. |
+
+**What it is built on.** Docs generation (§ docs-gen, #50 and #855) is the model: a durable
+row, a fire-and-forget run, a heartbeat, a sweep that fails rows whose heartbeat stopped, an
+AsyncLocalStorage scope carrying an `AbortSignal`, and the existing `job:lifecycle` bus and
+`job_scopes` record. The `background_runs` runner was not used: its restart recovery
+**re-queues** a stale run, which here would spend model tokens a second time for a command
+nobody re-ran. No queue was added; a job starts at once in the process that received it.
+
+**Which commands.** `SPECKIT_JOB_COMMANDS` (`packages/shared/src/spec-kit.ts`): specify,
+clarify, plan, checklist, tasks, analyze — every command that calls the model, by either
+name. `speckit.constitution` (a store write), `speckit.implement` (a handoff, no model call)
+and `speckit.taskstoissues` (its own per-task claims, #953; a GitHub export cannot be
+cancelled half-way honestly) stay request/response and are refused by the job route with
+`400 SPEC_KIT_COMMAND_NOT_A_JOB`.
+
+**The request/response route is kept**, for the MCP transport (§25.6.1), scripts and the
+walkthrough's API-only checks. For a job command it calls the same `startSpecKitJob` and
+awaits the job, then answers with the stored result or throws the stored error as an
+`AppError`, so its statuses, codes and payload are what they were. It therefore takes the
+same lock, and a caller whose connection dropped can read the outcome from the job.
+
+**Rules, and where each is enforced.**
+
+- **The client leaving changes nothing.** Nothing in `runJob` holds the request. The job's
+  state is the row.
+- **One writer per artifact set.** `activeKey` is `<projectId>:<featureSlug or empty>` while
+  the job is live and NULL once it is terminal, under a UNIQUE index. A second insert fails
+  with P2002 on any replica and the route answers `409 SPEC_KIT_JOB_RUNNING` with the
+  holder's id. The lock is per feature, not per command: `/speckit.tasks` reads the `plan.md`
+  a running `/speckit.plan` is about to replace. The project-level `.specify/` set (and a
+  `/speckit.specify` that creates a feature) is one key. The second request is refused rather
+  than handed the running job: its input may differ.
+- **Stop before saving, never during.** Cancel and the time limit (`SPEC_KIT_JOB_TIMEOUT_MS`)
+  call `control.stop()`, which aborts the provider call in flight (`runSpecKitAgent` passes
+  the scope's signal) and makes the next call fail before it is sent. `writeArtifact` and
+  `writeFeatureArtifact` call `specKitJobCommitPoint()` first: a stopped job throws there and
+  writes nothing; a job that passes is latched as saving and `stop()` is refused from then on
+  (`409 SPEC_KIT_JOB_SAVING` for a cancel). So #1065's "five artifacts or none" and #1057's
+  "a partial reply never replaces a complete version" hold under cancel and timeout with no
+  change to the commands. A stopped job is not waited for (`Promise.race` with the stop), so
+  a provider that ignores the abort cannot hold the job or its lock open; when its reply
+  arrives the command reaches the commit point and is refused.
+- **A restart.** The owner refreshes `heartbeatAt` every 15 s. A live row with a heartbeat
+  older than 90 s is failed as `SPEC_KIT_JOB_INTERRUPTED` (or `cancelled`, if a cancel had
+  been asked for), compare-and-set on the status and heartbeat that were read: by the sweep
+  (startup, then every 30 s, `server.ts`), by any read of the job, and by a start that needs
+  its key. Never resumed. A job whose own row was failed under it (a long stall) sees its
+  next heartbeat return nothing, stops, and does not overwrite that outcome.
+- **Another replica.** Cancel marks the row `cancelling`; the owner's heartbeat sees it and
+  stops. Start and finish are database compare-and-sets, so they need no shared memory.
+- **Errors keep their contract.** `toSpecKitJobError` (`routes/spec-kit.ts`) runs the route's
+  own `rethrow` mapping and stores `{ status, code, message, details }`. A class the mapping
+  does not know is stored as a generic 500, never its message. The `job:lifecycle` `failed`
+  event stays generic (#254); the detail is read through the authorized `GET`.
+- **Budget and usage are unchanged.** The job runs the same command functions, so
+  `assertWithinBudget` runs before every model call and `recordUsage` after it, with
+  `agentStep: spec-kit.<command>`, the project and the starting user. A plan that crosses the
+  budget on its third call fails with `402 BUDGET_EXCEEDED` and saves nothing. A call the
+  job aborted is recorded as an estimate of its prompt under `spec-kit.<command>.aborted`.
+- **Authorization on every endpoint.** Each job route runs `requireProjectAccess()`
+  (workspace scope, 404 for another tenant whatever the role), then `requirePermission`
+  (`project.read` to read, `project.update` to start or cancel), and reads the row only by
+  `(projectId, jobId)`. Another project's job id is a 404 on that project's URL and on the
+  caller's own. Ids are `randomUUID()`.
+
+**Progress.** `reportSpecKitJobPhase(text, percent?)` writes `phase` on the row and emits a
+`progress` lifecycle event. `runSpecKitAgent` reports its caller's `phase` (default
+"Waiting for the model"), and a continuation of a cut-off reply (#944); `runPlanExpanded`
+names each artifact ("Generating research.md (2 of 5)").
+
+**The page.** `runSpecKitCommand` starts the job and `watchSpecKitJob` reads it until it is
+terminal, then resolves with `job.result` or rejects with an `ApiError` built from
+`job.error`, so the mutation callbacks and the #1037 error card are untouched. The watched
+job's id is kept in session storage; on mount `findSpecKitJobToAttach` returns the viewer's
+running job (or the watched one that finished meanwhile) and the page attaches to it. This
+replaced `spec-kit-recovery.ts` (#1069), which inferred a command's outcome from artifact
+versions and could not tell two writers apart. The proxy timeout from #1069
+(`spec-kit-proxy-timeout.ts`) stays, for callers of the request/response route through the
+UI's `/api` path.
+
+**Not done.** A job does not survive its process, by design. `POST /spec-kit/constitution`
+("Generate constitution", one model call) is still request/response.
 
 ### 25.3 Phased status gate model
 

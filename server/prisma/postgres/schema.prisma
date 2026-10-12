@@ -1624,6 +1624,43 @@ model JobScopeRecord {
   @@map("job_scopes")
 }
 
+/// #1059 — one Spec Kit command run as a background job, so the command
+/// outlives the HTTP request that started it. The row is the job's durable
+/// state: a client polls it, a reload re-attaches to it, and a restart finds it.
+/// No relation to `projects` (as `job_scopes`): rows are pruned a day after they
+/// finish, by the sweeper.
+model SpecKitJob {
+  /// A random UUID minted by the server; also the `job:lifecycle` job id.
+  id          String    @id
+  projectId   String
+  /// The canonical `speckit.*` command.
+  command     String
+  featureSlug String?
+  /// `<projectId>:<featureSlug or empty>` while the job may still write, NULL
+  /// once it is terminal. UNIQUE, so the database refuses a second writer of
+  /// the same artifact set, on any replica.
+  activeKey   String?   @unique
+  /// running | cancelling | succeeded | failed | cancelled.
+  status      String    @default("running")
+  /// What the job is doing now, for display.
+  phase       String?
+  /// JSON: the command's result payload (`succeeded` only).
+  result      String?
+  /// JSON `{ status, code, message, details? }` (`failed` only).
+  error       String?
+  startedById String?
+  /// Refreshed while the owning process is alive; a live row whose heartbeat
+  /// stopped is failed as interrupted.
+  heartbeatAt DateTime  @default(now())
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+
+  @@index([projectId, status])
+  @@index([status, heartbeatAt])
+  @@index([finishedAt])
+  @@map("spec_kit_jobs")
+}
+
 // ============================================================================
 // Publishing — IssueDraft -> PublishBatch -> PublishedIssue
 // ============================================================================

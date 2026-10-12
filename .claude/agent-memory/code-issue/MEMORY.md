@@ -92,3 +92,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Mapper precision rule vs recall](project_mapper-precision-rules-halve-impact-recall.md) — run both evals; option, not global (#1063)
 - [0 findings: read token_usages](project_zero-findings-read-token-usages-first.md) — output == cap + empty reply = reasoning (#1063)
 - [Synthesis field must fail soft](project_synthesis-optional-field-must-fail-soft.md) — one null discards every requirement (#1063)
+- [Spec Kit jobs: test seams](project_speckit-jobs-test-seams-and-runner-choice.md) — mock job-store; park the stub, no sleeps (#1059)

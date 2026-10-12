@@ -25,12 +25,15 @@ import Link from "next/link";
 import { toast } from "sonner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { SPEC_KIT_ARTIFACT_NAMES, isSpecKitArtifactName } from "@metis/shared";
-import type { SpecKitArtifactName, SpecKitNamespacedCommand } from "@metis/shared";
+import type { SpecKitArtifactName, SpecKitJobDto, SpecKitNamespacedCommand } from "@metis/shared";
 import { specKitApi, type SpecKitRunOptions } from "@/lib/spec-kit-api";
 import {
-  SpecKitCommandCancelledError,
-  runSpecKitCommandWithRecovery,
-} from "@/lib/spec-kit-recovery";
+  SpecKitJobAbandonedError,
+  SpecKitJobCancelledError,
+  findSpecKitJobToAttach,
+  runSpecKitCommand,
+  watchSpecKitJob,
+} from "@/lib/spec-kit-jobs";
 import { analysisApi } from "@/lib/analysis-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
@@ -298,12 +301,14 @@ export default function SpecKitPage() {
     },
   });
 
-  // #1069 — aborted when the page is left. A command (or the poll for its lost
-  // response) can outlive the page by minutes, and TanStack still runs the
-  // mutation's callbacks then. The abort stops the poll's requests, and the
-  // callbacks below then skip only what belongs to this page: its state and the
-  // navigation back to it. The toast, the cache refresh and the saved handoff
-  // are app-wide, so a late result is still reported wherever the user is.
+  // #1069 — aborted when the page is left. TanStack still runs a mutation's
+  // callbacks then, so the callbacks below skip what belongs to this page: its
+  // state and the navigation back to it. The toast, the cache refresh and the
+  // saved handoff are app-wide, so a late result is still reported wherever
+  // the user is.
+  // #1059 — a job is no longer watched once the page is left (the abort ends
+  // the watch). The job itself carries on, and the page attaches to it again
+  // when it is next opened.
   const leftPage = useRef<AbortController | null>(null);
   useEffect(() => {
     const controller = new AbortController();
@@ -312,23 +317,40 @@ export default function SpecKitPage() {
   }, []);
   const hasLeftPage = (): boolean => leftPage.current?.signal.aborted !== false;
 
+  // #1059 — the background job the running command is, for its phase text and
+  // the Cancel button. Null for a command that is not a job, and between runs.
+  const [activeJob, setActiveJob] = useState<SpecKitJobDto | null>(null);
+
   const commandMutation = useMutation({
-    // #1069 — after a lost response (a bare 5xx from the proxy, a dropped
-    // connection) this polls for the artifact the command was writing.
-    mutationFn: (input: { command: SpecKitNamespacedCommand; options: SpecKitRunOptions }) =>
-      runSpecKitCommandWithRecovery(projectId, input.command, input.options, {
+    // #1059 — a model-backed command is started as a background job and then
+    // watched until it is terminal; `attach` watches one that is already
+    // running (after a reload, or a visit to another page).
+    mutationFn: (input: {
+      command: SpecKitNamespacedCommand;
+      options: SpecKitRunOptions;
+      attach?: SpecKitJobDto;
+    }) => {
+      const hooks = {
         signal: leftPage.current?.signal,
-      }),
+        userId: user?.id,
+        onUpdate: (job: SpecKitJobDto): void => {
+          if (!hasLeftPage()) setActiveJob(job);
+        },
+      };
+      return input.attach
+        ? watchSpecKitJob(projectId, input.attach.id, hooks, input.attach)
+        : runSpecKitCommand(projectId, input.command, input.options, hooks);
+    },
     // #936 — a command is a write (an artifact, a model call, issues on GitHub):
     // never resend it on a 5xx, which sent one click's request twice.
     retry: false,
-    // Issue #423 — Spec Kit commands stream `job:lifecycle` (kind `spec-kit`).
-    // The command is awaited server-side and the response carries the verbatim
-    // grounded-completion line ("Generated spec.md (v3) … grounded on N retrieved
-    // chunks."), so we fire the terminal toast from the callbacks (a late
-    // `subscribe:job` would miss the already-emitted terminal event) and keep
-    // surfacing the line in the result card. The grounded line is preserved
-    // byte-for-byte as the success toast text.
+    onSettled: () => {
+      if (!hasLeftPage()) setActiveJob(null);
+    },
+    // Issue #423 — the result carries the verbatim grounded-completion line
+    // ("Generated spec.md (v3) … grounded on N retrieved chunks."), so the
+    // terminal toast fires from the callbacks and the line is kept in the
+    // result card, byte for byte.
     onSuccess: (result, input) => {
       const onPage = !hasLeftPage();
       if (onPage) {
@@ -408,8 +430,19 @@ export default function SpecKitPage() {
       }
     },
     onError: (err) => {
-      // The poll was abandoned because the page was left: nothing failed.
-      if (err instanceof SpecKitCommandCancelledError) return;
+      // The watch ended because the page was left: nothing failed, and the job
+      // is picked up again when the page is next opened.
+      if (err instanceof SpecKitJobAbandonedError) return;
+      // #1059 — a cancelled command is not a failure: said once, without a code.
+      if (err instanceof SpecKitJobCancelledError) {
+        toast.warning(err.message);
+        if (hasLeftPage()) return;
+        setLastResultMessage(null);
+        setLastIssueLinks([]);
+        setLastPartial([]);
+        setLastError({ text: err.message, code: null });
+        return;
+      }
       if (hasLeftPage()) {
         toast.error(describeSpecKitError(err));
         return;
@@ -420,6 +453,39 @@ export default function SpecKitPage() {
       // #945 — the page's own words, never API field names or a raw issue array.
       reportFailure(err);
     },
+  });
+
+  // #1059 — on opening the page, pick the viewer's job up again: one still
+  // running (after a reload, or a visit elsewhere), or one this tab was
+  // watching that finished meanwhile, whose result or failure is then shown
+  // exactly as if the page had stayed open. Once per project per page view.
+  const commandPending = useRef(false);
+  commandPending.current = commandMutation.isPending;
+  const attachTried = useRef<string | null>(null);
+  const userId = user?.id;
+  const attachTo = commandMutation.mutate;
+  useEffect(() => {
+    if (!projectId || !userId || attachTried.current === projectId) return;
+    attachTried.current = projectId;
+    void findSpecKitJobToAttach(projectId, userId).then((job) => {
+      const left = leftPage.current?.signal.aborted !== false;
+      if (!job || left || commandPending.current) return;
+      // The result opens in the job's own feature, as it would have.
+      if (job.featureSlug !== null) setSelectedFeature(job.featureSlug);
+      attachTo({
+        command: job.command,
+        options: job.featureSlug !== null ? { featureSlug: job.featureSlug } : {},
+        attach: job,
+      });
+    });
+  }, [projectId, userId, attachTo]);
+
+  // #1059 — cancel the running job. The watch then sees it end as cancelled.
+  const cancelMutation = useMutation({
+    mutationFn: (jobId: string) => specKitApi.cancelJob(projectId, jobId),
+    retry: false,
+    // E.g. 409: the command is already saving its result.
+    onError: (err) => toast.error(describeSpecKitError(err)),
   });
 
   // #789 — delete the viewed artifact (project file or feature artifact).
@@ -1208,12 +1274,38 @@ export default function SpecKitPage() {
         ) : null}
 
         {commandMutation.isPending || constitutionMutation.isPending ? (
-          <JobProgress
-            indeterminate
-            message="Running Spec Kit command…"
-            label="Spec Kit command progress"
-            testId="spec-kit-progress"
-          />
+          <div className="space-y-2">
+            <JobProgress
+              indeterminate
+              message={
+                activeJob
+                  ? activeJob.status === "cancelling"
+                    ? `Cancelling /${activeJob.command}…`
+                    : `/${activeJob.command}${activeJob.featureSlug ? ` on ${activeJob.featureSlug}` : ""}: ${activeJob.phase ?? "starting"}…`
+                  : "Running Spec Kit command…"
+              }
+              label="Spec Kit command progress"
+              testId="spec-kit-progress"
+            />
+            {activeJob ? (
+              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span data-testid="spec-kit-job-note">
+                  Runs on the server: you can leave this page and come back.
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!canWrite || cancelMutation.isPending || activeJob.status !== "running"}
+                  onClick={() => cancelMutation.mutate(activeJob.id)}
+                  data-testid="spec-kit-job-cancel"
+                >
+                  {activeJob.status === "cancelling" || cancelMutation.isPending
+                    ? "Cancelling…"
+                    : "Cancel"}
+                </Button>
+              </div>
+            ) : null}
+          </div>
         ) : null}
 
         {lastResultMessage ? (

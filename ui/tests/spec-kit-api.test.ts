@@ -116,4 +116,37 @@ describe("specKitApi", () => {
       expect.objectContaining({ method: "DELETE" }),
     );
   });
+
+  it("#1059 the job endpoints: start, read, list and cancel", async () => {
+    mockFetch.mockResolvedValue({});
+    await specKitApi.startCommandJob("p 1", "speckit.plan", {
+      input: "go",
+      featureSlug: "001-a",
+    });
+    // Its own path: the proxy's long timeout is for `/commands/<cmd>` only.
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "/projects/p%201/spec-kit/commands/speckit.plan/jobs",
+      {
+        method: "POST",
+        body: { input: "go", featureSlug: "001-a" },
+      },
+    );
+    await specKitApi.startCommandJob("p1", "speckit.tasks");
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "/projects/p1/spec-kit/commands/speckit.tasks/jobs",
+      {
+        method: "POST",
+        body: { input: "" },
+      },
+    );
+    await specKitApi.getJob("p1", "job/1");
+    expect(mockFetch).toHaveBeenLastCalledWith("/projects/p1/spec-kit/jobs/job%2F1");
+    await specKitApi.listActiveJobs("p1");
+    expect(mockFetch).toHaveBeenLastCalledWith("/projects/p1/spec-kit/jobs");
+    await specKitApi.cancelJob("p1", "job-1");
+    expect(mockFetch).toHaveBeenLastCalledWith("/projects/p1/spec-kit/jobs/job-1/cancel", {
+      method: "POST",
+      body: {},
+    });
+  });
 });

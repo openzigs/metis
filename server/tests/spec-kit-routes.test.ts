@@ -240,7 +240,16 @@ vi.mock("../src/lib/spec-kit/feature-artifacts.js", async (importOriginal) => ({
   deleteFeatureArtifact,
 }));
 
-vi.mock("../src/lib/spec-kit/features.js", () => ({
+// #1059 — a model-backed command runs as a job the route waits on; its table is
+// the in-memory one (the real table is covered by the SQLite suite).
+vi.mock("../src/lib/spec-kit/job-store.js", async () => {
+  const fake = await import("./helpers/spec-kit-job-store-fake.js");
+  return fake.fakeSpecKitJobStore;
+});
+
+vi.mock("../src/lib/spec-kit/features.js", async (importOriginal) => ({
+  // The real constants (the slug shape the job lock is keyed on, #1059).
+  ...(await importOriginal<Record<string, unknown>>()),
   archiveFeature: featureLifecycle.archiveFeature,
   restoreFeature: featureLifecycle.restoreFeature,
   listFeatures: featureLifecycle.listFeatures,

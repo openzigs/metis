@@ -67,6 +67,13 @@ vi.mock("../lib/spec-kit/commands/specify.js", () => ({
 const recordJobScope = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock("../lib/socket/job-scope-store.js", () => ({ recordJobScope }));
 
+// #1059 — a model-backed command runs as a job this route waits on; its table
+// is the in-memory one (the real table is covered by the SQLite suite).
+vi.mock("../lib/spec-kit/job-store.js", async () => {
+  const fake = await import("../../tests/helpers/spec-kit-job-store-fake.js");
+  return fake.fakeSpecKitJobStore;
+});
+
 import { specKitRouter } from "./spec-kit.js";
 import { AppError } from "../middleware/error-handler.js";
 

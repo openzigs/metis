@@ -29,6 +29,11 @@ import { OfflineStubProvider } from "../../ai/providers/offline-stub-provider.js
 import { SpecKitArtifactError } from "../artifacts.js";
 import { detectTruncation } from "../../docs-gen/truncation.js";
 import { resolveSpecKitOutputOptions } from "../output-budget.js";
+import {
+  currentSpecKitJob,
+  reportSpecKitJobPhase,
+  throwIfSpecKitJobStopped,
+} from "../job-scope.js";
 
 export interface SpecKitProjectContext {
   id: string;
@@ -109,6 +114,13 @@ export interface RunCommandInput {
    * throwing; `truncated` still reports a cut. Every other command keeps them.
    */
   allowEmptyOutput?: boolean;
+  /**
+   * #1059 — what a job running this call shows while it waits ("Generating
+   * plan.md (1 of 5)"), and how far through the command it is (0-100).
+   * Ignored outside a job. Default: "Waiting for the model".
+   */
+  phase?: string;
+  phaseProgress?: number;
 }
 
 export interface RunCommandOutput {
@@ -215,6 +227,44 @@ export function joinContinuation(kept: string, next: string): string {
   return kept.length === 0 ? next : kept + next.replace(/^\n+/, "");
 }
 
+/** Characters per token for an aborted call's estimate — the ratio docs-gen uses (#855). */
+const ESTIMATE_CHARS_PER_TOKEN = 3.5;
+
+/**
+ * #1059 — record what a call its job aborted mid-flight had already cost: an
+ * ESTIMATE of the prompt, under the agent step `spec-kit.<command>.aborted`, so
+ * a cancelled command is not free in the ledger. Never throws.
+ */
+function recordAbortedCall(
+  input: RunCommandInput,
+  provider: AIProvider,
+  sessionId: string | null,
+  system: string,
+  messages: readonly ChatMessage[],
+): void {
+  try {
+    const chars = messages.reduce(
+      (n, m) =>
+        n + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length),
+      system.length,
+    );
+    recordUsage({
+      projectId: input.project.id,
+      sessionId: sessionId ?? "",
+      ...(input.actorId ? { userId: input.actorId } : {}),
+      agentStep: `spec-kit.${input.command}.aborted`,
+      provider: provider.key,
+      model: provider.model,
+      inputTokens: Math.ceil(chars / ESTIMATE_CHARS_PER_TOKEN),
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+  } catch {
+    // An estimate that cannot be recorded must not mask the stop.
+  }
+}
+
 /**
  * Single agent invocation reused by `/specify`, `/plan`, `/tasks`,
  * `/clarify`, `/analyze`. `/implement` does NOT call this — it just
@@ -284,6 +334,8 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
   // HTTP 200 like any other, so it is detected (finish reason or gateway
   // placeholder), its whole lines are kept, and the model is asked to continue.
   const userTurn: ChatMessage = { role: "user", content: userText };
+  const job = currentSpecKitJob();
+  const phase = input.phase ?? `Waiting for the model (/${input.command})`;
   const chatOpts = {
     systemMessage: fullSystem,
     sessionId: sessionId ?? undefined,
@@ -299,6 +351,8 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
     // #1057 — an explicit output cap and reasoning effort (config-driven), so
     // a thinking-by-default model cannot spend the provider default reasoning.
     ...resolveSpecKitOutputOptions(provider.model),
+    // #1059 — inside a job, cancel and the time limit abort the call in flight.
+    ...(job ? { signal: job.signal } : {}),
   };
   let kept = "";
   let truncated = false;
@@ -324,7 +378,22 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
             { role: "assistant", content: kept },
             { role: "user", content: CONTINUE_PROMPT },
           ];
-    response = await provider.chat(messages, chatOpts);
+    // #1059 — a stopped job makes no further call.
+    throwIfSpecKitJobStopped();
+    reportSpecKitJobPhase(
+      continuations === 0
+        ? phase
+        : `${phase}: continuing a reply cut off at the output limit (${continuations} of ${MAX_SPEC_KIT_CONTINUATIONS})`,
+      input.phaseProgress,
+    );
+    try {
+      response = await provider.chat(messages, chatOpts);
+    } catch (err) {
+      // A call its job aborted reported no usage, but the provider bills it:
+      // record an estimate of the prompt it had already been sent (as #855).
+      if (job?.signal.aborted) recordAbortedCall(input, provider, sessionId, fullSystem, messages);
+      throw err;
+    }
     totalTokens += response.usage.totalTokens;
 
     // 5. FinOps ledger — every call, continuation or not, is billed.

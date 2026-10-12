@@ -13,6 +13,7 @@ import {
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
+import { specKitJobCommitPoint } from "./job-scope.js";
 
 export class SpecKitArtifactError extends Error {
   readonly status: number;
@@ -105,6 +106,9 @@ export async function writeArtifact(input: WriteArtifactInput): Promise<SpecKitA
       "Spec Kit artifacts are capped at 200,000 characters",
     );
   }
+  // #1059 — inside a job this is where it starts saving: a job stopped before
+  // here writes nothing, and from here it can no longer be stopped.
+  specKitJobCommitPoint();
   const existing = await prisma.specKitArtifact.findUnique({
     where: { projectId_name: { projectId: input.projectId, name } },
   });

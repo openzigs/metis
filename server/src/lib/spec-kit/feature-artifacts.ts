@@ -12,6 +12,7 @@
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { SpecKitArtifactError } from "./artifacts.js";
+import { specKitJobCommitPoint } from "./job-scope.js";
 
 const KEY_RE = /^[a-zA-Z0-9._/-]{1,128}$/;
 
@@ -119,6 +120,9 @@ export async function writeFeatureArtifact(
   input: WriteFeatureArtifactInput,
 ): Promise<FeatureArtifactDto> {
   const key = assertFeatureArtifactWritable(input.key, input.content);
+  // #1059 — inside a job this is where it starts saving: a job stopped before
+  // here writes nothing, and from here it can no longer be stopped.
+  specKitJobCommitPoint();
   const existing = await prisma.specKitFeatureArtifact.findUnique({
     where: { featureId_key: { featureId: input.featureId, key } },
   });

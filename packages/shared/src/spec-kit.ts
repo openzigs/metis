@@ -177,3 +177,93 @@ export function parseSpecKitCommand(buffer: string): ParsedSpecKitCommand | null
   const input = (m[2] ?? "").trim();
   return { command, input };
 }
+
+// ---------------------------------------------------------------------------
+// #1059 — Spec Kit commands as background jobs
+// ---------------------------------------------------------------------------
+
+/**
+ * #1059 — the commands that run as a background job: every command that makes
+ * a model call, and so can outlast an HTTP request. `speckit.constitution` (a
+ * store write), `speckit.implement` (a handoff, no model call) and
+ * `speckit.taskstoissues` (its own per-task claims; a GitHub export cannot be
+ * cancelled half-way honestly) stay request/response only.
+ */
+export const SPECKIT_JOB_COMMANDS = [
+  "speckit.specify",
+  "speckit.clarify",
+  "speckit.plan",
+  "speckit.checklist",
+  "speckit.tasks",
+  "speckit.analyze",
+] as const satisfies readonly SpecKitNamespacedCommand[];
+export type SpecKitJobCommand = (typeof SPECKIT_JOB_COMMANDS)[number];
+
+/** True when the canonical `speckit.*` command runs as a job (#1059). */
+export function isSpecKitJobCommand(cmd: string): cmd is SpecKitJobCommand {
+  return (SPECKIT_JOB_COMMANDS as readonly string[]).includes(cmd);
+}
+
+/**
+ * #1059 — a job's state. `running` and `cancelling` are live; the other three
+ * are terminal. A job whose server stopped, and one that ran past its time
+ * limit, are `failed` with `SPEC_KIT_JOB_INTERRUPTED` / `SPEC_KIT_JOB_TIMEOUT`.
+ */
+export const SPEC_KIT_JOB_STATUSES = [
+  "running",
+  "cancelling",
+  "succeeded",
+  "failed",
+  "cancelled",
+] as const;
+export type SpecKitJobStatus = (typeof SPEC_KIT_JOB_STATUSES)[number];
+
+/** True while the job may still finish: poll again. */
+export function isSpecKitJobActive(status: SpecKitJobStatus): boolean {
+  return status === "running" || status === "cancelling";
+}
+
+/**
+ * #1059 — why a job failed: the status, code, message and details the
+ * synchronous route answers the same failure with, so a client handles both
+ * the same way.
+ */
+export interface SpecKitJobError {
+  status: number;
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+/** #1059 — a Spec Kit job as `GET /spec-kit/jobs/:jobId` returns it. */
+export interface SpecKitJobDto {
+  id: string;
+  projectId: string;
+  /** The canonical `speckit.*` command. */
+  command: SpecKitNamespacedCommand;
+  /** The feature the command runs on; `null` for a project-level command. */
+  featureSlug: string | null;
+  status: SpecKitJobStatus;
+  /** What the job is doing now, for display; `null` before its first step. */
+  phase: string | null;
+  startedById: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  /** `succeeded` only: the payload the synchronous route returns for the command. */
+  result?: unknown;
+  /** `failed` only. */
+  error?: SpecKitJobError;
+}
+
+/** Start refused: a job already holds this feature (or the project-level set). */
+export const SPEC_KIT_JOB_RUNNING_CODE = "SPEC_KIT_JOB_RUNNING";
+/** The server stopped while the job ran; nothing more was saved. */
+export const SPEC_KIT_JOB_INTERRUPTED_CODE = "SPEC_KIT_JOB_INTERRUPTED";
+/** The job ran past `SPEC_KIT_JOB_TIMEOUT_MS` and was stopped before saving. */
+export const SPEC_KIT_JOB_TIMEOUT_CODE = "SPEC_KIT_JOB_TIMEOUT";
+/** Cancel refused: the job is already saving its artifacts. */
+export const SPEC_KIT_JOB_SAVING_CODE = "SPEC_KIT_JOB_SAVING";
+/** Start refused: the command does not run as a job. */
+export const SPEC_KIT_NOT_A_JOB_CODE = "SPEC_KIT_COMMAND_NOT_A_JOB";
+/** No such job in this project (or it has aged out). */
+export const SPEC_KIT_JOB_NOT_FOUND_CODE = "SPEC_KIT_JOB_NOT_FOUND";

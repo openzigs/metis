@@ -37,6 +37,12 @@ vi.mock("../src/lib/spec-kit/artifacts.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/spec-kit/artifacts.js")>()),
   isSpecKitEnabled: async () => true,
 }));
+// #1059 — `/commands/specify` runs as a job the route waits on; its table is
+// the in-memory one, since Prisma is stubbed here.
+vi.mock("../src/lib/spec-kit/job-store.js", async () => {
+  const fake = await import("./helpers/spec-kit-job-store-fake.js");
+  return fake.fakeSpecKitJobStore;
+});
 vi.mock("../src/lib/spec-kit/commands/specify.js", () => ({
   runSpecify: async (input: {
     prompt: string;

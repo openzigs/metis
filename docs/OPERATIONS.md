@@ -425,6 +425,50 @@ the server back first: the new version selects `requestTokens`, so dropping the
 column under it fails the usage and budget queries. A stored list is used only
 when it adds up to its row's token columns; otherwise the row is priced as one call.
 
+### 6.5 Spec Kit background jobs (#1059): the `spec_kit_jobs` table and restarts
+
+Migration `20261019001059_issue1059_spec_kit_jobs` creates the `spec_kit_jobs` table, on
+SQLite and Postgres alike. It is new and empty, with no backfill. Apply it before the new
+server version serves traffic: that version writes a row for every Spec Kit command that
+calls the model. To roll back, roll the server back first, then drop the table; only jobs in
+flight and the last day's job results are lost, never an artifact.
+
+**What a restart does.** A Spec Kit job runs inside the server process that started it. A
+restart, crash, deploy or dev hot-reload ends it. It is **not** started again: that would
+spend model tokens nobody asked for a second time. The job's row is failed instead, with
+`SPEC_KIT_JOB_INTERRUPTED`:
+
+- A running job refreshes `heartbeatAt` every 15 seconds. A row still marked `running` or
+  `cancelling` whose heartbeat is more than 90 seconds old has no process behind it.
+- A sweep fails such rows at startup and every 30 seconds after that. It does not depend on
+  the scheduler. The same check also runs whenever the job is read and whenever a new
+  command needs the feature the dead job held, so neither waits for the sweep.
+- So for up to 90 seconds after a restart, a job that died with the old process still reads
+  as running, and a new command on the same feature is refused with
+  `409 SPEC_KIT_JOB_RUNNING`. After that it reads as failed and the feature is free.
+- Nothing is half-saved. A job writes its artifacts only at the end, and a process killed
+  during that last step is the one case that can leave some of a plan's five artifacts new
+  and some old (the store has no transaction). Run the command again.
+
+With more than one replica the rule is the same, and is the reason it is a heartbeat rather
+than "this process just started": another replica's live job keeps its row fresh. A cancel
+handled by a replica that does not run the job marks the row `cancelling`, and the replica
+that does run it notices on its next heartbeat (within 15 seconds).
+
+**Settings.**
+
+| Setting | Default | What it does |
+|---|---|---|
+| `SPEC_KIT_JOB_TIMEOUT_MS` | `1800000` (30 minutes) | The longest one job may run; 60000 to 21600000. Past it the model call in flight is aborted and the job fails with `504 SPEC_KIT_JOB_TIMEOUT` before saving anything. Admin setting or environment variable, read when a job starts. |
+| `SPECKIT_JOB_LIMIT_MAX` | `6000` | Requests to the job endpoints allowed per client address per window. A page watching a job makes one every 3 seconds (300 per 15 minutes). Environment variable, read per request. |
+| `SPECKIT_JOB_LIMIT_WINDOW_MS` | `900000` (15 minutes) | The window for the limit above. Environment variable, read at startup. |
+| `METIS_SPEC_KIT_PROXY_TIMEOUT_MS` | `900000` | Unchanged (#1069), on the **UI** server. It now matters only to API callers that send a command to the request/response route through the UI's `/api` path; the Spec Kit page starts jobs and no longer holds a request open. |
+
+**Housekeeping.** A finished job is deleted one day after it finished, by the same sweep. To
+see what is running: `SELECT "id", "command", "featureSlug", "status", "phase", "heartbeatAt"
+FROM "spec_kit_jobs" WHERE "status" IN ('running', 'cancelling');`. To free a feature by hand
+(it should never be needed), set the row's `status` to `failed` and its `activeKey` to NULL.
+
 ---
 
 ## 7. Container Image Sizes
