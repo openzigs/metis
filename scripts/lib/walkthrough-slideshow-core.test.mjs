@@ -7,8 +7,10 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  CHANGE_PLAN_SCOPES,
   INLINE_WARN_BYTES,
   buildSlideshow,
+  changePlanScopeLabel,
   comparePhase,
   escapeHtml,
   formatCost,
@@ -791,9 +793,13 @@ describe("filesystem", () => {
           .map((m) => m[1])
           .filter((r) => r.includes("miniflux/v2/issues"));
         expect(rows).toHaveLength(3);
-        expect(rows[0]).toMatch(/\/4336"[^>]*>#4336<\/a><\/th><td>impact<\/td><td>curated<\/td>/);
-        expect(rows[1]).toMatch(/#4478<\/a><\/th><td>chat<\/td>/);
-        expect(rows[2]).toMatch(/#4478<\/a><\/th><td>j2-plan<\/td>/);
+        // An impact row with no scope is the old combined scoring, and says so (#1073); a chat
+        // or plan row has no list to name.
+        expect(rows[0]).toMatch(
+          /\/4336"[^>]*>#4336<\/a><\/th><td>impact<\/td><td>both lists together \(rule before #1073\)<\/td><td>curated<\/td>/,
+        );
+        expect(rows[1]).toMatch(/#4478<\/a><\/th><td>chat<\/td><td>–<\/td><td>curated<\/td>/);
+        expect(rows[2]).toMatch(/#4478<\/a><\/th><td>j2-plan<\/td><td>–<\/td>/);
         // 4336 impact: files 3 tp 1 fp 2 fn -> P 75% (3/4), R 60% (3/5); functions 0/0 named.
         expect(rows[0]).toContain(
           "<td>75% (3/4)</td><td>60% (3/5)</td><td>–</td><td>0% (0/9)</td><td>yes</td>",
@@ -802,6 +808,36 @@ describe("filesystem", () => {
         expect(rows[1]).toContain("<td>100% (2/2)</td><td>67% (2/3)</td>");
         expect(rows[1]).toMatch(/<td>no<\/td>$/);
         expect(read("tutorial")).not.toContain("Change-plan accuracy");
+      });
+
+      it("renders an impact output as a files-to-edit row and a recall-only blast row (#1073)", () => {
+        fs.writeFileSync(
+          path.join(evidence, "run.json"),
+          JSON.stringify({ ...runInfo(), changePlanAccuracy: scopedFixture() }),
+        );
+        buildSlideshow(reportOpts());
+        const report = read("report");
+        expect(report).toContain('<th scope="col">Output</th><th scope="col">Scored list</th>');
+        expect(report).toContain("blast radius on recall only (#1073)");
+        const rows = [...report.matchAll(/<tr><th scope="row">(.*?)<\/tr>/g)]
+          .map((m) => m[1])
+          .filter((r) => r.includes("miniflux/v2/issues"));
+        // Sorted by issue, output, then scope: edit before blast, whatever order run.json had.
+        expect(
+          rows.map((r) => /<\/th><td>([\w-]+)<\/td><td>(.*?)<\/td>/.exec(r)?.slice(1)),
+        ).toEqual([
+          ["j2-impact", "files to edit"],
+          ["j2-impact", "blast radius"],
+          ["j2-plan", "–"],
+        ]);
+        // Files to edit: files 2 tp 1 fp 3 fn -> P 67% (2/3), R 40% (2/5); functions 3/1/8.
+        expect(rows[0]).toContain(
+          "<td>curated</td><td>67% (2/3)</td><td>40% (2/5)</td><td>75% (3/4)</td><td>27% (3/11)</td><td>yes</td>",
+        );
+        // Blast radius: recall only, 3/5 and 4/11; no precision is shown, not even "–" or 100%.
+        expect(rows[1]).toContain(
+          "<td>curated</td><td>not scored</td><td>60% (3/5)</td><td>not scored</td><td>36% (4/11)</td><td>yes</td>",
+        );
       });
 
       it("omits the accuracy slide without the field or with an empty list", () => {
@@ -889,6 +925,43 @@ function fixesFixture() {
 }
 
 /** Change-plan scores (#1042): one issue across two outputs, another on one. */
+/**
+ * TEST_PLAN.md's worked example under the #1073 rule: J2.1's impact for #4336 as a files-to-edit
+ * row and a blast-radius row (listed blast first, so the deck's sort is exercised), plus a plan.
+ *
+ * @returns {any[]}
+ */
+function scopedFixture() {
+  return [
+    {
+      issue: 4336,
+      output: "j2-impact",
+      scope: "blast",
+      source: "curated",
+      files: { tp: 3, fn: 2 },
+      functions: { tp: 4, fn: 7 },
+      migrationCorrect: true,
+    },
+    {
+      issue: 4336,
+      output: "j2-impact",
+      scope: "edit",
+      source: "curated",
+      files: { tp: 2, fp: 1, fn: 3 },
+      functions: { tp: 3, fp: 1, fn: 8 },
+      migrationCorrect: true,
+    },
+    {
+      issue: 4336,
+      output: "j2-plan",
+      source: "curated",
+      files: { tp: 4, fp: 0, fn: 1 },
+      functions: { tp: 6, fp: 2, fn: 5 },
+      migrationCorrect: true,
+    },
+  ];
+}
+
 function accuracyFixture() {
   return [
     {
@@ -1250,6 +1323,517 @@ describe("run.json changePlanAccuracy (#1042)", () => {
     ]),
   )("rejects %s, naming the row and field", (_label, mutate, message) => {
     expect(errorsOf(mutate)).toContain(message);
+  });
+});
+
+describe("run.json changePlanAccuracy scope (#1073)", () => {
+  it("names the two scopes", () => {
+    expect(CHANGE_PLAN_SCOPES).toEqual(["edit", "blast"]);
+  });
+
+  it("accepts an impact output scored as an edit row and a recall-only blast row", () => {
+    const { run, errors } = parseRunInfo(JSON.stringify({ changePlanAccuracy: scopedFixture() }));
+    expect(errors).toEqual([]);
+    expect(run?.changePlanAccuracy).toEqual(scopedFixture());
+  });
+
+  it("still accepts a run 7 file: impact rows with no scope, both lists scored together", () => {
+    // The shape every run up to 7 wrote (the skill, section 7), on both impact outputs.
+    const legacy = {
+      changePlanAccuracy: [
+        {
+          issue: 4336,
+          output: "impact",
+          source: "curated",
+          files: { tp: 4, fp: 96, fn: 1 },
+          functions: { tp: 5, fp: 40, fn: 6 },
+          migrationCorrect: true,
+        },
+        {
+          issue: 4336,
+          output: "j2-impact",
+          source: "curated",
+          files: { tp: 2, fp: 1, fn: 3 },
+          functions: { tp: 3, fp: 1, fn: 8 },
+          migrationCorrect: true,
+        },
+        ...accuracyFixture().slice(0, 2),
+      ],
+    };
+    const { run, errors } = parseRunInfo(JSON.stringify(legacy));
+    expect(errors).toEqual([]);
+    // Returned as written: no scope is invented for an old row.
+    expect(run?.changePlanAccuracy).toEqual(legacy.changePlanAccuracy);
+    expect(run?.changePlanAccuracy?.some((r) => "scope" in r)).toBe(false);
+  });
+
+  it("accepts scoped rows for one output beside an unscoped row for another", () => {
+    const rows = [
+      ...scopedFixture(),
+      {
+        issue: 4336,
+        output: "impact",
+        source: "curated",
+        files: { tp: 4, fp: 96, fn: 1 },
+        functions: { tp: 5, fp: 40, fn: 6 },
+        migrationCorrect: true,
+      },
+    ];
+    expect(parseRunInfo(JSON.stringify({ changePlanAccuracy: rows })).errors).toEqual([]);
+  });
+
+  it("accepts a blast row that finds exactly what the edit row finds", () => {
+    const rows = scopedFixture();
+    rows[0].files = { tp: 2, fn: 3 };
+    rows[0].functions = { tp: 3, fn: 8 };
+    expect(parseRunInfo(JSON.stringify({ changePlanAccuracy: rows })).errors).toEqual([]);
+  });
+
+  /** @param {(rows: any[]) => void} mutate */
+  const errorsOf = (mutate) => {
+    const rows = scopedFixture();
+    mutate(rows);
+    const { run, errors } = parseRunInfo(JSON.stringify({ changePlanAccuracy: rows }));
+    expect(run).toBeNull();
+    return errors;
+  };
+
+  const AT = "run.json changePlanAccuracy";
+  it.each(
+    /** @type {Array<[string, (rows: any[]) => void, string[]]>} */ ([
+      [
+        "an unknown scope",
+        (r) => (r[1].scope = "both"),
+        [`${AT}[1]: "scope" must be one of edit, blast`],
+      ],
+      [
+        "a null scope",
+        (r) => (r[2].scope = null),
+        [`${AT}[2]: "scope" must be one of edit, blast`],
+      ],
+      [
+        "a scope on a plan row",
+        (r) => (r[2].scope = "edit"),
+        [`${AT}[2]: "scope" applies only to impact and j2-impact rows, not j2-plan`],
+      ],
+      [
+        "false positives on a blast row's files",
+        (r) => (r[0].files = { tp: 3, fp: 40, fn: 2 }),
+        [`${AT}[0] files: "fp" is not recorded on a blast row, which is scored on recall only`],
+      ],
+      [
+        "false positives on a blast row's functions, even zero",
+        (r) => (r[0].functions.fp = 0),
+        [`${AT}[0] functions: "fp" is not recorded on a blast row, which is scored on recall only`],
+      ],
+      [
+        "an edit row without false positives",
+        (r) => delete r[1].files.fp,
+        [`${AT}[1] files: "fp" must be a non-negative integer`],
+      ],
+      [
+        "blast counts that are not an object",
+        (r) => (r[0].files = 3),
+        [`${AT}[0]: "files" must be an object { tp, fn }`],
+      ],
+      [
+        "an unknown count on a blast row",
+        (r) => (r[0].files.recall = 0.6),
+        [`${AT}[0] files: unknown field "recall"`],
+      ],
+      [
+        "a missing count on a blast row",
+        (r) => delete r[0].functions.fn,
+        [`${AT}[0] functions: "fn" must be a non-negative integer`],
+      ],
+      [
+        "two edit rows for one output",
+        (r) => {
+          r[0].scope = "edit";
+          r[0].files.fp = 0;
+          r[0].functions.fp = 0;
+        },
+        [
+          `${AT}[1]: duplicate row for #4336 j2-impact edit`,
+          `${AT}[0]: #4336 j2-impact has a "edit" row but no "blast" row; an impact output scored by list needs both`,
+        ],
+      ],
+      [
+        "an edit row with no blast row",
+        (r) => r.splice(0, 1),
+        [
+          `${AT}[0]: #4336 j2-impact has a "edit" row but no "blast" row; an impact output scored by list needs both`,
+        ],
+      ],
+      [
+        "a blast row with no edit row",
+        (r) => r.splice(1, 1),
+        [
+          `${AT}[0]: #4336 j2-impact has a "blast" row but no "edit" row; an impact output scored by list needs both`,
+        ],
+      ],
+      [
+        "a scoped row beside an unscoped row for the same output",
+        (r) => (r[2].output = "j2-impact"),
+        [
+          `${AT}[1]: #4336 j2-impact has a row with a "scope" and a row without one; score it by one rule, the edit and blast pair or a single unscoped row`,
+        ],
+      ],
+      [
+        "a blast row that finds fewer set files than the edit row",
+        (r) => (r[0].files = { tp: 1, fn: 4 }),
+        [
+          `${AT}[0]: #4336 j2-impact blast files tp is 1, below the edit row's 2; the blast radius includes the files to edit`,
+        ],
+      ],
+      [
+        "a blast row that finds fewer set functions than the edit row",
+        (r) => (r[0].functions = { tp: 1, fn: 10 }),
+        [
+          `${AT}[0]: #4336 j2-impact blast functions tp is 1, below the edit row's 3; the blast radius includes the files to edit`,
+        ],
+      ],
+      [
+        "migration verdicts that differ within the pair",
+        (r) => (r[0].migrationCorrect = false),
+        [
+          `${AT}[0]: #4336 j2-impact "migrationCorrect" differs between its edit and blast rows; the verdict is the output's, not a list's`,
+        ],
+      ],
+      [
+        "an edit row counted against a change set of another size",
+        (r) => (r[1].files.fn = 9),
+        [
+          `${AT}[1]: #4336 files tp + fn is 11, but an earlier row has 5; the change set is the same for every output`,
+        ],
+      ],
+    ]),
+  )("rejects %s", (_label, mutate, messages) => {
+    expect(errorsOf(mutate)).toEqual(messages);
+  });
+
+  it("reports an invalid scope once per row, with no pair error on top", () => {
+    // Row 0 is still a valid blast row; its pair is the row whose scope is misspelt.
+    expect(errorsOf((r) => (r[1].scope = "Edit"))).toEqual([
+      `${AT}[1]: "scope" must be one of edit, blast`,
+    ]);
+  });
+
+  // PR #1125 review: a rejected scope is one fault. The counts' shape follows the scope only
+  // once it is accepted, so no "fp" or "listed" complaint is stacked on the scope error.
+  it.each(
+    /** @type {Array<[string, (rows: any[]) => void, string[]]>} */ ([
+      [
+        "a blast scope on a plan row with ordinary counts",
+        (r) => (r[2].scope = "blast"),
+        [`${AT}[2]: "scope" applies only to impact and j2-impact rows, not j2-plan`],
+      ],
+      [
+        "a misspelt scope on a recall-only row that records listed",
+        (r) => {
+          r[0].scope = "Blast";
+          r[0].files.listed = 5;
+        },
+        [`${AT}[0]: "scope" must be one of edit, blast`],
+      ],
+    ]),
+  )("reports %s as exactly one error", (_label, mutate, messages) => {
+    expect(errorsOf(mutate)).toEqual(messages);
+  });
+
+  it("still checks the counts it can on a row whose scope was rejected", () => {
+    expect(
+      errorsOf((r) => {
+        r[2].scope = "blast";
+        r[2].files.fp = -1;
+        r[2].functions.listed = "many";
+      }),
+    ).toEqual([
+      `${AT}[2]: "scope" applies only to impact and j2-impact rows, not j2-plan`,
+      `${AT}[2] files: "fp" must be a non-negative integer`,
+      `${AT}[2] functions: "listed" must be a non-negative integer`,
+    ]);
+  });
+
+  // PR #1125 review: the pair's migration comparison runs only when both verdicts are
+  // booleans, so a non-boolean verdict is reported once, not again as "differs".
+  it.each(
+    /** @type {Array<[string, number]>} */ ([
+      ["edit", 1],
+      ["blast", 0],
+    ]),
+  )("reports a non-boolean migrationCorrect on the %s row once", (_scope, index) => {
+    expect(errorsOf((r) => (r[index].migrationCorrect = "yes"))).toEqual([
+      `${AT}[${index}]: "migrationCorrect" must be true or false`,
+    ]);
+  });
+
+  describe("listed, the size of the blast list", () => {
+    /** @param {(rows: any[]) => void} mutate */
+    const parsed = (mutate) => {
+      const rows = scopedFixture();
+      mutate(rows);
+      return { rows, ...parseRunInfo(JSON.stringify({ changePlanAccuracy: rows })) };
+    };
+
+    it("accepts listed on a blast row's files and functions and returns it as written", () => {
+      const { rows, run, errors } = parsed((r) => {
+        r[0].files.listed = 5;
+        r[0].functions.listed = 9;
+      });
+      expect(errors).toEqual([]);
+      expect(run?.changePlanAccuracy).toEqual(rows);
+      expect(run?.changePlanAccuracy?.[0].files).toEqual({ tp: 3, fn: 2, listed: 5 });
+    });
+
+    it("accepts listed on one of the two counts only", () => {
+      expect(parsed((r) => (r[0].files.listed = 40)).errors).toEqual([]);
+      expect(parsed((r) => (r[0].functions.listed = 400)).errors).toEqual([]);
+    });
+
+    it("accepts a list that holds nothing but the set items it found", () => {
+      expect(
+        parsed((r) => {
+          r[0].files.listed = 3;
+          r[0].functions.listed = 4;
+        }).errors,
+      ).toEqual([]);
+    });
+
+    it("accepts an empty blast radius: listed 0 with tp 0", () => {
+      expect(
+        parsed((r) => {
+          r[0].files = { tp: 0, fn: 5, listed: 0 };
+          r[0].functions = { tp: 0, fn: 11, listed: 0 };
+          r[1].files = { tp: 0, fp: 0, fn: 5 };
+          r[1].functions = { tp: 0, fp: 0, fn: 11 };
+        }).errors,
+      ).toEqual([]);
+    });
+
+    it.each(
+      /** @type {Array<[string, (rows: any[]) => void, string[]]>} */ ([
+        [
+          "a files list smaller than the set files found in it",
+          (r) => (r[0].files.listed = 2),
+          [
+            `${AT}[0] files: "listed" is 2, below "tp" 3; the list holds every set item found in it`,
+          ],
+        ],
+        [
+          "a functions list smaller than the set functions found in it",
+          (r) => (r[0].functions.listed = 0),
+          [
+            `${AT}[0] functions: "listed" is 0, below "tp" 4; the list holds every set item found in it`,
+          ],
+        ],
+        [
+          "a negative listed",
+          (r) => (r[0].files.listed = -1),
+          [`${AT}[0] files: "listed" must be a non-negative integer`],
+        ],
+        [
+          "a fractional listed",
+          (r) => (r[0].files.listed = 5.5),
+          [`${AT}[0] files: "listed" must be a non-negative integer`],
+        ],
+        [
+          "a listed that is not a number",
+          (r) => (r[0].functions.listed = "9"),
+          [`${AT}[0] functions: "listed" must be a non-negative integer`],
+        ],
+        [
+          "a null listed",
+          (r) => (r[0].functions.listed = null),
+          [`${AT}[0] functions: "listed" must be a non-negative integer`],
+        ],
+        [
+          "listed on an edit row",
+          (r) => (r[1].files.listed = 3),
+          [`${AT}[1] files: "listed" is recorded only on a blast row, as the size of its list`],
+        ],
+        [
+          "listed on a plan row",
+          (r) => (r[2].functions.listed = 8),
+          [`${AT}[2] functions: "listed" is recorded only on a blast row, as the size of its list`],
+        ],
+        [
+          "false positives on a blast row that also records listed",
+          (r) => (r[0].files = { tp: 3, fp: 2, fn: 2, listed: 5 }),
+          [`${AT}[0] files: "fp" is not recorded on a blast row, which is scored on recall only`],
+        ],
+      ]),
+    )("rejects %s", (_label, mutate, messages) => {
+      const { run, errors } = parsed(mutate);
+      expect(run).toBeNull();
+      expect(errors).toEqual(messages);
+    });
+
+    it("rejects listed on an impact row scored by the rule before #1073", () => {
+      const rows = [
+        {
+          issue: 4336,
+          output: "impact",
+          source: "curated",
+          files: { tp: 3, fp: 2, fn: 2, listed: 5 },
+          functions: { tp: 4, fp: 5, fn: 7 },
+          migrationCorrect: true,
+        },
+      ];
+      expect(parseRunInfo(JSON.stringify({ changePlanAccuracy: rows })).errors).toEqual([
+        `${AT}[0] files: "listed" is recorded only on a blast row, as the size of its list`,
+      ]);
+    });
+
+    it("rejects listed on buildProof counts", () => {
+      const proof = {
+        issue: 4478,
+        branch: "walkthrough/run-7-4478",
+        commit: "0123abcd",
+        builds: true,
+        testsPass: false,
+        tasksTotal: 8,
+        tasksCorrected: 2,
+        files: { tp: 2, fp: 1, fn: 1, listed: 3 },
+        functions: { tp: 2, fp: 0, fn: 0 },
+        agentCostUsd: 2.15,
+        wallMinutes: 38,
+      };
+      expect(parseRunInfo(JSON.stringify({ buildProof: proof })).errors).toEqual([
+        `run.json buildProof files: "listed" is recorded only on a blast row, as the size of its list`,
+      ]);
+    });
+  });
+});
+
+describe("accuracy slide through the exported renderer (#1073)", () => {
+  /** @param {any[]} changePlanAccuracy */
+  const rowsOf = (changePlanAccuracy) => {
+    const html = renderDeck({
+      kind: "report",
+      title: "T",
+      steps: [valid()],
+      imageSrc: () => "x.png",
+      inlineAssets: null,
+      run: /** @type {any} */ ({ changePlanAccuracy }),
+    });
+    const rows = [...html.matchAll(/<tr><th scope="row">(.*?)<\/tr>/g)]
+      .map((m) => m[1])
+      .filter((r) => r.includes("miniflux/v2/issues"));
+    return { html, rows };
+  };
+
+  it("never prints a precision for a blast row, even one that carries fp unvalidated", () => {
+    // renderDeck is exported and does not run the validator: the row's scope decides.
+    const blast = scopedFixture()[0];
+    blast.files = { tp: 3, fp: 2, fn: 2 };
+    blast.functions = { tp: 4, fp: 5, fn: 7 };
+    const { rows } = rowsOf([blast]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toContain(
+      "<td>blast radius</td><td>curated</td><td>not scored</td><td>60% (3/5)</td><td>not scored</td><td>36% (4/11)</td><td>yes</td>",
+    );
+    // 3/(3+2) and 4/(4+5), the precisions an fp-keyed renderer would have printed.
+    expect(rows[0]).not.toContain("60% (3/5)</td><td>60% (3/5)");
+    expect(rows[0]).not.toContain("44% (4/9)");
+  });
+
+  it("keeps the precision of an unscoped and of an edit row", () => {
+    const { rows } = rowsOf([scopedFixture()[1], accuracyFixture()[2]]);
+    expect(rows[0]).toContain("<td>75% (3/4)</td><td>60% (3/5)</td><td>–</td><td>0% (0/9)</td>");
+    expect(rows[1]).toContain("<td>67% (2/3)</td><td>40% (2/5)</td><td>75% (3/4)</td>");
+  });
+
+  it("prints no precision for an unvalidated row that has no fp to compute one from", () => {
+    const plan = scopedFixture()[2];
+    plan.files = { tp: 4, fn: 1 };
+    const { rows } = rowsOf([plan]);
+    expect(rows[0]).toContain("<td>not scored</td><td>80% (4/5)</td><td>75% (6/8)</td>");
+    expect(rows[0]).not.toContain("NaN");
+  });
+
+  const HEAD_NO_LISTED =
+    '<th scope="col">Function recall</th><th scope="col">Migration correct</th>';
+  const HEAD_LISTED =
+    '<th scope="col">Function recall</th><th scope="col">Listed</th><th scope="col">Migration correct</th>';
+
+  it("prints listed as plain numbers in its own column, and a dash on the other rows", () => {
+    const fixture = scopedFixture();
+    fixture[0].files.listed = 5;
+    fixture[0].functions.listed = 9;
+    const { html, rows } = rowsOf(fixture);
+    expect(html).toContain(HEAD_LISTED);
+    expect(html).toContain("Listed is the size of the blast radius, a count and not a score");
+    // Edit row, blast row, plan row.
+    expect(rows[0]).toContain("<td>27% (3/11)</td><td>–</td><td>yes</td>");
+    expect(rows[1]).toContain(
+      "<td>not scored</td><td>60% (3/5)</td><td>not scored</td><td>36% (4/11)</td><td>5 files · 9 functions</td><td>yes</td>",
+    );
+    expect(rows[2]).toContain("<td>–</td><td>yes</td>");
+    // A count, never a ratio: no percentage is built from listed (3/5 is the recall's).
+    expect(rows[1]).not.toMatch(/\(\d+\/9\)/);
+    expect(rows[1].match(/%/g)).toHaveLength(2);
+  });
+
+  it("prints only the count that was recorded, in the singular for one", () => {
+    const files = scopedFixture();
+    files[0].files = { tp: 1, fn: 4, listed: 1 };
+    files[1].files = { tp: 1, fp: 0, fn: 4 };
+    expect(rowsOf(files).rows[1]).toContain("<td>1 file</td><td>yes</td>");
+    const functions = scopedFixture();
+    functions[0].functions.listed = 12;
+    expect(rowsOf(functions).rows[1]).toContain("<td>12 functions</td><td>yes</td>");
+  });
+
+  it("leaves a deck with no listed exactly as it was: no Listed column or caption", () => {
+    for (const fixture of [scopedFixture(), accuracyFixture()]) {
+      const { html, rows } = rowsOf(fixture);
+      expect(html).toContain(HEAD_NO_LISTED);
+      expect(html).not.toContain("Listed");
+      expect(html).toContain("blast radius on recall only (#1073)</caption>");
+      for (const row of rows) expect(row.match(/<td>/g)).toHaveLength(8);
+    }
+  });
+
+  it("renders a run 7 row unchanged beside a pair that records listed", () => {
+    const fixture = scopedFixture();
+    fixture[0].files.listed = 5;
+    const legacy = accuracyFixture()[2];
+    legacy.issue = 4478;
+    const { rows } = rowsOf([...fixture, legacy]);
+    expect(rows[3]).toContain(
+      "<td>impact</td><td>both lists together (rule before #1073)</td><td>curated</td><td>75% (3/4)</td><td>60% (3/5)</td><td>–</td><td>0% (0/9)</td><td>–</td><td>yes</td>",
+    );
+  });
+
+  it("does not print a listed that is not a count, or one on a row that is not blast", () => {
+    const fixture = scopedFixture();
+    fixture[0].files.listed = "<b>5</b>";
+    fixture[0].functions.listed = -3;
+    fixture[1].files.listed = 77;
+    fixture[2].functions.listed = 88;
+    const { html } = rowsOf(fixture);
+    expect(html).toContain(HEAD_NO_LISTED);
+    expect(html).not.toContain("Listed");
+    expect(html).not.toContain("<b>5</b>");
+    expect(html).not.toContain("77 files");
+    expect(html).not.toContain("88 functions");
+  });
+});
+
+describe("changePlanScopeLabel (#1073)", () => {
+  it.each(
+    /** @type {Array<[string, string | undefined, string]>} */ ([
+      ["impact", "edit", "files to edit"],
+      ["j2-impact", "blast", "blast radius"],
+      ["impact", undefined, "both lists together (rule before #1073)"],
+      ["j2-impact", undefined, "both lists together (rule before #1073)"],
+      ["chat", undefined, "–"],
+      ["plan", undefined, "–"],
+      ["j2-plan", undefined, "–"],
+    ]),
+  )("%s with scope %s reads %s", (output, scope, label) => {
+    expect(changePlanScopeLabel(/** @type {any} */ ({ output, scope }))).toBe(label);
   });
 });
 

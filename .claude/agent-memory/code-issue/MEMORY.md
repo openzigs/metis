@@ -117,3 +117,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Before-fixture pins only its scenario](project_before-fixture-pins-only-its-scenario.md) — regenerate on base, mutate each off-path line
 - [Count the delimiter, not the split](project_count-the-delimiter-not-the-split.md) — `split(" | ")` misses `a | | b`; test edge bars
 - [Memoised closure = entities × closure](project_memoised-closure-cache-is-entities-times-closure.md) — probe heap at 2 sizes (#1104)
+- [Absent page group is ambiguous](project_absent-page-group-is-ambiguous-when-ui-hides-empty.md) — UI hides empty groups
