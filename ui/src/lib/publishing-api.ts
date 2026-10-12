@@ -48,6 +48,8 @@ export const publishingApi = {
       analysisId: string;
       targetOwner: string;
       targetRepo: string;
+      /** #1064 — the target's API base URL; `null` = public GitHub. */
+      targetBaseUrl?: string | null;
       defaultLabels?: string[];
       /** #863 — draft only these requirements. */
       requirementIds?: string[];

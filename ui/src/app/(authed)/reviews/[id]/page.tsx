@@ -28,6 +28,7 @@ import { DecisionBar } from "@/components/reviews/DecisionBar";
 import { ReviewHeader } from "@/components/reviews/ReviewHeader";
 import { ReviewItemCard } from "@/components/reviews/ReviewItemCard";
 import { ReviewerPanel } from "@/components/reviews/ReviewerPanel";
+import { canWithdrawReview, WithdrawReviewButton } from "@/components/reviews/WithdrawReviewButton";
 
 /**
  * The caller's own assignment, or null. Exported for unit testing.
@@ -134,7 +135,15 @@ export default function ReviewDetailPage() {
         </p>
       ) : (
         <>
-          <ReviewHeader review={review} />
+          {/* #1032 — offered only when the server would accept the withdraw. */}
+          <ReviewHeader
+            review={review}
+            actions={
+              canWithdrawReview(review, user) ? (
+                <WithdrawReviewButton review={review} user={user} />
+              ) : undefined
+            }
+          />
 
           <section className="space-y-3" aria-label="Review scope">
             <h2 className="text-sm font-semibold">

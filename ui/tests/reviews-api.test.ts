@@ -80,4 +80,9 @@ describe("reviewsApi", () => {
     await reviewsApi.submit("rev_1");
     expect(apiFetchMock).toHaveBeenCalledWith("/reviews/rev_1/submit", { method: "POST" });
   });
+
+  it("withdraws a review in review (#1032)", async () => {
+    await reviewsApi.withdraw("rev_1");
+    expect(apiFetchMock).toHaveBeenCalledWith("/reviews/rev_1/withdraw", { method: "POST" });
+  });
 });

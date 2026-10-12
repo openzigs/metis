@@ -172,6 +172,7 @@ export function publishingRouter(): Router {
         analysisId: body.analysisId,
         targetOwner: body.targetOwner,
         targetRepo: body.targetRepo,
+        targetBaseUrl: body.targetBaseUrl,
         defaultLabels: body.defaultLabels,
         requirementIds: body.requirementIds,
         actorId: actor(req),

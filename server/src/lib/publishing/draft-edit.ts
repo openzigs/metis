@@ -21,7 +21,7 @@
 import type { EditIssueDraftInput, IssueDraft as SharedIssueDraft } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
-import { normalizeTitle } from "./dedup.js";
+import { neutraliseMarkerText, normalizeTitle } from "./dedup.js";
 import { PublishError } from "./types.js";
 import { toDraftApi } from "./publishing-service.js";
 
@@ -76,7 +76,10 @@ export async function editDraft(opts: {
     where: { id: draft.id, deletedAt: null, status: { notIn: [...NOT_EDITABLE] } },
     data: {
       ...(title !== undefined ? { title } : {}),
-      ...(body !== undefined ? { body } : {}),
+      // A reviewer's text is published as written, except that it cannot
+      // hold a METIS marker: marker-shaped text is saved inert, so the
+      // draft they then see is what the tracker receives (`dedup.ts`).
+      ...(body !== undefined ? { body: neutraliseMarkerText(body) } : {}),
       ...(labels !== undefined ? { labels: JSON.stringify([...new Set(labels)]) } : {}),
       ...(draft.status === "approved" ? { status: "draft" } : {}),
       metadata: JSON.stringify({

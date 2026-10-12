@@ -142,6 +142,15 @@ export const reviewsApi = {
     return apiFetch<ReviewRequest>(`/reviews/${reviewId}/submit`, { method: "POST" });
   },
 
+  /**
+   * #1032 — in_review → draft, and every requirement gets back the status it
+   * had before the submit (#989). Requester or `review.admin` only; any other
+   * status is refused with 409 `ILLEGAL_REVIEW_TRANSITION`.
+   */
+  withdraw(reviewId: string): Promise<ReviewRequest> {
+    return apiFetch<ReviewRequest>(`/reviews/${reviewId}/withdraw`, { method: "POST" });
+  },
+
   /** Record the caller's approve/reject decision (assigned reviewers only). */
   decide(
     reviewId: string,
