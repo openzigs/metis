@@ -22,6 +22,7 @@ import {
   type GeneratedDocVersionRecord,
 } from "./generated-doc-provenance.js";
 import { recordSectionSynthesis, SECTION_SYNTHESIS_VERSION } from "./section-reuse.js";
+import type { SchemaInventory } from "./schema-inventory.js";
 
 const db = vi.hoisted(() => ({
   project: { findUnique: vi.fn() },
@@ -599,6 +600,54 @@ it("production entry point persists records and reuses them without rebuilding p
       changed: [groups[1].id],
       sections: [groups[1].id],
     });
+  });
+});
+
+// #1061 (panel) — nothing tested that the inventory the route loads reaches the
+// section: replacing the pass-through in `runHolisticSynthesis` with `{}` left
+// every test green, because the other #1061 tests call `synthesizeFinalDocument`
+// with the inventory directly.
+it("production entry point hands the schema inventory to the Data Architecture section", async () => {
+  await withPhase1Fixture(async () => {
+    const run = (schemaInventory?: SchemaInventory) =>
+      synthesizeHolisticDocument("p", "architecture", "Architecture", {
+        grounding: context("Source facts."),
+        ...(schemaInventory ? { schemaInventory } : {}),
+      });
+    const withSchema = await run({
+      source: "live-schema",
+      label: 'the live schema of "pg" (public)',
+      reads: [{ connector: "pg", how: "live", schemas: ["public"] }],
+      tables: [
+        {
+          schema: "public",
+          name: "orders_ledger",
+          read: 0,
+          columns: [
+            {
+              name: "id",
+              dataType: "bigint",
+              nullable: false,
+              isPrimaryKey: true,
+              isForeignKey: false,
+            },
+          ],
+          foreignKeys: [],
+        },
+      ],
+    });
+    // Rendered from the inventory, which only the entry point's caller holds.
+    expect(withSchema.markdown).toContain(
+      '### Schema Reference\n\n> Rendered from the live schema of "pg" (public), not written by the model.',
+    );
+    expect(withSchema.markdown).toContain("#### `orders_ledger`");
+    expect(withSchema.markdown).toContain("| id | bigint | PK, NOT NULL |");
+    expect(withSchema.markdown).not.toContain("Schema not verified");
+
+    // Without one, the section says so: the two are told apart by the option.
+    const without = await run();
+    expect(without.markdown).toContain("> **Schema not verified.**");
+    expect(without.markdown).not.toContain("### Schema Reference");
   });
 });
 

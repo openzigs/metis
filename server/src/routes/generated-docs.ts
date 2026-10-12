@@ -118,7 +118,7 @@ import {
   stopGeneration,
   type GenerationControl,
 } from "../lib/docs-gen/generation-control.js";
-import { withGenerationScope } from "../lib/docs-gen/generation-scope.js";
+import { throwIfGenerationStopped, withGenerationScope } from "../lib/docs-gen/generation-scope.js";
 import {
   countScopedRequirements,
   REQUIREMENTS_SCOPE_EMPTY_CODE,
@@ -1569,107 +1569,122 @@ export async function generateDocumentAsync(
       // #178 — the bar never moves backwards: a batched section's total grows
       // when a cut-off batch is split, which can lower done/total for a moment.
       const docPercent = monotonicPercent();
-      // #1061 — the architecture document's Data Architecture section is
-      // grounded in the schema: read live as the user this generation runs as
-      // (the same audited introspection the database document makes), else from
-      // a stored schema graph, else from the code graph's SQL. Never throws.
-      let schemaInventory: SchemaInventory | undefined;
-      if (docType === "architecture") {
-        const { loadSchemaInventory } = await import("../lib/docs-gen/schema-inventory-loader.js");
-        schemaInventory = await loadSchemaInventory({
-          projectId,
-          actorId: policy.actor.userId,
-          ...(policy.codeGraphId ? { codeGraphId: policy.codeGraphId } : {}),
-        });
-      }
       // #855 — inside the run's scope: every docs-gen provider call carries its
       // AbortSignal and reports its spend to the run's ceiling.
-      const result = await withGenerationScope(control!, () =>
-        synthesizeHolisticDocument(projectId, docType, doc?.title ?? "Generated Documentation", {
-          ...(automatic ? { previousManifest } : {}),
-          ...(beforeStep ? { beforeStep } : {}),
-          // #782 — resume: an earlier unfinished run's sections are reused
-          // where their inputs are unchanged, and this run's are saved as each
-          // one finishes, only while this run still holds the claim. `records`
-          // is already merged with the stored checkpoint (sections this run has
-          // not reached are carried), so it replaces the column, and a late
-          // failure's partial document is built from all of it.
-          checkpoint: original.generationCheckpoint ?? undefined,
-          onCheckpoint: async (records) => {
-            finishedSections = records;
-            await prisma.generatedDocument.updateMany({
-              where: { id: docId, projectId, deletedAt: null, codeGraphHash: claim },
-              data: {
-                generationCheckpoint: buildGenerationCheckpoint(
-                  records,
-                ) as unknown as Prisma.InputJsonValue,
-              },
-            });
-          },
-          provenance: {
-            revision: {
-              projectId,
-              generatedDocumentId: docId,
-              version: nextVersion,
+      const result = await withGenerationScope(control!, async () => {
+        // #1061 — the architecture document's Data Architecture section is
+        // grounded in the schema: read live as the user this generation runs as
+        // (the same audited introspection the database document makes), else
+        // from a stored schema graph, else from the code graph's SQL. Never
+        // throws. Inside the scope and given the run's signal, so a cancel or a
+        // delete during the read ends it at once instead of after the wait.
+        //
+        // Every database connector of the PROJECT is read, also for a
+        // repository- or path-scoped document: a connector belongs to the
+        // project and records no repository or path, so there is nothing to
+        // narrow it by (the repository-SQL tier is narrowed, by code graph).
+        let schemaInventory: SchemaInventory | undefined;
+        if (docType === "architecture") {
+          const { loadSchemaInventory } =
+            await import("../lib/docs-gen/schema-inventory-loader.js");
+          schemaInventory = await loadSchemaInventory({
+            projectId,
+            actorId: policy.actor.userId,
+            signal: control!.signal,
+            ...(policy.codeGraphId ? { codeGraphId: policy.codeGraphId } : {}),
+          });
+          throwIfGenerationStopped();
+        }
+        return synthesizeHolisticDocument(
+          projectId,
+          docType,
+          doc?.title ?? "Generated Documentation",
+          {
+            ...(automatic ? { previousManifest } : {}),
+            ...(beforeStep ? { beforeStep } : {}),
+            // #782 — resume: an earlier unfinished run's sections are reused
+            // where their inputs are unchanged, and this run's are saved as each
+            // one finishes, only while this run still holds the claim. `records`
+            // is already merged with the stored checkpoint (sections this run has
+            // not reached are carried), so it replaces the column, and a late
+            // failure's partial document is built from all of it.
+            checkpoint: original.generationCheckpoint ?? undefined,
+            onCheckpoint: async (records) => {
+              finishedSections = records;
+              await prisma.generatedDocument.updateMany({
+                where: { id: docId, projectId, deletedAt: null, codeGraphHash: claim },
+                data: {
+                  generationCheckpoint: buildGenerationCheckpoint(
+                    records,
+                  ) as unknown as Prisma.InputJsonValue,
+                },
+              });
             },
-            generatedAt,
-            policy,
+            provenance: {
+              revision: {
+                projectId,
+                generatedDocumentId: docId,
+                version: nextVersion,
+              },
+              generatedAt,
+              policy,
+            },
+            ...(repoConnectorId ? { repoConnectorId } : {}),
+            ...(pathPrefixes ? { pathPrefixes } : {}),
+            ...(grounding ? { grounding } : {}),
+            ...(schemaInventory ? { schemaInventory } : {}),
+            groundingForSection,
+            // #243 — per-section live progress + degraded/failed warnings.
+            onSectionProgress: (u) => {
+              // The last section's terminal update ends the section stage: what
+              // follows (assembly, provenance) is not "in" that section.
+              const last =
+                (u.status === "done" || u.status === "degraded" || u.status === "failed") &&
+                u.index >= u.total;
+              stage = last ? "assembly" : "sections";
+              // #856 — between sections the run is in none of them: a stop found
+              // before the next one must not be blamed on the one just finished.
+              stageSection = last || u.status !== "generating" ? undefined : u.section;
+              jobEvents.docSection({
+                jobId: docId,
+                projectId,
+                section: u.section,
+                status: u.status,
+                index: u.index,
+                total: u.total,
+                warning: u.warning
+                  ? {
+                      kind: u.warning.kind,
+                      severity: u.warning.severity,
+                      message: u.warning.message,
+                    }
+                  : undefined,
+              });
+              // Mirror progress onto the lifecycle channel (0-100): Phase 2 fills
+              // PHASE1_PROGRESS_SHARE..100, and a batched section advances once
+              // per batch, not once per section.
+              jobEvents.progress(
+                "doc-generation",
+                docId,
+                projectId,
+                docPercent(documentProgressPercent(u)),
+                sectionProgressMessage(u),
+              );
+            },
+            // Phase 1 fills the first PHASE1_PROGRESS_SHARE of the bar, per chunk.
+            onPhase1Progress: ({ done, total }) => {
+              stage = "facts";
+              jobEvents.progress(
+                "doc-generation",
+                docId,
+                projectId,
+                docPercent(phase1ProgressPercent(done, total)),
+                phase1ProgressMessage(done, total),
+              );
+            },
           },
-          ...(repoConnectorId ? { repoConnectorId } : {}),
-          ...(pathPrefixes ? { pathPrefixes } : {}),
-          ...(grounding ? { grounding } : {}),
-          ...(schemaInventory ? { schemaInventory } : {}),
-          groundingForSection,
-          // #243 — per-section live progress + degraded/failed warnings.
-          onSectionProgress: (u) => {
-            // The last section's terminal update ends the section stage: what
-            // follows (assembly, provenance) is not "in" that section.
-            const last =
-              (u.status === "done" || u.status === "degraded" || u.status === "failed") &&
-              u.index >= u.total;
-            stage = last ? "assembly" : "sections";
-            // #856 — between sections the run is in none of them: a stop found
-            // before the next one must not be blamed on the one just finished.
-            stageSection = last || u.status !== "generating" ? undefined : u.section;
-            jobEvents.docSection({
-              jobId: docId,
-              projectId,
-              section: u.section,
-              status: u.status,
-              index: u.index,
-              total: u.total,
-              warning: u.warning
-                ? {
-                    kind: u.warning.kind,
-                    severity: u.warning.severity,
-                    message: u.warning.message,
-                  }
-                : undefined,
-            });
-            // Mirror progress onto the lifecycle channel (0-100): Phase 2 fills
-            // PHASE1_PROGRESS_SHARE..100, and a batched section advances once
-            // per batch, not once per section.
-            jobEvents.progress(
-              "doc-generation",
-              docId,
-              projectId,
-              docPercent(documentProgressPercent(u)),
-              sectionProgressMessage(u),
-            );
-          },
-          // Phase 1 fills the first PHASE1_PROGRESS_SHARE of the bar, per chunk.
-          onPhase1Progress: ({ done, total }) => {
-            stage = "facts";
-            jobEvents.progress(
-              "doc-generation",
-              docId,
-              projectId,
-              docPercent(phase1ProgressPercent(done, total)),
-              phase1ProgressMessage(done, total),
-            );
-          },
-        }),
-      );
+        );
+      });
       stage = "assembly";
       stageSection = undefined;
       markdown = result.markdown;

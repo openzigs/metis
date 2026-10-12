@@ -22,6 +22,7 @@ import {
   type Phase2Router,
 } from "./holistic-synthesizer.js";
 import { NO_SCHEMA_INVENTORY, type SchemaInventory } from "./schema-inventory.js";
+import { deriveDocStatus, summarizeWarnings } from "./grounding/degraded-warnings.js";
 import { legacyGeneratedDocVersionManifest } from "./generated-doc-provenance.js";
 
 const db = vi.hoisted(() => ({
@@ -46,27 +47,39 @@ const TABLES = [
   {
     schema: "public",
     name: "feeds",
+    read: 0,
     columns: [column("id", "bigint", "pk"), column("user_id", "integer", "fk")],
     foreignKeys: [{ name: "feeds_user_id_fkey", columns: ["user_id"], refTable: "users" }],
   },
   {
     schema: "public",
     name: "users",
+    read: 0,
     columns: [column("id", "integer", "pk"), column("gesture_nav", "text")],
     foreignKeys: [],
   },
 ];
+/** One database, its `public` schema introspected in this run. */
 const LIVE: SchemaInventory = {
   source: "live-schema",
-  label: 'the live schema of "miniflux-pg"',
-  current: true,
+  label: 'the live schema of "miniflux-pg" (public)',
+  reads: [{ connector: "miniflux-pg", how: "live", schemas: ["public"] }],
   tables: TABLES,
+};
+/** The same tables from a stored graph: nothing may be removed against it. */
+const STORED: SchemaInventory = {
+  ...LIVE,
+  source: "schema-graph",
+  reads: [{ connector: "miniflux-pg", how: "stored", schemas: ["public"] }],
 };
 const REPO_SQL: SchemaInventory = {
   source: "repository-sql",
   label: "the SQL found in the repository (migrations, queries and mappings)",
-  current: false,
-  tables: TABLES.map((t) => ({ ...t, columns: t.columns.map((c) => ({ ...c, dataType: "" })) })),
+  reads: [],
+  tables: TABLES.map(({ read: _read, ...t }) => ({
+    ...t,
+    columns: t.columns.map((c) => ({ ...c, dataType: "" })),
+  })),
 };
 
 const dataGroup = (inventory?: SchemaInventory) =>
@@ -113,10 +126,50 @@ describe("the Data Architecture section definition (#1061)", () => {
     expect(instructions).toContain("- Do NOT write a Mermaid `erDiagram`.");
     expect(instructions).toContain("- Do NOT write per-table field or column tables.");
     expect(instructions).toContain("| Table | Purpose | Written by |");
-    expect(instructions).toContain("Never name a table or column that is not in the schema.");
-    expect(instructions).toContain('=== DATABASE SCHEMA — from the live schema of "miniflux-pg".');
+    expect(instructions).toContain(
+      '=== DATABASE SCHEMA — from the live schema of "miniflux-pg" (public).',
+    );
     expect(instructions).toContain("- users: id integer PK, gesture_nav text");
     expect(instructions).toContain("is described here as what it is, never as a table");
+  });
+
+  // #1061 review — only each database's default schema is read, so the prompt
+  // says what the list covers and does not forbid what it does not cover.
+  it("tells the model which schemas the list covers, and forbids nothing outside them", () => {
+    const { instructions } = dataGroup(LIVE);
+    expect(instructions).toContain(
+      'WHAT THE SCHEMA BELOW COVERS:\n- "miniflux-pg": schema public, read from the database now.',
+    );
+    expect(instructions).toContain("Only each database's default schema is read.");
+    expect(instructions).toContain(
+      "For the schemas it covers it is the authority for every table name",
+    );
+    expect(instructions).toContain(
+      "- Within the schemas listed as covered, do not name a table or column that is not in the list.",
+    );
+    expect(instructions).toContain(
+      "- The list is NOT the whole database. A table that the facts place in another schema, or " +
+        "in a database marked NOT read, may be named: write it with its schema (`audit.events`), " +
+        "say that its columns were not read, and list no columns for it.",
+    );
+    // The blanket prohibition is gone: it was false for every other schema.
+    expect(instructions).not.toContain("Never name a table or column that is not in the schema");
+    // The coverage statement comes before the list it describes.
+    expect(instructions.indexOf("WHAT THE SCHEMA BELOW COVERS")).toBeLessThan(
+      instructions.indexOf("=== DATABASE SCHEMA"),
+    );
+
+    const partial = dataGroup({
+      ...STORED,
+      reads: [
+        { connector: "A", how: "stored", schemas: ["public"], storedOn: "2026-10-10" },
+        { connector: "B", how: "unread", schemas: [] },
+      ],
+    }).instructions;
+    expect(partial).toContain(
+      '- "A": schema public, from a schema graph stored on 2026-10-10; it may be out of date.',
+    );
+    expect(partial).toContain('- "B": NOT read.');
   });
 
   it("with names from repository SQL: keeps the data dictionary, restricted to those names", () => {
@@ -175,6 +228,9 @@ One PostgreSQL database.
 | Field | Type | Description |
 |---|---|---|
 | \`feed_id\` | int64 | Invented |`;
+
+/** The same section without the invented table: everything in it can be repaired. */
+const REPAIRABLE = INVENTED.slice(0, INVENTED.indexOf("### Entity: `jobs`")).trimEnd();
 
 const state: { dataSection: string; prompts: string[] } = { dataSection: INVENTED, prompts: [] };
 const loadConfig = vi.hoisted(() => vi.fn());
@@ -323,22 +379,60 @@ describe("synthesizeFinalDocument — a stored Data Architecture section and the
       { schemaInventory },
     );
 
-  it("reuses the checked section, with its warning, while the schema is unchanged", async () => {
+  const dataRecord = (result: Result) =>
+    result.sectionSynthesis?.records.find((r) => r.sectionId === "data-architecture");
+
+  it("reuses a section whose findings were all repaired, while the schema is unchanged", async () => {
+    state.dataSection = REPAIRABLE;
     const cold = await run(LIVE);
-    // The record holds what the reader saw: the checked section and its warning.
-    const record = cold.sectionSynthesis?.records.find((r) => r.sectionId === "data-architecture");
-    expect(record?.markdown).toContain("### Schema Reference");
-    expect(record?.warnings.map((w) => w.kind)).toEqual(["schema-unverified"]);
+    // The record holds what the reader saw: the checked section, no warning.
+    expect(dataRecord(cold)?.markdown).toContain("### Schema Reference");
+    expect(dataRecord(cold)?.markdown).not.toContain("| `error_counter`");
+    expect(dataRecord(cold)?.warnings).toEqual([]);
 
     state.prompts = [];
     const warm = await run({ ...LIVE, tables: [...TABLES] }, cold);
     expect(state.prompts).toEqual([]);
     expect(warm.regeneration).toEqual({ mode: "unchanged", changed: [] });
     expect(warm.markdown).toBe(cold.markdown);
-    expect(warm.warnings.map((w) => w.kind)).toEqual(["schema-unverified"]);
+    expect(warm.warnings).toEqual([]);
+  });
+
+  // #1061 review — reused, a section with unmatched names carried its marks and
+  // its warning into every later run for as long as the schema was unchanged.
+  it("writes a section left with unmatched names again, and only that section", async () => {
+    const cold = await run(LIVE);
+    expect(cold.warnings.map((w) => w.kind)).toEqual(["schema-unverified"]);
+    // Its record is stored, so the snapshot is complete and the rest is reused.
+    expect(dataRecord(cold)?.warnings.map((w) => w.kind)).toEqual(["schema-unverified"]);
+    expect(cold.sectionSynthesis?.records).toHaveLength(5);
+
+    // Same schema, same everything, and the model writes the same thing: the
+    // section is written again (one call), and the warning is still true.
+    state.prompts = [];
+    const same = await run(LIVE, cold);
+    expect(state.prompts).toHaveLength(1);
+    expect(same.regeneration).toMatchObject({ mode: "sections", changed: ["data-architecture"] });
+    expect(same.warnings.map((w) => w.kind)).toEqual(["schema-unverified"]);
+
+    // The route back to a clean document: this time the model names only what
+    // exists. One section is written, the warning is gone, and from then on the
+    // section is reused like any other.
+    state.prompts = [];
+    state.dataSection = "## Data Architecture\n\nOne PostgreSQL database holding `users`.";
+    const clean = await run(LIVE, same);
+    expect(state.prompts).toHaveLength(1);
+    expect(clean.warnings).toEqual([]);
+    expect(clean.markdown).not.toContain("Not in the schema");
+    expect(dataRecord(clean)?.warnings).toEqual([]);
+    state.prompts = [];
+    const settled = await run(LIVE, clean);
+    expect(state.prompts).toEqual([]);
+    expect(settled.regeneration).toEqual({ mode: "unchanged", changed: [] });
   });
 
   it("rewrites only that section when the schema changes", async () => {
+    state.dataSection = REPAIRABLE;
     const cold = await run(LIVE);
     state.prompts = [];
     const changed: SchemaInventory = {
@@ -373,29 +467,84 @@ describe("synthesizeFinalDocument — Data Architecture is checked against the s
     expect(doc).toContain("| gesture_nav | text |  |");
     expect(doc).toContain('feeds }o--|| users : "feeds_user_id_fkey"');
     expect(doc).toContain(
-      '> **Schema check.** The tables and columns in this section were checked against the live schema of "miniflux-pg".',
+      '> **Schema check.** The tables and columns in this section were checked against the live schema of "miniflux-pg" (public).',
     );
     // One Data Architecture section, in its place.
     expect(doc.match(/^## Data Architecture$/gm)).toHaveLength(1);
     expect(doc.indexOf("## Component Breakdown")).toBeLessThan(doc.indexOf("## Data Architecture"));
   });
 
-  it("degrades the document with a warning that names what was found", async () => {
+  it("warns about the names it could not match, and only those", async () => {
     const result = await synth(LIVE);
-    const warning = result.warnings.find((w) => w.kind === "schema-unverified");
-    expect(warning).toMatchObject({ section: "Data Architecture", severity: "warning" });
-    expect(warning!.message).toContain(
-      '3 table or column name(s) written by the model do not match the live schema of "miniflux-pg" ' +
-        "(jobs, users.error_counter, users.gesture_nav).",
+    const schemaWarnings = result.warnings.filter((w) => w.kind === "schema-unverified");
+    expect(schemaWarnings).toHaveLength(1);
+    // `jobs` is still in the section, marked. The removed column and the
+    // annotated type were repaired and are not in the warning.
+    expect(schemaWarnings[0]).toEqual({
+      kind: "schema-unverified",
+      section: "Data Architecture",
+      severity: "warning",
+      message:
+        'Section "Data Architecture": 1 name could not be matched to the database schema (jobs). ' +
+        'Checked against the live schema of "miniflux-pg" (public). Each is marked in the ' +
+        "section and none was removed; a table in a schema or database that was not read can be real.",
+    });
+    expect(deriveDocStatus(result.warnings)).toBe("degraded");
+    expect(summarizeWarnings(result.warnings)).toBe(
+      "Needs review — 1 section(s) name tables or columns that could not be matched to the " +
+        "database schema (marked in the section).",
     );
-    expect(warning!.message).toContain("1 column(s) the table does not have were removed.");
+  });
+
+  // #1061 review — a finding that was repaired is no longer in the document.
+  it("does not degrade the document when every finding was repaired", async () => {
+    state.dataSection = REPAIRABLE;
+    const updates: Array<{ section: string; status: string }> = [];
+    const result = await synthesizeFinalDocument(
+      facts,
+      meta,
+      "architecture",
+      "Architecture",
+      router(),
+      "p",
+      undefined,
+      (u) => updates.push({ section: u.section, status: u.status }),
+      async () => context(),
+      undefined,
+      undefined,
+      { schemaInventory: LIVE },
+    );
+    // The repairs happened, and the section says so itself.
+    expect(result.markdown).not.toContain("error_counter` | int");
+    expect(result.markdown).toContain("| `gesture_nav` | bool *(schema: `text`)* |");
+    expect(result.markdown).toContain(
+      "> - Removed, because the table has no such column: `users.error_counter`.",
+    );
+    expect(result.markdown).toContain("> - Types that differ from the schema: `users.gesture_nav`");
+    // No warning, a clean document, and a section reported `done`.
+    expect(result.warnings).toEqual([]);
+    expect(deriveDocStatus(result.warnings)).toBe("ready");
+    expect(updates).toContainEqual({ section: "Data Architecture", status: "done" });
+    expect(updates).not.toContainEqual({ section: "Data Architecture", status: "degraded" });
   });
 
   it("marks instead of removing when the schema was not read live", async () => {
-    const result = await synth({ ...LIVE, source: "schema-graph", current: false });
+    const result = await synth(STORED);
     expect(result.markdown).toContain("| `error_counter` *(not in schema)* | int | Invented |");
     const warning = result.warnings.find((w) => w.kind === "schema-unverified")!;
-    expect(warning.message).not.toContain("were removed");
+    expect(warning.message).toContain(
+      "2 names could not be matched to the database schema (jobs, users.error_counter).",
+    );
+    expect(warning.message).toContain("none was removed");
+  });
+
+  it("names at most eight in the warning and counts the rest", async () => {
+    const rows = Array.from({ length: 11 }, (_, n) => `| \`ghost_${n}\` | int | x |`).join("\n");
+    state.dataSection = `## Data Architecture\n\n### Entity: \`users\`\n\n| Field | Type | Description |\n|---|---|---|\n${rows}`;
+    const result = await synth(STORED);
+    const warning = result.warnings.find((w) => w.kind === "schema-unverified")!;
+    expect(warning.message).toContain("11 names could not be matched");
+    expect(warning.message).toContain("users.ghost_7 and 3 more).");
   });
 
   it("raises no warning for a section that names only what exists", async () => {

@@ -1039,44 +1039,35 @@ export function sectionMissingWarning(section: string, reason: string): DocWarni
 }
 
 /**
- * #1061 — the Data Architecture section named tables or columns that the
- * schema it was checked against does not hold, or gave a column a type the
- * schema contradicts. The section itself marks each one (or, against a schema
- * read live in the same run, has the column removed); this is the same finding
- * for the document's status and its banner.
+ * #1061 — the Data Architecture section still names tables or columns that
+ * could not be matched to the schema it was checked against. Each is marked in
+ * the section; this is the same finding for the document's status and banner.
  *
- * Takes the check's report as plain counts and names so this module stays free
- * of the docs-gen pipeline.
+ * `unmatched` is ONLY the names left in the section with a mark. What the check
+ * repaired (a column its table does not have, removed; a spelling corrected; a
+ * type annotated with the schema's) is said by the section's own "Schema check"
+ * note and raises no warning: the document is not degraded by a finding that is
+ * no longer in it. Callers do not call this with an empty list.
+ *
+ * The message says what happened and no more. "Not matched" is not "wrong":
+ * only each database's default schema is read, so a table of another schema is
+ * real and unmatched.
  */
 export function schemaUnverifiedWarning(
   section: string,
-  report: {
-    unresolvedTables: readonly string[];
-    removedColumns: readonly string[];
-    flaggedColumns: readonly string[];
-    typeMismatches: ReadonlyArray<{ column: string }>;
-  },
+  unmatched: readonly string[],
   inventory: { label: string },
 ): DocWarning {
-  const names = [
-    ...report.unresolvedTables,
-    ...report.removedColumns,
-    ...report.flaggedColumns,
-    ...report.typeMismatches.map((mismatch) => mismatch.column),
-  ];
-  const shown = names.slice(0, 8).join(", ");
-  const more = names.length > 8 ? ` and ${names.length - 8} more` : "";
-  const removed =
-    report.removedColumns.length > 0
-      ? ` ${report.removedColumns.length} column(s) the table does not have were removed.`
-      : "";
+  const shown = unmatched.slice(0, 8).join(", ");
+  const more = unmatched.length > 8 ? ` and ${unmatched.length - 8} more` : "";
+  const names = unmatched.length === 1 ? "1 name" : `${unmatched.length} names`;
   return {
     kind: "schema-unverified",
     section,
     message:
-      `Section "${section}": ${names.length} table or column name(s) written by the model do ` +
-      `not match ${inventory.label} (${shown}${more}).${removed} The rest are marked in the ` +
-      `section — review them before relying on it.`,
+      `Section "${section}": ${names} could not be matched to the database schema ` +
+      `(${shown}${more}). Checked against ${inventory.label}. Each is marked in the section ` +
+      `and none was removed; a table in a schema or database that was not read can be real.`,
     severity: "warning",
   };
 }
@@ -1250,6 +1241,14 @@ export function summarizeWarnings(warnings: DocWarning[]): string {
     );
   if (spotChecked > 0)
     parts.push(`${spotChecked} section(s) were only spot-checked (DOCS_GEN_GROUNDING=sample)`);
+  // #1061 — without its own line a document whose only warning is this one
+  // summarised as "Needs review — ." with nothing after the dash.
+  const schemaUnmatched = warnings.filter((w) => w.kind === "schema-unverified").length;
+  if (schemaUnmatched > 0)
+    parts.push(
+      `${schemaUnmatched} section(s) name tables or columns that could not be matched to the ` +
+        `database schema (marked in the section)`,
+    );
   // The run-level marker adds a line only when no section line already says it.
   if (runNotChecked && notChecked === 0)
     parts.push("fact-checking was switched off for this run (DOCS_GEN_GROUNDING=off)");

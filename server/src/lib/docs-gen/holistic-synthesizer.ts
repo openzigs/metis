@@ -200,10 +200,15 @@ import {
 import {
   isTypedInventory,
   NO_SCHEMA_INVENTORY,
+  renderSchemaCoverage,
   renderSchemaPromptBlock,
   type SchemaInventory,
 } from "./schema-inventory.js";
-import { applySchemaGrounding, schemaCheckFindings } from "./schema-claim-check.js";
+import {
+  applySchemaGrounding,
+  schemaCheckFindings,
+  schemaCheckUnmatched,
+} from "./schema-claim-check.js";
 // #67 — the fixed, user-safe failure vocabulary a section's exception is mapped
 // through before it can reach a persisted, client-visible warning.
 import { generationFailureMessage, isConnectionDropped } from "./generation-failure-message.js";
@@ -3212,8 +3217,13 @@ export interface SectionGroup {
   schemaGrounding?: { inventory: SchemaInventory; version: number };
 }
 
-/** Bumped when `applySchemaGrounding` changes what it does to a section. */
-export const SCHEMA_GROUNDING_VERSION = 1;
+/**
+ * Bumped when `applySchemaGrounding` changes what it does to a section.
+ * 2 — removal needs proof of what was read (per connector and schema), a
+ * repaired finding no longer raises a warning, and the heading context covers
+ * one table (#1061 review).
+ */
+export const SCHEMA_GROUNDING_VERSION = 2;
 
 /** Outcome of post-validating one synthesized section against its grounding. */
 interface SectionGroundingOutcome {
@@ -4461,12 +4471,29 @@ export async function synthesizeFinalDocument(
         prompts: JSON.stringify(prompts),
       });
       const previous = previousRecords.get(group.id);
+      // #1061 — a stored section left with names that could not be matched to
+      // the schema is written again, not reused: reused, it would carry its
+      // marks and its `schema-unverified` warning into every later run for as
+      // long as its inputs are unchanged, and the document could never come
+      // back to `ready`. Its record IS stored (below), so the snapshot stays
+      // complete and every other section is still reused; only this one costs a
+      // model call, and a rewrite with nothing unmatched carries no warning.
+      const unmatchedSchemaNames =
+        previous?.warnings.some((w) => w.kind === "schema-unverified") ?? false;
       const stillValid =
-        previous != null && JSON.stringify(previous.inputs) === JSON.stringify(inputHashes);
+        previous != null &&
+        !unmatchedSchemaNames &&
+        JSON.stringify(previous.inputs) === JSON.stringify(inputHashes);
       // #857 — say which inputs made a stored section stale, so a regenerate
       // that rewrites it can tell the user why.
       if (previous && stillValid) resume.reused.push(group.label);
-      else if (previous) {
+      else if (previous && unmatchedSchemaNames) {
+        log.info("Stored section has names not matched to the schema; rewriting it", {
+          projectId,
+          docType,
+          section: group.id,
+        });
+      } else if (previous) {
         const keys = Object.keys(inputHashes) as Array<keyof SectionInputHashes>;
         const changed = keys.filter((key) => previous.inputs[key] !== inputHashes[key]);
         resume.stale.push({ section: group.label, changed });
@@ -4811,13 +4838,21 @@ export async function synthesizeFinalDocument(
           if (capOmitted) recordShortened(grounded.markdown, capOmitted);
           finalOutcome = { ...finalOutcome, markdown: grounded.markdown };
         }
+        // Only what is STILL in the section, marked, is a warning. A removed
+        // column, a corrected spelling and an annotated type are repairs: the
+        // section's own "Schema check" note lists them, and a document whose
+        // every finding was repaired is `ready`, not `degraded`.
+        const unmatched = schemaCheckUnmatched(grounded.report);
+        if (unmatched.length > 0) {
+          schemaWarning = schemaUnverifiedWarning(group.label, unmatched, inventory);
+        }
         if (schemaCheckFindings(grounded.report) > 0) {
-          schemaWarning = schemaUnverifiedWarning(group.label, grounded.report, inventory);
-          log.warn("Section names tables or columns the schema does not hold", {
+          log.info("Schema check changed or marked the section", {
             projectId,
             docType,
             group: group.id,
             source: inventory.source,
+            unmatched: unmatched.length,
             unresolvedTables: grounded.report.unresolvedTables.length,
             removedColumns: grounded.report.removedColumns.length,
             flaggedColumns: grounded.report.flaggedColumns.length,
@@ -6672,7 +6707,7 @@ function dataArchitectureGroup(inventory: SchemaInventory): SectionGroup {
   if (isTypedInventory(inventory)) {
     body = `The persistence model. Open with 1-2 paragraphs on how the system stores its data.
 
-The database schema is given below. It is the authority for every table name, column name and type in this section. A schema reference — an ER diagram and one column table per table — is rendered from it and inserted into this section automatically, so:
+The database schema is given below, with a statement of what it covers. For the schemas it covers it is the authority for every table name, column name and type in this section. A schema reference — an ER diagram and one column table per table — is rendered from it and inserted into this section automatically, so:
 - Do NOT write a Mermaid \`erDiagram\`.
 - Do NOT write per-table field or column tables.
 
@@ -6682,8 +6717,11 @@ ${DATA_ARCHITECTURE_NARRATIVE}
 
 NAMING RULES:
 - Spell every table and column exactly as the schema does.
-- Never name a table or column that is not in the schema. If the facts mention one that is not there, it was renamed or dropped, or it is not a table: leave it out, or say what the facts say it is.
+- Within the schemas listed as covered, do not name a table or column that is not in the list. If the facts mention one that is not there, it was renamed or dropped, or it is not a table: leave it out, or say what the facts say it is.
+- The list is NOT the whole database. A table that the facts place in another schema, or in a database marked NOT read, may be named: write it with its schema (\`audit.events\`), say that its columns were not read, and list no columns for it.
 - Never state a column's type from memory.
+
+${renderSchemaCoverage(inventory)}
 
 ${schemaBlock}`;
   } else if (schemaBlock) {

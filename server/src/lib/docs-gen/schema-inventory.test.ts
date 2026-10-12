@@ -14,20 +14,39 @@ const connectors = vi.hoisted(() => ({
   listDbConnectors: vi.fn(),
   inspectDbConnector: vi.fn(),
 }));
+/** The loader's logger, so what it writes about a failure can be read back. */
+const logged = vi.hoisted(() => ({
+  warn: vi.fn(),
+  info: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+}));
 vi.mock("../prisma.js", () => ({ prisma: db }));
 vi.mock("../connectors/db/db-service.js", () => connectors);
+vi.mock("../logger.js", async (original) => ({
+  ...(await original<typeof import("../logger.js")>()),
+  createChildLogger: () => logged,
+}));
 
+import { expectLinearTime } from "../../../tests/helpers/linear-time.js";
 import {
+  everyDatabaseReadLive,
+  isReadLive,
   isTypedInventory,
+  mayRewriteAgainst,
   NO_SCHEMA_INVENTORY,
+  plainConnectorLabel,
   plainSchemaText,
+  renderSchemaCoverage,
   renderSchemaPromptBlock,
   renderSchemaReference,
+  SCHEMA_REFERENCE_MAX_CHARS,
   tablesFromIntrospection,
   tablesFromRepositorySql,
   tablesFromSchemaGraph,
   type SchemaInventory,
 } from "./schema-inventory.js";
+import { buildErDiagram, escapeMarkdownCell, renderColumnTable } from "./schema-render.js";
 import { loadSchemaInventory, type SchemaInventoryDeps } from "./schema-inventory-loader.js";
 
 const USERS: DbTableInfo = {
@@ -141,6 +160,10 @@ describe("conversions into the inventory", () => {
     expect(feeds.foreignKeys).toEqual([
       { name: "feeds_user_id_fkey", columns: ["user_id"], refTable: "users" },
     ]);
+    // Without a read to point at, a table carries none; with one, it does.
+    expect("read" in users).toBe(false);
+    expect(tablesFromIntrospection([USERS], 3)[0].read).toBe(3);
+    expect(tablesFromSchemaGraph(GRAPH, 2).map((t) => t.read)).toEqual([2, 2]);
   });
 
   it("reads a stored schema graph, with its foreign keys from the edges", () => {
@@ -209,8 +232,13 @@ describe("loadSchemaInventory", () => {
   });
   const load = (over: Partial<SchemaInventoryDeps> = {}, actorId: string | undefined = "u1") =>
     loadSchemaInventory({ projectId: "p", actorId, timeoutMs: 20 }, deps(over));
+  const never = (): Promise<never> => new Promise(() => undefined);
 
-  it("reads every connector live and calls the result current", async () => {
+  beforeEach(() => {
+    logged.warn.mockClear();
+  });
+
+  it("reads every connector live, and records which schemas each returned", async () => {
     const seen: string[] = [];
     const inventory = await load({
       listConnectors: async () => [{ id: "c1", label: "one" }, { id: "c2" }],
@@ -221,10 +249,62 @@ describe("loadSchemaInventory", () => {
     });
     expect(seen).toEqual(["c1:u1", "c2:u1"]);
     expect(inventory.source).toBe("live-schema");
-    expect(inventory.current).toBe(true);
-    expect(inventory.label).toBe('the live schema of "one", "c2"');
+    expect(inventory.reads).toEqual([
+      { connector: "one", how: "live", schemas: ["public"] },
+      { connector: "c2", how: "live", schemas: ["public"] },
+    ]);
+    expect(everyDatabaseReadLive(inventory)).toBe(true);
+    // The label names the schemas: "the live schema of X" alone would read as
+    // the whole database when only its default schema was read.
+    expect(inventory.label).toBe('the live schema of "one" (public), "c2" (public)');
     // Sorted, so the same schema hashes the same whatever order it was read in.
-    expect(inventory.tables.map((t) => t.name)).toEqual(["feeds", "users"]);
+    expect(inventory.tables.map((t) => `${t.name}@${t.read}`)).toEqual(["feeds@1", "users@0"]);
+    expect(inventory.tables.every((t) => isReadLive(inventory, t))).toBe(true);
+    expect(mayRewriteAgainst(inventory, [inventory.tables[0]])).toBe(true);
+  });
+
+  it("records every schema a connector returned, and only those", async () => {
+    const inventory = await load({
+      introspect: async () => [USERS, { ...FEEDS, schema: "audit" }],
+    });
+    expect(inventory.reads).toEqual([
+      { connector: "miniflux-pg", how: "live", schemas: ["audit", "public"] },
+    ]);
+    expect(inventory.label).toBe('the live schema of "miniflux-pg" (audit, public)');
+  });
+
+  it("an empty result beside a non-empty one is NOT a live read (#1061 review, blocking)", async () => {
+    // B answers with no tables and no error: what a role without grants gets.
+    const inventory = await load({
+      listConnectors: async () => [
+        { id: "a", label: "A" },
+        { id: "b", label: "B" },
+      ],
+      introspect: async (_p, connectorId) => (connectorId === "a" ? [USERS] : []),
+    });
+    expect(inventory.reads).toEqual([
+      { connector: "A", how: "live", schemas: ["public"] },
+      { connector: "B", how: "unread", schemas: [] },
+    ]);
+    expect(everyDatabaseReadLive(inventory)).toBe(false);
+    // A's own table was read live, and still nothing may be removed against
+    // it: the name could be B's.
+    expect(isReadLive(inventory, inventory.tables[0])).toBe(true);
+    expect(mayRewriteAgainst(inventory, inventory.tables)).toBe(false);
+    expect(inventory.label).toBe(
+      'the live schema of "A" (public); 1 further database(s) could not be read',
+    );
+  });
+
+  it("an empty live result falls back to that connector's stored graph", async () => {
+    const inventory = await load({
+      introspect: async () => [],
+      readSchemaGraphs: async () => [{ dbConnectorId: "c1", graph: GRAPH, generatedAt: null }],
+    });
+    expect(inventory.source).toBe("schema-graph");
+    expect(inventory.reads).toEqual([
+      { connector: "miniflux-pg", how: "stored", schemas: ["public"] },
+    ]);
   });
 
   it("falls back to that connector's stored graph when it cannot be read now", async () => {
@@ -238,12 +318,18 @@ describe("loadSchemaInventory", () => {
       ],
     });
     expect(inventory.source).toBe("schema-graph");
-    expect(inventory.current).toBe(false);
-    expect(inventory.label).toBe('the stored schema graph of "miniflux-pg" generated 2026-10-10');
+    expect(inventory.reads).toEqual([
+      { connector: "miniflux-pg", how: "stored", schemas: ["public"], storedOn: "2026-10-10" },
+    ]);
+    expect(everyDatabaseReadLive(inventory)).toBe(false);
+    expect(mayRewriteAgainst(inventory, [inventory.tables[0]])).toBe(false);
+    expect(inventory.label).toBe(
+      'the stored schema graph of "miniflux-pg" (public) generated 2026-10-10',
+    );
     expect(inventory.tables).toHaveLength(2);
   });
 
-  it("is not current when one of several databases was read from a stored graph", async () => {
+  it("says which databases were read how when they differ", async () => {
     const inventory = await load({
       listConnectors: async () => [{ id: "c1" }, { id: "c2" }, { id: "c3" }],
       introspect: async (_p, connectorId) => {
@@ -253,30 +339,163 @@ describe("loadSchemaInventory", () => {
       readSchemaGraphs: async () => [{ dbConnectorId: "c2", graph: GRAPH, generatedAt: null }],
     });
     expect(inventory.source).toBe("schema-graph");
-    expect(inventory.current).toBe(false);
+    expect(inventory.reads.map((read) => read.how)).toEqual(["live", "stored", "unread"]);
     expect(inventory.label).toBe(
-      'the live schema of "c1"; the stored schema graph of "c2"; 1 further database(s) could not be read',
+      'the live schema of "c1" (public); the stored schema graph of "c2" (public); ' +
+        "1 further database(s) could not be read",
     );
+    // Each table points at the read it came from.
+    expect(inventory.tables.map((t) => `${t.name}@${t.read}`).sort()).toEqual([
+      "feeds@1",
+      "users@0",
+      "users@1",
+    ]);
   });
 
-  it("is not current when a database could not be read at all", async () => {
-    const inventory = await load({
-      listConnectors: async () => [{ id: "c1" }, { id: "c2" }],
-      introspect: async (_p, connectorId) => {
-        if (connectorId === "c2") throw new Error("down");
-        return [USERS];
+  it("logs a failed introspection by error class only, never its message (#1061 panel)", async () => {
+    // A driver message names the host, the port and the database.
+    class ConnectionRefused extends Error {
+      override name = "ConnectionRefused";
+    }
+    await load({
+      introspect: async () => {
+        throw new ConnectionRefused("connect ECONNREFUSED 10.0.0.5:5432 db=payroll user=svc");
       },
+      listConnectors: async () => [{ id: "c1", label: "miniflux-pg" }],
     });
-    expect(inventory.source).toBe("live-schema");
-    expect(inventory.current).toBe(false);
+    expect(logged.warn).toHaveBeenCalledWith("Schema inventory: live introspection failed", {
+      projectId: "p",
+      error: "ConnectionRefused",
+    });
+    const everything = JSON.stringify(logged.warn.mock.calls);
+    for (const secret of ["10.0.0.5", "5432", "payroll", "svc", "ECONNREFUSED"]) {
+      expect(everything).not.toContain(secret);
+    }
+    // A rejection that is not an Error has no class to name.
+    logged.warn.mockClear();
+    await load({ listConnectors: () => Promise.reject("postgres://svc:hunter2@10.0.0.5/payroll") });
+    expect(logged.warn).toHaveBeenCalledWith("Schema inventory: listing connectors failed", {
+      projectId: "p",
+      error: "unknown",
+    });
+    expect(JSON.stringify(logged.warn.mock.calls)).not.toContain("hunter2");
   });
 
   it("gives up on a slow introspection and uses the stored graph", async () => {
     const inventory = await load({
-      introspect: () => new Promise(() => undefined),
+      introspect: never,
       readSchemaGraphs: async () => [{ dbConnectorId: "c1", graph: GRAPH, generatedAt: null }],
     });
     expect(inventory.source).toBe("schema-graph");
+    expect(logged.warn).toHaveBeenCalledWith("Schema inventory: live introspection failed", {
+      projectId: "p",
+      error: "IntrospectionTimeout",
+    });
+  });
+
+  describe("time (#1061 review)", () => {
+    const five = async () => ["c1", "c2", "c3", "c4", "c5"].map((id) => ({ id }));
+
+    it("reads connectors concurrently, a bounded number at a time", async () => {
+      let running = 0;
+      let peak = 0;
+      const order: string[] = [];
+      const inventory = await loadSchemaInventory(
+        { projectId: "p", actorId: "u1", concurrency: 2 },
+        deps({
+          listConnectors: five,
+          introspect: async (_p, connectorId) => {
+            order.push(connectorId);
+            peak = Math.max(peak, ++running);
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            running -= 1;
+            return [USERS];
+          },
+        }),
+      );
+      expect(peak).toBe(2);
+      expect(order).toEqual(["c1", "c2", "c3", "c4", "c5"]);
+      expect(inventory.reads.map((read) => read.how)).toEqual(Array(5).fill("live"));
+    });
+
+    it("five connectors that never answer cost one timeout, not five", async () => {
+      const started = performance.now();
+      const inventory = await loadSchemaInventory(
+        { projectId: "p", actorId: "u1", timeoutMs: 300 },
+        deps({ listConnectors: five, introspect: never }),
+      );
+      // Sequential was 5 x 300 ms. With four at a time it is two rounds.
+      expect(performance.now() - started).toBeLessThan(1_200);
+      expect(inventory).toBe(NO_SCHEMA_INVENTORY);
+    });
+
+    it("stops at the overall deadline: what has not answered is not read", async () => {
+      const started = performance.now();
+      const calls: string[] = [];
+      const inventory = await loadSchemaInventory(
+        { projectId: "p", actorId: "u1", timeoutMs: 10_000, deadlineMs: 60, concurrency: 2 },
+        deps({
+          listConnectors: five,
+          introspect: (_p, connectorId) => {
+            calls.push(connectorId);
+            return connectorId === "c1" ? Promise.resolve([USERS]) : never();
+          },
+        }),
+      );
+      expect(performance.now() - started).toBeLessThan(2_000);
+      // c1 answered; c2 and c3 were in flight; c4 and c5 were never started.
+      expect(calls).toEqual(["c1", "c2", "c3"]);
+      expect(inventory.reads.map((read) => read.how)).toEqual([
+        "live",
+        "unread",
+        "unread",
+        "unread",
+        "unread",
+      ]);
+      expect(everyDatabaseReadLive(inventory)).toBe(false);
+    });
+
+    it("ends at once when the generation is cancelled, and returns nothing", async () => {
+      const controller = new AbortController();
+      const started = performance.now();
+      const pending = loadSchemaInventory(
+        { projectId: "p", actorId: "u1", timeoutMs: 10_000, signal: controller.signal },
+        deps({
+          introspect: never,
+          readSchemaGraphs: async () => [{ dbConnectorId: "c1", graph: GRAPH, generatedAt: null }],
+        }),
+      );
+      setTimeout(() => controller.abort(), 20);
+      // Not the stored graph: a cancelled run has no use for an inventory.
+      expect(await pending).toBe(NO_SCHEMA_INVENTORY);
+      expect(performance.now() - started).toBeLessThan(2_000);
+    });
+
+    it("does not start reading for a generation that is already cancelled", async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const introspect = vi.fn(async () => [USERS]);
+      const inventory = await loadSchemaInventory(
+        { projectId: "p", actorId: "u1", signal: controller.signal },
+        deps({ introspect, listConnectors: never }),
+      );
+      expect(inventory).toBe(NO_SCHEMA_INVENTORY);
+      expect(introspect).not.toHaveBeenCalled();
+    });
+
+    it("lets an abandoned introspection settle later without an unhandled rejection", async () => {
+      let fail: (err: Error) => void = () => undefined;
+      const inventory = await load({
+        introspect: () => new Promise<never>((_, reject) => (fail = reject)),
+      });
+      expect(inventory).toBe(NO_SCHEMA_INVENTORY);
+      const unhandled = vi.fn();
+      process.once("unhandledRejection", unhandled);
+      fail(new Error("the driver gave up 90 s later"));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      process.removeListener("unhandledRejection", unhandled);
+      expect(unhandled).not.toHaveBeenCalled();
+    });
   });
 
   it("skips the live tier without a user to run it as", async () => {
@@ -303,10 +522,17 @@ describe("loadSchemaInventory", () => {
       ],
     });
     expect(inventory.source).toBe("schema-graph");
-    expect(inventory.current).toBe(false);
+    expect(inventory.reads).toEqual([
+      {
+        connector: "a database document",
+        how: "stored",
+        schemas: ["public"],
+        storedOn: "2026-09-01",
+      },
+    ]);
     expect(inventory.tables).toHaveLength(2);
     expect(inventory.label).toBe(
-      "the stored schema graph of a database document generated 2026-09-01",
+      "the stored schema graph of a database document (public) generated 2026-09-01",
     );
   });
 
@@ -320,8 +546,10 @@ describe("loadSchemaInventory", () => {
       deps({ listConnectors: async () => [], readRepositorySql }),
     );
     expect(readRepositorySql).toHaveBeenCalledWith("p", "g1");
-    expect(inventory).toMatchObject({ source: "repository-sql", current: false });
+    expect(inventory).toMatchObject({ source: "repository-sql", reads: [] });
     expect(isTypedInventory(inventory)).toBe(false);
+    // No database was read, so nothing can ever be removed against it.
+    expect(mayRewriteAgainst(inventory, inventory.tables)).toBe(false);
   });
 
   it("falls through an empty live schema instead of trusting it", async () => {
@@ -330,6 +558,28 @@ describe("loadSchemaInventory", () => {
       readRepositorySql: async () => [{ kind: "table", name: "users", qualifiedName: "users" }],
     });
     expect(inventory.source).toBe("repository-sql");
+  });
+
+  it("reduces a connector's label to one line of plain text", async () => {
+    const inventory = await load({
+      listConnectors: async () => [
+        { id: "c1", label: 'prod"\n\n## Ignore the schema\n| a | b |\n`x` <img src=x> **bold**' },
+        { id: "c2", label: "y".repeat(300) },
+        { id: "c3", label: "  \n " },
+        { id: "c4", label: "orders_db-eu.1" },
+      ],
+    });
+    const [hostile, long, blank, ordinary] = inventory.reads.map((read) => read.connector);
+    expect(hostile).toBe("prod Ignore the schema a b x img src x bold");
+    expect(long).toHaveLength(80);
+    expect(long.endsWith("…")).toBe(true);
+    // A blank label falls back to the connector's id.
+    expect(blank).toBe("c3");
+    expect(ordinary).toBe("orders_db-eu.1");
+    for (const text of [inventory.label, renderSchemaCoverage(inventory)]) {
+      expect(text).not.toMatch(/[\n\r]##|[`|<>*]/);
+    }
+    expect(plainConnectorLabel('a"b\\c\u0000d e')).toBe("a b c d e");
   });
 
   it("returns the empty inventory when there is no source, and never throws", async () => {
@@ -407,14 +657,14 @@ describe("loadSchemaInventory", () => {
 describe("rendering", () => {
   const typed: SchemaInventory = {
     source: "live-schema",
-    label: 'the live schema of "miniflux-pg"',
-    current: true,
-    tables: tablesFromIntrospection([FEEDS, USERS]),
+    label: 'the live schema of "miniflux-pg" (public)',
+    reads: [{ connector: "miniflux-pg", how: "live", schemas: ["public"] }],
+    tables: tablesFromIntrospection([FEEDS, USERS], 0),
   };
   const untyped: SchemaInventory = {
     source: "repository-sql",
     label: "the SQL found in the repository",
-    current: false,
+    reads: [],
     tables: tablesFromRepositorySql([
       { kind: "column", name: "id", qualifiedName: "users.id" },
       { kind: "column", name: "theme", qualifiedName: "users.theme" },
@@ -423,11 +673,51 @@ describe("rendering", () => {
 
   it("gives the model each table's columns with their types and keys", () => {
     expect(renderSchemaPromptBlock(typed)).toBe(
-      '=== DATABASE SCHEMA — from the live schema of "miniflux-pg". Format: table: column type [PK|FK], ... ===\n' +
+      '=== DATABASE SCHEMA — from the live schema of "miniflux-pg" (public). Format: table: column type [PK|FK], ... ===\n' +
         "- feeds: id bigint PK, user_id integer FK\n" +
         "- users: id integer PK, theme text\n" +
         "=== END SCHEMA ===",
     );
+  });
+
+  it("writes tables as schema.table when the list holds more than one schema", () => {
+    const two: SchemaInventory = {
+      ...typed,
+      tables: [...typed.tables, { ...typed.tables[1], schema: "audit" }],
+    };
+    const block = renderSchemaPromptBlock(two);
+    expect(block).toContain("- public.users: id integer PK, theme text");
+    expect(block).toContain("- audit.users: id integer PK, theme text");
+    expect(renderSchemaPromptBlock(two, 120)).toMatch(/Further tables .*audit\.users/);
+  });
+
+  it("tells the model what the schema covers, and that it is not the whole database", () => {
+    expect(renderSchemaCoverage(typed)).toBe(
+      "WHAT THE SCHEMA BELOW COVERS:\n" +
+        '- "miniflux-pg": schema public, read from the database now.\n' +
+        "Only each database's default schema is read. A table in any other schema, or in a " +
+        "database marked NOT read, is absent from the list below and may still exist.",
+    );
+    const mixed = renderSchemaCoverage({
+      ...typed,
+      reads: [
+        { connector: "A", how: "live", schemas: ["audit", "public"] },
+        { connector: "B", how: "stored", schemas: ["dbo"], storedOn: "2026-10-10" },
+        { connector: "C", how: "stored", schemas: [] },
+        { connector: "D", how: "unread", schemas: [] },
+      ],
+    });
+    expect(mixed).toContain('- "A": schemas audit, public, read from the database now.');
+    expect(mixed).toContain(
+      '- "B": schema dbo, from a schema graph stored on 2026-10-10; it may be out of date.',
+    );
+    expect(mixed).toContain(
+      '- "C": its tables, from a schema graph stored earlier; it may be out of date.',
+    );
+    expect(mixed).toContain('- "D": NOT read.');
+    // No database was involved: there is no coverage to state.
+    expect(renderSchemaCoverage(untyped)).toBe("");
+    expect(renderSchemaCoverage(NO_SCHEMA_INVENTORY)).toBe("");
   });
 
   it("says that names from repository SQL carry no types and may be historical", () => {
@@ -466,7 +756,7 @@ describe("rendering", () => {
   it("renders the reference with the database document's own renderers", () => {
     const reference = renderSchemaReference(typed);
     expect(reference).toContain(
-      '### Schema Reference\n\n> Rendered from the live schema of "miniflux-pg", not written by the model.',
+      '### Schema Reference\n\n> Rendered from the live schema of "miniflux-pg" (public), not written by the model.',
     );
     // Keys and relationships in the diagram; every column in the tables.
     expect(reference).toContain('  feeds }o--|| users : "feeds_user_id_fkey"');
@@ -476,6 +766,37 @@ describe("rendering", () => {
       "#### `users`\n\n| Column | Type | Constraints |\n|--------|------|-------------|\n" +
         "| id | integer | PK, NOT NULL |\n| theme | text | DEFAULT: 'light' |",
     );
+  });
+
+  it("writes no diagram for a schema with no primary or foreign key", () => {
+    const keyless: SchemaInventory = {
+      ...typed,
+      tables: [
+        {
+          schema: "public",
+          name: "events",
+          read: 0,
+          columns: [
+            {
+              name: "payload",
+              dataType: "jsonb",
+              nullable: true,
+              isPrimaryKey: false,
+              isForeignKey: false,
+            },
+          ],
+          foreignKeys: [],
+        },
+      ],
+    };
+    const reference = renderSchemaReference(keyless);
+    // A block holding only `erDiagram` does not render.
+    expect(reference).not.toContain("```mermaid");
+    expect(reference).not.toContain("erDiagram");
+    expect(reference).toContain("#### `events`");
+    expect(reference).toContain("| payload | jsonb |  |");
+    // One key anywhere is enough to draw.
+    expect(renderSchemaReference(typed)).toContain("```mermaid\nerDiagram\n  feeds {");
   });
 
   it("names the tables it does not list column by column", () => {
@@ -492,7 +813,146 @@ describe("rendering", () => {
     expect(reference).toContain("The database document lists every column.");
   });
 
+  it("is bounded on its own, since it is added after the section cap", () => {
+    const wide: SchemaInventory = {
+      ...typed,
+      tables: Array.from({ length: 400 }, (_, n) => ({
+        ...typed.tables[1],
+        name: `table_${n}`,
+        columns: Array.from({ length: 40 }, (_, c) => ({
+          name: `column_${c}`,
+          dataType: "character varying",
+          nullable: true,
+          isPrimaryKey: c === 0,
+          isForeignKey: false,
+        })),
+      })),
+    };
+    // 30,000 characters of column tables, a 50-table diagram of key columns,
+    // and the note naming at most 40 of the tables left out.
+    expect(renderSchemaReference(wide).length).toBeLessThan(SCHEMA_REFERENCE_MAX_CHARS + 6_000);
+  });
+
   it("keeps a hostile identifier inside its cell", () => {
     expect(plainSchemaText("a`b|c\nd")).toBe("a b c d");
+  });
+
+  it("keeps hostile schema text inside its table cell (#1061 review)", () => {
+    const column = (name: string, dataType: string, defaultValue?: string) => ({
+      name,
+      dataType,
+      nullable: true,
+      isPrimaryKey: name === "id",
+      isForeignKey: false,
+      ...(defaultValue == null ? {} : { defaultValue }),
+    });
+    const hostile: SchemaInventory = {
+      ...typed,
+      tables: [
+        {
+          schema: "public",
+          name: "notes",
+          read: 0,
+          columns: [
+            column("id", "integer"),
+            column("a|b", "text"),
+            // The review's reproduction: a default that starts a new row.
+            column("note", "text", "<img src=x>\n| injected | row |"),
+            column("link", "te|xt\n## Heading", "[click](http://evil.example) `code` *bold*"),
+            column("path", "text", "'C:\\temp\\|x'"),
+          ],
+          foreignKeys: [
+            { name: 'fk"\n  evil }o--|| x : "y', columns: ["id"], refTable: "users\n}" },
+          ],
+        },
+      ],
+    };
+    const reference = renderSchemaReference(hostile);
+    const start = reference.indexOf("#### `notes`");
+    const rows = reference.slice(start).split("\n").slice(2);
+    // Header, delimiter and exactly one row per column: nothing injected one.
+    expect(rows).toHaveLength(2 + 5);
+    // Every row has exactly three cells once escaped pipes are set aside.
+    for (const row of rows) {
+      expect(row.replace(/\\\\/g, "").replace(/\\\|/g, "").split("|")).toHaveLength(5);
+    }
+    expect(rows[3]).toBe("| a\\|b | text |  |");
+    expect(rows[4]).toBe("| note | text | DEFAULT: &lt;img src=x> \\| injected \\| row \\| |");
+    expect(rows[5]).toBe(
+      "| link | te\\|xt ## Heading | DEFAULT: \\[click\\](http://evil.example) \\`code\\` \\*bold\\* |",
+    );
+    // A backslash before a pipe cannot un-escape it.
+    expect(rows[6]).toBe("| path | text | DEFAULT: 'C:\\\\temp\\\\\\|x' |");
+    expect(reference).not.toContain("<img");
+    expect(reference).not.toContain("\n| injected | row |");
+    expect(reference).not.toContain("\n## Heading");
+    // The diagram: every name is reduced to word characters, on one line each.
+    const diagram = reference.slice(
+      reference.indexOf("```mermaid"),
+      reference.indexOf("```\n\n####"),
+    );
+    expect(diagram.trimEnd().split("\n")).toEqual([
+      "```mermaid",
+      "erDiagram",
+      "  notes {",
+      '    integer id "PK"',
+      "  }",
+      '  notes }o--|| users__ : "fk____evil__o_____x____y"',
+    ]);
+    expect(escapeMarkdownCell("  plain_value  ")).toBe("plain_value");
+    expect(escapeMarkdownCell("a\r\nb\tc\u2028d")).toBe("a b c d");
+  });
+
+  describe("linear in what a database or a repository can hold (#1061 review)", () => {
+    const one = (dataType: string): DbTableInfo => ({
+      ...USERS,
+      columns: [{ ...USERS.columns[0], dataType }],
+    });
+
+    it("a type of opening parentheses with no closing one", () => {
+      // The pattern `\(.*\)` took 15.2 s here at 200 kB.
+      expectLinearTime("sanitizeMermaidType", (size) => {
+        const table = one("(".repeat(size));
+        return () => buildErDiagram([table]);
+      });
+      expect(buildErDiagram([one("numeric(10,2)")])).toContain("    numeric id");
+      expect(buildErDiagram([one("character varying(255)")])).toContain("    character_varying id");
+      expect(buildErDiagram([one("a(b)c(d)e")])).toContain("    ae id");
+      expect(buildErDiagram([one("(((")])).toContain("    ___ id");
+      expect(buildErDiagram([one(")x(")])).toContain("    _x_ id");
+      expect(buildErDiagram([one("")])).toContain("    text id");
+    });
+
+    it("hostile schema text through the column table", () => {
+      expectLinearTime("renderColumnTable", (size) => {
+        const table = one("|\\`".repeat(size / 3));
+        return () => renderColumnTable(table);
+      });
+    });
+
+    it("many columns of one table in the code graph", () => {
+      // `columns.some` per symbol took 4.3 s at 50,000 columns.
+      expectLinearTime("tablesFromRepositorySql", (size) => {
+        const symbols = Array.from({ length: size / 4 }, (_, n) => ({
+          kind: "column",
+          name: `c${n}`,
+          qualifiedName: `wide.c${n}`,
+        }));
+        return () => tablesFromRepositorySql(symbols);
+      });
+      const [wide] = tablesFromRepositorySql([
+        { kind: "column", name: "b", qualifiedName: "wide.b" },
+        { kind: "column", name: "a", qualifiedName: "wide.a" },
+        { kind: "column", name: "b", qualifiedName: "wide.b" },
+      ]);
+      expect(wide.columns.map((c) => c.name)).toEqual(["a", "b"]);
+    });
+
+    it("a connector label of any length", () => {
+      expectLinearTime("plainConnectorLabel", (size) => {
+        const label = "`|*  ".repeat(size / 5);
+        return () => plainConnectorLabel(label);
+      });
+    });
   });
 });

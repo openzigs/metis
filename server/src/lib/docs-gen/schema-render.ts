@@ -80,18 +80,45 @@ export function buildErDiagram(tables: DbTableInfo[]): string {
 }
 
 function sanitizeMermaidId(name: string): string {
-  // Mermaid identifiers must not contain spaces, dots, or special chars
-  return name.replace(/[^a-zA-Z0-9_]/g, "_");
+  // Mermaid identifiers must not contain spaces, dots, or special chars. Every
+  // character outside the word set is replaced, so nothing a database names a
+  // table, column or key can end the line, close the block or open a string.
+  return name.replace(/[^a-zA-Z0-9_]/g, "_") || "_";
 }
 
 function sanitizeMermaidType(dataType: string): string {
-  // Mermaid types must be word chars only; truncate parenthetical sizes
-  return (
-    dataType
-      .replace(/\(.*\)/, "")
-      .replace(/[^a-zA-Z0-9_]/g, "_")
-      .toLowerCase() || "text"
-  );
+  // Mermaid types must be word chars only; drop the parenthetical size, from
+  // the first `(` to the last `)`. Found by index: the pattern `\(.*\)` rescans
+  // from every `(` when there is no `)`, which is quadratic (#1061 review).
+  const open = dataType.indexOf("(");
+  const close = open < 0 ? -1 : dataType.lastIndexOf(")");
+  const bare = close > open ? dataType.slice(0, open) + dataType.slice(close + 1) : dataType;
+  return bare.replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase() || "text";
+}
+
+const CELL_ESCAPES: Record<string, string> = {
+  "\\": "\\\\",
+  "|": "\\|",
+  "`": "\\`",
+  "*": "\\*",
+  "[": "\\[",
+  "]": "\\]",
+  "<": "&lt;",
+};
+
+/**
+ * Text from a database (a column name, a type, a default) as the contents of
+ * ONE Markdown table cell. A pipe would add a cell and a line break would start
+ * a new row, heading or link, so whoever controls the DDL could write rows into
+ * the document (#1061 review). Line breaks and tabs become a space; the
+ * characters that are Markdown or HTML syntax are escaped, so the value reads
+ * as the database holds it. One pass, no backtracking.
+ */
+export function escapeMarkdownCell(value: string): string {
+  return value
+    .replace(/[\r\n\t\f\v\u2028\u2029]+/g, " ")
+    .replace(/[\\|`*[\]<]/g, (ch) => CELL_ESCAPES[ch])
+    .trim();
 }
 
 /**
@@ -106,8 +133,13 @@ export function renderColumnTable(table: Pick<DbTableInfo, "columns">): string[]
     if (col.isPrimaryKey) constraints.push("PK");
     if (col.isForeignKey) constraints.push("FK");
     if (!col.nullable) constraints.push("NOT NULL");
-    if (col.defaultValue != null) constraints.push(`DEFAULT: ${col.defaultValue}`);
-    lines.push(`| ${col.name} | ${col.dataType} | ${constraints.join(", ")} |`);
+    if (col.defaultValue != null) {
+      constraints.push(`DEFAULT: ${escapeMarkdownCell(String(col.defaultValue))}`);
+    }
+    lines.push(
+      `| ${escapeMarkdownCell(col.name)} | ${escapeMarkdownCell(col.dataType)} | ` +
+        `${constraints.join(", ")} |`,
+    );
   }
   return lines;
 }

@@ -164,6 +164,11 @@ vi.mock("../../src/lib/docs-gen/db-schema-synthesizer.js", () => ({
   synthesizeDbSchemaDocument: vi.fn(),
 }));
 
+// #1061 — the route reads the schema inventory for an architecture document.
+vi.mock("../../src/lib/docs-gen/schema-inventory-loader.js", () => ({
+  loadSchemaInventory: vi.fn(),
+}));
+
 vi.mock("../../src/lib/docs-gen/grounding/domain-web-research.js", () => ({
   runDomainWebResearch: vi.fn(),
 }));
@@ -207,6 +212,9 @@ import {
   buildSectionGroundingRetriever,
 } from "../../src/lib/docs-gen/grounding/grounding-retrieval.js";
 import { synthesizeHolisticDocument } from "../../src/lib/docs-gen/holistic-synthesizer.js";
+import { loadSchemaInventory } from "../../src/lib/docs-gen/schema-inventory-loader.js";
+import { stopGeneration } from "../../src/lib/docs-gen/generation-control.js";
+import type { SchemaInventory } from "../../src/lib/docs-gen/schema-inventory.js";
 import { PathScopeEmptyError } from "../../src/lib/docs-gen/path-scope.js";
 import { GENERATION_PATH_SCOPE_EMPTY_MESSAGE } from "../../src/lib/docs-gen/generation-failure-message.js";
 
@@ -488,5 +496,94 @@ describe("generateDocumentAsync — stored path scope", () => {
         }),
       }),
     );
+  });
+
+  // #1061 (panel) — nothing tested that the schema inventory reaches synthesis:
+  // disabling the load in the route left every test green.
+  describe("the schema inventory of an architecture document (#1061)", () => {
+    const INVENTORY: SchemaInventory = {
+      source: "live-schema",
+      label: 'the live schema of "pg" (public)',
+      reads: [{ connector: "pg", how: "live", schemas: ["public"] }],
+      tables: [{ schema: "public", name: "users", read: 0, columns: [], foreignKeys: [] }],
+    };
+    const architecture = (extra: Record<string, unknown> = {}) =>
+      mocked(prisma.generatedDocument.findFirst).mockResolvedValue(
+        scopedDoc(JSON.stringify({ docType: "architecture", ...extra })),
+      );
+
+    beforeEach(() => {
+      mocked(loadSchemaInventory).mockReset();
+      mocked(loadSchemaInventory).mockResolvedValue(INVENTORY);
+    });
+
+    it("is read as the acting user and handed to synthesis", async () => {
+      architecture();
+      await generateDocumentAsync("doc-1", "proj-1");
+      expect(loadSchemaInventory).toHaveBeenCalledTimes(1);
+      expect(mocked(loadSchemaInventory).mock.calls[0][0]).toMatchObject({
+        projectId: "proj-1",
+        actorId: "user_admin",
+      });
+      expect(mocked(synthesizeHolisticDocument).mock.calls[0][1]).toBe("architecture");
+      expect(mocked(synthesizeHolisticDocument).mock.calls[0][3].schemaInventory).toBe(INVENTORY);
+    });
+
+    it("is read with the generation's own signal, so a cancel ends the read", async () => {
+      architecture();
+      await generateDocumentAsync("doc-1", "proj-1");
+      const { signal } = mocked(loadSchemaInventory).mock.calls[0][0] as { signal: AbortSignal };
+      expect(signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it("a generation cancelled during the read does not go on to synthesis", async () => {
+      architecture();
+      mocked(loadSchemaInventory).mockImplementation(
+        async ({ signal }: { signal: AbortSignal }) => {
+          // The cancel route does this for a run in this process.
+          stopGeneration("doc-1", "aborted");
+          expect(signal.aborted).toBe(true);
+          return INVENTORY;
+        },
+      );
+      await generateDocumentAsync("doc-1", "proj-1");
+      expect(loadSchemaInventory).toHaveBeenCalledTimes(1);
+      expect(synthesizeHolisticDocument).not.toHaveBeenCalled();
+    });
+
+    it("is not read for any other document type", async () => {
+      for (const docType of ["business-requirements", "user-guide"]) {
+        mocked(prisma.generatedDocument.findFirst).mockResolvedValue(
+          scopedDoc(JSON.stringify({ docType })),
+        );
+        await generateDocumentAsync("doc-1", "proj-1");
+      }
+      expect(loadSchemaInventory).not.toHaveBeenCalled();
+      for (const call of mocked(synthesizeHolisticDocument).mock.calls) {
+        expect(call[3]).not.toHaveProperty("schemaInventory");
+      }
+    });
+
+    // Stated plainly, because it is a data-flow decision: a connector belongs
+    // to the project and records no repository or path, so a path-scoped
+    // architecture document still reads every database of the project. Only
+    // the repository-SQL tier is narrowed, by the document's code graph.
+    it("a path-scoped document reads the project's databases all the same", async () => {
+      mocked(resolveEvidencePolicy).mockResolvedValue({
+        projectId: "proj-1",
+        generatedDocumentId: "doc-1",
+        actor: { userId: "user_admin", role: "admin" },
+        sharedDocumentIds: [],
+        allowWebResearch: false,
+        codeGraphId: "graph-a",
+        repoConnectorId: "repo-a",
+      });
+      architecture({ pathPrefixes: ["packages/fit"] });
+      await generateDocumentAsync("doc-1", "proj-1");
+      const input = mocked(loadSchemaInventory).mock.calls[0][0];
+      expect(input).toMatchObject({ projectId: "proj-1", codeGraphId: "graph-a" });
+      expect(input).not.toHaveProperty("pathPrefixes");
+      expect(input).not.toHaveProperty("repoConnectorId");
+    });
   });
 });

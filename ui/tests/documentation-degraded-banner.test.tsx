@@ -11,7 +11,11 @@
  */
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { DegradedWarningsBanner } from "@/app/(authed)/projects/[id]/documentation/page";
+import {
+  classifyWarningSeverity,
+  DegradedWarningsBanner,
+  schemaNamesNotice,
+} from "@/app/(authed)/projects/[id]/documentation/page";
 
 type Tier = "narrative" | "reconstruction" | "literal";
 
@@ -258,5 +262,76 @@ describe("DegradedWarningsBanner — DOCS_GEN_GROUNDING off / sample (#186)", ()
     expect(alert).toHaveTextContent(/"Business Rules" falls short of the code-fidelity bar/);
     // The spot-checked section is listed, but never named as short of the bar.
     expect(alert).not.toHaveTextContent(/"Overview"[^.]*short of the code-fidelity bar/);
+  });
+});
+
+// #1061 review — a `schema-unverified` warning carries no tier, so it fell into
+// the "unknown, treat as concerning" branch: the banner said Data Architecture
+// "falls short of the code-fidelity bar" and that its statements could not be
+// verified against the retrieved source. Neither describes a name that was not
+// matched to the database schema.
+describe("DegradedWarningsBanner — names not matched to the database schema (#1061)", () => {
+  const schemaNames = (section = "Data Architecture") => ({
+    kind: "schema-unverified" as const,
+    section,
+    message: `Section "${section}": 2 names could not be matched to the database schema (jobs, audit_log).`,
+    severity: "warning" as const,
+  });
+
+  it("says what happened, and nothing about code fidelity or the retrieved source", () => {
+    render(<DegradedWarningsBanner warnings={[schemaNames()]} errorMessage={null} />);
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(
+      /Names not matched to the database schema: "Data Architecture" names tables or columns that could not be matched to the schema that was read\./,
+    );
+    expect(alert).toHaveTextContent(/marked in the section and nothing was removed/);
+    expect(alert).toHaveTextContent(
+      /a table in a schema or database that was not read can be real/,
+    );
+    expect(alert).toHaveTextContent(/2 names could not be matched to the database schema/);
+    expect(alert).not.toHaveTextContent(/code-fidelity bar/);
+    expect(alert).not.toHaveTextContent(/worth verifying/);
+    expect(alert).not.toHaveTextContent(/within normal tolerance/i);
+    expect(alert).not.toHaveTextContent(/retrieved source/);
+    expect(alert).not.toHaveTextContent(/_\(inferred\)_/);
+  });
+
+  it("does not name the section as short of the bar beside a section that is", () => {
+    render(
+      <DegradedWarningsBanner
+        warnings={[schemaNames(), tierWarning("Business Rules", "literal")]}
+        errorMessage={null}
+      />,
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(/"Business Rules" falls short of the code-fidelity bar/);
+    expect(alert).not.toHaveTextContent(/"Data Architecture"[^.]*short of the code-fidelity bar/);
+    expect(alert).toHaveTextContent(/Names not matched to the database schema/);
+    // The other warning is a grounding result, so its footer is still shown.
+    expect(alert).toHaveTextContent(/retrieved source/);
+  });
+
+  it("keeps the calm headline for a narrative section, and adds the schema line", () => {
+    render(
+      <DegradedWarningsBanner
+        warnings={[schemaNames(), tierWarning("Overview & Domain", "narrative")]}
+        errorMessage={null}
+      />,
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(/within normal tolerance/i);
+    expect(alert).toHaveTextContent(/Names not matched to the database schema/);
+  });
+
+  it("classifies it as not concerning, and builds no line without one", () => {
+    expect(classifyWarningSeverity([schemaNames()])).toEqual({
+      reviewRecommended: false,
+      concerningSections: [],
+    });
+    expect(schemaNamesNotice([tierWarning("Business Rules", "literal")])).toBeNull();
+    expect(schemaNamesNotice([schemaNames("A"), schemaNames("B"), schemaNames("A")])).toMatch(
+      /^Names not matched to the database schema: "A" and "B" name tables or columns/,
+    );
+    expect(schemaNamesNotice([schemaNames("")])).toMatch(/: A section names tables or columns/);
   });
 });

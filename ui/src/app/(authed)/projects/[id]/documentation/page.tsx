@@ -1489,6 +1489,10 @@ export function classifyWarningSeverity(warnings: DocWarning[]): {
     // #186 — a section that was not, or only partly, fact-checked has no
     // full-check result to fall short of; groundingModeNotice says so instead.
     if (w.kind === "grounding-skipped" || w.kind === "grounding-sampled") return false;
+    // #1061 — names not matched to the database schema are not a faithfulness
+    // score: nothing "falls short of the code-fidelity bar". schemaNamesNotice
+    // says what happened instead.
+    if (w.kind === "schema-unverified") return false;
     // A literal code-derived section below its bar is worth verifying.
     if (w.tier === "literal") return true;
     // Within-tolerance tiers (narrative/reconstruction) are NOT concerning.
@@ -1536,6 +1540,34 @@ export function groundingModeNotice(warnings: DocWarning[]): string | null {
     );
   }
   return notices.length > 0 ? notices.join(" ") : null;
+}
+
+/**
+ * #1061 — the banner line for a section that names tables or columns the
+ * schema check could not match to the database schema. `null` without one.
+ * It says what happened, and only that: the names are marked in the section,
+ * nothing was removed, and "not matched" is not "wrong" (only each database's
+ * default schema is read). A finding the check repaired raises no warning at
+ * all, so it never reaches this banner. Exported for unit testing.
+ */
+export function schemaNamesNotice(warnings: DocWarning[]): string | null {
+  const sections = Array.from(
+    new Set(
+      warnings
+        .filter((w) => w.kind === "schema-unverified")
+        .map((w) => w.section)
+        .filter((s): s is string => !!s && s.trim().length > 0),
+    ),
+  );
+  if (!warnings.some((w) => w.kind === "schema-unverified")) return null;
+  const where = sections.length > 0 ? formatSectionList(sections) : "A section";
+  return (
+    `Names not matched to the database schema: ${where} ${
+      sections.length > 1 ? "name" : "names"
+    } tables or columns that could not be matched to the schema that was read. They are marked ` +
+    `in the section and nothing was removed; a table in a schema or database that was not read ` +
+    `can be real. Generating the document again re-checks them.`
+  );
 }
 
 /**
@@ -1787,12 +1819,19 @@ export function DegradedWarningsBanner({
   // #186 — with fact-checking off or sampled, "grounded within tolerance" is a
   // claim nothing verified: the mode notice replaces it, and precedes a
   // review headline that names genuinely short sections.
-  const headline = modeNotice && !reviewRecommended ? null : tierHeadline;
+  // #1061 — a schema-name warning is not a grounding result. When it is the
+  // only kind present, neither the tier headline nor the footer below (both
+  // about statements checked against the retrieved source) describes it.
+  const schemaNotice = schemaNamesNotice(warnings);
+  const onlySchemaNames = warnings.every((w) => w.kind === "schema-unverified");
+  const headline =
+    (modeNotice && !reviewRecommended) || (schemaNotice && onlySchemaNames) ? null : tierHeadline;
 
   return (
     <Card className="border-warning/40 bg-warning-muted p-4" role="alert">
       {modeNotice && <p className="font-medium text-warning">{modeNotice}</p>}
       {headline && <p className="font-medium text-warning">{headline}</p>}
+      {schemaNotice && <p className="font-medium text-warning">{schemaNotice}</p>}
       {warnings.length > 0 && (
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-warning">
           {warnings.map((w, i) => (
@@ -1800,13 +1839,15 @@ export function DegradedWarningsBanner({
           ))}
         </ul>
       )}
-      <p className="mt-3 text-xs text-warning">
-        Flagged sections contain statements that could not be automatically verified against the
-        retrieved source — this does not by itself mean they are inaccurate (the supporting code may
-        simply not have been retrieved). Statements the model inferred from the code are tagged{" "}
-        <code className="rounded bg-warning-muted px-1">_(inferred)_</code> inline, so you can tell
-        verified facts from inferred ones.
-      </p>
+      {!(schemaNotice && onlySchemaNames) && (
+        <p className="mt-3 text-xs text-warning">
+          Flagged sections contain statements that could not be automatically verified against the
+          retrieved source — this does not by itself mean they are inaccurate (the supporting code
+          may simply not have been retrieved). Statements the model inferred from the code are
+          tagged <code className="rounded bg-warning-muted px-1">_(inferred)_</code> inline, so you
+          can tell verified facts from inferred ones.
+        </p>
+      )}
     </Card>
   );
 }
