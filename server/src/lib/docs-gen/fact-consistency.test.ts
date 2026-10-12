@@ -236,6 +236,15 @@ describe("scanFactStatements", () => {
     expect(scanFactStatements("$$\ntotal = a + b").map((s) => s.name)).toEqual(["total"]);
   });
 
+  it("reads at most the first 400 characters of one statement", () => {
+    // One fixture past the statement bound: the value is compared on its
+    // opening, never dropped.
+    const long = `\`MaxEntryLimit = ${"1".repeat(600)}\``;
+    const [statement] = scanFactStatements(long);
+    expect(statement.name).toBe("MaxEntryLimit");
+    expect(statement.form).toHaveLength(400 - "MaxEntryLimit = ".length);
+  });
+
   it("never changes the text it reads", () => {
     const md = Object.freeze(RUN7_SECTIONS.map((s) => s.markdown).join("\n\n"));
     const copy = `${md}`;
