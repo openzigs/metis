@@ -512,6 +512,8 @@ describe("provider routing on deep-ingest", () => {
         failures: [],
         overBudget: 0,
         skipped: 640,
+        stopReason: "time",
+        heapGrowthMb: null,
         resumedFiles: 0,
         incomplete: { files: 17, calls: 640 },
         abandonedFiles: 0,

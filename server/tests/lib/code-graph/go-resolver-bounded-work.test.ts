@@ -466,12 +466,12 @@ describe("placing a directory or an import path costs its own length, not the si
     return tree;
   };
 
-  /** The same tree where each import DOES end in one of the directories: every call binds. */
+  /** The same tree in a GOPATH layout, each directory holding its whole import path: every call binds. */
   const orphansThatMatch = (dirs: number): Tree => {
     const tree: Tree = [];
     let main = "package main\n\nimport (\n";
     for (let i = 0; i < dirs; i += 1) {
-      tree.push([`d${i}/x/a.go`, "package x\n\nfunc Go() {}\n"]);
+      tree.push([`src/example.org/app/d${i}/x/a.go`, "package x\n\nfunc Go() {}\n"]);
       main += `\ta${i} "example.org/app/d${i}/x"\n`;
     }
     main += ")\n\nfunc main() {\n";
@@ -495,7 +495,9 @@ describe("placing a directory or an import path costs its own length, not the si
     expect(resolveAll(orphans(40), [])()).toEqual({ "unbound external": 40 });
     const matched = resolveAll(orphansThatMatch(40), [])();
     expect(Object.keys(matched)).toHaveLength(40);
-    expect(Object.keys(matched).every((k) => k.startsWith("package d"))).toBe(true);
+    expect(Object.keys(matched).every((k) => k.startsWith("package src/example.org/app/d"))).toBe(
+      true,
+    );
   });
 
   it("no go.mod: 8,000 directories and 8,000 imports of one file", () => {

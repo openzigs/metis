@@ -1,5 +1,5 @@
 {
- "corpusHash": "45e48bb739028f5002eadc9fcc0833ded52beea75c7913cafed715d975a10510",
+ "corpusHash": "4d49d569be49209b732d6128bb537efa842c4c484afc4f54ef340a681f7aa5df",
  "goVersion": "go1.26.0",
  "platforms": ["linux/amd64","windows/amd64","darwin/arm64"],
  "trees": [
@@ -1013,7 +1013,8 @@
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","line":21,"col":2,"callee":"local","form":"ident","name":"local","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","name":"main"},"answer":{"k":"func","target":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","name":"local"}}},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","line":23,"col":4,"callee":"c.Open","form":"selector","name":"Open","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","name":"main"},"answer":{"k":"func","target":{"file":"corpus/legacy/src/example.org/legacy/store/store.go","recv":"Conn","name":"Open"}}},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","line":25,"col":5,"callee":"bc.Open","form":"selector","name":"Open","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","name":"main"},"answer":{"k":"func","target":{"file":"corpus/legacy/src/example.org/legacy/b/store/store.go","recv":"Conn","name":"Open"}}},
-    {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","line":26,"col":9,"callee":"istore.Open","form":"selector","name":"Open","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","name":"main"},"answer":{"k":"func","target":{"file":"corpus/legacy/src/example.org/legacy/internal/storage/storage.go","name":"Open"}}}
+    {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","line":26,"col":9,"callee":"istore.Open","form":"selector","name":"Open","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","name":"main"},"answer":{"k":"func","target":{"file":"corpus/legacy/src/example.org/legacy/internal/storage/storage.go","name":"Open"}}},
+    {"file":"corpus/legacy/src/example.org/legacy/cmd/app/wrap.go","line":8,"col":9,"callee":"errors.Wrap","form":"selector","name":"Wrap","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/wrap.go","name":"wrap"},"answer":{"k":"external","origin":"dependency","detail":"github.com/pkg/errors.Wrap"}}
    ],
    "symbols": [
     {"file":"corpus/legacy/src/example.org/legacy/b/store/store.go","kind":"function","name":"Save","line":4,"endLine":4},
@@ -1021,9 +1022,11 @@
     {"file":"corpus/legacy/src/example.org/legacy/b/store/store.go","kind":"function","recv":"Conn","name":"Open","line":10,"endLine":10},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","kind":"function","name":"main","line":14,"endLine":27},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","kind":"function","name":"local","line":29,"endLine":29},
+    {"file":"corpus/legacy/src/example.org/legacy/cmd/app/wrap.go","kind":"function","name":"wrap","line":7,"endLine":9},
     {"file":"corpus/legacy/src/example.org/legacy/internal/storage/storage.go","kind":"function","name":"Open","line":5,"endLine":5},
     {"file":"corpus/legacy/src/example.org/legacy/legacy/internal/storage/storage.go","kind":"function","name":"Open","line":5,"endLine":5},
     {"file":"corpus/legacy/src/example.org/legacy/mystore/mystore.go","kind":"function","name":"Save","line":6,"endLine":6},
+    {"file":"corpus/legacy/src/example.org/legacy/pkg/errors/e.go","kind":"function","name":"Wrap","line":7,"endLine":7},
     {"file":"corpus/legacy/src/example.org/legacy/store/store.go","kind":"function","name":"Save","line":6,"endLine":6},
     {"file":"corpus/legacy/src/example.org/legacy/store/store.go","kind":"struct","name":"Conn","line":10,"endLine":10},
     {"file":"corpus/legacy/src/example.org/legacy/store/store.go","kind":"function","recv":"Conn","name":"Open","line":13,"endLine":13},

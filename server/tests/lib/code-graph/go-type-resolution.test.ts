@@ -1095,7 +1095,7 @@ func main() { db.Open() }
     expect(v.get("svc/main.go:Open")).toBe("package svc/internal/db/db.go::Open");
   });
 
-  it("falls back to the directory the import path ends in when there is no go.mod — if there is only one", () => {
+  it("with no go.mod, a directory the import path merely ends in is never bound — only one that holds the whole path", () => {
     const main = `package main
 
 import "example.com/app/internal/storage"
@@ -1106,9 +1106,20 @@ func main() { storage.Long() }
       { "internal/storage/s.go": "package storage\n\nfunc Long() {}\n", "cmd/main.go": main },
       [],
     );
-    expect(one.get("cmd/main.go:Long")).toBe("package internal/storage/s.go::Long");
-    // Beside `storage/`, which the path ends in as well, it is one of two
-    // readings of the layout and neither is bound (PR #1104 review cycle 4).
+    // A proper tail of the path: the project's own package, or a dependency
+    // that is spelled alike (PR #1104 review cycle 5).
+    expect(one.get("cmd/main.go:Long")).toBe("unknown");
+    const held = verdicts(
+      {
+        "src/example.com/app/internal/storage/s.go": "package storage\n\nfunc Long() {}\n",
+        "cmd/main.go": main,
+      },
+      [],
+    );
+    expect(held.get("cmd/main.go:Long")).toBe(
+      "package src/example.com/app/internal/storage/s.go::Long",
+    );
+    // Beside `storage/`, which the path ends in as well, nothing changes.
     const two = verdicts(
       {
         "storage/s.go": "package storage\n\nfunc Short() {}\n",

@@ -1163,8 +1163,8 @@ export default function ConnectionsPage() {
                   {refreshIngestResult.summary.codeGraph.goBindingIncomplete.files === 1
                     ? ""
                     : "s"}{" "}
-                  not yet bound by type (the time limit for that step was reached). Nothing already
-                  bound was changed; the next Sync continues from there.
+                  not yet bound by type (a time or memory limit for that step was reached). Nothing
+                  already bound was changed; the next Sync continues from there.
                 </p>
               ) : null}
             </div>

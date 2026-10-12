@@ -76,8 +76,9 @@
  * ignore rules ({@link GoResolverOptions.incompleteDirs}); a type name its
  * project package does not declare; an import path that two `go.mod` files of
  * the tree both claim, from a file in neither; a tree with no `go.mod` where an
- * import path only ends like a directory name; and two imports that would bind
- * the same local name.
+ * import path only ends like a directory — one segment of it or five, since
+ * only a directory holding the WHOLE path says which package is meant; and two
+ * imports that would bind the same local name.
  *
  * An import is resolved from the importing file's OWN module first (the
  * nearest `go.mod` above it), then by the most specific module path, as Go
@@ -150,10 +151,15 @@
  *    for an interface a list of the interfaces it embeds, never a copy of
  *    their names. Both lists are capped by a property of the type alone
  *    ({@link GO_TYPE_LAYER_BUDGET}, {@link GO_TYPE_RETAINED_PER_MEMBER}), so
- *    the whole resolver retains an amount linear in the source and the calls,
- *    and {@link GoResolver.retained} counts it. (A flattened table per type
- *    aborted the process on 650 KB of Go, inside every budget below: a heap
- *    abort cannot be caught — PR #1104 review cycle 4.)
+ *    the whole resolver retains an amount linear in the source and the calls.
+ *    A struct's fields are read once per DECLARATION and shared by every type
+ *    that is that struct underneath. {@link GoResolver.retained} counts every
+ *    structure kept ({@link GO_RESOLVER_CACHES} is the audit), and each is
+ *    created through a helper that counts it. (A flattened table per type
+ *    aborted the process on 650 KB of Go, and a copy of a struct's fields per
+ *    defined type on 2.15 MB, inside every budget below: a heap abort cannot
+ *    be caught — PR #1104 review cycles 4 and 5. Ingest keeps a heap watchdog
+ *    as the last resort, `GO_BINDING_MAX_HEAP_GROWTH` in `ingest.ts`.)
  *  - Placing. Finding a directory's module, an import's most specific module,
  *    and — with no `go.mod` — the directory an import path is spelled like,
  *    each cost the LENGTH of that path, through indices built once: scanning
@@ -429,6 +435,87 @@ export interface GoResolverRetained {
   overRetained: number;
   /** The sum of the entry counts above. */
   entries: number;
+  /**
+   * EVERY structure the resolver holds between calls, by cache
+   * ({@link GO_RESOLVER_CACHES}): one count per map entry, set member or list
+   * element. The figures above are the part whose size depends on what a type
+   * reaches; this is all of it, including what is built from the declarations
+   * up front. A cache cannot be left out: each is created through one helper
+   * that counts it, and `go-resolver-type-forms.test.ts` fails on a `new Map`
+   * or `new Set` in this file that goes round it.
+   */
+  caches: Record<GoResolverCache, number>;
+  /** The sum of {@link caches}: linear in the source and the calls resolved. */
+  total: number;
+}
+
+/**
+ * The caches of a resolver — the audit of what it retains, kept where the
+ * code is. For each: what it is keyed by, what an entry holds, and its bound.
+ * "Declared" is a count of things WRITTEN in the source, so every bound here
+ * is O(source size) or O(calls resolved); none is a product of two of them.
+ *
+ * | cache | keyed by | an entry holds | bound |
+ * | --- | --- | --- | --- |
+ * | `packages` | directory, package clause, file path | a package, a file context, a directory | files + packages + directories |
+ * | `declarations` | package and declared name (methods: and receiver; test methods: and directory); twins also by file | a reference to the declaration's facts | 2 × declarations + test methods |
+ * | `placing` | `go.mod` directory or module path; directory; one trie node per path segment of a directory outside every module | a module, or a trie node | modules + directories + their path segments |
+ * | `imports` | importing module and import path; per file, the local import name | what the path names (one small object) | 3 × import statements |
+ * | `typeNames` | file and a type name as SPELLED in that file's declarations or calls | the declaration it names (references) | 2 × type mentions in the source |
+ * | `typeInfos` | declared type and whether the viewer sees its test files | references: declaration, shared struct, methods map | 2 × declared types |
+ * | `structs` | struct DECLARATION | its field names → field facts (references), and the types it embeds | 1 + fields + embedded fields, per struct declaration — shared by every defined type over it |
+ * | `interfaces` | declared interface and view | its own method names, and the interfaces it embeds | 2 × (1 + declared methods + declared embeds) |
+ * | `interfaceSets` | declared interface and view | references to the interfaces in reach | 2 × (1 + min(reach, {@link GO_TYPE_LAYER_BUDGET})) per interface asked about |
+ * | `memberTables` | type asked about and view | one table object | 2 × types a call selects from |
+ * | `layers` | (in a table) | references to the types a promotion search goes through, twice, and their depth index | 4 × max({@link GO_TYPE_LAYER_BUDGET}, {@link GO_TYPE_RETAINED_PER_MEMBER} × members the type declares ITSELF) per table |
+ * | `indexedNames` | (in a table wider than the layer budget) member name | what it selects | {@link GO_TYPE_RETAINED_PER_MEMBER} × members the type declares itself |
+ * | `askedNames` | (in a table) a member name a call selected | what it selects | one per name per call resolved |
+ *
+ * Not caches, and so not here: the per-call scratch sets marked `transient`
+ * where they are created, which die with the call or the build that made them.
+ */
+export const GO_RESOLVER_CACHES = [
+  "packages",
+  "declarations",
+  "placing",
+  "imports",
+  "typeNames",
+  "typeInfos",
+  "structs",
+  "interfaces",
+  "interfaceSets",
+  "memberTables",
+  "layers",
+  "indexedNames",
+  "askedNames",
+] as const;
+
+export type GoResolverCache = (typeof GO_RESOLVER_CACHES)[number];
+
+/** A `Map` that reports each NEW key, so that no cache is held uncounted. */
+class KeptMap<K, V> extends Map<K, V> {
+  private readonly note: () => void;
+  constructor(note: () => void) {
+    super();
+    this.note = note;
+  }
+  override set(key: K, value: V): this {
+    if (!super.has(key)) this.note();
+    return super.set(key, value);
+  }
+}
+
+/** A `Set` that reports each NEW member ({@link KeptMap}). */
+class KeptSet<T> extends Set<T> {
+  private readonly note: () => void;
+  constructor(note: () => void) {
+    super();
+    this.note = note;
+  }
+  override add(value: T): this {
+    if (!super.has(value)) this.note();
+    return super.add(value);
+  }
 }
 
 export interface GoResolver {
@@ -506,6 +593,7 @@ export const GO_TYPE_RETAINED_PER_MEMBER = 16;
  * Predeclared identifiers. A bare call to one that the package does not itself
  * declare is a builtin or a conversion to a basic type — never a project symbol.
  */
+// constant: not a cache
 const GO_UNIVERSE: ReadonlySet<string> = new Set([
   "append",
   "cap",
@@ -554,6 +642,7 @@ const GO_UNIVERSE: ReadonlySet<string> = new Set([
 ]);
 
 /** Predeclared types that are interfaces: a method on one is dispatched at run time. */
+// constant: not a cache
 const GO_UNIVERSE_INTERFACES: ReadonlySet<string> = new Set(["error", "any", "comparable"]);
 
 /** The directory of a repo-relative path (`""` at the root). */
@@ -725,11 +814,24 @@ interface NamedMemo {
   hops: number;
 }
 
+/**
+ * One struct DECLARATION, read once and shared by reference: by the type that
+ * declares it, by every defined type over it (`type A B`) and by every viewer.
+ */
 type StructInfo = {
   fields: GoFieldFact[];
   file: FileCtx;
   byName: Map<string, GoFieldFact>;
+  /**
+   * Lazily resolved: the project types the struct embeds, in source order, up
+   * to the first that is not a project type this module can see into (`blind`).
+   */
+  embeds?: { list: ProjectNamed[]; blind: boolean };
 };
+
+const NO_EMBEDS: NonNullable<StructInfo["embeds"]> = { list: [], blind: false };
+// constant: not a cache
+const NO_DIRS: ReadonlySet<string> = new Set<string>();
 
 /** What a composite type is underneath: the type itself, or what a defined type is defined as. */
 type Underlying = { type: GoType; file: FileCtx } | "external" | null;
@@ -739,11 +841,6 @@ interface TypeInfo {
   decl: Decl<GoTypeFact> | null;
   struct: StructInfo | "external" | null;
   methods: Map<string, Decls<GoFuncFact>> | undefined;
-  /**
-   * Lazily resolved: the project types its struct embeds, in source order, up
-   * to the first that is not a project type this module can see into (`blind`).
-   */
-  embeds?: { list: ProjectNamed[]; blind: boolean };
 }
 
 /**
@@ -854,30 +951,60 @@ export function createGoResolver(
   modules: readonly GoModule[],
   options: GoResolverOptions = {},
 ): GoResolver {
-  const incompleteDirs = options.incompleteDirs ?? new Set<string>();
+  const incompleteDirs = options.incompleteDirs ?? NO_DIRS;
   const callStepBudget = options.budgets?.callSteps ?? GO_CALL_STEP_BUDGET;
   const typeStepBudget = options.budgets?.typeSteps ?? GO_TYPE_STEP_BUDGET;
   const layerBudget = options.budgets?.layerTypes ?? GO_TYPE_LAYER_BUDGET;
   const interfaceBudget = options.budgets?.interfaceTypes ?? GO_TYPE_LAYER_BUDGET;
   const retainedPerMember = options.budgets?.retainedPerMember ?? GO_TYPE_RETAINED_PER_MEMBER;
-  const pkgs = new Map<string, Pkg>();
+
+  // ── What the resolver holds, counted where it is created ─────────────────
+  //
+  // Every Map, Set and list that outlives a call is made through `keptMap`,
+  // `keptSet` or counted with `keep`, under the cache it belongs to
+  // ({@link GO_RESOLVER_CACHES}). A counter written for the structures someone
+  // thought of does not see the next one: `retained()` read 48,000 entries
+  // while a per-type copy of a struct's fields held 2.6 GB (PR #1104 review
+  // cycle 5).
+  const cacheSizes = Object.fromEntries(GO_RESOLVER_CACHES.map((c) => [c, 0])) as Record<
+    GoResolverCache,
+    number
+  >;
+  const keep = (cache: GoResolverCache, entries = 1): void => {
+    cacheSizes[cache] += entries;
+  };
+  // One counting function per cache, shared by every map of it: a closure per
+  // map would itself be a per-type allocation.
+  const noteOf = Object.fromEntries(
+    GO_RESOLVER_CACHES.map((c) => [
+      c,
+      (): void => {
+        cacheSizes[c] += 1;
+      },
+    ]),
+  ) as Record<GoResolverCache, () => void>;
+  const keptMap = <K, V>(cache: GoResolverCache): Map<K, V> => new KeptMap<K, V>(noteOf[cache]);
+  const keptSet = <T>(cache: GoResolverCache): Set<T> => new KeptSet<T>(noteOf[cache]);
+  const pkgs = keptMap<string, Pkg>("packages");
   /**
    * Directory → the packages the go tool builds there (normally one, plus an
    * external `_test` one). A `//go:build ignore` file is in none of them.
    */
-  const pkgsByDir = new Map<string, Pkg[]>();
+  const pkgsByDir = keptMap<string, Pkg[]>("packages");
   /** Every directory holding a Go file, build-ignored ones included. */
-  const goDirs = new Set<string>();
+  const goDirs = keptSet<string>("packages");
   /** Directory → how many `//go:build ignore` files it holds. */
-  const ignoredInDir = new Map<string, number>();
-  const ctxByFile = new Map<string, FileCtx>();
+  const ignoredInDir = keptMap<string, number>("packages");
+  const ctxByFile = keptMap<string, FileCtx>("packages");
   /**
    * Directory → method name → the receivers a `_test.go` file of that
    * directory declares a method of that name on (by package id and type name).
    * One entry per such declaration: what a test caller's view of a type can
    * differ by ({@link viewMember}).
    */
-  const testMethods = new Map<string, Map<string, Map<string, { pkg: Pkg; receiver: string }>>>();
+  const testMethods = keptMap<string, Map<string, Map<string, { pkg: Pkg; receiver: string }>>>(
+    "declarations",
+  );
 
   const add = <T>(map: Map<string, Decls<T>>, key: string, decl: Decl<T>): void => {
     let decls = map.get(key);
@@ -887,6 +1014,7 @@ export function createGoResolver(
     }
     decls.all.push(decl);
     if (!decl.file.isTest) decls.nonTest.push(decl);
+    keep("declarations", decl.file.isTest ? 1 : 2);
   };
 
   for (const f of files) {
@@ -904,16 +1032,17 @@ export function createGoResolver(
         id: pkgs.size,
         dir,
         name: f.facts.package,
-        types: new Map(),
-        funcs: new Map(),
-        methods: new Map(),
-        vars: new Map(),
+        types: keptMap("declarations"),
+        funcs: keptMap("declarations"),
+        methods: keptMap("declarations"),
+        vars: keptMap("declarations"),
       };
       pkgs.set(key, pkg);
       if (!f.facts.buildIgnored) {
         const list = pkgsByDir.get(dir);
         if (list) list.push(pkg);
         else pkgsByDir.set(dir, [pkg]);
+        keep("packages");
       }
     }
     const ctx: FileCtx = {
@@ -922,8 +1051,8 @@ export function createGoResolver(
       pkg,
       isTest: f.isTest,
       facts: f.facts,
-      named: new Map(),
-      underlying: new Map(),
+      named: keptMap("typeNames"),
+      underlying: keptMap("typeNames"),
     };
     ctxByFile.set(f.filePath, ctx);
     for (const t of f.facts.types) add(pkg.types, t.name, { fact: t, file: ctx });
@@ -931,15 +1060,15 @@ export function createGoResolver(
       if (fn.receiver) {
         let ofType = pkg.methods.get(fn.receiver);
         if (!ofType) {
-          ofType = new Map();
+          ofType = keptMap("declarations");
           pkg.methods.set(fn.receiver, ofType);
         }
         add(ofType, fn.name, { fact: fn, file: ctx });
         if (f.isTest) {
           let inDir = testMethods.get(dir);
-          if (!inDir) testMethods.set(dir, (inDir = new Map()));
+          if (!inDir) testMethods.set(dir, (inDir = keptMap("declarations")));
           let ofName = inDir.get(fn.name);
-          if (!ofName) inDir.set(fn.name, (ofName = new Map()));
+          if (!ofName) inDir.set(fn.name, (ofName = keptMap("declarations")));
           ofName.set(`${pkg.id}\u0000${fn.receiver}`, { pkg, receiver: fn.receiver });
         }
       } else add(pkg.funcs, fn.name, { fact: fn, file: ctx });
@@ -951,17 +1080,18 @@ export function createGoResolver(
   // placing a directory or an import path costs the length of that path, never
   // the number of modules (a tree of 24,000 `go.mod` files took 1.2 s to build
   // a resolver for and 7.7 s to resolve, PR #1104 review cycle 3).
-  const moduleAtDir = new Map<string, GoModule>();
-  const modulesByPath = new Map<string, GoModule[]>();
+  const moduleAtDir = keptMap<string, GoModule>("placing");
+  const modulesByPath = keptMap<string, GoModule[]>("placing");
   for (const m of modules) {
     if (!moduleAtDir.has(m.dir)) moduleAtDir.set(m.dir, m);
     const same = modulesByPath.get(m.path);
     if (same) same.push(m);
     else modulesByPath.set(m.path, [m]);
+    keep("placing");
   }
 
   /** Directory → the `go.mod` nearest above it (the module the directory belongs to), or null. */
-  const moduleOfDir = new Map<string, GoModule | null>();
+  const moduleOfDir = keptMap<string, GoModule | null>("placing");
   const moduleOf = (dir: string): GoModule | null => {
     const known = moduleOfDir.get(dir);
     if (known !== undefined) return known;
@@ -1032,7 +1162,8 @@ export function createGoResolver(
   };
 
   /** Directories holding Go code that no `go.mod` of the tree covers. */
-  const orphanDirs = new Set([...goDirs].filter((d) => moduleOf(d) === null));
+  const orphanDirs = keptSet<string>("placing");
+  for (const d of goDirs) if (moduleOf(d) === null) orphanDirs.add(d);
 
   /**
    * Those directories indexed by the END of their paths, one segment per
@@ -1046,7 +1177,7 @@ export function createGoResolver(
   let orphanSuffixes: DirSuffixNode | null = null;
   const orphanSuffixIndex = (): DirSuffixNode => {
     if (orphanSuffixes) return orphanSuffixes;
-    const root: DirSuffixNode = { kids: new Map(), count: 0, first: "", dir: null };
+    const root: DirSuffixNode = { kids: keptMap("placing"), count: 0, first: "", dir: null };
     for (const d of orphanDirs) {
       if (d === "") continue;
       const segs = d.split("/");
@@ -1054,7 +1185,7 @@ export function createGoResolver(
       for (let i = segs.length - 1; i >= 0; i -= 1) {
         let next = node.kids.get(segs[i]);
         if (!next) {
-          next = { kids: new Map(), count: 0, first: d, dir: null };
+          next = { kids: keptMap("placing"), count: 0, first: d, dir: null };
           node.kids.set(segs[i], next);
         }
         next.count += 1;
@@ -1068,45 +1199,36 @@ export function createGoResolver(
 
   /**
    * An import path with no module to place it: matched to the tree by its
-   * spelling alone, which decides only when the evidence is unambiguous.
+   * spelling alone, which decides in ONE case — exactly one directory whose
+   * path ENDS in the whole import path. That is a GOPATH layout
+   * (`src/github.com/org/app/store` for `github.com/org/app/store`), or the
+   * tree root being the GOPATH's `src` itself (`github.com/org/app/store`).
    *
-   *  - a directory whose path ENDS in the whole import path (a GOPATH layout:
-   *    `src/github.com/org/app/store` for `github.com/org/app/store`);
-   *  - a directory of two or more segments that the import path ends in
-   *    (`internal/storage` for `example.org/app/internal/storage`) — when it
-   *    is the ONLY directory the path ends in. Beside `app/internal/storage`
-   *    it is one of two readings, and neither is bound.
-   *
-   * One segment is not evidence: `github.com/pkg/errors` ends in `errors`, and
-   * so does the project's own `errors/`. With nothing matched the path is
-   * outside the tree — unless Go code sits at the tree root, whose import path
-   * is the unknown module path itself.
+   * A directory the import path merely ends in — a PROPER TAIL of it — is a
+   * guess, however many segments match: `pkg/errors/` in a tree with no
+   * `go.mod` is the project's own package or it is where somebody keeps
+   * things, and `github.com/pkg/errors` is the dependency either way. Two
+   * segments were once taken for evidence, and bound `errors.Wrap()` to the
+   * project's `pkg/errors/e.go::Wrap` (PR #1104 review cycle 5; the type
+   * checker says external). Such a path is undecided — not external, since
+   * the tree root may be the package root and the directory the very package
+   * meant. With nothing matched at all the path is outside the tree — unless
+   * Go code sits at the tree root, whose import path is the unknown module
+   * path itself.
    */
   const bySpelling = (importPath: string): ImportTarget => {
     const segs = importPath.split("/");
-    // `suffix`: the longest directory the import path ENDS in (a proper tail
-    // of it). `holding`: the directories that end in the WHOLE import path.
-    let suffix: string | null = null;
-    let suffixes = 0;
+    // `tail`: a directory that IS a proper tail of the import path.
+    // `holding`: the directories that end in the WHOLE import path.
+    let tail = false;
     let node: DirSuffixNode | undefined = orphanSuffixIndex();
     for (let i = segs.length - 1; i >= 0 && node; i -= 1) {
       node = node.kids.get(segs[i]);
-      if (node?.dir && i > 0) {
-        suffix = node.dir;
-        suffixes += 1;
-      }
+      if (node?.dir && i > 0) tail = true;
     }
     const holding = node ? node.count : 0;
-    if (holding === 1 && suffix === null) return inDir(node!.first);
-    if (holding === 0 && suffix !== null) {
-      // Two directories the path ends in are two readings of the layout —
-      // `internal/storage` if the tree root is the module `example.org/app`,
-      // `app/internal/storage` if it is a GOPATH's `src/example.org` — and
-      // the longer one is not thereby the right one.
-      if (suffixes > 1) return UNKNOWN_IMPORT;
-      return suffix.includes("/") ? inDir(suffix) : UNKNOWN_IMPORT;
-    }
-    if (holding > 0 || suffix !== null) return UNKNOWN_IMPORT;
+    if (holding === 1 && !tail) return inDir(node!.first);
+    if (holding > 0 || tail) return UNKNOWN_IMPORT;
     const rootImportable = (pkgsByDir.get("") ?? []).some(
       (p) => !p.name.endsWith("_test") && p.name !== "main",
     );
@@ -1121,7 +1243,7 @@ export function createGoResolver(
    * index, {@link orphanSuffixIndex}); what a file may ask for is capped by
    * {@link importsReadable}.
    */
-  const importTargets = new Map<GoModule | null, Map<string, ImportTarget>>();
+  const importTargets = keptMap<GoModule | null, Map<string, ImportTarget>>("imports");
 
   /**
    * What an import path names FROM `importer`: a project package, a package
@@ -1131,7 +1253,7 @@ export function createGoResolver(
     const own = moduleOf(importer.dir);
     let ofModule = importTargets.get(own);
     if (!ofModule) {
-      ofModule = new Map();
+      ofModule = keptMap("imports");
       importTargets.set(own, ofModule);
     }
     const known = ofModule.get(importPath);
@@ -1189,7 +1311,7 @@ export function createGoResolver(
   const importsOf = (ctx: FileCtx): Map<string, ImportTarget> | null => {
     if (ctx.imports) return ctx.imports;
     if (!importsReadable(ctx)) return null;
-    const out = new Map<string, ImportTarget>();
+    const out = keptMap<string, ImportTarget>("imports");
     for (const imp of ctx.facts.imports) {
       if (imp.alias === "_" || imp.alias === ".") continue;
       const target = resolveImport(imp.path, ctx);
@@ -1225,7 +1347,7 @@ export function createGoResolver(
     if (ctx.dotImports) return ctx.dotImports;
     if (!importsReadable(ctx)) return null;
     const out: ImportTarget[] = [];
-    const seen = new Set<Pkg>();
+    const seen = new Set<Pkg>(); // transient: this call only
     let outside = false;
     for (const imp of ctx.facts.imports) {
       if (imp.alias !== ".") continue;
@@ -1239,6 +1361,7 @@ export function createGoResolver(
       }
       out.push(target);
     }
+    keep("imports", out.length);
     ctx.dotImports = out;
     return out;
   };
@@ -1267,12 +1390,13 @@ export function createGoResolver(
   /** The declarations of a name made in `file` itself: how a caller picks its own twin. */
   const declaredIn = <T>(decls: Decls<T>, file: FileCtx): Decl<T>[] => {
     if (!decls.byFile) {
-      decls.byFile = new Map();
+      decls.byFile = keptMap("declarations");
       for (const d of decls.all) {
         const list = decls.byFile.get(d.file);
         if (list) list.push(d);
         else decls.byFile.set(d.file, [d]);
       }
+      keep("declarations", decls.all.length);
     }
     return decls.byFile.get(file) ?? [];
   };
@@ -1347,18 +1471,34 @@ export function createGoResolver(
   const typeDecl = (named: ProjectNamed): Decl<GoTypeFact> | null =>
     visible(named.pkg.types, named.name, named.viewer, named.pkg.dir)?.[0] ?? null;
 
-  const structInfo = (fields: GoFieldFact[], file: FileCtx): StructInfo => {
-    const byName = new Map<string, GoFieldFact>();
+  /** Struct declaration → its fields by name, read ONCE ({@link StructInfo}). */
+  const structInfos = keptMap<Decl<GoTypeFact>, StructInfo>("structs");
+
+  /**
+   * The fields of one struct DECLARATION. There is one of these per
+   * declaration, and every type that is that struct underneath — the type
+   * itself, each `type A B` over it, each viewer — holds a reference to it.
+   * (A copy per defined type was types × fields: 111 KB for each of N types
+   * over one 3,000-field struct, a heap abort from 2.15 MB of Go — PR #1104
+   * review cycle 5.)
+   */
+  const structOf = (decl: Decl<GoTypeFact>): StructInfo => {
+    const known = structInfos.get(decl);
+    if (known) return known;
+    const fields = decl.fact.fields ?? [];
+    const byName = keptMap<string, GoFieldFact>("structs");
     // The first field of a name is the one a selector reaches.
     for (const f of fields) if (!byName.has(f.name)) byName.set(f.name, f);
-    return { fields, file, byName };
+    const info: StructInfo = { fields, file: decl.file, byName };
+    structInfos.set(decl, info);
+    return info;
   };
 
   /** The struct fields a type has, following `type A B` to B's struct. */
   const structAt = (named: ProjectNamed, depth: number): StructInfo | "external" | null => {
     const decl = typeDecl(named);
     if (!decl || depth > MAX_DEPTH) return null;
-    if (decl.fact.form === "struct") return structInfo(decl.fact.fields ?? [], decl.file);
+    if (decl.fact.form === "struct") return structOf(decl);
     if (decl.fact.form !== "defined" || !decl.fact.target) return null;
     const under = resolveNamed(decl.fact.target, decl.file, depth + 1);
     if (under.n === "external") return "external";
@@ -1369,7 +1509,7 @@ export function createGoResolver(
   const typeId = (named: ProjectNamed): string => `${named.pkg.id}\u0000${named.name}`;
 
   /** Package id, type name and who is looking → what the type declares, read once. */
-  const typeInfos = new Map<string, TypeInfo>();
+  const typeInfos = keptMap<string, TypeInfo>("typeInfos");
   const typeKey = (named: ProjectNamed): string =>
     `${typeId(named)}\u0000${seesTests(named.viewer, named.pkg.dir) ? 1 : 0}`;
 
@@ -1433,7 +1573,7 @@ export function createGoResolver(
     overRetained: 0,
   };
 
-  const interfaceInfos = new Map<string, InterfaceInfo | null>();
+  const interfaceInfos = keptMap<string, InterfaceInfo | null>("interfaces");
 
   /** A project interface's own declaration, read once; null for a type that is not one. */
   const interfaceInfo = (named: ProjectNamed): InterfaceInfo | null => {
@@ -1444,7 +1584,7 @@ export function createGoResolver(
     let info: InterfaceInfo | null = null;
     if (decl?.fact.form === "interface") {
       const embeds: ProjectNamed[] = [];
-      const seen = new Set<string>();
+      const seen = new Set<string>(); // transient: this declaration's own embeds
       let blind = false;
       for (const embedded of decl.fact.embeds ?? []) {
         const inner = embedded ? resolveNamed(embedded, decl.file, 0) : UNKNOWN_NAMED;
@@ -1457,13 +1597,16 @@ export function createGoResolver(
         seen.add(id);
         embeds.push(inner);
       }
-      info = { own: new Set(decl.fact.methods ?? []), embeds, blind };
+      const own = keptSet<string>("interfaces");
+      for (const method of decl.fact.methods ?? []) own.add(method);
+      keep("interfaces", embeds.length);
+      info = { own, embeds, blind };
     }
     interfaceInfos.set(key, info);
     return info;
   };
 
-  const interfaceSets = new Map<string, InterfaceSet>();
+  const interfaceSets = keptMap<string, InterfaceSet>("interfaceSets");
 
   /**
    * The method set of a project interface: itself and the interfaces it
@@ -1481,7 +1624,7 @@ export function createGoResolver(
     const members: InterfaceInfo[] = [];
     let open = false;
     let size = 0;
-    const seen = new Set<string>([typeId(start)]);
+    const seen = new Set<string>([typeId(start)]); // transient: at most the interface budget
     let level: ProjectNamed[] = [start];
     for (let depth = 0; level.length > 0; depth += 1) {
       const next: ProjectNamed[] = [];
@@ -1512,6 +1655,7 @@ export function createGoResolver(
     const out: InterfaceSet = { members, size, open };
     interfaceSets.set(key, out);
     kept.interfaceLayers += members.length;
+    keep("interfaceSets", members.length);
     return out;
   };
 
@@ -1571,28 +1715,29 @@ export function createGoResolver(
   }
 
   /** The types a struct embeds, resolved once: where promotion goes next from it. */
-  const embedsOf = (info: TypeInfo): NonNullable<TypeInfo["embeds"]> => {
-    if (info.embeds) return info.embeds;
+  const embedsOf = (info: TypeInfo): NonNullable<StructInfo["embeds"]> => {
+    const struct = ownStruct(info);
+    if (!struct) return NO_EMBEDS;
+    if (struct.embeds) return struct.embeds;
     const list: ProjectNamed[] = [];
     let blind = false;
-    const struct = ownStruct(info);
-    for (const field of struct?.fields ?? []) {
+    for (const field of struct.fields) {
       if (!field.embedded) continue;
       // An embedded type this module cannot see into may declare any name
       // at this depth, which would win over anything deeper.
-      const embedded =
-        struct && field.type ? resolveNamed(field.type, struct.file, 0) : UNKNOWN_NAMED;
+      const embedded = field.type ? resolveNamed(field.type, struct.file, 0) : UNKNOWN_NAMED;
       if (embedded.n !== "project") {
         blind = true;
         break;
       }
       list.push(embedded);
     }
-    info.embeds = { list, blind };
-    return info.embeds;
+    keep("structs", list.length);
+    struct.embeds = { list, blind };
+    return struct.embeds;
   };
 
-  const memberTables = new Map<string, MemberTable>();
+  const memberTables = keptMap<string, MemberTable>("memberTables");
 
   /** A project type's members: its layers, worked out once per type. */
   const memberTable = (start: ProjectNamed): MemberTable => {
@@ -1605,6 +1750,10 @@ export function createGoResolver(
     if (table.overBudget === "retained") kept.overRetained += 1;
     kept.layerTypes += table.layerCount;
     kept.indexedNames += table.names?.size ?? 0;
+    // `layers` and `infos` hold one reference each per layer type, and the
+    // level a search ended at names its holders twice (`holders`, `indices`).
+    keep("layers", 2 * table.layerCount + 2 * (table.wildcardLevel?.holders.length ?? 0));
+    keep("indexedNames", table.names?.size ?? 0);
     return table;
   };
 
@@ -1666,7 +1815,7 @@ export function createGoResolver(
     /** What the type may keep as an index of names ({@link GO_TYPE_RETAINED_PER_MEMBER}). */
     let wide = 0;
     let level: ProjectNamed[] = [start];
-    const seen = new Set<string>();
+    const seen = new Set<string>(); // transient: this build only
     for (let depth = 0; depth <= MAX_DEPTH && level.length > 0; depth += 1) {
       const infos = level.map((named) => typeInfo(named));
       const wildcards: Array<{ index: number; val: Val }> = [];
@@ -1674,7 +1823,16 @@ export function createGoResolver(
         const named = level[i];
         const info = infos[i];
         const own = ownSize(named, info);
-        if (depth === 0) wide = retainedPerMember * own;
+        // What the type may keep is measured by what its OWN declaration
+        // says. A defined type (`type A B`) has B's fields and wrote none of
+        // them: only its methods are its own, so it is never wide on B's
+        // account — N one-line types over a struct that embeds two hundred
+        // others would each keep two hundred references and an index.
+        if (depth === 0) {
+          wide =
+            retainedPerMember *
+            (info.decl?.fact.form === "defined" ? (info.methods?.size ?? 0) : own);
+        }
         // One step for the type and one for each member it declares.
         steps += 1 + own;
         // An interface whose set is not known in full answers to any name; so
@@ -1764,11 +1922,13 @@ export function createGoResolver(
    * as there are more than `limit`.
    */
   const indexNames = (table: MemberTable, limit: number): Map<string, MemberHit> | null => {
+    // counted: `indexedNames`, by memberTable, once the table is kept
     const names = new Map<string, MemberHit>();
     for (let depth = 0; depth < table.layers.length; depth += 1) {
       const level = table.layers[depth];
       const infos = table.infos[depth];
       // Hits at this depth, per name.
+      // transient: one depth of one build
       const hits = new Map<string, { count: number; val: Val; holder: number; last: number }>();
       for (let i = 0; i < level.length; i += 1) {
         for (const name of ownNames(level[i], infos[i])) {
@@ -1819,7 +1979,7 @@ export function createGoResolver(
   /** What `name` selects from a table and at which depth; null when no type of its layers declares it. */
   const memberHit = (table: MemberTable, name: string): MemberHit | null => {
     if (table.names) return table.names.get(name) ?? null;
-    const asked = (table.asked ??= new Map<string, MemberHit | null>());
+    const asked = (table.asked ??= keptMap<string, MemberHit | null>("askedNames"));
     const known = asked.get(name);
     if (known !== undefined) return known;
     const hit = walkLayers(table, name);
@@ -1830,7 +1990,7 @@ export function createGoResolver(
 
   const layerOf = (table: MemberTable): Map<string, number> => {
     if (table.layerOf) return table.layerOf;
-    const out = new Map<string, number>();
+    const out = keptMap<string, number>("layers");
     for (let depth = 0; depth < table.layers.length; depth += 1) {
       for (const named of table.layers[depth]) {
         const id = typeId(named);
@@ -1880,7 +2040,7 @@ export function createGoResolver(
         if (depth !== undefined) consider(pkg, receiver, depth);
       }
     } else {
-      const seen = new Set<string>();
+      const seen = new Set<string>(); // transient: this lookup only
       for (let depth = 0; depth < table.layers.length; depth += 1) {
         for (const named of table.layers[depth]) {
           if (named.pkg.dir !== dir) continue;
@@ -2250,9 +2410,13 @@ export function createGoResolver(
 
   return {
     retained(): GoResolverRetained {
+      let total = 0;
+      for (const cache of GO_RESOLVER_CACHES) total += cacheSizes[cache];
       return {
         ...kept,
         entries: kept.layerTypes + kept.indexedNames + kept.askedNames + kept.interfaceLayers,
+        caches: { ...cacheSizes },
+        total,
       };
     },
     resolveCall(filePath: string, callee: GoExpr): GoCallVerdict {

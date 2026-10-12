@@ -635,7 +635,8 @@
   "cmd/app/main.go:21:local = same-package cmd/app/main.go::local | go: func cmd/app/main.go::local",
   "cmd/app/main.go:23:Open = unknown | go: func store/store.go::Conn::Open",
   "cmd/app/main.go:25:Open = unknown | go: func b/store/store.go::Conn::Open",
-  "cmd/app/main.go:26:Open = unknown | go: func internal/storage/storage.go::Open"
+  "cmd/app/main.go:26:Open = unknown | go: func internal/storage/storage.go::Open",
+  "cmd/app/wrap.go:8:Wrap = unknown | go: external (dependency)"
  ],
  "legacy-gopath-root": [
   "src/example.org/legacy/cmd/app/main.go:15:Save = package src/example.org/legacy/store/store.go::Save | go: func src/example.org/legacy/store/store.go::Save",
@@ -647,6 +648,7 @@
   "src/example.org/legacy/cmd/app/main.go:21:local = same-package src/example.org/legacy/cmd/app/main.go::local | go: func src/example.org/legacy/cmd/app/main.go::local",
   "src/example.org/legacy/cmd/app/main.go:23:Open = receiver-type src/example.org/legacy/store/store.go::Conn::Open | go: func src/example.org/legacy/store/store.go::Conn::Open",
   "src/example.org/legacy/cmd/app/main.go:25:Open = receiver-type src/example.org/legacy/b/store/store.go::Conn::Open | go: func src/example.org/legacy/b/store/store.go::Conn::Open",
-  "src/example.org/legacy/cmd/app/main.go:26:Open = package src/example.org/legacy/internal/storage/storage.go::Open | go: func src/example.org/legacy/internal/storage/storage.go::Open"
+  "src/example.org/legacy/cmd/app/main.go:26:Open = package src/example.org/legacy/internal/storage/storage.go::Open | go: func src/example.org/legacy/internal/storage/storage.go::Open",
+  "src/example.org/legacy/cmd/app/wrap.go:8:Wrap = unbound external | go: external (dependency)"
  ]
 }

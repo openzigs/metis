@@ -118,3 +118,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Count the delimiter, not the split](project_count-the-delimiter-not-the-split.md) — `split(" | ")` misses `a | | b`; test edge bars
 - [Memoised closure = entities × closure](project_memoised-closure-cache-is-entities-times-closure.md) — probe heap at 2 sizes (#1104)
 - [Absent page group is ambiguous](project_absent-page-group-is-ambiguous-when-ui-hides-empty.md) — UI hides empty groups
+- [Retained counter sees only its own](project_retained-counter-sees-only-what-it-was-written-for.md) — probe every type form; watchdog (#1104)

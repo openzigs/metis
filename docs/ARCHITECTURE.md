@@ -3573,12 +3573,14 @@ that directory was not read — unparseable, unreadable, or hidden by `.metisign
 file (`go run gen.go gen_helpers.go`); a type name its project package does not declare; two
 imports that would bind one local name; an import path that two `go.mod` files of the tree
 both declare, from a file in neither; and — in a tree with no `go.mod`, or for Go code outside
-every module — an import path matched to a directory by spelling, which binds only on a
-GOPATH layout or two trailing segments, and only when that is the ONE directory the path
-ends in: two of them (`internal/storage` beside `app/internal/storage`) are two readings of
-the layout — the tree root as the module, or as a GOPATH's `src/<host>` — and the type
-checker shows the shorter one right in the oracle corpus, so neither is bound (PR #1104,
-review cycle 4). Otherwise it is unknown. An import is resolved in the
+every module — an import path matched to a directory by spelling, which binds in one case
+only: exactly one directory whose path ENDS in the whole import path (a GOPATH layout,
+`src/github.com/org/app/store`, or the tree root being that `src`). A directory the path
+merely ends in is never bound, however many segments match: two trailing segments were once
+taken for evidence, and `errors.Wrap()` importing `github.com/pkg/errors` bound to the
+project's own `pkg/errors/e.go::Wrap`, which the type checker says is the dependency's
+(PR #1104, review cycle 5; the case is in the oracle corpus). Such an import is unknown —
+not `external`, since the directory may be the very package meant. An import is resolved in the
 importing file's **own module** first (the nearest `go.mod` above it), then by the most
 specific module path, so in a monorepo of services that are each `module app`, `app/storage`
 means the importer's own `storage/`.
@@ -3710,6 +3712,24 @@ that walking the layers and the name index answer alike. The reviewer's probes a
 change: 24,000 such types (1.3 MB) 74 MB where the process aborted; 8,000 chained
 interfaces 33 MB and 42 ms.
 
+**The same copy, through another type form (PR #1104, review cycle 5).** The fix above
+covered a type that *embeds* a wide struct. A *defined* type (`type T W`) still got its own
+index of W's fields — 111 KB each, 2.7 GB for 24,000 of them, an abort at 48,000 (2.15 MB) —
+and `retained()` read 48,000 entries because it counted the structures it was written for.
+Three things changed. A struct's fields are read once per **declaration** and shared by
+every type that is that struct underneath. A defined type's allowance counts what *it*
+declares (its methods), not the fields of the struct it is defined over: N one-line types
+over a struct that embeds 200 others each kept 200 references and a 3,000-name index
+(375 KB each, an abort at about 10,000 types — found by the audit, not by the review), and
+are now undecided (`overBudget`). And every cache is created through one helper that counts
+it: `GO_RESOLVER_CACHES` in `go-type-resolution.ts` is the audit — for each cache its key,
+what an entry holds and its bound — `retained().total` sums them, and
+`tests/lib/code-graph/go-resolver-type-forms.test.ts` fails on a `new Map` or `new Set` in
+the resolver that goes round the helper. That suite measures each type FORM over one wide
+declaration (struct embedding, defined type, alias, pointer to a defined type, generic
+instantiation, interface embedding, defined type over an interface, and five compound
+shapes) by the count at two sizes and by retained heap after a forced collection.
+
 Ceilings bound what is left, and each is counted rather than guessed:
 
 | Ceiling | Constant | When it is reached |
@@ -3717,7 +3737,22 @@ Ceilings bound what is left, and each is counted rather than guessed:
 | Steps for one call | `GO_CALL_STEP_BUDGET` (10,000; `go-type-resolution.ts`) | The call is left undecided by type; counted in `IngestStats.goBinding.overBudget`. |
 | Steps for one type's layers | `GO_TYPE_STEP_BUDGET` (100,000) | No member of that type is decided, for any call; counted in `overBudget`. |
 | What one type may keep | `GO_TYPE_LAYER_BUDGET` (64), `GO_TYPE_RETAINED_PER_MEMBER` (16) | The same: no member of that type is decided; counted in `overBudget`. |
-| Time resolving Go calls in one ingest | `GO_BINDING_MAX_MS` (30 s; `ingest.ts`, per run `IngestOptions.goBindingMaxMs`) | Every remaining call of the run is left undecided by type and counted in `goBinding.skipped`; where each file stopped is recorded on the graph and the next ingest resumes there (below). At least `GO_BINDING_MIN_CALLS` (2,000) calls are resolved first whatever the clock says. |
+| Time resolving Go calls in one ingest | `GO_BINDING_MAX_MS` (30 s; `ingest.ts`, per run `IngestOptions.goBindingMaxMs`) | Every remaining call of the run is left undecided by type and counted in `goBinding.skipped`; where each file stopped is recorded on the graph and the next ingest resumes there (below). At least `GO_BINDING_MIN_CALLS` (2,000) calls are resolved first whatever the clock says. `goBinding.stopReason` is `time`. |
+| Heap growth during the step | `GO_BINDING_MAX_HEAP_GROWTH` (512 MB, or a quarter of the process's heap limit if that is less; read every `GO_BINDING_HEAP_SAMPLE_CALLS` = 256 calls) | The same as the time ceiling, with **no floor**, and the resolver is released. `goBinding.stopReason` is `memory`, `heapGrowthMb` the growth read. |
+
+**The heap watchdog is the last resort, and does not trust the resolver's own count.** Two
+reviews in a row found a structure `retained()` did not see, each a process abort from 1
+to 2 MB of Go. So the binding step reads `process.memoryUsage().heapUsed` itself before
+every 256th call and stops when the heap has grown by more than the limit since the step
+began. 512 MB is twice the worst growth measured for a shape that resolves correctly
+(48,000 types over one 3,000-member declaration: 65 to 240 MB), forty times what a real
+ingest of Miniflux reads (12 MB for 21,106 calls) and an eighth of Node's 4 GB default
+heap. A tree of the order of a million Go calls would reach it in one ingest and is then
+bound over several, each with a new resolver. It is the one limit here that is order-dependent — which call it stops at
+depends on what else the process holds — and that is accepted because the alternative is
+an abort nothing can catch; no verdict depends on it. The limit and the reader are
+`IngestOptions.goBindingMaxHeapGrowth` and `goBindingHeapUsed`, seams like the clock, read
+from no request.
 
 Resolving one call cannot fail the ingest either: a throw leaves that call undecided, is
 counted (`goBinding.errors`) and named (`goBinding.failures`, `file:line callee`, up to 50).
@@ -3767,9 +3802,16 @@ change caused decides nothing anew.
 Progress does not depend on the clock: `GO_BINDING_MIN_CALLS` calls are resolved in every
 run before the ceiling is consulted, so N open calls take at most `ceil(N / 2,000)`
 ingests. `resumesLeft` is that number plus `GO_BINDING_RESUME_GRACE` (3), set by the first
-ingest that ends with work open and counted down by each later one; at zero the remainder
+ingest that ends with work open and counted down by each later one. It is sized again by
+an ingest in which a Go change re-planned the work (every unchanged file back from its
+first call) — unless the calls never resolved by type did not move, which is the stuck
+graph the bound exists for. At zero the remainder
 moves to `abandoned`, is no longer resumed, and the version is stamped
-(`IngestStats.goBinding.abandonedFiles`). A file leaves `abandoned` when it changes, is
+(`IngestStats.goBinding.abandonedFiles`). An abandoned call that was never resolved by type
+keeps the row it has; one that was waiting to be resolved *again* held a type answer from
+before the last Go change, and is written undecided by type at that moment (the
+name-evidence answer; unbound and unlabelled in a file that could not be read), so no
+abandoned call carries a type verdict older than the tree. A file leaves `abandoned` when it changes, is
 deleted, or is re-bound whole by a later change to any Go file. Over-budget and failed
 calls are not recorded — resolving them again ends the same way. A full re-ingest ignores
 the record. `IngestStats.goBinding.incomplete` (`{ files, calls }`) and `resumedFiles`

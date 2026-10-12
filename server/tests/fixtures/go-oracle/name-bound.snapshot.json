@@ -33,7 +33,7 @@
     ]
   },
   "legacy-package-root": {
-    "calls": 10,
+    "calls": 11,
     "boundByName": 1,
     "boundByNameAgreeing": 1,
     "boundByName_list": [
@@ -41,7 +41,7 @@
     ]
   },
   "legacy-gopath-root": {
-    "calls": 10,
+    "calls": 11,
     "boundByName": 0,
     "boundByNameAgreeing": 0,
     "boundByName_list": []

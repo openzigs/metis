@@ -373,10 +373,34 @@ func main() {
     expect(importing("github.com/acme/app/store", { "store/store.go": STORE })).toBe("unknown");
   });
 
-  it("two trailing segments are: binds the directory the path ends in", () => {
+  it("two trailing segments are no better, nor three: a proper tail of the path is a guess", () => {
     expect(
       importing("github.com/acme/app/internal/store", { "internal/store/store.go": STORE }),
-    ).toBe("package internal/store/store.go::Open");
+    ).toBe("unknown");
+    expect(
+      importing("github.com/acme/app/internal/store", { "app/internal/store/store.go": STORE }),
+    ).toBe("unknown");
+  });
+
+  // PR #1104, review cycle 5. Two segments were taken for evidence, and this
+  // bound to the project's `pkg/errors/e.go::Wrap`. In Go it is the
+  // dependency's function (the oracle corpus holds the same tree, where the
+  // type checker says so: `legacy-package-root`, `cmd/app/wrap.go`).
+  it("the project's `pkg/errors/` is not `github.com/pkg/errors`", () => {
+    const v = verdicts(
+      {
+        "pkg/errors/e.go": "package errors\n\nfunc Wrap() {}\n",
+        "cmd/main.go": `package main\n\nimport "github.com/pkg/errors"\n\nfunc main() { errors.Wrap() }\n`,
+      },
+      [],
+    );
+    expect(v.get("cmd/main.go:Wrap")).toBe("unknown");
+  });
+
+  it("binds when the tree root is the GOPATH's `src`: the directory IS the whole import path", () => {
+    expect(
+      importing("github.com/acme/app/store", { "github.com/acme/app/store/store.go": STORE }),
+    ).toBe("package github.com/acme/app/store/store.go::Open");
   });
 
   it("binds a GOPATH layout, where the directory ends in the whole import path", () => {
@@ -442,9 +466,10 @@ func main() {
       },
       [{ dir: "svc", path: "example.com/svc" }],
     );
-    expect(v.get("svc/main.go:Help")).toBe("package tools/pkg/util/util.go::Help");
-    // `tools/log` for `example.com/tools/log`: two segments, so it binds too.
-    expect(v.get("svc/main.go:Print")).toBe("package tools/log/log.go::Print");
+    // Each directory is only a tail of its import path: undecided, however
+    // many segments match.
+    expect(v.get("svc/main.go:Help")).toBe("unknown");
+    expect(v.get("svc/main.go:Print")).toBe("unknown");
     expect(v.get("svc/main.go:Spin")).toBe("unbound external");
   });
 

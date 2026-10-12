@@ -150,7 +150,7 @@ describe("the code graph's size, apart from the run's delta (#715)", () => {
 describe("an unfinished Go call binding (#1071)", () => {
   const NOTE =
     "Go call binding is not finished: 12430 Go calls in 262 files are not yet bound by type " +
-    "(the time limit for that step was reached). Nothing already bound was changed; " +
+    "(a time or memory limit for that step was reached). Nothing already bound was changed; " +
     "the next ingest continues from there.";
   const withIncomplete = (
     incomplete: { files: number; calls: number } | null,

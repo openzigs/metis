@@ -261,6 +261,25 @@ describe("#1071 — the Go oracle corpus", () => {
         verdictsOf("legacy-gopath-root").get("src/example.org/legacy/cmd/app/main.go:26:Open"),
       ).toBe("package src/example.org/legacy/internal/storage/storage.go::Open");
     });
+
+    it("a project directory spelled like the END of a dependency's import path is not that dependency", () => {
+      // `github.com/pkg/errors`, in a tree with no go.mod that holds its own
+      // `pkg/errors/`. Two matching segments were taken for evidence and the
+      // call was bound to the project's `Wrap` — a wrong target, by the type
+      // checker's answer (PR #1104, review cycle 5). No rule above objects to
+      // `unknown`, so the verdict is stated here.
+      const view = GO_ORACLE_VIEWS.find((v) => v.name === "legacy-package-root")!;
+      const oracle = oracleCallsFor(snapshot, view).find((c) =>
+        c.file.endsWith("cmd/app/wrap.go"),
+      )!;
+      expect(showAnswer(oracle.answer, view)).toBe("external (dependency)");
+      expect(verdictsOf("legacy-package-root").get("cmd/app/wrap.go:8:Wrap")).toBe("unknown");
+      // From the GOPATH root nothing in the tree is spelled like the path at
+      // all: the dependency is known to be one.
+      expect(
+        verdictsOf("legacy-gopath-root").get("src/example.org/legacy/cmd/app/wrap.go:8:Wrap"),
+      ).toBe("unbound external");
+    });
   });
 
   // ── The checker itself: each rule must be able to fail. ───────────────────

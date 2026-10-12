@@ -448,10 +448,21 @@ describe("with no go.mod, an import is matched by whole path SEGMENTS, never by 
     ).toBe("package src/example.org/app/store/s.go::Save");
   });
 
-  it("an import path that ends in a directory of two segments or more is it", () => {
+  // PR #1104, review cycle 5: this used to bind. A directory that is only a
+  // tail of the path cannot be told from a dependency spelled the same way.
+  it("an import path that ends in a directory of two segments or more is undecided", () => {
     expect(at({ "b/store/s.go": STORE, "cmd/main.go": main('"example.org/app/b/store"') })).toBe(
-      "package b/store/s.go::Save",
+      "unknown",
     );
+  });
+
+  it("the tree root as the GOPATH's `src`: a directory that IS the import path is it", () => {
+    expect(
+      at({
+        "example.org/app/b/store/s.go": STORE,
+        "cmd/main.go": main('"example.org/app/b/store"'),
+      }),
+    ).toBe("package example.org/app/b/store/s.go::Save");
   });
 
   // PR #1104, review cycle 4. The LONGEST such directory used to be bound. But
@@ -480,13 +491,15 @@ describe("with no go.mod, an import is matched by whole path SEGMENTS, never by 
     expect(
       goVerdicts(tree(["internal/storage", "app/internal/storage"]), []).get("cmd/main.go:6:Save"),
     ).toBe("unknown");
-    // Either directory ALONE is the one reading there is.
-    expect(goVerdicts(tree(["internal/storage"]), []).get("cmd/main.go:6:Save")).toBe(
-      "package internal/storage/s.go::Save",
-    );
+    // Either directory ALONE is still only a tail of the path (review cycle 5).
+    expect(goVerdicts(tree(["internal/storage"]), []).get("cmd/main.go:6:Save")).toBe("unknown");
     expect(goVerdicts(tree(["app/internal/storage"]), []).get("cmd/main.go:6:Save")).toBe(
-      "package app/internal/storage/s.go::Save",
+      "unknown",
     );
+    // The directory that holds the whole path is the one reading there is.
+    expect(
+      goVerdicts(tree(["src/example.org/app/internal/storage"]), []).get("cmd/main.go:6:Save"),
+    ).toBe("package src/example.org/app/internal/storage/s.go::Save");
   });
 
   it("a ONE-segment directory the path ends in is a second reading too", () => {

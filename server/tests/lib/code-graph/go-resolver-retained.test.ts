@@ -132,8 +132,16 @@ describe("N types embedding one wide struct: what is kept does not grow with the
       overRetained: 0,
       entries: 1_500,
     });
-    // The same tree with a struct a tenth the width keeps exactly as much.
-    expect(prepare(wideEmbedded(500, 300))().retained).toEqual(small.retained);
+    // The same tree with a struct a tenth the width keeps exactly as much —
+    // but for the struct's own fields, held once (`caches.structs`).
+    const narrow = prepare(wideEmbedded(500, 300))().retained;
+    expect({ ...narrow, caches: null, total: 0 }).toEqual({
+      ...small.retained,
+      caches: null,
+      total: 0,
+    });
+    expect(small.retained.total - narrow.total).toBe(2_700);
+    expect(small.retained.caches.structs - narrow.caches.structs).toBe(2_700);
   });
 
   it("four times the types is four times the entries, whatever the struct holds", () => {

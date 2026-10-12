@@ -718,6 +718,14 @@ embedding, without declaring at least a sixteenth as many members itself, is lef
 (hand-written Go does not come near it; generated code might). And an interface that embeds
 more than twelve interfaces deep, or reaches more than 64, is treated as one whose method
 set is not known in full: a call through it is still `interface`.
+A third: a defined type (`type T W`) is measured by what it declares itself — its
+methods — not by the struct it is defined over. So a one-line type over a struct that
+embeds more than 64 others is left undecided (`overBudget`), while the struct itself is
+answered. (Before that, 10,000 such types — 0.5 MB of Go — exhausted the heap; and a
+defined type over any wide struct kept its own copy of the field index, which did the same
+at 2.15 MB.) The resolver now counts every structure it keeps, by cache
+(`GoResolver.retained().caches`), and the binding step keeps its own heap watchdog below.
+
 One more declared limit: a file whose import block is longer than 10,000 imports
 is not read for imports at all, so its calls through an import are left undecided
 (`overBudget`), the same on every ingest.
@@ -729,6 +737,7 @@ is not read for imports at all, so its calls through an import are left undecide
 | Embedded types one type is looked up through | `GO_TYPE_LAYER_BUDGET` | 64 |
 | Names a wider type may index, per member it declares | `GO_TYPE_RETAINED_PER_MEMBER` | 16 |
 | Time resolving Go calls in one ingest | `GO_BINDING_MAX_MS` | 30 s |
+| Heap growth during the step, read every 256 calls | `GO_BINDING_MAX_HEAP_GROWTH` | 512 MB, or a quarter of the heap limit if less |
 | Ingests a graph may end incomplete, beyond those the floor needs | `GO_BINDING_RESUME_GRACE` | 3 |
 
 The ingest log reports the step as `Go calls bound by type` with `files`, `calls` and
@@ -736,8 +745,9 @@ The ingest log reports the step as `Go calls bound by type` with `files`, `calls
 that is not in the source: `errors` (a call's resolution threw; `failures` names up to 50
 as `file:line callee` — worth reporting), `overBudget` (a step budget ran out, or a type
 would have to keep more than it may: a type with an enormous embedding fan-out, in practice
-generated code) or `skipped` (the time ceiling
-was reached; that ingest's Go binding is incomplete). Such a call is never given a decided
+generated code) or `skipped` (the time ceiling or the heap watchdog
+was reached — `stopReason` says `time` or `memory`, and `heapGrowthMb` the growth that
+tripped it; that ingest's Go binding is incomplete). Such a call is never given a decided
 verdict, and it never replaces an answer the graph already holds: for a file whose content
 did not change, the stored row of an unresolved call is left exactly as it was. Only a file
 that was itself re-parsed has no stored answer to keep; there the call goes on to the
@@ -757,14 +767,32 @@ clock says, so the work always shrinks. The floor counts calls, not time: on han
 Go it costs milliseconds, and on a tree built so that every one of those calls first
 reaches a type at its step budget (3 ms each, measured) it adds about 6 s to the ceiling.
 
+**When the heap watchdog stops the step.** `stopReason: "memory"` means the Node heap
+grew by more than the limit while Go calls were being bound, and the step stopped itself
+before the process could run out of memory (which is an abort: it would take every request
+of the server with it). Nothing is lost: it is recorded and resumed exactly like the time
+ceiling, except that there is no minimum number of calls. Seen once, it may be another
+ingest's memory in the same process; the next Sync continues. Seen on every ingest of one
+repository, with `heapGrowthMb` near the limit, it is a Go source shape the resolver keeps
+too much for — report it with the repository; after the allowance below the remainder is
+given up and the graph is stamped. Raising Node's heap (`--max-old-space-size`) raises the
+limit only up to 512 MB.
+
 **How long a graph may stay incomplete.** N open calls need at most ⌈N / 2,000⌉ ingests,
 and three more are allowed for ingests that close none (the file could not be read that
-time, no resolver could be built). A graph still open after that is stuck, not slow — and
+time, no resolver could be built, the heap watchdog stopped it before its first call). The
+allowance is sized again whenever a Go change puts the unchanged files back on the list —
+an active repository is not given up for being active — but not while the calls never
+resolved by type stand still. A graph still open after that is stuck, not slow — and
 while it is unstamped, automatic document regeneration reads the resumed rows as the rest
 of an upgrade. So the remainder is then **given up**: it moves to `abandoned` in the
 record, is no longer resumed, the version is stamped, and the ingest log warns `Go call
-binding abandoned` with the files. Those calls keep the name-based answer (undecided by
-type); a change to the file, or to any Go file, binds them again. The bound is counted in
+binding abandoned` with the files. What an abandoned call holds: one that was never
+resolved by type keeps the row it had (the name-based answer); one that was waiting to be
+resolved again after a Go change is written undecided by type at that moment — the
+name-based answer, or unbound with no label in a file that could not be read — so it never
+keeps a `receiver-type` or `package` binding worked out before that change. A change to
+the file, or to any Go file, binds them again. The bound is counted in
 ingests because an ingest is the only thing that can make progress: on a nightly refresh
 Miniflux's 21,106 calls would be allowed 14 nights.
 

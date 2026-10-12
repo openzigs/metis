@@ -12,6 +12,7 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
+import { getHeapStatistics } from "node:v8";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { compileMetisignore, DEFAULT_METISIGNORE, isIgnored } from "./metisignore.js";
 import {
@@ -151,6 +152,19 @@ export interface IngestOptions {
    * trip after an exact number of calls instead of whenever the machine says.
    */
   goBindingNow?: () => number;
+  /**
+   * #1071 — the heap growth, in bytes, at which this run stops resolving Go
+   * calls; defaults to {@link defaultGoBindingHeapLimit}. Like the clock, a
+   * seam for tests and for whoever calls `ingestCodeGraph` in code: no route
+   * reads it from a request.
+   */
+  goBindingMaxHeapGrowth?: number;
+  /**
+   * #1071 — what the heap watchdog reads, in bytes; defaults to
+   * `process.memoryUsage().heapUsed`. A seam for tests, so that the watchdog
+   * can be made to trip at an exact sample.
+   */
+  goBindingHeapUsed?: () => number;
   /**
    * User who triggered the ingest. Required for rationale-finding persistence
    * because the Finding→AgentResult→Analysis chain needs a User row. When
@@ -322,7 +336,9 @@ export interface IngestStats {
    *    refusing the type, never by a wrong answer;
    *  - `skipped` — the whole step had already used {@link GO_BINDING_MAX_MS}
    *    when the call came up (and {@link GO_BINDING_MIN_CALLS} calls had been
-   *    resolved). Non-zero means this ingest's Go binding is INCOMPLETE.
+   *    resolved), or its heap had grown past
+   *    {@link GO_BINDING_MAX_HEAP_GROWTH}. Non-zero means this ingest's Go
+   *    binding is INCOMPLETE, and `stopReason` says which of the two it was.
    *
    * None of the three ever REPLACES an answer the graph already holds: the
    * stored row of an unchanged file's call is left as it is. Only a file that
@@ -346,6 +362,14 @@ export interface IngestStats {
     failures: string[];
     overBudget: number;
     skipped: number;
+    /**
+     * Why the step stopped before its last call: `time`
+     * ({@link GO_BINDING_MAX_MS}) or `memory`
+     * ({@link GO_BINDING_MAX_HEAP_GROWTH}); null when it did not.
+     */
+    stopReason: "time" | "memory" | null;
+    /** On a `memory` stop, the heap growth sampled when it tripped, in MB; else null. */
+    heapGrowthMb: number | null;
     resumedFiles: number;
     incomplete: { files: number; calls: number } | null;
     /**
@@ -520,6 +544,68 @@ export const GO_BINDING_MAX_MS = 30_000;
 export const GO_BINDING_MIN_CALLS = 2_000;
 
 /**
+ * #1071 — the heap growth at which an ingest STOPS resolving Go calls: the
+ * last resort against a resolver that retains more than it says.
+ *
+ * The resolver bounds what it keeps and counts it (`GoResolver.retained`).
+ * Twice a review found a structure that count did not see — a flattened member
+ * table per type, then a copy of a struct's fields per defined type — and each
+ * time 1 to 2 MB of Go ended the process: `JavaScript heap out of memory` is
+ * an abort, not an exception, so nothing catches it and every ingest in the
+ * process dies with it. This watchdog does not trust that accounting. It reads
+ * the heap itself, every {@link GO_BINDING_HEAP_SAMPLE_CALLS} calls, and when
+ * the heap has grown by more than this since the step began it stops the step
+ * exactly as the time ceiling does: the remaining calls keep the answer they
+ * have, the graph records where each file stopped and is not stamped, the
+ * resolver is released — its caches with it — and the stats and the log say
+ * `stopReason: "memory"`.
+ *
+ * 512 MB, because of what was measured through the real walker and resolver
+ * (PR #1104 review cycle 5): the widest shapes that resolve correctly — 48,000
+ * types over one 3,000-member declaration, 2 to 5.6 MB of Go in one package —
+ * peak at 65 to 240 MB of growth, and a real ingest of Miniflux (21,106 calls)
+ * at 12 MB as this watchdog reads it. So the limit is twice the worst
+ * legitimate case found and forty times a real repository; and it is an
+ * eighth of Node's 4 GB default heap, which leaves the rest of the server its
+ * room. On a smaller heap the limit is a quarter of the heap instead
+ * ({@link defaultGoBindingHeapLimit}). At Miniflux's 0.6 KB a call it would be
+ * reached near 900,000 calls in ONE ingest: a tree that large is then bound
+ * over several ingests, each with a new resolver, like any other binding the
+ * ceiling interrupted — slower, and never an abort.
+ *
+ * Unlike every other limit of this step it is ORDER-dependent, and has no
+ * floor: which call it stops at depends on what else the process holds and on
+ * when the collector last ran, and it can stop an ingest before
+ * {@link GO_BINDING_MIN_CALLS} calls. That is accepted here and nowhere else —
+ * the alternative is the abort. No VERDICT depends on it: a call is resolved
+ * in full or not looked at. A tree that trips it on every ingest is given up
+ * after the usual allowance ({@link GO_BINDING_RESUME_GRACE}).
+ */
+export const GO_BINDING_MAX_HEAP_GROWTH = 512 * 1024 * 1024;
+
+/**
+ * #1071 — how often the heap watchdog reads the heap: before every 256th call
+ * handed to the resolver (the first included, which covers building it). A
+ * reading costs microseconds, so this adds well under a microsecond a call;
+ * and at the worst growth yet measured for one call (111 KB, the copy of a
+ * 3,000-field struct) 256 calls are 28 MB — what the heap may pass the limit
+ * by before the next reading notices.
+ */
+export const GO_BINDING_HEAP_SAMPLE_CALLS = 256;
+
+/**
+ * The default for {@link IngestOptions.goBindingMaxHeapGrowth}:
+ * {@link GO_BINDING_MAX_HEAP_GROWTH}, or a quarter of the process's heap limit
+ * where that is less — a server started with `--max-old-space-size=1024`
+ * would otherwise abort before a 512 MB watchdog ever tripped.
+ */
+export function defaultGoBindingHeapLimit(
+  heapSizeLimit: number = getHeapStatistics().heap_size_limit,
+): number {
+  return Math.min(GO_BINDING_MAX_HEAP_GROWTH, Math.floor(heapSizeLimit / 4));
+}
+
+/**
  * #1071 — the ingests a graph may END with Go binding still open, over and
  * above the number the floor itself needs.
  *
@@ -534,11 +620,31 @@ export const GO_BINDING_MIN_CALLS = 2_000;
  * acknowledging its changes as an upgrade — for good. So the bound is counted
  * in ingests, not in days: an ingest is the only thing that can make progress.
  *
+ * The allowance is worked out when work is first left open, and AGAIN by every
+ * ingest that re-plans it: a change to a Go file puts every unchanged Go file
+ * back on the list from its first call, so counting on down from a number
+ * sized for what was open before would give an active repository up early.
+ * It is not renewed while the calls NEVER resolved by type stand still — no
+ * file of them advanced — since that is the stuck graph this bound is for.
+ *
  * When it runs out the remainder is ABANDONED: moved to
  * {@link GoBindingIncomplete.abandoned}, no longer resumed, and the graph is
- * stamped. Those calls keep what they hold — the name-evidence answer, which
- * is undecided by type — until their file changes or a later change to any Go
- * file binds the whole tree again.
+ * stamped. What an abandoned call holds from then on, exactly:
+ *
+ *  - a call NEVER resolved by type (`files`) holds what it held: the
+ *    name-evidence answer (labelled `name`, or unbound with no label), or on
+ *    a graph an older extractor wrote the row that extractor left;
+ *  - a call waiting to be resolved AGAIN (`again`) held a TYPE answer worked
+ *    out before the last change to a Go file — possibly a binding, labelled
+ *    `receiver-type` or `package`, to a function the change moved the call
+ *    away from. That answer is not kept: at the moment of abandonment the
+ *    call is written undecided by type — the name-evidence answer, like any
+ *    call the resolver could not decide — or, in a file this ingest could not
+ *    read, unbound with no label.
+ *
+ * So no abandoned call carries a type verdict older than the tree it is in.
+ * It stays that way until its file changes or a later change to any Go file
+ * binds the whole tree again.
  */
 export const GO_BINDING_RESUME_GRACE = 3;
 
@@ -795,6 +901,8 @@ export async function ingestCodeGraph(
   const goBindingLeft = new Map<string, number>();
   const goBindingAgainLeft = new Map<string, number>();
   const goBindingAbandoned = new Map(goBindingRecord.abandoned);
+  // What `persistParsed` decided about the allowance; written back in Step 8.
+  const goBindingEnd: GoBindingEnd = { resumesLeft: null, abandonedNow: [] };
   // #1071 — said BEFORE the first row that depends on it: a Go file changed,
   // and until Step 8 replaces the record nobody can vouch for the rows this
   // ingest is writing ({@link GoBindingIncomplete.inFlight}).
@@ -1057,6 +1165,10 @@ export async function ingestCodeGraph(
       goBindingMaxMs: options.goBindingMaxMs ?? GO_BINDING_MAX_MS,
       goBindingMinCalls: options.goBindingMinCalls ?? GO_BINDING_MIN_CALLS,
       goBindingNow: options.goBindingNow ?? (() => performance.now()),
+      goBindingMaxHeapGrowth: options.goBindingMaxHeapGrowth ?? defaultGoBindingHeapLimit(),
+      goBindingHeapUsed: options.goBindingHeapUsed ?? (() => process.memoryUsage().heapUsed),
+      goBindingResumesLeft: goBindingRecord.resumesLeft,
+      goBindingEnd,
       goBindingPending,
       goBindingAgain: goBindingRecord.again,
       goBindingInterrupted: goBindingRecord.inFlight,
@@ -1269,31 +1381,18 @@ export async function ingestCodeGraph(
     langStatsRecord[row.language] = row._count._all;
   }
   // #1071 — what is left of Go binding, and for how many more ingests it may
-  // be ({@link GO_BINDING_RESUME_GRACE}).
-  let goResumesLeft: number | null = null;
-  if (goBindingLeft.size + goBindingAgainLeft.size > 0) {
-    const openCalls = stats.goBinding?.incomplete?.calls ?? 0;
-    const minCalls = Math.max(1, options.goBindingMinCalls ?? GO_BINDING_MIN_CALLS);
-    goResumesLeft =
-      goBindingRecord.resumesLeft === null
-        ? Math.ceil(openCalls / minCalls) + GO_BINDING_RESUME_GRACE
-        : goBindingRecord.resumesLeft - 1;
-    if (goResumesLeft <= 0) {
-      for (const [file, at] of goBindingAgainLeft) goBindingAbandoned.set(file, at);
-      for (const [file, at] of goBindingLeft) goBindingAbandoned.set(file, at);
-      log.warn(
-        "Go call binding abandoned: these files were still open after every ingest the floor needs and three more; their remaining calls stay undecided by type until the file, or any Go file, changes",
-        {
-          projectId,
-          count: goBindingLeft.size + goBindingAgainLeft.size,
-          files: [...goBindingLeft.keys(), ...goBindingAgainLeft.keys()].slice(0, NAMED_FILES_CAP),
-        },
-      );
-      goBindingLeft.clear();
-      goBindingAgainLeft.clear();
-      goResumesLeft = null;
-      if (stats.goBinding) stats.goBinding.incomplete = null;
-    }
+  // be, was decided by `persistParsed` before it wrote a row
+  // ({@link GO_BINDING_RESUME_GRACE}).
+  const goResumesLeft = goBindingEnd.resumesLeft;
+  if (goBindingEnd.abandonedNow.length > 0) {
+    log.warn(
+      "Go call binding abandoned: these files were still open after every ingest the floor needs and three more; their remaining calls are undecided by type (the name-based answer, never an older type binding) until the file, or any Go file, changes",
+      {
+        projectId,
+        count: goBindingEnd.abandonedNow.length,
+        files: goBindingEnd.abandonedNow.slice(0, NAMED_FILES_CAP),
+      },
+    );
   }
   if (stats.goBinding) stats.goBinding.abandonedFiles = goBindingAbandoned.size;
   const finalise = prisma.codeGraph.update({
@@ -1435,7 +1534,7 @@ function reportIngest(projectId: string, stats: IngestStats): void {
     const incomplete = errors + overBudget + skipped > 0;
     log[incomplete ? "warn" : "info"](
       incomplete
-        ? "Go calls bound by type; some were left undecided by type (errors: resolution threw, overBudget: a step budget ran out, skipped: the time ceiling was reached — recorded on the graph as `incomplete` and resumed by the next ingest)"
+        ? "Go calls bound by type; some were left undecided by type (errors: resolution threw, overBudget: a step budget ran out, skipped: the time ceiling or the heap watchdog was reached, see `stopReason` — recorded on the graph as `incomplete` and resumed by the next ingest)"
         : "Go calls bound by type",
       {
         projectId,
@@ -1573,6 +1672,14 @@ interface IngestTreeState {
   goBindingMinCalls: number;
   /** #1071 — the clock the ceiling is measured with. */
   goBindingNow: () => number;
+  /** #1071 — heap growth, in bytes, at which the step stops ({@link GO_BINDING_MAX_HEAP_GROWTH}). */
+  goBindingMaxHeapGrowth: number;
+  /** #1071 — what the heap watchdog reads, in bytes. */
+  goBindingHeapUsed: () => number;
+  /** #1071 — the allowance the graph's record holds ({@link GoBindingIncomplete.resumesLeft}); null when none. */
+  goBindingResumesLeft: number | null;
+  /** #1071 — what this run decided about the allowance: filled by `persistParsed`. */
+  goBindingEnd: GoBindingEnd;
   /** #1071 — files an earlier run's ceiling left open, and the call index each resumes at ({@link GoBindingIncomplete.files}). */
   goBindingPending: ReadonlyMap<string, number>;
   /** #1071 — files waiting to be re-bound after a Go change, and where each resumes ({@link GoBindingIncomplete.again}). */
@@ -1589,6 +1696,14 @@ interface IngestTreeState {
   markGoBindingInFlight: () => Promise<void>;
   /** #1071 — the pending work is the rest of an extractor upgrade (the version is not stamped yet). */
   goBindingResumesUpgrade: boolean;
+}
+
+/** #1071 — how a run's Go binding ends, as far as the next ingest is concerned. */
+interface GoBindingEnd {
+  /** {@link GoBindingIncomplete.resumesLeft} as this run leaves it; null when nothing is open. */
+  resumesLeft: number | null;
+  /** The files this run gave up on ({@link GO_BINDING_RESUME_GRACE}). */
+  abandonedNow: string[];
 }
 
 /** #1071 — what the binding step decided for one Go call, before any row is written. */
@@ -1609,6 +1724,28 @@ interface PlannedGoCall {
 }
 
 const GO_CALL_NOT_RESOLVED: PlannedGoCall = { verdict: { kind: "unknown" }, unresolved: true };
+
+/**
+ * Undecided by type, and WRITTEN: the name-evidence answer replaces what the
+ * row holds. For a call given up on whose stored answer predates the last
+ * change to a Go file ({@link GO_BINDING_RESUME_GRACE}).
+ */
+const GO_CALL_GIVEN_UP: PlannedGoCall = { verdict: { kind: "unknown" }, unresolved: false };
+
+/** `metadata` of every verdict the TYPE resolver writes — all but `name`. */
+const GO_TYPE_METADATA: readonly string[] = (
+  [
+    "package",
+    "same-package",
+    "receiver-type",
+    "external",
+    "external-assumed",
+    "interface",
+    "func-value",
+    "conversion",
+    "ambiguous",
+  ] as const satisfies readonly GoResolution[]
+).map(goResolutionMetadata);
 
 /** `metadata` of a Go call edge that says it IS bound: with no target left, there is no answer to keep. */
 const GO_BOUND_METADATA: ReadonlySet<string> = new Set(
@@ -1938,6 +2075,9 @@ async function persistParsed(
   );
   const now = tree.goBindingNow;
   const goT0 = now();
+  // The heap watchdog's baseline: everything the step holds from here on —
+  // the resolver, its caches, the plan — is growth ({@link GO_BINDING_MAX_HEAP_GROWTH}).
+  const goHeap0 = tree.goBindingHeapUsed();
   const goBuilt = buildGoResolver(
     [...parsedFiles, ...affectedFiles, ...upgradedFiles, ...goDeclarationFiles],
     tree.goModules,
@@ -1946,7 +2086,16 @@ async function persistParsed(
       ...[...tree.unchangedFiles].filter(([, f]) => f.language === "go").map(([p]) => p),
     ],
   );
-  const goResolver = goBuilt.resolver;
+  // Held in ONE place, so that releasing it frees its caches.
+  let goResolver = goBuilt.resolver;
+  goBuilt.resolver = null;
+  /** A resolver was built: Go calls go through the plan, also once it is released. */
+  const goTyped = goResolver !== null;
+  /** Why the step stopped early, if it did, and — for the heap watchdog — the growth it read. */
+  const goStop = {
+    reason: null as "time" | "memory" | null,
+    heapGrowth: null as number | null,
+  };
   const goBinding = {
     files: goBuilt.files,
     calls: 0,
@@ -1969,14 +2118,25 @@ async function persistParsed(
    * complete run stored for it is kept rather than replaced by a guess.
    * `null` is the ceiling: the call was not looked at.
    */
-  const goVerdict = (
-    resolver: GoResolver,
-    filePath: string,
-    edge: ParsedEdge,
-    callee: GoExpr,
-  ): PlannedGoCall | null => {
+  const goVerdict = (filePath: string, edge: ParsedEdge, callee: GoExpr): PlannedGoCall | null => {
     goBinding.calls += 1;
-    if (goAttempted >= tree.goBindingMinCalls && goResolveMs > tree.goBindingMaxMs) {
+    if (goStop.reason === null) {
+      if (goAttempted >= tree.goBindingMinCalls && goResolveMs > tree.goBindingMaxMs) {
+        goStop.reason = "time";
+      } else if (goAttempted % GO_BINDING_HEAP_SAMPLE_CALLS === 0) {
+        // The last resort, independent of the resolver's own accounting: no
+        // floor, since the alternative is an abort nothing can catch.
+        const growth = tree.goBindingHeapUsed() - goHeap0;
+        if (growth > tree.goBindingMaxHeapGrowth) {
+          goStop.reason = "memory";
+          goStop.heapGrowth = growth;
+          // Released: its caches are what grew.
+          goResolver = null;
+        }
+      }
+    }
+    const resolver = goResolver;
+    if (goStop.reason !== null || resolver === null) {
       goBinding.skipped += 1;
       return null;
     }
@@ -2021,7 +2181,7 @@ async function persistParsed(
   const goRewritten = new Set<string>();
   for (const f of parsedFiles) if (f.language === "go") goRewritten.add(f.filePath);
   for (const f of upgradedFiles) if (f.language === "go") goRewritten.add(f.filePath);
-  if (goResolver) {
+  if (goTyped) {
     /**
      * Plan the Go calls of `file` with index in [from, to). Returns the index
      * of the first one the ceiling skipped (-1: none) and how many it skipped.
@@ -2042,7 +2202,7 @@ async function persistParsed(
         if (index < from) continue;
         if (index >= to) break;
         await maybeYield();
-        const planned = goVerdict(goResolver, file.filePath, edge, edge.goCallee);
+        const planned = goVerdict(file.filePath, edge, edge.goCallee);
         if (planned === null) {
           goPlan.set(edge, GO_CALL_NOT_RESOLVED);
           if (firstSkipped === -1) firstSkipped = index;
@@ -2120,6 +2280,57 @@ async function persistParsed(
       tree.goBindingAbandoned.delete(relPath);
     }
   }
+
+  // ── What is left, and for how many more ingests it may be
+  // ({@link GO_BINDING_RESUME_GRACE}) — decided BEFORE any row is written, so
+  // that what is given up is written as given up.
+  /** Files given up on that this run could not read: their rows are cleared by file. */
+  const goGivenUpUnread: string[] = [];
+  if (tree.goBindingLeft.size + tree.goBindingAgainLeft.size > 0) {
+    // Re-planned: a Go change put every unchanged file back from its first
+    // call, so the allowance is sized for the work as it is NOW — unless the
+    // calls never resolved by type did not move, which is the stuck graph the
+    // allowance exists to end.
+    const neverResolvedMoved =
+      tree.goBindingPending.size === 0 ||
+      [...tree.goBindingPending].some(([file, at]) => tree.goBindingLeft.get(file) !== at);
+    const fresh = tree.goBindingResumesLeft === null || (goRebindAll && neverResolvedMoved);
+    let resumesLeft = fresh
+      ? Math.ceil(goIncompleteCalls / Math.max(1, tree.goBindingMinCalls)) + GO_BINDING_RESUME_GRACE
+      : tree.goBindingResumesLeft! - 1;
+    if (resumesLeft <= 0) {
+      // A call waiting to be resolved AGAIN holds a type answer from before
+      // the last Go change. Given up, it must not keep it: undecided by type,
+      // which is written like any other undecided call (the name rules).
+      const read = new Map(affectedFiles.map((f) => [f.filePath, f]));
+      for (const [relPath, from] of tree.goBindingAgainLeft) {
+        const file = read.get(relPath);
+        if (!file) {
+          goGivenUpUnread.push(relPath);
+          continue;
+        }
+        // From its recorded index on, step 1 had the file: never resolved.
+        const to = tree.goBindingPending.get(relPath) ?? Number.POSITIVE_INFINITY;
+        let index = -1;
+        for (const edge of file.edges) {
+          if (edge.kind !== "calls" || !edge.goCallee) continue;
+          index += 1;
+          if (index >= to) break;
+          if (index >= from) goPlan.set(edge, GO_CALL_GIVEN_UP);
+        }
+      }
+      for (const [file, at] of tree.goBindingAgainLeft) tree.goBindingAbandoned.set(file, at);
+      for (const [file, at] of tree.goBindingLeft) tree.goBindingAbandoned.set(file, at);
+      tree.goBindingEnd.abandonedNow = [
+        ...tree.goBindingLeft.keys(),
+        ...tree.goBindingAgainLeft.keys(),
+      ];
+      tree.goBindingLeft.clear();
+      tree.goBindingAgainLeft.clear();
+      resumesLeft = 0;
+    }
+    tree.goBindingEnd.resumesLeft = resumesLeft > 0 ? resumesLeft : null;
+  }
   const persistedClassNames = await loadPersistedClassNames(
     prisma,
     codeGraphId,
@@ -2142,7 +2353,7 @@ async function persistParsed(
       // A copybook name is a file, never a symbol: an unresolved COPY stays unbound.
       const copybook = resolveCopybook(edge.toQualifiedName, file.filePath, importCtx.copybooks);
       toId = copybook ? (qnameToId.get(copybook) ?? null) : null;
-    } else if (!toId && goResolver && edge.goCallee && edge.kind === "calls") {
+    } else if (!toId && (goTyped || goPlan.has(edge)) && edge.goCallee && edge.kind === "calls") {
       // #1071 — a Go call is decided by the declared types first; the
       // name-evidence rules apply only where no type could be inferred. A call
       // the plan left out was resolved by an earlier run and not looked at again.
@@ -2336,10 +2547,29 @@ async function persistParsed(
     await prisma.$transaction(updates);
   }
 
+  if (goGivenUpUnread.length > 0) {
+    // Given up in a file this run could not read: which of its rows predate
+    // the last Go change cannot be told without its calls in order, so every
+    // type verdict the file holds goes. Unbound and unlabelled is undecided.
+    await prisma.codeEdge.updateMany({
+      where: {
+        codeGraphId,
+        filePath: { in: goGivenUpUnread },
+        kind: "calls",
+        source: null,
+        metadata: { in: [...GO_TYPE_METADATA] },
+      },
+      data: { toSymbolId: null, metadata: null },
+    });
+  }
+
   const goOpenFiles = new Set([...tree.goBindingLeft.keys(), ...tree.goBindingAgainLeft.keys()]);
   if (goBinding.files > 0 || goOpenFiles.size > 0) {
     stats.goBinding = {
       ...goBinding,
+      stopReason: goStop.reason,
+      heapGrowthMb:
+        goStop.heapGrowth === null ? null : Math.round(goStop.heapGrowth / (1024 * 1024)),
       durationMs: Math.round(goParseMs + goResolveMs),
       incomplete:
         goOpenFiles.size > 0 ? { files: goOpenFiles.size, calls: goIncompleteCalls } : null,

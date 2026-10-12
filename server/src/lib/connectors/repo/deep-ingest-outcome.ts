@@ -73,7 +73,7 @@ export function goBindingIncompleteNote(
       : `Go calls in ${plural(incomplete.files, "file")}`;
   return (
     `Go call binding is not finished: ${what} ${incomplete.calls === 1 ? "is" : "are"} not yet bound by type ` +
-    `(the time limit for that step was reached). Nothing already bound was changed; ` +
+    `(a time or memory limit for that step was reached). Nothing already bound was changed; ` +
     `the next ingest continues from there.`
   );
 }

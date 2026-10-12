@@ -10,6 +10,6 @@ section: Changed
     receiver's type was not examined; neither is bound by name. Bindings are checked against the
     Go type checker on a checked-in corpus.
   - Existing graphs upgrade in place on their next ingest, once, without regenerating documents.
-  - Binding has reported ceilings on time and on memory; what the time ceiling leaves is shown in
-    the Sync result, finished by the next ingests, and never replaces a stored binding
-    (OPERATIONS §6.6).
+  - Binding has reported ceilings on time and memory and stops itself before the heap runs out; what
+    is left shows in the Sync result, is finished by later ingests, and never replaces a stored
+    binding (OPERATIONS §6.6). With no `go.mod`, an import binds only to a directory holding its whole path.
