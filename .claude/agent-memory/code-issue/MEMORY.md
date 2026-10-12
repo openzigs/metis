@@ -86,3 +86,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Gate over LLM output: probes](project_deterministic-gate-over-llm-output-probes.md) — adversarial answer, context cue, regex timing
 - [Fuzz every regex; sweep every model field](project_redos-fix-ships-beside-new-pattern-fuzz-all.md) — ReDoS fixes ship beside new ones (#1090)
 - [Model-cannot claims: sweep at the engine](project_model-cannot-claims-need-engine-level-sweep.md) — every LLM dep on; no near-idle timing bound
+- [Spec Kit plan context: replay + graph gaps](project_speckit-plan-context-replay-and-graph-gaps.md) — misses are rank, not top-k (#1060)

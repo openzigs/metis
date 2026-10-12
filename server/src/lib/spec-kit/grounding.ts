@@ -14,6 +14,9 @@
  *     implementation task covering the same acceptance criterion.
  *   - `describeGrounding` reports code symbols alongside document chunks, which
  *     "grounded on N chunks" used to omit.
+ *   - `findFalseNotRetrievedClaims` (#1060) checks every "not in the retrieved
+ *     context" a plan writes against the files the plan was actually given, and
+ *     `renderPlanContext` records that list beside the plan.
  *
  * Every lookup is project-scoped and parameterised through Prisma; paths taken
  * from model output are only ever compared, never used to touch the filesystem.
@@ -173,6 +176,113 @@ export async function verifyPlanPaths(
     });
     return unchecked;
   }
+}
+
+/** The phrase the plan prompt reserves for a file it was not given. */
+const NOT_RETRIEVED_PHRASE = "not in the retrieved context";
+
+/** Lines longer than this are not prose a claim sits in; they are skipped. */
+const MAX_CLAIM_LINE_CHARS = 2000;
+
+/**
+ * #1060 — the backticked paths a plan calls "not in the retrieved context"
+ * although its context named them. In #706 run 7 that sentence could not be
+ * checked: nothing recorded what the plan had been given.
+ *
+ * A claim is one LINE carrying the phrase; every backticked span on it is
+ * compared with `files`, and matches a file it names exactly, a directory that
+ * holds one (`internal/storage`), or a bare file name (`entry_query_builder.go`).
+ * A line with the phrase and no backticked span (the `Existing capability: none
+ * found in the retrieved context` line) claims nothing about a file.
+ *
+ * Linear in the plan: one pass over its lines, one non-nested pattern per line.
+ */
+export function findFalseNotRetrievedClaims(markdown: string, files: readonly string[]): string[] {
+  if (files.length === 0) return [];
+  const given = files.map(normalizePath);
+  const exact = new Set(given);
+  const basenames = new Set(given.map((f) => f.slice(f.lastIndexOf("/") + 1)));
+  const dirs = new Set<string>();
+  for (const f of given) {
+    for (let i = f.indexOf("/"); i !== -1; i = f.indexOf("/", i + 1)) dirs.add(f.slice(0, i));
+  }
+  const found = new Set<string>();
+  for (const line of markdown.split("\n")) {
+    if (line.length > MAX_CLAIM_LINE_CHARS) continue;
+    if (!line.toLowerCase().includes(NOT_RETRIEVED_PHRASE)) continue;
+    for (const m of line.matchAll(/`([^`\n]+)`/g)) {
+      const span = normalizePath(
+        m[1]!
+          .trim()
+          .replace(/::.*$/, "")
+          .replace(/:\d+(?:-\d+)?$/, ""),
+      ).replace(/\/$/, "");
+      if (span.length === 0 || span.length > MAX_PATH_LENGTH) continue;
+      const bare = !span.includes("/");
+      if (exact.has(span) || dirs.has(span) || (bare && basenames.has(span))) found.add(span);
+      if (found.size >= MAX_CHECKED_PATHS) return [...found];
+    }
+  }
+  return [...found];
+}
+
+/** The note a command's message carries for {@link findFalseNotRetrievedClaims}. `""` when none. */
+export function describeFalseNotRetrievedClaims(claims: readonly string[]): string {
+  if (claims.length === 0) return "";
+  const one = claims.length === 1;
+  return ` The plan calls ${claims.map((c) => `\`${c}\``).join(", ")} "not in the retrieved context", but ${one ? "it was" : "they were"} in it — check ${one ? "that statement" : "those statements"} before implementing.`;
+}
+
+/**
+ * The note a command's message carries for what the localisation left out (its
+ * token budget, or a list cap). `""` when nothing was. With `recordedIn`, the
+ * note gives the count and points at the artifact that lists them; without it
+ * (the project-level `/plan`, which has no such artifact) it lists them itself.
+ */
+export function describeContextDropped(dropped: readonly string[], recordedIn?: string): string {
+  if (dropped.length === 0) return "";
+  if (recordedIn) {
+    const n = dropped.length;
+    return ` ${n} group${n === 1 ? "" : "s"} of related code ${n === 1 ? "was" : "were"} left out of the plan's context (token budget or list cap) — listed in \`${recordedIn}\`.`;
+  }
+  return ` Left out of the plan's context (token budget or list cap): ${dropped.join("; ")}.`;
+}
+
+/** The feature artifact the plan's context is recorded in. */
+export const PLAN_CONTEXT_ARTIFACT = "plan-context.md";
+
+/**
+ * #1060 — `plan-context.md`: the files `/speckit.plan` was given, and what was
+ * left out for the budget. Kept OUT of plan.md on purpose: the change-plan
+ * scoring (#1042) counts the files a plan names, and a list of everything
+ * retrieved is not a list of files to change.
+ */
+export function renderPlanContext(rag: {
+  usedChunks: number;
+  usedSymbols: number;
+  files: readonly string[];
+  dropped: readonly string[];
+}): string {
+  const lines = [
+    "# Plan context",
+    "",
+    "What `/speckit.plan` was given when it wrote the current `plan.md`. This is the retrieved",
+    "context, NOT the list of files to change: the plan names those. A file listed here was in",
+    "the planner's context; a file that is not listed was not retrieved.",
+    "",
+    `- Grounding: ${describeGrounding(rag)}`,
+    `- Files named in the context: ${rag.files.length}`,
+    "",
+    "## Files in the retrieved context",
+    "",
+    ...(rag.files.length > 0 ? rag.files.map((f) => `- \`${f}\``) : ["None."]),
+    "",
+    "## Left out (token budget or list cap)",
+    "",
+    ...(rag.dropped.length > 0 ? rag.dropped.map((d) => `- ${d}`) : ["Nothing."]),
+    "",
+  ];
+  return lines.join("\n");
 }
 
 const TEST_TASK_RE = /\b(?:tests?|testing)\b/i;

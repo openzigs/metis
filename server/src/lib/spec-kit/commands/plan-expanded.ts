@@ -56,12 +56,18 @@ import {
   type SpecKitKnowledgeService,
 } from "../rag-context.js";
 import {
+  describeContextDropped,
+  describeFalseNotRetrievedClaims,
   describeGrounding,
   extractRequirementText,
+  findFalseNotRetrievedClaims,
   PINNED_REQUIREMENT_DOCUMENTS,
+  PLAN_CONTEXT_ARTIFACT,
+  renderPlanContext,
   verifyPlanPaths,
   type PlanPathLookup,
 } from "../grounding.js";
+import type { PlanLocalisationSource } from "../plan-localisation.js";
 
 /**
  * #786 — the `/plan` contract (AC-id traceability, grounding in the existing
@@ -146,12 +152,16 @@ export interface PlanInput {
   /** #944 — injectable caller lookup. Defaults to the production wiring. */
   callerLookup?: CallerLookup;
   pathLookup?: PlanPathLookup;
+  /** #1060 — injectable code-graph source for the localisation. Defaults to the production wiring. */
+  localisationSource?: PlanLocalisationSource;
 }
 
 export interface PlanResult {
   artifacts: FeatureArtifactDto[];
   message: string;
   tokensUsed: number;
+  /** #1060 — every repository file the plan's context named; also stored as `plan-context.md`. */
+  retrievedFiles: string[];
   /**
    * #1057 — cut-off replies by artifact key, set only for those NOT saved
    * because a complete version already existed (that version stays current).
@@ -205,6 +215,10 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     // #944 — and the code that already calls them: a plan missed the
     // protocol-adapter writers of the table it changed.
     callers: { ...(input.callerLookup ? { lookup: input.callerLookup } : {}) },
+    // #1060 — and down the code graph to the data that code touches: the
+    // migration, the table's writers, the query builder and the client struct
+    // share no word with a spec, so similarity never retrieved them.
+    localise: { ...(input.localisationSource ? { source: input.localisationSource } : {}) },
   });
 
   const userBase = [
@@ -342,8 +356,21 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
   for (const item of staged) {
     if (!item.prior) assertFeatureArtifactWritable(item.key, item.content);
   }
+  // #1060 — record what this plan was given, beside it. Only when this run's
+  // plan.md is the one being saved: a kept earlier plan keeps its own record.
+  const planContext = staged[0]!.prior ? null : renderPlanContext(rag);
+  if (planContext !== null) assertFeatureArtifactWritable(PLAN_CONTEXT_ARTIFACT, planContext);
   // Write the set. plan.md goes last so it is the artifact the page opens on,
   // as before.
+  // The record is not one of the five generated artifacts the result returns.
+  if (planContext !== null) {
+    await writeFeatureArtifact({
+      featureId: feature.id,
+      key: PLAN_CONTEXT_ARTIFACT,
+      content: planContext,
+      actorId: input.actorId ?? null,
+    });
+  }
   const artifacts: FeatureArtifactDto[] = [];
   for (const item of [...staged.slice(1), staged[0]!]) {
     artifacts.push(
@@ -394,6 +421,17 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
         ? " The plan declares no REST surface, so the contract defines no endpoint."
         : "";
 
+  // #1060 — "not in the retrieved context" is checked against what was retrieved.
+  // A kept earlier plan was written from an earlier context, so it is not checked.
+  const claimNote =
+    planContext !== null
+      ? describeFalseNotRetrievedClaims(findFalseNotRetrievedClaims(plan.content, rag.files))
+      : "";
+  const contextNote =
+    planContext !== null
+      ? ` The ${rag.files.length} file${rag.files.length === 1 ? "" : "s"} the plan was given ${rag.files.length === 1 ? "is" : "are"} recorded in \`${PLAN_CONTEXT_ARTIFACT}\`.${describeContextDropped(rag.dropped, PLAN_CONTEXT_ARTIFACT)}`
+      : "";
+
   const kept = Object.keys(partialContent);
   const keptNote =
     kept.length > 0
@@ -403,8 +441,9 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
 
   return {
     artifacts,
-    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${pathNote}${noneNote}${mermaidNote}${contractNote}${truncationWarning(truncated)}${keptNote}${statusNote}`,
+    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${contextNote}${pathNote}${noneNote}${claimNote}${mermaidNote}${contractNote}${truncationWarning(truncated)}${keptNote}${statusNote}`,
     tokensUsed: totalTokens,
+    retrievedFiles: rag.files,
     ...(kept.length > 0 ? { partialContent } : {}),
   };
 }

@@ -386,6 +386,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "#1057 — how much a Spec Kit model call may reason. Same values as DOCS_GEN_PHASE1_REASONING. auto (default): low effort for a model that REASONS BY DEFAULT (DeepSeek deepseek-v4-pro / deepseek-flash, or a claude-* name sent to DeepSeek's Anthropic endpoint) and nothing for every other model, so Claude on api.anthropic.com is unchanged. provider-default: send nothing. off: thinking disabled. low / medium / high: that effort for any model. In #706 run 7 deepseek-flash at its default (high) spent the whole output cap reasoning and /speckit.plan returned no text three times.",
     sensitive: false,
   },
+  // ── Issue #1060 — Spec Kit plan localisation ─────────────────────────
+  SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(0).max(20_000),
+    description:
+      "#1060 — INPUT token budget of the Change Localisation block /speckit.plan adds to its context: the tables the retrieved code reads and writes, where each is defined, the types named for it, its writers, what those call, and structural twins. Default 2500 (4 characters per token). Locator lines are rendered first, excerpts while the budget lasts; whatever does not fit is named in the block and in the command's message, never cut silently. The block sits in the system prefix of all five plan calls. Set 0 to turn the localisation off (the plan then gets similarity retrieval alone, as before #1060).",
+    sensitive: false,
+  },
   DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS: {
     tier: "tunable",
     valueType: "int",

@@ -4501,6 +4501,7 @@ Design points:
 | `DOCS_GEN_REASONING_ALLOWANCE_TOKENS` | `32768` | Reasoning headroom added on top of every docs-gen output cap for a model that **thinks by default** and draws its reasoning from the same `max_tokens` (#25). Applies only to models on the documented allow-list in `docs-gen/output-caps.ts` — today DeepSeek `deepseek-v4-pro` / `deepseek-flash`, whose thinking mode is on by default. The section/facts caps then describe the ANSWER budget; the sum is still clamped to the model's ceiling (384K for DeepSeek V4). `0` opts out. |
 | `DOCS_GEN_PHASE1_REASONING` | `auto` | How much a Phase-1 fact-extraction call may reason (#25): `auto` asks a thinking-by-default model (the same allow-list) for `low` effort and sends nothing for any other model, so Claude is unchanged; `provider-default`, `off`, `low`, `medium`, `high` override it for every model. Sent by the `anthropic` provider as `thinking` + `output_config.effort` (`thinking: enabled` on DeepSeek's endpoint, `adaptive` elsewhere; `off` → `thinking: disabled`). |
 | `SPEC_KIT_MAX_OUTPUT_TOKENS` | `21333` | Output-token cap for one Spec Kit model call (#1057). Before #1057 none was sent, so the `anthropic` path used its `16000` non-streaming default. The default is the Anthropic SDK's non-streaming bound (ADR 0008), which that provider clamps to anyway; the value is clamped down to the model's known ceiling, and a model with no known ceiling gets `8192` unless this is set. Minimum `512`. |
+| `SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET` | `2500` | Input-token budget (4 characters per token) of the **Change Localisation** block `/plan` and `/speckit.plan` add to their context (#1060, §25.2). Locator rows are rendered first and excerpts while the budget lasts; what does not fit is named in the block, in the command's message and in `plan-context.md`. The closing "left out" note and the file manifest are added on top of it. `0` turns the localisation off. |
 | `SPEC_KIT_REASONING` | `auto` | How much a Spec Kit model call may reason (#1057); same values and allow-list as `DOCS_GEN_PHASE1_REASONING`. In #706 run 7 `deepseek-flash` at its default (high) effort spent the whole cap reasoning. A reply that reaches the cap without one whole line of text now fails the command (`502 SPEC_KIT_OUTPUT_EXHAUSTED`) and keeps the previous artifact instead of saving a stub; an empty reply fails the same way (`502 SPEC_KIT_EMPTY_OUTPUT`). A plan reply cut off part-way never replaces a complete plan artifact (the partial text is returned as `partialContent`) and never marks the feature `planned`. |
 | `DOCS_GEN_FACTS_MAX_OUTPUT_TOKENS` | `8192` | Output-token cap for Phase-1 fact extraction (#1226). Same floor and model-ceiling clamp as above. Fact extraction emits compact bullets, so the smaller default is deliberate. |
 | `DOCS_GEN_CLAIM_MAX_OUTPUT_TOKENS` | `16384` | Output-token cap for one grounding claim-extraction call (#152); it used to reuse the section cap. Claim extraction sends a section in passages of at most ~8,000 characters (split at subsection headings where possible, never inside a fenced block), and a passage whose reply still stops at the cap (`finishReason: "length"`) is split in two and asked again rather than re-sent in `json_object` mode. A reply cut off at the cap is never parsed, and a section that still cannot fit gets a warning naming this key. Same floor and model-ceiling clamp as above. |
@@ -5869,6 +5870,7 @@ server/src/lib/spec-kit/
 │   ├── skeleton.ts               # SPECIFY_SKELETON + emitFeatureFiles + statusFile
 │   └── index.ts                  # runInstall + planInstall
 ├── rag-context.ts                # Phase 2 (#373): project-RAG context builder for /specify + /plan
+├── plan-localisation.ts          # #1060: code-graph walk from the retrieved symbols to their data path (no model call)
 └── commands/
     ├── runner.ts                 # shared agent executor: budget→constitution→RAG→safety→provider→safety→FinOps→audit
     ├── constitution.ts           # /speckit.constitution
@@ -5912,6 +5914,57 @@ feature's scope. `speckit.specify` and `speckit.plan` build the same RAG context
 `/specify` and `/plan` (`buildSpecKitRagContext`; the plan with code symbols, their
 same-file **sibling symbols** (#785) and pinned requirement documents, shared by all five
 plan artifacts), use the same spec and plan prompt contracts, and report their grounding.
+
+**Plan localisation (#1060).** Similarity retrieval gives a plan 8 document chunks and at
+most 12 code symbols, chosen by how closely they match the spec's wording, and until #1060
+the only expansion was upward, to their callers (#944). A spec is written in behavioural
+language, so the files a data change also edits rank far below those cut-offs or cannot
+rank at all: replayed offline on the #706 run-7 specs, `internal/storage/feed_query_builder.go`
+ranked 94th among code symbols and 27th among chunks, the client's `client/model.go` 101st,
+and `internal/database/migrations.go` (which holds only SQL table and column symbols)
+appeared in neither the top 500 symbols nor the top 200 chunks. Sending the whole spec
+instead of its first 2,048 characters did not move them. `plan-localisation.ts`
+(`buildPlanLocalisation`, enabled by `buildSpecKitRagContext`'s `localise` option, which
+both plan commands set) therefore walks the code graph down from the retrieved symbols,
+with no model call:
+
+1. A file-level (`module`) hit is replaced by the functions that file declares, since a
+   module symbol has no call edge.
+2. `resolveDownstreamDataLayer` follows `calls` two hops (a Go `h.store.X()` bound by
+   name, #791) and the SQL-lineage edges (`reads` / `writes` / `persists-to`) name the
+   tables that code touches. Tables are ranked by how much of the retrieved code reaches
+   them times one plus how often the spec names the entity (`countEntityMentions`:
+   the table name, its singular, and the unseparated form); the best two within a
+   quarter of the top score are kept.
+3. For each: `getDataModelSymbols` gives where it is defined (the migrations file) and
+   the production types named for it; `getWriterEdgesTo` gives every function that writes
+   it (ORM mapping edges, synthetic `sql@line` origins and tests excluded), with its
+   signature and first SQL statement as an excerpt; `reads` edges give the readers.
+4. The functions the retrieved code and that data layer call, with a second hop taken only
+   inside the data layer's own directories. This is how a query builder is reached: lineage
+   cannot see SQL assembled from fragments.
+5. Structural twins of the retrieved functions (`findStructuralTwins`, #1036).
+
+Lists are ordered so every file gets one row before any file gets a second
+(`roundRobin`), then capped. The block is budgeted by
+`SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET`: locator rows first, excerpts while the budget
+lasts, and everything a cap or the budget removed is named in a closing **Left out of this
+block** note and returned as `dropped`. The context then ends with **Files in the Retrieved
+Context**, built from the structured results (source excerpts, symbol locators, callers,
+localisation rows), and `buildSpecKitRagContext` returns it as `files`. The plan prompt
+reserves "not in the retrieved context" for a file absent from that list, and
+`findFalseNotRetrievedClaims` (`grounding.ts`) checks every such sentence in the generated
+plan against it, adding a note to the command's message for each path that was in the
+context. `/speckit.plan` records the list and what was left out as the feature artifact
+`plan-context.md` (written only when this run's `plan.md` is saved, and not one of the five
+artifacts the result returns) and returns `retrievedFiles`; the list is kept out of
+`plan.md` because the walkthrough's change-plan scoring counts the files a plan names. The
+legacy `/plan` has a closed set of artifact names and a frozen response shape, so it
+carries the check in its message only. A model-driven tool loop (chat's approach) was not
+used: the localisation adds no model call and about 0.1 s (measured on a 3,845-symbol project)
+to a command that already runs for minutes (#1059), and it is repeatable. Not reachable this way: a file that was never
+ingested (an HTML template, a README outside the indexed set), and code related to the
+spec only by wording that similarity ranked too low to seed the walk.
 
 The legacy alias is preserved byte-for-byte in response shape (`{command, artifactName, artifact, message, tokensUsed}`) so existing v1.2 client integrations require no changes.
 

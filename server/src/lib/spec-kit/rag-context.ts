@@ -41,6 +41,7 @@ import {
   createDefaultCodeSearcher,
   createDefaultSymbolLineLookup,
 } from "../code-graph/project-code-searcher.js";
+import { buildPlanLocalisation, type PlanLocalisationSource } from "./plan-localisation.js";
 
 const log = createChildLogger("spec-kit-rag");
 
@@ -114,7 +115,24 @@ export interface BuildSpecKitRagContextOptions {
    * sees every existing writer before claiming a symbol has no caller.
    */
   callers?: SpecKitCallerExpansion;
+  /**
+   * #1060 — follow the code graph from the retrieved symbols to the data they
+   * touch (tables, their definition, the types named for them, their writers,
+   * what those call) and list the files the context names. Off when absent;
+   * `/plan` sets it.
+   */
+  localise?: SpecKitLocalisation;
 }
+
+export interface SpecKitLocalisation {
+  /** Defaults to the project's code graph through Prisma. */
+  source?: PlanLocalisationSource;
+  /** Defaults to `SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET` ({@link DEFAULT_LOCALISATION_TOKEN_BUDGET}). */
+  tokenBudget?: number;
+}
+
+/** Default token budget of the #1060 localisation block. */
+export const DEFAULT_LOCALISATION_TOKEN_BUDGET = 2500;
 
 /** #944 — one `calls` edge into a retrieved symbol, as the caller lookup returns it. */
 export interface CallerEdgeRow {
@@ -180,6 +198,14 @@ export interface SpecKitRagContext {
   usedChunks: number;
   /** #20 — number of code-graph symbols folded into `context`. */
   usedSymbols: number;
+  /**
+   * #1060 — every repository file `context` names (a source excerpt, a symbol
+   * locator, a caller, a localisation row), repo-relative, in first-named
+   * order. What "in the retrieved context" means for a plan.
+   */
+  files: string[];
+  /** #1060 — what the localisation left out for its budget or a cap, one sentence each. */
+  dropped: string[];
 }
 
 /**
@@ -192,7 +218,13 @@ export async function buildSpecKitRagContext(
   query: string,
   opts: BuildSpecKitRagContextOptions = {},
 ): Promise<SpecKitRagContext> {
-  const empty: SpecKitRagContext = { context: "", usedChunks: 0, usedSymbols: 0 };
+  const empty: SpecKitRagContext = {
+    context: "",
+    usedChunks: 0,
+    usedSymbols: 0,
+    files: [],
+    dropped: [],
+  };
 
   const trimmedQuery = (query ?? "").trim();
   if (!projectId || trimmedQuery.length === 0) return empty;
@@ -267,17 +299,66 @@ export async function buildSpecKitRagContext(
     const callers = opts.callers
       ? await findCallers(
           projectId,
-          [...anchors.map((a) => ({ id: a.symbolId, name: a.name })), ...siblings.symbols],
+          [
+            ...anchors.map((a) => ({ id: a.symbolId, name: a.name })),
+            ...siblings.symbols.map((s) => ({ id: s.id, name: s.name })),
+          ],
           opts.callers,
         )
-      : "";
+      : { block: "", files: [] };
+
+    // #1060 — from what similarity retrieved, down the code graph to its data.
+    const localisation = opts.localise
+      ? await buildPlanLocalisation({
+          projectId,
+          requirementText: trimmedQuery,
+          seeds: [
+            ...anchors.map((a) => ({
+              id: a.symbolId,
+              name: a.name,
+              filePath: a.filePath,
+              kind: a.kind,
+            })),
+            ...siblings.symbols,
+          ],
+          tokenBudget:
+            opts.localise.tokenBudget ??
+            cfg.getNumber(
+              "SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET",
+              DEFAULT_LOCALISATION_TOKEN_BUDGET,
+            ),
+          ...(opts.localise.source ? { source: opts.localise.source } : {}),
+        })
+      : null;
 
     const usedChunks = (hits?.length ?? 0) + pinned.length;
-    const usedSymbols = fused.usedSymbols + covered.count + siblings.count;
-    const context = [docContext, fused.block, covered.block, siblings.block, callers]
+    const usedSymbols =
+      fused.usedSymbols + covered.count + siblings.count + (localisation?.usedSymbols ?? 0);
+    // #1060 — the files this context names, so a plan can tell "not retrieved"
+    // from "retrieved and overlooked". Built from the structured results, never
+    // parsed back out of the rendered text.
+    const files = uniquePaths([
+      ...[...(hits ?? []), ...pinned].flatMap((h) =>
+        h.source === "repo" ? [extractRepoRelPath(h.filename) ?? ""] : [],
+      ),
+      ...anchors.map((a) => a.filePath),
+      ...siblings.symbols.map((s) => s.filePath),
+      ...callers.files,
+      ...(localisation?.files ?? []),
+    ]);
+    const manifest = opts.localise ? renderFileManifest(files) : "";
+    const context = [
+      docContext,
+      fused.block,
+      covered.block,
+      siblings.block,
+      callers.block,
+      localisation?.block ?? "",
+      manifest,
+    ]
       .filter(Boolean)
       .join("\n\n");
-    return { context, usedChunks, usedSymbols };
+    return { context, usedChunks, usedSymbols, files, dropped: localisation?.dropped ?? [] };
   } catch (err) {
     // Retrieval failure (embedder offline, store error, hash-embedder
     // fallback, etc.) must never break generation — log and continue.
@@ -287,6 +368,24 @@ export async function buildSpecKitRagContext(
     });
     return empty;
   }
+}
+
+/** Distinct non-empty paths, in first-seen order. */
+function uniquePaths(paths: readonly string[]): string[] {
+  return [...new Set(paths.filter((p) => p.length > 0))];
+}
+
+export const FILE_MANIFEST_HEADER = [
+  "## Files in the Retrieved Context",
+  "Every repository file this context names, by an excerpt, a symbol locator, a caller or the",
+  "change localisation. `not in the retrieved context` is true ONLY of a file that is absent",
+  "from this list: never say it of a file listed here.",
+].join("\n");
+
+/** #1060 — the list a plan checks before it says a file was not retrieved. */
+function renderFileManifest(files: readonly string[]): string {
+  if (files.length === 0) return "";
+  return [FILE_MANIFEST_HEADER, "", ...files.map((f) => `- ${f}`)].join("\n");
 }
 
 /**
@@ -435,7 +534,11 @@ async function findSiblings(
   projectId: string,
   anchors: ReadonlyArray<{ symbolId: string; filePath: string; name: string }>,
   opts: SpecKitSiblingExpansion,
-): Promise<{ block: string; count: number; symbols: Array<{ id: string; name: string }> }> {
+): Promise<{
+  block: string;
+  count: number;
+  symbols: Array<{ id: string; name: string; filePath: string }>;
+}> {
   const none = { block: "", count: 0, symbols: [] };
   if (anchors.length === 0) return none;
   const files = [...new Set(anchors.map((a) => a.filePath))];
@@ -451,7 +554,7 @@ async function findSiblings(
   }
   const taken = new Set(anchors.map((a) => a.symbolId));
   const lines: string[] = [];
-  const symbols: Array<{ id: string; name: string }> = [];
+  const symbols: Array<{ id: string; name: string; filePath: string }> = [];
   const max = opts.max ?? DEFAULT_MAX_SIBLINGS;
   for (const anchor of anchors) {
     const found = rows
@@ -461,7 +564,7 @@ async function findSiblings(
     for (const r of found) {
       if (lines.length >= max) break;
       taken.add(r.id);
-      symbols.push({ id: r.id, name: r.name });
+      symbols.push({ id: r.id, name: r.name, filePath: r.filePath });
       lines.push(
         `- ${r.name} (${r.kind}) — ${r.filePath}:${r.startLine}-${r.endLine} (beside ${anchor.name})`,
       );
@@ -535,8 +638,9 @@ async function findCallers(
   projectId: string,
   callees: ReadonlyArray<{ id: string; name: string }>,
   opts: SpecKitCallerExpansion,
-): Promise<string> {
-  if (callees.length === 0) return "";
+): Promise<{ block: string; files: string[] }> {
+  const none = { block: "", files: [] };
+  if (callees.length === 0) return none;
   let rows: CallerEdgeRow[];
   try {
     rows = await (opts.lookup ?? prismaCallerLookup).findCallers(projectId, callees);
@@ -545,12 +649,13 @@ async function findCallers(
       projectId,
       error: (err as Error).message,
     });
-    return "";
+    return none;
   }
   const byId = new Map(callees.map((c) => [c.id, c.name]));
   const names = new Set(callees.map((c) => c.name));
   const max = opts.max ?? DEFAULT_MAX_CALLERS;
   const lines: string[] = [];
+  const files: string[] = [];
   const seen = new Set<string>();
   for (const r of rows) {
     if (lines.length >= max) break;
@@ -569,6 +674,7 @@ async function findCallers(
     if (seen.has(line)) continue;
     seen.add(line);
     lines.push(line);
+    files.push(r.filePath);
   }
-  return lines.length === 0 ? "" : [CALLERS_HEADER, "", ...lines].join("\n");
+  return lines.length === 0 ? none : { block: [CALLERS_HEADER, "", ...lines].join("\n"), files };
 }

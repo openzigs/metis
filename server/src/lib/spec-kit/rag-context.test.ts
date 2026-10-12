@@ -130,7 +130,7 @@ describe("buildSpecKitRagContext — flag ON", () => {
       knowledgeService: knowledgeService([]),
       fusedCode: deps,
     });
-    expect(res).toEqual({ context: "", usedChunks: 0, usedSymbols: 0 });
+    expect(res).toEqual({ context: "", usedChunks: 0, usedSymbols: 0, files: [], dropped: [] });
   });
 });
 

@@ -19,12 +19,16 @@ import {
   type SpecKitKnowledgeService,
 } from "../rag-context.js";
 import {
+  describeContextDropped,
+  describeFalseNotRetrievedClaims,
   describeGrounding,
   extractRequirementText,
+  findFalseNotRetrievedClaims,
   PINNED_REQUIREMENT_DOCUMENTS,
   verifyPlanPaths,
   type PlanPathLookup,
 } from "../grounding.js";
+import type { PlanLocalisationSource } from "../plan-localisation.js";
 import { PLAN_SYSTEM_PROMPT } from "./prompts.js";
 import { describeUndeclaredMermaidNodes, findUndeclaredMermaidNodes } from "../mermaid-check.js";
 export { PLAN_SYSTEM_PROMPT } from "./prompts.js";
@@ -50,12 +54,22 @@ export interface PlanInput {
   siblingLookup?: SiblingSymbolLookup;
   /** #944 — injectable caller lookup. Defaults to the production wiring. */
   callerLookup?: CallerLookup;
+  /** #1060 — injectable code-graph source for the localisation. Defaults to the production wiring. */
+  localisationSource?: PlanLocalisationSource;
 }
 
 export interface PlanResult {
   artifact: SpecKitArtifactDto;
   tokensUsed: number;
   message: string;
+  /**
+   * #1060 — every repository file the plan's context named. A file absent from
+   * it was not retrieved. Returned to the in-process caller only: the
+   * project-level `.specify/` set has a closed list of artifact names, and the
+   * deprecated `/plan` route's response shape is frozen. `/speckit.plan` stores
+   * the list as `plan-context.md`.
+   */
+  retrievedFiles: string[];
   /**
    * #1057 — the cut-off reply, set only when it was NOT saved because a
    * complete plan.md already existed (that version stays current).
@@ -91,6 +105,10 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     // #944 — and the code that already calls them: a plan missed the
     // protocol-adapter writers of the table it changed.
     callers: { ...(input.callerLookup ? { lookup: input.callerLookup } : {}) },
+    // #1060 — and down the code graph to the data that code touches: the
+    // migration, the table's writers, the query builder and the client struct
+    // share no word with a spec, so similarity never retrieved them.
+    localise: { ...(input.localisationSource ? { source: input.localisationSource } : {}) },
   });
 
   const userPrompt = [
@@ -123,6 +141,7 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     return {
       artifact: prior,
       tokensUsed: run.tokensUsed,
+      retrievedFiles: rag.files,
       partialContent: run.content,
       message: `plan.md was cut off at the model's output-token limit, so the complete plan.md (v${prior.version}) is kept as current and the partial reply was not saved — re-run the command or split the request.`,
     };
@@ -155,9 +174,15 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     findUndeclaredMermaidNodes(run.content),
   );
 
+  // #1060 — "not in the retrieved context" is checked against what was retrieved.
+  const claimNote = describeFalseNotRetrievedClaims(
+    findFalseNotRetrievedClaims(run.content, rag.files),
+  );
+
   return {
     artifact,
     tokensUsed: run.tokensUsed,
-    message: `Generated plan.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${pathNote}${noneNote}${mermaidNote}${truncationWarning(run.truncated ? ["plan.md"] : [])}`,
+    retrievedFiles: rag.files,
+    message: `Generated plan.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${describeContextDropped(rag.dropped)}${pathNote}${noneNote}${claimNote}${mermaidNote}${truncationWarning(run.truncated ? ["plan.md"] : [])}`,
   };
 }

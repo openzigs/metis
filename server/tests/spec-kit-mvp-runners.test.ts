@@ -255,6 +255,8 @@ import {
   SPECIFY_SKELETON,
 } from "../src/lib/spec-kit/installer/skeleton.js";
 import { SpecKitArtifactError } from "../src/lib/spec-kit/artifacts.js";
+import { __resetConfigSingleton } from "../src/lib/config/config-service.js";
+import { fakeSource, sym } from "./helpers/plan-localisation-graph.js";
 
 class FakeProvider implements AIProvider {
   readonly key: ProviderKey = "offline-stub";
@@ -764,6 +766,13 @@ describe("runPlanExpanded", () => {
     expect(r.message).toContain("`internal/kept.go`");
     expect(r.message).not.toContain("internal/partial.go");
     expect(featureRows.get(fid)!.status).not.toBe("planned");
+    // #1060 — the kept plan keeps its own record: none is written for the unsaved reply.
+    expect(
+      [...featureArtifactRows.values()].some(
+        (row) => row.featureId === fid && row.key === "plan-context.md",
+      ),
+    ).toBe(false);
+    expect(r.message).not.toContain("plan-context.md");
   });
 
   it("#1057 — a cut-off plan.md replaces an empty or whitespace-only stored plan.md", async () => {
@@ -1008,6 +1017,130 @@ describe("feature commands are grounded (#786, #785)", () => {
     expect(provider.systems.at(0)).toContain("Constitution Compliance Check");
     expect(knowledgeService.search.mock.calls[0]![1]).toContain("Mark all entries as read");
     expect(r.message).toMatch(/grounded on \d+ retrieved chunks? and 2 code symbols/);
+  });
+
+  /**
+   * #1060 — the retrieved `MarkAllAsRead` writes `entries.status`. The table's
+   * definition file and the client's `Entry` share no word with the spec and are
+   * reached through the code graph alone.
+   */
+  const localisationSource = () =>
+    fakeSource({
+      symbols: [
+        sym("s-mark", "function", `${ENTRY}::MarkAllAsRead`, ENTRY, 506),
+        sym("tbl", "table", "entries", "internal/database/migrations.go", 279),
+        sym("col", "column", "entries.status", ENTRY),
+        sym("ty", "class", "client/model.go::Entry", "client/model.go", 262),
+      ],
+      edges: [{ from: "s-mark", to: "col", kind: "writes" }],
+    });
+
+  it("#1060 — speckit.plan follows the code graph to the data, records what it was given, and checks 'not in the retrieved context'", async () => {
+    const fid = seedFeature("p1", "008-read-at");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nRecord when an entry was read.");
+    const provider = new RecordingProvider(
+      "# Plan\n\n`internal/database/migrations.go` is not in the retrieved context.\n",
+    );
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "008-read-at",
+      deps: { provider },
+      knowledgeService,
+      fusedCode,
+      siblingLookup,
+      callerLookup,
+      localisationSource: localisationSource(),
+    });
+    // One localisation serves all five calls, like the rest of the grounding.
+    expect(provider.systems).toHaveLength(5);
+    for (const system of provider.systems) {
+      expect(system).toContain("## Change Localisation");
+      expect(system).toContain(
+        "- table `entries` — defined in internal/database/migrations.go (a schema change to it goes in this file)",
+      );
+      expect(system).toContain("- Entry (class) — client/model.go:262-271");
+      expect(system).toContain("## Files in the Retrieved Context");
+    }
+    // The plan prompt says what the two blocks are for.
+    expect(provider.systems.at(0)).toContain(
+      "`Files in the Retrieved Context` is the complete list",
+    );
+
+    expect(r.retrievedFiles).toEqual([
+      ENTRY,
+      "internal/api/x.go",
+      "internal/googlereader/handler.go",
+      "internal/database/migrations.go",
+      "client/model.go",
+    ]);
+    // Recorded beside the plan, not in it, and not among the five generated artifacts.
+    const stored = [...featureArtifactRows.values()].filter((row) => row.featureId === fid);
+    const context = stored.find((row) => row.key === "plan-context.md");
+    expect(context?.content).toContain("- `internal/database/migrations.go`");
+    expect(context?.content).toContain("- `client/model.go`");
+    expect(stored.find((row) => row.key === "plan.md")!.content).not.toContain("Plan context");
+    expect(r.artifacts.map((a) => a.key)).not.toContain("plan-context.md");
+    expect(r.artifacts).toHaveLength(5);
+    expect(r.artifacts.at(-1)!.key).toBe("plan.md");
+
+    expect(r.message).toContain(
+      "The 5 files the plan was given are recorded in `plan-context.md`.",
+    );
+    expect(r.message).toContain(
+      'The plan calls `internal/database/migrations.go` "not in the retrieved context", but it was in it',
+    );
+  });
+
+  it("#1060 — a plan that makes no false claim gets no note", async () => {
+    const fid = seedFeature("p1", "009-clean");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nRecord when an entry was read.");
+    const r = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "009-clean",
+      deps: {
+        provider: new RecordingProvider(
+          "# Plan\n\n`internal/template/views/x.html` is not in the retrieved context.\n",
+        ),
+      },
+      knowledgeService,
+      fusedCode,
+      siblingLookup,
+      callerLookup,
+      localisationSource: localisationSource(),
+    });
+    expect(r.message).not.toContain("but it was in it");
+    expect(r.message).not.toContain("left out of the plan's context");
+  });
+
+  it("#1060 — says in the message what the localisation left out for its budget", async () => {
+    process.env.SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET = "170";
+    __resetConfigSingleton();
+    try {
+      const fid = seedFeature("p1", "010-tight");
+      seedFeatureArtifact(fid, "spec.md", "# Spec\nRecord when an entry was read.");
+      const r = await runPlanExpanded({
+        projectId: "p1",
+        featureSlug: "010-tight",
+        deps: { provider: new RecordingProvider("# Plan\n") },
+        knowledgeService,
+        fusedCode,
+        siblingLookup,
+        callerLookup,
+        localisationSource: localisationSource(),
+      });
+      expect(r.message).toMatch(
+        /\d+ groups? of related code (?:was|were) left out of the plan's context \(token budget or list cap\) — listed in `plan-context\.md`\./,
+      );
+      const context = [...featureArtifactRows.values()].find(
+        (row) => row.featureId === fid && row.key === "plan-context.md",
+      );
+      expect(context?.content).toMatch(
+        /## Left out \(token budget or list cap\)\n\n- .*not listed for the token budget/,
+      );
+    } finally {
+      delete process.env.SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET;
+      __resetConfigSingleton();
+    }
   });
 });
 

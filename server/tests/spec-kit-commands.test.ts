@@ -124,6 +124,7 @@ import { runAnalyze } from "../src/lib/spec-kit/commands/analyze.js";
 import { runImplement } from "../src/lib/spec-kit/commands/implement.js";
 import { writeArtifact } from "../src/lib/spec-kit/artifacts.js";
 import { SpecKitArtifactError } from "../src/lib/spec-kit/artifacts.js";
+import { fakeSource, sym } from "./helpers/plan-localisation-graph.js";
 
 class FakeProvider implements AIProvider {
   readonly key: ProviderKey = "offline-stub";
@@ -418,6 +419,7 @@ describe("/plan", () => {
     expect(r.partialContent).toContain("# Partial plan");
     expect(r.partialContent).toMatch(/\*\*Incomplete:\*\*/);
     expect(r.message).toMatch(/cut off .* kept as current/);
+    expect(r.retrievedFiles).toEqual([]);
   });
 
   it("#1057 — a cut-off reply with no prior plan.md is saved, marked and warned", async () => {
@@ -427,6 +429,67 @@ describe("/plan", () => {
     expect(r.artifact.content).toMatch(/\*\*Incomplete:\*\*/);
     expect(r.partialContent).toBeUndefined();
     expect(r.message).toContain("Warning: `plan.md` was cut off");
+  });
+
+  it("#1060 — /plan follows the code graph to the data, returns the files it was given, and checks 'not in the retrieved context'", async () => {
+    await writeArtifact({
+      projectId: "p1",
+      name: "spec.md",
+      content: "Record when an entry was read.",
+    });
+    const ENTRY = "internal/storage/entry.go";
+    const r = await runPlan({
+      projectId: "p1",
+      knowledgeService: fakeKnowledgeService([]),
+      fusedCode: {
+        searcher: {
+          search: vi.fn(async () => [
+            {
+              symbolId: "s-mark",
+              filePath: ENTRY,
+              name: "MarkAllAsRead",
+              kind: "function",
+              score: 1,
+            },
+          ]),
+        },
+        lineLookup: {
+          resolve: vi.fn(
+            async () => new Map([["s-mark", { filePath: ENTRY, startLine: 506, endLine: 520 }]]),
+          ),
+        },
+      },
+      siblingLookup: { findInFiles: vi.fn(async () => []) },
+      callerLookup: { findCallers: vi.fn(async () => []) },
+      localisationSource: fakeSource({
+        symbols: [
+          sym("s-mark", "function", `${ENTRY}::MarkAllAsRead`, ENTRY, 506),
+          sym("tbl", "table", "entries", "internal/database/migrations.go", 279),
+          sym("col", "column", "entries.status", ENTRY),
+        ],
+        edges: [{ from: "s-mark", to: "col", kind: "writes" }],
+      }),
+      deps: {
+        provider: new FakeProvider(
+          "# Plan\nThe migrations file (`migrations.go`) is not in the retrieved context.\n",
+        ),
+      },
+    });
+    expect(r.retrievedFiles).toEqual([ENTRY, "internal/database/migrations.go"]);
+    expect(r.message).toContain(
+      'The plan calls `migrations.go` "not in the retrieved context", but it was in it',
+    );
+  });
+
+  it("#1060 — /plan returns an empty file list when nothing was retrieved", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
+    const r = await runPlan({
+      projectId: "p1",
+      knowledgeService: fakeKnowledgeService([]),
+      deps: { provider: new FakeProvider("# Plan\n") },
+    });
+    expect(r.retrievedFiles).toEqual([]);
+    expect(r.message).not.toContain("not in the retrieved context");
   });
 
   it("still produces a valid plan.md ungrounded when retrieval is empty/fails (#375)", async () => {
