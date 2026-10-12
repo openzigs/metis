@@ -9,6 +9,12 @@
  * added without a published price, or a price edited away from the published
  * one, fails here.
  *
+ * The 5.5 rows (#1080) were read from the Anthropic page on 2026-10-11. Haiku
+ * 5.5 is pinned here at its price for prompts up to 100,000 tokens; its
+ * prompt-length tier is pinned in `claude-5-5-pricing.test.ts`. No Bedrock
+ * price for a 5.5 model was read: the family match gives a Bedrock id the
+ * Anthropic price (x1.1 on a geo profile), as it does for any unlisted id.
+ *
  * Sources (read 2026-09-22):
  *  - Anthropic (the `anthropic` provider): the model pricing table at
  *    https://platform.claude.com/docs/en/about-claude/pricing
@@ -69,6 +75,10 @@ const A_SONNET_5: Published = { input: 2, output: 10, cacheRead: 0.2, cacheWrite
 const A_OPUS_41: Published = { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 };
 const A_FABLE_5: Published = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 };
 const A_FABLE_51: Published = { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 };
+const A_SONNET_55: Published = { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 };
+const A_OPUS_55: Published = { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 };
+/** For prompts up to 100,000 tokens. */
+const A_HAIKU_55: Published = { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 };
 
 // ── AWS Price List, us-east-1, Regional ("Standard" / "Regional CRIS") SKU ─
 const B_SONNET_46_REGIONAL: Published = {
@@ -116,6 +126,9 @@ const PINNED: Record<string, Published> = {
   "anthropic:claude-opus-4-6": A_OPUS_45,
   "anthropic:claude-opus-4-5": A_OPUS_45,
   "anthropic:claude-haiku-4-5": A_HAIKU_45,
+  "anthropic:claude-sonnet-5-5": A_SONNET_55,
+  "anthropic:claude-opus-5-5": A_OPUS_55,
+  "anthropic:claude-haiku-5-5": A_HAIKU_55,
   "anthropic:claude-3-5-haiku": A_HAIKU_35,
   "bedrock-gateway:us.anthropic.claude-sonnet-4-6": B_SONNET_46_REGIONAL,
   "bedrock-gateway:anthropic.claude-sonnet-4-6": B_SONNET_46_REGIONAL,
@@ -185,6 +198,10 @@ describe("published Claude prices — the family match (#42)", () => {
     ["claude-fable-5", A_FABLE_5],
     ["claude-fable-5-1", A_FABLE_51],
     ["claude-opus-5", A_OPUS_45],
+    ["claude-opus-5-5", A_OPUS_55],
+    ["claude-sonnet-5-5", A_SONNET_55],
+    ["claude-haiku-5-5", A_HAIKU_55],
+    ["global.anthropic.claude-opus-5-5", A_OPUS_55],
     ["claude-opus-4-7", A_OPUS_45],
     ["claude-opus-4-1-20250805", A_OPUS_41],
     ["claude-opus-4-20250514", A_OPUS_41],

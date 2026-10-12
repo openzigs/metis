@@ -22,6 +22,17 @@
  *      in-cluster embedders under `embed:<key>`, #58);
  *   4. otherwise `null` — UNPRICED. Never `0`, and never another model's price.
  *
+ * So an administrator's `MODEL_PRICES` entry ALWAYS wins over a built-in rate
+ * for the same model, and it is flat: it has no prompt-length tier, so an entry
+ * for `claude-haiku-5-5` replaces BOTH of that model's built-in tiers (#1080).
+ *
+ * A rate may carry a prompt-length tier ({@link TokenRate.longPrompt}, #1080):
+ * a request whose prompt is over the threshold bills ENTIRELY at the tier's
+ * prices. {@link computeCostCentsExact} applies it, so the usage it is given
+ * must be ONE request's. A caller that sums tokens over several requests first
+ * must split them with {@link isLongPrompt} and price each share with
+ * {@link tierRate} (`replay/runs-service.ts`, `docs-gen/run-cost.ts`).
+ *
  * Cost is computed as integer cents. We round half-up at the cent boundary
  * to avoid systematic under-billing.
  */
@@ -31,7 +42,8 @@ import type { EmbeddingUsageProvider } from "../ai/types.js";
 
 export { MODEL_PRICES_KEY, modelPricesSchema, type ModelPrice };
 
-export interface TokenRate {
+/** One set of per-token prices, with no prompt-length tier. */
+export interface FlatTokenRate {
   /** Cents per 1,000 input tokens. */
   inputPer1k: number;
   /** Cents per 1,000 output tokens. */
@@ -40,6 +52,15 @@ export interface TokenRate {
   cacheReadPer1k?: number;
   /** Cents per 1,000 cache-write tokens (Bedrock prompt cache). */
   cacheWritePer1k?: number;
+}
+
+export interface TokenRate extends FlatTokenRate {
+  /**
+   * #1080 — a prompt-length price tier. A request whose prompt (uncached input
+   * + cache reads + cache writes) is OVER `overPromptTokens` bills every token
+   * — output included — at `rate`; any other request bills at the prices above.
+   */
+  longPrompt?: { overPromptTokens: number; rate: FlatTokenRate };
 }
 
 /**
@@ -64,6 +85,17 @@ export const DEFAULT_RATE: TokenRate = {
 //   Fable 5.1  : as Fable 5 but $0.25 cacheRead (0.025x input)
 // Re-read 2026-09-22 for #42, adding:
 //   Haiku 3.5  : $0.80 in / $4 out / $0.08 cacheRead / $1 cacheWrite(5m)
+// Re-read 2026-10-11 for #1080, adding:
+//   Sonnet 5.5 : $2 in / $10 out / $0.10 cacheRead (0.05x input) / $2.50 cacheWrite(5m)
+//   Opus 5.5   : $4 in / $20 out / $0.20 cacheRead (0.05x input) / $5 cacheWrite(5m)
+//   Haiku 5.5, prompts up to 100,000 tokens:
+//                $0.10 in / $0.50 out / $0.01 cacheRead / $0.125 cacheWrite(5m)
+//   Haiku 5.5, prompts over 100,000 tokens:
+//                $0.50 in / $2.50 out / $0.05 cacheRead / $0.625 cacheWrite(5m)
+//   "A request's prompt length counts all of its input tokens, including cache
+//   reads and cache writes. Each request is priced on its own: a request over
+//   the threshold pays the higher prices even when part of its prompt is a
+//   cache hit" (the page's "Long context pricing" section).
 // Every Claude row and family price is pinned to its published price by
 // `published-claude-prices.test.ts`.
 const ANTHROPIC_SONNET_4: TokenRate = {
@@ -89,6 +121,30 @@ const ANTHROPIC_SONNET_5: TokenRate = {
   outputPer1k: 1.0,
   cacheReadPer1k: 0.02,
   cacheWritePer1k: 0.25,
+};
+const ANTHROPIC_SONNET_5_5: TokenRate = { ...ANTHROPIC_SONNET_5, cacheReadPer1k: 0.01 };
+const ANTHROPIC_OPUS_5_5: TokenRate = {
+  inputPer1k: 0.4,
+  outputPer1k: 2.0,
+  cacheReadPer1k: 0.02,
+  cacheWritePer1k: 0.5,
+};
+/** Haiku 5.5's prompt-length threshold: a prompt OVER this many tokens. */
+export const HAIKU_5_5_LONG_PROMPT_TOKENS = 100_000;
+const ANTHROPIC_HAIKU_5_5: TokenRate = {
+  inputPer1k: 0.01,
+  outputPer1k: 0.05,
+  cacheReadPer1k: 0.001,
+  cacheWritePer1k: 0.0125,
+  longPrompt: {
+    overPromptTokens: HAIKU_5_5_LONG_PROMPT_TOKENS,
+    rate: {
+      inputPer1k: 0.05,
+      outputPer1k: 0.25,
+      cacheReadPer1k: 0.005,
+      cacheWritePer1k: 0.0625,
+    },
+  },
 };
 const ANTHROPIC_OPUS_LEGACY: TokenRate = {
   inputPer1k: 1.5,
@@ -127,11 +183,22 @@ const BEDROCK_REGIONAL_PREMIUM = 1.1;
 /** A rate × `factor`, rounded clear of float noise (0.1 × 1.1 must be 0.11). */
 function scaleRate(rate: TokenRate, factor: number): TokenRate {
   const s = (v: number) => Math.round(v * factor * 1e9) / 1e9;
+  const flat = (r: FlatTokenRate): FlatTokenRate => ({
+    inputPer1k: s(r.inputPer1k),
+    outputPer1k: s(r.outputPer1k),
+    ...(r.cacheReadPer1k !== undefined ? { cacheReadPer1k: s(r.cacheReadPer1k) } : {}),
+    ...(r.cacheWritePer1k !== undefined ? { cacheWritePer1k: s(r.cacheWritePer1k) } : {}),
+  });
   return {
-    inputPer1k: s(rate.inputPer1k),
-    outputPer1k: s(rate.outputPer1k),
-    ...(rate.cacheReadPer1k !== undefined ? { cacheReadPer1k: s(rate.cacheReadPer1k) } : {}),
-    ...(rate.cacheWritePer1k !== undefined ? { cacheWritePer1k: s(rate.cacheWritePer1k) } : {}),
+    ...flat(rate),
+    ...(rate.longPrompt
+      ? {
+          longPrompt: {
+            overPromptTokens: rate.longPrompt.overPromptTokens,
+            rate: flat(rate.longPrompt.rate),
+          },
+        }
+      : {}),
   };
 }
 
@@ -148,6 +215,12 @@ const RATES: ReadonlyMap<string, TokenRate> = new Map([
   ["anthropic:claude-opus-4-6", ANTHROPIC_OPUS_4],
   ["anthropic:claude-opus-4-5", ANTHROPIC_OPUS_4],
   ["anthropic:claude-haiku-4-5", ANTHROPIC_HAIKU_4],
+  // #1080 — the 5.5 generation. Before these rows the family match billed
+  // Haiku 5.5 at Haiku 4.5's $1 / $5 (10x), Opus 5.5 at $5 / $25 and Sonnet 5.5
+  // with Sonnet 5's $0.20 cache read.
+  ["anthropic:claude-sonnet-5-5", ANTHROPIC_SONNET_5_5],
+  ["anthropic:claude-opus-5-5", ANTHROPIC_OPUS_5_5],
+  ["anthropic:claude-haiku-5-5", ANTHROPIC_HAIKU_5_5],
   // #22 — there is deliberately NO `anthropic:default` row. It billed every
   // unrecognised model on the anthropic provider (e.g. `deepseek-v4-pro` via
   // ANTHROPIC_BASE_URL) at Sonnet 4.6 rates. Dated/suffixed Claude ids are
@@ -392,9 +465,14 @@ export function getRate(provider: string, model: string): TokenRate | null {
  * spelling, on any provider — to its family's published rate. Returns
  * `undefined` for an id that names no Claude family, so it stays unpriced.
  *
- * Fable 5 / 5.1 are $10/$50. Opus 4.5 and later are $5/$25; Opus 4 / 4.1
- * (and Claude 3 Opus) are $15/$75. Sonnet 5 is $2/$10; every earlier Sonnet
- * is $3/$15. Haiku 4.5 is $1/$5, Haiku 3.5 $0.80/$4, Claude 3 Haiku $0.25/$1.25.
+ * Fable 5 / 5.1 are $10/$50. Opus 5.5 is $4/$20; Opus 4.5 to Opus 5 are
+ * $5/$25; Opus 4 / 4.1 (and Claude 3 Opus) are $15/$75. Sonnet 5 and 5.5 are
+ * $2/$10 (5.5 with a $0.10 cache read); every earlier Sonnet is $3/$15.
+ * Haiku 5.5 is $0.10/$0.50, or $0.50/$2.50 for a prompt over 100,000 tokens;
+ * Haiku 4.5 is $1/$5, Haiku 3.5 $0.80/$4, Claude 3 Haiku $0.25/$1.25.
+ *
+ * Only the generations named here have a rule: a later one (a `-5-6`, a `-6`)
+ * falls to the nearest older rule until its price is added, as before #1080.
  *
  * A Bedrock geo inference profile (`us.anthropic.…`, `eu.anthropic.…`, …) or
  * in-region id (`anthropic.…`) of a Claude 4.5+ model bills at Bedrock's
@@ -413,12 +491,15 @@ export function claudeFamilyRate(model: string): TokenRate | undefined {
 function claudeBaseFamilyRate(m: string): TokenRate | undefined {
   if (/fable-5[.-]1/.test(m)) return ANTHROPIC_FABLE_5_1;
   if (/fable/.test(m)) return ANTHROPIC_FABLE_5;
+  if (/opus-5[.-]5(?!\d)/.test(m)) return ANTHROPIC_OPUS_5_5;
   if (/opus-(4-[5-9]|[5-9])/.test(m)) return ANTHROPIC_OPUS_4;
   if (/opus/.test(m)) return ANTHROPIC_OPUS_LEGACY;
+  if (/sonnet-5[.-]5(?!\d)/.test(m)) return ANTHROPIC_SONNET_5_5;
   if (/sonnet-[5-9]/.test(m)) return ANTHROPIC_SONNET_5;
   if (/sonnet/.test(m)) return ANTHROPIC_SONNET_4;
   if (/3-5-haiku/.test(m)) return ANTHROPIC_HAIKU_3_5;
   if (/3-haiku/.test(m)) return CLAUDE_3_HAIKU;
+  if (/haiku-5[.-]5(?!\d)/.test(m)) return ANTHROPIC_HAIKU_5_5;
   if (/haiku/.test(m)) return ANTHROPIC_HAIKU_4;
   return undefined;
 }
@@ -464,16 +545,56 @@ export interface CostUsage {
 }
 
 /**
- * Unrounded cost in cents. `cacheWritePer1k` overrides the rate's own
- * cache-write price (the 1-hour prompt-cache TTL bills 2× input, #702).
+ * #1080 — whether ONE request's usage is over `rate`'s prompt-length
+ * threshold. The prompt is every input token: uncached input, cache reads and
+ * cache writes (`usage.inputTokens` is the uncached share, as everywhere in
+ * this module). Exactly at the threshold is NOT over it. Always `false` for a
+ * rate with no tier.
+ */
+export function isLongPrompt(rate: TokenRate, usage: CostUsage): boolean {
+  if (!rate.longPrompt) return false;
+  const prompt = usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
+  return prompt > rate.longPrompt.overPromptTokens;
+}
+
+/**
+ * #1080 — one tier of `rate` as a flat rate: the long-prompt prices when
+ * `longPrompt` (and the rate has such a tier), otherwise the standard prices.
+ * For a caller that has already decided the tier per request and now prices a
+ * SUM of requests, which {@link computeCostCentsExact} must not re-decide.
+ */
+export function tierRate(rate: TokenRate, longPrompt: boolean): FlatTokenRate {
+  if (!rate.longPrompt) return rate;
+  if (longPrompt) return rate.longPrompt.rate;
+  return {
+    inputPer1k: rate.inputPer1k,
+    outputPer1k: rate.outputPer1k,
+    ...(rate.cacheReadPer1k !== undefined ? { cacheReadPer1k: rate.cacheReadPer1k } : {}),
+    ...(rate.cacheWritePer1k !== undefined ? { cacheWritePer1k: rate.cacheWritePer1k } : {}),
+  };
+}
+
+/**
+ * Unrounded cost in cents of ONE request. A rate with a prompt-length tier
+ * (#1080) is applied whole: the request bills at one tier, chosen by
+ * {@link isLongPrompt}. Pass a {@link tierRate} to price a sum of requests
+ * whose tier is already known.
+ *
+ * `cacheWriteMultiplier` prices cache writes at that multiple of the applied
+ * tier's input price instead of its own cache-write price (the 1-hour
+ * prompt-cache TTL bills 2× input, #702).
  */
 export function computeCostCentsExact(
-  rate: TokenRate,
+  tiered: TokenRate,
   usage: CostUsage,
-  opts: { cacheWritePer1k?: number } = {},
+  opts: { cacheWriteMultiplier?: number } = {},
 ): number {
+  const rate = tierRate(tiered, isLongPrompt(tiered, usage));
   const cacheRead = rate.cacheReadPer1k ?? rate.inputPer1k;
-  const cacheWrite = opts.cacheWritePer1k ?? rate.cacheWritePer1k ?? rate.inputPer1k;
+  const cacheWrite =
+    opts.cacheWriteMultiplier !== undefined
+      ? rate.inputPer1k * opts.cacheWriteMultiplier
+      : (rate.cacheWritePer1k ?? rate.inputPer1k);
   return (
     (usage.inputTokens * rate.inputPer1k) / 1000 +
     (usage.outputTokens * rate.outputPer1k) / 1000 +

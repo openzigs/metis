@@ -75,6 +75,57 @@ describe("estimateRunCost", () => {
     expect(estimateRunCost(usage).estimatedCostUsd).toBeCloseTo(0.3, 6);
   });
 
+  it("prices each Haiku 5.5 call in its own prompt-length tier, not the run's summed tokens (#1080)", () => {
+    const usage = new RunUsage();
+    const call = (inputTokens: number, cacheReadTokens = 0) =>
+      usage.add({
+        provider: "anthropic",
+        model: "claude-haiku-5-5",
+        inputTokens,
+        outputTokens: 0,
+        cacheReadTokens,
+      });
+    // Two 60,000-token calls: 120,000 tokens together, each under 100,000.
+    call(60_000);
+    call(60_000);
+    // One call over the threshold, counting its cache read: 50,000 + 100,000.
+    call(50_000, 100_000);
+    const estimate = estimateRunCost(usage);
+    expect(estimate.calls).toBe(3);
+    expect(estimate.lines.map((l) => [l.promptTier ?? "standard", l.calls, l.inputTokens])).toEqual(
+      [
+        ["standard", 2, 120_000],
+        ["long", 1, 50_000],
+      ],
+    );
+    // 120,000 × $0.10/M = $0.012 at the lower prices;
+    // 50,000 × $0.50/M + 100,000 × $0.05/M = $0.025 + $0.005 at the higher.
+    expect(estimate.lines[0]!.costUsd).toBeCloseTo(0.012, 12);
+    expect(estimate.lines[1]!.costUsd).toBeCloseTo(0.03, 12);
+    expect(estimate.estimatedCostUsd).toBeCloseTo(0.042, 12);
+  });
+
+  it("keeps one line for a model with no prompt-length tier, however long its prompts (#1080)", () => {
+    const usage = new RunUsage();
+    usage.add({
+      provider: "anthropic",
+      model: "claude-sonnet-5-5",
+      inputTokens: 500_000,
+      outputTokens: 0,
+    });
+    usage.add({
+      provider: "anthropic",
+      model: "claude-sonnet-5-5",
+      inputTokens: 1,
+      outputTokens: 0,
+    });
+    const estimate = estimateRunCost(usage);
+    expect(estimate.lines).toHaveLength(1);
+    expect(estimate.lines[0]).not.toHaveProperty("promptTier");
+    // 500,001 × $2/M
+    expect(estimate.estimatedCostUsd).toBeCloseTo(1.000002, 12);
+  });
+
   it("marks local-gemma self-hosted and a model with no price unpriced, never $0", () => {
     const usage = new RunUsage();
     usage.add({
@@ -146,6 +197,28 @@ describe("logRunCost", () => {
         estimatedCostUsd: 1,
         byModel: [{ model: "anthropic/claude-haiku-4-5", calls: 1, costUsd: 1 }],
         unpricedModels: ["openai/mystery-model-9"],
+      }),
+    );
+  });
+
+  it("logs a prompt-length-priced model's two tiers as separate lines (#1080)", () => {
+    const usage = new RunUsage();
+    const call = (inputTokens: number) =>
+      usage.add({ provider: "anthropic", model: "claude-haiku-5-5", inputTokens, outputTokens: 0 });
+    call(100_000);
+    call(200_000);
+    logRunCost({ ...CTX, outcome: "completed" }, usage);
+    expect(logInfo).toHaveBeenCalledWith(
+      "Docs-gen estimated run cost",
+      expect.objectContaining({
+        calls: 2,
+        inputTokens: 300_000,
+        // 100,000 × $0.10/M + 200,000 × $0.50/M
+        estimatedCostUsd: 0.11,
+        byModel: [
+          { model: "anthropic/claude-haiku-5-5", calls: 1, costUsd: 0.01 },
+          { model: "anthropic/claude-haiku-5-5", calls: 1, costUsd: 0.1, promptTier: "long" },
+        ],
       }),
     );
   });

@@ -723,6 +723,31 @@ describe("replay/runs-service — exact, unrounded run cost (#977)", () => {
     expect(cost.costUsd).toBeCloseTo(0.0051, 10);
   });
 
+  it("prices each Haiku 5.5 row in its own prompt-length tier before summing (#1080)", async () => {
+    const runId = await windowRun("haiku-55");
+    const row = (minute: number, inputTokens: number, cacheReadTokens = 0) =>
+      seedUsage({
+        sessionId: "haiku-55",
+        provider: "anthropic",
+        model: "claude-haiku-5-5",
+        createdAt: new Date(`2026-01-01T00:${String(minute).padStart(2, "0")}:00Z`),
+        inputTokens,
+        cacheReadTokens,
+      });
+    // Two 60,000-token requests — 120,000 together, each under the 100,000
+    // threshold: 120,000 × $0.10/M = 1.2¢.
+    row(10, 60_000);
+    row(11, 60_000);
+    // One request over it, counting its cache read (50,000 + 100,000):
+    // 50,000 × $0.50/M + 100,000 × $0.05/M = 2.5¢ + 0.5¢.
+    row(12, 50_000, 100_000);
+    const cost = await computeRunCost(runId);
+    // Pricing the 270,000 summed tokens as one request would give 11¢.
+    expect(cost.costUsd).toBeCloseTo(0.042, 10);
+    expect(cost.costCents).toBe(4);
+    expect(cost.totalTokens).toBe(270_000);
+  });
+
   it("rounds a multi-model run once, not once per model", async () => {
     // 0.45¢ on each of two models: per-model rounding gave 0 + 0 = 0¢.
     const runId = await windowRun("turn-2");

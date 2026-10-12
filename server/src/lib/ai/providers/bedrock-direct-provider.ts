@@ -124,6 +124,30 @@ export function isCrossRegionModelId(modelId: string): boolean {
  */
 export const OPENAI_COMPATIBLE_DEFAULT_MAX_TOKENS = 4096;
 
+/**
+ * #1077 — the `max_tokens` a chat call inherits on DeepSeek's OpenAI-format
+ * API (`api.deepseek.com`) when the caller sets none.
+ *
+ * DeepSeek thinks by default and its reasoning is spent from `max_tokens`, so
+ * the 4,096 above left too little for the answer: in the live A/B on #1077
+ * (requirements extraction, `deepseek-flash`) 4 of 12 calls came back empty or
+ * cut off mid-JSON at 4,096, and 12 of 12 succeeded at 16,000.
+ *
+ * The value is DeepSeek's own default for a request that sends no `max_tokens`
+ * in thinking mode, so an unset limit behaves here as it does on their API:
+ * "The value must be between 1 and 384K (393216). When not set, the default is
+ * 8K in non-thinking mode, 64K in thinking mode (128K with reasoning_effort set
+ * to max)" — https://api-docs.deepseek.com/api/create-chat-completion, read
+ * 2026-10-11. 64K is written as 65,536 by the same reading as that sentence's
+ * 384K = 393,216. https://api-docs.deepseek.com/quick_start/pricing lists the
+ * same 384K maximum output for `deepseek-flash` and `deepseek-v4-pro`.
+ *
+ * Not the 384K maximum itself: the same page warns that in JSON mode a model
+ * can emit whitespace "until the generation reaches the token limit", and the
+ * limit is what bounds that.
+ */
+export const DEEPSEEK_OPENAI_FORMAT_DEFAULT_MAX_TOKENS = 65_536;
+
 const DEFAULT_MAX_ATTEMPTS = 4;
 
 /**
@@ -836,8 +860,9 @@ export class OpenAICompatibleProvider implements AIProvider {
    * #1077 — `baseUrl` is DeepSeek's OpenAI-format API (`api.deepseek.com`).
    * Its `response_format` takes `text` or `json_object` only — no `json_schema`
    * (api-docs.deepseek.com/api/create-chat-completion) — and its output cap is
-   * `max_tokens`. Keyed on the host, as the Anthropic adapter keys the same
-   * vendor's other endpoint.
+   * `max_tokens`, which defaults to
+   * {@link DEEPSEEK_OPENAI_FORMAT_DEFAULT_MAX_TOKENS} here. Keyed on the host,
+   * as the Anthropic adapter keys the same vendor's other endpoint.
    */
   private readonly deepSeekEndpoint: boolean;
   /** #1077 — models already logged as downgraded from `json_schema`. */
@@ -938,7 +963,13 @@ export class OpenAICompatibleProvider implements AIProvider {
     this.apiKey = opts.apiKey;
     this.defaultModel = opts.model;
     this.key = opts.providerKey ?? "bedrock-gateway";
-    this.defaultMaxTokens = opts.defaultMaxTokens ?? OPENAI_COMPATIBLE_DEFAULT_MAX_TOKENS;
+    // #1077 — an explicit `defaultMaxTokens` (and, per call, `opts.maxTokens`)
+    // still wins; only the inherited default differs on a DeepSeek host.
+    this.defaultMaxTokens =
+      opts.defaultMaxTokens ??
+      (this.deepSeekEndpoint
+        ? DEEPSEEK_OPENAI_FORMAT_DEFAULT_MAX_TOKENS
+        : OPENAI_COMPATIBLE_DEFAULT_MAX_TOKENS);
     this.defaultTemperature = opts.defaultTemperature ?? 0.2;
     this.defaultTopP = opts.defaultTopP;
     this.defaultFrequencyPenalty = opts.defaultFrequencyPenalty;

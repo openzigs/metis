@@ -11,7 +11,12 @@
 import { prisma } from "../prisma.js";
 import { currentSpanIds } from "../otel/genai-spans.js";
 import { getRate, canonicalTokenCounts } from "../finops/index.js";
-import { computeCostCentsExact } from "../finops/provider-rates.js";
+import {
+  computeCostCentsExact,
+  isLongPrompt,
+  tierRate,
+  type TokenRate,
+} from "../finops/provider-rates.js";
 import { normalizeCents } from "../finops/ledger-cost.js";
 
 export type AgentRunKind = "analysis" | "chat" | "tool";
@@ -180,32 +185,53 @@ function inRunWindow(
 /**
  * Price a run's ledger rows, grouped by (provider, model) at the current rate
  * card and left UNROUNDED (#977). Unpriced models add tokens, no cost (#22).
+ *
+ * #1080 — a model priced by prompt length (Claude Haiku 5.5) bills each
+ * REQUEST in one tier, so a row's tier is decided from that row's own prompt
+ * before it is summed: the groups are (provider, model, tier). Deciding it on
+ * the summed tokens would bill a run of many small requests at the long-prompt
+ * prices.
  */
 function priceRunUsage(rows: readonly RunUsageRow[]): { exactCents: number; totalTokens: number } {
   interface Group {
-    provider: string;
-    model: string;
+    rate: TokenRate | null;
+    longPrompt: boolean;
     freshInputTokens: number;
     outputTokens: number;
     cacheReadTokens: number;
     cacheWriteTokens: number;
   }
   const groups = new Map<string, Group>();
+  const rates = new Map<string, TokenRate | null>();
   let totalTokens = 0;
   for (const row of rows) {
-    const key = `${row.provider} ${row.model}`;
+    const modelKey = `${row.provider} ${row.model}`;
+    let rate = rates.get(modelKey);
+    if (rate === undefined) {
+      rate = getRate(row.provider, row.model);
+      rates.set(modelKey, rate);
+    }
+    // #264 — make each row's counts disjoint BEFORE summing (the same rule
+    // `recordUsage` prices with), so a gateway row's cache reads are not billed
+    // again at the input rate, and one row's clamp cannot borrow another's.
+    const c = canonicalTokenCounts(row.provider, row);
+    const longPrompt =
+      rate !== null &&
+      isLongPrompt(rate, {
+        inputTokens: c.freshInputTokens,
+        outputTokens: c.outputTokens,
+        cacheReadTokens: c.cacheReadTokens,
+        cacheWriteTokens: c.cacheWriteTokens,
+      });
+    const key = longPrompt ? `${modelKey} long-prompt` : modelKey;
     const g = groups.get(key) ?? {
-      provider: row.provider,
-      model: row.model,
+      rate,
+      longPrompt,
       freshInputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
     };
-    // #264 — make each row's counts disjoint BEFORE summing (the same rule
-    // `recordUsage` prices with), so a gateway row's cache reads are not billed
-    // again at the input rate, and one row's clamp cannot borrow another's.
-    const c = canonicalTokenCounts(row.provider, row);
     // The canonical total, not the stored `totalTokens`: a row written before
     // #248 stored a gateway total that counted cache reads twice.
     totalTokens += c.totalTokens;
@@ -218,10 +244,9 @@ function priceRunUsage(rows: readonly RunUsageRow[]): { exactCents: number; tota
 
   let exactCents = 0;
   for (const g of groups.values()) {
-    const rate = getRate(g.provider, g.model);
     // #22 — an unpriced model has no cost to attribute; its tokens still count.
-    if (!rate) continue;
-    exactCents += computeCostCentsExact(rate, {
+    if (!g.rate) continue;
+    exactCents += computeCostCentsExact(tierRate(g.rate, g.longPrompt), {
       inputTokens: g.freshInputTokens,
       outputTokens: g.outputTokens,
       cacheReadTokens: g.cacheReadTokens,

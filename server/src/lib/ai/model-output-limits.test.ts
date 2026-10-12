@@ -85,6 +85,21 @@ describe("lookupModelMaxOutputTokens", () => {
     expect(lookupModelMaxOutputTokens("gpt-4.1")).toBe(32768);
   });
 
+  it("gives the 5.5 generation its 128,000 ceiling, in every spelling (#1080)", () => {
+    for (const id of [
+      "claude-sonnet-5-5",
+      "claude-haiku-5-5",
+      "claude-opus-5-5",
+      "us.anthropic.claude-haiku-5-5",
+      "global.anthropic.claude-opus-5-5",
+    ]) {
+      expect(lookupModelMaxOutputTokens(id), id).toBe(128_000);
+    }
+    // Haiku 5.5 is NOT Haiku 4.5's 64,000, and a clamp against it bites at 128,000.
+    expect(clampToModelOutputCeiling(200_000, "claude-haiku-5-5").value).toBe(128_000);
+    expect(clampToModelOutputCeiling(100_000, "claude-haiku-5-5").value).toBe(100_000);
+  });
+
   it("returns null for an unknown model rather than guessing a ceiling", () => {
     expect(lookupModelMaxOutputTokens("gemma4:12b")).toBeNull();
     expect(lookupModelMaxOutputTokens("totally-made-up")).toBeNull();

@@ -18,6 +18,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { supportsResponseFormat } from "../capabilities.js";
 import { MODEL_CATALOG_OVERRIDES_ENV } from "../model-catalog.js";
 import type { ChatChunk, JsonSchemaResponseFormat } from "../types.js";
+import {
+  DEEPSEEK_OPENAI_FORMAT_DEFAULT_MAX_TOKENS,
+  OPENAI_COMPATIBLE_DEFAULT_MAX_TOKENS,
+} from "./bedrock-direct-provider.js";
 import { OpenAICompatibleProvider } from "./openai-compatible-provider.js";
 
 type CapturedInit = RequestInit & { dispatcher?: unknown };
@@ -165,6 +169,46 @@ describe("#1077 DeepSeek's OpenAI-format endpoint — request shape", () => {
     expect(bodies[0]).not.toHaveProperty("max_completion_tokens");
   });
 
+  it("asks for 65,536 output tokens, not 4,096, when the caller sets no limit", async () => {
+    // 4 of 12 extraction calls came back empty or cut off at 4,096 (#1077):
+    // DeepSeek's reasoning is spent from the same limit.
+    expect(DEEPSEEK_OPENAI_FORMAT_DEFAULT_MAX_TOKENS).toBe(65_536);
+    for (const url of ["https://api.deepseek.com/v1", "https://API.DeepSeek.com/", DEEPSEEK_URL]) {
+      const bodies = stubFetch(jsonOk());
+      await makeProvider(url).chat(USER, { responseFormat: SCHEMA });
+      expect(bodies[0]!.max_tokens).toBe(65_536);
+      expect(bodies[0]).not.toHaveProperty("max_completion_tokens");
+    }
+  });
+
+  it("does the same on the streaming path", async () => {
+    const bodies = stubFetch(sseOk());
+
+    await drain(makeProvider(DEEPSEEK_URL).stream(USER));
+
+    expect(bodies[0]!.max_tokens).toBe(65_536);
+  });
+
+  it("lets a caller's limit win over the DeepSeek default, per call and per provider", async () => {
+    const perCall = stubFetch(jsonOk());
+    await makeProvider(DEEPSEEK_URL).chat(USER, { maxTokens: 1234 });
+    expect(perCall[0]!.max_tokens).toBe(1234);
+
+    const configured = new OpenAICompatibleProvider({
+      baseUrl: DEEPSEEK_URL,
+      apiKey: "placeholder-not-a-key",
+      model: "deepseek-chat",
+      providerKey: "openai",
+      defaultMaxTokens: 16_000,
+    });
+    const perProvider = stubFetch(jsonOk(), jsonOk());
+    await configured.chat(USER);
+    expect(perProvider[0]!.max_tokens).toBe(16_000);
+    // …and a per-call limit still beats the provider's own.
+    await configured.chat(USER, { maxTokens: 500 });
+    expect(perProvider[1]!.max_tokens).toBe(500);
+  });
+
   it("recognises the host however the URL is written", async () => {
     for (const url of ["https://api.deepseek.com/v1", "https://API.DeepSeek.com/", DEEPSEEK_URL]) {
       const bodies = stubFetch(jsonOk());
@@ -198,6 +242,26 @@ describe("#1077 every other OpenAI-compatible endpoint is unchanged", () => {
       expect(bodies[0]).not.toHaveProperty("max_tokens");
     },
   );
+
+  it.each([
+    ["https://api.openai.com/v1", "openai", "max_completion_tokens"],
+    ["https://deepseek.com.example.org/v1", "openai", "max_completion_tokens"],
+    ["http://localhost:11434/v1", "local-gemma", "max_tokens"],
+    ["http://gateway.internal/api/v1", "bedrock-gateway", "max_tokens"],
+  ] as const)("keeps the 4,096 default on %s (%s)", async (baseUrl, providerKey, field) => {
+    expect(OPENAI_COMPATIBLE_DEFAULT_MAX_TOKENS).toBe(4096);
+    const bodies = stubFetch(jsonOk());
+
+    await new OpenAICompatibleProvider({
+      baseUrl,
+      apiKey: "placeholder-not-a-key",
+      model: "some-model",
+      providerKey,
+      discoverCapabilities: false,
+    }).chat(USER);
+
+    expect(bodies[0]![field]).toBe(4096);
+  });
 
   it("declares both modes on a non-DeepSeek host", () => {
     const provider = makeProvider("https://api.openai.com/v1", "gpt-4.1");

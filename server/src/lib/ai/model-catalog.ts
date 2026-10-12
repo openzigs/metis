@@ -43,7 +43,7 @@ import type {
   ModelCatalogResponse,
 } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
-import { resolveRate } from "../finops/provider-rates.js";
+import { resolveRate, type FlatTokenRate } from "../finops/provider-rates.js";
 import type { ProviderCapabilities } from "./capabilities.js";
 import type { AIConfig } from "./config.js";
 import { lookupModelMaxOutputTokens, normalizeModelId } from "./model-output-limits.js";
@@ -118,6 +118,9 @@ interface BuiltinModel {
 // Claude facts: the claude-api model reference (cached 2026-06-24) — 1M context
 // for Sonnet 5 / Sonnet 4.6 / Opus 4.8 / Fable 5, 200K for Haiku 4.5. Tool use
 // and `output_config.format` structured outputs on every current model.
+// #1080 — Sonnet 5.5 / Haiku 5.5 / Opus 5.5: 1M context each, from the models
+// overview (https://platform.claude.com/docs/en/about-claude/models/overview,
+// read 2026-10-11).
 const CLAUDE: ModelCatalogCapabilities = {
   tools: true,
   jsonSchema: true,
@@ -145,6 +148,27 @@ const GPT: ModelCatalogCapabilities = {
  */
 export const BUILTIN_MODELS: readonly BuiltinModel[] = [
   // Native Anthropic — bare ids (AnthropicProvider normalises Bedrock spellings).
+  {
+    provider: "anthropic",
+    id: "claude-sonnet-5-5",
+    displayName: "Claude Sonnet 5.5",
+    contextWindow: 1_000_000,
+    capabilities: CLAUDE,
+  },
+  {
+    provider: "anthropic",
+    id: "claude-haiku-5-5",
+    displayName: "Claude Haiku 5.5",
+    contextWindow: 1_000_000,
+    capabilities: CLAUDE,
+  },
+  {
+    provider: "anthropic",
+    id: "claude-opus-5-5",
+    displayName: "Claude Opus 5.5",
+    contextWindow: 1_000_000,
+    capabilities: CLAUDE,
+  },
   {
     provider: "anthropic",
     id: "claude-sonnet-5",
@@ -287,11 +311,24 @@ export function catalogPrice(
   }
   if (!rate) return null;
   const usd = (centsPer1k: number): number => Math.round(centsPer1k * 10 * 1e9) / 1e9;
+  const perMTok = (r: FlatTokenRate) => ({
+    inputPerMTok: usd(r.inputPer1k),
+    outputPerMTok: usd(r.outputPer1k),
+    ...(r.cacheReadPer1k !== undefined ? { cacheReadPerMTok: usd(r.cacheReadPer1k) } : {}),
+    ...(r.cacheWritePer1k !== undefined ? { cacheWritePerMTok: usd(r.cacheWritePer1k) } : {}),
+  });
   return {
-    inputPerMTok: usd(rate.inputPer1k),
-    outputPerMTok: usd(rate.outputPer1k),
-    ...(rate.cacheReadPer1k !== undefined ? { cacheReadPerMTok: usd(rate.cacheReadPer1k) } : {}),
-    ...(rate.cacheWritePer1k !== undefined ? { cacheWritePerMTok: usd(rate.cacheWritePer1k) } : {}),
+    ...perMTok(rate),
+    // #1080 — a prompt-length tier is listed too, or the picker would show a
+    // price a long request is not billed at.
+    ...(rate.longPrompt
+      ? {
+          longPrompt: {
+            overPromptTokens: rate.longPrompt.overPromptTokens,
+            ...perMTok(rate.longPrompt.rate),
+          },
+        }
+      : {}),
   };
 }
 
