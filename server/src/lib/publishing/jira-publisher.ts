@@ -12,6 +12,7 @@ import { createJiraClient, JiraApiError, type JiraClient } from "../connectors/j
 import { assertConnectorHostAllowed } from "../connectors/network-allowlist.js";
 import type { JiraCreateIssueFields } from "../connectors/jira/types.js";
 import { publishableLabels } from "./label-sync.js";
+import { bodyWithCodeAsText } from "./draft-code-links.js";
 
 const log = createChildLogger("jira-publisher");
 
@@ -106,6 +107,7 @@ function mapDraftToJiraFields(
     draftType: string;
     labels: string;
     storyPoints: number | null;
+    metadata?: string | null;
   },
   projectKey: string,
   mapping: JiraFieldMapping,
@@ -116,7 +118,10 @@ function mapDraftToJiraFields(
     project: { key: projectKey },
     summary: draft.title.slice(0, 255),
     issuetype: { name: issueType },
-    description: draft.body,
+    // #1064 — a Jira project is never the repository the code was analysed
+    // from, so the Related code section goes out in its plain form: paths and
+    // symbols as code, with no owner, commit SHA or URL of that repository.
+    description: bodyWithCodeAsText(draft),
     ...mapping.additionalFields,
   };
 

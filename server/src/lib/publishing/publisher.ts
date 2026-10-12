@@ -1307,6 +1307,43 @@ async function reconcileFromRemote(args: ReconcileArgs): Promise<void> {
       });
       continue;
     }
+    // #1102 review — the marker's HASH is a hint as well, and it is the key the
+    // recovered issue is filed under: whichever draft of this batch has that
+    // hash is then PATCHed onto this issue. Anyone who can edit the issue can
+    // rewrite it (it is sha256 of `owner/repo:title`, so it is computable) to
+    // the hash of ANOTHER draft, and the next batch then overwrote this issue
+    // with that draft while the draft never got an issue of its own. So the
+    // hash must be the one METIS recorded for this issue — or, for a row that
+    // recorded none, the hash of the draft the marker names. Anything else is
+    // no match: the draft is created as a new issue and the conflict reported.
+    const named = drafts.find((d) => d.id === marker.draftId);
+    const recordedHash =
+      dbRow.dedupHash ?? (named ? computeDedupHash(target.owner, target.repo, named.title) : null);
+    if (recordedHash !== marker.hash) {
+      const claimedBy = drafts.find(
+        (d) => computeDedupHash(target.owner, target.repo, d.title) === marker.hash,
+      );
+      log.warn("publish.reconcile.marker_hash_mismatch", {
+        batchId: args.batchId,
+        markerDraftId: marker.draftId,
+        issueNumber: issue.number,
+        claimedByDraftId: claimedBy?.id ?? null,
+      });
+      audit({
+        actor: { id: "system" },
+        action: "publish.reconcile.marker_hash_mismatch",
+        target: {
+          type: "github_issue",
+          id: `${target.owner}/${target.repo}#${issue.number}`,
+        },
+        metadata: {
+          batchId: args.batchId,
+          markerDraftId: marker.draftId,
+          claimedByDraftId: claimedBy?.id ?? null,
+        },
+      });
+      continue;
+    }
     // Strip the marker before hashing so the recovered bodyHash matches the
     // hash format used at write time (raw user-supplied body).
     const stripped = stripMarker(issue.body ?? "").trimEnd();

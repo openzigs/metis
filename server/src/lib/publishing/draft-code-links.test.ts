@@ -22,6 +22,9 @@ const {
   CODE_LINKS_AS_TEXT_NOTE,
   MAX_DRAFT_CODE_LINKS,
   assertCodeLinksMatchTarget,
+  bodyWithCodeAsText,
+  codeLinksAsText,
+  publishTargetBase,
   buildCodeLinkUrl,
   codeLinkBase,
   inlineCode,
@@ -59,7 +62,7 @@ function connector(over: Partial<CodeLinkRepoSource> = {}): CodeLinkRepoSource {
   };
 }
 
-const TARGET = { targetOwner: "miniflux", targetRepo: "v2" };
+const TARGET = { owner: "miniflux", repo: "v2", baseUrl: null };
 
 beforeEach(() => {
   mappingFindMany.mockReset();
@@ -210,6 +213,31 @@ describe("inlineCode", () => {
     expect(inlineCode("<!--x")).toBe("`<!- -x`");
     expect(inlineCode("x-->")).toBe("`x- ->`");
     expect(inlineCode("a<!--<!--b")).not.toContain("<!--");
+    // HTML5 ends a comment at `--!>` as well; CommonMark only at `-->`.
+    expect(inlineCode("x--!>y")).toBe("`x- -!>y`");
+    expect(inlineCode("a<!-- b --!> c")).toBe("`a<!- - b - -!> c`");
+  });
+
+  it("writes a row whose path or symbol holds a square bracket as plain code, never a link", () => {
+    // `[` + a path holding `]:` is a link reference definition to Markdown.
+    const rows = (over: Partial<DraftCodeLink>) =>
+      renderCodeLinksSection([link(over)], REPO).filter((l) => l.startsWith("- "));
+    expect(
+      rows({ filePath: "x]:https:/evil.example/y", startLine: null, symbolName: null }),
+    ).toEqual(["- `x]:https:/evil.example/y`"]);
+    expect(rows({ filePath: "]", startLine: 3, endLine: 9, symbolName: null })).toEqual([
+      "- `]:3-9`",
+    ]);
+    expect(rows({ filePath: "app/[id]/page.tsx", startLine: null, symbolName: null })).toEqual([
+      "- `app/[id]/page.tsx`",
+    ]);
+    expect(rows({ filePath: "a.go", startLine: null, symbolName: "xs[0]" })).toEqual([
+      "- `a.go` — `xs[0]` (method)",
+    ]);
+    // Without a bracket the same row is still a link.
+    expect(rows({ filePath: "a.go", startLine: null, symbolName: "xs" })[0]).toMatch(
+      /^- \[`a\.go`\]\(https:\/\/github\.com\/miniflux\/v2\/blob\/abc1234\/a\.go\) — `xs`/,
+    );
   });
 
   it("does not split a surrogate pair at the cut", () => {
@@ -430,23 +458,61 @@ describe("loadDraftCodeLinks", () => {
     );
   });
 
-  it("offers the repository to link into only when the drafts target that repository", async () => {
+  it("offers the repository to link into only when the drafts target that repository on its host", async () => {
     mappingsByRequirement({ r1: [row("a.go")] });
     repoFindMany.mockResolvedValue([connector()]);
-    // GitHub compares names case-insensitively.
-    for (const same of [TARGET, { targetOwner: "Miniflux", targetRepo: "V2" }]) {
-      expect((await loadDraftCodeLinks("p1", ["r1"], same))?.repo).not.toBeNull();
+    // GitHub compares names case-insensitively; no base URL is public GitHub.
+    for (const same of [
+      TARGET,
+      { owner: "Miniflux", repo: "V2", baseUrl: null },
+      { owner: " miniflux ", repo: "v2", baseUrl: "https://api.github.com" },
+      { owner: "miniflux", repo: "v2", baseUrl: "https://API.GitHub.com/" },
+    ]) {
+      expect(
+        (await loadDraftCodeLinks("p1", ["r1"], same))?.repo,
+        JSON.stringify(same),
+      ).not.toBeNull();
     }
     for (const other of [
-      { targetOwner: "openzigs", targetRepo: "flux-v2" },
-      { targetOwner: "miniflux", targetRepo: "v2-fork" },
-      { targetOwner: "someone", targetRepo: "v2" },
+      { owner: "openzigs", repo: "flux-v2", baseUrl: null },
+      { owner: "miniflux", repo: "v2-fork", baseUrl: null },
+      { owner: "someone", repo: "v2", baseUrl: null },
+      // The same owner and name on ANOTHER host is another repository.
+      { owner: "miniflux", repo: "v2", baseUrl: "https://ghe.example.com/api/v3" },
+      { owner: "miniflux", repo: "v2", baseUrl: "http://api.github.com" },
+      // The host was not given: not known to be the analysed repository.
+      { owner: "miniflux", repo: "v2", baseUrl: undefined },
     ]) {
       const loaded = await loadDraftCodeLinks("p1", ["r1"], other);
-      expect(loaded?.repo).toBeNull();
+      expect(loaded?.repo, JSON.stringify(other)).toBeNull();
       // The links are still listed (as text).
       expect(loaded?.byRequirement.get("r1")?.links).toHaveLength(1);
     }
+  });
+
+  it("matches an Enterprise connector only on its own host, capitals and all", async () => {
+    mappingsByRequirement({ r1: [row("a.go")] });
+    repoFindMany.mockResolvedValue([
+      connector({
+        provider: "github_enterprise",
+        ownerOrOrg: "Acme",
+        repoName: "App",
+        apiBaseUrl: "https://GHE.example.com/api/v3",
+      }),
+    ]);
+    const on = (baseUrl: string | null | undefined) =>
+      loadDraftCodeLinks("p1", ["r1"], { owner: "acme", repo: "app", baseUrl });
+    expect((await on("https://ghe.example.com/api/v3"))?.repo).toEqual({
+      origin: "https://ghe.example.com",
+      owner: "Acme",
+      repo: "App",
+      ref: "abc1234def",
+    });
+    expect((await on("https://ghe.example.com"))?.repo).not.toBeNull();
+    // The same names on public GitHub, or with no host given: text.
+    expect((await on(null))?.repo).toBeNull();
+    expect((await on(undefined))?.repo).toBeNull();
+    expect((await on("https://other.example.com/api/v3"))?.repo).toBeNull();
   });
 
   it("returns null when the links cannot be read, rather than failing the draft run", async () => {
@@ -456,10 +522,33 @@ describe("loadDraftCodeLinks", () => {
   });
 });
 
+describe("publishTargetBase — one definition of the target, for generation and for the guard", () => {
+  it("is the link base of the repository, lower-cased", () => {
+    expect(publishTargetBase({ owner: "Acme", repo: "App", baseUrl: null })).toBe(
+      "https://github.com/acme/app",
+    );
+    expect(
+      publishTargetBase({ owner: "Acme", repo: "App", baseUrl: "https://GHE.example.com/api/v3" }),
+    ).toBe("https://ghe.example.com/acme/app");
+    expect(
+      publishTargetBase({ owner: "acme", repo: "app", baseUrl: "https://api.tenant.ghe.com" }),
+    ).toBe("https://tenant.ghe.com/acme/app");
+  });
+
+  it("is null when the host is not known or not https", () => {
+    expect(publishTargetBase({ owner: "acme", repo: "app", baseUrl: undefined })).toBeNull();
+    expect(
+      publishTargetBase({ owner: "acme", repo: "app", baseUrl: "http://x.example" }),
+    ).toBeNull();
+    expect(publishTargetBase({ owner: "acme", repo: "app", baseUrl: "not a url" })).toBeNull();
+  });
+});
+
 describe("assertCodeLinksMatchTarget — linked drafts stay in the repository they link into", () => {
   const base = codeLinkBase(REPO);
   const linked = {
     id: "d1",
+    title: "[Feature] Sign in",
     body: `- [\`a.go\`](${base}/blob/abc1234/a.go)`,
     metadata: JSON.stringify({ codeLinkBase: base }),
   };
@@ -468,12 +557,46 @@ describe("assertCodeLinksMatchTarget — linked drafts stay in the repository th
   it("accepts the repository the links point into, however it is spelled", () => {
     expect(() => assertCodeLinksMatchTarget([linked], same)).not.toThrow();
     expect(() =>
+      assertCodeLinksMatchTarget([linked], { ...same, baseUrl: undefined }),
+    ).not.toThrow();
+    expect(() =>
       assertCodeLinksMatchTarget([linked], {
         owner: "Miniflux",
         repo: "V2",
         baseUrl: "https://api.github.com",
       }),
     ).not.toThrow();
+  });
+
+  it("accepts a connector whose owner and repository are written with capitals", () => {
+    // The recorded base keeps the connector's own spelling (`Acme/App`); the
+    // comparison lower-cases BOTH sides, so the repository is not refused
+    // publishing into itself — whichever way the batch form spells it.
+    const capitals = codeLinkBase({
+      origin: "https://github.com",
+      owner: "Acme",
+      repo: "App",
+      ref: "abc1234",
+    });
+    expect(capitals).toBe("https://github.com/Acme/App");
+    const draft = {
+      id: "d1",
+      body: `- [\`a.go\`](${capitals}/blob/abc1234/a.go)`,
+      metadata: JSON.stringify({ codeLinkBase: capitals }),
+    };
+    for (const target of [
+      { owner: "Acme", repo: "App", baseUrl: null },
+      { owner: "acme", repo: "app", baseUrl: null },
+      { owner: "ACME", repo: "APP", baseUrl: "https://api.github.com" },
+    ]) {
+      expect(
+        () => assertCodeLinksMatchTarget([draft], target),
+        JSON.stringify(target),
+      ).not.toThrow();
+    }
+    expect(() =>
+      assertCodeLinksMatchTarget([draft], { owner: "Acme", repo: "Other", baseUrl: null }),
+    ).toThrow(PublishError);
   });
 
   it("refuses another repository, and another host with the same owner and name", () => {
@@ -498,6 +621,44 @@ describe("assertCodeLinksMatchTarget — linked drafts stay in the repository th
     }
   });
 
+  it("names the drafts it refuses, and both ways out", () => {
+    const other = { owner: "openzigs", repo: "flux-v2", baseUrl: null };
+    const message = (drafts: Parameters<typeof assertCodeLinksMatchTarget>[0]): string => {
+      try {
+        assertCodeLinksMatchTarget(drafts, other);
+      } catch (err) {
+        return (err as Error).message;
+      }
+      throw new Error("expected a refusal");
+    };
+    const one = message([linked]);
+    expect(one).toContain("1 draft links into the analysed repository");
+    expect(one).toContain('"[Feature] Sign in"');
+    expect(one).toContain("openzigs/flux-v2");
+    // Both remedies, and the case where the first one does not apply.
+    expect(one).toMatch(
+      /generate the drafts again for this target \(same owner, repository and base URL\)/,
+    );
+    expect(one).toMatch(/edited by hand or is kept because it is signed off/);
+    expect(one).toMatch(/remove the links from that draft in the editor/);
+
+    // Capped, the rest counted; a draft with no title is named by its id.
+    const many = Array.from({ length: 8 }, (_, i) => ({
+      ...linked,
+      id: `d${i}`,
+      title: i === 1 ? null : `Draft ${i} ${"long ".repeat(40)}`,
+    }));
+    const several = message(many);
+    expect(several).toContain("8 drafts link into the analysed repository");
+    expect(several).toContain('"Draft 0 long');
+    expect(several).toContain(", d1, ");
+    expect(several).toContain("and 3 more");
+    expect(several).not.toContain("Draft 5");
+    expect(several).toMatch(/remove the links from those drafts in the editor/);
+    // A title is one line of bounded length in the message.
+    expect(several.length).toBeLessThan(1200);
+  });
+
   it("lets through a draft that has no links: text-only, never linked, or links removed", () => {
     const other = { owner: "openzigs", repo: "flux-v2", baseUrl: null };
     for (const draft of [
@@ -513,6 +674,96 @@ describe("assertCodeLinksMatchTarget — linked drafts stay in the repository th
   });
 });
 
+describe("codeLinksAsText / bodyWithCodeAsText — the plain form, for a tracker that is not the repository", () => {
+  const base = codeLinkBase(REPO);
+  const links = [
+    link(),
+    link({ filePath: "internal/b.go", startLine: 7, endLine: null, symbolName: null }),
+  ];
+  const section = (repo: typeof REPO | null) =>
+    [
+      "## Acceptance criteria",
+      "",
+      "- [ ] one",
+      "",
+      ...renderCodeLinksSection(links, repo),
+      "",
+      "## Definition of done",
+      "",
+      "---",
+      "> Generated by METIS",
+    ].join("\n");
+
+  it("rewrites a linked section into exactly the text-only section", () => {
+    expect(section(REPO)).toContain(`${base}/blob/abc1234/`);
+    expect(codeLinksAsText(section(REPO), base)).toBe(section(null));
+    expect(codeLinksAsText(section(null), base)).toBe(section(null));
+  });
+
+  it("leaves no owner, repository, commit or URL of the analysed repository", () => {
+    const plain = codeLinksAsText(section(REPO), base);
+    expect(plain).not.toContain("github.com");
+    expect(plain).not.toContain("miniflux");
+    expect(plain).not.toContain("abc1234");
+    expect(plain).toContain(CODE_LINKS_AS_TEXT_NOTE);
+  });
+
+  it("takes out a blob URL a reviewer typed, in whatever case, and keeps other links", () => {
+    const edited = [
+      "See https://GitHub.com/Miniflux/v2/blob/abc1234/internal/a.go#L3 for context,",
+      `and <${base}/blob/main/README.md> and [docs](https://example.com/docs).`,
+      `Also [the handler](${base}/blob/abc1234/internal/a.go).`,
+    ].join("\n");
+    const plain = codeLinksAsText(edited, base);
+    expect(plain).toBe(
+      [
+        "See (link removed) for context,",
+        "and <(link removed)> and [docs](https://example.com/docs).",
+        "Also the handler.",
+      ].join("\n"),
+    );
+  });
+
+  it("adds the note once, under the rows, and only to a section that lists code", () => {
+    const empty = [
+      "## Related code",
+      "",
+      "_METIS recorded no code links for this requirement._",
+    ].join("\n");
+    expect(codeLinksAsText(empty, base)).toBe(empty);
+    expect(codeLinksAsText("No section here.", base)).toBe("No section here.");
+    const twice = codeLinksAsText(codeLinksAsText(section(REPO), base), base);
+    expect(twice.split(CODE_LINKS_AS_TEXT_NOTE)).toHaveLength(2);
+  });
+
+  it("reads the repository from the draft's metadata; without one the body is untouched", () => {
+    const body = section(REPO);
+    expect(bodyWithCodeAsText({ body, metadata: JSON.stringify({ codeLinkBase: base }) })).toBe(
+      section(null),
+    );
+    for (const metadata of [
+      null,
+      undefined,
+      "{not json",
+      JSON.stringify({ codeLinkBase: 7 }),
+      "{}",
+    ]) {
+      expect(bodyWithCodeAsText({ body, metadata })).toBe(body);
+    }
+  });
+
+  it("is linear in a body built to make it scan", () => {
+    expectLinearTime("open brackets", (n) => {
+      const body = "[".repeat(n);
+      return () => codeLinksAsText(body, base);
+    });
+    expectLinearTime("unfinished links", (n) => {
+      const unit = `[x](${base}/blob/`;
+      const body = unit.repeat(Math.ceil(n / unit.length));
+      return () => codeLinksAsText(body, base);
+    });
+  });
+});
 describe("renderFeatureBody — Related code (#1064)", () => {
   const base = {
     project: { id: "proj-123456789", name: "Miniflux" },

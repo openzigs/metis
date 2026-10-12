@@ -44,6 +44,18 @@ import { PUBLISH_MARKER_PREFIX } from "@metis/shared";
  * and what a reviewer previews is, byte for byte, what is published in front
  * of the block. {@link publishableBody} applies both steps once more at publish
  * time for rows written before this rule.
+ *
+ * WHAT ENDS A COMMENT, AND WHY THE RULE DOES NOT DEPEND ON IT. HTML5 ends a
+ * comment at `-->` and also at `--!>`, and reads `<!-->` and `<!--->` as whole
+ * (empty) comments. CommonMark ends one at `-->` only (`--!>` is text to it) and
+ * accepts the same two short forms. The two agree on how a comment STARTS:
+ * `<!--`, always. So nothing here reasons about closers:
+ *   - a line is a METIS marker only if the whole line matches one of the two
+ *     line patterns below, which need the opener, the marker name and a final
+ *     `-->`. A line ending `--!>` is not a marker to METIS under either reading;
+ *   - text is made inert by breaking the OPENER (`<!- -`), whatever follows it —
+ *     `-->`, `--!>` or nothing. With no opener there is no comment to end, under
+ *     HTML5 or CommonMark.
  */
 
 /** Longest line considered as a marker line. Bounds every match below. */
@@ -81,6 +93,22 @@ const SOURCE_LINE_RE = /^<!--[ \t]*metis-source:([^>\n]{0,300})-->$/i;
  * need to be well-formed or alone on a line).
  */
 const MARKER_OPENER_RE = /<!--(?=\s*metis-(?:publish|source)\s*:)/gi;
+
+/**
+ * Where the line `[start, end)` ends once its trailing spaces, tabs and carriage
+ * returns are left off. A scan back from the end: one step per character
+ * dropped. (The pattern `/[ \t\r]+$/` retries from every space in a line, so a
+ * line of spaces ending in a letter cost the square of its length.)
+ */
+function lineEnd(body: string, start: number, end: number): number {
+  let i = end;
+  while (i > start) {
+    const c = body.charCodeAt(i - 1);
+    if (c !== 0x20 && c !== 0x09 && c !== 0x0d) break;
+    i -= 1;
+  }
+  return i;
+}
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -166,6 +194,70 @@ function findTrailingBlock(body: string): TrailingBlock | null {
 export function stripMarker(body: string): string {
   const block = findTrailingBlock(body);
   return block ? body.slice(0, block.start).trimEnd() : body;
+}
+
+/** What METIS recorded for one published issue: enough to know its own marker lines. */
+export interface OwnMarkers {
+  /** The draft the issue was published from (`PublishedIssue.draftId`). */
+  draftId: string;
+  /** The dedup hash stored with it; `null` on rows that never recorded one. */
+  dedupHash: string | null;
+  /** The project the draft belongs to. */
+  projectId: string;
+}
+
+/**
+ * A body read back from the tracker, without the marker lines METIS wrote for
+ * THIS issue — wherever they now sit (#1102 review, cycle 2).
+ *
+ * {@link stripMarker} removes the block only while it is still the end of the
+ * body. A maintainer who adds a line on the tracker adds it BELOW the block, so
+ * the block is then mid-body: the remote text carried both marker lines into
+ * the drift diff, and Adopt wrote them into the draft as visible text —
+ * internal ids included — two more lines on every round.
+ *
+ * A line is removed only when all of this holds: the strictness of the block
+ * rule, plus a check against what the database recorded.
+ *   - It is a marker alone on its line, flush with the margin.
+ *   - A publish marker names the draft this issue was published from and, when
+ *     one was recorded, the dedup hash stored for it.
+ *   - A source marker names this project.
+ * Whole lines only, so a code span or a sentence is never cut. Everything else
+ * is kept as written: user text, and marker-shaped text that is not this
+ * issue's own (another draft's, another project's, indented, quoted, sharing
+ * its line) — which callers then make inert with {@link neutraliseMarkerText}.
+ * A blank line left doubled by a removed run is dropped with it.
+ */
+export function stripOwnMarkerLines(body: string, own: OwnMarkers): string {
+  if (!body.includes("<!--")) return body;
+  const isOwn = (raw: string): boolean => {
+    if (raw.length > MARKER_LINE_MAX) return false;
+    const text = raw.slice(0, lineEnd(raw, 0, raw.length));
+    const publish = PUBLISH_LINE_RE.exec(text);
+    if (publish) {
+      return publish[2] === own.draftId && (own.dedupHash === null || publish[3] === own.dedupHash);
+    }
+    const source = SOURCE_LINE_RE.exec(text);
+    return source !== null && sourceFromValue(source[1]!)?.projectId === own.projectId;
+  };
+  const kept: string[] = [];
+  let removed = false;
+  let afterRemoval = false;
+  for (const line of body.split("\n")) {
+    if (isOwn(line)) {
+      removed = true;
+      afterRemoval = true;
+      continue;
+    }
+    // The blank line METIS wrote above its block goes with it when the text
+    // that now follows brought a blank line of its own.
+    if (afterRemoval && line.trim() === "" && kept.length > 0 && kept.at(-1)!.trim() === "") {
+      continue;
+    }
+    afterRemoval = false;
+    kept.push(line);
+  }
+  return removed ? kept.join("\n").trimEnd() : body;
 }
 
 /**
@@ -255,7 +347,7 @@ function* markerCandidateLinesFromEnd(body: string): Generator<{ start: number; 
   for (;;) {
     const start = end > 0 ? body.lastIndexOf("\n", end - 1) + 1 : 0;
     if (end > start && end - start <= MARKER_LINE_MAX) {
-      yield { start, text: body.slice(start, end).replace(/[ \t\r]+$/, "") };
+      yield { start, text: body.slice(start, lineEnd(body, start, end)) };
     }
     if (start === 0) return;
     end = start - 1;

@@ -178,6 +178,10 @@ import { DRAFT_SELECTION_THRESHOLD } from "@metis/shared";
 import { prisma } from "../src/lib/prisma.js";
 import { PublishError } from "../src/lib/publishing/types.js";
 import { computeDedupHash } from "../src/lib/publishing/dedup.js";
+import {
+  assertCodeLinksMatchTarget,
+  bodyWithCodeAsText,
+} from "../src/lib/publishing/draft-code-links.js";
 
 beforeEach(() => {
   drafts.clear();
@@ -956,6 +960,8 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
     analysisId: "analysis_1",
     targetOwner: "acme",
     targetRepo: "metis",
+    // Public GitHub, as the batch form sends it when its base URL is empty.
+    targetBaseUrl: null as string | null | undefined,
   };
   const feature = (requirementId: string) =>
     [...drafts.values()].find((d) => d.requirementId === requirementId)!;
@@ -1077,6 +1083,161 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
     );
     // An unedited sibling was regenerated as text and records nothing.
     expect(JSON.parse(feature("req_2").metadata!).codeLinkBase).toBeUndefined();
+  });
+
+  it("keeps the link record with a signed-off body that a re-link holds", async () => {
+    codeMappings.push({
+      requirementId: "req_1",
+      filePath: "a.ts",
+      startLine: null,
+      endLine: null,
+      codeSymbol: null,
+    });
+    repoConnections.push({
+      provider: "github",
+      ownerOrOrg: "acme",
+      repoName: "metis",
+      defaultBranch: "main",
+      apiBaseUrl: null,
+      lastCommitSha: "0123abcd",
+    });
+    await generateDrafts(opts);
+    const draft = feature("req_1");
+    const linkedBody = draft.body;
+    expect(linkedBody).toContain("https://github.com/acme/metis/blob/0123abcd/a.ts");
+    // Signed off, then the analysis is re-run: the requirement row is replaced
+    // (the draft is unlinked) and its text has changed, so the body is HELD.
+    draft.status = "approved";
+    draft.requirementId = null;
+    const saved = { id: requirements[0].id, body: requirements[0].body };
+    requirements[0].id = "req_1_v2";
+    requirements[0].body = `${saved.body} — reworded`;
+    // The connector is gone on this Generate: a new body would be text and
+    // would record nothing.
+    repoConnections.length = 0;
+    try {
+      await generateDrafts(opts);
+    } finally {
+      requirements[0].id = saved.id;
+      requirements[0].body = saved.body;
+    }
+    const held = drafts.get(draft.id)!;
+    expect(held.requirementId).toBe("req_1_v2");
+    expect(held.body).toBe(linkedBody);
+    const meta = JSON.parse(held.metadata!);
+    expect(meta.bodyHeld).toBe(true);
+    // The body still links into acme/metis, so the record of that stays with
+    // it: without it the guard would let this draft into any other repository.
+    expect(meta.codeLinkBase).toBe("https://github.com/acme/metis");
+    expect(() =>
+      assertCodeLinksMatchTarget([held], { owner: "someone", repo: "public", baseUrl: null }),
+    ).toThrow(/links into the analysed repository/);
+  });
+
+  it("writes no link when the caller does not say which host the target is on", async () => {
+    codeMappings.push({
+      requirementId: "req_1",
+      filePath: "server/src/auth/login.ts",
+      startLine: 10,
+      endLine: 42,
+      codeSymbol: null,
+    });
+    repoConnections.push({
+      provider: "github",
+      ownerOrOrg: "acme",
+      repoName: "metis",
+      defaultBranch: "main",
+      apiBaseUrl: null,
+      lastCommitSha: "0123abcd",
+    });
+    // Owner and name match the connector; the host is simply not given.
+    await generateDrafts({ ...opts, targetBaseUrl: undefined });
+    const body = feature("req_1").body;
+    expect(body).toContain("- `server/src/auth/login.ts:10-42`");
+    expect(body).not.toContain("https://");
+    expect(JSON.parse(feature("req_1").metadata!).codeLinkBase).toBeUndefined();
+  });
+
+  describe("the same owner and repository name on another host", () => {
+    const GHE = "https://ghe.example.com/api/v3";
+    const onPublicGitHub = { owner: "acme", repo: "metis", baseUrl: null };
+    const onEnterprise = { owner: "acme", repo: "metis", baseUrl: GHE };
+    const featureDrafts = () => [...drafts.values()].filter((d) => d.draftType !== "epic");
+
+    beforeEach(() => {
+      codeMappings.push({
+        requirementId: "req_1",
+        filePath: "server/src/auth/login.ts",
+        startLine: 10,
+        endLine: 42,
+        codeSymbol: { name: "createSession", kind: "function" },
+      });
+      // Analysed on GitHub Enterprise; a same-named repository exists on github.com.
+      repoConnections.push({
+        provider: "github_enterprise",
+        ownerOrOrg: "acme",
+        repoName: "metis",
+        defaultBranch: "main",
+        apiBaseUrl: GHE,
+        lastCommitSha: "0123abcd",
+      });
+    });
+
+    it("links only when the drafts are generated for the connector's own host", async () => {
+      await generateDrafts({ ...opts, targetBaseUrl: GHE });
+      expect(feature("req_1").body).toContain(
+        "- [`server/src/auth/login.ts:10-42`](https://ghe.example.com/acme/metis/blob/0123abcd/server/src/auth/login.ts#L10-L42)",
+      );
+      expect(JSON.parse(feature("req_1").metadata!).codeLinkBase).toBe(
+        "https://ghe.example.com/acme/metis",
+      );
+      expect(() => assertCodeLinksMatchTarget(featureDrafts(), onEnterprise)).not.toThrow();
+    });
+
+    it("generated for github.com, the drafts carry no link and are never refused there", async () => {
+      // Before: names matched, so links were written, and the batch was refused.
+      await generateDrafts({ ...opts, targetBaseUrl: null });
+      const body = feature("req_1").body;
+      expect(body).toContain("- `server/src/auth/login.ts:10-42` — `createSession` (function)");
+      for (const leak of ["ghe.example.com", "0123abcd", "https://", "]("]) {
+        expect(body).not.toContain(leak);
+      }
+      expect(JSON.parse(feature("req_1").metadata!).codeLinkBase).toBeUndefined();
+      expect(() => assertCodeLinksMatchTarget(featureDrafts(), onPublicGitHub)).not.toThrow();
+    });
+
+    it("the refusal's first remedy works: generating again for the target clears it", async () => {
+      // Generated for the Enterprise host, then the batch is pointed at github.com.
+      await generateDrafts({ ...opts, targetBaseUrl: GHE });
+      let message = "";
+      try {
+        assertCodeLinksMatchTarget(featureDrafts(), onPublicGitHub);
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message).toContain("generate the drafts again for this target");
+      expect(message).toContain('"[Feature] Login form"');
+      // Do what the message says: Generate for THIS target — owner, repository
+      // and base URL as the batch form holds them.
+      await generateDrafts({ ...opts, targetBaseUrl: onPublicGitHub.baseUrl });
+      expect(() => assertCodeLinksMatchTarget(featureDrafts(), onPublicGitHub)).not.toThrow();
+      expect(feature("req_1").body).not.toContain("ghe.example.com");
+    });
+
+    it("the second remedy is the one for a draft whose text is kept, as the message says", async () => {
+      await generateDrafts({ ...opts, targetBaseUrl: GHE });
+      const edited = feature("req_1");
+      edited.metadata = JSON.stringify({ ...JSON.parse(edited.metadata!), userEdited: true });
+      // Regenerating keeps a hand-edited body, links and all: still refused…
+      await generateDrafts({ ...opts, targetBaseUrl: null });
+      expect(() => assertCodeLinksMatchTarget(featureDrafts(), onPublicGitHub)).toThrow(
+        /edited by hand or is kept because it is signed off/,
+      );
+      // …until the links are removed in the editor.
+      const now = drafts.get(edited.id)!;
+      now.body = bodyWithCodeAsText(now);
+      expect(() => assertCodeLinksMatchTarget(featureDrafts(), onPublicGitHub)).not.toThrow();
+    });
   });
 
   it("writes paths as text when the project has no single GitHub repository", async () => {

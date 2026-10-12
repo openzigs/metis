@@ -204,12 +204,20 @@ export default function PublishingPage() {
   const [pickedRequirements, setPickedRequirements] = useState<Set<string>>(new Set());
   useEffect(() => setPickedRequirements(new Set()), [analysisId]);
 
+  // The publish batch form's base URL (declared here because Generate reads it
+  // too). Empty = public GitHub.
+  const [batchBaseUrl, setBatchBaseUrl] = useState("");
+
   const generate = useMutation({
     mutationFn: () =>
       publishingApi.generateDrafts(projectId, {
         analysisId,
         targetOwner,
         targetRepo,
+        // #1064 — the host the batch form will publish to, so code is linked
+        // only when that host, owner and repository are the analysed
+        // repository's. Without it the server lists the code as text.
+        targetBaseUrl: batchBaseUrl ? batchBaseUrl : null,
         requirementIds: selectionRequired ? [...pickedRequirements] : undefined,
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.drafts(projectId) }),
@@ -295,7 +303,6 @@ export default function PublishingPage() {
   // not a placeholder. Typing in a field makes it the user's own.
   const [batchOwner, setBatchOwner] = useState<string | null>(null);
   const [batchRepo, setBatchRepo] = useState<string | null>(null);
-  const [batchBaseUrl, setBatchBaseUrl] = useState("");
   const [batchSecret, setBatchSecret] = useState("");
   const [batchLabels, setBatchLabels] = useState("");
   const [dryRun, setDryRun] = useState(true);

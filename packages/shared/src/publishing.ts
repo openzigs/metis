@@ -263,6 +263,13 @@ export const MAX_DRAFT_REQUIREMENT_SELECTION = 500;
 
 export const generateDraftsSchema = z.object({
   analysisId: idSchema,
+  /**
+   * #1064 — the API base URL of the repository the drafts are generated for, as
+   * the publish batch will send it: `null` for public GitHub. Code is linked
+   * only when the target is the analysed repository on the same host; left out,
+   * the host is unknown and the code is listed as text.
+   */
+  targetBaseUrl: z.string().url().max(2048).nullable().optional(),
   defaultLabels: z.array(z.string().min(1).max(64)).max(16).default([]),
   /** #863 — draft only these requirements of the analysis (all when omitted). */
   requirementIds: z.array(idSchema).min(1).max(MAX_DRAFT_REQUIREMENT_SELECTION).optional(),

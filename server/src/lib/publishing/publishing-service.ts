@@ -216,6 +216,8 @@ export async function createBatch(opts: CreateBatchOptions): Promise<SharedPubli
       requirementId: true,
       metadata: true,
       body: true,
+      // Named in the CODE_LINKS_TARGET_MISMATCH refusal.
+      title: true,
       requirement: { select: { analysisId: true } },
     },
   });
@@ -761,6 +763,8 @@ export async function generateDrafts(opts: {
   analysisId: string;
   targetOwner: string;
   targetRepo: string;
+  /** #1064 — the target's API base URL (`null` = public GitHub); see the generator. */
+  targetBaseUrl?: string | null;
   defaultLabels?: string[];
   /** #863 — draft only these requirements of the analysis. */
   requirementIds?: string[];
@@ -771,6 +775,7 @@ export async function generateDrafts(opts: {
     analysisId: opts.analysisId,
     targetOwner: opts.targetOwner,
     targetRepo: opts.targetRepo,
+    targetBaseUrl: opts.targetBaseUrl,
     defaultLabels: opts.defaultLabels,
     requirementIds: opts.requirementIds,
   });

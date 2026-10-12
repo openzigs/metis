@@ -1762,20 +1762,32 @@ For each requirement, METIS creates a draft issue (an import of more than 25 req
   - Related code — the requirement's code links: up to 10, highest confidence first. A closing line counts
     any links left out; a requirement with none says so (#1064). **What this section reveals depends on
     where the issue is going:**
-    - *Drafts generated for the repository METIS analysed* (the publish target's owner and name are the
-      project's single GitHub connector's): each path is a link into that repository at the ingested
-      commit, so the issue names the repository's owner, name and commit SHA — which its readers can
-      already see.
-    - *Drafts generated for any other repository* (a sandbox, a separate tracker, a public issue repo):
-      the same paths and symbol names are listed as plain code, with no link, no owner or repository name
-      and no commit SHA, and the section's last line says the paths are text because the issue is not in
-      the analysed repository. The paths and symbol names themselves are still written: if the layout of
-      a private repository must not reach that tracker, edit the section out of the draft before
-      approving it.
+    - *Drafts generated for the repository METIS analysed* — the publish target has the same host, owner
+      and name as the project's single GitHub connector: each path is a link into that repository at the
+      ingested commit, so the issue names the repository's owner, name and commit SHA — which its readers
+      can already see. The host is the **GHE base URL** field of the publish batch form (empty = public
+      GitHub), read when you click **Generate**; it is prefilled from the connector. A repository with
+      the same owner and name on another host is a different repository.
+    - *Drafts generated for any other repository* (a sandbox, a separate tracker, a public issue repo, a
+      same-named repository on another host): the same paths and symbol names are listed as plain code,
+      with no link, no owner or repository name and no commit SHA, and the section's last line says the
+      paths are text because the issue is not in the analysed repository. The paths and symbol names
+      themselves are still written: if the layout of a private repository must not reach that tracker,
+      edit the section out of the draft before approving it.
+    - A path or symbol name that contains a square bracket (`app/[id]/page.tsx`, `items[0]`) is always
+      listed as plain code, never as a link, in either case.
     - A batch, or a draft pull request, pointed at a different repository than its drafts were generated for is refused
-      (`CODE_LINKS_TARGET_MISMATCH`) while any of them still links into the analysed repository:
-      generate the drafts again for the new target, or remove the links in the draft editor. If the
-      batch also publishes to Jira, the Jira issue carries the same body, links included.
+      (`CODE_LINKS_TARGET_MISMATCH`) while any of them still links into the analysed repository. The
+      message names the drafts. There are two ways out: set the batch form's owner, repository and base
+      URL to the new target and click **Generate** again — the code is then listed as text, except in a
+      draft whose text you edited by hand or that is kept because it is signed off; or remove the links
+      from those drafts in the draft editor. A repository that was renamed or transferred is a different
+      target until the connector is updated to the new name.
+    - **Jira never receives the links.** When the project publishes to Jira (destination `jira` or
+      `both`), the Jira issue carries the section in its plain form — paths and symbol names as code, no
+      owner, repository name, commit SHA or URL — whatever the GitHub issue of the same draft carries.
+      A link into the analysed repository that someone typed elsewhere in the draft is replaced by
+      `(link removed)` in the Jira issue. The stored draft is not changed.
     - The paths are also plain text when the project has no GitHub connector, more than one, or one
       whose host or branch is not known safely. Links go to `github.com`; to `<tenant>.ghe.com` for a
       GitHub Enterprise Cloud connector whose API is `api.<tenant>.ghe.com`; and to the connector's own

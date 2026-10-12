@@ -112,7 +112,58 @@ describe("PublishingPage — analysis picker", () => {
         analysisId: "analysis_abcdef123456",
         targetOwner: "acme",
         targetRepo: "app",
+        // #1064 — the batch form's base URL is empty: public GitHub.
+        targetBaseUrl: null,
       }),
+    );
+  });
+
+  it("#1064 — Generate sends the host the batch form will publish to", async () => {
+    // The base URL field is prefilled from the primary connector (GitHub
+    // Enterprise here). Generate must name that host, or the server cannot
+    // tell the analysed repository from a same-named one elsewhere.
+    const getPrimary = repoConnectorsApi.getPrimary as unknown as ReturnType<typeof vi.fn>;
+    getPrimary.mockResolvedValueOnce({
+      ownerOrOrg: "acme",
+      repoName: "app",
+      apiBaseUrl: "https://ghe.example.com/api/v3",
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <PublishingPage />
+      </Wrapper>,
+    );
+    const select = await screen.findByTestId("publish-analysis-select");
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /completed/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(select, { target: { value: "analysis_abcdef123456" } });
+    fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "acme" } });
+    fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "app" } });
+    await waitFor(() =>
+      expect(screen.getByLabelText("GHE base URL (optional)")).toHaveValue(
+        "https://ghe.example.com/api/v3",
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+    await waitFor(() =>
+      expect(generateMock).toHaveBeenLastCalledWith(
+        "proj_1",
+        expect.objectContaining({ targetBaseUrl: "https://ghe.example.com/api/v3" }),
+      ),
+    );
+
+    // The user points the batch at another host: the next Generate follows it.
+    fireEvent.change(screen.getByLabelText("GHE base URL (optional)"), {
+      target: { value: "https://other.example.com/api/v3" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+    await waitFor(() =>
+      expect(generateMock).toHaveBeenLastCalledWith(
+        "proj_1",
+        expect.objectContaining({ targetBaseUrl: "https://other.example.com/api/v3" }),
+      ),
     );
   });
 

@@ -2016,3 +2016,192 @@ describe("#528 — loadExistingByHash is deterministic when rows share a dedupHa
     expect(updateOf(preview)).toEqual([11]);
   });
 });
+
+// ---- #1102 review, cycle 2 -------------------------------------------------
+
+describe("previewBatchPlan — an already-published draft is not in the plan", () => {
+  it("lists the approved draft only, as the live run would select it", async () => {
+    seedDraft({ id: "f_done", title: "Login", status: "published" });
+    seedDraft({ id: "f_new", title: "Billing", status: "approved" });
+    for (const draftIds of [["f_done", "f_new"], []]) {
+      const plan = await previewBatchPlan({
+        projectId: "proj_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+        targetBaseUrl: null,
+        provider: "github",
+        draftIds,
+        additionalLabels: [],
+        secretRef: null,
+      });
+      const issueActions = plan.actions.filter((a) => a.kind.startsWith("issue."));
+      expect(issueActions.map((a) => [a.kind, a.draftId])).toEqual([["issue.create", "f_new"]]);
+    }
+  });
+});
+
+describe("reconcileFromRemote — the marker's hash is checked against what METIS recorded", () => {
+  const H_LOGIN = computeDedupHash("acme", "metis", "Login");
+  const H_BILLING = computeDedupHash("acme", "metis", "Billing");
+  const marker = (draftId: string, hash: string) =>
+    `<!-- metis-publish: batch=batch_1 draft=${draftId} hash=${hash} -->`;
+
+  function row(over: Partial<PublishedIssueRow> = {}): PublishedIssueRow {
+    return {
+      id: "pi_42",
+      batchId: "batch_1",
+      draftId: "f1",
+      issueNumber: 42,
+      issueId: "I_kwDOfake42",
+      htmlUrl: "https://github.com/acme/metis/issues/42",
+      status: "created",
+      parentIssueNumber: null,
+      dedupHash: H_LOGIN,
+      bodyHash: computeBodyHash("login body"),
+      errorMessage: null,
+      publishedAt: new Date(),
+      ...over,
+    };
+  }
+
+  /** The fake tracker, recording every write it is sent. */
+  function tracker(): string[] {
+    const writes: string[] = [];
+    __setPublishOctokitFactory(async () => {
+      const base = makeFakeOctokit();
+      return fakeOctokit({
+        request: async (args) => {
+          if (
+            (args.method === "POST" || args.method === "PATCH") &&
+            /\/issues(\/\d+)?$/.test(args.url ?? "")
+          ) {
+            writes.push(`${args.method} ${args.url}`);
+          }
+          return base.request(args);
+        },
+      });
+    });
+    return writes;
+  }
+
+  const batch2 = (draftIds: string[], dryRun = false) =>
+    seedBatch({
+      id: `batch_2${dryRun ? "_dry" : ""}`,
+      dryRun,
+      metadata: JSON.stringify({ draftIds, additionalLabels: [], secretRef: "${vault:gh}" }),
+    });
+
+  it("an issue whose marker was edited to another draft's hash is not overwritten with that draft", async () => {
+    // Issue #42 is "Login" (draft f1), and METIS's row says so. Someone with
+    // write access to the tracker edits its marker to the dedup hash of the
+    // unpublished draft "Billing" — the hash is sha256 of `owner/repo:title`,
+    // so anyone can compute it.
+    seedDraft({ id: "f1", title: "Login", body: "login body", status: "published" });
+    seedDraft({ id: "f2", title: "Billing", body: "billing body", status: "approved" });
+    seedBatch({ id: "batch_1", status: "completed" });
+    issues.set("batch_1::f1", row());
+    const edited = `login body\n\n${marker("f1", H_BILLING)}\n`;
+    remoteIssues.set(42, makeRemoteIssue(42, edited));
+    const writes = tracker();
+
+    // The dry run and the live run agree: "Billing" is a new issue.
+    batch2(["f2"], true);
+    await runBatch({ batchId: "batch_2_dry", dryRun: true, secretRef: null, sleep: noopSleep });
+    const plan = JSON.parse(batches.get("batch_2_dry")!.dryRunPlan!) as {
+      actions: Array<{ kind: string; draftId?: string }>;
+    };
+    expect(
+      plan.actions.filter((a) => a.kind.startsWith("issue.")).map((a) => [a.kind, a.draftId]),
+    ).toEqual([["issue.create", "f2"]]);
+
+    batch2(["f2"]);
+    const result = await runBatch({
+      batchId: "batch_2",
+      dryRun: false,
+      secretRef: "${vault:gh}",
+      sleep: noopSleep,
+    });
+    expect(result.status).toBe("completed");
+    // #42 is untouched, and "Billing" has an issue of its own.
+    expect(writes).toEqual(["POST /repos/acme/metis/issues"]);
+    expect(remoteIssues.get(42)!.body).toBe(edited);
+    expect(remoteIssues.size).toBe(2);
+    expect(issues.get("batch_2::f2")!.issueNumber).not.toBe(42);
+    // The conflict is reported, naming the issue and the draft it was aimed at.
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "publish.reconcile.marker_hash_mismatch",
+        target: { type: "github_issue", id: "acme/metis#42" },
+        metadata: expect.objectContaining({ markerDraftId: "f1", claimedByDraftId: "f2" }),
+      }),
+    );
+  });
+
+  it("still recovers an issue whose marker carries the hash METIS recorded for it", async () => {
+    // The row is real but out of the local dedup map (its batch was archived):
+    // the sweep is what finds the issue, and the hash matches the record.
+    seedDraft({ id: "f1", title: "Login", body: "login body", status: "approved" });
+    seedBatch({ id: "batch_1", status: "completed", archived: true });
+    issues.set("batch_1::f1", row());
+    remoteIssues.set(42, makeRemoteIssue(42, `login body\n\n${marker("f1", H_LOGIN)}\n`));
+    const writes = tracker();
+    batch2(["f1"]);
+    await runBatch({
+      batchId: "batch_2",
+      dryRun: false,
+      secretRef: "${vault:gh}",
+      sleep: noopSleep,
+    });
+    expect(writes).toEqual([]);
+    expect(remoteIssues.size).toBe(1);
+    expect(batches.get("batch_2")!.dedupSkipped).toBe(1);
+    expect(audit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "publish.reconcile.marker_hash_mismatch" }),
+    );
+  });
+
+  it("a row that recorded no hash is held to the hash of the draft the marker names", async () => {
+    seedDraft({ id: "f1", title: "Login", body: "login body", status: "approved" });
+    seedDraft({ id: "f2", title: "Billing", body: "billing body", status: "approved" });
+    seedBatch({ id: "batch_1", status: "completed" });
+    issues.set("batch_1::f1", row({ dedupHash: null }));
+    const edited = `login body\n\n${marker("f1", H_BILLING)}\n`;
+    remoteIssues.set(42, makeRemoteIssue(42, edited));
+    const writes = tracker();
+    batch2(["f1", "f2"]);
+    await runBatch({
+      batchId: "batch_2",
+      dryRun: false,
+      secretRef: "${vault:gh}",
+      sleep: noopSleep,
+    });
+    // Nothing is PATCHed onto #42; both drafts are filed as new issues.
+    expect(writes).toEqual(["POST /repos/acme/metis/issues", "POST /repos/acme/metis/issues"]);
+    expect(remoteIssues.get(42)!.body).toBe(edited);
+
+    // …and when the marker names a draft that is not in the batch at all, the
+    // hash cannot be checked, so it is not trusted.
+    remoteIssues.clear();
+    issues.clear();
+    issues.set("batch_1::f1", row({ dedupHash: null }));
+    remoteIssues.set(42, makeRemoteIssue(42, edited));
+    drafts.get("f2")!.status = "approved";
+    writes.length = 0;
+    seedBatch({
+      id: "batch_3",
+      metadata: JSON.stringify({
+        draftIds: ["f2"],
+        additionalLabels: [],
+        secretRef: "${vault:gh}",
+      }),
+    });
+    await runBatch({
+      batchId: "batch_3",
+      dryRun: false,
+      secretRef: "${vault:gh}",
+      sleep: noopSleep,
+    });
+    expect(writes).toEqual(["POST /repos/acme/metis/issues"]);
+    expect(remoteIssues.get(42)!.body).toBe(edited);
+  });
+});

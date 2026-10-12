@@ -23,9 +23,25 @@ import type {
 } from "@metis/shared";
 import { isUniqueViolation } from "../db/prisma-errors.js";
 import { isHiddenRequirementLabel } from "../analysis/requirement-labels.js";
-import { publishableBody, stripMarker } from "../publishing/dedup.js";
+import {
+  publishableBody,
+  stripMarker,
+  stripOwnMarkerLines,
+  type OwnMarkers,
+} from "../publishing/dedup.js";
+import { bodyWithCodeAsText } from "../publishing/draft-code-links.js";
 
 const log = createChildLogger("sync-reconcile");
+
+/**
+ * An issue body read back from the tracker, as draft text: without the marker
+ * lines METIS recorded for this issue (anywhere in the body) and without a
+ * trailing marker block. User text is kept; marker-shaped text that is not this
+ * issue's own is kept too, and is made inert where a draft is written.
+ */
+function remoteDraftText(body: string, own: OwnMarkers): string {
+  return stripMarker(stripOwnMarkerLines(body, own));
+}
 
 export interface ReconcileResult {
   handled: boolean;
@@ -76,8 +92,16 @@ export async function reconcileIssueChange(
   // 2. Build local snapshot from draft
   const localSnapshot: IssueChangeFields = {
     title: publishedIssue.draft.title ?? "",
-    // Compared the way it was published: without METIS's marker block.
-    body: publishableBody(publishedIssue.draft.body ?? ""),
+    // Compared the way it was published: without METIS's marker block, and for
+    // a Jira issue with the Related code section in its plain form.
+    body: publishableBody(
+      publishedIssue.destination === "jira"
+        ? bodyWithCodeAsText({
+            body: publishedIssue.draft.body ?? "",
+            metadata: publishedIssue.draft.metadata,
+          })
+        : (publishedIssue.draft.body ?? ""),
+    ),
     state: publishedIssue.status === "created" ? "open" : "open",
     // #744 — the publisher never sends hidden `finding:<id>` labels, so they
     // must not read as drift on drafts generated before they were dropped.
@@ -88,10 +112,17 @@ export async function reconcileIssueChange(
   // 3. Compute field-level diffs
   // The tracker's body ends with the marker block METIS wrote (publish and
   // source markers). It is not part of the draft, so it is not drift and is
-  // never adopted into one. Only that trailing block is removed (`dedup.ts`).
+  // never adopted into one. The trailing block is removed, and so are this
+  // issue's own marker lines wherever they now sit: someone who adds a note on
+  // the tracker adds it BELOW the block, which leaves the block mid-body
+  // (`remoteDraftText`).
   const current: IssueChangeFields = {
     ...event.current,
-    body: stripMarker(event.current.body ?? ""),
+    body: remoteDraftText(event.current.body ?? "", {
+      draftId: publishedIssue.draftId,
+      dedupHash: publishedIssue.dedupHash ?? null,
+      projectId,
+    }),
   };
   const fieldDiffs = computeFieldDiffs(localSnapshot, {
     ...current,
@@ -219,8 +250,16 @@ export async function resolveDriftEvent(
         where: { id: publishedIssue.draftId },
         data: {
           title: externalSnapshot.title,
-          // Snapshots stored before the block was stripped still carry it.
-          body: publishableBody(externalSnapshot.body ?? ""),
+          // Snapshots stored before the markers were removed still carry them:
+          // this issue's own lines are dropped here too, and marker-shaped text
+          // that is NOT this issue's is kept and made inert.
+          body: publishableBody(
+            remoteDraftText(externalSnapshot.body ?? "", {
+              draftId: publishedIssue.draftId,
+              dedupHash: publishedIssue.dedupHash ?? null,
+              projectId: existing.projectId,
+            }),
+          ),
           labels: JSON.stringify(externalSnapshot.labels),
         },
       });

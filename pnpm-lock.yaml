@@ -475,6 +475,9 @@ importers:
       micromark:
         specifier: 4.0.3
         version: 4.0.3
+      micromark-extension-gfm:
+        specifier: 3.0.0
+        version: 3.0.0
       socket.io-client:
         specifier: ^4.8.4
         version: 4.8.4

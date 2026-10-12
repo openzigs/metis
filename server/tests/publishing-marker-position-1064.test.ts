@@ -31,11 +31,15 @@ const {
   parseSourceMarker,
   publishableBody,
   stripMarker,
+  stripOwnMarkerLines,
 } = await import("../src/lib/publishing/dedup.js");
-const { renderCodeLinksSection } = await import("../src/lib/publishing/draft-code-links.js");
+const { buildCodeLinkUrl, codeLinksAsText, codeLinkBase, renderCodeLinksSection } =
+  await import("../src/lib/publishing/draft-code-links.js");
 const { __testing } = await import("../src/lib/publishing/draft-generator.js");
 const { buildDryRunPlan } = await import("../src/lib/publishing/dry-run.js");
 const { expectLinearTime } = await import("./helpers/linear-time.js");
+const { markdownTokens, ofType, structureCounts, within, without } =
+  await import("./helpers/markdown-structure.js");
 
 const PUBLISH = { batchId: "batch_1", draftId: "draft_1", hash: "a".repeat(64) };
 const SOURCE = { projectId: "proj_1", analysisId: "analysis_1", requirementId: "req_1" };
@@ -66,6 +70,27 @@ function prng(seed: number): () => number {
 const FRAGMENTS = [
   "<!--",
   "-->",
+  // HTML5 also ends a comment at `--!>`, and reads these two as whole comments.
+  "--!>",
+  "<!-->",
+  "<!--->",
+  "<!-- metis-publish: batch=b draft=d hash=h --!>",
+  "<!-- metis-source: project=p --!>",
+  // Square brackets: `[` + text holding `]:` is a link reference definition.
+  "]",
+  "]:",
+  "[",
+  "]: https://evil.example/d",
+  "]:https:/evil.example/e",
+  "[ref]: https://evil.example/r",
+  "[ref]",
+  "][ref]",
+  "www.evil.example",
+  "https://evil.example/bare",
+  "![i](https://evil.example/i.png)",
+  "~~s~~",
+  "**b**",
+  "&amp;",
   "<!-- metis-publish: batch=b draft=d hash=h -->",
   "<!-- metis-source: project=p analysis=a requirement=r -->",
   "<!-- metis-source: x -->",
@@ -118,50 +143,173 @@ function hostile(rand: () => number, max = 8): string {
 }
 
 /**
- * A line with its Markdown code spans removed, the way CommonMark reads them:
- * a run of N backticks opens a span that the next run of exactly N closes. A
- * run that nothing closes is literal text and is left in — so an unbalanced
- * fence shows up in what this returns.
+ * A "Related code" row with its code spans removed — the spans as the Markdown
+ * PARSER found them, not as a scan for backticks would: only METIS's own markup
+ * is left.
  */
-function outsideCodeSpans(line: string): string {
-  let out = "";
-  let i = 0;
-  while (i < line.length) {
-    if (line[i] !== "`") {
-      out += line[i];
-      i += 1;
-      continue;
-    }
-    let open = i;
-    while (line[open] === "`") open += 1;
-    const width = open - i;
-    let close = -1;
-    for (let j = open; j < line.length;) {
-      if (line[j] !== "`") {
-        j += 1;
-        continue;
-      }
-      let k = j;
-      while (line[k] === "`") k += 1;
-      if (k - j === width) {
-        close = k;
-        break;
-      }
-      j = k;
-    }
-    if (close === -1) {
-      out += line.slice(i, open);
-      i = open;
-    } else {
-      i = close;
-    }
-  }
-  return out;
-}
-
-/** A "Related code" row with its code spans removed: only METIS's own markup. */
 const ROW_SKELETON =
   /^- (?:\[\]\(https:\/\/github\.com\/acme\/app\/blob\/abc1234\/[A-Za-z0-9%._~!*'/-]*(?:#L\d+(?:-L\d+)?)?\))?(?: — (?: \([a-z_-]+\))?)?$/;
+
+/** Where METIS's own links go, and nowhere else. */
+const ALLOWED_LINK_PREFIX = "https://github.com/acme/app/blob/abc1234/";
+
+/** Everything the parser may find inside a row: a list item of code spans and one link. */
+const ROW_TOKEN_TYPES = new Set([
+  // The list itself, when it holds this one row.
+  "listUnordered",
+  "listItemPrefix",
+  "listItemMarker",
+  "listItemPrefixWhitespace",
+  "content",
+  "paragraph",
+  "data",
+  "codeText",
+  "codeTextSequence",
+  "codeTextData",
+  "codeTextPadding",
+  "link",
+  "label",
+  "labelMarker",
+  "labelText",
+  "resource",
+  "resourceMarker",
+  "resourceDestination",
+  "resourceDestinationRaw",
+  "resourceDestinationString",
+]);
+
+type HostileLink = {
+  filePath: string;
+  startLine: number | null;
+  endLine: number | null;
+  symbolName: string | null;
+  symbolKind: string | null;
+};
+
+const SAFE_LINK: HostileLink = {
+  filePath: "src/safe.ts",
+  startLine: 3,
+  endLine: 9,
+  symbolName: "safe",
+  symbolKind: "function",
+};
+
+/** A feature body whose ONLY untrusted text is its code links. */
+function featureWithLinks(links: readonly HostileLink[], repo: typeof REPO | null): string {
+  return __testing.renderFeatureBody({
+    project: { id: "proj_1", name: "App" },
+    analysis: { id: "analysis_1" },
+    requirement: {
+      id: "req_1",
+      title: "T",
+      body: "Body text.",
+      type: "feature",
+      priority: "high",
+      acceptanceCriteria: JSON.stringify(["First criterion", "Second criterion"]),
+    },
+    parentTitle: "[Epic] App",
+    codeLinks: { links, repo },
+  });
+}
+
+/** How many rows the section shows: exact repeats once, at most ten. */
+function expectedRows(links: readonly HostileLink[]): number {
+  const keys = new Set(
+    links.map((l) => JSON.stringify([l.filePath, l.startLine, l.endLine, l.symbolName])),
+  );
+  return Math.min(keys.size, 10);
+}
+
+/**
+ * The Related code invariant, asserted on the PARSED stamped body — what the
+ * tracker's Markdown renderer will make of the text METIS sends:
+ *
+ *  (i)   every row is a list item holding only code spans, METIS's own
+ *        separators, and at most METIS's own link to the allowed origin;
+ *  (ii)  no heading, list, quote, task item, HTML, image, autolink, link
+ *        reference definition, code block, emphasis or table in the document
+ *        comes from a path or a symbol: the document has exactly the structure
+ *        of the same body with one harmless link, and no link but METIS's;
+ *  (iii) nothing mention-shaped, no closing keyword and no foreign host sits
+ *        outside a code span.
+ */
+function expectRelatedCodeInert(
+  links: readonly HostileLink[],
+  repo: typeof REPO | null,
+  label: string,
+): { rows: number; linked: number } {
+  const draft = featureWithLinks(links, repo);
+  const published = injectMarker(draft, PUBLISH, SOURCE);
+  expect(published, label).toBe(draft + BLOCK);
+  const tokens = markdownTokens(published);
+  const control = markdownTokens(
+    injectMarker(featureWithLinks([SAFE_LINK], repo), PUBLISH, SOURCE),
+  );
+
+  // (ii) the structure is the template's: nothing was added, nothing swallowed.
+  expect(structureCounts(tokens), label).toEqual(structureCounts(control));
+  const headings = ofType(tokens, "atxHeading");
+  expect(
+    headings.map((t) => t.text),
+    label,
+  ).toEqual(ofType(control, "atxHeading").map((t) => t.text));
+  expect(
+    ofType(tokens, "htmlFlow").map((t) => t.text),
+    label,
+  ).toEqual([SOURCE_LINE, PUBLISH_LINE]);
+
+  // (i) the rows.
+  const at = headings.findIndex((t) => t.text === "## Related code");
+  expect(at, label).toBeGreaterThanOrEqual(0);
+  const sectionStart = headings[at]!.end;
+  const sectionEnd = headings[at + 1]!.start;
+  const prefixes = ofType(within(tokens, sectionStart, sectionEnd), "listItemPrefix");
+  expect(prefixes.length, label).toBe(expectedRows(links));
+  const rowLines = published
+    .slice(sectionStart, sectionEnd)
+    .split("\n")
+    .filter((l) => l.startsWith("- "));
+  expect(rowLines.length, label).toBe(prefixes.length);
+  const resources: Array<{ start: number; end: number }> = [];
+  for (const prefix of prefixes) {
+    const end = published.indexOf("\n", prefix.start);
+    const rowLabel = `${label}: ${published.slice(prefix.start, end)}`;
+    expect(published[prefix.start - 1], rowLabel).toBe("\n");
+    const row = within(tokens, prefix.start, end);
+    expect(
+      row.filter((t) => !ROW_TOKEN_TYPES.has(t.type)).map((t) => t.type),
+      rowLabel,
+    ).toEqual([]);
+    const codes = ofType(row, "codeText");
+    expect(codes.length === 1 || codes.length === 2, rowLabel).toBe(true);
+    const rowLinks = ofType(row, "link");
+    expect(rowLinks.length, rowLabel).toBeLessThanOrEqual(repo ? 1 : 0);
+    for (const link of rowLinks) {
+      // The link opens the row and wraps exactly the first code span.
+      expect(link.start, rowLabel).toBe(prefix.end);
+      const inside = within(row, link.start, link.end);
+      const text = ofType(inside, "labelText");
+      expect(text, rowLabel).toHaveLength(1);
+      expect([text[0]!.start, text[0]!.end], rowLabel).toEqual([codes[0]!.start, codes[0]!.end]);
+      const destination = ofType(inside, "resourceDestinationString");
+      expect(destination, rowLabel).toHaveLength(1);
+      expect(destination[0]!.text.startsWith(ALLOWED_LINK_PREFIX), rowLabel).toBe(true);
+      resources.push(...ofType(inside, "resource"));
+    }
+    expect(without(published, codes, prefix.start, end), rowLabel).toMatch(ROW_SKELETON);
+  }
+  // (ii) no link anywhere but METIS's own, counted above. A reference-style
+  // link (one resolved through a definition) has no resource and so no place
+  // in that count.
+  expect(ofType(tokens, "link").length, label).toBe(resources.length);
+
+  // (iii) outside the code spans and METIS's own link targets.
+  const outside = without(published, [...ofType(tokens, "codeText"), ...resources]);
+  expect(outside, label).not.toMatch(/@[A-Za-z0-9]/);
+  expect(outside, label).not.toMatch(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[^\n]*#\d/i);
+  expect(outside, label).not.toContain("evil.example");
+  return { rows: prefixes.length, linked: resources.length };
+}
 
 function hostileFeature(rand: () => number, repo: typeof REPO | null) {
   const links = Array.from({ length: 1 + Math.floor(rand() * 4) }, () => ({
@@ -239,7 +387,6 @@ describe("the reviewer's reproduction: a marker-shaped path and symbol name", ()
   it("keeps the row on one line, so nothing in it starts a block on the tracker", () => {
     const rows = published.split("\n").filter((l) => l.startsWith("- `"));
     expect(rows).toHaveLength(1);
-    expect(outsideCodeSpans(rows[0]!)).toMatch(ROW_SKELETON);
     // No line of the published body begins with the injected heading or task.
     for (const line of published.split("\n")) {
       expect(line.startsWith("## Injected")).toBe(false);
@@ -247,11 +394,13 @@ describe("the reviewer's reproduction: a marker-shaped path and symbol name", ()
     }
   });
 
-  it("leaves no mention, closing keyword or attacker link outside a code span", () => {
-    const outside = published.split("\n").map(outsideCodeSpans).join("\n");
-    expect(outside).not.toContain("@octocat");
-    expect(outside).not.toMatch(/closes #1/i);
-    expect(outside).not.toContain("evil.example");
+  it("parses as one row of code spans: no heading, task, link, mention or keyword from the names", () => {
+    // The row is plain code (its text holds square brackets), in both modes.
+    expect(expectRelatedCodeInert(links, REPO, "reproduction")).toEqual({ rows: 1, linked: 0 });
+    expect(expectRelatedCodeInert(links, null, "reproduction, text")).toEqual({
+      rows: 1,
+      linked: 0,
+    });
   });
 
   it("the dry-run plan shows the same body the live run sends", () => {
@@ -310,30 +459,114 @@ describe("property: hostile text never changes what is published relative to the
     }
   });
 
-  it("code spans — nothing a path or symbol holds is outside its span, on any row", () => {
+  it("Related code, through a Markdown parser — a path or symbol adds nothing to the issue", () => {
+    let rows = 0;
     let linked = 0;
-    for (let seed = 1; seed <= 600; seed += 1) {
+    let bracketed = 0;
+    for (let seed = 1; seed <= 500; seed += 1) {
       const rand = prng(seed + 20_000);
-      const { links } = hostileFeature(rand, null);
+      const links: HostileLink[] = Array.from({ length: 1 + Math.floor(rand() * 4) }, () => ({
+        // Half are hostile through and through; half are a plain relative path
+        // with something hostile in it, which is what gets as far as a link.
+        filePath: rand() < 0.5 ? hostile(rand) : `src/${hostile(rand, 2)}.ts`,
+        startLine: rand() < 0.5 ? 3 : null,
+        endLine: rand() < 0.5 ? 9 : null,
+        symbolName: rand() < 0.6 ? hostile(rand, 3) : null,
+        symbolKind: rand() < 0.5 ? "function" : hostile(rand, 2),
+      }));
       for (const repo of [REPO, null]) {
-        const rows = renderCodeLinksSection(links, repo).filter((l) => l.startsWith("- "));
-        expect(rows.length, `seed ${seed}`).toBeGreaterThan(0);
-        for (const row of rows) {
-          // One line by every definition of a line break.
-          expect(/[\n\r\u0085\u2028\u2029]/.test(row), `seed ${seed}: ${row}`).toBe(false);
-          // No comment can open or close inside it.
-          expect(row.includes("<!--") || row.includes("-->"), `seed ${seed}: ${row}`).toBe(false);
-          // No invisible character survives to hide or reorder what is shown.
-          expect(/[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/.test(row), row).toBe(false);
-          // With the spans removed, only METIS's own markup is left: no mention,
-          // no closing keyword, no link but the one METIS built.
-          expect(outsideCodeSpans(row), `seed ${seed}: ${row}`).toMatch(ROW_SKELETON);
-          if (row.startsWith("- [")) linked += 1;
-        }
+        const seen = expectRelatedCodeInert(links, repo, `seed ${seed}${repo ? "" : " (text)"}`);
+        rows += seen.rows;
+        linked += seen.linked;
+      }
+      // Rows that WOULD be links but for a square bracket in their text.
+      bracketed += links.filter(
+        (l) =>
+          /[[\]]/.test(`${l.filePath}${l.symbolName ?? ""}`) && buildCodeLinkUrl(REPO, l) !== null,
+      ).length;
+      for (const row of renderCodeLinksSection(links, REPO).filter((l) => l.startsWith("- "))) {
+        // One line by every definition of a line break.
+        expect(/[\n\r\u0085\u2028\u2029]/.test(row), `seed ${seed}: ${row}`).toBe(false);
+        // No comment can open or close inside it, by HTML5's rules or CommonMark's.
+        expect(/<!--|--!?>/.test(row), `seed ${seed}: ${row}`).toBe(false);
+        // No invisible character survives to hide or reorder what is shown.
+        expect(/[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/.test(row), row).toBe(false);
       }
     }
-    // The generator does produce linkable hostile paths: the link form is exercised.
-    expect(linked).toBeGreaterThan(50);
+    // The generator reaches every form: linked rows, and rows a bracket kept plain.
+    expect(rows).toBeGreaterThan(1500);
+    expect(linked).toBeGreaterThan(100);
+    expect(bracketed).toBeGreaterThan(50);
+  });
+
+  it("the parser check is real: it fails on the row the bracket rule now prevents", () => {
+    // Red control. This is the row METIS wrote before the rule, for the path
+    // `x]:https:/evil.example/y` — to Markdown a link reference definition:
+    // an empty bullet, and a label the rest of the body can link through.
+    const before =
+      "- [`x]:https:/evil.example/y`](https://github.com/acme/app/blob/abc1234/x%5D%3Ahttps%3A/evil.example/y)";
+    const body = `## Related code\n\n${before}\n\nSee [\`x] for details.\n`;
+    const tokens = markdownTokens(body);
+    expect(ofType(tokens, "definition")).toHaveLength(1);
+    const resolved = ofType(tokens, "link");
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]!.text).toBe("[`x]");
+    // …and what METIS writes for that path now: code, no definition, no link.
+    const link = {
+      filePath: "x]:https:/evil.example/y",
+      startLine: null,
+      endLine: null,
+      symbolName: null,
+      symbolKind: null,
+    };
+    expect(renderCodeLinksSection([link], REPO).filter((l) => l.startsWith("- "))).toEqual([
+      "- `x]:https:/evil.example/y`",
+    ]);
+    expect(expectRelatedCodeInert([link], REPO, "definition shape")).toEqual({
+      rows: 1,
+      linked: 0,
+    });
+    // A bracket anywhere in the row's text keeps it plain: `]` alone meets the
+    // `:3-9` line suffix, and a `[` opens a label.
+    for (const filePath of ["]", "a]b.ts", "a[b.ts", "src/[id]/page.tsx"]) {
+      const row = renderCodeLinksSection([{ ...link, filePath, startLine: 3, endLine: 9 }], REPO);
+      expect(row.filter((l) => l.startsWith("- "))[0]!.startsWith("- `"), filePath).toBe(true);
+    }
+    const symbolRow = renderCodeLinksSection(
+      [{ ...link, filePath: "src/a.ts", symbolName: "items[0]: x" }],
+      REPO,
+    );
+    expect(symbolRow.filter((l) => l.startsWith("- "))).toEqual(["- `src/a.ts` — `items[0]: x`"]);
+  });
+
+  it("the plain form has one definition: the linked body rewritten equals the body generated as text", () => {
+    // Jira, and any tracker that is not the analysed repository, gets
+    // `codeLinksAsText(linked body)`. For every set of links that must be,
+    // character for character, what the generator writes when it has no
+    // repository to link into.
+    const base = codeLinkBase(REPO);
+    let rewritten = 0;
+    for (let seed = 1; seed <= 400; seed += 1) {
+      const rand = prng(seed + 40_000);
+      const links: HostileLink[] = Array.from({ length: 1 + Math.floor(rand() * 13) }, () => ({
+        filePath: rand() < 0.3 ? hostile(rand) : `src/${hostile(rand, 2)}.ts`,
+        startLine: rand() < 0.5 ? 3 : null,
+        endLine: rand() < 0.5 ? 9 : null,
+        symbolName: rand() < 0.6 ? hostile(rand, 3) : null,
+        symbolKind: rand() < 0.5 ? "function" : null,
+      }));
+      const linkedBody = featureWithLinks(links, REPO);
+      const textBody = featureWithLinks(links, null);
+      const plain = codeLinksAsText(linkedBody, base);
+      expect(plain, `seed ${seed}`).toBe(textBody);
+      // Nothing of the analysed repository is left: no owner/name, no commit.
+      expect(plain.includes("github.com/acme/app"), `seed ${seed}`).toBe(false);
+      expect(plain.includes("abc1234"), `seed ${seed}`).toBe(false);
+      // Already plain: unchanged.
+      expect(codeLinksAsText(plain, base), `seed ${seed}`).toBe(plain);
+      if (linkedBody !== textBody && linkedBody.includes(`${base}/blob/`)) rewritten += 1;
+    }
+    expect(rewritten).toBeGreaterThan(200);
   });
 
   it("a body written before this rule still publishes one stable text", () => {
@@ -492,5 +725,121 @@ describe("publishableBody — rows written before the rule", () => {
     const clean = "## Description\n\nText\n\n---\n> Generated by METIS";
     expect(publishableBody(clean)).toBe(clean);
     expect(computeDraftBodyHash(clean)).toBe(computeBodyHash(clean));
+  });
+});
+
+// ---- #1102 review, cycle 2 -------------------------------------------------
+
+describe("comment closers — HTML5 ends a comment at --!> too, CommonMark only at -->", () => {
+  it("a code span holds neither closer, and none of the opener's forms", async () => {
+    const { inlineCode } = await import("../src/lib/publishing/draft-code-links.js");
+    expect(inlineCode("a-->b")).toBe("`a- ->b`");
+    expect(inlineCode("a--!>b")).toBe("`a- -!>b`");
+    // The short forms HTML5 and CommonMark both read as whole comments.
+    expect(inlineCode("a<!-->b")).toBe("`a<!- ->b`");
+    expect(inlineCode("a<!--->b")).toBe("`a<!- - ->b`");
+    expect(inlineCode("<!-- x --!>")).toBe("`<!- - x - -!>`");
+    for (const text of ["-->", "--!>", "<!-->", "<!--->", "<!---->", "--!>-->", "---!>"]) {
+      expect(/<!--|--!?>/.test(inlineCode(`x${text}y`)), text).toBe(false);
+    }
+  });
+
+  it("a line ending --!> is not a marker, and its opener is made inert all the same", () => {
+    const line = "<!-- metis-publish: batch=b draft=d hash=h --!>";
+    expect(parseMarker(`Body\n\n${line}\n`)).toBeNull();
+    expect(stripMarker(`Body\n\n${line}\n`)).toBe(`Body\n\n${line}\n`);
+    expect(parseSourceMarker("Body\n\n<!-- metis-source: project=p --!>\n")).toBeNull();
+    // Inert under both readings: with no `<!--` there is no comment to end.
+    expect(publishableBody(`Body\n\n${line}`)).toBe(
+      "Body\n\n<!- - metis-publish: batch=b draft=d hash=h --!>",
+    );
+    const published = injectMarker(`Body\n\n${line}`, PUBLISH, SOURCE);
+    expect(parseMarker(published)).toEqual(PUBLISH);
+    expect(ofType(markdownTokens(published), "htmlFlow", "htmlText").map((t) => t.text)).toEqual([
+      SOURCE_LINE,
+      PUBLISH_LINE,
+    ]);
+  });
+});
+
+describe("stripOwnMarkerLines — this issue's marker lines, wherever they now sit", () => {
+  const OWN = { draftId: PUBLISH.draftId, dedupHash: PUBLISH.hash, projectId: SOURCE.projectId };
+
+  it("removes the block when text was added below it, and keeps that text", () => {
+    expect(stripOwnMarkerLines(`Body${BLOCK}\nA note added on GitHub.`, OWN)).toBe(
+      "Body\n\nA note added on GitHub.",
+    );
+    expect(stripOwnMarkerLines(`Body${BLOCK}A note with no blank line.`, OWN)).toBe(
+      "Body\n\nA note with no blank line.",
+    );
+    // An issue edited on github.com comes back with CRLF line endings.
+    expect(
+      stripOwnMarkerLines(`Body\r\n\r\n${SOURCE_LINE}\r\n${PUBLISH_LINE}\r\n\r\nNote\r\n`, OWN),
+    ).toBe("Body\r\n\r\nNote");
+  });
+
+  it("removes a trailing block exactly as stripMarker does", () => {
+    expect(stripOwnMarkerLines(`Body${BLOCK}`, OWN)).toBe("Body");
+    expect(stripOwnMarkerLines(`Body\n\n${PUBLISH_LINE}\n`, OWN)).toBe("Body");
+  });
+
+  it("removes its lines from several places at once", () => {
+    const body = `One\n\n${SOURCE_LINE}\n${PUBLISH_LINE}\n\nTwo\n\n${SOURCE_LINE}\n${PUBLISH_LINE}\n\nThree`;
+    expect(stripOwnMarkerLines(body, OWN)).toBe("One\n\nTwo\n\nThree");
+  });
+
+  it("keeps every marker-shaped line that is not this issue's own", () => {
+    const otherDraft = buildMarkerComment({ ...PUBLISH, draftId: "draft_other" });
+    const otherHash = buildMarkerComment({ ...PUBLISH, hash: "b".repeat(64) });
+    const otherProject = buildSourceMarkerComment({ ...SOURCE, projectId: "proj_other" })!;
+    for (const line of [
+      otherDraft,
+      otherHash,
+      otherProject,
+      // Not alone on its line, not flush left, quoted, fenced off by text.
+      `    ${PUBLISH_LINE}`,
+      ` ${SOURCE_LINE}`,
+      `> ${PUBLISH_LINE}`,
+      `text ${PUBLISH_LINE}`,
+      `${PUBLISH_LINE} text`,
+      `\`${SOURCE_LINE}\``,
+      "<!-- metis-publish: batch=batch_1 draft=draft_1 -->",
+      "<!-- metis-source: analysis=analysis_1 -->",
+      "<!-- an ordinary comment -->",
+    ]) {
+      const body = `Body\n\n${line}\n\nNote`;
+      expect(stripOwnMarkerLines(body, OWN), line).toBe(body);
+    }
+  });
+
+  it("with no recorded hash, the draft id alone identifies the publish marker", () => {
+    const own = { ...OWN, dedupHash: null };
+    const otherHash = buildMarkerComment({ ...PUBLISH, hash: "b".repeat(64) });
+    expect(stripOwnMarkerLines(`Body\n\n${otherHash}\n\nNote`, own)).toBe("Body\n\nNote");
+    const otherDraft = buildMarkerComment({ ...PUBLISH, draftId: "draft_other" });
+    expect(stripOwnMarkerLines(`Body\n\n${otherDraft}\n\nNote`, own)).toBe(
+      `Body\n\n${otherDraft}\n\nNote`,
+    );
+  });
+
+  it("never cuts into a line, and returns a body with nothing to remove as it is", () => {
+    for (const body of ["", "Body", "Body\n\n\n\nwith gaps\n", `a ${PUBLISH_LINE} b`]) {
+      expect(stripOwnMarkerLines(body, OWN)).toBe(body);
+    }
+  });
+
+  it("is linear in the body", () => {
+    expectLinearTime("own marker lines", (n) => {
+      const body = `${PUBLISH_LINE}\ntext\n`.repeat(Math.ceil(n / (PUBLISH_LINE.length + 6)));
+      return () => stripOwnMarkerLines(body, OWN);
+    });
+    expectLinearTime("lines of spaces ending in a letter", (n) => {
+      const body = `<!--\n${`${" ".repeat(598)}a\n`.repeat(Math.ceil(n / 600))}`;
+      return () => {
+        stripOwnMarkerLines(body, OWN);
+        parseMarker(body);
+        parseSourceMarker(body);
+      };
+    });
   });
 });

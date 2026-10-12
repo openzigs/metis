@@ -66,6 +66,14 @@ export interface GenerateDraftsOptions {
   /** Override target before persisting drafts so dedup hashes match the publish. */
   targetOwner: string;
   targetRepo: string;
+  /**
+   * #1064 — the target's API base URL, as the batch form holds it: `null` for
+   * public GitHub. Code is linked only when owner, repository AND this host
+   * are the analysed repository's. `undefined` (the caller does not know the
+   * host) writes plain code: a link that publishing may refuse is worse than
+   * no link.
+   */
+  targetBaseUrl?: string | null;
   defaultLabels?: string[];
   /** #863 — draft only these requirements of the analysis (all when omitted). */
   requirementIds?: string[];
@@ -432,7 +440,9 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   const codeLinks = await loadDraftCodeLinks(
     opts.projectId,
     requirements.map((r) => r.id),
-    draftTarget(opts),
+    // Host included: left out (`undefined`), the target is not known to be the
+    // analysed repository and every path is written as plain code.
+    { owner: opts.targetOwner, repo: opts.targetRepo, baseUrl: opts.targetBaseUrl },
   );
   // #490 — every requirement's content key, so a same-titled sibling never
   // falls back onto a draft whose text an exact match in this run will claim.

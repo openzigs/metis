@@ -14,20 +14,27 @@
  *   - control characters and line separators (a line break would end the
  *     span) become spaces, and invisible format characters (zero-width, bidi
  *     overrides) are dropped;
- *   - an HTML comment opener or closer is broken up (`<!- -`, `- ->`), so the
- *     text can never be, open or close a comment — a METIS marker included;
+ *   - an HTML comment opener or closer is broken up (`<!- -`, `- ->`, `- -!>`:
+ *     HTML5 ends a comment at `--!>` too), so the text can never be, open or
+ *     close a comment — a METIS marker included;
  *   - a link is written only to the project's own repository, on an https
  *     origin, at a known ref, for a plain repository-relative path, with every
- *     segment URL-encoded. Otherwise the path stays text.
+ *     segment URL-encoded, and never for a row whose path or symbol holds a
+ *     square bracket (`[` + a path holding `]:` is a link reference definition,
+ *     not a link). Otherwise the path stays text.
  * The link rules mirror `ui/src/lib/code-citation-blob-url.ts` (#728), which
  * the server cannot import.
  *
  * WHICH ISSUES GET LINKS. Only an issue published into the repository the code
- * was analysed from. A draft generated for any other target lists the same
- * paths and symbols as plain code — no URL, no owner or repository name, no
- * commit SHA — and says so: the analysed repository's coordinates are not
- * written into someone else's tracker. `assertCodeLinksMatchTarget` holds a
- * batch to the same rule if it is later pointed somewhere else.
+ * was analysed from: same host, owner and name (`publishTargetBase`), decided
+ * when the drafts are generated. A draft generated for any other target, or
+ * for a target whose host the caller did not give, lists the same paths and
+ * symbols as plain code — no URL, no owner or repository name, no commit SHA —
+ * and says so: the analysed repository's coordinates are not written into
+ * someone else's tracker. `assertCodeLinksMatchTarget` holds a batch to the
+ * same rule if it is later pointed somewhere else, and a Jira issue always
+ * gets the plain form (`bodyWithCodeAsText`): a Jira project is never the
+ * analysed repository.
  *
  * WHICH HOSTS GET LINKS (`githubWebOrigin`), from the connector's API base URL:
  *   - none set, provider `github`            → `https://github.com`
@@ -192,8 +199,11 @@ export function inlineCode(text: string): string {
   let clean = text
     .replace(CONTROL_RE_GLOBAL, " ")
     .replace(INVISIBLE_RE_GLOBAL, "")
+    // The opener is what makes a comment, in HTML5 and in CommonMark alike; it
+    // also covers the short forms `<!-->` and `<!--->`.
     .replace(/<!--/g, "<!- -")
-    .replace(/-->/g, "- ->")
+    // Both closers: HTML5 ends a comment at `--!>` as well as at `-->`.
+    .replace(/--(!?)>/g, "- -$1>")
     .trim();
   if (clean.length > MAX_CODE_TEXT) clean = `${cutAt(clean, MAX_CODE_TEXT - 1)}…`;
   if (clean === "") clean = "?";
@@ -208,6 +218,14 @@ function linkKey(link: DraftCodeLink): string {
   return JSON.stringify([link.filePath, link.startLine, link.endLine, link.symbolName]);
 }
 
+/**
+ * The linked form of a location: the code span as the text of a link to `url`.
+ * {@link codeLinksAsText} is its inverse; keep the two together.
+ */
+function linkedLocation(code: string, url: string): string {
+  return `[${code}](${url})`;
+}
+
 function renderLink(link: DraftCodeLink, repo: CodeLinkRepo | null): string {
   const range = lineRange(link);
   const where = !range
@@ -215,12 +233,23 @@ function renderLink(link: DraftCodeLink, repo: CodeLinkRepo | null): string {
     : range[0] === range[1]
       ? `${link.filePath}:${range[0]}`
       : `${link.filePath}:${range[0]}-${range[1]}`;
-  const url = buildCodeLinkUrl(repo, link);
-  const location = url ? `[${inlineCode(where)}](${url})` : inlineCode(where);
+  // A square bracket in the row's text and the location is plain code, never a
+  // link. Markdown finds link reference definitions (`[label]: destination`)
+  // before it reads any inline content, and a label ends at the first `]`
+  // whether or not a backtick came before it — so `[` + a path holding `]:` was
+  // a definition, not a link: the row rendered as an empty bullet and gave the
+  // rest of the body a link label pointing wherever the path said. A row that
+  // starts with a backtick cannot be a definition.
+  const bracketed = /[[\]]/.test(`${where}${link.symbolName ?? ""}`);
+  const url = bracketed ? null : buildCodeLinkUrl(repo, link);
+  const location = url ? linkedLocation(inlineCode(where), url) : inlineCode(where);
   if (!link.symbolName) return `- ${location}`;
   const kind = link.symbolKind && KIND_RE.test(link.symbolKind) ? ` (${link.symbolKind})` : "";
   return `- ${location} — ${inlineCode(link.symbolName)}${kind}`;
 }
+
+/** The section's heading line. */
+const CODE_LINKS_HEADING = "## Related code";
 
 /** The closing line of a section whose paths are text, not links. */
 export const CODE_LINKS_AS_TEXT_NOTE =
@@ -250,14 +279,14 @@ export function renderCodeLinksSection(
     return true;
   });
   if (unique.length === 0) {
-    return [`## Related code`, ``, `_METIS recorded no code links for this requirement._`];
+    return [CODE_LINKS_HEADING, ``, `_METIS recorded no code links for this requirement._`];
   }
   const shown = unique.slice(0, MAX_DRAFT_CODE_LINKS);
   // Repeats among the rows read are not locations of their own.
   const all = Math.max(unique.length, (total ?? 0) - (links.length - unique.length));
   const hidden = all - shown.length;
   return [
-    `## Related code`,
+    CODE_LINKS_HEADING,
     ``,
     `_Code METIS linked to this requirement. A starting point, not a complete list of what to change._`,
     ``,
@@ -298,20 +327,45 @@ export const CODE_LINK_READ_CAP = 50;
 /** Requirements read at once. */
 const READ_CONCURRENCY = 10;
 
-/** `owner/repo` equality the way GitHub compares names: case-insensitively. */
-function sameRepository(
-  repo: CodeLinkRepo,
-  target: { targetOwner: string; targetRepo: string },
-): boolean {
-  return (
-    repo.owner.toLowerCase() === target.targetOwner.trim().toLowerCase() &&
-    repo.repo.toLowerCase() === target.targetRepo.trim().toLowerCase()
-  );
-}
-
 /** `https://<host>/<owner>/<repo>` — the prefix every link into `repo` starts with. */
 export function codeLinkBase(repo: CodeLinkRepo): string {
   return `${repo.origin}/${encodeSegment(repo.owner)}/${encodeSegment(repo.repo)}`;
+}
+
+/** Where issues are published: a repository on a host. */
+export interface PublishTarget {
+  owner: string;
+  repo: string;
+  /**
+   * The target's API base URL as the batch form holds it. `null` is the
+   * publisher's default, public GitHub. `undefined` means the caller does not
+   * know the host — which is never read as "probably the same one".
+   */
+  baseUrl: string | null | undefined;
+}
+
+/**
+ * A publish target in the form of {@link codeLinkBase}, lower-cased (GitHub
+ * compares owner and repository names case-insensitively, and a host name has
+ * no case), or `null` when its host is not known or not an https origin.
+ *
+ * THE one definition of "the target is this repository": generation decides
+ * whether to write links with it, and {@link assertCodeLinksMatchTarget} checks
+ * a batch with it — owner, name AND host both times. When generation compared
+ * names only, a same-named repository on another host got links at Generate
+ * and a refusal at publish that generating again could never clear.
+ */
+export function publishTargetBase(target: PublishTarget): string | null {
+  if (target.baseUrl === undefined) return null;
+  // The publisher treats a batch without a base URL as public GitHub.
+  const origin = githubWebOrigin("github", target.baseUrl);
+  if (origin === null) return null;
+  return `${origin}/${encodeSegment(target.owner.trim())}/${encodeSegment(target.repo.trim())}`.toLowerCase();
+}
+
+/** Is `target` the repository `repo` — same host, owner and name? */
+function isPublishTarget(repo: CodeLinkRepo, target: PublishTarget): boolean {
+  return codeLinkBase(repo).toLowerCase() === publishTargetBase(target);
 }
 
 async function readRequirementLinks(
@@ -352,14 +406,15 @@ async function readRequirementLinks(
  * published issue changed), and bounded per requirement
  * ({@link CODE_LINK_READ_CAP}). `target` is the repository the drafts are
  * generated for: links are offered only when it is the connector's own
- * repository. Returns `null` when the links could not be read: the draft is
- * then generated without the section rather than failing, or claiming a
- * requirement has no links.
+ * repository on the connector's own host ({@link publishTargetBase}) — and so
+ * never when the target's host is not known. Returns `null` when the links
+ * could not be read: the draft is then generated without the section rather
+ * than failing, or claiming a requirement has no links.
  */
 export async function loadDraftCodeLinks(
   projectId: string,
   requirementIds: readonly string[],
-  target: { targetOwner: string; targetRepo: string },
+  target: PublishTarget,
 ): Promise<DraftCodeLinks | null> {
   try {
     const connectors = await prisma.repoConnection.findMany({
@@ -385,7 +440,7 @@ export async function loadDraftCodeLinks(
     }
     const repo = selectCodeLinkRepo(connectors);
     return {
-      repo: repo && sameRepository(repo, target) ? repo : null,
+      repo: repo && isPublishTarget(repo, target) ? repo : null,
       byRequirement,
     };
   } catch (err) {
@@ -397,6 +452,26 @@ export async function loadDraftCodeLinks(
   }
 }
 
+/** The repository a draft's generator recorded its code links point into, if any. */
+function recordedCodeLinkBase(metadata: string | null | undefined): string | null {
+  try {
+    const base = (JSON.parse(metadata ?? "{}") as { codeLinkBase?: unknown } | null)?.codeLinkBase;
+    return typeof base === "string" && base !== "" ? base : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The most drafts a refusal names; the rest are counted. */
+const MAX_NAMED_DRAFTS = 5;
+
+/** A draft as an error message names it: its title, cut, else its id. */
+function draftName(draft: { id: string; title?: string | null }): string {
+  const title = (draft.title ?? "").replace(/\s+/g, " ").trim();
+  if (title === "") return draft.id;
+  return `"${title.length > 80 ? `${cutAt(title, 79)}…` : title}"`;
+}
+
 /**
  * A draft whose body links into one repository must not be published into
  * another: the links name the analysed repository, its owner and a commit.
@@ -406,41 +481,100 @@ export async function loadDraftCodeLinks(
  *
  * A draft is refused only when its generator recorded the repository it linked
  * into (`metadata.codeLinkBase`), its body still contains a link there, and
- * the batch target is a different repository or host. Removing the links in
- * the draft editor, or generating the drafts again for the new target, clears
- * it. Nothing here calls the network.
+ * the batch target is a different repository or host
+ * ({@link publishTargetBase}, the comparison generation makes). There are two
+ * ways out and the message names both: generating the drafts again for this
+ * target — owner, repository and base URL — writes the code as text, except in
+ * a draft whose text is being kept (edited by hand, or held because it is
+ * signed off); removing the links in the draft editor clears any draft.
+ * Nothing here calls the network.
  */
 export function assertCodeLinksMatchTarget(
-  drafts: ReadonlyArray<{ id: string; body: string; metadata: string | null }>,
+  drafts: ReadonlyArray<{
+    id: string;
+    body: string;
+    metadata: string | null;
+    title?: string | null;
+  }>,
   target: { owner: string; repo: string; baseUrl: string | null | undefined },
 ): void {
-  // The publisher treats a batch without a base URL as public GitHub.
-  const origin = githubWebOrigin("github", target.baseUrl ?? null);
-  const targetBase =
-    origin === null
-      ? null
-      : `${origin}/${encodeSegment(target.owner.trim())}/${encodeSegment(target.repo.trim())}`.toLowerCase();
-  const offending: string[] = [];
-  for (const draft of drafts) {
-    let base: unknown;
-    try {
-      base = (JSON.parse(draft.metadata ?? "{}") as { codeLinkBase?: unknown } | null)
-        ?.codeLinkBase;
-    } catch {
-      continue;
-    }
-    if (typeof base !== "string" || base === "") continue;
-    if (base.toLowerCase() === targetBase) continue;
-    if (draft.body.includes(`${base}/blob/`)) offending.push(draft.id);
-  }
+  const targetBase = publishTargetBase({
+    ...target,
+    baseUrl: target.baseUrl ?? null,
+  });
+  const offending = drafts.filter((draft) => {
+    const base = recordedCodeLinkBase(draft.metadata);
+    if (base === null || base.toLowerCase() === targetBase) return false;
+    return draft.body.includes(`${base}/blob/`);
+  });
   if (offending.length === 0) return;
+  const named = offending.slice(0, MAX_NAMED_DRAFTS).map(draftName).join(", ");
+  const more = offending.length - MAX_NAMED_DRAFTS;
+  const one = offending.length === 1;
   throw new PublishError(
     409,
     "CODE_LINKS_TARGET_MISMATCH",
-    `${offending.length} draft(s) link into the analysed repository, which is not ` +
-      `${target.owner}/${target.repo}. Generate the drafts again for this target (the code is ` +
-      `then listed as text), or remove the links from the drafts, before publishing here.`,
+    `${offending.length} draft${one ? "" : "s"} link${one ? "s" : ""} into the analysed ` +
+      `repository, which is not ${target.owner}/${target.repo} on this host: ${named}` +
+      `${more > 0 ? ` and ${more} more` : ""}. Two ways to publish here: generate the drafts ` +
+      `again for this target (same owner, repository and base URL) — the code is then listed ` +
+      `as text, except in a draft whose text was edited by hand or is kept because it is ` +
+      `signed off; or remove the links from ${one ? "that draft" : "those drafts"} in the editor.`,
     false,
-    { draftIds: offending },
+    { draftIds: offending.map((d) => d.id) },
   );
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** What stands where a link into the analysed repository was taken out. */
+const LINK_REMOVED = "(link removed)";
+
+/**
+ * `body` with its Related code section in the PLAIN form: every link into
+ * `base` (a {@link codeLinkBase}) replaced by the code text it wrapped, and the
+ * note that the paths are text added under the rows. For a body the generator
+ * wrote this is, character for character, the body it would have written for a
+ * target that is not the analysed repository — the test holds the two equal, so
+ * "plain form" has one definition. Any other URL into `base` (one a reviewer
+ * typed or pasted) is taken out as well: what leaves here names no commit and
+ * no blob URL of the analysed repository.
+ */
+export function codeLinksAsText(body: string, base: string): string {
+  const blob = `${escapeRe(base)}/blob/`;
+  // The inverse of `linkedLocation`. A linked code span never holds a square
+  // bracket (see `renderLink`), and a blob URL METIS builds never holds a
+  // space or a parenthesis (`encodeSegment`).
+  const linked = new RegExp(`\\[([^\\[\\]\\n]*)\\]\\(${blob}[^\\s()]*\\)`, "gi");
+  const bare = new RegExp(`${blob}[^\\s()<>\\[\\]]*`, "gi");
+  const text = body.replace(linked, "$1").replace(bare, LINK_REMOVED);
+  if (text.includes(CODE_LINKS_AS_TEXT_NOTE)) return text;
+  const lines = text.split("\n");
+  // The generator writes the section after the requirement's own text.
+  const heading = lines.lastIndexOf(CODE_LINKS_HEADING);
+  if (heading < 0) return text;
+  let lastLine = heading;
+  let hasRows = false;
+  for (let i = heading + 1; i < lines.length; i += 1) {
+    const line = lines[i]!;
+    if (line === "---" || /^#{1,6} /.test(line)) break;
+    if (line.trim() !== "") lastLine = i;
+    if (line.startsWith("- ")) hasRows = true;
+  }
+  if (!hasRows) return text;
+  lines.splice(lastLine + 1, 0, "", CODE_LINKS_AS_TEXT_NOTE);
+  return lines.join("\n");
+}
+
+/**
+ * A draft's body for a tracker that is NOT the repository the code was
+ * analysed from — Jira, always: the Related code section in its plain form
+ * ({@link codeLinksAsText}). A draft whose generator recorded no repository
+ * has no links to take out and is returned as it is.
+ */
+export function bodyWithCodeAsText(draft: { body: string; metadata?: string | null }): string {
+  const base = recordedCodeLinkBase(draft.metadata);
+  return base === null ? draft.body : codeLinksAsText(draft.body, base);
 }
