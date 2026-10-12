@@ -130,6 +130,8 @@ export function buildApprovedRequirementSet(input: {
       ...(match?.storyPoints !== undefined ? { storyPoints: match.storyPoints } : {}),
       evidenceFindingIndexes: match?.evidenceFindingIndexes ?? [],
       acceptanceCriteria: match?.acceptanceCriteria ?? [],
+      // #1063 — which imported item it came from, when synthesis said.
+      ...(match?.sourceIds !== undefined ? { sourceIds: match.sourceIds } : {}),
     };
   });
 

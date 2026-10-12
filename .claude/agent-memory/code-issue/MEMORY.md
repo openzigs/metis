@@ -86,3 +86,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Gate over LLM output: probes](project_deterministic-gate-over-llm-output-probes.md) — adversarial answer, context cue, regex timing
 - [Fuzz every regex; sweep every model field](project_redos-fix-ships-beside-new-pattern-fuzz-all.md) — ReDoS fixes ship beside new ones (#1090)
 - [Model-cannot claims: sweep at the engine](project_model-cannot-claims-need-engine-level-sweep.md) — every LLM dep on; no near-idle timing bound
+- [Mapper precision rule vs recall](project_mapper-precision-rules-halve-impact-recall.md) — run both evals; option, not global (#1063)
+- [0 findings: read token_usages](project_zero-findings-read-token-usages-first.md) — output == cap + empty reply = reasoning (#1063)
+- [Synthesis field must fail soft](project_synthesis-optional-field-must-fail-soft.md) — one null discards every requirement (#1063)

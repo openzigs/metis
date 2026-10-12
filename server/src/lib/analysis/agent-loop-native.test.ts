@@ -207,7 +207,16 @@ describe("#141 native tool calls in runAgentLoop", () => {
       native,
       finalAnswerRetry: { instruction: "ANSWER NOW", isValidFinalAnswer: (t) => t.startsWith("{") },
     });
-    expect(result.finalAnswerRetry).toEqual({ attempted: true, succeeded: false });
+    // #1063 — an unusable retry reports exactly what it returned (PR #1095 panel, T1).
+    expect(result.finalAnswerRetry).toEqual({
+      attempted: true,
+      succeeded: false,
+      outcome: "prose",
+      finishReason: "stop",
+      responseLength: "still prose".length,
+      outputTokens: 2,
+      maxOutputTokens: 16_384,
+    });
     expect(result.hasFinalAnswer).toBe(false);
     expect(result.finalResponse).toMatch(/tool-call limit/);
     expect(result.salvageSource).toBe("still prose");

@@ -29,7 +29,7 @@
 import type { AgentFindingPayload, AnalysisSpecialistAgentKey } from "@metis/shared";
 import { callJsonLlm, JsonLlmParseError } from "../ai/json-llm-client.js";
 import { fenceToolResult } from "../ai/tool-runtime/fence.js";
-import type { AIProvider, TokenUsage } from "../ai/types.js";
+import type { AIProvider, ChatOptions, TokenUsage } from "../ai/types.js";
 import { estimateTokens } from "./context-window-manager.js";
 import { repairMaxOutputTokens } from "./agent-runner.js";
 import { FINAL_ANSWER_INSTRUCTION, salvageWithRepair } from "./agentic-degradation.js";
@@ -164,6 +164,12 @@ export interface EvidenceSalvageResult {
   fieldRepairs: FindingsRepair[];
   /** Why the call produced nothing, when it failed outright. */
   error?: string;
+  /**
+   * #1063 — what the call returned, so a total loss can be explained: a reply
+   * of length 0 whose `outputTokens` equal the cap is a model that spent the
+   * whole cap reasoning. Absent when no call was made or it threw.
+   */
+  reply?: { finishReason?: string; responseLength: number; outputTokens: number };
 }
 
 const NO_USAGE: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -190,6 +196,8 @@ export async function salvageFromEvidence(
     model?: string;
     signal?: AbortSignal;
     maxOutputTokens: number;
+    /** #1063 — how much this serialisation-only call may reason. */
+    reasoning?: Pick<ChatOptions, "reasoningEffort" | "disableThinking">;
     evidenceTokens?: number;
     loadKnownDocuments?: () => Promise<readonly KnownDocument[]>;
     findKnownDocumentIds?: FindKnownDocumentIds;
@@ -210,21 +218,25 @@ export async function salvageFromEvidence(
 
   let raw: string;
   let usage: TokenUsage;
+  let finishReason: string | undefined;
   try {
     const result = await callJsonLlm(provider, {
       systemPrompt: opts.systemMessage,
       userPrompt: `${opts.userMessage}\n\n${formatEvidenceForAnswer(digest)}\n\n${FINAL_ANSWER_INSTRUCTION}`,
       ...(opts.model ? { modelOverride: opts.model } : {}),
       maxTokens: opts.maxOutputTokens,
+      ...(opts.reasoning ?? {}),
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
     raw = result.raw;
     usage = result.response.usage;
+    finishReason = result.response.finishReason;
   } catch (err) {
     if (err instanceof JsonLlmParseError) {
       // Prose or a truncated payload: still billed, still worth a salvage.
       raw = err.raw;
       usage = err.response.usage;
+      finishReason = err.response.finishReason;
     } else {
       if ((err as Error).name === "AbortError") throw err;
       return {
@@ -252,5 +264,10 @@ export async function salvageFromEvidence(
     evidenceEntries: digest.included,
     usage,
     fieldRepairs: salvage.fieldRepairs,
+    reply: {
+      ...(finishReason ? { finishReason } : {}),
+      responseLength: raw.length,
+      outputTokens: usage?.completionTokens ?? 0,
+    },
   };
 }

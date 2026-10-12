@@ -4,7 +4,7 @@
  * Pure render/truncation is tested in isolation; `computeAffectedCodeContext`
  * is driven with an injected mapper + in-memory graph so no DB/LLM is needed.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AffectedCodeCandidate } from "@metis/shared";
 import {
   computeAffectedCodeContext,
@@ -12,7 +12,11 @@ import {
   estimateAffectedCodeTokens,
   EMPTY_AFFECTED_CODE_CONTEXT,
 } from "../src/lib/analysis/affected-code-context.js";
-import type { RequirementCodeMatch } from "../src/lib/traceability/requirement-code-mapping.js";
+import {
+  Bm25CodeSymbolSearcher,
+  mapRequirementToCode,
+  type RequirementCodeMatch,
+} from "../src/lib/traceability/requirement-code-mapping.js";
 import { InMemoryCodeGraphDataSource } from "../src/lib/impact-analysis/impact-analysis-engine.js";
 import type { CodeGraphDataSource } from "../src/lib/code-graph/query-service.js";
 
@@ -177,5 +181,192 @@ describe("computeAffectedCodeContext", () => {
     expect(ctx.result.candidates).toHaveLength(2);
     expect(ctx.result.candidates[0].symbols.length).toBeGreaterThan(0);
     expect(ctx.result.candidates[1].symbols).toEqual([]);
+  });
+});
+
+/**
+ * Issue #1063 — with the DEFAULT mapper (no injected `mapRequirement`) the
+ * context serves two readers. A PERSON is shown a link only when the symbol's
+ * name shares two of the requirement's terms, and "the project has code and
+ * none of it matched" is reported as such. The CODE AGENT is seeded exactly as
+ * before #1063 (PR #1095 review: the rule must not narrow its seeds).
+ */
+describe("computeAffectedCodeContext — default mapper (#1063)", () => {
+  const symbols = [
+    ["InlineKeyboardButton", "internal/integration/telegrambot/client.go"],
+    ["restoreButtonState", "internal/ui/static/js/app.js"],
+    ["flushSessions", "internal/cli/flush_sessions.go"],
+    ["showSessionsPage", "internal/ui/session_list.go"],
+    ["CleanOldWebSessions", "internal/storage/web_session.go"],
+    ["WebSessionsByUserID", "internal/storage/web_session.go"],
+    ["ForceRefreshInterval", "internal/config/options.go"],
+    ["markAllAsRead", "internal/ui/unread_mark_all_read.go"],
+    ["markFeedAsRead", "internal/ui/feed_mark_as_read.go"],
+  ].map(([name, filePath], i) => ({
+    id: `sym-${i}`,
+    name,
+    qualifiedName: `${filePath}::${name}`,
+    kind: "function",
+    filePath,
+    startLine: 10 + i,
+    endLine: 20 + i,
+  }));
+
+  const prismaWith = (rows: typeof symbols) => {
+    const findMany = vi.fn(async (args: { where?: { projectId?: string } }) =>
+      args?.where?.projectId === "proj-miniflux" ? rows : [],
+    );
+    return { prisma: { codeSymbol: { findMany } } as never, findMany };
+  };
+
+  const run = (extraInstructions: string, rows = symbols, tokenBudget = 100000) =>
+    computeAffectedCodeContext({
+      projectId: "proj-miniflux",
+      extraInstructions,
+      enabled: true,
+      tokenBudget,
+      deps: { prisma: prismaWith(rows).prisma, dataSourceFor: emptyGraphFor },
+    });
+
+  /** The context as it was BEFORE #1063: one mapper, no shared-terms rule. */
+  const runAsBefore1063 = (extraInstructions: string, tokenBudget = 100000) => {
+    const { prisma } = prismaWith(symbols);
+    const searcher = new Bm25CodeSymbolSearcher(prisma);
+    return computeAffectedCodeContext({
+      projectId: "proj-miniflux",
+      extraInstructions,
+      enabled: true,
+      tokenBudget,
+      deps: {
+        prisma,
+        dataSourceFor: emptyGraphFor,
+        mapRequirement: (req, projectId) =>
+          mapRequirementToCode(req, projectId, {}, { prisma, searcher }),
+      },
+    });
+  };
+
+  const THREE =
+    "- Mark all as read older than X\n- Add a button to terminate all sessions\n- Ability to force IPv4 or IPv6 per feed";
+  const TWO_UNLINKED =
+    "- Add a button to terminate all sessions\n- Ability to force IPv4 or IPv6 per feed";
+  const short = (q: string) => q.split("::")[1];
+
+  it("SHOWS the requirement that shares two terms and leaves the others unlinked", async () => {
+    const ctx = await run(THREE);
+    const [mark, terminate, ipv] = ctx.result.candidates;
+    expect(mark!.symbols.map((s) => short(s.qualifiedName))).toEqual(
+      expect.arrayContaining(["markAllAsRead", "markFeedAsRead"]),
+    );
+    // The two links reported in #706 run 7 are gone, and nothing replaces them.
+    expect(terminate!.symbols).toEqual([]);
+    expect(ipv!.symbols).toEqual([]);
+    const shown = ctx.result.candidates.flatMap((c) => c.symbols.map((s) => s.qualifiedName));
+    expect(shown.join(" ")).not.toContain("InlineKeyboardButton");
+    expect(shown.join(" ")).not.toContain("ForceRefreshInterval");
+  });
+
+  it("SEEDS the code agent exactly as before #1063: block, token cost and file list", async () => {
+    const [now, before] = await Promise.all([run(THREE), runAsBefore1063(THREE)]);
+    expect(before.block).toContain("flushSessions");
+    expect(now.block).toBe(before.block);
+    expect(now.tokens).toBe(before.tokens);
+    expect(now.filePaths).toEqual(before.filePaths);
+    // …while what is shown is narrower than what is seeded.
+    expect(now.result).not.toEqual(before.result);
+  });
+
+  it("still seeds the session symbols for a requirement the page shows as unlinked", async () => {
+    const ctx = await run(THREE);
+    expect(ctx.result.candidates[1]!.symbols).toEqual([]);
+    const section = ctx.block.slice(ctx.block.indexOf("[NR-2]"), ctx.block.indexOf("[NR-3]"));
+    // The symbols PR #1095 itself labelled right for this requirement.
+    expect(section).toContain("internal/cli/flush_sessions.go::flushSessions");
+    expect(section).toContain("CleanOldWebSessions");
+    expect(section).not.toContain("(no code matched");
+    expect(ctx.filePaths).toEqual(
+      expect.arrayContaining(["internal/cli/flush_sessions.go", "internal/storage/web_session.go"]),
+    );
+    expect(ctx.tokens).toBe(estimateAffectedCodeTokens(ctx.block));
+  });
+
+  it("reports every requirement as unlinked, and still seeds, when no name shares two terms", async () => {
+    const [ctx, before] = await Promise.all([run(TWO_UNLINKED), runAsBefore1063(TWO_UNLINKED)]);
+    expect(ctx.result.candidates.map((c) => [c.id, c.symbols.length])).toEqual([
+      ["NR-1", 0],
+      ["NR-2", 0],
+    ]);
+    expect(ctx.result.truncated).toBe(false);
+    expect(before.block.length).toBeGreaterThan(0);
+    expect(ctx.block).toBe(before.block);
+    expect(ctx.filePaths).toEqual(before.filePaths);
+  });
+
+  it("says so, and seeds nothing, when the project has code and no symbol shares any term", async () => {
+    const ctx = await run("- Zebra quux\n- Lorem ipsum dolor");
+    expect(ctx.result.candidates.map((c) => [c.id, c.symbols.length])).toEqual([
+      ["NR-1", 0],
+      ["NR-2", 0],
+    ]);
+    // Nothing to seed the code agent with: its prompt is unchanged.
+    expect(ctx.block).toBe("");
+    expect(ctx.tokens).toBe(0);
+    expect(ctx.filePaths).toEqual([]);
+    expect(ctx.result.truncated).toBe(false);
+  });
+
+  it("reports truncation of the SEED block, which is what the prompt carries", async () => {
+    const full = await run(THREE);
+    expect(full.result.truncated).toBe(false);
+    const tight = await run(THREE, symbols, full.tokens - 1);
+    expect(tight.result.truncated).toBe(true);
+    expect(tight.block.length).toBeLessThan(full.block.length);
+    // The shown links are complete either way.
+    expect(tight.result.candidates).toEqual(full.result.candidates);
+  });
+
+  it("loads the code symbols once for both readings", async () => {
+    const { prisma, findMany } = prismaWith(symbols);
+    await computeAffectedCodeContext({
+      projectId: "proj-miniflux",
+      extraInstructions: THREE,
+      enabled: true,
+      deps: { prisma, dataSourceFor: emptyGraphFor },
+    });
+    expect(findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("with an injected mapper there is one list: shown and seeded are the same", async () => {
+    const ctx = await runAsBefore1063(TWO_UNLINKED);
+    const shown = ctx.result.candidates.flatMap((c) => c.symbols.map((s) => s.qualifiedName));
+    expect(shown.length).toBeGreaterThan(0);
+    for (const q of shown) expect(ctx.block).toContain(q);
+    expect(ctx.filePaths).toEqual([
+      ...new Set(ctx.result.candidates.flatMap((c) => c.symbols.map((s) => s.filePath))),
+    ]);
+  });
+
+  it("stays a no-op when the project has no code graph at all", async () => {
+    const ctx = await run("- Add a button to terminate all sessions", []);
+    expect(ctx).toEqual(EMPTY_AFFECTED_CODE_CONTEXT);
+  });
+
+  it("stays a no-op when the code graph cannot be read", async () => {
+    const ctx = await computeAffectedCodeContext({
+      projectId: "proj-miniflux",
+      extraInstructions: "- Add a button to terminate all sessions",
+      enabled: true,
+      deps: {
+        prisma: {
+          codeSymbol: {
+            findMany: async () => {
+              throw new Error("database is locked");
+            },
+          },
+        } as never,
+        dataSourceFor: emptyGraphFor,
+      },
+    });
+    expect(ctx).toEqual(EMPTY_AFFECTED_CODE_CONTEXT);
   });
 });

@@ -26,7 +26,9 @@ import { fileURLToPath } from "node:url";
 import type { PrismaClient } from "@prisma/client";
 import { buildSymbolsFromRepo, type EvalCodeSymbol } from "../codegraph/fixture.js";
 import {
+  ANALYSIS_LINK_MIN_SHARED_TERMS,
   Bm25CodeSymbolSearcher,
+  type Bm25SearcherOptions,
   type CodeSymbolSearcher,
 } from "../../traceability/requirement-code-mapping.js";
 import type {
@@ -103,7 +105,12 @@ async function walkFiles(root: string): Promise<string[]> {
  * REAL {@link Bm25CodeSymbolSearcher} runs unmodified against them (project-
  * scoped filter included, exactly like the Prisma-backed path).
  */
-export function buildBm25Searcher(symbols: EvalCodeSymbol[]): CodeSymbolSearcher {
+export function buildBm25Searcher(
+  symbols: EvalCodeSymbol[],
+  // #1063 — the analysis path's setting, since that is the path this eval
+  // replays. Pass `{ minSharedTerms: 1 }` for the pre-#1063 arm.
+  options: Bm25SearcherOptions = { minSharedTerms: ANALYSIS_LINK_MIN_SHARED_TERMS },
+): CodeSymbolSearcher {
   const stub = {
     codeSymbol: {
       async findMany(args: { where?: { projectId?: string } }) {
@@ -122,7 +129,7 @@ export function buildBm25Searcher(symbols: EvalCodeSymbol[]): CodeSymbolSearcher
       },
     },
   } as unknown as Pick<PrismaClient, "codeSymbol">;
-  return new Bm25CodeSymbolSearcher(stub);
+  return new Bm25CodeSymbolSearcher(stub, options);
 }
 
 /**
