@@ -342,7 +342,11 @@ export async function captureGenerationInputs(
   // #1071 — the graphs this document reads (the same scope as the rows above,
   // never the project's other graphs), each with a digest of its own rows and
   // the upgrade mark it carries now. Read last: a mark that moves while the
-  // rows are being read is then newer than the rows, never older.
+  // rows are being read is then newer than the rows, never older. (If an
+  // upgrade completes between the two, the snapshot pairs pre-upgrade rows
+  // with the final mark; the next check sees rows that differ under an
+  // unmoved mark and regenerates — once, and towards spending, never towards
+  // swallowing a change.)
   const scopedGraphs = await prisma.codeGraph.findMany({
     where: { projectId: doc.projectId, ...(policy.codeGraphId ? { id: policy.codeGraphId } : {}) },
     select: { id: true, extractorUpgradedAt: true },

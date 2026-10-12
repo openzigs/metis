@@ -63,10 +63,19 @@
  * Attribution is per GRAPH, not per row. When the same ingest that upgrades a
  * graph also changes that graph's rows for another reason — a lineage backfill
  * that runs with it, a re-introspection just before — the two cannot be told
- * apart, and both are acknowledged with the upgrade. That is bounded to once
- * per upgrade per document, and only for a change confined to graph rows of
- * the upgraded graph: a change to any source file, SQL file, evidence or
- * setting always regenerates.
+ * apart, and both are acknowledged with the upgrade. That is bounded, and only
+ * for a change confined to graph rows of the upgraded graph: a change to any
+ * source file, SQL file, evidence or setting always regenerates.
+ *
+ * The bound is once per upgrade per document when the upgrade completes in
+ * one ingest. When the Go binding of an upgrade is interrupted by its time
+ * ceiling, the ingests that finish it move the mark again — once each, and
+ * only when they write a call the upgrade itself left unresolved; no other
+ * re-bind of an unstamped graph moves it (`ingest.ts`, pass 3). There are at
+ * most ⌈open calls / `GO_BINDING_MIN_CALLS`⌉ + `GO_BINDING_RESUME_GRACE` such
+ * ingests, after which the remainder is given up and the version stamped. On
+ * a graph that was ALREADY stamped, a later ceiling moves no mark at all: the
+ * rows a resume improves there read as the real change they are.
  *
  * A project whose graph no upgrade rewrote has no mark, so every check there
  * behaves exactly as it did before this rule existed — and reads nothing more:

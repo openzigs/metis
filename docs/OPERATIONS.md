@@ -619,10 +619,10 @@ presented token: a caller cannot create a new counter by inventing a token.
 ### 6.6 The code-graph extractor upgrade (#1071): what the first ingest after upgrading does
 
 Migration `20261019001071_issue1071_code_graph_extractor_version` adds, on SQLite and
-Postgres alike, three nullable columns (`code_graphs.extractorVersion`,
-`.extractorUpgradeFailed`, `.extractorUpgradedAt`) and one small, empty table
-(`generated_document_acknowledgements`, at most one row per generated document). There is
-nothing to run by hand. The work happens on each project's **next incremental ingest**,
+Postgres alike, four nullable columns on `code_graphs` (`extractorVersion`,
+`extractorUpgradeFailed`, `extractorUpgradedAt`, `goBindingIncomplete`) and one small,
+empty table (`generated_document_acknowledgements`, at most one row per generated document,
+with a nullable `graphs` column of its own). There is nothing to run by hand. The work happens on each project's **next incremental ingest**,
 which for a connected repository is its next scheduled refresh:
 
 - **Go projects are upgraded in place.** Every Go file is re-parsed, Go methods are
@@ -683,14 +683,42 @@ file the parser gave up on, upgrade or not.
 ingest re-parse every Go file of the repository to re-bind calls: about 1 ms and 26 KB of
 memory per file (0.5 s on 421 files; roughly 45 s and 520 MB at 20,000 files, which is
 parsing — #1107). Resolving the calls themselves is linear in declarations plus calls on
-every shape measured (50 ms for Miniflux's 21,100), and has three ceilings. What the
-ceilings promise is a bound on **time**, not a complete answer: one call stops at its step
-budget, one type at its own, and the whole step at the clock — and what the clock leaves
-undone is finished by the ingests that follow (below). "Linear" is a measurement, not a
-proof: three review rounds each found a shape that was not (embedded-type lattices; import
-matching in a tree with no `go.mod`; tens of thousands of `go.mod` files), each is now
-indexed and pinned by a scaling test, and the time ceiling is there for the next one.
-One declared limit goes with them: a file whose import block is longer than 10,000 imports
+every shape measured (50 ms for Miniflux's 21,100), and has ceilings on **time** and on
+**memory**. What they promise is a bound, not a complete answer.
+
+*Time.* One call stops at its step budget, one type at its own, and the whole step at the
+clock — and what the clock leaves undone is finished by the ingests that follow (below).
+"Linear" is a measurement, not a proof: three review rounds each found a shape that was not
+(embedded-type lattices; import matching in a tree with no `go.mod`; tens of thousands of
+`go.mod` files), each is now indexed and pinned by a scaling test, and the time ceiling is
+there for the next one.
+
+*Memory.* The time ceiling cannot help here: a heap abort is not an error the ingest can
+catch, it takes the server process down, and it did — 650 KB of compiling Go (11,000 types
+each embedding one 3,000-field struct) exhausted a 4 GB heap in 12 s, with every counter at
+zero. The resolver used to keep, per type, a copy of every member the type has. It now
+keeps, per type, a list of *references* to the types it embeds, and per interface a list of
+the interfaces it embeds; a name is looked up through them. What a type may keep is capped
+by a property of the type alone, so the whole resolver holds an amount linear in the source
+and the calls: at most 64 references for each type asked about, at most 32 entries for each
+member a type declares, and one entry for each distinct (type, name) a call selects. A type
+past its cap has no member decided and its calls are `overBudget` — never a wrong answer,
+and the same whatever was asked first. Measured through the real parser and resolver:
+
+| Input | Before | After |
+| --- | --- | --- |
+| 2,000 types embedding a 3,000-field struct (131 KB) | 732 MB | 12 MB |
+| 6,000 such types (338 KB) | 2,160 MB | 23 MB |
+| 24,000 such types (1.3 MB) | heap abort at about 4 GB | 74 MB |
+| 2,000 interfaces, each embedding the next (140 KB) | 206 MB, 0.7 s | 16 MB, 15 ms |
+| 8,000 such interfaces (579 KB) | 3,303 MB, 22.7 s | 33 MB, 42 ms |
+
+Two declared limits go with the caps. A type that reaches more than 64 other types by
+embedding, without declaring at least a sixteenth as many members itself, is left undecided
+(hand-written Go does not come near it; generated code might). And an interface that embeds
+more than twelve interfaces deep, or reaches more than 64, is treated as one whose method
+set is not known in full: a call through it is still `interface`.
+One more declared limit: a file whose import block is longer than 10,000 imports
 is not read for imports at all, so its calls through an import are left undecided
 (`overBudget`), the same on every ingest.
 
@@ -698,13 +726,17 @@ is not read for imports at all, so its calls through an import are left undecide
 | --- | --- | --- |
 | Steps resolving one call | `GO_CALL_STEP_BUDGET` | 10,000 |
 | Steps working out one type's members | `GO_TYPE_STEP_BUDGET` | 100,000 |
+| Embedded types one type is looked up through | `GO_TYPE_LAYER_BUDGET` | 64 |
+| Names a wider type may index, per member it declares | `GO_TYPE_RETAINED_PER_MEMBER` | 16 |
 | Time resolving Go calls in one ingest | `GO_BINDING_MAX_MS` | 30 s |
+| Ingests a graph may end incomplete, beyond those the floor needs | `GO_BINDING_RESUME_GRACE` | 3 |
 
 The ingest log reports the step as `Go calls bound by type` with `files`, `calls` and
 `durationMs`, and as a **warning** when any call was left undecided by type for a reason
 that is not in the source: `errors` (a call's resolution threw; `failures` names up to 50
-as `file:line callee` — worth reporting), `overBudget` (a step budget ran out: a type with
-an enormous embedding fan-out, in practice generated code) or `skipped` (the time ceiling
+as `file:line callee` — worth reporting), `overBudget` (a step budget ran out, or a type
+would have to keep more than it may: a type with an enormous embedding fan-out, in practice
+generated code) or `skipped` (the time ceiling
 was reached; that ingest's Go binding is incomplete). Such a call is never given a decided
 verdict, and it never replaces an answer the graph already holds: for a file whose content
 did not change, the stored row of an unresolved call is left exactly as it was. Only a file
@@ -712,12 +744,43 @@ that was itself re-parsed has no stored answer to keep; there the call goes on t
 name-based rules as before #1071 and can still be bound, labelled `name`.
 
 **When the time ceiling is reached, the binding is finished by the next ingests.** The
-graph records what is left (`code_graphs.goBindingIncomplete`: each file with unresolved
-calls and the call it stopped at), `extractorVersion` is not stamped until nothing is left,
-and the next ingest takes those files up first, whether or not any Go file changed; an
-upgrade the ceiling interrupted is resumed, not started again. Every ingest resolves at
-least `GO_BINDING_MIN_CALLS` (2,000) calls whatever the clock says, so the work always
-shrinks. Where to see it: the Deep Ingest completion message and the Sync panel on the
+graph records what is left (`code_graphs.goBindingIncomplete`), in two parts. `files` is
+each file with calls *never* resolved by type and the call it stopped at;
+`extractorVersion` is not stamped while one is left, and every later ingest takes them up
+first, each from where it stopped — also when another Go file changed in between, so a
+repository under active development still finishes. `again` is each unchanged file whose
+calls are to be resolved *again* because a Go file changed; those calls keep the answer
+they have until their turn comes, they start over at the next change, and they do not hold
+the version back. An upgrade the ceiling interrupted is resumed, not started again. Every
+ingest resolves at least `GO_BINDING_MIN_CALLS` (2,000) of the open calls whatever the
+clock says, so the work always shrinks. The floor counts calls, not time: on hand-written
+Go it costs milliseconds, and on a tree built so that every one of those calls first
+reaches a type at its step budget (3 ms each, measured) it adds about 6 s to the ceiling.
+
+**How long a graph may stay incomplete.** N open calls need at most ⌈N / 2,000⌉ ingests,
+and three more are allowed for ingests that close none (the file could not be read that
+time, no resolver could be built). A graph still open after that is stuck, not slow — and
+while it is unstamped, automatic document regeneration reads the resumed rows as the rest
+of an upgrade. So the remainder is then **given up**: it moves to `abandoned` in the
+record, is no longer resumed, the version is stamped, and the ingest log warns `Go call
+binding abandoned` with the files. Those calls keep the name-based answer (undecided by
+type); a change to the file, or to any Go file, binds them again. The bound is counted in
+ingests because an ingest is the only thing that can make progress: on a nightly refresh
+Miniflux's 21,106 calls would be allowed 14 nights.
+
+**An ingest that stops half-way is taken up again.** Before its first row, an ingest that
+is going to bind Go calls sets `inFlight` in the record; the write that ends it removes it.
+A run that crashed or threw in between has stored a changed file's new content hash, and
+perhaps name-based answers for calls its ceiling skipped, so the next ingest would find
+nothing changed. With the flag set it re-binds every Go file from its first call. (It
+cannot put back rows the stopped run never wrote: a file whose symbols were stored and
+whose edges were not stays without them until it changes, for every language, since #313.)
+
+**What it costs while a record stands.** Every ingest of that repository re-parses every Go
+file and builds the resolver, changed or not, until the record is empty or given up. On a
+graph that was already stamped, the rows a resume improves read as a real change, so
+auto-updating documents regenerate once per resuming ingest that changes rows they read.
+Where to see it: the Deep Ingest completion message and the Sync panel on the
 Connections page say `Go call binding is not finished: N calls in M files…`; the ingest
 log's warning carries `incomplete: { files, calls }` and, on the runs that continue,
 `resumedFiles`. To finish sooner, run Sync again: each run continues from where the last

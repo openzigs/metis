@@ -3574,7 +3574,11 @@ file (`go run gen.go gen_helpers.go`); a type name its project package does not 
 imports that would bind one local name; an import path that two `go.mod` files of the tree
 both declare, from a file in neither; and — in a tree with no `go.mod`, or for Go code outside
 every module — an import path matched to a directory by spelling, which binds only on a
-GOPATH layout or two trailing segments and is otherwise unknown. An import is resolved in the
+GOPATH layout or two trailing segments, and only when that is the ONE directory the path
+ends in: two of them (`internal/storage` beside `app/internal/storage`) are two readings of
+the layout — the tree root as the module, or as a GOPATH's `src/<host>` — and the type
+checker shows the shorter one right in the oracle corpus, so neither is bound (PR #1104,
+review cycle 4). Otherwise it is unknown. An import is resolved in the
 importing file's **own module** first (the nearest `go.mod` above it), then by the most
 specific module path, so in a monorepo of services that are each `module app`, `app/storage`
 means the importer's own `storage/`.
@@ -3656,9 +3660,9 @@ embedded field of every type a receiver could reach, for every call, and keep no
 generated 665 KB file (100 types a level, each embedding all 100 of the next, 3,000 calls)
 took the Go binding step of an ingest from 0.47 s to 36.8 s. Whatever depends only on the
 declarations is now worked out once per resolver and kept — what a type name means in a
-file, a type's struct, its whole member set (own and promoted), what an import path names —
-so a call costs its own length and a tree costs declarations plus calls (the same file:
-0.4 s). The third review found the next two shapes of the same kind, in placing imports:
+file, a type's struct, the types its promotion search goes through, what an import path
+names — so a call costs its own length and a tree costs declarations plus calls (the same
+file: 0.4 s). The third review found the next two shapes of the same kind, in placing imports:
 with no `go.mod`, matching one import against the directories filtered **all** of them, for
 every import of a file, inside one call and outside every budget (one call: 5.8 s on a
 20,001-file tree, 23 s on 40,001); and with tens of thousands of `go.mod` files, finding a
@@ -3670,12 +3674,49 @@ by directory and by declared path — and a file's import block is read whole or
 10,000 imports, not at all, the same for every call. The dot imports of a file are kept
 once per package (10,000 dot imports of one package made every bare call spend its whole
 budget). `tests/lib/code-graph/go-resolver-bounded-work.test.ts` pins each as a scaling
-ratio. Three ceilings bound what is left, and each is counted rather than guessed:
+ratio.
+
+**And it bounds what it retains, which none of that measured** (PR #1104, review cycle 4).
+"Kept" used to mean a flattened copy: every type held a table of every member it has, own
+and promoted, and every interface a set of every name below it. Memory was therefore
+types × members — 11,000 types embedding one 3,000-field struct, 650 KB of compiling Go,
+exhausted a 4 GB heap in 12 s with `overBudget` and `skipped` both 0 — and a chain of
+embedded interfaces was quadratic in time and memory (8,000 of them: 22.5 s, 2.3 GB). A
+heap abort is not catchable, so it sat inside every step budget and under the time ceiling.
+What is kept per type is now its **layers**: the types a promotion search goes through,
+depth by depth, as references. A member stays with the type that declares it; `x.name` is
+answered by walking the layers and asking each type of a layer for the name, with Go's own
+rule (the shallowest depth that declares it; two declarers at one depth are ambiguous) and
+the answer kept per name asked. An interface likewise keeps the list of interfaces it
+embeds, each holding its own names. Three properties of the TYPE cap it, so no verdict
+depends on what was asked first:
+
+- up to `GO_TYPE_LAYER_BUDGET` (64) layer types, the layers are walked;
+- a wider type keeps an index of its names as well — one step a lookup however wide a layer
+  is — but only while it pays for it: no more layer types and no more names than
+  `GO_TYPE_RETAINED_PER_MEMBER` (16) times the members the type declares itself. A struct
+  that embeds 200 others is wide because it says so, 200 times; a one-line struct that
+  reaches 200 types through somebody else's embeddings is not;
+- past both, nothing is kept and no member of the type is decided (`unknown`,
+  `why: "budget"`, counted in `overBudget`). An interface that embeds more than 12 deep, or
+  reaches more than 64, is treated as one whose method set is not known in full.
+
+So the resolver retains at most 64 references per type asked about, 32 entries per declared
+member and one per distinct (type, name) selected — linear in source plus calls.
+`GoResolver.retained()` counts those entries, and
+`tests/lib/code-graph/go-resolver-retained.test.ts` pins them exactly across two tree
+sizes, with heap growth and a time ratio beside them, and checks on the whole oracle corpus
+that walking the layers and the name index answer alike. The reviewer's probes after the
+change: 24,000 such types (1.3 MB) 74 MB where the process aborted; 8,000 chained
+interfaces 33 MB and 42 ms.
+
+Ceilings bound what is left, and each is counted rather than guessed:
 
 | Ceiling | Constant | When it is reached |
 | --- | --- | --- |
 | Steps for one call | `GO_CALL_STEP_BUDGET` (10,000; `go-type-resolution.ts`) | The call is left undecided by type; counted in `IngestStats.goBinding.overBudget`. |
-| Steps for one type's member set | `GO_TYPE_STEP_BUDGET` (100,000) | No member of that type is decided, for any call; counted in `overBudget`. |
+| Steps for one type's layers | `GO_TYPE_STEP_BUDGET` (100,000) | No member of that type is decided, for any call; counted in `overBudget`. |
+| What one type may keep | `GO_TYPE_LAYER_BUDGET` (64), `GO_TYPE_RETAINED_PER_MEMBER` (16) | The same: no member of that type is decided; counted in `overBudget`. |
 | Time resolving Go calls in one ingest | `GO_BINDING_MAX_MS` (30 s; `ingest.ts`, per run `IngestOptions.goBindingMaxMs`) | Every remaining call of the run is left undecided by type and counted in `goBinding.skipped`; where each file stopped is recorded on the graph and the next ingest resumes there (below). At least `GO_BINDING_MIN_CALLS` (2,000) calls are resolved first whatever the clock says. |
 
 Resolving one call cannot fail the ingest either: a throw leaves that call undecided, is
@@ -3693,23 +3734,41 @@ file that was itself re-parsed or upgraded (its rows are written new), and a row
 names a binding whose target symbol no longer exists.
 
 **What the ceiling leaves is recorded and resumed.** `CodeGraph.goBindingIncomplete` holds
-`{ version, files: { path: index } }`: for each file, the index among its Go call edges of
-the first call not resolved (after the ceiling every later call is skipped, so what is left
-of a file is its tail), and the extractor version the graph's rows already have. While it is
-set, `extractorVersion` is not stamped. The next incremental ingest reads it and
+`{ version, files, again?, inFlight?, resumesLeft?, abandoned? }` (`GoBindingIncomplete` in
+`ingest.ts`). `files` maps a file to the index, among its Go call edges, of the first call
+**never** resolved by type on the rows the graph holds (after the ceiling every later call
+is skipped, so what is left of a file is its tail); `version` is the extractor version
+those rows already have. `extractorVersion` is not stamped while `files` is non-empty.
+`again` maps an unchanged file to the first call whose answer predates the last change to
+a Go file and has not been re-resolved since. The plan of an incremental ingest is then, in
+this order:
 
-- with **no Go file changed**, re-parses the Go files for their declarations and resolves
-  only the listed files, each from its recorded index — the earlier calls were resolved on
-  the same tree and their rows stand;
-- with **a Go file changed**, re-binds everything from the first call as before, the listed
-  files first, so the ceiling tripping again still finishes old work before new;
-- treats an **interrupted upgrade** as resumed: the rows are current, so no symbol is renamed
-  and no file rewritten a second time, and the in-place re-binds move
-  `extractorUpgradedAt` like every other write of that upgrade.
+1. the files in `files`, each **from its recorded index** — whether or not a Go file
+   changed, which is what makes resuming monotone (re-binding them from their first call
+   whenever any Go file changed meant an active repository with one slow file never
+   finished) — then the files this run parsed or upgraded, whole;
+2. when a Go file changed, every unchanged Go file from its first call up to where step 1
+   took over; otherwise what `again` records.
+
+Step 2 starts only once step 1 is complete (after the ceiling every later call is skipped),
+and its leftovers do not hold the version back. An **interrupted upgrade** is resumed: the
+rows are current, so no symbol is renamed and no file rewritten a second time. The in-place
+writes of step 1's resumed calls, on a graph not yet stamped, move `extractorUpgradedAt`
+like every other write of that upgrade — and nothing else does: an affected file of
+another language, or a step 2 re-bind, is a real change and reads as one.
+
+`inFlight` closes the window between the rows and the record. It is written before the
+first row of an ingest that binds Go calls (before pass 0 when a Go file changed or was
+deleted, otherwise in pass 1c before any edge) and removed by Step 8's write. A run that
+stops in between leaves it, and the next ingest re-binds every unchanged Go file.
 
 Progress does not depend on the clock: `GO_BINDING_MIN_CALLS` calls are resolved in every
-run before the ceiling is consulted (one call is bounded by the step budgets), so an
-interrupted binding takes at most `ceil(calls / 2,000)` ingests. Over-budget and failed
+run before the ceiling is consulted, so N open calls take at most `ceil(N / 2,000)`
+ingests. `resumesLeft` is that number plus `GO_BINDING_RESUME_GRACE` (3), set by the first
+ingest that ends with work open and counted down by each later one; at zero the remainder
+moves to `abandoned`, is no longer resumed, and the version is stamped
+(`IngestStats.goBinding.abandonedFiles`). A file leaves `abandoned` when it changes, is
+deleted, or is re-bound whole by a later change to any Go file. Over-budget and failed
 calls are not recorded — resolving them again ends the same way. A full re-ingest ignores
 the record. `IngestStats.goBinding.incomplete` (`{ files, calls }`) and `resumedFiles`
 report it; the Deep Ingest completion message and the Sync summary
