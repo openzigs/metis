@@ -21,9 +21,9 @@ import {
 } from "./holistic-synthesizer.js";
 
 const CAP = 150_000;
-const group = sectionGroupsFor("architecture").find((g) => g.id === "components-and-data")!;
+const group = sectionGroupsFor("architecture").find((g) => g.id === "components")!;
 
-/** A module whose components-and-data entry is about `size` characters. */
+/** A module whose Component Breakdown entry is about `size` characters. */
 function moduleFacts(i: number, size: number): ModuleFacts {
   const bullets = (tag: string, n: number) =>
     Array.from({ length: n }, (_, k) => `- ${tag} ${k} of module${i}: ${"detail ".repeat(8)}`).join(

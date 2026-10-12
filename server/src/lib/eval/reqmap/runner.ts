@@ -26,7 +26,9 @@ export interface ReqMapEvalResult {
 /**
  * Regression floors for the aggregate scores. These are set BELOW the measured
  * performance on the committed fixture (macroF1 0.81, macroRecall 1.0, microF1
- * 0.77, hitRate 1.0 as of the #738 fixture) with deliberate headroom, so the
+ * 0.77, hitRate 1.0 as of the #738 fixture; with #1063's two-shared-terms rule,
+ * which the analysis path now applies, macroPrecision 0.71 to 0.87, macroRecall
+ * 1.0 to 0.90, macroF1 0.81 to 0.85, hitRate 1.0) with deliberate headroom, so the
  * eval fails only on a genuine mapping regression — not on noise. Recall is
  * floored high because the mapping's job is to FIND the files that changed;
  * precision is floored lower because BM25 + blast-radius over-predict on a tiny

@@ -10,7 +10,11 @@
  * code. This panel renders that deterministic mapping: one collapsible section
  * per candidate, each listing the affected symbols with their
  * `filePath:startLine` locator, relation (direct vs blast-radius), and
- * confidence. Candidates with no mapped code show an explicit empty state.
+ * confidence. Candidates with no mapped code show an explicit empty state:
+ * since #1063 a direct match is shown only when the symbol's NAME (with its
+ * enclosing type or table; never its file path) shares two of the
+ * requirement's terms, so "no link" is an ordinary, honest outcome. The code
+ * agent's own seed list is wider and is not what this panel shows.
  *
  * Renders nothing when there is no mapping (plain runs / no new requirements /
  * no code graph), so it never adds noise to a standard analysis.
@@ -45,7 +49,11 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
         Affected code (deterministic mapping)
       </h4>
       <p className="text-xs text-muted-foreground">
-        Each new requirement mapped to existing code via Impact Analysis (mapper + blast radius).
+        Each new requirement mapped to existing code via Impact Analysis (mapper + blast radius). A
+        direct match is shown only when the symbol&apos;s name (with its enclosing type or table,
+        never its file path) shares at least two of the requirement&apos;s terms; callers and
+        importers of a direct match are listed with it. Confidence is relative to the best link for
+        that requirement, not a probability.
         {affectedCode?.truncated
           ? " Some entries were omitted from the analysis prompt for length."
           : ""}
@@ -80,7 +88,10 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
                       data-testid={`affected-code-empty-${candidate.id}`}
                       className="text-xs text-muted-foreground"
                     >
-                      No code matched — see the coverage indicator.
+                      No code matched. No symbol&apos;s name shares two of this requirement&apos;s
+                      terms, so nothing is linked rather than showing a weak guess. The code agent
+                      still investigates it, and may start from weaker candidates that are not shown
+                      here; see the coverage indicator.
                     </p>
                   ) : (
                     <ul className="space-y-1.5">

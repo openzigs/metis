@@ -172,9 +172,11 @@ import {
   type EvidenceSalvageResult,
 } from "./agentic-evidence.js";
 import { summarizeToolCalls, type ToolCallRecord } from "./tool-telemetry.js";
+import { readSourceRequirements, toSynthesisSourceItems } from "./source-items.js";
 import {
   FINAL_ANSWER_INSTRUCTION,
   buildDegradedAgentOutput,
+  collectRecoveryAttempts,
   isJsonFinalAnswer,
   isSchemaValidFinalAnswer,
   salvageWithRepair,
@@ -246,6 +248,7 @@ import {
   buildAgenticPassPrompt,
   resolveAgentTokenBudget,
   resolveAgenticMaxTurns,
+  resolveRecoveryReasoning,
   resolveDatabaseAwareDecision,
 } from "./agentic-pass-context.js";
 import {
@@ -990,6 +993,7 @@ export class AnalysisOrchestrator {
         model,
         signal: controller.signal,
         accumulator: delta,
+        sourceRequirements: readSourceRequirements(analysis.metadata),
       });
       // #1001 — the regenerated code pass replaced the code findings, so the
       // run's retrieval health and "cut short" reason must describe IT, not the
@@ -1354,6 +1358,7 @@ export class AnalysisOrchestrator {
           model,
           signal: controller.signal,
           accumulator: delta,
+          sourceRequirements: readSourceRequirements(analysis.metadata),
         });
       }
 
@@ -2139,6 +2144,7 @@ export class AnalysisOrchestrator {
         accumulator: totals,
         // #824 — reconcile code + schema findings per requirement when present.
         affectedSchema: runAffectedSchemaBlock,
+        sourceRequirements: opts.sourceRequirements,
       });
 
       // #733 — freeze + persist the capability record and push the final state
@@ -2766,6 +2772,11 @@ export class AnalysisOrchestrator {
             input.model ?? this.deps.provider.model,
             this.deps.provider.key,
           );
+          // #1063 — both recovery calls below (the final-answer retry and the
+          // evidence-only salvage) only write up an investigation already done.
+          const recoveryReasoning = resolveRecoveryReasoning(
+            input.model ?? this.deps.provider.model,
+          );
           // #141 — native tool calls on a tool-capable model when the operator
           // enabled them; the text protocol otherwise (and by default).
           const nativeTools = resolveAnalysisNativeTools(this.deps.provider, input.model, tools);
@@ -2788,6 +2799,9 @@ export class AnalysisOrchestrator {
                 // `agentOutputSchema` is exactly what this retry exists to fix.
                 isValidFinalAnswer: isSchemaValidFinalAnswer,
                 maxOutputTokens: finalAnswerMaxOutputTokens,
+                // #1063 — a serialisation call: bound the reasoning that would
+                // otherwise be drawn from the same cap as the answer.
+                reasoning: recoveryReasoning,
                 // #726 — the retry re-sends the COMPACTED transcript; hand it the
                 // untruncated file reads and search hits so the answer is written
                 // over the code the agent read, not a 600-character head of it.
@@ -2881,6 +2895,7 @@ export class AnalysisOrchestrator {
                 ...(input.model ? { model: input.model } : {}),
                 ...(input.signal ? { signal: input.signal } : {}),
                 maxOutputTokens: finalAnswerMaxOutputTokens,
+                reasoning: recoveryReasoning,
                 loadKnownDocuments,
                 findKnownDocumentIds,
               });
@@ -2928,6 +2943,12 @@ export class AnalysisOrchestrator {
               reason: reason ?? "non-json-response",
               toolCalls: loopResult.toolCalls,
               salvaged,
+              // #1063 — on a total loss, say what the recovery calls returned.
+              recovery: collectRecoveryAttempts(loopResult.finalAnswerRetry, evidenceSalvage, {
+                maxOutputTokens: finalAnswerMaxOutputTokens,
+              }),
+              // …and advise the reasoning setting only where this provider sends it.
+              recoveryProviderKey: this.deps.provider.key,
             });
           }
           // #298 — no repair is silent: it is logged with its kind and position
@@ -3647,6 +3668,8 @@ export class AnalysisOrchestrator {
      * the section is omitted and the synthesis prompt is byte-identical.
      */
     affectedSchema?: string;
+    /** #1063 — the imported items the run was started from, when it was. */
+    sourceRequirements?: AnalysisSourceRequirement[];
   }): Promise<SynthesisOutcome> {
     // Epic #1107 (#1110) — RANK by the #1109 panel's confidence before anything
     // downstream numbers these rows. The reorder happens exactly ONCE, on the
@@ -3704,6 +3727,11 @@ export class AnalysisOrchestrator {
         refinedHumanAnswered,
         // #824 — reconcile code + schema findings per requirement when present.
         affectedSchema: input.affectedSchema,
+        // #1063 — on a run started from imported items, ask which item each
+        // requirement restates. Empty ⇒ the prompt is byte-identical.
+        ...(input.sourceRequirements && input.sourceRequirements.length > 0
+          ? { sourceItems: toSynthesisSourceItems(input.sourceRequirements) }
+          : {}),
       });
       input.accumulator.promptTokens += result.usage.promptTokens;
       input.accumulator.completionTokens += result.usage.completionTokens;

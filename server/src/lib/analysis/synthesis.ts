@@ -36,6 +36,7 @@ import { reasoningAllowanceTokens } from "../docs-gen/output-caps.js";
 import { createChildLogger } from "../logger.js";
 import { extractJsonObject } from "./agent-runner.js";
 import { buildSynthesisPrompt } from "./prompts.js";
+import { cleanSourceIds, type SynthesisSourceItem } from "./source-items.js";
 import { salvageSynthesisPrefix } from "./synthesis-salvage.js";
 
 const log = createChildLogger("analysis-synthesis");
@@ -48,6 +49,13 @@ export interface FlatFinding extends AgentFindingPayload {
 export interface SynthesisInput {
   projectName: string;
   findings: FlatFinding[];
+  /**
+   * Issue #1063 — the imported items the run was started from (`NR-*` id and
+   * title). When present the model names, per requirement, the items it
+   * restates; ids it returns are checked against this list. Empty/undefined ⇒
+   * the prompt is byte-identical and no requirement carries `sourceIds`.
+   */
+  sourceItems?: SynthesisSourceItem[];
   signal?: AbortSignal;
   model?: string;
   /**
@@ -506,6 +514,7 @@ const MAX_REQUIREMENTS = 100;
 const MAX_EVIDENCE = 50;
 const MAX_LABELS = 16;
 const MAX_CRITERIA = 20;
+const MAX_SOURCE_IDS = 20;
 
 const normalizeTitle = (title: string): string => title.trim().toLowerCase().replace(/\s+/g, " ");
 
@@ -561,6 +570,8 @@ export async function runSynthesis(
   );
 
   const isValidIndex = (i: number): boolean => Number.isInteger(i) && i >= 0 && i < total;
+  // #1063 — the only ids a requirement may claim as its source.
+  const knownSourceIds = new Set((input.sourceItems ?? []).map((s) => s.id));
 
   // #751 — requirements kept so far, in the order the model wrote them.
   const kept: SynthesizedRequirement[] = [];
@@ -591,9 +602,14 @@ export async function runSynthesis(
   const keep = (reqs: readonly SynthesizedRequirement[]): void => {
     const fromThisCall: Array<[string, SynthesizedRequirement]> = [];
     for (const r of reqs) {
-      const clean = {
-        ...r,
+      // #1063 — `sourceIds` is model output: keep only this run's ids, and
+      // drop the key entirely when the model did not (usably) say.
+      const { sourceIds: claimedSourceIds, ...rest } = r;
+      const sourceIds = cleanSourceIds(claimedSourceIds, knownSourceIds);
+      const clean: SynthesizedRequirement = {
+        ...rest,
         evidenceFindingIndexes: r.evidenceFindingIndexes.filter(isValidIndex),
+        ...(sourceIds !== undefined ? { sourceIds } : {}),
       };
       const key = normalizeTitle(clean.title);
       const evidence = new Set(clean.evidenceFindingIndexes);
@@ -614,6 +630,9 @@ export async function runSynthesis(
           MAX_EVIDENCE,
         );
         prior.labels = union(prior.labels, clean.labels, MAX_LABELS);
+        if (clean.sourceIds !== undefined) {
+          prior.sourceIds = union(prior.sourceIds ?? [], clean.sourceIds, MAX_SOURCE_IDS);
+        }
         prior.acceptanceCriteria = union(
           prior.acceptanceCriteria,
           clean.acceptanceCriteria,
@@ -678,6 +697,9 @@ export async function runSynthesis(
       refinedRequirements: input.refinedRequirements,
       refinedHumanAnswered: input.refinedHumanAnswered,
       affectedSchema: input.affectedSchema,
+      ...(input.sourceItems && input.sourceItems.length > 0
+        ? { sourceItems: input.sourceItems }
+        : {}),
       // #1110 — the panel rule is added only when a panel actually ran on a
       // finding in THIS table, so a flag-off run sends a byte-identical prompt.
       panelGuidance: hasPanelSignal(segmentFindings),

@@ -9,6 +9,7 @@
  * status from them so a doc with failed or ungrounded sections is NEVER reported
  * as a clean `ready`. Warnings are persisted (JSON) and surfaced in the UI.
  */
+import { schemaComparisonWords, type SchemaInventory } from "../schema-inventory.js";
 
 /** What kind of degradation occurred. */
 export type DocWarningKind =
@@ -26,9 +27,20 @@ export type DocWarningKind =
   /** DOCS_GEN_GROUNDING=sample — only a sample of the section was fact-checked. */
   | "grounding-sampled"
   /** #246 — the section's fact-check threw (after retries), so it was not checked at all. */
-  | "grounding-failed";
+  | "grounding-failed"
+  /**
+   * #1061 — the section names tables or columns that could not be matched to
+   * the database schema. Informational (`severity: "info"`): the names are
+   * marked in the section, and the document's status does not depend on it.
+   */
+  | "schema-unverified";
 
-export type DocWarningSeverity = "warning" | "error";
+/**
+ * `info` is a note for the reader and nothing else: it does not make the
+ * document `degraded`, is not counted in the review summary, and does not
+ * change whether a stored section is reused ({@link affectsDocStatus}).
+ */
+export type DocWarningSeverity = "info" | "warning" | "error";
 
 /**
  * The faithfulness TIER a `section-ungrounded` warning was gated at. This is a
@@ -1037,11 +1049,54 @@ export function sectionMissingWarning(section: string, reason: string): DocWarni
 }
 
 /**
- * Derive the document health status from its warnings. Any warning at all means
- * the document is `degraded`, never a clean `ready`.
+ * #1061 — the Data Architecture section names tables or columns that could not
+ * be matched to the schema it was compared with. Each is marked in the section
+ * (or, inside a diagram, listed in the section's "Schema check" note).
+ *
+ * This is INFORMATION, not a degradation (`severity: "info"`). The check is a
+ * text heuristic over model output against a schema read that is not provably
+ * complete, so a false mark is a known property of it, and the check never
+ * removes or changes anything. The document stays `ready`, the section is
+ * reused like any other, and the UI shows the message as an informational
+ * line. Callers do not call this with an empty list.
+ */
+export function schemaUnverifiedWarning(
+  section: string,
+  unmatched: readonly string[],
+  inventory: Pick<SchemaInventory, "label" | "source" | "reads">,
+): DocWarning {
+  // Said in the words of what was compared: no database is read on the
+  // repository-SQL tier, and a stored schema is not today's database.
+  const { what, caveat } = schemaComparisonWords(inventory);
+  const shown = unmatched.slice(0, 8).join(", ");
+  const more = unmatched.length > 8 ? ` and ${unmatched.length - 8} more` : "";
+  const names = unmatched.length === 1 ? "1 name" : `${unmatched.length} names`;
+  return {
+    kind: "schema-unverified",
+    section,
+    message:
+      `${names} in ${section} could not be matched to ${what} ` +
+      `(${shown}${more}). Compared with ${inventory.label}. They are marked or listed in the ` +
+      `section's Schema check note; nothing was removed or changed. ${caveat}, so an unmatched ` +
+      `name can be real.`,
+    severity: "info",
+  };
+}
+
+/**
+ * Whether a warning counts toward the document's status. An `info` one does
+ * not: it is a note for the reader (#1061's `schema-unverified`).
+ */
+export function affectsDocStatus(warning: Pick<DocWarning, "severity">): boolean {
+  return warning.severity !== "info";
+}
+
+/**
+ * Derive the document health status from its warnings. Any warning that is not
+ * merely informational means the document is `degraded`, never a clean `ready`.
  */
 export function deriveDocStatus(warnings: DocWarning[]): DocHealthStatus {
-  return warnings.length > 0 ? "degraded" : "ready";
+  return warnings.some(affectsDocStatus) ? "degraded" : "ready";
 }
 
 /**
@@ -1063,7 +1118,10 @@ export function serializeWarnings(warnings: DocWarning[]): string | null {
  * the neutral "Needs review" rather than the alarming "Degraded output" so users
  * don't discard an accurate document over unverified-but-correct content.
  */
-export function summarizeWarnings(warnings: DocWarning[]): string {
+export function summarizeWarnings(allWarnings: DocWarning[]): string {
+  // An informational note is not a review item: a document that carries only
+  // those is `ready` and has nothing to summarise.
+  const warnings = allWarnings.filter(affectsDocStatus);
   if (warnings.length === 0) return "";
   // #191 — Phase-1 causes that share a kind with a section-level one are told
   // apart by their own section label, so each gets the remedy for ITS cause.

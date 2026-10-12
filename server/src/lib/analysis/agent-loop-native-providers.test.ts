@@ -803,7 +803,17 @@ describe("#298 over-long findings fields — DeepSeek adapter loopback, both pro
     async (mode) => {
       const result = await run(mode, MALFORMED);
 
-      expect(result.finalAnswerRetry).toEqual({ attempted: true, succeeded: false });
+      // #1063 — an unusable retry reports exactly what it returned (PR #1095 panel, T1).
+      expect(result.finalAnswerRetry).toEqual({
+        attempted: true,
+        succeeded: false,
+        // Parses as JSON, fails the findings schema.
+        outcome: "valid-json",
+        finishReason: "end_turn",
+        responseLength: MALFORMED.length,
+        outputTokens: 10,
+        maxOutputTokens: 16_384,
+      });
       expect(result.hasFinalAnswer).toBe(false);
     },
   );

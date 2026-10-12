@@ -534,6 +534,14 @@ export function buildSpecialistPrompt(input: AgentPromptInput): {
 
 export interface SynthesisPromptInput {
   projectName: string;
+  /**
+   * Issue #1063 — the imported items the run was started from, each under the
+   * `NR-*` id it carried. When present the model is asked to name, per
+   * requirement, the items it restates (`sourceIds`). Untrusted data: titles
+   * come from an external tracker. Undefined or empty ⇒ the prompt is
+   * byte-identical to one without it.
+   */
+  sourceItems?: Array<{ id: string; title: string }>;
   /** All findings flattened, formatted as `[idx] (agent) title :: body`. */
   findingsTable: string;
   /**
@@ -612,11 +620,27 @@ const SYNTHESIS_PANEL_RULE =
 export const SYNTHESIS_EXTRACTED_RULE =
   "The EXTRACTED REQUIREMENTS section lists requirements METIS extracted from the project's sources. No person has answered clarifying questions about them yet. Use them alongside the findings and ensure each is represented in your output, but never describe them, or anything derived from them, as human-clarified, human-confirmed, answered or reviewed — in the summary or anywhere else.";
 
+/**
+ * Issue #1063 — the provenance rule. `[]` and "left out" are told apart on
+ * purpose: a requirement the model adds itself is labelled as added by the
+ * analysis, so it must say so rather than have silence read that way.
+ */
+const SYNTHESIS_SOURCE_ITEMS_RULE =
+  "The IMPORTED ITEMS section lists the tracker items this analysis was started from, each with an id. In every requirement set `sourceIds` to the ids of the imported items that requirement restates, refines or specifies — normally exactly one. Set `sourceIds` to an empty array for a requirement that is your own addition (a cross-cutting chore, a prerequisite, a gap no imported item asked for). Use only ids from that section, never an id that is not listed, and do not put an id on a requirement merely because it mentions the same area.";
+
 export function buildSynthesisPrompt(input: SynthesisPromptInput): {
   systemMessage: string;
   userMessage: string;
 } {
   const persona = getPersona("synthesis");
+  // #1063 — titles are tracker text: one line each, escaped like every other block.
+  const sourceItems = (input.sourceItems ?? []).filter((s) => s.id.trim().length > 0);
+  const safeSourceItems =
+    sourceItems.length > 0
+      ? escapeContext(
+          sourceItems.map((s) => `[${s.id}] ${s.title.replace(/\s+/g, " ").trim()}`).join("\n"),
+        )
+      : "";
   const safeName = escapeContext(input.projectName);
   const safeFindings = escapeContext(input.findingsTable);
   const refined = (input.refinedRequirements ?? []).filter(
@@ -666,6 +690,8 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
     input.panelGuidance ? `11. ${SYNTHESIS_PANEL_RULE}` : "",
     // #751 — only on a continuation after an output-cap truncation.
     safeAlready ? `12. ${SYNTHESIS_CONTINUATION_RULE}` : "",
+    // #1063 — only on a run started from imported items.
+    safeSourceItems ? `13. ${SYNTHESIS_SOURCE_ITEMS_RULE}` : "",
     "",
     "Respond with a single JSON object:",
     `{
@@ -679,7 +705,9 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
       "labels": ["..."],
       "storyPoints": <optional int>,
       "evidenceFindingIndexes": [<ints>],
-      "acceptanceCriteria": ["<testable statement naming the artifact and pass condition>"]
+      "acceptanceCriteria": ["<testable statement naming the artifact and pass condition>"]${
+        safeSourceItems ? ',\n      "sourceIds": ["<id from IMPORTED ITEMS>"]' : ""
+      }
     }
   ]
 }`,
@@ -697,6 +725,9 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
       : "",
     safeAlready
       ? `${FENCE} BEGIN ALREADY SYNTHESISED REQUIREMENTS ${FENCE}\n${safeAlready}\n${FENCE} END ALREADY SYNTHESISED REQUIREMENTS ${FENCE}\n`
+      : "",
+    safeSourceItems
+      ? `${FENCE} BEGIN IMPORTED ITEMS ${FENCE}\n${safeSourceItems}\n${FENCE} END IMPORTED ITEMS ${FENCE}\n`
       : "",
     `${FENCE} BEGIN FINDINGS ${FENCE}`,
     safeFindings,
