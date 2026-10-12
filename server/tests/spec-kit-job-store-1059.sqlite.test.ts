@@ -106,9 +106,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       it("does not sweep a row inserted by hand with the column's own default", async () => {
         await clean();
-        // `CURRENT_TIMESTAMP` writes `2026-10-12 11:14:48`: a space where every
-        // other writer has a `T`, so as TEXT it sorts before any ISO time of the
-        // same day and such a row was failed by the next sweep.
+        // `CURRENT_TIMESTAMP` writes `2026-10-12 11:14:48`, with a space between
+        // date and time. Compared as strings, that sorts before every ISO-8601
+        // value of the same day, so such a row was failed by the next sweep.
         await db.$executeRaw`
           INSERT INTO "spec_kit_jobs" ("id", "projectId", "command", "activeKey", "status")
           VALUES ('c1059-hand-new', 'c1059-pa', 'speckit.plan', 'c1059-pa:hand-new', 'running')`;
