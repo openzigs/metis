@@ -20,6 +20,7 @@ import { audit } from "../audit/audit-service.js";
 import { prisma } from "../prisma.js";
 import { archiveBatch as archiveBatchImpl, previewBatchPlan, runBatch } from "./publisher.js";
 import { generateDrafts as generateDraftsImpl } from "./draft-generator.js";
+import { assertCodeLinksMatchTarget } from "./draft-code-links.js";
 import { canCreateTickets } from "../analysis/approval-checkpoint.js";
 import { assertDraftsPublishable } from "../reviews/approval-gate.js";
 import { PublishError } from "./types.js";
@@ -214,12 +215,23 @@ export async function createBatch(opts: CreateBatchOptions): Promise<SharedPubli
       status: true,
       requirementId: true,
       metadata: true,
+      body: true,
+      // Named in the CODE_LINKS_TARGET_MISMATCH refusal.
+      title: true,
       requirement: { select: { analysisId: true } },
     },
   });
   if (drafts.length !== input.draftIds.length) {
     throw new PublishError(400, "DRAFT_MISMATCH", "one or more drafts not found in this project");
   }
+  // #1064 — a body that links into the analysed repository is not published
+  // into a different one. Dry runs too: a preview must not pass what the live
+  // run refuses.
+  assertCodeLinksMatchTarget(drafts, {
+    owner: input.targetOwner,
+    repo: input.targetRepo,
+    baseUrl: input.targetBaseUrl,
+  });
   const ineligible = drafts.find(
     (d) => d.status !== "draft" && d.status !== "approved" && d.status !== "failed",
   );
@@ -751,6 +763,8 @@ export async function generateDrafts(opts: {
   analysisId: string;
   targetOwner: string;
   targetRepo: string;
+  /** #1064 — the target's API base URL (`null` or left out = public GitHub); see the generator. */
+  targetBaseUrl?: string | null;
   defaultLabels?: string[];
   /** #863 — draft only these requirements of the analysis. */
   requirementIds?: string[];
@@ -761,6 +775,7 @@ export async function generateDrafts(opts: {
     analysisId: opts.analysisId,
     targetOwner: opts.targetOwner,
     targetRepo: opts.targetRepo,
+    targetBaseUrl: opts.targetBaseUrl,
     defaultLabels: opts.defaultLabels,
     requirementIds: opts.requirementIds,
   });

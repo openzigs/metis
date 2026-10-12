@@ -123,6 +123,11 @@ export const createPublishBatchSchema = z.object({
   projectId: idSchema,
   targetOwner: githubOwnerSchema,
   targetRepo: z.string().min(1).max(128),
+  /**
+   * The target's API base URL. Left out, it is public GitHub — the same reading
+   * `generateDraftsSchema` gives the field, so the two requests name one target.
+   * A batch calls this host, so anything that is not a URL is refused here.
+   */
   targetBaseUrl: z.string().url().optional(),
   provider: z.enum(PUBLISH_PROVIDERS).default("github"),
   draftIds: z.array(idSchema).min(1).max(MAX_BATCH_ISSUES),
@@ -263,6 +268,18 @@ export const MAX_DRAFT_REQUIREMENT_SELECTION = 500;
 
 export const generateDraftsSchema = z.object({
   analysisId: idSchema,
+  /**
+   * #1064 — the API base URL of the repository the drafts are generated for, as
+   * the publish batch will send it. Left out, `null` or empty is public GitHub,
+   * exactly as on `createPublishBatchSchema`. Code is linked only when the
+   * target is the analysed repository on the same host.
+   *
+   * Not held to a URL: Generate never calls this host, it only compares it. A
+   * value that is not an https URL (a half-typed field) names no host, so the
+   * drafts are generated with the code listed as text instead of the request
+   * failing on a field that has nothing else to do with it.
+   */
+  targetBaseUrl: z.string().trim().max(2048).nullable().optional(),
   defaultLabels: z.array(z.string().min(1).max(64)).max(16).default([]),
   /** #863 — draft only these requirements of the analysis (all when omitted). */
   requirementIds: z.array(idSchema).min(1).max(MAX_DRAFT_REQUIREMENT_SELECTION).optional(),

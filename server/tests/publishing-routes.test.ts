@@ -443,6 +443,40 @@ describe("POST /drafts/generate", () => {
     );
   });
 
+  it("#1064 — forwards the target's base URL: a URL, null or absent for public GitHub, or text that is no URL", async () => {
+    const token = await login("developer");
+    const generate = (extra: Record<string, unknown>) =>
+      request(app)
+        .post("/api/projects/proj_test_001/publishing/drafts/generate")
+        .set("Authorization", `Bearer ${token}`)
+        .send({
+          analysisId: "analysis_test_001",
+          targetOwner: "acme",
+          targetRepo: "metis",
+          ...extra,
+        });
+    const forwarded = () =>
+      (vi.mocked(generateDraftsMock).mock.calls.at(-1)![0] as { targetBaseUrl?: unknown })
+        .targetBaseUrl;
+
+    expect((await generate({ targetBaseUrl: "https://ghe.example.com/api/v3" })).status).toBe(201);
+    expect(forwarded()).toBe("https://ghe.example.com/api/v3");
+    expect((await generate({ targetBaseUrl: null })).status).toBe(201);
+    expect(forwarded()).toBeNull();
+    // Not sent: public GitHub, as on batch create — the generator reads it so.
+    expect((await generate({})).status).toBe(201);
+    expect(forwarded()).toBeUndefined();
+    // Not a URL (a half-typed batch-form field): Generate does not fail on it.
+    // It is passed on trimmed, and names no host, so the code is listed as text.
+    expect((await generate({ targetBaseUrl: "  ghe.example.com " })).status).toBe(201);
+    expect(forwarded()).toBe("ghe.example.com");
+    expect((await generate({ targetBaseUrl: "   " })).status).toBe(201);
+    expect(forwarded()).toBe("");
+    // Still bounded, and still a string.
+    expect((await generate({ targetBaseUrl: "x".repeat(2049) })).status).toBe(400);
+    expect((await generate({ targetBaseUrl: 7 })).status).toBe(400);
+  });
+
   it("developer can generate drafts (issue.draft)", async () => {
     const token = await login("developer");
     const res = await request(app)

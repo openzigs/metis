@@ -2,6 +2,7 @@
  * Epic #609 / Issue #618 — review detail header: title, status, policy, due
  * date, requester, and (post-approval) the produced baseline.
  */
+import type { ReactNode } from "react";
 import Link from "next/link";
 import type { ReviewPolicy, ReviewRequest } from "@/lib/reviews-api";
 import { DueDateBadge, ReviewStatusBadge } from "./review-badges";
@@ -19,11 +20,19 @@ export function policyLabel(
   return "All reviewers must approve";
 }
 
-export function ReviewHeader({ review }: { review: ReviewRequest }) {
+export function ReviewHeader({
+  review,
+  actions,
+}: {
+  review: ReviewRequest;
+  /** Page-level actions for this review, e.g. Withdraw review (#1032). */
+  actions?: ReactNode;
+}) {
   return (
     <PageHeader
       data-testid="review-header"
       title={review.title}
+      actions={actions}
       titleExtra={
         <>
           <ReviewStatusBadge status={review.status} />

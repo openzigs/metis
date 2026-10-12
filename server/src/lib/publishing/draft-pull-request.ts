@@ -54,6 +54,7 @@ import {
   statusOf,
   upstreamsOfAnalysed,
 } from "./analysed-repo-guard.js";
+import { assertCodeLinksMatchTarget } from "./draft-code-links.js";
 import { PublishError, type PublishOctokitLike } from "./types.js";
 
 const log = createChildLogger("draft-pull-request");
@@ -100,6 +101,10 @@ export async function openDraftPullRequest(
   }
   const analysed = await analysedRepos(input.projectId);
   refuseIfAnalysed(analysed.names, [`${saved.owner}/${saved.repo}`]);
+  // #1064 — the saved target is never the analysed repository (the line above),
+  // so a draft whose body still links into it would carry that repository's
+  // owner, name and commit there. Dry runs too.
+  assertCodeLinksMatchTarget([draft], { owner: saved.owner, repo: saved.repo, baseUrl: null });
   // Validates owner/repo and pins the public API base URL — no caller input.
   const target = await resolvePublishTarget({
     owner: saved.owner,

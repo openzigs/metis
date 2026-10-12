@@ -99,3 +99,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Recursion audit: bound work, not depth](project_recursion-audit-must-bound-work-not-depth.md) — lattice + scaling ratio (#1071)
 - [Test helper keys must be unique](project_test-helper-keys-must-be-unique.md) — throw on a duplicate key (#1071)
 - [Suppression needs evidence, once](project_suppression-rule-needs-positive-evidence-acknowledged-once.md) — not a missing field (#1071)
+- [Test the STAMPED body](project_publishing-safety-is-tested-on-the-stamped-body.md) — strip split a code span; double honours status
+- [Title rule change: look up old hash](project_draft-title-rule-change-needs-old-title-lookup.md) — else 2nd draft, 2nd issue (#1064)
+- [`pgrep -f` loop matches itself](project_pgrep-f-wait-loop-matches-itself.md) — never exits; use ps + grep "node .*(vitest|tsc)"

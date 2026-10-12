@@ -13,6 +13,8 @@
  *      blocked with the actionable APPROVAL_REQUIRED error; approving the
  *      requirement's review unblocks it.
  *   4. comparing two baselines surfaces a FIELD-LEVEL change between them.
+ *   5. (#1032) the requester WITHDRAWS an in-review review through the UI,
+ *      behind a confirmation; cancelling it withdraws nothing.
  *
  * UI vs API split: the review feature ships a reviewer decision UI, a baselines
  * surface, and a publish-gate settings card, but no create/submit-review UI
@@ -347,6 +349,37 @@ test.describe("Epic #609 — review & approval workflow (#622)", () => {
       // The entry carries the version transition and a field-level VersionDiff.
       await expect(changed).toContainText("v0");
       await expect(changed).toContainText("v1");
+    });
+  });
+
+  // ---- Flow 5 (#1032) ------------------------------------------------------
+  test("the requester withdraws a review in the UI, after confirming → draft", async ({ page }) => {
+    ctx = await setup("e2e-1032-withdraw");
+
+    const reviewId = await createReview(ctx.requesterApi, ctx.projectId, {
+      title: "Withdraw the seeded requirement's review",
+      reviewerIds: [ctx.reviewerId],
+      requirementIds: [ctx.requirementId],
+    });
+    await submitReview(ctx.requesterApi, reviewId);
+
+    await loginViaUi(page, REQUESTER, `/reviews/${reviewId}`);
+    const detail = new ReviewDetailPage(page);
+    await detail.expectReady();
+    await detail.expectStatus("In review");
+
+    await test.step("cancelling the confirmation withdraws nothing", async () => {
+      await detail.withdrawButton.click();
+      await detail.withdrawDialog.getByRole("button", { name: "Cancel" }).click();
+      await expect(detail.withdrawDialog).toBeHidden();
+      expect((await getReview(ctx.requesterApi, reviewId)).status).toBe("in_review");
+    });
+
+    await test.step("confirming withdraws the review and the action goes away", async () => {
+      await detail.withdraw();
+      await detail.expectStatus("Draft");
+      await expect(detail.withdrawButton).toBeHidden();
+      expect((await getReview(ctx.requesterApi, reviewId)).status).toBe("draft");
     });
   });
 });

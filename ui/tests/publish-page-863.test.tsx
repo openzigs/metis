@@ -234,6 +234,7 @@ describe("choosing which imported requirements to draft (#863)", () => {
         analysisId: "analysis_import_1",
         targetOwner: "openzigs",
         targetRepo: "example",
+        targetBaseUrl: null,
         requirementIds: ["imp_req_2", "imp_req_5"],
       }),
     );

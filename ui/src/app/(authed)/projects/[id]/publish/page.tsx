@@ -28,6 +28,7 @@ import { repoConnectorsApi } from "@/lib/connectors-api";
 import { publishDestinationApi } from "@/lib/change-analysis-api";
 import { queryKeys } from "@/lib/query-keys";
 import { commonDraftTarget, draftTargetsConflict } from "@/lib/publish-target";
+import { generateTargetBaseUrl } from "@/lib/generate-target-base-url";
 import { AnalysedRepoWarning } from "@/components/publishing/analysed-repo-warning";
 import { DraftDiffDialog } from "@/components/publishing/draft-diff-dialog";
 import { DraftEditDialog } from "@/components/publishing/draft-edit-dialog";
@@ -204,14 +205,33 @@ export default function PublishingPage() {
   const [pickedRequirements, setPickedRequirements] = useState<Set<string>>(new Set());
   useEffect(() => setPickedRequirements(new Set()), [analysisId]);
 
+  // The publish batch form's base URL (declared here because Generate reads it
+  // too). Empty = public GitHub.
+  const [batchBaseUrl, setBatchBaseUrl] = useState("");
+
+  // Why the last Generate listed code as text, when the base URL field is why.
+  const [baseUrlProblem, setBaseUrlProblem] = useState<string | null>(null);
   const generate = useMutation({
-    mutationFn: () =>
-      publishingApi.generateDrafts(projectId, {
+    // `baseUrlField` is the batch form's base URL as the page shows it at the
+    // click — passed in, not closed over: the connector prefills it, and a
+    // closure can still hold the empty field of the render before.
+    mutationFn: async (baseUrlField: string) => {
+      // #1064 — the host the batch form will publish to, so code is linked
+      // only when that host, owner and repository are the analysed
+      // repository's. The field is free text from another card: Generate never
+      // fails on it, and says so when it is why the code is listed as text.
+      const baseUrl = generateTargetBaseUrl(baseUrlField);
+      setBaseUrlProblem(null);
+      const result = await publishingApi.generateDrafts(projectId, {
         analysisId,
         targetOwner,
         targetRepo,
+        targetBaseUrl: baseUrl.value,
         requirementIds: selectionRequired ? [...pickedRequirements] : undefined,
-      }),
+      });
+      setBaseUrlProblem(baseUrl.problem);
+      return result;
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.drafts(projectId) }),
   });
   const resolveLink = approvalsResolveLink(generate.error, projectId);
@@ -295,7 +315,6 @@ export default function PublishingPage() {
   // not a placeholder. Typing in a field makes it the user's own.
   const [batchOwner, setBatchOwner] = useState<string | null>(null);
   const [batchRepo, setBatchRepo] = useState<string | null>(null);
-  const [batchBaseUrl, setBatchBaseUrl] = useState("");
   const [batchSecret, setBatchSecret] = useState("");
   const [batchLabels, setBatchLabels] = useState("");
   const [dryRun, setDryRun] = useState(true);
@@ -328,8 +347,9 @@ export default function PublishingPage() {
   const batchBody = () => ({
     targetOwner: effectiveOwner,
     targetRepo: effectiveRepo,
-    targetBaseUrl: batchBaseUrl ? batchBaseUrl : undefined,
-    provider: (batchBaseUrl ? "github_enterprise" : "github") as "github" | "github_enterprise",
+    targetBaseUrl: batchBaseUrl.trim() || undefined,
+    provider: (batchBaseUrl.trim() ? "github_enterprise" : "github") as
+      "github" | "github_enterprise",
     dryRun,
     draftIds: selectedDraftRows.map((d) => d.id),
     additionalLabels: batchLabels
@@ -591,6 +611,12 @@ export default function PublishingPage() {
           target={{ owner: targetOwner.trim(), repo: targetRepo.trim() }}
           connector={primaryRepo.data}
         />
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="generate-links-hint">
+          Each draft lists the code linked to its requirement. The paths are links only when this
+          target owner and repo — on the host in the <strong>GHE base URL</strong> field of the
+          publish batch form below (empty for github.com) — are the repository that was analysed;
+          otherwise they are plain text.
+        </p>
         {selectionRequired && candidates.data && (
           <DraftRequirementPicker
             requirements={candidates.data.requirements}
@@ -625,12 +651,15 @@ export default function PublishingPage() {
             </span>
           ) : null}
           <Button
-            onClick={() => generate.mutate()}
+            onClick={() => generate.mutate(batchBaseUrl)}
             disabled={
               !analysisId ||
               !targetOwner ||
               !targetRepo ||
               generate.isPending ||
+              // The connector prefills the base URL Generate sends: until it has
+              // loaded, an Enterprise project would be generated for github.com.
+              primaryRepo.isLoading ||
               (selectionRequired && pickedRequirements.size === 0)
             }
           >
@@ -656,6 +685,15 @@ export default function PublishingPage() {
           {generate.data && (
             <span className="text-xs text-success">
               {generate.data.summary.upserted} created · {generate.data.summary.refreshed} refreshed
+            </span>
+          )}
+          {baseUrlProblem && (
+            <span
+              className="text-xs text-warning"
+              role="status"
+              data-testid="generate-base-url-warning"
+            >
+              {baseUrlProblem}
             </span>
           )}
         </div>

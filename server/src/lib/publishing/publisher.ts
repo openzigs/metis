@@ -62,12 +62,15 @@ import {
 import {
   buildMarkerComment,
   computeBodyHash,
+  computeDraftBodyHash,
   computeDedupHash,
   injectMarker,
   parseMarker,
+  sourceMarkerForDraft,
   stripMarker,
 } from "./dedup.js";
 import { labelsToSync, publishableLabels, syncLabels } from "./label-sync.js";
+import { assertCodeLinksMatchTarget } from "./draft-code-links.js";
 import { buildDryRunPlan, dryRunWarning } from "./dry-run.js";
 import { notifyPublishRolledBack } from "../teams/notification-hooks.js";
 import { pagerDutyPublishRollback } from "../pagerduty/alerting-hooks.js";
@@ -150,6 +153,12 @@ export async function previewBatchPlan(input: PreviewBatchPlanInput): Promise<Dr
     },
     orderBy: [{ draftType: "asc" }, { createdAt: "asc" }],
   });
+  // #1064 — the confirmation must not describe a publish `createBatch` refuses.
+  assertCodeLinksMatchTarget(drafts, {
+    owner: input.targetOwner,
+    repo: input.targetRepo,
+    baseUrl: input.targetBaseUrl,
+  });
   const existingByHash = await loadExistingByHash(
     input.projectId,
     input.targetOwner,
@@ -174,6 +183,7 @@ export async function previewBatchPlan(input: PreviewBatchPlanInput): Promise<Dr
       labels: parseLabels(d.labels),
       parentDraftId: d.parentDraftId,
       draftType: d.draftType,
+      source: sourceMarkerForDraft(d),
     })),
     additionalLabels: input.additionalLabels,
     existingByHash,
@@ -226,6 +236,15 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
       ...(batch.metadata ? safeWhereFromMetadata(batch.metadata) : {}),
     },
     orderBy: [{ draftType: "asc" }, { createdAt: "asc" }],
+  });
+
+  // #1064 — the lowest layer for this rule too (`createBatch` checks it first):
+  // a body that links into the analysed repository never reaches another one,
+  // whichever caller got here. Local comparison only, so a dry run stays pure.
+  assertCodeLinksMatchTarget(drafts, {
+    owner: batch.targetOwner,
+    repo: batch.targetRepo,
+    baseUrl: batch.targetBaseUrl,
   });
 
   // #619 — approval gate at the LOWEST publishing layer. This is the choke
@@ -289,6 +308,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
         labels: parseLabels(d.labels),
         parentDraftId: d.parentDraftId,
         draftType: d.draftType,
+        source: sourceMarkerForDraft(d),
       })),
       additionalLabels: extractAdditionalLabels(batch.metadata),
       existingByHash,
@@ -415,15 +435,17 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     const draft = ordered[i];
     const hash = computeDedupHash(target.owner, target.repo, draft.title);
     const existing = existingByHash.get(hash);
-    const stampedBody = injectMarker(draft.body, {
-      batchId: batch.id,
-      draftId: draft.id,
-      hash,
-    });
+    // #1064 — the project, analysis and requirement ids ride a hidden source
+    // marker beside the publish marker, not the visible body.
+    const stampedBody = injectMarker(
+      draft.body,
+      { batchId: batch.id, draftId: draft.id, hash },
+      sourceMarkerForDraft(draft),
+    );
     // Hash the user-supplied body (without the per-batch marker) so that
     // re-running an identical draft in a fresh batch dedup-skips instead of
     // appearing to "change" because the marker batchId differs.
-    const bodyHash = computeBodyHash(draft.body);
+    const bodyHash = computeDraftBodyHash(draft.body);
     // #1091 — set as soon as the remote issue provably exists, so the catch
     // block can record the divergence and the rollback can actually close it
     // even when the local write is what failed.
@@ -446,7 +468,15 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
                 destination: "github",
               },
             },
-            update: { issueNumber: existing.issueNumber, status: "updated" },
+            // `existing` was found under `hash` with this body: record both
+            // with the issue, so a row left by an earlier failed run (another
+            // title's hash, no issue) describes the issue it now names.
+            update: {
+              issueNumber: existing.issueNumber,
+              status: "updated",
+              dedupHash: hash,
+              bodyHash,
+            },
             create: {
               batchId: batch.id,
               draftId: draft.id,
@@ -637,11 +667,19 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
         update: {
           status: "failed",
           errorMessage: message,
+          // The hashes move WITH the issue, and only with it: the row must hold
+          // the hash stamped in the marker of the issue it names, or the next
+          // run's remote sweep reads its own marker as a forged one and files
+          // a second issue (a draft retitled after an earlier failed run). A
+          // failure before any write leaves the recorded issue and its hash
+          // as they are — they still describe each other.
           ...(remoteCreated
             ? {
                 issueNumber: remoteCreated.issueNumber,
                 issueId: remoteCreated.nodeId,
                 htmlUrl: remoteCreated.htmlUrl,
+                dedupHash: hash,
+                bodyHash,
               }
             : {}),
         },
@@ -1238,6 +1276,9 @@ async function reconcileFromRemote(args: ReconcileArgs): Promise<void> {
     const dbRow = await prisma.publishedIssue.findFirst({
       where: {
         draftId: marker.draftId,
+        // A GitHub issue is matched against a GitHub row: the Jira row of the
+        // same draft holds issue number 0 and would read as a mismatch.
+        destination: "github",
         batch: { projectId },
       },
       include: { batch: true },
@@ -1281,6 +1322,54 @@ async function reconcileFromRemote(args: ReconcileArgs): Promise<void> {
           markerBatchId: marker.batchId,
           markerDraftId: marker.draftId,
           dbIssueNumber: dbRow.issueNumber,
+        },
+      });
+      continue;
+    }
+    // #1102 review — the marker's HASH is a hint as well, and it is the key the
+    // recovered issue is filed under: whichever draft of this batch has that
+    // hash is then PATCHed onto this issue. Anyone who can edit the issue can
+    // rewrite it (it is sha256 of `owner/repo:title`, so it is computable) to
+    // the hash of ANOTHER draft, and the next batch then overwrote this issue
+    // with that draft while the draft never got an issue of its own. So the
+    // hash must be one METIS can vouch for, for THIS issue's own draft (the row
+    // above ties the draft the marker names to this issue number):
+    //   - the hash recorded for the issue, or
+    //   - the hash that draft has now, when it is in this batch.
+    // The second is the only reading for a row that recorded no hash, and it
+    // is what recovers a draft retitled after a failed run: rows written
+    // before the failed branch recorded the hash with the issue hold the OLD
+    // title's hash beside an issue stamped with the new one, and refusing
+    // those created a second issue. It gives an editor of the tracker nothing:
+    // it files this issue under its own draft's hash, which is where that
+    // draft publishes anyway. Anything else is no match: the draft is created
+    // as a new issue and the conflict reported.
+    const named = drafts.find((d) => d.id === marker.draftId);
+    const vouched =
+      (dbRow.dedupHash !== null && dbRow.dedupHash === marker.hash) ||
+      (named !== undefined &&
+        computeDedupHash(target.owner, target.repo, named.title) === marker.hash);
+    if (!vouched) {
+      const claimedBy = drafts.find(
+        (d) => computeDedupHash(target.owner, target.repo, d.title) === marker.hash,
+      );
+      log.warn("publish.reconcile.marker_hash_mismatch", {
+        batchId: args.batchId,
+        markerDraftId: marker.draftId,
+        issueNumber: issue.number,
+        claimedByDraftId: claimedBy?.id ?? null,
+      });
+      audit({
+        actor: { id: "system" },
+        action: "publish.reconcile.marker_hash_mismatch",
+        target: {
+          type: "github_issue",
+          id: `${target.owner}/${target.repo}#${issue.number}`,
+        },
+        metadata: {
+          batchId: args.batchId,
+          markerDraftId: marker.draftId,
+          claimedByDraftId: claimedBy?.id ?? null,
         },
       });
       continue;
