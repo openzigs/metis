@@ -17,5 +17,6 @@ func TestExternal(t *testing.T) {
 	var l local
 	l.M()
 	l.Own()
+	embed.TestOnly(embed.TestOnly{}).Probe()
 	t.Log("ok")
 }

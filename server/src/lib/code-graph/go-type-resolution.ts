@@ -127,9 +127,11 @@
  *
  * ## Bounded work
  *
- * Pure: no I/O. Bounded in DEPTH and in WORK, which are different things — a
- * depth cap with a `seen` set still let one call look through every embedded
- * field of every type it could reach, and every call do it again.
+ * Pure: no I/O. Bounded in DEPTH, in WORK and in what it RETAINS, which are
+ * three different things — a depth cap with a `seen` set still let one call
+ * look through every embedded field of every type it could reach, and every
+ * call do it again; and keeping the answer per type, as a copy, made memory
+ * types × members.
  *
  *  - Depth. One call's evaluation carries ONE depth counter through every
  *    re-entry (a selection, a call result, a package variable's initialiser),
@@ -138,11 +140,20 @@
  *    that depth is also its number of steps. Type lookups (aliases, defined
  *    types, embeddings) are a separate recursion capped at {@link MAX_DEPTH}.
  *  - Work. Whatever depends only on the DECLARATIONS is worked out once per
- *    resolver and kept: what a type name means in a file, a type's struct, its
- *    whole member set (own and promoted), what an import path names, which
+ *    resolver and kept: what a type name means in a file, a type's struct, the
+ *    types its promotion search goes through, what an import path names, which
  *    declarations a viewer may see. A call then costs its own length, and the
  *    whole tree costs declarations plus calls. Nothing kept depends on the
  *    order calls arrive in.
+ *  - Retained size. What is kept for a type is a list of REFERENCES to the
+ *    types it embeds, layer by layer — never a copy of their members — and
+ *    for an interface a list of the interfaces it embeds, never a copy of
+ *    their names. Both lists are capped by a property of the type alone
+ *    ({@link GO_TYPE_LAYER_BUDGET}, {@link GO_TYPE_RETAINED_PER_MEMBER}), so
+ *    the whole resolver retains an amount linear in the source and the calls,
+ *    and {@link GoResolver.retained} counts it. (A flattened table per type
+ *    aborted the process on 650 KB of Go, inside every budget below: a heap
+ *    abort cannot be caught — PR #1104 review cycle 4.)
  *  - Placing. Finding a directory's module, an import's most specific module,
  *    and — with no `go.mod` — the directory an import path is spelled like,
  *    each cost the LENGTH of that path, through indices built once: scanning
@@ -150,10 +161,10 @@
  *    directories (PR #1104, review cycle 3). A file's import block is read
  *    whole, or — longer than {@link GO_CALL_STEP_BUDGET} imports — not at all.
  *  - Budgets. What is left is counted: {@link GO_CALL_STEP_BUDGET} steps for
- *    one call, {@link GO_TYPE_STEP_BUDGET} for one type's member set. Past
- *    either the answer is `unknown` with `why: "budget"` — counted by the
- *    caller, never a guess. Ingest adds a ceiling on the whole step
- *    (`GO_BINDING_MAX_MS` in `ingest.ts`).
+ *    one call, {@link GO_TYPE_STEP_BUDGET} for one type's layers, and what a
+ *    type may keep. Past any of them the answer is `unknown` with
+ *    `why: "budget"` — counted by the caller, never a guess. Ingest adds a
+ *    ceiling on the whole step (`GO_BINDING_MAX_MS` in `ingest.ts`).
  */
 import {
   GO_STDLIB_PACKAGES,
@@ -286,8 +297,9 @@ export type GoCallVerdict =
   | { kind: "unbound"; reason: GoUnboundReason }
   /**
    * `why: "budget"` — undecided because resolving it would have cost more than
-   * {@link GO_CALL_STEP_BUDGET} or {@link GO_TYPE_STEP_BUDGET} allow, not
-   * because the source leaves it open. The caller counts these.
+   * {@link GO_CALL_STEP_BUDGET} or {@link GO_TYPE_STEP_BUDGET} allow, or
+   * needed a type to keep more than it may ({@link GO_TYPE_LAYER_BUDGET}) —
+   * not because the source leaves it open. The caller counts these.
    */
   | { kind: "unknown"; why?: "budget" };
 
@@ -384,12 +396,46 @@ export interface GoResolverOptions {
    * what counts as a step on a tree of a dozen lines instead of a hundred
    * thousand.
    */
-  budgets?: { callSteps?: number; typeSteps?: number };
+  budgets?: {
+    callSteps?: number;
+    typeSteps?: number;
+    /** {@link GO_TYPE_LAYER_BUDGET}, for the layers of a type's members. */
+    layerTypes?: number;
+    /** {@link GO_TYPE_LAYER_BUDGET}, for the interfaces one interface's method set reaches. */
+    interfaceTypes?: number;
+    /** {@link GO_TYPE_RETAINED_PER_MEMBER}. */
+    retainedPerMember?: number;
+  };
+}
+
+/**
+ * What a resolver holds between calls, in ENTRIES — one reference or one map
+ * entry each — for everything whose size depends on what a type REACHES and
+ * not only on what it declares. Exposed so that a test can pin retained size
+ * across two tree sizes without reading the heap.
+ */
+export interface GoResolverRetained {
+  /** Types a member table was worked out for. */
+  tables: number;
+  /** Types listed in the layers of those tables (and in a table's depth index). */
+  layerTypes: number;
+  /** Names in the name index of a table wide enough to keep one. */
+  indexedNames: number;
+  /** Names answered through the layers of a table with no index, each kept once. */
+  askedNames: number;
+  /** Interfaces listed in the method sets of the interfaces asked about. */
+  interfaceLayers: number;
+  /** Types refused a table because keeping it would pass what the type may retain. */
+  overRetained: number;
+  /** The sum of the entry counts above. */
+  entries: number;
 }
 
 export interface GoResolver {
   /** Decide the callee of one call made in `filePath`. */
   resolveCall(filePath: string, callee: GoExpr): GoCallVerdict;
+  /** What the resolver holds so far ({@link GoResolverRetained}). */
+  retained(): GoResolverRetained;
 }
 
 /** Longest chain of aliases, defined types or embeddings followed. */
@@ -412,16 +458,49 @@ const MAX_EVAL_DEPTH = 64;
 export const GO_CALL_STEP_BUDGET = 10_000;
 
 /**
- * Most steps working out ONE type's member set may take: a step is one field,
- * one method or one embedded type visited while following promotion. That is
- * work proportional to the declarations the type reaches, done once per type —
- * not once per call, which is what made a file of K types each embedding K
- * others cost calls × fields (PR #1104, review cycle 2). A type whose member
- * set is larger than this (no hand-written Go comes near it) has NO member
- * decided: every call selecting from it is `{ kind: "unknown", why: "budget" }`,
- * at the cost of one lookup.
+ * Most steps working out ONE type's layers may take: a step is one type, one
+ * member a type declares (a field, a method, an interface method — counted,
+ * not read) or one embedding followed. That is work proportional to the
+ * declarations the type reaches, done once per type — not once per call,
+ * which is what made a file of K types each embedding K others cost
+ * calls × fields (PR #1104, review cycle 2). A type that reaches more than
+ * this (no hand-written Go comes near it) has NO member decided: every call
+ * selecting from it is `{ kind: "unknown", why: "budget" }`, at the cost of
+ * one lookup.
  */
 export const GO_TYPE_STEP_BUDGET = 100_000;
+
+/**
+ * Most types the LAYERS of one type may list — the types a promotion search
+ * goes through — for the type to be answered by walking them, and most
+ * interfaces one interface's method set may reach. Sixty-four embedded types
+ * in reach is far past hand-written Go; what it buys is that a lookup costs at
+ * most that many steps and a type keeps at most that many references, whatever
+ * the types it reaches declare.
+ */
+export const GO_TYPE_LAYER_BUDGET = 64;
+
+/**
+ * A type with MORE layer types than {@link GO_TYPE_LAYER_BUDGET} is answered
+ * through an index of its member names instead — one step a lookup however
+ * wide a layer is — and may keep that index only while it pays for it: no more
+ * layer types, and no more member names, than this many times the members the
+ * type DECLARES ITSELF (its fields, embedded ones included, and its methods).
+ * A struct that embeds two hundred others is wide because it says so, two
+ * hundred times; a one-line struct that reaches two hundred types through
+ * somebody else's embeddings is not, and is left undecided.
+ *
+ * Together the two make what the resolver retains LINEAR in the source: at
+ * most {@link GO_TYPE_LAYER_BUDGET} references for each type asked about, plus
+ * twice this many entries for each member a type declares, plus one entry for
+ * each distinct (type, name) a call selects. Before them a member table was a
+ * flattened copy per type — types × members — and 650 KB of Go exhausted a
+ * 4 GB heap, inside every step budget (PR #1104 review cycle 4). A type past
+ * both has NO member decided: every call selecting from it is
+ * `{ kind: "unknown", why: "budget" }`. That is a property of the type, so it
+ * is the same whatever was asked first.
+ */
+export const GO_TYPE_RETAINED_PER_MEMBER = 16;
 
 /**
  * Predeclared identifiers. A bare call to one that the package does not itself
@@ -660,41 +739,93 @@ interface TypeInfo {
   decl: Decl<GoTypeFact> | null;
   struct: StructInfo | "external" | null;
   methods: Map<string, Decls<GoFuncFact>> | undefined;
+  /**
+   * Lazily resolved: the project types its struct embeds, in source order, up
+   * to the first that is not a project type this module can see into (`blind`).
+   */
+  embeds?: { list: ProjectNamed[]; blind: boolean };
 }
 
 /**
- * Every member one project type has — its own and the promoted ones — worked
- * out ONCE, by Go's shallowest-depth rule. `rest` is what any name not listed
- * selects: unknown where promotion ran into a type this module cannot see into
- * (or ran out), an interface method where the type is an interface.
+ * The members one project type has — its own and the promoted ones — by Go's
+ * shallowest-depth rule.
+ *
+ * What is kept per type is its LAYERS: the types a promotion search goes
+ * through, depth by depth. A layer is a list of references — each embedded
+ * type's own declarations are read where they are, never copied into the type
+ * that embeds it. (Copying them made resolver memory types × members: 11,000
+ * types embedding one 3,000-field struct, 650 KB of Go, exhausted a 4 GB heap
+ * — PR #1104 review cycle 4.) A name is then answered by walking the layers
+ * and asking each type of a layer for it, and the answer is kept for the names
+ * that were asked ({@link MemberTable.asked}).
+ *
+ * A type whose whole member set is small beside what it DECLARES ITSELF keeps
+ * that set as one table as well ({@link MemberTable.names}): a lookup is then
+ * one step however many types a layer holds. See {@link GO_TYPE_RETAINED_BASE}.
+ *
+ * `rest` is what any name not found selects: unknown where promotion ran into
+ * a type this module cannot see into (or ran out), an interface method where
+ * the type is an interface.
  */
 interface MemberTable {
-  /** Members as a file that is NOT a test of any package involved sees them. */
-  names: Map<string, Val>;
-  /** The promotion depth each name of {@link names} was decided at. */
-  depths: Map<string, number>;
+  /** The types the search goes through, by depth, down to the level it ended at. */
+  layers: ProjectNamed[][];
+  /** {@link layers}, as each type is declared. */
+  infos: TypeInfo[][];
+  /** How many types {@link layers} holds. */
+  layerCount: number;
+  /**
+   * Every member name → what it selects and the depth that was decided at, as
+   * a file that is NOT a test of any package involved sees it. Null when the
+   * type may not keep that many ({@link GO_TYPE_RETAINED_BASE}): names are then
+   * answered one by one, through the layers.
+   */
+  names: Map<string, MemberHit> | null;
+  /** The names asked of a table with no {@link names}, each answered once. */
+  asked: Map<string, MemberHit | null> | null;
   rest: Val;
-  /**
-   * The types the search went through, by the directory of their package:
-   * where a method declared in a `_test.go` file could add a member for a
-   * caller that is a test of that directory ({@link MemberTable.views}).
-   */
-  byDir: Map<string, Array<{ named: ProjectNamed; depth: number }>>;
   /** The depth the search ended at because types there answer to ANY name, and which types. */
-  wildcardLevel: { depth: number; holders: string[] } | null;
-  /** Building it passed {@link GO_TYPE_STEP_BUDGET}: nothing about the type's members is decided. */
-  overBudget?: true;
+  wildcardLevel: { depth: number; holders: string[]; indices: number[] } | null;
   /**
-   * Test directory → the members that differ for a caller built with that
-   * directory's `_test.go` files, worked out on first use.
+   * Nothing about the type's members is decided: working them out passed
+   * {@link GO_TYPE_STEP_BUDGET} (`steps`), or keeping them would pass what the
+   * type may retain (`retained`).
    */
-  views?: Map<string, Map<string, Val>>;
+  overBudget?: "steps" | "retained";
+  /** Lazily built: package id and type name → the depth of that type in {@link layers}. */
+  layerOf?: Map<string, number>;
 }
 
-/** An interface's whole method set: its own names and those of the interfaces it embeds. */
-interface InterfaceNames {
-  names: ReadonlySet<string>;
-  /** Not known in full: it embeds something this module cannot read as a project interface. */
+/** What a member name selects, and the promotion depth it was decided at. */
+interface MemberHit {
+  val: Val;
+  depth: number;
+}
+
+/** A project interface as it is declared: its own method names and what it embeds. */
+interface InterfaceInfo {
+  own: ReadonlySet<string>;
+  /** The project interfaces it embeds directly. */
+  embeds: ProjectNamed[];
+  /** It embeds something that is not a project type (`io.Reader`, `error`, a union). */
+  blind: boolean;
+}
+
+/**
+ * An interface's method set, as LAYERS too: the interface and the interfaces
+ * it reaches by embedding, each holding its own names. Nothing is copied into
+ * the embedder — a name set per interface was interfaces × names along a chain
+ * of embeddings, 2.3 GB for 8,000 of them (PR #1104 review cycle 4).
+ */
+interface InterfaceSet {
+  members: InterfaceInfo[];
+  /** Names the members declare, summed — what reading the set costs. */
+  size: number;
+  /**
+   * Not known in full: something in reach is not a project interface, or the
+   * chain is longer than {@link MAX_DEPTH}, or reaches more interfaces than
+   * {@link GO_TYPE_LAYER_BUDGET}. The set may then hold any name.
+   */
   open: boolean;
 }
 
@@ -726,6 +857,9 @@ export function createGoResolver(
   const incompleteDirs = options.incompleteDirs ?? new Set<string>();
   const callStepBudget = options.budgets?.callSteps ?? GO_CALL_STEP_BUDGET;
   const typeStepBudget = options.budgets?.typeSteps ?? GO_TYPE_STEP_BUDGET;
+  const layerBudget = options.budgets?.layerTypes ?? GO_TYPE_LAYER_BUDGET;
+  const interfaceBudget = options.budgets?.interfaceTypes ?? GO_TYPE_LAYER_BUDGET;
+  const retainedPerMember = options.budgets?.retainedPerMember ?? GO_TYPE_RETAINED_PER_MEMBER;
   const pkgs = new Map<string, Pkg>();
   /**
    * Directory → the packages the go tool builds there (normally one, plus an
@@ -737,6 +871,13 @@ export function createGoResolver(
   /** Directory → how many `//go:build ignore` files it holds. */
   const ignoredInDir = new Map<string, number>();
   const ctxByFile = new Map<string, FileCtx>();
+  /**
+   * Directory → method name → the receivers a `_test.go` file of that
+   * directory declares a method of that name on (by package id and type name).
+   * One entry per such declaration: what a test caller's view of a type can
+   * differ by ({@link viewMember}).
+   */
+  const testMethods = new Map<string, Map<string, Map<string, { pkg: Pkg; receiver: string }>>>();
 
   const add = <T>(map: Map<string, Decls<T>>, key: string, decl: Decl<T>): void => {
     let decls = map.get(key);
@@ -794,6 +935,13 @@ export function createGoResolver(
           pkg.methods.set(fn.receiver, ofType);
         }
         add(ofType, fn.name, { fact: fn, file: ctx });
+        if (f.isTest) {
+          let inDir = testMethods.get(dir);
+          if (!inDir) testMethods.set(dir, (inDir = new Map()));
+          let ofName = inDir.get(fn.name);
+          if (!ofName) inDir.set(fn.name, (ofName = new Map()));
+          ofName.set(`${pkg.id}\u0000${fn.receiver}`, { pkg, receiver: fn.receiver });
+        }
       } else add(pkg.funcs, fn.name, { fact: fn, file: ctx });
     }
     for (const v of f.facts.vars) add(pkg.vars, v.name, { fact: v, file: ctx });
@@ -925,7 +1073,9 @@ export function createGoResolver(
    *  - a directory whose path ENDS in the whole import path (a GOPATH layout:
    *    `src/github.com/org/app/store` for `github.com/org/app/store`);
    *  - a directory of two or more segments that the import path ends in
-   *    (`internal/storage` for `example.org/app/internal/storage`).
+   *    (`internal/storage` for `example.org/app/internal/storage`) — when it
+   *    is the ONLY directory the path ends in. Beside `app/internal/storage`
+   *    it is one of two readings, and neither is bound.
    *
    * One segment is not evidence: `github.com/pkg/errors` ends in `errors`, and
    * so does the project's own `errors/`. With nothing matched the path is
@@ -937,14 +1087,23 @@ export function createGoResolver(
     // `suffix`: the longest directory the import path ENDS in (a proper tail
     // of it). `holding`: the directories that end in the WHOLE import path.
     let suffix: string | null = null;
+    let suffixes = 0;
     let node: DirSuffixNode | undefined = orphanSuffixIndex();
     for (let i = segs.length - 1; i >= 0 && node; i -= 1) {
       node = node.kids.get(segs[i]);
-      if (node?.dir && i > 0) suffix = node.dir;
+      if (node?.dir && i > 0) {
+        suffix = node.dir;
+        suffixes += 1;
+      }
     }
     const holding = node ? node.count : 0;
     if (holding === 1 && suffix === null) return inDir(node!.first);
     if (holding === 0 && suffix !== null) {
+      // Two directories the path ends in are two readings of the layout —
+      // `internal/storage` if the tree root is the module `example.org/app`,
+      // `app/internal/storage` if it is a GOPATH's `src/example.org` — and
+      // the longer one is not thereby the right one.
+      if (suffixes > 1) return UNKNOWN_IMPORT;
       return suffix.includes("/") ? inDir(suffix) : UNKNOWN_IMPORT;
     }
     if (holding > 0 || suffix !== null) return UNKNOWN_IMPORT;
@@ -1261,240 +1420,493 @@ export function createGoResolver(
   const wildcardOf = (info: TypeInfo): Val | null =>
     info.struct === "external" ? EXTERNAL_ASSUMED : null;
 
-  const interfaceNameSets = new Map<string, InterfaceNames>();
+  // ── What the resolver keeps between calls, counted ───────────────────────
+  //
+  // Every figure is a number of ENTRIES held for the life of the resolver, so
+  // a test can pin what a tree makes it retain without reading the heap.
+  const kept = {
+    tables: 0,
+    layerTypes: 0,
+    indexedNames: 0,
+    askedNames: 0,
+    interfaceLayers: 0,
+    overRetained: 0,
+  };
 
-  /**
-   * The whole method set of a project interface, worked out once: the names
-   * it declares and, through the interfaces it embeds, theirs — all at the
-   * interface's own depth, as Go has it. `open` when an embedded element is
-   * not a project interface this module can read (`io.Reader`, `error`, a
-   * union): the set may then hold any name.
-   */
-  const interfaceNames = (start: ProjectNamed): InterfaceNames => {
-    const key = typeKey(start);
-    const known = interfaceNameSets.get(key);
-    if (known) return known;
-    const names = new Set<string>();
-    let open = false;
-    let steps = 0;
-    const seen = new Set<string>([typeId(start)]);
-    const queue: ProjectNamed[] = [start];
-    for (let at = 0; at < queue.length && !open; at += 1) {
-      const decl = typeDecl(queue[at]);
-      if (decl?.fact.form !== "interface") {
-        open = true;
-        break;
-      }
-      for (const method of decl.fact.methods ?? []) {
-        steps += 1;
-        names.add(method);
-      }
+  const interfaceInfos = new Map<string, InterfaceInfo | null>();
+
+  /** A project interface's own declaration, read once; null for a type that is not one. */
+  const interfaceInfo = (named: ProjectNamed): InterfaceInfo | null => {
+    const key = typeKey(named);
+    const known = interfaceInfos.get(key);
+    if (known !== undefined) return known;
+    const decl = typeDecl(named);
+    let info: InterfaceInfo | null = null;
+    if (decl?.fact.form === "interface") {
+      const embeds: ProjectNamed[] = [];
+      const seen = new Set<string>();
+      let blind = false;
       for (const embedded of decl.fact.embeds ?? []) {
-        steps += 1;
         const inner = embedded ? resolveNamed(embedded, decl.file, 0) : UNKNOWN_NAMED;
         if (inner.n !== "project") {
-          open = true;
-          break;
+          blind = true;
+          continue;
         }
         const id = typeId(inner);
         if (seen.has(id)) continue;
         seen.add(id);
-        queue.push(inner);
+        embeds.push(inner);
       }
-      // Too large to read in budget: it may hold any name.
-      if (steps > typeStepBudget) open = true;
+      info = { own: new Set(decl.fact.methods ?? []), embeds, blind };
     }
-    const out: InterfaceNames = { names, open };
-    interfaceNameSets.set(key, out);
+    interfaceInfos.set(key, info);
+    return info;
+  };
+
+  const interfaceSets = new Map<string, InterfaceSet>();
+
+  /**
+   * The method set of a project interface: itself and the interfaces it
+   * reaches by embedding — all at the interface's own depth, as Go has it —
+   * each still holding its own names. What is kept per interface is that list
+   * of references, capped: a chain longer than {@link MAX_DEPTH}, or more than
+   * {@link GO_TYPE_LAYER_BUDGET} interfaces in reach, is not followed further
+   * and the set is `open`. So is one that embeds anything that is not a
+   * project interface this module can read (`io.Reader`, `error`, a union).
+   */
+  const interfaceSet = (start: ProjectNamed): InterfaceSet => {
+    const key = typeKey(start);
+    const known = interfaceSets.get(key);
+    if (known) return known;
+    const members: InterfaceInfo[] = [];
+    let open = false;
+    let size = 0;
+    const seen = new Set<string>([typeId(start)]);
+    let level: ProjectNamed[] = [start];
+    for (let depth = 0; level.length > 0; depth += 1) {
+      const next: ProjectNamed[] = [];
+      for (const named of level) {
+        const info = interfaceInfo(named);
+        if (!info) {
+          open = true;
+          continue;
+        }
+        members.push(info);
+        size += info.own.size;
+        if (info.blind) open = true;
+        for (const inner of info.embeds) {
+          const id = typeId(inner);
+          if (seen.has(id)) continue;
+          if (depth >= MAX_DEPTH || seen.size >= interfaceBudget) {
+            open = true;
+            break;
+          }
+          seen.add(id);
+          next.push(inner);
+        }
+      }
+      level = next;
+    }
+    // Too large to read in budget: it may hold any name.
+    if (size > typeStepBudget) open = true;
+    const out: InterfaceSet = { members, size, open };
+    interfaceSets.set(key, out);
+    kept.interfaceLayers += members.length;
     return out;
+  };
+
+  const interfaceHas = (set: InterfaceSet, name: string): boolean => {
+    for (const member of set.members) if (member.own.has(name)) return true;
+    return false;
+  };
+
+  const ownStruct = (info: TypeInfo): StructInfo | null =>
+    info.struct && info.struct !== "external" ? info.struct : null;
+
+  /** How many members a type declares ITSELF: its fields, its methods, an interface's method set. */
+  const ownSize = (named: ProjectNamed, info: TypeInfo): number =>
+    (ownStruct(info)?.byName.size ?? 0) +
+    (info.methods?.size ?? 0) +
+    (info.decl?.fact.form === "interface" ? interfaceSet(named).size : 0);
+
+  /**
+   * `name` as the type ITSELF declares it — a field, a method, or (an
+   * interface) a method of its set — or null. Nothing promoted.
+   */
+  const ownMember = (named: ProjectNamed, info: TypeInfo, name: string): Val | null => {
+    let val: Val | null = null;
+    const struct = ownStruct(info);
+    const field = struct?.byName.get(name);
+    if (struct && field) {
+      val = field.type ? { v: "value", type: field.type, file: struct.file } : UNKNOWN;
+    }
+    const decls = info.methods?.get(name);
+    // Methods declared in `_test.go` files are no part of this: they exist for
+    // one directory's tests only ({@link viewMember}).
+    if (decls && decls.nonTest.length > 0) {
+      // A field AND a method of one name cannot be one type: they are twins
+      // behind build constraints, and neither is chosen.
+      val = field ? AMBIGUOUS : methodVal(decls.nonTest);
+    }
+    // An interface holds exactly the methods it declares and embeds, each
+    // dispatched at run time.
+    if (
+      val === null &&
+      info.decl?.fact.form === "interface" &&
+      interfaceHas(interfaceSet(named), name)
+    ) {
+      val = INTERFACE_METHOD;
+    }
+    return val;
+  };
+
+  /** Every name {@link ownMember} may answer for a type; a name may come up more than once. */
+  function* ownNames(named: ProjectNamed, info: TypeInfo): Generator<string> {
+    const struct = ownStruct(info);
+    if (struct) yield* struct.byName.keys();
+    if (info.methods) yield* info.methods.keys();
+    if (info.decl?.fact.form === "interface") {
+      for (const member of interfaceSet(named).members) yield* member.own;
+    }
+  }
+
+  /** The types a struct embeds, resolved once: where promotion goes next from it. */
+  const embedsOf = (info: TypeInfo): NonNullable<TypeInfo["embeds"]> => {
+    if (info.embeds) return info.embeds;
+    const list: ProjectNamed[] = [];
+    let blind = false;
+    const struct = ownStruct(info);
+    for (const field of struct?.fields ?? []) {
+      if (!field.embedded) continue;
+      // An embedded type this module cannot see into may declare any name
+      // at this depth, which would win over anything deeper.
+      const embedded =
+        struct && field.type ? resolveNamed(field.type, struct.file, 0) : UNKNOWN_NAMED;
+      if (embedded.n !== "project") {
+        blind = true;
+        break;
+      }
+      list.push(embedded);
+    }
+    info.embeds = { list, blind };
+    return info.embeds;
   };
 
   const memberTables = new Map<string, MemberTable>();
 
-  /**
-   * Every member of a project type: its own (a field or a method), else the
-   * one promoted from the shallowest embedded type that has it. Built level by
-   * level, once per type.
-   */
+  /** A project type's members: its layers, worked out once per type. */
   const memberTable = (start: ProjectNamed): MemberTable => {
     const key = typeKey(start);
     const known = memberTables.get(key);
     if (known) return known;
     const table = buildMemberTable(start);
     memberTables.set(key, table);
+    kept.tables += 1;
+    if (table.overBudget === "retained") kept.overRetained += 1;
+    kept.layerTypes += table.layerCount;
+    kept.indexedNames += table.names?.size ?? 0;
     return table;
   };
 
+  /**
+   * What a name selects when `count` types of the layer at `depth` declare it
+   * themselves: a name one type holds is that member, a name two hold is
+   * ambiguous. A type of the layer that answers to ANY name (its members are
+   * not known) beside the one that declares it is not a tie but an open
+   * question: in Go that compiles only one of them has it, and which is not
+   * known here.
+   */
+  const decideAt = (
+    table: MemberTable,
+    depth: number,
+    count: number,
+    holder: number,
+    val: Val,
+  ): Val => {
+    if (count > 1) return AMBIGUOUS;
+    const wild = table.wildcardLevel;
+    if (wild && wild.depth === depth && wild.indices.some((index) => index !== holder)) {
+      return UNKNOWN;
+    }
+    return val;
+  };
+
+  /** Nothing about the type is decided, and nothing is kept for it. */
+  const overBudgetTable = (overBudget: NonNullable<MemberTable["overBudget"]>): MemberTable => ({
+    layers: [],
+    infos: [],
+    layerCount: 0,
+    names: null,
+    asked: null,
+    rest: UNKNOWN,
+    wildcardLevel: null,
+    overBudget,
+  });
+
+  /**
+   * The layers of a project type: itself, then level by level the types it
+   * embeds, down to the first level that ends the search. Building them reads
+   * no member — it counts them — so it costs the types and embeddings in
+   * reach, never their fields.
+   */
   const buildMemberTable = (start: ProjectNamed): MemberTable => {
-    const names = new Map<string, Val>();
-    const depths = new Map<string, number>();
-    const byDir: MemberTable["byDir"] = new Map();
+    const layers: ProjectNamed[][] = [];
+    const infoLayers: TypeInfo[][] = [];
+    let layerCount = 0;
     const done = (rest: Val, wildcardLevel: MemberTable["wildcardLevel"] = null): MemberTable => ({
-      names,
-      depths,
+      layers,
+      infos: infoLayers,
+      layerCount,
+      names: null,
+      asked: null,
       rest,
-      byDir,
       wildcardLevel,
     });
     let steps = 0;
+    /** What the type may keep as an index of names ({@link GO_TYPE_RETAINED_PER_MEMBER}). */
+    let wide = 0;
     let level: ProjectNamed[] = [start];
     const seen = new Set<string>();
     for (let depth = 0; depth <= MAX_DEPTH && level.length > 0; depth += 1) {
-      // Hits at this depth, per name: a name one type of the level holds is
-      // that member, a name two hold is ambiguous.
-      const hits = new Map<string, { count: number; val: Val; holders: Set<number> }>();
-      const hit = (name: string, val: Val, holder: number, replace = false): void => {
-        const had = hits.get(name);
-        if (!had) hits.set(name, { count: 1, val, holders: new Set([holder]) });
-        else if (!had.holders.has(holder)) {
-          had.count += 1;
-          had.holders.add(holder);
-        } else if (replace) had.val = val;
-      };
-      const wildcards: Array<{ holder: number; val: Val }> = [];
       const infos = level.map((named) => typeInfo(named));
+      const wildcards: Array<{ index: number; val: Val }> = [];
       for (let i = 0; i < level.length; i += 1) {
         const named = level[i];
         const info = infos[i];
-        steps += 1;
-        const inDir = byDir.get(named.pkg.dir);
-        if (inDir) inDir.push({ named, depth });
-        else byDir.set(named.pkg.dir, [{ named, depth }]);
-        if (info.struct && info.struct !== "external") {
-          const file = info.struct.file;
-          for (const [name, field] of info.struct.byName) {
-            steps += 1;
-            hit(name, field.type ? { v: "value", type: field.type, file } : UNKNOWN, i);
-          }
-        }
-        if (info.methods) {
-          for (const [name, decls] of info.methods) {
-            steps += 1;
-            // Methods declared in `_test.go` files are no part of this table:
-            // they exist for one directory's tests only ({@link viewMembers}).
-            if (decls.nonTest.length === 0) continue;
-            // A field AND a method of one name cannot be one type: they are
-            // twins behind build constraints, and neither is chosen.
-            const fieldToo =
-              info.struct && info.struct !== "external" && info.struct.byName.has(name);
-            hit(name, fieldToo ? AMBIGUOUS : methodVal(decls.nonTest), i, fieldToo === true);
-          }
-        }
-        if (info.decl?.fact.form === "interface") {
-          // An interface holds exactly the methods it declares and embeds,
-          // each dispatched at run time — and any name at all when its set
-          // is not known in full.
-          const set = interfaceNames(named);
-          for (const name of set.names) {
-            steps += 1;
-            hit(name, INTERFACE_METHOD, i);
-          }
-          if (set.open) wildcards.push({ holder: i, val: INTERFACE_METHOD });
+        const own = ownSize(named, info);
+        if (depth === 0) wide = retainedPerMember * own;
+        // One step for the type and one for each member it declares.
+        steps += 1 + own;
+        // An interface whose set is not known in full answers to any name; so
+        // does a defined type over a type outside the tree.
+        if (info.decl?.fact.form === "interface" && interfaceSet(named).open) {
+          wildcards.push({ index: i, val: INTERFACE_METHOD });
         }
         const wildcard = wildcardOf(info);
-        if (wildcard) wildcards.push({ holder: i, val: wildcard });
-        if (steps > typeStepBudget) return { ...done(UNKNOWN), names: new Map(), overBudget: true };
+        if (wildcard) wildcards.push({ index: i, val: wildcard });
+        if (steps > typeStepBudget) return overBudgetTable("steps");
       }
-      for (const [name, h] of hits) {
-        if (names.has(name)) continue;
-        // Two types of the level that both DECLARE the name are a tie. A
-        // type that answers to any name (its members are not known) beside
-        // the one that declares it is not a tie but an open question: in Go
-        // that compiles only one of them has it, and which is not known here.
-        let open = 0;
-        for (const w of wildcards) if (!h.holders.has(w.holder)) open += 1;
-        names.set(name, h.count > 1 ? AMBIGUOUS : open > 0 ? UNKNOWN : h.val);
-        depths.set(name, depth);
-      }
+      layers.push(level);
+      infoLayers.push(infos);
+      layerCount += level.length;
       // A type of this level that answers to every name ends the search
       // here: a name nobody declares is its member — or, with two such
-      // types, one of theirs, which is not known.
+      // types, one of theirs, which is not known. Nor is it known when
+      // ANOTHER type of the level embeds something: a name that type's
+      // embedded types declare is theirs in Go wherever the one wildcard does
+      // not have it (`struct { Store; Mid }`, `Store` embedding `io.Closer`
+      // and `Mid` a type with a method `Log`: `s.Log()` is that method), and
+      // whether it has it is exactly what is not known.
       if (wildcards.length > 0) {
-        return done(wildcards.length === 1 ? wildcards[0].val : UNKNOWN, {
-          depth,
-          holders: wildcards.map((w) => typeId(level[w.holder])),
-        });
+        const only = wildcards.length === 1 ? wildcards[0] : null;
+        const deeper =
+          only !== null &&
+          infos.some((info, i) => {
+            if (i === only.index) return false;
+            const embeds = embedsOf(info);
+            return embeds.blind || embeds.list.length > 0;
+          });
+        return finish(
+          done(only !== null && !deeper ? only.val : UNKNOWN, {
+            depth,
+            holders: wildcards.map((w) => typeId(level[w.index])),
+            indices: wildcards.map((w) => w.index),
+          }),
+          wide,
+        );
       }
+      // An embedded type this module cannot see into ends it too: nothing
+      // deeper is decided.
+      for (const info of infos) if (embedsOf(info).blind) return finish(done(UNKNOWN), wide);
       const next: ProjectNamed[] = [];
       for (const info of infos) {
-        if (!info.struct || info.struct === "external") continue;
-        for (const field of info.struct.fields) {
-          if (!field.embedded) continue;
-          steps += 1;
-          // An embedded type this module cannot see into may declare any name
-          // at this depth, which would win over anything deeper.
-          if (!field.type) return done(UNKNOWN);
-          const embedded = resolveNamed(field.type, info.struct.file, 0);
-          if (embedded.n !== "project") return done(UNKNOWN);
+        const embeds = embedsOf(info).list;
+        // One step for each embedding followed.
+        steps += embeds.length;
+        for (const embedded of embeds) {
           const key = typeId(embedded);
           if (seen.has(key)) continue;
           seen.add(key);
           next.push(embedded);
+          // Already more layer types than the type may keep in either form:
+          // the rest of a wide level is not read.
+          if (depth < MAX_DEPTH && layerCount + next.length > Math.max(layerBudget, wide)) {
+            return overBudgetTable("retained");
+          }
         }
       }
       level = next;
     }
-    return done(UNKNOWN);
+    return finish(done(UNKNOWN), wide);
   };
 
   /**
-   * The members of a type that DIFFER for a caller built with the `_test.go`
-   * files of `dir`, worked out once per type and directory.
+   * How a type's members are kept, decided from the type alone — never from
+   * what was asked first:
+   *
+   *  - up to {@link GO_TYPE_LAYER_BUDGET} layer types: the layers, and a name
+   *    is looked up by walking them;
+   *  - more, but no more layer types and no more member names than
+   *    {@link GO_TYPE_RETAINED_PER_MEMBER} times what the type declares itself:
+   *    an index of every name as well, so a lookup does not walk a wide layer;
+   *  - otherwise nothing is kept and nothing about the type is decided.
+   */
+  const finish = (table: MemberTable, wide: number): MemberTable => {
+    if (table.layerCount <= layerBudget) return table;
+    if (table.layerCount <= wide) {
+      const names = indexNames(table, wide);
+      if (names) return { ...table, names };
+    }
+    return overBudgetTable("retained");
+  };
+
+  /**
+   * Every member name of a table, by the layers' own rule — or null as soon
+   * as there are more than `limit`.
+   */
+  const indexNames = (table: MemberTable, limit: number): Map<string, MemberHit> | null => {
+    const names = new Map<string, MemberHit>();
+    for (let depth = 0; depth < table.layers.length; depth += 1) {
+      const level = table.layers[depth];
+      const infos = table.infos[depth];
+      // Hits at this depth, per name.
+      const hits = new Map<string, { count: number; val: Val; holder: number; last: number }>();
+      for (let i = 0; i < level.length; i += 1) {
+        for (const name of ownNames(level[i], infos[i])) {
+          // A shallower member still wins.
+          if (names.has(name)) continue;
+          const had = hits.get(name);
+          if (had?.last === i) continue;
+          const val = ownMember(level[i], infos[i], name);
+          if (!val) continue;
+          if (had) {
+            had.count += 1;
+            had.last = i;
+          } else {
+            hits.set(name, { count: 1, val, holder: i, last: i });
+            if (names.size + hits.size > limit) return null;
+          }
+        }
+      }
+      for (const [name, h] of hits) {
+        names.set(name, { val: decideAt(table, depth, h.count, h.holder, h.val), depth });
+      }
+    }
+    return names;
+  };
+
+  /** One name looked up through the layers: decided at the shallowest depth that declares it. */
+  const walkLayers = (table: MemberTable, name: string): MemberHit | null => {
+    for (let depth = 0; depth < table.layers.length; depth += 1) {
+      const level = table.layers[depth];
+      const infos = table.infos[depth];
+      let count = 0;
+      let holder = -1;
+      let val: Val = UNKNOWN;
+      for (let i = 0; i < level.length; i += 1) {
+        const own = ownMember(level[i], infos[i], name);
+        if (!own) continue;
+        if (count === 0) {
+          val = own;
+          holder = i;
+        }
+        count += 1;
+      }
+      if (count > 0) return { val: decideAt(table, depth, count, holder, val), depth };
+    }
+    return null;
+  };
+
+  /** What `name` selects from a table and at which depth; null when no type of its layers declares it. */
+  const memberHit = (table: MemberTable, name: string): MemberHit | null => {
+    if (table.names) return table.names.get(name) ?? null;
+    const asked = (table.asked ??= new Map<string, MemberHit | null>());
+    const known = asked.get(name);
+    if (known !== undefined) return known;
+    const hit = walkLayers(table, name);
+    asked.set(name, hit);
+    kept.askedNames += 1;
+    return hit;
+  };
+
+  const layerOf = (table: MemberTable): Map<string, number> => {
+    if (table.layerOf) return table.layerOf;
+    const out = new Map<string, number>();
+    for (let depth = 0; depth < table.layers.length; depth += 1) {
+      for (const named of table.layers[depth]) {
+        const id = typeId(named);
+        if (!out.has(id)) out.set(id, depth);
+      }
+    }
+    table.layerOf = out;
+    kept.layerTypes += out.size;
+    return out;
+  };
+
+  /**
+   * What `name` selects for a caller built with the `_test.go` files of `dir`,
+   * where that DIFFERS from what everybody else sees — else null.
    *
    * The types a promotion search goes through do not depend on who asks — a
-   * type that ships cannot embed a test-only one — so the table above stands,
-   * and a test file changes it in one way only: the types of ITS directory
-   * gain the methods their `_test.go` files declare. Such a method is the
-   * member when it sits shallower than what the table holds for that name; at
-   * the same depth the two collide; deeper, it loses. That costs the methods
-   * of the directory's types — every one of which the search that built the
-   * table already counted against its budget — not another search: a type
-   * reached from a thousand test directories is still searched once.
+   * type that ships cannot embed a test-only one — so the layers stand, and a
+   * test file changes them in one way only: the types of ITS directory gain
+   * the methods their `_test.go` files declare. Such a method is the member
+   * when it sits shallower than what the layers hold for that name; at the
+   * same depth the two collide; deeper, it loses.
+   *
+   * Nothing is kept for it. The receivers a directory's test files declare a
+   * method of that name on ({@link testMethods}) are each placed in the layers
+   * by one lookup — or, where the layers are fewer than they are, the layers
+   * are read instead. Either way a type reached from a thousand test
+   * directories is still searched once.
    */
-  const viewMembers = (table: MemberTable, dir: string): Map<string, Val> => {
-    const views = (table.views ??= new Map());
-    const known = views.get(dir);
-    if (known) return known;
-    const gains = new Map<
-      string,
-      { depth: number; count: number; decls: Decl<GoFuncFact>[]; holder: string }
-    >();
-    for (const { named, depth } of table.byDir.get(dir) ?? []) {
-      for (const [name, decls] of named.pkg.methods.get(named.name) ?? []) {
-        if (decls.all.length === decls.nonTest.length) continue;
-        const had = gains.get(name);
-        if (!had || depth < had.depth) {
-          gains.set(name, {
-            depth,
-            count: 1,
-            decls: decls.all,
-            holder: typeId(named),
-          });
-        } else if (depth === had.depth) had.count += 1;
+  const viewMember = (table: MemberTable, dir: string, name: string): Val | null => {
+    const declared = testMethods.get(dir)?.get(name);
+    if (!declared) return null;
+    const gain = { depth: -1, count: 0, decls: [] as Decl<GoFuncFact>[], holder: "" };
+    const consider = (pkg: Pkg, receiver: string, depth: number): void => {
+      const decls = pkg.methods.get(receiver)?.get(name);
+      if (!decls || decls.all.length === decls.nonTest.length) return;
+      if (gain.count === 0 || depth < gain.depth) {
+        gain.depth = depth;
+        gain.count = 1;
+        gain.decls = decls.all;
+        gain.holder = `${pkg.id}\u0000${receiver}`;
+      } else if (depth === gain.depth) gain.count += 1;
+    };
+    if (declared.size <= table.layerCount) {
+      const depths = layerOf(table);
+      for (const [id, { pkg, receiver }] of declared) {
+        const depth = depths.get(id);
+        if (depth !== undefined) consider(pkg, receiver, depth);
+      }
+    } else {
+      const seen = new Set<string>();
+      for (let depth = 0; depth < table.layers.length; depth += 1) {
+        for (const named of table.layers[depth]) {
+          if (named.pkg.dir !== dir) continue;
+          const id = typeId(named);
+          if (seen.has(id)) continue;
+          seen.add(id);
+          consider(named.pkg, named.name, depth);
+        }
       }
     }
-    const out = new Map<string, Val>();
-    for (const [name, gain] of gains) {
-      const held = table.depths.get(name);
-      // A shallower member still wins.
-      if (held !== undefined && held < gain.depth) continue;
-      // The same depth already holds the name: the type's own twin, a field
-      // of that name, or another embedded type's member.
-      if (held === gain.depth) {
-        out.set(name, AMBIGUOUS);
-        continue;
-      }
-      // Shallower than anything held. Two test-file declarations at that
-      // depth are a tie; ANOTHER type there that answers to any name leaves
-      // it open.
-      const others =
-        table.wildcardLevel?.depth === gain.depth
-          ? table.wildcardLevel.holders.filter((h) => h !== gain.holder).length
-          : 0;
-      out.set(name, gain.count > 1 ? AMBIGUOUS : others > 0 ? UNKNOWN : methodVal(gain.decls));
-    }
-    views.set(dir, out);
-    return out;
+    if (gain.count === 0) return null;
+    const held = memberHit(table, name)?.depth;
+    // A shallower member still wins.
+    if (held !== undefined && held < gain.depth) return null;
+    // The same depth already holds the name: the type's own twin, a field
+    // of that name, or another embedded type's member.
+    if (held === gain.depth) return AMBIGUOUS;
+    // Shallower than anything held. Two test-file declarations at that
+    // depth are a tie; ANOTHER type there that answers to any name leaves
+    // it open.
+    const others =
+      table.wildcardLevel?.depth === gain.depth
+        ? table.wildcardLevel.holders.filter((h) => h !== gain.holder).length
+        : 0;
+    return gain.count > 1 ? AMBIGUOUS : others > 0 ? UNKNOWN : methodVal(gain.decls);
   };
 
   /**
@@ -1508,11 +1920,11 @@ export function createGoResolver(
       budgetHit = true;
       return UNKNOWN;
     }
-    if (view !== null && table.byDir.has(view)) {
-      const differs = viewMembers(table, view).get(name);
+    if (view !== null) {
+      const differs = viewMember(table, view, name);
       if (differs) return differs;
     }
-    return table.names.get(name) ?? table.rest;
+    return memberHit(table, name)?.val ?? table.rest;
   };
   const packageMember = (
     target: ImportTarget,
@@ -1838,6 +2250,12 @@ export function createGoResolver(
   };
 
   return {
+    retained(): GoResolverRetained {
+      return {
+        ...kept,
+        entries: kept.layerTypes + kept.indexedNames + kept.askedNames + kept.interfaceLayers,
+      };
+    },
     resolveCall(filePath: string, callee: GoExpr): GoCallVerdict {
       const file = ctxByFile.get(filePath);
       if (!file) return { kind: "unknown" };

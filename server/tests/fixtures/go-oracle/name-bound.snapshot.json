@@ -1,8 +1,8 @@
 {
   "modules": {
-    "calls": 604,
-    "boundByName": 23,
-    "boundByNameAgreeing": 7,
+    "calls": 624,
+    "boundByName": 26,
+    "boundByNameAgreeing": 10,
     "boundByName_list": [
       "app/blocks/blocks.go:320:Do -> app/blocks/blocks.go::P::Do [type checker: app/blocks/blocks.go::Q::Do]",
       "app/closures/closures.go:119:Run -> app/closures/closures.go::A::Run [type checker: interface (project)]",
@@ -25,20 +25,23 @@
       "app/generics/more.go:35:Do -> app/generics/more.go::U::Do [agrees]",
       "app/service/service.go:59:Run -> app/service/service.go::Thing::Run [type checker: interface (project)]",
       "app/service/service.go:84:Run -> app/service/service.go::Thing::Run [type checker: app/model/model.go::Thing::Run]",
+      "app/values/factory.go:19:Save -> app/values/factory.go::Made::Save [agrees]",
+      "app/values/factory.go:23:Save -> app/values/factory.go::Made::Save [agrees]",
+      "app/values/factory.go:28:Save -> app/values/factory.go::Made::Save [agrees]",
       "app/values/values.go:37:Run -> app/values/values.go::Run [type checker: app/model/model.go::Thing::Run]",
       "app/values/values.go:79:Run -> app/values/values.go::Run [type checker: app/model/model.go::Thing::Run]"
     ]
   },
   "legacy-package-root": {
-    "calls": 9,
+    "calls": 10,
     "boundByName": 1,
     "boundByNameAgreeing": 1,
     "boundByName_list": [
-      "cmd/app/main.go:16:Save -> mystore/mystore.go::Save [agrees]"
+      "cmd/app/main.go:17:Save -> mystore/mystore.go::Save [agrees]"
     ]
   },
   "legacy-gopath-root": {
-    "calls": 9,
+    "calls": 10,
     "boundByName": 0,
     "boundByNameAgreeing": 0,
     "boundByName_list": []

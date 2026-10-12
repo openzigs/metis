@@ -1,12 +1,12 @@
 {
   "modules": {
-    "calls": 604,
+    "calls": 624,
     "otherForm": 16,
-    "boundAgreeing": 398,
-    "decidedAgreeing": 146,
+    "boundAgreeing": 407,
+    "decidedAgreeing": 153,
     "allowed": 4,
-    "undecided": 56,
-    "resolvable": 428,
+    "undecided": 60,
+    "resolvable": 441,
     "unbound": [
       "app/blocks/blocks.go:320:Do -> app/blocks/blocks.go::Q::Do [unknown]",
       "app/blocks/more.go:78:Do -> app/blocks/blocks.go::Q::Do [unknown]",
@@ -32,7 +32,11 @@
       "app/platform/plat_linux.go:8:shared -> app/platform/shared_unix.go::shared [unbound ambiguous]",
       "app/platform/plat_other.go:10:shared -> app/platform/shared_unix.go::shared [unbound ambiguous]",
       "app/platform/plat_windows.go:8:shared -> app/platform/shared_windows.go::shared [unbound ambiguous]",
+      "app/platform/use.go:21:Name -> app/platform/dev.go::Dev::Name [unknown]",
       "app/service/service.go:84:Run -> app/model/model.go::Thing::Run [unknown]",
+      "app/values/factory.go:19:Save -> app/values/factory.go::Made::Save [unknown]",
+      "app/values/factory.go:23:Save -> app/values/factory.go::Made::Save [unknown]",
+      "app/values/factory.go:28:Save -> app/values/factory.go::Made::Save [unknown]",
       "app/values/more.go:46:Run -> app/model/model.go::Thing::Run [unknown]",
       "app/values/more.go:53:String -> app/values/values.go::Celsius::String [unknown]",
       "app/values/values.go:37:Run -> app/model/model.go::Thing::Run [unknown]",
@@ -41,27 +45,31 @@
     ]
   },
   "legacy-package-root": {
-    "calls": 9,
+    "calls": 10,
     "otherForm": 0,
-    "boundAgreeing": 4,
+    "boundAgreeing": 1,
     "decidedAgreeing": 0,
     "allowed": 0,
-    "undecided": 5,
-    "resolvable": 7,
+    "undecided": 9,
+    "resolvable": 8,
     "unbound": [
-      "cmd/app/main.go:14:Save -> store/store.go::Save [unknown]",
-      "cmd/app/main.go:16:Save -> mystore/mystore.go::Save [unknown]",
-      "cmd/app/main.go:22:Open -> store/store.go::Conn::Open [unknown]"
+      "cmd/app/main.go:15:Save -> store/store.go::Save [unknown]",
+      "cmd/app/main.go:16:Save -> b/store/store.go::Save [unknown]",
+      "cmd/app/main.go:17:Save -> mystore/mystore.go::Save [unknown]",
+      "cmd/app/main.go:18:Save -> zx/ab/store/store.go::Save [unknown]",
+      "cmd/app/main.go:23:Open -> store/store.go::Conn::Open [unknown]",
+      "cmd/app/main.go:25:Open -> b/store/store.go::Conn::Open [unknown]",
+      "cmd/app/main.go:26:Open -> internal/storage/storage.go::Open [unknown]"
     ]
   },
   "legacy-gopath-root": {
-    "calls": 9,
+    "calls": 10,
     "otherForm": 0,
-    "boundAgreeing": 7,
+    "boundAgreeing": 8,
     "decidedAgreeing": 1,
     "allowed": 0,
     "undecided": 1,
-    "resolvable": 7,
+    "resolvable": 8,
     "unbound": []
   }
 }

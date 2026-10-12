@@ -1095,21 +1095,29 @@ func main() { db.Open() }
     expect(v.get("svc/main.go:Open")).toBe("package svc/internal/db/db.go::Open");
   });
 
-  it("falls back to the longest directory the import path ends in when there is no go.mod", () => {
-    const v = verdicts(
-      {
-        "storage/s.go": "package storage\n\nfunc Short() {}\n",
-        "internal/storage/s.go": "package storage\n\nfunc Long() {}\n",
-        "cmd/main.go": `package main
+  it("falls back to the directory the import path ends in when there is no go.mod — if there is only one", () => {
+    const main = `package main
 
 import "example.com/app/internal/storage"
 
 func main() { storage.Long() }
-`,
+`;
+    const one = verdicts(
+      { "internal/storage/s.go": "package storage\n\nfunc Long() {}\n", "cmd/main.go": main },
+      [],
+    );
+    expect(one.get("cmd/main.go:Long")).toBe("package internal/storage/s.go::Long");
+    // Beside `storage/`, which the path ends in as well, it is one of two
+    // readings of the layout and neither is bound (PR #1104 review cycle 4).
+    const two = verdicts(
+      {
+        "storage/s.go": "package storage\n\nfunc Short() {}\n",
+        "internal/storage/s.go": "package storage\n\nfunc Long() {}\n",
+        "cmd/main.go": main,
       },
       [],
     );
-    expect(v.get("cmd/main.go:Long")).toBe("package internal/storage/s.go::Long");
+    expect(two.get("cmd/main.go:Long")).toBe("unknown");
   });
 });
 

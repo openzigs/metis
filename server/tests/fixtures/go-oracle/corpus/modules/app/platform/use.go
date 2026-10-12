@@ -15,3 +15,8 @@ func Dial(c Conn) {
 }
 
 func always() {}
+
+// Hooked calls the result of a value whose type two files declare.
+func Hooked(h Hook) {
+	h().Name()
+}

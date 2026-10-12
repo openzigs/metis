@@ -10,3 +10,6 @@ type Conn struct{}
 
 // Open is declared on both twins of Conn.
 func (Conn) Open() {}
+
+// Hook is a func type with a twin behind the other constraint.
+type Hook func() *Dev

@@ -454,14 +454,60 @@ describe("with no go.mod, an import is matched by whole path SEGMENTS, never by 
     );
   });
 
-  it("…the LONGEST such directory, when two end it", () => {
+  // PR #1104, review cycle 4. The LONGEST such directory used to be bound. But
+  // two directories the path ends in are two readings of the layout: with the
+  // tree root as the module `example.org/a`, Go means `b/store`; with it as a
+  // GOPATH's `src/example.org`, it means `a/b/store`. The type checker shows
+  // the shorter one right in the oracle corpus (`legacy-package-root`,
+  // `example.org/legacy/internal/storage`), so the longer one was a guess.
+  it("two directories the path ends in are two readings of the layout: undecided", () => {
     expect(
       at({
         "b/store/s.go": STORE,
         "a/b/store/s.go": STORE,
         "cmd/main.go": main('"example.org/a/b/store"'),
       }),
-    ).toBe("package a/b/store/s.go::Save");
+    ).toBe("unknown");
+  });
+
+  it("the reviewer's tree: `internal/storage` beside `app/internal/storage`", () => {
+    const tree = (dirs: string[]): GoTree => ({
+      ...Object.fromEntries(dirs.map((d) => [`${d}/s.go`, STORE.replace("store", "storage")])),
+      "cmd/main.go":
+        'package main\n\nimport "example.org/app/internal/storage"\n\n' +
+        "func main() {\n\tstorage.Save()\n}\n",
+    });
+    expect(
+      goVerdicts(tree(["internal/storage", "app/internal/storage"]), []).get("cmd/main.go:6:Save"),
+    ).toBe("unknown");
+    // Either directory ALONE is the one reading there is.
+    expect(goVerdicts(tree(["internal/storage"]), []).get("cmd/main.go:6:Save")).toBe(
+      "package internal/storage/s.go::Save",
+    );
+    expect(goVerdicts(tree(["app/internal/storage"]), []).get("cmd/main.go:6:Save")).toBe(
+      "package app/internal/storage/s.go::Save",
+    );
+  });
+
+  it("a ONE-segment directory the path ends in is a second reading too", () => {
+    expect(
+      at({
+        "store/s.go": STORE,
+        "b/store/s.go": STORE,
+        "cmd/main.go": main('"example.org/app/b/store"'),
+      }),
+    ).toBe("unknown");
+  });
+
+  it("three of them are no better than two", () => {
+    expect(
+      at({
+        "store/s.go": STORE,
+        "b/store/s.go": STORE,
+        "a/b/store/s.go": STORE,
+        "cmd/main.go": main('"example.org/a/b/store"'),
+      }),
+    ).toBe("unknown");
   });
 
   it("one segment is not evidence: undecided", () => {
