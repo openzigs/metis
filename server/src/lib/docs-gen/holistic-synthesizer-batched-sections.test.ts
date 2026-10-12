@@ -505,7 +505,14 @@ describe("#855 / #856 — a stop on the batched path ends the run, not a batch",
 
 describe("#741 — a batched section is planned and fitted to its length cap", () => {
   const CAP = 20_000;
-  beforeEach(() => vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", String(CAP)));
+  beforeEach(() => {
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", String(CAP));
+    // #1070 — these pin the caps applied AFTER a section is written, which a
+    // business-requirements document now reaches only as a last resort: with
+    // the topic plan (the default) its sections are budgeted before they are
+    // written. The plan has its own tests (holistic-synthesizer-topic-plan).
+    vi.stubEnv("DOCS_GEN_TOPIC_PLAN", "off");
+  });
 
   it("asks each batch for its share in words, in fewer calls, still reading every module once", async () => {
     const facts = onyourleftSized();

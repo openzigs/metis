@@ -48,7 +48,7 @@ export const MIN_DOCUMENT_MAX_CHARS = 10_000;
 /** Markdown characters per English word, for the budget a prompt states. */
 export const CHARS_PER_WORD = 6;
 /** Room kept for the closing note, so a fitted section stays within its budget. */
-const NOTE_RESERVE = 900;
+export const NOTE_RESERVE = 900;
 /** Most omitted topic names the note lists. */
 const NOTE_TOPIC_LIMIT = 12;
 
@@ -207,7 +207,12 @@ export interface FitResult {
   originalChars: number;
 }
 
-function omissionNote(omitted: readonly string[], maxChars: number): string {
+/**
+ * The closing note of a shortened section: the limit, and the topics left out.
+ * #1070 — exported for a section whose PARTS were fitted to their planned
+ * budgets, which closes with one note for the section rather than one per part.
+ */
+export function omissionNote(omitted: readonly string[], maxChars: number): string {
   const listed = omitted.slice(0, NOTE_TOPIC_LIMIT).map((t) => t.replace(/\s+/g, " ").slice(0, 80));
   const more = omitted.length - listed.length;
   const topics =
@@ -231,13 +236,20 @@ function mergeTopics(first: readonly string[], rest: readonly string[]): string[
  * is always last, and its own note lists both sets.
  *
  * #995 — `measure` is what counts against `maxChars` (see {@link Measure}).
+ *
+ * #1070 — `options.note: false` fits one PART of a section: nothing is appended
+ * and no room is kept for a note, so the result may be empty when not even the
+ * part's first paragraph fits. The caller writes the section's one note from
+ * the `omittedTopics` of its parts.
  */
 export function fitSectionToBudget(
   markdown: string,
   maxChars: number,
   alreadyOmitted: readonly string[] = [],
   measure: Measure = rawLength,
+  options: { note?: boolean } = {},
 ): FitResult {
+  const withNote = options.note !== false;
   const originalChars = measure(markdown);
   if (originalChars <= maxChars) {
     return {
@@ -248,7 +260,7 @@ export function fitSectionToBudget(
     };
   }
   const all = units(markdown);
-  const room = Math.max(0, maxChars - NOTE_RESERVE);
+  const room = Math.max(0, maxChars - (withNote ? NOTE_RESERVE : 0));
   const kept: Unit[] = [];
   let used = 0;
   let cut = all.length;
@@ -279,13 +291,20 @@ export function fitSectionToBudget(
     }
   }
   const assemble = (): { markdown: string; omittedTopics: string[] } => {
-    // Never end on a heading with no content under it.
-    while (kept.length > 1 && kept[kept.length - 1].depth > 0) {
+    // Never end on a heading with no content under it. A section keeps its
+    // first heading whatever happens; a part (#1070) with no content left is
+    // empty, since a bare heading would be merged in as a topic of its own.
+    while (kept.length > (withNote ? 1 : 0) && kept[kept.length - 1].depth > 0) {
       kept.pop();
       cut -= 1;
     }
     const dropped = all.slice(Math.max(0, cut));
-    const droppedHeadings = dropped.filter((u) => u.depth > 0);
+    const allHeadings = dropped.filter((u) => u.depth > 0);
+    // A part cut whole lists its topics, not the section heading it opens with.
+    const droppedHeadings =
+      !withNote && cut <= 0 && allHeadings.length > 1 && all[0].depth > 0
+        ? allHeadings.filter((u) => u !== all[0])
+        : allHeadings;
     const level = droppedHeadings.reduce((min, u) => Math.min(min, u.depth), 7);
     const omittedTopics = mergeTopics(
       droppedHeadings.filter((u) => u.depth === level).map(headingText),
@@ -293,7 +312,7 @@ export function fitSectionToBudget(
     );
     const body = kept.map((u) => u.text).join("\n\n");
     return {
-      markdown: `${body}\n\n${omissionNote(omittedTopics, maxChars)}`,
+      markdown: withNote ? `${body}\n\n${omissionNote(omittedTopics, maxChars)}` : body,
       omittedTopics,
     };
   };

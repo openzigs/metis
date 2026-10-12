@@ -300,6 +300,14 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "#741 — the longest a whole generated document's body may be, in markdown characters before its footnote list (default 250000; minimum 10000). When the sections together exceed it, the longest sections are shortened first, at topic boundaries, until it fits; room a shortened section cannot use passes to the others (#995). The #706 run-3 BRD was 2.19 MB; the Architecture document of the same run was 212 KB.",
     sensitive: false,
   },
+  DOCS_GEN_TOPIC_PLAN: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.enum(["on", "off"]),
+    description:
+      "#1070 — whether a business-requirements document is planned before it is written (default on). on: the document budget (DOCS_GEN_DOCUMENT_MAX_CHARS) is shared among the sections and each catalogue section's share among its topics (one per module) before generation, with no model call; a topic that cannot have even a minimum share is left out by priority and listed with the section's omitted topics; each written part is held to its own budget instead of the section being cut at its tail; every section is given the canonical facts sheet (named constants and formulas read from the source) to cite; and the finished document is checked for a value stated differently in two places (an informational note, nothing is changed). off: sections are capped after they are written, as before #1070. Other document types are never planned. Changing it rewrites the document's sections on its next generation.",
+    sensitive: false,
+  },
   DOCS_GEN_PHASE1_CHUNK_INPUT_TOKENS: {
     tier: "tunable",
     valueType: "int",
