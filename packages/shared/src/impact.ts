@@ -34,6 +34,10 @@ export type RequirementCodeMappingSource = (typeof REQUIREMENT_CODE_MAPPING_SOUR
  *   - `dependency` — a downstream dependency reached via the graph.
  *   - `data-writer` — writes a column the change touches (#791): found through
  *                    SQL lineage, not through a call path or a word match.
+ *   - `data-model` — defines the data a new column lands in (#1036): the table's
+ *                    own definition, or a type named for that table.
+ *   - `related`    — retrieved for the request but below the edit-candidate cut
+ *                    (#1036). Listed for review; never a claim that it changes.
  */
 export const IMPACT_AFFECTED_RELATIONS = [
   "direct",
@@ -41,8 +45,49 @@ export const IMPACT_AFFECTED_RELATIONS = [
   "importer",
   "dependency",
   "data-writer",
+  "data-model",
+  "related",
 ] as const;
 export type ImpactAffectedRelation = (typeof IMPACT_AFFECTED_RELATIONS)[number];
+
+// ---- Edit candidates vs blast radius (#1036) --------------------------------
+
+/**
+ * #1036 — the two lists an impact result reports, which are scored differently:
+ *   - `edit-candidate` — code the change probably has to EDIT. Kept small;
+ *     scored on precision AND recall.
+ *   - `blast-radius`   — code to REVIEW because it calls, reads or sits beside
+ *     an edit candidate. Kept wide; scored on recall only.
+ */
+export const IMPACT_SYMBOL_ROLES = ["edit-candidate", "blast-radius"] as const;
+export type ImpactSymbolRole = (typeof IMPACT_SYMBOL_ROLES)[number];
+
+/**
+ * #1036 — the role of one affected symbol. A symbol at `depth` 0 is part of the
+ * seed set and so an edit candidate; anything further out is blast radius. This
+ * is the contract `depth` has always carried ("0 = direct, ≥1 = blast radius").
+ * The relation alone cannot decide it: a lineage writer is an edit candidate for
+ * a data change and only review material for a UI bug.
+ */
+export function impactSymbolRole(symbol: { depth: number }): ImpactSymbolRole {
+  return symbol.depth === 0 ? "edit-candidate" : "blast-radius";
+}
+
+/**
+ * #1036 — the files behind the two lists, in first-seen order. `blastRadiusFiles`
+ * is the WHOLE reviewed surface, so it includes the edit-candidate files: a file
+ * to edit is inside the blast radius by definition, and recall is measured on it.
+ */
+export function impactFileLists(symbols: ReadonlyArray<{ filePath: string; depth: number }>): {
+  editCandidateFiles: string[];
+  blastRadiusFiles: string[];
+} {
+  const edit = new Set<string>();
+  for (const s of symbols) if (impactSymbolRole(s) === "edit-candidate") edit.add(s.filePath);
+  const all = new Set<string>(edit);
+  for (const s of symbols) all.add(s.filePath);
+  return { editCandidateFiles: [...edit], blastRadiusFiles: [...all] };
+}
 
 // ---- Match quality (#961) --------------------------------------------------
 
@@ -398,6 +443,50 @@ export interface ImpactAffectedSymbolView {
 }
 
 /**
+ * #1051 — what became of a proposed column the #791 gate kept out of the
+ * affected tables:
+ *   - `rejected` — "Not proposed": an existing write path may already take the
+ *     value as a parameter, and the column could hold it;
+ *   - `optional` — "Optional: settings persistence": proposed by the model for a
+ *     request an existing write path may cover. Not part of the migration the
+ *     change needs.
+ *   - `unchecked` — different in kind: the column IS among the affected tables,
+ *     and the gate did not rule on it (looking up the write paths failed, the
+ *     SQL lineage named none, the request has no age or date bound, or no named
+ *     write path filters on a time). The reason says which.
+ *
+ * In a request an existing write path covers, a model-proposed column is always
+ * one of the first two: it reaches the affected tables only when the request
+ * itself states the `ALTER TABLE`.
+ */
+export const IMPACT_COLUMN_PROPOSAL_DISPOSITIONS = ["rejected", "optional", "unchecked"] as const;
+export type ImpactColumnProposalDisposition = (typeof IMPACT_COLUMN_PROPOSAL_DISPOSITIONS)[number];
+
+/** #1051 — the existing write path a ruled-out proposal is set against. */
+export interface ImpactColumnProposalWriter {
+  qualifiedName: string;
+  filePath: string;
+  startLine: number | null;
+  endLine: number | null;
+}
+
+/**
+ * #1051 — one proposed column that is NOT part of the affected tables, with why.
+ * `suggestedDdl` is text only and never executed. `reason` is written by the
+ * deterministic gate, not by a model.
+ */
+export interface ImpactColumnProposalView {
+  id: string;
+  tableName: string;
+  columnName: string;
+  columnType: string | null;
+  suggestedDdl: string | null;
+  reason: string;
+  /** Null when the ruling rests on no write path: an unchecked column. */
+  writer: ImpactColumnProposalWriter | null;
+}
+
+/**
  * #962 (epic #960) — a callout that an impacted database table's WRITE path
  * (the code symbols that `writes`/`persists-to` it) is reached by NO test. Purely
  * a QA-handoff signal for a BA: "this mutation is not covered — verify before
@@ -499,6 +588,18 @@ export interface ImpactItemView {
    */
   affectedTests: ImpactAffectedSymbolView[];
   /**
+   * #1036 — the production files the change probably has to EDIT: the files of the
+   * `edit-candidate` symbols in {@link affectedSymbols} (see
+   * {@link impactSymbolRole}). Small and precise; the list to score on precision
+   * and recall.
+   */
+  editCandidateFiles: string[];
+  /**
+   * #1036 — every production file in the result, edit candidates first. Wide by
+   * design; the list to score on recall only.
+   */
+  blastRadiusFiles: string[];
+  /**
    * #962 (epic #960) — impacted tables whose WRITE path (the symbols that
    * `writes`/`persists-to` them) is reached by no test. A deterministic
    * QA-handoff callout; empty when every written table has a covering test, when
@@ -518,6 +619,24 @@ export interface ImpactItemView {
    * them (recall safety). Empty when the filter did not run.
    */
   affectedTablesSecondary: ImpactAffectedTableView[];
+  /**
+   * #1051 — "Not proposed": columns the model proposed that an existing write
+   * path already covers (#791), each with that writer and the reason. Never in
+   * {@link affectedTables}. Empty for a run stored before #1051.
+   */
+  droppedColumnProposals: ImpactColumnProposalView[];
+  /**
+   * #1051 — "Optional: settings persistence": proposed columns that would only
+   * remember a preferred value (#791). Never in {@link affectedTables}, so not
+   * part of the migration the change needs. Empty for a run stored before #1051.
+   */
+  optionalColumnProposals: ImpactColumnProposalView[];
+  /**
+   * #791 — "Proposed, not checked": columns that ARE in {@link affectedTables}
+   * and that the gate did not rule on, each with the reason. A marker, not a second copy of the proposal: treat the matching
+   * `add-column` row as unverified. Empty for a run stored before this field.
+   */
+  uncheckedColumnProposals: ImpactColumnProposalView[];
   /**
    * Issue #966 (Epic #960) — accumulated BA feedback on this item's affected
    * tables (both the primary and secondary buckets share this one list; a

@@ -63,6 +63,11 @@ export interface HybridSearchOptions {
   symbolKind?: string;
   /** Weight configuration. */
   weights?: SearchWeights;
+  /**
+   * #1036 — called once per search that reaches fusion, with which channels
+   * answered. Not called for a project with no symbols (nothing was searched).
+   */
+  onRetrievalMode?: (mode: "hybrid" | "bm25-only") => void;
 }
 
 export interface SearchWeights {
@@ -446,10 +451,14 @@ export function tokenizeCode(text: string): string[] {
  * `tokenizeCode(tokenizeCodeRoots(t).join(" "))` equals `tokenizeCode(t)`.
  */
 export function tokenizeCodeRoots(text: string): string[] {
-  // Split camelCase/PascalCase before lowercasing
+  // Split camelCase/PascalCase before lowercasing. The acronym split
+  // (`HTTPServer` → `HTTP Server`) is a lookahead over ONE capital: the earlier
+  // `/([A-Z]+)([A-Z][a-z])/g` produced the same splits and rescanned a run of
+  // capitals from each of its positions — 19 s on a 200 KB upper-case run (PR
+  // #1090 review 2). Equality of the two is asserted in `hybrid-search.test.ts`.
   const expanded = text
     .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
+    .replace(/([A-Z])(?=[A-Z][a-z])/g, "$1 ");
   return expanded
     .toLowerCase()
     .replace(/[^a-z0-9_]/g, " ")
@@ -504,6 +513,15 @@ const sharedBm25 = new WeakMap<
 
 /** Distinct `fileGlob`/`symbolKind` variants kept per symbol array (oldest evicted). */
 const MAX_SHARED_FILTER_VARIANTS = 8;
+
+/**
+ * #1036 — which channels answered one search: `hybrid` when the vector channel
+ * returned at least one hit, `bm25-only` when it returned none (the project's
+ * symbols are not embedded under the active model yet, or the embed / vector
+ * search faulted) or was weighted out. The fallback is sound and silent in the
+ * ranking, so a caller that compares runs asks for this.
+ */
+export type RetrievalMode = "hybrid" | "bm25-only";
 
 export class HybridCodeSearch {
   private readonly lexical: LexicalConfig;
@@ -752,6 +770,8 @@ export class HybridCodeSearch {
         snippet: sym.snippet ?? sym.signature,
       });
     }
+
+    opts.onRetrievalMode?.(vectorResults.length > 0 ? "hybrid" : "bm25-only");
 
     log.info("Hybrid search completed", {
       projectId,

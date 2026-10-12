@@ -6,6 +6,7 @@ import {
   DEFAULT_MAX_DOWNSTREAM_DEPTH,
   DIRECT_SCHEMA_HIT_CONFIDENCE,
   DOWNSTREAM_DATA_LAYER_DECAY,
+  entityTypeKeysForTable,
   PrismaSchemaImpactDataSource,
   suggestDdl,
   type SchemaImpactDataSource,
@@ -202,6 +203,43 @@ describe("detectAdditiveColumnIntent (#923)", () => {
     expect(intent!.columnName).toBe("nickname");
     expect(intent!.entity).toBe("account");
     expect(intent!.confidence).toBe("low");
+  });
+
+  it("reads a column the request states as DDL, where its prose defeats both forms (#1036)", () => {
+    // The verbatim "Proposed Solution" + "Database migration" of Miniflux #4336.
+    const text = [
+      "Add a `read_at` TIMESTAMP column to the `entries` table.",
+      "```sql",
+      "ALTER TABLE entries ADD COLUMN read_at TIMESTAMPTZ;",
+      "CREATE INDEX entries_read_at_idx ON entries(read_at);",
+      "```",
+    ].join("\n");
+    expect(detectAdditiveColumnIntent(text)).toEqual({
+      columnName: "read_at",
+      columnType: "TIMESTAMP",
+      entity: "entries",
+      confidence: "medium",
+    });
+  });
+
+  it("takes only identifiers from stated DDL: a schema prefix is dropped, the type is inferred (#1036)", () => {
+    const intent = detectAdditiveColumnIntent(
+      "ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS nickname varchar(40)",
+    );
+    expect(intent).toEqual({
+      columnName: "nickname",
+      columnType: null,
+      entity: "accounts",
+      confidence: "low",
+    });
+  });
+
+  it("does not read ADD CONSTRAINT as a new column (#1036)", () => {
+    expect(
+      detectAdditiveColumnIntent(
+        "ALTER TABLE entries ADD CONSTRAINT entries_feed_fk FOREIGN KEY (feed_id)",
+      ),
+    ).toBeNull();
   });
 
   it("returns null for non-additive requirement text", () => {
@@ -781,6 +819,60 @@ describe("crossToSchema — DAO/mapper sibling expansion (#922)", () => {
     );
     const rows = await crossToSchema(["m-get"], bare, null, null, { expandDaoSiblings: true });
     expect(rows.map((r) => r.tableName)).toEqual(["account"]);
+  });
+});
+
+describe("PrismaSchemaImpactDataSource.getWriterEdgesTo — each edge carries its extractor (#791, PR #1090 review 3)", () => {
+  // `isOrmMappingEdge` reads `source` to tell a Prisma model's mapping edge from
+  // a MyBatis insert. This double returns ONLY the columns the query selects, as
+  // the database does, so dropping `source` from the select or from the mapping
+  // fails here. (The same path runs on real SQLite in
+  // `tests/impact-miniflux-791.sqlite.test.ts`.)
+  const STORED = [
+    { id: "e1", fromSymbolId: "Entry", toSymbolId: "col-1", kind: "persists-to", source: "orm" },
+    {
+      id: "e2",
+      fromSymbolId: "insertEntry",
+      toSymbolId: "col-1",
+      kind: "persists-to",
+      source: "mybatis",
+    },
+    { id: "e3", fromSymbolId: "SetStatus", toSymbolId: "col-1", kind: "writes", source: "sqlglot" },
+    { id: "e4", fromSymbolId: "legacy", toSymbolId: "col-1", kind: "writes", source: null },
+  ];
+  function selectingPrisma() {
+    const findMany = vi.fn(async (args: { select: Record<string, boolean> }) =>
+      STORED.map((row) =>
+        Object.fromEntries(Object.entries(row).filter(([column]) => args.select[column] === true)),
+      ),
+    );
+    return { codeSymbol: { findMany: vi.fn() }, codeEdge: { findMany } };
+  }
+
+  it("returns every edge with the source the row holds, null included", async () => {
+    const prisma = selectingPrisma();
+    const ds = new PrismaSchemaImpactDataSource(prisma as never, "proj-7");
+    expect(await ds.getWriterEdgesTo(["col-1"])).toEqual([
+      { fromSymbolId: "Entry", toSymbolId: "col-1", kind: "persists-to", source: "orm" },
+      { fromSymbolId: "insertEntry", toSymbolId: "col-1", kind: "persists-to", source: "mybatis" },
+      { fromSymbolId: "SetStatus", toSymbolId: "col-1", kind: "writes", source: "sqlglot" },
+      { fromSymbolId: "legacy", toSymbolId: "col-1", kind: "writes", source: null },
+    ]);
+    expect(prisma.codeEdge.findMany).toHaveBeenCalledWith({
+      where: {
+        projectId: "proj-7",
+        toSymbolId: { in: ["col-1"] },
+        kind: { in: ["writes", "persists-to"] },
+      },
+      select: { fromSymbolId: true, toSymbolId: true, kind: true, source: true },
+    });
+  });
+
+  it("asks nothing for no ids", async () => {
+    const prisma = selectingPrisma();
+    const ds = new PrismaSchemaImpactDataSource(prisma as never, "proj-7");
+    expect(await ds.getWriterEdgesTo([])).toEqual([]);
+    expect(prisma.codeEdge.findMany).not.toHaveBeenCalled();
   });
 });
 
@@ -1372,5 +1464,94 @@ describe("PrismaSchemaImpactDataSource — downstream call edges (#928)", () => 
         }),
       }),
     );
+  });
+});
+
+describe("entityTypeKeysForTable (#1036)", () => {
+  it("gives the table name and its singular, separators removed", () => {
+    expect(entityTypeKeysForTable("entries")).toEqual(["entries", "entry"]);
+    expect(entityTypeKeysForTable("feeds")).toEqual(["feeds", "feed"]);
+    expect(entityTypeKeysForTable("user_sessions")).toEqual(["usersessions", "usersession"]);
+    expect(entityTypeKeysForTable("statuses")).toEqual(["statuses", "status"]);
+  });
+
+  it("drops a schema prefix, and gives one key for an already-singular table", () => {
+    expect(entityTypeKeysForTable("public.API_Keys")).toEqual(["apikeys", "apikey"]);
+    expect(entityTypeKeysForTable("account")).toEqual(["account"]);
+    expect(entityTypeKeysForTable("address")).toEqual(["address"]);
+  });
+
+  it("is empty for a name with no letters or digits", () => {
+    expect(entityTypeKeysForTable("__")).toEqual([]);
+  });
+});
+
+describe("PrismaSchemaImpactDataSource.getDataModelSymbols (#1036)", () => {
+  const sym = (id: string, kind: string, name: string, filePath: string, language = "go") => ({
+    id,
+    kind,
+    name,
+    qualifiedName: language === "sql" ? name : `${filePath}::${name}`,
+    filePath,
+    startLine: 10,
+    endLine: 20,
+    language,
+  });
+  const tables = [
+    sym("t-entries", "table", "entries", "internal/database/migrations.go", "sql"),
+    sym("t-feeds", "table", "feeds", "internal/database/migrations.go", "sql"),
+    sym("t-live", "table", "entries", "<live-db>", "sql"),
+  ];
+  const types = [
+    sym("model-entry", "class", "Entry", "internal/model/entry.go"),
+    sym("client-entry", "class", "Entry", "client/model.go"),
+    sym("builder", "class", "EntryQueryBuilder", "internal/storage/entry_query_builder.go"),
+    sym("test-entry", "class", "Entry", "internal/model/entry_test.go"),
+    sym("model-feed", "class", "Feed", "internal/model/feed.go"),
+  ];
+  function prismaWith() {
+    const findMany = vi.fn(async (args: { where: { kind: unknown; projectId: string } }) =>
+      args.where.kind === "table" ? tables : types,
+    );
+    return { prisma: { codeSymbol: { findMany }, codeEdge: { findMany: vi.fn() } }, findMany };
+  }
+
+  it("returns where the table is defined and the types named for it", async () => {
+    const { prisma } = prismaWith();
+    const ds = new PrismaSchemaImpactDataSource(prisma as never, "proj-7");
+    const out = await ds.getDataModelSymbols(["entries"]);
+    expect(out.map((s) => s.id)).toEqual(["client-entry", "t-entries", "model-entry"]);
+    // CodeSymbolDetail only — the helper name column is not leaked.
+    expect(out[0]).toEqual({
+      id: "client-entry",
+      kind: "class",
+      qualifiedName: "client/model.go::Entry",
+      filePath: "client/model.go",
+      startLine: 10,
+      endLine: 20,
+      language: "go",
+    });
+  });
+
+  it("leaves out a type that merely contains the word, a test file and a live-db table", async () => {
+    const { prisma } = prismaWith();
+    const ds = new PrismaSchemaImpactDataSource(prisma as never, "proj-7");
+    const ids = (await ds.getDataModelSymbols(["public.entries"])).map((s) => s.id);
+    expect(ids).not.toContain("builder");
+    expect(ids).not.toContain("test-entry");
+    expect(ids).not.toContain("t-live");
+    expect(ids).not.toContain("model-feed");
+  });
+
+  it("scopes both lookups to the project, and asks nothing for no tables", async () => {
+    const { prisma, findMany } = prismaWith();
+    const ds = new PrismaSchemaImpactDataSource(prisma as never, "proj-7");
+    expect(await ds.getDataModelSymbols([])).toEqual([]);
+    expect(findMany).not.toHaveBeenCalled();
+    await ds.getDataModelSymbols(["feeds"]);
+    expect(findMany).toHaveBeenCalledTimes(2);
+    for (const [args] of findMany.mock.calls) {
+      expect(args.where.projectId).toBe("proj-7");
+    }
   });
 });

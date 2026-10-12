@@ -11,6 +11,7 @@
  * seed the multi-project mapping when no LLM is wired.
  */
 import { CHANGE_TYPES } from "@metis/shared";
+import type { ChangeRequest } from "./change-request.js";
 
 export type ChangeType = (typeof CHANGE_TYPES)[number];
 
@@ -25,6 +26,11 @@ export interface ChangedRequirement {
   priorityChanged?: boolean;
   typeChanged?: boolean;
   hasChildren?: boolean;
+  /**
+   * #1036 — the structure this change was read from, when the input was one
+   * issue (`change-request.ts`). Absent for a change the splitter produced.
+   */
+  request?: ChangeRequest;
 }
 
 export interface ChangeExtractor {
@@ -114,11 +120,23 @@ const SUBORDINATING_LABELS = new Set([
   "success criterion",
 ]);
 
+/**
+ * `text` without a trailing `(…)` group and the whitespace after it. By index:
+ * the pattern this replaces, `/\([^)]*\)\s*$/`, rescans to the end of the text
+ * from every `(` — 15 s on 200 KB of them (found by `request-regex-fuzz.test.ts`).
+ * Same result: the group opens at the first `(` after the last-but-one `)`.
+ */
+export function stripTrailingParenGroup(text: string): string {
+  const trimmed = text.trimEnd();
+  if (!trimmed.endsWith(")")) return text;
+  const previousClose = trimmed.lastIndexOf(")", trimmed.length - 2);
+  const open = trimmed.indexOf("(", previousClose + 1);
+  return open === -1 ? text : trimmed.slice(0, open);
+}
+
 /** Fold a label to its comparable form: no emphasis, no trailing `(…)`, no colon. */
 function normalizeLabel(text: string): string {
-  return text
-    .replace(/[*_`]/g, "")
-    .replace(/\([^)]*\)\s*$/, "")
+  return stripTrailingParenGroup(text.replace(/[*_`]/g, ""))
     .replace(/:\s*$/, "")
     .replace(/\s+/g, " ")
     .trim()

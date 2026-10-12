@@ -19,7 +19,8 @@
  * column it INSERTs (a mapper-seeded column counts half, UPDATEs only), plus up
  * to 4 points for how closely its UPDATE set matches one the seeded code reaches
  * (Jaccard). Writers under a quarter of the best score are dropped, the rest
- * capped. A synthetic `sql@<line>` origin (a pre-#807 graph) is never named.
+ * capped. A synthetic `sql@<line>` origin (a pre-#807 graph) is never named; a
+ * MyBatis mapper statement (kind `method`, language `sql`) is.
  *
  * Read-only and best-effort: a data source without the optional hooks yields [].
  */
@@ -50,6 +51,12 @@ export interface DataPathWriter {
   confidence: number;
   /** The target columns it writes, `table.column`, sorted. */
   columns: string[];
+  /**
+   * #1036 — true when it writes a column the requirement names as an identifier
+   * ({@link requirementIdentifierColumns}): the request is about this data, so
+   * the writer is code to edit and not only code to review.
+   */
+  namesRequirementColumn: boolean;
 }
 
 export interface ResolveDataPathWritersInput {
@@ -120,6 +127,59 @@ export function requirementNamedColumns(
     .map((c) => c.id);
 }
 
+/**
+ * #1036 — the subset of {@link requirementNamedColumns} the requirement names AS
+ * AN IDENTIFIER: a compound name (`changed_at`, `read_at`), or any name inside a
+ * code span (\`status\`). A bare English word that happens to be a column
+ * (`title`, `description`, `status` in "status changes") still scores a writer,
+ * but is not evidence that the request is about that column — and "this request
+ * is about this data" is what makes a writer an edit candidate.
+ */
+export function requirementIdentifierColumns(
+  requirementText: string,
+  columns: ReadonlyArray<{ id: string; name: string }>,
+): string[] {
+  const spans = (requirementText.match(/`[^`\n]+`/g) ?? []).join(" ").toLowerCase();
+  const inSpans = new Set(spans.match(/[a-z0-9_]+/g) ?? []);
+  const named = new Set(requirementNamedColumns(requirementText, columns));
+  return columns
+    .filter((c) => named.has(c.id))
+    .filter((c) => c.name.includes("_") || inSpans.has(c.name.toLowerCase()))
+    .map((c) => c.id);
+}
+
+/**
+ * True for a synthetic statement origin — `path::sql@412`, `path::exec@7`,
+ * `path::procsql@30` — which a pre-#807 graph (or SQL outside any function)
+ * records in place of the enclosing function. It names a line, not code, so it
+ * is never listed as a writer.
+ *
+ * This used to be `language !== "sql"`, which also dropped every MyBatis mapper
+ * statement: those are stored as kind `method`, language `sql`, under their own
+ * statement id in the mapper XML, and they ARE the code that writes the data.
+ */
+export function isSyntheticSqlOrigin(qualifiedName: string): boolean {
+  return /(?:^|::)[a-z]{2,12}@\d{1,9}$/.test(qualifiedName);
+}
+
+/**
+ * True for an ORM MAPPING edge: the `persists-to` edge `orm-extractor.ts` records
+ * from a Prisma `model` or a JPA `@Entity` to its table and to each mapped
+ * column. The declaration says where a field is stored; it writes nothing, so
+ * the symbol it starts at is not a write path.
+ *
+ * That symbol is stored exactly like a MyBatis statement or a JPA `@Query`
+ * method (`createOriginSymbol`: kind `method`, language `sql`), so the symbol
+ * cannot tell them apart and the edge has to: a MyBatis `<insert>` also
+ * `persists-to`, from source `mybatis`; a JPA `@Query` is source `orm` too, and
+ * only ever `reads` or `writes`. With the old `language !== "sql"` filter gone,
+ * every requirement naming a column of a Prisma or JPA project listed the
+ * entity itself as a lineage writer (PR #1090 review 2).
+ */
+export function isOrmMappingEdge(edge: { kind: string; source?: string | null }): boolean {
+  return edge.kind === "persists-to" && edge.source === "orm";
+}
+
 export async function resolveDataPathWriters(
   input: ResolveDataPathWritersInput,
 ): Promise<DataPathWriter[]> {
@@ -144,6 +204,7 @@ export async function resolveDataPathWriters(
   const named = new Map<string, number>();
   for (const id of input.seedIds) if (columnById.has(id)) named.set(id, SEEDED_COLUMN_WEIGHT);
   for (const id of requirementNamedColumns(input.requirementText, columns)) named.set(id, 1);
+  const identifierNamed = new Set(requirementIdentifierColumns(input.requirementText, columns));
 
   // 3 — what the seeded code itself writes: each reached writer's UPDATE set.
   const reached = await resolveDownstreamDataLayer(input.seedIds, ds, DEFAULT_MAX_DOWNSTREAM_DEPTH);
@@ -157,13 +218,16 @@ export async function resolveDataPathWriters(
 
   const points = new Map<string, number>();
   const written = new Map<string, Set<string>>();
+  const writesNamedColumn = new Set<string>();
   const candidates = new Set<string>();
   for (const e of await ds.getWriterEdgesTo([...lookup])) {
+    if (isOrmMappingEdge(e)) continue;
     candidates.add(e.fromSymbolId);
     const weight = named.get(e.toSymbolId);
     const p = WRITE_POINTS[e.kind];
     if (weight === undefined || p === undefined) continue;
     if (weight < 1 && e.kind !== "writes") continue;
+    if (identifierNamed.has(e.toSymbolId)) writesNamedColumn.add(e.fromSymbolId);
     const cols = written.get(e.fromSymbolId) ?? new Set<string>();
     if (cols.has(e.toSymbolId)) continue;
     cols.add(e.toSymbolId);
@@ -191,7 +255,7 @@ export async function resolveDataPathWriters(
   if (points.size === 0) return [];
 
   const details = (await ds.getCodeSymbolDetails([...points.keys()])).filter(
-    (d) => d.language !== "sql" && (d.kind === "function" || d.kind === "method"),
+    (d) => (d.kind === "function" || d.kind === "method") && !isSyntheticSqlOrigin(d.qualifiedName),
   );
   const scored = details.map((d) => ({ d, p: points.get(d.id) ?? 0 }));
   const top = Math.max(0, ...scored.map((s) => s.p));
@@ -210,6 +274,7 @@ export async function resolveDataPathWriters(
     columns: [...(written.get(d.id) ?? [])]
       .map((id) => columnById.get(id)?.qualifiedName ?? id)
       .sort(),
+    namesRequirementColumn: writesNamedColumn.has(d.id),
   }));
 }
 
@@ -253,16 +318,30 @@ export async function addDataPathWriters<T extends DataPathAffectedSymbol>(
   symbols: T[],
   input: AddDataPathWritersInput,
 ): Promise<Array<T | DataPathAffectedSymbol>> {
+  return (await expandDataPathWriters(symbols, input)).symbols;
+}
+
+/**
+ * {@link addDataPathWriters}, also returning EVERY writer the data names — the
+ * ones already in `symbols` included. A writer the seeding found first is still a
+ * writer: #1036 needs it to decide which writers are edit candidates, and #791
+ * needs it to decide which proposed columns an existing write path covers.
+ */
+export async function expandDataPathWriters<T extends DataPathAffectedSymbol>(
+  symbols: T[],
+  input: AddDataPathWritersInput,
+): Promise<{ symbols: Array<T | DataPathAffectedSymbol>; writers: DataPathWriter[] }> {
   const present = new Set(symbols.map((s) => s.codeSymbolId).filter(Boolean) as string[]);
-  const writers = await resolveDataPathWriters({
+  const allWriters = await resolveDataPathWriters({
     requirementText: input.requirementText,
     seedIds: input.seedIds,
     primaryTables: input.primaryTables,
     dataSource: input.dataSource,
-    excludeIds: present,
+    excludeIds: new Set(),
     maxWriters: input.maxWriters,
   });
-  if (writers.length === 0) return symbols;
+  const writers = allWriters.filter((w) => !present.has(w.id));
+  if (writers.length === 0) return { symbols, writers: allWriters };
 
   const added: DataPathAffectedSymbol[] = writers.map((w) => ({
     codeSymbolId: w.id,
@@ -302,13 +381,19 @@ export async function addDataPathWriters<T extends DataPathAffectedSymbol>(
     .slice(0, input.maxCallers ?? DEFAULT_MAX_WRITER_CALLERS);
   added.push(...callers);
 
-  return [...symbols, ...added].sort((a, b) => a.depth - b.depth || b.confidence - a.confidence);
+  return {
+    symbols: [...symbols, ...added].sort(
+      (a, b) => a.depth - b.depth || b.confidence - a.confidence,
+    ),
+    writers: allWriters,
+  };
 }
 
 /**
- * Drop the direct schema seeds (a `table` / `column` the mapper matched by
- * name) whose table the relevance filter put only in the secondary bucket. Code
- * seeds and every non-direct row are kept.
+ * Drop the schema seeds (a `table` / `column` the mapper matched by name, or —
+ * since #1036 — one the hybrid seeding returned among its best hits, listed as
+ * `related`) whose table the relevance filter put only in the secondary bucket.
+ * Code symbols and every graph-walk row are kept.
  */
 export async function pruneTangentialSchemaSeeds<T extends DataPathAffectedSymbol>(
   symbols: T[],
@@ -319,8 +404,9 @@ export async function pruneTangentialSchemaSeeds<T extends DataPathAffectedSymbo
   const kept = new Set(primary.map((t) => t.tableName));
   const tangential = new Set(secondary.map((t) => t.tableName).filter((t) => !kept.has(t)));
   if (tangential.size === 0) return symbols;
+  const isSeed = (s: DataPathAffectedSymbol) => s.relation === "direct" || s.relation === "related";
   const directIds = symbols
-    .filter((s) => s.relation === "direct" && s.codeSymbolId)
+    .filter((s) => isSeed(s) && s.codeSymbolId)
     .map((s) => s.codeSymbolId as string);
   const drop = new Set<string>();
   for (const sym of await dataSource.getSchemaSymbolsByIds(directIds)) {
@@ -333,7 +419,165 @@ export async function pruneTangentialSchemaSeeds<T extends DataPathAffectedSymbo
   }
   return drop.size === 0
     ? symbols
-    : symbols.filter(
-        (s) => !(s.relation === "direct" && s.codeSymbolId && drop.has(s.codeSymbolId)),
-      );
+    : symbols.filter((s) => !(isSeed(s) && s.codeSymbolId && drop.has(s.codeSymbolId)));
+}
+
+// ── #791 — what each writer DOES: its SQL, its parameters, the columns it filters on ──
+
+/**
+ * A lineage writer described well enough to decide what it already covers. The
+ * #1045 check compared a proposed column NAME with the writer NAME, and regressed
+ * 3 runs in 3 as soon as the model named its column `mark_read_delay` instead of
+ * `mark_read_older_than_days`. What a writer covers is what it does: it writes
+ * these tables, it filters on these columns, it takes these arguments.
+ */
+export interface DataPathWriterProfile extends DataPathWriter {
+  /** Every table it UPDATEs or INSERTs into, sorted. */
+  writeTables: string[];
+  /**
+   * The columns it READS on a table it also writes — the WHERE of an UPDATE or a
+   * DELETE (`published_at` in `UPDATE entries … WHERE published_at < $4`). The
+   * lineage records them as plain `reads`; a read of the written table is the
+   * predicate. `table.column`, sorted.
+   */
+  predicateColumns: string[];
+  /** The columns it reads on tables it does not write. `table.column`, sorted. */
+  readColumns: string[];
+  /** The declaration line, when the symbol's text is stored; else null. */
+  signature: string | null;
+  /** The declared parameters, as written (`before time.Time`). Empty when unknown. */
+  parameters: string[];
+  /** The first SQL statement in its body, whitespace-collapsed and capped; else null. */
+  sql: string | null;
+}
+
+/** Longest SQL excerpt kept per writer (it is shown to a model and to a reader). */
+export const MAX_WRITER_SQL_CHARS = 400;
+
+/** `function X in path` — the header line the embedding text opens with. */
+const SYMBOL_TEXT_HEADER =
+  /^(function|method|class|interface|type|struct|module)\s+\S+\s+in\s+\S+$/;
+const SQL_START = /\b(UPDATE\s+\S|INSERT\s+INTO\b|DELETE\s+FROM\b|MERGE\s+INTO\b|SELECT\s)/i;
+
+/** Split `a int, b map[string]int, c func(x, y)` on its top-level commas. */
+function splitTopLevel(list: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of list) {
+    if (ch === "(" || ch === "[" || ch === "{" || ch === "<") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}" || ch === ">") depth--;
+    if (ch === "," && depth === 0) {
+      parts.push(current);
+      current = "";
+    } else current += ch;
+  }
+  parts.push(current);
+  return parts.map((part) => part.trim()).filter(Boolean);
+}
+
+/** The text between `open` at `from` and its matching close; null when unbalanced. */
+function balancedGroup(text: string, from: number): { inner: string; end: number } | null {
+  let depth = 0;
+  for (let i = from; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")") {
+      depth--;
+      if (depth === 0) return { inner: text.slice(from + 1, i), end: i };
+    }
+  }
+  return null;
+}
+
+/**
+ * Read a declaration, its parameters and its first SQL statement out of a
+ * symbol's stored text (`CodeSymbolEmbedding.text`: a header line, the
+ * declaration, the body). Best-effort and language-light: a Go receiver
+ * (`func (s *Storage) Name(…)`) is skipped, a `self` / `this` parameter is
+ * dropped, and anything it cannot read comes back empty rather than guessed.
+ */
+export function parseWriterText(text: string): {
+  signature: string | null;
+  parameters: string[];
+  sql: string | null;
+} {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const start = SYMBOL_TEXT_HEADER.test((lines[0] ?? "").trim()) ? 1 : 0;
+  const declAt = lines.findIndex((l, i) => i >= start && l.trim() !== "");
+  if (declAt === -1) return { signature: null, parameters: [], sql: null };
+  // Trimmed first: `\s*[{:]\s*$` on the untrimmed line retries a run of
+  // spaces from each of its positions.
+  const signature = lines[declAt]!.trim().replace(/\s{0,8}[{:]$/, "");
+
+  let from = signature.indexOf("(");
+  // `func (s *Storage) Name(` — the first group is the receiver.
+  if (/^func\s*\(/.test(signature) && from !== -1) {
+    const receiver = balancedGroup(signature, from);
+    from = receiver ? signature.indexOf("(", receiver.end + 1) : -1;
+  }
+  const group = from === -1 ? null : balancedGroup(signature, from);
+  const parameters = group
+    ? splitTopLevel(group.inner).filter((param) => !/^(self|this|cls)\b/.test(param))
+    : [];
+
+  const body = lines.slice(declAt + 1).join("\n");
+  const sqlAt = body.search(SQL_START);
+  let sql: string | null = null;
+  if (sqlAt !== -1) {
+    const rest = body.slice(sqlAt);
+    // A statement in a string literal ends at the closing backtick or quote.
+    const close = rest.search(/[`"']/);
+    sql = (close === -1 ? rest : rest.slice(0, close)).replace(/\s+/g, " ").trim();
+    if (sql.length > MAX_WRITER_SQL_CHARS) sql = `${sql.slice(0, MAX_WRITER_SQL_CHARS - 1)}…`;
+  }
+  return { signature, parameters, sql: sql && sql.length > 0 ? sql : null };
+}
+
+function tableOf(qualifiedColumn: string): string {
+  const dot = qualifiedColumn.lastIndexOf(".");
+  return dot === -1 ? qualifiedColumn : qualifiedColumn.slice(0, dot);
+}
+
+/**
+ * Describe each writer by what it does. One pass over the lineage edges that
+ * start at the writers, plus the stored symbol text when the data source has
+ * it. A writer with no stored text still gets its tables and predicates.
+ */
+export async function profileDataPathWriters(
+  writers: readonly DataPathWriter[],
+  dataSource: DataPathDataSource,
+): Promise<DataPathWriterProfile[]> {
+  if (writers.length === 0) return [];
+  const ids = writers.map((w) => w.id);
+  const edges = await dataSource.getSchemaEdgesFrom(ids);
+  const targets = await dataSource.getSchemaSymbolsByIds([
+    ...new Set(edges.map((e) => e.toSymbolId)),
+  ]);
+  const targetById = new Map(targets.map((t) => [t.id, t]));
+  const textById = new Map(
+    dataSource.getCodeSymbolTexts
+      ? (await dataSource.getCodeSymbolTexts(ids)).map((t) => [t.id, t.text] as const)
+      : [],
+  );
+
+  return writers.map((w) => {
+    const writeTables = new Set<string>();
+    const reads = new Set<string>();
+    for (const e of edges) {
+      if (e.fromSymbolId !== w.id) continue;
+      const target = targetById.get(e.toSymbolId);
+      if (!target || (target.kind !== "table" && target.kind !== "column")) continue;
+      const table = target.kind === "column" ? tableOf(target.qualifiedName) : target.qualifiedName;
+      if (e.kind === "writes" || e.kind === "persists-to") writeTables.add(table);
+      else if (e.kind === "reads" && target.kind === "column") reads.add(target.qualifiedName);
+    }
+    const parsed = parseWriterText(textById.get(w.id) ?? "");
+    return {
+      ...w,
+      writeTables: [...writeTables].sort(),
+      predicateColumns: [...reads].filter((c) => writeTables.has(tableOf(c))).sort(),
+      readColumns: [...reads].filter((c) => !writeTables.has(tableOf(c))).sort(),
+      ...parsed,
+    };
+  });
 }

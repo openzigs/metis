@@ -46,6 +46,11 @@ function item(overrides: Partial<ImpactItemView> = {}): ImpactItemView {
     affectedTablesSecondary: [],
     affectedTests: [],
     writePathGaps: [],
+    editCandidateFiles: [],
+    blastRadiusFiles: [],
+    droppedColumnProposals: [],
+    optionalColumnProposals: [],
+    uncheckedColumnProposals: [],
     feedback: [],
     ...overrides,
   };

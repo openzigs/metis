@@ -799,3 +799,63 @@ describe("buildSymbolDocumentText (#1159 — what production BM25 can actually s
     );
   });
 });
+
+describe("tokenizeCodeRoots — the acronym split is linear and unchanged (PR #1090 review 2)", () => {
+  /** The implementation before the fix, verbatim: quadratic on a run of capitals. */
+  function tokenizeCodeRootsBefore(text: string): string[] {
+    const expanded = text
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
+    return expanded
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, " ")
+      .split(/\s+/)
+      .filter((t) => t.length > 1);
+  }
+
+  it("splits the same way on the shapes the old pattern was written for", () => {
+    expect(tokenizeCodeRoots("HTTPServer parseXMLDocument getURLForID ABc XAbCd IOError")).toEqual([
+      "http",
+      "server",
+      "parse",
+      "xml",
+      "document",
+      "get",
+      "url",
+      "for",
+      "id",
+      "bc",
+      "ab",
+      "cd",
+      "io",
+      "error",
+    ]);
+  });
+
+  it("equals the previous implementation on every string of a seeded sweep", () => {
+    // Deterministic LCG: every run tests the same 20,000 strings.
+    let seed = 0x2f6e2b1;
+    const next = (n: number) => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed % n;
+    };
+    const alphabet = ["A", "B", "Z", "a", "b", "z", "A", "a", "_", "1", " ", ".", "ID", "Ab", "aB"];
+    for (let i = 0; i < 20_000; i++) {
+      const length = 1 + next(24);
+      let text = "";
+      for (let j = 0; j < length; j++) text += alphabet[next(alphabet.length)];
+      expect(tokenizeCodeRoots(text), JSON.stringify(text)).toEqual(tokenizeCodeRootsBefore(text));
+    }
+  });
+
+  it.each([
+    ["a 200 KB run of capitals", "A".repeat(200_000)],
+    ["capitals, then one lower-case letter", `${"A".repeat(199_999)}a`],
+    ["upper-case words", "AB ".repeat(66_667)],
+    ["PascalCase", "Ab".repeat(100_000)],
+  ])("tokenizes %s in well under a second (19 s before)", (_name, text) => {
+    const start = performance.now();
+    tokenizeCodeRoots(text);
+    expect(performance.now() - start).toBeLessThan(500);
+  });
+});

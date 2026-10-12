@@ -2423,8 +2423,12 @@ the measurement lessons behind the split — is documented once in
 
 | Module                         | Responsibility                                                                                          |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------- |
-| `extract-changes.ts`           | Splits the source document into discrete changed requirements (`ChangeExtractor` / `heuristicChangeExtractor`). |
-| `requirement-code-mapping.ts`  | (traceability) Maps each requirement to seed code symbols via BM25 search over the project's symbols.   |
+| `extract-changes.ts`           | Splits the source document into discrete changed requirements (`ChangeExtractor` / `heuristicChangeExtractor`). Since #1036 this is the reader for a multi-requirement document only; see `change-request.ts`. |
+| `change-request.ts`            | **#1036 — reads a pasted issue as ONE change with sub-aspects.** `parseChangeRequest` recognises the issue shape (a title, then at least two headings from the vocabulary issue templates use) and returns `{ primaryRequest, subAspects, context, ignored }`; empty form fields, bare URLs, version/browser fields and sign-offs go to `ignored` with a reason. A whole-line bold label (`**Describe the bug**`) opens a section when it is in that vocabulary and counts as an unknown heading when it is not, so a requirements document marked up in bold is not read as one issue. Anything else returns `null` and `shapeAwareChangeExtractor` (the engine's default) falls back to the heuristic splitter, so the mode is chosen from the input's shape. Deterministic; an LLM extractor can replace it behind the same `ChangeExtractor`. |
+| `change-seeds.ts`              | **#1036 — hybrid seeding, split in two.** `resolveChangeSeeds` searches with the chat path's `HybridCodeSearch` (via `createDefaultCodeSearcher`: BM25 fused with symbol embeddings) on two queries — the title, and the request without rejected alternatives, code fences or links — and ranks the hits by FILE (`Σ hitᵢ × 0.5ⁱ`, so agreement lifts a file and size does not). The top `MAX_EDIT_FILES` files are the **edit candidates**; everything else retrieved is `related`. Never throws. |
+| `structural-twins.ts`          | **#1036 — functions built like a retrieved one**, by Jaccard overlap of callee NAMES (which exist for the 76% of Go calls the parser leaves unresolved). Blast radius only: bare names collide, so a twin is never an edit candidate. |
+| `impact-roles.ts`              | **#1036 — settles edit candidate vs blast radius** once every stage has run. A lineage writer is promoted to an edit candidate only when something besides the lineage says the request is about its data (it sits in a selected file, writes a column the request names as an identifier, or its table gains a column); a table that gains a column brings its definition and the types named for it in as `data-model` edit candidates; `related` hits are appended as blast radius. |
+| `requirement-code-mapping.ts`  | (traceability) Maps each requirement to seed code symbols via BM25 search over the project's symbols. Impact analysis uses it only when a mapper is injected (the opt-in `IMPACT_LLM_SEEDING` / `IMPACT_LLM_ENTITY_SEEDS` flags); its default seeding is `change-seeds.ts`. |
 | `blast-radius.ts`              | BFS over the code graph (incoming = callers/importers, outgoing = dependencies) with depth + edge-type weighted confidence decay. |
 | `impact-analysis-engine.ts`    | `computeProjectImpact` (pure per-project scorer), `PrismaCodeGraphDataSource` (project-scoped graph reads), and the async `trigger`/`execute` service. Crosses each project's affected symbols into the schema graph (best-effort) and persists `ImpactAffectedTable` rows. |
 | `live-schema-ingest.ts`        | `LiveSchemaIndex` over an introspected `DbSchemaSnapshot` (authoritative reconciliation source), plus `parseDdlFile` / `persistDdlFile` for `.sql` DDL, `persistLiveSchema` writers, and **(Epic #293 #301)** `persistLiveRoutines` — materializes introspected procedures/functions as `live-db` `procedure`/`function` symbols (routine bodies are never read). |
@@ -2448,6 +2452,99 @@ the measurement lessons behind the split — is documented once in
   default — see [Impact Analysis LLM stages](./IMPACT_ANALYSIS_LLM_STAGES.md) →
   "Defaults, and what they cost". Deterministic output remains the floor: the
   #1024 degradation contract, not the flags, is what guarantees it.
+- **Edit candidates vs blast radius (#1036)** — an impact result reports two
+  lists, because they are scored differently: **edit candidates** (the code the
+  change probably has to edit; small; scored on precision and recall) and the
+  **blast radius** (code to review; wide; scored on recall only). The role is
+  carried by `ImpactAffectedSymbol.depth` — `0` is an edit candidate, anything
+  further out is blast radius — and has one definition, `impactSymbolRole` in
+  `@metis/shared`, used by the read path (`ImpactItemView.editCandidateFiles` /
+  `blastRadiusFiles`), the markdown export and the UI. No migration: `depth` has
+  always meant "0 = direct, ≥1 = blast radius", and a run stored before #1036
+  reads through the same rule. Relations added: `data-model` and `related`.
+
+  ```mermaid
+  flowchart LR
+    Text[Pasted text] --> Shape{One issue?}
+    Shape -- yes --> One[One change + sub-aspects]
+    Shape -- no --> Split[Heuristic splitter]
+    One --> Seed[Hybrid search, ranked by file]
+    Split --> Seed
+    Seed --> Edit[Edit candidates · depth 0]
+    Seed --> Related[Related hits]
+    Edit --> Callers[Callers, 2 hops]
+    Edit --> Cross[Schema crossing]
+    Cross --> Writers[Lineage writers]
+    Writers -- request is about this data --> Edit
+    Writers -- otherwise --> Radius[Blast radius · depth ≥ 1]
+    Cross -- table gains a column --> Model[Table definition + types] --> Edit
+    Related --> Twins[Structural twins] --> Radius
+    Related --> Radius
+    Callers --> Radius
+  ```
+
+  Measured by replaying the six developer issues of walkthrough run 7 on that
+  run's Miniflux graph, deterministic stages only (no model in the loop),
+  micro-averaged over the 19 reference files, test files and neutral files
+  excluded as the walkthrough's scoring rule says:
+
+  | | Files named per issue | Precision | Recall |
+  |---|---|---|---|
+  | Before: everything named (splitter + BM25) | 62 to 117 | 2% | 47% |
+  | Before: mapper hits + lineage writers only | 11 to 44 | 5% | 37% |
+  | After: **edit candidates** | 3 to 7 | 37% | 53% |
+  | After: **blast radius** (recall only) | 46 to 98 | — | 84% |
+
+  Six issues is a small sample: read the direction, not the second digit. Two of
+  the nineteen reference files (an HTML template and a README) are not in the
+  code graph and cannot be reached by any stage here. A table that gains a
+  column only through the LLM proposer (#4511's `feeds`) gets its `data-model`
+  edit candidates only when that stage runs.
+
+  **The cut sizes are provisional.** `MAX_EDIT_FILES = 5`, `MIN_FILE_SHARE = 0.5`,
+  `FILE_HIT_DECAY = 0.5`, `EDIT_POOL = 60`, `MAX_SYMBOLS_PER_EDIT_FILE = 4` and
+  `SCHEMA_SEED_TOP = 10` (`change-seeds.ts`), and `MIN_CALLEES = 6` /
+  `MIN_TWIN_SIMILARITY = 0.7` (`structural-twins.ts`), were chosen on these six
+  Miniflux issues, and the table above is measured on the same six: it is an
+  **in-sample** number. They are to be revisited at walkthrough run 8. Two
+  consequences are already visible. A hard cap of five files bounds
+  edit-candidate recall on any change that touches more (#4511 edits six files
+  and is found at 17%). And the twin thresholds sit just under the one pair that
+  motivated the stage (#4386, similarity 0.83).
+
+  The one out-of-sample reading available offline is the committed `reqmap`
+  fixture (`eval-data/corpus/reqmap-01-precision-recall`: five replayed PRs over
+  an eight-file TypeScript micro-repo, two changed files each), run through the
+  same engine with no model and no database:
+
+  | reqmap fixture, micro-averaged | Precision | Recall |
+  |---|---|---|
+  | Names-only BM25 mapper + blast radius, every file named (what `pnpm eval:reqmap` measures) | 63% | 100% |
+  | This seeding, BM25-only mode: **edit candidates** | 56% | 100% |
+  | This seeding, BM25-only mode: **blast radius** (recall only) | — | 100% |
+
+  So the gain measured on Miniflux is **not** reproduced there: on a repository
+  of eight files the old path was already precise, and a cut of "up to five
+  files within half of the best" names four or five of the eight. The fixture
+  is a toy and carries no symbol text to embed, so it says little about the
+  hybrid mode; it does say the cut sizes are not yet shown to transfer.
+
+  **Retrieval mode.** Seeding degrades to BM25 when a project's symbols are not
+  embedded under the active model yet, or the vector search faults. That is a
+  sound fallback and a different result, so it is recorded: `HybridCodeSearch`
+  reports `hybrid` or `bm25-only` per search (`onRetrievalMode`), the seeds and
+  the per-project result carry `retrievalMode`, and a run in which any project
+  was seeded `bm25-only` says so in its `summary`, which the page and the
+  markdown export both show. The default seeding builds its lexical index over
+  the Prisma client the engine was given (`createRunScopedSymbolIndex`), so a
+  caller that injects a client searches the database it hydrates from.
+
+  **What counts as schema.** A hit is data rather than code by its KIND — a
+  table, a column, a stored procedure or a stored SQL function
+  (`isSchemaSymbol`) — not by its language. A MyBatis mapper statement is stored
+  as kind `method`, language `sql`, in its mapper XML: it stays an edit
+  candidate, and it is named as a lineage writer. Only a synthetic statement
+  origin (`path::sql@412`) is never named.
 - **Persistence** — `ImpactAnalysis` (run header), `ImpactItem` (one
   project × requirement-change row), `ImpactAffectedSymbol` (per-symbol hit with
   `relation` + `depth`), and `RequirementCodeMapping` (cached requirement→symbol links).
@@ -2666,8 +2763,156 @@ the enclosing function. The Go parser leaves `h.store.X()` calls unresolved, so
 them by Go package visibility (same directory, or a package the caller's package imports;
 only an unambiguous name binds) for the blast-radius graph and the downstream schema walk,
 where a symbol reached only that way contributes its writes, not its reads. Schema symbols
-are `language: "sql"` rows only, so an application `function` is never a DB routine. When
+are `language: "sql"` rows only, so an application `function` is never a DB routine. A
+writer is any `function` or `method` that is not a synthetic `sql@<line>` origin — so a
+MyBatis mapper statement or a JPA `@Query` method, stored as a `method` with language
+`sql`, is named. An ORM **mapping declaration** is stored the same way (one origin per
+Prisma `model` or JPA `@Entity`) and is not a write path: its `persists-to` edges from
+source `orm` are skipped (`isOrmMappingEdge`), so the entity is never a writer. When
 the #936 filter judges a table tangential, a column seed of that table leaves the direct set.
+
+**#791 — a proposed column an existing write path already covers (durable fix).** The
+additive-column proposer kept answering Miniflux #4478 ("mark all as read older than X")
+with a new `users` column, while `MarkAllAsReadBeforeDate(userID, before time.Time)`
+already does it. #1045 decided coverage by NAME — the column had to restate the writer —
+and regressed 3 runs in 3 once the model called its column `mark_read_delay`. The first
+two cuts of the gate that replaced it decided by cue words in the request and by fields
+the model chose (table, column name, type, declared writers); two reviews each found a
+way from one ordinary sentence, or one answer, to a core `users` column. The rule is now
+monotone:
+
+> **Invariant.** In a covered request no field a model chose can make a column core.
+> Core comes from what the user wrote: DDL or an explicit add-a-column sentence, in
+> the request or one of its sub-sections.
+
+```mermaid
+flowchart LR
+  Writers[Lineage writers] --> Profile[Profile: parameters, written tables,<br/>predicate columns, SQL]
+  Profile --> Proposer[Proposer: a justification per column]
+  Profile --> Covered{Covered?<br/>request bounded by an age or date<br/>AND a lineage writer filters on a time}
+  Proposer --> Covered
+  Covered -- yes, and the column restates the bound --> Rejected[Not proposed, with the writer and what was checked]
+  Covered -- yes, anything else --> Optional[Optional: settings persistence]
+  Covered -- no: the gate does not rule --> Label{Labelled user-preference<br/>by the proposer?}
+  Label -- no --> Core[Affected tables: ADD COLUMN<br/>and marked Proposed, not checked]
+  Label -- yes --> Optional
+  DDL[Written in the request: ALTER TABLE,<br/>or an add-a-column sentence] --> CoreDDL[Affected tables: ADD COLUMN]
+```
+
+- `profileDataPathWriters` (`data-path-writers.ts`) describes each lineage writer: the
+  tables it writes, the columns it READS on a table it also writes (the WHERE of its
+  UPDATE — the lineage records them as plain `reads`, so the predicate is derived), and its
+  parameters and first SQL statement, read from the text the symbol was embedded from
+  (`CodeSymbolEmbedding.text`; `CodeSymbol` stores neither).
+- The proposer runs **once per request**, after the writers are known, and is shown them as
+  numbered `W` lines. Its reply lists covering writers, then gives each proposal a
+  `justification` (`operation-needs-new-data` or `user-preference`) and a `coveredBy`.
+  A `W` number outside the list resolves to nothing, as an out-of-range table index does.
+- **A covered request.** `gateColumnProposals` (`column-proposal-gate.ts`) calls a request
+  covered when it is bounded by an age or a point in time ("older than X") **and** at
+  least one lineage writer filters the table it writes on a time-valued column
+  (`published_at`, or camelCase `publishedAt`): that writer already takes such a bound as
+  an argument. Both facts come from the request and the lineage. Nothing the proposer
+  returns — its table, its column name, its type, its justification, the writers it
+  declares — is read to decide it, and no other wording of the request is either.
+- **Which writers the gate is handed is not a model's choice either.** The engine looks
+  them up on every table the schema crossing reached, BEFORE the #936 relevance filter
+  sorts those tables into primary and secondary. The first wiring reused the lookup made
+  on the primary set, so one filter answer (`entries` is tangential) left #4478 uncovered
+  and its `users` column core (PR #1090 review 3). The symbols listed for review and the
+  writers shown to the proposer stay scoped to the primary set; when no filter ran the
+  two lookups are one. The #1029 recovery judge cannot reach the gate: it runs only when
+  no primary table is left, and then the proposer is not called. **The one limit:** which
+  tables the crossing reaches follows from the seeds. By default they are a search
+  result; with `IMPACT_LLM_SEEDING` or `IMPACT_LLM_ENTITY_SEEDS` on a model ranks or adds
+  them, and a seeding that never reaches the covering writer's table leaves the request
+  uncovered. `impact-analysis-engine-791-llm-deps.test.ts` asserts all of this at
+  `computeProjectImpact`, with each optional LLM dependency answering adversarially.
+- **In a covered request every proposal is `optional` or `rejected`, never `core`.**
+  `rejected` when the column restates the bound: it could hold an age or a count (a
+  number, text, or no type), the proposer did not call it a preference, and the request
+  does not ask for the value to be configurable. `optional` ("Optional: settings
+  persistence") otherwise. The settings cue, the justification and the type choose
+  between those two and nothing else; there is no record cue any more, and a column on
+  the covering writer's own table is ruled like any other. Each ruling cites the covering
+  writer with the most evidence (a typed time argument, then the lineage's own ranking),
+  not the first in list order, and a rejection states what was checked.
+- **Core in a covered request comes from what the user wrote, not from a model.** The
+  deterministic additive-intent fast path in `crossToSchema` (`detectAdditiveColumnIntent`)
+  runs before the proposer and marks a table `add-column` on three forms: an
+  `ALTER TABLE … ADD COLUMN` statement, "add a `<name>` field|column|flag to `<table>`",
+  and "add `<name>` to `<table>`". It reads what the request asks (`requestGateText`: the
+  primary request and its sub-aspects, never a context section), so DDL quoted under
+  "Alternatives considered" proposes nothing. A heading the parser does not know is a
+  sub-aspect, so DDL pasted under "Workaround" does count as asked for.
+- **The accepted cost.** A genuinely new column in a covered request — `feeds.last_cleanup_at`
+  in "delete entries older than 30 days and record when each feed was last cleaned" — is
+  shown as optional, not core. Optional columns do not enter `affectedTables`, so they
+  promote no writer to an edit candidate and bring in no `data-model` candidate. The gate
+  cannot tell that column from a copy of the bound without reading intent out of prose,
+  and that is what failed twice. The owner accepted "optional and labelled"; the reason
+  on the row says to write the `ALTER TABLE` in the request if the change needs it.
+- **In an uncovered request the gate does not rule.** A proposal is `core`, as before
+  the gate existed, and is also returned under `uncheckedColumnProposals` with the
+  reason: looking up the write paths failed; the lineage named none; the request is not
+  bounded by an age or a date; or write paths were named and none filters on a time
+  column. The #791 guarantee therefore needs SQL lineage, and covers time-bounded
+  requests only: anywhere else a proposal is `core` and marked, so the API, the page and
+  the export say nothing vetted it.
+- **One demotion applies there (owner decision).** A column the proposer itself labels
+  `user-preference` is `optional` in an uncovered request too, with no writer cited and
+  the same "not checked" reason. Uncovered is the common case (an ORM project whose writes
+  the lineage cannot read, a failed lookup), and a core `users` column for a remembered
+  preference is what the owner ruled out. It is a demotion only: the label takes a column
+  out of `core` and can never put one in, so no label, declaration or type the model
+  returns increases `core` in either branch. `coveredBy` and the declared writers are
+  still not read.
+- **Request text is untrusted and long.** It is accepted up to 500,000 characters, so
+  every pattern applied to it has to be linear. That is enforced by enumeration, not by
+  naming patterns: `request-regex-fuzz.test.ts` parses every production file under
+  `lib/impact-analysis/` (read from disk, so a new file is covered by default) plus a
+  short list outside it (the search, the export, the route) with the TypeScript compiler,
+  takes every regex literal and every `new RegExp`, and times each on 54 adversarial
+  inputs up to 200 KB under 250 ms. A `new RegExp` whose source cannot be evaluated
+  statically fails the test unless it is listed with what it is built from. The corpus
+  is fixed, so a green run means "linear on these shapes", not "linear". The search query
+  built from a request is capped at 4,000 characters (`MAX_SEED_QUERY_CHARS`), and each
+  section is cut down (after one linear pass that removes code fences) before the link,
+  URL and whitespace replaces, not after. Timing tests assert the shape
+  (`tests/helpers/linear-time.ts`: fast at full size, or a linear ratio against a quarter
+  of it), never a wall-clock bound near the idle figure.
+- `optional` and `rejected` proposals never enter `affectedTables`, so neither is part of
+  the migration a change is reported to need. They are returned on the result as
+  `optionalColumnProposals` / `droppedColumnProposals`, each with the writer's file and
+  line and the reason.
+- **Stored and shown (#1051).** Both lists are persisted per item in
+  `ImpactColumnProposal` (`impact_column_proposals`: `disposition` `rejected` | `optional`
+  | `unchecked` — the last marks a column that IS among the affected tables and that the
+  gate did not rule on —
+  the proposed column and its text-only DDL, the gate's `reason`, and the covering
+  writer's `writerQualifiedName` / `writerFilePath` / `writerStartLine` / `writerEndLine`;
+  `ON DELETE CASCADE` from `ImpactItem`). A table of its own rather than more rows in
+  `impact_affected_tables`, so nothing that reads the affected tables — the page, the
+  export, drift, the shared-table rollup, consumer resolution — can take a ruled-out column
+  for a change the requirement needs. `GET /api/impact-analyses/:id` returns them on each
+  item as `droppedColumnProposals`, `optionalColumnProposals` and
+  `uncheckedColumnProposals` (`ImpactColumnProposalView`); the impact card shows
+  **Optional: settings persistence** (with the DDL), **Not proposed** (without it) and
+  **Proposed, not checked** (without it: the DDL is already among the proposed changes)
+  under the proposed column changes, and the markdown export has the same three
+  sections. A run stored before #1051 returns empty lists.
+
+The lexical `dropProposalsRestatingWriters` is removed. Known limits:
+
+- Only time/age bounds are recognised. For a request bounded by something else ("the top
+  N") no write path rules a column out; only the proposer's own per-column answers
+  (`coveredBy`, `user-preference`) can still take one out of `core`.
+- Whether a column on another table is **rejected** rather than kept rests on its type,
+  which the model chooses. On the verbatim #4478 text that does not matter — the request
+  asks for the value to be configurable, so every answer is `optional` — but a request
+  with no such sentence and a proposal typed `TIMESTAMP` is `core`.
+- `predicateColumns` is any read on a table the writer also writes, which over-approximates
+  a WHERE clause (`SET x = created_at + …`, `RETURNING published_at`).
 
 API: `POST /api/impact-analyses` (returns `202` with `{id,status,projectIds}`),
 `GET /api/impact-analyses`, `GET /api/impact-analyses/:id`. Guarded by the

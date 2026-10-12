@@ -1,126 +1,245 @@
 /**
- * #791 review — a proposed column the existing-writer check drops must be
- * visible on the impact RESULT, not only in a server log; a borderline one it
- * keeps must carry the lower confidence and the reason. The data-path writer
- * expansion is stubbed to name `MarkAllAsReadBeforeDate`, so this exercises
- * only the engine's handling of the check's output.
+ * #791 — the engine never turns "mark all as read older than X" into a core
+ * `users` column, whatever the proposer answers.
+ *
+ * Nothing here is mocked below the engine: the lineage writers come from the real
+ * `expandDataPathWriters` over a schema graph shaped like Miniflux v2.3.3 after
+ * #807, they are profiled by the real `profileDataPathWriters`, and the proposals
+ * pass the real gate. Only the two model-shaped collaborators are stubbed — the
+ * seeding (one UI handler) and the proposer, which answers with the columns it
+ * actually returned in walkthrough runs 3 to 7.
+ *
+ * The requirement is the VERBATIM run-7 #4478 issue. #1045's fixture condensed
+ * it, passed, and regressed 3 runs in 3 in production.
  */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import type { CodeGraphDataSource, GraphSymbol } from "../code-graph/query-service.js";
-import type { AffectedTableInput } from "./schema-impact.js";
+import { extractChangesByShape } from "./change-request.js";
+import type { ProposedColumn, ProposerOutput } from "./column-proposal-gate.js";
+import { computeProjectImpact, type ComputeImpactDeps } from "./impact-analysis-engine.js";
+import type { AffectedTableInput, SchemaImpactDataSource } from "./schema-impact.js";
+import {
+  column,
+  EDGES,
+  ENTRY,
+  graph,
+  schemaDataSource,
+  UI_HANDLER_SEEDS,
+} from "../../../tests/helpers/miniflux-4478-lineage.js";
 
-const WRITER = "internal/storage/entry.go::MarkAllAsReadBeforeDate";
+const here = dirname(fileURLToPath(import.meta.url));
+const ISSUE_4478 = readFileSync(join(here, "__fixtures__", "miniflux-4478.md"), "utf8");
+const ISSUE_4336 = readFileSync(join(here, "__fixtures__", "miniflux-4336.md"), "utf8");
 
-vi.mock("./data-path-writers.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./data-path-writers.js")>();
-  return {
-    ...actual,
-    addDataPathWriters: async <T extends { relation: string }>(symbols: T[]) => [
-      ...symbols,
-      {
-        codeSymbolId: "W",
-        filePath: "internal/storage/entry.go",
-        qualifiedName: WRITER,
-        startLine: 1,
-        endLine: 10,
-        relation: "data-writer",
-        depth: 1,
-        confidence: 0.6,
-      },
-    ],
-  };
-});
+type Proposer = NonNullable<ComputeImpactDeps["additiveColumnProposer"]>;
 
-const { computeProjectImpact } = await import("./impact-analysis-engine.js");
-
-const A: GraphSymbol = {
-  id: "A",
-  qualifiedName: "pkg.A",
-  kind: "function",
-  filePath: "A.ts",
-  language: "ts",
-  startLine: 1,
-  endLine: 10,
-};
-
-const graph: CodeGraphDataSource = {
-  getSymbol: async (id) => (id === "A" ? A : null),
-  getEdgesFrom: async () => [],
-  getEdgesTo: async () => [],
-  getSymbolsByFile: async () => [],
-  getSymbolsByIds: async (ids) => (ids.includes("A") ? [A] : []),
-};
-
-const schemaSymbols = [
-  {
-    id: "tbl-1",
-    kind: "table" as const,
-    name: "users",
-    qualifiedName: "users",
-    source: "sqlglot" as const,
-  },
-];
-
-const proposal: AffectedTableInput = {
-  objectKind: "column",
-  tableName: "users",
-  columnName: "mark_read_days",
-  columnType: "INTEGER",
-  changeKind: "add-column",
-  suggestedDdl: "ALTER TABLE users ADD COLUMN mark_read_days INTEGER; -- SUGGESTED",
-  source: "sqlglot",
-  reconciliation: null,
-  confidence: 0.5,
-};
-
-function run(body: string) {
-  return computeProjectImpact(
-    { requirementId: null, title: "Mark all as read", body, changeType: "added", bodyDelta: 50 },
-    "proj-1",
-    {
-      mapRequirement: async () => [
-        {
-          codeSymbolId: "A",
-          filePath: "A.ts",
-          qualifiedName: "pkg.A",
-          startLine: 1,
-          endLine: 10,
-          confidence: 0.9,
-        },
-      ],
-      dataSourceFor: () => graph,
-      schemaDataSourceFor: () => ({
-        getSchemaEdgesFrom: async (ids: string[]) =>
-          ids.includes("A")
-            ? [{ fromSymbolId: "A", toSymbolId: "tbl-1", kind: "reads" as const }]
-            : [],
-        getSchemaSymbolsByIds: async (ids: string[]) =>
-          schemaSymbols.filter((s) => ids.includes(s.id)),
-      }),
-      additiveColumnProposer: async () => [proposal],
-    },
-  );
+function run(
+  issue: string,
+  proposer: Proposer,
+  over: Partial<ComputeImpactDeps> = {},
+  source: SchemaImpactDataSource = schemaDataSource(),
+) {
+  const changes = extractChangesByShape(issue);
+  expect(changes).toHaveLength(1);
+  return computeProjectImpact(changes[0]!, "proj-1", {
+    mapRequirement: async () => [],
+    seedChange: async () => UI_HANDLER_SEEDS,
+    dataSourceFor: () => graph,
+    schemaDataSourceFor: () => source,
+    additiveColumnProposer: proposer,
+    ...over,
+  });
 }
 
-describe("computeProjectImpact — #791 dropped column proposals", () => {
-  it("puts a dropped proposal on the result with its writer and reason", async () => {
-    const result = await run("Let entries older than X days be marked as read.");
-    expect(result.affectedTables.filter((t) => t.changeKind === "add-column")).toEqual([]);
-    expect(result.droppedColumnProposals).toHaveLength(1);
-    const [d] = result.droppedColumnProposals;
-    expect(`${d!.row.tableName}.${d!.row.columnName}`).toBe("users.mark_read_days");
-    expect(d!.writer).toBe(WRITER);
-    expect(d!.reason).toContain("MarkAllAsReadBeforeDate");
+const addColumns = (tables: AffectedTableInput[]) =>
+  tables.filter((t) => t.changeKind === "add-column").map((t) => `${t.tableName}.${t.columnName}`);
+
+describe("computeProjectImpact — the verbatim #4478 issue, three runs (#791)", () => {
+  // What the proposer returned on `users` in run 7 (UI run, re-run, fresh POST),
+  // plus the name it used in runs 3, 4 and 6.
+  const RUNS: AffectedTableInput[][] = [
+    [column("users", "mark_read_time_options", "TEXT")],
+    [column("users", "mark_read_delay", "INTEGER")],
+    [
+      column("users", "mark_read_times", "TEXT"),
+      column("users", "mark_read_older_than_days", "INTEGER"),
+    ],
+  ];
+
+  it("proposes no core users column in any of the three runs", async () => {
+    for (const proposals of RUNS) {
+      const result = await run(ISSUE_4478, async () => proposals);
+      expect(addColumns(result.affectedTables)).toEqual([]);
+      expect(addColumns(result.affectedTablesSecondary)).toEqual([]);
+    }
   });
 
-  it("keeps the proposal, annotated, when the requirement asks to remember the days", async () => {
-    const result = await run(
-      "Mark all as read older than X days, and remember the chosen days per user.",
+  it("puts each one under Optional: settings persistence, with the covering writer's file and line", async () => {
+    for (const proposals of RUNS) {
+      const result = await run(ISSUE_4478, async () => proposals);
+      expect(result.droppedColumnProposals).toEqual([]);
+      expect(result.optionalColumnProposals.map((o) => o.row)).toEqual(proposals);
+      for (const optional of result.optionalColumnProposals) {
+        expect(optional.writer).toEqual({
+          qualifiedName: `${ENTRY}::MarkAllAsReadBeforeDate`,
+          filePath: ENTRY,
+          startLine: 523,
+          endLine: 533,
+        });
+        expect(optional.reason).toContain("Optional: settings persistence.");
+        expect(optional.reason).toContain("(before time.Time)");
+      }
+    }
+  });
+
+  it("holds when the proposer answers in the structured form and insists it is needed data", async () => {
+    const insist = (row: AffectedTableInput): ProposedColumn => ({
+      row,
+      justification: "operation-needs-new-data",
+      coveredByWriterId: null,
+      rationale: "the operation needs to know the delay",
+    });
+    const result = await run(ISSUE_4478, async () => ({
+      proposals: RUNS[1]!.map(insist),
+      coveringWriterIds: [],
+    }));
+    expect(addColumns(result.affectedTables)).toEqual([]);
+    expect(result.optionalColumnProposals).toHaveLength(1);
+  });
+
+  it("rejects it outright when the request does not ask to configure anything", async () => {
+    // The verbatim issue without its "Times could be configured in settings." sentence.
+    const noSettings = ISSUE_4478.replace(" Times could be configured in settings.", "");
+    expect(noSettings).not.toBe(ISSUE_4478);
+    const result = await run(noSettings, async () => RUNS[1]!);
+    expect(addColumns(result.affectedTables)).toEqual([]);
+    expect(result.optionalColumnProposals).toEqual([]);
+    expect(result.droppedColumnProposals).toHaveLength(1);
+    expect(result.droppedColumnProposals[0]!.writer?.qualifiedName).toBe(
+      `${ENTRY}::MarkAllAsReadBeforeDate`,
     );
+    expect(result.droppedColumnProposals[0]!.reason).toMatch(
+      /^An existing write path may cover this:/,
+    );
+    expect(result.droppedColumnProposals[0]!.reason).toContain("Checked: the request's wording");
+  });
+
+  it("runs the proposer once for the whole issue, not once per section", async () => {
+    const proposer = vi.fn<Proposer>(async () => []);
+    await run(ISSUE_4478, proposer);
+    expect(proposer).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands the proposer the lineage writers with what each one does", async () => {
+    const proposer = vi.fn<Proposer>(async () => []);
+    await run(ISSUE_4478, proposer);
+    const { writers } = proposer.mock.calls[0]![2];
+    const before = writers.find((w) => w.id === "MarkAllAsReadBeforeDate")!;
+    expect(before).toMatchObject({
+      filePath: ENTRY,
+      startLine: 523,
+      writeTables: ["entries"],
+      predicateColumns: ["entries.published_at", "entries.user_id"],
+      parameters: ["userID int64", "before time.Time"],
+    });
+    expect(before.sql).toContain("published_at < $4");
+    // A writer the seeded code reaches directly is listed too.
+    expect(writers.map((w) => w.id)).toContain("MarkAllAsRead");
+  });
+
+  it("still lists MarkAllAsReadBeforeDate as the code that already does it", async () => {
+    const result = await run(ISSUE_4478, async () => RUNS[0]!);
+    expect(
+      result.affectedSymbols
+        .filter((s) => s.relation === "data-writer")
+        .map((s) => s.qualifiedName),
+    ).toContain(`${ENTRY}::MarkAllAsReadBeforeDate`);
+  });
+});
+
+describe("computeProjectImpact — what stays a core migration (#791)", () => {
+  it("keeps entries.read_at for the verbatim #4336 issue", async () => {
+    const result = await run(ISSUE_4336, async () => [column("entries", "read_at", "TIMESTAMP")]);
+    expect(addColumns(result.affectedTables)).toContain("entries.read_at");
     expect(result.droppedColumnProposals).toEqual([]);
-    const added = result.affectedTables.filter((t) => t.changeKind === "add-column");
-    expect(added.map((t) => t.columnName)).toEqual(["mark_read_days"]);
-    expect(added[0]!.confidence).toBeLessThan(proposal.confidence);
-    expect(added[0]!.relevanceRationale).toMatch(/existing write path may cover this/i);
+    expect(result.optionalColumnProposals).toEqual([]);
+  });
+
+  it("keeps a users column when the lineage names no time-bounded writer", async () => {
+    // No `published_at` predicate anywhere: nothing already takes an age.
+    const noPredicate = schemaDataSource({
+      getSchemaEdgesFrom: async (ids) =>
+        EDGES.filter(
+          (e) => ids.includes(e.fromSymbolId) && e.toSymbolId !== "entries.published_at",
+        ),
+    });
+    const result = await run(
+      ISSUE_4478,
+      async () => [column("users", "mark_read_delay", "INTEGER")],
+      {},
+      noPredicate,
+    );
+    expect(addColumns(result.affectedTables)).toEqual(["users.mark_read_delay"]);
+  });
+});
+
+describe("computeProjectImpact — the gate is best-effort around its collaborators (#791)", () => {
+  it("proposes without write paths when profiling them fails, and gates nothing", async () => {
+    const proposer = vi.fn<Proposer>(async () => [column("users", "mark_read_delay", "INTEGER")]);
+    const broken = schemaDataSource({
+      getCodeSymbolTexts: async () => {
+        throw new Error("db down");
+      },
+    });
+    const result = await run(ISSUE_4478, proposer, {}, broken);
+    expect(proposer.mock.calls[0]![2].writers).toEqual([]);
+    // With no writer profile there is nothing to cover the column: it passes —
+    // and is marked as not checked (`impact-analysis-engine-wiring.test.ts`).
+    expect(addColumns(result.affectedTables)).toEqual(["users.mark_read_delay"]);
+    expect(result.uncheckedColumnProposals).toHaveLength(1);
+  });
+
+  it("keeps the crossing output when the proposer throws", async () => {
+    const result = await run(ISSUE_4478, async () => {
+      throw new Error("provider down");
+    });
+    expect(addColumns(result.affectedTables)).toEqual([]);
+    expect(result.droppedColumnProposals).toEqual([]);
+    expect(result.optionalColumnProposals).toEqual([]);
+    expect(result.affectedTables.map((t) => t.tableName)).toContain("entries");
+  });
+
+  it("does not call the proposer when the crossing surfaced no table", async () => {
+    const proposer = vi.fn<Proposer>(async (): Promise<ProposerOutput> => []);
+    const empty = schemaDataSource({ getDownstreamCallEdgesFrom: async () => [] });
+    await run(ISSUE_4478, proposer, {}, empty);
+    expect(proposer).not.toHaveBeenCalled();
+  });
+
+  it("does not propose on a table the recovery judge added afterwards", async () => {
+    const proposer = vi.fn<Proposer>(async (): Promise<ProposerOutput> => []);
+    const empty = schemaDataSource({ getDownstreamCallEdgesFrom: async () => [] });
+    const recovered: AffectedTableInput = {
+      objectKind: "table",
+      tableName: "users",
+      columnName: null,
+      columnType: null,
+      changeKind: "reference",
+      suggestedDdl: null,
+      source: "sqlglot",
+      reconciliation: null,
+      confidence: 0.4,
+      relevanceTier: "possible",
+    };
+    const result = await run(
+      ISSUE_4478,
+      proposer,
+      { tableRecoveryJudge: async () => [recovered] },
+      empty,
+    );
+    expect(result.affectedTables.map((t) => t.tableName)).toEqual(["users"]);
+    expect(proposer).not.toHaveBeenCalled();
   });
 });

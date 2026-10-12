@@ -1922,18 +1922,35 @@ dependencies).
    click **New analysis**.
 2. Provide the requirement change — either **Paste text** of the new/changed
    requirements, or pick an existing **document** that has already been ingested.
+   A pasted **issue** (a title followed by sections such as *Summary*, *Proposed
+   Solution*, *Steps to Reproduce*, *Expected Behavior*) is read as **one**
+   change: the proposed solution and expected behaviour refine it, the problem
+   statement and reproduction steps are kept as context, and empty form fields,
+   bare links, version fields and sign-offs are left out. GitHub's older
+   templates, which mark each section with a bold line (`**Describe the bug**`,
+   `**Describe the solution you'd like**`) instead of a heading, are read the
+   same way. A document that lists several requirements is still split into one
+   change per requirement.
 3. Select **two or more projects** to compare the change against. Each project's
    source must already be ingested into the code graph.
 4. Click **Run impact analysis**. METIS starts the run and opens the results
    view, which updates automatically as the analysis completes.
 5. The report is grouped **per project**. For each impacted requirement you see a
-   **severity** badge and **impact score**, the **directly affected** symbols,
-   and the **blast radius** symbols tagged with their relation (caller, importer,
-   dependency) and depth. Symbols tagged **Writes affected data** are the
-   functions that update or insert the columns the change touches — found from
-   the project's SQL, so they appear even when their names share no word with
-   the requirement (for example every function that marks an entry read) — and
-   are followed by their callers.
+   **severity** badge and **impact score**, and the affected code as two lists:
+   - **Files to edit** — a short list of the files the change most likely has to
+     touch, each with the symbols that put it there. These come from the same
+     code search chat uses, from the project's SQL (symbols tagged **Writes
+     affected data** update or insert the columns the change touches, so they
+     appear even when their names share no word with the request), and, when a
+     table gains a column, from where that table is defined and the types named
+     for it (**Defines affected data**).
+   - **Blast radius** — a wider list to *review*: callers and importers of the
+     files to edit, data writers the request is not directly about, and
+     **Related** code the search found or that is built the same way as a match.
+     Being listed here is not a claim that the code has to change.
+
+   The card's headline counts both (*"3 files to edit · 41 more to review"*), and
+   the markdown export has the same two sections.
 
 Only projects you have access to appear in the picker, and you can only open a
 report whose projects are all visible to you.
@@ -2019,6 +2036,81 @@ This feature is **on by default**; operators turn it off with
 unavailable or returns something ungrounded, the report renders exactly as it
 would without AI — the proposals are **added** to the deterministic results and
 never replace them, so nothing is lost either way.
+
+**When existing code already does it.** Some requests ask for something the code
+can already do: *"mark all as read older than X"* is already a function that
+takes the cut-off date as an argument. METIS checks each proposed column against
+the functions that write the affected data — what they take as parameters and
+what they filter on — before showing it:
+
+A request is **covered** when two things hold: it is bounded by an age or a date
+("older than 30 days", "before a given date"), and an existing function already
+filters the data it writes by a date or time. For a covered request:
+
+- METIS **never** adds a column the AI model proposed to the migration the
+  change needs — whatever the model called it, whichever table it put it on and
+  whatever type it gave it.
+- A column that would only copy the cut-off — a number of days on the `users`
+  table, for a function that already filters entries by date — is **not
+  proposed**.
+- Every other proposed column is an **optional settings column**: shown, kept
+  apart from the proposed changes, and **not** part of the migration.
+- If the change really does need a new column, **ask for it in the request**:
+  write `ALTER TABLE <table> ADD COLUMN <column> <type>`, or a sentence such as
+  *"add a delay field to users"*. A column you asked for is always proposed.
+
+This check is made by rules over the code graph, not by the AI model, and no
+answer the model gives can turn a column into a required one. It reads what the
+request *asks for* — its title, summary and proposed solution, and any section
+under a heading METIS does not recognise — not the background around it
+(the problem statement, alternatives you considered, logs).
+
+That rule has a cost. Suppose a request says *"delete entries older than 30
+days, and record when each feed was last cleaned"*. The second half does need a
+new column, but METIS cannot tell it apart from a copy of the cut-off without
+guessing at intent, so it lists it as optional rather than required. Read the
+optional list for a covered request, or state the column as `ALTER TABLE`.
+
+For every other request the check does not rule, and the page says so:
+
+- the request is not bounded by an age or a date; or
+- METIS found no existing function that writes the affected data (this needs
+  the project's SQL to have been analysed); or
+- it found such functions, and none filters by a date or time.
+
+In those cases the proposed columns are still proposed, and each is listed again
+under **Proposed, not checked** with the reason. One exception: a column the
+model itself describes as only a remembered preference is listed under
+**Optional: settings persistence** instead, with the same reason, and is not
+part of the migration.
+
+You can see what was ruled out, and why. Under the proposed column changes, each
+impacted requirement shows up to three more lists:
+
+- **Optional: settings persistence** — the optional settings columns, each with
+  its suggested `ALTER TABLE` text and a note that it is not part of the
+  migration the change needs.
+- **Not proposed** — the columns an existing function appears to cover already.
+  Each entry says what was checked.
+- **Proposed, not checked** — columns that *are* in the proposed changes above,
+  which this check did not rule on. Each entry says why. Treat them as
+  unverified.
+
+An entry names the existing function it was set against, with its file and line
+(a link to the repository when the project has one connected), and the reason —
+for example *"`MarkAllAsReadBeforeDate` (`internal/storage/entry.go:523`) already
+filters `entries.published_at` by its argument (`before time.Time`), and the
+request asks for the value to be configurable"*. The same lists are in the
+markdown export and in the API response. Analyses run before this version show
+none of them.
+
+**When code search ran on keywords only.** The files to edit are found with the
+same search chat uses, which combines keyword matching with meaning-based
+(embedding) search. Right after a project is ingested, its embeddings may still
+be building; the search then runs on keywords alone. The analysis still
+completes, and its summary says so — *"Code search ran on keywords only (BM25)
+for this project…"* — so you know to re-run it once embedding has finished
+before comparing results.
 
 **Affected procedures & functions.** When the impacted code invokes a stored
 **procedure** or **function**, those routines are listed in their own *Affected
