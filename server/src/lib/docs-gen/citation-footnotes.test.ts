@@ -68,6 +68,37 @@ describe("readableSourceReference (#737)", () => {
   });
 });
 
+describe("a module directory named `canon` (#1119)", () => {
+  // `facts:canon:` opens the id of a canonical fact (#1070) AND the legacy id
+  // of the facts of a top-level module directory named `canon`.
+  it("is module facts, as it was before the facts sheet, whatever the index", () => {
+    for (const index of [0, 9, 123]) {
+      const id = factsSourceId("canon", index);
+      expect(id).toBe(`facts:canon:${index}`);
+      expect(readableSourceReference(facts(id, "canon"))).toBe("`canon` (module facts)");
+    }
+    expect(
+      renderCitationFootnotes("Rule [facts:canon:0].", [facts("facts:canon:0", "canon")]),
+    ).toBe("Rule[^src-1].\n\n[^src-1]: `canon` (module facts)");
+  });
+
+  it("reads only `cf-` and ten hex digits as a canonical fact", () => {
+    const canonical = "(canonical fact, read from the source)";
+    expect(readableSourceReference(facts("facts:canon:cf-0123456789", "a.go:1 — N = 5"))).toBe(
+      `\`a.go:1 — N = 5\` ${canonical}`,
+    );
+    for (const id of [
+      "facts:canon:cf-012345678", // nine digits
+      "facts:canon:cf-0123456789a", // eleven
+      "facts:canon:cf-012345678G", // not hex
+      "facts:canon:cf-0123456789:0",
+      "facts:canon:",
+    ]) {
+      expect(readableSourceReference(facts(id, "canon"))).not.toContain(canonical);
+    }
+  });
+});
+
 describe("renderCitationFootnotes (#737)", () => {
   it("turns an inline marker into a footnote with a readable definition", () => {
     const out = renderCitationFootnotes(`Storage owns SQL [${storage0}].`, sources);

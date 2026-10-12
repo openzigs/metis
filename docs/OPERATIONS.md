@@ -630,6 +630,23 @@ has measured a BRD generated with it on.
   and reuse inputs are byte for byte what they were before the upgrade, so stored sections
   are reused and no document is rewritten. Only `on` turns it on; any other value is off,
   and is logged.
+- **Leave it unset rather than writing `DOCS_GEN_TOPIC_PLAN=off` into the environment
+  (#1119).** A document's input snapshot hashes every `DOCS_GEN_*`, `DOCS_GROUNDING_*` and
+  `DOCS_FAITHFULNESS_*` variable that is present in the process environment (the two run
+  ceilings aside), whatever it says. So adding this variable to the environment, as `off`,
+  as `on` or empty, or changing its value there, changes the snapshot of **every**
+  auto-update document of every type, and each is queued one regeneration run on the next
+  auto-update check (after an ingest). What that run costs depends on the value, not on the
+  snapshot: with `off`, an empty value or any value but `on`, every stored section is
+  reused, so the run makes no section call and no fact-check call (Phase-1 facts come from
+  their cache, and a document generated with `DOCS_GEN_JUDGE_ESCALATION` on stores no
+  sections and is rewritten, as on any of its runs); with `on`, a BRD's sections are
+  rewritten once (below) and other document types still reuse theirs. This is how
+  every `DOCS_GEN_*` variable behaves, not something particular to this one. A value set
+  through the configuration registry instead (Settings, stored in `runtime_config`) is not
+  in the process environment and does not change the snapshot: no run is queued by the
+  change itself, and an auto-update BRD takes the new value on its next run, which is
+  when another input changes or someone presses **Regenerate**.
 - **No migration and no backfill.** Nothing is stored in a new column or table. The note is
   a warning of severity `info` in the existing `generated_documents.warnings` JSON, and
   planned-out topics use the existing `omittedTopics` of the version manifest.
@@ -648,8 +665,35 @@ has measured a BRD generated with it on.
   `DOCS_GEN_MAX_RUN_TOKENS` apply as before.
 - **A budget is a target.** The plan never cuts a document that fits
   `DOCS_GEN_SECTION_MAX_CHARS` and `DOCS_GEN_DOCUMENT_MAX_CHARS`, and when one of them is
-  exceeded it never keeps less than the same text would have kept without a plan; it
-  changes which text goes (each overrunning part's own tail). In a tightly planned
+  exceeded it changes which text goes (each overrunning part's own tail). What it
+  guarantees about how much is kept is this, and no more (#1119):
+  - **It is a guarantee on the document, not on each section.** Of the same written
+    sections, the planned cut keeps at least as many characters in total as the cut without
+    a plan. One section can keep far less than it would have: in the #1113 review's search
+    with adversarial budgets, a section that kept 18,262 characters without a plan kept 65
+    with one, the document total being no smaller. There is **no per-section floor**. The
+    replay of run 7 is the realistic size: Calculations 2.8k to 5.2k shorter (6 to 11%).
+  - **Kept text counts headings and rules.** A planned cut keeps more topics, each with its
+    heading and `---`. Counting paragraphs alone, it kept less than the cut without a plan
+    in 35 of 1,348 generated documents of that search, by at most 212 characters (0.35%).
+  - **It compares with a cut that is itself within the cap.** With
+    `DOCS_GEN_DOCUMENT_MAX_CHARS` near its 10,000 minimum and every section present, the cut
+    without a plan overruns the cap (it never cuts a section below two notes' length). The
+    planned cut is within the cap and is used without the comparison, so there the planned
+    document is the shorter of the two (13 of the 1,348).
+- **Every planned run logs what each section kept.** `Planned document fit by section`
+  (module `docs-gen:holistic`, level `info`) is written on every planned BRD run, cut or
+  not, with `documentMaxChars`, `bodyMaxChars`, `cut` (`whole`, `plan` or `tail`),
+  `unplannedWithinCap` and, per section, `section` (its id), `cut`, `keptChars` (in the
+  document), `planKeptChars` (under the plan-ordered cut) and `unplannedKeptChars` (what
+  the cut without a plan would have kept of the same text). Numbers and section ids only:
+  no document text. Compare `keptChars` with `unplannedKeptChars` per section across runs
+  before deciding whether a floor is needed; that decision waits for this data. Those
+  figures are measured on each section as it reaches the document, so a section already
+  shortened at `DOCS_GEN_SECTION_MAX_CHARS` appears there as whole. For such a section
+  read `Planned section over its cap` instead (same module and level, one line per
+  shortened section): `group` (the section id), `cut`, `keptChars`, `planKeptChars` and
+  `unplannedKeptChars`, measured on the section as it was written. In a tightly planned
   document a section's budget depends on the other sections' estimates, so a module whose
   facts change can move the budget of a catalogue section that reads nothing new from it
   and rewrite that section too. Catalogue sections read every module with content for

@@ -3902,11 +3902,17 @@ ${plannedOmissionNote(plannedOut, {
     const omitted = fit ? fit.omittedTopics[0] : plannedOut;
     if (omitted.length > 0 || (fit?.trimmed ?? 0) > 0) input.onShortened?.(markdown, omitted);
     if (fit && fit.mode !== "whole") {
+      // #1119 — with what the plan-ordered cut kept and what the cut without a
+      // plan would have kept of the section AS WRITTEN. The document fit's own
+      // figures are measured on this already-shortened section, so for a
+      // section cut here they under-read the loss. Ids and numbers only.
       log.info("Planned section over its cap", {
         projectId,
         group: group.id,
         cut: fit.mode,
         keptChars: fit.keptChars,
+        planKeptChars: fit.kept[0].planChars,
+        unplannedKeptChars: fit.kept[0].unplannedChars,
       });
     }
   } else {
@@ -5334,8 +5340,10 @@ export async function synthesizeFinalDocument(
   // nothing is cut while the document fits; what differs is WHICH text goes
   // when it does not: each part's tail past its planned share, from every
   // section at once, instead of the tails of the longest sections. The plan
-  // fit never keeps less than the fit without a plan would have kept of the
-  // same sections (`document-plan.ts`).
+  // fit never keeps less OF THE DOCUMENT than the fit without a plan would
+  // have kept of the same sections, headings counted, when that fit is itself
+  // within the cap; a single section can keep much less (`document-plan.ts`,
+  // "what that guarantee is, exactly").
   const planFit = planning
     ? fitDocumentToPlan(
         sectionMarkdowns.map((markdown, i) => ({
@@ -5360,6 +5368,27 @@ export async function synthesizeFinalDocument(
       alreadyOmitted,
       renderedCitationLength,
     );
+  // #1119 — on EVERY planned run, cut or not: what each section kept, what
+  // the plan-ordered cut kept of it and what the cut without a plan would have
+  // kept of the same text. There is no per-section floor; these are the
+  // figures one would be decided from. Ids and numbers only, no document text.
+  if (planFit) {
+    log.info("Planned document fit by section", {
+      projectId,
+      docType,
+      documentMaxChars,
+      bodyMaxChars,
+      cut: planFit.mode,
+      unplannedWithinCap: planFit.unplannedWithinCap,
+      sections: planFit.kept.map((kept, i) => ({
+        section: groups[manifestSections[sectionOwners[i]].sectionIndex]?.id ?? null,
+        cut: planFit.cuts[i],
+        keptChars: kept.chars,
+        planKeptChars: kept.planChars,
+        unplannedKeptChars: kept.unplannedChars,
+      })),
+    });
+  }
   if (fittedSections.trimmed > 0) {
     log.info("Document over its length cap; longest sections shortened", {
       projectId,
@@ -5394,13 +5423,16 @@ export async function synthesizeFinalDocument(
   // one document-level marker, since per-section markers can all be absent.
   const runWarning = groundingModeRunWarning(groundingRecord);
   if (runWarning) warnings.push(runWarning);
-  // #1070 — the sections read against each other and against the facts sheet,
-  // as drafted and before any length fit, so every run of the same sections
-  // reports the same thing. It only reports: an `info` note on the document,
-  // nothing removed or rewritten, no model call.
+  // #1070 — the sections read against each other and against the facts sheet.
+  // It only reports: an `info` note on the document, nothing removed or
+  // rewritten, no model call.
+  // #1119 — read AS FITTED, so the note quotes only statements that are in
+  // the document: read as drafted, it could quote one the length fit had just
+  // removed. The fit is a function of the sections and the caps, so every run
+  // of the same sections still reports the same thing.
   if (planning) {
     const consistency = checkFactConsistency(
-      sectionMarkdowns.map((markdown, i) => ({
+      fittedSections.sections.map((markdown, i) => ({
         label: manifestSections[sectionOwners[i]].sectionLabel,
         markdown,
       })),

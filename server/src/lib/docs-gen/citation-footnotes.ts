@@ -81,11 +81,19 @@ function decodeModulePath(sourceId: string): string | null {
 
 const code = (s: string): string => `\`${s.replace(/`/g, "")}\``;
 
+/**
+ * The id of a canonical fact (`canonicalSourceId`, `canonical-facts.ts`):
+ * `cf-` and ten hex digits. The whole id, not the `facts:canon:` prefix: a
+ * module in a top-level directory named `canon` has the legacy facts id
+ * `facts:canon:<index>`, and it is module facts whatever the plan setting (#1119).
+ */
+const CANONICAL_FACT_ID = /^facts:canon:cf-[0-9a-f]{10}$/;
+
 /** The reference a reader can follow for one admitted grounding source. */
 export function readableSourceReference(source: GroundingSource): string {
   if (source.kind === "facts") {
     // #1070 — a canonical fact: its label is the source line and the value.
-    if (source.sourceId.startsWith("facts:canon:")) {
+    if (CANONICAL_FACT_ID.test(source.sourceId)) {
       return `${code(source.label)} (canonical fact, read from the source)`;
     }
     const location = decodeSymbolLocation(source.sourceId);
