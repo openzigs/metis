@@ -468,7 +468,15 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
                 destination: "github",
               },
             },
-            update: { issueNumber: existing.issueNumber, status: "updated" },
+            // `existing` was found under `hash` with this body: record both
+            // with the issue, so a row left by an earlier failed run (another
+            // title's hash, no issue) describes the issue it now names.
+            update: {
+              issueNumber: existing.issueNumber,
+              status: "updated",
+              dedupHash: hash,
+              bodyHash,
+            },
             create: {
               batchId: batch.id,
               draftId: draft.id,
@@ -659,11 +667,19 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
         update: {
           status: "failed",
           errorMessage: message,
+          // The hashes move WITH the issue, and only with it: the row must hold
+          // the hash stamped in the marker of the issue it names, or the next
+          // run's remote sweep reads its own marker as a forged one and files
+          // a second issue (a draft retitled after an earlier failed run). A
+          // failure before any write leaves the recorded issue and its hash
+          // as they are — they still describe each other.
           ...(remoteCreated
             ? {
                 issueNumber: remoteCreated.issueNumber,
                 issueId: remoteCreated.nodeId,
                 htmlUrl: remoteCreated.htmlUrl,
+                dedupHash: hash,
+                bodyHash,
               }
             : {}),
         },
@@ -1260,6 +1276,9 @@ async function reconcileFromRemote(args: ReconcileArgs): Promise<void> {
     const dbRow = await prisma.publishedIssue.findFirst({
       where: {
         draftId: marker.draftId,
+        // A GitHub issue is matched against a GitHub row: the Jira row of the
+        // same draft holds issue number 0 and would read as a mismatch.
+        destination: "github",
         batch: { projectId },
       },
       include: { batch: true },
@@ -1313,13 +1332,24 @@ async function reconcileFromRemote(args: ReconcileArgs): Promise<void> {
     // rewrite it (it is sha256 of `owner/repo:title`, so it is computable) to
     // the hash of ANOTHER draft, and the next batch then overwrote this issue
     // with that draft while the draft never got an issue of its own. So the
-    // hash must be the one METIS recorded for this issue — or, for a row that
-    // recorded none, the hash of the draft the marker names. Anything else is
-    // no match: the draft is created as a new issue and the conflict reported.
+    // hash must be one METIS can vouch for, for THIS issue's own draft (the row
+    // above ties the draft the marker names to this issue number):
+    //   - the hash recorded for the issue, or
+    //   - the hash that draft has now, when it is in this batch.
+    // The second is the only reading for a row that recorded no hash, and it
+    // is what recovers a draft retitled after a failed run: rows written
+    // before the failed branch recorded the hash with the issue hold the OLD
+    // title's hash beside an issue stamped with the new one, and refusing
+    // those created a second issue. It gives an editor of the tracker nothing:
+    // it files this issue under its own draft's hash, which is where that
+    // draft publishes anyway. Anything else is no match: the draft is created
+    // as a new issue and the conflict reported.
     const named = drafts.find((d) => d.id === marker.draftId);
-    const recordedHash =
-      dbRow.dedupHash ?? (named ? computeDedupHash(target.owner, target.repo, named.title) : null);
-    if (recordedHash !== marker.hash) {
+    const vouched =
+      (dbRow.dedupHash !== null && dbRow.dedupHash === marker.hash) ||
+      (named !== undefined &&
+        computeDedupHash(target.owner, target.repo, named.title) === marker.hash);
+    if (!vouched) {
       const claimedBy = drafts.find(
         (d) => computeDedupHash(target.owner, target.repo, d.title) === marker.hash,
       );

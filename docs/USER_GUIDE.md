@@ -1765,29 +1765,44 @@ For each requirement, METIS creates a draft issue (an import of more than 25 req
     - *Drafts generated for the repository METIS analysed* — the publish target has the same host, owner
       and name as the project's single GitHub connector: each path is a link into that repository at the
       ingested commit, so the issue names the repository's owner, name and commit SHA — which its readers
-      can already see. The host is the **GHE base URL** field of the publish batch form (empty = public
-      GitHub), read when you click **Generate**; it is prefilled from the connector. A repository with
-      the same owner and name on another host is a different repository.
+      can already see. Three fields decide it, and they sit on two cards: the **Target owner** and
+      **Target repo** of the *Generate drafts from analysis* card, and the **GHE base URL** field of the
+      *New publish batch* card, which gives the host (empty = github.com; it is prefilled from the
+      connector, and **Generate** stays disabled until that has loaded). All three are read when you
+      click **Generate**. A repository with the same owner and name on another host is a different
+      repository. If the base URL field holds something that is not an `https://` URL, Generate still
+      runs: the drafts list the code as plain text and a note beside the button says why.
     - *Drafts generated for any other repository* (a sandbox, a separate tracker, a public issue repo, a
       same-named repository on another host): the same paths and symbol names are listed as plain code,
       with no link, no owner or repository name and no commit SHA, and the section's last line says the
       paths are text because the issue is not in the analysed repository. The paths and symbol names
       themselves are still written: if the layout of a private repository must not reach that tracker,
       edit the section out of the draft before approving it.
-    - A path or symbol name that contains a square bracket (`app/[id]/page.tsx`, `items[0]`) is always
-      listed as plain code, never as a link, in either case.
+    - A path that contains a square bracket (`app/[id]/page.tsx`, any Next.js dynamic route) is linked
+      too, but the link is written after the path instead of on it:
+      `` `app/[id]/page.tsx` ([source](…)) ``. A bracket in a symbol name (`items[0]`) changes nothing.
     - A batch, or a draft pull request, pointed at a different repository than its drafts were generated for is refused
       (`CODE_LINKS_TARGET_MISMATCH`) while any of them still links into the analysed repository. The
-      message names the drafts. There are two ways out: set the batch form's owner, repository and base
-      URL to the new target and click **Generate** again — the code is then listed as text, except in a
-      draft whose text you edited by hand or that is kept because it is signed off; or remove the links
-      from those drafts in the draft editor. A repository that was renamed or transferred is a different
-      target until the connector is updated to the new name.
-    - **Jira never receives the links.** When the project publishes to Jira (destination `jira` or
-      `both`), the Jira issue carries the section in its plain form — paths and symbol names as code, no
-      owner, repository name, commit SHA or URL — whatever the GitHub issue of the same draft carries.
-      A link into the analysed repository that someone typed elsewhere in the draft is replaced by
-      `(link removed)` in the Jira issue. The stored draft is not changed.
+      message names the drafts. There are two ways out. **Generate again for the new target:** in the
+      *Generate drafts from analysis* card set **Target owner** and **Target repo** to the new
+      repository, in the *New publish batch* card set **GHE base URL** to its host (empty for
+      github.com), and click **Generate** — the batch form's own Owner and Repo fields are not read by
+      Generate; they then show the regenerated drafts' target. The code is listed as text afterwards,
+      except in a draft whose text you edited by hand or that is kept because it is signed off. **Or
+      remove the links** from those drafts in the draft editor. A repository that was renamed or
+      transferred is a different target until the connector is updated to the new name.
+    - **Jira never receives the links METIS wrote.** When the project publishes to Jira (destination
+      `jira` or `both`), the Jira issue carries the **Related code** section in its plain form — paths
+      and symbol names as code, no owner, repository name, commit SHA or URL — whatever the GitHub issue
+      of the same draft carries. Only that section is replaced; every other character of the draft is
+      sent as it is, and the stored draft is not changed. Two consequences:
+      - *A link or URL you (or the imported requirement text) wrote is yours and goes to Jira unchanged*,
+        including a link into the analysed repository and its commit SHA. If that must not reach Jira,
+        take it out of the draft before approving it. The draft preview shows the linked body; Jira has
+        no dry run, so the plain section is not shown before it is sent.
+      - *If you edit the section*, METIS no longer swaps it whole. It takes its own link off each row
+        that still has it, leaves your words, and ends the section with a line saying it was edited. A
+        row you rewrote from its first character is yours and is sent as written.
     - The paths are also plain text when the project has no GitHub connector, more than one, or one
       whose host or branch is not known safely. Links go to `github.com`; to `<tenant>.ghe.com` for a
       GitHub Enterprise Cloud connector whose API is `api.<tenant>.ghe.com`; and to the connector's own
@@ -1872,7 +1887,7 @@ On the **Publishing** tab:
 2. Click **Generate** — METIS will create one Epic and N Features (one per requirement) with auto-assigned labels, a **Related code** section and a `Generated by METIS` footer.
    The epic is named after the batch, not after one requirement (#1064): the heading of the requirement text if it has one; the requirement itself when the text states only one; otherwise the import label, or `<N> stated requirements (analysis of <start time>)` when the text is a list of several. An epic draft that already exists keeps its title — edit it on this page to rename it.
 3. Re-running generation against the same analysis will **refresh** existing drafts in place rather than duplicating them.
-   **Issues published before #1064 are not rewritten.** Generate refreshes the stored draft of an already-published issue, but a publish run only selects drafts that are not yet published, so those issues keep the body they were published with: no **Related code** section, the old footer with ids, no hidden `metis-source` comment. Their preview in METIS therefore differs from what the tracker shows. The one exception is a draft a run can still select — one left `failed` by a partial run, or a `draft`/`approved` one matched to an existing issue — which is updated once; the dry-run plan lists it as `issue.update`. The same holds for the epic, whose body no longer shows ids: a published epic is left as it is, and no second epic is created.
+   **Issues published before #1064 are not rewritten.** Generate refreshes the stored draft of an already-published issue, but a publish run only selects drafts that are not yet published, so those issues keep the body they were published with: no **Related code** section, the old footer with ids, no hidden `metis-source` comment. Their preview in METIS therefore differs from what the tracker shows. The one exception is a draft a run can still select — one left `failed` by a partial run, or a `draft`/`approved` one matched to an existing issue — which is updated once; the dry-run plan lists it as `issue.update`. (One exception: an issue METIS can only find by reading the tracker — its own record is in an archived batch, or was lost — is found by the live run alone, because a dry run makes no GitHub call. The dry-run plan lists such a draft as `issue.create`; the live run then skips or updates the existing issue and creates nothing.) The same holds for the epic, whose body no longer shows ids: a published epic is left as it is, and no second epic is created.
 
 Permission required: `issue.draft` (admin / coordinator / developer).
 

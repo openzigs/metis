@@ -1004,9 +1004,20 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
       "- [`ui/src/login-form.tsx`](https://github.com/acme/metis/blob/0123abcd/ui/src/login-form.tsx)",
     );
     // The draft records what it links into, so a batch aimed elsewhere is refused.
-    expect(JSON.parse(feature("req_1").metadata!).codeLinkBase).toBe(
-      "https://github.com/acme/metis",
+    const recorded = JSON.parse(feature("req_1").metadata!);
+    expect(recorded.codeLinkBase).toBe("https://github.com/acme/metis");
+    // …and both renderings of the section its body holds: the linked one is in
+    // the body byte for byte, the plain one is what Jira gets in its place.
+    expect(linked).toContain(`\n${recorded.codeLinkSection.linked}\n`);
+    expect(recorded.codeLinkSection.plain).toContain(
+      "- `server/src/auth/login.ts:10-42` — `createSession` (function)\n- `ui/src/login-form.tsx`",
     );
+    expect(recorded.codeLinkSection.plain).not.toContain("acme");
+    expect(bodyWithCodeAsText(feature("req_1"))).toBe(
+      linked.replace(recorded.codeLinkSection.linked, recorded.codeLinkSection.plain),
+    );
+    // A requirement with no link has nothing to swap, and records no section.
+    expect(JSON.parse(feature("req_2").metadata!).codeLinkSection).toBeUndefined();
     // Another requirement's links never appear, and "no link" is said in words.
     const unlinked = feature("req_2").body;
     expect(unlinked).not.toContain("login.ts");
@@ -1129,12 +1140,17 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
     // The body still links into acme/metis, so the record of that stays with
     // it: without it the guard would let this draft into any other repository.
     expect(meta.codeLinkBase).toBe("https://github.com/acme/metis");
+    // …and so does the record of the section, or Jira would get the kept body
+    // through the edited-section path.
+    expect(held.body).toContain(meta.codeLinkSection.linked);
+    expect(bodyWithCodeAsText(held)).not.toContain("https://github.com/acme/metis");
+    expect(bodyWithCodeAsText(held)).toContain("this issue is not known to be in that repository");
     expect(() =>
       assertCodeLinksMatchTarget([held], { owner: "someone", repo: "public", baseUrl: null }),
     ).toThrow(/links into the analysed repository/);
   });
 
-  it("writes no link when the caller does not say which host the target is on", async () => {
+  it("reads a target with no base URL as public GitHub — the reading batch create gives it", async () => {
     codeMappings.push({
       requirementId: "req_1",
       filePath: "server/src/auth/login.ts",
@@ -1150,12 +1166,54 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
       apiBaseUrl: null,
       lastCommitSha: "0123abcd",
     });
-    // Owner and name match the connector; the host is simply not given.
-    await generateDrafts({ ...opts, targetBaseUrl: undefined });
-    const body = feature("req_1").body;
-    expect(body).toContain("- `server/src/auth/login.ts:10-42`");
-    expect(body).not.toContain("https://");
-    expect(JSON.parse(feature("req_1").metadata!).codeLinkBase).toBeUndefined();
+    const target = { owner: "acme", repo: "metis" };
+    // Left out, null and empty are one target, at Generate and for the guard:
+    // an API caller that sends the same fields to both gets links and no refusal.
+    for (const targetBaseUrl of [undefined, null, ""]) {
+      drafts.clear();
+      await generateDrafts({ ...opts, targetBaseUrl });
+      const label = String(targetBaseUrl);
+      expect(feature("req_1").body, label).toContain(
+        "- [`server/src/auth/login.ts:10-42`](https://github.com/acme/metis/blob/0123abcd/server/src/auth/login.ts#L10-L42)",
+      );
+      const generated = [...drafts.values()];
+      for (const baseUrl of [undefined, null]) {
+        expect(
+          () => assertCodeLinksMatchTarget(generated, { ...target, baseUrl }),
+          label,
+        ).not.toThrow();
+      }
+      expect(() => assertCodeLinksMatchTarget(generated, target), label).not.toThrow();
+    }
+  });
+
+  it("writes plain code, and records nothing, for a base URL that is not an https URL", async () => {
+    codeMappings.push({
+      requirementId: "req_1",
+      filePath: "server/src/auth/login.ts",
+      startLine: 10,
+      endLine: 42,
+      codeSymbol: null,
+    });
+    repoConnections.push({
+      provider: "github",
+      ownerOrOrg: "acme",
+      repoName: "metis",
+      defaultBranch: "main",
+      apiBaseUrl: null,
+      lastCommitSha: "0123abcd",
+    });
+    // What a half-typed batch-form field holds: Generate does not fail on it.
+    for (const targetBaseUrl of ["github.example.com", "http://api.github.com", "https://"]) {
+      drafts.clear();
+      await generateDrafts({ ...opts, targetBaseUrl });
+      const body = feature("req_1").body;
+      expect(body, targetBaseUrl).toContain("- `server/src/auth/login.ts:10-42`");
+      expect(body, targetBaseUrl).not.toContain("https://");
+      const meta = JSON.parse(feature("req_1").metadata!);
+      expect(meta.codeLinkBase).toBeUndefined();
+      expect(meta.codeLinkSection).toBeUndefined();
+    }
   });
 
   describe("the same owner and repository name on another host", () => {
@@ -1196,14 +1254,21 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
 
     it("generated for github.com, the drafts carry no link and are never refused there", async () => {
       // Before: names matched, so links were written, and the batch was refused.
-      await generateDrafts({ ...opts, targetBaseUrl: null });
-      const body = feature("req_1").body;
-      expect(body).toContain("- `server/src/auth/login.ts:10-42` — `createSession` (function)");
-      for (const leak of ["ghe.example.com", "0123abcd", "https://", "]("]) {
-        expect(body).not.toContain(leak);
+      // A base URL that was left out is github.com too, so it is no way round.
+      for (const targetBaseUrl of [null, undefined]) {
+        drafts.clear();
+        await generateDrafts({ ...opts, targetBaseUrl });
+        const body = feature("req_1").body;
+        expect(body).toContain("- `server/src/auth/login.ts:10-42` — `createSession` (function)");
+        for (const leak of ["ghe.example.com", "0123abcd", "https://", "]("]) {
+          expect(body).not.toContain(leak);
+        }
+        expect(JSON.parse(feature("req_1").metadata!).codeLinkBase).toBeUndefined();
+        expect(() => assertCodeLinksMatchTarget(featureDrafts(), onPublicGitHub)).not.toThrow();
+        expect(() =>
+          assertCodeLinksMatchTarget(featureDrafts(), { owner: "acme", repo: "metis" }),
+        ).not.toThrow();
       }
-      expect(JSON.parse(feature("req_1").metadata!).codeLinkBase).toBeUndefined();
-      expect(() => assertCodeLinksMatchTarget(featureDrafts(), onPublicGitHub)).not.toThrow();
     });
 
     it("the refusal's first remedy works: generating again for the target clears it", async () => {
@@ -1228,8 +1293,13 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
       await generateDrafts({ ...opts, targetBaseUrl: GHE });
       const edited = feature("req_1");
       edited.metadata = JSON.stringify({ ...JSON.parse(edited.metadata!), userEdited: true });
+      const recordedSection = JSON.parse(edited.metadata).codeLinkSection;
+      expect(recordedSection.linked).toContain("https://ghe.example.com/acme/metis/blob/");
       // Regenerating keeps a hand-edited body, links and all: still refused…
       await generateDrafts({ ...opts, targetBaseUrl: null });
+      // …and the record of the section that body holds is kept with it, not
+      // replaced by nothing (this Generate links nowhere).
+      expect(JSON.parse(drafts.get(edited.id)!.metadata!).codeLinkSection).toEqual(recordedSection);
       expect(() => assertCodeLinksMatchTarget(featureDrafts(), onPublicGitHub)).toThrow(
         /edited by hand or is kept because it is signed off/,
       );

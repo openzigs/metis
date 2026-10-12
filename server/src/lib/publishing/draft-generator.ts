@@ -40,6 +40,7 @@ import { publishableLabels } from "./label-sync.js";
 import { buildEpicTitle, buildLegacyEpicTitle, formatStartedAt } from "./epic-title.js";
 import {
   codeLinkBase,
+  codeLinkSectionRecord,
   loadDraftCodeLinks,
   renderCodeLinksSection,
   type CodeLinkRepo,
@@ -68,10 +69,10 @@ export interface GenerateDraftsOptions {
   targetRepo: string;
   /**
    * #1064 — the target's API base URL, as the batch form holds it: `null` for
-   * public GitHub. Code is linked only when owner, repository AND this host
-   * are the analysed repository's. `undefined` (the caller does not know the
-   * host) writes plain code: a link that publishing may refuse is worse than
-   * no link.
+   * public GitHub, and so is leaving it out — the reading batch create gives
+   * the same field. Code is linked only when owner, repository AND this host
+   * are the analysed repository's. A value that is not an https URL names no
+   * host, so the code is written as text.
    */
   targetBaseUrl?: string | null;
   defaultLabels?: string[];
@@ -440,8 +441,7 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   const codeLinks = await loadDraftCodeLinks(
     opts.projectId,
     requirements.map((r) => r.id),
-    // Host included: left out (`undefined`), the target is not known to be the
-    // analysed repository and every path is written as plain code.
+    // Host included: a same-named repository on another host is another target.
     { owner: opts.targetOwner, repo: opts.targetRepo, baseUrl: opts.targetBaseUrl },
   );
   // #490 — every requirement's content key, so a same-titled sibling never
@@ -476,6 +476,11 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
       },
     });
     const key = requirementKey(req);
+    const linked = codeLinks?.repo ? codeLinks.byRequirement.get(req.id) : undefined;
+    const codeLinkSection =
+      codeLinks?.repo && linked
+        ? codeLinkSectionRecord(linked.links, codeLinks.repo, linked.total)
+        : null;
     const draft = await claimAndUpsertDraft(
       opts,
       reqTitle,
@@ -501,6 +506,10 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
           // The repository this body's code links point into, so a batch aimed
           // at a different one is refused (`assertCodeLinksMatchTarget`).
           ...(codeLinks?.repo ? { codeLinkBase: codeLinkBase(codeLinks.repo) } : {}),
+          // Both renderings of the section this body holds, so a tracker that
+          // is not that repository (Jira) gets the plain one in its place
+          // without the body being parsed (`bodyWithCodeAsText`).
+          ...(codeLinkSection ? { codeLinkSection } : {}),
         },
       },
       { requirementKey: key, reservedKeys },
@@ -742,6 +751,7 @@ async function upsertDraft(args: UpsertArgs): Promise<{ id: string; created: boo
             ...args.metadata,
             // The body is kept, so what it links into is too.
             codeLinkBase: existingMeta.codeLinkBase,
+            codeLinkSection: existingMeta.codeLinkSection,
             requirementKey: storedKey,
             bodyHeld: true,
             // #776 — a reviewer's edit outlives the re-link too.
@@ -777,6 +787,7 @@ async function upsertDraft(args: UpsertArgs): Promise<{ id: string; created: boo
             ...args.metadata,
             // The body is kept, so what it links into is too.
             codeLinkBase: existingMeta.codeLinkBase,
+            codeLinkSection: existingMeta.codeLinkSection,
             userEdited: true,
             editedAt: existingMeta.editedAt,
             editedById: existingMeta.editedById,

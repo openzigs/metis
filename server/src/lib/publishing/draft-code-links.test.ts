@@ -20,13 +20,14 @@ vi.mock("../prisma.js", () => ({
 const {
   CODE_LINK_READ_CAP,
   CODE_LINKS_AS_TEXT_NOTE,
+  CODE_LINKS_EDITED_NOTE,
   MAX_DRAFT_CODE_LINKS,
   assertCodeLinksMatchTarget,
   bodyWithCodeAsText,
-  codeLinksAsText,
   publishTargetBase,
   buildCodeLinkUrl,
   codeLinkBase,
+  codeLinkSectionRecord,
   inlineCode,
   loadDraftCodeLinks,
   renderCodeLinksSection,
@@ -218,26 +219,35 @@ describe("inlineCode", () => {
     expect(inlineCode("a<!-- b --!> c")).toBe("`a<!- - b - -!> c`");
   });
 
-  it("writes a row whose path or symbol holds a square bracket as plain code, never a link", () => {
-    // `[` + a path holding `]:` is a link reference definition to Markdown.
+  it("links a location that holds a square bracket by a link after its code span", () => {
+    // `[` + a path holding `]:` is a link reference definition to Markdown, so
+    // a bracketed location is never the TEXT of a link.
     const rows = (over: Partial<DraftCodeLink>) =>
       renderCodeLinksSection([link(over)], REPO).filter((l) => l.startsWith("- "));
+    const blob = "https://github.com/miniflux/v2/blob/abc1234";
     expect(
       rows({ filePath: "x]:https:/evil.example/y", startLine: null, symbolName: null }),
-    ).toEqual(["- `x]:https:/evil.example/y`"]);
+    ).toEqual([
+      `- \`x]:https:/evil.example/y\` ([source](${blob}/x%5D%3Ahttps%3A/evil.example/y))`,
+    ]);
     expect(rows({ filePath: "]", startLine: 3, endLine: 9, symbolName: null })).toEqual([
-      "- `]:3-9`",
+      `- \`]:3-9\` ([source](${blob}/%5D#L3-L9))`,
     ]);
-    expect(rows({ filePath: "app/[id]/page.tsx", startLine: null, symbolName: null })).toEqual([
-      "- `app/[id]/page.tsx`",
+    // An ordinary Next.js route keeps its link, and its symbol.
+    expect(rows({ filePath: "app/[id]/page.tsx", startLine: null, symbolName: "Page" })).toEqual([
+      `- \`app/[id]/page.tsx\` ([source](${blob}/app/%5Bid%5D/page.tsx)) — \`Page\` (method)`,
     ]);
+    expect(
+      rows({ filePath: "app/[...slug]/page.tsx", startLine: 1, endLine: null, symbolName: null }),
+    ).toEqual([`- \`app/[...slug]/page.tsx:1\` ([source](${blob}/app/%5B...slug%5D/page.tsx#L1))`]);
+    // A bracket in the symbol only: the location is still the link's text.
     expect(rows({ filePath: "a.go", startLine: null, symbolName: "xs[0]" })).toEqual([
-      "- `a.go` — `xs[0]` (method)",
+      `- [\`a.go\`](${blob}/a.go) — \`xs[0]\` (method)`,
     ]);
-    // Without a bracket the same row is still a link.
-    expect(rows({ filePath: "a.go", startLine: null, symbolName: "xs" })[0]).toMatch(
-      /^- \[`a\.go`\]\(https:\/\/github\.com\/miniflux\/v2\/blob\/abc1234\/a\.go\) — `xs`/,
-    );
+    // A bracketed path that cannot be linked at all stays plain code.
+    expect(rows({ filePath: "../[id].ts", startLine: null, symbolName: null })).toEqual([
+      "- `../[id].ts`",
+    ]);
   });
 
   it("does not split a surrogate pair at the cut", () => {
@@ -467,6 +477,10 @@ describe("loadDraftCodeLinks", () => {
       { owner: "Miniflux", repo: "V2", baseUrl: null },
       { owner: " miniflux ", repo: "v2", baseUrl: "https://api.github.com" },
       { owner: "miniflux", repo: "v2", baseUrl: "https://API.GitHub.com/" },
+      // Left out, or empty, is public GitHub — as it is when a batch is created.
+      { owner: "miniflux", repo: "v2" },
+      { owner: "miniflux", repo: "v2", baseUrl: undefined },
+      { owner: "miniflux", repo: "v2", baseUrl: "  " },
     ]) {
       expect(
         (await loadDraftCodeLinks("p1", ["r1"], same))?.repo,
@@ -480,8 +494,8 @@ describe("loadDraftCodeLinks", () => {
       // The same owner and name on ANOTHER host is another repository.
       { owner: "miniflux", repo: "v2", baseUrl: "https://ghe.example.com/api/v3" },
       { owner: "miniflux", repo: "v2", baseUrl: "http://api.github.com" },
-      // The host was not given: not known to be the analysed repository.
-      { owner: "miniflux", repo: "v2", baseUrl: undefined },
+      // Not a URL at all (a half-typed field): names no host.
+      { owner: "miniflux", repo: "v2", baseUrl: "github.example.com" },
     ]) {
       const loaded = await loadDraftCodeLinks("p1", ["r1"], other);
       expect(loaded?.repo, JSON.stringify(other)).toBeNull();
@@ -509,9 +523,10 @@ describe("loadDraftCodeLinks", () => {
       ref: "abc1234def",
     });
     expect((await on("https://ghe.example.com"))?.repo).not.toBeNull();
-    // The same names on public GitHub, or with no host given: text.
+    // The same names on public GitHub — which is what no host given means: text.
     expect((await on(null))?.repo).toBeNull();
     expect((await on(undefined))?.repo).toBeNull();
+    expect((await on(""))?.repo).toBeNull();
     expect((await on("https://other.example.com/api/v3"))?.repo).toBeNull();
   });
 
@@ -535,8 +550,22 @@ describe("publishTargetBase — one definition of the target, for generation and
     ).toBe("https://tenant.ghe.com/acme/app");
   });
 
-  it("is null when the host is not known or not https", () => {
-    expect(publishTargetBase({ owner: "acme", repo: "app", baseUrl: undefined })).toBeNull();
+  it("reads a base URL that was left out, null or empty as public GitHub", () => {
+    for (const baseUrl of [undefined, null, "", "  "]) {
+      expect(publishTargetBase({ owner: "acme", repo: "app", baseUrl }), String(baseUrl)).toBe(
+        "https://github.com/acme/app",
+      );
+    }
+    expect(publishTargetBase({ owner: "acme", repo: "app" })).toBe("https://github.com/acme/app");
+    expect(
+      publishTargetBase({ owner: "acme", repo: "app", baseUrl: " https://ghe.example.com " }),
+    ).toBe("https://ghe.example.com/acme/app");
+  });
+
+  it("is null when the base URL is not an https URL", () => {
+    expect(
+      publishTargetBase({ owner: "acme", repo: "app", baseUrl: "ghe.example.com" }),
+    ).toBeNull();
     expect(
       publishTargetBase({ owner: "acme", repo: "app", baseUrl: "http://x.example" }),
     ).toBeNull();
@@ -674,96 +703,348 @@ describe("assertCodeLinksMatchTarget — linked drafts stay in the repository th
   });
 });
 
-describe("codeLinksAsText / bodyWithCodeAsText — the plain form, for a tracker that is not the repository", () => {
-  const base = codeLinkBase(REPO);
+describe("bodyWithCodeAsText — the plain form, for a tracker that is not the repository", () => {
+  // A connector spelled with capitals: the base is recorded as written.
+  const ACME = {
+    origin: "https://github.com",
+    owner: "Acme",
+    repo: "App",
+    ref: "abc1234",
+  };
+  const base = codeLinkBase(ACME);
+  const URL_A = `${base}/blob/main/src/a.ts`;
   const links = [
     link(),
-    link({ filePath: "internal/b.go", startLine: 7, endLine: null, symbolName: null }),
+    link({
+      filePath: "internal/b.go",
+      startLine: 7,
+      endLine: null,
+      symbolName: null,
+    }),
+    // A Next.js route: linked by the `source` link after the code span.
+    link({
+      filePath: "app/[id]/page.tsx",
+      startLine: null,
+      symbolName: "Page",
+      symbolKind: null,
+    }),
   ];
-  const section = (repo: typeof REPO | null) =>
+  const body = (
+    repo: typeof ACME | null,
+    text: readonly string[] = ["Requirement text."],
+    rows: readonly DraftCodeLink[] = links,
+  ) =>
     [
+      "## Description",
+      "",
+      ...text,
+      "",
       "## Acceptance criteria",
       "",
       "- [ ] one",
       "",
-      ...renderCodeLinksSection(links, repo),
+      ...renderCodeLinksSection(rows, repo),
       "",
       "## Definition of done",
       "",
       "---",
       "> Generated by METIS",
     ].join("\n");
+  const meta = (rows: readonly DraftCodeLink[] = links, repo = ACME) =>
+    JSON.stringify({
+      codeLinkBase: codeLinkBase(repo),
+      codeLinkSection: codeLinkSectionRecord(rows, repo),
+    });
+  const asText = (text: string, metadata: string | null = meta()) =>
+    bodyWithCodeAsText({ body: text, metadata });
 
-  it("rewrites a linked section into exactly the text-only section", () => {
-    expect(section(REPO)).toContain(`${base}/blob/abc1234/`);
-    expect(codeLinksAsText(section(REPO), base)).toBe(section(null));
-    expect(codeLinksAsText(section(null), base)).toBe(section(null));
+  /** Everything the cycle-3 review showed the whole-body scan cutting. */
+  const USER_TEXT = [
+    `Run \`${URL_A}\` then \`other\`.`,
+    `See ${URL_A}. Next sentence.`,
+    `[t](${URL_A} "title") and [t](<${URL_A}> "title")`,
+    `![shot](${URL_A}?raw=true)`,
+    `See [the handler](${URL_A}#L3) for detail, and <${URL_A}>.`,
+    "```",
+    `curl ${URL_A}`,
+    "```",
+    `[[a](${URL_A})](https://other.example) ${base}/tree/main ${base}/commit/abc1234`,
+    "",
+    "## Related code",
+    "",
+    "- my own list, with [a link](https://example.com/x)",
+    `- and ${URL_A}`,
+  ];
+
+  describe("a section still as METIS wrote it: swapped whole, nothing else read", () => {
+    it("puts exactly the text-only section in its place", () => {
+      expect(body(ACME)).toContain(`${base}/blob/abc1234/`);
+      expect(body(ACME)).toContain(
+        `- \`app/[id]/page.tsx\` ([source](${base}/blob/abc1234/app/%5Bid%5D/page.tsx)) — \`Page\``,
+      );
+      expect(asText(body(ACME))).toBe(body(null));
+      // Already plain: unchanged, and the note is not added twice.
+      expect(asText(body(null))).toBe(body(null));
+      expect(asText(asText(body(ACME))).split(CODE_LINKS_AS_TEXT_NOTE)).toHaveLength(2);
+    });
+
+    it("leaves no owner, repository, commit or URL of the analysed repository in the section", () => {
+      const plain = asText(body(ACME));
+      for (const leak of ["github.com", "Acme", "acme", "abc1234", "]("]) {
+        expect(plain, leak).not.toContain(leak);
+      }
+      expect(plain).toContain(CODE_LINKS_AS_TEXT_NOTE);
+    });
+
+    it("sends the user's own text to Jira byte for byte — links, URLs, code, punctuation", () => {
+      const plain = asText(body(ACME, USER_TEXT));
+      expect(plain).toBe(body(null, USER_TEXT));
+      for (const line of USER_TEXT) expect(plain, line).toContain(line);
+      // The heading the user wrote keeps its own list and gets no METIS note:
+      // the one note is under the section METIS wrote.
+      expect(plain.split(CODE_LINKS_AS_TEXT_NOTE)).toHaveLength(2);
+      expect(plain.indexOf(CODE_LINKS_AS_TEXT_NOTE)).toBeGreaterThan(
+        plain.indexOf("## Acceptance criteria"),
+      );
+    });
+
+    it("keeps a row whose symbol or path is itself a blob URL of the repository", () => {
+      const rows = [
+        link({
+          filePath: "src/a.ts",
+          startLine: 3,
+          endLine: null,
+          symbolName: `${base}/blob/z`,
+        }),
+        link({
+          filePath: `x](${base}/blob/`,
+          startLine: null,
+          symbolName: "sym",
+        }),
+        link({
+          filePath: "src/b.ts",
+          startLine: null,
+          symbolName: `[\`q\`](${base}/blob/q)`,
+        }),
+      ];
+      const plain = asText(body(ACME, undefined, rows), meta(rows));
+      expect(plain).toBe(body(null, undefined, rows));
+      expect(plain).toContain(`- \`src/a.ts:3\` — \`${base}/blob/z\` (method)`);
+      expect(plain).toContain(`- \`x](${base}/blob/\` — \`sym\` (method)`);
+    });
+
+    it("is its own plain form, even beside a section a user wrote the way METIS writes one", () => {
+      // Adopt writes the Jira form back into the draft. The next comparison
+      // must find it unchanged, or the issue reports drift for ever — and the
+      // user's own section must not be taken for an edited METIS one then.
+      const mine = [
+        "## Related code",
+        "",
+        `- [\`mine.go\`](${base}/blob/main/mine.go) — my own note`,
+        "",
+        "## More",
+      ];
+      const once = asText(body(ACME, mine));
+      expect(once).toBe(body(null, mine));
+      expect(asText(once)).toBe(once);
+      expect(once).toContain(`- [\`mine.go\`](${base}/blob/main/mine.go) — my own note`);
+    });
+
+    it("swaps every whole-line copy of the section, and no partial one", () => {
+      const section = renderCodeLinksSection(links, ACME).join("\n");
+      const plainSection = renderCodeLinksSection(links, null).join("\n");
+      expect(asText(`${section}\n\ntext\n\n${section}`)).toBe(
+        `${plainSection}\n\ntext\n\n${plainSection}`,
+      );
+      // Not on line boundaries: not the section. (It then counts as edited.)
+      expect(asText(`> ${section}`)).toBe(`> ${section}`);
+      const trailing = asText(`${section} trailing words`);
+      expect(trailing).toContain(CODE_LINKS_EDITED_NOTE);
+      expect(trailing).not.toContain(CODE_LINKS_AS_TEXT_NOTE);
+    });
+
+    it("adds the note to rows that never had a link, once", () => {
+      // Every path here is unsafe to link, so the two sections differ only by the note.
+      const rows = [link({ filePath: "../up.go", startLine: null, symbolName: null })];
+      const linked = body(ACME, undefined, rows);
+      expect(linked).not.toContain("](");
+      const plain = asText(linked, meta(rows));
+      expect(plain).toBe(body(null, undefined, rows));
+      expect(asText(plain, meta(rows))).toBe(plain);
+    });
   });
 
-  it("leaves no owner, repository, commit or URL of the analysed repository", () => {
-    const plain = codeLinksAsText(section(REPO), base);
-    expect(plain).not.toContain("github.com");
-    expect(plain).not.toContain("miniflux");
-    expect(plain).not.toContain("abc1234");
-    expect(plain).toContain(CODE_LINKS_AS_TEXT_NOTE);
+  describe("a section a reviewer edited: METIS's links come off its rows, nothing else", () => {
+    const section = renderCodeLinksSection(links, ACME);
+    const edited = (text: readonly string[] = ["Requirement text."]) =>
+      body(ACME, text)
+        .replace("`MarkAllAsRead` (method)", "`MarkAllAsRead` (method) — start here")
+        .replace(section[2]!, `${section[2]!}\n\nReviewer: also see [the handler](${URL_A}).`);
+
+    it("takes both link forms off, says the section was edited, and keeps the reviewer's words", () => {
+      const plain = asText(edited());
+      expect(plain).toContain(
+        "- `internal/storage/entry.go:120-148` — `MarkAllAsRead` (method) — start here",
+      );
+      expect(plain).toContain("- `internal/b.go:7`\n");
+      expect(plain).toContain("- `app/[id]/page.tsx` — `Page`\n");
+      // A link the reviewer wrote in the section is theirs.
+      expect(plain).toContain(`Reviewer: also see [the handler](${URL_A}).`);
+      expect(plain).toContain(
+        `- \`app/[id]/page.tsx\` — \`Page\`\n\n${CODE_LINKS_EDITED_NOTE}\n\n## Definition of done`,
+      );
+      expect(plain).not.toContain(CODE_LINKS_AS_TEXT_NOTE);
+      expect(plain).not.toContain("abc1234");
+      // Stable: a second pass finds nothing left to take off.
+      expect(asText(plain)).toBe(plain);
+    });
+
+    it("still leaves every byte outside the section alone", () => {
+      const plain = asText(edited(USER_TEXT));
+      const expected = body(null, USER_TEXT)
+        .replace("`MarkAllAsRead` (method)", "`MarkAllAsRead` (method) — start here")
+        .replace(
+          renderCodeLinksSection(links, null)[2]!,
+          `${section[2]!}\n\nReviewer: also see [the handler](${URL_A}).`,
+        )
+        .replace(CODE_LINKS_AS_TEXT_NOTE, CODE_LINKS_EDITED_NOTE);
+      expect(plain).toBe(expected);
+      for (const line of USER_TEXT) expect(plain, line).toContain(line);
+    });
+
+    it("finds the link whatever the case of the host, owner and name — recorded or in the body", () => {
+      const row = `- [\`a.go\`](${base}/blob/abc1234/a.go) — \`f\``;
+      const lower = `- [\`b.go\`](${base.toLowerCase()}/blob/abc1234/b.go)`;
+      const upper = `- \`c[0].go\` ([source](HTTPS://GITHUB.COM/ACME/APP/blob/abc1234/c%5B0%5D.go))`;
+      const text = ["## Related code", "", row, lower, upper].join("\n");
+      const expected = [
+        "## Related code",
+        "",
+        "- `a.go` — `f`",
+        "- `b.go`",
+        "- `c[0].go`",
+        "",
+        CODE_LINKS_EDITED_NOTE,
+      ].join("\n");
+      expect(base).toBe("https://github.com/Acme/App");
+      expect(asText(text)).toBe(expected);
+      // A base recorded in lower case finds the capitals in the body too.
+      const lowerMeta = JSON.stringify({
+        codeLinkBase: base.toLowerCase(),
+        codeLinkSection: { linked: "x", plain: "y" },
+      });
+      expect(asText(text, lowerMeta)).toBe(expected);
+    });
+
+    it("keeps the line endings of a body saved with CRLF", () => {
+      const crlf = body(ACME).split("\n").join("\r\n");
+      const plain = asText(crlf);
+      expect(plain).toContain("- `internal/b.go:7`\r\n");
+      expect(plain).toContain(`\r\n\r\n${CODE_LINKS_EDITED_NOTE}\r\n\r\n## Definition of done\r\n`);
+      expect(plain.split("\r\n").join("\n").split("\r")).toHaveLength(1);
+      expect(plain).not.toContain("abc1234");
+    });
+
+    it("changes only a row in METIS's own form, read from the start of the line", () => {
+      const untouched = [
+        // Not into this repository, or not a blob URL into it.
+        "- [`a`](https://github.com/other/repo/blob/x)",
+        `- [\`a\`](${base}-other/blob/x)`,
+        `- [\`a\`](${base}/issues/1)`,
+        `- \`a[0]\` ([source](${base}/tree/main/a))`,
+        // Not METIS's link syntax.
+        `- [a](${base}/blob/x)`,
+        `- [\`a\` b](${base}/blob/x)`,
+        `- [\`a\`] (${base}/blob/x)`,
+        `- [\`a\`](${base}/blob/x y)`,
+        `- [\`a\`](${base}/blob/x`,
+        `- [\`\`a\`](${base}/blob/x)`,
+        `- \`a\` ([docs](${base}/blob/x))`,
+        // The same length as METIS's own syntax, and not it.
+        `- \`a\` ([sourcx](${base}/blob/x))`,
+        `- [\`a\`]]${base}/blob/x)`,
+        `- \`a\` ([source](${base}/blob/x)`,
+        `- see [\`a\`](${base}/blob/x)`,
+        `  - [\`a\`](${base}/blob/x)`,
+        `* [\`a\`](${base}/blob/x)`,
+        `[\`a\`](${base}/blob/x)`,
+        "- ",
+        "- [",
+        // The link is not at the start: in a symbol, or after one.
+        `- \`a\` — \`[\`b\`](${base}/blob/x)\``,
+      ];
+      const text = ["## Related code", "", ...untouched].join("\n");
+      expect(asText(text)).toBe(text);
+      // Outside a Related code section even METIS's exact form is left alone.
+      const elsewhere = `## Notes\n\n- [\`a.go\`](${base}/blob/abc1234/a.go)\n\n---\n- [\`a.go\`](${base}/blob/abc1234/a.go)`;
+      expect(asText(elsewhere)).toBe(elsewhere);
+      expect(asText(`## Related code\n\n---\n- [\`a.go\`](${base}/blob/abc1234/a.go)`)).toContain(
+        "](",
+      );
+    });
+
+    it("handles every Related code heading, each with its own note", () => {
+      const text = [
+        "## Related code",
+        "",
+        "- my own list",
+        "",
+        "## Related code",
+        "- [`` a`b ``](" + `${base}/blob/abc1234/a%60b)`,
+        "### Sub",
+        `- [\`c.go\`](${base}/blob/abc1234/c.go)`,
+        "## Related code",
+        "",
+        `- [\`d.go\`](${base}/blob/abc1234/d.go)`,
+        "",
+        "",
+      ].join("\n");
+      expect(asText(text)).toBe(
+        [
+          "## Related code",
+          "",
+          "- my own list",
+          "",
+          "## Related code",
+          "- `` a`b ``",
+          "",
+          CODE_LINKS_EDITED_NOTE,
+          "### Sub",
+          `- [\`c.go\`](${base}/blob/abc1234/c.go)`,
+          "## Related code",
+          "",
+          "- `d.go`",
+          "",
+          CODE_LINKS_EDITED_NOTE,
+          "",
+          "",
+        ].join("\n"),
+      );
+    });
+
+    it("cannot tell a row a user wrote in METIS's exact form from METIS's own", () => {
+      // The stated limit of the edited path: under a `## Related code` heading,
+      // a row written exactly as METIS writes one loses its link like any other.
+      const text = `## Related code\n\n- [\`mine.go\`](${base}/blob/main/mine.go) — my note`;
+      expect(asText(text)).toBe(
+        `## Related code\n\n- \`mine.go\` — my note\n\n${CODE_LINKS_EDITED_NOTE}`,
+      );
+    });
   });
 
-  it("takes out a blob URL a reviewer typed, in whatever case, and keeps other links", () => {
-    const edited = [
-      "See https://GitHub.com/Miniflux/v2/blob/abc1234/internal/a.go#L3 for context,",
-      `and <${base}/blob/main/README.md> and [docs](https://example.com/docs).`,
-      `Also [the handler](${base}/blob/abc1234/internal/a.go).`,
-    ].join("\n");
-    const plain = codeLinksAsText(edited, base);
-    expect(plain).toBe(
-      [
-        "See (link removed) for context,",
-        "and <(link removed)> and [docs](https://example.com/docs).",
-        "Also the handler.",
-      ].join("\n"),
-    );
-  });
-
-  it("finds the links by position in text whose lower-case form has another length", () => {
-    // "İ" lower-cases to two code units; every index after it would be off by one.
-    const body = `İİİ [\`a.go\`](${base}/blob/abc1234/a.go) and ${base}/blob/abc1234/b.go İ`;
-    expect(codeLinksAsText(body, base)).toBe("İİİ `a.go` and (link removed) İ");
-  });
-
-  it("does not unwrap across a bracket or a line break, and leaves other text alone", () => {
-    // Not a METIS link: the text holds a bracket, or the URL is not closed.
-    expect(codeLinksAsText(`[a [b](${base}/blob/x)`, base)).toBe("[a b");
-    expect(codeLinksAsText(`[a]b](${base}/blob/x)`, base)).toBe("[a]b]((link removed))");
-    expect(codeLinksAsText(`[a\nb](${base}/blob/x)`, base)).toBe("[a\nb]((link removed))");
-    expect(codeLinksAsText(`[a](${base}/blob/x y)`, base)).toBe("[a]((link removed) y)");
-    // The repository's own page, or another repository, is not a blob URL into it.
-    for (const other of [
-      `${base}`,
-      `${base}/issues/1`,
-      `${base}-other/blob/x`,
-      "https://x.y/blob/z",
+  it("reads the record from the draft's metadata; a draft that recorded only the repository gets the ordinary note", () => {
+    const linked = body(ACME);
+    for (const metadata of [
+      JSON.stringify({ codeLinkBase: base }),
+      JSON.stringify({ codeLinkBase: base, codeLinkSection: null }),
+      JSON.stringify({
+        codeLinkBase: base,
+        codeLinkSection: { linked: 7, plain: "x" },
+      }),
+      JSON.stringify({ codeLinkBase: base, codeLinkSection: { linked: "x" } }),
     ]) {
-      expect(codeLinksAsText(`see ${other} here`, base)).toBe(`see ${other} here`);
+      expect(asText(linked, metadata), metadata).toBe(body(null));
     }
-  });
-
-  it("adds the note once, under the rows, and only to a section that lists code", () => {
-    const empty = [
-      "## Related code",
-      "",
-      "_METIS recorded no code links for this requirement._",
-    ].join("\n");
-    expect(codeLinksAsText(empty, base)).toBe(empty);
-    expect(codeLinksAsText("No section here.", base)).toBe("No section here.");
-    const twice = codeLinksAsText(codeLinksAsText(section(REPO), base), base);
-    expect(twice.split(CODE_LINKS_AS_TEXT_NOTE)).toHaveLength(2);
-  });
-
-  it("reads the repository from the draft's metadata; without one the body is untouched", () => {
-    const body = section(REPO);
-    expect(bodyWithCodeAsText({ body, metadata: JSON.stringify({ codeLinkBase: base }) })).toBe(
-      section(null),
-    );
     for (const metadata of [
       null,
       undefined,
@@ -771,19 +1052,42 @@ describe("codeLinksAsText / bodyWithCodeAsText — the plain form, for a tracker
       JSON.stringify({ codeLinkBase: 7 }),
       "{}",
     ]) {
-      expect(bodyWithCodeAsText({ body, metadata })).toBe(body);
+      expect(bodyWithCodeAsText({ body: linked, metadata })).toBe(linked);
     }
+    // No repository recorded: the record alone is not acted on.
+    expect(
+      asText(linked, JSON.stringify({ codeLinkSection: codeLinkSectionRecord(links, ACME) })),
+    ).toBe(linked);
+  });
+
+  it("the record is null when the two renderings are the same text", () => {
+    expect(codeLinkSectionRecord([], ACME)).toBeNull();
+    expect(codeLinkSectionRecord(links, ACME)).toEqual({
+      linked: renderCodeLinksSection(links, ACME).join("\n"),
+      plain: renderCodeLinksSection(links, null).join("\n"),
+    });
   });
 
   it("is linear in a body built to make it scan", () => {
-    expectLinearTime("open brackets", (n) => {
-      const body = "[".repeat(n);
-      return () => codeLinksAsText(body, base);
+    const metadata = meta();
+    const heading = "## Related code\n";
+    expectLinearTime("headings", (n) => {
+      const text = heading.repeat(Math.ceil(n / heading.length));
+      return () => asText(text, metadata);
+    });
+    expectLinearTime("a row of backticks", (n) => {
+      const text = `${heading}- [\`${"x`".repeat(n / 2)}`;
+      return () => asText(text, metadata);
     });
     expectLinearTime("unfinished links", (n) => {
-      const unit = `[x](${base}/blob/`;
-      const body = unit.repeat(Math.ceil(n / unit.length));
-      return () => codeLinksAsText(body, base);
+      const unit = `- [\`x\`](${base}/blob/\n`;
+      const text = heading + unit.repeat(Math.ceil(n / unit.length));
+      return () => asText(text, metadata);
+    });
+    expectLinearTime("near-copies of the section", (n) => {
+      const unit = `${renderCodeLinksSection(links, ACME).join("\n")} x\n`;
+      const text = unit.repeat(Math.ceil(n / unit.length));
+      return () => asText(text, metadata);
     });
   });
 });

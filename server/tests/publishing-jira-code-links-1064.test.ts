@@ -89,15 +89,19 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { executeBatch } = await import("../src/lib/publishing/publishing-service.js");
 const { __testing } = await import("../src/lib/publishing/draft-generator.js");
-const { codeLinkBase, CODE_LINKS_AS_TEXT_NOTE } =
+const { codeLinkBase, codeLinkSectionRecord, CODE_LINKS_AS_TEXT_NOTE, CODE_LINKS_EDITED_NOTE } =
   await import("../src/lib/publishing/draft-code-links.js");
 
+// Spelled with capitals, as a connector may be: the links are found all the same.
 const REPO = {
   origin: "https://github.com",
-  owner: "secretcorp",
-  repo: "upstream",
+  owner: "SecretCorp",
+  repo: "Upstream",
   ref: "0123abcd",
 };
+/** A link the requirement's author wrote: theirs, and sent to Jira as written. */
+const USER_LINE =
+  "See [the old handler](https://github.com/SecretCorp/Upstream/blob/main/legacy.ts#L3), then `x`.";
 const LINKS = [
   {
     filePath: "server/src/auth/login.ts",
@@ -113,30 +117,49 @@ const LINKS = [
     symbolName: null,
     symbolKind: null,
   },
+  // A Next.js route: its link follows the code span.
+  {
+    filePath: "ui/src/app/[id]/page.tsx",
+    startLine: 4,
+    endLine: null,
+    symbolName: "Page",
+    symbolKind: "function",
+  },
 ];
 
 function featureBody(repo: typeof REPO | null): string {
   return __testing.renderFeatureBody({
     project: { id: "proj_1", name: "App" },
     analysis: { id: "analysis_1" },
-    requirement: { id: "req_1", title: "Login", body: "Body.", type: "feature", priority: "high" },
+    requirement: {
+      id: "req_1",
+      title: "Login",
+      body: USER_LINE,
+      type: "feature",
+      priority: "high",
+    },
     parentTitle: "[Epic] App",
     codeLinks: { links: LINKS, repo },
   });
 }
 
-function seedLinkedDraft(): void {
+function seedLinkedDraft(edit: (body: string) => string = (body) => body): void {
   state.drafts.set("draft_1", {
     id: "draft_1",
     projectId: "proj_1",
     requirementId: "req_1",
     title: "[Feature] Login",
-    body: featureBody(REPO),
+    body: edit(featureBody(REPO)),
     draftType: "feature",
     labels: "[]",
     storyPoints: 3,
     status: "approved",
-    metadata: JSON.stringify({ analysisId: "analysis_1", codeLinkBase: codeLinkBase(REPO) }),
+    // What the generator records for a draft it linked.
+    metadata: JSON.stringify({
+      analysisId: "analysis_1",
+      codeLinkBase: codeLinkBase(REPO),
+      codeLinkSection: codeLinkSectionRecord(LINKS, REPO),
+    }),
     deletedAt: null,
   });
 }
@@ -153,7 +176,10 @@ describe("a draft that links into the analysed repository, published to Jira", (
       seedLinkedDraft();
       // The stored draft does link into the analysed repository.
       expect(state.drafts.get("draft_1")!.body).toContain(
-        "https://github.com/secretcorp/upstream/blob/0123abcd/server/src/auth/login.ts#L10-L42",
+        "https://github.com/SecretCorp/Upstream/blob/0123abcd/server/src/auth/login.ts#L10-L42",
+      );
+      expect(state.drafts.get("draft_1")!.body).toContain(
+        "([source](https://github.com/SecretCorp/Upstream/blob/0123abcd/ui/src/app/%5Bid%5D/page.tsx#L4))",
       );
 
       const result = await executeBatch({ batchId: "batch_1", actorId: "user_1" });
@@ -167,9 +193,14 @@ describe("a draft that links into the analysed repository, published to Jira", (
         "- `server/src/auth/login.ts:10-42` — `createSession` (function)",
       );
       expect(description).toContain("- `ui/src/login-form.tsx`");
+      expect(description).toContain("- `ui/src/app/[id]/page.tsx:4` — `Page` (function)");
       expect(description).toContain(CODE_LINKS_AS_TEXT_NOTE);
+      // The line the author wrote arrives as written; nothing METIS wrote names
+      // the repository, its owner or the commit.
+      expect(description).toContain(USER_LINE);
+      const metisText = description.replace(USER_LINE, "").toLowerCase();
       for (const leak of ["secretcorp", "upstream", "0123abcd", "github.com", "https://", "]("]) {
-        expect(description, leak).not.toContain(leak);
+        expect(metisText, leak).not.toContain(leak);
       }
       // The GitHub leg runs only for `both`, and the stored draft is untouched:
       // the plain form is what is SENT to Jira, not a rewrite of the draft.
@@ -177,6 +208,28 @@ describe("a draft that links into the analysed repository, published to Jira", (
       expect(state.drafts.get("draft_1")!.body).toBe(featureBody(REPO));
     });
   }
+
+  it("a section a reviewer edited: Jira still gets no METIS link, and is told the section was edited", async () => {
+    state.destination = "jira";
+    const edit = (body: string) =>
+      body.replace("`createSession` (function)", "`createSession` (function) — start here");
+    seedLinkedDraft(edit);
+    expect(state.drafts.get("draft_1")!.body).toContain("— start here");
+
+    await executeBatch({ batchId: "batch_1", actorId: "user_1" });
+    const description = String(createIssue.mock.calls[0]![0].description);
+    expect(description).toBe(
+      edit(featureBody(null)).replace(CODE_LINKS_AS_TEXT_NOTE, CODE_LINKS_EDITED_NOTE),
+    );
+    expect(description).toContain(
+      "- `server/src/auth/login.ts:10-42` — `createSession` (function) — start here",
+    );
+    expect(description).toContain(USER_LINE);
+    const metisText = description.replace(USER_LINE, "").toLowerCase();
+    for (const leak of ["secretcorp", "0123abcd", "github.com", "]("]) {
+      expect(metisText, leak).not.toContain(leak);
+    }
+  });
 
   it("a draft with no recorded repository is sent to Jira exactly as it is", async () => {
     state.destination = "jira";

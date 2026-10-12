@@ -11,6 +11,7 @@ interface DraftRow {
   requirementId?: string | null;
   metadata?: string | null;
   body?: string;
+  title?: string;
 }
 
 interface BatchRow {
@@ -47,8 +48,27 @@ let nextId = 0;
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     issueDraft: {
-      findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
-        [...drafts.values()].filter((d) => where.id.in.includes(d.id) && !d.deletedAt),
+      // Honours `select`, as Prisma does: a column the query does not ask for
+      // is not on the row, so code that reads one it forgot to select fails here.
+      findMany: vi.fn(
+        async ({
+          where,
+          select,
+        }: {
+          where: { id: { in: string[] } };
+          select?: Record<string, unknown>;
+        }) =>
+          [...drafts.values()]
+            .filter((d) => where.id.in.includes(d.id) && !d.deletedAt)
+            .map((d) =>
+              select
+                ? Object.fromEntries(
+                    Object.keys(select)
+                      .filter((key) => select[key])
+                      .map((key) => [key, (d as unknown as Record<string, unknown>)[key]]),
+                  )
+                : d,
+            ),
       ),
       findUnique: vi.fn(
         async ({ where }: { where: { id: string } }) => drafts.get(where.id) ?? null,
@@ -228,6 +248,7 @@ describe("createBatch — drafts that link into the analysed repository (#1064)"
     projectId: "proj_1",
     status: "approved",
     deletedAt: null,
+    title: "[Feature] Sign in",
     body: `- [\`a.ts\`](${BASE}/blob/0123abcd/a.ts)`,
     metadata: JSON.stringify({ codeLinkBase: BASE }),
   });
@@ -261,9 +282,23 @@ describe("createBatch — drafts that link into the analysed repository (#1064)"
         status: 409,
         code: "CODE_LINKS_TARGET_MISMATCH",
         details: { draftIds: ["d1"] },
+        // The draft is named by its TITLE, which the query has to select: a
+        // user cannot find "d1" on the page.
+        message: expect.stringContaining(
+          '1 draft links into the analysed repository, which is not someone/public-tracker on this host: "[Feature] Sign in".',
+        ),
       });
     }
     expect(batches.size).toBe(0);
+  });
+
+  it("reads a batch with no base URL as public GitHub, as Generate does", async () => {
+    // Generated with the base URL left out (public GitHub), published the same way.
+    drafts.set("d1", linkedDraft());
+    for (const targetBaseUrl of [undefined, "https://api.github.com"]) {
+      const batch = await createBatch({ actorId: "user_1", input: input({ targetBaseUrl }) });
+      expect(batch.targetRepo).toBe("metis");
+    }
   });
 
   it("refuses the same owner and name on another host", async () => {

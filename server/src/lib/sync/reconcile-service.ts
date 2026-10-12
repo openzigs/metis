@@ -122,6 +122,7 @@ export async function reconcileIssueChange(
       draftId: publishedIssue.draftId,
       dedupHash: publishedIssue.dedupHash ?? null,
       projectId,
+      requirementId,
     }),
   };
   const fieldDiffs = computeFieldDiffs(localSnapshot, {
@@ -244,6 +245,7 @@ export async function resolveDriftEvent(
     const externalSnapshot: IssueChangeFields = JSON.parse(existing.externalSnapshot);
     const publishedIssue = await prisma.publishedIssue.findUnique({
       where: { id: existing.publishedIssueId },
+      include: { draft: { select: { requirementId: true } } },
     });
     if (publishedIssue) {
       await prisma.issueDraft.update({
@@ -258,6 +260,7 @@ export async function resolveDriftEvent(
               draftId: publishedIssue.draftId,
               dedupHash: publishedIssue.dedupHash ?? null,
               projectId: existing.projectId,
+              requirementId: publishedIssue.draft?.requirementId ?? null,
             }),
           ),
           labels: JSON.stringify(externalSnapshot.labels),

@@ -71,6 +71,8 @@ interface PublishedIssueRow {
   bodyHash: string | null;
   errorMessage: string | null;
   publishedAt: Date;
+  /** `github` when left out, as the column defaults. */
+  destination?: string;
 }
 
 const batches = new Map<string, BatchRow>();
@@ -167,9 +169,14 @@ vi.mock("../src/lib/prisma.js", () => ({
     },
     publishedIssue: {
       findFirst: vi.fn(
-        async ({ where }: { where: { draftId?: string; batch?: { projectId?: string } } }) => {
+        async ({
+          where,
+        }: {
+          where: { draftId?: string; destination?: string; batch?: { projectId?: string } };
+        }) => {
           for (const row of issues.values()) {
             if (where.draftId && row.draftId !== where.draftId) continue;
+            if (where.destination && (row.destination ?? "github") !== where.destination) continue;
             const b = batches.get(row.batchId);
             const out = { ...row, batch: b ?? null };
             if (where.batch?.projectId && b?.projectId !== where.batch.projectId) continue;
@@ -2203,5 +2210,226 @@ describe("reconcileFromRemote — the marker's hash is checked against what METI
     });
     expect(writes).toEqual(["POST /repos/acme/metis/issues"]);
     expect(remoteIssues.get(42)!.body).toBe(edited);
+  });
+
+  describe("a draft retitled after a failed run keeps its one issue (#1102 review, cycle 3)", () => {
+    const H_OLD = computeDedupHash("acme", "metis", "Old title");
+    const H_NEW = computeDedupHash("acme", "metis", "New title");
+    const mismatch = expect.objectContaining({ action: "publish.reconcile.marker_hash_mismatch" });
+    const run2 = () =>
+      runBatch({ batchId: "batch_2", dryRun: false, secretRef: "${vault:gh}", sleep: noopSleep });
+
+    /** Issue #50 exists, stamped with the hash of the title the draft has now. */
+    function seedRetitled(recorded: string | null): string[] {
+      seedDraft({ id: "f1", title: "New title", body: "the body", status: "failed" });
+      seedBatch({ id: "batch_1", status: "failed" });
+      issues.set(
+        "batch_1::f1",
+        row({
+          status: "failed",
+          issueNumber: 50,
+          issueId: "I_kwDOfake50",
+          htmlUrl: "https://github.com/acme/metis/issues/50",
+          dedupHash: recorded,
+          bodyHash: computeBodyHash("the body"),
+          errorMessage: "sub-issue attach failed",
+        }),
+      );
+      remoteIssues.set(50, makeRemoteIssue(50, `the body\n\n${marker("f1", H_NEW)}\n`));
+      return tracker();
+    }
+
+    it("the row as it was written before: failed, #50, the OLD title's hash — zero creates", async () => {
+      // The failed branch used to record the issue it had just created without
+      // the hash it had stamped on it. The sweep then read its own marker as a
+      // forged one and filed the draft a second time.
+      const writes = seedRetitled(H_OLD);
+      batch2(["f1"]);
+      expect((await run2()).status).toBe("completed");
+      expect(writes).toEqual([]);
+      expect(remoteIssues.size).toBe(1);
+      expect(batches.get("batch_2")!.dedupSkipped).toBe(1);
+      expect(audit).not.toHaveBeenCalledWith(mismatch);
+      // The new row names the issue under the hash its marker carries.
+      expect(issues.get("batch_2::f1")).toMatchObject({ issueNumber: 50, dedupHash: H_NEW });
+    });
+
+    it("the same row with no recorded hash at all is recovered the same way", async () => {
+      const writes = seedRetitled(null);
+      batch2(["f1"]);
+      await run2();
+      expect(writes).toEqual([]);
+      expect(remoteIssues.size).toBe(1);
+      expect(audit).not.toHaveBeenCalledWith(mismatch);
+    });
+
+    it.each([
+      ["the old title's hash", H_OLD],
+      ["no hash", null],
+    ])(
+      "…but only for the issue's own draft: a same-titled sibling does not inherit it (row holds %s)",
+      async (_label, recorded) => {
+        // The marker names f1, which is not in this batch, and the row's hash
+        // is not the marker's: nothing METIS knows vouches for the hash, so the
+        // sibling is filed as a new issue and the conflict is reported.
+        const writes = seedRetitled(recorded);
+        seedDraft({ id: "f9", title: "New title", body: "the body", status: "approved" });
+        batch2(["f9"]);
+        await run2();
+        expect(writes).toEqual(["POST /repos/acme/metis/issues"]);
+        expect(remoteIssues.size).toBe(2);
+        expect(audit).toHaveBeenCalledWith(mismatch);
+      },
+    );
+
+    it("the failed branch now records the hash with the issue it records", async () => {
+      // Run 1 failed before creating anything, under the old title.
+      seedDraft({ id: "f1", title: "New title", body: "the body", status: "failed" });
+      seedBatch({ id: "batch_1" });
+      issues.set(
+        "batch_1::f1",
+        row({
+          status: "failed",
+          issueNumber: 0,
+          issueId: "",
+          htmlUrl: "",
+          dedupHash: H_OLD,
+          bodyHash: "stale",
+        }),
+      );
+      const writes = tracker();
+      // Run 2 creates the issue, then persisting the success fails.
+      const upsert = prisma.publishedIssue.upsert as unknown as Mock<
+        (args: { create?: { status?: string } }) => Promise<unknown>
+      >;
+      const real = upsert.getMockImplementation()!;
+      upsert.mockImplementation(async (args: { create?: { status?: string } }) => {
+        if (args.create?.status !== "failed") throw new Error("database is down");
+        return real(args);
+      });
+      try {
+        await runBatch({
+          batchId: "batch_1",
+          dryRun: false,
+          secretRef: "${vault:gh}",
+          sleep: noopSleep,
+        });
+      } finally {
+        upsert.mockImplementation(real);
+      }
+      const creates = () => writes.filter((w) => w === "POST /repos/acme/metis/issues");
+      expect(creates()).toHaveLength(1);
+      const created = [...remoteIssues.values()][0]!;
+      expect(created.body).toContain(marker("f1", H_NEW));
+      const recorded = issues.get("batch_1::f1")!;
+      expect(recorded).toMatchObject({
+        status: "failed",
+        issueNumber: created.number,
+        issueId: created.node_id,
+        // The hash stamped on the issue, and the hash of the body it carries.
+        dedupHash: H_NEW,
+        bodyHash: computeBodyHash("the body"),
+      });
+
+      // Run 3: the issue is found again; no second one is created.
+      drafts.get("f1")!.status = "failed";
+      batch2(["f1"]);
+      await run2();
+      expect(creates()).toHaveLength(1);
+      expect(remoteIssues.size).toBe(1);
+      expect(audit).not.toHaveBeenCalledWith(mismatch);
+    });
+
+    it("a failure before any write leaves the recorded issue and its hash together", async () => {
+      // #50 was stamped under the old title; the draft is retitled and the
+      // next run cannot reach GitHub. The row must go on describing #50.
+      seedDraft({ id: "f1", title: "New title", body: "the body", status: "failed" });
+      seedBatch({ id: "batch_1" });
+      issues.set(
+        "batch_1::f1",
+        row({ status: "failed", issueNumber: 50, dedupHash: H_OLD, bodyHash: "old-body-hash" }),
+      );
+      __setPublishOctokitFactory(async () => makeFakeOctokit({ alwaysFailCreate: true }));
+      await runBatch({
+        batchId: "batch_1",
+        dryRun: false,
+        secretRef: "${vault:gh}",
+        sleep: noopSleep,
+      });
+      expect(issues.get("batch_1::f1")).toMatchObject({
+        status: "failed",
+        issueNumber: 50,
+        dedupHash: H_OLD,
+        bodyHash: "old-body-hash",
+      });
+    });
+
+    it("a dedup-skip records the hash it matched on, over a row an earlier failed run left", async () => {
+      seedDraft({ id: "f1", title: "New title", body: "the body", status: "failed" });
+      seedBatch({ id: "batch_0", status: "completed" });
+      issues.set(
+        "batch_0::f1",
+        row({
+          id: "pi_0",
+          batchId: "batch_0",
+          issueNumber: 50,
+          dedupHash: H_NEW,
+          bodyHash: computeBodyHash("the body"),
+        }),
+      );
+      batch2(["f1"]);
+      issues.set(
+        "batch_2::f1",
+        row({
+          id: "pi_2",
+          batchId: "batch_2",
+          status: "failed",
+          issueNumber: 0,
+          dedupHash: H_OLD,
+          bodyHash: "stale",
+        }),
+      );
+      const writes = tracker();
+      await run2();
+      expect(writes).toEqual([]);
+      expect(issues.get("batch_2::f1")).toMatchObject({
+        status: "updated",
+        issueNumber: 50,
+        dedupHash: H_NEW,
+        bodyHash: computeBodyHash("the body"),
+      });
+    });
+  });
+
+  it("matches a GitHub issue against the draft's GitHub row, not its Jira row", async () => {
+    // Destination `both`: the draft has a Jira row (issue number 0) beside its
+    // GitHub one. Read first, the Jira row made the sweep refuse the issue.
+    seedDraft({ id: "f1", title: "Login", body: "login body", status: "approved" });
+    seedBatch({ id: "batch_1", status: "completed", archived: true });
+    issues.set(
+      "batch_1::f1::jira",
+      row({
+        id: "pi_jira",
+        issueNumber: 0,
+        issueId: "10001",
+        dedupHash: null,
+        destination: "jira",
+      }),
+    );
+    issues.set("batch_1::f1", row());
+    remoteIssues.set(42, makeRemoteIssue(42, `login body\n\n${marker("f1", H_LOGIN)}\n`));
+    const writes = tracker();
+    batch2(["f1"]);
+    await runBatch({
+      batchId: "batch_2",
+      dryRun: false,
+      secretRef: "${vault:gh}",
+      sleep: noopSleep,
+    });
+    expect(writes).toEqual([]);
+    expect(remoteIssues.size).toBe(1);
+    expect(vi.mocked(prisma.publishedIssue.findFirst).mock.calls.at(-1)![0]).toMatchObject({
+      where: { draftId: "f1", destination: "github" },
+    });
   });
 });

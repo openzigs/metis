@@ -763,7 +763,7 @@ export async function generateDrafts(opts: {
   analysisId: string;
   targetOwner: string;
   targetRepo: string;
-  /** #1064 — the target's API base URL (`null` = public GitHub); see the generator. */
+  /** #1064 — the target's API base URL (`null` or left out = public GitHub); see the generator. */
   targetBaseUrl?: string | null;
   defaultLabels?: string[];
   /** #863 — draft only these requirements of the analysis. */

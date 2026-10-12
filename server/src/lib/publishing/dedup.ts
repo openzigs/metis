@@ -204,6 +204,8 @@ export interface OwnMarkers {
   dedupHash: string | null;
   /** The project the draft belongs to. */
   projectId: string;
+  /** The requirement the draft is linked to now; `null` for an epic or an unlinked draft. */
+  requirementId: string | null;
 }
 
 /**
@@ -221,32 +223,54 @@ export interface OwnMarkers {
  *   - It is a marker alone on its line, flush with the margin.
  *   - A publish marker names the draft this issue was published from and, when
  *     one was recorded, the dedup hash stored for it.
- *   - A source marker names this project.
+ *   - A source marker names this project and either names the requirement
+ *     the draft is linked to (none, for a draft linked to none), or stands
+ *     directly above this issue's own publish marker — the block as METIS
+ *     writes it, which is what still identifies the line after the draft was
+ *     re-linked to a new requirement row by a later analysis.
  * Whole lines only, so a code span or a sentence is never cut. Everything else
  * is kept as written: user text, and marker-shaped text that is not this
- * issue's own (another draft's, another project's, indented, quoted, sharing
- * its line) — which callers then make inert with {@link neutraliseMarkerText}.
- * A blank line left doubled by a removed run is dropped with it.
+ * issue's own (another draft's, another requirement's, another project's,
+ * indented, quoted, sharing its line) — which callers then make inert with
+ * {@link neutraliseMarkerText}. A blank line left doubled by a removed run is
+ * dropped with it, and so are the blank lines a block removed from the TOP of
+ * the body leaves there (a tracker edit can move it): they would read as drift.
  */
 export function stripOwnMarkerLines(body: string, own: OwnMarkers): string {
   if (!body.includes("<!--")) return body;
-  const isOwn = (raw: string): boolean => {
-    if (raw.length > MARKER_LINE_MAX) return false;
-    const text = raw.slice(0, lineEnd(raw, 0, raw.length));
-    const publish = PUBLISH_LINE_RE.exec(text);
-    if (publish) {
-      return publish[2] === own.draftId && (own.dedupHash === null || publish[3] === own.dedupHash);
-    }
-    const source = SOURCE_LINE_RE.exec(text);
-    return source !== null && sourceFromValue(source[1]!)?.projectId === own.projectId;
+  const markerText = (raw: string | undefined): string | null =>
+    raw === undefined || raw.length > MARKER_LINE_MAX
+      ? null
+      : raw.slice(0, lineEnd(raw, 0, raw.length));
+  const isOwnPublish = (raw: string | undefined): boolean => {
+    const text = markerText(raw);
+    const publish = text === null ? null : PUBLISH_LINE_RE.exec(text);
+    return (
+      publish !== null &&
+      publish[2] === own.draftId &&
+      (own.dedupHash === null || publish[3] === own.dedupHash)
+    );
   };
+  const isOwnSource = (raw: string, next: string | undefined): boolean => {
+    const text = markerText(raw);
+    const match = text === null ? null : SOURCE_LINE_RE.exec(text);
+    const source = match ? sourceFromValue(match[1]!) : null;
+    if (!source || source.projectId !== own.projectId) return false;
+    return (source.requirementId ?? null) === own.requirementId || isOwnPublish(next);
+  };
+  const lines = body.split("\n");
   const kept: string[] = [];
   let removed = false;
   let afterRemoval = false;
-  for (const line of body.split("\n")) {
-    if (isOwn(line)) {
+  // Has any text been kept yet? Until it has, a removal is at the top.
+  let seenText = false;
+  let removedAtTop = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!;
+    if (isOwnPublish(line) || isOwnSource(line, lines[i + 1])) {
       removed = true;
       afterRemoval = true;
+      if (!seenText) removedAtTop = true;
       continue;
     }
     // The blank line METIS wrote above its block goes with it when the text
@@ -255,9 +279,15 @@ export function stripOwnMarkerLines(body: string, own: OwnMarkers): string {
       continue;
     }
     afterRemoval = false;
+    if (line.trim() !== "") seenText = true;
     kept.push(line);
   }
-  return removed ? kept.join("\n").trimEnd() : body;
+  if (!removed) return body;
+  if (removedAtTop) {
+    const first = kept.findIndex((line) => line.trim() !== "");
+    kept.splice(0, first < 0 ? kept.length : first);
+  }
+  return kept.join("\n").trimEnd();
 }
 
 /**

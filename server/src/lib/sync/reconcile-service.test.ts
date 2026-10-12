@@ -689,9 +689,10 @@ describe("drift → Adopt, through both functions, on bodies METIS itself publis
       batch: { id: "batch-1", projectId: "proj-1", project: { id: "proj-1" } },
       draft: { ...state.draft },
     })) as never);
-    vi.mocked(prisma.publishedIssue.findUnique).mockImplementation(
-      (async () => published) as never,
-    );
+    vi.mocked(prisma.publishedIssue.findUnique).mockImplementation((async () => ({
+      ...published,
+      draft: { requirementId: state.draft.requirementId },
+    })) as never);
     vi.mocked(prisma.driftEvent.create).mockImplementation((async ({
       data,
     }: {
@@ -818,12 +819,46 @@ describe("drift → Adopt, through both functions, on bodies METIS itself publis
     expect(state.draft.body).toBe("Body text.\n\nA note.");
   });
 
+  it("this issue's source line is known by its requirement when it no longer sits on the publish marker", async () => {
+    // A line typed between the two marker lines splits the block.
+    const split = `Body text.\n\n${buildSourceMarkerComment(SOURCE)}\nA line in between.\n${buildMarkerComment(PUBLISH)}\n`;
+    const state = store({ body: "Body text." });
+    const result = await webhook(split);
+    expect(state.drifts.get(result.driftEventId!)!.externalSnapshot).not.toContain("metis-");
+    await resolveDriftEvent(result.driftEventId!, "adopt", "user-1");
+    expect(state.draft.body).toBe("Body text.\n\nA line in between.");
+
+    // Adopt reads the requirement from the draft as well: a snapshot stored
+    // with the split block is cleaned the same way.
+    state.draft.body = "Body text.";
+    state.drifts.set("drift-old", {
+      id: "drift-old",
+      publishedIssueId: "pub-1",
+      projectId: "proj-1",
+      fieldDiffs: "[]",
+      localSnapshot: "{}",
+      createdAt: new Date(),
+      externalSnapshot: JSON.stringify({
+        title: "T",
+        body: split,
+        state: "open",
+        labels: [],
+        assignees: [],
+      }),
+      status: "pending",
+    });
+    await resolveDriftEvent("drift-old", "adopt", "user-1");
+    expect(state.draft.body).toBe("Body text.\n\nA line in between.");
+  });
+
   it("marker-shaped lines that are NOT this issue's recorded marker are kept, and made inert", async () => {
     const state = store({ body: "Body text." });
     const foreign = [
       buildMarkerComment({ ...PUBLISH, draftId: "draft-other" }),
       buildMarkerComment({ ...PUBLISH, hash: "b".repeat(64) }),
       buildSourceMarkerComment({ ...SOURCE, projectId: "proj-other" })!,
+      // Another requirement of the same project: another issue's source line.
+      buildSourceMarkerComment({ ...SOURCE, requirementId: "req-other" })!,
       `    ${buildMarkerComment(PUBLISH)}`,
       `quoted: ${buildSourceMarkerComment(SOURCE)}`,
     ];

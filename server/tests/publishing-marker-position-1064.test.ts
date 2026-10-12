@@ -33,8 +33,15 @@ const {
   stripMarker,
   stripOwnMarkerLines,
 } = await import("../src/lib/publishing/dedup.js");
-const { buildCodeLinkUrl, codeLinksAsText, codeLinkBase, renderCodeLinksSection } =
-  await import("../src/lib/publishing/draft-code-links.js");
+const {
+  CODE_LINKS_AS_TEXT_NOTE,
+  CODE_LINKS_EDITED_NOTE,
+  bodyWithCodeAsText,
+  buildCodeLinkUrl,
+  codeLinkBase,
+  codeLinkSectionRecord,
+  renderCodeLinksSection,
+} = await import("../src/lib/publishing/draft-code-links.js");
 const { __testing } = await import("../src/lib/publishing/draft-generator.js");
 const { buildDryRunPlan } = await import("../src/lib/publishing/dry-run.js");
 const { expectLinearTime } = await import("./helpers/linear-time.js");
@@ -85,6 +92,25 @@ const FRAGMENTS = [
   "[ref]: https://evil.example/r",
   "[ref]",
   "][ref]",
+  // Ordinary bracketed names: Next.js dynamic routes, an indexed symbol, nesting.
+  "app/[id]/page",
+  "[...slug]",
+  "[[...all]]",
+  "items[0]",
+  "[a[b]c]",
+  // The repository's own blob prefix — the one string the Jira form looks for —
+  // bare, in METIS's two link forms, with capitals, and as a whole section.
+  "https://github.com/acme/app/blob/",
+  "https://github.com/acme/app/blob/abc1234/src/a.ts#L3",
+  "https://GitHub.com/Acme/App/blob/z",
+  "](https://github.com/acme/app/blob/x",
+  "](https://github.com/acme/app/blob/x)",
+  "[`a.ts`](https://github.com/acme/app/blob/abc1234/a.ts)",
+  " ([source](https://github.com/acme/app/blob/abc1234/a.ts))",
+  "\n## Related code\n",
+  "\n- [`a.ts`](https://github.com/acme/app/blob/abc1234/a.ts) — `f`\n",
+  "\n- `a[0].ts` ([source](https://github.com/acme/app/blob/abc1234/a%5B0%5D.ts))\n",
+  "\n---\n",
   "www.evil.example",
   "https://evil.example/bare",
   "![i](https://evil.example/i.png)",
@@ -147,8 +173,9 @@ function hostile(rand: () => number, max = 8): string {
  * PARSER found them, not as a scan for backticks would: only METIS's own markup
  * is left.
  */
+// No link; the code span as the link's text; or the fixed `source` link after it.
 const ROW_SKELETON =
-  /^- (?:\[\]\(https:\/\/github\.com\/acme\/app\/blob\/abc1234\/[A-Za-z0-9%._~!*'/-]*(?:#L\d+(?:-L\d+)?)?\))?(?: — (?: \([a-z_-]+\))?)?$/;
+  /^- (?:\[\]\(https:\/\/github\.com\/acme\/app\/blob\/abc1234\/[A-Za-z0-9%._~!*'/-]*(?:#L\d+(?:-L\d+)?)?\)| \(\[source\]\(https:\/\/github\.com\/acme\/app\/blob\/abc1234\/[A-Za-z0-9%._~!*'/-]*(?:#L\d+(?:-L\d+)?)?\)\))?(?: — (?: \([a-z_-]+\))?)?$/;
 
 /** Where METIS's own links go, and nowhere else. */
 const ALLOWED_LINK_PREFIX = "https://github.com/acme/app/blob/abc1234/";
@@ -194,15 +221,19 @@ const SAFE_LINK: HostileLink = {
   symbolKind: "function",
 };
 
-/** A feature body whose ONLY untrusted text is its code links. */
-function featureWithLinks(links: readonly HostileLink[], repo: typeof REPO | null): string {
+/** A feature body whose ONLY untrusted text is its code links (and `text`, when given). */
+function featureWithLinks(
+  links: readonly HostileLink[],
+  repo: typeof REPO | null,
+  text = "Body text.",
+): string {
   return __testing.renderFeatureBody({
     project: { id: "proj_1", name: "App" },
     analysis: { id: "analysis_1" },
     requirement: {
       id: "req_1",
       title: "T",
-      body: "Body text.",
+      body: text,
       type: "feature",
       priority: "high",
       acceptanceCriteria: JSON.stringify(["First criterion", "Second criterion"]),
@@ -225,7 +256,8 @@ function expectedRows(links: readonly HostileLink[]): number {
  * tracker's Markdown renderer will make of the text METIS sends:
  *
  *  (i)   every row is a list item holding only code spans, METIS's own
- *        separators, and at most METIS's own link to the allowed origin;
+ *        separators, and at most METIS's own link to the allowed origin, whose
+ *        text is a code span with no square bracket in it or the word `source`;
  *  (ii)  no heading, list, quote, task item, HTML, image, autolink, link
  *        reference definition, code block, emphasis or table in the document
  *        comes from a path or a symbol: the document has exactly the structure
@@ -237,7 +269,8 @@ function expectRelatedCodeInert(
   links: readonly HostileLink[],
   repo: typeof REPO | null,
   label: string,
-): { rows: number; linked: number } {
+): { rows: number; linked: number; afterSpan: number } {
+  let afterSpan = 0;
   const draft = featureWithLinks(links, repo);
   const published = injectMarker(draft, PUBLISH, SOURCE);
   expect(published, label).toBe(draft + BLOCK);
@@ -285,12 +318,24 @@ function expectRelatedCodeInert(
     const rowLinks = ofType(row, "link");
     expect(rowLinks.length, rowLabel).toBeLessThanOrEqual(repo ? 1 : 0);
     for (const link of rowLinks) {
-      // The link opens the row and wraps exactly the first code span.
-      expect(link.start, rowLabel).toBe(prefix.end);
       const inside = within(row, link.start, link.end);
       const text = ofType(inside, "labelText");
       expect(text, rowLabel).toHaveLength(1);
-      expect([text[0]!.start, text[0]!.end], rowLabel).toEqual([codes[0]!.start, codes[0]!.end]);
+      const bracketed = /[[\]]/.test(codes[0]!.text);
+      if (link.start === prefix.end) {
+        // The link opens the row and wraps exactly the first code span, which
+        // holds no square bracket.
+        expect([text[0]!.start, text[0]!.end], rowLabel).toEqual([codes[0]!.start, codes[0]!.end]);
+        expect(bracketed, rowLabel).toBe(false);
+      } else {
+        // The first code span opens the row, holds a bracket, and is followed
+        // by METIS's fixed link text.
+        expect(codes[0]!.start, rowLabel).toBe(prefix.end);
+        expect(published.slice(codes[0]!.end, link.start), rowLabel).toBe(" (");
+        expect(text[0]!.text, rowLabel).toBe("source");
+        expect(bracketed, rowLabel).toBe(true);
+        afterSpan += 1;
+      }
       const destination = ofType(inside, "resourceDestinationString");
       expect(destination, rowLabel).toHaveLength(1);
       expect(destination[0]!.text.startsWith(ALLOWED_LINK_PREFIX), rowLabel).toBe(true);
@@ -308,7 +353,7 @@ function expectRelatedCodeInert(
   expect(outside, label).not.toMatch(/@[A-Za-z0-9]/);
   expect(outside, label).not.toMatch(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[^\n]*#\d/i);
   expect(outside, label).not.toContain("evil.example");
-  return { rows: prefixes.length, linked: resources.length };
+  return { rows: prefixes.length, linked: resources.length, afterSpan };
 }
 
 function hostileFeature(rand: () => number, repo: typeof REPO | null) {
@@ -395,12 +440,11 @@ describe("the reviewer's reproduction: a marker-shaped path and symbol name", ()
   });
 
   it("parses as one row of code spans: no heading, task, link, mention or keyword from the names", () => {
-    // The row is plain code (its text holds square brackets), in both modes.
-    expect(expectRelatedCodeInert(links, REPO, "reproduction")).toEqual({ rows: 1, linked: 0 });
-    expect(expectRelatedCodeInert(links, null, "reproduction, text")).toEqual({
-      rows: 1,
-      linked: 0,
-    });
+    // The row is plain code in both modes: a path holding `//` is not a
+    // plain repository-relative path, so there is nothing to link to.
+    const plainRow = { rows: 1, linked: 0, afterSpan: 0 };
+    expect(expectRelatedCodeInert(links, REPO, "reproduction")).toEqual(plainRow);
+    expect(expectRelatedCodeInert(links, null, "reproduction, text")).toEqual(plainRow);
   });
 
   it("the dry-run plan shows the same body the live run sends", () => {
@@ -462,7 +506,8 @@ describe("property: hostile text never changes what is published relative to the
   it("Related code, through a Markdown parser — a path or symbol adds nothing to the issue", () => {
     let rows = 0;
     let linked = 0;
-    let bracketed = 0;
+    let afterSpan = 0;
+    let bracketedLinked = 0;
     for (let seed = 1; seed <= 500; seed += 1) {
       const rand = prng(seed + 20_000);
       const links: HostileLink[] = Array.from({ length: 1 + Math.floor(rand() * 4) }, () => ({
@@ -478,12 +523,17 @@ describe("property: hostile text never changes what is published relative to the
         const seen = expectRelatedCodeInert(links, repo, `seed ${seed}${repo ? "" : " (text)"}`);
         rows += seen.rows;
         linked += seen.linked;
+        afterSpan += seen.afterSpan;
       }
-      // Rows that WOULD be links but for a square bracket in their text.
-      bracketed += links.filter(
-        (l) =>
-          /[[\]]/.test(`${l.filePath}${l.symbolName ?? ""}`) && buildCodeLinkUrl(REPO, l) !== null,
-      ).length;
+      // Rows whose LOCATION holds a square bracket and that have a URL: every
+      // one of them is linked, by the link that follows the code span.
+      const shown = new Set<string>();
+      for (const l of links) {
+        const key = JSON.stringify([l.filePath, l.startLine, l.endLine, l.symbolName]);
+        if (shown.has(key)) continue;
+        shown.add(key);
+        if (/[[\]]/.test(l.filePath) && buildCodeLinkUrl(REPO, l) !== null) bracketedLinked += 1;
+      }
       for (const row of renderCodeLinksSection(links, REPO).filter((l) => l.startsWith("- "))) {
         // One line by every definition of a line break.
         expect(/[\n\r\u0085\u2028\u2029]/.test(row), `seed ${seed}: ${row}`).toBe(false);
@@ -493,16 +543,21 @@ describe("property: hostile text never changes what is published relative to the
         expect(/[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/.test(row), row).toBe(false);
       }
     }
-    // The generator reaches every form: linked rows, and rows a bracket kept plain.
+    // The generator reaches every form: rows linked through their code span,
+    // and bracketed rows linked by the `source` link — none of which lost it.
     expect(rows).toBeGreaterThan(1500);
-    expect(linked).toBeGreaterThan(100);
-    expect(bracketed).toBeGreaterThan(50);
+    expect(linked - afterSpan).toBeGreaterThan(100);
+    expect(afterSpan).toBeGreaterThan(100);
+    expect(afterSpan).toBe(bracketedLinked);
   });
 
-  it("the parser check is real: it fails on the row the bracket rule now prevents", () => {
-    // Red control. This is the row METIS wrote before the rule, for the path
-    // `x]:https:/evil.example/y` — to Markdown a link reference definition:
-    // an empty bullet, and a label the rest of the body can link through.
+  const BARE_LINK = { startLine: null, endLine: null, symbolName: null, symbolKind: null };
+
+  it("the parser check is real: it fails on the row a bracketed path used to produce", () => {
+    // Red control. This is the row METIS wrote for the path
+    // `x]:https:/evil.example/y` when every location was link text — to
+    // Markdown a link reference definition: an empty bullet, and a label the
+    // rest of the body can link through.
     const before =
       "- [`x]:https:/evil.example/y`](https://github.com/acme/app/blob/abc1234/x%5D%3Ahttps%3A/evil.example/y)";
     const body = `## Related code\n\n${before}\n\nSee [\`x] for details.\n`;
@@ -511,62 +566,161 @@ describe("property: hostile text never changes what is published relative to the
     const resolved = ofType(tokens, "link");
     expect(resolved).toHaveLength(1);
     expect(resolved[0]!.text).toBe("[`x]");
-    // …and what METIS writes for that path now: code, no definition, no link.
-    const link = {
-      filePath: "x]:https:/evil.example/y",
-      startLine: null,
-      endLine: null,
-      symbolName: null,
-      symbolKind: null,
-    };
-    expect(renderCodeLinksSection([link], REPO).filter((l) => l.startsWith("- "))).toEqual([
-      "- `x]:https:/evil.example/y`",
+    // …and the invariant sees it: the same row fed through the check fails.
+    const link = { ...BARE_LINK, filePath: "x]:https:/evil.example/y" };
+    const now = renderCodeLinksSection([link], REPO).filter((l) => l.startsWith("- "));
+    expect(now).toEqual([
+      "- `x]:https:/evil.example/y` ([source](https://github.com/acme/app/blob/abc1234/x%5D%3Ahttps%3A/evil.example/y))",
     ]);
-    expect(expectRelatedCodeInert([link], REPO, "definition shape")).toEqual({
-      rows: 1,
-      linked: 0,
-    });
-    // A bracket anywhere in the row's text keeps it plain: `]` alone meets the
-    // `:3-9` line suffix, and a `[` opens a label.
-    for (const filePath of ["]", "a]b.ts", "a[b.ts", "src/[id]/page.tsx"]) {
-      const row = renderCodeLinksSection([{ ...link, filePath, startLine: 3, endLine: 9 }], REPO);
-      expect(row.filter((l) => l.startsWith("- "))[0]!.startsWith("- `"), filePath).toBe(true);
-    }
-    const symbolRow = renderCodeLinksSection(
-      [{ ...link, filePath: "src/a.ts", symbolName: "items[0]: x" }],
-      REPO,
+    const published = injectMarker(featureWithLinks([link], REPO), PUBLISH, SOURCE);
+    expect(ofType(markdownTokens(published.replace(now[0]!, before)), "definition")).toHaveLength(
+      1,
     );
-    expect(symbolRow.filter((l) => l.startsWith("- "))).toEqual(["- `src/a.ts` — `items[0]: x`"]);
+    expect(ofType(markdownTokens(published), "definition")).toHaveLength(0);
   });
 
-  it("the plain form has one definition: the linked body rewritten equals the body generated as text", () => {
+  it("a bracketed location keeps its link — written after the code span, with METIS's own text", () => {
+    // The cycle-2 attack shapes and the ordinary ones (a Next.js route is a
+    // bracketed path): each row is linked, defines nothing, and passes the
+    // whole parser invariant.
+    for (const filePath of [
+      "]",
+      "]:",
+      "x]:https:/evil.example/y",
+      "[",
+      "[[",
+      "]]",
+      "a]b.ts",
+      "a[b.ts",
+      "[a[b]c]/[[...all]]/x.ts",
+      "][ref]",
+      "[ref]: x",
+      "app/[id]/page.tsx",
+      "app/[...slug]/page.tsx",
+    ]) {
+      for (const range of [
+        { startLine: null, endLine: null },
+        { startLine: 3, endLine: 9 },
+      ]) {
+        for (const symbolName of [null, "items[0]: x", "]: https://evil.example/s"]) {
+          const link = { ...BARE_LINK, ...range, filePath, symbolName };
+          const label = `${filePath} ${range.startLine ?? "-"} ${symbolName ?? "-"}`;
+          const [row] = renderCodeLinksSection([link], REPO).filter((l) => l.startsWith("- "));
+          expect(row!.startsWith("- `"), label).toBe(true);
+          expect(row, label).toContain(" ([source](https://github.com/acme/app/blob/abc1234/");
+          expect(expectRelatedCodeInert([link], REPO, label), label).toEqual({
+            rows: 1,
+            linked: 1,
+            afterSpan: 1,
+          });
+        }
+      }
+    }
+    // A bracket in the SYMBOL alone changes nothing: the location is the link's text.
+    const symbolRow = renderCodeLinksSection(
+      [{ ...BARE_LINK, filePath: "src/a.ts", symbolName: "items[0]: x" }],
+      REPO,
+    );
+    expect(symbolRow.filter((l) => l.startsWith("- "))).toEqual([
+      "- [`src/a.ts`](https://github.com/acme/app/blob/abc1234/src/a.ts) — `items[0]: x`",
+    ]);
+    expect(
+      expectRelatedCodeInert(
+        [{ ...BARE_LINK, filePath: "src/a.ts", symbolName: "items[0]: x" }],
+        REPO,
+        "bracketed symbol",
+      ),
+    ).toEqual({ rows: 1, linked: 1, afterSpan: 0 });
+  });
+
+  /** The metadata a draft generated for `repo` records, as the generator writes it. */
+  function linkedMetadata(links: readonly HostileLink[], repo: typeof REPO): string {
+    const codeLinkSection = codeLinkSectionRecord(links, repo);
+    return JSON.stringify({
+      codeLinkBase: codeLinkBase(repo),
+      ...(codeLinkSection ? { codeLinkSection } : {}),
+    });
+  }
+
+  function hostileLinks(rand: () => number): HostileLink[] {
+    return Array.from({ length: 1 + Math.floor(rand() * 13) }, () => ({
+      filePath: rand() < 0.3 ? hostile(rand) : `src/${hostile(rand, 2)}.ts`,
+      startLine: rand() < 0.5 ? 3 : null,
+      endLine: rand() < 0.5 ? 9 : null,
+      symbolName: rand() < 0.6 ? hostile(rand, 3) : null,
+      symbolKind: rand() < 0.5 ? "function" : null,
+    }));
+  }
+
+  it("the plain form has one definition: the linked body's Jira form equals the body generated as text", () => {
     // Jira, and any tracker that is not the analysed repository, gets
-    // `codeLinksAsText(linked body)`. For every set of links that must be,
-    // character for character, what the generator writes when it has no
-    // repository to link into.
-    const base = codeLinkBase(REPO);
+    // `bodyWithCodeAsText(linked draft)`. For every set of links AND every
+    // requirement text that must be, character for character, what the
+    // generator writes when it has no repository to link into: the section is
+    // the plain one and nothing else in the body moved — including text that
+    // holds the repository's own blob URLs, link forms and section heading.
     let rewritten = 0;
+    let prefixInText = 0;
+    let prefixInRows = 0;
     for (let seed = 1; seed <= 400; seed += 1) {
       const rand = prng(seed + 40_000);
-      const links: HostileLink[] = Array.from({ length: 1 + Math.floor(rand() * 13) }, () => ({
-        filePath: rand() < 0.3 ? hostile(rand) : `src/${hostile(rand, 2)}.ts`,
-        startLine: rand() < 0.5 ? 3 : null,
-        endLine: rand() < 0.5 ? 9 : null,
-        symbolName: rand() < 0.6 ? hostile(rand, 3) : null,
-        symbolKind: rand() < 0.5 ? "function" : null,
-      }));
-      const linkedBody = featureWithLinks(links, REPO);
-      const textBody = featureWithLinks(links, null);
-      const plain = codeLinksAsText(linkedBody, base);
+      // The connector's spelling is recorded as written, capitals included.
+      const repo = seed % 3 === 0 ? { ...REPO, owner: "Acme", repo: "App" } : REPO;
+      const links = hostileLinks(rand);
+      const text = hostile(rand, 10);
+      const linkedBody = featureWithLinks(links, repo, text);
+      const textBody = featureWithLinks(links, null, text);
+      const metadata = linkedMetadata(links, repo);
+      const plain = bodyWithCodeAsText({ body: linkedBody, metadata });
       expect(plain, `seed ${seed}`).toBe(textBody);
-      // Nothing of the analysed repository is left: no owner/name, no commit.
-      expect(plain.includes("github.com/acme/app"), `seed ${seed}`).toBe(false);
-      expect(plain.includes("abc1234"), `seed ${seed}`).toBe(false);
       // Already plain: unchanged.
-      expect(codeLinksAsText(plain, base), `seed ${seed}`).toBe(plain);
-      if (linkedBody !== textBody && linkedBody.includes(`${base}/blob/`)) rewritten += 1;
+      expect(bodyWithCodeAsText({ body: plain, metadata }), `seed ${seed}`).toBe(plain);
+      if (linkedBody !== textBody) rewritten += 1;
+      if (/github\.com\/acme\/app\/blob\//i.test(text)) prefixInText += 1;
+      if (links.some((l) => /github\.com\/acme\/app\/blob\//i.test(`${l.filePath}${l.symbolName}`)))
+        prefixInRows += 1;
     }
     expect(rewritten).toBeGreaterThan(200);
+    // The generator did produce the input the swap could have mistaken.
+    expect(prefixInText).toBeGreaterThan(100);
+    expect(prefixInRows).toBeGreaterThan(100);
+  });
+
+  it("an edited section loses METIS's links and nothing else, row for row as the plain form", () => {
+    // A reviewer's edit means the recorded section no longer matches, so the
+    // links are taken off row by row. For every set of links that gives the
+    // plain rows exactly — the two ways of getting there agree — under the
+    // note that says the section was edited.
+    const INTRO = "_Code METIS linked to this requirement.";
+    let stripped = 0;
+    for (let seed = 1; seed <= 400; seed += 1) {
+      const rand = prng(seed + 50_000);
+      const repo = seed % 3 === 0 ? { ...REPO, owner: "Acme", repo: "App" } : REPO;
+      const links = hostileLinks(rand);
+      const edit = (body: string) => body.replace(INTRO, `Reviewed. ${INTRO}`);
+      const linkedBody = edit(featureWithLinks(links, repo));
+      const textBody = edit(featureWithLinks(links, null));
+      expect(linkedBody).toContain(`Reviewed. ${INTRO}`);
+      // Does any shown row carry a link? (Exact repeats once, the first ten.)
+      const rowsOf = (r: typeof REPO | null) =>
+        renderCodeLinksSection(links, r).filter((l) => l.startsWith("- "));
+      const anyLink = rowsOf(repo).join("\n") !== rowsOf(null).join("\n");
+      for (const metadata of [
+        linkedMetadata(links, repo),
+        // A draft that recorded only the repository gets the ordinary note.
+        JSON.stringify({ codeLinkBase: codeLinkBase(repo) }),
+      ]) {
+        const recorded = metadata.includes("codeLinkSection");
+        const expected = !anyLink
+          ? linkedBody
+          : recorded
+            ? textBody.replace(CODE_LINKS_AS_TEXT_NOTE, CODE_LINKS_EDITED_NOTE)
+            : textBody;
+        expect(bodyWithCodeAsText({ body: linkedBody, metadata }), `seed ${seed}`).toBe(expected);
+      }
+      if (anyLink) stripped += 1;
+    }
+    expect(stripped).toBeGreaterThan(200);
   });
 
   it("a body written before this rule still publishes one stable text", () => {
@@ -763,7 +917,12 @@ describe("comment closers — HTML5 ends a comment at --!> too, CommonMark only 
 });
 
 describe("stripOwnMarkerLines — this issue's marker lines, wherever they now sit", () => {
-  const OWN = { draftId: PUBLISH.draftId, dedupHash: PUBLISH.hash, projectId: SOURCE.projectId };
+  const OWN = {
+    draftId: PUBLISH.draftId,
+    dedupHash: PUBLISH.hash,
+    projectId: SOURCE.projectId,
+    requirementId: SOURCE.requirementId,
+  };
 
   it("removes the block when text was added below it, and keeps that text", () => {
     expect(stripOwnMarkerLines(`Body${BLOCK}\nA note added on GitHub.`, OWN)).toBe(
@@ -792,10 +951,17 @@ describe("stripOwnMarkerLines — this issue's marker lines, wherever they now s
     const otherDraft = buildMarkerComment({ ...PUBLISH, draftId: "draft_other" });
     const otherHash = buildMarkerComment({ ...PUBLISH, hash: "b".repeat(64) });
     const otherProject = buildSourceMarkerComment({ ...SOURCE, projectId: "proj_other" })!;
+    // Same project, another requirement: another issue's source line.
+    const otherRequirement = buildSourceMarkerComment({ ...SOURCE, requirementId: "req_2" })!;
+    const noRequirement = buildSourceMarkerComment({ ...SOURCE, requirementId: null })!;
     for (const line of [
       otherDraft,
       otherHash,
       otherProject,
+      otherRequirement,
+      noRequirement,
+      // …also when it stands above a publish marker that is not this issue's.
+      `${otherRequirement}\n${otherDraft}`,
       // Not alone on its line, not flush left, quoted, fenced off by text.
       `    ${PUBLISH_LINE}`,
       ` ${SOURCE_LINE}`,
@@ -810,6 +976,43 @@ describe("stripOwnMarkerLines — this issue's marker lines, wherever they now s
       const body = `Body\n\n${line}\n\nNote`;
       expect(stripOwnMarkerLines(body, OWN), line).toBe(body);
     }
+  });
+
+  it("knows its source line by the requirement, or by standing on its own publish marker", () => {
+    const otherRequirement = buildSourceMarkerComment({ ...SOURCE, requirementId: "req_2" })!;
+    const noRequirement = buildSourceMarkerComment({ ...SOURCE, requirementId: null })!;
+    // Its own requirement, wherever the line sits.
+    expect(stripOwnMarkerLines(`Body\n\n${SOURCE_LINE}\n\nNote`, OWN)).toBe("Body\n\nNote");
+    // A later analysis re-linked the draft to a new requirement row: the block
+    // on the tracker still names the old one, and is still this issue's block.
+    const relinked = { ...OWN, requirementId: "req_1_v2" };
+    expect(stripOwnMarkerLines(`Body\n\n${SOURCE_LINE}\n${PUBLISH_LINE}\n\nNote`, relinked)).toBe(
+      "Body\n\nNote",
+    );
+    // …but the same line on its own is then some other issue's.
+    const alone = `Body\n\n${SOURCE_LINE}\n\nNote`;
+    expect(stripOwnMarkerLines(alone, relinked)).toBe(alone);
+    // An epic is linked to no requirement, and its source line names none.
+    const epic = { ...OWN, requirementId: null };
+    expect(stripOwnMarkerLines(`Body\n\n${noRequirement}\n\nNote`, epic)).toBe("Body\n\nNote");
+    const featureLine = `Body\n\n${otherRequirement}\n\nNote`;
+    expect(stripOwnMarkerLines(featureLine, epic)).toBe(featureLine);
+    // Only the line directly above the publish marker is vouched for by it.
+    const apart = `Body\n\n${otherRequirement}\n\n${PUBLISH_LINE}\n\nNote`;
+    expect(stripOwnMarkerLines(apart, OWN)).toBe(`Body\n\n${otherRequirement}\n\nNote`);
+  });
+
+  it("leaves no blank line at the top when the block was moved there", () => {
+    // An edit on the tracker can put the block first. What is left must be the
+    // text, not the text behind a blank line that then reads as drift.
+    expect(stripOwnMarkerLines(`${SOURCE_LINE}\n${PUBLISH_LINE}\n\ntext\n\nmore`, OWN)).toBe(
+      "text\n\nmore",
+    );
+    expect(stripOwnMarkerLines(`\n\n${PUBLISH_LINE}\n\n\ntext`, OWN)).toBe("text");
+    expect(stripOwnMarkerLines(`${PUBLISH_LINE}\r\n\r\ntext\r\n`, OWN)).toBe("text");
+    expect(stripOwnMarkerLines(`${PUBLISH_LINE}\n`, OWN)).toBe("");
+    // A blank first line the user wrote stays when the block was not above the text.
+    expect(stripOwnMarkerLines(`\nBody${BLOCK}\nNote`, OWN)).toBe("\nBody\n\nNote");
   });
 
   it("with no recorded hash, the draft id alone identifies the publish marker", () => {

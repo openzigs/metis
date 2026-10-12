@@ -3,7 +3,7 @@
  * host to the generator.
  *
  * The generator links code only when the target is the analysed repository on
- * the same HOST, and writes plain code when the host is unknown. That is only
+ * the same HOST (no base URL given is public GitHub). That is only
  * as good as the value reaching it: a service that dropped `targetBaseUrl`
  * would silently turn every draft's links into text (or, before this rule, let
  * a same-named repository on another host get links it is then refused for).
@@ -48,7 +48,7 @@ describe("generateDrafts (service) — the target's base URL reaches the generat
     await generateDrafts({ ...base, targetBaseUrl: null });
     expect(generateDraftsImpl.mock.calls.at(-1)![0].targetBaseUrl).toBeNull();
 
-    // Unknown stays unknown: never defaulted to public GitHub on the way in.
+    // Left out is passed on as left out; the generator reads it as public GitHub.
     await generateDrafts(base);
     expect(generateDraftsImpl.mock.calls.at(-1)![0].targetBaseUrl).toBeUndefined();
   });

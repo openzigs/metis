@@ -17,3 +17,6 @@ In the publishing code, "untrusted text is safe inside a code span" must be test
 - A marker counts only in the body's final run of marker-only lines (`server/src/lib/publishing/dedup.ts`). Never add a strip, replace or parse that acts on marker-shaped text elsewhere; make it inert where the body is written (`neutraliseMarkerText`). The one exception is `stripOwnMarkerLines` on the drift path: whole lines only, and only lines matching what the `PublishedIssue` row recorded.
 - Any new writer of `IssueDraft.body` must pass the text through `neutraliseMarkerText` (today: the generator's `finishBody`, `editDraft`, drift Adopt).
 - When a publisher test needs a draft to be selected, set its status; do not loosen the double.
+- A property test's hostile generator must include the literal strings the implementation searches for or branches on — twice here it omitted exactly that input (a link-reference-definition shape; the repository's own blob-URL prefix).
+- Never "clean" a user-editable Markdown body with a whole-body scan; replace only the section METIS wrote, byte for byte, and leave the rest alone. (The generator records both renderings in `metadata.codeLinkSection`; `bodyWithCodeAsText` swaps them.)
+- Semgrep's `detect-non-literal-regexp` is blocking in CI and not installed locally — use string search in `server/src`.

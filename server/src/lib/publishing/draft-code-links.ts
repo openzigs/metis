@@ -19,22 +19,26 @@
  *     close a comment — a METIS marker included;
  *   - a link is written only to the project's own repository, on an https
  *     origin, at a known ref, for a plain repository-relative path, with every
- *     segment URL-encoded, and never for a row whose path or symbol holds a
- *     square bracket (`[` + a path holding `]:` is a link reference definition,
- *     not a link). Otherwise the path stays text.
+ *     segment URL-encoded. Otherwise the path stays text;
+ *   - the text of a link is METIS's own and holds no square bracket: a
+ *     location without one is the link's text, as a code span; a location that
+ *     holds one stays a plain code span and is followed by a link whose text is
+ *     the fixed word `source` (`linkedLocation`: `[` + a path holding `]:` is a
+ *     link reference definition, not a link).
  * The link rules mirror `ui/src/lib/code-citation-blob-url.ts` (#728), which
  * the server cannot import.
  *
  * WHICH ISSUES GET LINKS. Only an issue published into the repository the code
  * was analysed from: same host, owner and name (`publishTargetBase`), decided
  * when the drafts are generated. A draft generated for any other target, or
- * for a target whose host the caller did not give, lists the same paths and
+ * for a target whose base URL is not an https URL, lists the same paths and
  * symbols as plain code — no URL, no owner or repository name, no commit SHA —
  * and says so: the analysed repository's coordinates are not written into
  * someone else's tracker. `assertCodeLinksMatchTarget` holds a batch to the
  * same rule if it is later pointed somewhere else, and a Jira issue always
- * gets the plain form (`bodyWithCodeAsText`): a Jira project is never the
- * analysed repository.
+ * gets the section in its plain form (`bodyWithCodeAsText`): a Jira project is
+ * never the analysed repository. Only the section METIS wrote is replaced; the
+ * rest of the body is the user's and goes out as the draft has it.
  *
  * WHICH HOSTS GET LINKS (`githubWebOrigin`), from the connector's API base URL:
  *   - none set, provider `github`            → `https://github.com`
@@ -218,12 +222,33 @@ function linkKey(link: DraftCodeLink): string {
   return JSON.stringify([link.filePath, link.startLine, link.endLine, link.symbolName]);
 }
 
+/** What opens and closes the link that follows a location which is not itself link text. */
+const SOURCE_LINK_OPEN = " ([source](";
+const SOURCE_LINK_CLOSE = "))";
+
 /**
- * The linked form of a location: the code span as the text of a link to `url`.
- * {@link codeLinksAsText} is its inverse; keep the two together.
+ * A location (`code`, an {@link inlineCode} span) with its link. Two forms, and
+ * in both the text of the link is METIS's own and holds no square bracket:
+ *   - no bracket in the location: the code span is the link's text,
+ *     `[`src/a.ts:3`](url)`;
+ *   - a bracket in it (`app/[id]/page.tsx`, any Next.js dynamic route): the
+ *     code span stays plain and a link with fixed text follows it,
+ *     `` `app/[id]/page.tsx` ([source](url)) ``.
+ *
+ * Why two: Markdown finds link reference definitions (`[label]: destination`)
+ * before it reads any inline content, and a label ends at the first `]` whether
+ * or not a backtick came before it — so `[` + a path holding `]:` was a
+ * definition, not a link: the row rendered as an empty bullet and gave the rest
+ * of the body a link label pointing wherever the path said. A row that starts
+ * with a backtick cannot be a definition, and link text with no bracket in it
+ * cannot end early. The symbol name follows the link in a code span of its own,
+ * so a bracket in it changes nothing. {@link ownLinkRemoved} is the inverse of
+ * both forms; keep the two together.
  */
 function linkedLocation(code: string, url: string): string {
-  return `[${code}](${url})`;
+  return code.includes("[") || code.includes("]")
+    ? `${code}${SOURCE_LINK_OPEN}${url}${SOURCE_LINK_CLOSE}`
+    : `[${code}](${url})`;
 }
 
 function renderLink(link: DraftCodeLink, repo: CodeLinkRepo | null): string {
@@ -233,15 +258,7 @@ function renderLink(link: DraftCodeLink, repo: CodeLinkRepo | null): string {
     : range[0] === range[1]
       ? `${link.filePath}:${range[0]}`
       : `${link.filePath}:${range[0]}-${range[1]}`;
-  // A square bracket in the row's text and the location is plain code, never a
-  // link. Markdown finds link reference definitions (`[label]: destination`)
-  // before it reads any inline content, and a label ends at the first `]`
-  // whether or not a backtick came before it — so `[` + a path holding `]:` was
-  // a definition, not a link: the row rendered as an empty bullet and gave the
-  // rest of the body a link label pointing wherever the path said. A row that
-  // starts with a backtick cannot be a definition.
-  const bracketed = /[[\]]/.test(`${where}${link.symbolName ?? ""}`);
-  const url = bracketed ? null : buildCodeLinkUrl(repo, link);
+  const url = buildCodeLinkUrl(repo, link);
   const location = url ? linkedLocation(inlineCode(where), url) : inlineCode(where);
   if (!link.symbolName) return `- ${location}`;
   const kind = link.symbolKind && KIND_RE.test(link.symbolKind) ? ` (${link.symbolKind})` : "";
@@ -255,6 +272,15 @@ const CODE_LINKS_HEADING = "## Related code";
 export const CODE_LINKS_AS_TEXT_NOTE =
   "_These paths are in the repository METIS analysed. They are written as text, not links, " +
   "because this issue is not known to be in that repository._";
+
+/**
+ * The closing line of a section a reviewer edited, once the links METIS wrote
+ * in it were taken out for a tracker that is not the analysed repository.
+ */
+export const CODE_LINKS_EDITED_NOTE =
+  "_This section was edited after METIS wrote it. The links METIS wrote into the repository it " +
+  "analysed were taken out, because this issue is not in that repository; everything else here " +
+  "is as the draft has it._";
 
 /**
  * The section's Markdown lines. Links are listed in the order given (the
@@ -301,6 +327,32 @@ export function renderCodeLinksSection(
   ];
 }
 
+/**
+ * Both renderings of one draft's Related code section, as the generator wrote
+ * them: `linked` is in the body, `plain` is what a tracker that is not the
+ * analysed repository gets in its place ({@link bodyWithCodeAsText}).
+ */
+export interface CodeLinkSectionRecord {
+  linked: string;
+  plain: string;
+}
+
+/**
+ * What a draft records about the section written into its body for `repo`, or
+ * `null` when the two renderings are the same text (no row carries a link).
+ * Recorded as text, not as the links: the swap is then a comparison of bytes,
+ * and stays right for a draft whatever a later version does to the renderer.
+ */
+export function codeLinkSectionRecord(
+  links: readonly DraftCodeLink[],
+  repo: CodeLinkRepo,
+  total?: number,
+): CodeLinkSectionRecord | null {
+  const linked = renderCodeLinksSection(links, repo, total).join("\n");
+  const plain = renderCodeLinksSection(links, null, total).join("\n");
+  return linked === plain ? null : { linked, plain };
+}
+
 /** One requirement's links: the first rows read, and how many it holds in all. */
 export interface RequirementCodeLinks {
   links: DraftCodeLink[];
@@ -337,28 +389,28 @@ export interface PublishTarget {
   owner: string;
   repo: string;
   /**
-   * The target's API base URL as the batch form holds it. `null` is the
-   * publisher's default, public GitHub. `undefined` means the caller does not
-   * know the host — which is never read as "probably the same one".
+   * The target's API base URL as the batch form holds it. Left out, `null` or
+   * empty is the publisher's default, public GitHub — at Generate and at batch
+   * create alike. A value that is not an https URL names no host at all.
    */
-  baseUrl: string | null | undefined;
+  baseUrl?: string | null;
 }
 
 /**
  * A publish target in the form of {@link codeLinkBase}, lower-cased (GitHub
  * compares owner and repository names case-insensitively, and a host name has
- * no case), or `null` when its host is not known or not an https origin.
+ * no case), or `null` when its base URL is not an https URL.
  *
  * THE one definition of "the target is this repository": generation decides
  * whether to write links with it, and {@link assertCodeLinksMatchTarget} checks
- * a batch with it — owner, name AND host both times. When generation compared
- * names only, a same-named repository on another host got links at Generate
- * and a refusal at publish that generating again could never clear.
+ * a batch with it — owner, name AND host both times, and with one reading of a
+ * base URL that was left out. When generation compared names only, a same-named
+ * repository on another host got links at Generate and a refusal at publish
+ * that generating again could never clear.
  */
 export function publishTargetBase(target: PublishTarget): string | null {
-  if (target.baseUrl === undefined) return null;
   // The publisher treats a batch without a base URL as public GitHub.
-  const origin = githubWebOrigin("github", target.baseUrl);
+  const origin = githubWebOrigin("github", target.baseUrl?.trim() || null);
   if (origin === null) return null;
   return `${origin}/${encodeSegment(target.owner.trim())}/${encodeSegment(target.repo.trim())}`.toLowerCase();
 }
@@ -406,8 +458,8 @@ async function readRequirementLinks(
  * published issue changed), and bounded per requirement
  * ({@link CODE_LINK_READ_CAP}). `target` is the repository the drafts are
  * generated for: links are offered only when it is the connector's own
- * repository on the connector's own host ({@link publishTargetBase}) — and so
- * never when the target's host is not known. Returns `null` when the links
+ * repository on the connector's own host ({@link publishTargetBase}); a target
+ * with no base URL is public GitHub. Returns `null` when the links
  * could not be read: the draft is then generated without the section rather
  * than failing, or claiming a requirement has no links.
  */
@@ -496,12 +548,9 @@ export function assertCodeLinksMatchTarget(
     metadata: string | null;
     title?: string | null;
   }>,
-  target: { owner: string; repo: string; baseUrl: string | null | undefined },
+  target: PublishTarget,
 ): void {
-  const targetBase = publishTargetBase({
-    ...target,
-    baseUrl: target.baseUrl ?? null,
-  });
+  const targetBase = publishTargetBase(target);
   const offending = drafts.filter((draft) => {
     const base = recordedCodeLinkBase(draft.metadata);
     if (base === null || base.toLowerCase() === targetBase) return false;
@@ -525,112 +574,201 @@ export function assertCodeLinksMatchTarget(
   );
 }
 
-/** What stands where a link into the analysed repository was taken out. */
-const LINK_REMOVED = "(link removed)";
-
-/** The character after a blob URL that METIS wrote as a link target. */
-const LINK_URL_END = /[\s()]/;
-/** The character after a blob URL found anywhere else in a body. */
-const BARE_URL_END = /[\s()<>[\]]/;
+/** A body line without the carriage return a CRLF body leaves on it. */
+function withoutCr(line: string): string {
+  return line.endsWith("\r") ? line.slice(0, -1) : line;
+}
 
 /**
  * `s` with its ASCII capitals lower-cased and every other character left alone,
- * so the result has the length of the input and an index into one is an index
- * into the other. (`toLowerCase` can change the length of non-ASCII text.)
+ * so the result has the length of the input. (`toLowerCase` can change the
+ * length of non-ASCII text.)
  */
 function asciiLower(s: string): string {
   return s.replace(/[A-Z]+/g, (run) => run.toLowerCase());
 }
 
-function endOfUrl(body: string, from: number, stop: RegExp): number {
-  let i = from;
-  while (i < body.length && !stop.test(body[i]!)) i += 1;
-  return i;
-}
-
 /**
- * The `[` that opens the link text closing at `close`, looking back no further
- * than `floor`; -1 when the text between holds a bracket or a line break (a
- * linked code span never does: see `renderLink`).
+ * The index just past the code span that opens at `from`, or -1 when no span
+ * opens there or it is not closed on the line. A span opened by a run of n
+ * backticks is closed by the next run of exactly n ({@link inlineCode} writes a
+ * fence longer than any run in its text).
  */
-function linkTextStart(body: string, close: number, floor: number): number {
-  for (let i = close - 1; i >= floor; i -= 1) {
-    const c = body[i];
-    if (c === "[") return i;
-    if (c === "]" || c === "\n") return -1;
+function codeSpanEnd(line: string, from: number): number {
+  let fence = 0;
+  while (line[from + fence] === "`") fence += 1;
+  if (fence === 0) return -1;
+  let i = from + fence;
+  while (i < line.length) {
+    if (line[i] !== "`") {
+      i += 1;
+      continue;
+    }
+    let run = 0;
+    while (line[i + run] === "`") run += 1;
+    if (run === fence) return i + run;
+    i += run;
   }
   return -1;
 }
 
 /**
- * `body` without any URL under `blobPrefix` (compared without regard to ASCII
- * case, as a host and GitHub names are). A link METIS wrote — the inverse of
- * `linkedLocation`, `[<text>](<blob URL>)` — is replaced by its text; any other
- * occurrence of such a URL by {@link LINK_REMOVED}. One pass by string search:
- * `blobPrefix` comes from stored draft metadata, and no pattern is built from it.
+ * A Related code row without the link METIS wrote on it — the inverse of
+ * {@link linkedLocation}, both forms — or `null` when the line is not such a
+ * row: it does not start with `- ` and a code span (inside `[…]` or not), what
+ * follows the span is not METIS's link syntax, or the link does not go under
+ * `blobPrefix` (lower-case; compared without regard to ASCII case, as a host
+ * and GitHub names are). Read from the start of the line by position, so a
+ * link anywhere else on it — in a symbol name, in a note a reviewer added — is
+ * not METIS's and is never touched. No pattern is built from `blobPrefix`.
  */
-function withoutBlobUrls(body: string, blobPrefix: string): string {
-  const needle = asciiLower(blobPrefix);
-  const haystack = asciiLower(body);
-  let out = "";
-  let pos = 0;
-  for (;;) {
-    const at = haystack.indexOf(needle, pos);
-    if (at < 0) break;
-    // A blob URL METIS builds never holds a space or a parenthesis (`encodeSegment`).
-    const linkEnd = endOfUrl(body, at + needle.length, LINK_URL_END);
-    const open =
-      at - 2 >= pos && body.startsWith("](", at - 2) && body[linkEnd] === ")"
-        ? linkTextStart(body, at - 2, pos)
-        : -1;
-    if (open >= 0) {
-      out += body.slice(pos, open) + body.slice(open + 1, at - 2);
-      pos = linkEnd + 1;
-    } else {
-      out += body.slice(pos, at) + LINK_REMOVED;
-      pos = endOfUrl(body, at + needle.length, BARE_URL_END);
-    }
-  }
-  return out + body.slice(pos);
+function ownLinkRemoved(line: string, blobPrefix: string): string | null {
+  if (!line.startsWith("- ")) return null;
+  const asLinkText = line[2] === "[";
+  const spanStart = asLinkText ? 3 : 2;
+  const spanEnd = codeSpanEnd(line, spanStart);
+  if (spanEnd < 0) return null;
+  const open = asLinkText ? "](" : SOURCE_LINK_OPEN;
+  const close = asLinkText ? ")" : SOURCE_LINK_CLOSE;
+  if (!line.startsWith(open, spanEnd)) return null;
+  const urlStart = spanEnd + open.length;
+  const pathStart = urlStart + blobPrefix.length;
+  if (asciiLower(line.slice(urlStart, pathStart)) !== blobPrefix) return null;
+  // A blob URL METIS builds never holds a space or a parenthesis (`encodeSegment`).
+  let urlEnd = pathStart;
+  while (urlEnd < line.length && !/[\s()]/.test(line[urlEnd]!)) urlEnd += 1;
+  if (!line.startsWith(close, urlEnd)) return null;
+  return `- ${line.slice(spanStart, spanEnd)}${line.slice(urlEnd + close.length)}`;
 }
 
 /**
- * `body` with its Related code section in the PLAIN form: every link into
- * `base` (a {@link codeLinkBase}) replaced by the code text it wrapped, and the
- * note that the paths are text added under the rows. For a body the generator
- * wrote this is, character for character, the body it would have written for a
- * target that is not the analysed repository — the test holds the two equal, so
- * "plain form" has one definition. Any other URL into `base` (one a reviewer
- * typed or pasted) is taken out as well: what leaves here names no commit and
- * no blob URL of the analysed repository.
+ * Where `text` next occurs in `body` as whole lines (it starts a line and ends
+ * one), at or after `from`; -1 when it does not.
  */
-export function codeLinksAsText(body: string, base: string): string {
-  const text = withoutBlobUrls(body, `${base}/blob/`);
-  if (text.includes(CODE_LINKS_AS_TEXT_NOTE)) return text;
-  const lines = text.split("\n");
-  // The generator writes the section after the requirement's own text.
-  const heading = lines.lastIndexOf(CODE_LINKS_HEADING);
-  if (heading < 0) return text;
-  let lastLine = heading;
-  let hasRows = false;
-  for (let i = heading + 1; i < lines.length; i += 1) {
-    const line = lines[i]!;
-    if (line === "---" || /^#{1,6} /.test(line)) break;
-    if (line.trim() !== "") lastLine = i;
-    if (line.startsWith("- ")) hasRows = true;
+function indexOfLines(body: string, text: string, from: number): number {
+  for (let at = body.indexOf(text, from); at >= 0; at = body.indexOf(text, at + 1)) {
+    const end = at + text.length;
+    if ((at === 0 || body[at - 1] === "\n") && (end === body.length || body[end] === "\n")) {
+      return at;
+    }
   }
-  if (!hasRows) return text;
-  lines.splice(lastLine + 1, 0, "", CODE_LINKS_AS_TEXT_NOTE);
-  return lines.join("\n");
+  return -1;
+}
+
+/**
+ * `body` with every whole-line occurrence of `linked` replaced by `plain`, or
+ * `null` when it holds none. `linked` is the section exactly as the generator
+ * wrote it, so this never reads, and cannot misread, anything else in the body.
+ * An occurrence that is already the start of `plain` is left as it is: when no
+ * row carries a link the plain section is the linked one plus its closing note,
+ * and swapping it again would add the note twice.
+ */
+function swapSection(body: string, linked: string, plain: string): string | null {
+  let out = "";
+  let pos = 0;
+  for (;;) {
+    const at = indexOfLines(body, linked, pos);
+    if (at < 0) break;
+    const isPlain = indexOfLines(body.slice(at, at + plain.length + 1), plain, 0) === 0;
+    out += body.slice(pos, at) + plain;
+    pos = at + (isPlain ? plain.length : linked.length);
+  }
+  return pos === 0 ? null : out + body.slice(pos);
+}
+
+/**
+ * `body` with the links METIS wrote taken out of its Related code sections —
+ * for a section that is no longer the text the generator recorded. Only lines
+ * between a `## Related code` heading and the next heading or `---` are read,
+ * and only a row in METIS's own form is changed ({@link ownLinkRemoved}); a
+ * section that lost a link gets `note` under its last line. Every other line of
+ * the body, and every link a user wrote, is left exactly as it is.
+ */
+function withoutOwnLinks(body: string, blobPrefix: string, note: string): string {
+  const needle = asciiLower(blobPrefix);
+  const lines = body.split("\n");
+  let changed = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (withoutCr(lines[i]!) !== CODE_LINKS_HEADING) continue;
+    let last = i;
+    let removed = false;
+    let next = i + 1;
+    for (; next < lines.length; next += 1) {
+      const line = withoutCr(lines[next]!);
+      if (line === "---" || /^#{1,6} /.test(line)) break;
+      const plain = ownLinkRemoved(line, needle);
+      if (plain !== null) {
+        lines[next] = lines[next]!.endsWith("\r") ? `${plain}\r` : plain;
+        removed = true;
+      }
+      if (line.trim() !== "") last = next;
+    }
+    if (removed) {
+      const eol = lines[last]!.endsWith("\r") ? "\r" : "";
+      lines.splice(last + 1, 0, eol, `${note}${eol}`);
+      next += 2;
+      changed = true;
+    }
+    // The line that ended the section may be the next section's heading.
+    i = next - 1;
+  }
+  return changed ? lines.join("\n") : body;
+}
+
+/** The two renderings a draft's generator recorded for its Related code section. */
+function recordedCodeLinkSection(
+  metadata: string | null | undefined,
+): CodeLinkSectionRecord | null {
+  try {
+    const section = (JSON.parse(metadata ?? "{}") as { codeLinkSection?: unknown } | null)
+      ?.codeLinkSection as Partial<CodeLinkSectionRecord> | null | undefined;
+    return section && typeof section.linked === "string" && typeof section.plain === "string"
+      ? { linked: section.linked, plain: section.plain }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * A draft's body for a tracker that is NOT the repository the code was
- * analysed from — Jira, always: the Related code section in its plain form
- * ({@link codeLinksAsText}). A draft whose generator recorded no repository
- * has no links to take out and is returned as it is.
+ * analysed from — Jira, always: the Related code section METIS wrote, in its
+ * plain form. The body is not parsed to get there.
+ *
+ *   1. The generator recorded both renderings of the section
+ *      (`metadata.codeLinkSection`, {@link codeLinkSectionRecord}). While the
+ *      linked one is still in the body byte for byte, it is replaced by the
+ *      plain one — exactly the section the generator writes for a target that
+ *      is not the analysed repository — and no other byte of the body changes.
+ *      A body that already holds the plain one is returned as it is.
+ *   2. Otherwise a reviewer edited the section (or the draft predates the
+ *      record). Then only the rows under a `## Related code` heading are read,
+ *      METIS's own link is taken off each row that still has it, and the
+ *      section says so ({@link CODE_LINKS_EDITED_NOTE}).
+ *
+ * WHAT THIS DOES NOT DO. It is not a filter on the body: a link or URL into
+ * the analysed repository that a user wrote — in the requirement text, in a
+ * comment they added to the section, as a row they reshaped — is the user's
+ * content and reaches Jira unchanged, commit SHA and all. The guarantee is
+ * that METIS does not put the analysed repository's coordinates into Jira
+ * itself. A draft whose generator recorded no repository has no such link and
+ * is returned as it is.
  */
 export function bodyWithCodeAsText(draft: { body: string; metadata?: string | null }): string {
   const base = recordedCodeLinkBase(draft.metadata);
-  return base === null ? draft.body : codeLinksAsText(draft.body, base);
+  if (base === null) return draft.body;
+  const section = recordedCodeLinkSection(draft.metadata);
+  if (section) {
+    const swapped = swapSection(draft.body, section.linked, section.plain);
+    if (swapped !== null) return swapped;
+    // Already the plain section (a body adopted back from Jira): nothing to
+    // do — and so the plain form of a plain form is itself, which is what
+    // keeps a Jira issue from reporting drift again after Adopt.
+    if (indexOfLines(draft.body, section.plain, 0) >= 0) return draft.body;
+  }
+  return withoutOwnLinks(
+    draft.body,
+    `${base}/blob/`,
+    section ? CODE_LINKS_EDITED_NOTE : CODE_LINKS_AS_TEXT_NOTE,
+  );
 }
