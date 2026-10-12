@@ -39,6 +39,8 @@ vi.mock("../src/lib/prisma.js", async () => {
 
 const { loadResolvedGoCalls, loadResolvedGoCallsFrom } =
   await import("../src/lib/impact-analysis/go-call-resolution.js");
+const { PrismaSchemaImpactDataSource } =
+  await import("../src/lib/impact-analysis/schema-impact.js");
 const { findStructuralTwins, MAX_TWIN_SEEDS } =
   await import("../src/lib/impact-analysis/structural-twins.js");
 const {
@@ -291,6 +293,30 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         bound += expected.length;
       }
       expect(bound).toBeGreaterThan(100);
+    }, 60_000);
+
+    it("Go calls: impact analysis's own source and the plan's give the same edges out of a frontier, and only out of it", async () => {
+      // The whole-project loader behind impact analysis resolves every call of
+      // the project; what it hands the walk is filtered to the frontier. The
+      // walk takes every edge it is given without looking at the caller.
+      const rnd = sequence(99);
+      const pick = <T>(a: readonly T[]): T => a[Math.floor(rnd() * a.length)] as T;
+      const key = (e: { fromSymbolId: string; toSymbolId: string; inferred?: boolean }) =>
+        `${e.fromSymbolId}>${e.toSymbolId}${e.inferred ? " (bound by name)" : ""}`;
+      const engine = new PrismaSchemaImpactDataSource(db, GO);
+      const plan = createDefaultPlanLocalisationSource(GO).schema;
+      let bound = 0;
+      for (let t = 0; t < 20; t++) {
+        const frontier = [
+          ...new Set(Array.from({ length: 1 + Math.floor(rnd() * 30) }, () => pick(goFunctionIds))),
+        ];
+        const fromEngine = await engine.getDownstreamCallEdgesFrom(frontier);
+        const fromPlan = await plan.getDownstreamCallEdgesFrom!(frontier);
+        expect(fromEngine.every((e) => frontier.includes(e.fromSymbolId))).toBe(true);
+        expect(fromPlan.map(key).sort()).toEqual(fromEngine.map(key).sort());
+        bound += fromEngine.filter((e) => e.inferred).length;
+      }
+      expect(bound).toBeGreaterThan(20);
     }, 60_000);
 
     it("twins: the scoped callee-name read finds the whole-project twins, past MAX_TWIN_SEEDS too", async () => {

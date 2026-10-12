@@ -520,7 +520,8 @@ describe("/plan", () => {
     });
     expect(r.retrievedFiles).toEqual([ENTRY, "internal/database/migrations.go"]);
     // The plan says a listed file was not retrieved. No code decides what that
-    // sentence is about (#1094 cycle 2): `retrievedFiles` is how a reader checks it.
+    // sentence is about (#1094 cycle 2). The route does not forward `retrievedFiles`
+    // and `/plan` stores no record: a `/plan` reader cannot check it, and the guide says so.
     expect(r.message).not.toContain("Check before implementing");
     expect(r.message).not.toContain("not in the retrieved context");
     expect(r.message).not.toContain("plan-context.md");

@@ -6040,7 +6040,9 @@ Spec Kit artifact, so the installer does not write it into the target repository
 `specs/<slug>/` (`METIS_INTERNAL_FEATURE_ARTIFACTS`, `installer/skeleton.ts`). The list is
 kept out of `plan.md` because the walkthrough's change-plan scoring counts the files a plan
 names. The legacy `/plan` has a closed set of artifact names and a frozen response shape, so
-it carries the check and the full left-out list in its message only.
+it carries the full left-out list in its message and nothing else: `runPlan` returns
+`retrievedFiles`, the route (`routes/spec-kit.ts`) does not forward it, and no record is
+stored, so a `/plan` reader has no list to check the plan's statement against.
 
 A model-driven tool loop (chat's approach) was not used: the localisation adds no model call
 and 40 ms on the run-7 project to a command that already runs for minutes (#1059), and it is

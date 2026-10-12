@@ -613,6 +613,15 @@ describe("buildPlanLocalisation — the token budget", () => {
     // 2 original writers + 19 added, 16 listed.
     expect(all).toMatch(/Writers of `feeds`: 5 more writers not listed \(in /);
     expect(all).toMatch(/Readers of `feeds`: \d+ more readers not listed \(in /);
+    // The rows themselves are capped, not only counted: a list of all 21 writers
+    // under "5 more not listed" would say one thing and show another.
+    const rowsOf = (title: string) => {
+      const from = r.block.indexOf(`### ${title}`);
+      const to = r.block.indexOf("\n### ", from + 1);
+      return r.block.slice(from, to === -1 ? undefined : to).match(/^- /gm) ?? [];
+    };
+    expect(rowsOf("Writers of `feeds`")).toHaveLength(MAX_WRITERS_PER_TABLE);
+    expect(rowsOf("Readers of `feeds`")).toHaveLength(MAX_READERS_PER_TABLE);
     expect(all).toMatch(
       /Called by the Retrieved Code and the Data Layer: \d+ more callees not listed/,
     );
@@ -1110,6 +1119,23 @@ describe("buildPlanLocalisation — a slow walk does not delay the plan (#1094 r
     expect(expectLeftOut(r, /structural twins skipped/)).toBe(
       "Structural Twins of Retrieved Functions: structural twins skipped: looking for them took longer than 25 ms",
     );
+  });
+
+  it("reports the whole walk's limit, not the twin step's, when the walk runs out during the twin step", async () => {
+    // The twin step holds the thread past the WALK's limit and then looks at its
+    // own clock, which carries the walk's deadline. "Twins skipped: took longer
+    // than 5,000 ms" would be false: the walk stopped, at 60 ms.
+    const source = fakeSource(minifluxGraph());
+    source.calleeNameSets = async (_ids, checkpoint) => {
+      block(120);
+      await checkpoint?.();
+      return { sets: new Map() };
+    };
+    const r = await localise({ source, timeBudgetMs: 60, twinTimeBudgetMs: 5_000 });
+    expect(r.block).toBe("");
+    expect(r.dropped).toEqual([
+      "Change localisation skipped: the code-graph walk did not finish within 60 ms, so this plan was given similarity retrieval alone",
+    ]);
   });
 
   it("stops a twin comparison that holds the thread, between two retrieved functions", async () => {
