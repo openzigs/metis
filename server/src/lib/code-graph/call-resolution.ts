@@ -35,6 +35,10 @@
  *
  * Everything unresolved keeps `toSymbolId = null` and its `toQualifiedName`, so
  * "who calls X" tools still see the textual reference.
+ *
+ * Go is decided before these rules (#1071): `go-type-resolution.ts` binds a Go
+ * call by the types the source declares, and only a call whose receiver type it
+ * could not infer falls through to the member-call rules above.
  */
 
 import { isTestPath } from "./test-conventions.js";
@@ -537,7 +541,8 @@ export interface ResolutionSite {
 /**
  * Kinds a member call can land on. Go records receiver methods
  * (`func (s *Server) Start()`) as `function` symbols, so there a function is
- * method-capable too.
+ * method-capable too. Since #1071 these rules reach a Go call only when its
+ * receiver's type could not be inferred (`go-type-resolution.ts` decides first).
  */
 function isMemberCapable(sym: ResolvableSymbol): boolean {
   return sym.kind === "method" || (sym.language === "go" && sym.kind === "function");

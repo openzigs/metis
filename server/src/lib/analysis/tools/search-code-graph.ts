@@ -8,6 +8,7 @@
 import type { AgentTool, ToolContext, ToolResult, JSONSchema } from "./types.js";
 import { describeReceivedKeys } from "./arg-errors.js";
 import { prisma } from "../../prisma.js";
+import { goUndecidedCallWhere } from "../../code-graph/go-type-resolution.js";
 
 const MAX_RESULTS = 30;
 /** #740 — cap on the unresolved-callee names listed alongside the results. */
@@ -100,6 +101,9 @@ type Resolution =
 const renderSymbol = (s: Omit<SymbolRef, "id" | "name">): string =>
   `${s.kind} ${s.qualifiedName} — ${s.filePath}:${s.startLine}-${s.endLine} [${s.language}]`;
 
+/** `Type.member`: two identifiers and one dot. Anchored, no nested quantifier: linear. */
+const TYPE_MEMBER_REF = /^[A-Za-z_]\w*\.[A-Za-z_]\w*$/;
+
 /**
  * #774 — resolve the symbol a `calls`/`calledBy` filter names. Before #774 this
  * was `findFirst({ qualifiedName: { contains } })`: with three `UpdateFeed`
@@ -129,13 +133,24 @@ async function resolveNamedSymbol(codeGraphId: string, ref: string): Promise<Res
 
   let pool = exactHits;
   if (pool.length === 0) {
+    // #1071 — a member is stored `<file>::<Type>::<member>`, and asked for as
+    // `Type.member` (`Storage.SetEntriesStatus`): match that form too.
+    const member = TYPE_MEMBER_REF.test(ref) ? `::${ref.replace(".", "::")}` : null;
     const fuzzy: SymbolRef[] = await prisma.codeSymbol.findMany({
-      where: { codeGraphId, qualifiedName: { contains: ref } },
+      where: member
+        ? {
+            codeGraphId,
+            OR: [{ qualifiedName: { contains: ref } }, { qualifiedName: { endsWith: member } }],
+          }
+        : { codeGraphId, qualifiedName: { contains: ref } },
       ...page,
       take: MAX_CANDIDATES + 1,
     });
     const suffix = fuzzy.filter(
-      (s) => s.qualifiedName.endsWith(`::${ref}`) || s.qualifiedName.endsWith(`.${ref}`),
+      (s) =>
+        s.qualifiedName.endsWith(`::${ref}`) ||
+        s.qualifiedName.endsWith(`.${ref}`) ||
+        (member !== null && s.qualifiedName.endsWith(member)),
     );
     pool = suffix.length === 1 ? suffix : fuzzy;
   }
@@ -184,7 +199,17 @@ async function describeProbableCallSites(
       codeGraphId,
       kind: "calls",
       toSymbolId: null,
-      OR: [{ toQualifiedName: callee.name }, { toQualifiedName: { endsWith: `.${callee.name}` } }],
+      // #1071 — a call ingest decided has no project callee (`http.Get` beside a
+      // project `Get`) is not a probable call site of anything.
+      AND: [
+        {
+          OR: [
+            { toQualifiedName: callee.name },
+            { toQualifiedName: { endsWith: `.${callee.name}` } },
+          ],
+        },
+        goUndecidedCallWhere(),
+      ],
       fromSymbol: { language: callee.language },
       ...(filePath ? { filePath: { contains: filePath } } : {}),
     },

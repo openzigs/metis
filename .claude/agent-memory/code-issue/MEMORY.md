@@ -92,6 +92,13 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Mapper precision rule vs recall](project_mapper-precision-rules-halve-impact-recall.md) — run both evals; option, not global (#1063)
 - [0 findings: read token_usages](project_zero-findings-read-token-usages-first.md) — output == cap + empty reply = reasoning (#1063)
 - [Synthesis field must fail soft](project_synthesis-optional-field-must-fail-soft.md) — one null discards every requirement (#1063)
+- [Binding more edges: check fallback consumers](project_binding-more-edges-check-fallback-consumers.md) — diff replay `tables:` + per-seed (#1071)
+- [Identifier shape change: old fixtures stay green](project_identifier-shape-change-rerun-other-features-probes.md) — re-probe real graph (#1071)
+- [Decided verdict needs positive evidence](project_decided-verdicts-need-positive-evidence.md) — else stay undecided for the fallback (#1071)
+- [Code-graph extractor version](project_code-graph-extractor-version.md) — bump + EXTRACTOR_UPGRADES; upgrade marks the graph (#1071)
+- [Recursion audit: bound work, not depth](project_recursion-audit-must-bound-work-not-depth.md) — lattice + scaling ratio (#1071)
+- [Test helper keys must be unique](project_test-helper-keys-must-be-unique.md) — throw on a duplicate key (#1071)
+- [Suppression needs evidence, once](project_suppression-rule-needs-positive-evidence-acknowledged-once.md) — not a missing field (#1071)
 - [Spec Kit jobs: test seams](project_speckit-jobs-test-seams-and-runner-choice.md) — mock job-store; park the stub, no sleeps (#1059)
 - [Job tables: DB commit + one clock](project_heartbeat-sweep-tables-db-commit-and-one-clock.md) — in-memory stop misses other replicas (#1059)
 - [New Prisma model: 3 PG artefacts](project_new-prisma-model-three-postgres-artefacts.md) — baseline CREATE TABLE; run schema-parity (#1059)
@@ -99,6 +106,8 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Test the STAMPED body](project_publishing-safety-is-tested-on-the-stamped-body.md) — strip split a code span; double honours status
 - [Title rule change: look up old hash](project_draft-title-rule-change-needs-old-title-lookup.md) — else 2nd draft, 2nd issue (#1064)
 - [`pgrep -f` loop matches itself](project_pgrep-f-wait-loop-matches-itself.md) — never exits; use ps + grep "node .*(vitest|tsc)"
+- [Language resolver: type-checker oracle](project_language-resolver-needs-a-type-checker-oracle.md) — fixtures did not converge (#1104)
+- [A ceiling must not overwrite](project_a-ceiling-must-not-overwrite-and-must-be-recorded.md) — record it, resume it; force it tiny
 - [New route: own limiter, keyed on user](project_new-route-needs-its-own-limiter-keyed-on-user.md) — no global one; CodeQL lands late (#1007)
 - [Run tokens: 2 values; chat row ≠ turn](project_run-tokens-two-values-and-chat-row-is-not-the-turn.md) — stored cost, one definition
 - [`analysis.read`: every role has it](project_analysis-read-is-held-by-every-role.md) — no 403 test; test scoping + ownership
@@ -107,4 +116,8 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [requirementId guard; recording doubles](project_requirement-id-guard-and-recording-doubles.md) — agentic+single-shot unchecked (#1027)
 - [Before-fixture pins only its scenario](project_before-fixture-pins-only-its-scenario.md) — regenerate on base, mutate each off-path line
 - [Count the delimiter, not the split](project_count-the-delimiter-not-the-split.md) — `split(" | ")` misses `a | | b`; test edge bars
+- [Memoised closure = entities × closure](project_memoised-closure-cache-is-entities-times-closure.md) — probe heap at 2 sizes (#1104)
 - [Absent page group is ambiguous](project_absent-page-group-is-ambiguous-when-ui-hides-empty.md) — UI hides empty groups
+- [Retained counter sees only its own](project_retained-counter-sees-only-what-it-was-written-for.md) — probe every type form; watchdog (#1104)
+- [Memory probe: own members × tables/call](project_memory-probe-own-members-times-tables.md) — cap + growth watchdog (#1104)
+- [Fix the lookup rule, not the depth](project_fix-the-lookup-rule-not-the-reported-depth.md) — move the fixture ±1 level (#1104)

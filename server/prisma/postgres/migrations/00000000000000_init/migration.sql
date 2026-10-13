@@ -4348,3 +4348,20 @@ CREATE INDEX "spec_kit_jobs_status_heartbeatAt_idx" ON "spec_kit_jobs"("status",
 
 -- CreateIndex
 CREATE INDEX "spec_kit_jobs_finishedAt_idx" ON "spec_kit_jobs"("finishedAt");
+
+-- Issue #1071 — the inputs a generated document's latest version was
+-- acknowledged to stand for without being regenerated (extractor upgrade).
+-- CreateTable
+CREATE TABLE "generated_document_acknowledgements" (
+    "documentId" TEXT NOT NULL,
+    "version" INTEGER NOT NULL,
+    "upgradedAt" TIMESTAMP(3) NOT NULL,
+    "fingerprint" TEXT NOT NULL,
+    "graphs" TEXT,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "generated_document_acknowledgements_pkey" PRIMARY KEY ("documentId")
+);
+
+-- AddForeignKey
+ALTER TABLE "generated_document_acknowledgements" ADD CONSTRAINT "generated_document_acknowledgements_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "generated_documents"("id") ON DELETE CASCADE ON UPDATE CASCADE;

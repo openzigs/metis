@@ -108,8 +108,7 @@ function cleanIdentifier(raw: string): { schema?: string; name: string } | null 
  * parsing alone and is surfaced as an unresolved ref rather than dropped or
  * turned into a bogus concrete table. */
 type TablePositionMatch =
-  | { kind: "concrete"; schema?: string; name: string }
-  | { kind: "unresolved"; placeholder: string };
+  { kind: "concrete"; schema?: string; name: string } | { kind: "unresolved"; placeholder: string };
 
 function parseTablePosition(raw: string): TablePositionMatch | null {
   const dyn = DYNAMIC_PLACEHOLDER_RE.exec(raw.trim());

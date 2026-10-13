@@ -1014,7 +1014,7 @@ All three share `retrieveFusedCodeContext` / `retrieveFusedCodeChunks`, which de
 
 **Input-side requirement coverage (#1112, Epic #1107)** — `RequirementCoverage` (#736, below) grades **outputs**; nothing graded **inputs**, which is how #1101 happened: a user pasted seven requirements, six were mapped, the seventh was sliced off by `ANALYSIS_AFFECTED_CODE_MAX_CANDIDATES` (default 8) and the run reported success. The raw text never reaches the synthesis prompt, so nothing downstream could notice the absence — the loss was unobservable *by construction*. Three stages could discard user input silently: the candidate-cap `.slice()` in `extractNewRequirementCandidates`, the Jaccard ≥ `DUPLICATE_REQUIREMENT_OVERLAP` de-dupe in `mergeRequirementSets`, and the free-text box's own character cap. Each now **reports** instead. `server/src/lib/analysis/new-requirements.ts` gains accounted variants — `extractNewRequirementCandidatesWithAccount` (returns `parsedCount` + a `dropped[]` naming `candidate-cap` / `unparseable` + an `inputTruncated` flag when the paste arrived at `MAX_EXTRA_INSTRUCTIONS`) and `mergeRequirementSetsWithAccount` (returns `merged[]`, each naming the **survivor** it was folded into) — which `buildRequirementInputAccount` composes into a `RequirementInputAccount` on #733's capability record (`metadata.capability.requirementInputAccount`, additive, no migration). The invariant `parsedCount === analyzedIds.length + merged.length + dropped.length` (`isRequirementInputAccountBalanced`) is what makes "nothing vanished" checkable rather than assumed. **Merge and drop are deliberately distinct**: a duplicate folded into a named survivor is accounted for and does **not** raise a degradation reason, while a genuine loss derives the `requirement-inputs-dropped` capability reason — placed **outside** the `codeAnalysisRequested` gate, because the loss is of the user's own words regardless of which agents ran. **The cap is not raised**: a bigger cap that truncates in silence is the same bug at a different number. UI: `RequirementInputAccountPanel` ("Requirements you supplied", one line per merged/dropped input) on the results page, plus an explicit *"your text was cut at N characters"* notice in `EvaluateRequirementsPanel` — the textarea dropped its `maxLength` so the overflow is observable in `onChange` at all (the browser used to swallow it before React saw it) while the controlled value stays clamped. `MAX_EXTRA_INSTRUCTIONS` now lives in `@metis/shared` so the Zod cap, the textarea and the truncation check cannot drift.
 
-**Two shared name terms before a link is shown (#1063)** — BM25 scores only the query terms that match, so a term no symbol carries costs a candidate nothing, and `normalizeConfidence` is relative to the best hit. In #706 run 7 *"Add a button to terminate all sessions"* (content terms `button`, `terminate`, `sessions`; no symbol name contains `terminate`) therefore mapped to the Telegram bot's `InlineKeyboardButton` at confidence 1.0, because `button` is the rarest of the words that did match (7 of 3,845 symbols); *"Ability to force IPv4 or IPv6 per feed"* mapped to `ForceRefreshInterval` the same way. Raising the confidence floor could not fix it: the floor is relative to the best hit, and the best hit was the wrong one. The BM25 searchers take `{ minSharedTerms }`, applied before the result limit, and `ANALYSIS_LINK_MIN_SHARED_TERMS` is 2 (capped at the requirement's own term count). **The terms are counted against the symbol's name, not the BM25 document** (`symbolNameTerms`): the document is `name + qualifiedName`, and `qualifiedName` is `<filePath>::<name>`, so counting document terms let a directory or the file extension be the second shared term (*"…in the web client…"* brought `InlineKeyboardButton` back through `telegrambot/client.go`). Counted: the name, its enclosing type or table (`KeyboardHandler::listen`, `user_sessions.ip`; for a dotted name only the owner next to the member), and for a module row the file's base name without its extension. Never counted: directories, the file a non-module symbol lives in, extensions. Path terms still rank. **The rule filters what is persisted and shown, and nothing else.** `computeAffectedCodeContext` reads one corpus load twice (`MemoizingBm25CodeSymbolSearcher.withOptions`): with the rule for `result` (the persisted `metadata.affectedCode` and the Affected code panel), and without it for `block` and `filePaths`, the code agent's AFFECTED CODE seed block and its citation-provenance list, which are therefore what they were before #1063. A requirement whose hits each share one word gets **no link** on the page while the agent is still seeded; a run where the project has code but nothing matched at all is persisted with empty candidates rather than dropped, so the page can say so. Impact Analysis seeding, the schema-impact producer, the escalation context, the LLM seeder and the entity-seed union never set the option: on the impact-recall fixture the rule cut table recall from 0.91 to 0.50. The rule is **provisional and in-sample**. On the reqmap fixture, which replays the display path, macro precision went 0.71 to 0.87 and macro recall 1.00 to 0.90. There is no stemming (`session` does not share `sessions`), and a symbol whose only second term was its file name (`markAllAsRead` in `unread_mark_all_read.go`, for a requirement that says "unread") is no longer shown. Confidence is still relative to the best surviving link. Moving the mapper onto `HybridCodeSearch`, and an absolute confidence, are tracked in #1097.
+**Two shared name terms before a link is shown (#1063)** — BM25 scores only the query terms that match, so a term no symbol carries costs a candidate nothing, and `normalizeConfidence` is relative to the best hit. In #706 run 7 *"Add a button to terminate all sessions"* (content terms `button`, `terminate`, `sessions`; no symbol name contains `terminate`) therefore mapped to the Telegram bot's `InlineKeyboardButton` at confidence 1.0, because `button` is the rarest of the words that did match (7 of 3,845 symbols); *"Ability to force IPv4 or IPv6 per feed"* mapped to `ForceRefreshInterval` the same way. Raising the confidence floor could not fix it: the floor is relative to the best hit, and the best hit was the wrong one. The BM25 searchers take `{ minSharedTerms }`, applied before the result limit, and `ANALYSIS_LINK_MIN_SHARED_TERMS` is 2 (capped at the requirement's own term count). **The terms are counted against the symbol's name, not the BM25 document** (`symbolNameTerms`): the document is `name + qualifiedName`, and `qualifiedName` is `<filePath>::<name>`, so counting document terms let a directory or the file extension be the second shared term (*"…in the web client…"* brought `InlineKeyboardButton` back through `telegrambot/client.go`). Counted: the name, its enclosing type or table (`KeyboardHandler::listen`, `user_sessions.ip`; for a dotted name only the owner next to the member), and for a module row the file's base name without its extension. Never counted: directories, the file a non-module symbol lives in, extensions. Path terms still rank. **An enclosing type may supply shared terms, never all of them (#1071)**: a member links only when at least one shared term comes from its own name (`symbolOwnNameTerms`). Once a Go method's qualified name carried its receiver type, *"OIDC provider display name"* shared `oidc` and `provider` with all seven methods of `oidcProvider`, whatever each was called, and they pushed the one right symbol (`configOptions::OAuth2OIDCProviderName`) out of the ten links kept; with the rule that requirement links exactly what it linked before the rename. The type still counts for one term, so `Client::Users` links for *"Let users go to the client settings"* (`users` its own, `client` its type's), which the `<file>::Users` name did not. Measured on the run-7 Miniflux project over 11 probes and 23 stored requirements against the graph before #1071: 217 links unchanged, 20 added (11 right, 9 wrong by hand), 9 removed; without the rule 210 unchanged, 39 added, 16 removed. **The rule filters what is persisted and shown, and nothing else.** `computeAffectedCodeContext` reads one corpus load twice (`MemoizingBm25CodeSymbolSearcher.withOptions`): with the rule for `result` (the persisted `metadata.affectedCode` and the Affected code panel), and without it for `block` and `filePaths`, the code agent's AFFECTED CODE seed block and its citation-provenance list, which are therefore what they were before #1063. A requirement whose hits each share one word gets **no link** on the page while the agent is still seeded; a run where the project has code but nothing matched at all is persisted with empty candidates rather than dropped, so the page can say so. Impact Analysis seeding, the schema-impact producer, the escalation context, the LLM seeder and the entity-seed union never set the option: on the impact-recall fixture the rule cut table recall from 0.91 to 0.50. The rule is **provisional and in-sample**. On the reqmap fixture, which replays the display path, macro precision went 0.71 to 0.87 and macro recall 1.00 to 0.90. There is no stemming (`session` does not share `sessions`), and a symbol whose only second term was its file name (`markAllAsRead` in `unread_mark_all_read.go`, for a requirement that says "unread") is no longer shown. Confidence is still relative to the best surviving link. Moving the mapper onto `HybridCodeSearch`, and an absolute confidence, are tracked in #1097.
 
 **The block splitter's subordination contract (#1136)** — #1112 accounted honestly for a population the parser had inflated ~4×. `extractChangesHeuristically` (`server/src/lib/impact-analysis/extract-changes.ts`) promoted **every acceptance-criteria bullet to its own requirement candidate**: a measured walkthrough of ten requirements × three bullets produced `parsedCount: 40` and *"6 of 40 requirements you supplied were analyzed"*, with `Roles: owner, editor, viewer` arriving as `NR-10`. Since `ANALYSIS_AFFECTED_CODE_MAX_CANDIDATES` defaults to 8, an ordinary **three**-requirement paste with criteria already overflowed the cap — which is what actually produced #1101's "R7 was silently dropped". **The defect was the unit being counted, not the threshold, so the cap is unchanged.** The contract, derived from the existing #964 fixture rather than invented: **a bullet list is a requirement *set* only when it is introduced as one** — standing alone (`- A\n- B`, the headline paste shape, still one requirement per bullet), or under a heading / `Label:` lead-in that names a group. `Numbered requirements:` and `Notification channels:` in that fixture each introduce lists of genuinely distinct requirements and **still split**, which is precisely why a purely structural rule ("a lead-in label means subordinate") was not available and the discriminator has to include the label's *meaning*. A list that **continues the requirement just stated** — directly with no intervening label, or under a `SUBORDINATING_LABELS` entry (`acceptance criteria`, `success criteria`, `definition of done`, `AC`, `DoD`, `examples`, `notes`; matched through ATX-heading, `Label:` and `**emphasized**` forms, and through a trailing `(qualifier)`) — is that requirement's **detail** and is folded into it. The list is deliberately narrow: every entry describes how a requirement is *verified or illustrated*, never what the system must do, so `constraints` / `assumptions` / `rules` are excluded. Folding **appends** the detail to the parent's `body` (updating `bodyDelta`) rather than discarding it, so the criteria still reach the code agent and still seed #735's BM25 mapping; `title` and the `added`/`modified`/`removed` classification are **not** recomputed, so a criterion like *"the archived workspace is removed from the sidebar"* cannot retype an `added` requirement as a removal. Two guards keep the change loss-free: with no preceding requirement to attach to (a paste that *opens* with `Acceptance criteria:`), the pre-#1136 promotion is kept; and only the block **immediately** after a stated requirement is claimed as its detail, so a second adjacent bullet block stays a requirement set. #1101's own seven-requirement paste now parses to **7, all analyzed, nothing dropped**; the walkthrough's paste to **10, not 40**. #1112's accounting is unchanged and now grades the corrected population.
 
@@ -2063,7 +2063,7 @@ Epic #207 completes the traceability chain by introducing a first-class **Spec**
 - `backfill-spec-links.ts` (#228) — idempotently derives links from existing data: requirement→spec by Jaccard file-path overlap (spec scope paths vs the requirement→code spine), then propagates each requirement's code mappings onto its linked specs as `derived` spec→code rows. The derivation (`deriveSpecLinks`) is pure; persistence is a separate injected writer.
 - `seed-code-links-from-findings.ts` — after synthesis or promotion, writes `analysis-grounding` `RequirementCodeMapping` rows from the citations of each requirement's evidence findings. Since #768 a citation becomes a link only when it resolves to the project's code graph: a code citation binds to its own symbol (when that symbol is in the cited file), else the innermost symbol enclosing the span, else a file-level row with the cited lines; a repository document (`connector:repo:<id>:src/<relPath>`) whose `<relPath>` is a graph file becomes a file-level row under `<relPath>`. Uploaded docs, the live database schema, `connector:db:` docs and repository metadata units write nothing, so they no longer count towards code coverage.
 - `traceability-spine.ts` (#229) — `getRequirementChain` assembles the full requirement→spec→code tree; `getRequirementsForFile` is the reverse lookup. Since #814 every code node carries `isTest` (its file classifies as a test under `code-graph/test-conventions.ts`, #813) and the chain carries `testedBy`.
-- `tested-by.ts` (#814) — resolves which **tests** cover a requirement from the code it is already mapped to (direct `RequirementCodeMapping` rows and `RequirementSpecMapping` → `SpecCodeMapping`), with no model call and no new table. Three relations, strongest first: **`direct`** (base 1.0) — a mapped target's file is itself a test; **`exercises`** (0.8) — a symbol in a test file has an incoming `calls`/`references` `CodeEdge` into a target symbol, where a file-only target (the common `analysis-grounding` shape) means the symbols in that file that overlap its recorded line range (every symbol when it records none), filtered by range first and then capped at `TESTED_BY_MAX_SYMBOLS_PER_FILE` (default 500); `imports` edges are deliberately not followed, since for a file-only target they would link every test that imports the package; **`naming`** (0.6) — a test case in `siblingTestPaths(target)` is named for a target symbol (longest folded symbol name that prefixes the test's subject on a word boundary, ≥3 chars, so `TestValidatePasswordRejectsEmpty` → `ValidatePassword` and `TestUser_Validate` → `User.Validate`), or, for a file-only target, shares a denoised requirement token. Three more guards stop a broad mapping fanning out (#860, #905): a test-file mapping is `direct` only when it lands on a real test-file symbol — the whole-file `module` symbol every parser emits does not count, because the seeder (#768) binds a licence-header citation to it and writes its 1-EOF span; an `analysis-grounding` test-file mapping with neither a symbol nor a range (the seeder's shape for a document citation with no lines) is never `direct` (#905); and any target, symbol or file, exercised from test files in at least `TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS` (default 2) **foreign** directories — any but the target's own directory and the directories of its conventional sibling test paths (`__tests__/`, `tests/`, `src/test/`) — is a **hub** (a config constructor other packages' tests call for setup), whose `exercises` links survive only when the test's or the callee's name shares the denoised requirement **title**'s words — one word for a title of one or two words, two otherwise (the body's prose words are too common to discriminate). Only foreign callers make a hub, but inside one the filter applies to the target's own-package tests too (#905): every config requirement maps to the one constructor, and its own `TestConfigMap` tests the option map, not OIDC or metrics. Measured on Miniflux 2.3.3: `NewConfigOptions` has 2 foreign test directories (a hub, so the sanitizer and rewrite tests no longer "test" OAUTH2_USER_CREATION), `NewConfigParser` 10, `SanitizeHTML` 0. A flat single `tests/` layout is one foreign directory and never forms a hub at the default; a layout that mirrors `src/` under a separate test tree has every test foreign, so there a shared helper called from two test directories is a hub. A module-bound citation of a test file whose only symbol is the module (a TS/JS file of anonymous `describe`/`it` callbacks) stays `direct`: nothing tells a header from a test there. Within a relation tests are ranked by `BM25Index` relevance of `name + qualifiedName` against `denoiseRequirementQuery(title + body)`, folded into `score` as `base × (0.8 + 0.2 × relevance)`; results are deduplicated by `(filePath, qualifiedName)` keeping the strongest relation, at most 10. The Prisma query count is constant in the number of requirements (requirements, code mappings, spec mappings, spec code, target symbols, incoming edges, sibling-file symbols), every query filters on `projectId` (edges on the source symbol's project too), and sibling paths are computed in code and passed only as bound `in` values. **Go only (#1034)** — a fourth, weakest relation, **`inferred-call`** (0.5, ranked last): the ingest leaves a call through a receiver or struct field unresolved (the Go parser keeps only the bare field name of a selector call, the standard library's included), so those edges are bound afterwards by `loadResolvedGoCalls` (`impact-analysis/go-call-resolution.ts`: the one function of that name visible from the caller's package, or nothing). That resolver's over-approximation is safe for a blast radius and not for a coverage claim, so this consumer narrows it, leaving impact analysis unchanged: the name must be **distinctive** (two words or more and not a well-known stdlib/testing compound such as `WithTimeout`, `go-inferred-call-names.ts`) **or** a test in the target's own package must be named for it (`TestValidateCertFile` → `Validate`); an unexported name binds only from its own package; and a rangeless whole-file target never follows a bound call. Inferred links are labelled apart in the API and the UI ("Inferred call"), never count toward the hub guard (so one cannot hide or downgrade a listed test) and never count as strict coverage. The unresolved-calls read is narrowed to the targets' own names. Measured on the Miniflux v2.3.3 graph: 819 test→code binds from the resolver, 731 kept, 88 dropped. `listUntestedRequirements` reports the project's requirements with mapped code but no resolved test; a requirement with **no** mapped code is counted in `noCode` and never listed as untested — "cannot tell", the same rule as #773's `no_evidence`.
+- `tested-by.ts` (#814) — resolves which **tests** cover a requirement from the code it is already mapped to (direct `RequirementCodeMapping` rows and `RequirementSpecMapping` → `SpecCodeMapping`), with no model call and no new table. Three relations, strongest first: **`direct`** (base 1.0) — a mapped target's file is itself a test; **`exercises`** (0.8) — a symbol in a test file has an incoming `calls`/`references` `CodeEdge` into a target symbol, where a file-only target (the common `analysis-grounding` shape) means the symbols in that file that overlap its recorded line range (every symbol when it records none), filtered by range first and then capped at `TESTED_BY_MAX_SYMBOLS_PER_FILE` (default 500); `imports` edges are deliberately not followed, since for a file-only target they would link every test that imports the package; **`naming`** (0.6) — a test case in `siblingTestPaths(target)` is named for a target symbol (longest folded symbol name that prefixes the test's subject on a word boundary, ≥3 chars, so `TestValidatePasswordRejectsEmpty` → `ValidatePassword` and `TestUser_Validate` → `User.Validate`), or, for a file-only target, shares a denoised requirement token. Three more guards stop a broad mapping fanning out (#860, #905): a test-file mapping is `direct` only when it lands on a real test-file symbol — the whole-file `module` symbol every parser emits does not count, because the seeder (#768) binds a licence-header citation to it and writes its 1-EOF span; an `analysis-grounding` test-file mapping with neither a symbol nor a range (the seeder's shape for a document citation with no lines) is never `direct` (#905); and any target, symbol or file, exercised from test files in at least `TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS` (default 2) **foreign** directories — any but the target's own directory and the directories of its conventional sibling test paths (`__tests__/`, `tests/`, `src/test/`) — is a **hub** (a config constructor other packages' tests call for setup), whose `exercises` links survive only when the test's or the callee's name shares the denoised requirement **title**'s words — one word for a title of one or two words, two otherwise (the body's prose words are too common to discriminate). Only foreign callers make a hub, but inside one the filter applies to the target's own-package tests too (#905): every config requirement maps to the one constructor, and its own `TestConfigMap` tests the option map, not OIDC or metrics. Measured on Miniflux 2.3.3: `NewConfigOptions` has 2 foreign test directories (a hub, so the sanitizer and rewrite tests no longer "test" OAUTH2_USER_CREATION), `NewConfigParser` 10, `SanitizeHTML` 0. A flat single `tests/` layout is one foreign directory and never forms a hub at the default; a layout that mirrors `src/` under a separate test tree has every test foreign, so there a shared helper called from two test directories is a hub. A module-bound citation of a test file whose only symbol is the module (a TS/JS file of anonymous `describe`/`it` callbacks) stays `direct`: nothing tells a header from a test there. Within a relation tests are ranked by `BM25Index` relevance of `name + qualifiedName` against `denoiseRequirementQuery(title + body)`, folded into `score` as `base × (0.8 + 0.2 × relevance)`; results are deduplicated by `(filePath, qualifiedName)` keeping the strongest relation, at most 10. The Prisma query count is constant in the number of requirements (requirements, code mappings, spec mappings, spec code, target symbols, incoming edges, sibling-file symbols), every query filters on `projectId` (edges on the source symbol's project too), and sibling paths are computed in code and passed only as bound `in` values. **Go only (#1034)** — a fourth, weakest relation, **`inferred-call`** (0.5, ranked last): since #1071 ingest binds a call through a receiver or struct field by the declared types, and those links are `exercises`; this relation covers what ingest left undecided (a call through an interface, or a receiver whose type could not be inferred), bound afterwards by `loadResolvedGoCalls` (`impact-analysis/go-call-resolution.ts`: the one function of that name visible from the caller's package, or nothing). That resolver's over-approximation is safe for a blast radius and not for a coverage claim, so this consumer narrows it, leaving impact analysis unchanged: the name must be **distinctive** (two words or more and not a well-known stdlib/testing compound such as `WithTimeout`, `go-inferred-call-names.ts`) **or** a test in the target's own package must be named for it (`TestValidateCertFile` → `Validate`); an unexported name binds only from its own package; and a rangeless whole-file target never follows a bound call. Inferred links are labelled apart in the API and the UI ("Inferred call"), never count toward the hub guard (so one cannot hide or downgrade a listed test) and never count as strict coverage. The unresolved-calls read is narrowed to the targets' own names. Measured on the Miniflux v2.3.3 graph: 819 test→code binds from the resolver, 731 kept, 88 dropped. `listUntestedRequirements` reports the project's requirements with mapped code but no resolved test; a requirement with **no** mapped code is counted in `noCode` and never listed as untested — "cannot tell", the same rule as #773's `no_evidence`.
 
 **REST surface** — `server/src/routes/traceability.ts`, mounted at `/api/projects/:projectId`:
 
@@ -2439,7 +2439,7 @@ the measurement lessons behind the split — is documented once in
 | `extract-changes.ts`           | Splits the source document into discrete changed requirements (`ChangeExtractor` / `heuristicChangeExtractor`). Since #1036 this is the reader for a multi-requirement document only; see `change-request.ts`. |
 | `change-request.ts`            | **#1036 — reads a pasted issue as ONE change with sub-aspects.** `parseChangeRequest` recognises the issue shape (a title, then at least two headings from the vocabulary issue templates use) and returns `{ primaryRequest, subAspects, context, ignored }`; empty form fields, bare URLs, version/browser fields and sign-offs go to `ignored` with a reason. A whole-line bold label (`**Describe the bug**`) opens a section when it is in that vocabulary and counts as an unknown heading when it is not, so a requirements document marked up in bold is not read as one issue. Anything else returns `null` and `shapeAwareChangeExtractor` (the engine's default) falls back to the heuristic splitter, so the mode is chosen from the input's shape. Deterministic; an LLM extractor can replace it behind the same `ChangeExtractor`. |
 | `change-seeds.ts`              | **#1036 — hybrid seeding, split in two.** `resolveChangeSeeds` searches with the chat path's `HybridCodeSearch` (via `createDefaultCodeSearcher`: BM25 fused with symbol embeddings) on two queries — the title, and the request without rejected alternatives, code fences or links — and ranks the hits by FILE (`Σ hitᵢ × 0.5ⁱ`, so agreement lifts a file and size does not). The top `MAX_EDIT_FILES` files are the **edit candidates**; everything else retrieved is `related`. Never throws. |
-| `structural-twins.ts`          | **#1036 — functions built like a retrieved one**, by Jaccard overlap of callee NAMES (which exist for the 76% of Go calls the parser leaves unresolved). Blast radius only: bare names collide, so a twin is never an edit candidate. |
+| `structural-twins.ts`          | **#1036 — functions built like a retrieved one**, by Jaccard overlap of callee NAMES (which every call edge carries, bound or not; 60% of Miniflux's Go calls stay unresolved after #1071, nearly all of them calls into the standard library). Blast radius only: bare names collide, so a twin is never an edit candidate. |
 | `impact-roles.ts`              | **#1036 — settles edit candidate vs blast radius** once every stage has run. A lineage writer is promoted to an edit candidate only when something besides the lineage says the request is about its data (it sits in a selected file, writes a column the request names as an identifier, or its table gains a column); a table that gains a column brings its definition and the types named for it in as `data-model` edit candidates; `related` hits are appended as blast radius. |
 | `requirement-code-mapping.ts`  | (traceability) Maps each requirement to seed code symbols via BM25 search over the project's symbols. Impact analysis uses it only when a mapper is injected (the opt-in `IMPACT_LLM_SEEDING` / `IMPACT_LLM_ENTITY_SEEDS` flags); its default seeding is `change-seeds.ts`. |
 | `blast-radius.ts`              | BFS over the code graph (incoming = callers/importers, outgoing = dependencies) with depth + edge-type weighted confidence decay. |
@@ -2771,11 +2771,37 @@ relation `data-writer` at depth 1, plus their direct callers at depth 2. Target 
 live in a primary table: those the requirement names verbatim, those the mapper seeded,
 and — through a Jaccard match on UPDATE sets — siblings of what the seeded code itself
 writes. It reads the SQL-lineage `writes` / `persists-to` edges, which since #807 start at
-the enclosing function. The Go parser leaves `h.store.X()` calls unresolved, so
-[`go-call-resolution.ts`](../server/src/lib/impact-analysis/go-call-resolution.ts) binds
-them by Go package visibility (same directory, or a package the caller's package imports;
-only an unambiguous name binds) for the blast-radius graph and the downstream schema walk,
-where a symbol reached only that way contributes its writes, not its reads. Schema symbols
+the enclosing function. Since #1071 ingest binds a Go `h.store.X()` call itself (see "Go
+calls are bound by declared types" below), so
+[`go-call-resolution.ts`](../server/src/lib/impact-analysis/go-call-resolution.ts) is the
+**fallback** for the calls ingest left undecided: it binds them by Go package visibility
+(same directory, or a package the caller's package imports; only an unambiguous name binds)
+for the blast-radius graph and the downstream schema walk. It never binds a call ingest
+decided has no project callee. In the downstream schema walk a symbol reached only through a
+call that steps from one layer into another contributes its writes, not its reads: a
+handler's incidental reads are fan-out (#791). Two kinds of call carry that rule: one the
+fallback bound by name, and one ingest bound through the receiver's type
+(`goResolution: "receiver-type"`) **into another file** (`receiverCallCrossesLayer`). A
+method calling a helper of its own type in its own file is one unit of data access, and a
+full edge, as it was before #1071. The flag is about the shape of the call, not the strength
+of the binding: an exact cross-file receiver call loses its callee's reads while a call
+bound by name evidence keeps them, as both did before. Measured on Miniflux v2.3.3 with
+each of the 1,414 non-test Go functions as a single seed, against the graph before #1071:
+
+| Receiver-type edges that keep their reads | Seeds unchanged | Seeds gaining tables | Seeds losing tables |
+| --- | --- | --- | --- |
+| none (every one writes-only) | 1,390 | 21 (29 links) | 3 (3 links) |
+| **same file (shipped)** | 1,393 | 21 (29 links) | 0 |
+| same package (directory) | 1,386 | 28 (36 links) | 0 |
+| all | 1,252 | 162 (433 links) | 0 |
+
+The 21 gains are calls a name could not bind (two candidates) and a type can
+(`createCategoryHandler` → `categories`), so the set of flagged calls is not identical to the
+pre-#1071 one. Same package is the more Go-like boundary and was measured too: it changes
+nothing on the six replayed issues and adds seven links here (four right, `enclosures` for
+the entry query builder; two a lineage artifact). It was not taken because it has no measured
+benefit and, in a project that keeps handlers and storage in one package, it is the "all"
+row. Schema symbols
 are `language: "sql"` rows only, so an application `function` is never a DB routine. A
 writer is any `function` or `method` that is not a synthetic `sql@<line>` origin — so a
 MyBatis mapper statement or a JPA `@Query` method, stored as a `method` with language
@@ -3490,6 +3516,519 @@ table/column symbols left with no incoming edge are then pruned. Parser symbols 
 their ids, so findings, requirement/spec mappings and embeddings stay linked and the docs-gen
 inputs fingerprint (`docs-gen/generation-inputs.ts`) does not move on a same-SHA refresh.
 `IngestStats.filesLineageRefreshed` counts those files.
+
+**Go calls are bound by declared types, at ingest (#1071).** The Go walker
+([`parsers-tree-sitter-go.ts`](../server/src/lib/code-graph/parsers-tree-sitter-go.ts))
+names a method after its receiver type — `func (s *Storage) SetEntriesStatus()` in
+`internal/storage/entry.go` is `internal/storage/entry.go::Storage::SetEntriesStatus`, the
+`<file>::<Type>::<member>` shape every other language uses; `name` stays `SetEntriesStatus`
+and `kind` stays `function`. It also records, per file and never persisted, what the source
+declares about types (package clause, imports and aliases, struct fields, function results,
+package-level variables) and, on each call, the callee as a symbolic expression with the
+function's locals already substituted: a parameter or the receiver by its declared type,
+`x := NewFoo()` by the call, `x := &Foo{}` by the literal's type, following Go's block
+scoping. [`go-type-resolution.ts`](../server/src/lib/code-graph/go-type-resolution.ts)
+evaluates that expression against the declarations of **every** Go file in the tree, so
+`h.store.SetEntriesStatus()` reaches the field `store` (declared in another file of the
+package) and the methods of `storage.Storage` (declared in another package). `go.mod` gives
+the module path that tells a project package from a third-party one of the same directory
+name. Each call ends in one verdict, written to `CodeEdge.metadata` as
+`{"goResolution": …}`:
+
+| `goResolution` | `toSymbolId` | Meaning |
+| --- | --- | --- |
+| `receiver-type` / `package` / `same-package` | set | Bound by declarations: a method of the receiver's inferred type, `pkg.Func()` through an import, or a bare call inside the package. |
+| `name` | set | Bound by the name-evidence rules of `call-resolution.ts`, because no type could be inferred — or because the type resolver could not finish the call (it threw, ran out of budget, or the step's time ceiling was reached): such a call is undecided **by type**, not unbound. |
+| `external` | null | Decided: the callee is **positively known** to be declared outside the project (see below). No name-based reader may bind it. |
+| `external-assumed` | null | Decided, on a weaker footing that the label states: the receiver is a value from outside the project whose own type was not examined. No name-based reader may bind it. |
+| `func-value` / `conversion` / `ambiguous` | null | Decided: a call through a function value, a type conversion, or twins behind build constraints (two functions, two methods, a function and a variable or type of one name, a field and a method of one name). No name-based reader may bind it. |
+| `interface` | null | Dispatched at run time, through a project interface or a standard-library one (`http.Handler`, `io.Writer`), reached directly or through a standard-library member (`resp.Body.Close()`, `r.Context().Done()`). Left open: the impact fallback may bind it by name. |
+| *(absent)* | null | Undecided: the receiver's type or the package a name belongs to could not be determined, or the resolver could not finish the call and no name evidence bound it. Left open. |
+
+**`external` on positive evidence; `external-assumed` where the receiver is external but its
+type is unexamined.** Every later reader treats both as decided and skips the edge for good,
+so each says exactly what is known. `external` means one of: a predeclared identifier; a
+function of a package whose import path is the standard library
+([`go-stdlib.ts`](../server/src/lib/code-graph/go-stdlib.ts), a list, never a guess from the
+path's shape) or lies outside every `go.mod` module of the tree; a method called on a value
+whose type the project's own declarations name and which is a standard-library type that is
+**not an interface** (`db *sql.DB`) — unless that type only *promotes* the method from an
+interface it embeds (`sec.ReadAt()` on an `*elf.Section`, which embeds `io.ReaderAt`): the
+generated lists name every exported interface and, for every concrete type, every such
+promoted method, and those calls are `interface`; or a name that the one
+package Go's scoping lets it mean does not declare, when every Go file of that package's
+directory was read. A call of a standard-library package **variable** of a func type
+(`flag.Usage()`) is `func-value`, from the same generated lists. `external-assumed` is a method on a value of a **third-party** type, which
+may be an interface a project type implements (the dependency is not read), and a member of a
+member, of a call result or of an element of an external value (`r.URL.Query()`,
+`w.Header().Set()`), whose type in between nothing examined. It is kept decided on purpose:
+opened to the name fallback, four such calls of four bound to the wrong function on the
+Miniflux sample. Where the member in between is known to be a standard-library interface the
+call is `interface` instead.
+
+Everything short of evidence is undecided: an import path inside a project module whose
+directory holds no determinable package; a name its package does not declare while a file of
+that directory was not read — unparseable, unreadable, or hidden by `.metisignore`
+(`*_gen.go`, `*.pb.go`); a build-ignored file's call to a name of a sibling build-ignored
+file (`go run gen.go gen_helpers.go`); a type name its project package does not declare; two
+imports that would bind one local name; an import path that two `go.mod` files of the tree
+both declare, from a file in neither; and — in a tree with no `go.mod`, or for Go code outside
+every module — an import path P placed by **Go's own lookup rule** for such a file and by
+nothing else. A directory binds only when it holds the WHOLE path and sits where Go would
+look: **(a)** `<prefix>/src/P`, with the importing file beneath that same `src` (one GOPATH
+workspace); **(b)** `<prefix>/vendor/P`, with the importing file beneath `<prefix>` (Go's
+vendor scoping — and `vendor/` is in the default `.metisignore`, so this needs it
+un-ignored); **(c)** `P` from the tree root, where P's first segment has a dot in it
+(`example.org/…`, `github.com/…`: a domain as the first directory is the evidence that the
+root is a GOPATH `src`). Exactly one such directory binds; two are unknown; a directory
+holding the whole path anywhere else, or one the path merely ends in, is unknown — not
+`external`, since the directory may be the very package meant. With nothing matched the path
+is `external`. A file INSIDE a module never binds an import to a directory outside every
+`go.mod`: module mode looks nothing up in a GOPATH. The rule has no clause for a depth or a
+segment count, on purpose. "One directory ends in the path" bound a dependency's call to a
+project function three times, and each fix was cut to the shape reported: a two-segment tail
+(`pkg/errors/` for `github.com/pkg/errors`, review cycle 5), one segment below the root
+(`internal/appengine/` for `appengine`, cycle 6), then one segment at the root and two at
+depth (`appstats/`, `internal/appengine/datastore/`, cycle 7). All are in the oracle corpus,
+where the type checker says external. The check that found the last ones — and then
+`src/appstats/` under a package root, which is why (a) asks where the importer is — is to
+move a corpus directory one level up or down and re-run
+`go-oracle-corpus.test.ts -t SOUNDNESS`. The cost is recall in a tree with no `go.mod` that
+is not laid out as a GOPATH: an undotted import of a root-level directory, or a file outside
+`src/` importing a package inside it, is left undecided. An import is resolved in the
+importing file's **own module** first (the nearest `go.mod` above it), then by the most
+specific module path, so in a monorepo of services that are each `module app`, `app/storage`
+means the importer's own `storage/`.
+
+**The standard-library lists are generated, not hand-kept.** `node
+scripts/gen-go-stdlib-snapshot.mjs` runs a Go toolchain (`go list std` over several
+platforms, and the type checker over the standard library) and writes
+`go-stdlib.snapshot.json` and `go-stdlib.data.ts`: 177 packages, 197 exported interface
+types, 390 members of concrete types that are typed as one or promoted from an embedded one
+(18 of the latter, marked `*`), and the package variables of an interface or a func type,
+for the Go release named in both (go1.26.0). `tests/lib/code-graph/go-stdlib-snapshot.test.ts` fails when the two files,
+or the version, drift apart; nothing in the build or the tests runs Go. A missing entry costs
+this: an unlisted package is treated as any import outside the tree's modules (still
+`external` under a `go.mod`; in a tree with Go code outside every module it can be matched to
+a project directory of that path under a GOPATH `src` the importer is in — the one wrong
+binding a stale list can cause; at the tree root it is undecided), and an
+unlisted interface makes a call through it `external` where it should be `interface`, so an
+edge to the project type that implements it is lost. Regenerate when the Go release the
+project's sources target moves on.
+
+Build constraints are read as far as naming a directory's package needs: a file opening
+with `//go:build ignore` (or a lone `// +build ignore`) is not part of the package — it is
+resolved as a single-file package of its own, and beside another ignored file not even
+that is known in full — and `package main` beside one library package is never what an
+import of that directory means. The constraint is matched exactly: `//go:build
+!ignore_autogenerated` and `//go:buildignore` leave a file in its package. Other
+constraints are not evaluated, so twins behind them stay `ambiguous`. A file is a test file by Go's rule,
+`_test.go`, not by the code-graph's directory convention: `tests/util/util.go` is visible to
+the packages that import it.
+
+Local inference follows Go's declaration rules: every right-hand side is read before any name
+is bound (`a, b := b, a` swaps); `x, err := f()` declares only the names new in that scope, so
+a name the scope already holds (a parameter, a named result, `var s Store`) keeps its type;
+and an assignment never changes a written type. A type that was only inferred survives an
+assignment unless the assigned value contradicts it or is not modelled, and then the name is
+unknown. A name of a type the walker does not model — a type parameter, an interface or
+struct literal — is bound to unknown rather than left to resolve as the package-level name
+or imported package it shadows, and a type parameter is never read as the package type of
+the same name.
+
+What is deliberately **not** inferred: the concrete type behind an interface value, type
+parameters, method expressions, and the result of a third-party function (it may be generic).
+Embedded-struct promotion is resolved by Go's shallowest-depth rule and stops at a depth
+holding an embedded type from outside the tree. Four rules of that member lookup were
+corrected against the Go type checker (below):
+
+- **An embedded project interface holds the methods it declares and embeds, no others.** A
+  method exactly one member of a promotion depth declares is that member's — `interface` if
+  it is the interface's, the struct's method otherwise; two members declaring it are
+  `ambiguous`. Only an interface whose method set is *not known in full* (it embeds
+  `io.Closer`, `error`, a union) answers to any name, and beside it a sibling's method is
+  undecided — open to the name-based readers — not a decided tie.
+- **A method declared in a `_test.go` file exists for the tests of its own directory, at any
+  depth of promotion, and for nobody else.** With `type S struct{ E }`, `type E struct{ F }`,
+  `func (F) M()` and `func (E) M()` in `export_test.go`, `s.M()` is `E.M` from that
+  package's tests (internal or `_test` package) and `F.M` from every other file — including
+  the tests of another package, which are built against this one as it ships. The member
+  set is still worked out once per type: a test caller only adds the test-file methods of
+  its own directory's types, compared by depth with what the set holds.
+- **A function read out of a variable is called through the value.** `var run = serve;
+  run()` is `func-value`, never a binding to `serve` (the variable can be reassigned); the
+  result type is still the function's, so `run().Close()` binds.
+- **An indexed callee is decided by what is indexed.** `Make[int](x)` and `handlers[i]()`
+  are the same shape to the grammar (and `F[T](x)` with one argument reads as a
+  conversion): the walker records the call under the indexed name, and the resolver binds a
+  generic function, calls a conversion what it is, and calls an element of a slice or map of
+  functions `func-value`. For a member of a package outside the tree nothing says which, so
+  it is `external-assumed`. The regex Go parser in `parsers.ts` is the
+fallback used only when tree-sitter is not initialised (unit tests that call `parseSource`
+directly); it names methods the same way but records no calls, so the tree-sitter walker is
+authoritative, and `ingestCodeGraph` always initialises it. Every reader of unresolved calls
+by name — `loadResolvedGoCalls`, `search_code_graph`'s "probable call sites", Spec Kit's
+caller list — filters with `goUndecidedCallWhere()` / `isGoFallbackCandidate()`, so none of
+them contradicts ingest.
+
+**The resolver bounds the work of a call, not only its depth.** One evaluation carries a
+single depth counter through every re-entry, so a cycle of package variables (`var a = b; var
+b = a`) ends as unknown. That alone was not enough: promotion used to look through every
+embedded field of every type a receiver could reach, for every call, and keep nothing, so a
+generated 665 KB file (100 types a level, each embedding all 100 of the next, 3,000 calls)
+took the Go binding step of an ingest from 0.47 s to 36.8 s. Whatever depends only on the
+declarations is now worked out once per resolver and kept — what a type name means in a
+file, a type's struct, the types its promotion search goes through, what an import path
+names — so a call costs its own length and a tree costs declarations plus calls (the same
+file: 0.4 s). The third review found the next two shapes of the same kind, in placing imports:
+with no `go.mod`, matching one import against the directories filtered **all** of them, for
+every import of a file, inside one call and outside every budget (one call: 5.8 s on a
+20,001-file tree, 23 s on 40,001); and with tens of thousands of `go.mod` files, finding a
+directory's module and an import's most specific module scanned every one (24,000 modules:
+1.2 s to build the resolver, 7.7 s to resolve). Both are indexed now — directories outside
+every module by the END of their paths, one segment per level, so an import is matched by
+walking its own segments (whole segments: `mystore` does not end in `store`); `go.mod` files
+by directory and by declared path — and a file's import block is read whole or, past
+10,000 imports, not at all, the same for every call. The dot imports of a file are kept
+once per package (10,000 dot imports of one package made every bare call spend its whole
+budget). `tests/lib/code-graph/go-resolver-bounded-work.test.ts` pins each as a scaling
+ratio.
+
+**And it bounds what it retains, which none of that measured** (PR #1104, review cycle 4).
+"Kept" used to mean a flattened copy: every type held a table of every member it has, own
+and promoted, and every interface a set of every name below it. Memory was therefore
+types × members — 11,000 types embedding one 3,000-field struct, 650 KB of compiling Go,
+exhausted a 4 GB heap in 12 s with `overBudget` and `skipped` both 0 — and a chain of
+embedded interfaces was quadratic in time and memory (8,000 of them: 22.5 s, 2.3 GB). A
+heap abort is not catchable, so it sat inside every step budget and under the time ceiling.
+What is kept per type is now its **layers**: the types a promotion search goes through,
+depth by depth, as references. A member stays with the type that declares it; `x.name` is
+answered by walking the layers and asking each type of a layer for the name, with Go's own
+rule (the shallowest depth that declares it; two declarers at one depth are ambiguous) and
+the answer kept per name asked. An interface likewise keeps the list of interfaces it
+embeds, each holding its own names. Three properties of the TYPE cap it, so no verdict
+depends on what was asked first:
+
+- up to `GO_TYPE_LAYER_BUDGET` (64) layer types, the layers are walked;
+- a wider type keeps an index of its names as well — one step a lookup however wide a layer
+  is — but only while it pays for it: no more layer types and no more names than
+  `GO_TYPE_RETAINED_PER_MEMBER` (16) times the members the type declares itself. A struct
+  that embeds 200 others is wide because it says so, 200 times; a one-line struct that
+  reaches 200 types through somebody else's embeddings is not;
+- past both, nothing is kept and no member of the type is decided (`unknown`,
+  `why: "budget"`, counted in `overBudget`). An interface that embeds more than 12 deep, or
+  reaches more than 64, is treated as one whose method set is not known in full.
+
+So the resolver retains at most 64 references per type asked about, 32 entries per declared
+member and one per distinct (type, name) selected — linear in source plus calls.
+`GoResolver.retained()` counts those entries, and
+`tests/lib/code-graph/go-resolver-retained.test.ts` pins them exactly across two tree
+sizes, with heap growth and a time ratio beside them, and checks on the whole oracle corpus
+that walking the layers and the name index answer alike. The reviewer's probes after the
+change: 24,000 such types (1.3 MB) 74 MB where the process aborted; 8,000 chained
+interfaces 33 MB and 42 ms.
+
+**The same copy, through another type form (PR #1104, review cycle 5).** The fix above
+covered a type that *embeds* a wide struct. A *defined* type (`type T W`) still got its own
+index of W's fields — 111 KB each, 2.7 GB for 24,000 of them, an abort at 48,000 (2.15 MB) —
+and `retained()` read 48,000 entries because it counted the structures it was written for.
+Three things changed. A struct's fields are read once per **declaration** and shared by
+every type that is that struct underneath. A defined type's allowance counts what *it*
+declares (its methods), not the fields of the struct it is defined over: N one-line types
+over a struct that embeds 200 others each kept 200 references and a 3,000-name index
+(375 KB each, an abort at about 10,000 types — found by the audit, not by the review), and
+are now undecided (`overBudget`). And every cache is created through one helper that counts
+it: `GO_RESOLVER_CACHES` in `go-type-resolution.ts` is the audit — for each cache its key,
+what an entry holds and its bound — `retained().total` sums them, and
+`tests/lib/code-graph/go-resolver-type-forms.test.ts` fails on a `new Map` or `new Set` in
+the resolver that goes round the helper. That suite measures each type FORM over one wide
+declaration (struct embedding, defined type, alias, pointer to a defined type, generic
+instantiation, interface embedding, defined type over an interface, and five compound
+shapes) by the count at two sizes and by retained heap after a forced collection.
+
+**An absolute cap, and a watchdog that cannot be outrun (PR #1104, review cycle 6).** Every
+shape above varied the width of the declaration *underneath*. What dominated was the
+allowance a type earns from the members it declares **itself** — sixteen names for each
+field, and fields are cheap — times the tables **one call** builds. A struct of 2,000 fields
+earned a 32,000-name index (5 MB); `t.N.N.N.N.N.F()` builds six tables, and 160 such calls
+aborted the process between two readings of a watchdog that read every 256 calls. And 24,000
+types `struct{ W; a0 … a7 int }` over a `W` embedding 133 structs kept a 143-name index each:
+560 MB from 2.1 MB of Go (1,091 MB with test callers, 2,333 MB with forty fields). Two changes:
+
+- `GO_TYPE_RETAINED_MAX` (64) caps the allowance whatever a type declares. It equals the layer
+  budget, so at the defaults **no type keeps a name index**: a type whose promotion search
+  reaches more than 64 types is undecided (`overBudget`) even where it wrote the embeddings
+  itself. An index costs about 150 B a name *per type*, so any higher cap lets N types keep N
+  indexes (at 128 the same shape, re-tuned, still retains 443 MB). Nothing real was found to
+  need it: the widest table in Miniflux lists 8 layer types, the widest in about 4,200 files
+  of Go's own toolchain and standard library 4. The three trees now retain 40, 49 and 71 MB,
+  and 90, 149 and 121 MB re-tuned to sit exactly at the cap. One call's tables are then at
+  most 64 selections × 322 entries, about 1.5 MB.
+- the watchdog also reads the heap whenever the resolver has kept
+  `GO_BINDING_HEAP_SAMPLE_ENTRIES` (16,384) more entries than at its last reading
+  (`GoResolver.retainedTotal()`, a running sum), so what the heap may pass the limit by no
+  longer depends on what 256 calls keep. It has two parts. A constant one, about 8 MB: the
+  16,384 entries between readings and one call's member tables. And one that **no constant
+  bounds**: no reading can come between the declarations ONE call reads for the first time,
+  so the overshoot grows with the members those declarations declare — 40 to 50 B a member,
+  linear in the source the call reaches (about 6 retained bytes per byte of Go). One call
+  through 61 types of 20,000 fields kept 54 MB against a 16 MB limit (review cycle 7; "about
+  8 MB" used to be given here as the ceiling). At the 512 MB default that term is far from an
+  abort — it needs tens of megabytes of Go behind a single call — and a watchdog test pins
+  the shape. Reading the heap before every call was measured and rejected (16 ms on
+  Miniflux's 5.6 ms of resolving), and would not bound this term either.
+
+`go-wide-shapes.ts` holds both shapes ("N types × K own fields", "one call selecting through
+H wide types"); `go-resolver-type-forms.test.ts` scales them and
+`code-graph-go-binding-watchdog-1071.sqlite.test.ts` runs the chain through `ingestCodeGraph`.
+
+Ceilings bound what is left, and each is counted rather than guessed:
+
+| Ceiling | Constant | When it is reached |
+| --- | --- | --- |
+| Steps for one call | `GO_CALL_STEP_BUDGET` (10,000; `go-type-resolution.ts`) | The call is left undecided by type; counted in `IngestStats.goBinding.overBudget`. |
+| Steps for one type's layers | `GO_TYPE_STEP_BUDGET` (100,000) | No member of that type is decided, for any call; counted in `overBudget`. |
+| What one type may keep | `GO_TYPE_LAYER_BUDGET` (64), `GO_TYPE_RETAINED_PER_MEMBER` (16), capped at `GO_TYPE_RETAINED_MAX` (64) | The same: no member of that type is decided; counted in `overBudget`. |
+| Time resolving Go calls in one ingest | `GO_BINDING_MAX_MS` (30 s; `ingest.ts`, per run `IngestOptions.goBindingMaxMs`) | Every remaining call of the run is left undecided by type and counted in `goBinding.skipped`; where each file stopped is recorded on the graph and the next ingest resumes there (below). At least `GO_BINDING_MIN_CALLS` (2,000) calls are resolved first whatever the clock says. `goBinding.stopReason` is `time`. |
+| Heap growth during the step | `GO_BINDING_MAX_HEAP_GROWTH` (512 MB, or a quarter of the process's heap limit if that is less; read every `GO_BINDING_HEAP_SAMPLE_CALLS` = 256 calls and every `GO_BINDING_HEAP_SAMPLE_ENTRIES` = 16,384 entries the resolver keeps) | The same as the time ceiling, with **no floor**, and the resolver is released. `goBinding.stopReason` is `memory`, `heapGrowthMb` the growth read. |
+
+**The heap watchdog is the last resort, and does not trust the resolver's own count.** Two
+reviews in a row found a structure `retained()` did not see, each a process abort from 1
+to 2 MB of Go. So the binding step reads `process.memoryUsage().heapUsed` itself before
+every 256th call — and whenever the resolver has kept 16,384 more entries, so that calls
+which each keep a lot cannot outrun it — and stops when the heap has grown by more than the
+limit since the step began. 512 MB is twice the worst growth measured for a shape that resolves correctly
+(48,000 types over one 3,000-member declaration: 65 to 240 MB), forty times what a real
+ingest of Miniflux reads (12 MB for 21,106 calls) and an eighth of Node's 4 GB default
+heap. A tree of the order of a million Go calls would reach it in one ingest and is then
+bound over several, each with a new resolver. It is the one limit here that is order-dependent — which call it stops at
+depends on what else the process holds — and that is accepted because the alternative is
+an abort nothing can catch; no verdict depends on it. The limit and the reader are
+`IngestOptions.goBindingMaxHeapGrowth` and `goBindingHeapUsed`, seams like the clock, read
+from no request.
+
+Resolving one call cannot fail the ingest either: a throw leaves that call undecided, is
+counted (`goBinding.errors`) and named (`goBinding.failures`, `file:line callee`, up to 50).
+A warning log line carries all four counters.
+
+**A call the step did not resolve never replaces a stored answer** (PR #1104, review
+cycle 3: on a fully bound Miniflux graph, one touched file under a 12 ms ceiling rewrote
+1,599 correct `receiver-type` bindings as name guesses and stripped about 7,000 decided
+verdicts). Every Go call's verdict is worked out as a *plan* before any edge is written;
+a call the plan marks unresolved — the ceiling, a step budget, a throw, a resolver that
+could not be built — leaves the row of an unchanged file exactly as it is. Two cases have
+no stored answer to keep and take the name-evidence one, labelled `name` when it binds: a
+file that was itself re-parsed or upgraded (its rows are written new), and a row that
+names a binding whose target symbol no longer exists.
+
+**What the ceiling leaves is recorded and resumed.** `CodeGraph.goBindingIncomplete` holds
+`{ version, files, again?, inFlight?, resumesLeft?, abandoned? }` (`GoBindingIncomplete` in
+`ingest.ts`). `files` maps a file to the index, among its Go call edges, of the first call
+**never** resolved by type on the rows the graph holds (after the ceiling every later call
+is skipped, so what is left of a file is its tail); `version` is the extractor version
+those rows already have. `extractorVersion` is not stamped while `files` is non-empty.
+`again` maps an unchanged file to the first call whose answer predates the last change to
+a Go file and has not been re-resolved since. The plan of an incremental ingest is then, in
+this order:
+
+1. the files in `files`, each **from its recorded index** — whether or not a Go file
+   changed, which is what makes resuming monotone (re-binding them from their first call
+   whenever any Go file changed meant an active repository with one slow file never
+   finished) — then the files this run parsed or upgraded, whole;
+2. when a Go file changed, every unchanged Go file from its first call up to where step 1
+   took over; otherwise what `again` records.
+
+Step 2 starts only once step 1 is complete (after the ceiling every later call is skipped),
+and its leftovers do not hold the version back. An **interrupted upgrade** is resumed: the
+rows are current, so no symbol is renamed and no file rewritten a second time. The in-place
+writes of step 1's resumed calls, on a graph not yet stamped, move `extractorUpgradedAt`
+like every other write of that upgrade — and nothing else does: an affected file of
+another language, or a step 2 re-bind, is a real change and reads as one.
+
+`inFlight` closes the window between the rows and the record. It is written before the
+first row of an ingest in which a Go file changed or was deleted (before pass 0) and
+removed by Step 8's write. A run that stops in between leaves it, and the next ingest
+re-binds every unchanged Go file. No other ingest needs it: one that only resumes leaves
+its record standing, an upgrade leaves the version unstamped, and a re-bind that no Go
+change caused decides nothing anew.
+
+Progress does not depend on the clock: `GO_BINDING_MIN_CALLS` calls are resolved in every
+run before the ceiling is consulted, so N open calls take at most `ceil(N / 2,000)`
+ingests. `resumesLeft` is that number plus `GO_BINDING_RESUME_GRACE` (3), set by the first
+ingest that ends with work open and counted down by each later one. It is sized again by
+an ingest in which a Go change re-planned the work (every unchanged file back from its
+first call) — unless the calls never resolved by type did not move, which is the stuck
+graph the bound exists for. At zero the remainder
+moves to `abandoned`, is no longer resumed, and the version is stamped
+(`IngestStats.goBinding.abandonedFiles`). An abandoned call that was never resolved by type
+keeps the row it has; one that was waiting to be resolved *again* held a type answer from
+before the last Go change, and is written undecided by type at that moment (the
+name-evidence answer; unbound and unlabelled in a file that could not be read), so no
+abandoned call carries a type verdict older than the tree. A file leaves `abandoned` when it changes, is
+deleted, or is re-bound whole by a later change to any Go file. Over-budget and failed
+calls are not recorded — resolving them again ends the same way. A full re-ingest ignores
+the record. `IngestStats.goBinding.incomplete` (`{ files, calls }`) and `resumedFiles`
+report it; the Deep Ingest completion message and the Sync summary
+(`codeGraph.goBindingIncomplete`) show it to the user
+(`connectors/repo/deep-ingest-outcome.ts`, `goBindingIncompleteNote`). The ceiling is
+measured with `IngestOptions.goBindingNow` (default `performance.now`), which the tests
+replace to make it trip after an exact number of calls
+(`tests/code-graph-go-binding-incomplete-1071.sqlite.test.ts`).
+
+Measured on Miniflux v2.3.3 (21,100 Go call edges): resolved in the graph 4,967 → 8,348
+(3,985 `receiver-type`, 2,286 `same-package`, 2,076 `package`, 1 `name`). Of the 12,752 left:
+10,873 `external` (4,592 standard-library functions, 160 third-party functions, 1,247 builtins
+and bare names a fully read package does not declare, 4,874 methods on a standard-library
+type that is not an interface); 533 `external-assumed` (122 methods on a third-party type,
+411 members of a member, result or element of an external value); 221 `interface`; 137
+`func-value`; 4 `conversion`; 984 undecided.
+
+**How the binding is tested: against the Go type checker, not against fixtures.** Three
+independent mutation passes over this walker and resolver each found new one-edit mutants
+that bound a call to the *wrong* function with every suite green, after three
+implementers had each counted all mutants killed. The surface is a language, and a
+fixture per rule pins only the rules somebody thought of. So the expected binding is no
+longer written by hand:
+
+- [`server/tests/fixtures/go-oracle/`](../server/tests/fixtures/go-oracle/) holds a Go
+  **corpus that compiles** — two trees: `corpus/modules` (four modules, two of them both
+  `module app`, one importing another, a dependency reached through a `replace`) and
+  `corpus/legacy` (no `go.mod`, built in GOPATH mode, with dependencies whose import paths
+  end like project directories). It is written to exercise the constructs the resolver
+  claims: closures, every block form, redeclaration, same-named types in two packages
+  reached through aliases, defined and underlying types, embedding at several depths,
+  build-constraint twins, `//go:build ignore` beside a library, `_test.go` and `_test`
+  packages with an `export_test.go` method on an embedded type, dot imports, generics,
+  function values, and standard-library and third-party receivers.
+- `node scripts/gen-go-oracle-snapshot.mjs` (a developer tool: needs Go, run by nothing in
+  the build, the tests or CI) checks `gofmt` and `go vet`, then runs
+  [`scripts/go-oracle-snapshot/main.go`](../scripts/go-oracle-snapshot/main.go) — standard
+  library only: `go list` for the file sets of three platforms, `go/types` for the answers —
+  and writes `oracle.snapshot.json`: for every call expression, the project function it
+  statically resolves to (file, receiver, name) or why it has none (`interface`,
+  `func-value`, `conversion`, `builtin`, `external`, or `build-dependent` when the platforms
+  disagree).
+- [`tests/lib/code-graph/go-oracle-corpus.test.ts`](../server/tests/lib/code-graph/go-oracle-corpus.test.ts)
+  runs the real walker and resolver over the same files, and
+  [`tests/code-graph-go-oracle-1071.sqlite.test.ts`](../server/tests/code-graph-go-oracle-1071.sqlite.test.ts)
+  a real ingest, and compare call by call (`tests/helpers/go-oracle.ts`). **Soundness, zero
+  tolerance:** every call bound by type is bound to exactly the type checker's target.
+  **Decided verdicts agree in class**, with an exact, justified allow-list (four calls:
+  build constraints are not evaluated; a dependency's func variable cannot be told from
+  its function). **The walker saw the same calls**, on the same lines, in the same
+  functions. **Recall is a checked-in list**, not a threshold (`recall.snapshot.json`), and
+  so is every verdict beside the type checker's answer (`verdicts.snapshot.json`) and what
+  the name rules bound (`name-bound.snapshot.json`): losing a binding, or changing any
+  verdict, is a diff to read. A drift test fails when the corpus changes without the
+  snapshot being regenerated.
+
+To cover a construct, write it in the corpus and regenerate; when the type checker
+disagrees with the resolver, the resolver is wrong (when in doubt its answer is
+undecided), never the snapshot. The hand-written suites remain as the readable statement
+of each rule and for what a compiling corpus cannot hold: Go that does not compile (ties,
+twins), unreadable files, budgets.
+
+**Extractor version and in-place upgrade (#1071).** An incremental ingest skips a file whose
+content hash matches, so a parser change reached a stored graph only when its files changed.
+`CodeGraph.extractorVersion` records `CODE_GRAPH_EXTRACTOR_VERSION`; on the next incremental
+ingest of a graph recorded with an older one (null on every graph built before #1071), the
+files of the languages that version changed (`go` for version 1) are upgraded **in place**:
+re-parsed, their symbol rows kept and only a changed `qualifiedName` rewritten, their parser
+edges (`source` null) deleted and re-derived. Symbol ids survive, so findings,
+requirement/spec mappings and embeddings stay linked, exactly as for a lineage backfill;
+`IngestStats.filesUpgraded` counts the files. The upgraded graph equals a full re-ingest row
+for row (checked on Miniflux: 3,432 Go symbols, 26,265 parser edges, 3.8 s for 421 files).
+A file's old edges are deleted in the same transaction as its first batch of new ones, one
+file at a time, so a reader never sees a project whose Go files have symbols and no edges and
+a failure mid-upgrade leaves every file either old or new. The same transaction that renames
+a symbol renames the two stored TEXT copies of its qualified name
+(`impact_affected_symbols.qualifiedName` by symbol id, and
+`impact_column_proposals.writerQualifiedName` by file, old name and line), so an impact
+re-run does not report every renamed method as removed and added.
+`generated_document_versions.changedSymbols` is history and is left as written.
+
+**An upgrade that cannot reach a file is still done once.** A file of an upgraded language
+that cannot be re-parsed (unreadable, or the current parser gives up on it) keeps its old
+rows, is named in `IngestStats.filesUpgradeFailed` and in a warning log line, and is
+remembered on the graph: `CodeGraph.extractorUpgradeFailed` holds `{ path: hash of the
+content that failed }` (null for a file that could not be read). The version is stamped for
+the rest of the tree, so the upgrade is not repeated on every ingest — on Miniflux that was
+420 files and 26,000 edges each time while one file was broken. A remembered file is named in
+every ingest's result and is tried again only when its content is no longer the one that
+failed. Files the parser gives up on are named the same way whether or not an upgrade is
+running (`IngestStats.filesUnparseable`, up to 50 names; the count is never capped). The
+renames of `impact_column_proposals` are matched from one read of that table per upgrade
+(it has no index on the writer columns), by primary key.
+
+**An upgrade spends no model calls by itself — and is acknowledged once, per graph.** The
+scheduled repository refresh runs an incremental ingest and then schedules regeneration of
+auto-updating generated documents, whose inputs snapshot identifies every symbol and edge by
+qualified name; the upgrade would therefore regenerate each of them with no repository
+change. The rule that prevents it rests on positive evidence
+([`docs-gen/extractor-upgrade.ts`](../server/src/lib/docs-gen/extractor-upgrade.ts)):
+
+1. the ingest that rewrites a graph for an upgrade marks THAT graph —
+   `CodeGraph.extractorUpgradedAt` moves in the same transaction as every write of the
+   rewrite, and only then;
+2. a snapshot of a document's inputs records, beside its items and outside its fingerprint,
+   one entry per graph the document reads (`GenerationInputSnapshot.graphs`): a digest of the
+   items derived from that graph's rows, and the mark the graph carried when the snapshot was
+   taken;
+3. a difference between a document's baseline and its current inputs is put down to an
+   upgrade only when it is confined to graph rows (`symbol:`, `edge:`, `finding:`; every
+   source file, SQL file, evidence chunk and setting identical) **and** every graph whose
+   rows differ carries a mark that is not the one the baseline recorded for that same graph.
+   Rows that differ in a graph whose mark did not move are a real change and regenerate —
+   whatever was upgraded elsewhere in the project in the same refresh;
+4. it is then acknowledged, once: the current inputs — fingerprint, per-graph digests and
+   marks — are recorded for the document (`GeneratedDocumentAcknowledgement`, one row per
+   document; the version's manifest is not touched, nothing is published, no model is called)
+   and are the baseline of every later check.
+
+So the next change confined to graph rows — a lineage backfill, a re-introspection of the
+live schema, new rationale findings — finds its graph's mark where the baseline left it,
+and regenerates. A mark is compared only with another mark of the same graph, and only for
+identity: never with a version's date, with the current time or with another graph's mark,
+so clock skew between the ingest writer, the database and the generating process cannot make
+the rule acknowledge anything. A mark that moves while the document's inputs do not (the
+upgrade rewrote nothing this document reads) is recorded as seen at the next check, so it is
+not evidence for a later change either. A project whose graph no upgrade rewrote has no
+mark, and every check there is exactly what it was before #1071: no item of the snapshot
+says anything about the extractor, and the acknowledgement is read only when the inputs
+differ in graph rows alone or a mark is not the one the published version recorded. The same
+test is applied by the scheduled check, by an automatic run about to start (a task queued
+for the rewrite alone settles it instead of running), and by the mid-run and commit fences
+of a run in flight: a run that an upgrade overtakes goes on only when the graph whose rows
+moved carries another mark than the run captured for it — the run reads the marks of the
+document's own graphs and no others — and it records what it then stands for when it
+publishes.
+
+Two limits, both stated in the module header. **A version published before per-graph
+attribution existed** has no `graphs` in its manifest, so its difference cannot be placed in
+a graph: it is put down to an upgrade only when every graph the document reads carries a
+mark. A document over one graph is therefore never regenerated by the upgrade; a
+project-wide document over several graphs of which one was not upgraded (it holds no Go)
+regenerates once, and its new version records `graphs`. **Attribution is per graph, not per
+row**: when the same ingest that upgrades a graph also changes that graph's rows for another
+reason (a lineage backfill that runs with it, a re-introspection just before), the two are
+acknowledged together — once per upgrade per document, and only for a change confined to
+that graph's rows; a source change always regenerates. (The first form of this rule inferred
+the upgrade from the baseline lacking a field newer snapshots carried — true of every
+document published before the deploy, in every project, for ever — and so swallowed every
+later graph-only change. The second read one mark for the whole project and compared it
+with the version's date: a real change in one graph was acknowledged because another had
+been upgraded, and a mark ahead of the version's clock acknowledged a later real change.)
+
+**Cost.** Go declarations are not persisted, so an incremental ingest that parses, deletes or
+re-binds any Go file re-parses every unchanged Go file for its declarations and re-binds its
+edges in place (`filesRebound`); an ingest that touches no Go file reads none. That is
+O(Go files) per ingest whatever the size of the change: 0.45 s of a 0.98 s ingest on
+Miniflux's 421 files, about 1 ms and 26 KB retained per file, so roughly 45 s and 520 MB at
+20,000 files. It yields to the event loop but is not capped and cannot be cancelled.
+`IngestStats.goBinding` (`files`, `calls`, `durationMs`, `errors`) and an info log line report
+it on every ingest that binds Go; persisting the per-file facts by content hash and a
+cancellable ingest are tracked in #1107. This mechanism covers a change that renames or
+re-binds — a change to *which* symbols a file yields needs a full re-ingest.
 
 The query-time SELECT validator (`connectors/db/sql-validator.ts`, `node-sql-parser`)
 is unchanged — it remains the read-only guard for live DB queries.

@@ -454,6 +454,12 @@ describe("provider routing on deep-ingest", () => {
       schemaEdges: 0,
       routineEdges: 0,
       filesRebound: 0,
+      filesUpgraded: 0,
+      filesUpgradeFailed: [],
+      filesUpgradeFailedCount: 0,
+      filesUnparseable: [],
+      filesUnparseableCount: 0,
+      goBinding: null,
       lineageBackfill: false,
       filesLineageRefreshed: 0,
       filesUnchanged: 39,
@@ -477,6 +483,56 @@ describe("provider routing on deep-ingest", () => {
       graphSymbols: 517,
       graphEdges: 1203,
     });
+    // #1071 — Go binding was complete (the run bound no Go): said as null, not left out.
+    expect(res.body.data.codeGraph.goBindingIncomplete).toBeNull();
+  });
+
+  it("#1071 — refresh-ingest reports a Go binding the time ceiling left incomplete", async () => {
+    vi.mocked(ingestCodeGraph).mockResolvedValueOnce({
+      codeGraphId: "cg_1",
+      filesScanned: 41,
+      filesParsed: 1,
+      filesSkipped: 40,
+      symbolsUpserted: 3,
+      edgesUpserted: 2,
+      rationaleFindings: 0,
+      schemaEdges: 0,
+      routineEdges: 0,
+      filesRebound: 39,
+      filesUpgraded: 0,
+      filesUpgradeFailed: [],
+      filesUpgradeFailedCount: 0,
+      filesUnparseable: [],
+      filesUnparseableCount: 0,
+      goBinding: {
+        files: 40,
+        calls: 900,
+        durationMs: 31_000,
+        errors: 0,
+        failures: [],
+        overBudget: 0,
+        skipped: 640,
+        stopReason: "time",
+        heapGrowthMb: null,
+        resumedFiles: 0,
+        incomplete: { files: 17, calls: 640 },
+        abandonedFiles: 0,
+      },
+      lineageBackfill: false,
+      filesLineageRefreshed: 0,
+      filesUnchanged: 39,
+      graphFiles: 40,
+      graphSymbols: 517,
+      graphEdges: 1203,
+      languageStats: {},
+      durationMs: 7,
+    });
+    const token = await login("admin");
+    const res = await request(app)
+      .post("/api/projects/proj_1/connectors/repos/repo_github_x/refresh-ingest")
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.codeGraph.goBindingIncomplete).toEqual({ files: 17, calls: 640 });
   });
 
   it("local connector skips the clone (resolveNonGitIngestRoot, never shallowCloneRepo)", async () => {

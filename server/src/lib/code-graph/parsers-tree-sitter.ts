@@ -37,6 +37,8 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { COMPLEX_RECEIVER } from "./call-resolution.js";
 import { buildCodeQualifiedName, moduleQualifiedName } from "./qualified-name.js";
+import type { GoFileFacts } from "./go-type-resolution.js";
+import { walkGo } from "./parsers-tree-sitter-go.js";
 import { walkCFamily, walkRust, walkScala } from "./parsers-tree-sitter-more.js";
 import type {
   EdgeKind,
@@ -192,6 +194,7 @@ export function parseWithTreeSitter(
     endLine: source.split(/\r?\n/).length,
     contentHash: sha256(source),
   });
+  let goFacts: GoFileFacts | undefined;
 
   switch (language) {
     case "ts":
@@ -202,7 +205,7 @@ export function parseWithTreeSitter(
       walkPython(tree.rootNode, source, moduleQname, symbols, edges);
       break;
     case "go":
-      walkGo(tree.rootNode, source, moduleQname, symbols, edges);
+      goFacts = walkGo(tree.rootNode, source, moduleQname, symbols, edges);
       break;
     case "java":
       walkJava(tree.rootNode, source, moduleQname, symbols, edges);
@@ -235,6 +238,7 @@ export function parseWithTreeSitter(
     edges,
     fileHash: sha256(source),
     rationaleHints,
+    ...(goFacts ? { goFacts } : {}),
   };
 }
 
@@ -1098,128 +1102,6 @@ function walkPython(
     }
   };
   walk(root, visit);
-}
-
-// ---------------------------------------------------------------------------
-// Go walker
-// TODO(#383): Go currently emits `calls` edges only. `references` for
-// composite literals (`Foo{...}`), type assertions, and unqualified type
-// usages would round out parity with TS/JS/Python/Java but are deferred —
-// the value-add is small for the metis codebase footprint.
-// ---------------------------------------------------------------------------
-function walkGo(
-  root: SyntaxNode,
-  source: string,
-  moduleQname: string,
-  symbols: ParsedSymbol[],
-  edges: ParsedEdge[],
-): void {
-  type Frame = { name: string; node: SyntaxNode };
-  const declStack: Frame[] = [];
-
-  // See walkTsJs comment — stack-top access is O(1) and correct for DFS.
-  const enclosingDefQname = (_node: SyntaxNode): string =>
-    declStack.length ? declStack[declStack.length - 1].name : moduleQname;
-
-  const recordSymbol = (node: SyntaxNode, name: string, kind: SymbolKind): ParsedSymbol => {
-    const qname = buildCodeQualifiedName(moduleQname, name);
-    const sym: ParsedSymbol = {
-      kind,
-      name,
-      qualifiedName: qname,
-      startLine: node.startPosition.row + 1,
-      endLine: node.endPosition.row + 1,
-      contentHash: bodyHash(source, node),
-    };
-    symbols.push(sym);
-    emitDefines(edges, moduleQname, sym);
-    return sym;
-  };
-
-  const visit = (n: SyntaxNode): void | "skip" => {
-    switch (n.type) {
-      case "function_declaration":
-      case "method_declaration": {
-        const id = n.childForFieldName("name");
-        if (id) {
-          const sym = recordSymbol(n, id.text, "function");
-          declStack.push({ name: sym.qualifiedName, node: n });
-          for (const c of n.namedChildren) walk(c, visit);
-          declStack.pop();
-          return "skip";
-        }
-        break;
-      }
-      case "type_declaration": {
-        for (const spec of n.namedChildren) {
-          if (spec.type !== "type_spec") continue;
-          const id = spec.childForFieldName("name");
-          const t = spec.childForFieldName("type");
-          if (!id) continue;
-          const kind: SymbolKind =
-            t?.type === "interface_type"
-              ? "interface"
-              : t?.type === "struct_type"
-                ? "class"
-                : "type";
-          recordSymbol(spec, id.text, kind);
-        }
-        return "skip";
-      }
-      case "import_declaration": {
-        // Two shapes: `import "x"` and `import (...)`.
-        for (const c of n.namedChildren) {
-          collectGoImports(c, moduleQname, edges);
-        }
-        return "skip";
-      }
-      case "call_expression": {
-        const fn = n.childForFieldName("function");
-        if (fn) {
-          let callee: string | null = null;
-          let receiver: string | undefined;
-          if (fn.type === "identifier") callee = fn.text;
-          else if (fn.type === "selector_expression") {
-            const field = fn.childForFieldName("field");
-            if (field) {
-              callee = field.text;
-              receiver = receiverOf(fn.childForFieldName("operand"));
-            }
-          }
-          if (callee) {
-            edges.push({
-              kind: "calls",
-              fromQualifiedName: enclosingDefQname(n),
-              toQualifiedName: callee,
-              line: n.startPosition.row + 1,
-              ...(receiver !== undefined ? { receiver } : {}),
-            });
-          }
-        }
-        return;
-      }
-    }
-  };
-  walk(root, visit);
-}
-
-function collectGoImports(node: SyntaxNode, moduleQname: string, edges: ParsedEdge[]): void {
-  if (node.type === "import_spec") {
-    const path = node.childForFieldName("path");
-    if (path) {
-      const target = path.text.replace(/^"|"$/g, "");
-      edges.push({
-        kind: "imports",
-        fromQualifiedName: moduleQname,
-        toQualifiedName: target,
-        line: node.startPosition.row + 1,
-      });
-    }
-    return;
-  }
-  if (node.type === "import_spec_list") {
-    for (const c of node.namedChildren) collectGoImports(c, moduleQname, edges);
-  }
 }
 
 // ---------------------------------------------------------------------------

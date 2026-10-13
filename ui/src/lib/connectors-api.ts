@@ -60,6 +60,12 @@ export interface RefreshIngestSummary {
     graphSymbols?: number;
     graphEdges?: number;
     durationMs: number;
+    /**
+     * #1071 — the Go files, and calls in them, that the ingest's time limit
+     * left unbound by type; null or absent when Go binding is complete. The
+     * next Sync continues from there.
+     */
+    goBindingIncomplete?: { files: number; calls: number } | null;
   };
   sourceKnowledge: { documentsCreated: number; documentsUpdated: number; chunkCount: number };
   cloneSizeBytes: number;

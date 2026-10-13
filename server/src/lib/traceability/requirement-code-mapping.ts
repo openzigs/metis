@@ -435,7 +435,7 @@ interface Bm25Corpus {
   byId: Map<string, Bm25SymbolRow>;
   size: number;
   /** {@link symbolNameTerms} per symbol id, filled on first use (#1063). */
-  nameTerms: Map<string, ReadonlySet<string>>;
+  nameTerms: Map<string, NameTermSets>;
 }
 
 /** Load a project's code symbols and build the BM25 index once. */
@@ -489,7 +489,8 @@ async function buildBm25Corpus(
  *
  * The terms are counted against what the symbol is CALLED ({@link
  * symbolNameTerms}), not against the BM25 document. The document is
- * `name + qualifiedName`, and `qualifiedName` is `<filePath>::<name>`, so
+ * `name + qualifiedName`, and `qualifiedName` starts with the file path
+ * (`<filePath>::<name>`, or `<filePath>::<Type>::<name>` for a member), so
  * counting document terms let a directory (`internal`, `client`) or the file
  * extension (`go`) be the second "shared term": "Add a button in the web client
  * to terminate all sessions" reached `InlineKeyboardButton` again through
@@ -559,36 +560,102 @@ export function symbolNameTerms(row: {
   qualifiedName: string;
   filePath: string;
 }): ReadonlySet<string> {
+  return symbolNameTermSets(row).all;
+}
+
+/**
+ * #1071 — the terms of a MEMBER's own name, apart from its enclosing type or
+ * table; null for a symbol that has none (a function, a type, a table, a file).
+ *
+ * The enclosing type is part of how a member is referred to, but it is shared
+ * by every member: once a Go method's qualified name carried its receiver type
+ * (`oauth2/oidc.go::oidcProvider::Config`), "OIDC provider display name"
+ * shared `oidc` and `provider` with all seven methods of `oidcProvider`,
+ * whatever each was called, and they pushed the one right symbol out of the
+ * top ten. So the type may supply shared terms, but never all of them: a member
+ * links only when at least one comes from its own name
+ * ({@link sharesEnoughNameTerms}).
+ *
+ * A table is the enclosing type of its columns, deliberately. A requirement
+ * that names a table links the TABLE (which is what the schema crossing
+ * starts from); it links a column only when a word of the column's own name is
+ * in the requirement too (`user_sessions.user_agent` for "user"). Measured both
+ * ways on the Miniflux sample (PR #1104, review 2): on the 23 stored
+ * requirements the two readings give the same 210 links; they differ on one of
+ * the eleven probe sentences, "Add a button in the web client to terminate all
+ * sessions", where exempting columns adds all seven columns of `web_sessions`
+ * — none of which the sentence names — beside the table it already links. So
+ * this rule also applies, as a behaviour change, to every language with
+ * members and to every schema: a column no longer links on its table's name.
+ */
+export function symbolOwnNameTerms(row: {
+  name: string;
+  qualifiedName: string;
+  filePath: string;
+}): ReadonlySet<string> | null {
+  return symbolNameTermSets(row).own;
+}
+
+interface NameTermSets {
+  /** {@link symbolNameTerms}. */
+  all: ReadonlySet<string>;
+  /** {@link symbolOwnNameTerms}. */
+  own: ReadonlySet<string> | null;
+}
+
+function symbolNameTermSets(row: {
+  name: string;
+  qualifiedName: string;
+  filePath: string;
+}): NameTermSets {
   const parts: string[] = [];
   const qualified = row.qualifiedName;
+  let hasOwner = false;
   if (qualified.includes("::")) {
-    parts.push(
-      ...qualified.split("::").filter((seg) => seg !== row.filePath && !hasPathSeparator(seg)),
-      row.name,
-    );
+    const segments = qualified
+      .split("::")
+      .filter((seg) => seg !== row.filePath && !hasPathSeparator(seg));
+    // `<file>::<Type>::<member>` leaves the type and the member; `<file>::<name>` only the name.
+    hasOwner = segments.length > 1;
+    parts.push(...segments, row.name);
   } else if (qualified === row.filePath || hasPathSeparator(qualified)) {
     // A module row: `qualifiedName` is the path, `name` the file's base name.
     parts.push(row.name.replace(FILE_EXTENSION_RE, ""));
   } else {
-    parts.push(...qualified.split(".").slice(-2), row.name);
+    const dotted = qualified.split(".");
+    hasOwner = dotted.length > 1;
+    parts.push(...dotted.slice(-2), row.name);
   }
-  return new Set(tokenizeCode(parts.join(" ")));
+  return {
+    all: new Set(tokenizeCode(parts.join(" "))),
+    own: hasOwner ? new Set(tokenizeCode(row.name)) : null,
+  };
 }
 
-/** How many of `queryTerms` the symbol's name carries (see {@link symbolNameTerms}). */
-function sharedNameTermCount(
+/**
+ * Whether the symbol's name shares at least `required` of `queryTerms` — and,
+ * for a member, at least one of them through its own name rather than its
+ * enclosing type's (see {@link symbolOwnNameTerms}).
+ */
+function sharesEnoughNameTerms(
   corpus: Bm25Corpus,
   symbolId: string,
   queryTerms: ReadonlySet<string>,
-): number {
+  required: number,
+): boolean {
   let terms = corpus.nameTerms.get(symbolId);
   if (!terms) {
-    terms = symbolNameTerms(corpus.byId.get(symbolId)!);
+    terms = symbolNameTermSets(corpus.byId.get(symbolId)!);
     corpus.nameTerms.set(symbolId, terms);
   }
   let shared = 0;
-  for (const term of queryTerms) if (terms.has(term)) shared++;
-  return shared;
+  let own = terms.own === null;
+  for (const term of queryTerms) {
+    if (!terms.all.has(term)) continue;
+    shared++;
+    if (terms.own?.has(term)) own = true;
+  }
+  return shared >= required && own;
 }
 
 /** Score a query against a pre-built corpus into ranked candidates. */
@@ -611,7 +678,7 @@ function scoreBm25Corpus(
   if ((options.minSharedTerms ?? 1) > 1) {
     const queryTerms = new Set(tokenizeCode(denoised));
     const required = requiredSharedTerms(denoised, options.minSharedTerms);
-    scored = scored.filter((s) => sharedNameTermCount(corpus, s.symbolId, queryTerms) >= required);
+    scored = scored.filter((s) => sharesEnoughNameTerms(corpus, s.symbolId, queryTerms, required));
   }
   return scored.slice(0, limit).map((s) => {
     const row = corpus.byId.get(s.symbolId)!;

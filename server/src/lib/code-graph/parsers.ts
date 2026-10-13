@@ -24,22 +24,12 @@ export {
 } from "./parsers-tree-sitter.js";
 export type { StringLiteral } from "./parsers-tree-sitter.js";
 
+import type { GoExpr, GoFileFacts } from "./go-type-resolution.js";
+
 export type SymbolKind = "function" | "class" | "interface" | "type" | "module" | "method";
 export type EdgeKind = "calls" | "imports" | "defines" | "references";
 export type Language =
-  | "ts"
-  | "js"
-  | "py"
-  | "go"
-  | "java"
-  | "sas"
-  | "cs"
-  | "kt"
-  | "cbl"
-  | "scala"
-  | "rs"
-  | "c"
-  | "cpp";
+  "ts" | "js" | "py" | "go" | "java" | "sas" | "cs" | "kt" | "cbl" | "scala" | "rs" | "c" | "cpp";
 
 export interface ParsedSymbol {
   kind: SymbolKind;
@@ -79,6 +69,14 @@ export interface ParsedEdge {
    * at ingest — never persisted.
    */
   importedNames?: string[];
+  /**
+   * #1071 — for a Go `calls` edge, the callee as a symbolic expression with the
+   * function's locals substituted (`h.store.Save()` in a method on `*handler` →
+   * select `Save` of select `store` of a `handler` value). Ingest evaluates it
+   * against every Go file's {@link ParsedFile.goFacts} to bind the call by type.
+   * Never persisted.
+   */
+  goCallee?: GoExpr;
 }
 
 export interface ParsedFile {
@@ -95,6 +93,12 @@ export interface ParsedFile {
   rationaleHints: RationaleHint[];
   /** True when the parser hit a syntax error and gave up partway. */
   unparseable?: boolean;
+  /**
+   * #1071 — what a Go file declares about types (package, imports, struct
+   * fields, function results, package-level variables). Set by the tree-sitter
+   * Go walker only; never persisted.
+   */
+  goFacts?: GoFileFacts;
 }
 
 export interface RationaleHint {
@@ -635,14 +639,16 @@ function parseGo(filePath: string, source: string): ParsedFile {
       });
     }
 
-    const fn = /^\s*func\s+(?:\([^)]*\)\s+)?([A-Za-z_][\w]*)/.exec(line);
+    const fn = /^\s*func\s+(?:\(([^)]*)\)\s+)?([A-Za-z_][\w]*)/.exec(line);
     if (fn) {
       const end = findBlockEnd(lines, i);
-      const qname = buildCodeQualifiedName(moduleQname, fn[1]);
+      // #1071 — a method is named after its receiver type, as the tree-sitter
+      // walker names it: `func (s *Storage) Save()` → `<file>::Storage::Save`.
+      const qname = buildCodeQualifiedName(moduleQname, goReceiverTypeName(fn[1] ?? ""), fn[2]);
       const body = lines.slice(i, end + 1).join("\n");
       symbols.push({
         kind: "function",
-        name: fn[1],
+        name: fn[2],
         qualifiedName: qname,
         startLine: i + 1,
         endLine: end + 1,
@@ -690,6 +696,19 @@ function parseGo(filePath: string, source: string): ParsedFile {
   }
 
   return { filePath, language: "go", symbols, edges, fileHash: sha256(source), rationaleHints };
+}
+
+/**
+ * The base type name of a Go receiver as written between the parentheses:
+ * `s *Storage` → `Storage`, `l List[T]` → `List`, `Named` → `Named`. Empty when
+ * there is no receiver or it names no type.
+ */
+function goReceiverTypeName(receiver: string): string {
+  const bracket = receiver.indexOf("[");
+  const head = (bracket === -1 ? receiver : receiver.slice(0, bracket)).trim();
+  const space = head.lastIndexOf(" ");
+  const type = (space === -1 ? head : head.slice(space + 1)).replace(/^[*(]+/, "");
+  return /^[A-Za-z_]\w*$/.test(type) ? type : "";
 }
 
 // ---------------------------------------------------------------------------

@@ -871,6 +871,9 @@ export function connectorsRouter(): Router {
               graphSymbols: stats.graphSymbols,
               graphEdges: stats.graphEdges,
               durationMs: stats.durationMs,
+              // #1071 — set when the time ceiling left Go calls unbound by
+              // type; the Sync panel says so, and the next Sync continues.
+              goBindingIncomplete: stats.goBinding?.incomplete ?? null,
             },
             sourceKnowledge: {
               documentsCreated: srcSummary.documentsCreated,

@@ -348,6 +348,49 @@ describe("ConnectionsPage — deep ingest and refresh ingest", () => {
     expect(screen.queryByText(/655 scanned/)).not.toBeInTheDocument();
   });
 
+  it("#1071 — says in words when the Sync left Go call binding unfinished, and nothing when it did not", async () => {
+    const summary = (goBindingIncomplete: { files: number; calls: number } | null) => ({
+      pulled: true,
+      filesChanged: 1,
+      codeGraph: {
+        filesScanned: 430,
+        filesParsed: 1,
+        filesSkipped: 429,
+        symbolsUpserted: 12,
+        edgesUpserted: 40,
+        filesUnchanged: 420,
+        graphFiles: 421,
+        graphSymbols: 4252,
+        graphEdges: 28636,
+        durationMs: 31000,
+        goBindingIncomplete,
+      },
+      sourceKnowledge: { documentsCreated: 0, documentsUpdated: 1, chunkCount: 2675 },
+      cloneSizeBytes: 0,
+    });
+    refreshIngest.mockResolvedValueOnce(summary({ files: 262, calls: 12430 }));
+    repoList.mockResolvedValue([makeRepo({ id: "r1" })]);
+    renderPage();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Sync$/ })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
+    const note = await screen.findByTestId("sync-go-binding-incomplete");
+    expect(note).toHaveTextContent(
+      /Go call binding is not finished: 12,?430 calls in 262 Go files not yet bound by type/,
+    );
+    expect(note).toHaveTextContent(
+      "Nothing already bound was changed; the next Sync continues from there.",
+    );
+
+    // A Sync that finished the binding: the note is gone.
+    refreshIngest.mockResolvedValueOnce(summary(null));
+    fireEvent.click(screen.getByRole("button", { name: /^Sync$/ }));
+    await waitFor(() => expect(refreshIngest).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.queryByTestId("sync-go-binding-incomplete")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText(/Sync complete/i)).toBeInTheDocument();
+  });
+
   it("warns instead of reporting success when the sync landed but scheduling failed (#449)", async () => {
     const warning =
       "The repository was ingested, but scheduling automatic document regeneration failed.";

@@ -1,15 +1,28 @@
 /**
- * #791 — bind a Go project's unresolved `calls` edges to the function they reach,
- * for impact analysis only.
+ * #791 — the FALLBACK binder for the Go `calls` edges ingest left unresolved.
  *
- * The Go parser records a method declaration (`func (s *Storage)
- * SetEntriesStatus(…)`) as a plain `function` and a call through a struct field
- * (`h.store.SetEntriesStatus(…)`) by its bare callee name, so the ingest-time
- * resolver (`code-graph/call-resolution.ts`) has no method to bind it to and
- * leaves `toSymbolId` null. On Miniflux v2.3.3 that is 16.5k of 21.7k call
- * edges, including every call from an HTTP handler into `internal/storage`. The
- * impact blast radius and the schema crossing walk only resolved edges, so the
- * Fever and Google Reader handlers that change an entry's status never appeared.
+ * Since #1071 ingest binds a Go call by the types the source declares
+ * (`code-graph/go-type-resolution.ts`): `h.store.SetEntriesStatus(…)` reaches
+ * `Storage::SetEntriesStatus` in the graph itself, with no help from here. What
+ * ingest leaves unresolved falls in two groups, and it says which on the edge
+ * (`metadata.goResolution`, see `GO_RESOLUTION_KEY`):
+ *
+ *  - **decided, no project callee** — `external` (the standard library, a
+ *    third-party module, a builtin), `external-assumed` (a member or result of
+ *    an external value whose own type was not examined), `func-value`,
+ *    `conversion`, `ambiguous`. This module never binds these: ingest has the
+ *    declarations and ruled a project callee out, so a name match here could
+ *    only contradict it. (For `external-assumed` that ruling is an assumption,
+ *    kept closed on purpose: opened to this fallback, four calls of four bound
+ *    to the wrong function on the Miniflux sample.)
+ *  - **undecided** — `interface` (dispatched at run time) and edges with no
+ *    verdict (the receiver's type could not be inferred, or a graph ingested
+ *    before #1071). These are bound here, by name, for the consumers that prefer
+ *    a probable callee to none: the impact blast radius, the schema crossing,
+ *    Tested-by's `inferred-call` relation and the plan localisation walk.
+ *
+ * So the two resolvers cannot disagree: this one only speaks where ingest did
+ * not. Its results are never written to the graph.
  *
  * The rule is Go's own visibility rule, so it binds only on evidence: a callee
  * named `X` is a candidate when it is declared in the caller's package (same
@@ -18,15 +31,16 @@
  * candidate remains; an ambiguous name stays unresolved. A test file is never a
  * candidate for a non-test caller.
  *
- * Pure: the loader below reads the rows, {@link resolveGoCalls} decides.
+ * Pure: the loaders below read the rows, {@link resolveGoCalls} decides.
  */
 import type { PrismaClient } from "@prisma/client";
 import { isTestFilePath } from "../code-graph/call-resolution.js";
+import { goUndecidedCallWhere, isGoFallbackCandidate } from "../code-graph/go-type-resolution.js";
 
 /** A Go function or method that a call can reach. */
 export interface GoCallable {
   id: string;
-  /** Simple name — the segment after the last `::`. */
+  /** Simple name — the segment after the last `::` (`<file>::<name>`, or `<file>::<Type>::<name>` for a method). */
   name: string;
   filePath: string;
 }
@@ -158,6 +172,8 @@ export async function loadResolvedGoCalls(
         toSymbolId: null,
         filePath: { endsWith: ".go" },
         ...(opts?.calleeNames ? { toQualifiedName: { in: [...opts.calleeNames] } } : {}),
+        // #1071 — never a call ingest decided has no project callee.
+        ...goUndecidedCallWhere(),
       },
       select: { fromSymbolId: true, filePath: true, toQualifiedName: true },
     }),
@@ -203,9 +219,10 @@ const SCOPED_OR_CHUNK = 100;
  * imports of the caller's package (all loaded, by directory).
  *
  * Candidates are read by the symbol's `name` column and compared, as everywhere
- * else, by the tail of `qualifiedName`. The Go parser writes `<file>::<name>`,
- * so the two are the same string (23,633 of 23,633 Go functions in the #706
- * run-7 database).
+ * else, by the tail of `qualifiedName`. The Go parser writes `<file>::<name>`
+ * for a function and, since #1071, `<file>::<Type>::<name>` for a method, so the
+ * tail and the column are the same string either way (23,633 of 23,633 Go
+ * functions in the #706 run-7 database, before and after the upgrade).
  */
 export async function loadResolvedGoCallsFrom(
   prisma: GoResolutionPrisma,
@@ -226,10 +243,16 @@ export async function loadResolvedGoCallsFrom(
         fromSymbolId: { in: fromSymbolIds.slice(i, i + SCOPED_IN_CHUNK) },
         filePath: { endsWith: ".go" },
       },
-      select: { fromSymbolId: true, toSymbolId: true, filePath: true, toQualifiedName: true },
+      select: {
+        fromSymbolId: true,
+        toSymbolId: true,
+        filePath: true,
+        toQualifiedName: true,
+        metadata: true,
+      },
     });
     for (const r of rows) {
-      if (!r.toSymbolId && r.toQualifiedName) {
+      if (!r.toSymbolId && r.toQualifiedName && isGoFallbackCandidate(r.metadata)) {
         calls.push({
           fromSymbolId: r.fromSymbolId,
           filePath: r.filePath,

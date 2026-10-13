@@ -3605,6 +3605,29 @@ model CodeGraph {
   /// incremental ingest whose inputs differ re-parses every file so lineage
   /// backfills. Null on graphs built before #721.
   lineageFingerprint String?
+  /// Issue #1071 — `CODE_GRAPH_EXTRACTOR_VERSION` the graph's parser rows were
+  /// last written with. An incremental ingest of a graph recorded with an older
+  /// one (or null: built before #1071) upgrades the affected files in place.
+  extractorVersion   Int?
+  /// Issue #1071 — the files an extractor upgrade could NOT bring to
+  /// `extractorVersion`: JSON `{ "<path>": "<content hash that failed>" | null }`
+  /// (null: the file could not be read). Their rows keep the older shape. A
+  /// file listed here is retried only when its content differs from the
+  /// recorded hash, so one unparseable file does not make every ingest redo
+  /// the whole upgrade. Null when every file is at `extractorVersion`.
+  extractorUpgradeFailed String?
+  /// Issue #1071 — when an ingest last REWROTE this graph's rows in place for
+  /// an extractor upgrade (it upgraded at least one file). The evidence
+  /// automatic document regeneration needs to tell that rewrite from a real
+  /// change of the graph; null when no upgrade ever rewrote it.
+  extractorUpgradedAt DateTime?
+  /// Issue #1071 — the Go call binding the ingest's time ceiling left
+  /// unfinished: JSON `{ "version": <extractor version the rows have>,
+  /// "files": { "<path>": <index of the first call edge not yet resolved> } }`.
+  /// While it is set `extractorVersion` is not stamped, the stored answer of
+  /// every skipped call is kept, and the next ingest resumes these files
+  /// first, whether or not a Go file changed. Null when binding is complete.
+  goBindingIncomplete String?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
@@ -3625,7 +3648,7 @@ model CodeSymbol {
   projectId     String // denormalised for fast (projectId, kind) reads from the MCP tools
   kind          String // function | class | interface | type | module | method | table | column
   name          String
-  qualifiedName String // e.g. "server/src/lib/x.ts::Foo.bar"
+  qualifiedName String // e.g. "server/src/lib/x.ts::Foo::bar"; a Go method is "<file>::<ReceiverType>::<name>" (#1071)
   filePath      String
   startLine     Int
   endLine       Int
@@ -3984,6 +4007,8 @@ model GeneratedDocument {
 
   project             Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
   versions            GeneratedDocumentVersion[]
+  /// Issue #1071 — the inputs the latest version was acknowledged to stand for.
+  acknowledgement     GeneratedDocumentAcknowledgement?
   /// Epic #207 — this document acting as a "spec" in the traceability spine.
   requirementMappings RequirementSpecMapping[]
   codeMappings        SpecCodeMapping[]
@@ -4018,6 +4043,37 @@ model GeneratedDocumentVersion {
   @@index([revisionId])
   @@index([documentId, version])
   @@map("generated_document_versions")
+}
+
+/// Issue #1071 — the inputs a document's latest version was ACKNOWLEDGED to
+/// stand for without being regenerated. At most one row per document, written
+/// when a check finds that a code-graph extractor upgrade rewrote the graph
+/// (`CodeGraph.extractorUpgradedAt`) and nothing else the document reads
+/// changed — or that a graph's upgrade mark moved without changing them. Later
+/// checks treat the row as the document's baseline in place of its version's
+/// own manifest, so an upgrade is acknowledged exactly once, per graph, and
+/// the next change of a graph regenerates. A row whose `version` is not the
+/// document's latest is stale and ignored. The version's manifest is immutable
+/// and is never touched.
+model GeneratedDocumentAcknowledgement {
+  documentId  String   @id
+  /// The published version this acknowledgement belongs to.
+  version     Int
+  /// The latest `CodeGraph.extractorUpgradedAt` among the graphs recorded in
+  /// `graphs`. Informational: the rule compares the per-graph marks below.
+  upgradedAt  DateTime
+  /// Fingerprint of the acknowledged generation inputs.
+  fingerprint String
+  /// JSON: graph tag (a hash of the graph id) → `{ rows, mark }` — the digest of
+  /// that graph's rows in the acknowledged inputs and the upgrade mark the
+  /// graph carried. A later difference is put down to an upgrade only for a
+  /// graph whose mark is no longer this one. Null: none recorded.
+  graphs      String?
+  updatedAt   DateTime @updatedAt
+
+  document GeneratedDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@map("generated_document_acknowledgements")
 }
 
 /// Phase-1 fact-extraction cache for the holistic doc synthesizer.

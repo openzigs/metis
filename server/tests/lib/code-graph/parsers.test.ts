@@ -199,6 +199,42 @@ type Stringer interface {
     expect(targets).toEqual(["fmt", "log", "os"]);
   });
 
+  it("names a method after its receiver type, as the tree-sitter walker does (#1071)", () => {
+    const methods = parseSource(
+      "pkg/x.go",
+      [
+        "package pkg",
+        "func (s *Storage) Save() {",
+        "}",
+        "func (n Named) String() string {",
+        "}",
+        "func (l *List[T]) Add(v T) {",
+        "}",
+        "func (Named) Zero() {",
+        "}",
+        "func Plain() {",
+        "}",
+      ].join("\n"),
+      "go",
+    );
+    expect(
+      methods.symbols.filter((s) => s.kind === "function").map((s) => s.qualifiedName),
+    ).toEqual([
+      "pkg/x.go::Storage::Save",
+      "pkg/x.go::Named::String",
+      "pkg/x.go::List::Add",
+      "pkg/x.go::Named::Zero",
+      "pkg/x.go::Plain",
+    ]);
+    expect(methods.symbols.filter((s) => s.kind === "function").map((s) => s.name)).toEqual([
+      "Save",
+      "String",
+      "Add",
+      "Zero",
+      "Plain",
+    ]);
+  });
+
   it("captures WHY marker", () => {
     expect(result.rationaleHints.find((h) => h.tag === "WHY")).toBeDefined();
   });

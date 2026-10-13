@@ -98,9 +98,16 @@ import {
   parseGeneratedDocVersionManifest,
 } from "../lib/docs-gen/generated-doc-provenance.js";
 import {
+  isGraphRowsOnlyChange,
   planRegeneration,
   type GenerationInputSnapshot,
 } from "../lib/docs-gen/regeneration-plan.js";
+import {
+  acknowledgeExtractorUpgrade,
+  isAttributableToUpgrade,
+  settleExtractorUpgrade,
+  type AcknowledgedUpgrade,
+} from "../lib/docs-gen/extractor-upgrade.js";
 import type { RegenerationTask } from "../lib/docs-gen/incremental.js";
 import {
   GENERATION_CANCELLED_MESSAGE,
@@ -1260,6 +1267,42 @@ export async function generateDocumentAsync(
     const previous = previousManifest?.inputSnapshot ?? null;
     const plan = inputSnapshot ? planRegeneration(previous, inputSnapshot) : null;
     if (automatic && plan?.mode === "unchanged") return;
+    // #1071 — neither does an automatic run start for a code-graph extractor
+    // upgrade alone: a task queued for exactly that rewrite (by a scheduler
+    // that did not know the rule, or before the rewrite was acknowledged)
+    // settles here the way the scheduling check would have.
+    if (automatic && inputSnapshot && lastVersion) {
+      const settled = await settleExtractorUpgrade({
+        documentId: docId,
+        latest: lastVersion,
+        published: previous,
+        current: inputSnapshot,
+      });
+      if (settled.outcome !== "changed") return;
+    }
+    // #1071 — an upgrade that rewrites the graph WHILE this run is going is
+    // not changed inputs either. The evidence is the mark of the very graph
+    // whose rows differ: not the one the run captured for it (nor one this run
+    // has already tolerated). The fresh capture reads the document's own
+    // graphs and no others, so another repository's upgrade is never evidence
+    // here; what the run then stands for is recorded when it publishes.
+    const upgrade: { acknowledged: AcknowledgedUpgrade | null } = { acknowledged: null };
+    const inputsStand = async (
+      row: Parameters<typeof captureGenerationInputs>[0],
+      rowPolicy: Parameters<typeof captureGenerationInputs>[1],
+    ): Promise<boolean> => {
+      if (!inputSnapshot) return true;
+      const fresh = await captureGenerationInputs(row, rowPolicy);
+      const standsFor = upgrade.acknowledged?.snapshot ?? inputSnapshot;
+      if (fresh.fingerprint === standsFor.fingerprint) return true;
+      if (!isGraphRowsOnlyChange(standsFor, fresh)) return false;
+      // A run's own capture always records its graphs: no "older record" here.
+      if (!standsFor.graphs || !isAttributableToUpgrade(standsFor.graphs, fresh.graphs)) {
+        return false;
+      }
+      upgrade.acknowledged = { snapshot: fresh };
+      return true;
+    };
     const acquired = await prisma.generatedDocument.updateMany({
       where: {
         id: docId,
@@ -1307,11 +1350,7 @@ export async function generateDocumentAsync(
       });
       if (!row || row.codeGraphHash !== claim) run.stop("superseded");
       else if (row.status === "cancelling") run.stop("aborted");
-      else if (
-        inputSnapshot &&
-        (await captureGenerationInputs(row, await resolveEvidencePolicy(row))).fingerprint !==
-          inputSnapshot.fingerprint
-      ) {
+      else if (!(await inputsStand(row, await resolveEvidencePolicy(row)))) {
         log.warn("Generation inputs changed mid-run; stopping it", {
           docId,
           projectId,
@@ -1818,11 +1857,7 @@ export async function generateDocumentAsync(
     const currentPolicy = await resolveEvidencePolicy(current);
     if (automatic?.signal.aborted)
       throw new UnpublishableGenerationError("aborted", "Regeneration aborted");
-    if (
-      inputSnapshot &&
-      (await captureGenerationInputs(current, currentPolicy)).fingerprint !==
-        inputSnapshot.fingerprint
-    ) {
+    if (!(await inputsStand(current, currentPolicy))) {
       throw new UnpublishableGenerationError(
         "inputs-changed",
         "Generation inputs changed; replay ingestion to regenerate the current revision",
@@ -1891,6 +1926,12 @@ export async function generateDocumentAsync(
           ...(plan ? { changedSymbols: JSON.stringify(plan.changed) } : {}),
         },
       });
+      // #1071 — the manifest says what the run captured. When an extractor
+      // upgrade rewrote the graph meanwhile, this says what the version stands
+      // for, so the next check does not take that rewrite for a change.
+      if (upgrade.acknowledged) {
+        await acknowledgeExtractorUpgrade(tx, docId, nextVersion, upgrade.acknowledged.snapshot);
+      }
       return persistGeneratedDocTask(
         tx,
         { projectId, generatedDocumentId: docId, version: nextVersion, revisionId },

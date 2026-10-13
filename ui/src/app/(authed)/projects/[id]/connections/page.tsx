@@ -1146,6 +1146,27 @@ export default function ConnectionsPage() {
                   {(refreshIngestResult.summary.codeGraph.durationMs / 1000).toFixed(1)} s
                 </span>
               </div>
+              {/* #1071 — the time limit on Go call binding was reached: said in
+                  words, since nothing else on the panel would show it. */}
+              {refreshIngestResult.summary.codeGraph.goBindingIncomplete ? (
+                <p
+                  className="mt-2 text-warning"
+                  role="status"
+                  data-testid="sync-go-binding-incomplete"
+                >
+                  Go call binding is not finished:{" "}
+                  {refreshIngestResult.summary.codeGraph.goBindingIncomplete.calls > 0
+                    ? `${refreshIngestResult.summary.codeGraph.goBindingIncomplete.calls.toLocaleString()} call${refreshIngestResult.summary.codeGraph.goBindingIncomplete.calls === 1 ? "" : "s"} in `
+                    : "calls in "}
+                  {refreshIngestResult.summary.codeGraph.goBindingIncomplete.files.toLocaleString()}{" "}
+                  Go file
+                  {refreshIngestResult.summary.codeGraph.goBindingIncomplete.files === 1
+                    ? ""
+                    : "s"}{" "}
+                  not yet bound by type (a time or memory limit for that step was reached). Nothing
+                  already bound was changed; the next Sync continues from there.
+                </p>
+              ) : null}
             </div>
           ) : null}
         </ul>
