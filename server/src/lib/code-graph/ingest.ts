@@ -3972,7 +3972,7 @@ export async function extractSchemaUsage(
  * library or a test framework (#17) — evidence that a bare call to that name is
  * NOT a project symbol.
  */
-function buildFileImportIndex(
+export function buildFileImportIndex(
   parsedFiles: ParsedFile[],
   ctx: ImportResolutionContext,
 ): { importTargets: Map<string, string[]>; runtimeImports: Map<string, Set<string>> } {
@@ -4002,7 +4002,7 @@ function buildFileImportIndex(
  * files parsed on this run; on an incremental one (#313) they are the parsed
  * files plus every unchanged file, so an import resolves identically either way.
  */
-interface ImportResolutionContext {
+export interface ImportResolutionContext {
   filePaths: ReadonlySet<string>;
   /** `OrderService.java` → every path with that basename (Java imports). */
   javaByBasename: Map<string, string[]>;
@@ -4010,7 +4010,7 @@ interface ImportResolutionContext {
   copybooks: CopybookIndex;
 }
 
-function buildImportResolutionContext(filePaths: Iterable<string>): ImportResolutionContext {
+export function buildImportResolutionContext(filePaths: Iterable<string>): ImportResolutionContext {
   const paths = new Set(filePaths);
   const javaByBasename = new Map<string, string[]>();
   for (const fp of paths) {

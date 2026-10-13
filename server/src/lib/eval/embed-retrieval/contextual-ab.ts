@@ -22,8 +22,49 @@
  * {@link isEstablishedGain} therefore also requires the mean delta to be
  * positive.
  */
-import { MIN_IMPORTANT_BM25_DELTA, MIN_IMPORTANT_FUSED_DELTA } from "./lexical-ab.js";
+import path from "node:path";
+import {
+  createResolutionIndex,
+  indexSymbol,
+  resolveEdgeTarget,
+} from "../../code-graph/call-resolution.js";
+import {
+  DEFAULT_WEIGHTS,
+  tokenizeCode,
+  type LexicalConfig,
+  type SearchableSymbol,
+  type SearchWeights,
+} from "../../code-graph/hybrid-search.js";
+import { buildFileImportIndex, buildImportResolutionContext } from "../../code-graph/ingest.js";
+import { detectLanguage, parseSource, type ParsedFile } from "../../code-graph/parsers.js";
+import {
+  composeEmbeddingText,
+  contextLines,
+  contextualDocumentText,
+  deriveCrossFileContext,
+  extractOwnFileContext,
+  packageOfFile,
+  type ContextEdgeRef,
+  type ContextSymbolRef,
+  type CrossFileContext,
+  type OwnFileContext,
+} from "../../code-graph/symbol-context.js";
+import type { EmbedService } from "../../code-graph/symbol-embeddings.js";
+import { readRepoFiles, type EmbedRetrievalCorpus } from "./corpus.js";
+import {
+  compareLexicalArm,
+  createLexicalArmSearch,
+  MIN_IMPORTANT_BM25_DELTA,
+  MIN_IMPORTANT_FUSED_DELTA,
+  renderLexicalArms,
+  renderLexicalDecision,
+  scoreLexicalArm,
+  type LexicalArmResult,
+  type LexicalComparison,
+} from "./lexical-ab.js";
 import type { RerankVerdict as DeltaVerdict } from "./rerank-sweep.js";
+import { createEmptyVectorStore, LEXICAL_ONLY_WEIGHTS, type EmbedFn } from "./runner.js";
+import { corpusSymbolIndex, withWiredCorpus } from "./wired-runner.js";
 
 /** Rank depth every arm is scored at — the `@10` in nDCG@10. */
 export const CONTEXTUAL_K = 10;
@@ -237,4 +278,527 @@ export function decideContextualShip(input: ShipDecisionInput): ShipDecision {
 
 function signed(n: number): string {
   return `${n >= 0 ? "+" : ""}${n.toFixed(3)}`;
+}
+
+// =============================================================================
+// Everything below was written AFTER the pre-registration commit. It builds the
+// documents the arms above name and scores them; it changes no bar and no rule.
+// =============================================================================
+
+/** The context of every corpus symbol, built with production's own functions. */
+export interface CorpusContext {
+  /** Own-file fields, by corpus symbol id. Schema symbols have none, as in production. */
+  own: ReadonlyMap<string, OwnFileContext>;
+  /** Cross-file fields, by corpus symbol id; absent when a symbol has neither. */
+  cross: ReadonlyMap<string, CrossFileContext>;
+}
+
+/** The context fields, in the order the reach table prints them. */
+export const CONTEXT_FIELDS = [
+  "signature",
+  "docComment",
+  "receiver",
+  "package",
+  "callers",
+  "tables",
+] as const;
+export type ContextField = (typeof CONTEXT_FIELDS)[number];
+
+/**
+ * Build the corpus's context the way an ingest would.
+ *
+ * Own-file fields come from {@link extractOwnFileContext}, the function ingest
+ * calls. Callers come from the parser's `calls` edges, bound by the same
+ * resolution index and the same {@link resolveEdgeTarget} ingest's pass 2
+ * uses, then reduced by {@link deriveCrossFileContext}.
+ *
+ * Two things differ from a real ingest and both are stated in the artifact:
+ * the corpus is parsed by the regex parser (as `corpus.ts` already does, so
+ * the run needs no grammar), and there is no SQL-lineage pass, so no symbol
+ * has a `reads` or `writes` edge and the tables field is empty.
+ */
+export function buildCorpusContext(
+  files: ReadonlyArray<{ relPath: string; content: string }>,
+): CorpusContext {
+  const parsed: ParsedFile[] = [];
+  const own = new Map<string, OwnFileContext>();
+  const refs: ContextSymbolRef[] = [];
+  const index = createResolutionIndex();
+  const qnameToId = new Map<string, string>();
+  const symbolId = (relPath: string, qualifiedName: string): string =>
+    `${relPath}::${qualifiedName}`;
+
+  for (const { relPath, content } of files) {
+    const language = detectLanguage(relPath);
+    if (!language) continue;
+    const file = parseSource(relPath, content, language);
+    parsed.push(file);
+    const lines = content.split("\n");
+    const pkg = packageOfFile(relPath, language, lines);
+    for (const sym of file.symbols) {
+      const id = symbolId(relPath, sym.qualifiedName);
+      // Ingest indexes every symbol, the file's `module` symbol included.
+      indexSymbol(index, {
+        id,
+        name: sym.name,
+        qualifiedName: sym.qualifiedName,
+        filePath: relPath,
+        kind: sym.kind,
+        language,
+      });
+      if (!qnameToId.has(sym.qualifiedName)) qnameToId.set(sym.qualifiedName, id);
+      refs.push({ id, name: sym.name, kind: sym.kind, qualifiedName: sym.qualifiedName });
+      if (sym.kind === "module") continue;
+      own.set(id, extractOwnFileContext(sym, { filePath: relPath, language, package: pkg }, lines));
+    }
+  }
+
+  const importCtx = buildImportResolutionContext(parsed.map((f) => f.filePath));
+  const { importTargets, runtimeImports } = buildFileImportIndex(parsed, importCtx);
+  const edges: ContextEdgeRef[] = [];
+  for (const file of parsed) {
+    const site = {
+      filePath: file.filePath,
+      language: file.language,
+      importedFiles: importTargets.get(file.filePath) ?? [],
+      runtimeImports: runtimeImports.get(file.filePath),
+    };
+    for (const edge of file.edges) {
+      if (edge.kind !== "calls") continue;
+      const fromSymbolId = qnameToId.get(edge.fromQualifiedName);
+      if (!fromSymbolId) continue;
+      const toSymbolId =
+        qnameToId.get(edge.toQualifiedName) ??
+        resolveEdgeTarget(edge.toQualifiedName, edge.receiver, site, index);
+      edges.push({ kind: "calls", fromSymbolId, toSymbolId });
+    }
+  }
+
+  return { own, cross: deriveCrossFileContext(refs, edges) };
+}
+
+/** Read a corpus's source files and build its context. */
+export async function loadCorpusContext(dir: string): Promise<CorpusContext> {
+  return buildCorpusContext(await readRepoFiles(path.join(dir, "repo")));
+}
+
+/**
+ * How many corpus symbols carry each field — the ceiling on what the field can
+ * do here, and the input to the pre-registered rule that a field with no reach
+ * does not ship in a document.
+ */
+export function contextReach(
+  corpus: Pick<EmbedRetrievalCorpus, "symbols">,
+  context: CorpusContext,
+): Record<ContextField, number> & { symbols: number } {
+  const reach = {
+    symbols: corpus.symbols.length,
+    signature: 0,
+    docComment: 0,
+    receiver: 0,
+    package: 0,
+    callers: 0,
+    tables: 0,
+  };
+  for (const s of corpus.symbols) {
+    const own = context.own.get(s.id);
+    if (own?.signature) reach.signature += 1;
+    if (own?.docComment) reach.docComment += 1;
+    if (own?.receiver) reach.receiver += 1;
+    if (own?.package) reach.package += 1;
+    const cross = context.cross.get(s.id);
+    if (cross && cross.callers.length > 0) reach.callers += 1;
+    if (cross && cross.tables.length > 0) reach.tables += 1;
+  }
+  return reach;
+}
+
+/** The fields no corpus symbol carries: unmeasured, so excluded from shipped documents. */
+export function unmeasuredFields(reach: Record<ContextField, number>): ContextField[] {
+  return CONTEXT_FIELDS.filter((f) => reach[f] === 0);
+}
+
+/** The corpus's lexical view with every context field attached. */
+export function contextualSearchable(
+  corpus: Pick<EmbedRetrievalCorpus, "searchable">,
+  context: CorpusContext,
+): SearchableSymbol[] {
+  return corpus.searchable.map((s) => {
+    const own = context.own.get(s.symbolId);
+    const cross = context.cross.get(s.symbolId);
+    return {
+      ...s,
+      ...(own?.signature ? { signature: own.signature } : {}),
+      ...(own?.docComment ? { docstring: own.docComment } : {}),
+      ...(own?.receiver ? { receiver: own.receiver } : {}),
+      ...(own?.package ? { package: own.package } : {}),
+      ...(cross && cross.callers.length > 0 ? { callers: cross.callers } : {}),
+      ...(cross && cross.tables.length > 0 ? { tables: cross.tables } : {}),
+    };
+  });
+}
+
+/**
+ * The BM25 document `main` builds, frozen: `name + " " + qualifiedName`.
+ *
+ * Not `buildSymbolDocumentText`: that function appends `signature` and
+ * `docstring` when a symbol has them, and every arm here shares one symbol set
+ * that does. The baseline must not see them, and must not move if production's
+ * builder does.
+ */
+export function baselineDocumentText(
+  sym: Pick<SearchableSymbol, "name" | "qualifiedName">,
+): string {
+  return `${sym.name} ${sym.qualifiedName}`;
+}
+
+/** The lexical configuration of one document variant. Every arm uses production's tokenizer. */
+export function lexicalConfigFor(variant: DocumentVariant): LexicalConfig {
+  return {
+    tokenizer: tokenizeCode,
+    buildDocumentText:
+      variant === "base" ? baselineDocumentText : (sym) => contextualDocumentText(sym, variant),
+  };
+}
+
+/** One symbol's embedding text under a variant, from the text `main` embeds. */
+export function embeddingTextFor(
+  baseText: string,
+  symbolId: string,
+  context: CorpusContext,
+  variant: DocumentVariant,
+): string {
+  if (variant === "base") return baseText;
+  const own = context.own.get(symbolId) ?? { receiver: null, package: null, docComment: null };
+  const cross = variant === "full" ? context.cross.get(symbolId) : undefined;
+  return composeEmbeddingText(baseText, contextLines(own, cross));
+}
+
+/** The corpus with every doc's text rebuilt for one embedding variant. */
+export function corpusForEmbeddingVariant(
+  corpus: EmbedRetrievalCorpus,
+  context: CorpusContext,
+  variant: DocumentVariant,
+): EmbedRetrievalCorpus {
+  if (variant === "base") return corpus;
+  return {
+    ...corpus,
+    docs: corpus.docs.map((d) => ({
+      ...d,
+      text: embeddingTextFor(d.text, d.id, context, variant),
+    })),
+  };
+}
+
+/** What embedding one variant of the corpus cost. */
+export interface EmbedCost {
+  variant: DocumentVariant;
+  /** Symbol texts embedded (queries are not counted). */
+  texts: number;
+  /** Characters across those texts. */
+  chars: number;
+  /** Wall time spent inside the embedder for them, in milliseconds. */
+  ms: number;
+}
+
+/** One channel's arms and their comparisons against that channel's first arm. */
+export interface ContextualChannel {
+  arms: LexicalArmResult[];
+  comparisons: LexicalComparison[];
+}
+
+export interface ContextualAbReport {
+  reach: Record<ContextField, number> & { symbols: number };
+  unmeasured: ContextField[];
+  /** Pure BM25, one arm per document variant (`base`, `own`, `full`). */
+  bm25: ContextualChannel;
+  /** Pure vector, one arm per embedding variant. Null without weights. */
+  vector: ContextualChannel | null;
+  /** The decision channel: the six pre-registered arms. Null without weights. */
+  fused: ContextualChannel | null;
+  /** Costlier shippable arm against cheaper, keyed by {@link incrementKey}. */
+  increments: Record<string, LexicalComparison>;
+  decision: ShipDecision | null;
+  embedCost: EmbedCost[];
+}
+
+const VARIANTS: readonly DocumentVariant[] = ["base", "own", "full"];
+const VECTOR_ONLY_WEIGHTS: SearchWeights = { bm25Weight: 0, vectorWeight: 1 };
+
+/** The embedder and its model id; absent for a BM25-only run. */
+export interface ContextualEmbedder {
+  embed: EmbedFn;
+  model: string;
+  /** Test seam for the cost clock. */
+  now?: () => number;
+}
+
+/**
+ * Score every pre-registered arm and apply the pre-registered rule.
+ *
+ * The corpus is embedded once per embedding variant (three times), through the
+ * production write path, and each store is read through the production
+ * searcher with the arm's lexical configuration. Query embeddings are not
+ * counted in {@link EmbedCost}: a call with one text is a query.
+ */
+export async function runContextualAb(
+  corpus: EmbedRetrievalCorpus,
+  context: CorpusContext,
+  embedder: ContextualEmbedder | null,
+  log: (line: string) => void = () => {},
+): Promise<ContextualAbReport> {
+  const reach = contextReach(corpus, context);
+  const searchable = contextualSearchable(corpus, context);
+  const symbolIndex = corpusSymbolIndex(searchable);
+
+  // --- pure BM25: no embedder reachable at all ---
+  const refusing: EmbedService = {
+    async embed() {
+      throw new Error("the pure-BM25 arms must reach no embedder");
+    },
+  };
+  const bm25Arms: LexicalArmResult[] = [];
+  for (const variant of VARIANTS) {
+    const search = createLexicalArmSearch(
+      {
+        vectorStore: createEmptyVectorStore(),
+        symbolIndex,
+        embedService: refusing,
+        projectId: corpus.projectId,
+        weights: LEXICAL_ONLY_WEIGHTS,
+      },
+      lexicalConfigFor(variant),
+    );
+    bm25Arms.push(await scoreLexicalArm(corpus, search, { id: variant, label: `BM25 ${variant}` }));
+    log(`  bm25  ${variant.padEnd(14)} nDCG@10=${bm25Arms[bm25Arms.length - 1].ndcg10.toFixed(3)}`);
+  }
+  const bm25: ContextualChannel = {
+    arms: bm25Arms,
+    comparisons: bm25Arms
+      .slice(1)
+      .map((arm) => compareLexicalArm(bm25Arms[0], arm, MIN_IMPORTANT_CONTEXTUAL_BM25_DELTA)),
+  };
+
+  const report: ContextualAbReport = {
+    reach,
+    unmeasured: unmeasuredFields(reach),
+    bm25,
+    vector: null,
+    fused: null,
+    increments: {},
+    decision: null,
+    embedCost: [],
+  };
+  if (!embedder) return report;
+
+  const now = embedder.now ?? ((): number => performance.now());
+  const fusedById = new Map<ContextualArmId, LexicalArmResult>();
+  const vectorArms: LexicalArmResult[] = [];
+
+  for (const variant of VARIANTS) {
+    const cost: EmbedCost = { variant, texts: 0, chars: 0, ms: 0 };
+    const counting: EmbedFn = async (texts) => {
+      // The pipeline embeds symbols in batches; a single text is a query.
+      if (texts.length === 1) return embedder.embed(texts);
+      const t0 = now();
+      const vectors = await embedder.embed(texts);
+      cost.ms += now() - t0;
+      cost.texts += texts.length;
+      cost.chars += texts.reduce((n, t) => n + t.length, 0);
+      return vectors;
+    };
+    await withWiredCorpus(
+      corpusForEmbeddingVariant(corpus, context, variant),
+      counting,
+      embedder.model,
+      async (wired) => {
+        const deps = {
+          vectorStore: wired.vectorStore,
+          symbolIndex,
+          embedService: wired.embedService,
+          projectId: corpus.projectId,
+        };
+        const vector = await scoreLexicalArm(
+          corpus,
+          createLexicalArmSearch(
+            { ...deps, weights: VECTOR_ONLY_WEIGHTS },
+            lexicalConfigFor("base"),
+          ),
+          { id: variant, label: `vector ${variant}` },
+        );
+        vectorArms.push(vector);
+        log(`  vector ${variant.padEnd(13)} nDCG@10=${vector.ndcg10.toFixed(3)}`);
+        for (const spec of CONTEXTUAL_ARMS.filter((a) => a.embedding === variant)) {
+          const arm = await scoreLexicalArm(
+            corpus,
+            createLexicalArmSearch(
+              { ...deps, weights: DEFAULT_WEIGHTS },
+              lexicalConfigFor(spec.lexical),
+            ),
+            spec,
+          );
+          fusedById.set(spec.id, arm);
+          log(`  fused ${spec.id.padEnd(14)} nDCG@10=${arm.ndcg10.toFixed(3)}`);
+        }
+      },
+    );
+    report.embedCost.push(cost);
+  }
+
+  const fusedArm = (id: ContextualArmId): LexicalArmResult => {
+    const arm = fusedById.get(id);
+    if (!arm) throw new Error(`contextual A/B: arm "${id}" was not scored`);
+    return arm;
+  };
+  const baseline = fusedArm("baseline");
+  const bar = MIN_IMPORTANT_CONTEXTUAL_FUSED_DELTA;
+  const fusedArms = CONTEXTUAL_ARMS.map((a) => fusedArm(a.id));
+  report.fused = {
+    arms: fusedArms,
+    comparisons: fusedArms.slice(1).map((arm) => compareLexicalArm(baseline, arm, bar)),
+  };
+  report.vector = {
+    arms: vectorArms,
+    comparisons: vectorArms.slice(1).map((arm) => compareLexicalArm(vectorArms[0], arm, bar)),
+  };
+
+  const shippable = SHIPPABLE_ARMS_CHEAPEST_FIRST;
+  for (const [i, cheaper] of shippable.entries()) {
+    for (const costlier of shippable.slice(i + 1)) {
+      report.increments[incrementKey(costlier, cheaper)] = compareLexicalArm(
+        fusedArm(cheaper),
+        fusedArm(costlier),
+        bar,
+      );
+    }
+  }
+
+  const input = (c: LexicalComparison): DecisionInput => ({
+    verdict: c.verdict,
+    meanDelta: c.paired.meanDelta,
+  });
+  const vsBaseline = (id: ContextualArmId): DecisionInput => {
+    const c = report.fused?.comparisons.find((x) => x.armId === id);
+    if (!c) throw new Error(`contextual A/B: no comparison for "${id}"`);
+    return input(c);
+  };
+  report.decision = decideContextualShip({
+    vsBaseline: {
+      "own-file": vsBaseline("own-file"),
+      "lexical-cross": vsBaseline("lexical-cross"),
+      contextual: vsBaseline("contextual"),
+    },
+    increments: Object.fromEntries(
+      Object.entries(report.increments).map(([k, c]) => [k, input(c)]),
+    ),
+  });
+  return report;
+}
+
+const f3 = (n: number): string => n.toFixed(3);
+
+/** The reach table: how many corpus symbols carry each field. */
+export function renderReach(report: Pick<ContextualAbReport, "reach" | "unmeasured">): string {
+  const lines = [`| field | symbols carrying it | of | note |`, `| --- | --- | --- | --- |`];
+  for (const f of CONTEXT_FIELDS) {
+    const note = report.unmeasured.includes(f)
+      ? "**no reach — unmeasured, excluded from shipped documents**"
+      : "";
+    lines.push(`| ${f} | ${report.reach[f]} | ${report.reach.symbols} | ${note} |`);
+  }
+  return lines.join("\n");
+}
+
+/** The "costlier vs cheaper" table the second step of the rule reads. */
+export function renderIncrements(increments: Readonly<Record<string, LexicalComparison>>): string {
+  const lines = [
+    `| comparison | Δ nDCG@10 | paired 95% CI | wins/losses/ties | sign p | verdict |`,
+    `| --- | --- | --- | --- | --- | --- |`,
+  ];
+  for (const [key, c] of Object.entries(increments)) {
+    lines.push(
+      `| \`${key}\` | ${c.paired.meanDelta >= 0 ? "+" : ""}${f3(c.paired.meanDelta)} | ` +
+        `[${f3(c.paired.ciLow)}, ${f3(c.paired.ciHigh)}] | ` +
+        `${c.paired.wins}/${c.paired.losses}/${c.paired.ties} | ${c.paired.signTestP.toFixed(3)} | ` +
+        `**${c.verdict}** |`,
+    );
+  }
+  return lines.join("\n");
+}
+
+/** What embedding each variant cost. */
+export function renderEmbedCost(costs: readonly EmbedCost[]): string {
+  const lines = [
+    `| embedding text | symbols embedded | characters | mean chars/symbol | wall time in the embedder |`,
+    `| --- | --- | --- | --- | --- |`,
+  ];
+  for (const c of costs) {
+    lines.push(
+      `| ${c.variant} | ${c.texts} | ${c.chars} | ` +
+        `${c.texts === 0 ? "—" : (c.chars / c.texts).toFixed(0)} | ${(c.ms / 1000).toFixed(1)} s |`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function renderChannel(title: string, bar: number, channel: ContextualChannel): string {
+  const names = channel.arms
+    .map(
+      (a) =>
+        `${a.armId} (${a.exactNameMisses.length}/${a.exactNameCount}): ` +
+        `${[...a.exactNameMisses].sort().join(", ") || "none"}`,
+    )
+    .join("\n");
+  return (
+    `## ${title}\n\n` +
+    `Pre-registered bar: +${f3(bar)} nDCG@10.\n\n` +
+    `${renderLexicalArms(channel.arms[0], channel.arms.slice(1), channel.comparisons)}\n\n` +
+    `${renderLexicalDecision(channel.comparisons)}\n\n` +
+    `Exact-name misses, by name:\n\n\`\`\`\n${names}\n\`\`\`\n`
+  );
+}
+
+/** The whole artifact. */
+export function renderContextualAb(
+  report: ContextualAbReport,
+  meta: { corpusId: string; snapshotCommit: string; queries: number; ranAt: string },
+): string {
+  const head =
+    `# Contextual symbol documents (#1072)\n\n` +
+    `Corpus: \`${meta.corpusId}\` (\`snapshotCommit\` ${meta.snapshotCommit}) — ` +
+    `${report.reach.symbols} symbols, ${meta.queries} requirements. Run: ${meta.ranAt}\n\n` +
+    `Bars, arms and rule were pre-registered: ` +
+    `\`docs/decisions/0020-contextual-symbol-documents.md\`.\n\n` +
+    `## Reach\n\n${renderReach(report)}\n\n` +
+    `The corpus is parsed by the regex parser and has no SQL-lineage pass.\n\n`;
+  const fused = report.fused
+    ? renderChannel(
+        "Fused at `DEFAULT_WEIGHTS` — the decision channel",
+        MIN_IMPORTANT_CONTEXTUAL_FUSED_DELTA,
+        report.fused,
+      ) +
+      `\n### Costlier arm against cheaper\n\n${renderIncrements(report.increments)}\n\n` +
+      `### Decision\n\n**Ships: ${report.decision?.ship ?? "none"}**\n\n` +
+      `${(report.decision?.reasons ?? []).map((r) => `- ${r}`).join("\n")}\n\n`
+    : `## Fused\n\nNOT MEASURED — no model weights in this run. No decision.\n\n`;
+  const vector = report.vector
+    ? renderChannel(
+        "Pure vector (`0.00 / 1.00`) — attribution only",
+        MIN_IMPORTANT_CONTEXTUAL_FUSED_DELTA,
+        report.vector,
+      )
+    : "";
+  return (
+    head +
+    fused +
+    renderChannel(
+      "Pure BM25 (`1.00 / 0.00`) — attribution only",
+      MIN_IMPORTANT_CONTEXTUAL_BM25_DELTA,
+      report.bm25,
+    ) +
+    `\n${vector}` +
+    (report.embedCost.length > 0
+      ? `\n## Embedding cost on this corpus\n\n${renderEmbedCost(report.embedCost)}\n`
+      : "")
+  );
 }

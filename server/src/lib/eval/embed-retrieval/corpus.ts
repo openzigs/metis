@@ -342,7 +342,7 @@ export function defaultCorpusDir(): string {
   return corpusDir(DEFAULT_CORPUS_ID);
 }
 
-async function readRepoFiles(
+export async function readRepoFiles(
   repoDir: string,
 ): Promise<Array<{ relPath: string; content: string }>> {
   const files: Array<{ relPath: string; content: string }> = [];

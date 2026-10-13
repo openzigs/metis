@@ -101,6 +101,11 @@ import {
   type LexicalSearchDeps,
   type SnakeStratumSummary,
 } from "../src/lib/eval/embed-retrieval/lexical-ab.js";
+import {
+  loadCorpusContext,
+  renderContextualAb,
+  runContextualAb,
+} from "../src/lib/eval/embed-retrieval/contextual-ab.js";
 import { DEFAULT_WEIGHTS, type SearchWeights } from "../src/lib/code-graph/hybrid-search.js";
 import type { EmbedService } from "../src/lib/code-graph/symbol-embeddings.js";
 import { runWiredArm, runWiredSweep } from "../src/lib/eval/embed-retrieval/wired-runner.js";
@@ -206,6 +211,11 @@ async function main(): Promise<void> {
   // measured as separate levers before any combined arm.
   if (argv.includes("--lexical-ab")) {
     await runLexicalAb(corpusId, argv);
+    return;
+  }
+  // #1072 — contextual symbol documents: six pre-registered arms, one decision.
+  if (argv.includes("--contextual-ab")) {
+    await runContextualAbCli(corpusId, argv);
     return;
   }
   if (wired && argv.includes("--sweep")) {
@@ -843,6 +853,57 @@ async function runLexicalAb(corpusId: string, argv: readonly string[]): Promise<
     "utf8",
   );
   log(`\nWrote ${mdPath}`);
+}
+
+/**
+ * Epic #1068 / Issue #1072 — `--contextual-ab`: do contextual symbol documents
+ * retrieve better?
+ *
+ *   EMBEDDINGS_MODEL_DOWNLOAD_TESTS=1 pnpm eval:embed-retrieval --contextual-ab
+ *   pnpm eval:embed-retrieval --contextual-ab --bm25-only   # no weights, no decision
+ *
+ * The bars, the arms and the ship rule are pre-registered in
+ * `contextual-ab.ts` and `docs/decisions/0020-contextual-symbol-documents.md`.
+ * This function only loads, runs and writes. It calls no network service: the
+ * embedder is the in-process ONNX model, read from `TRANSFORMERS_CACHE`.
+ */
+async function runContextualAbCli(corpusId: string, argv: readonly string[]): Promise<void> {
+  const dir = corpusDir(corpusId);
+  const corpus = await loadEmbedRetrievalCorpus(dir);
+  const context = await loadCorpusContext(dir);
+  const bm25Only = argv.includes("--bm25-only") || !DOWNLOAD_ENABLED;
+  log(corpusHeader(corpus));
+
+  const spec = armByRole("candidate");
+  if (!bm25Only) log(`Embedding the corpus three times with ${spec.label}\n`);
+  const report = await runContextualAb(
+    corpus,
+    context,
+    bm25Only ? null : { embed: createArmEmbedFn(spec), model: spec.model },
+    log,
+  );
+
+  const ranAt = new Date().toISOString();
+  const resultsDir = path.join(REPO_ROOT, "eval-results");
+  await mkdir(resultsDir, { recursive: true });
+  const mdPath = path.join(
+    resultsDir,
+    `embed-retrieval-contextual-ab-${ranAt.replace(/[:.]/g, "-")}.md`,
+  );
+  const md = renderContextualAb(report, {
+    corpusId: corpus.spec.id,
+    snapshotCommit: corpus.spec.snapshotCommit,
+    queries: corpus.queries.length,
+    ranAt,
+  });
+  await writeFile(mdPath, md, "utf8");
+  log(`\n${md}`);
+  log(
+    report.decision
+      ? `\nDECISION: ships ${report.decision.ship}`
+      : "\nNO DECISION: the fused channel was not measured.",
+  );
+  log(`Wrote ${mdPath}`);
 }
 
 /**

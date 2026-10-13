@@ -43,6 +43,14 @@ export interface SearchableSymbol {
   signature?: string;
   docstring?: string;
   snippet?: string;
+  /** #1072 — the type a method is declared on. */
+  receiver?: string;
+  /** #1072 — the declared package, or the directory of the file. */
+  package?: string;
+  /** #1072 — up to `MAX_CONTEXT_CALLERS` caller names (`symbol-context.ts`). */
+  callers?: readonly string[];
+  /** #1072 — up to `MAX_CONTEXT_TABLES` names of the tables the symbol reads or writes. */
+  tables?: readonly string[];
 }
 
 export interface HybridSearchResult {
