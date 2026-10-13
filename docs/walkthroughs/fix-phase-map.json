@@ -1,5 +1,5 @@
 {
-  "$comment": "#954: where the walkthrough verifies each fix. Keyed by issue number (preferred) or PR number. wave: A-G or BA; phase: a TEST_PLAN.md phase (\"8\", \"S21\") or journey step (\"J1.4\"); or {\"skip\": \"reason\"} for a fix no wave verifies, listed under excluded. check: optional one-line 'what to check', defaulting to the closing issue's title. scripts/walkthrough/fixes-since.mjs reads it and lists every relevant PR it cannot place.",
+  "$comment": "#954: where the walkthrough verifies each fix. Keyed by issue number (preferred) or PR number. wave: A-G or BA; phase: a TEST_PLAN.md phase (\"8\", \"S21\") or journey step (\"J1.4\"); or {\"skip\": \"reason\"} for a fix no wave verifies, listed under excluded. check: optional one-line 'what to check', defaulting to the closing issue's title. scripts/walkthrough/fixes-since.mjs reads it and lists every relevant PR it cannot place. A PR gets one line in one wave: when it closes several mapped issues, the lowest-numbered issue's entry is the one used, so that entry's check also carries what the others need.",
   "issues": {
     "905": {
       "wave": "E",
@@ -186,7 +186,126 @@
     },
     "1044": {
       "skip": "walkthrough tooling: three more developer requests this run uses"
+    },
+    "1072": {
+      "wave": "A",
+      "phase": "3",
+      "check": "Code search matches a symbol's doc comment, not only its name. After the Phase 3 reindex has finished, `POST /api/projects/:id/code-search` with the query `updates all user entries to the read status before the given date` returns `MarkAllAsReadBeforeDate` (`internal/storage/entry.go:523`) in its top 10, and the exact-name query `MarkAllAsReadBeforeDate` returns it in its top 6. Both results carry a non-empty `snippet` holding the first lines of the function. Report both ranks"
+    },
+    "1071": {
+      "wave": "E",
+      "phase": "17",
+      "check": "Go method calls are bound in the code graph at ingest, and Tested by follows them. Count the project's Go `calls` rows in `code_edges` by the `goResolution` value in `metadata` (`SELECT json_extract(metadata, '$.goResolution'), COUNT(*) FROM code_edges WHERE \"projectId\" = :project AND kind = 'calls' AND \"filePath\" LIKE '%.go' GROUP BY 1`). PR #1104 measured 21,106 Go call edges on this tag with 8,348 bound (`receiver-type` 3,985, `same-package` 2,286, `package` 2,076, `name` 1), against 4,967 before it; the binding makes no model call, so report the run's counts and treat a different bound total as a finding. Spot-check 5 `receiver-type` edges against the v2.3.3 source: the receiver at the call site has that method, in that file. Then the requirement about the LinkTaco API token and organization slug, listed as untested in run 6 (#1034): its Tested by names `internal/integration/linktaco/linktaco_test.go` › `TestCreateBookmark` with a relation label (record the label), or it is still in the untested list; say which. If the analysis has no such requirement, name one requirement whose Tested by lists a test reached through a method call and check that call in the source. The Phase 17 ledger delta is still 0"
+    },
+    "1073": {
+      "wave": "E",
+      "phase": "16",
+      "check": "The developer-request change-plan table scores each impact analysis as two rows (#1073): scope `edit`, the **Files to edit** group, with tp / fp / fn, and scope `blast`, Files to edit and the opened Blast radius group together, with tp and fn plus `listed` and no fp and no precision. That is 24 rows for the six requests, not run 7's 18. Report each `edit` row's file precision beside run 7's figure for the two lists scored together (1 to 3%; #4478 was tp 2, fp 92), and say for each request whether the page had a Files to edit group or an empty edit list"
+    },
+    "1119": {
+      "wave": "C",
+      "phase": "9",
+      "check": "Only with `DOCS_GEN_TOPIC_PLAN=on` in force for the full-scope BRD (state the value; record not-exercised if it is off): the server log has a `Planned document fit by section` entry for that run. Report, per section, the characters kept against the characters the cut without a plan would have kept, and name every section that kept less under the plan (the guarantee is on the document total, not per section). Every statement the document's consistency note quotes is present in the exported BRD (check up to 5), and no footnote label runs over more than one line"
+    },
+    "1007": {
+      "wave": "E",
+      "phase": "18",
+      "check": "A finished analysis run shows the same two token figures (\"… tok without cache · … with cache\") on the analysis header, in **Past runs**, on `/runs` and on `/runs/:id`, and both equal the ledger for that run (run 5 showed 215.4k, 479.8k and 227.5k for one run on three surfaces). A run that is going never reads `0 tok`. `/runs` has a **Chat turns** table: find one of this run's own chat turns by Session ID, as the user who chatted, and check that its tokens and its exact cost (not \"—\", not $0.0100) equal that turn's `token_usages` rows"
+    },
+    "1027": {
+      "wave": "D",
+      "phase": "S9",
+      "check": "After **Start analysis with these artifacts**, the analysis page's handoff notice lists the requirements sent from `spec.md` and, on a separate line, what was \"Sent as context for the code agent, not as requirements\" from `plan.md` (components) and `tasks.md` (task ids and titles), with anything that did not fit named. The collapsed **Context given to the code agent, not requirements** shows the stored text, at most 4,096 characters. No plan component and no task id appears among the run's requirements, and no finding gives a task id or component name as its requirement"
+    },
+    "1059": {
+      "wave": "D",
+      "phase": "S6b",
+      "check": "`speckit.plan` runs as a background job (S6b to S6d). Its progress text names the command, the feature and the artifact being generated (\"Generating research.md (2 of 5)\"); it is there again after a page reload and after opening another page and coming back, with no second run; it ends with the result card and toast. No \"Internal Server Error\" however long the plan takes: record the duration (run 7 failed three times at 5.0 minutes). **Cancel** during the second or third artifact leaves every artifact at the version it had. A second start on the same feature answers 409 `SPEC_KIT_JOB_RUNNING`"
+    },
+    "1032": {
+      "wave": "F",
+      "phase": "J1.4",
+      "check": "**Withdraw review** is offered on the review page and on its `/reviews` row while the review is in review; after confirming, the review is a draft and every requirement shows the status it had before the request. The same PR closes #1064, checked at J1.8: each published issue body has a **Related code** section with the requirement's paths and symbols as plain code (no link, no `miniflux/v2`, no commit SHA) or a line saying none were recorded; no project, analysis or requirement id appears in the visible body or as a label, and the footer reads `Generated by METIS`; the dry-run plan lists every `issue.create` title before the label upserts and its \"not shown\" line counts the rows left out (run 7 hid the titles behind \"…and 6 more action(s) not shown\"); the epic is not titled after one of the five requirements"
+    },
+    "1064": {
+      "wave": "F",
+      "phase": "J1.8",
+      "check": "Each published issue body has a **Related code** section with the requirement's paths and symbols as plain code (no link, no `miniflux/v2`, no commit SHA) or a line saying none were recorded; no project, analysis or requirement id appears in the visible body or as a label, and the footer reads `Generated by METIS`; the dry-run plan lists every `issue.create` title before the label upserts and its \"not shown\" line counts the rows left out (run 7 hid the titles behind \"…and 6 more action(s) not shown\"); the epic is not titled after one of the five requirements"
+    },
+    "1060": {
+      "wave": "E",
+      "phase": "16",
+      "check": "Each developer-request Spec Kit plan is given the data layer. The feature's `plan-context.md` lists `internal/database/migrations.go` and the request's storage and query-builder files (#4511: `internal/storage/feed.go`, `internal/storage/feed_query_builder.go`, `client/model.go`; #4336: `internal/storage/entry.go`, `internal/storage/entry_query_builder.go`, `client/model.go`), and no plan says one of those files is \"not in the retrieved context\". The client `Feed` / `Entry` structs are placed in `client/model.go`, not `client/client.go`, and the #4336 plan names `SetEntriesStatusAndCountVisible`. Report each plan's file precision / recall beside run 7's: #4511 18% / 33%, #4336 18% / 40%, #4386 0% / 0%"
+    },
+    "1061": {
+      "wave": "C",
+      "phase": "9",
+      "check": "The architecture document has a **Data Architecture** section of its own, with a **Schema check** note under its heading and a **Schema Reference** (ER diagram and one column table per table) rendered from the schema. Check every table and column the section names against the Miniflux v2.3.3 schema. None of run 7's inventions appears unmarked: a feed-refresh `jobs` table, `ENTRY_TAGS`, a feeds `error_counter`, `entries.category_id`, `certificate_cache` (real: `acme_cache`), `fever_password`, `google_reader_*` and `rss_bridge_*` columns (real: `googlereader_*`, `rssbridge_*`), `gesture_nav` as a bool. A name the schema does not have carries *(not in schema)*. Report the document's hallucination count and its F-graded sections beside run 7's 27 and 2"
+    },
+    "1063": {
+      "wave": "F",
+      "phase": "J1.2",
+      "check": "In the analysis of the 5 imported items the code agent ends with findings, not degraded with 0 (run 7: 0 findings, all 7 requirements \"Docs only / Could not verify\"). Each requirement card shows its imported item's own title with a link back to the issue, or the badge **Added by the analysis**. An affected-code link names a symbol that shares the requirement's subject, or the panel says no code matched; neither of run 7's mislinks appears (\"terminate sessions\" to `InlineKeyboardButton`, \"IPv4/IPv6\" to `ForceRefreshInterval`). Report how many requirements the 5 items became (run 7: 7)"
+    },
+    "1080": {
+      "wave": "A",
+      "phase": "1",
+      "check": "Adding the Claude 5.5 models to the catalog did not put them in front of a DeepSeek-only deployment: the analysis model override, the provider preferences and `/projects/:id/settings/models` still offer only Auto and `deepseek-flash` (no `claude-sonnet-5-5`, `claude-haiku-5-5` or `claude-opus-5-5`), and `deepseek-flash` shows the price set in `MODEL_PRICES`. The Claude 5.5 prices themselves cannot be checked on a DeepSeek run; say so rather than marking them confirmed"
+    },
+    "1069": {
+      "skip": "superseded before any run saw it: #1105 (#1059) runs Spec Kit commands as background jobs and retired this PR's lost-response polling; the raised proxy timeout is left only as a backstop for the synchronous command route, which the page no longer calls. Step S6b verifies the user-visible outcome under PR #1105"
+    },
+    "998": {
+      "wave": "B",
+      "phase": "8",
+      "check": "The baseline detail page (open a baseline from `/projects/:id/baselines`) and the item card of a review on `/reviews` render requirement bodies as Markdown: no literal `###` heading, and none of `<!-- metis:clarifications:start -->`, `## Clarifications` or `**Q:**` as text (run 5 showed all of them). An image in an imported issue's body is shown as its alt text and is never loaded. The same PR closes #1034, which is checked in wave E, Phase 17, under PR #1104"
+    },
+    "1034": {
+      "wave": "E",
+      "phase": "17",
+      "check": "The requirement about the LinkTaco API token and organization slug, listed as untested in run 6, has `internal/integration/linktaco/linktaco_test.go` › `TestCreateBookmark` under **Tested by** with a relation label (record the label; a call bound only by name reads **Inferred call** and does not count as strict coverage in the workspace rollup), or it is still in the untested list; say which"
+    },
+    "1002": {
+      "wave": "B",
+      "phase": "7",
+      "check": "A deep dive on a storage finding returns a draft, or fails with a plain message; it never shows parser text such as \"returned non-JSON output … at position 2019\" (run 5). The same PR closes #1058, checked in this phase on a run started from ticked imported items with **Ask clarifying questions** on: the Questions tab lists questions and Approvals has pending items, or the tab shows the failed-step alert (`structured-extraction-failed`). A tab that says \"No open questions — requirements look complete\" while the run's Requirements tab lists requirements is the run 7 defect (0 questions, 0 pending, 7 requirements)"
+    },
+    "1058": {
+      "wave": "F",
+      "phase": "J1.3",
+      "check": "The analysis of the 5 imported items, with **Ask clarifying questions** on, asks questions on its Questions tab and has pending items on Approvals (run 6: 28 questions; run 7: none, with 7 requirements), or the tab shows the failed-step alert (`structured-extraction-failed`); it never says \"No open questions — requirements look complete\" while the run lists requirements"
+    },
+    "1037": {
+      "wave": "D",
+      "phase": "S19",
+      "check": "A failed Spec Kit call shows the server's own message. **Generate checklists** before `plan.md` exists puts the 412's sentence in both the toast and `spec-kit-error`, with the server's error code on the card, not \"The Spec Kit operation failed. Please try again.\"; `speckit.constitution` or `speckit.specify` typed with nothing after it says what to type and sends no request. The same PR closes #1065, checked at S6 and S8: the feature's contract defines no endpoint the plan leaves out of scope (a plan stating `REST surface: none` has a contract with `paths: {}`), and `analysis.md` has a **Contract vs plan** section naming any disagreement (run 7: the contract had `PUT /entries/mark-all-as-read`, the plan no REST endpoint, and nothing was flagged). It also closes #1062, checked here only if the S9 handoff run's code investigation is cut short: after one **Continue with a larger budget** the notice clears, or reads \"The rerun was also cut short: X of Y requirements unreached\" with the button replaced by the reason. Otherwise record #1062 as not exercised in this wave"
+    },
+    "1062": {
+      "wave": "B",
+      "phase": "7",
+      "check": "After one **Continue with a larger budget** on a run whose code investigation was cut short, the cut-short notice clears, or it reads \"The rerun was also cut short: X of Y requirements unreached\" and the button is replaced by the reason; Continue cannot be pressed a second time (run 7: the flag, the notice and the button all stayed)"
+    },
+    "1065": {
+      "wave": "D",
+      "phase": "S8",
+      "check": "The feature's `contracts/api.openapi.yaml` defines no endpoint the plan leaves out of scope (a plan stating `REST surface: none` has a contract with `paths: {}`), and `analysis.md` has a **Contract vs plan** section naming any disagreement between the two (run 7: the contract had `PUT /entries/mark-all-as-read`, the plan no REST endpoint, and `/speckit.analyze` flagged nothing)"
+    },
+    "1057": {
+      "wave": "E",
+      "phase": "16",
+      "check": "No `/speckit.plan` for the six developer requests saves a stub: no `plan.md` of a few hundred bytes reading \"Incomplete: cut off at the model's output-token limit\" (run 7: three, on #4386 once and #4456 twice, about $0.27). A reply cut off at the output cap fails with `SPEC_KIT_OUTPUT_EXHAUSTED` shown on the page, leaves the previous `plan.md` version current and does not mark the feature planned. Report each plan's size in bytes and how many attempts it took"
+    },
+    "1056": {
+      "wave": "A",
+      "phase": "2",
+      "check": "The repo connector's metadata documents are read at the pinned tag. Its ingested `go.mod` document lists `github.com/PuerkitoBio/goquery v1.12.0`, the v2.3.3 value (run 7 stored the default branch's v1.13.0), and its `OVERVIEW.md` document reads `- Ref: v2.3.3` and `- Commit: c4d54f87…`, with the upstream default branch and the languages labelled as not specific to this ref"
     }
   },
-  "prs": {}
+  "prs": {
+    "1113": {
+      "wave": "C",
+      "phase": "9",
+      "check": "The full-scope BRD is generated with `DOCS_GEN_TOPIC_PLAN=on` (it is off by default; state the value in force and record not-exercised if it is off). Compare it with run 7's BRD, which had no plan: the topics listed as left out (run 7: 87), and how many of them are listed as `(not planned)`, dropped by priority before writing, rather than cut at a section's tail; how many times the feed scheduler formula is written out and how many are wrong (run 7: 4 times, 2 wrong); whether each discrepancy in the consistency note shown with the document is real; the BRD's docs-gen cost (run 7: $0.67 synthesis + $0.46 fact-check); and its #1041 scores (run 7: coverage 15/15, accuracy 13/15, 5 hallucinations). No section is over 60,000 characters and the body is not over 250,000"
+    }
+  }
 }
