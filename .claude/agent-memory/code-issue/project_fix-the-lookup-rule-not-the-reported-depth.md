@@ -46,6 +46,10 @@ and the type checker said external. Asking where the IMPORTER is closed it.
   it. Here the per-module import cache skips such answers; the per-file one keeps them.
 - `vendor/` is in the default `.metisignore`, so the oracle views never see a vendored
   directory: the vendor clause is pinned by unit rows only.
+- A `lastIndexOf`-driven walk over "every ancestor directory" must clamp -1 to 0 before
+  slicing: `slice(0, -1)` is the path minus one character, so an importer in `srcs/` or
+  `x/src2/` passed the whole-segment `src` check (cycle 8, review 5497656607). Put the
+  lookalike directory on the IMPORTER side of a test row, not only on the target side.
 
 See also `project_language-resolver-needs-a-type-checker-oracle.md` and
 `project_decided-verdicts-need-positive-evidence.md`.

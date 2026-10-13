@@ -443,6 +443,17 @@ func main() {
       expect(importingFrom(importer, P, at(dir))).toBe("unknown");
     });
 
+    it.each([["srcs/main.go"], ["x/src2/main.go"], ["x/y/srcz/main.go"]])(
+      "(a) the walk above the importer `%s` stops at the tree root, on a whole directory name",
+      (importer) => {
+        // PR #1104, review cycle 8. Walking up from the importer, the step past
+        // its first directory sliced one CHARACTER off instead of reaching the
+        // root, so `srcs` was read as `src` and the root-level directory bound.
+        // Another workspace's `src` holds the path too, so the `src` branch runs.
+        expect(importingFrom(importer, P, { ...at(P), ...at(`other/src/${P}`) })).toBe("unknown");
+      },
+    );
+
     it("(a) `src` is a whole directory name: `mysrc/` is not one", () => {
       // Another workspace's `src` holds the path too, so the `src` branch runs.
       expect(

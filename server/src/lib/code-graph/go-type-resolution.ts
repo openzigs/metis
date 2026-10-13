@@ -1315,7 +1315,12 @@ export function createGoResolver(
       if (anySrc || anyVendor) {
         spellingScoped = true;
         // Every directory the importer lies beneath, the tree root included.
-        for (let end = importerDir.length; ; end = importerDir.lastIndexOf("/", end - 1)) {
+        // `lastIndexOf` answers -1 above the first directory; the root is 0.
+        for (
+          let end = importerDir.length;
+          ;
+          end = Math.max(0, importerDir.lastIndexOf("/", end - 1))
+        ) {
           const above = importerDir.slice(0, end);
           const prefix = end > 0 ? `${above}/` : "";
           const vendored = `${prefix}vendor/${importPath}`;
