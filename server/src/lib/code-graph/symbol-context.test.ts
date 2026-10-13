@@ -534,6 +534,8 @@ describe("comment markers are stripped whatever their shape", () => {
 
   it("keeps a slash that is not a line marker", () => {
     expect(doc(["/* /etc/hosts is read */"])).toBe("/etc/hosts is read");
+    // A middle line of a block comment that itself begins with one slash.
+    expect(doc(["/*", "/etc/hosts is read here.", "*/"])).toBe("/etc/hosts is read here.");
   });
 
   it("handles a line of asterisks as long as the scan allows without a slow path", () => {
