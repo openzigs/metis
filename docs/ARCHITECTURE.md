@@ -7068,19 +7068,87 @@ flowchart TD
 |-----------|------|----------------|
 | `SymbolEmbeddingPipeline` | `server/src/lib/code-graph/symbol-embeddings.ts` | Incremental symbol embedding with SHA-256 hash-based caching |
 | `HybridCodeSearch` | `server/src/lib/code-graph/hybrid-search.ts` | BM25 + vector similarity with RRF score fusion |
-| `BM25Index` | `server/src/lib/code-graph/hybrid-search.ts` | In-memory BM25 scorer for symbol names/signatures/docs |
+| `BM25Index` | `server/src/lib/code-graph/hybrid-search.ts` | In-memory BM25 scorer over each symbol's document: name, qualified name, package, signature, doc comment |
+| `symbol-context.ts` | `server/src/lib/code-graph/symbol-context.ts` | #1072 — extracts a symbol's own-file context, bounds and neutralises it, and builds both search documents from it |
 | `GraphContextBuilder` (updated) | `server/src/lib/analysis/graph-context-builder.ts` | Hybrid retrieval mode with configurable budget split |
 
 #### Symbol Embedding Format
 
 ```
 {kind} {name} in {filePath}
-{signature}
-{docstring}
+package: {package}
+doc: {doc comment}
 {body_first_10_lines}
 ```
 
-Each symbol's formatted text is SHA-256 hashed; embeddings are only recomputed when the hash changes.
+The `package:` and `doc:` lines are present only when the symbol has the field. Each
+symbol's formatted text is SHA-256 hashed; embeddings are only recomputed when the hash
+changes.
+
+#### Contextual symbol documents (#1072, ADR 0020)
+
+Until #1072 a symbol's BM25 document was `name + qualifiedName` and its embedding text was
+the header line plus ten body lines: `CodeSymbol` stored nothing else, and the source file
+is gone by the time a document is built. This section used to say BM25 ran over signatures
+and docstrings. It did not; no such columns existed.
+
+**What ingest stores.** Four nullable columns on `code_symbols`, written while the file is
+in memory (`extractOwnFileContext`): `signature` (the declaration up to where its body
+opens), `docComment` (the comment directly above it, or a Python docstring), `receiver`
+(the type a method is declared on) and `package` (the declared package, or the file's
+directory). A file's `module` symbol and schema symbols have none. Each value is repository
+text: it is reduced to one line, stripped of control, zero-width and bidirectional
+characters, and capped (300 / 600 / 120 / 120 characters) before it is stored.
+
+**What the documents carry, and why not more.** The BM25 document gains package, signature
+and doc comment; the embedding text gains the `package:` and `doc:` lines. That is the
+`own-file` arm of `pnpm eval:embed-retrieval --contextual-ab`, chosen by a rule
+pre-registered before any arm was scored (ADR 0020): fused nDCG@10 0.282 → 0.398 on 127
+queries, paired 95% CI [+0.075, +0.160]. Three things the issue asked for are **not** in
+the documents:
+
+| Field | Status | Reason |
+|---|---|---|
+| callers | derivable (`deriveCrossFileContext`), not in any document | added nothing measurable over the own-file fields (fused +0.002, CI [−0.004, +0.009]) |
+| tables | derivable, not in any document | the corpus has no lineage edges, so it could not be measured |
+| receiver | stored, not in any document | no corpus symbol has one, so it could not be measured |
+
+Callers and tables are **computed from edges, never stored**. They change when a file that
+does not declare the symbol changes, so a stored copy would be stale after any incremental
+ingest that touched a caller. Had they earned a place, the BM25 document would have read
+them when the symbol set is loaded (the cache is invalidated by every ingest); putting them
+in the embedding text would have re-embedded a symbol whenever an unrelated file gained a
+call site, which is the cost the rule made them earn and they did not.
+
+**Fused hits carry a body snippet.** `createDefaultCodeSearcher` reads the stored embedding
+text of the hits it returns (at most the search limit) and cuts the body lines from it:
+at most 10 lines and 800 characters (`bodySnippet`). A line that would read as structure in
+the blocks that quote a hit, such as a markdown heading or an entry head `[n] `, is
+indented. A failed read leaves the hit with its signature.
+
+**An existing graph.** `CodeGraph.symbolContextVersion` records `SYMBOL_CONTEXT_VERSION`.
+On the next incremental ingest of a graph recorded with an older one (null on every graph
+built before #1072), `backfillSymbolContext` fills the columns in for every unchanged file
+on the existing rows. Nothing is re-parsed, because a stored symbol already has its line
+span, and no symbol id changes. An embedding text that comes out different is rewritten
+and marked pending, so the symbol is embedded again once; one whose text is unchanged is
+not touched. It is a version of its own rather than a `CODE_GRAPH_EXTRACTOR_VERSION` step
+because it re-parses nothing, touches no edge and must not wait on an interrupted Go
+binding. Checked on Miniflux v2.3.3: 3,106 symbols filled in 1.3 s, and the result equals
+a full re-ingest row for row (3,533 rows). The version is not recorded while a file of the
+graph cannot be read, so the next ingest tries again.
+
+**Cost.** On that graph the backfill rewrote 3,106 of 3,533 embedding texts (every symbol
+but the 427 `module` rows), which is 1.18 M characters to embed again, about 85 s with the
+in-process `gte-modernbert-base` q8 model on the development machine. Total embedding text
+grew from 1.19 M to 1.31 M characters (+10.5%). The BM25 index of the same graph grew from
+2.9 MB to 4.2 MB.
+
+**The cost on exact-name lookups.** With longer documents a symbol's own name is a smaller
+share of its document, and a neighbour whose doc comment mentions that name now matches
+too. On the pure-BM25 channel, which is what a project is searched with until its symbols
+are embedded, an exact-name query returned its symbol first for 153 of 155 names before
+and 136 after. On the fused channel it is 118 before and 117 after.
 
 #### Hybrid Search — Reciprocal Rank Fusion (RRF)
 

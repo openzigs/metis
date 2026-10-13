@@ -12,10 +12,17 @@ import {
   tokenizeCode,
   type SearchableSymbol,
 } from "../../code-graph/hybrid-search.js";
-import { buildDocText, loadEmbedRetrievalCorpus, type EmbedRetrievalCorpus } from "./corpus.js";
+import { composeEmbeddingText, shippedContextLines } from "../../code-graph/symbol-context.js";
+import {
+  buildDocText,
+  corpusDir,
+  loadEmbedRetrievalCorpus,
+  type EmbedRetrievalCorpus,
+} from "./corpus.js";
 import {
   baselineDocumentText,
   buildCorpusContext,
+  loadCorpusContext,
   CONTEXT_FIELDS,
   CONTEXTUAL_ARMS,
   contextReach,
@@ -289,12 +296,35 @@ describe("document variants", () => {
   });
 });
 
-describe("the baseline arm is the document main builds", () => {
-  it("equals production's builder on every symbol of the committed corpus", async () => {
+describe("the arms are the documents they claim to be, on the committed corpus", () => {
+  it("baseline: the pre-#1072 document, which production still builds for a symbol with no context", async () => {
     const corpus = await loadEmbedRetrievalCorpus();
     expect(corpus.searchable.length).toBeGreaterThan(700);
     for (const s of corpus.searchable) {
+      // `corpus.searchable` carries no context field, as every row did before #1072.
       expect(baselineDocumentText(s)).toBe(buildSymbolDocumentText(s));
+    }
+  });
+
+  it("own-file: the documents production builds, symbol for symbol", async () => {
+    const dir = corpusDir();
+    const corpus = await loadEmbedRetrievalCorpus(dir);
+    const context = await loadCorpusContext(dir);
+    const own = lexicalConfigFor("own");
+    let withContext = 0;
+    for (const s of contextualSearchable(corpus, context)) {
+      // The BM25 document: production's builder over the same fields.
+      expect(buildSymbolDocumentText(s), s.symbolId).toBe(own.buildDocumentText(s));
+      if (s.docstring || s.package) withContext += 1;
+    }
+    // The comparison is not vacuous: most symbols do carry a field.
+    expect(withContext).toBeGreaterThan(600);
+    for (const d of corpus.docs) {
+      // The embedding text: the lines production adds, where the measured arm put them.
+      const fields = context.own.get(d.id) ?? { package: null, docComment: null };
+      expect(composeEmbeddingText(d.text, shippedContextLines(fields)), d.id).toBe(
+        embeddingTextFor(d.text, d.id, context, "own"),
+      );
     }
   });
 });

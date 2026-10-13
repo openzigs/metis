@@ -330,7 +330,12 @@ function docCommentOf(
  * the method's own (`<file>::<Type>::<name>`). A Go method is a `function`
  * symbol named that way since #1071, so Go is read by shape, not by kind.
  */
-function receiverOf(sym: ContextSourceSymbol, filePath: string, language: string): string | null {
+export function receiverOf(
+  sym: Pick<ContextSourceSymbol, "kind" | "qualifiedName">,
+  filePath: string,
+  language: string,
+): string | null {
+  if (sym.kind === "module") return null;
   if (sym.kind !== "method" && language !== "go") return null;
   const prefix = `${filePath}::`;
   if (!sym.qualifiedName.startsWith(prefix)) return null;
@@ -338,12 +343,29 @@ function receiverOf(sym: ContextSourceSymbol, filePath: string, language: string
   return parts.length >= 2 ? boundedField(parts[parts.length - 2], MAX_RECEIVER_CHARS) : null;
 }
 
-/** The own-file fields of one parsed symbol. `file.package` is {@link packageOfFile} of its file. */
+/** A symbol with no own-file context: a `module`, a schema symbol, a row not yet extracted. */
+export const NO_OWN_CONTEXT: OwnFileContext = Object.freeze({
+  signature: null,
+  docComment: null,
+  receiver: null,
+  package: null,
+});
+
+/**
+ * The own-file fields of one parsed symbol. `file.package` is
+ * {@link packageOfFile} of its file.
+ *
+ * A file's `module` symbol has none: it is the whole file, so its "declaration"
+ * would be the file's first line and its "doc comment" nothing. Its documents
+ * stay exactly as they were before #1072, which is also all that was measured
+ * (the evaluation corpus holds no module symbols).
+ */
 export function extractOwnFileContext(
   sym: ContextSourceSymbol,
   file: { filePath: string; language: string; package: string | null },
   sourceLines: readonly string[],
 ): OwnFileContext {
+  if (sym.kind === "module") return NO_OWN_CONTEXT;
   return {
     signature: signatureOf(sym, file.language, sourceLines),
     docComment: docCommentOf(sym, file.language, sourceLines),
@@ -521,6 +543,31 @@ export function composeEmbeddingText(baseText: string, context: string | null | 
   return `${baseText.slice(0, headerEnd)}\n${context}${baseText.slice(headerEnd)}`;
 }
 
+// ---- The documents production builds ----------------------------------------
+//
+// ADR 0020 measured six arms and its pre-registered rule selected `own-file`:
+// the own-file fields in both documents, no cross-file field in either. Two
+// fields are held back from that:
+//
+//  - `receiver` — no symbol of the evaluation corpus has one, so it was not
+//    measured. It is stored, and stays out of the documents until it is.
+//  - `callers` / `tables` — callers did not improve on `own-file`
+//    (-0.003 nDCG@10, not established), and tables had no reach either.
+//
+// So production builds its documents with the SAME two functions the `own-file`
+// arm was scored with, minus the receiver. On the evaluation corpus the two are
+// identical symbol for symbol; `contextual-ab-run.test.ts` asserts it.
+
+/** The BM25 document production indexes: name, qualified name, package, signature, doc comment. */
+export function shippedDocumentText(sym: DocumentSymbol): string {
+  return contextualDocumentText({ ...sym, receiver: null }, "own");
+}
+
+/** The lines production adds to an embedding text: `package:` and `doc:`. */
+export function shippedContextLines(own: Pick<OwnFileContext, "package" | "docComment">): string {
+  return contextLines({ receiver: null, package: own.package, docComment: own.docComment });
+}
+
 /** How many times the snippet bound is read from a stored text before it is split into lines. */
 const SNIPPET_SCAN_FACTOR = 4;
 
@@ -541,8 +588,22 @@ function snippetLine(line: string): string {
 }
 
 /**
- * The bounded body snippet a fused hit carries, cut from a stored `baseText`:
- * the lines after the header, at most {@link MAX_SNIPPET_LINES} of them and
+ * Where the body starts in a stored embedding text whose header ends before
+ * `start`. The context lines sit between the header and the body; they are
+ * skipped only when they are there exactly, since a text written before #1072
+ * has none and its first body line may merely begin like one.
+ */
+function bodyStartOf(text: string, start: number, context: string | null | undefined): number {
+  if (!context || !text.startsWith(context, start)) return start;
+  const end = start + context.length;
+  if (end === text.length) return end;
+  return text[end] === "\n" ? end + 1 : start;
+}
+
+/**
+ * The bounded body snippet a fused hit carries, cut from a stored embedding
+ * text: the lines after the header and after `context` (the symbol's
+ * {@link shippedContextLines}), at most {@link MAX_SNIPPET_LINES} of them and
  * {@link MAX_SNIPPET_CHARS} characters.
  *
  * It stays multi-line, because it is code. Each line has its control,
@@ -551,11 +612,12 @@ function snippetLine(line: string): string {
  * an entry head `[n] ` — is indented, so it is code inside the entry and not
  * the start of a new one.
  */
-export function bodySnippet(baseText: string): string | undefined {
-  const headerEnd = baseText.indexOf("\n");
+export function bodySnippet(text: string, context?: string | null): string | undefined {
+  const headerEnd = text.indexOf("\n");
   if (headerEnd === -1) return undefined;
-  const lines = baseText
-    .slice(headerEnd + 1, headerEnd + 1 + MAX_SNIPPET_CHARS * SNIPPET_SCAN_FACTOR)
+  const bodyStart = bodyStartOf(text, headerEnd + 1, context);
+  const lines = text
+    .slice(bodyStart, bodyStart + MAX_SNIPPET_CHARS * SNIPPET_SCAN_FACTOR)
     .split("\n")
     .slice(0, MAX_SNIPPET_LINES)
     .map(snippetLine);

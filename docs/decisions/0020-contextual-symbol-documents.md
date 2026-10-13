@@ -1,7 +1,7 @@
 # ADR 0020 — Contextual symbol documents
 
-- **Status:** Pre-registered — not yet measured
-- **Date:** 2026-10-12
+- **Status:** Accepted — measured; the `own-file` documents ship
+- **Date:** 2026-10-12 (pre-registered in commit `e88875a6`, measured the same day)
 - **Issue:** GitHub #1072 (epic #1068)
 - **Related:** ADR 0002 (symbol-level granularity), ADR 0005 (the embedder is fixed; the
   baseline this is measured against), #1157 (the decision rule), #1159 (the previous change
@@ -136,4 +136,148 @@ Also fixed in advance:
 
 ## Result
 
-Not yet measured.
+Measured on 2026-10-12 at commit `d3e82aa3`, with the harness written after the
+pre-registration (`e88875a6`) and before any arm was scored. One run; the bootstrap is
+seeded, so a re-run reproduces these figures.
+
+    TRANSFORMERS_CACHE=<cache> EMBEDDINGS_MODEL_DOWNLOAD_TESTS=1 \
+      pnpm eval:embed-retrieval --contextual-ab
+
+The embedder runs in-process from cached weights. The run made no call to any model API.
+
+### Reach
+
+| Field | Corpus symbols carrying it (of 794) |
+|---|---|
+| signature | 671 |
+| doc comment | 384 |
+| package | 671 |
+| callers | 175 |
+| receiver | **0** |
+| tables | **0** |
+
+The 123 symbols with nothing are the schema's tables and columns, which have no own-file
+context in production either. Tables were expected to be empty. The receiver was not: the
+regex parser the corpus is built with emits no `method` symbols, so no corpus symbol has
+one. Under the rule fixed above, neither field ships in a document.
+
+### The decision channel: fused at `DEFAULT_WEIGHTS`
+
+| Arm | nDCG@10 | Δ vs baseline | Paired 95% CI | Wins / losses / ties | Sign p | Verdict |
+|---|---|---|---|---|---|---|
+| `baseline` | 0.282 | | | | | |
+| `contextual` (primary) | 0.395 | +0.113 | [+0.072, +0.156] | 51 / 18 / 58 | < 0.001 | **SHIP** |
+| `lexical-cross` | 0.399 | +0.118 | [+0.077, +0.161] | 49 / 17 / 61 | < 0.001 | SHIP |
+| `own-file` | 0.398 | +0.116 | [+0.075, +0.160] | 49 / 17 / 61 | < 0.001 | SHIP |
+| `lexical-only` | 0.304 | +0.022 | [+0.003, +0.042] | 23 / 10 / 94 | 0.035 | DIRECTION-ESTABLISHED-MAGNITUDE-NOT |
+| `vector-only` | 0.385 | +0.103 | [+0.062, +0.145] | 48 / 16 / 63 | < 0.001 | SHIP |
+
+The baseline is 0.282, not the 0.276 quoted above from ADR 0005: #1159's tokenizer change
+landed after that figure and moved it.
+
+Costlier arm against cheaper:
+
+| Comparison | Δ | Paired 95% CI | Wins / losses / ties | Sign p | Verdict |
+|---|---|---|---|---|---|
+| `lexical-cross` vs `own-file` | +0.002 | [−0.004, +0.009] | 1 / 1 / 125 | 1.000 | NOT-ESTABLISHED |
+| `contextual` vs `own-file` | −0.003 | [−0.021, +0.014] | 14 / 11 / 102 | 0.690 | NOT-ESTABLISHED |
+| `contextual` vs `lexical-cross` | −0.004 | [−0.022, +0.012] | 14 / 11 / 102 | 0.690 | NOT-ESTABLISHED |
+
+**The rule's output: `own-file` ships.** The primary treatment is an established gain and
+clears the bar, so the gate is open. `own-file` is itself an established gain, and neither
+costlier arm is established better than it. Caller names did not earn the re-embedding
+they would cost.
+
+### Attribution
+
+| Channel | base | own | full | own vs base | full vs base |
+|---|---|---|---|---|---|
+| Pure BM25 (`1.00 / 0.00`) | 0.109 | 0.236 | 0.232 | +0.126 [+0.072, +0.182], SHIP at the +0.05 bar | +0.122 [+0.068, +0.178], SHIP |
+| Pure vector (`0.00 / 1.00`) | 0.286 | 0.390 | 0.386 | +0.105 [+0.066, +0.145] | +0.100 [+0.060, +0.142] |
+
+Most of the fused gain comes through the embedding text. That is what the weights imply:
+the vector channel carries 95% of the fused score.
+
+### The cost: exact-name lookups
+
+An exact-name probe asks for a symbol by its own name and counts whether it comes back
+first. This was pre-registered as reported, not as a gate.
+
+- **Pure BM25: 153 of 155 first before, 136 after.** Seventeen names lost and none
+  recovered: `InMemorySamlRequestIdCache`, `LeaderElector`, `SSOStateStore`,
+  `TeamsAadIdentityResolver`, `VaultService`, `absenceIsConfirmableForClaim`,
+  `buildTraceabilityMatrix`, `checkReplication`, `columnWidthDirection`, `extract_usage`,
+  `fetchRegistry`, `generateAndSendChargeback`, `runWebhook`, `safeFetch`,
+  `scoreFaithfulness`, `tierForSection`, `validateCitations`.
+- **Fused: 118 of 155 before, 117 after.** Eight lost (`_lineage_edges`,
+  `aggregateDecisions`, `assertSafeUrl`, `columnWidthDirection`, `mirrorMessageToTeams`,
+  `safeFetch`, `startForecastRecompute`, `traverseLineage`) and seven recovered
+  (`InMemorySamlRequestIdCache`, `buildTraceabilityMatrix`, `fetchUpstream`,
+  `planMigration`, `reconcileIdentity`, `scoreFaithfulness`, `toAdminSamlView`).
+
+The pure-BM25 loss matters in one situation: a project whose symbols are not embedded yet
+is searched on that channel alone. The mechanism is the one #1159 described for
+`filePath`. A longer document gives the symbol's own name a smaller share of it, and a
+neighbour whose doc comment mentions the name now matches too. Repeating the name to
+weight it would likely recover most of these. It was not tried: it would be a change made
+after seeing the result, and it needs its own measurement.
+
+### What the result does not show
+
+These are limits of the measurement, not of the rule.
+
+1. **The gain is the doc comment.** A split made after the result, which decides nothing:
+   where a query's target has a doc comment (93 of 127 queries) `own-file` gains +0.161,
+   CI [+0.108, +0.217]; where no target has one (34 queries) it is −0.006,
+   CI [−0.041, +0.028]. Package and signature show no effect of their own.
+2. **The corpus is better documented than most code.** 57% of its code symbols and 73% of
+   its query targets have a doc comment. On Miniflux v2.3.3, 26% of symbols do (811 of
+   3,106). The +0.116 is therefore an upper estimate for a typical repository.
+3. **The corpus's baseline text is thinner than production's.** The regex parser gives 153
+   of 671 symbols a one-line span, so their baseline embedding text is the header and one
+   line where production (tree-sitter) has ten. Where a target has a one-line span the gain
+   is +0.169; where none has, +0.077, CI [+0.032, +0.125]. The second figure is the better
+   guide to production.
+4. **The requirements were written by people who had read the code.** They do not copy the
+   comments (a requirement shares a mean of 14% of its content words with its target's doc
+   comment), and they may still echo them.
+5. **Fields were measured as a bundle.** There is no per-field arm; point 1 is the only
+   evidence about which field does the work.
+6. **One corpus, one language family.** TypeScript and Python. Nothing here was measured
+   on Go, where the receiver and the declared package would have had reach.
+
+### What ships
+
+- Ingest stores `signature`, `docComment`, `receiver` and `package` on each symbol.
+- The BM25 document is name, qualified name, package, signature, doc comment. The embedding
+  text gains `package:` and `doc:` lines. A test asserts that these are, symbol for symbol,
+  the documents the `own-file` arm scored.
+- A fused hit carries a bounded body snippet.
+- Callers and tables are derivable from the graph's edges (`deriveCrossFileContext`) and
+  are in no document. The receiver is stored and is in no document. Nothing in production
+  reads them; the evaluation harness does, which keeps this result reproducible.
+
+### Cost on the Miniflux fixture
+
+Measured on a copy of a development database holding Miniflux v2.3.3 (3,533 symbol rows,
+all embedded with `gte-modernbert-base`), upgraded by one incremental ingest.
+
+| | Before | After |
+|---|---|---|
+| Symbols with an embedding text | 3,533 | 3,533 |
+| Characters across all embedding texts | 1,186,675 | 1,310,933 (+10.5%) |
+| Symbols embedded again by the upgrade | | 3,106 (every symbol but the 427 `module` rows) |
+| Characters embedded again | | 1,177,806 |
+| Wall time to embed them, in-process q8, warm | | about 85 s |
+| Wall time to embed the whole graph, warm | 76 s | 79 s |
+| Wall time of the backfill itself | | 1.3 s |
+
+Embedding the first set in a fresh process took about twice as long (152 s to 163 s for the
+whole graph). The backfilled graph equals a full re-ingest of the same tree row for row.
+
+### Follow-ups this leaves open
+
+- Measure the receiver and tables on a corpus that has them: Go source, built with lineage.
+- Measure a name-weighted BM25 document against the exact-name losses above.
+- `pnpm eval:embed-retrieval`'s other modes still build the pre-#1072 documents from the
+  corpus. Its `own-file` arm is what production runs.

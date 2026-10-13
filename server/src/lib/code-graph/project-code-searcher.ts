@@ -25,6 +25,7 @@
  * simply contributes nothing and BM25 keeps serving — degraded, never broken.
  */
 import type { PrismaClient } from "@prisma/client";
+import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { getEmbedder } from "../rag/embedder.js";
 import type {
@@ -38,8 +39,11 @@ import {
   type SymbolIndex,
   type SymbolVectorStore,
 } from "./hybrid-search.js";
+import { bodySnippet, shippedContextLines } from "./symbol-context.js";
 import { createSymbolVectorStore } from "./symbol-embedding-service.js";
 import type { EmbedService } from "./symbol-embeddings.js";
+
+const log = createChildLogger("project-code-searcher");
 
 /**
  * #372 — projects whose full lexical symbol set is held in memory (LRU). Each entry
@@ -48,6 +52,13 @@ import type { EmbedService } from "./symbol-embeddings.js";
  * so four bound the worst case near 110 MB. That figure counts one index per
  * project: each distinct `fileGlob`/`symbolKind` pair adds another (up to 8 per
  * array), but no production caller passes a filter today.
+ *
+ * #1072 — that 27 MB was measured on `name + qualifiedName` documents. With the
+ * signature, doc comment and package in the document the index of a
+ * 3,533-symbol graph (Miniflux v2.3.3) went from 2.9 MB to 4.2 MB, a factor of
+ * 1.45, and the cached symbol set itself gained about as many characters as it
+ * had. Applying the factor to the figure above puts four large projects near
+ * 160 MB. That is a projection from one graph, not a measurement of the large one.
  */
 const MAX_CACHED_PROJECTS = 4;
 
@@ -77,12 +88,21 @@ export function __resetSymbolIndexCache(): void {
   inFlight.clear();
 }
 
+/**
+ * #1072 — `signature`, `docComment` and `package` are read because the BM25
+ * document is built from them (`buildSymbolDocumentText`). `receiver` is stored
+ * and deliberately NOT read: no symbol of the evaluation corpus has one, so it
+ * was not measured and is in no document (ADR 0020).
+ */
 const SYMBOL_SELECT = {
   id: true,
   name: true,
   qualifiedName: true,
   kind: true,
   filePath: true,
+  signature: true,
+  docComment: true,
+  package: true,
 } as const;
 
 interface SymbolRow {
@@ -91,6 +111,9 @@ interface SymbolRow {
   qualifiedName: string;
   kind: string;
   filePath: string;
+  signature: string | null;
+  docComment: string | null;
+  package: string | null;
 }
 
 function toSearchable(r: SymbolRow): SearchableSymbol {
@@ -100,6 +123,10 @@ function toSearchable(r: SymbolRow): SearchableSymbol {
     qualifiedName: r.qualifiedName,
     kind: r.kind,
     filePath: r.filePath,
+    // Absent, not null, when a symbol has none: a `module`, a schema symbol.
+    ...(r.signature ? { signature: r.signature } : {}),
+    ...(r.docComment ? { docstring: r.docComment } : {}),
+    ...(r.package ? { package: r.package } : {}),
   };
 }
 
@@ -257,14 +284,69 @@ export function createRunScopedSymbolIndex(client: Pick<PrismaClient, "codeSymbo
   };
 }
 
+/**
+ * #1072 — the bounded body snippet of each hit, by symbol id. A symbol with no
+ * stored text (a table, a column) is absent from the map.
+ */
+export interface SymbolSnippetLookup {
+  resolve(symbolIds: string[], projectId: string): Promise<Map<string, string>>;
+}
+
+/**
+ * The default {@link SymbolSnippetLookup}: cut from `CodeSymbolEmbedding.text`,
+ * the one place a symbol's first body lines are stored.
+ *
+ * Read for the RETURNED hits only (at most the search limit), after ranking,
+ * so the symbol cache and the BM25 index hold no body text. The text is
+ * repository text; {@link bodySnippet} bounds it and defuses the lines that
+ * would read as structure in the blocks that quote a hit.
+ */
+export function createDefaultSnippetLookup(
+  client: Pick<PrismaClient, "codeSymbolEmbedding"> = prisma,
+): SymbolSnippetLookup {
+  return {
+    async resolve(symbolIds, projectId) {
+      const out = new Map<string, string>();
+      if (symbolIds.length === 0) return out;
+      const rows = await client.codeSymbolEmbedding.findMany({
+        where: { projectId, symbolId: { in: symbolIds } },
+        select: {
+          symbolId: true,
+          text: true,
+          symbol: { select: { package: true, docComment: true } },
+        },
+      });
+      for (const r of rows) {
+        const snippet = bodySnippet(r.text, shippedContextLines(r.symbol));
+        if (snippet) out.set(r.symbolId, snippet);
+      }
+      return out;
+    },
+  };
+}
+
 export interface CodeSearcherDeps {
   vectorStore?: SymbolVectorStore;
   embedService?: EmbedService;
   symbolIndex?: SymbolIndex;
+  /**
+   * #1072 — where a hit's body snippet comes from. Defaults to
+   * {@link createDefaultSnippetLookup} when the symbol index is production's;
+   * a caller that injects its own index (the eval, a fixture) has no
+   * `CodeSymbolEmbedding` rows behind its symbols, so it gets no lookup unless
+   * it passes one. `null` turns it off.
+   */
+  snippetLookup?: SymbolSnippetLookup | null;
 }
 
 /** Build the default production {@link FusedCodeSearcher}. */
 export function createDefaultCodeSearcher(deps: CodeSearcherDeps = {}): FusedCodeSearcher {
+  const snippetLookup =
+    deps.snippetLookup !== undefined
+      ? deps.snippetLookup
+      : deps.symbolIndex
+        ? null
+        : createDefaultSnippetLookup();
   const hybrid = new HybridCodeSearch(
     deps.vectorStore ?? createSymbolVectorStore(),
     deps.symbolIndex ?? prismaSymbolIndex,
@@ -280,13 +362,30 @@ export function createDefaultCodeSearcher(deps: CodeSearcherDeps = {}): FusedCod
         limit: opts?.limit ?? 20,
         onRetrievalMode: opts?.onRetrievalMode,
       });
+      // #1072 — a hit carries the first lines of its body. A failure to read
+      // them must not fail the search: the hit then keeps what it had (its
+      // signature, when it has one).
+      let snippets = new Map<string, string>();
+      if (snippetLookup && results.length > 0) {
+        try {
+          snippets = await snippetLookup.resolve(
+            results.map((r) => r.symbolId),
+            projectId,
+          );
+        } catch (err) {
+          log.warn("body snippets unavailable; hits keep their signature", {
+            projectId,
+            error: String(err),
+          });
+        }
+      }
       return results.map((r) => ({
         symbolId: r.symbolId,
         filePath: r.filePath,
         name: r.name,
         kind: r.kind,
         score: r.score,
-        snippet: r.snippet,
+        snippet: snippets.get(r.symbolId) ?? r.snippet,
       }));
     },
   };
