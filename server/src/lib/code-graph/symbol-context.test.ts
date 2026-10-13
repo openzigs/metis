@@ -508,6 +508,43 @@ describe("the scans are bounded on untrusted input", () => {
   });
 });
 
+describe("comment markers are stripped whatever their shape", () => {
+  const doc = (comment: string[], language = "ts") => {
+    const src = [...comment, language === "py" ? "def f():" : "function f() {", "    pass"];
+    return extract(src.join("\n"), comment.length + 1, comment.length + 2, { language }).docComment;
+  };
+
+  it("strips banner openers, closers and leading asterisks", () => {
+    expect(doc(["/*** Title ***/"])).toBe("Title");
+    expect(doc(["/**", " ** Starred.", " **/"])).toBe("Starred.");
+    expect(doc(["/* a * b */"])).toBe("a * b");
+  });
+
+  it("strips any run of slashes or hashes, and nothing after the first space", () => {
+    expect(doc(["//// Loud. // not a marker"])).toBe("Loud. // not a marker");
+    expect(doc(["### Heading-like."], "py")).toBe("Heading-like.");
+  });
+
+  it("is null for a comment that is only markers", () => {
+    expect(doc(["/***/"])).toBeNull();
+    expect(doc(["/**", " *", " */"])).toBeNull();
+    expect(doc(["//"])).toBeNull();
+    expect(doc([`/*${"*".repeat(1500)}*/`])).toBeNull();
+  });
+
+  it("keeps a slash that is not a line marker", () => {
+    expect(doc(["/* /etc/hosts is read */"])).toBe("/etc/hosts is read");
+  });
+
+  it("handles a line of asterisks as long as the scan allows without a slow path", () => {
+    // 40 lines of 2,000 asterisks above one symbol: quadratic stripping took
+    // seconds here; by index it is immediate. No time is asserted, only that
+    // the answer is right and the test returns.
+    const stars = Array.from({ length: 38 }, () => "*".repeat(2000));
+    expect(doc(["/*", ...stars, " Real text. */"])).toBe("Real text.");
+  });
+});
+
 describe("a Python header ends at the colon outside brackets", () => {
   it("does not stop at a line that ends with a colon inside a bracket", () => {
     const src = ["def f(a=d[1:", "    2]):", "    return a"].join("\n");

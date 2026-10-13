@@ -226,15 +226,34 @@ function signatureOf(
   return boundedField(lineAt(sourceLines, first), MAX_SIGNATURE_CHARS);
 }
 
-/** One comment line without its marker; null when it is empty or a tool directive. */
+/**
+ * One comment line without its marker; null when it is empty or a tool directive.
+ *
+ * The markers are stripped by index, not by pattern: `/\*+\/$/` rescans a run of
+ * asterisks from each of its positions, which is quadratic on a line of them,
+ * and a comment line is repository text.
+ */
 function commentBody(line: string): string | null {
-  const body = line
-    .trim()
-    .replace(/^\/\*+/, "")
-    .replace(/\*+\/$/, "")
-    .trim()
-    .replace(/^(?:\/\/+|\*+|#+)/, "")
-    .trim();
+  const trimmed = line.trim();
+  let from = 0;
+  let to = trimmed.length;
+  // An opener `/*`, `/**`, …: drop its slash; its asterisks go with the line
+  // marker below.
+  if (trimmed.startsWith("/*")) from = 1;
+  // A closer `*/`, `**/`, …: drop its slash and the asterisks before it. In
+  // `/***/` the opener and the closer share theirs, and nothing is left.
+  if (trimmed.endsWith("*/")) {
+    to -= 1;
+    while (to > from && trimmed[to - 1] === "*") to -= 1;
+  }
+  let body = trimmed.slice(from, to).trim();
+  // A line marker: `//`, `///`, a run of `*`, a run of `#`.
+  const lead = body[0];
+  if (lead === "*" || lead === "#" || (lead === "/" && body[1] === "/")) {
+    let i = 1;
+    while (i < body.length && body[i] === lead) i += 1;
+    body = body.slice(i).trim();
+  }
   return body.length === 0 || DIRECTIVE.test(body) ? null : body;
 }
 
