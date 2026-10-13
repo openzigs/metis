@@ -109,6 +109,14 @@ function corpusFrom(files: typeof FILES): EmbedRetrievalCorpus {
       },
       { id: "Q2", requirement: "sign up", relevant: [id("signUp")], strata: null },
       { id: "Q3", requirement: "import users", relevant: [id("importUsers")], strata: null },
+      // Only the CALLERS of `saveUser` (`signUp`, `importUsers`) share a word with
+      // this one: a document without cross-file fields cannot answer it.
+      {
+        id: "Q4",
+        requirement: "sign up then import",
+        relevant: [id("saveUser")],
+        strata: null,
+      },
     ],
     searchable: symbols.map((s) => ({
       symbolId: s.id,
@@ -411,6 +419,24 @@ describe("runContextualAb", () => {
       report.fused?.arms.find((a) => a.armId === id)?.ndcg10 ?? 0;
     expect(inc.paired.meanDelta).toBeCloseTo(fused("contextual") - fused("own-file"), 10);
 
+    // Each embedding variant's store serves exactly the arms that name it: the
+    // arms are scored while that store exists, so the order says which read which.
+    expect(
+      lines
+        .map((l) => l.trim().split(/\s+/).slice(0, 2).join(" "))
+        .filter((l) => l.startsWith("vector ") || l.startsWith("fused ")),
+    ).toEqual([
+      "vector base",
+      "fused baseline",
+      "fused lexical-only",
+      "vector own",
+      "fused lexical-cross",
+      "fused own-file",
+      "vector full",
+      "fused contextual",
+      "fused vector-only",
+    ]);
+
     // The decision is the pre-registered rule applied to exactly these comparisons.
     const vs = (id: string) => {
       const c = report.fused?.comparisons.find((x) => x.armId === id);
@@ -434,6 +460,32 @@ describe("runContextualAb", () => {
     expect(lines.some((l) => l.includes("fused contextual"))).toBe(true);
     expect(lines.some((l) => l.includes("bm25  base"))).toBe(true);
     expect(lines.some((l) => l.includes("vector full"))).toBe(true);
+  });
+
+  it("reports an increment as the costlier arm minus the cheaper one", async () => {
+    // One requirement that only caller names answer, and an embedder that puts
+    // the symbols whose text has a `callers:` line next to every query. Only the
+    // `full` documents can rank the target first, so the costlier arm is ahead
+    // and the delta has a sign to get wrong.
+    const callersOnly = {
+      ...corpus,
+      queries: corpus.queries.filter((q) => q.id === "Q4"),
+    };
+    const report = await runContextualAb(callersOnly, context, {
+      model: "callers-aware",
+      embed: async (texts) =>
+        texts.map((t) => (t.includes("\ncallers: ") || !t.includes("\n") ? [1, 0] : [0, 1])),
+    });
+    const ndcg = (id: string): number =>
+      report.fused?.arms.find((a) => a.armId === id)?.ndcg10 ?? -1;
+    expect(ndcg("contextual")).toBe(1);
+    expect(ndcg("own-file")).toBeLessThan(1);
+    const inc = report.increments[incrementKey("contextual", "own-file")];
+    expect(inc.paired.meanDelta).toBeCloseTo(ndcg("contextual") - ndcg("own-file"), 10);
+    expect(inc.paired.meanDelta).toBeGreaterThan(0);
+    expect(inc.paired.wins).toBe(1);
+    expect(inc.paired.losses).toBe(0);
+    expect(inc.armId).toBe("contextual");
   });
 
   it("pairs each fused arm with its own lexical variant", async () => {

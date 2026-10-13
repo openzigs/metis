@@ -16,7 +16,7 @@
  *   5. while a file of the graph cannot be read, the version is not recorded.
  */
 import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { promises as fs, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
@@ -370,6 +370,71 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
+    it.each(["signature", "docComment", "receiver", "package"] as const)(
+      "rewrites a row whose only difference is its %s",
+      async (column) => {
+        const { projectId, root } = await newProject();
+        await ingest(projectId, root, false);
+        const fresh = await snapshot(projectId);
+        // One Go method has all four columns set. Make ONE of them stale.
+        const key = "internal/db/storage.go|function|Save";
+        await db.codeSymbol.update({
+          where: { id: fresh.get(key)?.id },
+          data: { [column]: "stale" },
+        });
+        await db.codeGraph.updateMany({
+          where: { projectId },
+          data: { symbolContextVersion: null },
+        });
+
+        const stats = await ingest(projectId, root);
+
+        expect(stats.symbolContextBackfill?.symbols).toBe(1);
+        expect((await snapshot(projectId)).get(key)).toEqual(fresh.get(key));
+      },
+    );
+
+    it("does not record the version when a file changes between the walk and the backfill", async () => {
+      const { projectId, root } = await newProject();
+      await ingest(projectId, root, false);
+      await downgrade(projectId);
+      const edited = path.join(root, "src/store/io.ts");
+      let calls = 0;
+
+      // `goBindingNow` is read once pass 2 starts: after the walk hashed every
+      // file and before the backfill reads them again.
+      const stats = await ingestCodeGraph(db, {
+        projectId,
+        rootDir: root,
+        incremental: true,
+        sqlLineageOverride: false,
+        goBindingNow: () => {
+          calls += 1;
+          if (calls === 1) writeFileSync(edited, `${IO_TS}\nexport const later = 1;\n`, "utf8");
+          return performance.now();
+        },
+      });
+
+      expect(calls).toBeGreaterThan(0);
+      expect(stats.symbolContextBackfill?.failedFiles).toBe(1);
+      expect(
+        (await db.codeGraph.findFirstOrThrow({ where: { projectId } })).symbolContextVersion,
+      ).toBeNull();
+      // The file's rows describe the old content and were left as they were.
+      expect((await snapshot(projectId)).get("src/store/io.ts|function|write")?.package).toBeNull();
+
+      // The next ingest sees the file as changed, re-parses it, and finishes.
+      const again = await ingest(projectId, root);
+      expect(again.filesParsed).toBe(1);
+      expect(again.symbolContextBackfill?.failedFiles).toBe(0);
+      expect(
+        (await db.codeGraph.findFirstOrThrow({ where: { projectId } })).symbolContextVersion,
+      ).toBe(SYMBOL_CONTEXT_VERSION);
+      expect((await snapshot(projectId)).get("src/store/io.ts|function|write")?.package).toBe(
+        "store",
+      );
+    });
+
     it("is idempotent when run again over rows that are already current", async () => {
       const { projectId, root } = await newProject();
       await ingest(projectId, root, false);
@@ -453,6 +518,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await ingest(projectId, root, false);
         await downgrade(projectId);
         const locked = path.join(root, "src/store/io.ts");
+        // A file the graph has never held is unreadable too. It has no rows to
+        // fill in, so it must not count against the backfill.
+        const stranger = path.join(root, "src/store/stranger.ts");
+        await fs.writeFile(stranger, "export const s = 1;\n", "utf8");
+        await fs.chmod(stranger, 0o000);
         await fs.chmod(locked, 0o000);
         try {
           const stats = await ingest(projectId, root);
@@ -466,6 +536,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ).toBeNull();
         } finally {
           await fs.chmod(locked, 0o644);
+          await fs.rm(stranger, { force: true });
         }
 
         const again = await ingest(projectId, root);

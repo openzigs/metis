@@ -216,6 +216,17 @@ describe("#1072 — a fused hit carries a bounded body snippet", () => {
     expect(embeddingFindMany).not.toHaveBeenCalled();
   });
 
+  it("does not ask an injected lookup about an empty result", async () => {
+    findMany.mockResolvedValue(ROWS);
+    const resolve = vi.fn().mockResolvedValue(new Map());
+    const searcher = createDefaultCodeSearcher({
+      ...lexicalDeps,
+      snippetLookup: { resolve },
+    } as never);
+    expect(await searcher.search("zzzz", "p1")).toEqual([]);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it("uses no default lookup behind an injected symbol index", async () => {
     const symbolIndex = {
       getSymbols: async () => [

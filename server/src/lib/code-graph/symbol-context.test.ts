@@ -482,6 +482,39 @@ describe("extractOwnFileContext — receiver and package", () => {
   });
 });
 
+describe("the scans are bounded on untrusted input", () => {
+  it("reads only the first eight bounds of a field's text", () => {
+    // Zero-width characters are dropped, so without the bound the tail would surface.
+    const hidden = `${"​".repeat(8 * 10)}tail`;
+    expect(boundedField(hidden, 10)).toBeNull();
+    expect(boundedField(`${"​".repeat(8 * 10 - 4)}tail`, 10)).toBe("tail");
+  });
+
+  it("reads only the first 2,000 characters of a source line", () => {
+    // A package clause pushed past the scanned prefix of its line is not read.
+    expect(packageOfFile("dir/x.go", "go", [`${" ".repeat(2000)}package late`])).toBe("dir");
+    expect(packageOfFile("dir/x.go", "go", [`${" ".repeat(1900)}package early`])).toBe("early");
+  });
+
+  it("reads only the first four bounds of a stored text when cutting a snippet", () => {
+    const text = `h\n${"​".repeat(4 * MAX_SNIPPET_CHARS)}tail`;
+    expect(bodySnippet(text)).toBeUndefined();
+    expect(bodySnippet(`h\n${"​".repeat(4 * MAX_SNIPPET_CHARS - 4)}tail`)).toBe("tail");
+  });
+
+  it("cuts a snippet at the character bound even when its lines are few", () => {
+    const text = `h\n${Array.from({ length: 5 }, () => "x".repeat(300)).join("\n")}`;
+    expect(bodySnippet(text)).toHaveLength(MAX_SNIPPET_CHARS);
+  });
+});
+
+describe("a Python header ends at the colon outside brackets", () => {
+  it("does not stop at a line that ends with a colon inside a bracket", () => {
+    const src = ["def f(a=d[1:", "    2]):", "    return a"].join("\n");
+    expect(extract(src, 1, 3, { language: "py" }).signature).toBe("def f(a=d[1: 2]):");
+  });
+});
+
 describe("deriveCrossFileContext", () => {
   const sym = (
     id: string,
