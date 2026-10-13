@@ -825,7 +825,9 @@ generated for one Go release (`GO_STDLIB_VERSION`, go1.26.0) by
 For source written against a newer release, an import path or interface type added since is
 not in the lists: such a call is recorded `external` rather than `interface` (an edge to a
 project implementation is not shown), and in a repository with Go code outside every
-`go.mod` an unlisted package path can be bound to a project directory of the same path.
+`go.mod` an unlisted package path can be bound to a project directory of the same path —
+only where that directory is under a GOPATH `src` the importing file is in too; anywhere
+else such a call is left undecided.
 Regenerate and release when the target Go release moves on.
 
 **Rolling back.** Roll the server back first. The older version ignores the new columns and

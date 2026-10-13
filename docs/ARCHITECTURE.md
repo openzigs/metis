@@ -3610,7 +3610,8 @@ for the Go release named in both (go1.26.0). `tests/lib/code-graph/go-stdlib-sna
 or the version, drift apart; nothing in the build or the tests runs Go. A missing entry costs
 this: an unlisted package is treated as any import outside the tree's modules (still
 `external` under a `go.mod`; in a tree with Go code outside every module it can be matched to
-a project directory of that path — the one wrong binding a stale list can cause), and an
+a project directory of that path under a GOPATH `src` the importer is in — the one wrong
+binding a stale list can cause; at the tree root it is undecided), and an
 unlisted interface makes a call through it `external` where it should be `interface`, so an
 edge to the project type that implements it is lost. Regenerate when the Go release the
 project's sources target moves on.
