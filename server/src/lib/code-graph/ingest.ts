@@ -113,6 +113,14 @@ import {
   type SymbolKind as EmbeddingSymbolKind,
 } from "./symbol-embeddings.js";
 import { enqueueSymbolEmbeddings } from "./symbol-embedding-service.js";
+import {
+  extractOwnFileContext,
+  packageOfFile,
+  receiverOf,
+  shippedContextLines,
+  type ContextSourceSymbol,
+  type OwnFileContext,
+} from "./symbol-context.js";
 import { reconcileProjectSchemaIdentities } from "../cross-project/schema-object-identity-service.js";
 
 const log = createChildLogger("code-graph-ingest");
@@ -316,6 +324,15 @@ export interface IngestStats {
   filesUnparseable: string[];
   filesUnparseableCount: number;
   /**
+   * #1072 — what bringing a graph written before {@link SYMBOL_CONTEXT_VERSION}
+   * up to it did: `symbols` rows whose context columns were filled in,
+   * `embeddingTexts` embedding texts rewritten (each is embedded again, once),
+   * `failedFiles` unchanged files it could not read. The version is recorded
+   * only when `failedFiles` is zero, so the next ingest tries again. Absent
+   * when the graph was already current, and on a full ingest.
+   */
+  symbolContextBackfill?: { symbols: number; embeddingTexts: number; failedFiles: number };
+  /**
    * #1071 — what binding Go calls by type cost this run, and what it could not
    * do. Any change to one Go file re-parses EVERY Go file of the tree for its
    * declarations, so this is O(Go files) per ingest: `files` Go files held,
@@ -486,6 +503,37 @@ export const CODE_GRAPH_EXTRACTOR_VERSION = 1;
 const EXTRACTOR_UPGRADES: ReadonlyArray<{ version: number; languages: readonly string[] }> = [
   { version: 1, languages: ["go"] },
 ];
+
+/**
+ * #1072 — version of what ingest stores about a symbol FROM ITS OWN FILE beyond
+ * the parser's rows: the context columns (`signature`, `docComment`,
+ * `receiver`, `package`) and the embedding text built with them. Bump it
+ * whenever `extractOwnFileContext` or `shippedContextLines`
+ * (`symbol-context.ts`) would give an unchanged file a different answer;
+ * `tests/code-graph-symbol-context-1072.sqlite.test.ts` pins their output to
+ * this number.
+ *
+ * A graph recorded with an older one (or none — every graph built before
+ * #1072) has the columns filled in for every unchanged file on its next
+ * incremental ingest ({@link backfillSymbolContext}), on the existing rows: no
+ * symbol id changes. An embedding text that comes out different is rewritten
+ * and marked pending, so that symbol is embedded again, once.
+ *
+ * It is a number of its own, not a {@link CODE_GRAPH_EXTRACTOR_VERSION} step,
+ * because it needs none of that upgrade's work: nothing is re-parsed (the
+ * stored line span is enough), no edge is touched, and no Go call is re-bound.
+ * It also must not wait on an interrupted Go binding, which holds that
+ * version back.
+ *
+ * History: unversioned = before #1072; 1 = #1072 as first pushed (PR #1126,
+ * never on `main`); 2 = the same PR's review round, which changed two answers
+ * for an unchanged file: a stored field no longer keeps the directional marks,
+ * soft hyphen, invisible operators and tag characters, and a code line that
+ * merely ends in a block comment (`#endif /* X *\/`) is no longer read as the
+ * doc comment of the declaration below it. A graph stamped 1 can only have
+ * come from running that branch; it is brought up to date like any older one.
+ */
+export const SYMBOL_CONTEXT_VERSION = 2;
 
 /** The languages a graph recorded at `storedVersion` must have upgraded in place. */
 export function extractorUpgradeLanguages(storedVersion: number | null): Set<string> {
@@ -936,6 +984,16 @@ export async function ingestCodeGraph(
   const rowsVersion =
     goBindingPending.size > 0 ? CODE_GRAPH_EXTRACTOR_VERSION : graph.extractorVersion;
   const upgradeLanguages = incremental ? extractorUpgradeLanguages(rowsVersion) : new Set<string>();
+  // #1072 — the graph's unchanged files were written before the symbol context
+  // columns existed (or by an older extractor of them). A full re-ingest
+  // rewrites every row anyway, and a graph with no files has nothing to fill.
+  const contextBackfill =
+    incremental &&
+    existingFiles.size > 0 &&
+    (graph.symbolContextVersion ?? 0) < SYMBOL_CONTEXT_VERSION;
+  // Files of the graph the backfill could not read: while there is one, the
+  // version is not recorded and the next ingest tries again.
+  let contextBackfillFailed = 0;
   // What this run leaves open in turn; written back in Step 8.
   const goBindingLeft = new Map<string, number>();
   const goBindingAgainLeft = new Map<string, number>();
@@ -1109,6 +1167,8 @@ export async function ingestCodeGraph(
     } catch {
       stats.filesSkipped += 1;
       if (lang === "go") unparsedGoPaths.push(relPath);
+      // #1072 — nor can its symbols be given their context from a file nobody can read.
+      if (contextBackfill && existingFiles.has(relPath)) contextBackfillFailed += 1;
       // Rows the graph holds for it cannot be brought to the current shape (#1071).
       if (
         existingFiles.has(relPath) &&
@@ -1400,6 +1460,30 @@ export async function ingestCodeGraph(
     maybeYield,
   );
 
+  // Step 7b (#1072) — give the symbols of every UNCHANGED file their context
+  // columns, on the existing rows. After the passes above on purpose: an
+  // extractor upgrade may have just renamed a row, and the receiver is read off
+  // the name.
+  if (contextBackfill) {
+    const filled = await backfillSymbolContext(
+      prisma,
+      graph.id,
+      rootDir,
+      unchangedFiles,
+      maybeYield,
+    );
+    contextBackfillFailed += filled.failedFiles;
+    stats.symbolContextBackfill = {
+      symbols: filled.symbols,
+      embeddingTexts: filled.embeddingTexts,
+      failedFiles: contextBackfillFailed,
+    };
+    log.info("symbol context filled in for a graph written before it was stored", {
+      projectId,
+      ...stats.symbolContextBackfill,
+    });
+  }
+
   // Step 8 — finalise CodeGraph counts.
   const totalSymbols = await prisma.codeSymbol.count({ where: { codeGraphId: graph.id } });
   const totalEdges = await prisma.codeEdge.count({ where: { codeGraphId: graph.id } });
@@ -1455,6 +1539,10 @@ export async function ingestCodeGraph(
       // be re-bound after a change (`again`) do not hold it back: their rows
       // have the current shape and an answer.
       ...(goBindingLeft.size === 0 ? { extractorVersion: CODE_GRAPH_EXTRACTOR_VERSION } : {}),
+      // #1072 — every symbol row now has its context columns: this run wrote
+      // them (a full ingest, or a new graph), filled them in, or found them
+      // current. Not recorded while a file of the graph could not be read.
+      ...(contextBackfillFailed === 0 ? { symbolContextVersion: SYMBOL_CONTEXT_VERSION } : {}),
       // This write also ends the run: `inFlight` goes.
       goBindingIncomplete: writeGoBindingIncomplete({
         files: goBindingLeft,
@@ -1624,6 +1712,7 @@ async function upsertCodeGraph(
   extractorVersion: number | null;
   extractorUpgradeFailed: string | null;
   goBindingIncomplete: string | null;
+  symbolContextVersion: number | null;
 }> {
   // #758 — the commit label is written by Step 8, not here: a run that fails
   // part-way must not relabel a graph it never finished rebuilding.
@@ -1642,6 +1731,7 @@ async function upsertCodeGraph(
       extractorVersion: true,
       extractorUpgradeFailed: true,
       goBindingIncomplete: true,
+      symbolContextVersion: true,
     },
   });
 }
@@ -1859,10 +1949,14 @@ async function persistParsed(
     // statement outside a transaction is its own commit, and each commit is a
     // synchronous journal write + fsync on the event-loop thread; per-row commits
     // made the persist phase ~420k of them for this repository.
+    // #1072 — what the file says about each symbol (declaration, doc comment,
+    // receiver, package), read while the source is in memory and stored on the row.
+    const sourceLines = (sourceByRelPath.get(file.filePath) ?? "").split("\n");
+    const contexts = ownContextsOf(file.filePath, file.language, sourceLines, file.symbols);
     const results = await prisma.$transaction([
       prisma.codeEdge.deleteMany({ where: { codeGraphId, filePath: file.filePath } }),
       prisma.codeSymbol.deleteMany({ where: { codeGraphId, filePath: file.filePath } }),
-      ...file.symbols.map((sym) =>
+      ...file.symbols.map((sym, i) =>
         prisma.codeSymbol.create({
           data: {
             codeGraphId,
@@ -1875,6 +1969,7 @@ async function persistParsed(
             endLine: sym.endLine,
             language: file.language,
             contentHash: sym.contentHash,
+            ...contexts[i],
           },
           select: { id: true },
         }),
@@ -1884,10 +1979,8 @@ async function persistParsed(
 
     // Issue #797 — the index-time embedding TEXT is formatted HERE, while the
     // source file is still in memory. It cannot be rebuilt later: `CodeSymbol`
-    // persists no signature, docstring or body, so a background embed job or an
-    // #787 model-flip reindex has nothing to format from. Hence
-    // `CodeSymbolEmbedding.text`.
-    const sourceLines = (sourceByRelPath.get(file.filePath) ?? "").split("\n");
+    // persists no body, so a background embed job or an #787 model-flip reindex
+    // has nothing to format from. Hence `CodeSymbolEmbedding.text`.
     const embeddingRows: Array<{
       codeGraphId: string;
       projectId: string;
@@ -1911,14 +2004,7 @@ async function persistParsed(
       qnameToId.set(sym.qualifiedName, id);
       stats.symbolsUpserted += 1;
 
-      const text = formatSymbolForEmbedding({
-        symbolId: id,
-        name: sym.name,
-        qualifiedName: sym.qualifiedName,
-        kind: sym.kind as EmbeddingSymbolKind,
-        filePath: file.filePath,
-        bodyLines: sourceLines.slice(sym.startLine - 1, sym.endLine),
-      });
+      const text = embeddingTextOf({ ...sym, id }, file.filePath, contexts[i], sourceLines);
       embeddingRows.push({
         codeGraphId,
         projectId,
@@ -2679,6 +2765,135 @@ function buildGoResolver(
   }
 }
 
+/** #1072 — the own-file context of each symbol of one file, in the order given. */
+function ownContextsOf(
+  filePath: string,
+  language: string,
+  sourceLines: readonly string[],
+  symbols: readonly ContextSourceSymbol[],
+): OwnFileContext[] {
+  const file = { filePath, language, package: packageOfFile(filePath, language, sourceLines) };
+  return symbols.map((sym) => extractOwnFileContext(sym, file, sourceLines));
+}
+
+/**
+ * The text a symbol is embedded from: its header, the context lines production
+ * ships (#1072, ADR 0020), and the lines of its span. One function for the two
+ * writers — a parsed file (pass 1) and the backfill of an unchanged one — so a
+ * symbol's text does not depend on which of them wrote it.
+ */
+function embeddingTextOf(
+  sym: { id: string; name: string; qualifiedName: string; kind: string } & Pick<
+    ContextSourceSymbol,
+    "startLine" | "endLine"
+  >,
+  filePath: string,
+  own: OwnFileContext,
+  sourceLines: readonly string[],
+): string {
+  return formatSymbolForEmbedding({
+    symbolId: sym.id,
+    name: sym.name,
+    qualifiedName: sym.qualifiedName,
+    kind: sym.kind as EmbeddingSymbolKind,
+    filePath,
+    contextLines: shippedContextLines(own),
+    bodyLines: sourceLines.slice(sym.startLine - 1, sym.endLine),
+  });
+}
+
+/**
+ * #1072 — fill in the context columns of every UNCHANGED file's symbols, for a
+ * graph written before {@link SYMBOL_CONTEXT_VERSION}.
+ *
+ * Nothing is re-parsed and no row is re-created (#856): a stored symbol already
+ * has its kind, qualified name and line span, the file's content is the content
+ * those were read from (its hash is checked again here), and that is all
+ * {@link extractOwnFileContext} needs. So every id survives, and with it every
+ * finding, mapping and vector that points at one.
+ *
+ * An embedding text that comes out different is rewritten and marked PENDING
+ * (`embeddingModel` empty), which is what makes the embed job embed that symbol
+ * again; one whose text is unchanged is not touched and is not embedded again.
+ * The comparison is by content hash, so no stored text is read.
+ *
+ * Idempotent: a second run over the same files writes nothing. A file that
+ * cannot be read, or whose content is no longer the one the walk hashed, is
+ * counted in `failedFiles` and left as it was.
+ *
+ * Rows a schema pass wrote for the file (`source` set) are not parser symbols
+ * and are left alone.
+ */
+export async function backfillSymbolContext(
+  prisma: PrismaClient,
+  codeGraphId: string,
+  rootDir: string,
+  unchangedFiles: ReadonlyMap<string, { language: string; contentHash: string }>,
+  maybeYield: MaybeYield,
+): Promise<{ symbols: number; embeddingTexts: number; failedFiles: number }> {
+  const done = { symbols: 0, embeddingTexts: 0, failedFiles: 0 };
+  for (const [relPath, { language, contentHash }] of unchangedFiles) {
+    await maybeYield();
+    let source: string;
+    try {
+      source = stripNulBytes(await fs.readFile(path.join(rootDir, relPath), "utf8"));
+    } catch {
+      done.failedFiles += 1;
+      continue;
+    }
+    if (sha256(source) !== contentHash) {
+      // Edited since the walk read it: the stored spans describe the old content.
+      done.failedFiles += 1;
+      continue;
+    }
+    const rows = await prisma.codeSymbol.findMany({
+      where: { codeGraphId, filePath: relPath, source: null, language },
+      select: {
+        id: true,
+        kind: true,
+        name: true,
+        qualifiedName: true,
+        startLine: true,
+        endLine: true,
+        signature: true,
+        docComment: true,
+        receiver: true,
+        package: true,
+        embedding: { select: { contentHash: true } },
+      },
+    });
+    const sourceLines = source.split("\n");
+    const contexts = ownContextsOf(relPath, language, sourceLines, rows);
+    const writes: Prisma.PrismaPromise<unknown>[] = [];
+    for (const [i, row] of rows.entries()) {
+      const own = contexts[i];
+      if (
+        own.signature !== row.signature ||
+        own.docComment !== row.docComment ||
+        own.receiver !== row.receiver ||
+        own.package !== row.package
+      ) {
+        writes.push(prisma.codeSymbol.update({ where: { id: row.id }, data: own }));
+        done.symbols += 1;
+      }
+      if (!row.embedding) continue;
+      const text = embeddingTextOf(row, relPath, own, sourceLines);
+      const hash = computeSymbolHash(text);
+      if (hash === row.embedding.contentHash) continue;
+      writes.push(
+        prisma.codeSymbolEmbedding.update({
+          where: { symbolId: row.id },
+          data: { text, contentHash: hash, embeddingModel: "" },
+        }),
+      );
+      done.embeddingTexts += 1;
+    }
+    // One transaction per file (#16): a row and its embedding text move together.
+    if (writes.length > 0) await prisma.$transaction(writes);
+  }
+  return done;
+}
+
 /**
  * #1071 — give a file's stored symbols the qualified names the current parser
  * produces, on the existing rows. A stored symbol is matched to a re-parsed one
@@ -2724,7 +2939,18 @@ async function renameSymbolsInPlace(
     const next = wanted.get(`${row.kind}\u0000${row.name}\u0000${row.startLine}`);
     if (next === undefined || next === row.qualifiedName) continue;
     updates.push(
-      prisma.codeSymbol.update({ where: { id: row.id }, data: { qualifiedName: next } }),
+      prisma.codeSymbol.update({
+        where: { id: row.id },
+        // #1072 — the receiver is read off the qualified name, so it moves with it.
+        data: {
+          qualifiedName: next,
+          receiver: receiverOf(
+            { kind: row.kind, qualifiedName: next },
+            file.filePath,
+            file.language,
+          ),
+        },
+      }),
       prisma.impactAffectedSymbol.updateMany({
         where: { codeSymbolId: row.id },
         data: { qualifiedName: next },
@@ -3972,7 +4198,7 @@ export async function extractSchemaUsage(
  * library or a test framework (#17) — evidence that a bare call to that name is
  * NOT a project symbol.
  */
-function buildFileImportIndex(
+export function buildFileImportIndex(
   parsedFiles: ParsedFile[],
   ctx: ImportResolutionContext,
 ): { importTargets: Map<string, string[]>; runtimeImports: Map<string, Set<string>> } {
@@ -4002,7 +4228,7 @@ function buildFileImportIndex(
  * files parsed on this run; on an incremental one (#313) they are the parsed
  * files plus every unchanged file, so an import resolves identically either way.
  */
-interface ImportResolutionContext {
+export interface ImportResolutionContext {
   filePaths: ReadonlySet<string>;
   /** `OrderService.java` → every path with that basename (Java imports). */
   javaByBasename: Map<string, string[]>;
@@ -4010,7 +4236,7 @@ interface ImportResolutionContext {
   copybooks: CopybookIndex;
 }
 
-function buildImportResolutionContext(filePaths: Iterable<string>): ImportResolutionContext {
+export function buildImportResolutionContext(filePaths: Iterable<string>): ImportResolutionContext {
   const paths = new Set(filePaths);
   const javaByBasename = new Map<string, string[]>();
   for (const fp of paths) {

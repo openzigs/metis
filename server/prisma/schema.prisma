@@ -3628,6 +3628,12 @@ model CodeGraph {
   /// every skipped call is kept, and the next ingest resumes these files
   /// first, whether or not a Go file changed. Null when binding is complete.
   goBindingIncomplete String?
+  /// Issue #1072 — `SYMBOL_CONTEXT_VERSION` (`code-graph/ingest.ts`) the
+  /// graph's symbol context columns and embedding texts were last written
+  /// with. An incremental ingest of a graph recorded with an older one (or
+  /// null: built before #1072) fills them in for every unchanged file, on the
+  /// existing rows.
+  symbolContextVersion Int?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
@@ -3659,6 +3665,17 @@ model CodeSymbol {
   /// Epic #168 — provenance for schema symbols (table/column):
   /// live-db | mybatis | orm | ddl-file. Null for ordinary code symbols.
   source        String?
+  /// Issue #1072 — what the symbol's own file says about it, each one line and
+  /// bounded (`code-graph/symbol-context.ts`). Repository text. Null for a
+  /// `module`, a schema symbol, and a symbol written before #1072 until its
+  /// graph's next ingest. `signature`: the declaration up to where its body
+  /// opens. `docComment`: the comment directly above it, or a Python
+  /// docstring. `receiver`: the type a method is declared on. `package`: the
+  /// declared package, or the directory of the file.
+  signature     String?
+  docComment    String?
+  receiver      String?
+  package       String?
   createdAt     DateTime @default(now())
 
   graph   CodeGraph @relation(fields: [codeGraphId], references: [id], onDelete: Cascade)

@@ -4,6 +4,33 @@
 - **Date:** 2026-07-08
 - **Resolves:** GitHub #716 (Epic #712 stretch/spike)
 - **Related:** #714, #713, #715, #717 (epic #712 shipped work); #507/#508/#509 (symbol index)
+- **Corrected:** 2026-10-12 (#1072) — see the next section
+
+## Correction (2026-10-12, #1072)
+
+This ADR says in five places that the symbol index runs BM25 "over
+name/qualifiedName/signature/docstring" and embeds a symbol's
+"name/signature/docstring/body-preview". **That was not true when it was written.**
+
+- `CodeSymbol` had no `signature` and no `docstring` column, and the production query
+  (`SYMBOL_SELECT`, `project-code-searcher.ts`) read `id, name, qualifiedName, kind,
+  filePath`. The BM25 document was therefore `name + " " + qualifiedName`. The
+  `signature` and `docstring` branches the ADR cites in `hybrid-search.ts` existed in the
+  code, and only test fixtures could reach them (#1159 established this).
+- `formatSymbolForEmbedding` accepts a signature and a docstring, and ingest passed it
+  neither: the embedded text was `{kind} {name} in {filePath}` plus the first ten lines of
+  the symbol's source.
+
+**The decision stands.** It rests on symbol records carrying authoritative line spans and
+on not doubling storage, and neither depends on which fields BM25 indexed. The "ranking
+regression" argument (reason 4 below) was weaker than stated, since the symbol index had
+no signature or docstring structure to lose.
+
+Since #1072 the claim is true in a narrower form: the BM25 document is name, qualified
+name, package, signature and doc comment, and the embedding text carries `package:` and
+`doc:` lines. What was measured, and what was left out, is in
+[ADR 0020](0020-contextual-symbol-documents.md). The five passages below are marked
+*(see Correction)* rather than rewritten, so the record of what was believed is kept.
 
 ## Context
 
@@ -34,7 +61,8 @@ surfaces:
   incrementally (SHA-256 skip). `HybridCodeSearch.search()`
   (`server/src/lib/code-graph/hybrid-search.ts` L243) fuses **BM25 (keyword)**
   over symbol name/qualifiedName/signature/docstring with **vector similarity**
-  via Reciprocal Rank Fusion, returning ranked symbols.
+  via Reciprocal Rank Fusion, returning ranked symbols. *(Incorrect when written:
+  no signature or docstring was indexed or embedded. See the Correction above.)*
 
 The spike question: should the **document RAG store** *also* gain symbol-level
 granularity, or does the symbol index (#2/#3) already deliver the tight, citable
@@ -89,7 +117,7 @@ tight, citable spans?**"
 | New production code | Re-chunker + line-tracking in `chunker.ts` + `connector-ingest.ts` | Dual-write pipeline + new chunk source + dedupe | **None** — already merged |
 | Storage / index cost | ~same doc volume, more chunks | **Doubles** symbol storage (LanceDB doc store *and* symbol embeddings) | No change |
 | Duplicate-hit risk | High — same source now in doc + symbol index | High — literally the same symbols in two vector stores | **Solved** — #714 dedupes symbol hits vs source-as-RAG (`isCoveredByRag`) |
-| Ranking quality | Loses BM25-over-signature/docstring; falls back to generic doc chunk text | Re-embeds symbols with the *doc* embedder, losing the symbol-tuned formatting | Uses symbol-tuned BM25 + vector RRF (`hybrid-search.ts`) |
+| Ranking quality | Loses BM25-over-signature/docstring *(see Correction)*; falls back to generic doc chunk text | Re-embeds symbols with the *doc* embedder, losing the symbol-tuned formatting | Uses symbol-tuned BM25 + vector RRF (`hybrid-search.ts`) |
 | Incremental re-index | Full re-chunk on file change | New hash-skip path to build | Already incremental (`SymbolEmbeddingPipeline` SHA-256 skip) |
 | Retrieval breadth | Symbol-only; loses whole-file/context-window docs | Adds symbols, keeps docs (redundantly) | Keeps coarse docs *and* adds symbol precision — complementary, not either/or |
 
@@ -126,11 +154,11 @@ the ranking and dedupe problems the symbol index already handles.
    copy of index #2 into the doc store.
 3. **Option (b) doubles cost for a copy.** It re-embeds the same symbols a second
    time (with the document embedder, which is *not* tuned on
-   name/signature/docstring the way `formatSymbolForEmbedding` is), doubling
+   name/signature/docstring the way `formatSymbolForEmbedding` is *(see Correction)*), doubling
    vector storage and creating exactly the duplicate-hit problem #714's dedupe
    was built to prevent — except now the duplicate is *inside* one store.
 4. **Ranking regression.** `HybridCodeSearch` scores BM25 over
-   symbol-specific fields (name, qualifiedName, signature, docstring —
+   symbol-specific fields (name, qualifiedName, signature, docstring *(see Correction)* —
    `hybrid-search.ts` L166–171) and fuses with vector similarity via RRF.
    Symbol-boundary *document* chunks would lose that structure and fall back to
    generic prose BM25, a likely retrieval-quality regression for code queries.
@@ -233,7 +261,7 @@ the local constraint:
 - `server/src/lib/rag/chunker.ts` — `DEFAULT_CHUNK_SIZE` / `DEFAULT_OVERLAP` (L44–45)
 - `server/prisma/schema.prisma` — `CodeSymbol` model + line spans (L3056, L3064–3065)
 - `server/src/lib/code-graph/symbol-embeddings.ts` — `SymbolEmbeddingPipeline` (L124)
-- `server/src/lib/code-graph/hybrid-search.ts` — `HybridCodeSearch.search()` (L243), BM25 fields (L166–171)
+- `server/src/lib/code-graph/hybrid-search.ts` — `HybridCodeSearch.search()` (L243), BM25 fields (L166–171) *(see Correction)*
 - `server/src/lib/rag/fused-code-context.ts` — dedupe + locator rendering (L128–157) [#714]
 - `server/src/lib/analysis/tools/search-symbols.ts` — `search_code_symbols` locators (L96–102) [#713]
 - `server/src/lib/rag/embedder.ts` — offline hash-embedder fallback (L510–525)

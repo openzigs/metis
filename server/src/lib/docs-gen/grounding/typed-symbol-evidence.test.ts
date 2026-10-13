@@ -426,8 +426,9 @@ describe("buildTypedSymbolEvidenceRetriever default dependency path", () => {
     });
 
     vi.resetModules();
+    const createSearcher = vi.fn((_deps?: unknown) => ({ search }));
     vi.doMock("../../code-graph/project-code-searcher.js", () => ({
-      createDefaultCodeSearcher: vi.fn(() => ({ search })),
+      createDefaultCodeSearcher: createSearcher,
     }));
     vi.doMock("../../prisma.js", () => ({
       prisma: {
@@ -457,6 +458,10 @@ describe("buildTypedSymbolEvidenceRetriever default dependency path", () => {
 
     const result = await adapter.groundingForSection({ id: "overview", query: "order flow" });
     expect(search).toHaveBeenCalledWith("order flow", "p1", { limit: 6 });
+    // PR #1126 review — the hits are used for their ids; the span is read from
+    // the repository. So the searcher is built with its snippet read off.
+    expect(createSearcher).toHaveBeenCalledTimes(1);
+    expect(createSearcher).toHaveBeenCalledWith({ snippetLookup: null });
     expect(findManySymbols).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({

@@ -29,6 +29,12 @@ export interface SymbolForEmbedding {
   docstring?: string;
   bodyLines?: string[];
   /**
+   * Issue #1072 — the labelled context lines (`package: …`, `doc: …`) placed
+   * between the header and everything else: `shippedContextLines` in
+   * `symbol-context.ts`. Each is one line of neutralised repository text.
+   */
+  contextLines?: string;
+  /**
    * Issue #797 — the ALREADY-FORMATTED index text, when the caller has it.
    *
    * Ingest formats a symbol while the source file is still in memory and
@@ -102,7 +108,12 @@ const MAX_BODY_LINES = 10;
 
 /**
  * Format a symbol for embedding. The format is:
- * `{kind} {name} in {filePath}\n{signature}\n{docstring}\n{body_first_10_lines}`
+ * `{kind} {name} in {filePath}\n{contextLines}\n{signature}\n{docstring}\n{body_first_10_lines}`
+ *
+ * Ingest — the only production caller that formats rather than replays — passes
+ * `contextLines` and `bodyLines` and neither `signature` nor `docstring`: the
+ * first body lines already are the declaration, and the doc comment travels as
+ * a `doc:` context line (#1072).
  *
  * A pre-formatted {@link SymbolForEmbedding.text} short-circuits this: it is
  * returned verbatim (subject to the same {@link MAX_TEXT_CHARS} cap below).
@@ -115,6 +126,10 @@ export function formatSymbolForEmbedding(symbol: SymbolForEmbedding): string {
 
   const parts: string[] = [];
   parts.push(`${symbol.kind} ${symbol.name} in ${symbol.filePath}`);
+
+  if (symbol.contextLines) {
+    parts.push(symbol.contextLines);
+  }
 
   if (symbol.signature) {
     parts.push(symbol.signature);

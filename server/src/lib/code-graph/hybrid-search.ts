@@ -4,10 +4,11 @@
  * `HybridCodeSearch.search()` returns ranked symbols using both BM25 (keyword)
  * and vector similarity (semantic), fused via Reciprocal Rank Fusion (RRF).
  *
- * BM25 index is built from symbol names, signatures, and docstrings.
- * Vector search uses embeddings from issue #508.
+ * BM25 index is built from symbol names, packages, signatures, and doc comments
+ * ({@link buildSymbolDocumentText}). Vector search uses embeddings from issue #508.
  */
 import { createChildLogger } from "../logger.js";
+import { shippedDocumentText } from "./symbol-context.js";
 import type { EmbedService, SymbolEmbeddingMetadata } from "./symbol-embeddings.js";
 
 const log = createChildLogger("hybrid-search");
@@ -33,16 +34,29 @@ export interface SearchableSymbol {
    */
   language?: string;
   /**
-   * #1159: `CodeSymbol` has NO `signature` and NO `docstring` column, and
-   * `SYMBOL_SELECT` (`project-code-searcher.ts`) does not read them. These two are
-   * therefore reachable only from test fixtures — production BM25 documents are
-   * `name + qualifiedName`. Adding the columns is a schema + ingest change and is
-   * deliberately out of #1159's scope; do not read their presence here as evidence
-   * that the lexical index sees a signature.
+   * #1072 — the declaration and the doc comment, from `CodeSymbol.signature`
+   * and `CodeSymbol.docComment`. Production reads both (`SYMBOL_SELECT`) and
+   * the BM25 document carries them. Until #1072 neither column existed and
+   * these two were reachable only from fixtures (#1159).
    */
   signature?: string;
   docstring?: string;
   snippet?: string;
+  /** #1072 — the declared package, or the directory of the file. In the BM25 document. */
+  package?: string;
+  /**
+   * #1072 — the type a method is declared on, up to `MAX_CONTEXT_CALLERS`
+   * caller names, and up to `MAX_CONTEXT_TABLES` table names.
+   *
+   * Production populates NONE of these three and {@link buildSymbolDocumentText}
+   * reads none of them: ADR 0020 measured callers as no improvement over the
+   * own-file fields, and could not measure the other two at all. They are set
+   * only by the evaluation corpus (`contextual-ab.ts`), which keeps that result
+   * reproducible.
+   */
+  receiver?: string;
+  callers?: readonly string[];
+  tables?: readonly string[];
 }
 
 export interface HybridSearchResult {
@@ -206,25 +220,53 @@ export interface LexicalConfig {
 }
 
 /**
- * The BM25 document text for one symbol.
+ * The BM25 document text for one symbol: name, qualified name, package,
+ * signature, doc comment (#1072).
  *
- * Issue #1159 — read the field list against `SYMBOL_SELECT` in
- * `project-code-searcher.ts` before assuming this indexes more than it does.
- * `CodeSymbol` has NO `signature` and NO `docstring` column, and the production
- * select reads `id, name, qualifiedName, kind, filePath`. So in production this
- * returns `name + " " + qualifiedName` and nothing else: the two optional fields
- * below are reachable only from test fixtures and are kept because
- * {@link SearchableSymbol} still declares them.
+ * Before #1072 this was `name + " " + qualifiedName`: `CodeSymbol` stored
+ * nothing else. The three added fields are columns now, read by `SYMBOL_SELECT`
+ * (`project-code-searcher.ts`), and a symbol that has none of them — a table,
+ * a column, a file's `module` — still gets exactly the old document.
  *
- * Do not read the `if` guards as evidence that production BM25 sees a signature.
- * It does not, and #1159 measured what happens when the document is widened with
- * fields that ARE retrievable — see the results file that issue cites.
+ * ## What it measured (`pnpm eval:embed-retrieval --contextual-ab`, 127 queries /
+ * ## 794 symbols, `embedretrieval-02-nl-to-code`, bars pre-registered in ADR 0020)
+ *
+ * This document together with the matching embedding text (`package:` and
+ * `doc:` lines, `symbol-context.ts`) is the `own-file` arm:
+ *
+ *   channel         before   after    Δ        paired 95% CI      sign p   verdict
+ *   fused 0.05/95   0.282    0.398    +0.116   [+0.075, +0.160]   0.000    SHIP
+ *   pure BM25       0.109    0.236    +0.126   [+0.072, +0.182]   0.000    SHIP
+ *
+ * Most of the fused gain is the embedding text: the widened BM25 document over
+ * the OLD embedding text (the `lexical-only` arm, which also had caller names)
+ * moves the fused channel +0.022 [+0.003, +0.042].
+ *
+ * Read the size with two things in mind, both from a post-hoc split that
+ * decides nothing. The gain sits in the queries whose target has a doc comment
+ * (+0.161, n = 93); where no target has one it is −0.006 (n = 34). And 93 of
+ * 127 corpus queries have a documented target, which is more than most
+ * repositories will.
+ *
+ * ## The cost, stated where it will be found
+ *
+ * An EXACT-NAME lookup on the pure-BM25 channel went from #1 for 153 of 155
+ * names to 136 of 155. A longer document has a lower term-frequency share for
+ * its own name, and a neighbour whose doc comment mentions that name now
+ * matches it too. The pure-BM25 channel is what a project is searched with
+ * until its symbols are embedded. On the fused channel the count is 118 → 117
+ * of 155 (8 names lost, 7 recovered). ADR 0020 lists every name.
+ *
+ * ## What is deliberately NOT here
+ *
+ * Callers, tables and the receiver. The same run scored caller names: added to
+ * this document they moved pure BM25 0.236 → 0.232 and the fused channel
+ * +0.002 [−0.004, +0.009], not established. No corpus symbol has a table edge
+ * or a receiver, so those two were not measured at all. Do not add one without
+ * measuring it.
  */
 export function buildSymbolDocumentText(sym: SearchableSymbol): string {
-  const parts = [sym.name, sym.qualifiedName];
-  if (sym.signature) parts.push(sym.signature);
-  if (sym.docstring) parts.push(sym.docstring);
-  return parts.join(" ");
+  return shippedDocumentText(sym);
 }
 
 /** Production's one lexical configuration. */
@@ -235,7 +277,7 @@ export const DEFAULT_LEXICAL_CONFIG: LexicalConfig = {
 
 /**
  * Lightweight in-memory BM25 scorer for symbol search.
- * Builds an index from symbol names, signatures, and docstrings.
+ * Builds an index from the document {@link LexicalConfig.buildDocumentText} gives each symbol.
  */
 export class BM25Index {
   private documents: BM25Document[] = [];

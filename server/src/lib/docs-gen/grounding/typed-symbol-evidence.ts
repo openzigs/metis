@@ -191,7 +191,11 @@ export function buildTypedSymbolEvidenceRetriever(
 
 function resolveDeps(deps: Partial<TypedSymbolEvidenceDeps>): TypedSymbolEvidenceDeps {
   return {
-    searcher: deps.searcher ?? createDefaultCodeSearcher({} satisfies CodeSearcherDeps),
+    // The hits are used for their ids only (the source span is read from the
+    // repository below), so the snippet read is turned off (#1072 review).
+    searcher:
+      deps.searcher ??
+      createDefaultCodeSearcher({ snippetLookup: null } satisfies CodeSearcherDeps),
     hydrateSymbols: deps.hydrateSymbols ?? defaultHydrateSymbols,
     hydrateNeighborSymbols: deps.hydrateNeighborSymbols ?? defaultHydrateNeighborSymbols,
     loadRepositories: deps.loadRepositories ?? loadRepositorySources,
