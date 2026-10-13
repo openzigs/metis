@@ -406,7 +406,12 @@ describe("the verbatim run-7 #4478 issue, end to end on captured search hits (#1
     // The searcher's lexical index is built over the INJECTED client, the one the
     // hits are hydrated from — not the module-global one (PR #1090 review).
     expect(createRunScopedSymbolIndex).toHaveBeenCalledWith(prisma);
-    expect(createDefaultCodeSearcher).toHaveBeenCalledWith({ symbolIndex: RUN_INDEX });
+    // PR #1126 review — and with the snippet read off: seeding reads a hit's id
+    // and score, never its snippet.
+    expect(createDefaultCodeSearcher).toHaveBeenCalledWith({
+      snippetLookup: null,
+      symbolIndex: RUN_INDEX,
+    });
     // Title, then the request without its rejected alternatives.
     expect(search.mock.calls.map((c) => c[0])).toEqual(CAPTURE.queries.map((q) => q.query));
     expect(mapRequirementToCode).not.toHaveBeenCalled();

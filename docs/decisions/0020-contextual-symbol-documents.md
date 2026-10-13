@@ -222,6 +222,62 @@ neighbour whose doc comment mentions the name now matches too. Repeating the nam
 weight it would likely recover most of these. It was not tried: it would be a change made
 after seeing the result, and it needs its own measurement.
 
+#### Addendum, 2026-10-13: where the lost names rank
+
+Added in the review round of PR #1126. The counts above say a name is no longer first and
+nothing about where it went, and no caller takes only the first hit: they take a pool of 6
+(docs-gen) to 120 (impact seeding). `--contextual-ab` now follows each lost name. This is
+reporting only. No bar, arm, cap or rule reads it, and nothing above this heading changed.
+
+One re-run at the review-round tip, offline from cached weights, no model API. Every figure
+in this Result section reproduced, including `own-file` at 0.398 and +0.116
+[+0.075, +0.160] and both miss sets name for name. The documents of all 794 corpus symbols
+are byte-identical to the ones measured on 2026-10-12.
+
+**No name falls below rank 6 on either channel.** The deepest is rank 5, on pure BM25.
+
+| Channel | Lost first rank | In a pool of 3 | In a pool of 6 | In a pool of 12 | Deepest rank |
+|---|---|---|---|---|---|
+| Pure BM25, `own` against `base` | 17 of 155 | 16 | 17 | 17 | 5 |
+| Fused, `own-file` against `baseline` | 8 of 155 | 8 | 8 | 8 | 2 |
+
+Pure BM25, by name:
+
+- **Rank 2 (14):** `InMemorySamlRequestIdCache`, `LeaderElector`, `TeamsAadIdentityResolver`,
+  `VaultService`, `absenceIsConfirmableForClaim`, `buildTraceabilityMatrix`,
+  `checkReplication`, `columnWidthDirection`, `extract_usage`,
+  `generateAndSendChargeback`, `runWebhook`, `scoreFaithfulness`, `tierForSection`,
+  `validateCitations`.
+- **Rank 3 (2):** `fetchRegistry`, `safeFetch`.
+- **Rank 5 (1):** `SSOStateStore`.
+
+Fused: all eight (`_lineage_edges`, `aggregateDecisions`, `assertSafeUrl`,
+`columnWidthDirection`, `mirrorMessageToTeams`, `safeFetch`, `startForecastRecompute`,
+`traverseLineage`) are at rank 2.
+
+How it is read. The rank is the target's position in one search at limit 120. A pool is
+searched at its own limit and not read off that rank, because on the fused channel the
+vector candidates are twice the limit; here the two agree for every name. So a caller that
+takes six hits still receives every one of these symbols, and one that takes three misses
+`SSOStateStore` alone, on a project that has no vectors yet. That bounds the cost on this
+corpus; it does not restore first rank, which is still the follow-up below.
+
+#### Addendum, 2026-10-13: the snippet and the fused block's budget
+
+The pre-registration says a snippet changes no ranking, which is true and was not the
+whole of it. The blocks that quote fused hits have a budget (1,500 tokens for 12 symbols by
+default) and dropped every hit after the first entry that did not fit. Entries were costed
+with their snippet, so with snippets of up to 800 characters about six symbols fit where
+twelve had. Two reviewers of PR #1126 found this independently; it was not measured here
+and was in no test.
+
+It is fixed in the same PR, not by raising a budget: every head line that fits is placed
+first, costed alone, exactly as before #1072, and only what is left is spent on snippets,
+best-ranked first, each cut at a line end or left out. Which symbols are listed is again
+independent of whether any hit has a snippet. With twelve cap-size snippets at the default
+budget all twelve locators are listed; the first five hits carry their whole snippet, the
+sixth part of one, and the rest none.
+
 ### What the result does not show
 
 These are limits of the measurement, not of the rule.
@@ -276,6 +332,8 @@ Embedding the first set in a fresh process took about twice as long (152 s to 16
 whole graph). The backfilled graph equals a full re-ingest of the same tree row for row.
 
 ### Follow-ups this leaves open
+
+Tracked in #1127.
 
 - Measure the receiver and tables on a corpus that has them: Go source, built with lineage.
 - Measure a name-weighted BM25 document against the exact-name losses above.

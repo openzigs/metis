@@ -483,6 +483,54 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
+    // PR #1126 review — in the test above the row's language is `sql` and the
+    // file's is `ts`, so the `language` predicate alone kept the backfill off
+    // it and dropping `source: null` from the filter changed nothing. Each row
+    // here is kept out by exactly ONE of the two predicates.
+    it("leaves a schema-pass row alone by its provenance, and a foreign-language row by its language", async () => {
+      const { projectId, root } = await newProject();
+      await ingest(projectId, root, false);
+      const graph = await db.codeGraph.findFirstOrThrow({ where: { projectId } });
+      const row = (name: string, language: string, source: "orm" | null) =>
+        db.codeSymbol.create({
+          data: {
+            codeGraphId: graph.id,
+            projectId,
+            kind: "table",
+            name,
+            qualifiedName: name,
+            filePath: "src/store/users.ts",
+            // The line of `export function saveUser(...)`: a signature to read.
+            startLine: 6,
+            endLine: 6,
+            language,
+            contentHash: "x",
+            source,
+          },
+        });
+      // Same language as the file: only `source` tells it from a parser symbol.
+      const tagged = await row("users_by_provenance", "ts", "orm");
+      // No provenance: only the language tells it from a parser symbol.
+      const foreign = await row("users_by_language", "sql", null);
+      await downgrade(projectId);
+
+      const stats = await ingest(projectId, root);
+
+      // The file's own symbols were filled in, so the backfill did visit it.
+      expect((await snapshot(projectId)).get("src/store/users.ts|function|saveUser")).toMatchObject(
+        { package: "store", signature: "export function saveUser(user: User): void" },
+      );
+      expect(stats.symbolContextBackfill?.failedFiles).toBe(0);
+      for (const id of [tagged.id, foreign.id]) {
+        expect(await db.codeSymbol.findUniqueOrThrow({ where: { id } })).toMatchObject({
+          signature: null,
+          docComment: null,
+          receiver: null,
+          package: null,
+        });
+      }
+    });
+
     it("counts a file it cannot read, or that changed under it, and writes nothing for it", async () => {
       const { projectId, root } = await newProject();
       await ingest(projectId, root, false);
@@ -574,6 +622,62 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
+    // PR #1126 review — "the backfill runs after the rename" had no test. The
+    // END state cannot show it: the rename writes the receiver itself, so either
+    // order leaves the same rows. What the order decides is which name the
+    // backfill reads, so this watches the statements: for the renamed row, the
+    // UPDATE that sets `qualifiedName` reaches the database before the UPDATE
+    // that sets `signature`.
+    it("fills the context in AFTER an extractor upgrade has renamed the row", async () => {
+      const { projectId, root } = await newProject();
+      await ingest(projectId, root, false);
+      const save = await db.codeSymbol.findFirstOrThrow({
+        where: { projectId, name: "Save", kind: "function" },
+      });
+      await db.codeSymbol.update({
+        where: { id: save.id },
+        data: { qualifiedName: "internal/db/storage.go::Save" },
+      });
+      await downgrade(projectId);
+      await db.codeGraph.updateMany({ where: { projectId }, data: { extractorVersion: null } });
+
+      const logged = new PrismaClient({
+        adapter: new PrismaBetterSqlite3({ url: sqlite.url }),
+        log: [{ emit: "event", level: "query" }],
+      });
+      /** The SET clause of every UPDATE of a symbol row, in the order they ran. */
+      const sets: string[] = [];
+      logged.$on("query", (e) => {
+        const q = e.query;
+        if (!q.startsWith("UPDATE") || !q.includes("`code_symbols` SET ")) return;
+        sets.push(q.slice(q.indexOf(" SET "), q.indexOf(" WHERE ")));
+      });
+      try {
+        await ingestCodeGraph(logged, {
+          projectId,
+          rootDir: root,
+          incremental: true,
+          sqlLineageOverride: false,
+        });
+      } finally {
+        await logged.$disconnect();
+      }
+
+      const renames = sets.flatMap((s, i) => (s.includes("`qualifiedName`") ? [i] : []));
+      const fills = sets.flatMap((s, i) => (s.includes("`signature`") ? [i] : []));
+      // One Go method renamed; every symbol with a declaration filled in.
+      expect(renames).toHaveLength(1);
+      expect(fills.length).toBeGreaterThan(1);
+      expect(Math.min(...fills)).toBeGreaterThan(renames[0]);
+      expect(await db.codeSymbol.findUniqueOrThrow({ where: { id: save.id } })).toMatchObject({
+        qualifiedName: "internal/db/storage.go::Storage::Save",
+        receiver: "Storage",
+        signature: "func (s *Storage) Save() error",
+        docComment: "Save stores the user.",
+        package: "storage",
+      });
+    });
+
     it("pins what is stored to SYMBOL_CONTEXT_VERSION", async () => {
       // A change to what `extractOwnFileContext` or `shippedContextLines` gives an
       // UNCHANGED file moves this digest. Bump SYMBOL_CONTEXT_VERSION with it, or
@@ -592,8 +696,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ]),
         ),
       );
+      // Version 2 with version 1's digest: the review round changed the answer
+      // for shapes this tree does not hold (an invisible character in a comment,
+      // a code line ending in a block comment above a declaration). Those are
+      // pinned in `symbol-context.test.ts`; the number moved for them.
       expect({ version: SYMBOL_CONTEXT_VERSION, digest }).toEqual({
-        version: 1,
+        version: 2,
         digest: "71a378cd2837a791b18fd09956e9756377d6ac747ba454305489866faff685f5",
       });
     });

@@ -1178,6 +1178,9 @@ export function defaultSeedChange(
 ): SeedChangeFn {
   const sameClient = (prisma as unknown) === (defaultPrisma as unknown);
   const searcher = createDefaultCodeSearcher({
+    // Seeding reads a hit's id and score, never its snippet: without this each
+    // query also read up to 120 stored embedding texts (#1072 review).
+    snippetLookup: null,
     ...(sameClient ? {} : { symbolIndex: createRunScopedSymbolIndex(prisma) }),
     ...searcherDeps,
   });

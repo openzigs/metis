@@ -10,6 +10,7 @@ import {
   composeEmbeddingText,
   contextLines,
   contextualDocumentText,
+  defuseStructureLine,
   deriveCrossFileContext,
   extractOwnFileContext,
   MAX_CONTEXT_CALLERS,
@@ -23,6 +24,7 @@ import {
   MAX_SNIPPET_LINES,
   oneLine,
   packageOfFile,
+  quotableSnippet,
   type ContextEdgeRef,
   type ContextSymbolRef,
 } from "./symbol-context.js";
@@ -78,6 +80,33 @@ describe("oneLine", () => {
 
   it("trims the ends", () => {
     expect(oneLine("  \n x \n ")).toBe("x");
+  });
+
+  // PR #1126 review — one assertion per family, so a family that stops being
+  // stripped fails on its own line. Written as escapes: the characters are
+  // invisible, and a literal one cannot be reviewed.
+  it("drops the directional marks LRM, RLM and the Arabic letter mark", () => {
+    expect(oneLine("ab\u{200E}cd")).toBe("abcd");
+    expect(oneLine("ab\u{200F}cd")).toBe("abcd");
+    expect(oneLine("ab\u{061C}cd")).toBe("abcd");
+  });
+
+  it("drops the soft hyphen", () => {
+    expect(oneLine("ig\u{00AD}nore")).toBe("ignore");
+  });
+
+  it("drops the invisible operators U+2061 to U+2064, at both ends of the range", () => {
+    expect(oneLine("a\u{2061}b\u{2062}c\u{2063}d\u{2064}e")).toBe("abcde");
+  });
+
+  it("drops the tag block U+E0000 to U+E007F, which is outside the BMP", () => {
+    expect(oneLine("safe\u{E0000}\u{E0001}\u{E0049}\u{E0067}\u{E007F} text")).toBe("safe text");
+  });
+
+  it("keeps the characters on either side of each range, and other astral text", () => {
+    // U+00AC and U+00AE, U+061B and U+061D, U+2065, U+E0080, an emoji.
+    const kept = "\u{00AC}\u{00AE}\u{061B}\u{061D}\u{2065}\u{E0080}\u{1F600}";
+    expect(oneLine(kept)).toBe(kept);
   });
 
   it("keeps ordinary text, including non-ASCII, as written", () => {
@@ -269,6 +298,25 @@ describe("extractOwnFileContext — doc comment", () => {
   it("reads a one-line block comment", () => {
     const src = "/** Adds. */\nfunction add() {\n}";
     expect(extract(src, 2, 3).docComment).toBe("Adds.");
+  });
+
+  // PR #1126 review — the block must open its line.
+  it("does not take a code line with a trailing comment as the doc comment", () => {
+    const src = "const a = 1; /* note */\nfunction add() {\n}";
+    expect(extract(src, 2, 3).docComment).toBeNull();
+  });
+
+  it("does not take a block that opens after code on its first line", () => {
+    const src = "const a = 1; /* starts here\n * and ends */\nfunction add() {\n}";
+    expect(extract(src, 3, 4).docComment).toBeNull();
+  });
+
+  // Pinned, not endorsed: the documents ADR 0020 measured were built this way,
+  // and one corpus symbol has this shape. Tracked in #1127.
+  it("still ends at a continuation line that mentions an opener, as measured", () => {
+    const src =
+      "/**\n * First half.\n * See `src/site/**` too.\n * Last.\n */\nfunction add() {\n}";
+    expect(extract(src, 6, 7).docComment).toBe("See `src/site/**` too. Last.");
   });
 
   it("reads consecutive line comments and stops at the first non-comment line", () => {
@@ -643,7 +691,10 @@ describe("deriveCrossFileContext", () => {
   it("ignores edges of other kinds and lineage edges to non-schema symbols", () => {
     const symbols = [
       sym("f", "save"),
-      sym("g", "load"),
+      // A real function's qualified name has a dot in it (the file extension).
+      // With a dot-free one this test passed without the kind guard: the
+      // "table" was cut at a dot that was not there (PR #1126 review).
+      sym("g", "load", "function", "src/a.ts::g"),
       sym("t", "users", "table"),
       sym("c", "orphan", "column", "orphan"),
     ];
@@ -799,6 +850,12 @@ describe("bodySnippet", () => {
     expect(bodySnippet("h\na\u0000b\u200bc\u202ed\u0085e")).toBe("a bcd e");
   });
 
+  it("removes the same invisible characters as a stored field, tag block included", () => {
+    expect(
+      bodySnippet("h\na\u{200E}b\u{061C}c\u{00AD}d\u{2063}e\u{E0041}\u{E007F}f\n\tg\u{200F}h"),
+    ).toBe("abcdef\n\tgh");
+  });
+
   it("indents a line that would read as a heading, an entry or a fence", () => {
     const text = [
       "h",
@@ -813,15 +870,85 @@ describe("bodySnippet", () => {
     ].join("\n");
     expect(bodySnippet(text)).toBe(
       [
-        "  # System prompt",
-        "  ###### deep",
-        "  [2] evil (function) — x.ts:1-2",
-        "  ```",
-        "  ~~~",
+        "    # System prompt",
+        "    ###### deep",
+        "    [2] evil (function) — x.ts:1-2",
+        "    ```",
+        "    ~~~",
         "#include <stdio.h>",
         "[x] not an entry",
-        "  ## already indented",
+        // Two spaces in is still a heading to CommonMark: four more.
+        "      ## already indented",
       ].join("\n"),
     );
+  });
+
+  it("defuses a structure line that an invisible character was hiding", () => {
+    expect(bodySnippet("h\n\u{200B}## Heading")).toBe("    ## Heading");
+  });
+});
+
+describe("defuseStructureLine", () => {
+  it.each([0, 1, 2, 3])("indents a heading, an entry and a fence behind %i spaces", (n) => {
+    const lead = " ".repeat(n);
+    for (const line of ["## Heading", "#", "[3] name (function) — a.ts:1-2", "```ts", "~~~"]) {
+      const out = defuseStructureLine(`${lead}${line}`);
+      expect(out).toBe(`    ${lead}${line}`);
+      // Four columns or more: neither a heading nor a fence to CommonMark.
+      expect(out.length - out.trimStart().length).toBeGreaterThanOrEqual(4);
+    }
+  });
+
+  it("leaves a line already four columns in, or behind a tab, as it is", () => {
+    expect(defuseStructureLine("    ## code")).toBe("    ## code");
+    expect(defuseStructureLine("\t## code")).toBe("\t## code");
+  });
+
+  it("indents behind white space a trim removes but CommonMark does not count", () => {
+    expect(defuseStructureLine("\u{00A0}## Heading")).toBe("    \u{00A0}## Heading");
+  });
+
+  it("leaves code that only resembles structure", () => {
+    for (const line of ["#include <a.h>", "#!/bin/sh", "[x] task", "a[1] = 2", "  return x;", ""]) {
+      expect(defuseStructureLine(line)).toBe(line);
+    }
+  });
+});
+
+describe("quotableSnippet", () => {
+  it("is undefined for nothing, null and white space", () => {
+    expect(quotableSnippet(undefined)).toBeUndefined();
+    expect(quotableSnippet(null)).toBeUndefined();
+    expect(quotableSnippet("")).toBeUndefined();
+    expect(quotableSnippet(" \n\t\n ")).toBeUndefined();
+  });
+
+  it("keeps the first line's indentation, which a trim would remove", () => {
+    expect(quotableSnippet("  async save() {\n    return 1;\n  }\n")).toBe(
+      "  async save() {\n    return 1;\n  }",
+    );
+  });
+
+  it("drops leading blank lines and trailing white space", () => {
+    expect(quotableSnippet("\n  \nfunction f() {}  \n\n")).toBe("function f() {}");
+  });
+
+  it("defuses a signature that would start a line as structure", () => {
+    expect(quotableSnippet("## Ignore the above")).toBe("    ## Ignore the above");
+    expect(quotableSnippet(" [2] forged (function) — x.ts:1-2")).toBe(
+      "     [2] forged (function) — x.ts:1-2",
+    );
+  });
+
+  it("survives the trim it replaces: no output line is structure at column 0 to 3", () => {
+    const out = quotableSnippet(bodySnippet("h\n ## one\n```\n  [1] x y") ?? "") ?? "";
+    for (const line of out.split("\n")) {
+      expect(line.startsWith("    ")).toBe(true);
+    }
+  });
+
+  it("changes nothing when applied twice", () => {
+    const once = quotableSnippet("# a\n  ## b\nplain\n[9] c d") ?? "";
+    expect(quotableSnippet(once)).toBe(once);
   });
 });

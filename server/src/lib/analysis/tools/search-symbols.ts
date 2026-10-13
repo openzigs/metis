@@ -16,6 +16,7 @@
 import type { AgentTool, ToolContext, ToolResult, JSONSchema } from "./types.js";
 import { missingParamError } from "./arg-errors.js";
 import type { FusedCodeSearcher, SymbolLineLookup } from "../../rag/fused-code-context.js";
+import { quotableSnippet } from "../../code-graph/symbol-context.js";
 import {
   createDefaultCodeSearcher,
   createDefaultSymbolLineLookup,
@@ -121,8 +122,9 @@ export function createSearchSymbolsTool(deps?: Partial<SearchSymbolsDeps>): Agen
       const span = spans.get(hit.symbolId);
       const locator = span ? `${span.filePath}:${span.startLine}-${span.endLine}` : hit.filePath;
       const head = `${hit.kind} ${hit.name} — ${locator} (score=${hit.score.toFixed(3)})`;
-      const snippet = hit.snippet?.trim();
-      return snippet ? `${head}\n${snippet.slice(0, MAX_SNIPPET_CHARS)}` : head;
+      // Cut first, then quote: a cut cannot expose a line the quoting defused.
+      const snippet = quotableSnippet(hit.snippet?.slice(0, MAX_SNIPPET_CHARS));
+      return snippet ? `${head}\n${snippet}` : head;
     });
 
     return {

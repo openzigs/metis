@@ -7097,8 +7097,10 @@ in memory (`extractOwnFileContext`): `signature` (the declaration up to where it
 opens), `docComment` (the comment directly above it, or a Python docstring), `receiver`
 (the type a method is declared on) and `package` (the declared package, or the file's
 directory). A file's `module` symbol and schema symbols have none. Each value is repository
-text: it is reduced to one line, stripped of control, zero-width and bidirectional
-characters, and capped (300 / 600 / 120 / 120 characters) before it is stored.
+text: it is reduced to one line, stripped of control, invisible and reordering characters
+(zero-width, soft hyphen, the directional marks and bidirectional controls, the invisible
+operators, the tag block), and capped (300 / 600 / 120 / 120 characters) before it is
+stored.
 
 **What the documents carry, and why not more.** The BM25 document gains package, signature
 and doc comment; the embedding text gains the `package:` and `doc:` lines. That is the
@@ -7123,8 +7125,20 @@ call site, which is the cost the rule made them earn and they did not.
 **Fused hits carry a body snippet.** `createDefaultCodeSearcher` reads the stored embedding
 text of the hits it returns (at most the search limit) and cuts the body lines from it:
 at most 10 lines and 800 characters (`bodySnippet`). A line that would read as structure in
-the blocks that quote a hit, such as a markdown heading or an entry head `[n] `, is
-indented. A failed read leaves the hit with its signature.
+the blocks that quote a hit, such as a markdown heading, a fence or an entry head `[n] `,
+is indented to four columns, whether it started at column 0 or behind one to three spaces.
+A failed read leaves the hit with its signature, which is defused the same way. Every
+renderer quotes a snippet through `quotableSnippet` and never trims it: a trim took the
+indent off the first line again.
+
+**A snippet never costs a symbol its place.** The fused blocks (chat, Spec Kit, the analysis
+code agent) have a token budget, 1,500 for 12 symbols by default. `fuseCodeContext` places
+every head line that fits first, costed alone as before #1072, and spends only the
+remainder on snippets, best-ranked first; a snippet that does not fit whole is cut at a line
+end or left out. The hits it returns carry the snippet as placed, so the analysis path,
+which renders the hits itself, stays inside the same budget. A caller that never renders a
+snippet builds its searcher with `snippetLookup: null` (impact seeding, docs-gen typed-symbol
+evidence) and skips the read.
 
 **An existing graph.** `CodeGraph.symbolContextVersion` records `SYMBOL_CONTEXT_VERSION`.
 On the next incremental ingest of a graph recorded with an older one (null on every graph

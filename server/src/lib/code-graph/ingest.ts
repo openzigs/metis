@@ -525,9 +525,15 @@ const EXTRACTOR_UPGRADES: ReadonlyArray<{ version: number; languages: readonly s
  * It also must not wait on an interrupted Go binding, which holds that
  * version back.
  *
- * History: unversioned = before #1072; 1 = #1072.
+ * History: unversioned = before #1072; 1 = #1072 as first pushed (PR #1126,
+ * never on `main`); 2 = the same PR's review round, which changed two answers
+ * for an unchanged file: a stored field no longer keeps the directional marks,
+ * soft hyphen, invisible operators and tag characters, and a code line that
+ * merely ends in a block comment (`#endif /* X *\/`) is no longer read as the
+ * doc comment of the declaration below it. A graph stamped 1 can only have
+ * come from running that branch; it is brought up to date like any older one.
  */
-export const SYMBOL_CONTEXT_VERSION = 1;
+export const SYMBOL_CONTEXT_VERSION = 2;
 
 /** The languages a graph recorded at `storedVersion` must have upgraded in place. */
 export function extractorUpgradeLanguages(storedVersion: number | null): Set<string> {

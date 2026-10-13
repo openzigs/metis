@@ -30,6 +30,7 @@ import {
   createDefaultCodeSearcher,
   createDefaultSymbolLineLookup,
 } from "../code-graph/project-code-searcher.js";
+import { quotableSnippet } from "../code-graph/symbol-context.js";
 import { getConfigService } from "../config/config-service.js";
 import {
   buildFusedCodeBlock,
@@ -64,7 +65,7 @@ export interface AnalysisFusedCodeDeps {
 export function symbolHitToContextChunk(hit: FusedSymbolHit): RetrievalContextChunk {
   const locator = `${hit.filePath}:${hit.startLine}-${hit.endLine}`;
   const head = `${hit.name} (${hit.kind}) — ${locator}`;
-  const snippet = hit.snippet?.trim();
+  const snippet = quotableSnippet(hit.snippet);
   return {
     documentId: `${CODE_GRAPH_DOCUMENT_PREFIX}${hit.symbolId}`,
     chunkIndex: 0,

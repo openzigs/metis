@@ -39,7 +39,7 @@ import {
   type SymbolIndex,
   type SymbolVectorStore,
 } from "./hybrid-search.js";
-import { bodySnippet, shippedContextLines } from "./symbol-context.js";
+import { bodySnippet, quotableSnippet, shippedContextLines } from "./symbol-context.js";
 import { createSymbolVectorStore } from "./symbol-embedding-service.js";
 import type { EmbedService } from "./symbol-embeddings.js";
 
@@ -131,10 +131,16 @@ function toSearchable(r: SymbolRow): SearchableSymbol {
 }
 
 /**
- * What the cache is keyed on. Every symbol write is a create or a delete
- * (`ingest.ts`, `schema-graph.ts` — no update), so a create moves `max(createdAt)`
- * and a pure delete moves the count: together they change whenever the project's
- * symbol set does.
+ * What the cache is keyed on. A create moves `max(createdAt)` and a pure delete
+ * moves the count: together they change whenever the project's symbol SET does.
+ *
+ * Neither moves on an UPDATE, and there are two since #1071 / #1072: the Go
+ * qualified-name rename and the context backfill both rewrite existing rows in
+ * place (`ingest.ts`). Those change the documents, not the set, and only the
+ * `lastIndexedAt` backstop below sees them. Both run inside `ingestCodeGraph`
+ * before step 8, so a completed ingest picks them up; an ingest that throws
+ * after one of them and before step 8 leaves this cache on the old documents
+ * until the next ingest that completes.
  *
  * #394: `createdAt` alone can fail to move — clock skew, two concurrent ingests on
  * Postgres (where `now()` is the transaction start) or an explicit `createdAt` can
@@ -334,7 +340,9 @@ export interface CodeSearcherDeps {
    * {@link createDefaultSnippetLookup} when the symbol index is production's;
    * a caller that injects its own index (the eval, a fixture) has no
    * `CodeSymbolEmbedding` rows behind its symbols, so it gets no lookup unless
-   * it passes one. `null` turns it off.
+   * it passes one. `null` turns it off, which is what a caller that never
+   * renders a snippet passes: the read is up to `limit` stored texts per query
+   * (impact seeding asks for 120), and a hit then keeps its signature.
    */
   snippetLookup?: SymbolSnippetLookup | null;
 }
@@ -385,7 +393,9 @@ export function createDefaultCodeSearcher(deps: CodeSearcherDeps = {}): FusedCod
         name: r.name,
         kind: r.kind,
         score: r.score,
-        snippet: snippets.get(r.symbolId) ?? r.snippet,
+        // The fallback is the signature: one line of repository text, quoted
+        // on a line of its own, so it is defused like a snippet line.
+        snippet: snippets.get(r.symbolId) ?? quotableSnippet(r.snippet),
       }));
     },
   };

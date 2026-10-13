@@ -9,4 +9,6 @@ section: Changed
   - Existing projects pick this up on their next ingest, which embeds each code symbol again
     once (OPERATIONS §6.7). No document is regenerated.
   - Cost: an exact-name search on a project not yet embedded finds its symbol first less
-    often (136 of 155 names, was 153).
+    often (136 of 155 names, was 153). All 17 are still in the first five results.
+  - A body snippet never displaces a symbol from a code block: every locator is placed
+    first and snippets use only the budget that is left.

@@ -61,9 +61,11 @@ import {
   scoreLexicalArm,
   type LexicalArmResult,
   type LexicalComparison,
+  type LexicalSearch,
 } from "./lexical-ab.js";
 import type { RerankVerdict as DeltaVerdict } from "./rerank-sweep.js";
 import { createEmptyVectorStore, LEXICAL_ONLY_WEIGHTS, type EmbedFn } from "./runner.js";
+import { exactNameProbes } from "./weight-sweep.js";
 import { corpusSymbolIndex, withWiredCorpus } from "./wired-runner.js";
 
 /** Rank depth every arm is scored at — the `@10` in nDCG@10. */
@@ -520,6 +522,127 @@ export interface ContextualAbReport {
   increments: Record<string, LexicalComparison>;
   decision: ShipDecision | null;
   embedCost: EmbedCost[];
+  /**
+   * Where each exact-name lookup that lost first rank now ranks, for the
+   * documents production builds. REPORTING ONLY: nothing above reads it.
+   */
+  exactNameDepth: { bm25: ExactNameDepth; fused: ExactNameDepth | null };
+}
+
+// ---- Where a lost exact-name lookup now ranks (PR #1126 review) -------------
+//
+// The registered scoring counts an exact-name lookup as a miss when its target
+// is not ranked FIRST, and says no more. No production caller takes only the
+// first hit: they take a pool of 6 (docs-gen) to 120 (impact seeding). Whether
+// "17 names lost first rank" matters to one of them depends on where the 17
+// went, so the report prints it. No bar, arm, cap or rule reads these numbers.
+
+/** The deepest rank looked for: the largest pool a production caller asks for. */
+export const EXACT_NAME_RANK_DEPTH = 120;
+
+/** The pools the summary counts against: a short list, docs-gen's default (6), the fused blocks' (12). */
+export const EXACT_NAME_POOLS = [3, 6, 12] as const;
+
+/** The arms whose lost names are followed: the documents production builds, per channel. */
+export const DEPTH_BM25_ARM: DocumentVariant = "own";
+export const DEPTH_FUSED_ARM: ContextualArmId = "own-file";
+
+export interface LostExactName {
+  name: string;
+  /** 1-based rank of the target in ONE search at limit {@link EXACT_NAME_RANK_DEPTH}; null when it is not in it. */
+  rank: number | null;
+  /** For each of {@link EXACT_NAME_POOLS}: does a search at THAT limit return the target? */
+  inPool: Record<number, boolean>;
+}
+
+export interface ExactNameDepth {
+  baselineArm: string;
+  arm: string;
+  /** How many exact-name lookups the suite has. */
+  probes: number;
+  /** The names ranked first under `baselineArm` and not under `arm`, in name order. */
+  lost: LostExactName[];
+}
+
+/**
+ * Follow every name `arm` lost first rank on relative to `baseline`.
+ *
+ * "Lost" is read off the two arms' registered miss sets, so it is the same set
+ * of names the report already lists. The rank is then read from fresh searches
+ * with the arm's own searcher. A pool is asked for at its own limit, not
+ * derived from the rank: on the fused channel the vector candidates are twice
+ * the limit, so what a caller with a pool of 6 gets is a search at limit 6.
+ */
+export async function exactNameDepth(
+  corpus: EmbedRetrievalCorpus,
+  baseline: LexicalArmResult,
+  arm: LexicalArmResult,
+  search: LexicalSearch,
+): Promise<ExactNameDepth> {
+  const before = new Set(baseline.exactNameMisses);
+  const targets = new Map(exactNameProbes(corpus).map((p) => [p.query, p.targetId]));
+  const lost: LostExactName[] = [];
+  for (const name of arm.exactNameMisses.filter((n) => !before.has(n)).sort()) {
+    const targetId = targets.get(name);
+    if (targetId === undefined) continue;
+    const at = (await search(name, EXACT_NAME_RANK_DEPTH)).indexOf(targetId);
+    const inPool: Record<number, boolean> = {};
+    for (const pool of EXACT_NAME_POOLS) {
+      inPool[pool] = (await search(name, pool)).includes(targetId);
+    }
+    lost.push({ name, rank: at === -1 ? null : at + 1, inPool });
+  }
+  return { baselineArm: baseline.armId, arm: arm.armId, probes: arm.exactNameCount, lost };
+}
+
+function depthCell(entry: LostExactName | undefined): string {
+  if (!entry) return "—";
+  const rank = entry.rank === null ? `>${EXACT_NAME_RANK_DEPTH}` : String(entry.rank);
+  const pools = EXACT_NAME_POOLS.map((p) => `${p}:${entry.inPool[p] ? "y" : "n"}`).join(" ");
+  return `${rank} (${pools})`;
+}
+
+function depthSummary(channel: string, d: ExactNameDepth): string {
+  const pools = EXACT_NAME_POOLS.map((p) => `${d.lost.filter((l) => l.inPool[p]).length}`);
+  const deepest = d.lost.reduce((m, l) => Math.max(m, l.rank ?? Infinity), 0);
+  const beyond = d.lost.filter((l) => l.rank === null).length;
+  return (
+    `| ${channel} | \`${d.arm}\` vs \`${d.baselineArm}\` | ${d.lost.length} of ${d.probes} | ` +
+    `${pools.join(" | ")} | ` +
+    `${d.lost.length === 0 ? "—" : Number.isFinite(deepest) ? deepest : `>${EXACT_NAME_RANK_DEPTH}`} | ` +
+    `${beyond} |`
+  );
+}
+
+/** The rank-depth section of the artifact. */
+export function renderExactNameDepth(depth: ContextualAbReport["exactNameDepth"]): string {
+  const bm25 = new Map(depth.bm25.lost.map((l) => [l.name, l]));
+  const fused = new Map((depth.fused?.lost ?? []).map((l) => [l.name, l]));
+  const names = [...new Set([...bm25.keys(), ...fused.keys()])].sort();
+  const pools = EXACT_NAME_POOLS.join(" / ");
+  const rows = names.map(
+    (n) =>
+      `| \`${n}\` | ${depthCell(bm25.get(n))} | ${depth.fused ? depthCell(fused.get(n)) : "not measured"} |`,
+  );
+  const summary = [
+    `| channel | arms | lost first rank | ${EXACT_NAME_POOLS.map((p) => `in a pool of ${p}`).join(" | ")} | deepest rank | not in the top ${EXACT_NAME_RANK_DEPTH} |`,
+    `| --- | --- | --- | ${EXACT_NAME_POOLS.map(() => "---").join(" | ")} | --- | --- |`,
+    depthSummary("pure BM25", depth.bm25),
+    ...(depth.fused ? [depthSummary("fused", depth.fused)] : []),
+  ];
+  return (
+    `## Where the lost exact-name lookups now rank\n\n` +
+    `Reporting only: no bar, arm or rule reads this section. For each name that was ranked ` +
+    `first under the baseline arm and is not under the documents production builds: the rank ` +
+    `its target holds in one search at limit ${EXACT_NAME_RANK_DEPTH}, and whether a search at ` +
+    `limit ${pools} returns it (\`y\`/\`n\`). \`—\` means the name did not lose first rank on ` +
+    `that channel. On the fused channel the vector candidates are twice the limit, so a pool ` +
+    `is searched at its own limit, not read off the rank.\n\n` +
+    `| name | pure BM25: rank (pools ${pools}) | fused: rank (pools ${pools}) |\n` +
+    `| --- | --- | --- |\n` +
+    `${rows.length > 0 ? rows.join("\n") : "| none | — | — |"}\n\n` +
+    `${summary.join("\n")}\n`
+  );
 }
 
 const VARIANTS: readonly DocumentVariant[] = ["base", "own", "full"];
@@ -558,6 +681,7 @@ export async function runContextualAb(
     },
   };
   const bm25Arms: LexicalArmResult[] = [];
+  let bm25Depth: ExactNameDepth | null = null;
   for (const variant of VARIANTS) {
     const search = createLexicalArmSearch(
       {
@@ -571,7 +695,12 @@ export async function runContextualAb(
     );
     bm25Arms.push(await scoreLexicalArm(corpus, search, { id: variant, label: `BM25 ${variant}` }));
     log(`  bm25  ${variant.padEnd(14)} nDCG@10=${bm25Arms[bm25Arms.length - 1].ndcg10.toFixed(3)}`);
+    // Reporting only, after the arm is scored: where its lost names went.
+    if (variant === DEPTH_BM25_ARM) {
+      bm25Depth = await exactNameDepth(corpus, bm25Arms[0], bm25Arms[bm25Arms.length - 1], search);
+    }
   }
+  if (!bm25Depth) throw new Error(`contextual A/B: arm "${DEPTH_BM25_ARM}" was not scored`);
   const bm25: ContextualChannel = {
     arms: bm25Arms,
     comparisons: bm25Arms
@@ -588,6 +717,7 @@ export async function runContextualAb(
     increments: {},
     decision: null,
     embedCost: [],
+    exactNameDepth: { bm25: bm25Depth, fused: null },
   };
   if (!embedder) return report;
 
@@ -629,16 +759,19 @@ export async function runContextualAb(
         vectorArms.push(vector);
         log(`  vector ${variant.padEnd(13)} nDCG@10=${vector.ndcg10.toFixed(3)}`);
         for (const spec of CONTEXTUAL_ARMS.filter((a) => a.embedding === variant)) {
-          const arm = await scoreLexicalArm(
-            corpus,
-            createLexicalArmSearch(
-              { ...deps, weights: DEFAULT_WEIGHTS },
-              lexicalConfigFor(spec.lexical),
-            ),
-            spec,
+          const search = createLexicalArmSearch(
+            { ...deps, weights: DEFAULT_WEIGHTS },
+            lexicalConfigFor(spec.lexical),
           );
+          const arm = await scoreLexicalArm(corpus, search, spec);
           fusedById.set(spec.id, arm);
           log(`  fused ${spec.id.padEnd(14)} nDCG@10=${arm.ndcg10.toFixed(3)}`);
+          // Reporting only, after the arm is scored. `baseline` is scored with
+          // the first embedding variant, so it is already here.
+          const fusedBaseline = fusedById.get("baseline");
+          if (spec.id === DEPTH_FUSED_ARM && fusedBaseline) {
+            report.exactNameDepth.fused = await exactNameDepth(corpus, fusedBaseline, arm, search);
+          }
         }
       },
     );
@@ -797,6 +930,7 @@ export function renderContextualAb(
       report.bm25,
     ) +
     `\n${vector}` +
+    `\n${renderExactNameDepth(report.exactNameDepth)}` +
     (report.embedCost.length > 0
       ? `\n## Embedding cost on this corpus\n\n${renderEmbedCost(report.embedCost)}\n`
       : "")

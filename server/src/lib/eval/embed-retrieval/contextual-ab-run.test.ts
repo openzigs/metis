@@ -32,7 +32,13 @@ import {
   embeddingTextFor,
   incrementKey,
   lexicalConfigFor,
+  DEPTH_BM25_ARM,
+  DEPTH_FUSED_ARM,
+  EXACT_NAME_POOLS,
+  EXACT_NAME_RANK_DEPTH,
+  exactNameDepth,
   renderContextualAb,
+  renderExactNameDepth,
   renderEmbedCost,
   renderIncrements,
   renderReach,
@@ -511,6 +517,161 @@ describe("runContextualAb", () => {
     for (const arm of ["baseline", "vector-only"]) {
       expect(q1(arm), arm).toBe(0.25);
     }
+  });
+});
+
+describe("where a lost exact-name lookup now ranks (PR #1126 review)", () => {
+  const corpus = corpusFrom(FILES);
+  const context = buildCorpusContext(FILES);
+  const idOf = (name: string): string => corpus.symbols.find((s) => s.name === name)?.id ?? "";
+  const armWith = (armId: string, exactNameMisses: string[]) =>
+    ({ armId, exactNameMisses, exactNameCount: 3 }) as never;
+
+  it("follows exactly the names the arm lost and the baseline had first", async () => {
+    const asked: Array<[string, number]> = [];
+    const search = async (query: string, limit: number): Promise<string[]> => {
+      asked.push([query, limit]);
+      // `saveUser` is fifth; `importUsers` is nowhere.
+      const ranked = ["x1", "x2", "x3", "x4", idOf("saveUser"), "x6"];
+      return query === "saveUser" ? ranked.slice(0, limit) : ["x1", "x2"].slice(0, limit);
+    };
+    const depth = await exactNameDepth(
+      corpus,
+      armWith("base", ["signUp"]),
+      // `signUp` was already a miss; `notAProbe` is not a lookup of the suite.
+      armWith("own", ["signUp", "saveUser", "notAProbe", "importUsers"]),
+      search,
+    );
+    expect(depth).toEqual({
+      baselineArm: "base",
+      arm: "own",
+      probes: 3,
+      lost: [
+        { name: "importUsers", rank: null, inPool: { 3: false, 6: false, 12: false } },
+        { name: "saveUser", rank: 5, inPool: { 3: false, 6: true, 12: true } },
+      ],
+    });
+    expect(asked.filter(([q]) => q === "signUp" || q === "notAProbe")).toEqual([]);
+    expect(asked.filter(([q]) => q === "saveUser").map(([, limit]) => limit)).toEqual([
+      EXACT_NAME_RANK_DEPTH,
+      ...EXACT_NAME_POOLS,
+    ]);
+  });
+
+  it("asks for a pool at its own limit instead of reading it off the rank", async () => {
+    // Second at limit 120, and not returned at all at limit 3: what the fused
+    // channel can do, because its vector candidates are twice the limit.
+    const search = async (_q: string, limit: number): Promise<string[]> =>
+      limit === 3 ? ["x1", "x2", "x3"] : ["x1", idOf("saveUser")];
+    const depth = await exactNameDepth(
+      corpus,
+      armWith("baseline", []),
+      armWith("own-file", ["saveUser"]),
+      search,
+    );
+    expect(depth.lost).toEqual([
+      { name: "saveUser", rank: 2, inPool: { 3: false, 6: true, 12: true } },
+    ]);
+  });
+
+  it("is the depths the callers' pools need", () => {
+    expect(EXACT_NAME_RANK_DEPTH).toBe(120);
+    expect([...EXACT_NAME_POOLS]).toEqual([3, 6, 12]);
+  });
+
+  it("renders one row per lost name and one summary row per channel", () => {
+    const md = renderExactNameDepth({
+      bm25: {
+        baselineArm: "base",
+        arm: "own",
+        probes: 155,
+        lost: [
+          { name: "alpha", rank: 2, inPool: { 3: true, 6: true, 12: true } },
+          { name: "beta", rank: 9, inPool: { 3: false, 6: false, 12: true } },
+          { name: "gamma", rank: null, inPool: { 3: false, 6: false, 12: false } },
+        ],
+      },
+      fused: {
+        baselineArm: "baseline",
+        arm: "own-file",
+        probes: 155,
+        lost: [{ name: "beta", rank: 4, inPool: { 3: false, 6: true, 12: true } }],
+      },
+    });
+    expect(md).toContain("## Where the lost exact-name lookups now rank");
+    expect(md).toContain("| `alpha` | 2 (3:y 6:y 12:y) | — |");
+    expect(md).toContain("| `beta` | 9 (3:n 6:n 12:y) | 4 (3:n 6:y 12:y) |");
+    expect(md).toContain("| `gamma` | >120 (3:n 6:n 12:n) | — |");
+    expect(md).toContain("| pure BM25 | `own` vs `base` | 3 of 155 | 1 | 1 | 2 | >120 | 1 |");
+    expect(md).toContain("| fused | `own-file` vs `baseline` | 1 of 155 | 0 | 1 | 1 | 4 | 0 |");
+  });
+
+  it("renders a run with no fused channel and no lost name", () => {
+    const md = renderExactNameDepth({
+      bm25: { baselineArm: "base", arm: "own", probes: 155, lost: [] },
+      fused: null,
+    });
+    expect(md).toContain("| none | — | — |");
+    expect(md).toContain("| pure BM25 | `own` vs `base` | 0 of 155 | 0 | 0 | 0 | — | 0 |");
+    expect(md).not.toContain("| fused |");
+  });
+
+  it("says a channel was not measured on a row of the other", () => {
+    const md = renderExactNameDepth({
+      bm25: {
+        baselineArm: "base",
+        arm: "own",
+        probes: 2,
+        lost: [{ name: "alpha", rank: 2, inPool: { 3: true, 6: true, 12: true } }],
+      },
+      fused: null,
+    });
+    expect(md).toContain("| `alpha` | 2 (3:y 6:y 12:y) | not measured |");
+  });
+
+  it("a run reports it for the documents production builds, on both channels", async () => {
+    const bm25Only = await runContextualAb(corpus, context, null);
+    expect(bm25Only.exactNameDepth.fused).toBeNull();
+    expect(bm25Only.exactNameDepth.bm25).toMatchObject({ baselineArm: "base", arm: "own" });
+    expect(DEPTH_BM25_ARM).toBe("own");
+    expect(DEPTH_FUSED_ARM).toBe("own-file");
+
+    const report = await runContextualAb(corpus, context, {
+      model: "fake-bow",
+      embed: async (texts) => texts.map(bagOfWords),
+    });
+    expect(report.exactNameDepth.fused).toMatchObject({
+      baselineArm: "baseline",
+      arm: "own-file",
+    });
+    // The lost names are the difference of the two registered miss sets.
+    for (const [depth, channel, base, arm] of [
+      [report.exactNameDepth.bm25, report.bm25, "base", "own"],
+      [report.exactNameDepth.fused, report.fused, "baseline", "own-file"],
+    ] as const) {
+      const misses = (id: string) =>
+        channel?.arms.find((a) => a.armId === id)?.exactNameMisses ?? [];
+      expect(depth?.lost.map((l) => l.name)).toEqual(
+        misses(arm)
+          .filter((n) => !misses(base).includes(n))
+          .sort(),
+      );
+    }
+    expect(
+      renderContextualAb(report, {
+        corpusId: "t",
+        snapshotCommit: "abc",
+        queries: 4,
+        ranAt: "now",
+      }),
+    ).toContain("## Where the lost exact-name lookups now rank");
+  });
+
+  it("does not move a score: the extra lookups run after an arm is scored", async () => {
+    const embed = async (texts: string[]) => texts.map(bagOfWords);
+    const report = await runContextualAb(corpus, context, { model: "fake-bow", embed });
+    // Query embeddings are not costed, so the cost is the corpus, as before.
+    expect(report.embedCost.map((c) => c.texts)).toEqual([4, 4, 4]);
   });
 });
 

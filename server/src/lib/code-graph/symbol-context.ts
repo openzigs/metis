@@ -62,10 +62,21 @@ export const MAX_SNIPPET_CHARS = 800;
 
 // ---- Neutralising repository text ------------------------------------------
 
-/** Zero-width space, joiners, word joiner, BOM, Mongolian vowel separator. */
+/**
+ * Characters a reader does not see: zero-width space and joiners, word joiner,
+ * BOM, Mongolian vowel separator, soft hyphen, the invisible operators
+ * (U+2061-U+2064), and the tag block (U+E0000-U+E007F), which spells ASCII a
+ * model reads and a person does not. Takes a code POINT: the tag block is
+ * outside the BMP.
+ */
 function isZeroWidth(code: number): boolean {
   return (
-    (code >= 0x200b && code <= 0x200d) || code === 0x2060 || code === 0xfeff || code === 0x180e
+    (code >= 0x200b && code <= 0x200d) ||
+    (code >= 0x2060 && code <= 0x2064) ||
+    code === 0xfeff ||
+    code === 0x180e ||
+    code === 0x00ad ||
+    (code >= 0xe0000 && code <= 0xe007f)
   );
 }
 
@@ -74,9 +85,34 @@ function isLineOrControl(code: number): boolean {
   return code <= 0x1f || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029;
 }
 
-/** Bidirectional embedding, override and isolate controls: they reorder what a reader sees. */
+/**
+ * Bidirectional embedding, override and isolate controls, and the three
+ * directional marks (LRM, RLM, Arabic letter mark): they reorder what a reader sees.
+ */
 function isBidiControl(code: number): boolean {
-  return (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
+  return (
+    (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2066 && code <= 0x2069) ||
+    code === 0x200e ||
+    code === 0x200f ||
+    code === 0x061c
+  );
+}
+
+/**
+ * `text` with every invisible or reordering character dropped and every
+ * control or line separator turned into a space, except the one control `keep`
+ * names. Walks code points, not UTF-16 units, so a character outside the BMP
+ * is judged whole.
+ */
+function printable(text: string, keep?: number): string {
+  let out = "";
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (isZeroWidth(code) || isBidiControl(code)) continue;
+    out += code !== keep && isLineOrControl(code) ? " " : ch;
+  }
+  return out;
 }
 
 /**
@@ -88,16 +124,14 @@ function isBidiControl(code: number): boolean {
  * document and in a prompt that quotes a fused hit. The prompt blocks that
  * quote one are line-structured (`[n] name (kind) — path:lines`, a `##`
  * heading), so text that cannot start a line of its own cannot forge an entry
- * or a heading. The same rule as `printable` in `docs-gen/canonical-facts.ts`.
+ * or a heading. A field that IS quoted on a line of its own — the signature a
+ * hit falls back to — goes through {@link quotableSnippet} like any snippet.
+ *
+ * The shape of `printable` in `docs-gen/canonical-facts.ts` with a wider list;
+ * that one feeds a hashed fact sheet and is not changed from here.
  */
 export function oneLine(text: string): string {
-  let out = "";
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.charCodeAt(i);
-    if (isZeroWidth(code) || isBidiControl(code)) continue;
-    out += isLineOrControl(code) ? " " : text[i];
-  }
-  return out.replace(/\s+/g, " ").trim();
+  return printable(text).replace(/\s+/g, " ").trim();
 }
 
 /** `text` cut to `max` UTF-16 units without splitting a surrogate pair. */
@@ -273,7 +307,19 @@ function commentEndingAt(
       const line = lineAt(sourceLines, i);
       const body = commentBody(line);
       if (body) bodies.unshift(body);
-      if (line.includes("/*")) return bodies.join(" ");
+      if (!line.includes("/*")) continue;
+      // The line that holds the opener must be a COMMENT line: `/*` first, or a
+      // `*` continuation. `const a = 1; /* note */` above a declaration is code
+      // with a trailing comment, not a doc comment, and taking it stored the
+      // code as one (PR #1126 review).
+      //
+      // Known and left as measured: a continuation line that merely MENTIONS
+      // an opener (a glob, ` * see src/site/**`) still ends the walk here, so
+      // that comment is kept from that line down. One symbol of the evaluation
+      // corpus has that shape; reading past it changes its document, which
+      // belongs with a re-measurement (#1127).
+      const first = line.trimStart()[0];
+      return first === "/" || first === "*" ? bodies.join(" ") : null;
     }
     // The opener is further up than a doc comment is followed: not one.
     return null;
@@ -590,20 +636,51 @@ export function shippedContextLines(own: Pick<OwnFileContext, "package" | "docCo
 /** How many times the snippet bound is read from a stored text before it is split into lines. */
 const SNIPPET_SCAN_FACTOR = 4;
 
-/** A line that the blocks quoting a hit would read as their own structure. */
-const STRUCTURE_LINE = /^(?:#{1,6}\s|\[\d+\]\s|```|~~~)/;
+/**
+ * What the blocks quoting a hit would read as their own structure, tested
+ * against a line with its leading white space removed: a markdown heading, an
+ * entry head `[n] `, a fence.
+ */
+const STRUCTURE_START = /^(?:#{1,6}(?:\s|$)|\[\d+\]\s|```|~~~)/;
+
+/** Four columns: at that depth CommonMark reads neither a heading nor a fence. */
+const STRUCTURE_INDENT = "    ";
+
+/**
+ * `line`, indented by four more columns when it would otherwise read as
+ * structure. CommonMark still sees a heading or a fence behind one to three
+ * leading spaces, so the test ignores leading white space, and only a line
+ * already four columns in (or behind a tab) is left as it is.
+ */
+export function defuseStructureLine(line: string): string {
+  if (line.startsWith(STRUCTURE_INDENT) || line.startsWith("\t")) return line;
+  return STRUCTURE_START.test(line.trimStart()) ? `${STRUCTURE_INDENT}${line}` : line;
+}
+
+/**
+ * A hit's snippet as a block may quote it under the entry head: every line
+ * through {@link defuseStructureLine}, leading blank lines and trailing white
+ * space dropped, `undefined` when nothing is left.
+ *
+ * Every renderer of a hit calls this INSTEAD of `.trim()`. A trim takes the
+ * defusing indent off the first line again, and the snippet is not always a
+ * {@link bodySnippet}: a hit with no stored text carries its signature, which
+ * is one line of repository text and was never defused. Applying it twice
+ * changes nothing.
+ */
+export function quotableSnippet(snippet: string | null | undefined): string | undefined {
+  if (!snippet) return undefined;
+  const lines = snippet.split("\n");
+  let first = 0;
+  while (first < lines.length && lines[first].trim() === "") first += 1;
+  const out = lines.slice(first).map(defuseStructureLine).join("\n").trimEnd();
+  return out.length > 0 ? out : undefined;
+}
 
 /** One snippet line: unprintable characters out, indentation kept, structure defused. */
 function snippetLine(line: string): string {
-  let out = "";
-  for (let i = 0; i < line.length; i += 1) {
-    const code = line.charCodeAt(i);
-    if (isZeroWidth(code) || isBidiControl(code)) continue;
-    // A tab is indentation; every other control would end or corrupt the line.
-    out += code !== 0x09 && isLineOrControl(code) ? " " : line[i];
-  }
-  out = out.trimEnd();
-  return STRUCTURE_LINE.test(out) ? `  ${out}` : out;
+  // A tab is indentation; every other control would end or corrupt the line.
+  return defuseStructureLine(printable(line, 0x09).trimEnd());
 }
 
 /**
@@ -626,10 +703,12 @@ function bodyStartOf(text: string, start: number, context: string | null | undef
  * {@link MAX_SNIPPET_CHARS} characters.
  *
  * It stays multi-line, because it is code. Each line has its control,
- * zero-width and bidirectional characters removed, and a line that would read
+ * invisible and bidirectional characters removed, and a line that would read
  * as structure in the blocks that quote hits — a markdown heading, a fence, or
- * an entry head `[n] ` — is indented, so it is code inside the entry and not
- * the start of a new one.
+ * an entry head `[n] ` — is indented to four columns
+ * ({@link defuseStructureLine}), so it is code inside the entry and not the
+ * start of a new one. A renderer quotes it with {@link quotableSnippet} and
+ * never `.trim()`s it.
  */
 export function bodySnippet(text: string, context?: string | null): string | undefined {
   const headerEnd = text.indexOf("\n");
