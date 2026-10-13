@@ -138,9 +138,9 @@ export function goOracleCorpusHash(fixture: string = GO_ORACLE_FIXTURE): string 
 
 /**
  * A directory METIS is given. One oracle tree can be seen from more than one:
- * the tree with no `go.mod` is ingested from its package root (an import is
- * matched by the directory it ENDS in) and from its GOPATH root (by the
- * directory that ends in the whole import path).
+ * the tree with no `go.mod` is ingested from its package root (where nothing
+ * says which directory an import names, so none binds) and from its GOPATH
+ * root (where `src/<import path>` is the package, for a file under that `src`).
  */
 export interface OracleView {
   name: string;

@@ -1,5 +1,5 @@
 {
- "corpusHash": "49464ec419d3a094b971b5ed86c7b0f10ea1c73121ffd6e95f54a3a949640744",
+ "corpusHash": "8c494b5e2b18255bca4c79c296a0fcaebc3ce475b4f5e7bcab9a5e31cbb66c14",
  "goVersion": "go1.26.0",
  "platforms": ["linux/amd64","windows/amd64","darwin/arm64"],
  "trees": [
@@ -1004,6 +1004,7 @@
    "name": "legacy",
    "root": "corpus/legacy/src/example.org/legacy",
    "calls": [
+    {"file":"corpus/legacy/src/example.org/legacy/cmd/app/ds.go","line":9,"col":12,"callee":"datastore.Get","form":"selector","name":"Get","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/ds.go","name":"ds"},"answer":{"k":"external","origin":"dependency","detail":"appengine/datastore.Get"}},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/gae.go","line":9,"col":12,"callee":"appengine.Main","form":"selector","name":"Main","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/gae.go","name":"gae"},"answer":{"k":"external","origin":"dependency","detail":"appengine.Main"}},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","line":15,"col":6,"callee":"own.Save","form":"selector","name":"Save","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","name":"main"},"answer":{"k":"func","target":{"file":"corpus/legacy/src/example.org/legacy/store/store.go","name":"Save"}}},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","line":16,"col":9,"callee":"bstore.Save","form":"selector","name":"Save","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","name":"main"},"answer":{"k":"func","target":{"file":"corpus/legacy/src/example.org/legacy/b/store/store.go","name":"Save"}}},
@@ -1015,17 +1016,22 @@
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","line":23,"col":4,"callee":"c.Open","form":"selector","name":"Open","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","name":"main"},"answer":{"k":"func","target":{"file":"corpus/legacy/src/example.org/legacy/store/store.go","recv":"Conn","name":"Open"}}},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","line":25,"col":5,"callee":"bc.Open","form":"selector","name":"Open","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","name":"main"},"answer":{"k":"func","target":{"file":"corpus/legacy/src/example.org/legacy/b/store/store.go","recv":"Conn","name":"Open"}}},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","line":26,"col":9,"callee":"istore.Open","form":"selector","name":"Open","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","name":"main"},"answer":{"k":"func","target":{"file":"corpus/legacy/src/example.org/legacy/internal/storage/storage.go","name":"Open"}}},
+    {"file":"corpus/legacy/src/example.org/legacy/cmd/app/stats.go","line":9,"col":11,"callee":"appstats.Main","form":"selector","name":"Main","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/stats.go","name":"stats"},"answer":{"k":"external","origin":"dependency","detail":"appstats.Main"}},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/wrap.go","line":8,"col":9,"callee":"errors.Wrap","form":"selector","name":"Wrap","from":{"file":"corpus/legacy/src/example.org/legacy/cmd/app/wrap.go","name":"wrap"},"answer":{"k":"external","origin":"dependency","detail":"github.com/pkg/errors.Wrap"}}
    ],
    "symbols": [
+    {"file":"corpus/legacy/src/example.org/legacy/appstats/appstats.go","kind":"function","name":"Main","line":8,"endLine":8},
     {"file":"corpus/legacy/src/example.org/legacy/b/store/store.go","kind":"function","name":"Save","line":4,"endLine":4},
     {"file":"corpus/legacy/src/example.org/legacy/b/store/store.go","kind":"struct","name":"Conn","line":7,"endLine":7},
     {"file":"corpus/legacy/src/example.org/legacy/b/store/store.go","kind":"function","recv":"Conn","name":"Open","line":10,"endLine":10},
+    {"file":"corpus/legacy/src/example.org/legacy/cmd/app/ds.go","kind":"function","name":"ds","line":8,"endLine":10},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/gae.go","kind":"function","name":"gae","line":8,"endLine":10},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","kind":"function","name":"main","line":14,"endLine":27},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/main.go","kind":"function","name":"local","line":29,"endLine":29},
+    {"file":"corpus/legacy/src/example.org/legacy/cmd/app/stats.go","kind":"function","name":"stats","line":8,"endLine":10},
     {"file":"corpus/legacy/src/example.org/legacy/cmd/app/wrap.go","kind":"function","name":"wrap","line":7,"endLine":9},
     {"file":"corpus/legacy/src/example.org/legacy/internal/appengine/appengine.go","kind":"function","name":"Main","line":8,"endLine":8},
+    {"file":"corpus/legacy/src/example.org/legacy/internal/appengine/datastore/datastore.go","kind":"function","name":"Get","line":9,"endLine":9},
     {"file":"corpus/legacy/src/example.org/legacy/internal/storage/storage.go","kind":"function","name":"Open","line":5,"endLine":5},
     {"file":"corpus/legacy/src/example.org/legacy/legacy/internal/storage/storage.go","kind":"function","name":"Open","line":5,"endLine":5},
     {"file":"corpus/legacy/src/example.org/legacy/mystore/mystore.go","kind":"function","name":"Save","line":6,"endLine":6},

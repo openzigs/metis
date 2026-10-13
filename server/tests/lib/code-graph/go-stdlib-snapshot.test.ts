@@ -258,14 +258,23 @@ describe("what a missing entry costs (the reason to regenerate for a new Go rele
     expect(v.get("p/p.go:6:Marshal")).toBe("unbound external");
   });
 
-  it("with NO go.mod, an unlisted path can be taken for the project directory of that name", () => {
+  it("with NO go.mod, an unlisted path beside a project directory of that name is undecided, not bound", () => {
     const tree = {
       "p/p.go": caller(NEW_PACKAGE),
       "encoding/newfmt/n.go": "package newfmt\n\nfunc Marshal() {}\n",
     };
-    // The one wrong binding a missing package entry can cause.
-    expect(goVerdicts(tree, []).get("p/p.go:6:Marshal")).toBe(
-      "package encoding/newfmt/n.go::Marshal",
+    // This was the one wrong binding a missing package entry could cause: the
+    // directory was bound. A path with no domain in front names a root-level
+    // directory only by a guess (PR #1104 review cycle 7), so the cost of a
+    // missing entry here is now an undecided call.
+    expect(goVerdicts(tree, []).get("p/p.go:6:Marshal")).toBe("unknown");
+    // Under a GOPATH `src` the importer is in, it is still the wrong target.
+    const gopath = {
+      "src/p/p.go": caller(NEW_PACKAGE),
+      "src/encoding/newfmt/n.go": "package newfmt\n\nfunc Marshal() {}\n",
+    };
+    expect(goVerdicts(gopath, []).get("src/p/p.go:6:Marshal")).toBe(
+      "package src/encoding/newfmt/n.go::Marshal",
     );
     // A LISTED path in the same layout is the standard library, whatever the tree holds.
     const listed = {

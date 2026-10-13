@@ -1109,14 +1109,15 @@ func main() { storage.Long() }
     // A proper tail of the path: the project's own package, or a dependency
     // that is spelled alike (PR #1104 review cycle 5).
     expect(one.get("cmd/main.go:Long")).toBe("unknown");
+    // Held whole under a GOPATH `src`, for a file of that workspace.
     const held = verdicts(
       {
         "src/example.com/app/internal/storage/s.go": "package storage\n\nfunc Long() {}\n",
-        "cmd/main.go": main,
+        "src/example.com/app/cmd/main.go": main,
       },
       [],
     );
-    expect(held.get("cmd/main.go:Long")).toBe(
+    expect(held.get("src/example.com/app/cmd/main.go:Long")).toBe(
       "package src/example.com/app/internal/storage/s.go::Long",
     );
     // Beside `storage/`, which the path ends in as well, nothing changes.

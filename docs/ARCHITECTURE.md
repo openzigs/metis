@@ -3573,17 +3573,29 @@ that directory was not read — unparseable, unreadable, or hidden by `.metisign
 file (`go run gen.go gen_helpers.go`); a type name its project package does not declare; two
 imports that would bind one local name; an import path that two `go.mod` files of the tree
 both declare, from a file in neither; and — in a tree with no `go.mod`, or for Go code outside
-every module — an import path matched to a directory by spelling, which binds in one case
-only: exactly one directory whose path ENDS in the whole import path (a GOPATH layout,
-`src/github.com/org/app/store`, or the tree root being that `src`). A ONE-segment path
-(`import "appengine"`) is its own tail, so it binds only to a directory at the tree root or
-directly under one named `src` or `vendor` — `internal/appengine/` was bound for the
-dependency, a wrong target by the type checker (review cycle 6; in the oracle corpus). A directory the path
-merely ends in is never bound, however many segments match: two trailing segments were once
-taken for evidence, and `errors.Wrap()` importing `github.com/pkg/errors` bound to the
-project's own `pkg/errors/e.go::Wrap`, which the type checker says is the dependency's
-(PR #1104, review cycle 5; the case is in the oracle corpus). Such an import is unknown —
-not `external`, since the directory may be the very package meant. An import is resolved in the
+every module — an import path P placed by **Go's own lookup rule** for such a file and by
+nothing else. A directory binds only when it holds the WHOLE path and sits where Go would
+look: **(a)** `<prefix>/src/P`, with the importing file beneath that same `src` (one GOPATH
+workspace); **(b)** `<prefix>/vendor/P`, with the importing file beneath `<prefix>` (Go's
+vendor scoping — and `vendor/` is in the default `.metisignore`, so this needs it
+un-ignored); **(c)** `P` from the tree root, where P's first segment has a dot in it
+(`example.org/…`, `github.com/…`: a domain as the first directory is the evidence that the
+root is a GOPATH `src`). Exactly one such directory binds; two are unknown; a directory
+holding the whole path anywhere else, or one the path merely ends in, is unknown — not
+`external`, since the directory may be the very package meant. With nothing matched the path
+is `external`. A file INSIDE a module never binds an import to a directory outside every
+`go.mod`: module mode looks nothing up in a GOPATH. The rule has no clause for a depth or a
+segment count, on purpose. "One directory ends in the path" bound a dependency's call to a
+project function three times, and each fix was cut to the shape reported: a two-segment tail
+(`pkg/errors/` for `github.com/pkg/errors`, review cycle 5), one segment below the root
+(`internal/appengine/` for `appengine`, cycle 6), then one segment at the root and two at
+depth (`appstats/`, `internal/appengine/datastore/`, cycle 7). All are in the oracle corpus,
+where the type checker says external. The check that found the last ones — and then
+`src/appstats/` under a package root, which is why (a) asks where the importer is — is to
+move a corpus directory one level up or down and re-run
+`go-oracle-corpus.test.ts -t SOUNDNESS`. The cost is recall in a tree with no `go.mod` that
+is not laid out as a GOPATH: an undotted import of a root-level directory, or a file outside
+`src/` importing a package inside it, is left undecided. An import is resolved in the
 importing file's **own module** first (the nearest `go.mod` above it), then by the most
 specific module path, so in a monorepo of services that are each `module app`, `app/storage`
 means the importer's own `storage/`.
@@ -3753,9 +3765,17 @@ types `struct{ W; a0 … a7 int }` over a `W` embedding 133 structs kept a 143-n
   most 64 selections × 322 entries, about 1.5 MB.
 - the watchdog also reads the heap whenever the resolver has kept
   `GO_BINDING_HEAP_SAMPLE_ENTRIES` (16,384) more entries than at its last reading
-  (`GoResolver.retainedTotal()`, a running sum), so what the heap may pass the limit by is
-  about 8 MB instead of whatever 256 calls keep. Reading the heap before every call was
-  measured and rejected (16 ms on Miniflux's 5.6 ms of resolving).
+  (`GoResolver.retainedTotal()`, a running sum), so what the heap may pass the limit by no
+  longer depends on what 256 calls keep. It has two parts. A constant one, about 8 MB: the
+  16,384 entries between readings and one call's member tables. And one that **no constant
+  bounds**: no reading can come between the declarations ONE call reads for the first time,
+  so the overshoot grows with the members those declarations declare — 40 to 50 B a member,
+  linear in the source the call reaches (about 6 retained bytes per byte of Go). One call
+  through 61 types of 20,000 fields kept 54 MB against a 16 MB limit (review cycle 7; "about
+  8 MB" used to be given here as the ceiling). At the 512 MB default that term is far from an
+  abort — it needs tens of megabytes of Go behind a single call — and a watchdog test pins
+  the shape. Reading the heap before every call was measured and rejected (16 ms on
+  Miniflux's 5.6 ms of resolving), and would not bound this term either.
 
 `go-wide-shapes.ts` holds both shapes ("N types × K own fields", "one call selecting through
 H wide types"); `go-resolver-type-forms.test.ts` scales them and

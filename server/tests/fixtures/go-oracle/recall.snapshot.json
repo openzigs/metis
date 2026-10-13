@@ -45,12 +45,12 @@
     ]
   },
   "legacy-package-root": {
-    "calls": 12,
+    "calls": 14,
     "otherForm": 0,
     "boundAgreeing": 1,
     "decidedAgreeing": 0,
     "allowed": 0,
-    "undecided": 11,
+    "undecided": 13,
     "resolvable": 8,
     "unbound": [
       "cmd/app/main.go:15:Save -> store/store.go::Save [unknown]",
@@ -63,12 +63,12 @@
     ]
   },
   "legacy-gopath-root": {
-    "calls": 12,
+    "calls": 14,
     "otherForm": 0,
     "boundAgreeing": 8,
     "decidedAgreeing": 2,
     "allowed": 0,
-    "undecided": 2,
+    "undecided": 4,
     "resolvable": 8,
     "unbound": []
   }

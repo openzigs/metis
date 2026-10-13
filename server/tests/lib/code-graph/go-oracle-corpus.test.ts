@@ -299,6 +299,30 @@ describe("#1071 — the Go oracle corpus", () => {
         expect(verdictsOf(name).get(`${file}:9:Main`)).toBe("unknown");
       }
     });
+
+    it("the same guess one level away: a lone directory at the tree root, and two segments at depth", () => {
+      // The cycle-6 fix was cut to "one segment, below the root". `appstats/`
+      // at the project's root was still bound for `import "appstats"`, and
+      // `internal/appengine/datastore/` for `import "appengine/datastore"` —
+      // wrong targets by the type checker, and SOUNDNESS above failed on both
+      // (PR #1104, review cycle 7). The rule is now Go's own lookup (`src/`,
+      // an in-scope `vendor/`, a dotted path from the root), with no clause
+      // for a depth or a segment count.
+      for (const [name, prefix] of [
+        ["legacy-package-root", ""],
+        ["legacy-gopath-root", "src/example.org/legacy/"],
+      ] as const) {
+        const view = GO_ORACLE_VIEWS.find((v) => v.name === name)!;
+        for (const [file, callee] of [
+          ["cmd/app/stats.go", "Main"],
+          ["cmd/app/ds.go", "Get"],
+        ] as const) {
+          const oracle = oracleCallsFor(snapshot, view).find((c) => c.file.endsWith(file))!;
+          expect(showAnswer(oracle.answer, view)).toBe("external (dependency)");
+          expect(verdictsOf(name).get(`${prefix}${file}:9:${callee}`)).toBe("unknown");
+        }
+      }
+    });
   });
 
   // ── The checker itself: each rule must be able to fail. ───────────────────

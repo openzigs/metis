@@ -607,13 +607,23 @@ export const GO_BINDING_HEAP_SAMPLE_CALLS = 256;
  * each keep a lot: between two readings the resolver adds fewer than this
  * many entries plus what ONE call adds.
  *
- * That makes the overshoot — what the heap may have grown past the limit when
- * a reading notices — at most about 8 MB: 16,384 entries are 0.4 to 2 MB at
- * the 23 to 130 B an entry measured at 24,000 types (4 MB at the 250 B of a
- * small tree), and one call's member tables are at most 1.5 MB
- * (`GO_TYPE_RETAINED_MAX`). The one term no constant bounds is a call's first
- * reading of the declarations it reaches, about 60 B a declared member, once
- * per declaration; the reading after that call sees it.
+ * The overshoot — what the heap may have grown past the limit when a reading
+ * notices — therefore has two parts, and only the first is a constant:
+ *
+ *  - about 8 MB: 16,384 entries are 0.4 to 2 MB at the 23 to 130 B an entry
+ *    measured at 24,000 types (4 MB at the 250 B of a small tree), and one
+ *    call's member tables are at most 1.5 MB (`GO_TYPE_RETAINED_MAX`);
+ *  - what ONE call's first reading of the declarations it reaches keeps: 40
+ *    to 50 B a declared member, once per declaration. No reading can come
+ *    between them, so this is bounded by the members those declarations
+ *    declare and by nothing smaller — linear in the source the call reaches,
+ *    about 6 retained bytes per byte of Go. One call through 61 types of
+ *    20,000 fields (17.5 MB of Go) kept 54 MB against a 16 MB limit (PR #1104
+ *    review cycle 7; this comment used to give "at most about 8 MB" as the
+ *    ceiling). The reading after that call sees it and stops the step.
+ *
+ * At the 512 MB default the second term is not an abort: it takes tens of
+ * megabytes of Go behind a single call to come near it.
  *
  * Reading the heap before EVERY call was measured and rejected: on Miniflux
  * (21,106 calls, 5.6 ms of resolving) it adds 16 ms, nearly three times the

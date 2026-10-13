@@ -985,9 +985,6 @@ interface InterfaceSet {
 /** One segment of the index of directories no `go.mod` covers, read from the END of their paths. */
 interface DirSuffixNode {
   kids: Map<string, DirSuffixNode>;
-  /** How many directories end in the segments leading here, and one of them. */
-  count: number;
-  first: string;
   /** The directory that IS exactly these segments, if there is one. */
   dir: string | null;
 }
@@ -1238,7 +1235,7 @@ export function createGoResolver(
   let orphanSuffixes: DirSuffixNode | null = null;
   const orphanSuffixIndex = (): DirSuffixNode => {
     if (orphanSuffixes) return orphanSuffixes;
-    const root: DirSuffixNode = { kids: keptMap("placing"), count: 0, first: "", dir: null };
+    const root: DirSuffixNode = { kids: keptMap("placing"), dir: null };
     for (const d of orphanDirs) {
       if (d === "") continue;
       const segs = d.split("/");
@@ -1246,10 +1243,9 @@ export function createGoResolver(
       for (let i = segs.length - 1; i >= 0; i -= 1) {
         let next = node.kids.get(segs[i]);
         if (!next) {
-          next = { kids: keptMap("placing"), count: 0, first: d, dir: null };
+          next = { kids: keptMap("placing"), dir: null };
           node.kids.set(segs[i], next);
         }
-        next.count += 1;
         node = next;
       }
       node.dir = d;
@@ -1259,53 +1255,89 @@ export function createGoResolver(
   };
 
   /**
-   * An import path with no module to place it: matched to the tree by its
-   * spelling alone, which decides in ONE case — exactly one directory whose
-   * path ENDS in the whole import path. That is a GOPATH layout
-   * (`src/github.com/org/app/store` for `github.com/org/app/store`), or the
-   * tree root being the GOPATH's `src` itself (`github.com/org/app/store`).
+   * An import path with no module to place it — the importing file is in no
+   * `go.mod`'s tree — placed by GO'S OWN LOOKUP RULE for such a file, and by
+   * nothing else. A project directory D is the path P's package only when D
+   * holds the WHOLE path and sits where Go would look for it:
    *
-   * A directory the import path merely ends in — a PROPER TAIL of it — is a
-   * guess, however many segments match: `pkg/errors/` in a tree with no
-   * `go.mod` is the project's own package or it is where somebody keeps
-   * things, and `github.com/pkg/errors` is the dependency either way. Two
-   * segments were once taken for evidence, and bound `errors.Wrap()` to the
-   * project's `pkg/errors/e.go::Wrap` (PR #1104 review cycle 5; the type
-   * checker says external). Such a path is undecided — not external, since
-   * the tree root may be the package root and the directory the very package
+   *  (a) `<prefix>/src/P` — the directory directly above P's first segment is
+   *      named `src` — and the importing file lies beneath that `src`: both
+   *      are then in one GOPATH workspace. (A `src` the importer is NOT under
+   *      is some directory of that name: `src/appstats/` inside the package
+   *      `example.org/legacy` is `example.org/legacy/src/appstats`, and was
+   *      bound for the dependency `appstats` until the importer was asked
+   *      for — found by moving the corpus directory, cycle 7.)
+   *  (b) `<prefix>/vendor/P`, and the importing file lies beneath `<prefix>`:
+   *      Go applies a vendor directory to the code under its parent only;
+   *  (c) `P` from the tree root, and P's first segment has a dot in it
+   *      (`example.org/…`, `github.com/…`). A domain as the first directory is
+   *      the evidence that the tree root is itself a GOPATH `src`.
+   *
+   * Exactly one such directory binds. Two are undecided. A directory that
+   * holds the whole path anywhere else, and a directory the path merely ends
+   * in (a PROPER TAIL of it), are undecided too — never external, since the
+   * tree root may be the package root and the directory the very package
    * meant. With nothing matched at all the path is outside the tree — unless
    * Go code sits at the tree root, whose import path is the unknown module
    * path itself.
    *
-   * An import path of ONE segment (`import "appengine"`) is its own tail: "a
-   * directory ending in the whole path" is then any directory of that name,
-   * the same guess. `internal/appengine/` is `…/internal/appengine`, and was
-   * bound for the dependency `appengine` — a wrong target, by the type
-   * checker (PR #1104 review cycle 6). So one segment binds only where the
-   * directory sits where a one-segment path can live: at the tree root (the
-   * tree being a GOPATH `src`), or directly under a directory named `src` or
-   * `vendor`. Anywhere else it is undecided.
+   * The rule has no clause for a depth or a number of segments, on purpose.
+   * Three times "one directory ends in the path" bound a dependency's call to
+   * a project function, and each fix was cut to the reported shape: a
+   * two-segment tail (`pkg/errors/` for `github.com/pkg/errors`, PR #1104
+   * review cycle 5), one segment below the root (`internal/appengine/` for
+   * `appengine`, cycle 6), then one segment AT the root, with the same guess
+   * still bound for `internal/appengine/datastore` (cycle 7). The type checker
+   * says external for all of them.
+   *
+   * {@link spellingScoped} is set when the answer depended on where the
+   * importer is — (a) and (b) both ask — so that it is not kept for other
+   * files. The cost is the importer's depth times the path's length.
    */
-  const bySpelling = (importPath: string): ImportTarget => {
+  let spellingScoped = false;
+  const bySpelling = (importPath: string, importerDir: string): ImportTarget => {
     const segs = importPath.split("/");
     // `tail`: a directory that IS a proper tail of the import path.
-    // `holding`: the directories that end in the WHOLE import path.
+    // `node`: the directories that end in the WHOLE import path.
     let tail = false;
     let node: DirSuffixNode | undefined = orphanSuffixIndex();
     for (let i = segs.length - 1; i >= 0 && node; i -= 1) {
       node = node.kids.get(segs[i]);
       if (node?.dir && i > 0) tail = true;
     }
-    const holding = node ? node.count : 0;
-    if (holding === 1 && !tail) {
-      const dir = node!.first;
-      if (segs.length === 1) {
-        const under = dir.split("/").at(-2);
-        if (under !== undefined && under !== "src" && under !== "vendor") return UNKNOWN_IMPORT;
+    if (node) {
+      // Where Go would look. More than one place is undecided, so the count
+      // is all that is kept past two.
+      let found = 0;
+      let dir = "";
+      const anySrc = node.kids.has("src");
+      const anyVendor = node.kids.has("vendor");
+      if (anySrc || anyVendor) {
+        spellingScoped = true;
+        // Every directory the importer lies beneath, the tree root included.
+        for (let end = importerDir.length; ; end = importerDir.lastIndexOf("/", end - 1)) {
+          const above = importerDir.slice(0, end);
+          const prefix = end > 0 ? `${above}/` : "";
+          const vendored = `${prefix}vendor/${importPath}`;
+          if (anyVendor && orphanDirs.has(vendored)) {
+            found += 1;
+            dir = vendored;
+          }
+          const inSrc = `${prefix}${importPath}`;
+          if (anySrc && (above === "src" || above.endsWith("/src")) && orphanDirs.has(inSrc)) {
+            found += 1;
+            dir = inSrc;
+          }
+          if (end <= 0) break;
+        }
       }
-      return inDir(dir);
+      if (node.dir !== null && segs[0].includes(".")) {
+        found += 1;
+        dir = node.dir;
+      }
+      return found === 1 && !tail ? inDir(dir) : UNKNOWN_IMPORT;
     }
-    if (holding > 0 || tail) return UNKNOWN_IMPORT;
+    if (tail) return UNKNOWN_IMPORT;
     const rootImportable = (pkgsByDir.get("") ?? []).some(
       (p) => !p.name.endsWith("_test") && p.name !== "main",
     );
@@ -1335,12 +1367,20 @@ export function createGoResolver(
     }
     const known = ofModule.get(importPath);
     if (known) return known;
-    const target = resolveImportOnce(importPath, own);
-    ofModule.set(importPath, target);
+    spellingScoped = false;
+    const target = resolveImportOnce(importPath, own, importer.dir);
+    // An answer that depended on the importer's own directory (a vendor
+    // directory in a tree with no `go.mod`) is that file's alone; the file
+    // keeps it ({@link importsOf}).
+    if (!spellingScoped) ofModule.set(importPath, target);
     return target;
   };
 
-  const resolveImportOnce = (importPath: string, own: GoModule | null): ImportTarget => {
+  const resolveImportOnce = (
+    importPath: string,
+    own: GoModule | null,
+    importerDir: string,
+  ): ImportTarget => {
     // The standard library is never a project directory, whatever the tree holds.
     if (GO_STDLIB_PACKAGES.has(importPath)) return { t: "external", path: importPath };
     // The importing file's own module first: a path inside it means the
@@ -1371,7 +1411,12 @@ export function createGoResolver(
       return inDir(dirInModule(best[0], importPath)!);
     }
     if (orphanDirs.size === 0) return { t: "external", path: importPath };
-    return bySpelling(importPath);
+    const spelled = bySpelling(importPath, importerDir);
+    // A file INSIDE a module is built in module mode, where no import is ever
+    // looked up in a GOPATH: a directory outside every `go.mod` is not what
+    // its import names, wherever it sits. Undecided rather than external —
+    // the directory is there, and what build sees it is not known.
+    return own && spelled.t === "project" ? UNKNOWN_IMPORT : spelled;
   };
 
   /**

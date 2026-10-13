@@ -33,20 +33,24 @@
     ]
   },
   "legacy-package-root": {
-    "calls": 12,
-    "boundByName": 2,
+    "calls": 14,
+    "boundByName": 4,
     "boundByNameAgreeing": 1,
     "boundByName_list": [
+      "cmd/app/ds.go:9:Get -> internal/appengine/datastore/datastore.go::Get [type checker: external (dependency)]",
       "cmd/app/gae.go:9:Main -> internal/appengine/appengine.go::Main [type checker: external (dependency)]",
-      "cmd/app/main.go:17:Save -> mystore/mystore.go::Save [agrees]"
+      "cmd/app/main.go:17:Save -> mystore/mystore.go::Save [agrees]",
+      "cmd/app/stats.go:9:Main -> appstats/appstats.go::Main [type checker: external (dependency)]"
     ]
   },
   "legacy-gopath-root": {
-    "calls": 12,
-    "boundByName": 1,
+    "calls": 14,
+    "boundByName": 3,
     "boundByNameAgreeing": 0,
     "boundByName_list": [
-      "src/example.org/legacy/cmd/app/gae.go:9:Main -> src/example.org/legacy/internal/appengine/appengine.go::Main [type checker: external (dependency)]"
+      "src/example.org/legacy/cmd/app/ds.go:9:Get -> src/example.org/legacy/internal/appengine/datastore/datastore.go::Get [type checker: external (dependency)]",
+      "src/example.org/legacy/cmd/app/gae.go:9:Main -> src/example.org/legacy/internal/appengine/appengine.go::Main [type checker: external (dependency)]",
+      "src/example.org/legacy/cmd/app/stats.go:9:Main -> src/example.org/legacy/appstats/appstats.go::Main [type checker: external (dependency)]"
     ]
   }
 }

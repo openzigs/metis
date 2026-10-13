@@ -397,40 +397,157 @@ func main() {
     expect(v.get("cmd/main.go:Wrap")).toBe("unknown");
   });
 
-  // PR #1104, review cycle 6. A ONE-segment import path is its own tail: any
-  // directory of that name "ends in the whole path". `internal/appengine/`
-  // was bound for the dependency `appengine` (the oracle corpus holds the
-  // tree: `legacy-package-root`, `cmd/app/gae.go`, where the type checker
-  // says external).
+  // PR #1104, review cycles 6 and 7. "Exactly one directory ends in the whole
+  // path" bound `internal/appengine/` for the dependency `appengine`; the fix
+  // was cut to one segment below the root, and the same guess stayed bound at
+  // the root (`appengine/`) and for two segments at depth
+  // (`internal/appengine/datastore/`). The oracle corpus holds all three
+  // (`legacy-package-root`: `cmd/app/gae.go`, `stats.go`, `ds.go`), where the
+  // type checker says external. The rule is Go's own lookup, and has no
+  // clause for a depth or a segment count — so every row is run for a path of
+  // one segment and of two.
+  const importingFrom = (importer: string, importPath: string, tree: Tree) =>
+    verdicts(
+      {
+        ...tree,
+        [importer]: `package main\n\nimport "${importPath}"\n\nfunc main() { store.Open() }\n`,
+      },
+      [],
+    ).get(`${importer}:Open`);
+
+  describe.each([["appengine"], ["appengine/datastore"]])("import %j", (P) => {
+    const at = (dir: string): Tree => ({ [`${dir}/store.go`]: STORE });
+    const bound = (dir: string) => `package ${dir}/store.go::Open`;
+
+    it.each([
+      // Directly above the path is a `src`, and the importer is beneath that `src`.
+      [`src/${P}`, "src/main.go"],
+      [`src/${P}`, "src/example.org/app/cmd/main.go"],
+      [`go/src/${P}`, "go/src/example.org/app/main.go"],
+      [`a/b/src/${P}`, "a/b/src/c/main.go"],
+    ])("(a) binds `%s` for the importer `%s`, in the same GOPATH workspace", (dir, importer) => {
+      expect(importingFrom(importer, P, at(dir))).toBe(bound(dir));
+    });
+
+    it.each([
+      // A `src` the importer is not under is some directory of that name. The
+      // oracle corpus, with `appstats/` moved to `src/appstats/` under the
+      // package root, has the type checker say external for exactly this.
+      [`src/${P}`, "cmd/main.go"],
+      [`src/${P}`, "main.go"],
+      [`src/${P}`, "srcs/main.go"],
+      [`go/src/${P}`, "go/main.go"],
+      [`go/src/${P}`, "src/main.go"],
+      [`a/b/src/${P}`, "a/src/main.go"],
+    ])("(a) `%s` is undecided for the importer `%s`, outside that `src`", (dir, importer) => {
+      expect(importingFrom(importer, P, at(dir))).toBe("unknown");
+    });
+
+    it("(a) `src` is a whole directory name: `mysrc/` is not one", () => {
+      // Another workspace's `src` holds the path too, so the `src` branch runs.
+      expect(
+        importingFrom("mysrc/main.go", P, { ...at(`mysrc/${P}`), ...at(`other/src/${P}`) }),
+      ).toBe("unknown");
+    });
+
+    it.each([
+      // Beneath the vendor directory's parent, at any depth, the parent itself included.
+      [`vendor/${P}`, "cmd/main.go"],
+      [`vendor/${P}`, "main.go"],
+      [`third_party/vendor/${P}`, "third_party/cmd/tool/main.go"],
+      [`third_party/vendor/${P}`, "third_party/main.go"],
+      [`a/b/vendor/${P}`, "a/b/c/d/main.go"],
+    ])("(b) binds `%s` for the importer `%s`, which lies beneath its parent", (dir, importer) => {
+      expect(importingFrom(importer, P, at(dir))).toBe(bound(dir));
+    });
+
+    it.each([
+      [`third_party/vendor/${P}`, "cmd/main.go"],
+      [`third_party/vendor/${P}`, "main.go"],
+      [`third_party/vendor/${P}`, "third_party2/main.go"],
+      [`a/b/vendor/${P}`, "a/main.go"],
+      [`a/b/vendor/${P}`, "a/bc/main.go"],
+    ])("(b) `%s` is undecided for the importer `%s`, outside its parent", (dir, importer) => {
+      expect(importingFrom(importer, P, at(dir))).toBe("unknown");
+    });
+
+    it("(b) is decided per importer: one vendor directory, two files, two answers", () => {
+      const v = verdicts(
+        {
+          ...at(`third_party/vendor/${P}`),
+          "cmd/main.go": `package main\n\nimport "${P}"\n\nfunc main() { store.Open() }\n`,
+          "third_party/tool/main.go": `package main\n\nimport "${P}"\n\nfunc main() { store.Open() }\n`,
+          "other/main.go": `package main\n\nimport "${P}"\n\nfunc main() { store.Open() }\n`,
+        },
+        [],
+      );
+      expect(v.get("cmd/main.go:Open")).toBe("unknown");
+      expect(v.get("third_party/tool/main.go:Open")).toBe(bound(`third_party/vendor/${P}`));
+      expect(v.get("other/main.go:Open")).toBe("unknown");
+    });
+
+    it.each([
+      // The tree root, with no dot in the first segment: nothing says the root is a GOPATH `src`.
+      [P],
+      // Holding the whole path, somewhere Go does not look.
+      [`internal/${P}`],
+      [`lib/${P}`],
+      [`a/srcs/${P}`],
+      [`a/vendored/${P}`],
+      [`src/x/${P}`],
+      [`vendor/x/${P}`],
+    ])("`%s` is undecided: it holds the whole path where Go does not look", (dir) => {
+      expect(importing(P, at(dir))).toBe("unknown");
+    });
+
+    it.each([
+      // A `src` inside a `src`, the importer under both.
+      [`src/${P}`, `src/x/src/${P}`, "src/x/src/main.go"],
+      // A GOPATH and a vendor directory. (Go takes the vendored one; one rule
+      // with no order of preference leaves it undecided.)
+      [`src/${P}`, `src/app/vendor/${P}`, "src/app/main.go"],
+      // Two vendor directories above the importer.
+      [`vendor/${P}`, `cmd/vendor/${P}`, "cmd/main.go"],
+    ])(
+      "two places Go would look — `%s` and `%s` — are undecided for `%s`",
+      (one, two, importer) => {
+        expect(importingFrom(importer, P, { ...at(one), ...at(two) })).toBe("unknown");
+      },
+    );
+
+    it("one place Go would look binds, whatever else holds the path elsewhere", () => {
+      expect(
+        importingFrom("src/app/main.go", P, {
+          ...at(`src/${P}`),
+          ...at(`src/internal/${P}`),
+          ...at(`x/vendor/${P}`),
+          ...at(`x/src/${P}`),
+        }),
+      ).toBe(bound(`src/${P}`));
+    });
+  });
+
   it.each([
-    ["internal/appengine", "unknown"],
-    ["lib/appengine", "unknown"],
-    ["a/srcs/appengine", "unknown"],
-    // Where a one-segment import path can live: the tree root (a GOPATH `src`)…
-    ["appengine", "package appengine/store.go::Open"],
-    // …or directly under a `src` or a `vendor` directory.
-    ["src/appengine", "package src/appengine/store.go::Open"],
-    ["go/src/appengine", "package go/src/appengine/store.go::Open"],
-    ["vendor/appengine", "package vendor/appengine/store.go::Open"],
-    ["third_party/vendor/appengine", "package third_party/vendor/appengine/store.go::Open"],
-  ])("a one-segment import: the lone directory `%s` is %s", (dir, verdict) => {
-    expect(
-      importing("appengine", {
-        // (The package clause says `store`, which is the name the importer uses.)
-        [`${dir}/store.go`]: STORE,
-      }),
-    ).toBe(verdict);
+    ["example.org/store", "example.org/store"],
+    ["github.com/acme/app/store", "github.com/acme/app/store"],
+  ])("(c) binds `%s` from the tree root: a DOMAIN first is a GOPATH `src`", (P, dir) => {
+    expect(importing(P, { [`${dir}/store.go`]: STORE })).toBe(`package ${dir}/store.go::Open`);
   });
 
-  it("binds when the tree root is the GOPATH's `src`: the directory IS the whole import path", () => {
-    expect(
-      importing("github.com/acme/app/store", { "github.com/acme/app/store/store.go": STORE }),
-    ).toBe("package github.com/acme/app/store/store.go::Open");
+  it.each([
+    // No dot in the first segment…
+    ["acme/app/store", "acme/app/store"],
+    // …or the dot is in a later one.
+    ["acme/app.v2/store", "acme/app.v2/store"],
+    // A dotted path that is not at the root.
+    ["example.org/store", "internal/example.org/store"],
+  ])("(c) `%s` at `%s` is undecided", (P, dir) => {
+    expect(importing(P, { [`${dir}/store.go`]: STORE })).toBe("unknown");
   });
 
-  it("binds a GOPATH layout, where the directory ends in the whole import path", () => {
+  it("binds a GOPATH layout: the whole import path under `src`, from a file of that workspace", () => {
     expect(
-      importing("github.com/acme/app/store", {
+      importingFrom("src/github.com/acme/app/cmd/main.go", "github.com/acme/app/store", {
         "src/github.com/acme/app/store/store.go": STORE,
       }),
     ).toBe("package src/github.com/acme/app/store/store.go::Open");
@@ -443,6 +560,37 @@ func main() {
         "b/acme/store/store.go": STORE,
       }),
     ).toBe("unknown");
+    // (a) and (c) at once: under a `src`, and dotted from the root.
+    expect(
+      importingFrom("src/main.go", "example.org/store", {
+        "example.org/store/store.go": STORE,
+        "src/example.org/store/store.go": STORE,
+      }),
+    ).toBe("unknown");
+  });
+
+  it("a file INSIDE a module never binds an import to a directory outside every go.mod", () => {
+    // Module mode looks nothing up in a GOPATH. The same directories bind for
+    // the same file when no `go.mod` covers it.
+    const tree: Tree = {
+      "src/appengine/store.go": STORE,
+      "example.org/store/store.go": STORE,
+    };
+    const from = (importPath: string, modules: { dir: string; path: string }[]) =>
+      verdicts(
+        {
+          ...tree,
+          "src/svc/main.go": `package main\n\nimport "${importPath}"\n\nfunc main() { store.Open() }\n`,
+        },
+        modules,
+      ).get("src/svc/main.go:Open");
+    // With `src/svc/go.mod` the importer is in a module, and `src/appengine/`
+    // and `example.org/store/` are outside every one.
+    const inModule = [{ dir: "src/svc", path: "example.com/svc" }];
+    expect(from("appengine", inModule)).toBe("unknown");
+    expect(from("example.org/store", inModule)).toBe("unknown");
+    expect(from("appengine", [])).toBe("package src/appengine/store.go::Open");
+    expect(from("example.org/store", [])).toBe("package example.org/store/store.go::Open");
   });
 
   it("is undecided when the path both ends in one directory and is the end of another", () => {

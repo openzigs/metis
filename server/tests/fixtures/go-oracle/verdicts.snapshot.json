@@ -626,6 +626,7 @@
   "tools/cmd/tool/main.go:20:Run = receiver-type app/model/model.go::Thing::Run | go: func app/model/model.go::Thing::Run"
  ],
  "legacy-package-root": [
+  "cmd/app/ds.go:9:Get = unknown | go: external (dependency)",
   "cmd/app/gae.go:9:Main = unknown | go: external (dependency)",
   "cmd/app/main.go:15:Save = unknown | go: func store/store.go::Save",
   "cmd/app/main.go:16:Save = unknown | go: func b/store/store.go::Save",
@@ -637,9 +638,11 @@
   "cmd/app/main.go:23:Open = unknown | go: func store/store.go::Conn::Open",
   "cmd/app/main.go:25:Open = unknown | go: func b/store/store.go::Conn::Open",
   "cmd/app/main.go:26:Open = unknown | go: func internal/storage/storage.go::Open",
+  "cmd/app/stats.go:9:Main = unknown | go: external (dependency)",
   "cmd/app/wrap.go:8:Wrap = unknown | go: external (dependency)"
  ],
  "legacy-gopath-root": [
+  "src/example.org/legacy/cmd/app/ds.go:9:Get = unknown | go: external (dependency)",
   "src/example.org/legacy/cmd/app/gae.go:9:Main = unknown | go: external (dependency)",
   "src/example.org/legacy/cmd/app/main.go:15:Save = package src/example.org/legacy/store/store.go::Save | go: func src/example.org/legacy/store/store.go::Save",
   "src/example.org/legacy/cmd/app/main.go:16:Save = package src/example.org/legacy/b/store/store.go::Save | go: func src/example.org/legacy/b/store/store.go::Save",
@@ -651,6 +654,7 @@
   "src/example.org/legacy/cmd/app/main.go:23:Open = receiver-type src/example.org/legacy/store/store.go::Conn::Open | go: func src/example.org/legacy/store/store.go::Conn::Open",
   "src/example.org/legacy/cmd/app/main.go:25:Open = receiver-type src/example.org/legacy/b/store/store.go::Conn::Open | go: func src/example.org/legacy/b/store/store.go::Conn::Open",
   "src/example.org/legacy/cmd/app/main.go:26:Open = package src/example.org/legacy/internal/storage/storage.go::Open | go: func src/example.org/legacy/internal/storage/storage.go::Open",
+  "src/example.org/legacy/cmd/app/stats.go:9:Main = unknown | go: external (dependency)",
   "src/example.org/legacy/cmd/app/wrap.go:8:Wrap = unbound external | go: external (dependency)"
  ]
 }

@@ -408,6 +408,21 @@ describe("a defined type is as wide as what IT declares, not as what it is defin
     expect(own.tally).toEqual({ "receiver-type p/p.go::E0::M0": 2 });
     expect(own.retained.overRetained).toBe(0);
   });
+
+  // PR #1104 review cycle 7. The two tests above lift the cap, so nothing said
+  // that a DEFINED type is under it: capping only the other forms — leaving
+  // `type D W` with sixteen names for each method it declares — passed every
+  // suite. That is the 560 MB shape again, spelled with methods for fields.
+  it("at the DEFAULT budgets the absolute cap holds for a defined type with methods of its own", () => {
+    const run = measure(tree(GO_TYPE_LAYER_BUDGET + 6, 10));
+    // Ten methods would earn 160; the cap allows 64, and D reaches 71 types.
+    expect(GO_TYPE_RETAINED_PER_MEMBER * 10).toBeGreaterThan(GO_TYPE_LAYER_BUDGET + 7);
+    expect(GO_TYPE_RETAINED_MAX).toBeLessThan(GO_TYPE_LAYER_BUDGET + 7);
+    // `d.M0()` — and `w.M0()`, W being over the cap as well.
+    expect(run.tally).toEqual({ "unknown:budget": 2 });
+    expect(run.retained.overRetained).toBe(2);
+    expect(run.retained.indexedNames).toBe(0);
+  });
 });
 
 /**

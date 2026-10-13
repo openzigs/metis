@@ -476,7 +476,10 @@ describe("placing a directory or an import path costs its own length, not the si
     return tree;
   };
 
-  /** The same tree in a GOPATH layout, each directory holding its whole import path: every call binds. */
+  /**
+   * The same tree in a GOPATH layout, each directory holding its whole import
+   * path under `src`, and the importing file in that workspace: every call binds.
+   */
   const orphansThatMatch = (dirs: number): Tree => {
     const tree: Tree = [];
     let main = "package main\n\nimport (\n";
@@ -486,7 +489,7 @@ describe("placing a directory or an import path costs its own length, not the si
     }
     main += ")\n\nfunc main() {\n";
     for (let i = 0; i < dirs; i += 1) main += `\ta${i}.Go()\n`;
-    tree.push(["cmd/main.go", `${main}}\n`]);
+    tree.push(["src/example.org/app/cmd/main.go", `${main}}\n`]);
     return tree;
   };
 

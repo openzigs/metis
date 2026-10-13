@@ -120,3 +120,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Absent page group is ambiguous](project_absent-page-group-is-ambiguous-when-ui-hides-empty.md) — UI hides empty groups
 - [Retained counter sees only its own](project_retained-counter-sees-only-what-it-was-written-for.md) — probe every type form; watchdog (#1104)
 - [Memory probe: own members × tables/call](project_memory-probe-own-members-times-tables.md) — cap + growth watchdog (#1104)
+- [Fix the lookup rule, not the depth](project_fix-the-lookup-rule-not-the-reported-depth.md) — move the fixture ±1 level (#1104)

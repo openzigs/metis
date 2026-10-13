@@ -439,13 +439,25 @@ describe("with no go.mod, an import is matched by whole path SEGMENTS, never by 
     expect(at({ "mystore/s.go": STORE, "cmd/main.go": main('"store"') })).toBe("unbound external");
   });
 
-  it("a directory that ends in the WHOLE import path is it (a GOPATH layout)", () => {
+  it("a directory that holds the WHOLE import path under `src` is it, for a file of that workspace (a GOPATH layout)", () => {
+    const inWorkspace = "src/example.org/app/cmd/main.go";
+    expect(
+      goVerdicts(
+        {
+          "src/example.org/app/store/s.go": STORE,
+          [inWorkspace]: main('"example.org/app/store"'),
+        },
+        [],
+      ).get(`${inWorkspace}:6:Save`),
+    ).toBe("package src/example.org/app/store/s.go::Save");
+    // From a file outside that `src`, the directory is only one named `src`
+    // (PR #1104 review cycle 7).
     expect(
       at({
         "src/example.org/app/store/s.go": STORE,
         "cmd/main.go": main('"example.org/app/store"'),
       }),
-    ).toBe("package src/example.org/app/store/s.go::Save");
+    ).toBe("unknown");
   });
 
   // PR #1104, review cycle 5: this used to bind. A directory that is only a
@@ -496,9 +508,19 @@ describe("with no go.mod, an import is matched by whole path SEGMENTS, never by 
     expect(goVerdicts(tree(["app/internal/storage"]), []).get("cmd/main.go:6:Save")).toBe(
       "unknown",
     );
-    // The directory that holds the whole path is the one reading there is.
+    // The directory that holds the whole path under `src` is the one reading
+    // there is — for a file of that GOPATH workspace.
+    const inWorkspace = "src/example.org/app/cmd/main.go";
     expect(
-      goVerdicts(tree(["src/example.org/app/internal/storage"]), []).get("cmd/main.go:6:Save"),
+      goVerdicts(
+        {
+          "src/example.org/app/internal/storage/s.go": STORE.replace("store", "storage"),
+          [inWorkspace]:
+            'package main\n\nimport "example.org/app/internal/storage"\n\n' +
+            "func main() {\n\tstorage.Save()\n}\n",
+        },
+        [],
+      ).get(`${inWorkspace}:6:Save`),
     ).toBe("package src/example.org/app/internal/storage/s.go::Save");
   });
 
@@ -549,10 +571,13 @@ describe("with no go.mod, an import is matched by whole path SEGMENTS, never by 
     ).toBe("unknown");
   });
 
-  it("the directory that IS the import path is it, and is not also 'a directory it ends in'", () => {
-    expect(at({ "org/store/s.go": STORE, "cmd/main.go": main('"org/store"') })).toBe(
-      "package org/store/s.go::Save",
-    );
+  it("the directory that IS the import path is it when a DOMAIN comes first, and is not also 'a directory it ends in'", () => {
+    expect(
+      at({ "example.org/store/s.go": STORE, "cmd/main.go": main('"example.org/store"') }),
+    ).toBe("package example.org/store/s.go::Save");
+    // Without a dot in the first segment nothing says the tree root is a
+    // GOPATH `src` (PR #1104 review cycle 7): this used to bind.
+    expect(at({ "org/store/s.go": STORE, "cmd/main.go": main('"org/store"') })).toBe("unknown");
   });
 
   it("nothing matched, but library code at the tree root: its import path is unknown, so is this", () => {

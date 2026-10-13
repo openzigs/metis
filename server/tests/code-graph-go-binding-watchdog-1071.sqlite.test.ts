@@ -532,14 +532,56 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         );
         expect(readings).toBeLessThan(resolved);
         // What the heap may pass the limit by is documented on
-        // GO_BINDING_HEAP_SAMPLE_ENTRIES: about 8 MB. (Run to the end, either
-        // tree grows by several times limit + 8 MB.)
+        // GO_BINDING_HEAP_SAMPLE_ENTRIES: a constant part of about 8 MB, plus
+        // what one call's FIRST reading of the declarations it reaches keeps.
+        // Both rows keep that second term small by choice of input — six
+        // types of at most 2,000 fields, under 1 MB — so the constant shows.
+        // (Run to the end, either tree grows by several times limit + 8 MB.)
+        // The next test is the row where the second term dominates.
         expect(stopped.goBinding!.heapGrowthMb).toBeGreaterThanOrEqual(limitMb);
         expect(stopped.goBinding!.heapGrowthMb).toBeLessThanOrEqual(limitMb + 8);
         expect((await graphOf(projectId)).extractorVersion).toBeNull();
       },
       120_000,
     );
+
+    // PR #1104 review cycle 7. "At most about 8 MB" was stated as a ceiling and
+    // is not one: a single call that reads 61 declarations of 20,000 fields
+    // for the first time kept 54 MB against a 16 MB limit. No reading can come
+    // between the declarations ONE call reads, so the overshoot has a term
+    // that is linear in the source the call reaches. This is that shape, at a
+    // third of the size: one call through 21 types of 20,000 fields each.
+    it("the real heap, one call reading 20,000-field types: stopped after it, the overshoot bounded by the members it read", async () => {
+      const HOPS = 20;
+      const FIELDS = 20_000;
+      const limitMb = 4;
+      const tree = goSelectorChainShape(2, HOPS, FIELDS, 62);
+      const sourceMb = Object.values(tree).reduce((n, s) => n + s.length, 0) / MB;
+      const { projectId, root } = await newProject({ "go.mod": GO_MOD, ...tree });
+      const stopped = await ingest(projectId, root, {
+        incremental: false,
+        goBindingHeapUsed: retainedHeap,
+        goBindingMaxHeapGrowth: limitMb * MB,
+      });
+      // The stop happens — at the first reading there is, after call one — and
+      // the graph is recorded incomplete.
+      expect(stopped.goBinding).toMatchObject({ calls: 2, skipped: 1, stopReason: "memory" });
+      expect(stopped.goBinding!.incomplete!.calls).toBe(1);
+      expect((await graphOf(projectId)).extractorVersion).toBeNull();
+
+      const growthMb = stopped.goBinding!.heapGrowthMb!;
+      // The constant alone does not hold here, and must not be documented as
+      // if it did.
+      expect(growthMb).toBeGreaterThan(limitMb + 8);
+      // The honest bound: the constant part, plus the members the call's
+      // declarations declare — measured at 40 to 50 B a member, held to 100.
+      const membersRead = (HOPS + 1) * (FIELDS + 2);
+      expect(growthMb).toBeLessThanOrEqual(limitMb + 8 + Math.ceil((membersRead * 100) / MB));
+      // Which is linear in the source, whatever the tree: under ten retained
+      // bytes for a byte of Go (about 6 measured), for the WHOLE tree — and
+      // this call read half of it.
+      expect(growthMb).toBeLessThanOrEqual(limitMb + 8 + 10 * sourceMb);
+    }, 120_000);
 
     it("the time ceiling says `time`", async () => {
       const { projectId, root } = await newProject(WIDE_TREE);
