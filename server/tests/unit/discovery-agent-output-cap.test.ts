@@ -64,6 +64,10 @@ function symbol(overrides: Partial<CodeSymbol> = {}): CodeSymbol {
     language: "typescript",
     contentHash: "h1",
     source: null,
+    signature: null,
+    docComment: null,
+    receiver: null,
+    package: null,
     createdAt: new Date(0),
     ...overrides,
   };
