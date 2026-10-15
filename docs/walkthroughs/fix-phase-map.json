@@ -299,6 +299,54 @@
       "wave": "A",
       "phase": "2",
       "check": "The repo connector's metadata documents are read at the pinned tag. Its ingested `go.mod` document lists `github.com/PuerkitoBio/goquery v1.12.0`, the v2.3.3 value (run 7 stored the default branch's v1.13.0), and its `OVERVIEW.md` document reads `- Ref: v2.3.3` and `- Commit: c4d54f87…`, with the upstream default branch and the languages labelled as not specific to this ref"
+    },
+    "1141": {
+      "skip": "walkthrough TEST_PLAN and runbook corrections; no product behaviour to verify"
+    },
+    "1142": {
+      "wave": "B",
+      "phase": "7",
+      "check": "Cancel stops an analysis's model spend: start a second, throwaway analysis (never the run's main one), press Cancel while it runs, and confirm it ends `cancelled` and `token_usages` gains no row for it more than ~30 s after the cancel. Report the rows written after the cancel (run 8: spend continued after Cancel)"
+    },
+    "1143": {
+      "wave": "B",
+      "phase": "7",
+      "check": "A run where an agent failed or dropped citations does not read plain `completed`: the run page shows **completed with errors** or **completed with warnings**, and the capability record names `citations-dropped` with a count when citations were dropped. Report the label and the count for the main analysis run"
+    },
+    "1145": {
+      "wave": "B",
+      "phase": "7",
+      "check": "With the project's model on Auto, every agent of the analysis runs on the project's model: every `token_usages` row of the run names the same model (DeepSeek `deepseek-flash`), with no Claude or other model mixed in. The Models settings page offers the Claude 5.5 models. Report the distinct models in the run's rows"
+    },
+    "1144": {
+      "wave": "D",
+      "phase": "S6",
+      "check": "`/speckit.plan` reads its own prompt-cache prefix: on the S6b re-run, the plan's `token_usages` rows show `cacheReadTokens` > 0 (report input, cacheRead and cost for both plan runs). Single-call Spec Kit commands (specify, tasks, analyze) still complete normally"
+    },
+    "1134": {
+      "wave": "D",
+      "phase": "S6b",
+      "check": "Re-running `speckit.plan` on the unchanged spec revises the previous plan rather than redesigning: the result message says `Compared with plan.md vN:` and names any endpoint, file or function change (report whether the design held). `tasks.md` (and `analysis.md`, checklists) from the earlier plan show **Out of date: generated from plan.md vN, plan.md is now vM** in the feature tree, and `speckit.implement` warns that tasks.md predates the plan. Re-running `speckit.tasks` clears the mark (run 8: the re-run changed the design and tasks.md was silently stale)"
+    },
+    "1135": {
+      "wave": "E",
+      "phase": "16",
+      "check": "For #4386, the plan context and plan name the page handlers (`internal/ui/feed_entries.go`, and `category_entries.go` as its twin); report the plan's must-surface and the result card's check notes. For #4479, the plan does not blame a parse-time default while calling the query code \"not visible\" when its body was given, and the card flags any such claim. Impact for a read-path bug (#4386) keeps table writers in Related, not Files to edit. Report must-surface for the six requests against run 8 (impact 4/6, plan 4/6)"
+    },
+    "1098": {
+      "wave": "F",
+      "phase": "J1.2",
+      "check": "On the analysis of the 5 imported items, the server log has one line recording imported / given to the code agent / folded in / left out; the code agent is given the 5 imported items (`NR-1`..`NR-5`) and no unrelated document requirement. Report those four numbers"
+    },
+    "1129": {
+      "wave": "F",
+      "phase": "J1.4",
+      "check": "The approvals are grouped under **From your ticked items** and **Added by the analysis**, matching each requirement's source badge; **Leave out the N added by the analysis** rejects only the added ones after a confirm. Clarifying questions on ticked items come first (J1.3). The review request (J1.4) offers **Only the N from ticked items** and states \"This review covers X of Y requirements\"; the J1.7 BRD can be scoped to chosen requirements and its heading states the count. Report how many requirements the 5 items became (run 8: about 34) and how many were left out"
+    },
+    "1130": {
+      "wave": "F",
+      "phase": "J1.4",
+      "check": "On the review page, a never-edited requirement's card shows its body (no `metis:` markers), acceptance criteria and priority, labelled \"No edits were recorded for this requirement; this is its current text.\" A requirement edited after the review was requested shows its pinned text, labelled as rebuilt from recorded edits (run 8: unedited cards showed no body)"
     }
   },
   "prs": {
