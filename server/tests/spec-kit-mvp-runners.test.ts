@@ -2894,6 +2894,9 @@ describe("#1134 — a re-planned feature marks what the earlier plan generated",
     // Two reports appended, one stamp.
     expect(analysis.content.match(/generated from plan\.md/g)).toHaveLength(1);
     expect(readPlanSource(all.find((a) => a.key === "checklist-security.md")!.content)).toBe(1);
+  });
+});
+
 describe("#1135 — /speckit.plan reports a renamed parameter on its result", () => {
   it("names the spec's parameter the plan replaced, and is quiet when the plan keeps it", async () => {
     const fid = seedFeature("p1", "009-read-at");
