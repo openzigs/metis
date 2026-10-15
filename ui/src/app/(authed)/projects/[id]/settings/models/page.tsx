@@ -165,7 +165,7 @@ export default function ProjectModelSettingsPage() {
           <Label htmlFor="budget-threshold">Budget Downgrade Threshold</Label>
           <p className="text-xs text-muted-foreground" data-testid="budget-threshold-help">
             {servesTierModels
-              ? "When monthly token usage exceeds this threshold, METIS automatically downgrades from Sonnet to Haiku to save costs. Set to 0 to disable."
+              ? "When monthly token usage exceeds this threshold, METIS automatically downgrades a Sonnet model to this provider's Haiku model to save costs. It has no effect when the project sets its own AI model. Set to 0 to disable."
               : "This deployment's provider runs a single model, so there is no cheaper model to downgrade to and this threshold has no effect."}
           </p>
         </div>

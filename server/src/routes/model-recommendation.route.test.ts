@@ -450,6 +450,32 @@ describe("model-recommendation on the Anthropic API (#1145)", () => {
     expect(body.data.selection.modelId).toBe("claude-sonnet-5");
   });
 
+  // #1145 adversarial review — `acceptedModelIds` is what lets the card honour
+  // a Models-page task-type override naming a provider-served model.
+  it("names a Models-page task-type override naming a served Claude 5.5 model", async () => {
+    projectFindFirst.mockResolvedValue({ id: "proj-1", aiModel: null });
+    const taskTypes = [
+      "summarization",
+      "extraction",
+      "analysis",
+      "synthesis",
+      "cross-referencing",
+      "general",
+    ];
+    modelPreferenceFindUnique.mockResolvedValue({
+      defaultModel: null,
+      taskTypeOverrides: JSON.stringify(
+        Object.fromEntries(taskTypes.map((t) => [t, "claude-haiku-5-5"])),
+      ),
+      budgetDowngradeThreshold: null,
+    });
+    const body = await post({ agentKeys: ["document"] });
+    expect(body.data.selection.modelId).toBe("claude-haiku-5-5");
+    expect(body.data.selection.modelName).toBe("Claude Haiku 5.5");
+    // No router rate for it: no estimate borrowed from Sonnet.
+    expect(body.data.selection.estimatedCost).toBeNull();
+  });
+
   it("offers the Claude 5.5 models as overrides and honours one", async () => {
     const body = (await post({
       agentKeys: ["document"],

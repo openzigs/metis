@@ -497,6 +497,77 @@ describe("ModelRouter autoModel (#1145)", () => {
     expect(sel.wasDowngraded).toBe(true);
   });
 
+  // #1145 adversarial review — the downgrade fired only on the Sonnet tier id,
+  // which Auto no longer selects on the Anthropic API.
+  describe("budget downgrade of a provider's own Sonnet-class model", () => {
+    const served = new Set(["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"]);
+    const overBudget = (autoModel: string, extra: Partial<{ defaultModel: string }> = {}) =>
+      new ModelRouter({
+        provider: anthropicApi,
+        autoModel,
+        acceptedModelIds: served,
+        preferences: { budgetDowngradeThreshold: 100, ...extra },
+        currentMonthTokens: 1_000,
+      });
+
+    it("downgrades the project's Sonnet 5.5 to the provider's Haiku 5.5", () => {
+      const sel = overBudget("claude-sonnet-5-5").select(moderateProfile);
+      expect(sel.modelId).toBe("claude-haiku-5-5");
+      expect(sel.wasDowngraded).toBe(true);
+      expect(sel.rationale).toBe(
+        "Budget threshold exceeded (1,000 >= 100 tokens): downgraded from claude-sonnet-5-5 to claude-haiku-5-5",
+      );
+      // A served model with no router rate: no borrowed Sonnet estimate.
+      expect(sel.estimatedCost).toBeNull();
+    });
+
+    it("downgrades a Sonnet-class default model preference", () => {
+      const sel = overBudget("claude-opus-5-5", { defaultModel: "claude-sonnet-5-5" }).select(
+        simpleProfile,
+      );
+      expect(sel.modelId).toBe("claude-haiku-5-5");
+    });
+
+    it("leaves a Sonnet-class model alone under the threshold", () => {
+      const sel = new ModelRouter({
+        provider: anthropicApi,
+        autoModel: "claude-sonnet-5-5",
+        acceptedModelIds: served,
+        preferences: { budgetDowngradeThreshold: 100 },
+        currentMonthTokens: 99,
+      }).select(moderateProfile);
+      expect(sel.modelId).toBe("claude-sonnet-5-5");
+      expect(sel.wasDowngraded).toBe(false);
+    });
+
+    it("does not downgrade a model that is not Sonnet-class", () => {
+      expect(overBudget("claude-opus-5-5").select(moderateProfile).modelId).toBe("claude-opus-5-5");
+    });
+
+    it("does not downgrade when the provider serves no Haiku-class model", () => {
+      const sel = new ModelRouter({
+        provider: anthropicApi,
+        autoModel: "claude-sonnet-5-5",
+        acceptedModelIds: new Set(["claude-sonnet-5-5", "claude-opus-5-5"]),
+        preferences: { budgetDowngradeThreshold: 100 },
+        currentMonthTokens: 1_000,
+      }).select(moderateProfile);
+      expect(sel.modelId).toBe("claude-sonnet-5-5");
+      expect(sel.wasDowngraded).toBe(false);
+    });
+  });
+
+  it("does not price a served model the router has no rate for at the Sonnet rate", () => {
+    const sel = new ModelRouter({
+      provider: anthropicApi,
+      autoModel: "claude-sonnet-5-5",
+      acceptedModelIds: new Set(["claude-haiku-5-5"]),
+      preferences: { defaultModel: "claude-haiku-5-5" },
+    }).select(moderateProfile);
+    expect(sel.modelId).toBe("claude-haiku-5-5");
+    expect(sel.estimatedCost).toBeNull();
+  });
+
   it("does not remap the project's model on a provider that serves no tier ids", () => {
     const deepSeek: RouterProvider = {
       key: "anthropic",

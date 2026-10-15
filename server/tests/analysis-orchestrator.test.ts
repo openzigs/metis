@@ -2213,6 +2213,58 @@ describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
     expect(new Set(sent)).toEqual(new Set(["claude-haiku-5-5"]));
   });
 
+  // #1145 adversarial review — `acceptedModelIds` is what lets a Models-page
+  // task-type override name a provider-served model the tier registry lacks.
+  it("an Auto run honours a Models-page task-type override naming a served Claude 5.5 model", async () => {
+    const taskTypes = [
+      "summarization",
+      "extraction",
+      "analysis",
+      "synthesis",
+      "cross-referencing",
+      "general",
+    ];
+    vi.mocked(prisma.modelPreference.findUnique).mockResolvedValue({
+      defaultModel: null,
+      taskTypeOverrides: JSON.stringify(
+        Object.fromEntries(taskTypes.map((t) => [t, "claude-haiku-5-5"])),
+      ),
+      budgetDowngradeThreshold: null,
+    } as never);
+    try {
+      const sent = await modelsSentBy(anthropicApi);
+      expect(sent).toContain("claude-haiku-5-5");
+      expect(sent).not.toContain(anthropicApi.model);
+    } finally {
+      vi.mocked(prisma.modelPreference.findUnique).mockResolvedValue(null);
+    }
+  });
+
+  // #1145 adversarial review — the budget downgrade fired only on the Sonnet
+  // tier id, which Auto no longer selects on the Anthropic API.
+  it("an Auto run over the budget threshold downgrades the provider's Sonnet 5.5 to Haiku 5.5", async () => {
+    const findMany = vi.mocked(prisma.analysis.findMany);
+    const original = findMany.getMockImplementation()!;
+    // The month-to-date read (`select: { totalTokens }`) is well over the threshold.
+    findMany.mockImplementation((async (args?: { select?: { totalTokens?: boolean } }) =>
+      args?.select?.totalTokens
+        ? [{ totalTokens: 1_000_000 }]
+        : (original as (a?: unknown) => Promise<unknown>)(args)) as never);
+    vi.mocked(prisma.modelPreference.findUnique).mockResolvedValue({
+      defaultModel: null,
+      taskTypeOverrides: "{}",
+      budgetDowngradeThreshold: 100,
+    } as never);
+    try {
+      const sent = await modelsSentBy({ ...anthropicApi, model: "claude-sonnet-5-5" });
+      expect(sent).toContain("claude-haiku-5-5");
+      expect(sent).not.toContain("claude-sonnet-5-5");
+    } finally {
+      findMany.mockImplementation(original);
+      vi.mocked(prisma.modelPreference.findUnique).mockResolvedValue(null);
+    }
+  });
+
   it("runs specialists on the provider's configured model on a non-Claude provider", async () => {
     const sent = await modelsSentBy(deepSeek);
     expect(sent).toContain("deepseek-chat");

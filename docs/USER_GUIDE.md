@@ -4531,7 +4531,7 @@ You can override the automatic selection at two levels:
 Navigate to **Projects → [Your Project] → Settings → Configure model preferences** to access the Model Preferences page. You can configure:
 
 - **Default Model** — Choose `Auto`, `Claude Haiku 4.5`, or `Claude Sonnet 4.6` as the default for all tasks in this project.
-- **Budget Downgrade Threshold** — Set a monthly token limit. When usage exceeds this threshold, METIS automatically switches from Sonnet to Haiku to control costs. Set to 0 to disable.
+- **Budget Downgrade Threshold** — Set a monthly token limit. When usage exceeds this threshold, METIS automatically switches a Sonnet model (for example Claude Sonnet 5.5) to the provider's Haiku model (Claude Haiku 5.5) to control costs. It has no effect when the project sets its own AI model, or when the provider serves no Haiku model. Set to 0 to disable.
 - **Task Type Overrides** (Advanced) — Force a specific model for certain task types (e.g., always use Sonnet for code review, always use Haiku for document analysis).
 
 Click **Save Preferences** to apply your changes.

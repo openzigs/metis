@@ -289,21 +289,40 @@ export class ModelRouter {
     rationale: string,
   ): ModelSelection {
     const threshold = this.preferences.budgetDowngradeThreshold;
-    if (
-      threshold != null &&
-      threshold > 0 &&
-      this.currentMonthTokens >= threshold &&
-      selectedModel === SONNET_MODEL_ID
-    ) {
+    const target =
+      threshold != null && threshold > 0 && this.currentMonthTokens >= threshold
+        ? this.downgradeTarget(selectedModel)
+        : undefined;
+    if (target !== undefined) {
+      const exceeded = `Budget threshold exceeded (${this.currentMonthTokens.toLocaleString()} >= ${threshold!.toLocaleString()} tokens)`;
       return this.buildSelection(
-        HAIKU_MODEL_ID,
+        target,
         profile,
-        `Budget threshold exceeded (${this.currentMonthTokens.toLocaleString()} >= ${threshold.toLocaleString()} tokens): downgraded from Sonnet to Haiku`,
+        selectedModel === SONNET_MODEL_ID
+          ? `${exceeded}: downgraded from Sonnet to Haiku`
+          : `${exceeded}: downgraded from ${selectedModel} to ${target}`,
         true,
       );
     }
 
     return this.buildSelection(selectedModel, profile, rationale, false);
+  }
+
+  /**
+   * The cheaper model a budget downgrade switches `model` to, if any: the Sonnet
+   * tier id to the Haiku tier id (#599), and (#1145) any other Sonnet-class
+   * model — the project's or the provider's own, e.g. `claude-sonnet-5-5` on the
+   * Anthropic API — to the first Haiku-class model the provider serves
+   * ({@link ModelRouterOptions.acceptedModelIds}, newest first). No Haiku-class
+   * model served, or a model that is not Sonnet-class: no downgrade.
+   */
+  private downgradeTarget(model: string): string | undefined {
+    if (model === SONNET_MODEL_ID) return HAIKU_MODEL_ID;
+    if (!/sonnet/i.test(model)) return undefined;
+    for (const id of this.acceptedModelIds) {
+      if (/haiku/i.test(id)) return id;
+    }
+    return undefined;
   }
 
   /**
@@ -350,7 +369,11 @@ export class ModelRouter {
   ): ModelSelection {
     // #1145 — the project's own model, or a model the caller named explicitly,
     // is what the provider runs: never remapped like a tier id it cannot serve.
-    const ownModel = explicit || (this.autoModel !== undefined && modelId === this.autoModel);
+    // A model the provider lists as its own (`acceptedModelIds`) counts too.
+    const ownModel =
+      explicit ||
+      (this.autoModel !== undefined && modelId === this.autoModel) ||
+      this.acceptedModelIds.has(modelId);
     // #512 — a tier id the active provider cannot run is not what the run
     // uses: DeepSeek maps `claude-*` onto its own models, and an OpenAI-
     // compatible endpoint receives the id verbatim. Report (and run) the
