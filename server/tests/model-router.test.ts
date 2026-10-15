@@ -590,6 +590,21 @@ describe("ModelRouter autoModel (#1145)", () => {
       expect(router.select(moderateProfile).modelId).toBe("claude-sonnet-5-5");
     });
 
+    // #1145 re-review blocker — the orchestrator sends the target raw, so an
+    // unservable one must be no downgrade (buildSelection's fallback is bypassed).
+    it("does not downgrade to a Haiku tier the provider cannot serve", () => {
+      const openAi: RouterProvider = {
+        key: "openai",
+        model: SONNET_MODEL_ID,
+        servesRouterModel: () => false,
+      };
+      const router = overBudget(SONNET_MODEL_ID, {}, { provider: openAi, accepted: new Set() });
+      expect(router.runBudgetDowngrade()).toBeUndefined();
+      const sel = router.select(moderateProfile);
+      expect(sel.modelId).toBe(SONNET_MODEL_ID);
+      expect(sel.wasDowngraded).toBe(false);
+    });
+
     it("is undefined without a run model", () => {
       expect(
         new ModelRouter({

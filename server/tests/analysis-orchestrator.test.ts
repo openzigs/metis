@@ -1843,6 +1843,78 @@ describe("AnalysisOrchestrator.regenerateAgent guards", () => {
     }
   });
 
+  // #1145 re-review — the Auto model's budget reads are awaited before the
+  // regenerate's ActiveRun existed, so a second regenerate passed the
+  // `active.has` check in the gap and a cancel could find nothing to abort.
+  it("#1145 — a second concurrent regenerate is refused, and cancel aborts the first", async () => {
+    const base = makeProvider({});
+    let hold = false;
+    const signals: AbortSignal[] = [];
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const provider = {
+      ...base,
+      async chat(messages: ChatMessage[], opts?: { signal?: AbortSignal }) {
+        if (hold) {
+          if (opts?.signal) signals.push(opts.signal);
+          await Promise.race([
+            held,
+            new Promise((r) => opts?.signal?.addEventListener("abort", r, { once: true })),
+          ]);
+        }
+        return base.chat(messages, opts as never);
+      },
+    } as unknown as AIProvider;
+    const orch = new AnalysisOrchestrator({ provider, retrieve: async () => [] });
+    const analysisId = await runToCompletion(orch);
+    const { AnalysisNotRegeneratableError } = await import("../src/lib/analysis/orchestrator.js");
+
+    hold = true;
+    const args = { analysisId, agentKey: "document" as const, actorId: "user-1234567890" };
+    const first = orch.regenerateAgent(args);
+    const second = orch.regenerateAgent(args);
+    // A second regenerate that is NOT refused blocks in the held provider call;
+    // bound the wait so that failure reads as a failure, not a timeout.
+    const refusedPromptly = Promise.race([
+      second,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("the second regenerate was not refused")), 2_000),
+      ),
+    ]);
+    try {
+      await expect(refusedPromptly).rejects.toBeInstanceOf(AnalysisNotRegeneratableError);
+      for (let i = 0; i < 200 && signals.length === 0; i += 1) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(signals).toHaveLength(1);
+      expect(await orch.cancel(analysisId, "user-1234567890")).toBe(true);
+      expect(signals[0]!.aborted).toBe(true);
+    } finally {
+      release();
+      await first.catch(() => undefined);
+      await second.catch(() => undefined);
+    }
+    expect(orch.isActive(analysisId)).toBe(false);
+  });
+
+  it("#1145 — a regenerate refused by the continue limit releases its claim", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const analysisId = await runToCompletion(orch);
+    const spy = vi
+      .spyOn(orch, "assertCanContinueInvestigation")
+      .mockRejectedValueOnce(new Error("limit reached"));
+    await expect(
+      orch.regenerateAgent({
+        analysisId,
+        agentKey: "code",
+        actorId: "user-1234567890",
+        extendBudget: true,
+      }),
+    ).rejects.toThrow("limit reached");
+    expect(orch.isActive(analysisId)).toBe(false);
+    spy.mockRestore();
+  });
+
   it("refuses regenerate when the analysis status is still running (M1)", async () => {
     const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
     const analysisId = await runToCompletion(orch);
@@ -2293,6 +2365,21 @@ describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
       monthToDate(1_000_000);
       const sent = await modelsSentBy(sonnet55, { regenerate: true });
       expect(new Set(sent)).toEqual(new Set(["claude-haiku-5-5"]));
+    });
+
+    // #1145 re-review blocker — probe from the review: the Haiku tier is not
+    // served here, so the run keeps the provider's model on every call.
+    it("over the threshold on a provider that cannot serve the Haiku tier, every call stays on its model", async () => {
+      const { SONNET_MODEL_ID } = await import("../src/lib/ai/model-router.js");
+      monthToDate(1_000_000);
+      const sent = await modelsSentBy({
+        key: "openai",
+        model: SONNET_MODEL_ID,
+        offline: false,
+        servesRouterModel: () => false,
+      });
+      expect(sent.length).toBeGreaterThan(0);
+      expect(new Set(sent)).toEqual(new Set([SONNET_MODEL_ID]));
     });
 
     it("a project with its own aiModel is never downgraded", async () => {

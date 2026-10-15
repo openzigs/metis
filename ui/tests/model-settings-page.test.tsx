@@ -281,7 +281,9 @@ describe("ProjectModelSettingsPage", () => {
         expect(screen.getByTestId("budget-threshold-help")).toBeInTheDocument();
       });
       const help = screen.getByTestId("budget-threshold-help").textContent;
-      expect(help).toContain("runs entirely on this provider's newest Haiku model");
+      expect(help).toContain("runs entirely on the provider's newest Haiku model");
+      // #1145 re-review — it follows the provider's model, not a Models-page default.
+      expect(help).toContain("follows the provider's model, not the default model chosen above");
       // #1145 — and says exactly when it does not apply.
       expect(help).toContain("no effect when the project sets its own AI model");
       expect(screen.getByTestId("budget-threshold-slider")).not.toBeDisabled();

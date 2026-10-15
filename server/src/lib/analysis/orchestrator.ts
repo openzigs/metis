@@ -918,14 +918,35 @@ export class AnalysisOrchestrator {
     extendBudget?: boolean;
   }): Promise<void> {
     const { analysis } = await this.assertCanRegenerate(opts.analysisId);
-    // #1062 — the route pre-checks this; a direct caller is held to it too.
-    if (opts.extendBudget) await this.assertCanContinueInvestigation(opts.analysisId);
+    // #1145 review — claim the run in the same synchronous step as the check,
+    // before any further await (the continue-limit read, the Auto model's
+    // budget reads), as resume does: otherwise a second regenerate passes the
+    // check in the gap, and a cancel finds no ActiveRun to abort (#1142).
+    if (this.active.has(opts.analysisId)) {
+      throw new AnalysisNotRegeneratableError(opts.analysisId, "running");
+    }
+    const controller = new AbortController();
+    const active: ActiveRun = {
+      analysisId: opts.analysisId,
+      controllers: new Map([[opts.agentKey, controller]]),
+      cancelled: false,
+    };
+    this.active.set(opts.analysisId, active);
+    try {
+      // #1062 — the route pre-checks this; a direct caller is held to it too.
+      if (opts.extendBudget) await this.assertCanContinueInvestigation(opts.analysisId);
+    } catch (err) {
+      this.active.delete(opts.analysisId);
+      throw err;
+    }
     // #724 — bill the regenerated agent and the re-synthesis to the project.
     const scope = {
       projectId: analysis.projectId,
       sessionId: opts.analysisId,
     };
-    return runInAnalysisUsageScope(scope, () => this.regenerateLoadedAgent(opts, analysis));
+    return runInAnalysisUsageScope(scope, () =>
+      this.regenerateLoadedAgent(opts, analysis, controller),
+    );
   }
 
   private async regenerateLoadedAgent(
@@ -936,6 +957,11 @@ export class AnalysisOrchestrator {
       extendBudget?: boolean;
     },
     maybeAnalysis: Awaited<ReturnType<AnalysisOrchestrator["assertCanRegenerate"]>>["analysis"],
+    /**
+     * The controller of the ActiveRun `regenerateAgent` registered. Defaulted
+     * only for tests that drive this method directly, with no ActiveRun.
+     */
+    controller: AbortController = new AbortController(),
   ): Promise<void> {
     const analysis = maybeAnalysis as NonNullable<typeof maybeAnalysis> & {
       project: {
@@ -952,21 +978,9 @@ export class AnalysisOrchestrator {
     const documentIds = Array.isArray(metadata.documentIds)
       ? (metadata.documentIds as string[])
       : undefined;
-    const model = await this.resolveRunModel(
-      typeof metadata.model === "string" ? metadata.model : undefined,
-      analysis.project,
-      analysis.projectId,
-    );
     const extraInstructions =
       typeof metadata.extraInstructions === "string" ? metadata.extraInstructions : undefined;
     const agentContext = readAgentContext(metadata);
-    const controller = new AbortController();
-    const active: ActiveRun = {
-      analysisId: opts.analysisId,
-      controllers: new Map([[opts.agentKey, controller]]),
-      cancelled: false,
-    };
-    this.active.set(opts.analysisId, active);
 
     audit({
       actor: { id: opts.actorId },
@@ -995,6 +1009,13 @@ export class AnalysisOrchestrator {
     let reopened: ReopenedRun = null;
     try {
       reopened = await reopenForFollowUp(opts.analysisId);
+      // #1145 — resolved inside the try, so a failure here is recorded and the
+      // ActiveRun released by the finally like any other.
+      const model = await this.resolveRunModel(
+        typeof metadata.model === "string" ? metadata.model : undefined,
+        analysis.project,
+        analysis.projectId,
+      );
       const agentInput = {
         analysisId: opts.analysisId,
         projectId: analysis.projectId,

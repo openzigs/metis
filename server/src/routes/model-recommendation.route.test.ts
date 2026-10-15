@@ -86,6 +86,7 @@ vi.mock("../lib/ai/config.js", async (importOriginal) => ({
 
 const { initModelRecommendationRouter } = await import("./model-preferences.js");
 const { errorHandler } = await import("../middleware/error-handler.js");
+const { SONNET_MODEL_ID } = await import("../lib/ai/model-router.js");
 
 /** Metadata exactly as `createAnalysis` writes it. */
 const metaWithAgents = (n: number): string =>
@@ -507,6 +508,20 @@ describe("model-recommendation on the Anthropic API (#1145)", () => {
       withThreshold(1_000_000);
       const body = await post({ agentKeys: ["document"] });
       expect(body.data.selection.modelId).toBe("claude-sonnet-5-5");
+      expect(body.data.selection.wasDowngraded).toBe(false);
+    });
+
+    // #1145 re-review blocker — the card agrees with the run on an endpoint that
+    // cannot serve the Haiku tier: no downgrade, the provider's model.
+    it("names the provider's model, not downgraded, when the Haiku tier is not served", async () => {
+      activeProvider = {
+        key: "openai",
+        model: SONNET_MODEL_ID,
+        servesRouterModel: () => false,
+      };
+      withThreshold(100);
+      const body = await post({ agentKeys: ["document"] });
+      expect(body.data.selection.modelId).toBe(SONNET_MODEL_ID);
       expect(body.data.selection.wasDowngraded).toBe(false);
     });
 

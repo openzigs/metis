@@ -182,6 +182,19 @@ describe("meterAnalysisProvider", () => {
     expect(inner.chatCalls).toBe(1);
     expect(recordUsage).not.toHaveBeenCalled();
   });
+
+  // #1145 — the analysis runs on the metered provider, so the flag that stops
+  // an automatic downgrade on a declared proxy must survive the meter. It is a
+  // getter on AnthropicProvider, so it is defined that way here.
+  it("keeps routerModelsInferred, a getter on the adapter", () => {
+    class ProxyAdapter extends FakeProvider {
+      get routerModelsInferred(): boolean {
+        return true;
+      }
+    }
+    expect(meterAnalysisProvider(new ProxyAdapter()).routerModelsInferred).toBe(true);
+    expect(meterAnalysisProvider(new FakeProvider()).routerModelsInferred).toBeUndefined();
+  });
 });
 
 describe("flushAnalysisUsage", () => {

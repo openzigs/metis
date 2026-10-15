@@ -11,4 +11,6 @@ In METIS, the Model card (model-recommendation route, `server/src/routes/model-p
 
 - In `server/tests/analysis-orchestrator.test.ts`, `modelsSentBy` recorded `opts.model`, and non-specialist calls send `undefined` (which runs as `provider.model`), so `expect(sent).not.toContain(<provider model>)` always passed. Map `undefined` to `provider.model`. The router and budget downgrade only choose the model for `runOneAgent` specialist calls unless the run resolves the model once (PR #1150 re-review; fixed by `resolveRunModel` + `runBudgetDowngrade`).
 
+- When a model decision moves from `ModelRouter.select()`/`buildSelection` to a raw id the orchestrator sends itself (`resolveRunModel`, `runBudgetDowngrade`), it loses `buildSelection`'s fallback to `provider.model` for ids the provider cannot serve. Every raw-id path must apply `cannotServe` itself. Probe with `{key:'openai', model: SONNET_MODEL_ID, servesRouterModel: () => false}` (PR #1150 re-review 3).
+
 **How to apply:** for every Auto-semantics change, write one test per path (route test + orchestrator `modelsSentBy`) for each config combination, and prove each by deleting the wiring line at that call site.

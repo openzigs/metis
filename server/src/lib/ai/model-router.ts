@@ -374,13 +374,23 @@ export class ModelRouter {
    * to the NEWEST Haiku-class model the provider serves
    * ({@link ModelRouterOptions.acceptedModelIds}, ordered by {@link haikuVersion},
    * not by list order). No downgrade when `model` is not Sonnet-class, when no
-   * Haiku-class model is served, or when the provider's served set is inferred
+   * Haiku-class model is served, when the provider cannot serve the target, or
+   * when the provider's served set is inferred
    * rather than known (`routerModelsInferred`: a proxy declared to bill as
    * Anthropic answers "served" for every id, so an automatic switch could send
    * it a model it cannot route).
    */
   private downgradeTarget(model: string): string | undefined {
     if (this.provider?.routerModelsInferred === true) return undefined;
+    const target = this.downgradeCandidate(model);
+    // #1145 review — the orchestrator SENDS this id raw (`resolveRunModel`),
+    // bypassing `buildSelection`'s fallback to the provider's configured model.
+    // A target the provider cannot serve (the Haiku tier on an OpenAI-compatible
+    // endpoint) is therefore no downgrade at all, never a remapped one.
+    return target !== undefined && !this.cannotServe(target) ? target : undefined;
+  }
+
+  private downgradeCandidate(model: string): string | undefined {
     if (model === SONNET_MODEL_ID || model === LEGACY_SONNET_MODEL_ID) return HAIKU_MODEL_ID;
     if (!/sonnet/i.test(model)) return undefined;
     let best: string | undefined;
