@@ -7331,7 +7331,7 @@ flowchart TD
     I --> L{Budget Threshold?}
     J --> L
     K --> L
-    L -->|exceeded & Sonnet-class selected| M[Downgrade to a served Haiku-class model]
+    L -->|exceeded & Sonnet-class run model| M[Whole run on the newest served Haiku-class model]
     L -->|within budget| N[Return selected model]
     M --> N
     E --> N
@@ -7368,7 +7368,7 @@ flowchart TD
    - `simple` → **Haiku** (sufficient capability at lower cost)
    - `complex` → **Sonnet** (deep reasoning required)
    - `moderate` → Project default model (falls back to Sonnet if unset)
-5. **Budget-aware downgrade** — If a budget threshold is configured and current-month token usage exceeds it, a Sonnet-class selection is downgraded automatically: the Sonnet tier id to the Haiku tier id, and (#1145) any other Sonnet-class model — e.g. `claude-sonnet-5-5`, the provider's configured model on the Anthropic API — to the first Haiku-class model the provider serves (`claude-haiku-5-5`). No downgrade when the selection is not Sonnet-class, when the provider serves no Haiku-class model, or when the project sets its own `aiModel` (step 3).
+5. **Budget-aware downgrade** — If a budget threshold is configured and current-month token usage exceeds it, an Auto run is downgraded **as a whole, once, at run start** (#1145): `ModelRouter.runBudgetDowngrade()` maps the run's model (`autoModel`, the provider's configured model) — the Sonnet tier id or its legacy alias to the Haiku tier id, any other Sonnet-class model (e.g. `claude-sonnet-5-5` on the Anthropic API) to the **newest** Haiku-class model the provider serves by version (`haikuVersion`; `claude-haiku-5-5` over `claude-haiku-4-5`). The orchestrator resolves it in `resolveRunModel`, so every call of the run — specialists, synthesis, extraction, enhancement and the agentic code loop — sends that one model, and `selectModelForAgent` applies no per-call threshold; the Model card's `select()` takes the same branch first, so it names the same model. No downgrade when the run's model is not Sonnet-class, when no Haiku-class model is served, when the provider's served set is only declared (`routerModelsInferred`: an `ANTHROPIC_BASE_URL_BILLS_AS=anthropic` proxy answers "served" for every id), or when the project sets its own `aiModel` (step 3). A regenerate or resume re-resolves it at that time (persisting it is #1153).
 
 ### 29.4 Per-Project Model Preferences
 

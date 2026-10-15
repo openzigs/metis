@@ -270,6 +270,8 @@ export function initModelRecommendationRouter(): Router {
     // (`aiModel`, else the provider's configured model), never a hard-coded tier.
     // When the project sets `aiModel` the orchestrator resolves Auto to it and
     // never applies the Models-page preferences, so the card drops them too.
+    // Over the budget threshold, `select()` names the model the whole run is
+    // downgraded to (`runBudgetDowngrade`), the orchestrator's own resolution.
     const projectModel = provider ? projectRunModel(project, provider) : undefined;
     const modelRouter = new ModelRouter({
       preferences:

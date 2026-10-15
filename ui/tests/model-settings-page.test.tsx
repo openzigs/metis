@@ -281,7 +281,7 @@ describe("ProjectModelSettingsPage", () => {
         expect(screen.getByTestId("budget-threshold-help")).toBeInTheDocument();
       });
       const help = screen.getByTestId("budget-threshold-help").textContent;
-      expect(help).toContain("downgrades a Sonnet model to this provider's Haiku model");
+      expect(help).toContain("runs entirely on this provider's newest Haiku model");
       // #1145 — and says exactly when it does not apply.
       expect(help).toContain("no effect when the project sets its own AI model");
       expect(screen.getByTestId("budget-threshold-slider")).not.toBeDisabled();

@@ -119,6 +119,7 @@ interface RecommendationBody {
       modelName: string;
       estimatedCost: number | null;
       rationale: string;
+      wasDowngraded?: boolean;
     };
     estimate: { tokens: number | null; basis: string; sampleSize: number };
   };
@@ -474,6 +475,47 @@ describe("model-recommendation on the Anthropic API (#1145)", () => {
     expect(body.data.selection.modelName).toBe("Claude Haiku 5.5");
     // No router rate for it: no estimate borrowed from Sonnet.
     expect(body.data.selection.estimatedCost).toBeNull();
+  });
+
+  // #1145 re-review — the card names the model the WHOLE run is downgraded to,
+  // resolved the same way as the run (`ModelRouter.runBudgetDowngrade`).
+  describe("budget downgrade on the card", () => {
+    beforeEach(() => {
+      activeProvider = { ...anthropicApi, model: "claude-sonnet-5-5" };
+      projectFindFirst.mockResolvedValue({ id: "proj-1", aiModel: null });
+    });
+
+    const withThreshold = (budgetDowngradeThreshold: number) =>
+      modelPreferenceFindUnique.mockResolvedValue({
+        defaultModel: null,
+        taskTypeOverrides: "{}",
+        budgetDowngradeThreshold,
+      });
+
+    it("names Haiku 5.5 for every run shape once the month is over the threshold", async () => {
+      // REPORTED_HISTORY is 185,167 tokens this month.
+      withThreshold(100);
+      for (const agentKeys of [["document"], ["document", "code", "database", "web"]]) {
+        const body = await post({ agentKeys });
+        expect(body.data.selection.modelId).toBe("claude-haiku-5-5");
+        expect(body.data.selection.modelName).toBe("Claude Haiku 5.5");
+        expect(body.data.selection.wasDowngraded).toBe(true);
+      }
+    });
+
+    it("names the provider's Sonnet 5.5 under the threshold", async () => {
+      withThreshold(1_000_000);
+      const body = await post({ agentKeys: ["document"] });
+      expect(body.data.selection.modelId).toBe("claude-sonnet-5-5");
+      expect(body.data.selection.wasDowngraded).toBe(false);
+    });
+
+    it("never downgrades a project that sets its own aiModel", async () => {
+      withThreshold(100);
+      projectFindFirst.mockResolvedValue({ id: "proj-1", aiModel: "claude-sonnet-5-5" });
+      const body = await post({ agentKeys: ["document"] });
+      expect(body.data.selection.modelId).toBe("claude-sonnet-5-5");
+    });
   });
 
   it("offers the Claude 5.5 models as overrides and honours one", async () => {

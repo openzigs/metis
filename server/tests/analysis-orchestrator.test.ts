@@ -2046,18 +2046,22 @@ describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
       /** #1145 — the project's `aiModel` / `aiProviderId` for this run. */
       project?: { aiModel?: string | null; aiProviderId?: string | null };
     } = {},
-  ): Promise<Array<string | undefined>> {
+  ): Promise<string[]> {
     if (run.project) {
       const row = projects.get("proj-abcdefghij")!;
       projects.set("proj-abcdefghij", { ...row, ...run.project });
     }
     const base = makeProvider({});
-    const sent: Array<string | undefined> = [];
+    // #1145 re-review — a call that names no model runs on the provider's own,
+    // so record THAT: recording `undefined` made every "not the provider's
+    // model" assertion pass vacuously for the non-specialist calls.
+    const runsAs = overrides.model ?? base.model;
+    const sent: string[] = [];
     const provider = {
       ...base,
       ...overrides,
       async chat(messages: ChatMessage[], opts?: { model?: string }) {
-        sent.push(opts?.model);
+        sent.push(opts?.model ?? runsAs);
         return base.chat(messages, opts);
       },
     } as unknown as AIProvider;
@@ -2233,36 +2237,69 @@ describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
     } as never);
     try {
       const sent = await modelsSentBy(anthropicApi);
-      expect(sent).toContain("claude-haiku-5-5");
-      expect(sent).not.toContain(anthropicApi.model);
+      // The specialists take the override; synthesis and the other run-level
+      // calls run the provider's model (a task-type override is per task type).
+      expect(new Set(sent)).toEqual(new Set(["claude-haiku-5-5", anthropicApi.model]));
     } finally {
       vi.mocked(prisma.modelPreference.findUnique).mockResolvedValue(null);
     }
   });
 
-  // #1145 adversarial review — the budget downgrade fired only on the Sonnet
-  // tier id, which Auto no longer selects on the Anthropic API.
-  it("an Auto run over the budget threshold downgrades the provider's Sonnet 5.5 to Haiku 5.5", async () => {
-    const findMany = vi.mocked(prisma.analysis.findMany);
-    const original = findMany.getMockImplementation()!;
-    // The month-to-date read (`select: { totalTokens }`) is well over the threshold.
-    findMany.mockImplementation((async (args?: { select?: { totalTokens?: boolean } }) =>
-      args?.select?.totalTokens
-        ? [{ totalTokens: 1_000_000 }]
-        : (original as (a?: unknown) => Promise<unknown>)(args)) as never);
-    vi.mocked(prisma.modelPreference.findUnique).mockResolvedValue({
-      defaultModel: null,
-      taskTypeOverrides: "{}",
-      budgetDowngradeThreshold: 100,
-    } as never);
-    try {
-      const sent = await modelsSentBy({ ...anthropicApi, model: "claude-sonnet-5-5" });
-      expect(sent).toContain("claude-haiku-5-5");
-      expect(sent).not.toContain("claude-sonnet-5-5");
-    } finally {
-      findMany.mockImplementation(original);
-      vi.mocked(prisma.modelPreference.findUnique).mockResolvedValue(null);
+  // #1145 — the budget downgrade is decided once per Auto run (re-review of
+  // PR #1150): applied only to the specialist calls, it sent Haiku 5.5 on 4
+  // calls and Sonnet 5.5 on 15 in one run.
+  describe("run-level budget downgrade (#1145)", () => {
+    const sonnet55: Partial<AIProvider> = { ...anthropicApi, model: "claude-sonnet-5-5" };
+    let restoreFindMany: () => void = () => {};
+
+    function monthToDate(tokens: number): void {
+      const findMany = vi.mocked(prisma.analysis.findMany);
+      const original = findMany.getMockImplementation()!;
+      // Only the month-to-date read selects `{ totalTokens }` alone.
+      findMany.mockImplementation((async (args?: { select?: { totalTokens?: boolean } }) =>
+        args?.select?.totalTokens && Object.keys(args.select).length === 1
+          ? [{ totalTokens: tokens }]
+          : (original as (a?: unknown) => Promise<unknown>)(args)) as never);
+      restoreFindMany = () => findMany.mockImplementation(original);
     }
+
+    beforeEach(() => {
+      vi.mocked(prisma.modelPreference.findUnique).mockResolvedValue({
+        defaultModel: null,
+        taskTypeOverrides: "{}",
+        budgetDowngradeThreshold: 100,
+      } as never);
+    });
+
+    afterEach(() => {
+      restoreFindMany();
+      vi.mocked(prisma.modelPreference.findUnique).mockResolvedValue(null);
+    });
+
+    it("over the threshold, every call of the run is sent Haiku 5.5", async () => {
+      monthToDate(1_000_000);
+      const sent = await modelsSentBy(sonnet55);
+      expect(sent.length).toBeGreaterThan(4);
+      expect(new Set(sent)).toEqual(new Set(["claude-haiku-5-5"]));
+    });
+
+    it("under the threshold, every call of the run is sent the provider's model", async () => {
+      monthToDate(99);
+      const sent = await modelsSentBy(sonnet55);
+      expect(new Set(sent)).toEqual(new Set(["claude-sonnet-5-5"]));
+    });
+
+    it("a regenerate over the threshold is sent Haiku 5.5 throughout too", async () => {
+      monthToDate(1_000_000);
+      const sent = await modelsSentBy(sonnet55, { regenerate: true });
+      expect(new Set(sent)).toEqual(new Set(["claude-haiku-5-5"]));
+    });
+
+    it("a project with its own aiModel is never downgraded", async () => {
+      monthToDate(1_000_000);
+      const sent = await modelsSentBy(sonnet55, { project: { aiModel: "claude-sonnet-5-5" } });
+      expect(new Set(sent)).toEqual(new Set(["claude-sonnet-5-5"]));
+    });
   });
 
   it("runs specialists on the provider's configured model on a non-Claude provider", async () => {

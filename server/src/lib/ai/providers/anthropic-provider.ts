@@ -276,6 +276,14 @@ export class AnthropicProvider implements AIProvider {
   }
 
   /**
+   * #1145 — on a declared proxy, {@link servesRouterModel} is the operator's
+   * declaration, not a list of what the proxy routes.
+   */
+  get routerModelsInferred(): boolean {
+    return !this.anthropicApiEndpoint && baseUrlBillsAsAnthropic(this.config);
+  }
+
+  /**
    * #131 — per-model capabilities from the model catalog (#135), with the
    * endpoint's limits applied: DeepSeek's endpoint never honours
    * `output_config.format`.

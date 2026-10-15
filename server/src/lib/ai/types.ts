@@ -596,6 +596,14 @@ export interface AIProvider {
    */
   servesRouterModel?(modelId: string): boolean;
   /**
+   * #1145 — `true` when {@link servesRouterModel} is a declaration rather than
+   * knowledge: a proxy the operator declared relays to Anthropic
+   * (`ANTHROPIC_BASE_URL_BILLS_AS=anthropic`) answers "served" for every id, so
+   * nothing chooses a model for it automatically (the budget downgrade is
+   * skipped). Absent: the answer is real.
+   */
+  readonly routerModelsInferred?: boolean;
+  /**
    * #1077 — the output-token limit a `chat()` call on this adapter gets when
    * the caller sets no `maxTokens`. It depends on the adapter AND on where it
    * points (4,096 on an OpenAI-compatible host, 65,536 on DeepSeek's, 16,000 on

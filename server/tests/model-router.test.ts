@@ -12,6 +12,7 @@ import {
   ModelNotServedError,
   tierModelFor,
   projectRunModel,
+  haikuVersion,
   type RouterProvider,
 } from "../src/lib/ai/model-router.js";
 import type { TaskProfile } from "../src/lib/ai/types.js";
@@ -482,79 +483,128 @@ describe("ModelRouter autoModel (#1145)", () => {
     expect(router.select(simpleProfile).modelId).toBe("claude-sonnet-5-5");
   });
 
-  it("still downgrades a Sonnet-tier default over the budget threshold", () => {
-    const router = new ModelRouter({
-      provider: anthropicApi,
-      autoModel: "claude-sonnet-5-5",
-      preferences: {
-        defaultModel: SONNET_MODEL_ID,
-        budgetDowngradeThreshold: 100,
-      },
-      currentMonthTokens: 1_000,
-    });
-    const sel = router.select(moderateProfile);
-    expect(sel.modelId).toBe(HAIKU_MODEL_ID);
-    expect(sel.wasDowngraded).toBe(true);
-  });
-
-  // #1145 adversarial review — the downgrade fired only on the Sonnet tier id,
-  // which Auto no longer selects on the Anthropic API.
-  describe("budget downgrade of a provider's own Sonnet-class model", () => {
+  // #1145 — the budget downgrade is decided once per Auto run, from the run's
+  // model, so every call of the run gets the same model (re-review of PR #1150).
+  describe("run-level budget downgrade", () => {
     const served = new Set(["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"]);
-    const overBudget = (autoModel: string, extra: Partial<{ defaultModel: string }> = {}) =>
+    const overBudget = (
+      autoModel: string,
+      extra: { defaultModel?: string; taskTypeOverrides?: Record<string, string> } = {},
+      opts: { provider?: RouterProvider; accepted?: ReadonlySet<string> } = {},
+    ) =>
       new ModelRouter({
-        provider: anthropicApi,
+        provider: opts.provider ?? anthropicApi,
         autoModel,
-        acceptedModelIds: served,
+        acceptedModelIds: opts.accepted ?? served,
         preferences: { budgetDowngradeThreshold: 100, ...extra },
         currentMonthTokens: 1_000,
       });
 
-    it("downgrades the project's Sonnet 5.5 to the provider's Haiku 5.5", () => {
-      const sel = overBudget("claude-sonnet-5-5").select(moderateProfile);
-      expect(sel.modelId).toBe("claude-haiku-5-5");
-      expect(sel.wasDowngraded).toBe(true);
-      expect(sel.rationale).toBe(
-        "Budget threshold exceeded (1,000 >= 100 tokens): downgraded from claude-sonnet-5-5 to claude-haiku-5-5",
+    it("downgrades the run's Sonnet 5.5 to the provider's Haiku 5.5, for every task", () => {
+      const router = overBudget("claude-sonnet-5-5");
+      expect(router.runBudgetDowngrade()).toBe("claude-haiku-5-5");
+      for (const profile of [simpleProfile, moderateProfile, complexProfile]) {
+        const sel = router.select(profile);
+        expect(sel.modelId).toBe("claude-haiku-5-5");
+        expect(sel.wasDowngraded).toBe(true);
+        // A served model with no router rate: no borrowed Sonnet estimate.
+        expect(sel.estimatedCost).toBeNull();
+      }
+      expect(router.select(moderateProfile).rationale).toBe(
+        "Budget threshold exceeded (1,000 >= 100 tokens): the run is downgraded from claude-sonnet-5-5 to claude-haiku-5-5",
       );
-      // A served model with no router rate: no borrowed Sonnet estimate.
-      expect(sel.estimatedCost).toBeNull();
     });
 
-    it("downgrades a Sonnet-class default model preference", () => {
-      const sel = overBudget("claude-opus-5-5", { defaultModel: "claude-sonnet-5-5" }).select(
-        simpleProfile,
-      );
-      expect(sel.modelId).toBe("claude-haiku-5-5");
+    it("takes precedence over the Models-page default and task-type overrides", () => {
+      const router = overBudget("claude-sonnet-5-5", {
+        defaultModel: "claude-opus-5-5",
+        taskTypeOverrides: { summarization: "claude-opus-5-5" },
+      });
+      expect(router.select(simpleProfile).modelId).toBe("claude-haiku-5-5");
+      expect(router.select(moderateProfile).modelId).toBe("claude-haiku-5-5");
     });
 
-    it("leaves a Sonnet-class model alone under the threshold", () => {
-      const sel = new ModelRouter({
+    it("never downgrades one Auto call on its own: a Sonnet default under a non-Sonnet run model", () => {
+      const router = overBudget("claude-opus-5-5", { defaultModel: "claude-sonnet-5-5" });
+      expect(router.runBudgetDowngrade()).toBeUndefined();
+      const sel = router.select(simpleProfile);
+      expect(sel.modelId).toBe("claude-sonnet-5-5");
+      expect(sel.wasDowngraded).toBe(false);
+    });
+
+    it("downgrades the Sonnet tier id and its legacy alias to the Haiku tier id", () => {
+      const gateway: RouterProvider = {
+        key: "bedrock-gateway",
+        model: SONNET_MODEL_ID,
+        servesRouterModel: () => true,
+      };
+      for (const model of [SONNET_MODEL_ID, LEGACY_SONNET_MODEL_ID]) {
+        const router = overBudget(model, {}, { provider: gateway, accepted: new Set() });
+        expect(router.runBudgetDowngrade()).toBe(HAIKU_MODEL_ID);
+        expect(router.select(complexProfile).modelId).toBe(HAIKU_MODEL_ID);
+      }
+    });
+
+    it.each([
+      ["4.5 listed first", ["claude-haiku-4-5", "claude-haiku-5-5"]],
+      ["5.5 listed first", ["claude-haiku-5-5", "claude-haiku-4-5"]],
+    ])("picks the newest served Haiku by version (%s)", (_label, haikus) => {
+      const accepted = new Set(["claude-sonnet-5-5", ...haikus]);
+      expect(overBudget("claude-sonnet-5-5", {}, { accepted }).runBudgetDowngrade()).toBe(
+        "claude-haiku-5-5",
+      );
+    });
+
+    it("leaves the run alone under the threshold", () => {
+      const router = new ModelRouter({
         provider: anthropicApi,
         autoModel: "claude-sonnet-5-5",
         acceptedModelIds: served,
         preferences: { budgetDowngradeThreshold: 100 },
         currentMonthTokens: 99,
-      }).select(moderateProfile);
+      });
+      expect(router.runBudgetDowngrade()).toBeUndefined();
+      const sel = router.select(moderateProfile);
       expect(sel.modelId).toBe("claude-sonnet-5-5");
       expect(sel.wasDowngraded).toBe(false);
     });
 
-    it("does not downgrade a model that is not Sonnet-class", () => {
+    it("does not downgrade a run model that is not Sonnet-class", () => {
       expect(overBudget("claude-opus-5-5").select(moderateProfile).modelId).toBe("claude-opus-5-5");
     });
 
     it("does not downgrade when the provider serves no Haiku-class model", () => {
-      const sel = new ModelRouter({
-        provider: anthropicApi,
-        autoModel: "claude-sonnet-5-5",
-        acceptedModelIds: new Set(["claude-sonnet-5-5", "claude-opus-5-5"]),
-        preferences: { budgetDowngradeThreshold: 100 },
-        currentMonthTokens: 1_000,
-      }).select(moderateProfile);
-      expect(sel.modelId).toBe("claude-sonnet-5-5");
-      expect(sel.wasDowngraded).toBe(false);
+      const router = overBudget(
+        "claude-sonnet-5-5",
+        {},
+        { accepted: new Set(["claude-sonnet-5-5", "claude-opus-5-5"]) },
+      );
+      expect(router.runBudgetDowngrade()).toBeUndefined();
+      expect(router.select(moderateProfile).modelId).toBe("claude-sonnet-5-5");
     });
+
+    it("does not downgrade on a provider whose served set is only declared (a BILLS_AS proxy)", () => {
+      const proxy: RouterProvider = { ...anthropicApi, routerModelsInferred: true };
+      const router = overBudget("claude-sonnet-5-5", {}, { provider: proxy });
+      expect(router.runBudgetDowngrade()).toBeUndefined();
+      expect(router.select(moderateProfile).modelId).toBe("claude-sonnet-5-5");
+    });
+
+    it("is undefined without a run model", () => {
+      expect(
+        new ModelRouter({
+          provider: anthropicApi,
+          preferences: { budgetDowngradeThreshold: 100 },
+          currentMonthTokens: 1_000,
+        }).runBudgetDowngrade(),
+      ).toBeUndefined();
+    });
+  });
+
+  it("haikuVersion reads the release, not the snapshot date", () => {
+    expect(haikuVersion("claude-haiku-5-5")).toEqual([5, 5]);
+    expect(haikuVersion(HAIKU_MODEL_ID)).toEqual([4, 5]);
+    expect(haikuVersion("claude-sonnet-5-5")).toEqual([]);
   });
 
   it("does not price a served model the router has no rate for at the Sonnet rate", () => {

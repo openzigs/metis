@@ -81,6 +81,11 @@ export class RecordingProvider implements AIProvider {
     return this.inner.servesRouterModel?.(modelId) === true;
   }
 
+  /** #1145 — transparent: whether the inner adapter's served set is inferred. */
+  get routerModelsInferred(): boolean | undefined {
+    return this.inner.routerModelsInferred;
+  }
+
   async chat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<ChatResponse> {
     const response = await this.inner.chat(messages, opts);
     const key = fixtureKey(messages, opts);

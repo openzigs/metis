@@ -59,6 +59,14 @@ describe("servesRouterModel (#512)", () => {
       const config = configWith({ ANTHROPIC_BASE_URL_BILLS_AS: "anthropic" });
       const p = new AnthropicProvider({ apiKey: "k", baseUrl: proxy, config });
       expect(p.servesRouterModel(SONNET_MODEL_ID)).toBe(true);
+      // #1145 — but only by declaration: no automatic model switch is made for it.
+      expect(p.routerModelsInferred).toBe(true);
+    });
+
+    it("Anthropic's own API, opt-in or not, has a real served set (#1145)", () => {
+      const config = configWith({ ANTHROPIC_BASE_URL_BILLS_AS: "anthropic" });
+      expect(new AnthropicProvider({ apiKey: "k", config }).routerModelsInferred).toBe(false);
+      expect(new AnthropicProvider({ apiKey: "k" }).routerModelsInferred).toBe(false);
     });
 
     it.each<Record<string, string>>([{}, { ANTHROPIC_BASE_URL_BILLS_AS: "auto" }])(

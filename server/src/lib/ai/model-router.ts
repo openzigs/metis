@@ -93,7 +93,7 @@ export interface ModelPreferences {
  * unable.
  */
 export type RouterProvider = Pick<AIProvider, "key" | "model" | "servesRouterModel"> &
-  Partial<Pick<AIProvider, "offline">>;
+  Partial<Pick<AIProvider, "offline" | "routerModelsInferred">>;
 
 /**
  * #713 — the offline stub, which answers any model id and runs no real model.
@@ -140,6 +140,29 @@ export class ModelNotServedError extends Error {
     );
     this.name = "ModelNotServedError";
   }
+}
+
+/**
+ * #1145 — the release version a Haiku-class model id names, for picking the
+ * newest served one: `claude-haiku-5-5` → `[5, 5]`,
+ * `us.anthropic.claude-haiku-4-5-20251001-v1:0` → `[4, 5]` (an 8-digit
+ * snapshot date is not part of the version). No version: `[]`, which sorts last.
+ */
+export function haikuVersion(id: string): number[] {
+  const m = /haiku-(\d+(?:-\d+)*)/i.exec(id);
+  if (!m) return [];
+  return m[1]!
+    .split("-")
+    .filter((part) => part.length < 8)
+    .map(Number);
+}
+
+function compareVersions(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const d = (a[i] ?? -1) - (b[i] ?? -1);
+    if (d !== 0) return d;
+  }
+  return 0;
 }
 
 export interface ModelRouterOptions {
@@ -230,6 +253,21 @@ export class ModelRouter {
       );
     }
 
+    // #1145 — an over-budget Auto run is downgraded as a whole, decided once
+    // from the run's model (see {@link runBudgetDowngrade}): it takes precedence
+    // over the per-task preferences so every call of the run gets one model.
+    if (this.autoModel !== undefined) {
+      const runDowngrade = this.runBudgetDowngrade();
+      if (runDowngrade !== undefined) {
+        return this.buildSelection(
+          runDowngrade,
+          profile,
+          `${this.budgetExceededText()}: the run is downgraded from ${this.autoModel} to ${runDowngrade}`,
+          true,
+        );
+      }
+    }
+
     // Check task-type overrides from project preferences
     const taskTypeOverride = this.preferences.taskTypeOverrides?.[profile.taskType];
     if (
@@ -248,12 +286,15 @@ export class ModelRouter {
     if (this.autoModel !== undefined) {
       const projectDefault = this.preferences.defaultModel;
       const model = projectDefault ?? this.autoModel;
-      return this.withBudgetDowngrade(
+      // No per-task budget downgrade here: an Auto run's downgrade is decided
+      // once, above, so one call of a run is never cheaper than its siblings.
+      return this.buildSelection(
         model,
         profile,
         projectDefault
           ? `Auto (${profile.taskType}): the project's default model preference (${model})`
           : `Auto (${profile.taskType}): the project's model (${model})`,
+        false,
       );
     }
 
@@ -288,19 +329,14 @@ export class ModelRouter {
     profile: TaskProfile,
     rationale: string,
   ): ModelSelection {
-    const threshold = this.preferences.budgetDowngradeThreshold;
-    const target =
-      threshold != null && threshold > 0 && this.currentMonthTokens >= threshold
-        ? this.downgradeTarget(selectedModel)
-        : undefined;
+    const target = this.overBudget() ? this.downgradeTarget(selectedModel) : undefined;
     if (target !== undefined) {
-      const exceeded = `Budget threshold exceeded (${this.currentMonthTokens.toLocaleString()} >= ${threshold!.toLocaleString()} tokens)`;
       return this.buildSelection(
         target,
         profile,
         selectedModel === SONNET_MODEL_ID
-          ? `${exceeded}: downgraded from Sonnet to Haiku`
-          : `${exceeded}: downgraded from ${selectedModel} to ${target}`,
+          ? `${this.budgetExceededText()}: downgraded from Sonnet to Haiku`
+          : `${this.budgetExceededText()}: downgraded from ${selectedModel} to ${target}`,
         true,
       );
     }
@@ -309,20 +345,52 @@ export class ModelRouter {
   }
 
   /**
+   * #1145 — the model an Auto run switches to as a whole because the project is
+   * over its budget threshold, or `undefined` for no downgrade. Decided ONCE per
+   * run from the run's model ({@link ModelRouterOptions.autoModel}), so the
+   * orchestrator sends the result on every call of the run (specialists,
+   * synthesis, extraction, enhancement and the agentic code loop alike) and the
+   * Model card names the same model. No `autoModel`: `undefined`.
+   */
+  runBudgetDowngrade(): string | undefined {
+    if (this.autoModel === undefined || !this.overBudget()) return undefined;
+    return this.downgradeTarget(this.autoModel);
+  }
+
+  private overBudget(): boolean {
+    const threshold = this.preferences.budgetDowngradeThreshold;
+    return threshold != null && threshold > 0 && this.currentMonthTokens >= threshold;
+  }
+
+  private budgetExceededText(): string {
+    const threshold = this.preferences.budgetDowngradeThreshold ?? 0;
+    return `Budget threshold exceeded (${this.currentMonthTokens.toLocaleString()} >= ${threshold.toLocaleString()} tokens)`;
+  }
+
+  /**
    * The cheaper model a budget downgrade switches `model` to, if any: the Sonnet
-   * tier id to the Haiku tier id (#599), and (#1145) any other Sonnet-class
-   * model — the project's or the provider's own, e.g. `claude-sonnet-5-5` on the
-   * Anthropic API — to the first Haiku-class model the provider serves
-   * ({@link ModelRouterOptions.acceptedModelIds}, newest first). No Haiku-class
-   * model served, or a model that is not Sonnet-class: no downgrade.
+   * tier id (or its legacy alias) to the Haiku tier id (#599), and (#1145) any
+   * other Sonnet-class model — e.g. `claude-sonnet-5-5` on the Anthropic API —
+   * to the NEWEST Haiku-class model the provider serves
+   * ({@link ModelRouterOptions.acceptedModelIds}, ordered by {@link haikuVersion},
+   * not by list order). No downgrade when `model` is not Sonnet-class, when no
+   * Haiku-class model is served, or when the provider's served set is inferred
+   * rather than known (`routerModelsInferred`: a proxy declared to bill as
+   * Anthropic answers "served" for every id, so an automatic switch could send
+   * it a model it cannot route).
    */
   private downgradeTarget(model: string): string | undefined {
-    if (model === SONNET_MODEL_ID) return HAIKU_MODEL_ID;
+    if (this.provider?.routerModelsInferred === true) return undefined;
+    if (model === SONNET_MODEL_ID || model === LEGACY_SONNET_MODEL_ID) return HAIKU_MODEL_ID;
     if (!/sonnet/i.test(model)) return undefined;
+    let best: string | undefined;
     for (const id of this.acceptedModelIds) {
-      if (/haiku/i.test(id)) return id;
+      if (!/haiku/i.test(id)) continue;
+      if (best === undefined || compareVersions(haikuVersion(id), haikuVersion(best)) > 0) {
+        best = id;
+      }
     }
-    return undefined;
+    return best;
   }
 
   /**
