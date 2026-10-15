@@ -24,6 +24,14 @@ names the UI control for each step and marks the few checks that are *API only*.
 those; anything else that needs `fetch` is a finding. Chat no longer runs or suggests Spec Kit
 commands (#931).
 
+- **S3b:** `developer` is not a member of a fresh run's workspace. Invite, accept, then log
+  out and back in as `developer` before the read-only check (3 of the 20 logins per 15
+  minutes).
+- **S6 then S6b changes the design.** Save `plan.md` and `tasks.md` only after S6b to S6d,
+  and run `/speckit.analyze` and the handoff after them.
+- **S9 budget:** the handoff analysis took 20 minutes and $0.35 in run 8, and one Continue
+  added 23 minutes and $0.41. Budget 45 minutes for S9 when #1062 is exercised.
+- **Spec Kit commands take the leading slash** in the palette (`/speckit.specify`).
 - **S9 handoff:** **Start analysis with these artifacts** once. It must start a new run, never
   `{{ANALYSIS_RUN_ID}}`; record its ID and cost, with test custom agents disabled first.
 - **S21:** the dry run lists the titles and the target repo; Publish stays disabled with the

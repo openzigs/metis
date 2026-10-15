@@ -63,7 +63,11 @@ results were not comparable. Do not reorder.
    Expect 1 user / 1 category / 1 feed / 25 entries (8 read, 5 starred). Re-running is a no-op.
 4. **Server and UI in the operator's own terminal** — `pnpm --filter ./server run dev` and
    `pnpm --filter ./ui run dev`. Agent background shells are killed at 2 h, which is
-   shorter than a wave. Sync steps and mock auth: the `run-metis-dev` skill.
+   shorter than a wave, so restart both servers between waves. Sync steps and mock auth: the
+   `run-metis-dev` skill. **Finish every `.env` edit before the servers start, and never edit
+   `.env` while `next dev` is running:** in run 8 the edit restarted the UI child, which hit
+   `EMFILE` and served 404s, and wave A stopped before login. Raise the file limit first
+   (`ulimit -n 10240` in the shell that starts the servers).
 5. **Workspace first, then the project inside it.** Membership has no invite UI (#941): invite
    over the API, open `/invites/<token>` as the invitee, then log them in afresh. Reviewers
    must be workspace members. A project *outside* a workspace can only be created with
@@ -78,6 +82,9 @@ results were not comparable. Do not reorder.
 7. **Ground truth** for citation checks, outside the repo's tracked tree:
    `git clone --depth 1 --branch v2.3.3 https://github.com/miniflux/v2`, or the release
    source tarball. Check a cited line with `sed -n '163,164p' internal/validator/user.go`.
+   **Confirm the directory the briefs name exists and is not empty** (`ls` it, and check
+   `internal/validator/user.go` is there): in run 8 it was empty and an intact copy was
+   elsewhere in the scratch area.
 
 ## 2. LLM
 
@@ -170,7 +177,13 @@ publishes count toward the run's cap of 2, so leave it a slot or let it dry-run 
 refresh, re-ingest or scheduler run while docs generation is in flight used to fail the
 document at commit after its whole spend: $4.61 and 88 min in run 3 (#856). #867 now stops
 early on changed inputs, but the run still ends `failed`. Pause every scheduled job before
-Phase 9, and create the Phase 13 scheduler job **after** Phase 9's documents finish.
+Phase 9, and create the Phase 13 scheduler job **after** Phase 9's documents finish. **Confirm no scheduled job from an earlier run is enabled** at
+`/scheduler` before wave A: run 8's dashboard still listed jobs from runs 3 to 7, including a
+run 7 repo refresh on `*/2`. Pause or delete them.
+
+**Sandbox publish slots.** The harness refused the real-publish confirmation in wave C and
+allowed it in waves D and F. The cap is 2 real sandbox issues per run; assign them up front
+(for example one to wave D's S21 and one to wave F's Journey 1) and let wave C dry-run only.
 
 ## 4. Safety guard-rails
 
@@ -293,6 +306,10 @@ found wrong in `TEST_PLAN.md`, in a PR.
 - In dev mode, snapshots fail for **20–40 s** after a navigation while the route compiles.
   Wait, then retry.
 - File **uploads must come from under the repo** root.
+- **Never take a full-page screenshot of an analysis run's Traceability tab**: it crashes
+  Chrome. Use viewport captures on analysis pages.
+- In the step manifest, the `useful` axis takes only `pass`, `weak`, `fail` or `n/a`. Wave F
+  wrote `"partial"` on 14 lines of run 8's `steps.jsonl`; use `weak` for that.
 - A second user needs `browser.newContext()`. Mock users exist only after their first login.
 - **After signing out in Playwright, clicks can stop delivering events.** Open a new tab, and
   sign in or out with in-page `fetch` rather than the account menu, except for the one sign-out

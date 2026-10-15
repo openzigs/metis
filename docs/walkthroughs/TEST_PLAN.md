@@ -115,7 +115,7 @@ ANTHROPIC_MODEL=deepseek-flash
    { "deepseek-flash": { "inputPerMTok": 0.30, "outputPerMTok": 1.20, "cacheReadPerMTok": 0.006 } }
    ```
    Off-peak prices are half of these.
-3. Set a project budget (`/projects/:id/settings` budget card, `PATCH /api/projects/:id/budget`). Suggested: **$25** for the whole walkthrough.
+3. Set a project budget (`/projects/:id/settings` budget card, `PATCH /api/projects/:id/budget`). The card takes **tokens**, not dollars. Suggested: **30,000,000** tokens for the whole walkthrough (run 8's setting; at DeepSeek's peak prices a full pass costs well under $25).
 
 **Cost note.** A full pass (ingest, analysis with deep dives, 3 doc generations, Spec Kit, impact ×3, PR review, chat) was estimated at **5–20M tokens, about $2–$25 at peak**. Measured: run 3 spent $9.84 and run 4 $4.32. Record the real figure per phase.
 
@@ -173,10 +173,10 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
 - **Steps:**
   1. In `/projects/:id/connections`, add a repo connector for `https://github.com/miniflux/v2.git` at ref `v2.3.3`, using the vault picker for the token. This calls `POST /api/projects/:id/connectors/repos`. Connector labels must match `^[A-Za-z0-9][A-Za-z0-9 _.\-]*$`.
   2. Run `…/repos/:id/test`, then **deep ingest**: `POST /api/projects/:id/connectors/repos/:repoId/deep-ingest` (clone + code graph + RAG). Then `set-primary`.
-  3. Open `/repositories` and `/projects/:id/repositories`.
+  3. Open the Repositories page: it redirects to the project's connections page (`/projects/:id/connections`), so expect the redirect and do not file it. Then open `/projects/:id/repositories`.
 - **Works:**
   - The ingest job's progress (`components/realtime/job-progress`) reaches completion.
-  - `GET /api/projects/:id/connectors/repos/:repoId` shows code-graph stats greater than 0.
+  - The code-graph stats are greater than 0. `GET /api/projects/:id/connectors/repos/:repoId` carries none, so read them from the Deep Ingest banner on `/projects/:id/connections` (`sync-graph-totals`: graph files, symbols and edges; run 8 showed 427 files, 3,845 symbols, 28,158 edges) or from the deep-ingest job result's `summary.codeGraph` (`graphFiles`, `graphSymbols`, `graphEdges`).
   - The connector card reads `connected` with the commit as soon as the first ingest ends, with no reload, and its commit is the code graph's `commitSha` (#758, #762).
   - The Deep Ingest banner reports the graph's totals ("code graph of N files, …"), not the delta (#715).
   - No credential-scan quarantine for Miniflux. If one fires, record which file.
@@ -185,7 +185,7 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
 ### Phase 3 — Ingest, embeddings and RAG
 - **Steps:**
   1. In `/projects/:id/documents`, upload `README.md` and `miniflux.1` (as `.txt`) from the checkout (`POST /api/projects/:id/documents`). Add the URL `https://miniflux.app/docs/api.html` (`POST …/documents/url`) and one text note (`POST …/documents/text`).
-  2. Approve the documents (`POST …/documents/:id/approve`). Uploaded and URL documents land in quarantine (Project settings → Quarantine) until approved.
+  2. Approve the documents (`POST …/documents/:id/approve`). Uploaded documents, URLs and pasted notes all land in quarantine (Project settings → Quarantine) until approved.
   3. In `/settings/embeddings`, view the project's coverage (`GET /api/admin/embeddings/projects/:id/coverage`) and trigger a reindex (`POST …/reindex`, which returns 202 plus a jobId).
   4. Query retrieval: `POST /api/projects/:id/retrieve` with "how often are feeds refreshed".
 - **Works:**
@@ -267,7 +267,7 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
   5. **Request review** on the Requirements page for `coordinator` (a workspace member; see Setup order 3). It is listed on `/reviews`.
 - **Works:** requirements approved in the checkpoint arrive on the hub already **Approved**, not "Awaiting review", so they need no second Approve (#939); links persist, the workspace roll-up counts match (the moved project from Phase 5 appears in it), the baseline compare shows the edit, and `request-review-done` confirms the review.
 - **Useful:**
-  - The requirement "a user cannot subscribe to the same feed URL twice" traces to `unique (user_id, feed_url)` (`internal/database/migrations.go:69`) and to the feed validator in `internal/validator/feed.go` or `subscription.go`.
+  - The requirement "a user cannot subscribe to the same feed URL twice" traces to `unique (user_id, feed_url)` (`internal/database/migrations.go:69`) and to the feed validator in `internal/validator/feed.go` or `subscription.go`. Run 8's analysis produced no such requirement (its 19 were deployment pin, polling, CLI commands, validators, metrics and TLS), so the trace could not be checked. Seed it as a requirement before Phase 8, or fall back to a validator requirement such as "Reading Speed Validation" and check that it traces to `internal/validator/user.go`; record which was used.
   - Approved requirements keep their acceptance criteria and code links (#730, #909). Report how many promoted requirements have none of each (run 3: 29/29 without criteria; run 4: 3/37).
 
 ### Phase 9 — Docs generation
@@ -419,11 +419,12 @@ What counts:
   - No draft title reads `[Feature] [Feature]: …`.
   - Nothing is created in `miniflux/v2`. Verify with `gh issue list -R miniflux/v2 --author @me`.
   - Sandbox issues exist and their links resolve.
-- **Useful:** a published issue body has a clear title, the affected files and acceptance criteria that a developer could act on without opening METIS. Drafts from the Phase 6 GitHub import carry the upstream issue's acceptance criteria when it has an "Acceptance criteria" heading.
+- **Useful:** a published issue body has a clear title, the affected files and acceptance criteria that a developer could act on without opening METIS. Drafts from an import carry the source issue's acceptance criteria when it has an "Acceptance criteria" heading. No Miniflux issue has one (0 of 266 in run 8), so judge this on an import that does, or record n/a.
 
 ### Phase 13 — Drift, scheduler and tasks
 Run this phase only after Phase 9's documents finish: a repo refresh during docs generation fails the document at commit (#856).
 - **Steps:**
+  0. **Read the lineage edge count first** (`GET /api/projects/:id/sql-lineage`). The scheduled refresh on an unchanged commit raised reads from 740 to 785 in run 8 (also run 7, listed on #1066), so a count taken before and after Phase 13 differs by design. Run 8's end-of-run query gives 785 reads, 361 writes and 108 persists-to; waves A and B reported 740.
   1. Open `/projects/:id/sync` (`GET /api/sync/drift`, `…/drift/count`, `…/drift/:id/resolve`).
   2. In `/scheduler`, list the handlers (`GET /api/scheduler/handlers`) and create a job of type `refresh-repo-connector` on a cron schedule. Pause, resume and view its history.
   3. In `/tasks`, cancel and retry a task.
@@ -452,7 +453,7 @@ Run this phase only after Phase 9's documents finish: a repo refresh during docs
 ### Phase 17 — "Tested by" in traceability
 Replaces the Test Coverage page, whose imports and runs were removed in #818 and #819 (epic #812, [ADR 0019](../decisions/0019-replace-test-coverage-with-tested-by.md)).
 - **Steps:**
-  1. Open the completed analysis's **Requirements** tab and expand the requirement "password ≥ 6 chars". Read its **Tested by** section. If the analysis produced no such requirement, use a validator requirement such as "Reading speed validation" instead, which should list `user_test.go:40` `TestValidateReadingSpeed`. To check through the API, use `GET /api/projects/:projectId/requirements/:requirementId/traceability`, field `testedBy`.
+  1. Open the completed analysis's **Requirements** tab and expand the requirement "password ≥ 6 chars". Read its **Tested by** section. If the analysis produced no such requirement, use a validator requirement instead. For the #1071 check (the LinkTaco requirement; run 8's reviewed analysis has none) name "Selectable Polling Scheduler" (`feed_test.go:79`) or "Reading Speed Validation" (`user_test.go:40`, `TestValidateReadingSpeed`) as the fallback. To check through the API, use `GET /api/projects/:projectId/requirements/:requirementId/traceability`, field `testedBy`.
   2. Open the analysis's **Traceability** tab. Read the matrix's **Tests** column and the **Untested requirements** list below it (`GET /api/projects/:projectId/traceability/test-gaps?analysisId=:id`).
   3. Open the workspace traceability rollup and read the project's **Tested** column. Hover it to see the strict figure.
 - **Works:** the Tested by section, the untested list and the Tested column render, and no model call is made (the ledger delta for this phase is 0).
@@ -495,6 +496,8 @@ Replaces the Test Coverage page, whose imports and runs were removed in #818 and
 - **Useful:** cache telemetry shows DeepSeek cache reads, if DeepSeek reports them (#796).
 
 ## Spec Kit (Phase 14, in full)
+
+**Type the leading slash.** This plan writes Spec Kit commands without one (`speckit.specify`) so the drift check does not read them as pages, but the command palette requires it: type `/speckit.specify`, `/speckit.plan` and so on. Where a step says to run `speckit.<name>`, that means `/speckit.<name>` in the palette. The API paths are unaffected. **S6 then S6b changes the design**, so save `plan.md` and `tasks.md` only after S6b to S6d, and run `/speckit.analyze` and the handoff after them. Budget 45 minutes for S9 when #1062 is exercised (run 8: 20 minutes and $0.35, and one Continue added 23 minutes and $0.41). In S3b, `developer` is not a member of a fresh run's workspace: invite, accept, then log out and in. <!-- drift-check: skip -->
 
 **Sources:**
 - API: `server/src/routes/spec-kit.ts`, mounted at `/api/projects/:projectId/spec-kit`.
@@ -594,9 +597,11 @@ that names the right four functions from one that names them among forty wrong o
 output is also **scored on precision and recall** against a reference change set (#1042); an
 impact analysis's blast radius is scored on recall only (#1073, "Scoring a change plan").
 
-### Upstream state of the six requests (checked 2026-10-10)
+### Upstream state of the six requests (checked 2026-10-10; re-checked 2026-10-15)
 
-Read-only `gh` against `miniflux/v2`: `main` at `899fe04c`, and `v2.3.3` (2026-07-24) still the
+Update 2026-10-15 (run 8): miniflux/v2 PR [#4453](https://github.com/miniflux/v2/pull/4453) ("feat(rewrite): validate rewrite rules at save time with helpful error messages", merged 2026-10-12 as `6333ca10`, no linked issue) is a genuine feature merged after `v2.3.3`. **Decision:** it is recorded as an alternate with its own reference change set (below) and does **not** replace a bug-fix entry yet, because #4386, #4456 and #4479 are upstream-truth fixes tied to issues; swap it in for #4479 only if run 9 wants a third `upstream` feature. #4547 and #4552 were still open on 2026-10-15, so #4511 stays `candidate`.
+
+Read-only `gh` against `miniflux/v2`, as first checked 2026-10-10: `main` at `899fe04c`, and `v2.3.3` (2026-07-24) still the
 latest release. No feature PR has merged since `v2.3.3` (the only `feat` title merged since is a
 Polish translation, #4527), so none of the three feature change sets is "what upstream actually
 did". Re-check before each run: if a candidate PR has merged, switch that request's change set to
@@ -689,6 +694,13 @@ changes, cited at `v2.3.3`.
 - **Neutral:** `storage.(*EntryQueryBuilder).WithLimit` (`internal/storage/entry_query_builder.go:204`, the cause) and `WithLimitAndMaximum` (:210), both unchanged; `model.MaxEntryLimit` and `model.MaxEntryIDsLimit` (`internal/model/entry.go:20`, `:24`), unchanged; `googlereader.(*greaderHandler).streamItemIDsHandler` (:952, which dispatches to the four) and `getItemRefsAndContinuation` (:1097).
 - **Must not:** raising `model.MaxEntryLimit` (it is also the REST API's `limit` cap and the `entries_per_page` maximum; upstream used the separate ID-list maximum); any migration.
 - **Test files (not scored):** none in the PR.
+
+#### Alternate: miniflux/v2 #4453, rewrite rules validated at save time
+
+- **Source:** `upstream` (merged PR `6333ca10`, no linked issue: the PR description is the request, like #4526).
+- **Files (scored, 8):** `internal/reader/rewrite/content_rewrite.go`; `internal/reader/rewrite/content_rewrite_validation.go` (new); `internal/reader/rewrite/url_rewrite.go`; `internal/validator/rewrite.go` (new); `internal/validator/feed.go`; `internal/ui/form/subscription.go`; `internal/ui/feed_update.go`; `internal/locale/translations/en_US.json`.
+- **Neutral:** the other 22 locale files, the templates `add_subscription.html`, `edit_feed.html` and `settings.html` (textarea and monospace change), `internal/ui/static/css/common.css`, and the tests.
+- **Behaviour:** malformed content, URL and entry rewrite rules block saving on the add-feed, edit-feed and settings screens with a message; existing malformed rules are logged at apply time. Scoring uses the same rules as the other sets; a plan that only logs at apply time misses the save-time half.
 
 #### #4386: After "Mark this page as read" the feed shows 0 entries
 
@@ -893,6 +905,8 @@ between features (#939 approval, #940 a dropped label, #943 cost lost between ru
   both decks show each journey as one chapter.
 
 ### Journey 1: Business analyst ("Priya")
+
+**Decide up front whether to approve all.** Run 8's 5 items became about 34 requirements and the harness refuses a scripted bulk rejection. The journey ran 43 of its 45 minutes with no idle time. Take viewport screenshots on analysis pages: a full-page capture of the Traceability tab crashes Chrome.
 
 **Goal:** turn open Miniflux feature requests into reviewed, traceable sandbox issues for a sprint.
 **Budget:** ≤ 45 min, ≤ $1.50.
