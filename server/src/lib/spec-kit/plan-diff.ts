@@ -37,12 +37,81 @@ function namedFunctions(plan: string): string[] {
   return [...seen];
 }
 
-function change(before: string[], after: string[]): SetChange {
+/**
+ * The `## Components` section's top-level bullets, each with its indented
+ * continuation lines. Empty when the plan has no such section.
+ */
+function componentBullets(plan: string): string[] {
+  const section = /^##\s+Components\s*$([\s\S]*?)(?=^##\s|(?![\s\S]))/m.exec(plan);
+  if (!section) return [];
+  const bullets: string[] = [];
+  for (const line of section[1]!.split("\n")) {
+    if (/^[-*]\s/.test(line)) bullets.push(line);
+    else if (bullets.length > 0 && /^\s+\S/.test(line)) bullets[bullets.length - 1] += `\n${line}`;
+  }
+  return bullets;
+}
+
+/** The words a component uses to say it changes or creates code (prompts.ts: **Extends** / **New**). */
+const CHANGE_RE = /\b(?:extends?|new|modif(?:y|ies|ied)|adds?|creates?|placed in)\b/i;
+
+/**
+ * Bullets that propose a change: they carry a change word, and their head —
+ * the name before the first dash or colon — does not declare them unchanged
+ * (run 8's "Unchanged existing surfaces", "(reused, unchanged)").
+ */
+function changeBullets(plan: string): string[] {
+  return componentBullets(plan).filter((b) => {
+    const head = b.split(/\s[—–]\s|:\s/)[0]!;
+    return CHANGE_RE.test(b) && !/\bunchanged\b|\buntouched\b/i.test(head);
+  });
+}
+
+/**
+ * The files a plan proposes to change or create (#1134): per component bullet,
+ * the first path after its change word, else its first path. A plan cites many
+ * files as grounding — run 8 cited both handler files in both plans, so a diff
+ * over every cited path hid the handler move behind incidental files. Falls
+ * back to every cited path when the plan names no such component.
+ */
+function proposedFiles(plan: string): string[] {
+  const seen = new Set<string>();
+  for (const bullet of changeBullets(plan)) {
+    const at = bullet.search(CHANGE_RE);
+    const file = extractReferencedPaths(bullet.slice(at))[0] ?? extractReferencedPaths(bullet)[0];
+    if (file !== undefined) seen.add(file);
+  }
+  return seen.size > 0 ? [...seen] : extractReferencedPaths(plan);
+}
+
+/**
+ * How central a name is to the proposed change, lower first: 0 for a changed
+ * component's own name (`**MarkAllAsReadBeforeDays** — **New**`), 1 for a
+ * name a changed component mentions, 2 for a grounding citation elsewhere.
+ * Run 8's removed storage wrapper sat 8th of 17, behind the list cap.
+ */
+function functionRanks(plans: string[]): Map<string, number> {
+  const ranks = new Map<string, number>();
+  for (const bullet of plans.flatMap(changeBullets)) {
+    const name = /^[-*]\s+\*\*([^*\n]+)\*\*/.exec(bullet)?.[1]?.trim();
+    if (name !== undefined) ranks.set(name, 0);
+    for (const fn of namedFunctions(bullet)) if (!ranks.has(fn)) ranks.set(fn, 1);
+  }
+  return ranks;
+}
+
+function change(before: string[], after: string[], ranks = new Map<string, number>()): SetChange {
   const b = new Set(before);
   const a = new Set(after);
+  // Stable within a rank, so first-seen order survives among equals.
+  const order = (xs: string[]) =>
+    xs
+      .map((x, i) => ({ x, i, r: ranks.get(x) ?? 2 }))
+      .sort((p, q) => p.r - q.r || p.i - q.i)
+      .map((e) => e.x);
   return {
-    added: after.filter((x) => !b.has(x)),
-    removed: before.filter((x) => !a.has(x)),
+    added: order(after.filter((x) => !b.has(x))),
+    removed: order(before.filter((x) => !a.has(x))),
   };
 }
 
@@ -50,8 +119,12 @@ export function diffPlanDesign(previous: string, next: string): PlanDesignDiff {
   const endpoints = (plan: string) => listPlanEndpoints(plan).map((e) => `${e.method} ${e.path}`);
   return {
     endpoints: change(endpoints(previous), endpoints(next)),
-    files: change(extractReferencedPaths(previous), extractReferencedPaths(next)),
-    functions: change(namedFunctions(previous), namedFunctions(next)),
+    files: change(proposedFiles(previous), proposedFiles(next)),
+    functions: change(
+      namedFunctions(previous),
+      namedFunctions(next),
+      functionRanks([previous, next]),
+    ),
   };
 }
 

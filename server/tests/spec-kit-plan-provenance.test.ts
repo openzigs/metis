@@ -2,6 +2,7 @@
  * #1134 — which plan.md a derived artifact was generated from, and what a
  * re-planned design changed.
  */
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   describeStale,
@@ -179,6 +180,40 @@ describe("plan design diff", () => {
     const many = Array.from({ length: 8 }, (_, i) => `- \`doThing${i}()\``).join("\n");
     const text = describePlanDesignDiff(1, diffPlanDesign("", many));
     expect(text).toContain("and 3 more");
+  });
+
+  // The real run 8 plans (.playwright-mcp/walkthrough-706-run8/wave-d): v1
+  // extends entry_handlers.go, v2 user_handlers.go, but each plan cites both.
+  it("reports the handler move between the real run 8 plans, not their grounding citations", () => {
+    const fixture = (name: string) =>
+      readFileSync(new URL(`./fixtures/plan-diff/${name}`, import.meta.url), "utf8");
+    const diff = diffPlanDesign(fixture("run8-plan-v1.md"), fixture("run8-plan-v2.md"));
+    expect(diff.files).toEqual({
+      added: ["internal/api/user_handlers.go"],
+      removed: ["internal/api/entry_handlers.go"],
+    });
+    expect(diff.functions.removed[0]).toBe("MarkAllAsReadBeforeDays");
+    const text = describePlanDesignDiff(1, diff);
+    expect(text).toContain(
+      "files differ (added `internal/api/user_handlers.go`; removed `internal/api/entry_handlers.go`)",
+    );
+    expect(text).toContain("removed `MarkAllAsReadBeforeDays`");
+  });
+
+  it("does not count a component declared unchanged as a proposed file", () => {
+    const plan = (file: string, kept: string) =>
+      [
+        "## Components",
+        `- **Handler** — **Extends** \`${file}\` (\`markThingHandler\`)`,
+        `- **Storage** *(reused, unchanged)* — **Extends** \`${kept}\``,
+        "## Risks",
+        "- cites \`internal/other/file.go\`",
+      ].join("\n");
+    const diff = diffPlanDesign(
+      plan("internal/api/a.go", "internal/storage/x.go"),
+      plan("internal/api/b.go", "internal/storage/y.go"),
+    );
+    expect(diff.files).toEqual({ added: ["internal/api/b.go"], removed: ["internal/api/a.go"] });
   });
 
   it("hands the previous plan over as the starting point", () => {
