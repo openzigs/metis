@@ -225,7 +225,9 @@ function selectionSummary(filter: RequirementsScopeFilter, count: number): strin
  */
 export function headingWithCount(title: string, count: number): string {
   const noun = count === 1 ? "requirement" : "requirements";
-  if (new RegExp(`\\b${count} requirements?\\b`, "i").test(title)) return title;
+  // A fixed pattern (no regex built from data): every "<n> requirement(s)" the title names.
+  const stated = [...title.matchAll(/(?<!\d)(\d+) requirements?\b/gi)].map((m) => Number(m[1]));
+  if (stated.includes(count)) return title;
   return `${title} (${count} ${noun})`;
 }
 
