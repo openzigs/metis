@@ -30,6 +30,12 @@ export interface RequirementHistoryPage {
   page: number;
   pageSize: number;
   currentVersion: number;
+  /**
+   * #1130 — the requirement as it was before its first recorded change, under
+   * the version it held. A review pinned at a never-edited requirement's version
+   * finds it here: version rows are written only by edits.
+   */
+  original?: { version: number; snapshot: RequirementVersionSnapshot };
 }
 
 export interface RestoreResult {

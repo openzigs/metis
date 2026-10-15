@@ -226,6 +226,34 @@ export function buildHistoryEntries(
   }));
 }
 
+/**
+ * Issue #1130 — the requirement as it was before its first recorded change.
+ *
+ * A version row is written only when a requirement is EDITED, so a freshly
+ * promoted, never-edited set has none, and a review pinned at its version (v0)
+ * found no history entry: every card read "No version history for v0" and the
+ * reviewer could not see what they were asked to approve. The history replay
+ * already arrives at that state — reversing every recorded change from the
+ * current row — and simply discarded it. This returns it under the version it
+ * held: one below the earliest row, or the current version when there are no
+ * rows (nothing has changed since it was created).
+ *
+ * Chosen over writing a v0 row at promotion: it needs no migration or backfill,
+ * so it also fixes every review requested before this change, and it is the
+ * PINNED text (later edits are reversed out), not the current text.
+ */
+export function originalVersionOf(
+  current: RequirementSnapshot,
+  currentVersion: number,
+  versionsDesc: VersionRow[],
+): { version: number; snapshot: RequirementSnapshot } {
+  let running: RequirementSnapshot = { ...current };
+  for (const row of versionsDesc)
+    running = applyReverse(running, parseChangedFields(row.changedFields));
+  const earliest = versionsDesc.at(-1);
+  return { version: earliest ? earliest.version - 1 : currentVersion, snapshot: running };
+}
+
 // ---------------------------------------------------------------------------
 // Database operations
 // ---------------------------------------------------------------------------

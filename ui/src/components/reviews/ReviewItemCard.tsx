@@ -9,6 +9,7 @@
  * document version diffs are out of scope for this issue.
  */
 import { useQuery } from "@tanstack/react-query";
+import { parseAcceptanceCriteria } from "@metis/shared";
 import { RequirementBody } from "@/components/analysis/RequirementBody";
 import { Card } from "@/components/ui/card";
 import { historyApi } from "@/lib/history-api";
@@ -45,7 +46,13 @@ export function ReviewItemCard({ item }: { item: ReviewItem }) {
   }
 
   const entry = history.data?.versions.find((v) => v.version === item.pinnedVersion);
-  const snapshot = entry?.snapshot;
+  // #1130 — a never-edited requirement has no version row; its pinned text is
+  // the state before the first recorded change, which the server returns.
+  const original =
+    !entry && history.data?.original?.version === item.pinnedVersion
+      ? history.data.original
+      : undefined;
+  const snapshot = entry?.snapshot ?? original?.snapshot;
   const title =
     typeof snapshot?.title === "string" && snapshot.title !== ""
       ? snapshot.title
@@ -64,20 +71,22 @@ export function ReviewItemCard({ item }: { item: ReviewItem }) {
         <p className="text-xs text-destructive" role="alert">
           Failed to load version history for this requirement.
         </p>
-      ) : entry ? (
+      ) : snapshot ? (
         <>
-          {/* #998 — the pinned body is Markdown and carries METIS block markers; its
-              headings sit under this card's h3 title. */}
-          {typeof snapshot?.body === "string" ? (
-            <RequirementBody body={snapshot.body} minHeadingLevel={4} />
-          ) : null}
-          <SnapshotMeta snapshot={snapshot ?? {}} />
-          <div className="space-y-1">
-            <h4 className="text-xs font-semibold text-muted-foreground">
-              Changes introduced by v{item.pinnedVersion}
-            </h4>
-            <VersionDiff changedFields={entry.changedFields} />
-          </div>
+          <PinnedContent snapshot={snapshot} />
+          {entry ? (
+            <div className="space-y-1">
+              <h4 className="text-xs font-semibold text-muted-foreground">
+                Changes introduced by v{item.pinnedVersion}
+              </h4>
+              <VersionDiff changedFields={entry.changedFields} />
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="review-item-unedited">
+              v{item.pinnedVersion} is the requirement as it was created: no edits were recorded
+              before it.
+            </p>
+          )}
         </>
       ) : (
         <p className="text-xs text-muted-foreground">
@@ -85,6 +94,33 @@ export function ReviewItemCard({ item }: { item: ReviewItem }) {
         </p>
       )}
     </Card>
+  );
+}
+
+/** The pinned body, acceptance criteria and metadata of a requirement snapshot. */
+function PinnedContent({ snapshot }: { snapshot: Record<string, unknown> }) {
+  const criteria = parseAcceptanceCriteria(
+    typeof snapshot.acceptanceCriteria === "string" ? snapshot.acceptanceCriteria : null,
+  );
+  return (
+    <>
+      {/* #998 — the pinned body is Markdown and carries METIS block markers; its
+          headings sit under this card's h3 title. */}
+      {typeof snapshot.body === "string" ? (
+        <RequirementBody body={snapshot.body} minHeadingLevel={4} />
+      ) : null}
+      {criteria.length > 0 ? (
+        <div className="space-y-1" data-testid="review-item-criteria">
+          <h4 className="text-xs font-semibold text-muted-foreground">Acceptance criteria</h4>
+          <ul className="list-disc space-y-0.5 pl-5 text-sm">
+            {criteria.map((c, i) => (
+              <li key={i}>{c}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <SnapshotMeta snapshot={snapshot} />
+    </>
   );
 }
 

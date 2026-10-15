@@ -241,6 +241,90 @@ describe("ReviewItemCard", () => {
     expect(screen.queryByTestId("requirement-body")).toBeNull();
   });
 
+  // Issue #1130 — a freshly promoted, never-edited set has no version rows, so
+  // every card read "No version history for v0". The server's `original` is the
+  // pinned text.
+  it("shows every never-edited requirement's body, criteria and priority at v0", async () => {
+    const body = (n: number) =>
+      [
+        `Users **mark** entry ${n} read.`,
+        "",
+        "<!-- metis:clarifications:start -->",
+        "## Clarifications",
+        "<!-- metis:clarifications:end -->",
+      ].join("\n");
+    historyListMock.mockImplementation(async (requirementId: string) => {
+      const n = Number(requirementId.slice(-1));
+      return {
+        versions: [],
+        total: 0,
+        page: 1,
+        pageSize: 100,
+        currentVersion: 0,
+        original: {
+          version: 0,
+          snapshot: {
+            title: `Requirement ${n}`,
+            body: body(n),
+            priority: "high",
+            acceptanceCriteria: JSON.stringify([`Criterion ${n}`]),
+          },
+        },
+      };
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        {[1, 2, 3].map((n) => (
+          <ReviewItemCard
+            key={n}
+            item={makeRequirementItem({
+              id: `item-${n}`,
+              requirementId: `req-${n}`,
+              pinnedVersion: 0,
+              requirement: { id: `req-${n}`, title: `Requirement ${n}`, version: 0 },
+            })}
+          />
+        ))}
+      </Wrapper>,
+    );
+
+    await waitFor(() => expect(screen.getAllByTestId("requirement-body")).toHaveLength(3));
+    const bodies = screen.getAllByTestId("requirement-body");
+    for (const [i, rendered] of bodies.entries()) {
+      expect(rendered.textContent).toContain(`entry ${i + 1} read`);
+      expect(rendered.querySelector("strong")?.textContent).toBe("mark");
+      expect(rendered.textContent).not.toContain("metis:");
+    }
+    expect(screen.getAllByTestId("review-item-criteria").map((c) => c.textContent)).toEqual([
+      "Acceptance criteriaCriterion 1",
+      "Acceptance criteriaCriterion 2",
+      "Acceptance criteriaCriterion 3",
+    ]);
+    expect(screen.getAllByText(/priority: high/)).toHaveLength(3);
+    expect(screen.getAllByTestId("review-item-unedited")).toHaveLength(3);
+    expect(screen.queryByText(/No version history/)).toBeNull();
+  });
+
+  it("does not use the original for a different pinned version", async () => {
+    historyListMock.mockResolvedValue({
+      versions: [],
+      total: 0,
+      page: 1,
+      pageSize: 100,
+      currentVersion: 4,
+      original: { version: 4, snapshot: { title: "Now", body: "Current text" } },
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <ReviewItemCard item={makeRequirementItem()} />
+      </Wrapper>,
+    );
+    expect(await screen.findByText(/No version history for v3/i)).toBeInTheDocument();
+    expect(screen.queryByText("Current text")).toBeNull();
+  });
+
   it("falls back gracefully when the pinned version has no history entry", async () => {
     historyListMock.mockResolvedValue({
       versions: [],
