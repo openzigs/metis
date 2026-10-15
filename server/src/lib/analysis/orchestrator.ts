@@ -260,8 +260,7 @@ import {
   buildRequirementInputAccount,
   extractNewRequirementCandidates,
   extractNewRequirementCandidatesWithAccount,
-  mergeRequirementSets,
-  mergeRequirementSetsWithAccount,
+  codeAgentRequirementSet,
   type RequirementRef,
 } from "./new-requirements.js";
 import { computeRequirementEscalations } from "./escalation-context.js";
@@ -668,6 +667,13 @@ export interface StartAnalysisOptions {
   agentContext?: string;
 }
 
+/** #1098 — the `NR-*` ids of the imported items a run was started from. */
+function importedCandidateIds(
+  sources: ReadonlyArray<Pick<AnalysisSourceRequirement, "candidateId">> | undefined,
+): Set<string> {
+  return new Set((sources ?? []).map((s) => s.candidateId));
+}
+
 /** #1027 — the run's stored plan context, or undefined. */
 export function readAgentContext(metadata: Record<string, unknown>): string | undefined {
   return normalizeAgentContext(metadata.agentContext);
@@ -1035,6 +1041,8 @@ export class AnalysisOrchestrator {
       const result =
         opts.agentKey === "code"
           ? await this.regenerateCodeAgent(agentInput, {
+              // #1098 — scope the set to the imported items, as the run did.
+              importedIds: importedCandidateIds(readSourceRequirements(analysis.metadata)),
               databaseAwareSetting:
                 (analysis.project as { databaseAwareAnalysis?: string | null })
                   .databaseAwareAnalysis ?? undefined,
@@ -1123,13 +1131,21 @@ export class AnalysisOrchestrator {
    */
   private async regenerateCodeAgent(
     input: Parameters<AnalysisOrchestrator["runOneAgent"]>[0],
-    opts: { databaseAwareSetting?: string; tokenBudget?: number; turnMultiplier?: number } = {},
+    opts: {
+      databaseAwareSetting?: string;
+      tokenBudget?: number;
+      turnMultiplier?: number;
+      /** #1098 — the `NR-*` ids of the imported items the run was started from. */
+      importedIds?: ReadonlySet<string>;
+    } = {},
   ): Promise<AgentRunResult> {
     const totalBudget = opts.tokenBudget ?? resolveAgentTokenBudget();
-    const requirements = mergeRequirementSets(
+    // #1098 — the same set the pipeline gave the code agent.
+    const requirements = codeAgentRequirementSet(
       await this.extractRequirementsFromDocAgent(input.analysisId),
       await extractNewRequirementCandidates(input.extraInstructions),
-    );
+      opts.importedIds ?? new Set(),
+    ).requirements;
     const mode = await this.detectAgentMode(input.projectId, "code", requirements);
     if (mode !== "agentic") {
       return this.runOneAgent({ ...input, knownRequirementIds: requirements.map((r) => r.id) });
@@ -1382,10 +1398,12 @@ export class AnalysisOrchestrator {
         // requirements into the code agent's requirement set; a resumed repo must
         // be analysed against the SAME set or it would investigate less than its
         // siblings.
-        const requirements = mergeRequirementSets(
+        const requirements = codeAgentRequirementSet(
           await this.extractRequirementsFromDocAgent(opts.analysisId),
           await extractNewRequirementCandidates(extraInstructions),
-        );
+          // #1098 — scoped to the imported items, as the original run was.
+          importedCandidateIds(readSourceRequirements(analysis.metadata)),
+        ).requirements;
         const affectedCode = await this.computeAffectedCode(
           opts.analysisId,
           analysis.projectId,
@@ -1777,8 +1795,24 @@ export class AnalysisOrchestrator {
         // case, silently dormant.
         const extraction = await extractNewRequirementCandidatesWithAccount(opts.extraInstructions);
         const newRequirements = extraction.candidates;
-        const mergeResult = mergeRequirementSetsWithAccount(extractedRequirements, newRequirements);
+        // #1098 — on a run started from imported items, the code agent is given
+        // those items, each once and first; a document requirement that restates
+        // one is folded into it, and one that restates none is not investigated.
+        const mergeResult = codeAgentRequirementSet(
+          extractedRequirements,
+          newRequirements,
+          importedCandidateIds(opts.sourceRequirements),
+        );
         const codeRequirements = mergeResult.requirements;
+        if (opts.sourceRequirements?.length) {
+          log.info("Code agent requirement set scoped to the imported items", {
+            analysisId,
+            importedCount: opts.sourceRequirements.length,
+            givenToCodeAgent: codeRequirements.length,
+            restatedByDocuments: mergeResult.restated.length,
+            leftOutDocumentRequirements: mergeResult.leftOut.length,
+          });
+        }
 
         // #1112 (Epic #1107) — INPUT-side coverage. `RequirementCoverage` grades
         // outputs, so a requirement sliced off by the candidate cap (#1101's R7)

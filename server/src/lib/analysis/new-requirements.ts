@@ -352,6 +352,131 @@ export function mergeRequirementSetsWithAccount(
 }
 
 /**
+ * Issue #1098 — share of an imported item's content words a document
+ * requirement must contain to restate it. Containment, not Jaccard: an imported
+ * item is carried as its tracker TITLE (#1006), a handful of words, while the
+ * document agent restates it as a full spec sentence, so the symmetric
+ * {@link DUPLICATE_REQUIREMENT_OVERLAP} measure missed all five restatements in
+ * #706 run 7. Above one half so a single shared word ("feed") is not enough.
+ */
+export const IMPORTED_RESTATEMENT_CONTAINMENT = 0.6;
+
+/** Content tokens with a plural `s` folded, so "entries"/"entrie" and "feeds"/"feed" meet. */
+function stemmedTokens(text: string): Set<string> {
+  return new Set(
+    [...contentTokens(text)].map((w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w)),
+  );
+}
+
+/** Issue #1098 — the code agent's requirement set on a run from imported items. */
+export interface ImportedScopeResult extends RequirementMergeResult {
+  /** Document requirements that restate an imported item, folded into it. */
+  restated: Array<{ id: string; restatesId: string }>;
+  /** Document requirements that restate no imported item: not given to the code agent. */
+  leftOut: RequirementRef[];
+}
+
+/**
+ * Issue #1098 — on a run started from imported items, the code agent works on
+ * those items, each once, and first.
+ *
+ * #706 run 7: five imported items gave the code agent 33 requirements, 23 of
+ * them README features nobody asked about and five restatements the de-dupe
+ * did not catch. The loop spent its budget on favicons and webhooks and every
+ * requirement ended "Could not verify".
+ *
+ * Decision: a document requirement that restates no imported item is NOT
+ * investigated on such a run; that is an ordinary analysis's job. Ordering them
+ * after the imported items would not protect the imported items' budget, since
+ * the loop decides for itself what to search. They are still read by the
+ * document agent and reach synthesis through its findings; only the code
+ * agent's investigation list is narrowed.
+ *
+ * The direction of the merge is reversed from {@link mergeRequirementSets}: a
+ * restatement folds INTO the imported item's `NR-*` id, so the link back to the
+ * tracker item (#1063) survives. Imported candidates lead in their ticked order;
+ * any other free-text candidate the operator typed follows them.
+ */
+export function scopeRequirementsToImported(
+  documentRequirements: readonly RequirementRef[],
+  newRequirements: readonly RequirementRef[],
+  importedIds: ReadonlySet<string>,
+): ImportedScopeResult {
+  const dropped: DroppedRequirementInput[] = [];
+  const kept: RequirementRef[] = [];
+  for (const candidate of newRequirements) {
+    if (normalizeRequirementText(candidate.text).length === 0) {
+      dropped.push({
+        id: candidate.id,
+        excerpt: requirementInputExcerpt(candidate.text),
+        reason: "unparseable",
+      });
+      continue;
+    }
+    kept.push(candidate);
+  }
+  const requirements = [
+    ...kept.filter((r) => importedIds.has(r.id)),
+    ...kept.filter((r) => !importedIds.has(r.id)),
+  ];
+  const targets = requirements.map((r) => ({
+    id: r.id,
+    normalized: normalizeRequirementText(r.text),
+    tokens: contentTokens(r.text),
+    stems: stemmedTokens(r.text),
+  }));
+
+  const restated: ImportedScopeResult["restated"] = [];
+  const leftOut: RequirementRef[] = [];
+  for (const doc of documentRequirements) {
+    const normalized = normalizeRequirementText(doc.text);
+    const tokens = contentTokens(doc.text);
+    const stems = stemmedTokens(doc.text);
+    let best: { id: string; score: number; hits: number } | null = null;
+    for (const t of targets) {
+      let hits = 0;
+      for (const w of t.stems) if (stems.has(w)) hits += 1;
+      const containment = t.stems.size === 0 ? 0 : hits / t.stems.size;
+      const same =
+        normalized.length > 0 &&
+        (t.normalized === normalized ||
+          t.normalized.includes(normalized) ||
+          normalized.includes(t.normalized) ||
+          contentOverlap(t.tokens, tokens) >= DUPLICATE_REQUIREMENT_OVERLAP);
+      const score = same ? 1 : containment;
+      if (score < IMPORTED_RESTATEMENT_CONTAINMENT) continue;
+      // Best match wins; on a tie, the more specific item (more words matched).
+      if (!best || score > best.score || (score === best.score && hits > best.hits)) {
+        best = { id: t.id, score, hits };
+      }
+    }
+    if (best) restated.push({ id: doc.id, restatesId: best.id });
+    else leftOut.push(doc);
+  }
+  return { requirements, merged: [], dropped, restated, leftOut };
+}
+
+/**
+ * Issue #1098 — the requirement set the code agent works from, on every path
+ * that builds one (the pipeline, a regenerate, a resumed repo): scoped to the
+ * imported items when the run was started from some, otherwise the #768 merge.
+ */
+export function codeAgentRequirementSet(
+  documentRequirements: readonly RequirementRef[],
+  newRequirements: readonly RequirementRef[],
+  importedIds: ReadonlySet<string>,
+): ImportedScopeResult {
+  if (importedIds.size > 0) {
+    return scopeRequirementsToImported(documentRequirements, newRequirements, importedIds);
+  }
+  return {
+    ...mergeRequirementSetsWithAccount(documentRequirements, newRequirements),
+    restated: [],
+    leftOut: [],
+  };
+}
+
+/**
  * Issue #1112 (Epic #1107) — assemble the run's input-side coverage from the two
  * stages that can discard a user-supplied requirement.
  *
