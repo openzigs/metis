@@ -98,9 +98,10 @@ the checkout (#756, PR #892).
 - Never click **Regenerate** on a reviewed run — `{{ANALYSIS_RUN_ID}}` is one.
 - Never **reject** approval items on a run that is still needed (#723).
 - Never run Spec Kit `taskstoissues` without the sandbox repo set explicitly.
-- Every publish is a **dry run first**; at most 2 real sandbox issues in the whole run.
-  Real publishing needs the operator's auto-mode allow rule; if it is blocked, stop and
-  report — do not route around it.
+- Every publish is a **dry run first**; at most 2 real sandbox issues in the whole run. Waves
+  D and F own those two slots; the harness refused wave C's real-publish confirmation in run 8,
+  so dry-run only here: do not attempt a real publish in this wave. If a step seems to need
+  one, stop and report — do not route around it.
 - Use the GitHub token only through the METIS vault picker.
 
 ## Tips

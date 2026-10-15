@@ -15,6 +15,10 @@ Phases 1–4 before you start; the `e2e-walkthrough` skill has the setup order.
 | Miniflux DB | migrated and seeded (`{{MINIFLUX_DB_URL}}`) |
 | Removed phases this run | `{{REMOVED_PHASES}}` (for example Phase 4's bug scan, #799) |
 
+Before anything else: `ls` the ground-truth checkout the skill names and confirm it is not
+empty; do not edit `.env` once the servers are running (it restarts the UI child, which can
+hit `EMFILE`); and confirm no scheduled job from an earlier run is enabled at `/scheduler`.
+
 ## Do
 
 1. Create workspace `{{WORKSPACE_NAME}}`, then project `{{PROJECT_NAME}}` **inside it** (#731).

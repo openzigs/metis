@@ -23,6 +23,13 @@ point to an outcome. Act as the persona: you know what they know and nothing mor
 
 No project, run or requirement IDs are given on purpose. Find everything through the UI.
 
+Notes from run 8: Journey 1's 5 items become about 34 requirements and the harness refuses a
+scripted bulk rejection, so decide up front whether to approve all; the journey ran 43 of its
+45 minutes with no idle time. Take **viewport** screenshots on analysis pages (a full-page
+capture of the Traceability tab crashes Chrome). In `steps.jsonl` the `useful` field is
+`pass`, `weak`, `fail` or `n/a` only, never `partial`. Wave D and wave F own the two real
+sandbox slots; wave C does not.
+
 ## Do
 
 1. **Journey 1, then journey 2**, step by step as the plan's tables define them. Before J1.1
