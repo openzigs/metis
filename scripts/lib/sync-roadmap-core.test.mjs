@@ -10,6 +10,7 @@ import {
   ISSUES_QUERY,
   ITEMS_QUERY,
   MAX_MUTATIONS,
+  ONE_ISSUE_QUERY,
   PROJECT_QUERY,
   SET_VALUE,
   UPDATE_FIELD,
@@ -22,7 +23,9 @@ import {
   kindOf,
   main,
   missingAreaOptions,
+  ownTier,
   parseArgs,
+  resolveTier,
   progressOf,
   shouldAdd,
   summaryLine,
@@ -47,6 +50,60 @@ describe("tierOf", () => {
   it("does not treat the severity label priority: high as a tier", () => {
     expect(tierOf(["priority: high", "bug"])).toBe("Unranked");
     expect(tierOf([])).toBe("Unranked");
+  });
+});
+
+describe("ownTier / resolveTier", () => {
+  /** @param {Array<[number, string[], number | null]>} rows */
+  const lookup = (rows) =>
+    new Map(rows.map(([number, labels, parent]) => [number, { number, labels, parent }]));
+
+  it("returns the own label's tier, or null", () => {
+    expect(ownTier(["priority: next"])).toBe("Next");
+    expect(ownTier(["priority: high"])).toBeNull();
+  });
+
+  it("prefers the issue's own label over any ancestor's", () => {
+    const l = lookup([
+      [3, ["priority: later"], 2],
+      [2, ["priority: now"], null],
+    ]);
+    expect(resolveTier(3, l)).toBe("Later");
+  });
+
+  it("takes the nearest labelled ancestor over a farther one", () => {
+    const l = lookup([
+      [4, [], 3],
+      [3, [], 2],
+      [2, ["priority: next"], 1],
+      [1, ["priority: now"], null],
+    ]);
+    expect(resolveTier(4, l)).toBe("Next");
+    expect(resolveTier(3, l)).toBe("Next");
+  });
+
+  it("is Unranked with no label on the chain, a missing parent, a cycle, or an unknown issue", () => {
+    expect(
+      resolveTier(
+        2,
+        lookup([
+          [2, ["priority: high"], 1],
+          [1, ["bug"], null],
+        ]),
+      ),
+    ).toBe("Unranked");
+    expect(resolveTier(2, lookup([[2, [], 99]]))).toBe("Unranked");
+    expect(
+      resolveTier(
+        3,
+        lookup([
+          [3, [], 2],
+          [2, [], 3],
+        ]),
+      ),
+    ).toBe("Unranked");
+    expect(resolveTier(5, lookup([[5, [], 5]]))).toBe("Unranked");
+    expect(resolveTier(7, lookup([]))).toBe("Unranked");
   });
 });
 
@@ -193,7 +250,8 @@ describe("parseArgs", () => {
  * `updatedAt` defaults to `closedAt` (a close updates the issue), else to a day before NOW.
  *
  * @param {Partial<{ number: number, title: string, state: string, closedAt: string | null,
- *   updatedAt: string, labels: string[], summary: any }>} [over]
+ *   updatedAt: string, labels: string[], summary: any, parent: number | null,
+ *   parentRepo: string }>} [over]
  * @param {number} number
  */
 function issue(number, over = {}) {
@@ -205,6 +263,8 @@ function issue(number, over = {}) {
     closedAt: /** @type {string | null} */ (null),
     labels: /** @type {string[]} */ ([]),
     summary: /** @type {any} */ (null),
+    parent: /** @type {number | null} */ (null),
+    parentRepo: "openzigs/metis",
     ...over,
   };
   return { ...base, updatedAt: over.updatedAt ?? base.closedAt ?? "2026-10-14T12:00:00Z" };
@@ -220,6 +280,8 @@ function issueNode(i) {
     closedAt: i.closedAt,
     labels: { nodes: i.labels.map((name) => ({ name })) },
     subIssuesSummary: i.summary ?? { total: 0, completed: 0, percentCompleted: 0 },
+    parent:
+      i.parent == null ? null : { number: i.parent, repository: { nameWithOwner: i.parentRepo } },
   };
 }
 
@@ -323,6 +385,11 @@ function fakeGitHub({
       const p = page(matching, variables.after);
       return ok({ repository: { issues: { ...p, nodes: p.nodes.map(issueNode) } } });
     }
+    if (query === ONE_ISSUE_QUERY) {
+      // Any issue by number, in the window or not; a number with no issue is null, as on GitHub.
+      const found = issues.find((i) => i.number === variables.number);
+      return ok({ repository: { issue: found ? issueNode(found) : null } });
+    }
     if (query === ITEMS_QUERY) {
       const p = page(board, variables.after);
       return ok({
@@ -407,7 +474,9 @@ function fakeGitHub({
     throw new Error(`unexpected request: ${query.slice(0, 60)}`);
   });
 
-  return { impl, board, mutations, requests, fields };
+  const oneIssueReads = () =>
+    requests.filter((r) => JSON.parse(r.init.body).query === ONE_ISSUE_QUERY).length;
+  return { impl, board, mutations, requests, fields, oneIssueReads };
 }
 
 /** @param {ReturnType<typeof fakeGitHub>} gh @param {boolean} [dryRun] */
@@ -814,6 +883,56 @@ describe("sync", () => {
     ).rejects.toThrow("another bug");
   });
 
+  it("inherits Tier from the nearest labelled ancestor, reading ones outside the window", async () => {
+    // #101 (open, no label) → #100 (closed in the window, no label) → #10 (closed in January,
+    // priority: now). #102 has its own label. #103's chain carries no tier label.
+    const gh = fakeGitHub({
+      issues: [
+        issue(10, {
+          state: "CLOSED",
+          closedAt: "2026-01-01T00:00:00Z",
+          labels: ["priority: now", "epic"],
+        }),
+        issue(11, { state: "CLOSED", closedAt: "2026-01-01T00:00:00Z", labels: ["epic"] }),
+        issue(100, { state: "CLOSED", closedAt: "2026-10-10T00:00:00Z", parent: 10 }),
+        issue(101, { parent: 100 }),
+        issue(102, { parent: 100, labels: ["priority: later"] }),
+        issue(103, { parent: 11 }),
+      ],
+      items: [100, 101, 102, 103].map((number) => ({ number, values: { Kind: "Issue" } })),
+    });
+    await run(gh);
+    expect(gh.board.map((b) => [b.number, b.values.Tier])).toEqual([
+      [100, "Now"],
+      [101, "Now"],
+      [102, "Later"],
+      [103, "Unranked"],
+    ]);
+    // #10 and #11 are read once each, and decide Tier only: neither is added nor written.
+    expect(gh.oneIssueReads()).toBe(2);
+    expect(gh.mutations.every((m) => /^PVTI_10[0-3]$/.test(m.variables.item))).toBe(true);
+  });
+
+  it("stops at a cycle, a deleted parent and a parent in another repository", async () => {
+    const gh = fakeGitHub({
+      issues: [
+        // #21 ↔ #22, both closed long ago and unlabelled: read once each, then the walk stops.
+        issue(21, { state: "CLOSED", closedAt: "2026-01-01T00:00:00Z", parent: 22 }),
+        issue(22, { state: "CLOSED", closedAt: "2026-01-01T00:00:00Z", parent: 21 }),
+        issue(20, { parent: 21 }),
+        issue(30, { parent: 999 }),
+        // #7 here is labelled, but #40's parent #7 lives in another repository.
+        issue(7, { state: "CLOSED", closedAt: "2026-01-01T00:00:00Z", labels: ["priority: now"] }),
+        issue(40, { parent: 7, parentRepo: "openzigs/onyourleft" }),
+      ],
+      items: [20, 30, 40].map((number) => ({ number, values: { Kind: "Issue" } })),
+    });
+    await run(gh);
+    expect(gh.board.map((b) => b.values.Tier)).toEqual(["Unranked", "Unranked", "Unranked"]);
+    // #21, #22 and the missing #999; never #7.
+    expect(gh.oneIssueReads()).toBe(3);
+  });
+
   it("requires the Area field", async () => {
     const noArea = FIELDS.filter((f) => f.name !== "Area");
     await expect(run(fakeGitHub({ issues: [], fields: noArea }))).rejects.toThrow(
@@ -952,7 +1071,7 @@ describe("main", () => {
     const { code, out, err } = await cli(gh, { GH_TOKEN: TOKEN });
     expect(code).toBe(1);
     expect(gh.board.map((b) => b.number)).toEqual([2]);
-    expect(err).toEqual(['sync-roadmap: 1 item(s) failed; see the lines starting "failed:"']);
+    expect(err).toEqual(['sync-roadmap: 1 write(s) failed; see the lines starting "failed:"']);
     expect([...out, ...err].join("\n")).not.toContain(TOKEN);
   });
 

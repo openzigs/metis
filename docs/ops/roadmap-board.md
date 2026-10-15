@@ -24,7 +24,9 @@ it the changes are made. Node built-ins only, nothing to install. Its tests are
 ## What it reads, adds and leaves alone
 
 - **Reads** every issue in `openzigs/metis` that is open or was closed in the last 30 days, with
-  its labels and sub-issue summary. Pull requests are never added.
+  its labels, parent and sub-issue summary. Pull requests are never added. It also reads each
+  ancestor outside that set (an epic closed long ago) so a Tier chain resolves; an ancestor
+  decides Tier and nothing else, and is never added or written.
 - **Adds** every open issue that is not on the board. It never deletes and never archives, and it
   leaves an archived item, and an item outside what it read, exactly as they are.
 - **Adds an Area option** when an issue carries an `area:` label the board has no option for. The
@@ -43,7 +45,7 @@ it the changes are made. Node built-ins only, nothing to install. Its tests are
 
 | Field | Type | Filled from |
 |---|---|---|
-| **Tier** | single select | the issue's own labels: `priority: now` → Now, `priority: next` → Next, `priority: later` → Later, `blocked` → Blocked, else **Unranked**. Several: the first in that order. `priority: high` is a severity label in METIS, not a tier, and sets nothing |
+| **Tier** | single select | the issue's own label: `priority: now` → Now, `priority: next` → Next, `priority: later` → Later, `blocked` → Blocked (several: the first in that order). With none, the **nearest ancestor's** (parent, then grandparent, …); with none on the chain, **Unranked**. So a sub-issue follows its epic until it is given its own label. `priority: high` is a severity label in METIS, not a tier, and sets nothing |
 | **Kind** | single select | `epic` label → Epic; title starting "Spike" or "Research" → Spike; `bug` label → Bug; else Issue, in that order |
 | **Progress %** | number | the issue's sub-issues, `percentCompleted` (GitHub rounds down); cleared for an issue with none |
 | **Sub-issues done** | text | the same, as "10 of 23"; cleared for an issue with none |

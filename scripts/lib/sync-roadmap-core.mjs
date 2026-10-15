@@ -8,7 +8,9 @@
  *
  * What a run does, in order:
  *   1. Reads every issue in openzigs/metis that is open or was closed in the last 30 days — labels,
- *      state, sub-issue summary — paged by 100. Pull requests are not issues and are never read.
+ *      state, parent, sub-issue summary — paged by 100. Pull requests are not issues and are never
+ *      read. Then reads, one by one, each ancestor outside that set (an epic closed long ago), so a
+ *      Tier chain resolves; ancestors decide Tier and nothing else.
  *   2. Reads every item already on the board, once, into a map.
  *   3. ADDS to the board's Area single-select any `area:` label name it has no option for, keeping
  *      every existing option by id (so no item loses its Area).
@@ -18,9 +20,10 @@
  *      touches Status (GitHub's built-in workflows own it).
  *
  * How METIS differs from On Your Left, deliberately:
- *   - Tier comes from the issue's OWN labels only (`priority: now|next|later`, then `blocked`), as
- *     the board's README states and the first fill of 2026-10-15 did; no ancestor inheritance.
- *     `priority: high` is a SEVERITY label here, not a tier, so it sets nothing.
+ *   - Tier is the issue's own label (`priority: now|next|later`, then `blocked`), else the nearest
+ *     ancestor's, else Unranked — On Your Left's `resolve_tier`, kept as merged per the owner's
+ *     correction of 2026-10-15 on #1147. `priority: high` is a SEVERITY label here, not a tier, so
+ *     it sets nothing and is not inherited.
  *   - Area comes from the `area:` label, as On Your Left's does (the owner's correction of
  *     2026-10-15 on #1147); the board's Area field must exist, it is never created.
  *   - Kind counts a title starting "Research" as a Spike: METIS names its spikes that way (#263).
@@ -68,7 +71,7 @@ export const MANAGED_FIELDS = /** @type {const} */ ([TIER, KIND, AREA, PROGRESS,
  * @typedef {{ total: number, completed: number, percentCompleted: number }} SubIssuesSummary
  * @typedef {{
  *   id: string, number: number, title: string, state: string, closedAt: string | null,
- *   labels: string[], summary: SubIssuesSummary | null
+ *   labels: string[], summary: SubIssuesSummary | null, parent: number | null
  * }} Issue
  * @typedef {string | number | null} FieldValue
  * @typedef {{ id: string | null, archived: boolean, values: Record<string, FieldValue> }} Item
@@ -80,17 +83,47 @@ export const MANAGED_FIELDS = /** @type {const} */ ([TIER, KIND, AREA, PROGRESS,
 // --- Decisions (pure) -------------------------------------------------------------------------
 
 /**
+ * The Tier an issue's own labels give it, or null when none applies.
+ *
+ * @param {string[]} labels
+ * @returns {string | null}
+ */
+export function ownTier(labels) {
+  const names = new Set(labels);
+  for (const [label, tier] of TIER_BY_LABEL) {
+    if (names.has(label)) return tier;
+  }
+  return null;
+}
+
+/**
+ * Own label first, else the nearest ancestor's, else Unranked. A parent that is not in `lookup`
+ * ends the walk, and so does a cycle, which GitHub should not allow but costs nothing to refuse.
+ *
+ * @param {number} number
+ * @param {Map<number, Pick<Issue, "number" | "labels" | "parent">>} lookup
+ * @returns {string}
+ */
+export function resolveTier(number, lookup) {
+  const seen = new Set();
+  let current = lookup.get(number);
+  while (current && !seen.has(current.number)) {
+    seen.add(current.number);
+    const tier = ownTier(current.labels);
+    if (tier) return tier;
+    current = current.parent == null ? undefined : lookup.get(current.parent);
+  }
+  return UNRANKED;
+}
+
+/**
  * The Tier an issue's own labels give it; Unranked when none applies.
  *
  * @param {string[]} labels
  * @returns {string}
  */
 export function tierOf(labels) {
-  const names = new Set(labels);
-  for (const [label, tier] of TIER_BY_LABEL) {
-    if (names.has(label)) return tier;
-  }
-  return UNRANKED;
+  return ownTier(labels) ?? UNRANKED;
 }
 
 /**
@@ -153,12 +186,13 @@ export function progressOf(summary) {
 
 /**
  * @param {Issue} issue
+ * @param {Map<number, Issue>} [lookup] the read issues and their ancestors, for Tier
  * @returns {Record<string, FieldValue>}
  */
-export function desiredFields(issue) {
+export function desiredFields(issue, lookup = new Map([[issue.number, issue]])) {
   const [progress, done] = progressOf(issue.summary);
   return {
-    [TIER]: tierOf(issue.labels),
+    [TIER]: resolveTier(issue.number, lookup),
     [KIND]: kindOf(issue),
     [AREA]: areaOf(issue.labels),
     [PROGRESS]: progress,
@@ -343,16 +377,27 @@ export function createClient({
 
 /** @typedef {ReturnType<typeof createClient>} Client */
 
+const ISSUE_FIELDS = `
+        id number title state closedAt
+        labels(first: 50) { nodes { name } }
+        parent { number repository { nameWithOwner } }
+        subIssuesSummary { total completed percentCompleted }`;
+
 export const ISSUES_QUERY = `
 query($owner: String!, $name: String!, $after: String, $filter: IssueFilters) {
   repository(owner: $owner, name: $name) {
     issues(first: 100, after: $after, filterBy: $filter, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
-      nodes {
-        id number title state closedAt
-        labels(first: 50) { nodes { name } }
-        subIssuesSummary { total completed percentCompleted }
+      nodes {${ISSUE_FIELDS}
       }
+    }
+  }
+}`;
+
+export const ONE_ISSUE_QUERY = `
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {${ISSUE_FIELDS}
     }
   }
 }`;
@@ -425,10 +470,14 @@ mutation($project: ID!, $item: ID!, $field: ID!) {
 }`;
 
 /**
+ * A parent in another repository is dropped: its number means a different issue here.
+ *
  * @param {any} node
+ * @param {string} repository
  * @returns {Issue}
  */
-function issueFromNode(node) {
+function issueFromNode(node, repository) {
+  const parent = node.parent;
   return {
     id: node.id,
     number: node.number,
@@ -437,6 +486,10 @@ function issueFromNode(node) {
     closedAt: node.closedAt ?? null,
     labels: (node.labels?.nodes ?? []).map((/** @type {{ name: string }} */ l) => l.name),
     summary: node.subIssuesSummary ?? null,
+    parent:
+      typeof parent?.number === "number" && parent.repository?.nameWithOwner === repository
+        ? parent.number
+        : null,
   };
 }
 
@@ -463,7 +516,7 @@ export async function readIssues(client, repository, now) {
       const data = await client.query(ISSUES_QUERY, { owner, name, after, filter });
       const page = data.repository.issues;
       for (const node of page.nodes) {
-        const issue = issueFromNode(node);
+        const issue = issueFromNode(node, repository);
         if (inReadWindow(issue, now)) issues.set(issue.number, issue);
       }
       if (!page.pageInfo.hasNextPage) break;
@@ -471,6 +524,35 @@ export async function readIssues(client, repository, now) {
     }
   }
   return issues;
+}
+
+/**
+ * Ancestors outside the read set, kept apart: they decide Tier, nothing else. Each is read once;
+ * a parent already read, or one that no longer exists, ends that branch, so a cycle cannot loop.
+ *
+ * @param {Client} client
+ * @param {string} repository owner/name
+ * @param {Map<number, Issue>} issues
+ * @returns {Promise<Map<number, Issue>>}
+ */
+export async function readAncestors(client, repository, issues) {
+  const [owner, name] = repository.split("/");
+  /** @type {Map<number, Issue>} */
+  const ancestors = new Map();
+  /** @type {number[]} */
+  const pending = [];
+  for (const issue of issues.values()) if (issue.parent != null) pending.push(issue.parent);
+  while (pending.length) {
+    const number = /** @type {number} */ (pending.pop());
+    if (issues.has(number) || ancestors.has(number)) continue;
+    const data = await client.query(ONE_ISSUE_QUERY, { owner, name, number });
+    const node = data.repository?.issue;
+    if (!node) continue;
+    const ancestor = issueFromNode(node, repository);
+    ancestors.set(number, ancestor);
+    if (ancestor.parent != null) pending.push(ancestor.parent);
+  }
+  return ancestors;
 }
 
 /**
@@ -558,10 +640,10 @@ export async function ensureAreaOptions(client, fields, issues) {
  * write budget. A write that throws propagates to the caller, which counts the item as failed.
  *
  * @param {{ client: Client, projectId: string, fields: Map<string, Field>, issue: Issue,
- *   item: Item | undefined, log: (line: string) => void, counts: Counts }} ctx
+ *   lookup: Map<number, Issue>, item: Item | undefined, log: (line: string) => void, counts: Counts }} ctx
  * @returns {Promise<{ outcome: "changed" | "unchanged" | "skipped" | "ignored", deferred: boolean }>}
  */
-async function syncOne({ client, projectId, fields, issue, item, log, counts }) {
+async function syncOne({ client, projectId, fields, issue, lookup, item, log, counts }) {
   const { number } = issue;
   if (item?.archived) return { outcome: "skipped", deferred: false };
   if (!item) {
@@ -574,7 +656,7 @@ async function syncOne({ client, projectId, fields, issue, item, log, counts }) 
     item = { id: data?.addProjectV2ItemById?.item?.id ?? null, archived: false, values: {} };
     counts.added += 1;
   }
-  const changes = fieldChanges(desiredFields(issue), item.values);
+  const changes = fieldChanges(desiredFields(issue, lookup), item.values);
   if (changes.length === 0) return { outcome: "unchanged", deferred: false };
   let writes = 0;
   let deferred = false;
@@ -643,6 +725,8 @@ export async function sync({
   }
 
   const issues = await readIssues(client, repository, now);
+  /** @type {Map<number, Issue>} */
+  const lookup = new Map([...(await readAncestors(client, repository, issues)), ...issues]);
   const items = await readItems(client, org, projectNumber, repository);
 
   /** @type {Counts} */
@@ -665,6 +749,7 @@ export async function sync({
         projectId: project.id,
         fields,
         issue,
+        lookup,
         item: items.get(number),
         log,
         counts,
@@ -721,7 +806,7 @@ export async function main({
     const client = createClient({ token, dryRun: args.dryRun, fetchImpl, log });
     const counts = await sync({ client, org: args.org, project: args.project, now, log });
     if (counts.failed > 0) {
-      error(`sync-roadmap: ${counts.failed} item(s) failed; see the lines starting "failed:"`);
+      error(`sync-roadmap: ${counts.failed} write(s) failed; see the lines starting "failed:"`);
       return 1;
     }
     return 0;
