@@ -241,6 +241,128 @@ describe("ReviewItemCard", () => {
     expect(screen.queryByTestId("requirement-body")).toBeNull();
   });
 
+  // Issue #1130 — a freshly promoted, never-edited set has no version rows, so
+  // every card read "No version history for v0". The server's `original` is the
+  // pinned text.
+  it("shows every never-edited requirement's body, criteria and priority at v0", async () => {
+    const body = (n: number) =>
+      [
+        `Users **mark** entry ${n} read.`,
+        "",
+        "<!-- metis:clarifications:start -->",
+        "## Clarifications",
+        "<!-- metis:clarifications:end -->",
+      ].join("\n");
+    historyListMock.mockImplementation(async (requirementId: string) => {
+      const n = Number(requirementId.slice(-1));
+      return {
+        versions: [],
+        total: 0,
+        page: 1,
+        pageSize: 100,
+        currentVersion: 0,
+        original: {
+          version: 0,
+          source: "current" as const,
+          snapshot: {
+            title: `Requirement ${n}`,
+            body: body(n),
+            priority: "high",
+            acceptanceCriteria: JSON.stringify([`Criterion ${n}`]),
+          },
+        },
+      };
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        {[1, 2, 3].map((n) => (
+          <ReviewItemCard
+            key={n}
+            item={makeRequirementItem({
+              id: `item-${n}`,
+              requirementId: `req-${n}`,
+              pinnedVersion: 0,
+              requirement: { id: `req-${n}`, title: `Requirement ${n}`, version: 0 },
+            })}
+          />
+        ))}
+      </Wrapper>,
+    );
+
+    await waitFor(() => expect(screen.getAllByTestId("requirement-body")).toHaveLength(3));
+    const bodies = screen.getAllByTestId("requirement-body");
+    for (const [i, rendered] of bodies.entries()) {
+      expect(rendered.textContent).toContain(`entry ${i + 1} read`);
+      expect(rendered.querySelector("strong")?.textContent).toBe("mark");
+      expect(rendered.textContent).not.toContain("metis:");
+    }
+    expect(screen.getAllByTestId("review-item-criteria").map((c) => c.textContent)).toEqual([
+      "Acceptance criteriaCriterion 1",
+      "Acceptance criteriaCriterion 2",
+      "Acceptance criteriaCriterion 3",
+    ]);
+    expect(screen.getAllByText(/priority: high/)).toHaveLength(3);
+    // #1130 AC2 — with no recorded edits this is the CURRENT text: the card
+    // must say so rather than claim it is the text as created or pinned.
+    const labels = screen.getAllByTestId("review-item-unedited").map((l) => l.textContent);
+    expect(labels).toEqual(
+      Array(3).fill("No edits were recorded for this requirement; this is its current text."),
+    );
+    expect(screen.queryByText(/as it was created/)).toBeNull();
+    expect(screen.queryByText(/No version history/)).toBeNull();
+  });
+
+  it("labels an original rebuilt from recorded edits as rebuilt, not current", async () => {
+    historyListMock.mockResolvedValue({
+      versions: [
+        {
+          version: 4,
+          changedFields: { body: { from: "Old text", to: "Current text" } },
+          actorId: null,
+          reason: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          snapshot: { title: "Now", body: "Current text" },
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 100,
+      currentVersion: 4,
+      original: { version: 3, source: "reversed", snapshot: { title: "Then", body: "Old text" } },
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <ReviewItemCard item={makeRequirementItem()} />
+      </Wrapper>,
+    );
+    expect(await screen.findByTestId("review-item-unedited")).toHaveTextContent(
+      "v3 is rebuilt by reversing the edits recorded after it.",
+    );
+    expect(screen.queryByText(/this is its current text/)).toBeNull();
+    expect(screen.getByTestId("requirement-body")).toHaveTextContent("Old text");
+  });
+
+  it("does not use the original for a different pinned version", async () => {
+    historyListMock.mockResolvedValue({
+      versions: [],
+      total: 0,
+      page: 1,
+      pageSize: 100,
+      currentVersion: 4,
+      original: { version: 4, snapshot: { title: "Now", body: "Current text" } },
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <ReviewItemCard item={makeRequirementItem()} />
+      </Wrapper>,
+    );
+    expect(await screen.findByText(/No version history for v3/i)).toBeInTheDocument();
+    expect(screen.queryByText("Current text")).toBeNull();
+  });
+
   it("falls back gracefully when the pinned version has no history entry", async () => {
     historyListMock.mockResolvedValue({
       versions: [],

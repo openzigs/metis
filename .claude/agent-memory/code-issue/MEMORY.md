@@ -126,3 +126,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Fake API filters lie](project_fake-api-filters-must-match-github-semantics.md) — since is updatedAt, not closedAt; clone replies (#1148)
 - [zod default misses null/lone obj](project_zod-default-repair-misses-null-and-lone-object.md) — probe null + a lone object per array field (#1143)
 - [Card and run resolve model apart](project_model-card-and-run-resolve-model-separately.md) — test Auto on both, aiModel + prefs (#1145)
+- [Version history has gaps](project_requirement-version-history-is-incomplete.md) — enrichment/import/review skip rows; reversed≠pinned (#1162)

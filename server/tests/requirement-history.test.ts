@@ -175,6 +175,40 @@ describe("requirement history router", () => {
       expect(second.body.data.versions[0].snapshot.body).toBe("Body C");
     });
 
+    // #1130 — a review pinned at a version with no row still needs the text.
+    it("returns the requirement as it was before its first recorded change", async () => {
+      mockPrisma.requirement.findUnique.mockResolvedValue(CURRENT);
+      mockPrisma.requirementVersion.findMany.mockResolvedValue(VERSION_ROWS);
+
+      const res = await request(app).get("/requirements/req-1/history?page=2&pageSize=2");
+
+      // Independent of the page: computed from every row.
+      expect(res.body.data.original.version).toBe(0);
+      // Rebuilt from recorded changes, not the live row.
+      expect(res.body.data.original.source).toBe("reversed");
+      expect(res.body.data.original.snapshot).toMatchObject({
+        title: "Title v1",
+        body: "Body C",
+        priority: "high",
+      });
+    });
+
+    it("returns a never-edited requirement's current state under its current version", async () => {
+      mockPrisma.requirement.findUnique.mockResolvedValue({ ...CURRENT, version: 0 });
+      mockPrisma.requirementVersion.findMany.mockResolvedValue([]);
+
+      const res = await request(app).get("/requirements/req-1/history?pageSize=100");
+
+      expect(res.body.data.total).toBe(0);
+      // #1130 AC2 — no rows means this is the CURRENT text, and the response
+      // must say so rather than let the card call it pinned.
+      expect(res.body.data.original).toEqual({
+        version: 0,
+        source: "current",
+        snapshot: expect.objectContaining({ title: "Title v3", body: "Body D", priority: "high" }),
+      });
+    });
+
     it("returns 404 for an unknown requirement", async () => {
       mockPrisma.requirement.findUnique.mockResolvedValue(null);
       const res = await request(app).get("/requirements/missing/history");
