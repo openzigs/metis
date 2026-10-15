@@ -11,6 +11,7 @@ import {
   LEGACY_SONNET_MODEL_ID,
   ModelNotServedError,
   tierModelFor,
+  projectRunModel,
   type RouterProvider,
 } from "../src/lib/ai/model-router.js";
 import type { TaskProfile } from "../src/lib/ai/types.js";
@@ -427,5 +428,114 @@ describe("ModelRouter.assertServable (#978)", () => {
 
   it("accepts anything when no provider is attached", () => {
     expect(() => new ModelRouter().assertServable("force-opus")).not.toThrow();
+  });
+});
+// #1145 — Auto with the project's model known: no reasoning-depth tier routing.
+describe("ModelRouter autoModel (#1145)", () => {
+  const anthropicApi: RouterProvider = {
+    key: "anthropic",
+    model: "claude-sonnet-5",
+    servesRouterModel: () => true,
+  };
+
+  it.each([simpleProfile, moderateProfile, complexProfile])(
+    "runs the project's model for a $reasoningDepth task",
+    (profile) => {
+      const router = new ModelRouter({
+        provider: anthropicApi,
+        autoModel: "claude-sonnet-5-5",
+      });
+      const sel = router.select(profile);
+      expect(sel.modelId).toBe("claude-sonnet-5-5");
+      expect(sel.rationale).toContain("claude-sonnet-5-5");
+      // No rate for it in the router: no borrowed Claude estimate.
+      expect(sel.estimatedCost).toBeNull();
+    },
+  );
+
+  it("prefers the project's default model preference", () => {
+    const router = new ModelRouter({
+      provider: anthropicApi,
+      autoModel: "claude-sonnet-5-5",
+      preferences: { defaultModel: OPUS_MODEL_ID },
+    });
+    expect(router.select(simpleProfile).modelId).toBe(OPUS_MODEL_ID);
+  });
+
+  it("honours a task-type override naming one of the provider's own models", () => {
+    const router = new ModelRouter({
+      provider: anthropicApi,
+      autoModel: "claude-sonnet-5-5",
+      preferences: { taskTypeOverrides: { summarization: "claude-haiku-5-5" } },
+      acceptedModelIds: new Set(["claude-haiku-5-5"]),
+    });
+    expect(router.select(simpleProfile).modelId).toBe("claude-haiku-5-5");
+    expect(router.select(complexProfile).modelId).toBe("claude-sonnet-5-5");
+  });
+
+  it("ignores a task-type override naming a model nobody accepted", () => {
+    const router = new ModelRouter({
+      provider: anthropicApi,
+      autoModel: "claude-sonnet-5-5",
+      preferences: { taskTypeOverrides: { summarization: "claude-haiku-5-5" } },
+    });
+    expect(router.select(simpleProfile).modelId).toBe("claude-sonnet-5-5");
+  });
+
+  it("still downgrades a Sonnet-tier default over the budget threshold", () => {
+    const router = new ModelRouter({
+      provider: anthropicApi,
+      autoModel: "claude-sonnet-5-5",
+      preferences: {
+        defaultModel: SONNET_MODEL_ID,
+        budgetDowngradeThreshold: 100,
+      },
+      currentMonthTokens: 1_000,
+    });
+    const sel = router.select(moderateProfile);
+    expect(sel.modelId).toBe(HAIKU_MODEL_ID);
+    expect(sel.wasDowngraded).toBe(true);
+  });
+
+  it("does not remap the project's model on a provider that serves no tier ids", () => {
+    const deepSeek: RouterProvider = {
+      key: "anthropic",
+      model: "deepseek-chat",
+      servesRouterModel: () => false,
+    };
+    const sel = new ModelRouter({
+      provider: deepSeek,
+      autoModel: "deepseek-chat",
+    }).select(complexProfile);
+    expect(sel.modelId).toBe("deepseek-chat");
+    expect(sel.rationale).toMatch(/project's model/);
+  });
+
+  it("runs an explicit model id override as named", () => {
+    const sel = new ModelRouter({ provider: anthropicApi }).select(
+      simpleProfile,
+      "claude-opus-5-5",
+    );
+    expect(sel.modelId).toBe("claude-opus-5-5");
+    expect(sel.rationale).toBe("User override: claude-opus-5-5");
+  });
+});
+
+describe("projectRunModel (#1145)", () => {
+  const provider = { key: "anthropic" } as const;
+
+  it("is the project's aiModel when no provider override names another", () => {
+    expect(projectRunModel({ aiModel: "claude-sonnet-5-5" }, provider)).toBe("claude-sonnet-5-5");
+    expect(
+      projectRunModel({ aiModel: "claude-sonnet-5-5", aiProviderId: "anthropic" }, provider),
+    ).toBe("claude-sonnet-5-5");
+  });
+
+  it("is undefined for no aiModel, a blank one, or one set for another provider", () => {
+    expect(projectRunModel(null, provider)).toBeUndefined();
+    expect(projectRunModel({ aiModel: "  " }, provider)).toBeUndefined();
+    expect(
+      projectRunModel({ aiModel: "gpt-4.1", aiProviderId: "openai" }, provider),
+    ).toBeUndefined();
   });
 });

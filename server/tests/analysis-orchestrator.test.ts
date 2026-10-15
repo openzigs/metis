@@ -2039,8 +2039,18 @@ describe("AnalysisOrchestrator misc branches", () => {
 describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
   async function modelsSentBy(
     overrides: Partial<AIProvider>,
-    run: { model?: string; regenerate?: boolean; persistedModel?: string } = {},
+    run: {
+      model?: string;
+      regenerate?: boolean;
+      persistedModel?: string;
+      /** #1145 — the project's `aiModel` / `aiProviderId` for this run. */
+      project?: { aiModel?: string | null; aiProviderId?: string | null };
+    } = {},
   ): Promise<Array<string | undefined>> {
+    if (run.project) {
+      const row = projects.get("proj-abcdefghij")!;
+      projects.set("proj-abcdefghij", { ...row, ...run.project });
+    }
     const base = makeProvider({});
     const sent: Array<string | undefined> = [];
     const provider = {
@@ -2151,11 +2161,56 @@ describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
     expect(new Set(sent)).toEqual(new Set(["deepseek-reasoner"]));
   });
 
-  it("routes specialists to Claude tier ids on a Claude-serving provider", async () => {
+  // #1145 — Auto used to route a simple task to Haiku 4.5 and a complex one to
+  // Sonnet 5 on any Claude-serving provider, whatever the project ran.
+  it("Auto runs specialists on the provider's configured model, never a hard-coded tier", async () => {
     const { HAIKU_MODEL_ID } = await import("../src/lib/ai/model-router.js");
     const sent = await modelsSentBy(gateway);
-    // The retrieved context is one word — a simple task — so Haiku is chosen.
-    expect(sent).toContain(HAIKU_MODEL_ID);
+    // The retrieved context is one word — a simple task, which was routed to Haiku.
+    expect(sent).not.toContain(HAIKU_MODEL_ID);
+    expect(new Set(sent.map((m) => m ?? gateway.model))).toEqual(new Set([gateway.model]));
+  });
+
+  // The Claude A/B for #1074: an Anthropic API deployment, a project on
+  // claude-sonnet-5-5, Auto — three models in the ledger.
+  const anthropicApi: Partial<AIProvider> = {
+    key: "anthropic",
+    model: "claude-sonnet-5",
+    offline: false,
+    servesRouterModel: () => true,
+  };
+
+  it("an Auto run on a project with aiModel claude-sonnet-5-5 sends only that model", async () => {
+    const sent = await modelsSentBy(anthropicApi, { project: { aiModel: "claude-sonnet-5-5" } });
+    expect(sent.length).toBeGreaterThan(0);
+    // Every call names the model: none falls back to the provider's own.
+    expect(new Set(sent)).toEqual(new Set(["claude-sonnet-5-5"]));
+  });
+
+  it("a regenerate of an Auto run resolves the project's aiModel the same way", async () => {
+    const sent = await modelsSentBy(anthropicApi, {
+      regenerate: true,
+      project: { aiModel: "claude-sonnet-5-5" },
+    });
+    expect(new Set(sent)).toEqual(new Set(["claude-sonnet-5-5"]));
+  });
+
+  it("an aiModel set for another provider is not sent to this one", async () => {
+    const sent = await modelsSentBy(anthropicApi, {
+      project: { aiModel: "gpt-4.1", aiProviderId: "openai" },
+    });
+    expect(sent).not.toContain("gpt-4.1");
+    expect(new Set(sent.map((m) => m ?? anthropicApi.model))).toEqual(
+      new Set([anthropicApi.model]),
+    );
+  });
+
+  it("an explicit model overrides the project's aiModel", async () => {
+    const sent = await modelsSentBy(anthropicApi, {
+      model: "claude-haiku-5-5",
+      project: { aiModel: "claude-sonnet-5-5" },
+    });
+    expect(new Set(sent)).toEqual(new Set(["claude-haiku-5-5"]));
   });
 
   it("runs specialists on the provider's configured model on a non-Claude provider", async () => {

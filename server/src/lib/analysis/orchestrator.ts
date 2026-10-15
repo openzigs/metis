@@ -268,7 +268,8 @@ import { computeRequirementEscalations } from "./escalation-context.js";
 import { splitEscalationBudget, type EscalationPolicyConfig } from "./escalation-policy.js";
 import type { RequirementEscalation, SpecKitHandoffRecord } from "@metis/shared";
 import { TaskProfiler } from "../ai/task-profiler.js";
-import { ModelRouter, type ModelPreferences } from "../ai/model-router.js";
+import { ModelRouter, projectRunModel, type ModelPreferences } from "../ai/model-router.js";
+import { servedProviderModels } from "../ai/model-catalog.js";
 import { displayFilename } from "../rag/hit-locator.js";
 
 const log = createChildLogger("analysis-orchestrator");
@@ -820,7 +821,8 @@ export class AnalysisOrchestrator {
 
     // Resolve a `force-*` override to the tier id it names — the same
     // resolution the Model card reports (#512); servability was checked above.
-    const resolvedOpts = { ...opts, model: this.resolveRunModel(opts.model) };
+    // #1145 — Auto runs every agent on the project's model, never a tier.
+    const resolvedOpts = { ...opts, model: this.resolveRunModel(opts.model, project) };
 
     // Run pipeline in the background. Errors are recorded against the
     // Analysis row \u2014 they never bubble up to the caller.
@@ -932,7 +934,13 @@ export class AnalysisOrchestrator {
     maybeAnalysis: Awaited<ReturnType<AnalysisOrchestrator["assertCanRegenerate"]>>["analysis"],
   ): Promise<void> {
     const analysis = maybeAnalysis as NonNullable<typeof maybeAnalysis> & {
-      project: { name: string; description: string; status: string };
+      project: {
+        name: string;
+        description: string;
+        status: string;
+        aiModel?: string | null;
+        aiProviderId?: string | null;
+      };
       projectId: string;
       metadata: string | null;
     };
@@ -942,6 +950,7 @@ export class AnalysisOrchestrator {
       : undefined;
     const model = this.resolveRunModel(
       typeof metadata.model === "string" ? metadata.model : undefined,
+      analysis.project,
     );
     const extraInstructions =
       typeof metadata.extraInstructions === "string" ? metadata.extraInstructions : undefined;
@@ -1275,7 +1284,13 @@ export class AnalysisOrchestrator {
       return { resumed: [], remaining: [], noop: true };
     }
     const analysis = maybeAnalysis as typeof maybeAnalysis & {
-      project: { name: string; description: string; status: string };
+      project: {
+        name: string;
+        description: string;
+        status: string;
+        aiModel?: string | null;
+        aiProviderId?: string | null;
+      };
       projectId: string;
       metadata: string | null;
     };
@@ -1328,6 +1343,7 @@ export class AnalysisOrchestrator {
           : {};
         const model = this.resolveRunModel(
           typeof metadata.model === "string" ? metadata.model : undefined,
+          analysis.project,
         );
         const extraInstructions =
           typeof metadata.extraInstructions === "string" ? metadata.extraInstructions : undefined;
@@ -4839,9 +4855,17 @@ export class AnalysisOrchestrator {
   /**
    * #512 — the model a run started with `model` sends: a `force-*` override
    * resolved through the ModelRouter with the active provider attached.
+   * #1145 — Auto (no `model`) sends the project's `aiModel` when it names one
+   * for this provider; otherwise `undefined`, the provider's configured model.
    */
-  private resolveRunModel(model: string | undefined): string | undefined {
-    return new ModelRouter({ provider: this.deps.provider }).resolveRunModel(model);
+  private resolveRunModel(
+    model: string | undefined,
+    project: { aiModel?: string | null; aiProviderId?: string | null } | null | undefined,
+  ): string | undefined {
+    return (
+      new ModelRouter({ provider: this.deps.provider }).resolveRunModel(model) ??
+      projectRunModel(project, this.deps.provider)
+    );
   }
 
   /**
@@ -4877,10 +4901,15 @@ export class AnalysisOrchestrator {
 
       // #512 — tier ids only on a provider that serves them; elsewhere the
       // selection is the provider's own configured model.
+      // #1145 — Auto runs the provider's configured model (the run model the
+      // rest of the pipeline uses) unless the project's Model preferences name
+      // another; never a hard-coded older tier.
       const router = new ModelRouter({
         preferences,
         currentMonthTokens,
         provider: this.deps.provider,
+        autoModel: this.deps.provider.model,
+        acceptedModelIds: new Set(servedProviderModels(this.deps.provider).map((m) => m.id)),
       });
 
       const selection = router.select(profile);

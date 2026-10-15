@@ -400,3 +400,60 @@ describe("POST /projects/:projectId/analyses/model-recommendation (#1095)", () =
     });
   });
 });
+// #1145 — the Claude A/B for #1074: on the Anthropic API, Auto was labelled
+// "Claude Sonnet 5" and ran Haiku 4.5 / Sonnet 5, while the project ran
+// claude-sonnet-5-5; and the override offered no Claude 5.5 model.
+describe("model-recommendation on the Anthropic API (#1145)", () => {
+  const anthropicApi: FakeProvider = {
+    key: "anthropic",
+    model: "claude-sonnet-5",
+    servesRouterModel: () => true,
+  };
+
+  beforeEach(() => {
+    activeProvider = anthropicApi;
+    projectFindFirst.mockResolvedValue({
+      id: "proj-1",
+      aiModel: "claude-sonnet-5-5",
+    });
+    projectFindUnique.mockResolvedValue({
+      workspaceId: "ws-1",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
+    modelPreferenceFindUnique.mockResolvedValue(null);
+    analysisFindMany.mockResolvedValue(REPORTED_HISTORY);
+  });
+
+  it("names the project's model for Auto, whatever the task's depth", async () => {
+    for (const agentKeys of [["document"], ["document", "code", "database", "web"]]) {
+      const body = await post({ agentKeys });
+      expect(body.data.selection.modelId).toBe("claude-sonnet-5-5");
+      expect(body.data.selection.modelName).toBe("Claude Sonnet 5.5");
+    }
+  });
+
+  it("names the provider's configured model when the project sets none", async () => {
+    projectFindFirst.mockResolvedValue({ id: "proj-1", aiModel: null });
+    const body = await post({ agentKeys: ["document"] });
+    expect(body.data.selection.modelId).toBe("claude-sonnet-5");
+  });
+
+  it("offers the Claude 5.5 models as overrides and honours one", async () => {
+    const body = (await post({
+      agentKeys: ["document"],
+      override: "claude-haiku-5-5",
+    })) as RecommendationBody & {
+      data: { providerModels: Array<{ id: string; name: string }> };
+    };
+    expect(body.data.providerModels.map((m) => m.id)).toEqual(
+      expect.arrayContaining(["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"]),
+    );
+    expect(body.data.selection.modelId).toBe("claude-haiku-5-5");
+    expect(body.data.selection.rationale).toMatch(/User override/);
+  });
+
+  it("treats an override naming no offered model as Auto", async () => {
+    const body = await post({ agentKeys: ["document"], override: "gpt-4o" });
+    expect(body.data.selection.modelId).toBe("claude-sonnet-5-5");
+  });
+});

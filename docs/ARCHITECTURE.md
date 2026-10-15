@@ -7354,13 +7354,19 @@ flowchart TD
 
 `ModelRouter` (`server/src/lib/ai/model-router.ts`) applies a priority-ordered decision chain:
 
-1. **User override** — `force-haiku` or `force-sonnet` bypasses all other logic.
+1. **User override** — a `force-*` tier, or (#1145) one of the provider's own catalog models
+   (`servedProviderModels`, e.g. Claude Sonnet 5.5 on the Anthropic API), bypasses all other logic.
 2. **Task-type override** — Per-project overrides for specific task types (e.g., always use Sonnet for code review).
-3. **Reasoning depth routing**:
+3. **Auto runs the project's model (#1145)** — when the caller knows the project's model
+   (`autoModel`), every task runs on the project's `defaultModel` preference, else on that model:
+   the project's `aiModel` when it is set for the provider the analysis runs on
+   (`projectRunModel`), else the provider's configured model. The analysis orchestrator and the
+   Model card both pass it, so Auto never routes to a hard-coded older tier.
+4. **Reasoning depth routing** (only when no `autoModel` is given):
    - `simple` → **Haiku** (sufficient capability at lower cost)
    - `complex` → **Sonnet** (deep reasoning required)
    - `moderate` → Project default model (falls back to Sonnet if unset)
-4. **Budget-aware downgrade** — If a budget threshold is configured and current-month token usage exceeds it, Sonnet selections are downgraded to Haiku automatically.
+5. **Budget-aware downgrade** — If a budget threshold is configured and current-month token usage exceeds it, Sonnet selections are downgraded to Haiku automatically.
 
 ### 29.4 Per-Project Model Preferences
 

@@ -95,3 +95,28 @@ describe("<ModelRecommendation /> override options (#978)", () => {
     expect(labels).toContain("Force Opus");
   });
 });
+// #1145 — on the Anthropic API the override offered no Claude 5.5 model.
+describe("<ModelRecommendation /> provider models (#1145)", () => {
+  beforeEach(() => {
+    apiFetchMock.mockReset();
+  });
+
+  it("offers the provider's own models ahead of the forced tiers, and selects one by id", async () => {
+    apiFetchMock.mockResolvedValue(
+      recommendation({
+        servesTierModels: true,
+        configuredModel: "claude-sonnet-5-5",
+        providerModels: [
+          { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
+          { id: "claude-haiku-5-5", name: "Claude Haiku 5.5" },
+        ],
+      }),
+    );
+    const onChange = vi.fn();
+    const labels = await openOptions(onChange);
+    expect(labels.slice(0, 3)).toEqual(["Auto", "Claude Sonnet 5.5", "Claude Haiku 5.5"]);
+    expect(labels).toContain("Force Opus");
+    await userEvent.setup().click(screen.getByRole("option", { name: "Claude Haiku 5.5" }));
+    expect(onChange).toHaveBeenCalledWith("claude-haiku-5-5");
+  });
+});

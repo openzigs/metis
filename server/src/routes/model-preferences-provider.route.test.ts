@@ -225,3 +225,46 @@ describe("PUT model-preferences default model (#713)", () => {
     expect((await put("deepseek-flash")).status).toBe(400);
   });
 });
+// #1145 — on the Anthropic API the picker offered only the Bedrock-spelled tier
+// ids (Sonnet 5, Haiku 4.5 …): a project could not choose Claude Sonnet 5.5.
+describe("model-preferences on the Anthropic API (#1145)", () => {
+  const anthropicApi: FakeProvider = {
+    key: "anthropic",
+    model: "claude-sonnet-5-5",
+    servesRouterModel: () => true,
+  };
+
+  beforeEach(() => {
+    activeProvider = anthropicApi;
+    activeConfig = { provider: "anthropic", model: anthropicApi.model };
+  });
+
+  it("lists the current Claude 5.5 models as the provider's own, ahead of the tiers", async () => {
+    const data = await getPrefs();
+    const ids = data.availableModels.map((m) => m.id);
+    expect(ids.slice(0, 3)).toEqual(["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"]);
+    expect(data.availableModels[0]).toMatchObject({
+      name: "Claude Sonnet 5.5",
+      tier: "provider",
+    });
+    expect(ids).toContain("us.anthropic.claude-sonnet-5");
+  });
+
+  it("accepts a Claude 5.5 model as the project's default", async () => {
+    const res = await request(buildApp())
+      .put("/projects/proj-1/model-preferences")
+      .send({ defaultModel: "claude-haiku-5-5" });
+    expect(res.status).toBe(200);
+    expect(res.body.data.defaultModel).toBe("claude-haiku-5-5");
+  });
+
+  it("still offers none of them on DeepSeek's Anthropic-compatible endpoint", async () => {
+    useDeepSeek();
+    const data = await getPrefs();
+    expect(data.availableModels.map((m) => m.id)).toEqual(["deepseek-flash"]);
+    const res = await request(buildApp())
+      .put("/projects/proj-1/model-preferences")
+      .send({ defaultModel: "claude-sonnet-5-5" });
+    expect(res.status).toBe(400);
+  });
+});

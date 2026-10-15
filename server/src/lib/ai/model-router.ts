@@ -153,6 +153,38 @@ export interface ModelRouterOptions {
    * tier routing is reported unchanged.
    */
   provider?: RouterProvider;
+  /**
+   * #1145 — the model Auto runs: the project's own model (its `aiModel`, else
+   * the provider's configured model — see {@link projectRunModel}). When set,
+   * Auto never routes on reasoning depth to a hard-coded Claude tier: every
+   * task runs on the project's default model preference, else on this model.
+   * A project task-type override still applies. Omitted: the reasoning-depth
+   * tier routing of #599, for callers that do not know the project's model.
+   */
+  autoModel?: string;
+  /**
+   * #1145 — further model ids a task-type override may name (the provider's
+   * own catalog models, e.g. Claude Sonnet 5.5 on the Anthropic API), beyond
+   * the router's tier ids.
+   */
+  acceptedModelIds?: ReadonlySet<string>;
+}
+
+/**
+ * #1145 — the model a project's Auto analysis runs on: its `aiModel` when it
+ * sets one for the provider the analysis runs on (no provider override, or an
+ * override naming that same provider), else `undefined` — the provider's own
+ * configured model. An `aiModel` set alongside another provider is a model of
+ * THAT provider, which the analysis does not run on, so it is not sent here.
+ */
+export function projectRunModel(
+  project: { aiModel?: string | null; aiProviderId?: string | null } | null | undefined,
+  provider: Pick<RouterProvider, "key">,
+): string | undefined {
+  const model = project?.aiModel?.trim();
+  if (!model) return undefined;
+  if (project?.aiProviderId && project.aiProviderId !== provider.key) return undefined;
+  return model;
 }
 
 /**
@@ -163,39 +195,65 @@ export class ModelRouter {
   private readonly preferences: ModelPreferences;
   private readonly currentMonthTokens: number;
   private readonly provider: RouterProvider | undefined;
+  private readonly autoModel: string | undefined;
+  private readonly acceptedModelIds: ReadonlySet<string>;
 
   constructor(opts: ModelRouterOptions = {}) {
     this.preferences = opts.preferences ?? {};
     this.currentMonthTokens = opts.currentMonthTokens ?? 0;
     this.provider = opts.provider;
+    this.autoModel = opts.autoModel;
+    this.acceptedModelIds = opts.acceptedModelIds ?? new Set();
   }
 
   /**
    * Select the optimal model for a given task profile.
    *
    * @param profile   Task profile from the TaskProfiler
-   * @param override  Optional user override (force-haiku, force-sonnet, auto)
+   * @param override  Optional user override (force-haiku, force-sonnet, auto),
+   *                  or (#1145) an explicit model id the caller has validated
    */
-  select(profile: TaskProfile, override: ModelOverride = "auto"): ModelSelection {
+  select(profile: TaskProfile, override: ModelOverride | (string & {}) = "auto"): ModelSelection {
+    // #1145 — an explicit model id (one of the provider's own models) runs as named.
+    if (override !== "auto" && !Object.hasOwn(OVERRIDE_MODEL_MAP, override)) {
+      return this.buildSelection(override, profile, `User override: ${override}`, false, true);
+    }
     // User override takes precedence
     if (override !== "auto") {
-      const forcedModel = OVERRIDE_MODEL_MAP[override];
+      const forced = override as keyof typeof OVERRIDE_MODEL_MAP;
+      const forcedModel = OVERRIDE_MODEL_MAP[forced];
       return this.buildSelection(
         forcedModel,
         profile,
-        `User override: forced ${OVERRIDE_LABELS[override]}`,
+        `User override: forced ${OVERRIDE_LABELS[forced]}`,
         false,
       );
     }
 
     // Check task-type overrides from project preferences
     const taskTypeOverride = this.preferences.taskTypeOverrides?.[profile.taskType];
-    if (taskTypeOverride && KNOWN_MODEL_IDS.has(taskTypeOverride)) {
+    if (
+      taskTypeOverride &&
+      (KNOWN_MODEL_IDS.has(taskTypeOverride) || this.acceptedModelIds.has(taskTypeOverride))
+    ) {
       return this.buildSelection(
         taskTypeOverride,
         profile,
         `Project task-type override for "${profile.taskType}"`,
         false,
+      );
+    }
+
+    // #1145 — Auto runs the project's model, never a hard-coded older tier.
+    if (this.autoModel !== undefined) {
+      const projectDefault = this.preferences.defaultModel;
+      const model = projectDefault ?? this.autoModel;
+      return this.withBudgetDowngrade(
+        model,
+        profile,
+        projectDefault
+          ? `Auto (${profile.taskType}): the project's default model preference (${model})`
+          : `Auto (${profile.taskType}): the project's model (${model})`,
       );
     }
 
@@ -221,7 +279,15 @@ export class ModelRouter {
         break;
     }
 
-    // Budget-aware downgrade: if threshold is set and current usage exceeds it
+    return this.withBudgetDowngrade(selectedModel, profile, rationale);
+  }
+
+  /** Budget-aware downgrade: if threshold is set and current usage exceeds it. */
+  private withBudgetDowngrade(
+    selectedModel: string,
+    profile: TaskProfile,
+    rationale: string,
+  ): ModelSelection {
     const threshold = this.preferences.budgetDowngradeThreshold;
     if (
       threshold != null &&
@@ -280,13 +346,17 @@ export class ModelRouter {
     profile: TaskProfile,
     rationale: string,
     wasDowngraded: boolean,
+    explicit = false,
   ): ModelSelection {
+    // #1145 — the project's own model, or a model the caller named explicitly,
+    // is what the provider runs: never remapped like a tier id it cannot serve.
+    const ownModel = explicit || (this.autoModel !== undefined && modelId === this.autoModel);
     // #512 — a tier id the active provider cannot run is not what the run
     // uses: DeepSeek maps `claude-*` onto its own models, and an OpenAI-
     // compatible endpoint receives the id verbatim. Report (and run) the
     // provider's configured model, with no Claude rate quoted against it.
     const provider = this.provider;
-    if (provider && this.cannotServe(modelId)) {
+    if (provider && !ownModel && this.cannotServe(modelId)) {
       return {
         modelId: provider.model,
         modelName: provider.model,
@@ -298,11 +368,15 @@ export class ModelRouter {
       };
     }
 
-    const costPer1K = COST_PER_1K[modelId] ?? 0.003;
+    // #1145 — a model the router has no rate for (the project's own model, an
+    // explicit provider model) gets no estimate rather than a borrowed Claude rate.
+    const costPer1K = COST_PER_1K[modelId] ?? (ownModel ? null : 0.003);
     // #1095 — an unknown token estimate yields an unknown cost. Coercing null to
     // 0 here is what produced the authoritative-looking "~$0.0000" in the UI.
     const estimatedCost =
-      profile.tokenEstimate == null ? null : (profile.tokenEstimate / 1_000) * costPer1K;
+      profile.tokenEstimate == null || costPer1K == null
+        ? null
+        : (profile.tokenEstimate / 1_000) * costPer1K;
 
     return {
       modelId,
