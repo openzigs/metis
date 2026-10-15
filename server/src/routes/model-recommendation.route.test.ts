@@ -432,6 +432,18 @@ describe("model-recommendation on the Anthropic API (#1145)", () => {
     }
   });
 
+  it("names the project's model even when the Models page sets a default or override", async () => {
+    // The run resolves Auto to aiModel and never applies the preferences, so the
+    // card must not name the preference (#1145 review).
+    modelPreferenceFindUnique.mockResolvedValue({
+      defaultModel: "claude-haiku-5-5",
+      taskTypeOverrides: JSON.stringify({ simple: "claude-haiku-5-5" }),
+      budgetDowngradeThreshold: 0.8,
+    });
+    const body = await post({ agentKeys: ["document"] });
+    expect(body.data.selection.modelId).toBe("claude-sonnet-5-5");
+  });
+
   it("names the provider's configured model when the project sets none", async () => {
     projectFindFirst.mockResolvedValue({ id: "proj-1", aiModel: null });
     const body = await post({ agentKeys: ["document"] });

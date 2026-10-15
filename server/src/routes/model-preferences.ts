@@ -266,19 +266,23 @@ export function initModelRecommendationRouter(): Router {
       throw err;
     }
 
+    // #1145 — the card names what the run uses: Auto runs the project's model
+    // (`aiModel`, else the provider's configured model), never a hard-coded tier.
+    // When the project sets `aiModel` the orchestrator resolves Auto to it and
+    // never applies the Models-page preferences, so the card drops them too.
+    const projectModel = provider ? projectRunModel(project, provider) : undefined;
     const modelRouter = new ModelRouter({
-      preferences: pref
-        ? {
-            defaultModel: pref.defaultModel ?? undefined,
-            taskTypeOverrides: safeParse(pref.taskTypeOverrides),
-            budgetDowngradeThreshold: pref.budgetDowngradeThreshold,
-          }
-        : undefined,
+      preferences:
+        pref && !projectModel
+          ? {
+              defaultModel: pref.defaultModel ?? undefined,
+              taskTypeOverrides: safeParse(pref.taskTypeOverrides),
+              budgetDowngradeThreshold: pref.budgetDowngradeThreshold,
+            }
+          : undefined,
       currentMonthTokens,
       provider,
-      // #1145 — the card names what the run uses: Auto runs the project's model
-      // (`aiModel`, else the provider's configured model), never a hard-coded tier.
-      ...(provider ? { autoModel: projectRunModel(project, provider) ?? provider.model } : {}),
+      ...(provider ? { autoModel: projectModel ?? provider.model } : {}),
       acceptedModelIds: new Set(providerModels.map((m) => m.id)),
     });
 
