@@ -891,6 +891,51 @@ describe("SpecKitPage — #789", () => {
     expect(m.runCommand).not.toHaveBeenCalled();
   });
 
+  it("#1134 — marks an artifact generated from an earlier plan.md as out of date", async () => {
+    m.listFeatures!.mockResolvedValue({ features: [FEATURE] });
+    m.listFeatureArtifacts!.mockResolvedValue({
+      feature: FEATURE,
+      artifacts: [
+        fa("spec.md"),
+        fa("plan.md"),
+        fa("tasks.md"),
+        fa("analysis.md"),
+        fa("checklist-ux.md"),
+      ],
+      stale: [
+        { key: "tasks.md", planVersion: 1, currentPlanVersion: 2 },
+        { key: "analysis.md", planVersion: null, currentPlanVersion: 2 },
+      ],
+    });
+    m.featureStatus!.mockResolvedValue({
+      slug: "001-a",
+      specGate: true,
+      planGate: true,
+      tasksGate: true,
+      implementGate: false,
+      lastUpdated: new Date().toISOString(),
+    });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /001-a — Mark read/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(screen.getByTestId("spec-kit-feature-select"), {
+      target: { value: "001-a" },
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("spec-kit-feature-artifact-stale-tasks.md")).toHaveTextContent(
+        "Out of date: generated from plan.md v1, plan.md is now v2.",
+      ),
+    );
+    expect(screen.getByTestId("spec-kit-feature-artifact-stale-analysis.md")).toHaveTextContent(
+      "Out of date: generated before plan.md v2.",
+    );
+    expect(
+      screen.queryByTestId("spec-kit-feature-artifact-stale-checklist-ux.md"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("spec-kit-feature-artifact-stale-plan.md")).not.toBeInTheDocument();
+  });
+
   it("selecting a feature shows its artifact tree, gates and scopes the palette", async () => {
     m.runCommand!.mockResolvedValue({ message: "planned", artifacts: [{ key: "plan.md" }] });
     await openFeature();

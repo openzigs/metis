@@ -16,6 +16,8 @@ import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
+// Pure (no database import), so it can load before the SQLite environment is set.
+import { stampPlanSource } from "../src/lib/spec-kit/plan-provenance.js";
 import {
   createMigratedSqlite,
   type MigratedSqlite,
@@ -148,7 +150,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.body.data).toMatchObject({ command: "tasks", featureSlug: SLUG });
       expect(res.body.data.message).toContain(`for ${SLUG}`);
 
-      expect((await getFeatureArtifact(featureId, "tasks.md"))?.content).toBe(TASKS);
+      // #1134 — stamped with the plan version it was generated from.
+      expect((await getFeatureArtifact(featureId, "tasks.md"))?.content).toBe(
+        stampPlanSource(TASKS, 1),
+      );
       expect(await getArtifact(PROJ, "tasks.md")).toMatchObject({ version: 1 });
 
       const status = await request(app())

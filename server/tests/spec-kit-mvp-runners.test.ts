@@ -2773,3 +2773,126 @@ describe("runTasksToIssues", () => {
 
 // keep `path` import referenced — used by guard helpers in higher-level suites.
 void path;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #1134 — re-running /speckit.plan on an unchanged spec
+// ─────────────────────────────────────────────────────────────────────────────
+describe("#1134 — a re-planned feature marks what the earlier plan generated", () => {
+  /** Answers plan.md with the next scripted plan, everything else with `other`. */
+  class ScriptedPlanner extends FakeProvider {
+    readonly planPrompts: string[] = [];
+    constructor(
+      private readonly plans: string[],
+      private readonly other = "## Tasks\n\n- [ ] T01 — do it (satisfies: AC-1) depends-on: none",
+    ) {
+      super("unused");
+    }
+    async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+      const system = (o as { systemMessage?: string }).systemMessage ?? "";
+      const user = m.map((x) => String(x.content)).join("\n");
+      const isPlan =
+        system.includes("Constitution Compliance Check") && /Produce plan\.md/.test(user);
+      if (isPlan) this.planPrompts.push(user);
+      const text = isPlan ? (this.plans.shift() ?? "## Components\n- none") : this.other;
+      const r = await super.chat(m, o);
+      return { ...r, content: text } as ChatResponse;
+    }
+  }
+
+  const V1 =
+    "## Components\n- `PUT /v1/entries/mark-all-as-read` in `internal/api/entry_handlers.go`\n- new `MarkAllAsReadBeforeDays` wrapper";
+  const V2 =
+    "## Components\n- `PUT /v1/users/{userID}/mark-all-as-read-older-than-days` in `internal/api/user_handlers.go`";
+
+  it("runs the plan twice on one spec: tasks.md is marked out of date, naming plan v1", async () => {
+    const { runTasks } = await import("../src/lib/spec-kit/commands/tasks.js");
+    const { runImplement } = await import("../src/lib/spec-kit/commands/implement.js");
+    const { listFeatureArtifacts } = await import("../src/lib/spec-kit/feature-artifacts.js");
+    const { findStaleArtifacts } = await import("../src/lib/spec-kit/plan-provenance.js");
+
+    const fid = seedFeature("p1", "001-mark-all");
+    seedFeatureArtifact(
+      fid,
+      "spec.md",
+      "# Spec\n\n## Acceptance criteria\n- AC-1 mark old entries read",
+    );
+    const provider = new ScriptedPlanner([V1, V2]);
+    const scope = featureArtifactScope({ id: fid, slug: "001-mark-all" });
+
+    const first = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "001-mark-all",
+      deps: { provider },
+    });
+    expect(first.message).not.toContain("Compared with plan.md");
+    // The first plan has no predecessor to start from.
+    expect(provider.planPrompts[0]).not.toContain("Previous plan.md");
+
+    await runTasks({ projectId: "p1", scope, deps: { provider } });
+    let stale = findStaleArtifacts(await listFeatureArtifacts(fid));
+    expect(stale).toEqual([]);
+    const clean = await runImplement({ projectId: "p1", scope });
+    expect(clean.message).not.toContain("Warning");
+
+    const second = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "001-mark-all",
+      deps: { provider },
+    });
+    // The re-run starts from the previous plan…
+    expect(provider.planPrompts[1]).toContain("Previous plan.md (v1) — the starting point");
+    expect(provider.planPrompts[1]).toContain("MarkAllAsReadBeforeDays");
+    // …and its result card says what moved.
+    expect(second.message).toContain("Compared with plan.md v1:");
+    expect(second.message).toContain("endpoints differ");
+    expect(second.message).toContain("files differ");
+    expect(second.message).toContain("removed `MarkAllAsReadBeforeDays`");
+
+    // Read back through the store, as the feature page does.
+    stale = findStaleArtifacts(await listFeatureArtifacts(fid));
+    expect(stale).toEqual([{ key: "tasks.md", planVersion: 1, currentPlanVersion: 2 }]);
+
+    const handoff = await runImplement({ projectId: "p1", scope });
+    expect(handoff.message).toContain(
+      "Warning: tasks.md was generated from plan.md v1; plan.md is now v2 — re-run /speckit.tasks with featureSlug 001-mark-all",
+    );
+
+    // Regenerating the tasks clears the mark.
+    await runTasks({ projectId: "p1", scope, deps: { provider } });
+    expect(findStaleArtifacts(await listFeatureArtifacts(fid))).toEqual([]);
+  });
+
+  it("analysis.md and checklists carry the plan version they were generated from", async () => {
+    const { listFeatureArtifacts } = await import("../src/lib/spec-kit/feature-artifacts.js");
+    const { readPlanSource } = await import("../src/lib/spec-kit/plan-provenance.js");
+    const fid = seedFeature("p1", "002-stamp");
+    seedFeatureArtifact(fid, "spec.md", "# Spec");
+    seedFeatureArtifact(fid, "plan.md", "# Plan");
+    seedFeatureArtifact(fid, "tasks.md", "## Tasks\n- [ ] T01 — x");
+    await updateFeatureStatus(fid, "planned", null);
+    const scope = featureArtifactScope({ id: fid, slug: "002-stamp" });
+    await runAnalyze({
+      projectId: "p1",
+      scope,
+      deps: { provider: new FakeProvider("## Summary\nVerdict: OK") },
+    });
+    await runAnalyze({
+      projectId: "p1",
+      scope,
+      deps: { provider: new FakeProvider("## Summary\nVerdict: OK") },
+    });
+    await runChecklist({
+      projectId: "p1",
+      featureSlug: "002-stamp",
+      domains: ["security"],
+      force: true,
+      deps: { provider: new FakeProvider("## security\n- [ ] Validate input") },
+    });
+    const all = await listFeatureArtifacts(fid);
+    const analysis = all.find((a) => a.key === "analysis.md")!;
+    expect(readPlanSource(analysis.content)).toBe(1);
+    // Two reports appended, one stamp.
+    expect(analysis.content.match(/generated from plan\.md/g)).toHaveLength(1);
+    expect(readPlanSource(all.find((a) => a.key === "checklist-security.md")!.content)).toBe(1);
+  });
+});

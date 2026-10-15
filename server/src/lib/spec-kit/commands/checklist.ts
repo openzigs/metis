@@ -28,6 +28,7 @@ import { SpecKitArtifactError } from "../artifacts.js";
 import { loadProjectContext, runSpecKitAgent, type RunDeps } from "./runner.js";
 import type { AIProvider } from "../../ai/types.js";
 import { AIProviderError, AIProviderRetiredError } from "../../ai/errors.js";
+import { stampPlanSource } from "../plan-provenance.js";
 
 export const DEFAULT_CHECKLIST_DOMAINS = [
   "security",
@@ -126,6 +127,8 @@ export async function runChecklist(input: ChecklistInput): Promise<ChecklistResu
 
   // #787 — one model pass over the feature's own spec + plan.
   let derived = new Map<string, string[]>();
+  // #1134 — the plan.md version the checklists are stamped with (null: none read).
+  let planVersion: number | null = null;
   let tokensUsed = 0;
   let provider = input.deps?.provider;
   let unavailable = false;
@@ -141,6 +144,7 @@ export async function runChecklist(input: ChecklistInput): Promise<ChecklistResu
   if (online) {
     const spec = await getFeatureArtifact(feature.id, "spec.md");
     const plan = await getFeatureArtifact(feature.id, "plan.md");
+    planVersion = plan?.version ?? null;
     const run = await runSpecKitAgent({
       command: "checklist",
       project: await loadProjectContext(input.projectId),
@@ -186,7 +190,7 @@ export async function runChecklist(input: ChecklistInput): Promise<ChecklistResu
     const written = await writeFeatureArtifact({
       featureId: feature.id,
       key,
-      content: next,
+      content: stampPlanSource(next, planVersion),
       actorId: input.actorId ?? null,
     });
     artifacts.push(written);

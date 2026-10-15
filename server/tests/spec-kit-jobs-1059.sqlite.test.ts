@@ -23,6 +23,8 @@ import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
+// Pure (no database import), so it can load before the SQLite environment is set.
+import { stampPlanSource } from "../src/lib/spec-kit/plan-provenance.js";
 import {
   createMigratedSqlite,
   type MigratedSqlite,
@@ -185,6 +187,8 @@ const SPEC =
 const PLAN =
   "# Plan\nExtend `internal/storage/entry.go`.\n\n## Components\nNo REST surface change.";
 const TASKS = "## Tasks\n\n- [ ] T01 — Add the storage call (satisfies: AC-1) depends-on: none";
+/** #1134 — tasks.md as stored: stamped with the plan.md version it was generated from. */
+const STORED_TASKS = stampPlanSource(TASKS, 1);
 /** Far above what any step here needs, far below the test timeout. */
 const WAIT = { timeout: 12_000, interval: 15 };
 
@@ -353,8 +357,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           featureSlug: f.slug,
           tokensUsed: 2,
         });
-        expect(job.result.artifact).toMatchObject({ key: "tasks.md", version: 1, content: TASKS });
-        expect((await getFeatureArtifact(f.id, "tasks.md"))?.content).toBe(TASKS);
+        expect(job.result.artifact).toMatchObject({
+          key: "tasks.md",
+          version: 1,
+          content: STORED_TASKS,
+        });
+        expect((await getFeatureArtifact(f.id, "tasks.md"))?.content).toBe(STORED_TASKS);
         expect((await get(`${base()}/jobs`)).body.data.jobs).toEqual([]);
 
         // The same command on the synchronous route returns the same payload.
@@ -482,7 +490,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         (await nextCall()).resolve({ content: TASKS });
         const job = await finished(jobs[0].id);
         expect(job.status).toBe("succeeded");
-        expect((await getFeatureArtifact(f.id, "tasks.md"))?.content).toBe(TASKS);
+        expect((await getFeatureArtifact(f.id, "tasks.md"))?.content).toBe(STORED_TASKS);
       });
     });
 
@@ -967,7 +975,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await finished(b.body.data.jobId)).status).toBe("succeeded");
         const artifact = await getFeatureArtifact(f.id, "tasks.md");
         // One write, by the job that holds the feature — not v1 by A and v2 by B.
-        expect(artifact).toMatchObject({ version: 1, content: `${TASKS} FROM-B` });
+        expect(artifact).toMatchObject({
+          version: 1,
+          content: stampPlanSource(`${TASKS} FROM-B`, 1),
+        });
         expect(state.commits).toHaveLength(2);
         expect(state.commits[1]).toBe("ok");
       });

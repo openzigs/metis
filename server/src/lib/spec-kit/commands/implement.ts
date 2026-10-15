@@ -16,6 +16,7 @@ import { audit } from "../../audit/audit-service.js";
 import { getArtifact, SpecKitArtifactError } from "../artifacts.js";
 import { commandHint, projectArtifactScope, type ArtifactScope } from "../artifact-scope.js";
 import { loadProjectContext } from "./runner.js";
+import { describeStale, stalenessAgainstPlan } from "../plan-provenance.js";
 
 export interface ImplementInput {
   projectId: string;
@@ -42,8 +43,10 @@ export async function runImplement(input: ImplementInput): Promise<ImplementResu
   const project = await loadProjectContext(input.projectId);
   const scope = input.scope ?? projectArtifactScope(input.projectId);
   const present: string[] = [];
+  const loaded = new Map<string, Awaited<ReturnType<ArtifactScope["get"]>>>();
   for (const name of REQUIRED) {
     const a = await scope.get(name);
+    loaded.set(name, a);
     if (!a || a.content.trim().length === 0) {
       throw new SpecKitArtifactError(
         409,
@@ -53,6 +56,15 @@ export async function runImplement(input: ImplementInput): Promise<ImplementResu
     }
     present.push(scope.kind === "feature" ? `${scope.location}${name}` : name);
   }
+  // #1134 — the handoff still goes ahead, but says when the tasks follow an earlier design.
+  const stale = stalenessAgainstPlan(
+    "tasks.md",
+    loaded.get("tasks.md")!,
+    loaded.get("plan.md") ?? null,
+  );
+  const staleTasks = stale
+    ? `${describeStale(stale)} — re-run ${commandHint(scope, "tasks")} before implementing, or the tasks follow the earlier design.`
+    : undefined;
   const constitution = await getArtifact(input.projectId, "constitution.md");
   if (constitution) present.push("constitution.md");
 
@@ -60,7 +72,7 @@ export async function runImplement(input: ImplementInput): Promise<ImplementResu
     actor: input.actorId ? { id: input.actorId } : null,
     action: "spec_kit.command.implement",
     target: { type: "project", id: project.id },
-    metadata: { context: present },
+    metadata: { context: present, ...(stale ? { staleTasks: true } : {}) },
   });
 
   return {
@@ -68,6 +80,6 @@ export async function runImplement(input: ImplementInput): Promise<ImplementResu
     orchestratorRoute: `/api/projects/${project.id}/analyses`,
     // #789 — addressed to the person on the Spec Kit page, which offers the
     // button; API clients read `orchestratorRoute` and `context`.
-    message: `Spec Kit handoff ready with ${present.length} artifact(s): ${present.join(", ")}. Use Start analysis to run the analysis on them.`,
+    message: `Spec Kit handoff ready with ${present.length} artifact(s): ${present.join(", ")}.${staleTasks ? ` Warning: ${staleTasks}` : ""} Use Start analysis to run the analysis on them.`,
   };
 }

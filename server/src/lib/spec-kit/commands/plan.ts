@@ -29,6 +29,7 @@ import {
 import type { PlanLocalisationSource } from "../plan-localisation.js";
 import { PLAN_SYSTEM_PROMPT } from "./prompts.js";
 import { describeUndeclaredMermaidNodes, findUndeclaredMermaidNodes } from "../mermaid-check.js";
+import { describePlanDesignDiff, diffPlanDesign, previousPlanSection } from "../plan-diff.js";
 export { PLAN_SYSTEM_PROMPT } from "./prompts.js";
 
 const SYSTEM_PROMPT = PLAN_SYSTEM_PROMPT;
@@ -85,6 +86,9 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     );
   }
   const project = await loadProjectContext(input.projectId);
+  // #1134 — a re-run revises the current plan instead of designing afresh.
+  const storedPlan = await getArtifact(input.projectId, "plan.md");
+  const previousPlan = storedPlan && storedPlan.content.trim().length > 0 ? storedPlan : null;
 
   // #375 / #20 — ground the plan on project RAG and the code graph. The query
   // is the spec's own requirement text: the project name and generic
@@ -117,6 +121,7 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     spec.content,
     "```",
     "",
+    ...(previousPlan ? [previousPlanSection(previousPlan), ""] : []),
     "Produce plan.md per the system instructions.",
   ].join("\n");
 
@@ -134,7 +139,7 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
 
   // #1057 — a cut-off reply never replaces a complete plan.md: the stored
   // version stays current and the partial text is returned to the caller.
-  const prior = run.truncated ? await getArtifact(input.projectId, "plan.md") : null;
+  const prior = run.truncated ? previousPlan : null;
   if (prior && keepsPriorVersion(run.truncated, prior)) {
     return {
       artifact: prior,
@@ -172,10 +177,17 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     findUndeclaredMermaidNodes(run.content),
   );
 
+  const designNote = previousPlan
+    ? describePlanDesignDiff(
+        previousPlan.version,
+        diffPlanDesign(previousPlan.content, run.content),
+      )
+    : "";
+
   return {
     artifact,
     tokensUsed: run.tokensUsed,
     retrievedFiles: rag.files,
-    message: `Generated plan.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${describeContextDropped(rag.dropped)}${pathNote}${noneNote}${mermaidNote}${truncationWarning(run.truncated ? ["plan.md"] : [])}`,
+    message: `Generated plan.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${designNote}${describeContextDropped(rag.dropped)}${pathNote}${noneNote}${mermaidNote}${truncationWarning(run.truncated ? ["plan.md"] : [])}`,
   };
 }

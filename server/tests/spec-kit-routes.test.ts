@@ -245,10 +245,19 @@ const featureLifecycle = vi.hoisted(() => {
 
 // #789 — the feature-artifact DELETE route's store call, observable.
 const deleteFeatureArtifact = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock("../src/lib/spec-kit/feature-artifacts.js", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  deleteFeatureArtifact,
-}));
+// #1134 — the feature-artifact list the GET route reads; real store otherwise.
+const listFeatureArtifactsMock = vi.hoisted(() => ({ rows: null as unknown[] | null }));
+vi.mock("../src/lib/spec-kit/feature-artifacts.js", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, any>>();
+  return {
+    ...actual,
+    deleteFeatureArtifact,
+    listFeatureArtifacts: vi.fn(
+      async (featureId: string) =>
+        listFeatureArtifactsMock.rows ?? actual.listFeatureArtifacts(featureId),
+    ),
+  };
+});
 
 // #1059 — a model-backed command runs as a job the route waits on; its table is
 // the in-memory one (the real table is covered by the SQLite suite).
@@ -939,5 +948,37 @@ describe("/api/projects/:projectId/spec-kit feature lifecycle", () => {
     const res = await request(makeApp()).post("/api/projects/p1/spec-kit/features/001-x/restore");
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe("SPECKIT_FEATURE_NOT_ARCHIVED");
+  });
+});
+
+describe("#1134 GET /features/:slug/artifacts marks plan-derived artifacts out of date", () => {
+  afterEach(() => {
+    listFeatureArtifactsMock.rows = null;
+  });
+
+  it("names tasks.md generated from an earlier plan.md, and nothing current", async () => {
+    featureLifecycle.resolveFeatureBySlug.mockResolvedValueOnce({ id: "f1", slug: "001-a" });
+    const when = new Date("2026-10-13T10:00:00Z").toISOString();
+    const row = (key: string, content: string, version: number) => ({
+      id: key,
+      featureId: "f1",
+      key,
+      content,
+      version,
+      updatedById: null,
+      createdAt: when,
+      updatedAt: when,
+    });
+    listFeatureArtifactsMock.rows = [
+      row("plan.md", "# Plan", 2),
+      row("tasks.md", "## Tasks\n\n<!-- metis: generated from plan.md v1 -->\n", 1),
+      row("analysis.md", "r\n\n<!-- metis: generated from plan.md v2 -->\n", 3),
+    ];
+    const res = await request(makeApp()).get("/api/projects/p1/spec-kit/features/001-a/artifacts");
+    expect(res.status).toBe(200);
+    expect(res.body.data.stale).toEqual([
+      { key: "tasks.md", planVersion: 1, currentPlanVersion: 2 },
+    ]);
+    expect(res.body.data.artifacts).toHaveLength(3);
   });
 });

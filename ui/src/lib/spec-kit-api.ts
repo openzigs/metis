@@ -40,6 +40,17 @@ export interface SpecKitFeatureArtifact {
   updatedAt: string;
 }
 
+/**
+ * #1134 — a plan-derived artifact (tasks.md, analysis.md, a checklist) generated
+ * from an earlier plan.md than the current one. `planVersion` is null when the
+ * artifact names no plan version (it was written before the plan, by time).
+ */
+export interface SpecKitStaleArtifact {
+  key: string;
+  planVersion: number | null;
+  currentPlanVersion: number;
+}
+
 /** #789 — `GET /features/:slug/status`: which phase gates the feature has met. */
 export interface SpecKitFeatureStatus {
   slug: string;
@@ -246,7 +257,11 @@ export const specKitApi = {
   listFeatureArtifacts(
     projectId: string,
     slug: string,
-  ): Promise<{ feature: SpecKitFeature; artifacts: SpecKitFeatureArtifact[] }> {
+  ): Promise<{
+    feature: SpecKitFeature;
+    artifacts: SpecKitFeatureArtifact[];
+    stale?: SpecKitStaleArtifact[];
+  }> {
     return apiFetch(`${featuresBase(projectId)}/${encodeURIComponent(slug)}/artifacts`);
   },
   featureStatus(projectId: string, slug: string): Promise<SpecKitFeatureStatus> {
