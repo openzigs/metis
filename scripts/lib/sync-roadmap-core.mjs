@@ -1,0 +1,559 @@
+/**
+ * #1147 — keep the METIS roadmap board (https://github.com/orgs/openzigs/projects/2) in step
+ * with the issues. A port of On Your Left's `scripts/sync-roadmap.py` (openzigs/onyourleft#1348,
+ * merged in openzigs/onyourleft#1359 at 74ab113a), written as a Node module so it runs under this
+ * repository's own gate (`pnpm test`, vitest, the 80% floor) with no new dependency. The env/argv
+ * glue is `scripts/sync-roadmap.mjs`; the workflow that runs it nightly is
+ * `.github/workflows/roadmap.yml`; the reader's version is `docs/ops/roadmap-board.md`.
+ *
+ * What a run does, in order:
+ *   1. Reads every issue in openzigs/metis that is open or was closed in the last 30 days — labels,
+ *      state, sub-issue summary — paged by 100. Pull requests are not issues and are never read.
+ *   2. Reads every item already on the board, once, into a map.
+ *   3. ADDS every open issue that is not on the board. Never deletes, never archives, and leaves an
+ *      archived item, and an item outside what it read, exactly as they are.
+ *   4. SETS Tier, Kind, Progress % and Sub-issues done, only where the value differs. NEVER touches
+ *      Status (GitHub's built-in workflows own it) or Area (set by hand from #1146's sections).
+ *
+ * How METIS differs from On Your Left, deliberately:
+ *   - Tier comes from the issue's OWN labels only (`priority: now|next|later`, then `blocked`), as
+ *     the board's README states and the first fill of 2026-10-15 did; no ancestor inheritance.
+ *     `priority: high` is a SEVERITY label here, not a tier, so it sets nothing.
+ *   - Area is the owner's, so it is not a managed field and no option is ever created.
+ *   - Kind counts a title starting "Research" as a Spike: METIS names its spikes that way (#263).
+ *   - No weekly status update: #1147 does not ask for one.
+ *
+ * Writes are throttled to about one a second and capped below 400 a run (GitHub's secondary limit
+ * is about 80 content-creating requests a minute and 500 an hour). Running it twice changes nothing
+ * the second time: `addProjectV2ItemById` on an issue already on the board returns the same item
+ * (measured on openzigs/onyourleft#1348), and every field write is skipped when the board already
+ * holds the value.
+ *
+ * The token goes in one request header and nowhere else: never printed, never logged, never in an
+ * error message.
+ */
+
+export const REPOSITORY = "openzigs/metis";
+export const CLOSED_WINDOW_DAYS = 30;
+export const MAX_MUTATIONS = 399;
+export const MUTATION_INTERVAL_MS = 1000;
+export const API_URL = "https://api.github.com/graphql";
+
+/** Precedence is the field's option order: the first of these an issue carries wins. */
+export const TIER_BY_LABEL = /** @type {const} */ ([
+  ["priority: now", "Now"],
+  ["priority: next", "Next"],
+  ["priority: later", "Later"],
+  ["blocked", "Blocked"],
+]);
+export const UNRANKED = "Unranked";
+
+export const TIER = "Tier";
+export const KIND = "Kind";
+export const PROGRESS = "Progress %";
+export const SUBS_DONE = "Sub-issues done";
+/** The order fields are written in, and the ONLY fields this script ever writes. */
+export const MANAGED_FIELDS = /** @type {const} */ ([TIER, KIND, PROGRESS, SUBS_DONE]);
+
+/**
+ * @typedef {{ total: number, completed: number, percentCompleted: number }} SubIssuesSummary
+ * @typedef {{
+ *   id: string, number: number, title: string, state: string, closedAt: string | null,
+ *   labels: string[], summary: SubIssuesSummary | null
+ * }} Issue
+ * @typedef {string | number | null} FieldValue
+ * @typedef {{ id: string | null, archived: boolean, values: Record<string, FieldValue> }} Item
+ * @typedef {{ id: string, name: string, dataType?: string, options?: Array<{ id: string, name: string }> }} Field
+ */
+
+// --- Decisions (pure) -------------------------------------------------------------------------
+
+/**
+ * The Tier an issue's own labels give it; Unranked when none applies.
+ *
+ * @param {string[]} labels
+ * @returns {string}
+ */
+export function tierOf(labels) {
+  const names = new Set(labels);
+  for (const [label, tier] of TIER_BY_LABEL) {
+    if (names.has(label)) return tier;
+  }
+  return UNRANKED;
+}
+
+/**
+ * `epic` label → Epic; title starting "Spike" or "Research" → Spike; `bug` label → Bug; else Issue.
+ *
+ * @param {{ title: string, labels: string[] }} issue
+ * @returns {string}
+ */
+export function kindOf(issue) {
+  const labels = new Set(issue.labels);
+  if (labels.has("epic")) return "Epic";
+  if (/^\s*(spike|research)\b/i.test(issue.title)) return "Spike";
+  if (labels.has("bug")) return "Bug";
+  return "Issue";
+}
+
+/**
+ * [Progress %, Sub-issues done] from `subIssuesSummary`; [null, null] clears both.
+ *
+ * @param {SubIssuesSummary | null | undefined} summary
+ * @returns {[number | null, string | null]}
+ */
+export function progressOf(summary) {
+  if (!summary || !summary.total) return [null, null];
+  return [summary.percentCompleted, `${summary.completed} of ${summary.total}`];
+}
+
+/**
+ * @param {Issue} issue
+ * @returns {Record<string, FieldValue>}
+ */
+export function desiredFields(issue) {
+  const [progress, done] = progressOf(issue.summary);
+  return {
+    [TIER]: tierOf(issue.labels),
+    [KIND]: kindOf(issue),
+    [PROGRESS]: progress,
+    [SUBS_DONE]: done,
+  };
+}
+
+/**
+ * Every managed field whose value differs, in write order; a null value clears. An absent value
+ * and null are the same (an empty field); JSON numbers compare exactly (86 vs 85 differs).
+ *
+ * @param {Record<string, FieldValue>} desired
+ * @param {Record<string, FieldValue>} current
+ * @returns {Array<[string, FieldValue]>}
+ */
+export function fieldChanges(desired, current) {
+  return MANAGED_FIELDS.filter(
+    (field) => (desired[field] ?? null) !== (current[field] ?? null),
+  ).map((field) => [field, desired[field]]);
+}
+
+/** @param {Pick<Issue, "state">} issue */
+export function shouldAdd(issue) {
+  return issue.state === "OPEN";
+}
+
+/**
+ * Open, or closed within the window.
+ *
+ * @param {Pick<Issue, "state" | "closedAt">} issue
+ * @param {Date} now
+ */
+export function inReadWindow(issue, now) {
+  if (issue.state === "OPEN") return true;
+  if (!issue.closedAt) return false;
+  const closed = Date.parse(issue.closedAt);
+  return !Number.isNaN(closed) && now.getTime() - closed <= CLOSED_WINDOW_DAYS * 86_400_000;
+}
+
+/**
+ * The `value` argument of `updateProjectV2ItemFieldValue`, or null when a single-select field has
+ * no option of that name (the board was edited by hand; the item is left alone, said so in the log).
+ *
+ * @param {Field} field
+ * @param {string | number} value
+ * @returns {Record<string, string | number> | null}
+ */
+export function encodeValue(field, value) {
+  if (field.dataType === "NUMBER") return { number: Number(value) };
+  if (field.dataType === "TEXT") return { text: String(value) };
+  const option = (field.options ?? []).find((o) => o.name === value);
+  return option ? { singleSelectOptionId: option.id } : null;
+}
+
+/** @param {{ added: number, changed: number, unchanged: number, skipped: number }} counts */
+export function summaryLine(counts) {
+  return `summary: added ${counts.added}, changed ${counts.changed}, unchanged ${counts.unchanged}, skipped ${counts.skipped}`;
+}
+
+/**
+ * @param {string[]} argv
+ * @returns {{ org: string, project: number, dryRun: boolean }}
+ */
+export function parseArgs(argv) {
+  /** @type {{ org: string, project: number, dryRun: boolean }} */
+  const out = { org: "", project: Number.NaN, dryRun: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--dry-run") out.dryRun = true;
+    else if (arg === "--org") out.org = argv[++i] ?? "";
+    else if (arg === "--project") out.project = Number(argv[++i]);
+    else throw new Error(`unknown argument ${JSON.stringify(arg)}`);
+  }
+  if (!/^[A-Za-z0-9-]+$/.test(out.org)) throw new Error("--org <login> is required");
+  if (!Number.isInteger(out.project) || out.project < 1) {
+    throw new Error("--project <number> is required");
+  }
+  return out;
+}
+
+// --- I/O --------------------------------------------------------------------------------------
+
+export class GraphQLError extends Error {}
+
+/**
+ * A GraphQL client that writes at most MAX_MUTATIONS a run, one a second, and in a dry run only
+ * prints what it would write.
+ *
+ * @param {{
+ *   token: string, dryRun: boolean, fetchImpl?: typeof fetch,
+ *   sleep?: (ms: number) => Promise<void>, clock?: () => number, log?: (line: string) => void
+ * }} opts
+ */
+export function createClient({
+  token,
+  dryRun,
+  fetchImpl = fetch,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  clock = () => performance.now(),
+  log = (line) => console.log(line),
+}) {
+  if (!token) throw new GraphQLError("set GH_TOKEN or GITHUB_TOKEN");
+  let mutations = 0;
+  let last = Number.NEGATIVE_INFINITY;
+
+  /**
+   * @param {string} query
+   * @param {Record<string, unknown>} variables
+   * @returns {Promise<any>}
+   */
+  async function post(query, variables) {
+    let res;
+    try {
+      res = await fetchImpl(API_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `bearer ${token}`,
+          "Content-Type": "application/json",
+          "User-Agent": "metis-sync-roadmap",
+        },
+        body: JSON.stringify({ query, variables }),
+      });
+    } catch (error) {
+      // The cause's message only; never the request, whose headers hold the token.
+      throw new GraphQLError(
+        `GitHub API unreachable: ${error instanceof Error ? error.message : "?"}`,
+      );
+    }
+    /** @type {any} */
+    let payload = null;
+    try {
+      payload = await res.json();
+    } catch {
+      payload = null;
+    }
+    if (!res.ok) {
+      throw new GraphQLError(
+        `GitHub API HTTP ${res.status} ${String(payload?.message ?? "")}`.trim(),
+      );
+    }
+    if (payload?.errors?.length) {
+      throw new GraphQLError(
+        payload.errors.map((/** @type {any} */ e) => e?.message ?? "?").join("; "),
+      );
+    }
+    if (!payload?.data) throw new GraphQLError("GitHub API returned no data");
+    return payload.data;
+  }
+
+  return {
+    dryRun,
+    get mutations() {
+      return mutations;
+    },
+    /** @param {string} query @param {Record<string, unknown>} variables */
+    query(query, variables) {
+      return post(query, variables);
+    },
+    budgetLeft() {
+      return mutations < MAX_MUTATIONS;
+    },
+    /**
+     * Prints the change; in a dry run that is all it does.
+     *
+     * @param {string} description @param {string} query @param {Record<string, unknown>} variables
+     */
+    async mutate(description, query, variables) {
+      log((dryRun ? "would " : "") + description);
+      if (dryRun) return null;
+      const wait = MUTATION_INTERVAL_MS - (clock() - last);
+      if (wait > 0) await sleep(wait);
+      mutations += 1;
+      try {
+        return await post(query, variables);
+      } finally {
+        last = clock();
+      }
+    },
+  };
+}
+
+/** @typedef {ReturnType<typeof createClient>} Client */
+
+export const ISSUES_QUERY = `
+query($owner: String!, $name: String!, $after: String, $filter: IssueFilters) {
+  repository(owner: $owner, name: $name) {
+    issues(first: 100, after: $after, filterBy: $filter, orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id number title state closedAt
+        labels(first: 50) { nodes { name } }
+        subIssuesSummary { total completed percentCompleted }
+      }
+    }
+  }
+}`;
+
+export const PROJECT_QUERY = `
+query($org: String!, $number: Int!) {
+  organization(login: $org) {
+    projectV2(number: $number) {
+      id
+      fields(first: 50) {
+        nodes {
+          ... on ProjectV2FieldCommon { id name dataType }
+          ... on ProjectV2SingleSelectField { options { id name } }
+        }
+      }
+    }
+  }
+}`;
+
+export const ITEMS_QUERY = `
+query($org: String!, $number: Int!, $after: String) {
+  organization(login: $org) {
+    projectV2(number: $number) {
+      items(first: 100, after: $after, archivedStates: [ARCHIVED, NOT_ARCHIVED]) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id isArchived
+          content { ... on Issue { number repository { nameWithOwner } } }
+          fieldValues(first: 30) {
+            nodes {
+              ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
+              ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2FieldCommon { name } } }
+              ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } }
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+export const ADD_ITEM = `
+mutation($project: ID!, $content: ID!) {
+  addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } }
+}`;
+
+export const SET_VALUE = `
+mutation($project: ID!, $item: ID!, $field: ID!, $value: ProjectV2FieldValue!) {
+  updateProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field, value: $value}) {
+    projectV2Item { id }
+  }
+}`;
+
+export const CLEAR_VALUE = `
+mutation($project: ID!, $item: ID!, $field: ID!) {
+  clearProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field}) {
+    projectV2Item { id }
+  }
+}`;
+
+/**
+ * @param {any} node
+ * @returns {Issue}
+ */
+function issueFromNode(node) {
+  return {
+    id: node.id,
+    number: node.number,
+    title: node.title,
+    state: node.state,
+    closedAt: node.closedAt ?? null,
+    labels: (node.labels?.nodes ?? []).map((/** @type {{ name: string }} */ l) => l.name),
+    summary: node.subIssuesSummary ?? null,
+  };
+}
+
+/**
+ * Open issues, and issues closed in the window, by number.
+ *
+ * @param {Client} client
+ * @param {string} repository owner/name
+ * @param {Date} now
+ * @returns {Promise<Map<number, Issue>>}
+ */
+export async function readIssues(client, repository, now) {
+  const [owner, name] = repository.split("/");
+  const since = new Date(now.getTime() - CLOSED_WINDOW_DAYS * 86_400_000).toISOString();
+  // A close updates the issue, so `since` (on updatedAt) catches every close in the window;
+  // inReadWindow then drops the ones only edited in it.
+  const filters = [{ states: ["OPEN"] }, { states: ["CLOSED"], since }];
+  /** @type {Map<number, Issue>} */
+  const issues = new Map();
+  for (const filter of filters) {
+    /** @type {string | null} */
+    let after = null;
+    for (;;) {
+      const data = await client.query(ISSUES_QUERY, { owner, name, after, filter });
+      const page = data.repository.issues;
+      for (const node of page.nodes) {
+        const issue = issueFromNode(node);
+        if (inReadWindow(issue, now)) issues.set(issue.number, issue);
+      }
+      if (!page.pageInfo.hasNextPage) break;
+      after = page.pageInfo.endCursor;
+    }
+  }
+  return issues;
+}
+
+/**
+ * This repository's issues on the board: number → item, with each field's value by field name.
+ *
+ * @param {Client} client
+ * @param {string} org
+ * @param {number} number
+ * @param {string} repository
+ * @returns {Promise<Map<number, Item>>}
+ */
+export async function readItems(client, org, number, repository) {
+  /** @type {Map<number, Item>} */
+  const items = new Map();
+  /** @type {string | null} */
+  let after = null;
+  for (;;) {
+    const data = await client.query(ITEMS_QUERY, { org, number, after });
+    const page = data.organization.projectV2.items;
+    for (const node of page.nodes) {
+      const content = node.content ?? {};
+      if (typeof content.number !== "number" || content.repository?.nameWithOwner !== repository)
+        continue;
+      /** @type {Record<string, FieldValue>} */
+      const values = {};
+      for (const value of node.fieldValues?.nodes ?? []) {
+        const field = value?.field?.name;
+        if (!field) continue;
+        for (const key of ["name", "number", "text"]) {
+          if (key in value) values[field] = value[key];
+        }
+      }
+      items.set(content.number, { id: node.id, archived: Boolean(node.isArchived), values });
+    }
+    if (!page.pageInfo.hasNextPage) break;
+    after = page.pageInfo.endCursor;
+  }
+  return items;
+}
+
+/**
+ * @param {{
+ *   client: Client, org: string, project: number, now: Date,
+ *   repository?: string, log?: (line: string) => void
+ * }} opts
+ * @returns {Promise<{ added: number, changed: number, unchanged: number, skipped: number }>}
+ */
+export async function sync({
+  client,
+  org,
+  project: projectNumber,
+  now,
+  repository = REPOSITORY,
+  log = console.log,
+}) {
+  const project = (await client.query(PROJECT_QUERY, { org, number: projectNumber })).organization
+    ?.projectV2;
+  if (!project) {
+    throw new GraphQLError(`project ${org}/${projectNumber} not found, or the token cannot see it`);
+  }
+  /** @type {Map<string, Field>} */
+  const fields = new Map();
+  for (const f of project.fields.nodes) if (f?.name) fields.set(f.name, f);
+  for (const name of MANAGED_FIELDS) {
+    if (!fields.has(name)) {
+      throw new GraphQLError(
+        `the board has no field named ${JSON.stringify(name)} (docs/ops/roadmap-board.md)`,
+      );
+    }
+  }
+
+  const issues = await readIssues(client, repository, now);
+  const items = await readItems(client, org, projectNumber, repository);
+
+  const counts = { added: 0, changed: 0, unchanged: 0, skipped: 0 };
+  let deferred = 0;
+  for (const number of [...issues.keys()].sort((a, b) => a - b)) {
+    const issue = /** @type {Issue} */ (issues.get(number));
+    let item = items.get(number);
+    if (item?.archived) {
+      counts.skipped += 1;
+      continue;
+    }
+    if (!item) {
+      if (!shouldAdd(issue)) continue;
+      if (!client.budgetLeft()) {
+        deferred += 1;
+        counts.skipped += 1;
+        continue;
+      }
+      const data = await client.mutate(`add #${number} ${issue.title}`, ADD_ITEM, {
+        project: project.id,
+        content: issue.id,
+      });
+      item = { id: data?.addProjectV2ItemById?.item?.id ?? null, archived: false, values: {} };
+      counts.added += 1;
+    }
+    const changes = fieldChanges(desiredFields(issue), item.values);
+    if (changes.length === 0) {
+      counts.unchanged += 1;
+      continue;
+    }
+    if (!client.budgetLeft()) {
+      deferred += 1;
+      counts.skipped += 1;
+      continue;
+    }
+    for (const [fieldName, value] of changes) {
+      if (!client.budgetLeft()) break;
+      const field = /** @type {Field} */ (fields.get(fieldName));
+      const label = `#${number} ${fieldName} -> ${value == null ? "(clear)" : value}`;
+      if (value == null) {
+        await client.mutate(`set ${label}`, CLEAR_VALUE, {
+          project: project.id,
+          item: item.id,
+          field: field.id,
+        });
+        continue;
+      }
+      const encoded = encodeValue(field, value);
+      if (!encoded) {
+        log(`skip #${number} ${fieldName}: no option named ${JSON.stringify(value)} on the board`);
+        continue;
+      }
+      await client.mutate(`set ${label}`, SET_VALUE, {
+        project: project.id,
+        item: item.id,
+        field: field.id,
+        value: encoded,
+      });
+    }
+    counts.changed += 1;
+  }
+
+  // On the board but outside the read window: left exactly as they are.
+  for (const number of items.keys()) if (!issues.has(number)) counts.skipped += 1;
+
+  if (deferred) {
+    log(`write budget of ${MAX_MUTATIONS} reached: ${deferred} issues continue on the next run`);
+  }
+  log(summaryLine(counts) + (client.dryRun ? " (dry run)" : ""));
+  return counts;
+}

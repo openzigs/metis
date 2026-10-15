@@ -1,0 +1,95 @@
+# #1147 — keep the METIS roadmap board (https://github.com/orgs/openzigs/projects/2) in step with
+# the issues, nightly. Ported from On Your Left's roadmap.yml (openzigs/onyourleft#1359).
+# docs/ops/roadmap-board.md says what fills each field and how the App behind the token is set up.
+#
+# NOT a required check, and it never runs on a pull request: it holds a token that can write every
+# project in the org, and a pull request -- from a fork above all -- must never reach it. So the
+# triggers are `schedule` and `workflow_dispatch` ONLY; `pull_request` and `pull_request_target`
+# are left out on purpose. The script's tests run in `pnpm test` (scripts/lib/
+# sync-roadmap-core.test.mjs) instead. The private key lives in the Environment `roadmap`, whose
+# deployments are limited to `main`.
+name: Roadmap board sync
+
+on:
+  schedule:
+    # 05:41 UTC: off the hour, clear of ci.yml's 04:17 nightly and On Your Left's 04:41 sync,
+    # which shares the App's rate limit.
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Print the planned changes and write nothing
+        type: boolean
+        default: false
+
+# The checkout needs no more. The board is written with the App's token, never with
+# GITHUB_TOKEN, which cannot write an organisation's project.
+permissions:
+  contents: read
+
+concurrency:
+  group: roadmap-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync the roadmap board
+    runs-on: ubuntu-latest
+    environment: roadmap
+    # A first fill of the whole board is at most 399 writes at one a second; the rest is reads.
+    timeout-minutes: 20
+    steps:
+      # Skip, green and saying why, until the App is configured: a nightly run that went red
+      # before the owner added the private key would be an alarm for nothing. Every later step is
+      # conditional on this one. The key is checked for presence only; it is never echoed.
+      - name: Check the App is configured
+        id: configured
+        env:
+          CLIENT_ID: ${{ vars.ROADMAP_APP_CLIENT_ID }}
+          HAS_KEY: ${{ secrets.ROADMAP_APP_PRIVATE_KEY != '' }}
+        run: |
+          if [ -z "${CLIENT_ID}" ] || [ "${HAS_KEY}" != "true" ]; then
+            echo "::notice title=Roadmap sync skipped::ROADMAP_APP_CLIENT_ID or ROADMAP_APP_PRIVATE_KEY is not set in the 'roadmap' environment; see docs/ops/roadmap-board.md"
+            echo "ready=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "ready=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout
+        if: steps.configured.outputs.ready == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        if: steps.configured.outputs.ready == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Mint the App token
+        if: steps.configured.outputs.ready == 'true'
+        id: app-token
+        # Pinned to a full commit SHA (v3.3.0):
+        #   gh api repos/actions/create-github-app-token/git/ref/tags/v3.3.0 --jq .object.sha
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.ROADMAP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ROADMAP_APP_PRIVATE_KEY }}
+          owner: openzigs
+          repositories: metis
+          permission-organization-projects: write
+          permission-issues: read
+
+      # Node built-ins only: no `pnpm install`, so no dependency code runs beside the token.
+      - name: Sync the board
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          args=(--org openzigs --project 2)
+          if [ "${DRY_RUN}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          node scripts/sync-roadmap.mjs "${args[@]}"
