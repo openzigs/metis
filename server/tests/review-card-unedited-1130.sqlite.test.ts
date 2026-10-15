@@ -161,12 +161,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(res.status).toBe(200);
         const { versions, original } = res.body.data as {
           versions: Array<{ version: number }>;
-          original: { version: number; snapshot: Record<string, unknown> };
+          original: { version: number; snapshot: Record<string, unknown>; source: string };
         };
         // The card's lookup: no row at the pinned version, the original is it.
         expect(versions.some((v) => v.version === item.pinnedVersion)).toBe(false);
         expect(original.version).toBe(item.pinnedVersion);
         const n = item.requirementId!.slice(-1);
+        // The edited one is rebuilt; the others are, honestly, their current text.
+        expect(original.source).toBe(item.requirementId === ids[0] ? "reversed" : "current");
         expect(original.snapshot.body).toBe(`Users **mark** every entry read (${n}).`);
         expect(original.snapshot.priority).toBe("high");
         expect(JSON.parse(original.snapshot.acceptanceCriteria as string)).toEqual([

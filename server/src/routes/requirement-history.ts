@@ -180,6 +180,8 @@ export function requirementHistoryRouter(): Router {
           currentVersion: reqRow.version,
           // #1130 — the version before the first recorded change, so a review
           // pinned at a never-edited requirement's version can show its text.
+          // `source` says whether it was rebuilt ("reversed") or is simply the
+          // current row ("current") because no change was ever recorded.
           original: originalVersionOf(pickTracked(reqRow), reqRow.version, rows),
         },
       });

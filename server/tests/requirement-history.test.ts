@@ -184,6 +184,8 @@ describe("requirement history router", () => {
 
       // Independent of the page: computed from every row.
       expect(res.body.data.original.version).toBe(0);
+      // Rebuilt from recorded changes, not the live row.
+      expect(res.body.data.original.source).toBe("reversed");
       expect(res.body.data.original.snapshot).toMatchObject({
         title: "Title v1",
         body: "Body C",
@@ -198,8 +200,11 @@ describe("requirement history router", () => {
       const res = await request(app).get("/requirements/req-1/history?pageSize=100");
 
       expect(res.body.data.total).toBe(0);
+      // #1130 AC2 — no rows means this is the CURRENT text, and the response
+      // must say so rather than let the card call it pinned.
       expect(res.body.data.original).toEqual({
         version: 0,
+        source: "current",
         snapshot: expect.objectContaining({ title: "Title v3", body: "Body D", priority: "high" }),
       });
     });

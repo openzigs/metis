@@ -626,11 +626,16 @@ describe("originalVersionOf — #1130", () => {
   it("reverses every recorded change and names the version before the earliest row", () => {
     const original = originalVersionOf(current, 3, rows);
     expect(original.version).toBe(1);
+    expect(original.source).toBe("reversed");
     expect(original.snapshot).toMatchObject({ title: "T2", body: "B2", priority: "low" });
   });
 
   it("is the current state under the current version when nothing was recorded", () => {
-    expect(originalVersionOf(current, 0, [])).toEqual({ version: 0, snapshot: current });
+    expect(originalVersionOf(current, 0, [])).toEqual({
+      version: 0,
+      snapshot: current,
+      source: "current",
+    });
   });
 
   it("does not mutate the current snapshot", () => {

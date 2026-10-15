@@ -33,9 +33,15 @@ export interface RequirementHistoryPage {
   /**
    * #1130 — the requirement as it was before its first recorded change, under
    * the version it held. A review pinned at a never-edited requirement's version
-   * finds it here: version rows are written only by edits.
+   * finds it here: version rows are written only by edits. `source` is
+   * "reversed" when rebuilt from recorded changes, "current" when none were
+   * recorded and the snapshot is simply the requirement's current text.
    */
-  original?: { version: number; snapshot: RequirementVersionSnapshot };
+  original?: {
+    version: number;
+    snapshot: RequirementVersionSnapshot;
+    source?: "reversed" | "current";
+  };
 }
 
 export interface RestoreResult {

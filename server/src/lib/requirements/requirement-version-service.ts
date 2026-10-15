@@ -227,31 +227,52 @@ export function buildHistoryEntries(
 }
 
 /**
+ * Where {@link originalVersionOf} got its snapshot from (#1130):
+ * - `reversed` — rebuilt by reversing every recorded change from the current row.
+ * - `current`  — no change was recorded, so this IS the current row.
+ */
+export type OriginalSource = "reversed" | "current";
+
+/** The requirement before its first recorded change, and how that was derived. */
+export interface OriginalVersion {
+  version: number;
+  snapshot: RequirementSnapshot;
+  source: OriginalSource;
+}
+
+/**
  * Issue #1130 — the requirement as it was before its first recorded change.
  *
- * A version row is written only when a requirement is EDITED, so a freshly
- * promoted, never-edited set has none, and a review pinned at its version (v0)
- * found no history entry: every card read "No version history for v0" and the
- * reviewer could not see what they were asked to approve. The history replay
- * already arrives at that state — reversing every recorded change from the
- * current row — and simply discarded it. This returns it under the version it
- * held: one below the earliest row, or the current version when there are no
- * rows (nothing has changed since it was created).
+ * A version row is written only when a requirement is edited through
+ * {@link updateRequirementWithHistory}, so a freshly promoted, never-edited set
+ * has none, and a review pinned at its version (v0) found no history entry:
+ * every card read "No version history for v0" and the reviewer could not see
+ * what they were asked to approve. The history replay already arrives at the
+ * earliest recorded state — reversing every recorded change from the current
+ * row — and simply discarded it. This returns it under the version it held:
+ * one below the earliest row, or the current version when there are no rows.
+ *
+ * This is NOT guaranteed to be the text as it was pinned. Some writers change
+ * tracked fields without a version row (clarification enrichment, import
+ * re-sync, review status), and reversing recorded changes cannot undo them.
+ * With no rows at all the snapshot is simply the current row, so `source`
+ * says which it is and callers must not present `current` as pinned text.
  *
  * Chosen over writing a v0 row at promotion: it needs no migration or backfill,
- * so it also fixes every review requested before this change, and it is the
- * PINNED text (later edits are reversed out), not the current text.
+ * so it also covers every review requested before this change.
  */
 export function originalVersionOf(
   current: RequirementSnapshot,
   currentVersion: number,
   versionsDesc: VersionRow[],
-): { version: number; snapshot: RequirementSnapshot } {
+): OriginalVersion {
   let running: RequirementSnapshot = { ...current };
   for (const row of versionsDesc)
     running = applyReverse(running, parseChangedFields(row.changedFields));
   const earliest = versionsDesc.at(-1);
-  return { version: earliest ? earliest.version - 1 : currentVersion, snapshot: running };
+  return earliest
+    ? { version: earliest.version - 1, snapshot: running, source: "reversed" }
+    : { version: currentVersion, snapshot: running, source: "current" };
 }
 
 // ---------------------------------------------------------------------------

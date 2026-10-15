@@ -81,10 +81,15 @@ export function ReviewItemCard({ item }: { item: ReviewItem }) {
               </h4>
               <VersionDiff changedFields={entry.changedFields} />
             </div>
-          ) : (
+          ) : original?.source === "reversed" ? (
             <p className="text-xs text-muted-foreground" data-testid="review-item-unedited">
-              v{item.pinnedVersion} is the requirement as it was created: no edits were recorded
-              before it.
+              v{item.pinnedVersion} is rebuilt by reversing the edits recorded after it.
+            </p>
+          ) : (
+            // #1130 AC2 — with no recorded edits the server returns the CURRENT
+            // row, which is not guaranteed to be the pinned text: say so.
+            <p className="text-xs text-muted-foreground" data-testid="review-item-unedited">
+              No edits were recorded for this requirement; this is its current text.
             </p>
           )}
         </>
