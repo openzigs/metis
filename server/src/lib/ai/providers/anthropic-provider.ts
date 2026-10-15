@@ -711,9 +711,19 @@ export class AnthropicProvider implements AIProvider {
       // When caching the system prefix, send it as a one-element content-block
       // array carrying the ephemeral breakpoint; otherwise keep the bare-string
       // form (back-compat — an un-flagged request is byte-for-byte unchanged).
-      body.system = cacheSystem
-        ? [{ type: "text", text: systemText, cache_control: cacheControl }]
-        : systemText;
+      // #1144 — with a shared `systemPrefix` the breakpoint ends that prefix and
+      // the varying tail follows uncached, so sibling calls read the write.
+      const prefix = opts.promptCaching?.systemPrefix ?? "";
+      const split =
+        prefix.length > 0 && prefix.length < systemText.length && systemText.startsWith(prefix);
+      body.system = !cacheSystem
+        ? systemText
+        : split
+          ? [
+              { type: "text", text: prefix, cache_control: cacheControl },
+              { type: "text", text: systemText.slice(prefix.length) },
+            ]
+          : [{ type: "text", text: systemText, cache_control: cacheControl }];
     }
 
     // Tag the last content block of the last USER message so the large stable

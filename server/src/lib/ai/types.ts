@@ -350,8 +350,14 @@ export interface ChatOptions {
    * For chat/stream routes on Bedrock, caching is
    * handled at the gateway level via `ENABLE_PROMPT_CACHING=true` on the
    * bedrock-access-gateway container (#656).
+   *
+   *   • `systemPrefix` (#1144, native Anthropic only) — with `system`, put the
+   *     breakpoint at the end of this leading part of the system prompt instead
+   *     of at its end, and send the rest as a second, uncached block. Calls
+   *     that share the prefix but differ after it then read each other's cache
+   *     write. Ignored unless it is a strict, non-empty prefix of the system.
    */
-  promptCaching?: { system?: boolean; messages?: boolean };
+  promptCaching?: { system?: boolean; messages?: boolean; systemPrefix?: string };
   /**
    * Coarse call-site tag used ONLY to attribute prompt-cache hit-ratio
    * telemetry (#390) to a workload. It does NOT change request behaviour.
