@@ -3,7 +3,6 @@
 Entries are capped at 150 bytes and the whole file at 17,500 (`pnpm agents:verify`).
 Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never loaded.
 
-- [Green api ≠ server runs](project_green-api-job-does-not-run-server-image.md) — RESOLVED #39/#45: api smokes /healthz on SQLite + Postgres
 - [Tag-ref caches are unreadable](project_tag-ref-gha-cache-is-write-only.md) — only that tag can restore it; check per-ref size
 - [Budget rationale in 3 places](project_image-budget-rationale-lives-in-three-places.md) — docs + 2 comments; grep the tree when correcting one
 - [Probe real default paths](project_storage-probes-must-target-real-default-paths.md) — a /tmp probe passed while <cwd>/data was EACCES (#54)
@@ -63,7 +62,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Docs-gen model-written keys](project_docs-gen-model-keys.md) — S1/[^storage] tables were model output after [facts:] stripping
 - [Access rule in fixtures](project_access-rule-in-fixtures.md) — socket/discussion tests encode access in mocks; update together
 - [Compaction truncates evidence](project_compaction-truncates-evidence.md) — 600-char tool-result cut; check before blaming tools
-- [Go methods unresolved](project_go-methods-unresolved.md) — Go parser stores methods as file::M; 76% of Miniflux calls unresolved
 - [e2e replay provider is not offline](project_e2e-replay-provider-not-offline.md) — detect stub by key "offline-stub" too (#900)
 - [cancelled no-runner checks](project_cancelled-no-runner-checks.md) — 0 steps + log 404 = queue cancel; re-run, never trust unrun postgres-adapter
 - [seeded mappings symbol-bound](project_seeded-mappings-are-symbol-bound.md) — fixtures must match seeder shapes (#897)
@@ -127,3 +125,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [zod default misses null/lone obj](project_zod-default-repair-misses-null-and-lone-object.md) — probe null + a lone object per array field (#1143)
 - [Card and run resolve model apart](project_model-card-and-run-resolve-model-separately.md) — test Auto on both, aiModel + prefs (#1145)
 - [Version history has gaps](project_requirement-version-history-is-incomplete.md) — enrichment/import/review skip rows; reversed≠pinned (#1162)
+- [Imported provenance is recorded](project_imported-item-provenance-is-already-recorded.md) — read #1063 sourceIds, not word overlap (#1129)
+- [Closes #N sticks: file follow-up](project_closes-link-cannot-be-unlinked-file-follow-up.md) — deferring a criterion? file the issue pre-merge
+- [Affected-code cap 8 < 25 imported](project_affected-code-cap-below-imported-cap.md) — NR-* keyed logic loses items 9+; test >8 (#1158)

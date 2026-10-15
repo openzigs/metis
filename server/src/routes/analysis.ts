@@ -75,6 +75,8 @@ import {
   canCreateTickets,
   // Issue #1104 (finding B) — release the requirements the gate withheld.
   promoteApprovedRequirements,
+  // Issue #1129 — the run's recorded #1063 provenance for the ticked/added split.
+  readSynthesisOutput,
   type PromotionOutcome,
   // Epic #176 / #178 — finding deep-dive → issue draft.
   deepDiveFinding,
@@ -214,7 +216,8 @@ async function ensureAnalysisVisible(analysisId: string, projectId: string | nul
 /**
  * Issue #1129 — on a run started from ticked imported items, whether each
  * reviewed (structured) requirement restates a ticked item or was added by the
- * analysis. Empty for any other run.
+ * analysis. Empty for any other run. The approvals list, clarify ordering and
+ * reject-added all read this one classification.
  */
 async function requirementOriginsFor(
   analysisId: string,
@@ -222,8 +225,17 @@ async function requirementOriginsFor(
 ): Promise<Map<string, RequirementOrigin>> {
   const sources = readSourceRequirements(metadata);
   if (sources.length === 0) return new Map();
-  const structured = await getStructuredRequirements(analysisId);
-  return classifyRequirementOrigins(structured?.requirements ?? [], sources);
+  const [structured, synthesis] = await Promise.all([
+    getStructuredRequirements(analysisId),
+    readSynthesisOutput(analysisId),
+  ]);
+  // #1063's recorded `sourceIds` decide first — the same provenance behind the
+  // "Added by the analysis" badge; the word join covers only what has none.
+  return classifyRequirementOrigins(
+    structured?.requirements ?? [],
+    sources,
+    synthesis?.requirements ?? [],
+  );
 }
 
 /**

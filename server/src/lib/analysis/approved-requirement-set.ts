@@ -40,10 +40,14 @@ const MAX_LABELS = 16;
  * requirement (and each synthesized requirement with at most one structured
  * one), best score first, so evidence and criteria are never duplicated onto
  * two rows.
+ *
+ * Issue #1129 — exported so the ticked/added split reads the same #1063
+ * `sourceIds` this join carries onto the promoted row (and so onto the
+ * "Added by the analysis" badge), rather than guessing from words.
  */
-function matchSynthesized(
-  approved: StructuredRequirement[],
-  synthesized: SynthesizedRequirement[],
+export function matchSynthesized(
+  approved: ReadonlyArray<Pick<StructuredRequirement, "id" | "title">>,
+  synthesized: readonly SynthesizedRequirement[],
 ): Map<string, SynthesizedRequirement> {
   const synthTokens = synthesized.map((s) => significantTokens(`${s.title} ${s.body}`));
   const candidates: Array<{ structuredId: string; synthIdx: number; score: number }> = [];

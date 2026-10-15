@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AnalysisSourceRequirement } from "@metis/shared";
+import type { AnalysisSourceRequirement, SynthesizedRequirement } from "@metis/shared";
 import { classifyRequirementOrigins, orderTickedFirst, tickedFirst } from "./imported-scope.js";
 
 const source = (candidateId: string, title: string): AnalysisSourceRequirement => ({
@@ -32,12 +32,20 @@ describe("classifyRequirementOrigins — #1129", () => {
     expect(origins.get("REQ-3")).toBe("added");
   });
 
-  it("matches on the description when the title was rewritten", () => {
+  it("matches on the description when the title alone shares no word", () => {
+    // The title has no word of the imported title; only the description does,
+    // so dropping the description from the join turns this "added".
     const origins = classifyRequirementOrigins(
-      [req("REQ-1", "Feed refresh scheduling", "Allow a per-feed refresh interval to be set.")],
+      [req("REQ-1", "Scheduling options", "Allow a per-feed refresh interval to be set.")],
       [source("NR-1", "Per-feed refresh interval")],
     );
     expect(origins.get("REQ-1")).toBe("ticked");
+    expect(
+      classifyRequirementOrigins(
+        [req("REQ-1", "Scheduling options")],
+        [source("NR-1", "Per-feed refresh interval")],
+      ).get("REQ-1"),
+    ).toBe("added");
   });
 
   it("does not call a requirement ticked on one shared word of a long imported title", () => {
@@ -46,6 +54,79 @@ describe("classifyRequirementOrigins — #1129", () => {
       [source("NR-1", "Show favicons beside each feed in the sidebar list")],
     );
     expect(origins.get("REQ-1")).toBe("added");
+  });
+});
+
+const synth = (title: string, body: string, sourceIds?: string[]): SynthesizedRequirement => ({
+  type: "feature",
+  title,
+  body,
+  priority: "medium",
+  labels: [],
+  evidenceFindingIndexes: [],
+  acceptanceCriteria: [],
+  ...(sourceIds !== undefined ? { sourceIds } : {}),
+});
+
+describe("classifyRequirementOrigins — recorded #1063 provenance decides first", () => {
+  const ticked = [source("NR-1", "Per-feed refresh interval")];
+
+  it("files a requirement the synthesis recorded as its own 'added' even when its words overlap a ticked title", () => {
+    // The adversarial counterexample: the word join scores this 0.5 against
+    // "Per-feed refresh interval" and would file it "ticked", while the badge
+    // (fed by the recorded `sourceIds: []`) says "Added by the analysis".
+    const requirements = [req("REQ-1", "Refresh all feeds", "Trigger a refresh of every feed.")];
+    const synthesized = [synth("Refresh all feeds", "Trigger a refresh of every feed.", [])];
+
+    expect(classifyRequirementOrigins(requirements, ticked).get("REQ-1")).toBe("ticked");
+    expect(classifyRequirementOrigins(requirements, ticked, synthesized).get("REQ-1")).toBe(
+      "added",
+    );
+  });
+
+  it("files a requirement whose recorded ids include a ticked item 'ticked' though no word matches", () => {
+    const requirements = [req("REQ-1", "Polling cadence", "Choose how often a source is polled.")];
+    const synthesized = [synth("Polling cadence", "How often a source is polled.", ["NR-1"])];
+
+    expect(classifyRequirementOrigins(requirements, ticked).get("REQ-1")).toBe("added");
+    expect(classifyRequirementOrigins(requirements, ticked, synthesized).get("REQ-1")).toBe(
+      "ticked",
+    );
+  });
+
+  it("ignores recorded ids that are not this run's ticked items, and falls back to words", () => {
+    // `cleanSourceIds`: a list naming only unknown ids is "not recorded".
+    const requirements = [req("REQ-1", "Per-feed refresh interval setting")];
+    const synthesized = [synth("Per-feed refresh interval setting", "", ["NR-99"])];
+
+    expect(classifyRequirementOrigins(requirements, ticked, synthesized).get("REQ-1")).toBe(
+      "ticked",
+    );
+  });
+
+  it("falls back to the word join per requirement when its synthesized match recorded nothing", () => {
+    const requirements = [
+      req("REQ-1", "Per-feed refresh interval setting"),
+      req("REQ-2", "Refresh all feeds", "Trigger a refresh of every feed."),
+    ];
+    const synthesized = [
+      synth("Per-feed refresh interval setting", "Degraded: no sourceIds."),
+      synth("Refresh all feeds", "Trigger a refresh of every feed.", []),
+    ];
+
+    const origins = classifyRequirementOrigins(requirements, ticked, synthesized);
+    expect(origins.get("REQ-1")).toBe("ticked");
+    expect(origins.get("REQ-2")).toBe("added");
+  });
+
+  it("leaves a requirement unclassified when it has no provenance and no imported title has a significant word", () => {
+    const origins = classifyRequirementOrigins(
+      [req("REQ-1", "Import OPML"), req("REQ-2", "Export OPML")],
+      [source("NR-1", "the and of")],
+      [synth("Import OPML", "", [])],
+    );
+    expect(origins.get("REQ-1")).toBe("added");
+    expect(origins.has("REQ-2")).toBe(false);
   });
 });
 

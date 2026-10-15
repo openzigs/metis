@@ -8,37 +8,66 @@
  * items became 34 approvals, 29 of them README and API features nobody ticked,
  * and nothing on screen told the two apart.
  *
- * The join is deterministic and LLM-free: an imported title restated by a
- * requirement has most of its significant words in that requirement's title or
- * description. It is the same containment measure #1116 uses to place
- * clarification answers. It errs toward "ticked": leaving out an added
- * requirement is one click to reopen, while hiding a ticked one among the added
- * would make the user re-find the thing they asked for.
+ * Provenance first. #1063 already records it: synthesis names the imported
+ * ids each requirement came from (`sourceIds`, checked against the run's own
+ * ids), `matchSynthesized` joins that onto the structured requirement, and
+ * promotion persists it as `sourceCandidateIds` — the column behind the
+ * "Added by the analysis" badge. So a requirement whose recorded ids include a
+ * ticked item is "ticked", and one with recorded provenance and no ticked id is
+ * "added", exactly as the badge will say. A second, word-based opinion would
+ * disagree with that badge, and `reject-added` would act on the wrong one.
+ *
+ * Only a requirement with NO recorded provenance (degraded synthesis, no
+ * synthesized match, a model that did not say) falls back to a deterministic,
+ * LLM-free word join: an imported title restated by a requirement has most of
+ * its significant words in that requirement's title or description — the
+ * containment measure #1116 uses to place clarification answers. The fallback
+ * errs toward "ticked": leaving out an added requirement is one click to
+ * reopen, while hiding a ticked one among the added would make the user
+ * re-find the thing they asked for.
  */
-import type { AnalysisSourceRequirement } from "@metis/shared";
+import type { AnalysisSourceRequirement, SynthesizedRequirement } from "@metis/shared";
+import { matchSynthesized } from "./approved-requirement-set.js";
 import { containmentScore, significantTokens } from "./clarification-enrichment.js";
+import { cleanSourceIds } from "./source-items.js";
 
 export type RequirementOrigin = "ticked" | "added";
 
 /**
- * Share of an imported title's significant words a requirement must contain to
- * restate it. Matches `ATTRIBUTION_THRESHOLD`: a two-word title needs one hit,
- * a six-word title three.
+ * Fallback only. Share of an imported title's significant words a requirement
+ * with no recorded provenance must contain to restate it. Matches
+ * `ATTRIBUTION_THRESHOLD`: a two-word title needs one hit, a six-word title
+ * three.
  */
 export const TICKED_MATCH_THRESHOLD = 0.5;
 
 /**
  * Origin per requirement id. Empty when the run was not started from imported
  * items, so every caller can treat "no entry" as "no ticked/added split".
+ *
+ * `synthesized` is the synthesis agent's output for the run; its `sourceIds`
+ * are the recorded provenance. Omitted or empty, every requirement falls back
+ * to the word join.
  */
 export function classifyRequirementOrigins(
   requirements: ReadonlyArray<{ id: string; title: string; description?: string | null }>,
-  sources: ReadonlyArray<Pick<AnalysisSourceRequirement, "title">>,
+  sources: ReadonlyArray<Pick<AnalysisSourceRequirement, "candidateId" | "title">>,
+  synthesized: readonly SynthesizedRequirement[] = [],
 ): Map<string, RequirementOrigin> {
   const origins = new Map<string, RequirementOrigin>();
+  if (sources.length === 0) return origins;
+  const knownIds = new Set(sources.map((s) => s.candidateId));
+  // The same join promotion uses, so the recorded ids are the badge's ids.
+  const matches = matchSynthesized(requirements, synthesized);
   const needles = sources.map((s) => significantTokens(s.title)).filter((t) => t.size > 0);
-  if (needles.length === 0) return origins;
   for (const r of requirements) {
+    const recorded = cleanSourceIds(matches.get(r.id)?.sourceIds, knownIds);
+    if (recorded !== undefined) {
+      origins.set(r.id, recorded.length > 0 ? "ticked" : "added");
+      continue;
+    }
+    // Imported titles of stopwords only: the word join cannot say either way.
+    if (needles.length === 0) continue;
     const haystack = significantTokens(`${r.title} ${r.description ?? ""}`);
     const restates = needles.some(
       (needle) => containmentScore(needle, haystack) >= TICKED_MATCH_THRESHOLD,
