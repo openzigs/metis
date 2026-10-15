@@ -41,7 +41,8 @@ export const HTTP_HANDLER_SIGNATURE_MARKERS: readonly string[] = [
   "echo.Context", // Echo
   "*fiber.Ctx", // Fiber
   "res: Response", // Express, typed
-  "(req, res", // Express, untyped
+  "(req, res)", // Express, untyped
+  "(req, res,", // Express, untyped with next
   "NextRequest", // Next.js route handler
   "HttpServletResponse", // Java servlet
 ];

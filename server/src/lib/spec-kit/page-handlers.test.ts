@@ -35,6 +35,10 @@ describe("isHttpHandlerSignature", () => {
     expect(
       isHttpHandlerSignature("func (s *Storage) MarkFeedAsRead(userID, feedID int64) error"),
     ).toBe(false);
+    expect(isHttpHandlerSignature("function (req, res, next)")).toBe(true);
+    // A Promise executor is not a handler.
+    expect(isHttpHandlerSignature("new Promise((req, resolve) => {})")).toBe(false);
+    expect(isHttpHandlerSignature("function f(req, result)")).toBe(false);
     expect(isHttpHandlerSignature(null)).toBe(false);
     expect(isHttpHandlerSignature(undefined)).toBe(false);
   });

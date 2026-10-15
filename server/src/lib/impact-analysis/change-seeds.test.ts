@@ -744,6 +744,19 @@ describe("resolveChangeSeeds — a read-path bug (#1135)", () => {
     expect(READ_PATH_HANDLER_BOOST).toBeGreaterThan(1);
   });
 
+  it("isReadPathBug: a write-path bug is not a read-path bug (writers stay editable)", () => {
+    expect(isReadPathBug(bug("Settings not saved", "Settings does not save."))).toBe(false);
+    expect(
+      isReadPathBug(
+        bug("Mark as read does not update status", "The status is never written to the database."),
+      ),
+    ).toBe(false);
+    expect(
+      isReadPathBug(bug("Delete feed fails", "Deleting a feed leaves entries in the table.")),
+    ).toBe(false);
+    expect(isReadPathBug(bug("Entries hidden", "The page shows 0 entries."))).toBe(true);
+  });
+
   it("prismaWriterIdLoader reads write edges for the given symbols, project-scoped and chunked", async () => {
     const findMany = vi
       .fn()

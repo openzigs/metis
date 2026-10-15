@@ -148,6 +148,14 @@ const STORED_DATA_CHANGE_RE =
   /\b(?:migrations?|schema|new (?:column|field|table)s?|add(?:s|ing)? (?:a |an |the )?(?:new )?(?:column|field|table)s?|persist(?:s|ed|ing)?|stor(?:e|es|ed|ing) (?:a |an |the )?new|timestamp column)\b/i;
 
 /**
+ * Words that say the bug is a failed WRITE ("not saved", "does not update",
+ * "never written to the database", "delete fails", "leaves entries in the
+ * table"): the writer is then the fix site and must stay an edit candidate.
+ */
+const WRITE_PATH_RE =
+  /\b(?:(?:not|never|fail(?:s|ed)? to|unable to|cannot|can't)\s+(?:be\s+)?(?:sav(?:e|ed|ing)|updat(?:e|ed|ing)|writ(?:e|ten|ing)|stor(?:e|ed|ing)|delet(?:e|ed|ing)|remov(?:e|ed|ing)|insert(?:ed|ing)?|creat(?:e|ed|ing)|persist(?:ed|ing)?)|(?:does|do|did)n'?t\s+(?:sav|updat|writ|stor|delet|remov|insert|creat|persist)e?|(?:sav(?:e|ing)|updat(?:e|ing)|delet(?:e|ing)|remov(?:e|ing)|creat(?:e|ing)|insert(?:ing)?)\b[^.\n]{0,30}\bfail(?:s|ed|ing)?|written to|leaves?\b[^.\n]{0,60}\bin the (?:table|database|db))\b/i;
+
+/**
  * #1135 — true for a bug report that changes no stored data. For one, the
  * functions that WRITE a table are not files to edit by default: in #706 run 8
  * the impact for Miniflux #4386 ("0 entries after 'Mark this page as read'")
@@ -158,9 +166,8 @@ export function isReadPathBug(
   change: Pick<ChangedRequirement, "title" | "body" | "request">,
 ): boolean {
   if (change.request?.kind !== "bug") return false;
-  return !STORED_DATA_CHANGE_RE.test(
-    `${change.title}\n${change.body}`.slice(0, MAX_SEED_QUERY_CHARS * 4),
-  );
+  const text = `${change.title}\n${change.body}`.slice(0, MAX_SEED_QUERY_CHARS * 4);
+  return !STORED_DATA_CHANGE_RE.test(text) && !WRITE_PATH_RE.test(text);
 }
 
 const SCHEMA_KINDS: ReadonlySet<string> = new Set(["table", "column", "procedure"]);

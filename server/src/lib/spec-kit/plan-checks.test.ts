@@ -60,6 +60,10 @@ describe("findNotVisibleClaims", () => {
     ).toEqual([]);
     expect(lookupSpy).not.toHaveBeenCalled();
     expect(await findNotVisibleClaims("`WithLimit` clamps to 1000.", CONTEXT, lookup)).toEqual([]);
+    // Symptom wording of a UI bug is not a claim about the context.
+    const symptom =
+      "After `parseCount` the entries are not shown because `WithLimit` is invisible to the user and they cannot see it.";
+    expect(await findNotVisibleClaims(symptom, CONTEXT, lookup)).toEqual([]);
     expect(await findNotVisibleClaims("`WithLimit` is not visible.", [], lookup)).toEqual([]);
     expect(describeNotVisibleClaims([], "plan-context.md")).toBe("");
   });
@@ -109,6 +113,11 @@ describe("findParameterRenames", () => {
     expect(describeParameterRenames(renames)).toBe(
       " Check: plan.md renames names the spec states (`read_at_after` → `read_after`, `read_at_before` → `read_before`) without saying why — keep the spec's name or record the rename and its reason.",
     );
+  });
+
+  it("does not call an added part a rename (user_id -> user_feed_id)", () => {
+    expect(findParameterRenames("Filter by user_id.", "Filter by user_feed_id.")).toEqual([]);
+    expect(findParameterRenames("Sort by created_at.", "Sort by created_updated_at.")).toEqual([]);
   });
 
   it("is quiet when the plan keeps the names, or records the rename", () => {
