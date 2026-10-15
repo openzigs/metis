@@ -760,3 +760,75 @@ describe("ticked vs added follows the recorded #1063 provenance, as the badge do
     expect([...(dialogDeps.at(-1)?.askFirst ?? [])]).toEqual(["REQ-2"]);
   });
 });
+
+describe("a rejected requirement does not take part in the provenance join — #1129", () => {
+  it("reject-added keeps the pending requirement promotion would badge ticked", async () => {
+    analysisRow.metadata = {
+      sourceRequirements: [
+        {
+          candidateId: "NR-1",
+          requirementId: "imp-1",
+          title: "Per-feed refresh interval",
+          externalSource: "github",
+          externalId: "1",
+          externalUrl: null,
+        },
+      ],
+    };
+    getStructuredRequirements.mockResolvedValue({
+      requirements: [
+        { id: "REQ-B", title: "Per-feed refresh interval setting", description: "" },
+        { id: "REQ-A", title: "Refresh interval", description: "" },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    const synth = (title: string, sourceIds: string[]) => ({
+      type: "feature",
+      title,
+      body: "",
+      priority: "medium",
+      labels: [],
+      evidenceFindingIndexes: [],
+      acceptanceCriteria: [],
+      sourceIds,
+    });
+    readSynthesisOutput.mockResolvedValue({
+      summary: "s",
+      requirements: [
+        synth("Per-feed refresh interval setting", ["NR-1"]),
+        synth("Refresh interval defaults", []),
+      ],
+    });
+    listApprovalRequests.mockResolvedValue([
+      {
+        id: "ap_b",
+        analysisId: "analysis-1",
+        type: "requirement",
+        itemId: "REQ-B",
+        status: "rejected",
+        createdAt: new Date("2026-10-01T00:00:00Z"),
+      },
+      {
+        id: "ap_a",
+        analysisId: "analysis-1",
+        type: "requirement",
+        itemId: "REQ-A",
+        status: "pending",
+        createdAt: new Date("2026-10-01T00:00:00Z"),
+      },
+    ]);
+    rejectPendingRequirementApprovals.mockResolvedValueOnce({ rejectedCount: 0 });
+    promoteApprovedRequirements.mockResolvedValueOnce({ status: "blocked", pendingCount: 1 });
+
+    await request(createApp()).post(
+      "/api/projects/proj-1/analyses/analysis-1/approvals/reject-added",
+    );
+
+    expect(rejectPendingRequirementApprovals).toHaveBeenCalledWith(
+      "analysis-1",
+      expect.not.arrayContaining(["REQ-A"]),
+      expect.anything(),
+    );
+  });
+});

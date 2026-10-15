@@ -95,13 +95,38 @@ describe("classifyRequirementOrigins — recorded #1063 provenance decides first
   });
 
   it("ignores recorded ids that are not this run's ticked items, and falls back to words", () => {
-    // `cleanSourceIds`: a list naming only unknown ids is "not recorded".
-    const requirements = [req("REQ-1", "Per-feed refresh interval setting")];
-    const synthesized = [synth("Per-feed refresh interval setting", "", ["NR-99"])];
+    // `cleanSourceIds`: a list naming only unknown ids is "not recorded". The
+    // title shares no word with the ticked one, so the fallback says "added"
+    // where the unchecked list (one id, so "ticked") would not.
+    const requirements = [req("REQ-1", "Import OPML")];
+    const synthesized = [synth("Import OPML", "", ["NR-99"])];
 
     expect(classifyRequirementOrigins(requirements, ticked, synthesized).get("REQ-1")).toBe(
-      "ticked",
+      "added",
     );
+  });
+
+  it("leaves a rejected requirement out of the join, as promotion joins over the approved subset", () => {
+    // REQ-B (rejected) and REQ-A both match S1, which records the ticked item.
+    // Joined over everything, REQ-B takes S1 and REQ-A gets S2 ("added"); once
+    // REQ-A alone is promoted it takes S1 and its badge says ticked.
+    const requirements = [
+      req("REQ-B", "Per-feed refresh interval setting"),
+      req("REQ-A", "Refresh interval"),
+    ];
+    const synthesized = [
+      synth("Per-feed refresh interval setting", "", ["NR-1"]),
+      synth("Refresh interval defaults", "", []),
+    ];
+
+    expect(classifyRequirementOrigins(requirements, ticked, synthesized).get("REQ-A")).toBe(
+      "added",
+    );
+    expect(
+      classifyRequirementOrigins(requirements, ticked, synthesized, {
+        rejectedIds: new Set(["REQ-B"]),
+      }).get("REQ-A"),
+    ).toBe("ticked");
   });
 
   it("falls back to the word join per requirement when its synthesized match recorded nothing", () => {

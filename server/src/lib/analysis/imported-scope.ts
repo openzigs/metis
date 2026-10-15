@@ -48,17 +48,27 @@ export const TICKED_MATCH_THRESHOLD = 0.5;
  * `synthesized` is the synthesis agent's output for the run; its `sourceIds`
  * are the recorded provenance. Omitted or empty, every requirement falls back
  * to the word join.
+ *
+ * `rejectedIds` are the requirements whose latest approval is rejected. They
+ * are left out of the join, because promotion joins over the approved subset
+ * only: a rejected requirement must not claim the synthesized entry that a
+ * pending one would carry, and so its badge, once promoted.
  */
 export function classifyRequirementOrigins(
   requirements: ReadonlyArray<{ id: string; title: string; description?: string | null }>,
   sources: ReadonlyArray<Pick<AnalysisSourceRequirement, "candidateId" | "title">>,
   synthesized: readonly SynthesizedRequirement[] = [],
+  options: { rejectedIds?: ReadonlySet<string> } = {},
 ): Map<string, RequirementOrigin> {
   const origins = new Map<string, RequirementOrigin>();
   if (sources.length === 0) return origins;
   const knownIds = new Set(sources.map((s) => s.candidateId));
   // The same join promotion uses, so the recorded ids are the badge's ids.
-  const matches = matchSynthesized(requirements, synthesized);
+  const rejected = options.rejectedIds ?? new Set<string>();
+  const matches = matchSynthesized(
+    requirements.filter((r) => !rejected.has(r.id)),
+    synthesized,
+  );
   const needles = sources.map((s) => significantTokens(s.title)).filter((t) => t.size > 0);
   for (const r of requirements) {
     const recorded = cleanSourceIds(matches.get(r.id)?.sourceIds, knownIds);

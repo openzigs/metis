@@ -116,6 +116,7 @@ import { meterAnalysisProvider, runInAnalysisUsageScope } from "../lib/analysis/
 // approval view reads.
 import { applyClarificationsToRequirements } from "../lib/analysis/clarification-enrichment.js";
 import { readSourceRequirements } from "../lib/analysis/source-items.js";
+import { latestRequirementApprovals } from "../lib/analysis/approved-requirement-set.js";
 import {
   classifyRequirementOrigins,
   tickedFirst,
@@ -225,16 +226,26 @@ async function requirementOriginsFor(
 ): Promise<Map<string, RequirementOrigin>> {
   const sources = readSourceRequirements(metadata);
   if (sources.length === 0) return new Map();
-  const [structured, synthesis] = await Promise.all([
+  const [structured, synthesis, approvals] = await Promise.all([
     getStructuredRequirements(analysisId),
     readSynthesisOutput(analysisId),
+    listApprovalRequests(analysisId),
   ]);
+  // Promotion joins provenance over the approved subset, so a requirement whose
+  // latest approval is rejected must not take part in the join here either.
+  const latest = latestRequirementApprovals(
+    (approvals ?? []).filter((a) => a.type === "requirement"),
+  );
+  const rejectedIds = new Set(
+    [...latest.values()].filter((a) => a.status === "rejected").map((a) => a.itemId),
+  );
   // #1063's recorded `sourceIds` decide first — the same provenance behind the
   // "Added by the analysis" badge; the word join covers only what has none.
   return classifyRequirementOrigins(
     structured?.requirements ?? [],
     sources,
     synthesis?.requirements ?? [],
+    { rejectedIds },
   );
 }
 
