@@ -66,6 +66,39 @@ export function currentAnalysisUsageScope(): AnalysisUsageScope | null {
 
 const METERED = Symbol.for("metis.analysisUsageMetered");
 
+/**
+ * #1142 — sessions whose model calls are refused: a cancelled analysis. Cancel
+ * used to abort only the controllers that existed at that moment, so a phase
+ * that started afterwards (synthesis, verification, the cross-document passes)
+ * kept calling the model and the run ended `completed`. The gate sits on the
+ * metered provider for the same reason the meter does: every analysis-family
+ * call goes through it, so no call site can be missed.
+ */
+const stoppedSessions = new Set<string>();
+
+/** #1142 — refuse every further metered model call billed to `sessionId`. */
+export function stopAnalysisModelCalls(sessionId: string): void {
+  stoppedSessions.add(sessionId);
+}
+
+/** #1142 — lift {@link stopAnalysisModelCalls}, once the stopped run has ended. */
+export function allowAnalysisModelCalls(sessionId: string): void {
+  stoppedSessions.delete(sessionId);
+}
+
+/** The error a refused call throws: an abort, which every phase already treats as one. */
+function cancelledCallError(sessionId: string): Error {
+  const err = new Error(`Analysis ${sessionId} was cancelled; model call refused`);
+  err.name = "AbortError";
+  return err;
+}
+
+/** #1142 — throws when the active scope's session has been stopped. */
+function assertCallAllowed(): void {
+  const scope = storage.getStore();
+  if (scope && stoppedSessions.has(scope.sessionId)) throw cancelledCallError(scope.sessionId);
+}
+
 /** In-flight `token_usages` writes, keyed by the scope's session id. */
 const inFlight = new Map<string, Set<Promise<void>>>();
 
@@ -141,12 +174,14 @@ export function meterAnalysisProvider(provider: AIProvider): AIProvider {
   if ((provider as unknown as Record<symbol, unknown>)[METERED]) return provider;
 
   const chat = async (messages: ChatMessage[], opts?: ChatOptions) => {
+    assertCallAllowed();
     const res = await provider.chat(messages, opts);
     record(res.provider ?? provider.key, res.model ?? opts?.model ?? provider.model, res.usage);
     return res;
   };
 
   async function* stream(messages: ChatMessage[], opts?: ChatOptions): AsyncGenerator<ChatChunk> {
+    assertCallAllowed();
     for await (const chunk of provider.stream(messages, opts)) {
       // The model the stream reports it ran, as `chat()` prices `res.model`;
       // the requested model only when the adapter does not say.
