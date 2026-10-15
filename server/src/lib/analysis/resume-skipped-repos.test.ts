@@ -226,6 +226,31 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     ).toEqual(sourceRequirements);
   });
 
+  it("#1098 — a resumed repo is given the imported items, not the document's other features", async () => {
+    state.metadata = JSON.stringify({
+      ...JSON.parse(capabilityMeta([{ connectorId: "c2", label: "worker" }])),
+      extraInstructions: "- Add a button to terminate all sessions",
+      sourceRequirements: [
+        {
+          candidateId: "NR-1",
+          requirementId: "req-imported-1",
+          title: "Add a button to terminate all sessions",
+          externalSource: "github",
+          externalId: "4074",
+          externalUrl: null,
+        },
+      ],
+    });
+    state.connectors = [{ id: "c2", label: "worker" }];
+    const { orch, runAgenticCodeAgent } = makeOrch();
+
+    await orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" });
+
+    const pass = runAgenticCodeAgent.mock.calls[0]![0] as { requirements: Array<{ id: string }> };
+    // The document's REQ-001 ("req") restates no imported item.
+    expect(pass.requirements.map((r) => r.id)).toEqual(["NR-1"]);
+  });
+
   // #1027 — a resumed repo is analysed with the same plan context as its siblings.
   it("#1027 — hands the run's plan context to each resumed repo, never to the re-synthesis", async () => {
     const agentContext = "Tasks (tasks.md):\n- T01: Add the unique index on feeds";

@@ -321,3 +321,39 @@ describe("regenerate carries the run's plan context (#1027)", () => {
     expect(single.runOneAgent.mock.calls[0][0]).not.toHaveProperty("agentContext");
   });
 });
+
+// #1098 — a regenerate works from the same scoped set the pipeline used.
+describe("regenerate on a run started from imported items (#1098)", () => {
+  it("gives the agentic pass the imported items, not the document's other features", async () => {
+    prismaMock.repoConnection.findMany.mockResolvedValue([{ id: "repo_1", label: "miniflux" }]);
+    const orch = makeOrchestrator("agentic");
+    orch.extractRequirementsFromDocAgent = vi.fn(async () => [
+      ...REQS,
+      { id: "REQ-2", text: "A user can mute a feed." },
+    ]);
+    await orch.regenerateLoadedAgent(
+      { analysisId: "an_1", agentKey: "code", actorId: "u1" },
+      {
+        ...ANALYSIS,
+        metadata: JSON.stringify({
+          model: "deepseek-flash",
+          extraInstructions: "- Mute feeds",
+          sourceRequirements: [
+            {
+              candidateId: "NR-1",
+              requirementId: "imp-1",
+              title: "Mute feeds",
+              externalSource: "github",
+              externalId: "1",
+              externalUrl: null,
+            },
+          ],
+        }),
+      },
+    );
+
+    expect(
+      orch.runAgenticCodeAgent.mock.calls[0][0].requirements.map((r: { id: string }) => r.id),
+    ).toEqual(["NR-1"]);
+  });
+});
