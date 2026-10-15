@@ -123,3 +123,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Fix the lookup rule, not the depth](project_fix-the-lookup-rule-not-the-reported-depth.md) — move the fixture ±1 level (#1104)
 - [Embed-retrieval corpus limits](project_embed-retrieval-corpus-limits-and-document-ab.md) — no receivers/tables; 1-line spans inflate (#1072)
 - [A/B: rank depth + snippet budget](project_retrieval-ab-rank-depth-and-snippet-budget.md) — print lost ranks; locators first (#1126)
+- [Fake API filters lie](project_fake-api-filters-must-match-github-semantics.md) — since is updatedAt, not closedAt; clone replies (#1148)
