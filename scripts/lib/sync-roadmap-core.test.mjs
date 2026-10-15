@@ -93,17 +93,26 @@ describe("ownTier / resolveTier", () => {
       ),
     ).toBe("Unranked");
     expect(resolveTier(2, lookup([[2, [], 99]]))).toBe("Unranked");
-    expect(
-      resolveTier(
-        3,
-        lookup([
-          [3, [], 2],
-          [2, [], 3],
-        ]),
-      ),
-    ).toBe("Unranked");
-    expect(resolveTier(5, lookup([[5, [], 5]]))).toBe("Unranked");
     expect(resolveTier(7, lookup([]))).toBe("Unranked");
+    // A cycle: the lookup throws past 10 reads, so a walk that does not stop fails here, named,
+    // instead of hanging the worker.
+    /** @param {ReturnType<typeof lookup>} map */
+    const bounded = (map) => {
+      let reads = 0;
+      return /** @type {typeof map} */ ({
+        get: (/** @type {number} */ n) => {
+          reads += 1;
+          if (reads > 10) throw new Error("resolveTier walked a cycle without stopping");
+          return map.get(n);
+        },
+      });
+    };
+    const cycle = lookup([
+      [3, [], 2],
+      [2, [], 3],
+    ]);
+    expect(resolveTier(3, bounded(cycle))).toBe("Unranked");
+    expect(resolveTier(5, bounded(lookup([[5, [], 5]])))).toBe("Unranked");
   });
 });
 
@@ -321,6 +330,8 @@ const FIELDS = [
   {},
 ];
 
+const MAX_ONE_ISSUE_READS = 20;
+
 /**
  * An in-memory board behind a fake `fetch`: mutations change it, so a second run reads back
  * what the first one wrote — the same path a real consumer uses. Its filters and mutations follow
@@ -343,6 +354,7 @@ function fakeGitHub({
 }) {
   const fields = structuredClone(initialFields);
   let optionSeq = 0;
+  let oneIssueCount = 0;
   const board = items.map((it, n) => ({
     id: `PVTI_${it.number}`,
     number: it.number,
@@ -386,6 +398,14 @@ function fakeGitHub({
       return ok({ repository: { issues: { ...p, nodes: p.nodes.map(issueNode) } } });
     }
     if (query === ONE_ISSUE_QUERY) {
+      // A walk that re-reads what it has read never ends; cap it so it fails as a named test,
+      // not a hung or crashed run.
+      oneIssueCount += 1;
+      if (oneIssueCount > MAX_ONE_ISSUE_READS) {
+        throw new Error(
+          `fake: over ${MAX_ONE_ISSUE_READS} single-issue reads, the walk is unbounded`,
+        );
+      }
       // Any issue by number, in the window or not; a number with no issue is null, as on GitHub.
       const found = issues.find((i) => i.number === variables.number);
       return ok({ repository: { issue: found ? issueNode(found) : null } });
@@ -919,7 +939,9 @@ describe("sync", () => {
         // #21 ↔ #22, both closed long ago and unlabelled: read once each, then the walk stops.
         issue(21, { state: "CLOSED", closedAt: "2026-01-01T00:00:00Z", parent: 22 }),
         issue(22, { state: "CLOSED", closedAt: "2026-01-01T00:00:00Z", parent: 21 }),
-        issue(20, { parent: 21 }),
+        // #20's own label ends resolveTier's walk at once (its cycle guard is unit-tested with a
+        // bounded lookup above); readAncestors still walks the cycle, which this test guards.
+        issue(20, { parent: 21, labels: ["priority: next"] }),
         issue(30, { parent: 999 }),
         // #7 here is labelled, but #40's parent #7 lives in another repository.
         issue(7, { state: "CLOSED", closedAt: "2026-01-01T00:00:00Z", labels: ["priority: now"] }),
@@ -927,8 +949,11 @@ describe("sync", () => {
       ],
       items: [20, 30, 40].map((number) => ({ number, values: { Kind: "Issue" } })),
     });
-    await run(gh);
-    expect(gh.board.map((b) => b.values.Tier)).toEqual(["Unranked", "Unranked", "Unranked"]);
+    const result = await run(gh).catch((/** @type {Error} */ e) => e);
+    // Each of #21, #22 and #999 is read exactly once: a walk that re-reads a cycle trips the
+    // fake's cap and lands here as an error, not a hang.
+    expect(result).not.toBeInstanceOf(Error);
+    expect(gh.board.map((b) => b.values.Tier)).toEqual(["Next", "Unranked", "Unranked"]);
     // #21, #22 and the missing #999; never #7.
     expect(gh.oneIssueReads()).toBe(3);
   });
