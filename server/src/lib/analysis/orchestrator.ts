@@ -139,6 +139,7 @@ import {
   detectCodeAgentFailed,
   detectStaticCapability,
   finalizeCapability,
+  recordDroppedCitations,
 } from "./analysis-capability.js";
 // #777 — the file tools are gated on the clone EXISTING, not on a path string.
 import { cloneDirPath, resolveExistingCloneDir } from "./clone-availability.js";
@@ -2527,6 +2528,7 @@ export class AnalysisOrchestrator {
             input.model ??
             (await this.selectModelForAgent(input.projectId, input.agentKey, retrieved)),
         });
+        this.noteCitationSalvage(input.analysisId, input.agentKey, result.citationSalvage);
         // #1027 — the single-shot code prompt lists no requirement ids and does
         // not ask for the field, so an id here is one the model lifted from the
         // text it read (a task id, a `[NR-9]` line). Only a requirement of the
@@ -2821,7 +2823,7 @@ export class AnalysisOrchestrator {
         // searched-scope provenance describe the whole run.
         const passHealths: AnalysisRetrievalHealth[] = [];
         const { extractJsonObject } = await import("./agent-runner.js");
-        const { agentOutputSchema } = await import("@metis/shared");
+        const { agentOutputSchema, collectSalvagedCitations } = await import("@metis/shared");
         const onDrop = makeCitationDropLogger(input.analysisId, agentKey, "agentic");
         // #298 — the project's documents, for resolving a citation `documentId`
         // the model wrote as a filename or path. Loaded at most once per run,
@@ -2970,8 +2972,11 @@ export class AnalysisOrchestrator {
                 loadKnownDocuments,
                 findKnownDocumentIds,
               );
+              const citationSalvage = collectSalvagedCitations(repaired.value);
               validated = agentOutputSchema.parse(repaired.value);
               fieldRepairs = repaired.repairs;
+              // #1143 — only once the answer parsed: a rejected one is salvaged below.
+              this.noteCitationSalvage(input.analysisId, agentKey, citationSalvage);
             } catch {
               reason = "schema-invalid";
             }
@@ -3552,12 +3557,15 @@ export class AnalysisOrchestrator {
           promptCaching: { system: true },
         });
 
-        const { agentOutputSchema } = await import("@metis/shared");
+        const { agentOutputSchema, collectSalvagedCitations } = await import("@metis/shared");
         const parsed = extractJsonObject(response.content);
         if (parsed && typeof parsed === "object") {
           (parsed as Record<string, unknown>).agentKey = agentKey;
         }
+        const citationSalvage = collectSalvagedCitations(parsed);
         const validated = agentOutputSchema.parse(parsed);
+        // #1143 — the citations the schema dropped are recorded on the run.
+        this.noteCitationSalvage(input.analysisId, agentKey, citationSalvage);
 
         // Enrich citations and validate the model-supplied requirementId
         // against the known requirement ids (drop hallucinated linkage).
@@ -4472,6 +4480,29 @@ export class AnalysisOrchestrator {
     if (!analysisId) return;
     const tracker = this.capabilities.get(analysisId);
     if (tracker) tracker.codeAgentDegraded = true;
+  }
+
+  /**
+   * #1143 — an agent's answer lost malformed citations to the shared schema's
+   * salvage. Logged with the agent and the counts (never the model's text), and
+   * recorded on the run's capability (`citations-dropped`), so the run reads
+   * `completed with warnings` rather than as a clean completion.
+   */
+  private noteCitationSalvage(
+    analysisId: string | undefined,
+    agentKey: string,
+    salvage: { dropped: number; repaired: number } | undefined,
+  ): void {
+    if (!salvage || (salvage.dropped === 0 && salvage.repaired === 0)) return;
+    log.warn("Agent citations salvaged: malformed citations dropped or repaired", {
+      analysisId,
+      agentKey,
+      dropped: salvage.dropped,
+      repaired: salvage.repaired,
+    });
+    if (!analysisId) return;
+    const tracker = this.capabilities.get(analysisId);
+    if (tracker) recordDroppedCitations(tracker, agentKey, salvage.dropped);
   }
 
   /**

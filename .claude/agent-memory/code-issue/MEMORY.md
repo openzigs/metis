@@ -124,3 +124,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Embed-retrieval corpus limits](project_embed-retrieval-corpus-limits-and-document-ab.md) — no receivers/tables; 1-line spans inflate (#1072)
 - [A/B: rank depth + snippet budget](project_retrieval-ab-rank-depth-and-snippet-budget.md) — print lost ranks; locators first (#1126)
 - [Fake API filters lie](project_fake-api-filters-must-match-github-semantics.md) — since is updatedAt, not closedAt; clone replies (#1148)
+- [zod default misses null/lone obj](project_zod-default-repair-misses-null-and-lone-object.md) — probe null + a lone object per array field (#1143)

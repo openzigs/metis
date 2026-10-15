@@ -11,6 +11,7 @@
  */
 import { mergeHiddenRequirementLabels, parseRequirementLabels } from "./requirement-labels.js";
 import {
+  analysisFailedAgents,
   isAgentPhaseResultKey,
   type AnalysisAgentSource,
   type AnalysisResultAgentKey,
@@ -1299,6 +1300,8 @@ export async function listAnalysesForProject(projectId: string) {
       totalTokens: true,
       errorMessage: true,
       metadata: true,
+      // #1143 — which agents failed, so the list can show "completed with errors".
+      agentResults: { select: { agentKey: true, status: true } },
     },
   });
   // Exclude background rows (code-graph ingest, opt-in doc-gen domain research,
@@ -1331,8 +1334,11 @@ export async function listAnalysesForProject(projectId: string) {
     });
     return null;
   });
-  return runs.map((r) => ({
+  return runs.map(({ agentResults, ...r }) => ({
     ...r,
+    failedAgents: analysisFailedAgents(agentResults),
+    // #1143 — and which agents lost malformed citations: "completed with warnings".
+    droppedCitations: extractCapability(parseMetadata(r.metadata))?.droppedCitations ?? [],
     requirementCounts: counts.get(r.id) as RequirementCounts,
     ledgerTokens: ledger ? (ledger.get(r.id) ?? { withCache: 0, withoutCache: 0 }) : null,
   }));
@@ -1360,8 +1366,14 @@ export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot 
     { projectId: row.projectId },
   );
   const sourceById = new Map([...cited].map(([docId, d]) => [docId, d.source]));
+  const snapshot = toSnapshot(row, crossDocFindings, sourceById);
   return {
-    ...toSnapshot(row, crossDocFindings, sourceById),
+    ...snapshot,
+    // #1143 — a completed run in which an agent failed completed with errors;
+    // one in which an agent lost malformed citations completed with warnings.
+    // The page reads both from here, the same fields the run list carries.
+    failedAgents: analysisFailedAgents(row.agentResults),
+    droppedCitations: snapshot.capability?.droppedCitations ?? [],
     ledgerUsage: await readAnalysisLedgerUsage(row.projectId, id),
   };
 }

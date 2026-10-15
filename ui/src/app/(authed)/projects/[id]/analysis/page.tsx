@@ -57,6 +57,7 @@ import { PersonaTag } from "@/components/findings/persona-tag";
 import { agentSourcePersonas } from "@/components/findings/agent-source-persona";
 import { DeepDiveDialog, type DeepDiveDialogFinding } from "@/components/findings/deep-dive-dialog";
 import { ModelRecommendation } from "@/components/analysis/ModelRecommendation";
+import { RunStatusBadge, StatusBadge } from "@/components/analysis/analysis-status-badge";
 import { formatChangeRunLabels } from "@/lib/format-change-run-label";
 import { EnhancementStatus } from "@/components/analysis/EnhancementStatus";
 import { EnhancementResults } from "@/components/analysis/EnhancementResults";
@@ -164,24 +165,6 @@ import {
 import { runTokensLabel } from "@/lib/run-tokens";
 
 const SPECIALIST_AGENTS: AnalysisAgentKey[] = ["document", "code", "database", "web"];
-
-function StatusBadge({ status }: { status: string }): React.ReactElement {
-  const colour =
-    status === "completed"
-      ? "bg-success-muted text-success border-success/30"
-      : status === "degraded"
-        ? "bg-warning-muted text-warning border-warning/30"
-        : status === "failed"
-          ? "bg-destructive/10 text-destructive border-destructive/30"
-          : status === "cancelled"
-            ? "bg-muted text-foreground border-border/30"
-            : "bg-info-muted text-info border-info/30";
-  return (
-    <span className={`inline-block rounded border px-2 py-0.5 text-xs font-medium ${colour}`}>
-      {status}
-    </span>
-  );
-}
 
 export default function AnalysisPage(): React.ReactElement {
   const params = useParams<{ id: string }>();
@@ -920,7 +903,12 @@ export default function AnalysisPage(): React.ReactElement {
                     <span className="text-xs font-medium text-foreground">
                       {runLabels.get(item.id)?.primary}
                     </span>
-                    <StatusBadge status={item.status} />
+                    {/* #1143 — a completed run whose agents failed, or lost citations, says so here. */}
+                    <RunStatusBadge
+                      status={item.status}
+                      failedAgents={item.failedAgents}
+                      droppedCitations={item.droppedCitations}
+                    />
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
                     <span data-testid="analysis-past-run-tokens">
@@ -952,7 +940,13 @@ export default function AnalysisPage(): React.ReactElement {
                     {runLabels.has(detail.data.id)
                       ? `Run #${runLabels.get(detail.data.id)?.sequence}`
                       : "Run"}{" "}
-                    <StatusBadge status={detail.data.status} />
+                    {/* #1143 — the snapshot's server-computed fields, the same ones
+                        the run list reads, so the two badges cannot disagree. */}
+                    <RunStatusBadge
+                      status={detail.data.status}
+                      failedAgents={detail.data.failedAgents}
+                      droppedCitations={detail.data.droppedCitations}
+                    />
                   </h3>
                   <p className="text-xs text-muted-foreground">
                     Started {new Date(detail.data.startedAt).toLocaleString()} ·{" "}

@@ -549,17 +549,20 @@ describe("#298 findings field repair on the shared validation path", () => {
       ...finding([]),
       ...over,
     });
+    // #1143 — a citation outside its bounds is dropped, not the whole answer:
+    // the bound is on what a finding keeps.
+    const kept = (v: unknown) => agentOutputSchema.parse(v).findings[0]?.citations.length;
     const cite = (documentId: string) => ({
       ...base,
       findings: [finding([{ documentId, chunkIndex: 0 }])],
     });
     // documentId: 10-64, or code-graph: up to 320.
-    expect(ok(cite("a".repeat(10)))).toBe(true);
-    expect(ok(cite("a".repeat(9)))).toBe(false);
-    expect(ok(cite("a".repeat(64)))).toBe(true);
-    expect(ok(cite("a".repeat(65)))).toBe(false);
-    expect(ok(cite("code-graph:" + "a".repeat(309)))).toBe(true);
-    expect(ok(cite("code-graph:" + "a".repeat(310)))).toBe(false);
+    expect(kept(cite("a".repeat(10)))).toBe(1);
+    expect(kept(cite("a".repeat(9)))).toBe(0);
+    expect(kept(cite("a".repeat(64)))).toBe(1);
+    expect(kept(cite("a".repeat(65)))).toBe(0);
+    expect(kept(cite("code-graph:" + "a".repeat(309)))).toBe(1);
+    expect(kept(cite("code-graph:" + "a".repeat(310)))).toBe(0);
     // summary / title / body.
     expect(ok({ ...base, summary: "s".repeat(2048) })).toBe(true);
     expect(ok({ ...base, summary: "s".repeat(2049) })).toBe(false);
@@ -571,8 +574,8 @@ describe("#298 findings field repair on the shared validation path", () => {
     expect(ok({ ...base, findings: Array(50).fill(f({})) })).toBe(true);
     expect(ok({ ...base, findings: Array(51).fill(f({})) })).toBe(false);
     const c = { documentId: "a".repeat(10), chunkIndex: 0 };
-    expect(ok({ ...base, findings: [f({ citations: Array(20).fill(c) })] })).toBe(true);
-    expect(ok({ ...base, findings: [f({ citations: Array(21).fill(c) })] })).toBe(false);
+    expect(kept({ ...base, findings: [f({ citations: Array(20).fill(c) })] })).toBe(20);
+    expect(kept({ ...base, findings: [f({ citations: Array(21).fill(c) })] })).toBe(20);
     expect(ok({ ...base, notes: Array(20).fill("n".repeat(512)) })).toBe(true);
     expect(ok({ ...base, notes: Array(21).fill("n") })).toBe(false);
     expect(ok({ ...base, notes: ["n".repeat(513)] })).toBe(false);

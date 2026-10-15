@@ -4115,3 +4115,156 @@ describe("AnalysisOrchestrator cancel stops spend (#1142)", () => {
     expect(await orch.cancel(id, "user-1234567890")).toBe(false);
   });
 });
+/**
+ * #1143 — run `cmv8qrdrc01f6599k30aagqwk`: one citation matching no union
+ * branch failed the document agent's schema validation and discarded all its
+ * findings, and the run still read as a clean `completed`.
+ */
+describe("AnalysisOrchestrator malformed citation and failed agents (#1143)", () => {
+  const goodDocCitation = { documentId: "doc-1234567890", chunkIndex: 0 };
+  // The A/B's rejected shape: no documentId, a null symbolId, line 0.
+  const malformedCitation = { filePath: "src/a.ts", startLine: 0, endLine: 2, symbolId: null };
+
+  /**
+   * Runs a whole analysis in which the document agent (Mary) answers with
+   * these two findings' `citations` and every other agent answers as the base
+   * provider does — so the citations are the only thing that can go wrong
+   * unless `failAgent` adds a fault of its own.
+   */
+  async function runWithDocCitations(
+    first: unknown,
+    second: unknown,
+    opts: { failAgent?: string } = {},
+  ) {
+    const { analysisFailedAgents, analysisStatusLabel } = await import("@metis/shared");
+    const base = makeProvider(opts.failAgent ? { failAgent: opts.failAgent } : {});
+    const provider = {
+      ...base,
+      async chat(messages: ChatMessage[], chatOpts?: { systemMessage?: string }) {
+        const sys =
+          chatOpts?.systemMessage ??
+          (messages.find((m) => m.role === "system")?.content as string | undefined) ??
+          "";
+        if (sys.includes("Mary")) {
+          return stubResponse(
+            JSON.stringify({
+              agentKey: "document",
+              summary: "summary from document",
+              findings: [
+                {
+                  category: "gap",
+                  severity: "medium",
+                  title: "the first finding",
+                  body: "b",
+                  citations: first,
+                },
+                {
+                  category: "risk",
+                  severity: "low",
+                  title: "the other finding",
+                  body: "b",
+                  citations: second,
+                },
+              ],
+              notes: [],
+            }),
+          );
+        }
+        return base.chat(messages, chatOpts);
+      },
+    } as unknown as AIProvider;
+    const orch = new AnalysisOrchestrator({
+      provider,
+      retrieve: async () => [
+        {
+          documentId: "doc-1234567890",
+          chunkIndex: 0,
+          filename: "spec.md",
+          text: "x",
+          score: 0.8,
+        },
+      ],
+    });
+    const { id } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    for (let i = 0; i < 400 && analyses.get(id)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const rows = [...agentResults.values()].filter((a) => a.analysisId === id);
+    const status = analyses.get(id)!.status;
+    const meta = JSON.parse(analyses.get(id)!.metadata ?? "{}") as {
+      capability?: import("@metis/shared").AnalysisCapability;
+    };
+    const capability = meta.capability;
+    const failedAgents = analysisFailedAgents(rows);
+    return {
+      doc: rows.find((a) => a.agentKey === "document")!,
+      status,
+      capability,
+      failedAgents,
+      // What the run list and the run header both show for this run.
+      label: analysisStatusLabel(status, failedAgents, capability?.droppedCitations ?? []),
+    };
+  }
+
+  it("a clean run in this harness reads as a clean completion (the control)", async () => {
+    const run = await runWithDocCitations([goodDocCitation], [goodDocCitation]);
+    expect(run.status).toBe("completed");
+    expect(run.failedAgents).toEqual([]);
+    expect(run.capability?.droppedCitations).toBeUndefined();
+    expect(run.capability?.reasons).not.toContain("citations-dropped");
+    expect(run.label).toBe("completed");
+  });
+
+  it("one malformed citation alone: every finding survives, and the run completes with warnings", async () => {
+    const run = await runWithDocCitations([malformedCitation, goodDocCitation], [goodDocCitation]);
+    expect(run.doc.status).toBe("completed");
+    expect(run.doc.findings.map((f) => f.title).sort()).toEqual([
+      "the first finding",
+      "the other finding",
+    ]);
+    const kept = run.doc.findings.find((f) => f.title === "the first finding")!;
+    expect(kept.evidence).toContain("doc-1234567890");
+    expect(kept.evidence).not.toContain("src/a.ts");
+
+    // No agent failed: the dropped citation is the only fault, and it shows.
+    expect(run.status).toBe("completed");
+    expect(run.failedAgents).toEqual([]);
+    expect(run.capability?.droppedCitations).toEqual([{ agentKey: "document", count: 1 }]);
+    expect(run.capability?.reasons).toContain("citations-dropped");
+    expect(run.label).toBe("completed with warnings");
+  });
+
+  it("citations: null and a lone citation object keep the agent and its findings", async () => {
+    const run = await runWithDocCitations(null, goodDocCitation);
+    expect(run.doc.status).toBe("completed");
+    expect(run.doc.findings.map((f) => f.title).sort()).toEqual([
+      "the first finding",
+      "the other finding",
+    ]);
+    const lone = run.doc.findings.find((f) => f.title === "the other finding")!;
+    expect(lone.evidence).toContain("doc-1234567890");
+    // Repaired without loss: nothing dropped, so nothing to warn about.
+    expect(run.capability?.droppedCitations).toBeUndefined();
+    expect(run.label).toBe("completed");
+  });
+
+  it("a lone malformed citation object is dropped and counted, not the agent", async () => {
+    const run = await runWithDocCitations(malformedCitation, [goodDocCitation]);
+    expect(run.doc.status).toBe("completed");
+    expect(run.doc.findings).toHaveLength(2);
+    expect(run.capability?.droppedCitations).toEqual([{ agentKey: "document", count: 1 }]);
+    expect(run.label).toBe("completed with warnings");
+  });
+
+  it("a failed agent outranks dropped citations: the run completes with errors", async () => {
+    const run = await runWithDocCitations([malformedCitation], [goodDocCitation], {
+      failAgent: "code",
+    });
+    expect(run.status).toBe("completed");
+    expect(run.failedAgents).toEqual(["code"]);
+    expect(run.label).toBe("completed with errors");
+  });
+});

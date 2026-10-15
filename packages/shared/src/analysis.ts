@@ -330,6 +330,97 @@ export type SnapshotDocumentCitation = DocumentCitation & { source?: DocumentSou
 /** #573 — a finding citation on the analysis snapshot. */
 export type SnapshotCitation = SnapshotDocumentCitation | CodeCitation;
 
+/**
+ * Issue #1143 — what {@link salvageCitationList} did to one finding's
+ * citations. `dropped` counts citations lost (invalid after repair, or past the
+ * cap); `repaired` counts fixes that lost nothing (a `null` optional field
+ * removed, a `null` list read as empty, a lone citation wrapped in a list).
+ */
+export interface CitationSalvage {
+  citations: unknown;
+  dropped: number;
+  repaired: number;
+}
+
+/**
+ * Issue #1143 — a model-authored citation list, repaired where it can be and
+ * otherwise thinned, never rejected whole. Measured on the Claude A/B for
+ * #1074: one citation matching no union branch (`symbolId: null`, no
+ * `documentId`, `startLine: 0`) made `agentOutputSchema` throw, and the
+ * document and code agents were each recorded `failed` with every finding they
+ * had produced discarded. Each citation is now tried on its own: a `null` in
+ * an optional field is dropped (the repair), a citation still invalid after
+ * that is dropped, and the finding keeps the citations that validate. The list
+ * is cut to its cap rather than failing on it.
+ *
+ * The list itself is repaired the same way: `citations: null` is an empty list,
+ * and a lone value where the list belongs is a list of one, then validated like
+ * any other element. Only `undefined` passes through, for `.default([])`.
+ *
+ * Returns the counts rather than reporting them, so the schema stays a plain
+ * value usable by every caller; a caller that must say what was lost reads the
+ * same counts with {@link collectSalvagedCitations} before it parses.
+ *
+ * Model boundary only, like {@link coerceFindingCategory}: persisted evidence is
+ * parsed elsewhere, and the #734 grounding gate still checks every surviving
+ * code citation against what the agent actually retrieved.
+ */
+export function salvageCitationList(value: unknown): CitationSalvage {
+  if (value === undefined) return { citations: undefined, dropped: 0, repaired: 0 };
+  if (value === null) return { citations: [], dropped: 0, repaired: 1 };
+  let repaired = 0;
+  let list: unknown[];
+  if (Array.isArray(value)) {
+    list = value;
+  } else {
+    list = [value];
+    repaired += 1;
+  }
+  const kept: Citation[] = [];
+  let dropped = 0;
+  for (const raw of list) {
+    const isObject = raw !== null && typeof raw === "object" && !Array.isArray(raw);
+    const entries = isObject ? Object.entries(raw) : [];
+    const withoutNulls = entries.filter(([, v]) => v !== null);
+    const parsed = citationSchema.safeParse(isObject ? Object.fromEntries(withoutNulls) : raw);
+    if (!parsed.success) {
+      dropped += 1;
+      continue;
+    }
+    if (withoutNulls.length < entries.length) repaired += 1;
+    kept.push(parsed.data);
+  }
+  dropped += Math.max(0, kept.length - MAX_FINDING_CITATIONS);
+  return { citations: kept.slice(0, MAX_FINDING_CITATIONS), dropped, repaired };
+}
+
+/** The citation list {@link salvageCitationList} keeps: the schema's preprocess step. */
+export function salvageCitations(value: unknown): unknown {
+  return salvageCitationList(value).citations;
+}
+
+/**
+ * Issue #1143 — the salvage totals across a model's whole answer (its
+ * `findings[].citations`), read before the parse that erases them. Pure and
+ * total: any shape returns counts, never throws.
+ */
+export function collectSalvagedCitations(output: unknown): { dropped: number; repaired: number } {
+  const total = { dropped: 0, repaired: 0 };
+  if (output === null || typeof output !== "object" || Array.isArray(output)) return total;
+  const findings = (output as Record<string, unknown>).findings;
+  if (!Array.isArray(findings)) return total;
+  for (const f of findings) {
+    if (f === null || typeof f !== "object" || Array.isArray(f)) continue;
+    const s = salvageCitationList((f as Record<string, unknown>).citations);
+    total.dropped += s.dropped;
+    total.repaired += s.repaired;
+  }
+  return total;
+}
+
+/** Most citations one finding carries. */
+export const MAX_FINDING_CITATIONS = 20;
+
 /** Narrow a {@link Citation} to a {@link CodeCitation} (has a `filePath`). */
 export function isCodeCitation(c: Citation): c is CodeCitation {
   return typeof (c as Partial<CodeCitation>).filePath === "string";
@@ -582,7 +673,10 @@ export const agentFindingPayloadSchema = z.object({
   severity: z.enum(FINDING_SEVERITIES),
   title: z.string().min(1).max(255),
   body: z.string().min(1).max(4096),
-  citations: z.array(citationSchema).max(20).default([]),
+  /** Issue #1143 — salvaged per citation, never rejected whole: {@link salvageCitations}. */
+  citations: z
+    .preprocess(salvageCitations, z.array(citationSchema).max(MAX_FINDING_CITATIONS))
+    .default([]),
   tags: z.array(z.string().min(1).max(64)).max(16).default([]),
   /**
    * Epic #912 (#916/#920) — id of the extracted requirement this finding is
@@ -1262,6 +1356,17 @@ export interface AnalysisSnapshot {
    */
   ledgerUsage?: AnalysisLedgerUsage | null;
   errorMessage: string | null;
+  /**
+   * Issue #1143 — the agents whose result failed ({@link analysisFailedAgents}).
+   * Non-empty on a `completed` run: it completed with errors.
+   */
+  failedAgents?: string[];
+  /**
+   * Issue #1143 — the malformed citations each agent lost, from the capability
+   * record. Non-empty on a `completed` run with no failed agent: it completed
+   * with warnings.
+   */
+  droppedCitations?: AnalysisDroppedCitations[];
   metadata: Record<string, unknown> | null;
   agents: Array<{
     agentKey: AnalysisResultAgentKey;
@@ -2270,6 +2375,13 @@ export const ANALYSIS_CAPABILITY_REASONS = [
    * ran out of room. The UI offers to continue the code agent with a larger budget.
    */
   "code-investigation-cut-short",
+  /**
+   * Issue #1143 — an agent wrote citations that matched no citation shape even
+   * after repair, so they were dropped and the findings kept without them.
+   * {@link AnalysisCapability.droppedCitations} names each agent and the count.
+   * Outside every agent gate: any agent can write one.
+   */
+  "citations-dropped",
 ] as const;
 export type AnalysisCapabilityReason = (typeof ANALYSIS_CAPABILITY_REASONS)[number];
 
@@ -2452,6 +2564,11 @@ export interface AnalysisCapability {
    * only while `codeInvestigationCutShort` is true and the pass reported counts.
    */
   codeInvestigationUnreached?: { unreached: number; total: number };
+  /**
+   * Issue #1143 — the citations each agent wrote that were dropped as malformed.
+   * Absent when none were (and on every run persisted before #1143).
+   */
+  droppedCitations?: AnalysisDroppedCitations[];
   /** Derived, enumerated degradation reasons. Empty ⇒ fully capable run. */
   reasons: AnalysisCapabilityReason[];
 }
@@ -2536,6 +2653,14 @@ export interface CapabilityReasonInput {
   requirementInputAccount?: RequirementInputAccount | null;
   /** #1001 — the agentic code pass ran out of turn/token budget before covering every requirement. */
   codeInvestigationCutShort?: boolean;
+  /** #1143 — citations an agent wrote that were dropped as malformed. */
+  droppedCitations?: readonly AnalysisDroppedCitations[];
+}
+
+/** Issue #1143 — how many malformed citations one agent's answer lost. */
+export interface AnalysisDroppedCitations {
+  agentKey: string;
+  count: number;
 }
 
 /**
@@ -2599,7 +2724,55 @@ export function deriveCapabilityReasons(input: CapabilityReasonInput): AnalysisC
   if (hasDiscardedRequirementInputs(input.requirementInputAccount)) {
     reasons.push("requirement-inputs-dropped");
   }
+  // #1143 — any agent can write a citation no shape matches; dropping it keeps
+  // the findings, and this keeps the loss from being silent.
+  if (input.droppedCitations?.some((d) => d.count > 0)) reasons.push("citations-dropped");
   return reasons;
+}
+
+/**
+ * Issue #1143 — the agents whose result row `failed` in a run, de-duplicated in
+ * first-seen order (a multi-repo code agent writes one row per connector). A
+ * `cancelled` row is not a failure. Read from the rows rather than from a
+ * stored field, so it is right for every run, including ones recorded before
+ * this existed.
+ */
+export function analysisFailedAgents(
+  agents: ReadonlyArray<{ agentKey: string; status: string }> | null | undefined,
+): string[] {
+  const failed: string[] = [];
+  for (const a of agents ?? []) {
+    if (a.status === "failed" && !failed.includes(a.agentKey)) failed.push(a.agentKey);
+  }
+  return failed;
+}
+
+/** Issue #1143 — the status a completed run in which an agent failed shows. */
+export const COMPLETED_WITH_ERRORS_LABEL = "completed with errors";
+
+/**
+ * Issue #1143 — the status a completed run shows when no agent failed but an
+ * agent's malformed citations were dropped: every agent finished, and some of
+ * what one wrote was lost.
+ */
+export const COMPLETED_WITH_WARNINGS_LABEL = "completed with warnings";
+
+/**
+ * Issue #1143 — the status a run shows. A `completed` run in which any agent
+ * failed is `completed with errors`; one in which no agent failed but an
+ * agent's citations were dropped is `completed with warnings`; anything else
+ * shows its stored status. The run stays `completed` in storage because its
+ * result is real and usable.
+ */
+export function analysisStatusLabel(
+  status: string,
+  failedAgents: readonly string[],
+  droppedCitations: readonly AnalysisDroppedCitations[] = [],
+): string {
+  if (status !== "completed") return status;
+  if (failedAgents.length > 0) return COMPLETED_WITH_ERRORS_LABEL;
+  if (droppedCitations.some((d) => d.count > 0)) return COMPLETED_WITH_WARNINGS_LABEL;
+  return status;
 }
 
 /** Whether a capability record represents a degraded run (has ≥1 reason). */
