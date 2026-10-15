@@ -9,8 +9,10 @@
  * `user_handlers.go`).
  *
  * Each derived artifact now carries one stamp line naming the plan version it
- * was generated from. It is an HTML comment, so it is not rendered, it travels
- * with the artifact into the target repository, and it needs no schema column.
+ * was generated from. It is an HTML comment, so it travels with the artifact
+ * into the target repository and needs no schema column. The Spec Kit viewer's
+ * markdown renderer shows raw HTML as text, so `displayArtifactText` in
+ * ui/src/lib/spec-kit-display.ts hides the line from the page.
  * An artifact written before the stamp existed (or with the stamp edited out)
  * is judged by time instead: older than plan.md ⇒ out of date, version unknown.
  */
@@ -60,7 +62,8 @@ export interface StaleArtifact {
 }
 
 /**
- * Whether `artifact` predates `plan`: its stamp names an earlier version, or —
+ * Whether `artifact` predates `plan`: its stamp names another version (an earlier
+ * one, or a later one when plan.md was deleted and restarted at v1), or —
  * with no stamp — it was last written before plan.md was.
  */
 export function stalenessAgainstPlan(
@@ -72,7 +75,7 @@ export function stalenessAgainstPlan(
   const source = readPlanSource(artifact.content);
   const stale =
     source !== null
-      ? source < plan.version
+      ? source !== plan.version
       : Date.parse(artifact.updatedAt) < Date.parse(plan.updatedAt);
   return stale ? { key, planVersion: source, currentPlanVersion: plan.version } : null;
 }

@@ -107,6 +107,19 @@ describe("staleness against plan.md", () => {
     expect(findStaleArtifacts([plan, research])).toEqual([]);
   });
 
+  it("treats a stamp newer than plan.md as stale (plan deleted and recreated)", () => {
+    const tasks = {
+      content: stampPlanSource("x", 3),
+      version: 1,
+      updatedAt: at("2026-10-13T11:00:00Z"),
+    };
+    expect(stalenessAgainstPlan("tasks.md", tasks, { ...plan, version: 1 })).toEqual({
+      key: "tasks.md",
+      planVersion: 3,
+      currentPlanVersion: 1,
+    });
+  });
+
   it("describes both kinds", () => {
     expect(describeStale({ key: "tasks.md", planVersion: 1, currentPlanVersion: 2 })).toBe(
       "tasks.md was generated from plan.md v1; plan.md is now v2",
@@ -172,5 +185,12 @@ describe("plan design diff", () => {
     const section = previousPlanSection({ content: PLAN_V1, version: 1 });
     expect(section).toContain("Previous plan.md (v1) — the starting point");
     expect(section).toContain(PLAN_V1);
+  });
+
+  it("fences a plan that itself holds fenced blocks with a longer fence", () => {
+    const plan = "## Flow\n```mermaid\ngraph TD\n```\nend";
+    const section = previousPlanSection({ content: plan, version: 2 });
+    expect(section).toContain(`\n\`\`\`\`md\n${plan}\n\`\`\`\`\n`.trimEnd());
+    expect(section.endsWith("````")).toBe(true);
   });
 });

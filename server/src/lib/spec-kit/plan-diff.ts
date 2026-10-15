@@ -92,12 +92,15 @@ export function describePlanDesignDiff(previousVersion: number, diff: PlanDesign
  * (#1134): an unchanged spec must not get a new design by chance.
  */
 export function previousPlanSection(previous: { content: string; version: number }): string {
+  // A fence longer than any backtick run inside, so a plan's own Mermaid fences cannot close it.
+  const longest = Math.max(0, ...(previous.content.match(/`+/g) ?? []).map((r) => r.length));
+  const fence = "`".repeat(Math.max(3, longest + 1));
   return [
     `Previous plan.md (v${previous.version}) — the starting point. Revise it rather than designing afresh:`,
     "keep its endpoints, the files it changes and the functions it adds or uses unless spec.md or the",
     "code context requires a change, and record each such change and its reason as an ADR under `## ADRs`.",
-    "```md",
+    `${fence}md`,
     previous.content,
-    "```",
+    fence,
   ].join("\n");
 }
