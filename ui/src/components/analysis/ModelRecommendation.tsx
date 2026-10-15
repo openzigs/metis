@@ -73,6 +73,11 @@ interface ModelRecommendationData {
   servesTierModels?: boolean;
   /** #978 — the provider's configured model, offered in place of the tiers. */
   configuredModel?: string | null;
+  /**
+   * #1145 — the provider's own models (Claude Sonnet 5.5 … on the Anthropic
+   * API), offered beside the forced tiers. Absent from an older server.
+   */
+  providerModels?: Array<{ id: string; name: string }>;
 }
 
 const DEPTH_COLORS: Record<ReasoningDepth, string> = {
@@ -162,7 +167,10 @@ export function ModelRecommendation({
       ? data.configuredModel
         ? [{ value: data.configuredModel, label: data.configuredModel }]
         : []
-      : FORCED_TIERS;
+      : [
+          ...(data.providerModels ?? []).map((m) => ({ value: m.id, label: m.name })),
+          ...FORCED_TIERS,
+        ];
 
   return (
     <div

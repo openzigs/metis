@@ -36,6 +36,8 @@ const state = {
   metadata: capabilityMeta([]) as string | null,
   connectors: [] as Array<{ id: string; label: string }>,
   updates: [] as Array<Record<string, unknown>>,
+  /** #1145 — the project's own model, read by an Auto run. */
+  aiModel: null as string | null,
 };
 
 vi.mock("../prisma.js", () => ({
@@ -53,7 +55,13 @@ vi.mock("../prisma.js", () => ({
           projectId: PROJECT_ID,
           status: state.status,
           metadata: state.metadata,
-          project: { name: "Proj", description: "desc", status: "active" },
+          project: {
+            name: "Proj",
+            description: "desc",
+            status: "active",
+            aiModel: state.aiModel,
+            aiProviderId: null,
+          },
         };
       }),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -122,6 +130,27 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     state.metadata = capabilityMeta([]);
     state.connectors = [];
     state.updates = [];
+    state.aiModel = null;
+  });
+
+  // #1145 adversarial review — the resume path resolved Auto through the same
+  // helper as start/regenerate, but nothing proved it passed the project.
+  it("#1145 — an Auto run on a project with aiModel resumes its repos on that model", async () => {
+    state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
+    state.connectors = [{ id: "c2", label: "worker" }];
+    state.aiModel = "claude-sonnet-5-5";
+    const { orch, runAgenticCodeAgent } = makeOrch({
+      key: "anthropic",
+      model: "claude-sonnet-5",
+      servesRouterModel: () => true,
+    });
+
+    await orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" });
+
+    expect(runAgenticCodeAgent).toHaveBeenCalledTimes(1);
+    expect((runAgenticCodeAgent.mock.calls[0]![0] as { model?: string }).model).toBe(
+      "claude-sonnet-5-5",
+    );
   });
 
   it("re-runs each skipped connector with append-mode + a full budget, then re-synthesizes", async () => {

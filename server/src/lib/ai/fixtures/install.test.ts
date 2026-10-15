@@ -94,6 +94,30 @@ describe("maybeWrapProviderForFixtures", () => {
     expect(plain.servesRouterModel?.("tier-a")).toBe(false);
   });
 
+  it("replay keeps the wrapped provider's routerModelsInferred (#1145)", () => {
+    const proxy = { ...base(), routerModelsInferred: true };
+    const wrapped = maybeWrapProviderForFixtures(proxy as AIProvider, {
+      env: { AI_REPLAY: "1" },
+      fixtureDir: dir,
+    });
+    expect(wrapped).toBeInstanceOf(ReplayProvider);
+    expect(wrapped.routerModelsInferred).toBe(true);
+    const plain = maybeWrapProviderForFixtures(base(), {
+      env: { AI_REPLAY: "1" },
+      fixtureDir: dir,
+    });
+    expect(plain.routerModelsInferred).toBeUndefined();
+  });
+
+  it("record keeps the wrapped provider's routerModelsInferred (#1145)", () => {
+    const proxy = { ...base(), routerModelsInferred: true };
+    const wrapped = maybeWrapProviderForFixtures(proxy as AIProvider, {
+      env: { AI_RECORD: "1" },
+      fixtureDir: dir,
+    });
+    expect(wrapped.routerModelsInferred).toBe(true);
+  });
+
   it("replay end-to-end: a recorded fixture replays via the wrapped provider", async () => {
     const store = new FixtureStore(dir);
     await store.write(fixtureKey(msgs), msgs, {}, resp("recorded!"));

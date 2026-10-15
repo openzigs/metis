@@ -86,6 +86,7 @@ vi.mock("../lib/ai/config.js", async (importOriginal) => ({
 
 const { initModelRecommendationRouter } = await import("./model-preferences.js");
 const { errorHandler } = await import("../middleware/error-handler.js");
+const { SONNET_MODEL_ID } = await import("../lib/ai/model-router.js");
 
 /** Metadata exactly as `createAnalysis` writes it. */
 const metaWithAgents = (n: number): string =>
@@ -119,6 +120,7 @@ interface RecommendationBody {
       modelName: string;
       estimatedCost: number | null;
       rationale: string;
+      wasDowngraded?: boolean;
     };
     estimate: { tokens: number | null; basis: string; sampleSize: number };
   };
@@ -398,5 +400,155 @@ describe("POST /projects/:projectId/analyses/model-recommendation (#1095)", () =
       const body = await post({ agentKeys: ["document", "code", "database", "web"] });
       expect(body.data.selection.modelId).toBe("us.anthropic.claude-sonnet-5");
     });
+  });
+});
+// #1145 — the Claude A/B for #1074: on the Anthropic API, Auto was labelled
+// "Claude Sonnet 5" and ran Haiku 4.5 / Sonnet 5, while the project ran
+// claude-sonnet-5-5; and the override offered no Claude 5.5 model.
+describe("model-recommendation on the Anthropic API (#1145)", () => {
+  const anthropicApi: FakeProvider = {
+    key: "anthropic",
+    model: "claude-sonnet-5",
+    servesRouterModel: () => true,
+  };
+
+  beforeEach(() => {
+    activeProvider = anthropicApi;
+    projectFindFirst.mockResolvedValue({
+      id: "proj-1",
+      aiModel: "claude-sonnet-5-5",
+    });
+    projectFindUnique.mockResolvedValue({
+      workspaceId: "ws-1",
+      workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+    });
+    modelPreferenceFindUnique.mockResolvedValue(null);
+    analysisFindMany.mockResolvedValue(REPORTED_HISTORY);
+  });
+
+  it("names the project's model for Auto, whatever the task's depth", async () => {
+    for (const agentKeys of [["document"], ["document", "code", "database", "web"]]) {
+      const body = await post({ agentKeys });
+      expect(body.data.selection.modelId).toBe("claude-sonnet-5-5");
+      expect(body.data.selection.modelName).toBe("Claude Sonnet 5.5");
+    }
+  });
+
+  it("names the project's model even when the Models page sets a default or override", async () => {
+    // The run resolves Auto to aiModel and never applies the preferences, so the
+    // card must not name the preference (#1145 review).
+    modelPreferenceFindUnique.mockResolvedValue({
+      defaultModel: "claude-haiku-5-5",
+      taskTypeOverrides: JSON.stringify({ simple: "claude-haiku-5-5" }),
+      budgetDowngradeThreshold: 0.8,
+    });
+    const body = await post({ agentKeys: ["document"] });
+    expect(body.data.selection.modelId).toBe("claude-sonnet-5-5");
+  });
+
+  it("names the provider's configured model when the project sets none", async () => {
+    projectFindFirst.mockResolvedValue({ id: "proj-1", aiModel: null });
+    const body = await post({ agentKeys: ["document"] });
+    expect(body.data.selection.modelId).toBe("claude-sonnet-5");
+  });
+
+  // #1145 adversarial review — `acceptedModelIds` is what lets the card honour
+  // a Models-page task-type override naming a provider-served model.
+  it("names a Models-page task-type override naming a served Claude 5.5 model", async () => {
+    projectFindFirst.mockResolvedValue({ id: "proj-1", aiModel: null });
+    const taskTypes = [
+      "summarization",
+      "extraction",
+      "analysis",
+      "synthesis",
+      "cross-referencing",
+      "general",
+    ];
+    modelPreferenceFindUnique.mockResolvedValue({
+      defaultModel: null,
+      taskTypeOverrides: JSON.stringify(
+        Object.fromEntries(taskTypes.map((t) => [t, "claude-haiku-5-5"])),
+      ),
+      budgetDowngradeThreshold: null,
+    });
+    const body = await post({ agentKeys: ["document"] });
+    expect(body.data.selection.modelId).toBe("claude-haiku-5-5");
+    expect(body.data.selection.modelName).toBe("Claude Haiku 5.5");
+    // No router rate for it: no estimate borrowed from Sonnet.
+    expect(body.data.selection.estimatedCost).toBeNull();
+  });
+
+  // #1145 re-review — the card names the model the WHOLE run is downgraded to,
+  // resolved the same way as the run (`ModelRouter.runBudgetDowngrade`).
+  describe("budget downgrade on the card", () => {
+    beforeEach(() => {
+      activeProvider = { ...anthropicApi, model: "claude-sonnet-5-5" };
+      projectFindFirst.mockResolvedValue({ id: "proj-1", aiModel: null });
+    });
+
+    const withThreshold = (budgetDowngradeThreshold: number) =>
+      modelPreferenceFindUnique.mockResolvedValue({
+        defaultModel: null,
+        taskTypeOverrides: "{}",
+        budgetDowngradeThreshold,
+      });
+
+    it("names Haiku 5.5 for every run shape once the month is over the threshold", async () => {
+      // REPORTED_HISTORY is 185,167 tokens this month.
+      withThreshold(100);
+      for (const agentKeys of [["document"], ["document", "code", "database", "web"]]) {
+        const body = await post({ agentKeys });
+        expect(body.data.selection.modelId).toBe("claude-haiku-5-5");
+        expect(body.data.selection.modelName).toBe("Claude Haiku 5.5");
+        expect(body.data.selection.wasDowngraded).toBe(true);
+      }
+    });
+
+    it("names the provider's Sonnet 5.5 under the threshold", async () => {
+      withThreshold(1_000_000);
+      const body = await post({ agentKeys: ["document"] });
+      expect(body.data.selection.modelId).toBe("claude-sonnet-5-5");
+      expect(body.data.selection.wasDowngraded).toBe(false);
+    });
+
+    // #1145 re-review blocker — the card agrees with the run on an endpoint that
+    // cannot serve the Haiku tier: no downgrade, the provider's model.
+    it("names the provider's model, not downgraded, when the Haiku tier is not served", async () => {
+      activeProvider = {
+        key: "openai",
+        model: SONNET_MODEL_ID,
+        servesRouterModel: () => false,
+      };
+      withThreshold(100);
+      const body = await post({ agentKeys: ["document"] });
+      expect(body.data.selection.modelId).toBe(SONNET_MODEL_ID);
+      expect(body.data.selection.wasDowngraded).toBe(false);
+    });
+
+    it("never downgrades a project that sets its own aiModel", async () => {
+      withThreshold(100);
+      projectFindFirst.mockResolvedValue({ id: "proj-1", aiModel: "claude-sonnet-5-5" });
+      const body = await post({ agentKeys: ["document"] });
+      expect(body.data.selection.modelId).toBe("claude-sonnet-5-5");
+    });
+  });
+
+  it("offers the Claude 5.5 models as overrides and honours one", async () => {
+    const body = (await post({
+      agentKeys: ["document"],
+      override: "claude-haiku-5-5",
+    })) as RecommendationBody & {
+      data: { providerModels: Array<{ id: string; name: string }> };
+    };
+    expect(body.data.providerModels.map((m) => m.id)).toEqual(
+      expect.arrayContaining(["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"]),
+    );
+    expect(body.data.selection.modelId).toBe("claude-haiku-5-5");
+    expect(body.data.selection.rationale).toMatch(/User override/);
+  });
+
+  it("treats an override naming no offered model as Auto", async () => {
+    const body = await post({ agentKeys: ["document"], override: "gpt-4o" });
+    expect(body.data.selection.modelId).toBe("claude-sonnet-5-5");
   });
 });

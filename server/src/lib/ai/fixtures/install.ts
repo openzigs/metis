@@ -74,6 +74,8 @@ export function maybeWrapProviderForFixtures(
       key: provider.key,
       model: provider.model,
       servesRouterModel: provider.servesRouterModel?.bind(provider),
+      // #1145 — so a BILLS_AS proxy under replay is still never auto-downgraded.
+      routerModelsInferred: provider.routerModelsInferred,
     });
   }
 

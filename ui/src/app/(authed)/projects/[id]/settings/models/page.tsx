@@ -38,12 +38,15 @@ const TIER_DESCRIPTIONS: Record<string, string> = {
   complex: "Highest capability",
   // #713 — a provider that does not serve the Claude tiers offers its own model.
   configured: "The model this deployment's provider runs",
+  // #1145 — one of the provider's own models (e.g. Claude Sonnet 5.5 on the API).
+  provider: "A current model of this deployment's provider",
 };
 
 const AUTO_OPTION = {
   value: "auto",
   label: "Auto (recommended)",
-  description: "Let METIS choose the best model per task",
+  // #1145 — Auto runs the project's model, not a per-task Claude tier.
+  description: "Use the project's model for every task",
 };
 
 const TASK_TYPES = [
@@ -162,7 +165,7 @@ export default function ProjectModelSettingsPage() {
           <Label htmlFor="budget-threshold">Budget Downgrade Threshold</Label>
           <p className="text-xs text-muted-foreground" data-testid="budget-threshold-help">
             {servesTierModels
-              ? "When monthly token usage exceeds this threshold, METIS automatically downgrades from Sonnet to Haiku to save costs. Set to 0 to disable."
+              ? "When monthly token usage exceeds this threshold and this deployment's provider model is a Sonnet model, an Auto analysis runs entirely on the provider's newest Haiku model instead, to save costs. It follows the provider's model, not the default model chosen above, and has no effect when the project sets its own AI model or the provider cannot serve a Haiku model. Set to 0 to disable."
               : "This deployment's provider runs a single model, so there is no cheaper model to downgrade to and this threshold has no effect."}
           </p>
         </div>

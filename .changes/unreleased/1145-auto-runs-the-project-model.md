@@ -1,0 +1,15 @@
+---
+issue: 1145
+section: Fixed
+---
+
+- An analysis started with Model override **Auto** now runs every agent on the project's model
+  (its AI model setting, else the provider's configured model) instead of sending the document,
+  database and single-shot code agents to Claude Haiku 4.5 or Sonnet 5 by task depth. When the
+  project sets an AI model of its own, the Models page's default model, task-type overrides and
+  budget threshold do not apply; otherwise they do.
+- On the Anthropic API the analysis Model override and the project Models page now offer the
+  current Claude models (Sonnet 5.5, Haiku 5.5, Opus 5.5 and the others the API serves).
+- Over the Models-page budget threshold, an Auto run whose provider model is a Sonnet model now
+  runs entirely on the provider's newest Haiku model, decided once at run start, and only where
+  the provider can serve it; the Model card names the same model.

@@ -1843,6 +1843,78 @@ describe("AnalysisOrchestrator.regenerateAgent guards", () => {
     }
   });
 
+  // #1145 re-review — the Auto model's budget reads are awaited before the
+  // regenerate's ActiveRun existed, so a second regenerate passed the
+  // `active.has` check in the gap and a cancel could find nothing to abort.
+  it("#1145 — a second concurrent regenerate is refused, and cancel aborts the first", async () => {
+    const base = makeProvider({});
+    let hold = false;
+    const signals: AbortSignal[] = [];
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const provider = {
+      ...base,
+      async chat(messages: ChatMessage[], opts?: { signal?: AbortSignal }) {
+        if (hold) {
+          if (opts?.signal) signals.push(opts.signal);
+          await Promise.race([
+            held,
+            new Promise((r) => opts?.signal?.addEventListener("abort", r, { once: true })),
+          ]);
+        }
+        return base.chat(messages, opts as never);
+      },
+    } as unknown as AIProvider;
+    const orch = new AnalysisOrchestrator({ provider, retrieve: async () => [] });
+    const analysisId = await runToCompletion(orch);
+    const { AnalysisNotRegeneratableError } = await import("../src/lib/analysis/orchestrator.js");
+
+    hold = true;
+    const args = { analysisId, agentKey: "document" as const, actorId: "user-1234567890" };
+    const first = orch.regenerateAgent(args);
+    const second = orch.regenerateAgent(args);
+    // A second regenerate that is NOT refused blocks in the held provider call;
+    // bound the wait so that failure reads as a failure, not a timeout.
+    const refusedPromptly = Promise.race([
+      second,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("the second regenerate was not refused")), 2_000),
+      ),
+    ]);
+    try {
+      await expect(refusedPromptly).rejects.toBeInstanceOf(AnalysisNotRegeneratableError);
+      for (let i = 0; i < 200 && signals.length === 0; i += 1) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(signals).toHaveLength(1);
+      expect(await orch.cancel(analysisId, "user-1234567890")).toBe(true);
+      expect(signals[0]!.aborted).toBe(true);
+    } finally {
+      release();
+      await first.catch(() => undefined);
+      await second.catch(() => undefined);
+    }
+    expect(orch.isActive(analysisId)).toBe(false);
+  });
+
+  it("#1145 — a regenerate refused by the continue limit releases its claim", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const analysisId = await runToCompletion(orch);
+    const spy = vi
+      .spyOn(orch, "assertCanContinueInvestigation")
+      .mockRejectedValueOnce(new Error("limit reached"));
+    await expect(
+      orch.regenerateAgent({
+        analysisId,
+        agentKey: "code",
+        actorId: "user-1234567890",
+        extendBudget: true,
+      }),
+    ).rejects.toThrow("limit reached");
+    expect(orch.isActive(analysisId)).toBe(false);
+    spy.mockRestore();
+  });
+
   it("refuses regenerate when the analysis status is still running (M1)", async () => {
     const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
     const analysisId = await runToCompletion(orch);
@@ -2039,15 +2111,29 @@ describe("AnalysisOrchestrator misc branches", () => {
 describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
   async function modelsSentBy(
     overrides: Partial<AIProvider>,
-    run: { model?: string; regenerate?: boolean; persistedModel?: string } = {},
-  ): Promise<Array<string | undefined>> {
+    run: {
+      model?: string;
+      regenerate?: boolean;
+      persistedModel?: string;
+      /** #1145 — the project's `aiModel` / `aiProviderId` for this run. */
+      project?: { aiModel?: string | null; aiProviderId?: string | null };
+    } = {},
+  ): Promise<string[]> {
+    if (run.project) {
+      const row = projects.get("proj-abcdefghij")!;
+      projects.set("proj-abcdefghij", { ...row, ...run.project });
+    }
     const base = makeProvider({});
-    const sent: Array<string | undefined> = [];
+    // #1145 re-review — a call that names no model runs on the provider's own,
+    // so record THAT: recording `undefined` made every "not the provider's
+    // model" assertion pass vacuously for the non-specialist calls.
+    const runsAs = overrides.model ?? base.model;
+    const sent: string[] = [];
     const provider = {
       ...base,
       ...overrides,
       async chat(messages: ChatMessage[], opts?: { model?: string }) {
-        sent.push(opts?.model);
+        sent.push(opts?.model ?? runsAs);
         return base.chat(messages, opts);
       },
     } as unknown as AIProvider;
@@ -2151,11 +2237,156 @@ describe("AnalysisOrchestrator auto-mode model selection (#512)", () => {
     expect(new Set(sent)).toEqual(new Set(["deepseek-reasoner"]));
   });
 
-  it("routes specialists to Claude tier ids on a Claude-serving provider", async () => {
+  // #1145 — Auto used to route a simple task to Haiku 4.5 and a complex one to
+  // Sonnet 5 on any Claude-serving provider, whatever the project ran.
+  it("Auto runs specialists on the provider's configured model, never a hard-coded tier", async () => {
     const { HAIKU_MODEL_ID } = await import("../src/lib/ai/model-router.js");
     const sent = await modelsSentBy(gateway);
-    // The retrieved context is one word — a simple task — so Haiku is chosen.
-    expect(sent).toContain(HAIKU_MODEL_ID);
+    // The retrieved context is one word — a simple task, which was routed to Haiku.
+    expect(sent).not.toContain(HAIKU_MODEL_ID);
+    expect(new Set(sent.map((m) => m ?? gateway.model))).toEqual(new Set([gateway.model]));
+  });
+
+  // The Claude A/B for #1074: an Anthropic API deployment, a project on
+  // claude-sonnet-5-5, Auto — three models in the ledger.
+  const anthropicApi: Partial<AIProvider> = {
+    key: "anthropic",
+    model: "claude-sonnet-5",
+    offline: false,
+    servesRouterModel: () => true,
+  };
+
+  it("an Auto run on a project with aiModel claude-sonnet-5-5 sends only that model", async () => {
+    const sent = await modelsSentBy(anthropicApi, { project: { aiModel: "claude-sonnet-5-5" } });
+    expect(sent.length).toBeGreaterThan(0);
+    // Every call names the model: none falls back to the provider's own.
+    expect(new Set(sent)).toEqual(new Set(["claude-sonnet-5-5"]));
+  });
+
+  it("a regenerate of an Auto run resolves the project's aiModel the same way", async () => {
+    const sent = await modelsSentBy(anthropicApi, {
+      regenerate: true,
+      project: { aiModel: "claude-sonnet-5-5" },
+    });
+    expect(new Set(sent)).toEqual(new Set(["claude-sonnet-5-5"]));
+  });
+
+  it("an aiModel set for another provider is not sent to this one", async () => {
+    const sent = await modelsSentBy(anthropicApi, {
+      project: { aiModel: "gpt-4.1", aiProviderId: "openai" },
+    });
+    expect(sent).not.toContain("gpt-4.1");
+    expect(new Set(sent.map((m) => m ?? anthropicApi.model))).toEqual(
+      new Set([anthropicApi.model]),
+    );
+  });
+
+  it("an explicit model overrides the project's aiModel", async () => {
+    const sent = await modelsSentBy(anthropicApi, {
+      model: "claude-haiku-5-5",
+      project: { aiModel: "claude-sonnet-5-5" },
+    });
+    expect(new Set(sent)).toEqual(new Set(["claude-haiku-5-5"]));
+  });
+
+  // #1145 adversarial review — `acceptedModelIds` is what lets a Models-page
+  // task-type override name a provider-served model the tier registry lacks.
+  it("an Auto run honours a Models-page task-type override naming a served Claude 5.5 model", async () => {
+    const taskTypes = [
+      "summarization",
+      "extraction",
+      "analysis",
+      "synthesis",
+      "cross-referencing",
+      "general",
+    ];
+    vi.mocked(prisma.modelPreference.findUnique).mockResolvedValue({
+      defaultModel: null,
+      taskTypeOverrides: JSON.stringify(
+        Object.fromEntries(taskTypes.map((t) => [t, "claude-haiku-5-5"])),
+      ),
+      budgetDowngradeThreshold: null,
+    } as never);
+    try {
+      const sent = await modelsSentBy(anthropicApi);
+      // The specialists take the override; synthesis and the other run-level
+      // calls run the provider's model (a task-type override is per task type).
+      expect(new Set(sent)).toEqual(new Set(["claude-haiku-5-5", anthropicApi.model]));
+    } finally {
+      vi.mocked(prisma.modelPreference.findUnique).mockResolvedValue(null);
+    }
+  });
+
+  // #1145 — the budget downgrade is decided once per Auto run (re-review of
+  // PR #1150): applied only to the specialist calls, it sent Haiku 5.5 on 4
+  // calls and Sonnet 5.5 on 15 in one run.
+  describe("run-level budget downgrade (#1145)", () => {
+    const sonnet55: Partial<AIProvider> = { ...anthropicApi, model: "claude-sonnet-5-5" };
+    let restoreFindMany: () => void = () => {};
+
+    function monthToDate(tokens: number): void {
+      const findMany = vi.mocked(prisma.analysis.findMany);
+      const original = findMany.getMockImplementation()!;
+      // Only the month-to-date read selects `{ totalTokens }` alone.
+      findMany.mockImplementation((async (args?: { select?: { totalTokens?: boolean } }) =>
+        args?.select?.totalTokens && Object.keys(args.select).length === 1
+          ? [{ totalTokens: tokens }]
+          : (original as (a?: unknown) => Promise<unknown>)(args)) as never);
+      restoreFindMany = () => findMany.mockImplementation(original);
+    }
+
+    beforeEach(() => {
+      vi.mocked(prisma.modelPreference.findUnique).mockResolvedValue({
+        defaultModel: null,
+        taskTypeOverrides: "{}",
+        budgetDowngradeThreshold: 100,
+      } as never);
+    });
+
+    afterEach(() => {
+      restoreFindMany();
+      vi.mocked(prisma.modelPreference.findUnique).mockResolvedValue(null);
+    });
+
+    it("over the threshold, every call of the run is sent Haiku 5.5", async () => {
+      monthToDate(1_000_000);
+      const sent = await modelsSentBy(sonnet55);
+      expect(sent.length).toBeGreaterThan(4);
+      expect(new Set(sent)).toEqual(new Set(["claude-haiku-5-5"]));
+    });
+
+    it("under the threshold, every call of the run is sent the provider's model", async () => {
+      monthToDate(99);
+      const sent = await modelsSentBy(sonnet55);
+      expect(new Set(sent)).toEqual(new Set(["claude-sonnet-5-5"]));
+    });
+
+    it("a regenerate over the threshold is sent Haiku 5.5 throughout too", async () => {
+      monthToDate(1_000_000);
+      const sent = await modelsSentBy(sonnet55, { regenerate: true });
+      expect(new Set(sent)).toEqual(new Set(["claude-haiku-5-5"]));
+    });
+
+    // #1145 re-review blocker — probe from the review: the Haiku tier is not
+    // served here, so the run keeps the provider's model on every call.
+    it("over the threshold on a provider that cannot serve the Haiku tier, every call stays on its model", async () => {
+      const { SONNET_MODEL_ID } = await import("../src/lib/ai/model-router.js");
+      monthToDate(1_000_000);
+      const sent = await modelsSentBy({
+        key: "openai",
+        model: SONNET_MODEL_ID,
+        offline: false,
+        servesRouterModel: () => false,
+      });
+      expect(sent.length).toBeGreaterThan(0);
+      expect(new Set(sent)).toEqual(new Set([SONNET_MODEL_ID]));
+    });
+
+    it("a project with its own aiModel is never downgraded", async () => {
+      monthToDate(1_000_000);
+      const sent = await modelsSentBy(sonnet55, { project: { aiModel: "claude-sonnet-5-5" } });
+      expect(new Set(sent)).toEqual(new Set(["claude-sonnet-5-5"]));
+    });
   });
 
   it("runs specialists on the provider's configured model on a non-Claude provider", async () => {

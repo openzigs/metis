@@ -7331,7 +7331,7 @@ flowchart TD
     I --> L{Budget Threshold?}
     J --> L
     K --> L
-    L -->|exceeded & Sonnet selected| M[Downgrade to Haiku]
+    L -->|exceeded & Sonnet-class run model| M[Whole run on the newest served Haiku-class model]
     L -->|within budget| N[Return selected model]
     M --> N
     E --> N
@@ -7354,13 +7354,21 @@ flowchart TD
 
 `ModelRouter` (`server/src/lib/ai/model-router.ts`) applies a priority-ordered decision chain:
 
-1. **User override** — `force-haiku` or `force-sonnet` bypasses all other logic.
+1. **User override** — a `force-*` tier, or (#1145) one of the provider's own catalog models
+   (`servedProviderModels`, e.g. Claude Sonnet 5.5 on the Anthropic API), bypasses all other logic.
 2. **Task-type override** — Per-project overrides for specific task types (e.g., always use Sonnet for code review).
-3. **Reasoning depth routing**:
+3. **Auto runs the project's model (#1145)** — when the caller knows the project's model
+   (`autoModel`), every task runs on the project's `defaultModel` preference, else on that model.
+   A project that sets its own `aiModel` for the provider the analysis runs on
+   (`projectRunModel`) runs every agent on it and the Models-page preferences (default,
+   task-type overrides, budget threshold) do not apply; otherwise `autoModel` is the provider's
+   configured model and they do. The analysis orchestrator and the Model card both pass it, so
+   Auto never routes to a hard-coded older tier.
+4. **Reasoning depth routing** (only when no `autoModel` is given):
    - `simple` → **Haiku** (sufficient capability at lower cost)
    - `complex` → **Sonnet** (deep reasoning required)
    - `moderate` → Project default model (falls back to Sonnet if unset)
-4. **Budget-aware downgrade** — If a budget threshold is configured and current-month token usage exceeds it, Sonnet selections are downgraded to Haiku automatically.
+5. **Budget-aware downgrade** — If a budget threshold is configured and current-month token usage exceeds it, an Auto run is downgraded **as a whole, once, at run start** (#1145): `ModelRouter.runBudgetDowngrade()` maps the run's model (`autoModel`, the provider's configured model) — the Sonnet tier id or its legacy alias to the Haiku tier id, any other Sonnet-class model (e.g. `claude-sonnet-5-5` on the Anthropic API) to the **newest** Haiku-class model the provider serves by version (`haikuVersion`; `claude-haiku-5-5` over `claude-haiku-4-5`). The orchestrator resolves it in `resolveRunModel`, so every call of the run — specialists, synthesis, extraction, enhancement and the agentic code loop — sends that one model, and `selectModelForAgent` applies no per-call threshold; the Model card's `select()` takes the same branch first, so it names the same model. No downgrade when the run's model is not Sonnet-class, when no Haiku-class model is served or the provider cannot serve the target (`cannotServe`: the orchestrator sends the target raw, bypassing `buildSelection`'s fallback to `provider.model`), when the provider's served set is only declared (`routerModelsInferred`: an `ANTHROPIC_BASE_URL_BILLS_AS=anthropic` proxy answers "served" for every id), or when the project sets its own `aiModel` (step 3). A regenerate or resume re-resolves it at that time (persisting it is #1153).
 
 ### 29.4 Per-Project Model Preferences
 
@@ -7370,7 +7378,7 @@ Stored in the `ModelPreference` Prisma model (one per project):
 |-------|------|-------------|
 | `defaultModel` | `string?` | One of `auto`, Haiku model ID, or Sonnet model ID |
 | `taskTypeOverrides` | `JSON` | Map of task type → model ID |
-| `budgetDowngradeThreshold` | `int?` | Token count that triggers automatic Sonnet→Haiku downgrade |
+| `budgetDowngradeThreshold` | `int?` | Token count that triggers the automatic Sonnet-class → Haiku-class downgrade (step 5) |
 
 API endpoints:
 - `GET /api/projects/:projectId/model-preferences` — Read current preferences

@@ -47,7 +47,13 @@ import { resolveRate, type FlatTokenRate } from "../finops/provider-rates.js";
 import type { ProviderCapabilities } from "./capabilities.js";
 import type { AIConfig } from "./config.js";
 import { lookupModelMaxOutputTokens, normalizeModelId } from "./model-output-limits.js";
-import { FABLE_MODEL_ID, HAIKU_MODEL_ID, OPUS_MODEL_ID, SONNET_MODEL_ID } from "./model-router.js";
+import {
+  FABLE_MODEL_ID,
+  HAIKU_MODEL_ID,
+  OPUS_MODEL_ID,
+  SONNET_MODEL_ID,
+  type RouterProvider,
+} from "./model-router.js";
 import type { ProviderKey } from "./types.js";
 import { isDeepSeekEndpoint } from "./providers/anthropic-endpoint.js";
 
@@ -723,6 +729,26 @@ export function catalogCharsPerToken(
  */
 export function routerCatalog(env: NodeJS.ProcessEnv = process.env): ModelCatalogEntry[] {
   return BUILTIN_MODELS.filter((m) => m.routerTier)
+    .map((m) => lookupCatalogEntry(m.provider, m.id, env))
+    .filter((m): m is ModelCatalogEntry => m !== undefined);
+}
+
+/**
+ * #1145 — the provider's own catalog models a project may pick for an analysis
+ * (the Model override and the Models page), beyond the router's tier ids: on
+ * the Anthropic API that is the current Claude line (Sonnet 5.5, Haiku 5.5,
+ * Opus 5.5 …), which the Bedrock-spelled tier registry does not name. Only
+ * models the provider says it runs as sent (`servesRouterModel`), so DeepSeek's
+ * Anthropic-compatible endpoint, which remaps `claude-*`, is offered none.
+ */
+export function servedProviderModels(
+  provider: RouterProvider | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): ModelCatalogEntry[] {
+  if (provider?.key !== "anthropic") return [];
+  return BUILTIN_MODELS.filter(
+    (m) => m.provider === "anthropic" && provider.servesRouterModel?.(m.id) === true,
+  )
     .map((m) => lookupCatalogEntry(m.provider, m.id, env))
     .filter((m): m is ModelCatalogEntry => m !== undefined);
 }

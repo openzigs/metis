@@ -52,6 +52,8 @@ export interface ReplayProviderOptions {
    * site that picks a Claude tier id sends the model the fixture was keyed on.
    */
   servesRouterModel?: (modelId: string) => boolean;
+  /** #1145 — the stood-in provider's `routerModelsInferred`. */
+  routerModelsInferred?: boolean;
 }
 
 const tokenize = (s: string): string[] => s.match(/\S+/g) ?? [];
@@ -70,6 +72,8 @@ export class ReplayProvider implements AIProvider {
   private readonly store: FixtureStore;
   private readonly fallback?: AIProvider;
   private readonly serves?: (modelId: string) => boolean;
+  /** #1145 — transparent: whether the stood-in provider's served set is inferred. */
+  readonly routerModelsInferred?: boolean;
 
   constructor(opts: ReplayProviderOptions) {
     this.store = opts.store;
@@ -77,6 +81,9 @@ export class ReplayProvider implements AIProvider {
     this.key = opts.key ?? "offline-stub";
     this.model = opts.model ?? "replay";
     this.serves = opts.servesRouterModel;
+    if (opts.routerModelsInferred !== undefined) {
+      this.routerModelsInferred = opts.routerModelsInferred;
+    }
   }
 
   servesRouterModel(modelId: string): boolean {

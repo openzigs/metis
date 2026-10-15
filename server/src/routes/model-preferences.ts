@@ -30,9 +30,10 @@ import {
   LEGACY_SONNET_MODEL_ID,
   ModelNotServedError,
   isOfflineStub,
+  projectRunModel,
   type RouterProvider,
 } from "../lib/ai/model-router.js";
-import { getModelCatalog, routerCatalog } from "../lib/ai/model-catalog.js";
+import { getModelCatalog, routerCatalog, servedProviderModels } from "../lib/ai/model-catalog.js";
 import { loadAIConfig } from "../lib/ai/config.js";
 import { buildProvider } from "../lib/ai/providers/factory.js";
 import type { AIProvider } from "../lib/ai/types.js";
@@ -165,7 +166,9 @@ export function initModelPreferenceRouter(): Router {
  * and answered 16 tokens / "simple" for every project regardless of workload.
  */
 const runShapeSchema = z.object({
-  override: overrideSchema.optional(),
+  // `auto`, a forced tier, or (#1145) one of the provider's own models —
+  // narrowed in the handler, because which ids are valid depends on the provider.
+  override: z.string().max(200).optional(),
   agentKeys: z.array(z.string().min(1).max(64)).max(16).default([]),
   /**
    * The requirement text the user typed. Carried in a POST body (not a query
@@ -187,7 +190,7 @@ export function initModelRecommendationRouter(): Router {
 
   const handle = async (req: Request, res: Response): Promise<void> => {
     const projectId = String(req.params.projectId);
-    await ensureProjectExists(projectId);
+    const project = await ensureProjectExists(projectId);
 
     // GET keeps working for callers that only want the override applied; POST
     // carries the full run shape (agents + requirement text) without truncation.
@@ -210,8 +213,6 @@ export function initModelRecommendationRouter(): Router {
         issues: parsed.error.flatten(),
       });
     }
-    const override = overrideSchema.parse(parsed.data.override ?? "auto");
-
     const pref = await prisma.modelPreference.findUnique({ where: { projectId } });
 
     // #1095 — the empirical estimate: this project's own completed runs. The
@@ -246,6 +247,13 @@ export function initModelRecommendationRouter(): Router {
     // #978 — a forced tier this provider cannot run is a 400, not a card that
     // quietly names a different model.
     const provider = activeRouterProvider();
+    // #1145 — the provider's own models (Claude Sonnet 5.5 … on the Anthropic
+    // API) are offered as overrides beside the forced tiers; any other id is Auto.
+    const providerModels = servedProviderModels(provider);
+    const requested = parsed.data.override ?? "auto";
+    const override = providerModels.some((m) => m.id === requested)
+      ? requested
+      : overrideSchema.parse(requested);
     try {
       new ModelRouter({ provider }).assertServable(override);
     } catch (err) {
@@ -258,19 +266,31 @@ export function initModelRecommendationRouter(): Router {
       throw err;
     }
 
+    // #1145 — the card names what the run uses: Auto runs the project's model
+    // (`aiModel`, else the provider's configured model), never a hard-coded tier.
+    // When the project sets `aiModel` the orchestrator resolves Auto to it and
+    // never applies the Models-page preferences, so the card drops them too.
+    // Over the budget threshold, `select()` names the model the whole run is
+    // downgraded to (`runBudgetDowngrade`), the orchestrator's own resolution.
+    const projectModel = provider ? projectRunModel(project, provider) : undefined;
     const modelRouter = new ModelRouter({
-      preferences: pref
-        ? {
-            defaultModel: pref.defaultModel ?? undefined,
-            taskTypeOverrides: safeParse(pref.taskTypeOverrides),
-            budgetDowngradeThreshold: pref.budgetDowngradeThreshold,
-          }
-        : undefined,
+      preferences:
+        pref && !projectModel
+          ? {
+              defaultModel: pref.defaultModel ?? undefined,
+              taskTypeOverrides: safeParse(pref.taskTypeOverrides),
+              budgetDowngradeThreshold: pref.budgetDowngradeThreshold,
+            }
+          : undefined,
       currentMonthTokens,
       provider,
+      ...(provider ? { autoModel: projectModel ?? provider.model } : {}),
+      acceptedModelIds: new Set(providerModels.map((m) => m.id)),
     });
 
-    const selection = modelRouter.select(profile, override);
+    const chosen = modelRouter.select(profile, override);
+    const named = providerModels.find((m) => m.id === chosen.modelId);
+    const selection = named ? { ...chosen, modelName: named.displayName } : chosen;
 
     res.json(
       ok({
@@ -282,6 +302,8 @@ export function initModelRecommendationRouter(): Router {
         // this configured model.
         servesTierModels: servesTierModels(provider),
         configuredModel: provider?.model ?? null,
+        // #1145 — the provider's own models the override may name.
+        providerModels: providerModels.map((m) => ({ id: m.id, name: m.displayName })),
       }),
     );
   };
@@ -331,7 +353,7 @@ async function availableModelsFor(
   provider: PreferenceProvider | undefined,
 ): Promise<AvailableModel[]> {
   if (servesTierModels(provider)) {
-    return routerCatalog()
+    const tiers = routerCatalog()
       .filter(
         (m) => !provider || isOfflineStub(provider) || provider.servesRouterModel?.(m.id) === true,
       )
@@ -343,6 +365,16 @@ async function availableModelsFor(
         price: m.price,
         capabilities: m.capabilities,
       }));
+    // #1145 — and the provider's own models, e.g. Claude Sonnet 5.5 on the API.
+    const own = servedProviderModels(provider).map((m) => ({
+      id: m.id,
+      name: m.displayName,
+      tier: "provider",
+      contextWindow: m.contextWindow,
+      price: m.price,
+      capabilities: m.capabilities,
+    }));
+    return [...own, ...tiers];
   }
   const model = provider!.model;
   let entry: ModelCatalogEntry | undefined;
@@ -381,6 +413,8 @@ async function availableModelsFor(
 function acceptsDefaultModel(id: string, provider: PreferenceProvider | undefined): boolean {
   if (id === "auto") return true;
   if ((validModelIds as readonly string[]).includes(id) && servesTierModels(provider)) return true;
+  // #1145 — one of the provider's own models (listed by GET).
+  if (servedProviderModels(provider).some((m) => m.id === id)) return true;
   return provider !== undefined && id === provider.model;
 }
 
@@ -410,11 +444,14 @@ function activeRouterProvider(): PreferenceProvider | undefined {
   }
 }
 
-async function ensureProjectExists(projectId: string): Promise<void> {
+async function ensureProjectExists(
+  projectId: string,
+): Promise<{ aiModel?: string | null; aiProviderId?: string | null }> {
   const project = await prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
   });
   if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
+  return project;
 }
 
 function safeParse(json: string): Record<string, string> {

@@ -268,7 +268,8 @@ import { computeRequirementEscalations } from "./escalation-context.js";
 import { splitEscalationBudget, type EscalationPolicyConfig } from "./escalation-policy.js";
 import type { RequirementEscalation, SpecKitHandoffRecord } from "@metis/shared";
 import { TaskProfiler } from "../ai/task-profiler.js";
-import { ModelRouter, type ModelPreferences } from "../ai/model-router.js";
+import { ModelRouter, projectRunModel, type ModelPreferences } from "../ai/model-router.js";
+import { servedProviderModels } from "../ai/model-catalog.js";
 import { displayFilename } from "../rag/hit-locator.js";
 
 const log = createChildLogger("analysis-orchestrator");
@@ -820,7 +821,12 @@ export class AnalysisOrchestrator {
 
     // Resolve a `force-*` override to the tier id it names — the same
     // resolution the Model card reports (#512); servability was checked above.
-    const resolvedOpts = { ...opts, model: this.resolveRunModel(opts.model) };
+    // #1145 — Auto runs every agent on the project's model, never a tier.
+    // #1145 — and an over-budget Auto run is downgraded here, once, for every call.
+    const resolvedOpts = {
+      ...opts,
+      model: await this.resolveRunModel(opts.model, project, opts.projectId),
+    };
 
     // Run pipeline in the background. Errors are recorded against the
     // Analysis row \u2014 they never bubble up to the caller.
@@ -912,14 +918,35 @@ export class AnalysisOrchestrator {
     extendBudget?: boolean;
   }): Promise<void> {
     const { analysis } = await this.assertCanRegenerate(opts.analysisId);
-    // #1062 — the route pre-checks this; a direct caller is held to it too.
-    if (opts.extendBudget) await this.assertCanContinueInvestigation(opts.analysisId);
+    // #1145 review — claim the run in the same synchronous step as the check,
+    // before any further await (the continue-limit read, the Auto model's
+    // budget reads), as resume does: otherwise a second regenerate passes the
+    // check in the gap, and a cancel finds no ActiveRun to abort (#1142).
+    if (this.active.has(opts.analysisId)) {
+      throw new AnalysisNotRegeneratableError(opts.analysisId, "running");
+    }
+    const controller = new AbortController();
+    const active: ActiveRun = {
+      analysisId: opts.analysisId,
+      controllers: new Map([[opts.agentKey, controller]]),
+      cancelled: false,
+    };
+    this.active.set(opts.analysisId, active);
+    try {
+      // #1062 — the route pre-checks this; a direct caller is held to it too.
+      if (opts.extendBudget) await this.assertCanContinueInvestigation(opts.analysisId);
+    } catch (err) {
+      this.active.delete(opts.analysisId);
+      throw err;
+    }
     // #724 — bill the regenerated agent and the re-synthesis to the project.
     const scope = {
       projectId: analysis.projectId,
       sessionId: opts.analysisId,
     };
-    return runInAnalysisUsageScope(scope, () => this.regenerateLoadedAgent(opts, analysis));
+    return runInAnalysisUsageScope(scope, () =>
+      this.regenerateLoadedAgent(opts, analysis, controller),
+    );
   }
 
   private async regenerateLoadedAgent(
@@ -930,9 +957,20 @@ export class AnalysisOrchestrator {
       extendBudget?: boolean;
     },
     maybeAnalysis: Awaited<ReturnType<AnalysisOrchestrator["assertCanRegenerate"]>>["analysis"],
+    /**
+     * The controller of the ActiveRun `regenerateAgent` registered. Defaulted
+     * only for tests that drive this method directly, with no ActiveRun.
+     */
+    controller: AbortController = new AbortController(),
   ): Promise<void> {
     const analysis = maybeAnalysis as NonNullable<typeof maybeAnalysis> & {
-      project: { name: string; description: string; status: string };
+      project: {
+        name: string;
+        description: string;
+        status: string;
+        aiModel?: string | null;
+        aiProviderId?: string | null;
+      };
       projectId: string;
       metadata: string | null;
     };
@@ -940,19 +978,9 @@ export class AnalysisOrchestrator {
     const documentIds = Array.isArray(metadata.documentIds)
       ? (metadata.documentIds as string[])
       : undefined;
-    const model = this.resolveRunModel(
-      typeof metadata.model === "string" ? metadata.model : undefined,
-    );
     const extraInstructions =
       typeof metadata.extraInstructions === "string" ? metadata.extraInstructions : undefined;
     const agentContext = readAgentContext(metadata);
-    const controller = new AbortController();
-    const active: ActiveRun = {
-      analysisId: opts.analysisId,
-      controllers: new Map([[opts.agentKey, controller]]),
-      cancelled: false,
-    };
-    this.active.set(opts.analysisId, active);
 
     audit({
       actor: { id: opts.actorId },
@@ -981,6 +1009,13 @@ export class AnalysisOrchestrator {
     let reopened: ReopenedRun = null;
     try {
       reopened = await reopenForFollowUp(opts.analysisId);
+      // #1145 — resolved inside the try, so a failure here is recorded and the
+      // ActiveRun released by the finally like any other.
+      const model = await this.resolveRunModel(
+        typeof metadata.model === "string" ? metadata.model : undefined,
+        analysis.project,
+        analysis.projectId,
+      );
       const agentInput = {
         analysisId: opts.analysisId,
         projectId: analysis.projectId,
@@ -1275,7 +1310,13 @@ export class AnalysisOrchestrator {
       return { resumed: [], remaining: [], noop: true };
     }
     const analysis = maybeAnalysis as typeof maybeAnalysis & {
-      project: { name: string; description: string; status: string };
+      project: {
+        name: string;
+        description: string;
+        status: string;
+        aiModel?: string | null;
+        aiProviderId?: string | null;
+      };
       projectId: string;
       metadata: string | null;
     };
@@ -1326,8 +1367,10 @@ export class AnalysisOrchestrator {
         const metadata = analysis.metadata
           ? safeParse<Record<string, unknown>>(analysis.metadata)
           : {};
-        const model = this.resolveRunModel(
+        const model = await this.resolveRunModel(
           typeof metadata.model === "string" ? metadata.model : undefined,
+          analysis.project,
+          analysis.projectId,
         );
         const extraInstructions =
           typeof metadata.extraInstructions === "string" ? metadata.extraInstructions : undefined;
@@ -4839,9 +4882,57 @@ export class AnalysisOrchestrator {
   /**
    * #512 — the model a run started with `model` sends: a `force-*` override
    * resolved through the ModelRouter with the active provider attached.
+   * #1145 — Auto (no `model`) sends the project's `aiModel` when it names one
+   * for this provider. With no `aiModel`, an Auto run over the project's budget
+   * threshold is downgraded HERE, once for the whole run
+   * ({@link ModelRouter.runBudgetDowngrade}), so every call — specialists,
+   * synthesis, extraction, enhancement, the agentic code loop — sends that one
+   * model; otherwise `undefined`, the provider's configured model.
    */
-  private resolveRunModel(model: string | undefined): string | undefined {
-    return new ModelRouter({ provider: this.deps.provider }).resolveRunModel(model);
+  private async resolveRunModel(
+    model: string | undefined,
+    project: { aiModel?: string | null; aiProviderId?: string | null } | null | undefined,
+    projectId: string,
+  ): Promise<string | undefined> {
+    const fixed =
+      new ModelRouter({ provider: this.deps.provider }).resolveRunModel(model) ??
+      projectRunModel(project, this.deps.provider);
+    if (fixed !== undefined) return fixed;
+    return this.autoRunBudgetDowngrade(projectId);
+  }
+
+  /**
+   * #1145 — the model an over-budget Auto run is downgraded to, if any.
+   * #1095 — month-to-date usage is the `Analysis`-derived accounting the cost
+   * cap uses (`TokenUsage` is never written by the analysis pipeline).
+   */
+  private async autoRunBudgetDowngrade(projectId: string): Promise<string | undefined> {
+    try {
+      const pref = await prisma.modelPreference.findUnique({ where: { projectId } });
+      const threshold = pref?.budgetDowngradeThreshold;
+      if (threshold == null || threshold <= 0) return undefined;
+      const target = new ModelRouter({
+        preferences: { budgetDowngradeThreshold: threshold },
+        currentMonthTokens: await getProjectMonthlyAnalysisTokens(projectId),
+        provider: this.deps.provider,
+        autoModel: this.deps.provider.model,
+        acceptedModelIds: new Set(servedProviderModels(this.deps.provider).map((m) => m.id)),
+      }).runBudgetDowngrade();
+      if (target !== undefined) {
+        log.info("Auto run downgraded over the budget threshold", {
+          projectId,
+          from: this.deps.provider.model,
+          to: target,
+        });
+      }
+      return target;
+    } catch (err) {
+      log.warn("Budget downgrade check failed; the run keeps its model", {
+        projectId,
+        error: (err as Error).message,
+      });
+      return undefined;
+    }
   }
 
   /**
@@ -4862,25 +4953,27 @@ export class AnalysisOrchestrator {
         where: { projectId },
       });
 
-      // #1095 — was `TokenUsage`, which the analysis pipeline never writes, so
-      // this read 0 for every project and `budgetDowngradeThreshold` could never
-      // trip. Use the same `Analysis`-derived accounting as the cost cap.
-      const currentMonthTokens = await getProjectMonthlyAnalysisTokens(projectId);
-
+      // #1145 — no budget threshold here: an Auto run's downgrade is decided
+      // once, at run start (`resolveRunModel`), and a downgraded run never
+      // reaches this method. Applying it per call let a run cross the threshold
+      // midway and send some calls to a cheaper model than their siblings.
       const preferences: ModelPreferences | undefined = pref
         ? {
             defaultModel: pref.defaultModel ?? undefined,
             taskTypeOverrides: safeParse<Record<string, string>>(pref.taskTypeOverrides),
-            budgetDowngradeThreshold: pref.budgetDowngradeThreshold,
           }
         : undefined;
 
       // #512 — tier ids only on a provider that serves them; elsewhere the
       // selection is the provider's own configured model.
+      // #1145 — Auto runs the provider's configured model (the run model the
+      // rest of the pipeline uses) unless the project's Model preferences name
+      // another; never a hard-coded older tier.
       const router = new ModelRouter({
         preferences,
-        currentMonthTokens,
         provider: this.deps.provider,
+        autoModel: this.deps.provider.model,
+        acceptedModelIds: new Set(servedProviderModels(this.deps.provider).map((m) => m.id)),
       });
 
       const selection = router.select(profile);
