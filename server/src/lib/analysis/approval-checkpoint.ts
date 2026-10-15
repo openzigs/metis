@@ -168,6 +168,32 @@ export async function approveAllPendingApprovalRequests(
 }
 
 /**
+ * Issue #1129 — reject the PENDING `requirement` approvals for the given
+ * structured requirement ids in one write. Used to leave out every requirement
+ * the analysis added on a run started from ticked imported items: trimming 34
+ * approvals to the five the user ticked was 29 single clicks. Resolved
+ * approvals keep their decision, and each rejection can still be reopened.
+ */
+export async function rejectPendingRequirementApprovals(
+  analysisId: string,
+  itemIds: readonly string[],
+  review: { reviewerId: string; reviewNote?: string },
+): Promise<{ rejectedCount: number }> {
+  if (itemIds.length === 0) return { rejectedCount: 0 };
+  const { count } = await prisma.approvalRequest.updateMany({
+    where: { analysisId, type: "requirement", status: "pending", itemId: { in: [...itemIds] } },
+    data: {
+      status: "rejected",
+      reviewerId: review.reviewerId,
+      reviewNote: review.reviewNote ?? null,
+      reviewedAt: new Date(),
+    },
+  });
+  log.info("Rejected pending requirement approvals", { analysisId, count });
+  return { rejectedCount: count };
+}
+
+/**
  * Check if all approvals for an analysis are resolved (approved/rejected).
  */
 export async function areAllApprovalsResolved(analysisId: string): Promise<boolean> {

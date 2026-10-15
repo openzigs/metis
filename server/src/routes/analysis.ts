@@ -70,6 +70,7 @@ import {
   listApprovalRequests,
   reopenApprovalRequest,
   approveAllPendingApprovalRequests,
+  rejectPendingRequirementApprovals,
   reviewApprovalRequest,
   canCreateTickets,
   // Issue #1104 (finding B) — release the requirements the gate withheld.
@@ -112,6 +113,12 @@ import { meterAnalysisProvider, runInAnalysisUsageScope } from "../lib/analysis/
 // (and therefore into the drafts/issues they become), not just the metadata the
 // approval view reads.
 import { applyClarificationsToRequirements } from "../lib/analysis/clarification-enrichment.js";
+import { readSourceRequirements } from "../lib/analysis/source-items.js";
+import {
+  classifyRequirementOrigins,
+  tickedFirst,
+  type RequirementOrigin,
+} from "../lib/analysis/imported-scope.js";
 import {
   serializeClarifyCsv,
   serializeClarifyJson,
@@ -202,6 +209,21 @@ async function ensureAnalysisVisible(analysisId: string, projectId: string | nul
   });
   if (!analysis) throw new AppError(404, "ANALYSIS_NOT_FOUND", "Analysis not found");
   return analysis;
+}
+
+/**
+ * Issue #1129 — on a run started from ticked imported items, whether each
+ * reviewed (structured) requirement restates a ticked item or was added by the
+ * analysis. Empty for any other run.
+ */
+async function requirementOriginsFor(
+  analysisId: string,
+  metadata: unknown,
+): Promise<Map<string, RequirementOrigin>> {
+  const sources = readSourceRequirements(metadata);
+  if (sources.length === 0) return new Map();
+  const structured = await getStructuredRequirements(analysisId);
+  return classifyRequirementOrigins(structured?.requirements ?? [], sources);
 }
 
 /**
@@ -753,7 +775,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // projectId now scopes knowledge-grounding retrieval below, this
       // relationship is load-bearing — protects both the start and
       // submit-answers branches.
-      await ensureAnalysisVisible(analysisId, projectId);
+      const analysis = await ensureAnalysisVisible(analysisId, projectId);
 
       // Issue #403 — validate at the trust boundary so malformed input is a
       // 400, not a 500 thrown from inside the dialog.
@@ -777,6 +799,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         provider,
         retriever: getKnowledgeService(),
         projectId,
+        // Issue #1129 — on a run from ticked items, their questions come first.
+        askFirst: tickedFirst(await requirementOriginsFor(analysisId, analysis.metadata)),
       });
 
       // Epic #922 — prefer the server-sourced structured requirements that the
@@ -1181,14 +1205,21 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     async (req: Request, res: Response) => {
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);
-      await ensureAnalysisVisible(analysisId, projectId);
+      const analysis = await ensureAnalysisVisible(analysisId, projectId);
       const status = req.query.status as string | undefined;
       const validStatuses = new Set(["pending", "approved", "rejected"]);
       const statusFilter =
         status && validStatuses.has(status)
           ? (status as "pending" | "approved" | "rejected")
           : undefined;
-      const items = await listApprovalRequests(analysisId, statusFilter);
+      const rows = await listApprovalRequests(analysisId, statusFilter);
+      // Issue #1129 — say which requirement approvals restate a ticked imported
+      // item and which the analysis added, so the panel can separate them.
+      const origins = await requirementOriginsFor(analysisId, analysis.metadata);
+      const items = rows.map((row) => {
+        const origin = row.type === "requirement" ? origins.get(row.itemId) : undefined;
+        return origin ? { ...row, origin } : row;
+      });
       const ticketStatus = await canCreateTickets(analysisId);
       res.json(ok({ items, ticketStatus }));
     },
@@ -1357,6 +1388,56 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       }
 
       res.json(ok({ approvedCount, promotion }));
+    },
+  );
+
+  /**
+   * POST /api/projects/:projectId/analyses/:id/approvals/reject-added
+   * Issue #1129 — on a run started from ticked imported items, reject every
+   * PENDING requirement approval the analysis added (one that restates no
+   * ticked item), then promote once. Trimming 34 approvals to the five ticked
+   * was 29 single clicks. The added set is computed here from the run's own
+   * record, never taken from the client. Same permission, scope and limiters
+   * as approve-all; each rejection can be reopened.
+   */
+  projectScoped.post(
+    "/:id/approvals/reject-added",
+    // Per-IP, ahead of auth: CodeQL js/missing-rate-limiting (PR #902).
+    analysisApprovalPreAuthRateLimiter,
+    requireAuth,
+    requirePermission("analysis.run"),
+    analysisApprovalPromoteRateLimiter,
+    async (req: Request, res: Response) => {
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      const analysis = await ensureAnalysisVisible(analysisId, projectId);
+
+      const origins = await requirementOriginsFor(analysisId, analysis.metadata);
+      const addedIds = [...origins].filter(([, o]) => o === "added").map(([id]) => id);
+      const actor = actorFromReq(req);
+      const { rejectedCount } = await rejectPendingRequirementApprovals(analysisId, addedIds, {
+        reviewerId: actor.id,
+        reviewNote: "Left out: added by the analysis, not one of the ticked items.",
+      });
+
+      audit({
+        actor: { id: actor.id },
+        action: "analysis.approval.reject_added",
+        target: { type: "analysis", id: analysisId },
+        metadata: { rejectedCount },
+      });
+
+      let promotion: PromotionOutcome;
+      try {
+        promotion = await promoteApprovedRequirements(analysisId);
+      } catch {
+        promotion = {
+          status: "unavailable",
+          reason: "Rejections recorded, but promoting the requirements failed. Try again.",
+        };
+      }
+
+      res.json(ok({ rejectedCount, promotion }));
     },
   );
 

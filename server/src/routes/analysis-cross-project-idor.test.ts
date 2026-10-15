@@ -111,6 +111,7 @@ const listApprovalRequests = vi.fn();
 const reviewApprovalRequest = vi.fn();
 const reopenApprovalRequest = vi.fn();
 const approveAllPendingApprovalRequests = vi.fn(async () => ({ approvedCount: 1 }));
+const rejectPendingRequirementApprovals = vi.fn(async () => ({ rejectedCount: 1 }));
 const promoteApprovedRequirements = vi.fn(async () => ({
   status: "already-promoted" as const,
   requirementCount: 0,
@@ -141,6 +142,7 @@ vi.mock("../lib/analysis/index.js", () => ({
   reviewApprovalRequest,
   reopenApprovalRequest,
   approveAllPendingApprovalRequests,
+  rejectPendingRequirementApprovals,
   canCreateTickets,
   // #1104 — reviewing an approval now retries promotion of the withheld
   // requirements; scoping is asserted on `reviewApprovalRequest` as before.
@@ -387,6 +389,33 @@ describe("analyses/:id/* — cross-project scope (#1097)", () => {
       expect(res.status).toBe(200);
       expect(approveAllPendingApprovalRequests).toHaveBeenCalledWith(
         "ana-b",
+        expect.objectContaining({ reviewerId: expect.any(String) }),
+      );
+    });
+  });
+
+  // Issue #1129 — bulk reject writes the analysis's added requirement approvals.
+  describe("POST /:id/approvals/reject-added", () => {
+    it("404s before rejecting another project's approvals", async () => {
+      const res = await request(app).post(
+        "/api/projects/proj-b/analyses/ana-a/approvals/reject-added",
+      );
+
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe("ANALYSIS_NOT_FOUND");
+      expect(rejectPendingRequirementApprovals).not.toHaveBeenCalled();
+      expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+    });
+
+    it("still runs for the caller's own analysis (no over-blocking)", async () => {
+      const res = await request(app).post(
+        "/api/projects/proj-b/analyses/ana-b/approvals/reject-added",
+      );
+
+      expect(res.status).toBe(200);
+      expect(rejectPendingRequirementApprovals).toHaveBeenCalledWith(
+        "ana-b",
+        expect.any(Array),
         expect.objectContaining({ reviewerId: expect.any(String) }),
       );
     });

@@ -546,6 +546,95 @@ function ApproveAllPending({
   );
 }
 
+/**
+ * Issue #1129 — on a run started from ticked imported items, the pending
+ * approvals split into the ones that restate a ticked item and the ones the
+ * analysis added. `null` when the server marked none (any other run), so the
+ * panel renders one list exactly as before.
+ */
+export function splitPendingByOrigin<T extends Pick<ApprovalRequestPayload, "origin">>(
+  pending: readonly T[],
+): { ticked: T[]; added: T[]; other: T[] } | null {
+  if (!pending.some((a) => a.origin)) return null;
+  return {
+    ticked: pending.filter((a) => a.origin === "ticked"),
+    added: pending.filter((a) => a.origin === "added"),
+    other: pending.filter((a) => !a.origin),
+  };
+}
+
+/**
+ * Issue #1129 — leave out every pending requirement the analysis added, in one
+ * action. Trimming 34 approvals to the five ticked items took 29 clicks. Asks
+ * first; each rejection can be reopened afterwards.
+ */
+function LeaveOutAdded({
+  projectId,
+  analysisId,
+  addedCount,
+  onChange,
+}: {
+  projectId: string;
+  analysisId: string;
+  addedCount: number;
+  onChange: () => void;
+}): React.ReactElement {
+  const qc = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+  const rejectAdded = useMutation({
+    mutationFn: () => analysisApi.rejectAddedApprovals(projectId, analysisId),
+    onSuccess: () => {
+      setConfirming(false);
+      onChange();
+      qc.invalidateQueries({ queryKey: ["approvals", analysisId] });
+      qc.invalidateQueries({ queryKey: queryKeys.analyses.detail(analysisId) });
+    },
+  });
+
+  if (!confirming) {
+    return (
+      <Button size="sm" variant="outline" onClick={() => setConfirming(true)}>
+        Leave out the {addedCount} added by the analysis
+      </Button>
+    );
+  }
+  return (
+    <div
+      className="space-y-2 rounded border px-3 py-2 text-sm"
+      data-testid="leave-out-added-confirm"
+    >
+      <p>
+        Reject the {addedCount} requirement(s) the analysis added? None of your ticked items asked
+        for them. They are left out of the promoted set, and each one can be reopened below.
+      </p>
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          aria-label="Confirm leave out added"
+          onClick={() => rejectAdded.mutate()}
+          disabled={rejectAdded.isPending}
+        >
+          Leave them out
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setConfirming(false)}
+          disabled={rejectAdded.isPending}
+        >
+          Cancel
+        </Button>
+      </div>
+      {rejectAdded.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          Could not leave out the added requirements.{" "}
+          {rejectAdded.error instanceof ApiError ? rejectAdded.error.message : "Try again."}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function ApprovalsPanel({
   projectId,
   analysisId,
@@ -624,6 +713,19 @@ export function ApprovalsPanel({
 
   const pending = items.filter((a) => a.status === "pending");
   const resolved = items.filter((a) => a.status !== "pending");
+  const split = splitPendingByOrigin(pending);
+  const renderPending = (approval: ApprovalRequestPayload, i: number): React.ReactElement => (
+    <ApprovalCard
+      key={approval.id}
+      approval={approval}
+      requirement={lookupRequirement(approval)}
+      addressed={addressed}
+      position={i + 1}
+      projectId={projectId}
+      analysisId={analysisId}
+      onChange={() => query.refetch()}
+    />
+  );
 
   return (
     // #1104 — a stable anchor so the gated REQUIREMENTS notice can link straight
@@ -685,18 +787,45 @@ export function ApprovalsPanel({
               onChange={() => query.refetch()}
             />
           </div>
-          {pending.map((approval, i) => (
-            <ApprovalCard
-              key={approval.id}
-              approval={approval}
-              requirement={lookupRequirement(approval)}
-              addressed={addressed}
-              position={i + 1}
-              projectId={projectId}
-              analysisId={analysisId}
-              onChange={() => query.refetch()}
-            />
-          ))}
+          {split ? (
+            <>
+              {/* #1129 — the ticked items first, then what the analysis added. */}
+              <div className="space-y-2" data-testid="approvals-ticked">
+                <p className="text-sm font-medium">
+                  From your ticked items ({split.ticked.length})
+                </p>
+                {split.ticked.map(renderPending)}
+              </div>
+              {split.added.length > 0 && (
+                <div className="space-y-2" data-testid="approvals-added">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-medium">
+                      Added by the analysis ({split.added.length})
+                    </p>
+                    <LeaveOutAdded
+                      projectId={projectId}
+                      analysisId={analysisId}
+                      addedCount={split.added.length}
+                      onChange={() => query.refetch()}
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    None of the ticked items asked for these. They are offered, not promoted: each
+                    is promoted only if you approve it.
+                  </p>
+                  {split.added.map(renderPending)}
+                </div>
+              )}
+              {split.other.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Other checkpoints ({split.other.length})</p>
+                  {split.other.map(renderPending)}
+                </div>
+              )}
+            </>
+          ) : (
+            pending.map(renderPending)
+          )}
         </div>
       )}
 
