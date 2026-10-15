@@ -392,6 +392,13 @@ export interface ImportedScopeResult extends RequirementMergeResult {
  * document agent and reach synthesis through its findings; only the code
  * agent's investigation list is narrowed.
  *
+ * Imported items past the candidate cap (`importedItems`) are appended as
+ * requirements: the cap bounds free text, not an explicit selection.
+ *
+ * The restatement match is for ACCOUNTING only: a restatement is excluded from
+ * the code agent's set either way (folded, or left out), and the NR item keeps
+ * the bare tracker title (#1006). Only the logged counters depend on the matcher.
+ *
  * The direction of the merge is reversed from {@link mergeRequirementSets}: a
  * restatement folds INTO the imported item's `NR-*` id, so the link back to the
  * tracker item (#1063) survives. Imported candidates lead in their ticked order;
@@ -401,6 +408,7 @@ export function scopeRequirementsToImported(
   documentRequirements: readonly RequirementRef[],
   newRequirements: readonly RequirementRef[],
   importedIds: ReadonlySet<string>,
+  importedItems: readonly RequirementRef[] = [],
 ): ImportedScopeResult {
   const dropped: DroppedRequirementInput[] = [];
   const kept: RequirementRef[] = [];
@@ -414,6 +422,12 @@ export function scopeRequirementsToImported(
       continue;
     }
     kept.push(candidate);
+  }
+  // The candidate cap bounds free text, not an explicit selection: an imported
+  // item past it still has to be investigated, and its restatement kept.
+  const present = new Set(kept.map((r) => r.id));
+  for (const item of importedItems) {
+    if (!present.has(item.id) && normalizeRequirementText(item.text).length > 0) kept.push(item);
   }
   const requirements = [
     ...kept.filter((r) => importedIds.has(r.id)),
@@ -465,9 +479,15 @@ export function codeAgentRequirementSet(
   documentRequirements: readonly RequirementRef[],
   newRequirements: readonly RequirementRef[],
   importedIds: ReadonlySet<string>,
+  importedItems: readonly RequirementRef[] = [],
 ): ImportedScopeResult {
   if (importedIds.size > 0) {
-    return scopeRequirementsToImported(documentRequirements, newRequirements, importedIds);
+    return scopeRequirementsToImported(
+      documentRequirements,
+      newRequirements,
+      importedIds,
+      importedItems,
+    );
   }
   return {
     ...mergeRequirementSetsWithAccount(documentRequirements, newRequirements),

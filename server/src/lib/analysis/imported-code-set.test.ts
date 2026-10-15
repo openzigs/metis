@@ -163,4 +163,26 @@ describe("codeAgentRequirementSet — #1098", () => {
     expect(result.requirements).toEqual(IMPORTED);
     expect(result.leftOut).toHaveLength(23);
   });
+
+  it("keeps an imported item past the candidate cap and folds its restatement into it", () => {
+    const titles = Array.from({ length: 10 }, (_, i) => `Widget number${i + 1} export option`);
+    const all = titles.map((text, i) => ({ id: `NR-${i + 1}`, text }));
+    const capped = all.slice(0, 8);
+    const restatements = [9, 10].map((n) => ({
+      id: `REQ-${n}`,
+      text: `The system SHALL provide a widget number${n} export option for users.`,
+    }));
+    const result = codeAgentRequirementSet(
+      restatements,
+      capped,
+      new Set(all.map((r) => r.id)),
+      all,
+    );
+    expect(result.requirements.map((r) => r.id)).toEqual(all.map((r) => r.id));
+    expect(result.leftOut).toEqual([]);
+    expect(result.restated).toEqual([
+      { id: "REQ-9", restatesId: "NR-9" },
+      { id: "REQ-10", restatesId: "NR-10" },
+    ]);
+  });
 });

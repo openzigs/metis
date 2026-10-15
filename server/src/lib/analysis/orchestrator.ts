@@ -674,6 +674,16 @@ function importedCandidateIds(
   return new Set((sources ?? []).map((s) => s.candidateId));
 }
 
+/**
+ * #1098 — every imported item as a requirement (`NR-*` id, tracker title), so
+ * items past the candidate cap still reach the code agent.
+ */
+function importedItemRefs(
+  sources: ReadonlyArray<Pick<AnalysisSourceRequirement, "candidateId" | "title">> | undefined,
+): RequirementRef[] {
+  return (sources ?? []).map((s) => ({ id: s.candidateId, text: s.title }));
+}
+
 /** #1027 — the run's stored plan context, or undefined. */
 export function readAgentContext(metadata: Record<string, unknown>): string | undefined {
   return normalizeAgentContext(metadata.agentContext);
@@ -1043,6 +1053,7 @@ export class AnalysisOrchestrator {
           ? await this.regenerateCodeAgent(agentInput, {
               // #1098 — scope the set to the imported items, as the run did.
               importedIds: importedCandidateIds(readSourceRequirements(analysis.metadata)),
+              importedItems: importedItemRefs(readSourceRequirements(analysis.metadata)),
               databaseAwareSetting:
                 (analysis.project as { databaseAwareAnalysis?: string | null })
                   .databaseAwareAnalysis ?? undefined,
@@ -1137,6 +1148,7 @@ export class AnalysisOrchestrator {
       turnMultiplier?: number;
       /** #1098 — the `NR-*` ids of the imported items the run was started from. */
       importedIds?: ReadonlySet<string>;
+      importedItems?: readonly RequirementRef[];
     } = {},
   ): Promise<AgentRunResult> {
     const totalBudget = opts.tokenBudget ?? resolveAgentTokenBudget();
@@ -1145,6 +1157,7 @@ export class AnalysisOrchestrator {
       await this.extractRequirementsFromDocAgent(input.analysisId),
       await extractNewRequirementCandidates(input.extraInstructions),
       opts.importedIds ?? new Set(),
+      opts.importedItems,
     ).requirements;
     const mode = await this.detectAgentMode(input.projectId, "code", requirements);
     if (mode !== "agentic") {
@@ -1403,6 +1416,7 @@ export class AnalysisOrchestrator {
           await extractNewRequirementCandidates(extraInstructions),
           // #1098 — scoped to the imported items, as the original run was.
           importedCandidateIds(readSourceRequirements(analysis.metadata)),
+          importedItemRefs(readSourceRequirements(analysis.metadata)),
         ).requirements;
         const affectedCode = await this.computeAffectedCode(
           opts.analysisId,
@@ -1802,6 +1816,7 @@ export class AnalysisOrchestrator {
           extractedRequirements,
           newRequirements,
           importedCandidateIds(opts.sourceRequirements),
+          importedItemRefs(opts.sourceRequirements),
         );
         const codeRequirements = mergeResult.requirements;
         if (opts.sourceRequirements?.length) {

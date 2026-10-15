@@ -275,6 +275,28 @@ describe("#1098 — the code agent's requirement set on a run from imported item
     expect(codeAgentRequirementIds(recorded)).toEqual(["NR-1", "NR-2", "NR-3", "NR-4", "NR-5"]);
   });
 
+  it("investigates imported items past the candidate cap, and does not leave their restatements out", async () => {
+    const titles = Array.from({ length: 10 }, (_, i) => `Gadget zone${i + 1} export option`);
+    docState.requirements = [9, 10].map((n) => ({
+      id: `REQ-${n}`,
+      text: `The system SHALL provide a gadget zone${n} export option for users.`,
+    }));
+    const recorded = await runPipeline("claude-sonnet-4-6", {
+      extraInstructions: titles.map((t) => `- ${t}`).join("\n"),
+      sourceRequirements: titles.map((title, i) => ({
+        candidateId: `NR-${i + 1}`,
+        requirementId: `imp-${i + 1}`,
+        title,
+        externalSource: "github",
+        externalId: String(5000 + i),
+        externalUrl: null,
+      })),
+    });
+    expect(codeAgentRequirementIds(recorded)).toEqual(
+      Array.from({ length: 10 }, (_, i) => `NR-${i + 1}`),
+    );
+  });
+
   it("still gives the document requirements to the code agent on an ordinary run", async () => {
     docState.requirements = docState.requirements.slice(0, 3);
     const recorded = await runPipeline("claude-sonnet-4-6");
