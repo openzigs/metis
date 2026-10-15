@@ -177,9 +177,10 @@ publishes count toward the run's cap of 2, so leave it a slot or let it dry-run 
 refresh, re-ingest or scheduler run while docs generation is in flight used to fail the
 document at commit after its whole spend: $4.61 and 88 min in run 3 (#856). #867 now stops
 early on changed inputs, but the run still ends `failed`. Pause every scheduled job before
-Phase 9, and create the Phase 13 scheduler job **after** Phase 9's documents finish. **Confirm no scheduled job from an earlier run is enabled** at
-`/scheduler` before wave A: run 8's dashboard still listed jobs from runs 3 to 7, including a
-run 7 repo refresh on `*/2`. Pause or delete them.
+Phase 9, and create the Phase 13 scheduler job **after** Phase 9's documents finish.
+**Confirm no scheduled job from an earlier run is enabled** at `/scheduler` before wave A:
+run 8's dashboard still listed jobs from runs 3 to 7, including a run 7 repo refresh on
+`*/2`. Pause or delete them.
 
 **Sandbox publish slots.** The harness refused the real-publish confirmation in wave C and
 allowed it in waves D and F. The cap is 2 real sandbox issues per run; assign them up front

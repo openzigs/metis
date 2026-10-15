@@ -173,10 +173,10 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
 - **Steps:**
   1. In `/projects/:id/connections`, add a repo connector for `https://github.com/miniflux/v2.git` at ref `v2.3.3`, using the vault picker for the token. This calls `POST /api/projects/:id/connectors/repos`. Connector labels must match `^[A-Za-z0-9][A-Za-z0-9 _.\-]*$`.
   2. Run `…/repos/:id/test`, then **deep ingest**: `POST /api/projects/:id/connectors/repos/:repoId/deep-ingest` (clone + code graph + RAG). Then `set-primary`.
-  3. Open the Repositories page: it redirects to the project's connections page (`/projects/:id/connections`), so expect the redirect and do not file it. Then open `/projects/:id/repositories`.
+  3. Open `/repositories`, the cross-project repository list (no redirect), and confirm Miniflux is listed. `/projects/:id/repositories` redirects to `/projects/:id/connections` (#1371), so expect that redirect and do not file it.
 - **Works:**
   - The ingest job's progress (`components/realtime/job-progress`) reaches completion.
-  - The code-graph stats are greater than 0. `GET /api/projects/:id/connectors/repos/:repoId` carries none, so read them from the Deep Ingest banner on `/projects/:id/connections` (`sync-graph-totals`: graph files, symbols and edges; run 8 showed 427 files, 3,845 symbols, 28,158 edges) or from the deep-ingest job result's `summary.codeGraph` (`graphFiles`, `graphSymbols`, `graphEdges`).
+  - The code-graph stats are greater than 0. `GET /api/projects/:id/connectors/repos/:repoId` carries none, so read them from the Deep Ingest banner on `/projects/:id/connections` (its text reads "code graph of N files, N symbols, N edges"; run 8 showed 427 files, 3,845 symbols, 28,158 edges). Or press **Sync** on the connector card: `POST /api/projects/:id/connectors/repos/:repoId/refresh-ingest` returns `data.codeGraph.graphFiles`, `data.codeGraph.graphSymbols` and `data.codeGraph.graphEdges`, which the Sync result panel shows as `sync-graph-totals`. Starting a Deep Ingest clears that panel, and the deep-ingest job event carries only the banner message.
   - The connector card reads `connected` with the commit as soon as the first ingest ends, with no reload, and its commit is the code graph's `commitSha` (#758, #762).
   - The Deep Ingest banner reports the graph's totals ("code graph of N files, …"), not the delta (#715).
   - No credential-scan quarantine for Miniflux. If one fires, record which file.
@@ -424,7 +424,7 @@ What counts:
 ### Phase 13 — Drift, scheduler and tasks
 Run this phase only after Phase 9's documents finish: a repo refresh during docs generation fails the document at commit (#856).
 - **Steps:**
-  0. **Read the lineage edge count first** (`GET /api/projects/:id/sql-lineage`). The scheduled refresh on an unchanged commit raised reads from 740 to 785 in run 8 (also run 7, listed on #1066), so a count taken before and after Phase 13 differs by design. Run 8's end-of-run query gives 785 reads, 361 writes and 108 persists-to; waves A and B reported 740.
+  0. **Read the lineage edge count first** (`GET /api/projects/:id/sql-lineage`). The scheduled refresh on an unchanged commit raised reads from 740 to 785 in run 8 (also run 7, listed on #1066), so expect a count taken before and after Phase 13 to differ. Whether that is intended is still open on #1066: record both counts there, not as a new finding. Run 8's end-of-run query gives 785 reads, 361 writes and 108 persists-to; waves A and B reported 740.
   1. Open `/projects/:id/sync` (`GET /api/sync/drift`, `…/drift/count`, `…/drift/:id/resolve`).
   2. In `/scheduler`, list the handlers (`GET /api/scheduler/handlers`) and create a job of type `refresh-repo-connector` on a cron schedule. Pause, resume and view its history.
   3. In `/tasks`, cancel and retry a task.
@@ -497,7 +497,9 @@ Replaces the Test Coverage page, whose imports and runs were removed in #818 and
 
 ## Spec Kit (Phase 14, in full)
 
-**Type the leading slash.** This plan writes Spec Kit commands without one (`speckit.specify`) so the drift check does not read them as pages, but the command palette requires it: type `/speckit.specify`, `/speckit.plan` and so on. Where a step says to run `speckit.<name>`, that means `/speckit.<name>` in the palette. The API paths are unaffected. **S6 then S6b changes the design**, so save `plan.md` and `tasks.md` only after S6b to S6d, and run `/speckit.analyze` and the handoff after them. Budget 45 minutes for S9 when #1062 is exercised (run 8: 20 minutes and $0.35, and one Continue added 23 minutes and $0.41). In S3b, `developer` is not a member of a fresh run's workspace: invite, accept, then log out and in. <!-- drift-check: skip -->
+**Type the leading slash.** This plan writes Spec Kit commands without one (`speckit.specify`) so the drift check does not read them as pages, but the command palette requires it: type `/speckit.specify`, `/speckit.plan` and so on. Where a step says to run `speckit.<name>`, that means `/speckit.<name>` in the palette. The API paths are unaffected. <!-- drift-check: skip -->
+
+**S6 then S6b changes the design**, so save `plan.md` and `tasks.md` only after S6b to S6d, and run `speckit.analyze` and the handoff after them. Budget 45 minutes for S9 when #1062 is exercised (run 8: 20 minutes and $0.35, and one Continue added 23 minutes and $0.41). In S3b, `developer` is not a member of a fresh run's workspace: invite, accept, then log out and in.
 
 **Sources:**
 - API: `server/src/routes/spec-kit.ts`, mounted at `/api/projects/:projectId/spec-kit`.
@@ -700,7 +702,7 @@ changes, cited at `v2.3.3`.
 - **Source:** `upstream` (merged PR `6333ca10`, no linked issue: the PR description is the request, like #4526).
 - **Files (scored, 8):** `internal/reader/rewrite/content_rewrite.go`; `internal/reader/rewrite/content_rewrite_validation.go` (new); `internal/reader/rewrite/url_rewrite.go`; `internal/validator/rewrite.go` (new); `internal/validator/feed.go`; `internal/ui/form/subscription.go`; `internal/ui/feed_update.go`; `internal/locale/translations/en_US.json`.
 - **Neutral:** the other 22 locale files, the templates `add_subscription.html`, `edit_feed.html` and `settings.html` (textarea and monospace change), `internal/ui/static/css/common.css`, and the tests.
-- **Behaviour:** malformed content, URL and entry rewrite rules block saving on the add-feed, edit-feed and settings screens with a message; existing malformed rules are logged at apply time. Scoring uses the same rules as the other sets; a plan that only logs at apply time misses the save-time half.
+- **Behaviour:** malformed content, URL and entry rewrite rules block saving with a message on the add-feed and edit-feed screens and on feed create and update through the REST API (`internal/validator/feed.go`); existing malformed rules are logged at apply time. Scoring uses the same rules as the other sets; a plan that only logs at apply time misses the save-time half.
 
 #### #4386: After "Mark this page as read" the feed shows 0 entries
 
