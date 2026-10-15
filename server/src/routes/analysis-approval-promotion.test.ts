@@ -40,7 +40,10 @@ vi.mock("../middleware/analysis-deepdive-rate-limit.js", () => ({
 const reopenLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
 const promoteLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
 const preAuthLimiter = vi.hoisted(() => ({ limited: false, calls: 0 }));
-const analysisRow = vi.hoisted(() => ({ status: "completed" }));
+const analysisRow = vi.hoisted(() => ({
+  status: "completed",
+  metadata: null as Record<string, unknown> | null,
+}));
 vi.mock("../middleware/analysis-approval-rate-limit.js", () => ({
   analysisApprovalPreAuthRateLimiter: (
     _req: express.Request,
@@ -87,6 +90,7 @@ vi.mock("../lib/prisma.js", () => ({
         id: "analysis-1",
         projectId: "proj-1",
         status: analysisRow.status,
+        metadata: analysisRow.metadata,
       })),
     },
     project: { findUnique: vi.fn(async () => ({ workspaceId: null })) },
@@ -102,6 +106,12 @@ const reviewApprovalRequest = vi.fn(async () => ({
 }));
 const promoteApprovedRequirements = vi.fn();
 const approveAllPendingApprovalRequests = vi.fn();
+const rejectPendingRequirementApprovals = vi.fn();
+const dialogDeps = vi.hoisted(() => [] as Array<{ askFirst?: ReadonlySet<string> }>);
+const getStructuredRequirements = vi.fn();
+const readSynthesisOutput = vi.fn(async (): Promise<unknown> => null);
+const listApprovalRequests = vi.fn();
+const canCreateTickets = vi.fn();
 const reopenApprovalRequest = vi.fn(async () => ({
   id: "ap_1",
   analysisId: "analysis-1",
@@ -120,19 +130,28 @@ vi.mock("../lib/analysis/index.js", () => ({
   getAnalysisSnapshot: vi.fn(),
   getCostCapStatus: vi.fn(),
   getOrchestrator: vi.fn(),
-  getStructuredRequirements: vi.fn(),
+  getStructuredRequirements,
   persistAnalysisEnhancement: vi.fn(),
   listAnalysesForProject: vi.fn(),
   setOrchestratorForTests: vi.fn(),
   updateRequirementRow: vi.fn(),
-  ClarificationDialog: class {},
+  ClarificationDialog: class {
+    constructor(deps: { askFirst?: ReadonlySet<string> }) {
+      dialogDeps.push(deps);
+    }
+    async startOrContinue() {
+      return { analysisId: "analysis-1", rounds: [] };
+    }
+  },
   getDialogState: vi.fn(),
-  listApprovalRequests: vi.fn(),
+  listApprovalRequests,
   reviewApprovalRequest,
   reopenApprovalRequest,
   approveAllPendingApprovalRequests,
-  canCreateTickets: vi.fn(),
+  rejectPendingRequirementApprovals,
+  canCreateTickets,
   promoteApprovedRequirements,
+  readSynthesisOutput,
   deepDiveFinding: vi.fn(),
   loadFindingForDeepDive: vi.fn(),
 }));
@@ -183,6 +202,9 @@ beforeEach(() => {
   preAuthLimiter.calls = 0;
   authCalls.n = 0;
   analysisRow.status = "completed";
+  analysisRow.metadata = null;
+  readSynthesisOutput.mockReset();
+  readSynthesisOutput.mockResolvedValue(null);
 });
 
 describe("approval promote/reopen — per-IP limiter ahead of the route's auth (PR #902)", () => {
@@ -200,6 +222,11 @@ describe("approval promote/reopen — per-IP limiter ahead of the route's auth (
     {
       path: "/:id/approvals/approve-all",
       url: "/api/projects/proj-1/analyses/analysis-1/approvals/approve-all",
+      perUser: promoteLimiter,
+    },
+    {
+      path: "/:id/approvals/reject-added",
+      url: "/api/projects/proj-1/analyses/analysis-1/approvals/reject-added",
       perUser: promoteLimiter,
     },
   ];
@@ -244,6 +271,7 @@ describe("approval promote/reopen — per-IP limiter ahead of the route's auth (
     "lets the request through to the per-user limiter on $path",
     async ({ url, perUser }) => {
       approveAllPendingApprovalRequests.mockResolvedValue({ approvedCount: 0 });
+      rejectPendingRequirementApprovals.mockResolvedValue({ rejectedCount: 0 });
       // Queue the promotion only for the route that consumes it.
       if (perUser === promoteLimiter) {
         promoteApprovedRequirements.mockResolvedValueOnce({
@@ -472,5 +500,335 @@ describe("POST .../approvals/approve-all — #939", () => {
     expect(res.status).toBe(429);
     expect(approveAllPendingApprovalRequests).not.toHaveBeenCalled();
     expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+  });
+});
+
+describe("ticked vs added requirement approvals — #1129", () => {
+  const importedRun = () => {
+    analysisRow.metadata = {
+      sourceRequirements: [
+        {
+          candidateId: "NR-1",
+          requirementId: "imp-1",
+          title: "Keyboard shortcut to mark all entries as read",
+          externalSource: "github",
+          externalId: "1",
+          externalUrl: null,
+        },
+      ],
+    };
+    getStructuredRequirements.mockResolvedValue({
+      requirements: [
+        { id: "REQ-1", title: "Mark all entries read by keyboard shortcut", description: "" },
+        { id: "REQ-2", title: "Import OPML", description: "Import subscriptions." },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+  };
+  const approvalRows = [
+    {
+      id: "ap_1",
+      analysisId: "analysis-1",
+      type: "requirement",
+      itemId: "REQ-1",
+      status: "pending",
+    },
+    {
+      id: "ap_2",
+      analysisId: "analysis-1",
+      type: "requirement",
+      itemId: "REQ-2",
+      status: "pending",
+    },
+    { id: "ap_3", analysisId: "analysis-1", type: "evidence", itemId: "REQ-2", status: "pending" },
+  ];
+
+  it("labels each requirement approval ticked or added on a run from imported items", async () => {
+    importedRun();
+    listApprovalRequests.mockResolvedValue(approvalRows);
+    canCreateTickets.mockResolvedValue({ allowed: false, pendingCount: 3, rejectedCount: 0 });
+
+    const res = await request(createApp()).get(
+      "/api/projects/proj-1/analyses/analysis-1/approvals",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.items.map((i: { origin?: string }) => i.origin)).toEqual([
+      "ticked",
+      "added",
+      undefined,
+    ]);
+  });
+
+  it("adds no origin on a run that was not started from imported items", async () => {
+    listApprovalRequests.mockResolvedValue(approvalRows);
+    canCreateTickets.mockResolvedValue({ allowed: false, pendingCount: 3, rejectedCount: 0 });
+
+    const res = await request(createApp()).get(
+      "/api/projects/proj-1/analyses/analysis-1/approvals",
+    );
+
+    expect(res.body.data.items.every((i: { origin?: string }) => i.origin === undefined)).toBe(
+      true,
+    );
+    expect(getStructuredRequirements).not.toHaveBeenCalled();
+  });
+
+  it("rejects exactly the added requirements, computed on the server, then promotes", async () => {
+    importedRun();
+    rejectPendingRequirementApprovals.mockResolvedValueOnce({ rejectedCount: 1 });
+    promoteApprovedRequirements.mockResolvedValueOnce({ status: "blocked", pendingCount: 1 });
+
+    const res = await request(createApp())
+      .post("/api/projects/proj-1/analyses/analysis-1/approvals/reject-added")
+      .send({ itemIds: ["REQ-1"] });
+
+    expect(res.status).toBe(200);
+    expect(rejectPendingRequirementApprovals).toHaveBeenCalledWith(
+      "analysis-1",
+      ["REQ-2"],
+      expect.objectContaining({ reviewerId: "user-1" }),
+    );
+    expect(res.body.data.rejectedCount).toBe(1);
+    expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1");
+  });
+
+  it("rejects nothing on a run with no imported items", async () => {
+    rejectPendingRequirementApprovals.mockResolvedValueOnce({ rejectedCount: 0 });
+    promoteApprovedRequirements.mockResolvedValueOnce({ status: "blocked", pendingCount: 1 });
+
+    await request(createApp()).post(
+      "/api/projects/proj-1/analyses/analysis-1/approvals/reject-added",
+    );
+
+    expect(rejectPendingRequirementApprovals).toHaveBeenCalledWith("analysis-1", [], {
+      reviewerId: "user-1",
+      reviewNote: expect.any(String),
+    });
+  });
+
+  it("reports the rejections even when promotion fails", async () => {
+    importedRun();
+    rejectPendingRequirementApprovals.mockResolvedValueOnce({ rejectedCount: 1 });
+    promoteApprovedRequirements.mockRejectedValueOnce(new Error("db down"));
+
+    const res = await request(createApp()).post(
+      "/api/projects/proj-1/analyses/analysis-1/approvals/reject-added",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.promotion.status).toBe("unavailable");
+  });
+});
+
+describe("clarify start asks the ticked items' questions first — #1129", () => {
+  it("hands the dialog the ids that restate a ticked item", async () => {
+    dialogDeps.length = 0;
+    analysisRow.metadata = {
+      sourceRequirements: [
+        {
+          candidateId: "NR-1",
+          requirementId: "imp-1",
+          title: "Keyboard shortcut to mark all entries as read",
+          externalSource: "github",
+          externalId: "1",
+          externalUrl: null,
+        },
+      ],
+    };
+    getStructuredRequirements.mockResolvedValue({
+      requirements: [
+        { id: "REQ-1", title: "Import OPML", description: "" },
+        { id: "REQ-2", title: "Mark all entries read by keyboard shortcut", description: "" },
+      ],
+      totalAmbiguities: 2,
+      totalEvidenceNeeds: 0,
+    });
+
+    const res = await request(createApp())
+      .post("/api/projects/proj-1/analyses/analysis-1/clarify")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect([...(dialogDeps.at(-1)?.askFirst ?? [])]).toEqual(["REQ-2"]);
+  });
+});
+
+describe("ticked vs added follows the recorded #1063 provenance, as the badge does — #1129", () => {
+  // The adversarial counterexample: "Refresh all feeds" shares half the words
+  // of the ticked "Per-feed refresh interval", so a word join files it ticked,
+  // while synthesis recorded `sourceIds: []` and the badge says "Added by the
+  // analysis". Every surface must agree with the badge.
+  const counterexampleRun = () => {
+    analysisRow.metadata = {
+      sourceRequirements: [
+        {
+          candidateId: "NR-1",
+          requirementId: "imp-1",
+          title: "Per-feed refresh interval",
+          externalSource: "github",
+          externalId: "1",
+          externalUrl: null,
+        },
+      ],
+    };
+    getStructuredRequirements.mockResolvedValue({
+      requirements: [
+        {
+          id: "REQ-1",
+          title: "Refresh all feeds",
+          description: "Trigger a refresh of every feed.",
+        },
+        { id: "REQ-2", title: "Polling cadence", description: "How often a source is polled." },
+      ],
+      totalAmbiguities: 2,
+      totalEvidenceNeeds: 0,
+    });
+    const synth = (title: string, body: string, sourceIds: string[]) => ({
+      type: "feature",
+      title,
+      body,
+      priority: "medium",
+      labels: [],
+      evidenceFindingIndexes: [],
+      acceptanceCriteria: [],
+      sourceIds,
+    });
+    readSynthesisOutput.mockResolvedValue({
+      summary: "s",
+      requirements: [
+        synth("Refresh all feeds", "Trigger a refresh of every feed.", []),
+        synth("Polling cadence", "How often a source is polled.", ["NR-1"]),
+      ],
+    });
+  };
+
+  it("labels the approvals from provenance", async () => {
+    counterexampleRun();
+    listApprovalRequests.mockResolvedValue([
+      {
+        id: "ap_1",
+        analysisId: "analysis-1",
+        type: "requirement",
+        itemId: "REQ-1",
+        status: "pending",
+      },
+      {
+        id: "ap_2",
+        analysisId: "analysis-1",
+        type: "requirement",
+        itemId: "REQ-2",
+        status: "pending",
+      },
+    ]);
+    canCreateTickets.mockResolvedValue({ allowed: false, pendingCount: 2, rejectedCount: 0 });
+
+    const res = await request(createApp()).get(
+      "/api/projects/proj-1/analyses/analysis-1/approvals",
+    );
+
+    expect(res.body.data.items.map((i: { origin?: string }) => i.origin)).toEqual([
+      "added",
+      "ticked",
+    ]);
+    expect(readSynthesisOutput).toHaveBeenCalledWith("analysis-1");
+  });
+
+  it("reject-added rejects the requirement the badge calls added, and keeps the ticked one", async () => {
+    counterexampleRun();
+    rejectPendingRequirementApprovals.mockResolvedValueOnce({ rejectedCount: 1 });
+    promoteApprovedRequirements.mockResolvedValueOnce({ status: "blocked", pendingCount: 1 });
+
+    await request(createApp()).post(
+      "/api/projects/proj-1/analyses/analysis-1/approvals/reject-added",
+    );
+
+    expect(rejectPendingRequirementApprovals).toHaveBeenCalledWith(
+      "analysis-1",
+      ["REQ-1"],
+      expect.objectContaining({ reviewerId: "user-1" }),
+    );
+  });
+
+  it("clarify asks the provenance-ticked requirement first", async () => {
+    dialogDeps.length = 0;
+    counterexampleRun();
+
+    await request(createApp()).post("/api/projects/proj-1/analyses/analysis-1/clarify").send({});
+
+    expect([...(dialogDeps.at(-1)?.askFirst ?? [])]).toEqual(["REQ-2"]);
+  });
+});
+
+describe("a rejected requirement does not take part in the provenance join — #1129", () => {
+  it("reject-added keeps the pending requirement promotion would badge ticked", async () => {
+    analysisRow.metadata = {
+      sourceRequirements: [
+        {
+          candidateId: "NR-1",
+          requirementId: "imp-1",
+          title: "Per-feed refresh interval",
+          externalSource: "github",
+          externalId: "1",
+          externalUrl: null,
+        },
+      ],
+    };
+    getStructuredRequirements.mockResolvedValue({
+      requirements: [
+        { id: "REQ-B", title: "Per-feed refresh interval setting", description: "" },
+        { id: "REQ-A", title: "Refresh interval", description: "" },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    const synth = (title: string, sourceIds: string[]) => ({
+      type: "feature",
+      title,
+      body: "",
+      priority: "medium",
+      labels: [],
+      evidenceFindingIndexes: [],
+      acceptanceCriteria: [],
+      sourceIds,
+    });
+    readSynthesisOutput.mockResolvedValue({
+      summary: "s",
+      requirements: [
+        synth("Per-feed refresh interval setting", ["NR-1"]),
+        synth("Refresh interval defaults", []),
+      ],
+    });
+    listApprovalRequests.mockResolvedValue([
+      {
+        id: "ap_b",
+        analysisId: "analysis-1",
+        type: "requirement",
+        itemId: "REQ-B",
+        status: "rejected",
+        createdAt: new Date("2026-10-01T00:00:00Z"),
+      },
+      {
+        id: "ap_a",
+        analysisId: "analysis-1",
+        type: "requirement",
+        itemId: "REQ-A",
+        status: "pending",
+        createdAt: new Date("2026-10-01T00:00:00Z"),
+      },
+    ]);
+    rejectPendingRequirementApprovals.mockResolvedValueOnce({ rejectedCount: 0 });
+    promoteApprovedRequirements.mockResolvedValueOnce({ status: "blocked", pendingCount: 1 });
+
+    await request(createApp()).post(
+      "/api/projects/proj-1/analyses/analysis-1/approvals/reject-added",
+    );
+
+    expect(rejectPendingRequirementApprovals).toHaveBeenCalledWith(
+      "analysis-1",
+      expect.not.arrayContaining(["REQ-A"]),
+      expect.anything(),
+    );
   });
 });

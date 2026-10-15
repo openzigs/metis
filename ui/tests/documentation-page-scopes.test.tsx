@@ -538,6 +538,65 @@ describe("DocumentationPage — GenerateForm scope selection", () => {
     });
   });
 
+  describe("requirements scope limited to chosen requirements (#1129)", () => {
+    it("sends only the chosen requirement ids with the run", async () => {
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (typeof path === "string" && path.endsWith("/analyses"))
+          return {
+            items: [
+              {
+                id: "run_done",
+                status: "completed",
+                startedAt: "2026-10-13T00:00:00Z",
+                completedAt: "2026-10-13T01:00:00Z",
+              },
+            ],
+          };
+        if (typeof path === "string" && path.endsWith("/analyses/run_done"))
+          return {
+            requirements: [
+              {
+                id: "r1",
+                title: "Mark all read",
+                reviewStatus: "approved",
+                sourceItems: [{ candidateId: "NR-1" }],
+              },
+              { id: "r2", title: "Import OPML", reviewStatus: "approved", sourceItems: [] },
+            ],
+          };
+        return sampleDocs;
+      });
+      renderPage();
+      fireEvent.click(await screen.findByTestId("generate-docs-btn"));
+      fireEvent.change(await screen.findByTestId("doc-scope-select"), {
+        target: { value: "requirements" },
+      });
+      await waitFor(() => {
+        const select = screen.getByTestId("analysis-run-select") as HTMLSelectElement;
+        expect(Array.from(select.options).map((o) => o.value)).toContain("run_done");
+      });
+      fireEvent.change(screen.getByTestId("analysis-run-select"), {
+        target: { value: "run_done" },
+      });
+      fireEvent.click(await screen.findByRole("button", { name: "Only the 1 from ticked items" }));
+      expect(screen.getByTestId("requirements-scope-count")).toHaveTextContent("cover 1 of 2");
+      fireEvent.click(screen.getByTestId("submit-generate"));
+
+      await waitFor(() => {
+        const call = mockApiFetch.mock.calls.find(
+          (c) => typeof c[0] === "string" && (c[0] as string).includes("/docs/generate"),
+        );
+        expect(call).toBeDefined();
+        const body = (call![1] as { body: Record<string, unknown> }).body;
+        expect(body.scopeFilter).toEqual({
+          analysisId: "run_done",
+          approvedOnly: true,
+          requirementIds: ["r1"],
+        });
+      });
+    });
+  });
+
   // Issue #58 — screen-reader audit. The GenerateForm controls were labelled by
   // bare <label> elements with no htmlFor/id association — invisible to SR users
   // (announced as unlabelled comboboxes). They are now programmatically named.

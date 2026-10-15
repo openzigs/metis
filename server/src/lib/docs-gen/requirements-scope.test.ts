@@ -9,6 +9,7 @@ vi.mock("../prisma.js", () => ({ prisma: { requirement: { findMany, count } } })
 
 import {
   countScopedRequirements,
+  headingWithCount,
   loadScopedRequirements,
   neutralizeHtml,
   renderRequirementsDocument,
@@ -134,7 +135,7 @@ describe("renderRequirementsDocument", () => {
       }),
       req({ id: "req-2", title: "Audit log", reviewStatus: null, verdict: null, body: "  " }),
     ]);
-    expect(md).toContain("# Invoices BRD");
+    expect(md).toContain("# Invoices BRD (2 requirements)\n");
     expect(md).toContain("covers 2 requirement(s) from analysis run `run-7`");
     expect(md).toContain("1 of 2 have recorded code links.");
     expect(md).toContain(
@@ -236,6 +237,29 @@ describe("synthesizeRequirementsDocument", () => {
     findMany.mockResolvedValue([]);
     await expect(synthesizeRequirementsDocument("p1", { analysisId: "a1" }, "BRD")).rejects.toThrow(
       /No requirements match/,
+    );
+  });
+});
+
+describe("requirements chosen from one run — #1129", () => {
+  it("says the document covers the chosen requirements of the run, with the count in the title", () => {
+    const md = renderRequirementsDocument(
+      "Business Requirements",
+      { analysisId: "run-8", requirementIds: ["a", "b", "c", "d", "e"] },
+      ["a", "b", "c", "d", "e"].map((id) => req({ id })),
+    );
+    expect(md.startsWith("# Business Requirements (5 requirements)\n")).toBe(true);
+    expect(md).toContain(
+      "This document covers 5 requirement(s) from those chosen from analysis run `run-8`.",
+    );
+    expect(md).not.toContain("selected requirement(s)");
+  });
+
+  it("does not repeat a count the title already states", () => {
+    expect(headingWithCount("BRD — 5 requirements", 5)).toBe("BRD — 5 requirements");
+    expect(headingWithCount("BRD", 1)).toBe("BRD (1 requirement)");
+    expect(headingWithCount("BRD — 15 requirements", 5)).toBe(
+      "BRD — 15 requirements (5 requirements)",
     );
   });
 });

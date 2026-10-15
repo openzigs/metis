@@ -205,12 +205,30 @@ function prLink(prNumber: number, prUrl: string): string {
 
 function selectionSummary(filter: RequirementsScopeFilter, count: number): string {
   const sources: string[] = [];
-  if (filter.analysisId) sources.push(`analysis run \`${cell(filter.analysisId)}\``);
+  // #1129 — a selection within one run is a subset OF that run, not a second source.
+  const chosenFromRun = Boolean(filter.analysisId && filter.requirementIds);
+  if (filter.analysisId)
+    sources.push(
+      `${chosenFromRun ? "those chosen from " : ""}analysis run \`${cell(filter.analysisId)}\``,
+    );
   if (filter.reviewRequestId) sources.push(`review \`${cell(filter.reviewRequestId)}\``);
-  if (filter.requirementIds)
+  if (filter.requirementIds && !chosenFromRun)
     sources.push(`${filter.requirementIds.length} selected requirement(s)`);
   const approved = filter.approvedOnly ? ", approved requirements only" : "";
   return `This document covers ${count} requirement(s) from ${sources.join(" and ")}${approved}.`;
+}
+
+/**
+ * #1129 — the document's heading states how many requirements it covers, so a
+ * BRD of five chosen requirements cannot be mistaken for one of the whole run.
+ * A title that already names the count is left as it is.
+ */
+export function headingWithCount(title: string, count: number): string {
+  const noun = count === 1 ? "requirement" : "requirements";
+  // A fixed pattern (no regex built from data): every "<n> requirement(s)" the title names.
+  const stated = [...title.matchAll(/(?<!\d)(\d+) requirements?\b/gi)].map((m) => Number(m[1]));
+  if (stated.includes(count)) return title;
+  return `${title} (${count} ${noun})`;
 }
 
 /** The Markdown document for a set of requirements. */
@@ -223,7 +241,7 @@ export function renderRequirementsDocument(
     (r) => r.codeMappings.length > 0 || r.implementations.length > 0,
   ).length;
   const out: string[] = [
-    `# ${cell(title)}`,
+    `# ${cell(headingWithCount(title, requirements.length))}`,
     "",
     selectionSummary(filter, requirements.length),
     `${linked} of ${requirements.length} have recorded code links.`,

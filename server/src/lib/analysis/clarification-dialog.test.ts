@@ -288,3 +288,48 @@ describe("ClarificationDialog start is idempotent per analysis + round (#937)", 
     expect(state.rounds).toHaveLength(1);
   });
 });
+
+describe("ClarificationDialog askFirst — #1129", () => {
+  const TWO: StructuredRequirements = {
+    requirements: ["added-1", "ticked-1"].map((id) => ({
+      id,
+      title: id,
+      description: id,
+      type: "functional",
+      priority: "high",
+      ambiguities: [{ field: "scope", description: "unclear" }],
+    })),
+    totalAmbiguities: 2,
+    totalEvidenceNeeds: 0,
+  } as unknown as StructuredRequirements;
+
+  const twoQuestionProvider = (): AIProvider =>
+    ({
+      offline: true,
+      chat: vi.fn(async () => ({
+        content: JSON.stringify({
+          questions: ["added-1", "ticked-1"].map((requirementId) => ({
+            requirementId,
+            ambiguityField: "scope",
+            question: `About ${requirementId}?`,
+            context: "",
+          })),
+        }),
+      })),
+    }) as unknown as AIProvider;
+
+  it("asks the ticked items' questions first", async () => {
+    const dialog = new ClarificationDialog({
+      provider: twoQuestionProvider(),
+      askFirst: new Set(["ticked-1"]),
+    });
+    const state = await dialog.startOrContinue("ana-ask-first", TWO);
+    expect(state.rounds[0]!.questions.map((q) => q.requirementId)).toEqual(["ticked-1", "added-1"]);
+  });
+
+  it("keeps the generated order without askFirst", async () => {
+    const dialog = new ClarificationDialog({ provider: twoQuestionProvider() });
+    const state = await dialog.startOrContinue("ana-no-ask-first", TWO);
+    expect(state.rounds[0]!.questions.map((q) => q.requirementId)).toEqual(["added-1", "ticked-1"]);
+  });
+});

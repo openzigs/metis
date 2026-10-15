@@ -54,7 +54,7 @@ export type PromotionOutcome =
   | { status: "unavailable"; reason: string };
 
 /** Read + validate the synthesis agent's persisted output for an analysis. */
-async function readSynthesisOutput(analysisId: string): Promise<SynthesisOutput | null> {
+export async function readSynthesisOutput(analysisId: string): Promise<SynthesisOutput | null> {
   const row = await prisma.agentResult.findFirst({
     where: { analysisId, agentKey: "synthesis", status: "completed" },
     select: { output: true },

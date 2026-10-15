@@ -54,14 +54,22 @@ vi.mock("../src/lib/prisma.js", () => ({
           where,
           data,
         }: {
-          where: { id?: string; analysisId: string; status?: string };
+          where: {
+            id?: string;
+            analysisId: string;
+            status?: string;
+            type?: string;
+            itemId?: { in: string[] };
+          };
           data: Record<string, unknown>;
         }) => {
           const matched = rows.filter(
             (r) =>
               (where.id === undefined || r.id === where.id) &&
               r.analysisId === where.analysisId &&
-              (where.status === undefined || r.status === where.status),
+              (where.status === undefined || r.status === where.status) &&
+              (where.type === undefined || r.type === where.type) &&
+              (where.itemId === undefined || where.itemId.in.includes(r.itemId)),
           );
           for (const row of matched) Object.assign(row, data);
           return Promise.resolve({ count: matched.length });
@@ -94,6 +102,7 @@ const {
   canCreateTickets,
   reopenApprovalRequest,
   approveAllPendingApprovalRequests,
+  rejectPendingRequirementApprovals,
   DEFAULT_APPROVAL_POLICY,
 } = await import("../src/lib/analysis/approval-checkpoint.js");
 
@@ -486,5 +495,55 @@ describe("approveAllPendingApprovalRequests (#939)", () => {
   it("reports zero when nothing is pending", async () => {
     const result = await approveAllPendingApprovalRequests("analysis-1", { reviewerId: "user-1" });
     expect(result).toEqual({ approvedCount: 0 });
+  });
+});
+
+describe("rejectPendingRequirementApprovals (#1129)", () => {
+  beforeEach(() => {
+    rows = [];
+    idCounter = 0;
+  });
+
+  it("rejects only the named pending requirement approvals of the analysis", async () => {
+    await createApprovalRequests("analysis-1", [
+      { type: "requirement" as const, itemId: "REQ-1" },
+      { type: "requirement" as const, itemId: "REQ-2" },
+      { type: "requirement" as const, itemId: "REQ-3" },
+      { type: "evidence" as const, itemId: "REQ-2" },
+    ]);
+    await createApprovalRequests("analysis-2", [{ type: "requirement" as const, itemId: "REQ-2" }]);
+    await reviewApprovalRequest("analysis-1", "approval-3", {
+      status: "approved",
+      reviewerId: "user-0",
+    });
+
+    const result = await rejectPendingRequirementApprovals("analysis-1", ["REQ-2", "REQ-3"], {
+      reviewerId: "user-1",
+      reviewNote: "added by the analysis",
+    });
+
+    expect(result).toEqual({ rejectedCount: 1 });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    expect(byId.get("approval-1")!.status).toBe("pending");
+    expect(byId.get("approval-2")).toMatchObject({
+      status: "rejected",
+      reviewerId: "user-1",
+      reviewNote: "added by the analysis",
+    });
+    expect(byId.get("approval-2")!.reviewedAt).toBeInstanceOf(Date);
+    // An earlier approval keeps its reviewer: only pending rows are resolved.
+    expect(byId.get("approval-3")).toMatchObject({ status: "approved", reviewerId: "user-0" });
+    // Same item id, another type: not a requirement approval.
+    expect(byId.get("approval-4")!.status).toBe("pending");
+    expect(byId.get("approval-5")!.status).toBe("pending");
+  });
+
+  it("writes nothing for an empty id list", async () => {
+    await createApprovalRequests("analysis-1", [{ type: "requirement" as const, itemId: "REQ-1" }]);
+    const result = await rejectPendingRequirementApprovals("analysis-1", [], {
+      reviewerId: "user-1",
+    });
+    expect(result).toEqual({ rejectedCount: 0 });
+    expect(rows[0]!.status).toBe("pending");
   });
 });

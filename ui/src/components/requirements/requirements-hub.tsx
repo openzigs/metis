@@ -176,6 +176,7 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
             key={selected.id}
             projectId={projectId}
             requirementIds={detail.data.requirements.map((r) => r.id)}
+            requirements={detail.data.requirements}
             currentUserId={user.id}
             approvedCount={counts.approved}
           />

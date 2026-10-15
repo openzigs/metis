@@ -741,6 +741,16 @@ export const analysisApi = {
     ),
 
   /**
+   * Issue #1129 — reject every pending requirement approval the analysis added
+   * on a run started from ticked imported items. The server decides which.
+   */
+  rejectAddedApprovals: (projectId: string, analysisId: string) =>
+    apiFetch<{ rejectedCount: number; promotion: PromotionOutcome }>(
+      `/projects/${projectId}/analyses/${analysisId}/approvals/reject-added`,
+      { method: "POST", body: {} },
+    ),
+
+  /**
    * Issue #723 — promote the approved requirements of a run whose gate is open
    * but which has no requirement rows. Idempotent on the server.
    */
@@ -1065,6 +1075,12 @@ export interface ApprovalRequestPayload {
   reviewNote: string | null;
   createdAt: string;
   reviewedAt: string | null;
+  /**
+   * Issue #1129 — on a run started from ticked imported items, whether this
+   * requirement approval restates a ticked item or was added by the analysis.
+   * Absent on any other run and on non-requirement approvals.
+   */
+  origin?: "ticked" | "added";
 }
 
 export interface TicketStatus {

@@ -32,6 +32,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MarkdownPreviewer } from "@/components/markdown-previewer";
 import { Skeleton } from "@/components/ui/skeleton";
 import { VersionArtifacts } from "@/components/documentation/version-artifacts";
+import { RequirementsScopePicker } from "@/components/documentation/requirements-scope-picker";
 import type { DocSectionProgressEvent, SchemaGraph } from "@metis/shared";
 import { PageHeader } from "@/components/ui/page-header";
 
@@ -818,6 +819,10 @@ function GenerateForm({
   // it is limited to the requirements a reviewer approved.
   const [selectedAnalysisId, setSelectedAnalysisId] = useState<string>("");
   const [approvedOnly, setApprovedOnly] = useState(true);
+  // #1129 — the chosen requirements of the run; null is the whole run.
+  const [chosenRequirementIds, setChosenRequirementIds] = useState<ReadonlySet<string> | null>(
+    null,
+  );
   // #283 — opt-in domain web-research grounding. Default OFF to respect
   // network/cost; only meaningful for narrative business-requirements docs.
   const [groundDomainWithWebResearch, setGroundDomainWithWebResearch] = useState(false);
@@ -884,6 +889,7 @@ function GenerateForm({
     setSelectedRepoId("");
     setSelectedDbId("");
     setSelectedAnalysisId("");
+    setChosenRequirementIds(null);
     if (!titleEdited) {
       // #980 — a database-scope document is a schema reference, whatever the
       // (hidden) document type says; the title used to keep "Business Requirements".
@@ -925,6 +931,7 @@ function GenerateForm({
     if (scope === "requirements" && selectedAnalysisId) {
       scopeFilter.analysisId = selectedAnalysisId;
       scopeFilter.approvedOnly = approvedOnly;
+      if (chosenRequirementIds) scopeFilter.requirementIds = [...chosenRequirementIds];
     }
     // #283 — only forward the opt-in for narrative business-requirements docs
     // where it is meaningful; ignored for other doc types.
@@ -954,7 +961,8 @@ function GenerateForm({
     !title.trim() ||
     (scope === "repository" && !selectedRepoId) ||
     (scope === "database" && !selectedDbId) ||
-    (scope === "requirements" && !selectedAnalysisId);
+    (scope === "requirements" && !selectedAnalysisId) ||
+    (scope === "requirements" && chosenRequirementIds?.size === 0);
 
   return (
     <Card className="p-4 space-y-4" data-testid="generate-form">
@@ -1047,7 +1055,10 @@ function GenerateForm({
           <select
             id="analysis-run-select"
             value={selectedAnalysisId}
-            onChange={(e) => setSelectedAnalysisId(e.target.value)}
+            onChange={(e) => {
+              setSelectedAnalysisId(e.target.value);
+              setChosenRequirementIds(null);
+            }}
             className="w-full px-3 py-2 border rounded-md bg-background"
             data-testid="analysis-run-select"
             disabled={analysesQuery.isLoading}
@@ -1081,6 +1092,14 @@ function GenerateForm({
             />
             Approved requirements only
           </label>
+          {selectedAnalysisId ? (
+            <RequirementsScopePicker
+              analysisId={selectedAnalysisId}
+              approvedOnly={approvedOnly}
+              value={chosenRequirementIds}
+              onChange={setChosenRequirementIds}
+            />
+          ) : null}
           <p className="text-xs text-muted-foreground">
             A business requirements document of the run&rsquo;s requirements, with their acceptance
             criteria and the code each one is linked to.

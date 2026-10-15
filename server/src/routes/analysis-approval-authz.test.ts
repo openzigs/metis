@@ -50,6 +50,7 @@ vi.mock("../lib/prisma.js", () => ({
 
 const reopenApprovalRequest = vi.fn(async () => ({ id: "ap_1", status: "pending" }));
 const approveAllPendingApprovalRequests = vi.fn(async () => ({ approvedCount: 2 }));
+const rejectPendingRequirementApprovals = vi.fn(async () => ({ rejectedCount: 2 }));
 const promoteApprovedRequirements = vi.fn(async () => ({
   status: "promoted" as const,
   requirementCount: 3,
@@ -76,6 +77,7 @@ vi.mock("../lib/analysis/index.js", () => ({
   reviewApprovalRequest: vi.fn(),
   reopenApprovalRequest,
   approveAllPendingApprovalRequests,
+  rejectPendingRequirementApprovals,
   canCreateTickets: vi.fn(),
   promoteApprovedRequirements,
   deepDiveFinding: vi.fn(),
@@ -123,6 +125,11 @@ const routes = [
     name: "POST .../approvals/approve-all (#939)",
     path: "/api/projects/proj-1/analyses/analysis-1/approvals/approve-all",
     service: approveAllPendingApprovalRequests,
+  },
+  {
+    name: "POST .../approvals/reject-added (#1129)",
+    path: "/api/projects/proj-1/analyses/analysis-1/approvals/reject-added",
+    service: rejectPendingRequirementApprovals,
   },
 ];
 

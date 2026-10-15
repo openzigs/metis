@@ -164,6 +164,25 @@ export interface ClarificationDialogDeps {
    */
   retriever?: GroundingRetriever;
   projectId?: string;
+  /**
+   * Issue #1129 — requirement ids whose questions are asked FIRST. On a run
+   * started from ticked imported items these are the requirements that restate
+   * a ticked item; the analysis's own additions follow, so five ticked items
+   * are never buried under 29 questions about features nobody asked for.
+   */
+  askFirst?: ReadonlySet<string>;
+}
+
+/** Stable partition: questions about `askFirst` requirements, then the rest. */
+export function orderQuestionsAskFirst<T extends { requirementId: string }>(
+  questions: readonly T[],
+  askFirst: ReadonlySet<string> | undefined,
+): T[] {
+  if (!askFirst || askFirst.size === 0) return [...questions];
+  return [
+    ...questions.filter((q) => askFirst.has(q.requirementId)),
+    ...questions.filter((q) => !askFirst.has(q.requirementId)),
+  ];
 }
 
 export class ClarificationDialog {
@@ -171,12 +190,14 @@ export class ClarificationDialog {
   private readonly model: string | undefined;
   private readonly retriever: GroundingRetriever | undefined;
   private readonly projectId: string | undefined;
+  private readonly askFirst: ReadonlySet<string> | undefined;
 
   constructor(deps: ClarificationDialogDeps) {
     this.provider = deps.provider;
     this.model = deps.model;
     this.retriever = deps.retriever;
     this.projectId = deps.projectId;
+    this.askFirst = deps.askFirst;
   }
 
   /**
@@ -266,7 +287,8 @@ export class ClarificationDialog {
 
     const round: ClarificationRound = {
       round: state.currentRound,
-      questions: groundedQuestions,
+      // #1129 — the ticked items' questions lead the round.
+      questions: orderQuestionsAskFirst(groundedQuestions, this.askFirst),
       answers: [],
     };
 

@@ -29,10 +29,29 @@ interface UserHit {
   displayName: string;
 }
 
+/** #1129 — a requirement the review can be limited to. */
+export interface ReviewableRequirement {
+  id: string;
+  title: string;
+  reviewStatus?: string | null;
+  /** `[]` when the analysis added it; items when it restates ticked imported items. */
+  sourceItems?: readonly unknown[] | null;
+}
+
+/** #1129 — ids of the requirements that restate a ticked imported item. */
+export function tickedRequirementIds(requirements: readonly ReviewableRequirement[]): string[] {
+  return requirements.filter((r) => (r.sourceItems?.length ?? 0) > 0).map((r) => r.id);
+}
+
 interface Props {
   projectId: string;
   /** The requirements the review covers. */
   requirementIds: readonly string[];
+  /**
+   * #1129 — when given, the form lets the requester limit the review to some of
+   * them (all are chosen to start with) and says how many it covers.
+   */
+  requirements?: readonly ReviewableRequirement[];
   /** The signed-in user — never offered as a reviewer. */
   currentUserId: string;
   /** #989 — how many of `requirementIds` are already approved. */
@@ -41,12 +60,25 @@ interface Props {
 
 export function RequestReviewCard({
   projectId,
-  requirementIds,
+  requirementIds: allRequirementIds,
+  requirements,
   currentUserId,
-  approvedCount = 0,
+  approvedCount: approvedCountProp = 0,
 }: Props) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
+  // #1129 — the chosen subset; every requirement to start with.
+  const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set(allRequirementIds));
+  const requirementIds = allRequirementIds.filter((id) => chosen.has(id));
+  const ticked = requirements ? tickedRequirementIds(requirements) : [];
+  const approvedCount =
+    requirements && requirements.some((r) => r.reviewStatus !== undefined)
+      ? requirements.filter((r) => chosen.has(r.id) && r.reviewStatus === "approved").length
+      : approvedCountProp;
+  const choose = (next: ReadonlySet<string>): void => {
+    setChosen(next);
+    setDraftId(null);
+  };
   const [title, setTitle] = useState("Requirements review");
   const [search, setSearch] = useState("");
   const [reviewers, setReviewers] = useState<UserHit[]>([]);
@@ -105,6 +137,7 @@ export function RequestReviewCard({
 
   const count = requirementIds.length;
   const noun = `requirement${count === 1 ? "" : "s"}`;
+  const total = allRequirementIds.length;
 
   if (!open) {
     return (
@@ -143,6 +176,53 @@ export function RequestReviewCard({
         }}
       >
         <h3 className="text-sm font-semibold">Request review</h3>
+        <p className="text-sm font-medium" data-testid="request-review-scope">
+          This review covers {count} of {total} requirement{total === 1 ? "" : "s"}.
+        </p>
+        {requirements && requirements.length > 1 ? (
+          <fieldset className="space-y-1">
+            <legend className="text-xs font-medium">Requirements in this review</legend>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => choose(new Set(allRequirementIds))}
+              >
+                Choose all
+              </Button>
+              {ticked.length > 0 && ticked.length < requirements.length ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => choose(new Set(ticked))}
+                >
+                  Only the {ticked.length} from ticked items
+                </Button>
+              ) : null}
+            </div>
+            <ul className="max-h-48 space-y-1 overflow-y-auto rounded-md border p-2">
+              {requirements.map((r) => (
+                <li key={r.id} className="text-sm">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={chosen.has(r.id)}
+                      onChange={(e) => {
+                        const next = new Set(chosen);
+                        if (e.target.checked) next.add(r.id);
+                        else next.delete(r.id);
+                        choose(next);
+                      }}
+                    />
+                    {r.title}
+                  </label>
+                </li>
+              ))}
+            </ul>
+          </fieldset>
+        ) : null}
         <p className="text-xs text-muted-foreground">
           Asks the reviewers to approve or reject these {count} {noun} at their current versions.
           Approval creates a baseline.
