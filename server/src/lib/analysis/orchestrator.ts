@@ -73,9 +73,11 @@ import {
 } from "./code-citations.js";
 import { getPersona } from "./personas.js";
 import {
+  allowAnalysisModelCalls,
   flushAnalysisUsage,
   meterAnalysisProvider,
   runInAnalysisUsageScope,
+  stopAnalysisModelCalls,
 } from "./analysis-usage.js";
 import { withInvokeAgentSpan } from "../otel/genai-spans.js";
 import {
@@ -673,6 +675,11 @@ interface ActiveRun {
   analysisId: string;
   controllers: Map<string, AbortController>;
   cancelled: boolean;
+  /**
+   * #1142 — set once the run has passed its last cancellation check and is
+   * recording its result: a cancel can no longer stop it, so it answers false.
+   */
+  settled?: boolean;
 }
 
 /** #741 (Epic #727) — outcome of a multi-repo budget resume. */
@@ -1062,6 +1069,7 @@ export class AnalysisOrchestrator {
         },
       });
       this.active.delete(opts.analysisId);
+      allowAnalysisModelCalls(opts.analysisId);
     }
   }
 
@@ -1427,6 +1435,7 @@ export class AnalysisOrchestrator {
         },
       });
       this.active.delete(opts.analysisId);
+      allowAnalysisModelCalls(opts.analysisId);
     }
     return { resumed, remaining, noop: false };
   }
@@ -1533,11 +1542,19 @@ export class AnalysisOrchestrator {
     }
   }
 
-  /** Cancel an in-flight analysis. Idempotent. */
+  /**
+   * Cancel an in-flight analysis. Idempotent. `true` means no further model
+   * call is made for the run (one already in flight may finish) and it ends
+   * `cancelled`; `false` means there was nothing left to stop — no live run, or
+   * one already recording its result (#1142).
+   */
   async cancel(analysisId: string, actorId: string): Promise<boolean> {
     const active = this.active.get(analysisId);
-    if (!active) return false;
+    if (!active || active.settled) return false;
     active.cancelled = true;
+    // #1142 — aborting the controllers alive now does not reach a phase that
+    // starts later with its own; the metered provider refuses those calls.
+    stopAnalysisModelCalls(analysisId);
     for (const c of active.controllers.values()) c.abort();
     audit({
       actor: { id: actorId },
@@ -1615,6 +1632,34 @@ export class AnalysisOrchestrator {
       projectId: opts.projectId,
       kind: "analysis",
     }).catch(() => undefined);
+
+    // #1142 — a cancelled run ends here, from whichever phase it was in.
+    const endCancelled = async (): Promise<void> => {
+      await markAnalysisCancelled(analysisId, totals);
+      this.emitCancelled(analysisId);
+      // #239 — a cancelled run is terminal; report as failed on the unified
+      // job channel so the UI leaves the running state (with a clear reason).
+      jobEvents.failed("analysis", analysisId, opts.projectId, "Analysis cancelled");
+      audit({
+        actor: { id: opts.startedById },
+        action: "analysis.cancelled",
+        target: { type: "analysis", id: analysisId },
+        metadata: { tokens: totals.totalTokens },
+      });
+      if (replayRunId) {
+        // A cancelled analysis may still have incurred spend before the
+        // cancel landed; attribute whatever usage is in-window.
+        const { costCents } = await replayRunCostAfterUsage(analysisId, replayRunId).catch(() => ({
+          costCents: 0,
+        }));
+        await finishReplayRun({
+          runId: replayRunId,
+          status: "cancelled",
+          totalTokens: totals.totalTokens,
+          costCents,
+        }).catch(() => undefined);
+      }
+    };
 
     try {
       // Phase 1: Run document agent first (for requirement extraction),
@@ -2069,32 +2114,7 @@ export class AnalysisOrchestrator {
       }
 
       if (run.cancelled) {
-        await markAnalysisCancelled(analysisId, totals);
-        this.emitCancelled(analysisId);
-        // #239 — a cancelled run is terminal; report as failed on the unified
-        // job channel so the UI leaves the running state (with a clear reason).
-        jobEvents.failed("analysis", analysisId, opts.projectId, "Analysis cancelled");
-        audit({
-          actor: { id: opts.startedById },
-          action: "analysis.cancelled",
-          target: { type: "analysis", id: analysisId },
-          metadata: { tokens: totals.totalTokens },
-        });
-        if (replayRunId) {
-          // A cancelled analysis may still have incurred spend before the
-          // cancel landed; attribute whatever usage is in-window.
-          const { costCents } = await replayRunCostAfterUsage(analysisId, replayRunId).catch(
-            () => ({
-              costCents: 0,
-            }),
-          );
-          await finishReplayRun({
-            runId: replayRunId,
-            status: "cancelled",
-            totalTokens: totals.totalTokens,
-            costCents,
-          }).catch(() => undefined);
-        }
+        await endCancelled();
         return;
       }
 
@@ -2119,6 +2139,12 @@ export class AnalysisOrchestrator {
             error: (err as Error).message,
           });
         });
+      }
+
+      // #1142 — a cancel that landed during enhancement.
+      if (run.cancelled) {
+        await endCancelled();
+        return;
       }
 
       // Honesty gate (#anthropic-model-id-and-analysis-status): if EVERY
@@ -2179,6 +2205,15 @@ export class AnalysisOrchestrator {
         sourceRequirements: opts.sourceRequirements,
       });
 
+      // #1142 — a cancel that landed during synthesis (whose fallback never
+      // throws) must not end the run `completed`. Past this check the result is
+      // being recorded, so a later cancel answers false rather than lying.
+      if (run.cancelled) {
+        await endCancelled();
+        return;
+      }
+      run.settled = true;
+
       // #733 — freeze + persist the capability record and push the final state
       // to the UI. Best-effort: a persistence hiccup must never fail a run that
       // otherwise completed.
@@ -2224,6 +2259,17 @@ export class AnalysisOrchestrator {
         }).catch(() => undefined);
       }
     } catch (err) {
+      // #1142 — a cancelled run whose phase threw on the refused call or the
+      // abort ended because it was cancelled, not because it failed.
+      if (run.cancelled) {
+        await endCancelled().catch((cancelErr: unknown) => {
+          log.error("Recording a cancelled analysis failed", {
+            analysisId,
+            error: (cancelErr as Error).message,
+          });
+        });
+        return;
+      }
       // #254 — the RAW error is kept server-side only: logged at error level
       // here and persisted to the analysis row. Both client-facing socket events
       // (`analysis:failed` and the unified `job:lifecycle` `failed` event) carry
@@ -2255,6 +2301,7 @@ export class AnalysisOrchestrator {
       }
     } finally {
       this.active.delete(analysisId);
+      allowAnalysisModelCalls(analysisId);
       this.capabilities.delete(analysisId);
     }
   }

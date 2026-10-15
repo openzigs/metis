@@ -253,3 +253,36 @@ describe("flushAnalysisUsage", () => {
     await expect(flushAnalysisUsage("never-used")).resolves.toBeUndefined();
   });
 });
+// #1142 — a cancelled analysis kept calling the model: the gate refuses every
+// metered call billed to a stopped session, before it reaches the adapter.
+describe("stopAnalysisModelCalls (#1142)", () => {
+  it("refuses chat and stream for the stopped session, and records nothing", async () => {
+    const { stopAnalysisModelCalls, allowAnalysisModelCalls } = await import("./analysis-usage.js");
+    const inner = new FakeProvider();
+    const metered = meterAnalysisProvider(inner);
+    stopAnalysisModelCalls("ana-1");
+    try {
+      await expect(runInAnalysisUsageScope(SCOPE, () => metered.chat([]))).rejects.toMatchObject({
+        name: "AbortError",
+      });
+      await expect(
+        runInAnalysisUsageScope(SCOPE, async () => {
+          for await (const _ of metered.stream([])) void _;
+        }),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(inner.chatCalls).toBe(0);
+      expect(recordUsage).not.toHaveBeenCalled();
+
+      // Another analysis, and a call outside any scope, are not stopped.
+      await runInAnalysisUsageScope({ projectId: "proj-1", sessionId: "ana-2" }, () =>
+        metered.chat([]),
+      );
+      await metered.chat([]);
+      expect(inner.chatCalls).toBe(2);
+    } finally {
+      allowAnalysisModelCalls("ana-1");
+    }
+    await runInAnalysisUsageScope(SCOPE, () => metered.chat([]));
+    expect(inner.chatCalls).toBe(3);
+  });
+});

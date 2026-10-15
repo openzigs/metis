@@ -1759,7 +1759,8 @@ describe("AnalysisOrchestrator.start", () => {
     for (let i = 0; i < 400 && analyses.get(analysisId)!.status === "running"; i += 1) {
       await new Promise((r) => setTimeout(r, 10));
     }
-    expect(["cancelled", "failed"]).toContain(analyses.get(analysisId)!.status);
+    // #1142 — a cancelled run ends cancelled, never failed or completed.
+    expect(analyses.get(analysisId)!.status).toBe("cancelled");
   });
 
   it("rejects requests for archived projects", async () => {
@@ -3951,5 +3952,166 @@ describe("selectWebAgentEvidence (#864)", () => {
     expect(
       selectWebAgentEvidence([chunk("a.md", 0, "upload"), chunk("b.md", undefined, "upload")]),
     ).toEqual([]);
+  });
+});
+/**
+ * #1142 — `cancel` answered `cancelled: true` while the run kept calling the
+ * model and ended `completed`: run `cmv8qrdrc01f6599k30aagqwk` made 20 more
+ * calls ($0.13) after Cancel. Cancel aborted only the controllers alive at that
+ * moment, and synthesis — with its own fresh controller — ran on to completion.
+ */
+describe("AnalysisOrchestrator cancel stops spend (#1142)", () => {
+  /**
+   * Runs an analysis on a provider that records every model call, and cancels
+   * from inside the call `cancelWhen` picks (so that call is in flight when the
+   * cancel lands, and may finish). Returns the calls started after the cancel.
+   */
+  async function runAndCancel(cancelWhen: (persona: string, call: number) => boolean): Promise<{
+    after: string[];
+    before: string[];
+    status: string;
+    answered: boolean | null;
+  }> {
+    const base = makeProvider({});
+    const before: string[] = [];
+    const after: string[] = [];
+    let cancelled = false;
+    let answered: boolean | null = null;
+    let orch: InstanceType<typeof AnalysisOrchestrator> | null = null;
+    let analysisId = "";
+    const provider = {
+      ...base,
+      key: "anthropic",
+      model: "claude-sonnet-5-5",
+      offline: false,
+      servesRouterModel: () => false,
+      async chat(messages: ChatMessage[], opts?: { systemMessage?: string }) {
+        const sys =
+          opts?.systemMessage ??
+          (messages.find((m) => m.role === "system")?.content as string | undefined) ??
+          "";
+        const persona = sys.includes("Mary")
+          ? "document"
+          : sys.includes("Winston")
+            ? "code"
+            : sys.includes("Sally")
+              ? "database"
+              : sys.includes("Quinn")
+                ? "web"
+                : "other";
+        (cancelled ? after : before).push(persona);
+        const res = await base.chat(messages, opts);
+        if (!cancelled && cancelWhen(persona, before.length)) {
+          cancelled = true;
+          answered = await orch!.cancel(analysisId, "user-1234567890");
+        }
+        return res;
+      },
+    } as unknown as AIProvider;
+    orch = new AnalysisOrchestrator({
+      provider,
+      retrieve: async () => [
+        {
+          documentId: "doc-1234567890",
+          chunkIndex: 0,
+          filename: "spec.md",
+          text: "x",
+          score: 0.8,
+        },
+      ],
+    });
+    ({ id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    }));
+    for (let i = 0; i < 400 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return {
+      after,
+      before,
+      status: analyses.get(analysisId)!.status,
+      answered,
+    };
+  }
+
+  it("a cancel between agent steps makes no further model call and ends cancelled", async () => {
+    const run = await runAndCancel((p) => p === "document");
+    expect(run.answered).toBe(true);
+    expect(run.before).toContain("document");
+    expect(run.after).toEqual([]);
+    expect(run.status).toBe("cancelled");
+  });
+
+  it("a cancel during synthesis makes no further model call and ends cancelled", async () => {
+    // The first call after the specialists is synthesis's.
+    let specialists = 0;
+    const run = await runAndCancel((p) => {
+      if (p !== "other") specialists += 1;
+      return p === "other" && specialists > 0;
+    });
+    expect(run.answered).toBe(true);
+    expect(run.after).toEqual([]);
+    expect(run.status).toBe("cancelled");
+  });
+
+  it("a cancel during the run's last model call still ends it cancelled", async () => {
+    // A clean run first, to learn how many calls it makes.
+    const clean = await runAndCancel(() => false);
+    expect(clean.status).toBe("completed");
+    const last = clean.before.length;
+    const run = await runAndCancel((_p, call) => call === last);
+    expect(run.answered).toBe(true);
+    expect(run.after).toEqual([]);
+    expect(run.status).toBe("cancelled");
+  });
+
+  it("answers false once the run is recording its completion, and it stays completed", async () => {
+    let answered: boolean | null = null;
+    let orch: InstanceType<typeof AnalysisOrchestrator> | null = null;
+    let analysisId = "";
+    const io = {
+      to() {
+        return {
+          emit(event: string) {
+            // The run is still active here: it has marked itself completed.
+            if (event === "analysis:completed" && answered === null) {
+              void orch!.cancel(analysisId, "user-1234567890").then((r) => (answered = r));
+            }
+          },
+        };
+      },
+    };
+    orch = new AnalysisOrchestrator({
+      provider: makeProvider({}),
+      io: io as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [],
+    });
+    ({ id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    }));
+    for (let i = 0; i < 400 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    await new Promise((r) => setTimeout(r, 5));
+    expect(answered).toBe(false);
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+  });
+
+  it("answers false for a run that has already finished", async () => {
+    const orch = new AnalysisOrchestrator({
+      provider: makeProvider({}),
+      retrieve: async () => [],
+    });
+    const { id } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    for (let i = 0; i < 400 && analyses.get(id)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(analyses.get(id)!.status).toBe("completed");
+    expect(await orch.cancel(id, "user-1234567890")).toBe(false);
   });
 });
