@@ -716,6 +716,15 @@ export class AnthropicProvider implements AIProvider {
       const prefix = opts.promptCaching?.systemPrefix ?? "";
       const split =
         prefix.length > 0 && prefix.length < systemText.length && systemText.startsWith(prefix);
+      if (cacheSystem && prefix.length > 0 && !split) {
+        log.debug(
+          "systemPrefix is not a strict prefix of the system prompt; caching the whole system",
+          {
+            prefixLength: prefix.length,
+            systemLength: systemText.length,
+          },
+        );
+      }
       body.system = !cacheSystem
         ? systemText
         : split

@@ -261,6 +261,23 @@ describe("AnthropicProvider prompt caching — chat()", () => {
     }
   });
 
+  it("#1144 — a rejected systemPrefix is logged, not silent", async () => {
+    logDebugSpy.mockClear();
+    await provider().chat(messages, { promptCaching: { system: true, systemPrefix: "PROMPT" } });
+    expect(logDebugSpy).toHaveBeenCalledWith(
+      expect.stringContaining("systemPrefix"),
+      expect.anything(),
+    );
+    logDebugSpy.mockClear();
+    await provider().chat(messages, {
+      promptCaching: { system: true, systemPrefix: "SYS" },
+    });
+    expect(logDebugSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("systemPrefix"),
+      expect.anything(),
+    );
+  });
+
   it("#1144 — systemPrefix without promptCaching.system writes no breakpoint", async () => {
     await provider().chat(messages, { promptCaching: { systemPrefix: "SYS" } });
     expect(lastCreateBody().system).toBe("SYS PROMPT");
