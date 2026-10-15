@@ -259,6 +259,8 @@ export interface AnalysisListItem {
    */
   ledgerTokens?: LedgerTokens | null;
   errorMessage: string | null;
+  /** #1143 — the agents whose result failed; non-empty on a run that completed with errors. */
+  failedAgents?: string[];
   /** #999 — how many of this run's requirements sit in each review status. */
   requirementCounts: Record<RequirementReviewStatus, number>;
 }

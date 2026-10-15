@@ -45,7 +45,8 @@ function answer(citations: unknown[], notes: unknown[] = []) {
 describe("repairFindingsAnswer — citation documentId", () => {
   it("resolves an over-long path naming a known document to that document's id", () => {
     const input = answer([{ documentId: PATH_AS_ID, chunkIndex: 4 }]);
-    expect(agentOutputSchema.safeParse(input).success).toBe(false);
+    // #1143 — unrepaired, the citation is dropped (no longer the whole answer).
+    expect(agentOutputSchema.parse(input).findings[0].citations).toEqual([]);
 
     const { value, repairs } = repairFindingsAnswer(input, { knownDocuments: KNOWN });
 
@@ -252,13 +253,19 @@ describe("the stored limits stay the contract", () => {
       { ...answer([]), notes: [42] },
       // no summary
       { ...answer([]), summary: undefined },
-      // a document citation with a valid id but no chunkIndex
-      answer([{ documentId: "doc_loanterms_0001" }]),
     ];
     for (const m of malformed) {
       const { value } = repairFindingsAnswer(m, { knownDocuments: KNOWN });
       expect(agentOutputSchema.safeParse(value).success).toBe(false);
     }
+    // #1143 — a citation with a valid id but no chunkIndex is dropped; the
+    // finding it was on survives.
+    const { value } = repairFindingsAnswer(answer([{ documentId: "doc_loanterms_0001" }]), {
+      knownDocuments: KNOWN,
+    });
+    const parsed = agentOutputSchema.parse(value);
+    expect(parsed.findings).toHaveLength(1);
+    expect(parsed.findings[0].citations).toEqual([]);
   });
 
   it("passes non-object input through untouched", () => {
@@ -500,11 +507,11 @@ describe("repairFindingsAnswer — a valid-length documentId that names no known
     });
   }
 
-  it("an otherwise-invalid citation is not touched, so the schema still rejects it", () => {
+  it("an otherwise-invalid citation is not touched, so the schema drops it (#1143)", () => {
     const input = answer([{ documentId: FILENAME_AS_ID }]);
     const { value, repairs } = repairFindingsAnswer(input, { knownDocuments: KNOWN });
     expect(repairs).toEqual([]);
-    expect(agentOutputSchema.safeParse(value).success).toBe(false);
+    expect(agentOutputSchema.parse(value).findings[0].citations).toEqual([]);
   });
 });
 

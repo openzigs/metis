@@ -267,3 +267,32 @@ describe("getAnalysisSnapshot ledgerUsage.tokens (#1007)", () => {
     expect(snap?.ledgerUsage).toEqual({ totalTokens: 545_197, costUsd: 0.3352, unpricedTokens: 0 });
   });
 });
+// #1143 — the run list and the snapshot name the agents that failed, so a run
+// whose agents failed no longer reads as a clean completion.
+describe("failedAgents (#1143)", () => {
+  it("lists the failed agents of each run, once each, and none for a clean run", async () => {
+    state.analyses = [
+      {
+        ...analysis("an-errors", "completed", 10),
+        agentResults: [
+          { agentKey: "document", status: "failed" },
+          { agentKey: "code", status: "failed" },
+          { agentKey: "code", status: "failed" },
+          { agentKey: "database", status: "completed" },
+        ],
+      },
+      { ...analysis("an-clean", "completed", 10), agentResults: [] },
+    ];
+    const runs = await listAnalysesForProject("p-1");
+    const byId = new Map(runs.map((r) => [r.id, r]));
+    expect(byId.get("an-errors")!.failedAgents).toEqual(["document", "code"]);
+    expect(byId.get("an-clean")!.failedAgents).toEqual([]);
+    // The rows are summarised, not returned.
+    expect(byId.get("an-errors")).not.toHaveProperty("agentResults");
+  });
+
+  it("names them on the snapshot too", async () => {
+    const snap = await getAnalysisSnapshot("an-any");
+    expect(snap!.failedAgents).toEqual([]);
+  });
+});

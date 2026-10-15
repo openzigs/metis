@@ -330,6 +330,38 @@ export type SnapshotDocumentCitation = DocumentCitation & { source?: DocumentSou
 /** #573 — a finding citation on the analysis snapshot. */
 export type SnapshotCitation = SnapshotDocumentCitation | CodeCitation;
 
+/**
+ * Issue #1143 — a model-authored citation list, repaired where it can be and
+ * otherwise thinned, never rejected whole. Measured on the Claude A/B for
+ * #1074: one citation matching no union branch (`symbolId: null`, no
+ * `documentId`, `startLine: 0`) made `agentOutputSchema` throw, and the
+ * document and code agents were each recorded `failed` with every finding they
+ * had produced discarded. Each citation is now tried on its own: a `null` in
+ * an optional field is dropped (the repair), a citation still invalid after
+ * that is dropped, and the finding keeps the citations that validate. The list
+ * is cut to its cap rather than failing on it.
+ *
+ * Model boundary only, like {@link coerceFindingCategory}: persisted evidence is
+ * parsed elsewhere, and the #734 grounding gate still checks every surviving
+ * code citation against what the agent actually retrieved.
+ */
+export function salvageCitations(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  const kept: Citation[] = [];
+  for (const raw of value) {
+    const candidate =
+      raw && typeof raw === "object" && !Array.isArray(raw)
+        ? Object.fromEntries(Object.entries(raw).filter(([, v]) => v !== null))
+        : raw;
+    const parsed = citationSchema.safeParse(candidate);
+    if (parsed.success) kept.push(parsed.data);
+  }
+  return kept.slice(0, MAX_FINDING_CITATIONS);
+}
+
+/** Most citations one finding carries. */
+export const MAX_FINDING_CITATIONS = 20;
+
 /** Narrow a {@link Citation} to a {@link CodeCitation} (has a `filePath`). */
 export function isCodeCitation(c: Citation): c is CodeCitation {
   return typeof (c as Partial<CodeCitation>).filePath === "string";
@@ -582,7 +614,10 @@ export const agentFindingPayloadSchema = z.object({
   severity: z.enum(FINDING_SEVERITIES),
   title: z.string().min(1).max(255),
   body: z.string().min(1).max(4096),
-  citations: z.array(citationSchema).max(20).default([]),
+  /** Issue #1143 — salvaged per citation, never rejected whole: {@link salvageCitations}. */
+  citations: z
+    .preprocess(salvageCitations, z.array(citationSchema).max(MAX_FINDING_CITATIONS))
+    .default([]),
   tags: z.array(z.string().min(1).max(64)).max(16).default([]),
   /**
    * Epic #912 (#916/#920) — id of the extracted requirement this finding is
@@ -1262,6 +1297,11 @@ export interface AnalysisSnapshot {
    */
   ledgerUsage?: AnalysisLedgerUsage | null;
   errorMessage: string | null;
+  /**
+   * Issue #1143 — the agents whose result failed ({@link analysisFailedAgents}).
+   * Non-empty on a `completed` run: it completed with errors.
+   */
+  failedAgents?: string[];
   metadata: Record<string, unknown> | null;
   agents: Array<{
     agentKey: AnalysisResultAgentKey;
@@ -2600,6 +2640,36 @@ export function deriveCapabilityReasons(input: CapabilityReasonInput): AnalysisC
     reasons.push("requirement-inputs-dropped");
   }
   return reasons;
+}
+
+/**
+ * Issue #1143 — the agents whose result row `failed` in a run, de-duplicated in
+ * first-seen order (a multi-repo code agent writes one row per connector). A
+ * `cancelled` row is not a failure. Read from the rows rather than from a
+ * stored field, so it is right for every run, including ones recorded before
+ * this existed.
+ */
+export function analysisFailedAgents(
+  agents: ReadonlyArray<{ agentKey: string; status: string }> | null | undefined,
+): string[] {
+  const failed: string[] = [];
+  for (const a of agents ?? []) {
+    if (a.status === "failed" && !failed.includes(a.agentKey)) failed.push(a.agentKey);
+  }
+  return failed;
+}
+
+/** Issue #1143 — the status a completed run in which an agent failed shows. */
+export const COMPLETED_WITH_ERRORS_LABEL = "completed with errors";
+
+/**
+ * Issue #1143 — the status a run shows: `completed with errors` for a
+ * `completed` run in which any agent failed, otherwise the stored status. A
+ * run whose agents failed is no longer shown as a clean completion; it stays
+ * `completed` in storage because its partial result is real and usable.
+ */
+export function analysisStatusLabel(status: string, failedAgents: readonly string[]): string {
+  return status === "completed" && failedAgents.length > 0 ? COMPLETED_WITH_ERRORS_LABEL : status;
 }
 
 /** Whether a capability record represents a degraded run (has ≥1 reason). */

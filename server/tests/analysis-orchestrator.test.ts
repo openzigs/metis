@@ -4115,3 +4115,93 @@ describe("AnalysisOrchestrator cancel stops spend (#1142)", () => {
     expect(await orch.cancel(id, "user-1234567890")).toBe(false);
   });
 });
+/**
+ * #1143 — run `cmv8qrdrc01f6599k30aagqwk`: one citation matching no union
+ * branch failed the document agent's schema validation and discarded all its
+ * findings, and the run still read as a clean `completed`.
+ */
+describe("AnalysisOrchestrator malformed citation and failed agents (#1143)", () => {
+  it("keeps the agent's findings without the bad citation, and the run completes with errors", async () => {
+    const { analysisFailedAgents, analysisStatusLabel } = await import("@metis/shared");
+    const base = makeProvider({ failAgent: "code" });
+    const provider = {
+      ...base,
+      async chat(messages: ChatMessage[], opts?: { systemMessage?: string }) {
+        const sys =
+          opts?.systemMessage ??
+          (messages.find((m) => m.role === "system")?.content as string | undefined) ??
+          "";
+        if (sys.includes("Mary")) {
+          return stubResponse(
+            JSON.stringify({
+              agentKey: "document",
+              summary: "summary from document",
+              findings: [
+                {
+                  category: "gap",
+                  severity: "medium",
+                  title: "kept with its good citation",
+                  body: "b",
+                  citations: [
+                    // The A/B's rejected shape: no documentId, a null symbolId, line 0.
+                    {
+                      filePath: "src/a.ts",
+                      startLine: 0,
+                      endLine: 2,
+                      symbolId: null,
+                    },
+                    { documentId: "doc-1234567890", chunkIndex: 0 },
+                  ],
+                },
+                {
+                  category: "risk",
+                  severity: "low",
+                  title: "the other finding",
+                  body: "b",
+                  citations: [{ documentId: "doc-1234567890", chunkIndex: 0 }],
+                },
+              ],
+              notes: [],
+            }),
+          );
+        }
+        return base.chat(messages, opts);
+      },
+    } as unknown as AIProvider;
+    const orch = new AnalysisOrchestrator({
+      provider,
+      retrieve: async () => [
+        {
+          documentId: "doc-1234567890",
+          chunkIndex: 0,
+          filename: "spec.md",
+          text: "x",
+          score: 0.8,
+        },
+      ],
+    });
+    const { id } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    for (let i = 0; i < 400 && analyses.get(id)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const rows = [...agentResults.values()].filter((a) => a.analysisId === id);
+    const doc = rows.find((a) => a.agentKey === "document")!;
+    expect(doc.status).toBe("completed");
+    expect(doc.findings.map((f) => f.title).sort()).toEqual([
+      "kept with its good citation",
+      "the other finding",
+    ]);
+    const kept = doc.findings.find((f) => f.title === "kept with its good citation")!;
+    expect(kept.evidence).toContain("doc-1234567890");
+    expect(kept.evidence).not.toContain("src/a.ts");
+
+    const status = analyses.get(id)!.status;
+    expect(status).toBe("completed");
+    const failed = analysisFailedAgents(rows);
+    expect(failed).toEqual(["code"]);
+    expect(analysisStatusLabel(status, failed)).toBe("completed with errors");
+  });
+});
