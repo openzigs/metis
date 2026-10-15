@@ -2475,6 +2475,10 @@ the measurement lessons behind the split — is documented once in
   `blastRadiusFiles`), the markdown export and the UI. No migration: `depth` has
   always meant "0 = direct, ≥1 = blast radius", and a run stored before #1036
   reads through the same rule. Relations added: `data-model` and `related`.
+  **Read-path bugs (#1135).** For a bug report that asks to store nothing new
+  (`isReadPathBug` in `change-seeds.ts`), table writers (lineage `writes` /
+  `persists-to`) are kept out of the edit candidates and stay in `related`, and
+  an HTTP-handler hit counts `READ_PATH_HANDLER_BOOST` (2×) in the file ranking.
 
   ```mermaid
   flowchart LR
@@ -6537,6 +6541,7 @@ are reported now. `plan-localisation.test.ts` holds one fixture per constant tha
 | the callee step's second hop, outside the data layer | kept inside it only | `N callees one call further out, outside the data layer, not listed (in …)` |
 | `MAX_LISTED_TWINS`, and the finder's `MAX_TWINS_PER_SEED`, `MAX_TWINS` | 6, 4, 24 | `N more twins not listed (in …)`, counting what all three removed |
 | `MAX_TWIN_SEEDS` | 60 | `N retrieved functions were not compared for twins, past the first 60` |
+| `MAX_PAGE_HANDLERS` (#1135) | 4 | `Handlers Serving the Page or Action: N more handlers not listed (in …)` |
 | `MAX_COLUMNS_PER_WRITER`, `MAX_NAMED_CALLERS` | 5, 3 | `+N more` on the row, and `N writers with more than 5 columns …` / `N callees with more than 3 callers …` |
 | `MAX_TYPE_EXCERPT_CHARS` | 1,600 | `N type declarations cut at 1,600 characters (…)` |
 | `MAX_SCANNED_SPEC_CHARS` | 20,000 | `Spec text: only the first 20,000 of N characters were read for table names` |
@@ -6545,6 +6550,19 @@ are reported now. `plan-localisation.test.ts` holds one fixture per constant tha
 | `TWIN_MAX_PROJECT_CALL_EDGES`, `TWIN_MAX_CANDIDATE_CALL_EDGES`, `TWIN_TIME_BUDGET_MS` | 2,000,000, 100,000, 1.5 s | `structural twins skipped: …` (the rest of the block is kept) |
 | `TWIN_MAX_POOLED_CALLEE_NAMES`, `TWIN_MAX_CANDIDATES` | 900, 2,000 | `N retrieved functions were not compared for twins …`, `more than 2,000 functions share callee names …` |
 | `LOCALISATION_TIME_BUDGET_MS`, an aborted signal | 5 s | `Change localisation skipped: …` (no block; the plan gets similarity retrieval alone) |
+
+**Handlers serving the page (#1135).** When the spec names a page or a UI action (`page`,
+`button`, `shortcut`, …), the walk lists the HTTP handlers whose names the spec's words match
+(`page-handlers.ts`). A handler is a function whose stored `signature` takes an HTTP request
+and response, for example Go `http.ResponseWriter` or Express `(req, res)`. When the spec says
+"page", page handlers come first. The handlers that are listed are compared for twins *before*
+the retrieved functions. That is how a fix seen on one page reaches the page built the same
+way. On the local Miniflux graph, with the run-8 #4386 spec, the change brought
+`internal/ui/feed_entries.go` and `internal/ui/category_entries.go` into the block (0 of 2
+before, 2 of 2 after). After generation, `plan-checks.ts` adds two notes to the result. The
+first flags a plan that calls a function or file "not visible" when that file was in its
+context. The second flags a snake_case name the spec states that the plan replaced with
+another name sharing its first and last part (`read_at_after` → `read_after`).
 
 The two depth bounds (`DEFAULT_MAX_DOWNSTREAM_DEPTH`, and the callee step's second hop) are
 different in kind: past them nothing is enumerated, so there is nothing to count. The block's

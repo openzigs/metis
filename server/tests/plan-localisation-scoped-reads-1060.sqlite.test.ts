@@ -71,6 +71,8 @@ interface SymbolRow {
   endLine: number;
   language: string;
   contentHash: string;
+  /** #1135 — the stored declaration. */
+  signature?: string | null;
 }
 interface EdgeRow {
   codeGraphId: string;
@@ -525,6 +527,39 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const functions = await source.getFunctionsInFiles(files);
       expect(functions.map((f) => f.filePath).sort()).toEqual([...files].sort());
       expect(functions.every((f) => f.id.startsWith(`${CHUNK}-`))).toBe(true);
+    }, 60_000);
+
+    it("#1135 — HTTP handlers: by stored signature, functions only, this project only, capped", async () => {
+      const handler =
+        "func (h *handler) showFeedEntriesPage(w http.ResponseWriter, r *http.Request)";
+      const symbols: SymbolRow[] = [];
+      for (const projectId of [CHUNK, HEAVY]) {
+        const own = (id: string) => `${projectId}-hh-${id}`;
+        symbols.push({
+          ...fn(projectId, own("page"), "internal/ui/feed_entries.go", "showFeedEntriesPage"),
+          signature: handler,
+        });
+        symbols.push({
+          ...fn(projectId, own("page2"), "internal/ui/unread.go", "showUnreadPage"),
+          signature: handler,
+        });
+        symbols.push({
+          ...fn(projectId, own("store"), "internal/storage/entry.go", "MarkFeedAsRead"),
+          signature: "func (s *Storage) MarkFeedAsRead(userID int64) error",
+        });
+        // A type whose declaration happens to mention the marker is not a handler.
+        symbols.push({
+          ...fn(projectId, own("type"), "internal/ui/w.go", "Wrapper"),
+          kind: "class",
+          signature: "type Wrapper struct { w http.ResponseWriter }",
+        });
+        symbols.push({ ...fn(projectId, own("nosig"), "internal/ui/x.go", "x") });
+      }
+      await insert(symbols, []);
+      const source = createDefaultPlanLocalisationSource(CHUNK);
+      const all = await source.getHttpHandlers!(10);
+      expect(all.map((d) => d.id).sort()).toEqual([`${CHUNK}-hh-page`, `${CHUNK}-hh-page2`]);
+      expect(await source.getHttpHandlers!(1)).toHaveLength(1);
     }, 60_000);
   },
 );

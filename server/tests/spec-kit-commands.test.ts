@@ -496,7 +496,7 @@ describe("/plan", () => {
     expect(r.message).toContain("Warning: `plan.md` was cut off");
   });
 
-  it("#1060 — /plan follows the code graph to the data, returns the files it was given, and passes no verdict on the plan's 'not in the retrieved context'", async () => {
+  it("#1060 — /plan follows the code graph to the data, returns the files it was given, and flags the plan's 'not in the retrieved context' of a file it was given (#1135)", async () => {
     await writeArtifact({
       projectId: "p1",
       name: "spec.md",
@@ -548,11 +548,13 @@ describe("/plan", () => {
       },
     });
     expect(r.retrievedFiles).toEqual([ENTRY, "internal/database/migrations.go"]);
-    // The plan says a listed file was not retrieved. No code decides what that
-    // sentence is about (#1094 cycle 2). The route does not forward `retrievedFiles`
-    // and `/plan` stores no record: a `/plan` reader cannot check it, and the guide says so.
-    expect(r.message).not.toContain("Check before implementing");
-    expect(r.message).not.toContain("not in the retrieved context");
+    // The plan says a listed file was not retrieved. #1094 passed no verdict on
+    // that sentence; #1135 flags it on the result card, because a `/plan` reader
+    // has no plan-context.md to check it against (run 8: "`WithLimit` not visible"
+    // with its file in the context).
+    expect(r.message).toContain(
+      " Check: plan.md says it could not see `internal/database/migrations.go`, but that file was in the plan's context — read it before trusting what the plan says about it.",
+    );
     expect(r.message).not.toContain("plan-context.md");
     // `/plan` has no `plan-context.md`, so the message is the only place that can
     // say what the localisation left out: it lists it in full.

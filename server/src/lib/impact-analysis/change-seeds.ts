@@ -39,6 +39,7 @@ import type { PrismaClient } from "@prisma/client";
 import { isDocumentationFilePath, isTestFilePath } from "../analysis/traceability-matrix.js";
 import { createChildLogger } from "../logger.js";
 import type { RequirementCodeMatch } from "../traceability/requirement-code-mapping.js";
+import { isHttpHandlerSignature } from "../spec-kit/page-handlers.js";
 import { requestRetrievalText } from "./change-request.js";
 import type { ChangedRequirement } from "./extract-changes.js";
 
@@ -74,6 +75,8 @@ export interface SeedSymbolRow {
   language: string;
   startLine: number | null;
   endLine: number | null;
+  /** #1135 — the stored declaration, to tell an HTTP handler. Absent from older loaders. */
+  signature?: string | null;
 }
 
 export type SeedSymbolLoader = (symbolIds: string[], projectId: string) => Promise<SeedSymbolRow[]>;
@@ -81,6 +84,11 @@ export type SeedSymbolLoader = (symbolIds: string[], projectId: string) => Promi
 export interface ChangeSeedDeps {
   searcher: SeedSearcher;
   loadSymbols: SeedSymbolLoader;
+  /**
+   * #1135 — which of the given symbols write a table (lineage `writes` /
+   * `persists-to`). Absent: no symbol is treated as a writer.
+   */
+  loadWriterIds?: (symbolIds: string[], projectId: string) => Promise<Set<string>>;
 }
 
 export interface ChangeSeeds {
@@ -125,6 +133,35 @@ export const MAX_RELATED = 100;
 export const SCHEMA_SEED_TOP = 10;
 /** A `related` hit is one step out: its confidence is scaled by this. */
 export const RELATED_CONFIDENCE_FACTOR = 0.6;
+
+/**
+ * #1135 — on a read-path bug, an HTTP handler hit counts this many times over
+ * in the file ranking: the handler builds the response that is wrong.
+ */
+export const READ_PATH_HANDLER_BOOST = 2;
+
+/**
+ * Words that say a request changes stored data. A bug report with none of them
+ * is a READ-PATH bug: something is shown or returned wrong.
+ */
+const STORED_DATA_CHANGE_RE =
+  /\b(?:migrations?|schema|new (?:column|field|table)s?|add(?:s|ing)? (?:a |an |the )?(?:new )?(?:column|field|table)s?|persist(?:s|ed|ing)?|stor(?:e|es|ed|ing) (?:a |an |the )?new|timestamp column)\b/i;
+
+/**
+ * #1135 — true for a bug report that changes no stored data. For one, the
+ * functions that WRITE a table are not files to edit by default: in #706 run 8
+ * the impact for Miniflux #4386 ("0 entries after 'Mark this page as read'")
+ * named the storage status writers, which the fix must not touch, and left the
+ * page handlers that build the empty page under Related.
+ */
+export function isReadPathBug(
+  change: Pick<ChangedRequirement, "title" | "body" | "request">,
+): boolean {
+  if (change.request?.kind !== "bug") return false;
+  return !STORED_DATA_CHANGE_RE.test(
+    `${change.title}\n${change.body}`.slice(0, MAX_SEED_QUERY_CHARS * 4),
+  );
+}
 
 const SCHEMA_KINDS: ReadonlySet<string> = new Set(["table", "column", "procedure"]);
 
@@ -273,11 +310,28 @@ export async function resolveChangeSeeds(
   // Only production code can be a file to edit: a test follows the change, and a
   // schema symbol is data, which the lineage stages handle.
   const isSchema = (h: FusedHit) => isSchemaSymbol(h.row);
-  const editable = ranked
-    .filter((h) => !isTestFilePath(h.row.filePath) && !isSchema(h))
-    .slice(0, EDIT_POOL);
+  const production = ranked.filter((h) => !isTestFilePath(h.row.filePath) && !isSchema(h));
+  // #1135 — a read-path bug: table writers stay for review, handlers count more.
+  const readPath = isReadPathBug(change);
+  let writers = new Set<string>();
+  if (readPath && deps.loadWriterIds) {
+    try {
+      writers = await deps.loadWriterIds(
+        production.slice(0, EDIT_POOL * 2).map((h) => h.symbolId),
+        projectId,
+      );
+    } catch (err) {
+      log.warn("writer lookup failed; writers stay edit candidates", {
+        projectId,
+        error: String(err),
+      });
+    }
+  }
+  const editable = production.filter((h) => !writers.has(h.symbolId)).slice(0, EDIT_POOL);
+  const boost = (h: FusedHit) =>
+    readPath && isHttpHandlerSignature(h.row.signature) ? READ_PATH_HANDLER_BOOST : 1;
   const editFiles = new Set(
-    rankEditFiles(editable.map((h) => ({ filePath: h.row.filePath, score: h.score }))),
+    rankEditFiles(editable.map((h) => ({ filePath: h.row.filePath, score: h.score * boost(h) }))),
   );
 
   const top = ranked[0]!.score;
@@ -316,7 +370,31 @@ const SEED_SYMBOL_SELECT = {
   language: true,
   startLine: true,
   endLine: true,
+  signature: true,
 } as const;
+
+/** #1135 — the production writer lookup: lineage write edges, project-scoped, chunked. */
+export function prismaWriterIdLoader(
+  prisma: Pick<PrismaClient, "codeEdge">,
+): (symbolIds: string[], projectId: string) => Promise<Set<string>> {
+  const CHUNK = 500;
+  return async (symbolIds, projectId) => {
+    const out = new Set<string>();
+    for (let i = 0; i < symbolIds.length; i += CHUNK) {
+      const rows = await prisma.codeEdge.findMany({
+        where: {
+          projectId,
+          kind: { in: ["writes", "persists-to"] },
+          fromSymbolId: { in: symbolIds.slice(i, i + CHUNK) },
+        },
+        select: { fromSymbolId: true },
+        distinct: ["fromSymbolId"],
+      });
+      for (const r of rows) out.add(r.fromSymbolId);
+    }
+    return out;
+  };
+}
 
 /** The production {@link SeedSymbolLoader}: project-scoped, chunked. */
 export function prismaSeedSymbolLoader(prisma: Pick<PrismaClient, "codeSymbol">): SeedSymbolLoader {

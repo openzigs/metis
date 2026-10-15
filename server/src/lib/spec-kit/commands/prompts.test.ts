@@ -82,6 +82,16 @@ describe("Spec Kit prompts name no walkthrough ground-truth symbol (#853)", () =
     expect(offenders).toEqual([]);
   });
 
+  it("#1135 — keeps the spec's names, and never calls listed code not visible", () => {
+    expect(PLAN_SYSTEM_PROMPT).toContain(
+      "Keep every parameter, field, column and endpoint name the spec states,",
+    );
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/record each rename and its\s+reason as an ADR/);
+    expect(PLAN_SYSTEM_PROMPT).toMatch(
+      /A function declared in a listed file is in the retrieved context too/,
+    );
+  });
+
   it("keeps a worked sibling example, just a neutral one", () => {
     expect(PLAN_SYSTEM_PROMPT).toMatch(/`\w+` next to `\w+`/);
   });

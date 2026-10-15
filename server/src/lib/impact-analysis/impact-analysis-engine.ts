@@ -43,6 +43,7 @@ import {
 import { assignImpactRoles, tablesGainingColumns } from "./impact-roles.js";
 import {
   prismaSeedSymbolLoader,
+  prismaWriterIdLoader,
   resolveChangeSeeds,
   type ChangeSeeds,
   type RetrievalMode,
@@ -1173,7 +1174,7 @@ export interface TriggerImpactAnalysisInput {
  * hydrates from another.
  */
 export function defaultSeedChange(
-  prisma: Pick<PrismaClient, "codeSymbol">,
+  prisma: Pick<PrismaClient, "codeSymbol" | "codeEdge">,
   searcherDeps: CodeSearcherDeps = {},
 ): SeedChangeFn {
   const sameClient = (prisma as unknown) === (defaultPrisma as unknown);
@@ -1185,7 +1186,10 @@ export function defaultSeedChange(
     ...searcherDeps,
   });
   const loadSymbols = prismaSeedSymbolLoader(prisma);
-  return (change, projectId) => resolveChangeSeeds(change, projectId, { searcher, loadSymbols });
+  // #1135 — on a read-path bug, table writers are not files to edit.
+  const loadWriterIds = prismaWriterIdLoader(prisma);
+  return (change, projectId) =>
+    resolveChangeSeeds(change, projectId, { searcher, loadSymbols, loadWriterIds });
 }
 
 function resolvePrisma(deps: ImpactServiceDeps): ImpactPrisma {

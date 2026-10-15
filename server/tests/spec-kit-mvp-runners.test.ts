@@ -2894,5 +2894,32 @@ describe("#1134 — a re-planned feature marks what the earlier plan generated",
     // Two reports appended, one stamp.
     expect(analysis.content.match(/generated from plan\.md/g)).toHaveLength(1);
     expect(readPlanSource(all.find((a) => a.key === "checklist-security.md")!.content)).toBe(1);
+describe("#1135 — /speckit.plan reports a renamed parameter on its result", () => {
+  it("names the spec's parameter the plan replaced, and is quiet when the plan keeps it", async () => {
+    const fid = seedFeature("p1", "009-read-at");
+    seedFeatureArtifact(
+      fid,
+      "spec.md",
+      "# Spec\n\n## In scope\n- support filtering with read_at_after / read_at_before",
+    );
+    const renamed = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "009-read-at",
+      symbolFileLookup: async () => new Map(),
+      deps: { provider: new FakeProvider("## Components\n- filters read_after and read_before") },
+    });
+    expect(renamed.message).toContain(
+      "Check: plan.md renames names the spec states (`read_at_after` → `read_after`, `read_at_before` → `read_before`) without saying why",
+    );
+
+    const kept = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "009-read-at",
+      symbolFileLookup: async () => new Map(),
+      deps: {
+        provider: new FakeProvider("## Components\n- filters read_at_after and read_at_before"),
+      },
+    });
+    expect(kept.message).not.toContain("renames");
   });
 });

@@ -34,6 +34,7 @@ import {
   MAX_NAMED_CALLERS,
   MAX_NAMED_LEFT_OUT,
   MAX_OTHER_CALLEES,
+  MAX_PAGE_HANDLERS,
   MAX_READERS_PER_TABLE,
   MAX_SCANNED_SPEC_CHARS,
   MAX_TABLES,
@@ -1604,5 +1605,86 @@ describe("createDefaultPlanLocalisationSource — callee names for the twin step
       OR: [{ filePath: { startsWith: "internal/ui/" } }],
     });
     vi.doUnmock("../prisma.js");
+  });
+});
+
+// ── #1135: the handlers serving the page a spec names ───────────────────────
+
+describe("buildPlanLocalisation — the handlers serving the page (#1135)", () => {
+  /** The #4386 shape: the page action is retrieved, the page handler is not. */
+  const PAGE_SPEC =
+    "After 'Mark this page as read' on the last page of a feed, the feed entries page shows 0 entries and no Previous button.";
+  const graph = minifluxGraph();
+  const detail = (id: string) => {
+    const { name: _n, text: _t, ...d } = graph.symbols.find((x) => x.id === id)!;
+    return d;
+  };
+  const settings = sym(
+    "h-settings",
+    "function",
+    "internal/ui/settings_show.go::showSettingsPage",
+    "internal/ui/settings_show.go",
+    10,
+  );
+  const handlerSource = (handlers: ReturnType<typeof detail>[]) => {
+    const getHttpHandlers = vi.fn(async (_limit: number) => handlers);
+    return { source: { ...fakeSource(graph), getHttpHandlers }, getHttpHandlers };
+  };
+  const ONLY_REFRESH: LocalisationSeed[] = [SEEDS[0]!];
+
+  it("lists the page's handler, and finds its twin from it", async () => {
+    const { name: _n, ...settingsDetail } = settings;
+    const { source, getHttpHandlers } = handlerSource([detail("f-show"), settingsDetail]);
+    const r = await localise({ requirementText: PAGE_SPEC, seeds: ONLY_REFRESH, source });
+    expect(getHttpHandlers).toHaveBeenCalledOnce();
+    expect(r.block).toContain("### Handlers Serving the Page or Action");
+    expect(r.block).toContain(
+      "- showFeedEntriesPage (function) — internal/ui/feed_entries.go:15-24 (name matches: feed, entry)",
+    );
+    expect(r.block).not.toContain("showSettingsPage");
+    // The twin step starts from the handler: the same pattern on another page.
+    expect(r.block).toContain(
+      "- showCategoryEntriesPage (function) — internal/ui/category_entries.go:15-24 (built like showFeedEntriesPage",
+    );
+    expect(r.files).toEqual(
+      expect.arrayContaining(["internal/ui/feed_entries.go", "internal/ui/category_entries.go"]),
+    );
+    // Listed once: the callee list does not repeat it.
+    expect(r.block.split("\n").filter((l) => l.startsWith("- showFeedEntriesPage ("))).toHaveLength(
+      1,
+    );
+  });
+
+  it("does nothing for a spec that names no page or UI action", async () => {
+    const { source, getHttpHandlers } = handlerSource([detail("f-show")]);
+    const r = await localise({ seeds: ONLY_REFRESH, source });
+    expect(getHttpHandlers).not.toHaveBeenCalled();
+    expect(r.block).not.toContain("Handlers Serving the Page");
+  });
+
+  it("does not repeat a handler the retrieval already named", async () => {
+    const { source } = handlerSource([detail("f-show")]);
+    const r = await localise({ requirementText: PAGE_SPEC, source });
+    expect(r.block).not.toContain("Handlers Serving the Page");
+  });
+
+  it(`lists at most ${MAX_PAGE_HANDLERS} handlers and says how many more matched`, async () => {
+    const many = Array.from({ length: MAX_PAGE_HANDLERS + 2 }, (_, i) => {
+      const { name: _n, ...d } = sym(
+        `h-${i}`,
+        "function",
+        `internal/ui/feed_entries_${i}.go::showFeedEntries${i}Page`,
+        `internal/ui/feed_entries_${i}.go`,
+        1,
+      );
+      return d;
+    });
+    const { source } = handlerSource(many);
+    const r = await localise({ requirementText: PAGE_SPEC, seeds: ONLY_REFRESH, source });
+    const rows = r.block.split("\n").filter((l) => /^- showFeedEntries\d+Page \(/.test(l));
+    expect(rows).toHaveLength(MAX_PAGE_HANDLERS);
+    expect(r.dropped).toContain(
+      `Handlers Serving the Page or Action: 2 more handlers not listed (in internal/ui/feed_entries_4.go, internal/ui/feed_entries_5.go)`,
+    );
   });
 });

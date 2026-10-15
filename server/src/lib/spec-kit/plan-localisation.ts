@@ -82,6 +82,11 @@ import {
   type SchemaImpactDataSource,
 } from "../impact-analysis/schema-impact.js";
 import {
+  HTTP_HANDLER_SIGNATURE_MARKERS,
+  namesPageOrUiAction,
+  rankHandlers,
+} from "./page-handlers.js";
+import {
   MAX_TWIN_SEEDS,
   MIN_CALLEES,
   MIN_TWIN_SIMILARITY,
@@ -138,6 +143,11 @@ export interface PlanLocalisationSource {
     seedIds: readonly string[],
     checkpoint?: () => Promise<void>,
   ): Promise<CalleeNameLoad>;
+  /**
+   * #1135 — production functions whose stored signature marks them as HTTP
+   * handlers, at most `limit`. Absent: no handler step.
+   */
+  getHttpHandlers?(limit: number): Promise<CodeSymbolDetail[]>;
 }
 
 export interface BuildPlanLocalisationInput {
@@ -213,6 +223,10 @@ const DEPTH_DECAY = 0.5;
 export const MAX_COLUMNS_PER_WRITER = 5;
 /** Callers named per callee line. */
 export const MAX_NAMED_CALLERS = 3;
+/** #1135 — handlers listed for a spec that names a page or a UI action. */
+export const MAX_PAGE_HANDLERS = 4;
+/** #1135 — handler symbols read to rank, at most. */
+export const MAX_HANDLER_CANDIDATES = 2_000;
 
 // The bounds on the walk's own cost (#1094 review). Measured on a synthetic
 // 1M-call-edge Go project with the SQLite driver, where every query is
@@ -634,6 +648,19 @@ export function createDefaultPlanLocalisationSource(projectId: string): PlanLoca
     },
     calleeNameSets: (seedIds, checkpoint) =>
       loadCalleeNameSets(projectId, seedIds, checkpoint ?? (async () => undefined)),
+    async getHttpHandlers(limit) {
+      return prisma.codeSymbol.findMany({
+        where: {
+          projectId,
+          kind: { in: ["function", "method"] },
+          language: { not: "sql" },
+          OR: HTTP_HANDLER_SIGNATURE_MARKERS.map((m) => ({ signature: { contains: m } })),
+        },
+        select: DETAIL_SELECT,
+        orderBy: [{ filePath: "asc" }, { startLine: "asc" }],
+        take: limit,
+      });
+    },
   };
 }
 
@@ -935,11 +962,18 @@ async function localise(
 
   // 2 — across the lineage edges to the tables this change is about.
   const tables = await selectTables(walk, input.requirementText);
+  // #1135 — the handlers that serve the page the spec names; read before the
+  // callees, whose list must not repeat them.
+  const handlers = await handlerSection(walk, input.requirementText);
   const sections: LocalisationSection[] = [
     ...(tables.length > 0 ? await dataPathSections(walk, tables) : []),
+    ...(handlers ? [handlers.section] : []),
     await calleeSection(walk),
-    await twinSection(walk),
   ];
+  // Their twins are looked for first: the same fix usually belongs in a page
+  // built the same way, and the twin step compares only its first seeds.
+  if (handlers) walk.seedIds = [...handlers.ids, ...walk.seedIds];
+  sections.push(await twinSection(walk));
   return { ...renderLocalisation(sections, input.tokenBudget, notes), tables };
 }
 
@@ -1246,6 +1280,46 @@ async function calleeSection(walk: Walk): Promise<LocalisationSection> {
         : []),
       ...rowCap("callee", MAX_NAMED_CALLERS, "callers", manyCallers),
     ],
+  };
+}
+
+/**
+ * #1135 — for a spec that names a page or a UI action: the HTTP handlers whose
+ * names its words match ({@link rankHandlers}), best {@link MAX_PAGE_HANDLERS}.
+ * Null when the spec names none, the source cannot list handlers, or none matches.
+ */
+async function handlerSection(
+  walk: Walk,
+  requirementText: string,
+): Promise<{ section: LocalisationSection; ids: string[] } | null> {
+  if (!walk.source.getHttpHandlers || !namesPageOrUiAction(requirementText)) return null;
+  await walk.clock.checkpoint();
+  const candidates = (await walk.source.getHttpHandlers(MAX_HANDLER_CANDIDATES))
+    .filter(isNameableCode)
+    .filter((d) => !walk.listed.has(d.id))
+    .map((d) => ({ ...d, name: simpleName(d.qualifiedName) }));
+  const ranked = rankHandlers(candidates, requirementText);
+  if (ranked.length === 0) return null;
+  const shown = ranked.slice(0, MAX_PAGE_HANDLERS);
+  for (const { handler } of shown) {
+    walk.listed.add(handler.id);
+    walk.names.set(handler.id, handler.name);
+  }
+  return {
+    ids: shown.map((r) => r.handler.id),
+    section: {
+      title: "Handlers Serving the Page or Action",
+      note: "HTTP handlers whose names match the page or action the spec names. A bug seen on a page is often fixed in the handler that builds it, not in the storage layer: check each one, and its twins below.",
+      entries: shown.map(({ handler, matched }) => ({
+        line: `${handler.name} (${handler.kind}) — ${locator(handler)} (name matches: ${matched.join(", ")})`,
+        filePath: handler.filePath,
+        label: handler.name,
+      })),
+      capped: overflow(
+        "handlers",
+        ranked.slice(MAX_PAGE_HANDLERS).map((r) => r.handler),
+      ),
+    },
   };
 }
 
