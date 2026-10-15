@@ -79,7 +79,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Readers re-check side-columns](project_side-column-readers-apply-writer-invariant.md) — use ledgerRowSummedRequests, not shape-only (#1092)
 - [Impact offline replay + pinned shapes](project_impact-offline-replay-and-pinned-shapes.md) — measure with no model; 4 far-away tests
 - [Gate over LLM output: probes](project_deterministic-gate-over-llm-output-probes.md) — adversarial answer, context cue, regex timing
-- [Fuzz every regex; sweep every model field](project_redos-fix-ships-beside-new-pattern-fuzz-all.md) — ReDoS fixes ship beside new ones (#1090)
 - [Model-cannot claims: sweep at the engine](project_model-cannot-claims-need-engine-level-sweep.md) — every LLM dep on; no near-idle timing bound
 - [Spec Kit plan context: replay + graph gaps](project_speckit-plan-context-replay-and-graph-gaps.md) — misses are rank, not top-k (#1060)
 - [Cap claims: one fixture per MAX_*](project_never-dropped-silently-needs-a-fixture-per-cap.md) — upstream caps cut uncounted (#1094)
@@ -127,3 +126,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Affected-code cap 8 < 25 imported](project_affected-code-cap-below-imported-cap.md) — NR-* keyed logic loses items 9+; test >8 (#1158)
 - [Fallback test: make paths disagree](project_fallback-test-needs-fixture-where-paths-disagree.md) — else deleting the filter stays green (#1129)
 - [Free-text classifier: negative corpus](project_free-text-classifier-needs-negative-corpus.md) — test symptom phrasings + opposite class (#1135)
+- [Declaration checks mistake calls](project_declaration-check-mistakes-calls.md) — test foo(() => {, return foo(1), = foo(3);, void foo(x); (#1135)

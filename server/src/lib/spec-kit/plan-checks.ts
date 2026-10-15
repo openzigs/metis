@@ -61,30 +61,57 @@ export interface PlanContextShown {
 /** Longest line of an excerpt read when looking for a declaration. */
 const MAX_DECLARATION_LINE = 500;
 
-/** A line that opens with a declaration keyword: `func`, `def`, `public`, `export function`… */
-const DECLARATION_KEYWORD_RE =
-  /^\s*(?:export\s+)?(?:default\s+)?(?:pub\b|public|private|protected|internal|static|async|override|final|abstract|virtual|func|function|def|fn|sub|procedure|void)\b/;
+/** Words that open a statement, never a declared return type. */
+const NOT_A_TYPE =
+  "(?!(?:return|new|await|throw|else|yield|case|typeof|delete|do|in|of|if|while|for|switch)\\b)";
+/** Modifiers that may precede a method in Java, C#, TypeScript or Kotlin. */
+const MODIFIERS =
+  "(?:(?:public|private|protected|internal|static|final|abstract|virtual|override|sealed|synchronized|async|readonly|open|suspend|inline|get|set)\\s+)*";
 
 /**
- * True when a line of `text` declares the function `name` (an identifier, so
- * safe in a pattern): a declaration keyword opens the line and `name(` follows
- * not as a member call, or the line is a method head `name(…) {` or a binding
- * `const name = `. A call alone never counts.
+ * The declaration shapes of `name`, one pattern per language family. In each,
+ * `name` is the identifier being DECLARED: the first one after the keyword
+ * (`func`, `def`, `function`, `fn`, `fun`), the one after a single return type
+ * (`public List<Entry> name(`, no `=` before it and no `;` after), a method head
+ * that ends in `{` (`name(…) {`, `name(…): T {`), or a function bound with
+ * `const`. Every pattern is anchored at the line start and holds at most one
+ * unbounded class per position, so it is linear in the line.
+ */
+function declarationPatterns(name: string): RegExp[] {
+  const sources = [
+    // Go: `func Name(`, `func (r *T) Name(`, `func Name[T any](`.
+    `^\\s*func\\s+(?:\\([^()\\n]*\\)\\s*)?${name}\\s*[([]`,
+    // Python.
+    `^\\s*(?:async\\s+)?def\\s+${name}\\s*\\(`,
+    // JavaScript / TypeScript.
+    `^\\s*(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?function\\s*\\*?\\s*${name}\\s*[(<]`,
+    // Rust.
+    `^\\s*(?:pub(?:\\([^()\\n]*\\))?\\s+)?(?:(?:async|const|unsafe)\\s+)*fn\\s+${name}\\s*[(<]`,
+    // Kotlin.
+    `^\\s*${MODIFIERS}fun\\s+(?:<[^<>\\n]*>\\s*)?(?:\\w+\\.)?${name}\\s*[(<]`,
+    // Java / C#: modifiers, one return type, the name; no `;` after it.
+    `^\\s*${MODIFIERS}(?:<[^<>\\n]*>\\s+)?${NOT_A_TYPE}[\\w.\\[\\]?]+(?:<[^\\n=;]*>)?\\s+${name}\\s*\\([^;\\n]*$`,
+    // A TypeScript / JavaScript method head: `name(…) {` or `name(…): T {`.
+    `^\\s*${MODIFIERS}${name}\\s*(?:<[^<>\\n]*>)?\\s*\\([^()\\n]*\\)\\s*(?::[^{};=\\n]*)?\\{\\s*$`,
+    // A function bound to a name.
+    `^\\s*(?:export\\s+)?(?:const|let|var)\\s+${name}\\s*(?::[^=\\n]*)?=\\s*(?:async\\s+)?(?:function\\b|\\(|\\w+\\s*=>)`,
+  ];
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- `name` is a bare identifier (checked by the caller: word characters only), so it adds no metacharacter; each pattern is anchored at the line start and runs on one line of at most MAX_DECLARATION_LINE characters.
+  return sources.map((src) => new RegExp(src));
+}
+
+/**
+ * True when a line of `text` declares the function `name`. A line that only
+ * calls it — `name(() => {`, `function h() { return name(1) }`,
+ * `private X x = name(3);`, `void name(x);` — never counts (PR #1164 re-review).
  */
 export function declaresFunction(text: string, name: string): boolean {
   if (!/^\w{1,120}$/.test(name)) return false;
-  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- `name` is a bare identifier (checked above: word characters only), so it adds no metacharacter; each pattern runs on one line of at most MAX_DECLARATION_LINE characters with a single unbounded quantifier.
-  const call = new RegExp(`(?<![\\w.$])${name}\\s*[(<]`);
-  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- `name` is a bare identifier (checked above: word characters only), so it adds no metacharacter; each pattern runs on one line of at most MAX_DECLARATION_LINE characters with a single unbounded quantifier.
-  const methodHead = new RegExp(`^\\s*(?:async\\s+)?${name}\\s*\\([^\\n]*\\{\\s*$`);
-  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- `name` is a bare identifier (checked above: word characters only), so it adds no metacharacter; each pattern runs on one line of at most MAX_DECLARATION_LINE characters with a single unbounded quantifier.
-  const binding = new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var)\\s+${name}\\s*=`);
+  const patterns = declarationPatterns(name);
   for (const raw of text.slice(0, MAX_SCANNED_CHARS).split("\n")) {
     if (!raw.includes(name)) continue;
     const line = raw.slice(0, MAX_DECLARATION_LINE);
-    if ((DECLARATION_KEYWORD_RE.test(line) && call.test(line)) || methodHead.test(line))
-      return true;
-    if (binding.test(line)) return true;
+    if (patterns.some((re) => re.test(line))) return true;
   }
   return false;
 }

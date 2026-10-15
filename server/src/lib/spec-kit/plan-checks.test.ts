@@ -122,6 +122,53 @@ describe("findNotVisibleClaims", () => {
     expect(declaresFunction("func a.b(", "a.b")).toBe(false);
   });
 
+  it("declaresFunction: a line that only CALLS the name is not a declaration (PR #1164 re-review)", () => {
+    for (const line of [
+      "WithLimit(10).then(() => {",
+      "  WithLimit(() => {",
+      "export function handler(req) { return WithLimit(5) }",
+      "private static final Query Q = WithLimit(3);",
+      "void WithLimit(x);",
+      "\tWithLimit(10).Run(func() {",
+      "  return WithLimit(5);",
+      "  await WithLimit(1) {",
+      "const q = WithLimit(3);",
+    ]) {
+      expect(declaresFunction(line, "WithLimit"), line).toBe(false);
+    }
+    // Every declaration shape stays recognised.
+    for (const line of [
+      "func WithLimit(limit int) *Builder {",
+      "func (e *EntryQueryBuilder) WithLimit(limit int) *EntryQueryBuilder {",
+      "func WithLimit[T any](limit T) {",
+      "def WithLimit(self, n):",
+      "async def WithLimit(n):",
+      "export function WithLimit(n: number) {",
+      "export default async function WithLimit<T>(n: T) {",
+      "  public List<Entry> WithLimit(int n) {",
+      "  private static Query WithLimit(int n)",
+      "  public void WithLimit(int n) {",
+      "  public async Task<Query> WithLimit(int n) {",
+      "pub fn WithLimit(n: usize) -> Self {",
+      "  WithLimit(n: number): this {",
+      "  async WithLimit(n) {",
+      "export const WithLimit = (n) => n;",
+      "const WithLimit = async function (n) {",
+      "  override fun WithLimit(n: Int): Query {",
+      "suspend fun WithLimit(n: Int) {",
+    ]) {
+      expect(declaresFunction(line, "WithLimit"), line).toBe(true);
+    }
+  });
+
+  it("does NOT flag a function whose excerpt only calls it, end to end (PR #1164 re-review)", async () => {
+    const plan = "`WithLimit` is not visible in the retrieved context.";
+    const excerpt = { filePath: QB, text: "func list() {\n\tWithLimit(10).Run(func() {" };
+    expect(await findNotVisibleClaims(plan, { files: FILES, excerpts: [excerpt] }, lookup)).toEqual(
+      [],
+    );
+  });
+
   it("declaresFunction stays linear on adversarial source text", () => {
     const line = `  func WithLimit${"( ".repeat(300)}`;
     const text = Array.from({ length: 400 }, () => line).join("\n"); // ~240 KB
@@ -129,6 +176,12 @@ describe("findNotVisibleClaims", () => {
     expect(declaresFunction(text, "WithLimit")).toBe(true);
     // No keyword and no `{`: every line is tried against every pattern, and fails.
     expect(declaresFunction(text.replace(/func /g, ""), "WithLimit")).toBe(false);
+    // Modifier and type words the Java shape could split many ways, and a generic never closed.
+    const javaish = Array.from(
+      { length: 400 },
+      () => `${"public static ".repeat(30)}List<${"Map<A ".repeat(20)} WithLimit`,
+    ).join("\n");
+    expect(declaresFunction(javaish, "WithLimit")).toBe(false);
     expect(performance.now() - started).toBeLessThan(250);
   });
 
