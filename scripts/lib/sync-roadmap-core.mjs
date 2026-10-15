@@ -10,18 +10,24 @@
  *   1. Reads every issue in openzigs/metis that is open or was closed in the last 30 days — labels,
  *      state, sub-issue summary — paged by 100. Pull requests are not issues and are never read.
  *   2. Reads every item already on the board, once, into a map.
- *   3. ADDS every open issue that is not on the board. Never deletes, never archives, and leaves an
+ *   3. ADDS to the board's Area single-select any `area:` label name it has no option for, keeping
+ *      every existing option by id (so no item loses its Area).
+ *   4. ADDS every open issue that is not on the board. Never deletes, never archives, and leaves an
  *      archived item, and an item outside what it read, exactly as they are.
- *   4. SETS Tier, Kind, Progress % and Sub-issues done, only where the value differs. NEVER touches
- *      Status (GitHub's built-in workflows own it) or Area (set by hand from #1146's sections).
+ *   5. SETS Tier, Kind, Area, Progress % and Sub-issues done, only where the value differs. NEVER
+ *      touches Status (GitHub's built-in workflows own it).
  *
  * How METIS differs from On Your Left, deliberately:
  *   - Tier comes from the issue's OWN labels only (`priority: now|next|later`, then `blocked`), as
  *     the board's README states and the first fill of 2026-10-15 did; no ancestor inheritance.
  *     `priority: high` is a SEVERITY label here, not a tier, so it sets nothing.
- *   - Area is the owner's, so it is not a managed field and no option is ever created.
+ *   - Area comes from the `area:` label, as On Your Left's does (the owner's correction of
+ *     2026-10-15 on #1147); the board's Area field must exist, it is never created.
  *   - Kind counts a title starting "Research" as a Spike: METIS names its spikes that way (#263).
  *   - No weekly status update: #1147 does not ask for one.
+ *
+ * One failed write does not end the run: the item is counted as failed and the run carries on;
+ * the CLI then exits non-zero. A failed READ still ends the run, since nothing after it is sound.
  *
  * Writes are throttled to about one a second and capped below 400 a run (GitHub's secondary limit
  * is about 80 content-creating requests a minute and 500 an hour). Running it twice changes nothing
@@ -48,12 +54,15 @@ export const TIER_BY_LABEL = /** @type {const} */ ([
 ]);
 export const UNRANKED = "Unranked";
 
+export const AREA_PREFIX = "area:";
+
 export const TIER = "Tier";
 export const KIND = "Kind";
+export const AREA = "Area";
 export const PROGRESS = "Progress %";
 export const SUBS_DONE = "Sub-issues done";
 /** The order fields are written in, and the ONLY fields this script ever writes. */
-export const MANAGED_FIELDS = /** @type {const} */ ([TIER, KIND, PROGRESS, SUBS_DONE]);
+export const MANAGED_FIELDS = /** @type {const} */ ([TIER, KIND, AREA, PROGRESS, SUBS_DONE]);
 
 /**
  * @typedef {{ total: number, completed: number, percentCompleted: number }} SubIssuesSummary
@@ -63,7 +72,9 @@ export const MANAGED_FIELDS = /** @type {const} */ ([TIER, KIND, PROGRESS, SUBS_
  * }} Issue
  * @typedef {string | number | null} FieldValue
  * @typedef {{ id: string | null, archived: boolean, values: Record<string, FieldValue> }} Item
- * @typedef {{ id: string, name: string, dataType?: string, options?: Array<{ id: string, name: string }> }} Field
+ * @typedef {{ id: string | null, name: string, color?: string, description?: string }} Option
+ * @typedef {{ id: string | null, name: string, dataType?: string, options?: Option[] }} Field
+ * @typedef {{ added: number, changed: number, unchanged: number, skipped: number, failed: number }} Counts
  */
 
 // --- Decisions (pure) -------------------------------------------------------------------------
@@ -97,6 +108,39 @@ export function kindOf(issue) {
 }
 
 /**
+ * `area: run-state` → `run-state`; null when the issue has no `area:` label. Several: the first by
+ * name, so it is stable.
+ *
+ * @param {string[]} labels
+ * @returns {string | null}
+ */
+export function areaOf(labels) {
+  const areas = labels
+    .filter((label) => label.startsWith(AREA_PREFIX))
+    .map((label) => label.slice(AREA_PREFIX.length).trim())
+    .filter(Boolean)
+    .sort();
+  return areas[0] ?? null;
+}
+
+/**
+ * Area names some issue needs that the field has no option for, sorted.
+ *
+ * @param {Iterable<{ labels: string[] }>} issues
+ * @param {string[]} optionNames
+ * @returns {string[]}
+ */
+export function missingAreaOptions(issues, optionNames) {
+  const have = new Set(optionNames);
+  const missing = new Set();
+  for (const issue of issues) {
+    const area = areaOf(issue.labels);
+    if (area && !have.has(area)) missing.add(area);
+  }
+  return [...missing].sort();
+}
+
+/**
  * [Progress %, Sub-issues done] from `subIssuesSummary`; [null, null] clears both.
  *
  * @param {SubIssuesSummary | null | undefined} summary
@@ -116,6 +160,7 @@ export function desiredFields(issue) {
   return {
     [TIER]: tierOf(issue.labels),
     [KIND]: kindOf(issue),
+    [AREA]: areaOf(issue.labels),
     [PROGRESS]: progress,
     [SUBS_DONE]: done,
   };
@@ -159,7 +204,8 @@ export function inReadWindow(issue, now) {
  *
  * @param {Field} field
  * @param {string | number} value
- * @returns {Record<string, string | number> | null}
+ * @returns {Record<string, string | number | null> | null} a null option id only in a dry run,
+ *   for an option the run would have added
  */
 export function encodeValue(field, value) {
   if (field.dataType === "NUMBER") return { number: Number(value) };
@@ -168,9 +214,9 @@ export function encodeValue(field, value) {
   return option ? { singleSelectOptionId: option.id } : null;
 }
 
-/** @param {{ added: number, changed: number, unchanged: number, skipped: number }} counts */
+/** @param {Counts} counts */
 export function summaryLine(counts) {
-  return `summary: added ${counts.added}, changed ${counts.changed}, unchanged ${counts.unchanged}, skipped ${counts.skipped}`;
+  return `summary: added ${counts.added}, changed ${counts.changed}, unchanged ${counts.unchanged}, skipped ${counts.skipped}, failed ${counts.failed}`;
 }
 
 /**
@@ -319,7 +365,7 @@ query($org: String!, $number: Int!) {
       fields(first: 50) {
         nodes {
           ... on ProjectV2FieldCommon { id name dataType }
-          ... on ProjectV2SingleSelectField { options { id name } }
+          ... on ProjectV2SingleSelectField { options { id name color description } }
         }
       }
     }
@@ -357,6 +403,17 @@ export const SET_VALUE = `
 mutation($project: ID!, $item: ID!, $field: ID!, $value: ProjectV2FieldValue!) {
   updateProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field, value: $value}) {
     projectV2Item { id }
+  }
+}`;
+
+/**
+ * Replaces the field's WHOLE option list: an existing option must be sent back with its id, or it
+ * becomes a new option and every item that held the old one is emptied.
+ */
+export const UPDATE_FIELD = `
+mutation($field: ID!, $options: [ProjectV2SingleSelectFieldOptionInput!]) {
+  updateProjectV2Field(input: {fieldId: $field, singleSelectOptions: $options}) {
+    projectV2Field { ... on ProjectV2SingleSelectField { id name dataType options { id name color description } } }
   }
 }`;
 
@@ -455,11 +512,111 @@ export async function readItems(client, org, number, repository) {
 }
 
 /**
+ * Adds an Area option for every `area:` label name the board has none for. Every existing option
+ * is sent back with its id, colour and description, so no item loses its value; the field is then
+ * replaced in `fields` by what GitHub returns, so the new options' ids are the real ones.
+ *
+ * @param {Client} client
+ * @param {Map<string, Field>} fields
+ * @param {Iterable<Issue>} issues
+ */
+export async function ensureAreaOptions(client, fields, issues) {
+  const field = /** @type {Field} */ (fields.get(AREA));
+  const have = field.options ?? [];
+  const missing = missingAreaOptions(
+    issues,
+    have.map((o) => o.name),
+  );
+  if (missing.length === 0 || !client.budgetLeft()) return;
+  const options = [
+    ...have.map((o) => ({
+      id: o.id,
+      name: o.name,
+      color: o.color || "GRAY",
+      description: o.description ?? "",
+    })),
+    ...missing.map((name) => ({ name, color: "GRAY", description: "" })),
+  ];
+  const data = await client.mutate(`add Area options ${missing.join(", ")}`, UPDATE_FIELD, {
+    field: field.id,
+    options,
+  });
+  const result = data?.updateProjectV2Field?.projectV2Field;
+  if (result) {
+    fields.set(AREA, { ...result, name: AREA, dataType: "SINGLE_SELECT" });
+  } else if (client.dryRun) {
+    // So a dry run shows the values it would then set.
+    fields.set(AREA, {
+      ...field,
+      options: [...have, ...missing.map((name) => ({ id: null, name }))],
+    });
+  }
+}
+
+/**
+ * One issue's add and writes. Returns what to count it as, and whether it was deferred by the
+ * write budget. A write that throws propagates to the caller, which counts the item as failed.
+ *
+ * @param {{ client: Client, projectId: string, fields: Map<string, Field>, issue: Issue,
+ *   item: Item | undefined, log: (line: string) => void, counts: Counts }} ctx
+ * @returns {Promise<{ outcome: "changed" | "unchanged" | "skipped" | "ignored", deferred: boolean }>}
+ */
+async function syncOne({ client, projectId, fields, issue, item, log, counts }) {
+  const { number } = issue;
+  if (item?.archived) return { outcome: "skipped", deferred: false };
+  if (!item) {
+    if (!shouldAdd(issue)) return { outcome: "ignored", deferred: false };
+    if (!client.budgetLeft()) return { outcome: "skipped", deferred: true };
+    const data = await client.mutate(`add #${number} ${issue.title}`, ADD_ITEM, {
+      project: projectId,
+      content: issue.id,
+    });
+    item = { id: data?.addProjectV2ItemById?.item?.id ?? null, archived: false, values: {} };
+    counts.added += 1;
+  }
+  const changes = fieldChanges(desiredFields(issue), item.values);
+  if (changes.length === 0) return { outcome: "unchanged", deferred: false };
+  let writes = 0;
+  let deferred = false;
+  for (const [fieldName, value] of changes) {
+    if (!client.budgetLeft()) {
+      deferred = true;
+      break;
+    }
+    const field = /** @type {Field} */ (fields.get(fieldName));
+    const label = `#${number} ${fieldName} -> ${value == null ? "(clear)" : value}`;
+    if (value == null) {
+      await client.mutate(`set ${label}`, CLEAR_VALUE, {
+        project: projectId,
+        item: item.id,
+        field: field.id,
+      });
+      writes += 1;
+      continue;
+    }
+    const encoded = encodeValue(field, value);
+    if (!encoded) {
+      log(`skip #${number} ${fieldName}: no option named ${JSON.stringify(value)} on the board`);
+      continue;
+    }
+    await client.mutate(`set ${label}`, SET_VALUE, {
+      project: projectId,
+      item: item.id,
+      field: field.id,
+      value: encoded,
+    });
+    writes += 1;
+  }
+  // Changed only if a write happened; an item whose every change was skipped or deferred is not.
+  return { outcome: writes > 0 ? "changed" : "skipped", deferred: writes === 0 && deferred };
+}
+
+/**
  * @param {{
  *   client: Client, org: string, project: number, now: Date,
  *   repository?: string, log?: (line: string) => void
  * }} opts
- * @returns {Promise<{ added: number, changed: number, unchanged: number, skipped: number }>}
+ * @returns {Promise<Counts>}
  */
 export async function sync({
   client,
@@ -488,64 +645,38 @@ export async function sync({
   const issues = await readIssues(client, repository, now);
   const items = await readItems(client, org, projectNumber, repository);
 
-  const counts = { added: 0, changed: 0, unchanged: 0, skipped: 0 };
+  /** @type {Counts} */
+  const counts = { added: 0, changed: 0, unchanged: 0, skipped: 0, failed: 0 };
+  try {
+    await ensureAreaOptions(client, fields, issues.values());
+  } catch (error) {
+    if (!(error instanceof GraphQLError)) throw error;
+    // The items that needed a new option are then skipped, said so, by encodeValue.
+    counts.failed += 1;
+    log(`failed: add Area options: ${error.message}`);
+  }
+
   let deferred = 0;
   for (const number of [...issues.keys()].sort((a, b) => a - b)) {
     const issue = /** @type {Issue} */ (issues.get(number));
-    let item = items.get(number);
-    if (item?.archived) {
-      counts.skipped += 1;
-      continue;
-    }
-    if (!item) {
-      if (!shouldAdd(issue)) continue;
-      if (!client.budgetLeft()) {
-        deferred += 1;
-        counts.skipped += 1;
-        continue;
-      }
-      const data = await client.mutate(`add #${number} ${issue.title}`, ADD_ITEM, {
-        project: project.id,
-        content: issue.id,
+    try {
+      const result = await syncOne({
+        client,
+        projectId: project.id,
+        fields,
+        issue,
+        item: items.get(number),
+        log,
+        counts,
       });
-      item = { id: data?.addProjectV2ItemById?.item?.id ?? null, archived: false, values: {} };
-      counts.added += 1;
+      if (result.deferred) deferred += 1;
+      if (result.outcome !== "ignored") counts[result.outcome] += 1;
+    } catch (error) {
+      // GraphQLError messages are built from GitHub's response only, never the request's headers.
+      if (!(error instanceof GraphQLError)) throw error;
+      counts.failed += 1;
+      log(`failed: #${number}: ${error.message}`);
     }
-    const changes = fieldChanges(desiredFields(issue), item.values);
-    if (changes.length === 0) {
-      counts.unchanged += 1;
-      continue;
-    }
-    if (!client.budgetLeft()) {
-      deferred += 1;
-      counts.skipped += 1;
-      continue;
-    }
-    for (const [fieldName, value] of changes) {
-      if (!client.budgetLeft()) break;
-      const field = /** @type {Field} */ (fields.get(fieldName));
-      const label = `#${number} ${fieldName} -> ${value == null ? "(clear)" : value}`;
-      if (value == null) {
-        await client.mutate(`set ${label}`, CLEAR_VALUE, {
-          project: project.id,
-          item: item.id,
-          field: field.id,
-        });
-        continue;
-      }
-      const encoded = encodeValue(field, value);
-      if (!encoded) {
-        log(`skip #${number} ${fieldName}: no option named ${JSON.stringify(value)} on the board`);
-        continue;
-      }
-      await client.mutate(`set ${label}`, SET_VALUE, {
-        project: project.id,
-        item: item.id,
-        field: field.id,
-        value: encoded,
-      });
-    }
-    counts.changed += 1;
   }
 
   // On the board but outside the read window: left exactly as they are.
@@ -556,4 +687,47 @@ export async function sync({
   }
   log(summaryLine(counts) + (client.dryRun ? " (dry run)" : ""));
   return counts;
+}
+
+/**
+ * The CLI: 2 on bad arguments or a missing token; 1 on a failed read, or when any write failed;
+ * 0 otherwise. Errors go to `error`, prefixed; the token is never in one.
+ *
+ * @param {{ argv: string[], env: Record<string, string | undefined>, now?: Date,
+ *   fetchImpl?: typeof fetch, log?: (line: string) => void, error?: (line: string) => void }} opts
+ * @returns {Promise<number>}
+ */
+export async function main({
+  argv,
+  env,
+  now = new Date(),
+  fetchImpl,
+  log = (line) => console.log(line),
+  error = (line) => console.error(line),
+}) {
+  let args;
+  try {
+    args = parseArgs(argv);
+  } catch (e) {
+    error(`sync-roadmap: ${e instanceof Error ? e.message : String(e)}`);
+    return 2;
+  }
+  const token = env.GH_TOKEN || env.GITHUB_TOKEN || "";
+  if (!token) {
+    error("sync-roadmap: set GH_TOKEN or GITHUB_TOKEN");
+    return 2;
+  }
+  try {
+    const client = createClient({ token, dryRun: args.dryRun, fetchImpl, log });
+    const counts = await sync({ client, org: args.org, project: args.project, now, log });
+    if (counts.failed > 0) {
+      error(`sync-roadmap: ${counts.failed} item(s) failed; see the lines starting "failed:"`);
+      return 1;
+    }
+    return 0;
+  } catch (e) {
+    if (!(e instanceof GraphQLError)) throw e;
+    error(`sync-roadmap: ${e.message}`);
+    return 1;
+  }
 }

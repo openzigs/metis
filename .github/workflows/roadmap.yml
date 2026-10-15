@@ -12,9 +12,9 @@ name: Roadmap board sync
 
 on:
   schedule:
-    # 05:41 UTC: off the hour, clear of ci.yml's 04:17 nightly and On Your Left's 04:41 sync,
-    # which shares the App's rate limit.
-    - cron: "41 5 * * *"
+    # 02:23 UTC: off the hour, clear of eval-nightly.yml's 02:00, ci.yml's 04:17 nightly and
+    # On Your Left's 04:41 sync, which shares the App's rate limit, by more than two hours.
+    - cron: "23 2 * * *"
   workflow_dispatch:
     inputs:
       dry-run:

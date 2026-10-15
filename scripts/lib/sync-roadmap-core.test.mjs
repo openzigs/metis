@@ -12,12 +12,16 @@ import {
   MAX_MUTATIONS,
   PROJECT_QUERY,
   SET_VALUE,
+  UPDATE_FIELD,
+  areaOf,
   createClient,
   desiredFields,
   encodeValue,
   fieldChanges,
   inReadWindow,
   kindOf,
+  main,
+  missingAreaOptions,
   parseArgs,
   progressOf,
   shouldAdd,
@@ -64,14 +68,37 @@ describe("progressOf / desiredFields", () => {
     expect(progressOf(null)).toEqual([null, null]);
   });
 
-  it("never names Area or Status", () => {
-    const fields = desiredFields(issue(1, { labels: ["priority: now", "bug"] }));
+  it("names Area from the area: label, and never Status", () => {
+    const fields = desiredFields(issue(1, { labels: ["priority: now", "bug", "area: ci"] }));
     expect(fields).toEqual({
       Tier: "Now",
       Kind: "Bug",
+      Area: "ci",
       "Progress %": null,
       "Sub-issues done": null,
     });
+    expect(desiredFields(issue(2)).Area).toBeNull();
+  });
+});
+
+describe("areaOf / missingAreaOptions", () => {
+  it("takes the area: label's name, the first by name when there are several", () => {
+    expect(areaOf(["bug", "area: ci"])).toBe("ci");
+    expect(areaOf(["area: ui", "area:  docs ", "area: ci"])).toBe("ci");
+    expect(areaOf(["area:", "area:   ", "areas: x", "bug"])).toBeNull();
+    expect(areaOf([])).toBeNull();
+  });
+
+  it("lists the area names the field has no option for, once each, sorted", () => {
+    const issues = [
+      { labels: ["area: zeta"] },
+      { labels: ["area: ci"] },
+      { labels: ["area: alpha"] },
+      { labels: ["area: zeta"] },
+      { labels: [] },
+    ];
+    expect(missingAreaOptions(issues, ["ci"])).toEqual(["alpha", "zeta"]);
+    expect(missingAreaOptions(issues, ["ci", "alpha", "zeta"])).toEqual([]);
   });
 });
 
@@ -79,9 +106,7 @@ describe("fieldChanges", () => {
   const desired = { Tier: "Now", Kind: "Epic", "Progress %": 50, "Sub-issues done": "1 of 2" };
 
   it("returns nothing when the board holds every value, ignoring unmanaged fields", () => {
-    expect(
-      fieldChanges(desired, { ...desired, "Progress %": 50.0, Area: "ci", Status: "Todo" }),
-    ).toEqual([]);
+    expect(fieldChanges(desired, { ...desired, "Progress %": 50.0, Status: "Todo" })).toEqual([]);
   });
 
   it("returns each differing field, a cleared one as null, in write order", () => {
@@ -134,8 +159,8 @@ describe("encodeValue / summaryLine", () => {
   });
 
   it("summarises", () => {
-    expect(summaryLine({ added: 1, changed: 2, unchanged: 3, skipped: 4 })).toBe(
-      "summary: added 1, changed 2, unchanged 3, skipped 4",
+    expect(summaryLine({ added: 1, changed: 2, unchanged: 3, skipped: 4, failed: 5 })).toBe(
+      "summary: added 1, changed 2, unchanged 3, skipped 4, failed 5",
     );
   });
 });
@@ -165,21 +190,24 @@ describe("parseArgs", () => {
 // --- A fake GitHub GraphQL endpoint -------------------------------------------------------------
 
 /**
+ * `updatedAt` defaults to `closedAt` (a close updates the issue), else to a day before NOW.
+ *
  * @param {Partial<{ number: number, title: string, state: string, closedAt: string | null,
- *   labels: string[], summary: any }>} [over]
+ *   updatedAt: string, labels: string[], summary: any }>} [over]
  * @param {number} number
  */
 function issue(number, over = {}) {
-  return {
+  const base = {
     id: `I_${number}`,
     number,
     title: `Issue ${number}`,
     state: "OPEN",
-    closedAt: null,
-    labels: [],
-    summary: null,
+    closedAt: /** @type {string | null} */ (null),
+    labels: /** @type {string[]} */ ([]),
+    summary: /** @type {any} */ (null),
     ...over,
   };
+  return { ...base, updatedAt: over.updatedAt ?? base.closedAt ?? "2026-10-14T12:00:00Z" };
 }
 
 /** @param {ReturnType<typeof issue>} i */
@@ -219,18 +247,40 @@ const FIELDS = [
   },
   { id: "F_progress", name: "Progress %", dataType: "NUMBER" },
   { id: "F_done", name: "Sub-issues done", dataType: "TEXT" },
-  { id: "F_area", name: "Area", dataType: "SINGLE_SELECT", options: [{ id: "a1", name: "ci" }] },
+  {
+    id: "F_area",
+    name: "Area",
+    dataType: "SINGLE_SELECT",
+    options: [
+      { id: "a1", name: "ci", color: "GRAY", description: "CI health and flaky tests" },
+      { id: "a2", name: "ui", color: "BLUE", description: "UI and UX" },
+    ],
+  },
   {},
 ];
 
 /**
  * An in-memory board behind a fake `fetch`: mutations change it, so a second run reads back
- * what the first one wrote — the same path a real consumer uses.
+ * what the first one wrote — the same path a real consumer uses. Its filters and mutations follow
+ * GitHub's documented semantics, not the script's assumptions: `IssueFilters.since` is on
+ * updatedAt, and `updateProjectV2Field` replaces the option list, keeping an option only when its
+ * id is sent back (an item holding a dropped option is emptied). `fail` makes a mutation answer
+ * with a GraphQL error.
  *
  * @param {{ issues: ReturnType<typeof issue>[], items?: Array<{ number: number, archived?: boolean,
- *   values?: Record<string, any>, repo?: string }>, fields?: any[], project?: boolean, pageSize?: number }} opts
+ *   values?: Record<string, any>, repo?: string }>, fields?: any[], project?: boolean, pageSize?: number,
+ *   fail?: (query: string, variables: any) => boolean }} opts
  */
-function fakeGitHub({ issues, items = [], fields = FIELDS, project = true, pageSize = 100 }) {
+function fakeGitHub({
+  issues,
+  items = [],
+  fields: initialFields = FIELDS,
+  project = true,
+  pageSize = 100,
+  fail = () => false,
+}) {
+  const fields = structuredClone(initialFields);
+  let optionSeq = 0;
   const board = items.map((it, n) => ({
     id: `PVTI_${it.number}`,
     number: it.number,
@@ -258,7 +308,8 @@ function fakeGitHub({ issues, items = [], fields = FIELDS, project = true, pageS
     requests.push({ url, init });
     const { query, variables } = JSON.parse(init.body);
     /** @param {any} data */
-    const ok = (data) => ({ ok: true, status: 200, json: async () => ({ data }) });
+    // Cloned, as JSON off the wire would be: the script must never see the fake's own state.
+    const ok = (data) => ({ ok: true, status: 200, json: async () => structuredClone({ data }) });
     if (query === PROJECT_QUERY) {
       return ok({
         organization: { projectV2: project ? { id: "PVT_1", fields: { nodes: fields } } : null },
@@ -267,7 +318,7 @@ function fakeGitHub({ issues, items = [], fields = FIELDS, project = true, pageS
     if (query === ISSUES_QUERY) {
       const f = variables.filter;
       const matching = issues.filter(
-        (i) => f.states.includes(i.state) && (!f.since || (i.closedAt ?? "") >= f.since),
+        (i) => f.states.includes(i.state) && (!f.since || i.updatedAt >= f.since),
       );
       const p = page(matching, variables.after);
       return ok({ repository: { issues: { ...p, nodes: p.nodes.map(issueNode) } } });
@@ -302,6 +353,26 @@ function fakeGitHub({ issues, items = [], fields = FIELDS, project = true, pageS
       });
     }
     mutations.push({ query, variables });
+    if (fail(query, variables)) {
+      return { ok: true, status: 200, json: async () => ({ errors: [{ message: "boom" }] }) };
+    }
+    if (query === UPDATE_FIELD) {
+      const f = fieldById(variables.field);
+      const kept = new Set(variables.options.map((/** @type {any} */ o) => o.id).filter(Boolean));
+      for (const old of f.options) {
+        if (kept.has(old.id)) continue;
+        for (const b of board) if (b.values[f.name] === old.name) delete b.values[f.name];
+      }
+      f.options = variables.options.map((/** @type {any} */ o) => ({
+        ...o,
+        id: o.id ?? `new_${(optionSeq += 1)}`,
+      }));
+      return ok({
+        updateProjectV2Field: {
+          projectV2Field: { id: f.id, name: f.name, dataType: f.dataType, options: f.options },
+        },
+      });
+    }
     if (query === ADD_ITEM) {
       const i = issues.find((x) => x.id === variables.content);
       const existing = board.find((b) => b.number === i?.number);
@@ -336,7 +407,7 @@ function fakeGitHub({ issues, items = [], fields = FIELDS, project = true, pageS
     throw new Error(`unexpected request: ${query.slice(0, 60)}`);
   });
 
-  return { impl, board, mutations, requests };
+  return { impl, board, mutations, requests, fields };
 }
 
 /** @param {ReturnType<typeof fakeGitHub>} gh @param {boolean} [dryRun] */
@@ -376,7 +447,7 @@ describe("sync", () => {
       ],
     });
     const { counts } = await run(gh);
-    expect(counts).toEqual({ added: 1, changed: 1, unchanged: 0, skipped: 0 });
+    expect(counts).toEqual({ added: 1, changed: 1, unchanged: 0, skipped: 0, failed: 0 });
     expect(gh.board.find((b) => b.number === 10)?.values).toEqual({
       Tier: "Now",
       Kind: "Epic",
@@ -393,10 +464,10 @@ describe("sync", () => {
     const writes = gh.mutations.length;
     const { counts } = await run(gh);
     expect(gh.mutations.length).toBe(writes);
-    expect(counts).toEqual({ added: 0, changed: 0, unchanged: 2, skipped: 0 });
+    expect(counts).toEqual({ added: 0, changed: 0, unchanged: 2, skipped: 0, failed: 0 });
   });
 
-  it("writes only the fields that differ, and never Status or Area", async () => {
+  it("writes only the fields that differ, Area from the area: label, and never Status", async () => {
     const gh = fakeGitHub({
       issues: [issue(20, { labels: ["priority: later", "area: ci"] })],
       items: [
@@ -416,12 +487,12 @@ describe("sync", () => {
     const { counts } = await run(gh);
     expect(counts.changed).toBe(1);
     const fieldIds = gh.mutations.map((m) => m.variables.field);
-    expect(fieldIds).toEqual(["F_tier", "F_progress", "F_done"]);
+    expect(fieldIds).toEqual(["F_tier", "F_area", "F_progress", "F_done"]);
     expect(gh.board[0].values).toEqual({
       Tier: "Later",
       Kind: "Issue",
       Status: "Todo",
-      Area: "docs",
+      Area: "ci",
     });
   });
 
@@ -445,7 +516,7 @@ describe("sync", () => {
     // #32 is closed and in the window: updated if on the board, but a closed issue is never added.
     expect(gh.mutations.filter((m) => m.query === ADD_ITEM)).toEqual([]);
     expect(gh.mutations).toEqual([]);
-    expect(counts).toEqual({ added: 0, changed: 0, unchanged: 0, skipped: 3 });
+    expect(counts).toEqual({ added: 0, changed: 0, unchanged: 0, skipped: 3, failed: 0 });
     expect(gh.board.map((b) => [b.number, b.values.Tier])).toEqual([
       [30, "Later"],
       [31, "Now"],
@@ -472,7 +543,7 @@ describe("sync", () => {
       pageSize: 2,
     });
     const { counts } = await run(gh);
-    expect(counts).toEqual({ added: 0, changed: 0, unchanged: 5, skipped: 0 });
+    expect(counts).toEqual({ added: 0, changed: 0, unchanged: 5, skipped: 0, failed: 0 });
   });
 
   it("in a dry run prints every planned change, writes nothing, and never prints the token", async () => {
@@ -486,7 +557,7 @@ describe("sync", () => {
       "would add #50 New thing",
       "would set #50 Tier -> Next",
       "would set #50 Kind -> Issue",
-      "summary: added 1, changed 1, unchanged 0, skipped 0 (dry run)",
+      "summary: added 1, changed 1, unchanged 0, skipped 0, failed 0 (dry run)",
     ]);
     expect(lines.join("\n")).not.toContain(TOKEN);
     // The token travels in the Authorization header and nowhere else.
@@ -544,6 +615,209 @@ describe("sync", () => {
     const noKind = FIELDS.filter((f) => f.name !== "Kind");
     await expect(run(fakeGitHub({ issues: [], fields: noKind }))).rejects.toThrow(
       /no field named "Kind"/,
+    );
+  });
+
+  it("ignores an issue closed long ago that GitHub returns because it was edited recently", async () => {
+    // IssueFilters.since is on updatedAt: a label edit today brings back an issue closed in
+    // January. inReadWindow must still drop it, so the board item stays as it is.
+    const gh = fakeGitHub({
+      issues: [
+        issue(31, {
+          state: "CLOSED",
+          closedAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-10-14T00:00:00Z",
+          labels: ["priority: now"],
+        }),
+      ],
+      items: [{ number: 31, values: { Tier: "Later" } }],
+    });
+    const { counts } = await run(gh);
+    expect(gh.mutations).toEqual([]);
+    expect(gh.board[0].values).toEqual({ Tier: "Later" });
+    expect(counts).toEqual({ added: 0, changed: 0, unchanged: 0, skipped: 1, failed: 0 });
+  });
+
+  it("sets Area from the area: label, the first by name, and clears it when there is none", async () => {
+    const gh = fakeGitHub({
+      issues: [
+        issue(70, { labels: ["area: ui", "area: ci"] }),
+        issue(71),
+        issue(72, { labels: ["area: ci"] }),
+      ],
+      items: [
+        { number: 70, values: { Tier: "Unranked", Kind: "Issue" } },
+        { number: 71, values: { Tier: "Unranked", Kind: "Issue", Area: "ui" } },
+        { number: 72, values: { Tier: "Unranked", Kind: "Issue", Area: "ci" } },
+      ],
+    });
+    const { counts } = await run(gh);
+    expect(gh.board.map((b) => b.values.Area)).toEqual(["ci", undefined, "ci"]);
+    expect(gh.mutations.map((m) => [m.query === CLEAR_VALUE, m.variables.item])).toEqual([
+      [false, "PVTI_70"],
+      [true, "PVTI_71"],
+    ]);
+    // No option was missing, so the field itself is never written.
+    expect(gh.mutations.some((m) => m.query === UPDATE_FIELD)).toBe(false);
+    expect(counts).toEqual({ added: 0, changed: 2, unchanged: 1, skipped: 0, failed: 0 });
+  });
+
+  it("adds a missing Area option, keeping every existing option by id so no item loses its Area", async () => {
+    const gh = fakeGitHub({
+      issues: [
+        issue(80, { labels: ["area: ci"] }),
+        issue(81, { labels: ["area: ui"] }),
+        issue(82, { labels: ["area: security"] }),
+        issue(83, { labels: ["area: docs"] }),
+      ],
+      items: [
+        { number: 80, values: { Tier: "Unranked", Kind: "Issue", Area: "ci" } },
+        { number: 81, values: { Tier: "Unranked", Kind: "Issue", Area: "ui" } },
+      ],
+    });
+    const { counts, lines } = await run(gh);
+    const update = gh.mutations.find((m) => m.query === UPDATE_FIELD);
+    expect(update?.variables).toEqual({
+      field: "F_area",
+      options: [
+        { id: "a1", name: "ci", color: "GRAY", description: "CI health and flaky tests" },
+        { id: "a2", name: "ui", color: "BLUE", description: "UI and UX" },
+        { name: "docs", color: "GRAY", description: "" },
+        { name: "security", color: "GRAY", description: "" },
+      ],
+    });
+    expect(lines[0]).toBe("add Area options docs, security");
+    // The existing options keep their ids, so the items holding them keep their values.
+    const area = gh.fields.find((f) => f.name === "Area");
+    expect(area.options.slice(0, 2).map((/** @type {any} */ o) => o.id)).toEqual(["a1", "a2"]);
+    expect(gh.board.map((b) => [b.number, b.values.Area])).toEqual([
+      [80, "ci"],
+      [81, "ui"],
+      [82, "security"],
+      [83, "docs"],
+    ]);
+    // The new items are set with the ids GitHub returned for the new options.
+    const set82 = gh.mutations.find(
+      (m) =>
+        m.query === SET_VALUE && m.variables.item === "PVTI_82" && m.variables.field === "F_area",
+    );
+    const security = area.options.find((/** @type {any} */ o) => o.name === "security");
+    expect(set82?.variables.value).toEqual({ singleSelectOptionId: security.id });
+    expect(counts).toEqual({ added: 2, changed: 2, unchanged: 2, skipped: 0, failed: 0 });
+
+    // And a second run changes nothing.
+    const writes = gh.mutations.length;
+    await run(gh);
+    expect(gh.mutations.length).toBe(writes);
+  });
+
+  it("in a dry run shows the new Area option and the values it would then set", async () => {
+    const gh = fakeGitHub({ issues: [issue(90, { labels: ["area: docs"] })] });
+    const { lines } = await run(gh, { dryRun: true });
+    expect(gh.mutations).toEqual([]);
+    expect(lines).toEqual([
+      "would add Area options docs",
+      "would add #90 Issue 90",
+      "would set #90 Tier -> Unranked",
+      "would set #90 Kind -> Issue",
+      "would set #90 Area -> docs",
+      "summary: added 1, changed 1, unchanged 0, skipped 0, failed 0 (dry run)",
+    ]);
+  });
+
+  it("counts an item as changed only when a write happened", async () => {
+    // #60's one change has no option on the board, so nothing is written: skipped, not changed.
+    const fields = FIELDS.map((f) =>
+      f.name === "Kind" ? { ...f, options: [{ id: "k_Issue", name: "Issue" }] } : f,
+    );
+    const gh = fakeGitHub({
+      issues: [issue(60, { labels: ["bug"] })],
+      items: [{ number: 60, values: { Tier: "Unranked", Kind: "Issue" } }],
+      fields,
+    });
+    const { counts } = await run(gh);
+    expect(gh.mutations).toEqual([]);
+    expect(counts).toEqual({ added: 0, changed: 0, unchanged: 0, skipped: 1, failed: 0 });
+  });
+
+  it("counts an item whose add spent the last of the budget as skipped, and carries it over", async () => {
+    // 398 items need one write each; the 399th issue is new, and its add is the 399th write.
+    const existing = Array.from({ length: 398 }, (_, n) => issue(n + 1, { labels: ["bug"] }));
+    const gh = fakeGitHub({
+      issues: [...existing, issue(399)],
+      items: existing.map((i) => ({
+        number: i.number,
+        values: { Tier: "Unranked", Kind: "Issue" },
+      })),
+    });
+    const { counts, lines } = await run(gh);
+    expect(gh.mutations.length).toBe(MAX_MUTATIONS);
+    expect(counts).toEqual({ added: 1, changed: 398, unchanged: 0, skipped: 1, failed: 0 });
+    expect(lines).toContain(
+      `write budget of ${MAX_MUTATIONS} reached: 1 issues continue on the next run`,
+    );
+  });
+
+  it("carries on past a failed write, counts the item as failed, and never logs the token", async () => {
+    const gh = fakeGitHub({
+      issues: [issue(1, { labels: ["bug"] }), issue(2, { labels: ["bug"] }), issue(3)],
+      items: [
+        { number: 1, values: { Tier: "Unranked", Kind: "Issue" } },
+        { number: 2, values: { Tier: "Unranked", Kind: "Issue" } },
+      ],
+      // #2's write and #3's add both fail.
+      fail: (query, v) => v.item === "PVTI_2" || (query === ADD_ITEM && v.content === "I_3"),
+    });
+    const { counts, lines } = await run(gh);
+    expect(gh.board.map((b) => [b.number, b.values.Kind])).toEqual([
+      [1, "Bug"],
+      [2, "Issue"],
+    ]);
+    expect(counts).toEqual({ added: 0, changed: 1, unchanged: 0, skipped: 0, failed: 2 });
+    expect(lines).toContain("failed: #2: boom");
+    expect(lines).toContain("failed: #3: boom");
+    expect(lines.join("\n")).not.toContain(TOKEN);
+  });
+
+  it("carries on when adding an Area option fails, skipping the values that needed it", async () => {
+    const gh = fakeGitHub({
+      issues: [issue(1, { labels: ["area: docs"] }), issue(2, { labels: ["area: ci"] })],
+      items: [
+        { number: 1, values: { Tier: "Unranked", Kind: "Issue" } },
+        { number: 2, values: { Tier: "Unranked", Kind: "Issue" } },
+      ],
+      fail: (query) => query === UPDATE_FIELD,
+    });
+    const { counts, lines } = await run(gh);
+    expect(lines).toContain("failed: add Area options: boom");
+    expect(lines).toContain('skip #1 Area: no option named "docs" on the board');
+    expect(gh.board.map((b) => b.values.Area)).toEqual([undefined, "ci"]);
+    expect(counts).toEqual({ added: 0, changed: 1, unchanged: 0, skipped: 1, failed: 1 });
+  });
+
+  it("rethrows an error that is not GitHub's, rather than counting it", async () => {
+    const gh = fakeGitHub({ issues: [issue(1)], items: [{ number: 1 }] });
+    const { client } = clientFor(gh);
+    client.mutate = async () => {
+      throw new TypeError("a bug");
+    };
+    await expect(
+      sync({ client, org: "openzigs", project: 2, now: NOW, log: () => {} }),
+    ).rejects.toThrow("a bug");
+    const gh2 = fakeGitHub({ issues: [issue(1, { labels: ["area: docs"] })] });
+    const { client: client2 } = clientFor(gh2);
+    client2.mutate = async () => {
+      throw new TypeError("another bug");
+    };
+    await expect(
+      sync({ client: client2, org: "openzigs", project: 2, now: NOW, log: () => {} }),
+    ).rejects.toThrow("another bug");
+  });
+
+  it("requires the Area field", async () => {
+    const noArea = FIELDS.filter((f) => f.name !== "Area");
+    await expect(run(fakeGitHub({ issues: [], fields: noArea }))).rejects.toThrow(
+      /no field named "Area"/,
     );
   });
 });
@@ -644,5 +918,69 @@ describe("scripts/sync-roadmap.mjs", () => {
     const noToken = runScript(["--org", "openzigs", "--project", "2", "--dry-run"], {});
     expect(noToken.status).toBe(2);
     expect(noToken.stderr).toContain("set GH_TOKEN or GITHUB_TOKEN");
+  });
+});
+
+describe("main", () => {
+  const argv = ["--org", "openzigs", "--project", "2"];
+  /** @param {ReturnType<typeof fakeGitHub>} gh @param {Record<string, string>} env @param {string[]} [args] */
+  async function cli(gh, env, args = argv) {
+    const out = /** @type {string[]} */ ([]);
+    const err = /** @type {string[]} */ ([]);
+    const code = await main({
+      argv: args,
+      env,
+      now: NOW,
+      fetchImpl: /** @type {any} */ (gh.impl),
+      log: (l) => out.push(l),
+      error: (l) => err.push(l),
+    });
+    return { code, out, err };
+  }
+
+  it("exits 0 on a clean run, reading the token from GH_TOKEN or GITHUB_TOKEN", async () => {
+    const gh = fakeGitHub({ issues: [issue(1)] });
+    expect((await cli(gh, { GH_TOKEN: TOKEN })).code).toBe(0);
+    expect((await cli(gh, { GITHUB_TOKEN: TOKEN })).code).toBe(0);
+  });
+
+  it("exits 1 when any write failed, after the whole run, without the token", async () => {
+    const gh = fakeGitHub({
+      issues: [issue(1), issue(2)],
+      fail: (query, v) => query === ADD_ITEM && v.content === "I_1",
+    });
+    const { code, out, err } = await cli(gh, { GH_TOKEN: TOKEN });
+    expect(code).toBe(1);
+    expect(gh.board.map((b) => b.number)).toEqual([2]);
+    expect(err).toEqual(['sync-roadmap: 1 item(s) failed; see the lines starting "failed:"']);
+    expect([...out, ...err].join("\n")).not.toContain(TOKEN);
+  });
+
+  it("exits 1 on a failed read, and 2 on bad arguments or no token", async () => {
+    const gh = fakeGitHub({ issues: [], project: false });
+    const read = await cli(gh, { GH_TOKEN: TOKEN });
+    expect(read.code).toBe(1);
+    expect(read.err[0]).toMatch(/^sync-roadmap: project openzigs\/2 not found/);
+    expect((await cli(gh, { GH_TOKEN: TOKEN }, ["--org", "openzigs"])).code).toBe(2);
+    const none = await cli(gh, {});
+    expect(none.code).toBe(2);
+    expect(none.err).toEqual(["sync-roadmap: set GH_TOKEN or GITHUB_TOKEN"]);
+  });
+
+  it("rethrows an error that is not GitHub's", async () => {
+    const boom = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: { organization: { projectV2: { id: "P", fields: null } } } }),
+    }));
+    await expect(
+      main({
+        argv,
+        env: { GH_TOKEN: TOKEN },
+        fetchImpl: /** @type {any} */ (boom),
+        log: () => {},
+        error: () => {},
+      }),
+    ).rejects.toThrow(TypeError);
   });
 });
