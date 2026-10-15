@@ -1337,6 +1337,8 @@ export async function listAnalysesForProject(projectId: string) {
   return runs.map(({ agentResults, ...r }) => ({
     ...r,
     failedAgents: analysisFailedAgents(agentResults),
+    // #1143 — and which agents lost malformed citations: "completed with warnings".
+    droppedCitations: extractCapability(parseMetadata(r.metadata))?.droppedCitations ?? [],
     requirementCounts: counts.get(r.id) as RequirementCounts,
     ledgerTokens: ledger ? (ledger.get(r.id) ?? { withCache: 0, withoutCache: 0 }) : null,
   }));
@@ -1364,10 +1366,14 @@ export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot 
     { projectId: row.projectId },
   );
   const sourceById = new Map([...cited].map(([docId, d]) => [docId, d.source]));
+  const snapshot = toSnapshot(row, crossDocFindings, sourceById);
   return {
-    ...toSnapshot(row, crossDocFindings, sourceById),
-    // #1143 — a completed run in which an agent failed completed with errors.
+    ...snapshot,
+    // #1143 — a completed run in which an agent failed completed with errors;
+    // one in which an agent lost malformed citations completed with warnings.
+    // The page reads both from here, the same fields the run list carries.
     failedAgents: analysisFailedAgents(row.agentResults),
+    droppedCitations: snapshot.capability?.droppedCitations ?? [],
     ledgerUsage: await readAnalysisLedgerUsage(row.projectId, id),
   };
 }

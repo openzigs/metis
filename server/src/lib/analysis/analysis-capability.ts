@@ -19,6 +19,7 @@ import {
   type AnalysisAgentMode,
   type AnalysisCapability,
   type AnalysisCapabilityPreview,
+  type AnalysisDroppedCitations,
   type AnalysisSkippedRepo,
   type RequirementInputAccount,
   deriveCapabilityReasons,
@@ -126,6 +127,27 @@ export interface CapabilityTracker {
    * retrieval health (`exhausted`).
    */
   codeInvestigationCutShort: boolean;
+  /**
+   * #1143 — malformed citations dropped from each agent's answer. Optional so a
+   * tracker built without it (older call sites and fixtures) stays valid.
+   */
+  droppedCitations?: AnalysisDroppedCitations[];
+}
+
+/**
+ * #1143 — add `count` dropped citations to `agentKey`'s tally (one entry per
+ * agent, in first-seen order). A non-positive count records nothing.
+ */
+export function recordDroppedCitations(
+  tracker: CapabilityTracker,
+  agentKey: string,
+  count: number,
+): void {
+  if (!(count > 0)) return;
+  const list = (tracker.droppedCitations ??= []);
+  const entry = list.find((d) => d.agentKey === agentKey);
+  if (entry) entry.count += count;
+  else list.push({ agentKey, count });
 }
 
 /**
@@ -202,6 +224,10 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
       ? { requirementInputAccount: tracker.requirementInputAccount }
       : {}),
     codeInvestigationCutShort: tracker.codeInvestigationCutShort,
+    // #1143 — omitted when nothing was dropped, so a clean run's record is unchanged.
+    ...(tracker.droppedCitations && tracker.droppedCitations.length > 0
+      ? { droppedCitations: tracker.droppedCitations.map((d) => ({ ...d })) }
+      : {}),
     reasons: deriveCapabilityReasons({
       codeAnalysisRequested: tracker.codeAnalysisRequested,
       databaseAnalysisRequested: tracker.databaseAnalysisRequested,
@@ -219,6 +245,7 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
       newRequirementsProvided: tracker.newRequirementsProvided,
       requirementInputAccount: tracker.requirementInputAccount,
       codeInvestigationCutShort: tracker.codeInvestigationCutShort,
+      droppedCitations: tracker.droppedCitations,
     }),
   };
 }

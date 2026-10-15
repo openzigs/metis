@@ -16,6 +16,7 @@ import {
   FALLBACK_FINDING_CATEGORY,
   FINDING_CATEGORIES,
   agentOutputSchema,
+  collectSalvagedCitations,
   documentAgentOutputSchema,
   isDocumentCitation,
   matchFindingCategory,
@@ -99,6 +100,12 @@ export interface AgentRunResult {
    * mask an all-failed run (#755).
    */
   skipped?: boolean;
+  /**
+   * #1143 — malformed citations the shared schema dropped (`dropped`) or fixed
+   * without loss (`repaired`) in this answer. The caller records a non-zero
+   * `dropped` on the run, so a lost citation is never silent.
+   */
+  citationSalvage?: { dropped: number; repaired: number };
 }
 
 const DEFAULT_USAGE: TokenUsage = {
@@ -715,6 +722,9 @@ export async function runAgent(
     });
   }
 
+  // #1143 — like the categories above: the schema salvages citations, and the
+  // counts are read here, before the parse erases what it dropped.
+  const citationSalvage = collectSalvagedCitations(parsed);
   const validated = schema.parse(clampAgentOutputStrings(parsed));
 
   // Enrich citations with retrieval metadata when possible.
@@ -728,5 +738,6 @@ export async function runAgent(
     output: validated,
     usage: response.usage ?? DEFAULT_USAGE,
     durationMs: Date.now() - start,
+    citationSalvage,
   };
 }

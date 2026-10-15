@@ -12,7 +12,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ACCEPTANCE_CRITERIA_MAX_ITEMS,
   ACCEPTANCE_CRITERION_MAX_LENGTH,
-  analysisFailedAgents,
   capAcceptanceCriteria,
   deriveBodyAcceptanceCriteria,
 } from "@metis/shared";
@@ -904,8 +903,12 @@ export default function AnalysisPage(): React.ReactElement {
                     <span className="text-xs font-medium text-foreground">
                       {runLabels.get(item.id)?.primary}
                     </span>
-                    {/* #1143 — a completed run whose agents failed says so here. */}
-                    <RunStatusBadge status={item.status} failedAgents={item.failedAgents} />
+                    {/* #1143 — a completed run whose agents failed, or lost citations, says so here. */}
+                    <RunStatusBadge
+                      status={item.status}
+                      failedAgents={item.failedAgents}
+                      droppedCitations={item.droppedCitations}
+                    />
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
                     <span data-testid="analysis-past-run-tokens">
@@ -937,9 +940,12 @@ export default function AnalysisPage(): React.ReactElement {
                     {runLabels.has(detail.data.id)
                       ? `Run #${runLabels.get(detail.data.id)?.sequence}`
                       : "Run"}{" "}
+                    {/* #1143 — the snapshot's server-computed fields, the same ones
+                        the run list reads, so the two badges cannot disagree. */}
                     <RunStatusBadge
                       status={detail.data.status}
-                      failedAgents={analysisFailedAgents(detail.data.agentResults)}
+                      failedAgents={detail.data.failedAgents}
+                      droppedCitations={detail.data.droppedCitations}
                     />
                   </h3>
                   <p className="text-xs text-muted-foreground">

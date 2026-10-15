@@ -29,6 +29,36 @@ describe("<RunStatusBadge /> (#1143)", () => {
     expect(screen.getByText("completed")).toBeInTheDocument();
   });
 
+  it("shows a completed run that only lost citations as completed with warnings, naming the agent and count", () => {
+    render(
+      <RunStatusBadge
+        status="completed"
+        failedAgents={[]}
+        droppedCitations={[
+          { agentKey: "document", count: 2 },
+          { agentKey: "web", count: 0 },
+        ]}
+      />,
+    );
+    expect(screen.getByText("completed with warnings")).toHaveClass("text-warning");
+    expect(screen.getByTestId("analysis-dropped-citations")).toHaveTextContent(
+      "Citations dropped: document (2)",
+    );
+    expect(screen.getByTestId("analysis-dropped-citations").textContent).not.toContain("web");
+  });
+
+  it("names failed agents, not dropped citations, when a run has both", () => {
+    render(
+      <RunStatusBadge
+        status="completed"
+        failedAgents={["code"]}
+        droppedCitations={[{ agentKey: "document", count: 1 }]}
+      />,
+    );
+    expect(screen.getByText("completed with errors")).toBeInTheDocument();
+    expect(screen.queryByTestId("analysis-dropped-citations")).toBeNull();
+  });
+
   it("colours an agent row's own status as before", () => {
     render(<StatusBadge status="cancelled" />);
     expect(screen.getByText("cancelled")).toHaveClass("bg-muted");

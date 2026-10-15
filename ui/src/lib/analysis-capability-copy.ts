@@ -120,4 +120,12 @@ export const CAPABILITY_REASON_COPY: Record<AnalysisCapabilityReason, Capability
     action:
       "Findings from this run are still grounded in the code graph. For deeper, line-level evidence, re-sync the repository connector so a working copy is available, then re-run.",
   },
+  // Issue #1143 — the findings were kept; only the unreadable citations went.
+  // The run header names each agent and how many it lost.
+  "citations-dropped": {
+    title:
+      "An agent wrote citations METIS could not read, so they were dropped — the findings they were on were kept without them.",
+    action:
+      "Check the evidence on this run's findings before relying on it. The run status names the agent and how many citations it lost; re-running usually produces readable citations.",
+  },
 };
