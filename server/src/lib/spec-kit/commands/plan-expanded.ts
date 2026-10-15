@@ -494,7 +494,7 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     describeNotVisibleClaims(
       await findNotVisibleClaims(
         plan.content,
-        rag.files,
+        rag,
         input.symbolFileLookup ?? createDefaultSymbolFileLookup(input.projectId),
       ),
       PLAN_CONTEXT_ARTIFACT,

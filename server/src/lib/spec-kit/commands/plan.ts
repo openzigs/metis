@@ -199,7 +199,7 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     describeNotVisibleClaims(
       await findNotVisibleClaims(
         run.content,
-        rag.files,
+        rag,
         input.symbolFileLookup ?? createDefaultSymbolFileLookup(input.projectId),
       ),
       null,

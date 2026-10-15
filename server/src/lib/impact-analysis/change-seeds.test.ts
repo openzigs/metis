@@ -426,6 +426,22 @@ describe("prismaSeedSymbolLoader (#1036)", () => {
     expect(first[0].where.projectId).toBe("proj-9");
     expect(first[0].where.id.in).toHaveLength(500);
   });
+
+  it("returns each symbol's signature, which the #1135 handler boost reads (PR #1164 panel)", async () => {
+    const stored = {
+      ...row("H", "ui/h.go"),
+      signature: "func h(w http.ResponseWriter, r *http.Request)",
+    };
+    // Answers only the fields the query selects, as Prisma does.
+    const findMany = vi.fn(async ({ select }: { select: Record<string, boolean> }) => [
+      Object.fromEntries(Object.entries(stored).filter(([k]) => select[k])),
+    ]);
+    const [loaded] = await prismaSeedSymbolLoader({ codeSymbol: { findMany } } as never)(
+      ["H"],
+      "p1",
+    );
+    expect(loaded!.signature).toBe(stored.signature);
+  });
 });
 
 describe("resolveChangeSeeds — which channels answered (#1036, PR #1090 review)", () => {
@@ -755,6 +771,29 @@ describe("resolveChangeSeeds — a read-path bug (#1135)", () => {
       isReadPathBug(bug("Delete feed fails", "Deleting a feed leaves entries in the table.")),
     ).toBe(false);
     expect(isReadPathBug(bug("Entries hidden", "The page shows 0 entries."))).toBe(true);
+  });
+
+  it("isReadPathBug: a negative corpus of write-path symptom phrasings keeps the writers (PR #1164 panel)", () => {
+    // Each of these names a failed WRITE; reading one as a read-path bug drops
+    // the writer that needs the fix from the files to edit.
+    for (const [title, body] of [
+      ["Read status lost", "The status isn't saved."],
+      ["Stale entries", "Entries don't get updated."],
+      ["Feed removal broken", "Deleting a feed throws an error."],
+      ["Bulk action broken", "Mark all as read does nothing."],
+      ["Settings", "The setting won't save after a reload."],
+      ["Starred", "Starring an entry: the flag was not marked as starred."],
+    ] as const) {
+      expect(isReadPathBug(bug(title, body)), body).toBe(false);
+    }
+    // The opposite class: the motivating #4386 report, verbatim, stays read-path.
+    const [issue] = extractChangesByShape(read("miniflux-4386.md"));
+    expect(issue!.request!.kind).toBe("bug");
+    expect(isReadPathBug(issue!)).toBe(true);
+    expect(isReadPathBug(BUG_4386)).toBe(true);
+    expect(isReadPathBug(bug("Wrong count", "The unread counter shows (0) after paging."))).toBe(
+      true,
+    );
   });
 
   it("prismaWriterIdLoader reads write edges for the given symbols, project-scoped and chunked", async () => {

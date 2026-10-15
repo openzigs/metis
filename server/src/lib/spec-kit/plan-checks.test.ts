@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   MAX_LOOKED_UP_NAMES,
   createDefaultSymbolFileLookup,
+  declaresFunction,
   describeNotVisibleClaims,
   describeParameterRenames,
   findNotVisibleClaims,
@@ -16,7 +17,19 @@ const findMany = vi.hoisted(() => vi.fn());
 vi.mock("../prisma.js", () => ({ prisma: { codeSymbol: { findMany } } }));
 
 const QB = "internal/storage/entry_query_builder.go";
-const CONTEXT = [QB, "internal/model/entry.go", "internal/googlereader/handler.go"];
+const FILES = [QB, "internal/model/entry.go", "internal/googlereader/handler.go"];
+/** The #4479 plan's context: `WithLimit`'s file, with its source excerpt. */
+const QB_SOURCE = [
+  "func (e *EntryQueryBuilder) WithLimit(limit int) *EntryQueryBuilder {",
+  "\tif limit > 0 {",
+  "\t\te.limit = limit",
+  "\t}",
+  "\treturn e",
+  "}",
+].join("\n");
+const CONTEXT = { files: FILES, excerpts: [{ filePath: QB, text: QB_SOURCE }] };
+/** The same files, with `WithLimit` named only by its locator: no source shown. */
+const LOCATOR_ONLY = { files: FILES };
 const lookup = async (names: string[]) =>
   new Map(
     names.flatMap((n): Array<[string, string[]]> =>
@@ -64,8 +77,59 @@ describe("findNotVisibleClaims", () => {
     const symptom =
       "After `parseCount` the entries are not shown because `WithLimit` is invisible to the user and they cannot see it.";
     expect(await findNotVisibleClaims(symptom, CONTEXT, lookup)).toEqual([]);
-    expect(await findNotVisibleClaims("`WithLimit` is not visible.", [], lookup)).toEqual([]);
+    expect(
+      await findNotVisibleClaims("`WithLimit` is not visible.", { files: [] }, lookup),
+    ).toEqual([]);
     expect(describeNotVisibleClaims([], "plan-context.md")).toBe("");
+  });
+
+  it("does NOT flag a function the context named only by its locator (PR #1164 panel)", async () => {
+    const plan =
+      "`WithLimit` (internal/storage/entry_query_builder.go:120-125) is not visible in the retrieved context; read it to confirm the cap.";
+    expect(await findNotVisibleClaims(plan, LOCATOR_ONLY, lookup)).toEqual([]);
+    // A source excerpt of the file that only CALLS it shows no body either.
+    const callerOnly = {
+      files: FILES,
+      excerpts: [{ filePath: QB, text: "\treturn q.WithLimit(5)" }],
+    };
+    expect(await findNotVisibleClaims(plan, callerOnly, lookup)).toEqual([]);
+    // Shown: as a source excerpt that declares it, or as a code snippet.
+    expect(await findNotVisibleClaims(plan, CONTEXT, lookup)).toEqual([
+      { named: "WithLimit", file: QB },
+    ]);
+    const lookupSpy = vi.fn(lookup);
+    expect(
+      await findNotVisibleClaims(
+        plan,
+        { files: FILES, bodies: [{ name: "WithLimit", filePath: QB }] },
+        lookupSpy,
+      ),
+    ).toEqual([{ named: "WithLimit", file: QB }]);
+    expect(lookupSpy).not.toHaveBeenCalled();
+  });
+
+  it("declaresFunction: a declaration, not a call", () => {
+    expect(declaresFunction(QB_SOURCE, "WithLimit")).toBe(true);
+    expect(declaresFunction("def with_limit(n):", "with_limit")).toBe(true);
+    expect(declaresFunction("  public List<Entry> withLimit(int n) {", "withLimit")).toBe(true);
+    expect(declaresFunction("export function withLimit(n: number) {", "withLimit")).toBe(true);
+    expect(declaresFunction("  withLimit(n: number): this {", "withLimit")).toBe(true);
+    expect(declaresFunction("export const withLimit = (n) => n;", "withLimit")).toBe(true);
+    expect(declaresFunction("\treturn q.WithLimit(5)", "WithLimit")).toBe(false);
+    expect(declaresFunction("func run() { q.WithLimit(5) }", "WithLimit")).toBe(false);
+    expect(declaresFunction("func WithLimitAll(n int) {", "WithLimit")).toBe(false);
+    // A name that is not a bare identifier is never compiled into a pattern.
+    expect(declaresFunction("func a.b(", "a.b")).toBe(false);
+  });
+
+  it("declaresFunction stays linear on adversarial source text", () => {
+    const line = `  func WithLimit${"( ".repeat(300)}`;
+    const text = Array.from({ length: 400 }, () => line).join("\n"); // ~240 KB
+    const started = performance.now();
+    expect(declaresFunction(text, "WithLimit")).toBe(true);
+    // No keyword and no `{`: every line is tried against every pattern, and fails.
+    expect(declaresFunction(text.replace(/func /g, ""), "WithLimit")).toBe(false);
+    expect(performance.now() - started).toBeLessThan(250);
   });
 
   it("pluralises", () => {

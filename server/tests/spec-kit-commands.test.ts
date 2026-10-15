@@ -563,6 +563,28 @@ describe("/plan", () => {
     );
   });
 
+  it("#1135 — /plan reports a parameter the spec states that the plan renamed", async () => {
+    await writeArtifact({
+      projectId: "p1",
+      name: "spec.md",
+      content: "Support filtering with read_at_after / read_at_before.",
+    });
+    const renamed = await runPlan({
+      projectId: "p1",
+      symbolFileLookup: async () => new Map(),
+      deps: { provider: new FakeProvider("# Plan\n- filters read_after and read_before") },
+    });
+    expect(renamed.message).toContain(
+      "Check: plan.md renames names the spec states (`read_at_after` → `read_after`, `read_at_before` → `read_before`) without saying why",
+    );
+    const kept = await runPlan({
+      projectId: "p1",
+      symbolFileLookup: async () => new Map(),
+      deps: { provider: new FakeProvider("# Plan\n- filters read_at_after and read_at_before") },
+    });
+    expect(kept.message).not.toContain("renames");
+  });
+
   it("#1060 — /plan says nothing was left out when nothing was", async () => {
     await writeArtifact({
       projectId: "p1",

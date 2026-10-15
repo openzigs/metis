@@ -127,3 +127,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Closes #N sticks: file follow-up](project_closes-link-cannot-be-unlinked-file-follow-up.md) — deferring a criterion? file the issue pre-merge
 - [Affected-code cap 8 < 25 imported](project_affected-code-cap-below-imported-cap.md) — NR-* keyed logic loses items 9+; test >8 (#1158)
 - [Fallback test: make paths disagree](project_fallback-test-needs-fixture-where-paths-disagree.md) — else deleting the filter stays green (#1129)
+- [Free-text classifier: negative corpus](project_free-text-classifier-needs-negative-corpus.md) — test symptom phrasings + opposite class (#1135)

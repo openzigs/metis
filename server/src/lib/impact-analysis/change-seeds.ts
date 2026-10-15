@@ -147,13 +147,34 @@ export const READ_PATH_HANDLER_BOOST = 2;
 const STORED_DATA_CHANGE_RE =
   /\b(?:migrations?|schema|new (?:column|field|table)s?|add(?:s|ing)? (?:a |an |the )?(?:new )?(?:column|field|table)s?|persist(?:s|ed|ing)?|stor(?:e|es|ed|ing) (?:a |an |the )?new|timestamp column)\b/i;
 
+/** A verb that changes stored data, in any of its inflections. */
+const WRITE_VERB =
+  "(?:(?:sav|updat|stor|delet|remov|creat|archiv)(?:e|es|ed|ing)?|writ(?:e|es|ten|ing)|wrote" +
+  "|(?:insert|persist|mark|add|edit|import)(?:s|ed|ing)?|modif(?:y|ies|ied|ying))";
+/** A negation in front of the verb: "not", "never", "isn't", "don't", "won't", "fails to"… */
+const WRITE_NEGATION =
+  "(?:not|never|cannot|unable\\s+to|fail(?:s|ed)?\\s+to" +
+  "|(?:is|are|was|were|has|have|had|does|do|did|wo|ca|could|would|should)n['\u2019]?t)";
+/** What a failed write does: "fails", "throws", "errors", "does nothing", "has no effect"… */
+const WRITE_FAILURE =
+  "(?:fail(?:s|ed|ing)?|throw(?:s|n|ing)?|error(?:s|ed)?|crash(?:es|ed|ing)?" +
+  "|(?:does|did) nothing|(?:has|had) no effect|(?:does|did)(?: not|n['\u2019]?t) work|is ignored)";
+
 /**
- * Words that say the bug is a failed WRITE ("not saved", "does not update",
- * "never written to the database", "delete fails", "leaves entries in the
- * table"): the writer is then the fix site and must stay an edit candidate.
+ * Words that say the bug is a failed WRITE: a negated write verb ("not saved",
+ * "isn't saved", "don't get updated", "won't delete", "never written to the
+ * database"), a write verb followed by a failure ("deleting a feed throws",
+ * "Mark all as read does nothing", "delete fails"), or a row left behind
+ * ("leaves entries in the table"). The writer is then the fix site and must
+ * stay an edit candidate. Erring this way is the safe side: a missed read-path
+ * bug only keeps a writer in the files to edit, as before #1135.
  */
-const WRITE_PATH_RE =
-  /\b(?:(?:not|never|fail(?:s|ed)? to|unable to|cannot|can't)\s+(?:be\s+)?(?:sav(?:e|ed|ing)|updat(?:e|ed|ing)|writ(?:e|ten|ing)|stor(?:e|ed|ing)|delet(?:e|ed|ing)|remov(?:e|ed|ing)|insert(?:ed|ing)?|creat(?:e|ed|ing)|persist(?:ed|ing)?)|(?:does|do|did)n'?t\s+(?:sav|updat|writ|stor|delet|remov|insert|creat|persist)e?|(?:sav(?:e|ing)|updat(?:e|ing)|delet(?:e|ing)|remov(?:e|ing)|creat(?:e|ing)|insert(?:ing)?)\b[^.\n]{0,30}\bfail(?:s|ed|ing)?|written to|leaves?\b[^.\n]{0,60}\bin the (?:table|database|db))\b/i;
+const WRITE_PATH_RE = new RegExp(
+  `\\b(?:${WRITE_NEGATION}\\s+(?:(?:be|been|get|gets|got|gotten|getting)\\s+)?${WRITE_VERB}` +
+    `|${WRITE_VERB}\\b[^.\\n]{0,40}\\b${WRITE_FAILURE}` +
+    `|written to|leaves?\\b[^.\\n]{0,60}\\bin the (?:table|database|db))\\b`,
+  "i",
+);
 
 /**
  * #1135 — true for a bug report that changes no stored data. For one, the

@@ -222,6 +222,13 @@ export interface SpecKitRagContext {
   files: string[];
   /** #1060 — what the localisation left out for its budget or a cap, one sentence each. */
   dropped: string[];
+  /**
+   * #1135 — functions whose code-graph snippet `context` shows. A function
+   * named only by a locator or as a caller is not here: its body was not given.
+   */
+  bodies: Array<{ name: string; filePath: string }>;
+  /** #1135 — the retrieved repository source text `context` shows, by file. */
+  excerpts: Array<{ filePath: string; text: string }>;
 }
 
 /**
@@ -240,6 +247,8 @@ export async function buildSpecKitRagContext(
     usedSymbols: 0,
     files: [],
     dropped: [],
+    bodies: [],
+    excerpts: [],
   };
 
   const trimmedQuery = (query ?? "").trim();
@@ -385,7 +394,24 @@ export async function buildSpecKitRagContext(
     ]
       .filter(Boolean)
       .join("\n\n");
-    return { context, usedChunks, usedSymbols, files, dropped: localisation?.dropped ?? [] };
+    // #1135 — what of that code the plan was shown as SOURCE, not just named:
+    // a placed snippet, or a retrieved source chunk.
+    const bodies = fused.hits.flatMap((h) =>
+      h.snippet ? [{ name: h.name, filePath: h.filePath }] : [],
+    );
+    const excerpts = (hits ?? []).flatMap((h) => {
+      const filePath = h.source === "repo" ? extractRepoRelPath(h.filename) : null;
+      return filePath ? [{ filePath, text: h.text }] : [];
+    });
+    return {
+      context,
+      usedChunks,
+      usedSymbols,
+      files,
+      dropped: localisation?.dropped ?? [],
+      bodies,
+      excerpts,
+    };
   } catch (err) {
     // Retrieval failure (embedder offline, store error, hash-embedder
     // fallback, etc.) must never break generation — log and continue.

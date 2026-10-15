@@ -2479,6 +2479,10 @@ the measurement lessons behind the split — is documented once in
   (`isReadPathBug` in `change-seeds.ts`), table writers (lineage `writes` /
   `persists-to`) are kept out of the edit candidates and stay in `related`, and
   an HTTP-handler hit counts `READ_PATH_HANDLER_BOOST` (2×) in the file ranking.
+  A report that names a failed write (a negated write verb such as "isn't saved"
+  or "don't get updated", or a write verb followed by "throws", "fails" or "does
+  nothing") is not read-path, so its writers stay editable; when unsure, the
+  writers stay.
 
   ```mermaid
   flowchart LR
@@ -6560,8 +6564,10 @@ the retrieved functions. That is how a fix seen on one page reaches the page bui
 way. On the local Miniflux graph, with the run-8 #4386 spec, the change brought
 `internal/ui/feed_entries.go` and `internal/ui/category_entries.go` into the block (0 of 2
 before, 2 of 2 after). After generation, `plan-checks.ts` adds two notes to the result. The
-first flags a plan that calls a function or file "not visible" when that file was in its
-context. The second flags a snake_case name the spec states that the plan replaced with
+first flags a plan that calls a file "not visible" when that file was in its context, or a
+function when its source was: a placed code snippet, or a retrieved source excerpt that
+declares it. A function the context named only by its locator or as a caller may be called
+not visible; the prompt asks the plan to say which span the implementer must read. The second flags a snake_case name the spec states that the plan replaced with
 another name sharing its first and last part (`read_at_after` → `read_after`).
 
 The two depth bounds (`DEFAULT_MAX_DOWNSTREAM_DEPTH`, and the callee step's second hop) are

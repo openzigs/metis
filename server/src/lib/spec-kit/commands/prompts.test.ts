@@ -82,14 +82,21 @@ describe("Spec Kit prompts name no walkthrough ground-truth symbol (#853)", () =
     expect(offenders).toEqual([]);
   });
 
-  it("#1135 — keeps the spec's names, and never calls listed code not visible", () => {
+  it("#1135 — keeps the spec's names, and never calls code whose source it was shown not visible", () => {
     expect(PLAN_SYSTEM_PROMPT).toContain(
       "Keep every parameter, field, column and endpoint name the spec states,",
     );
     expect(PLAN_SYSTEM_PROMPT).toMatch(/record each rename and its\s+reason as an ADR/);
     expect(PLAN_SYSTEM_PROMPT).toMatch(
-      /A function declared in a listed file is in the retrieved context too/,
+      /A function whose source you were given[\s\S]{0,120}is visible: never call it/,
     );
+    // PR #1164 panel: a locator-only function may honestly be called not visible,
+    // and the plan says what it would need to read.
+    expect(PLAN_SYSTEM_PROMPT).not.toMatch(/function declared in a listed file/);
+    expect(PLAN_SYSTEM_PROMPT).toMatch(
+      /given only as a locator or a caller\s+is named, not shown: you may say its body was not visible/,
+    );
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/which `path:startLine-endLine` the implementer must read/);
   });
 
   it("keeps a worked sibling example, just a neutral one", () => {

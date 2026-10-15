@@ -5,8 +5,11 @@
  *    for Miniflux #4479 had `entry_query_builder.go` in its context and still
  *    wrote that `WithLimit`'s semantics were "not visible", then blamed a
  *    parse-time default. The claim is checked against the files the plan was
- *    given (`plan-context.md`): a named file on that list, or a named function
- *    declared in one, is flagged.
+ *    given (`plan-context.md`): a named file on that list is flagged, and a
+ *    named function only when its SOURCE was shown — a code snippet of it, or
+ *    a retrieved source excerpt that declares it. A function the context named
+ *    only by a locator or as a caller may honestly be called not visible
+ *    (PR #1164 panel): its file is listed, its body is not.
  *
  * 2. A plan that renames a parameter the request states. The J2.4 plan for
  *    #4336 turned the requested `read_at_after` / `read_at_before` into
@@ -45,6 +48,47 @@ function sentences(text: string): string[] {
 /** A backticked code name: `WithLimit`, `store.WithLimit`, `WithLimit()`. */
 const CODE_NAME_RE = /^(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(?:\(\))?$/;
 
+/** What the plan was given, as far as the check needs it. */
+export interface PlanContextShown {
+  /** Every repository file the context names (`plan-context.md`). */
+  files: readonly string[];
+  /** Functions whose code-graph snippet the context shows. */
+  bodies?: ReadonlyArray<{ name: string; filePath: string }>;
+  /** Retrieved repository source text, by file. */
+  excerpts?: ReadonlyArray<{ filePath: string; text: string }>;
+}
+
+/** Longest line of an excerpt read when looking for a declaration. */
+const MAX_DECLARATION_LINE = 500;
+
+/** A line that opens with a declaration keyword: `func`, `def`, `public`, `export function`… */
+const DECLARATION_KEYWORD_RE =
+  /^\s*(?:export\s+)?(?:default\s+)?(?:pub\b|public|private|protected|internal|static|async|override|final|abstract|virtual|func|function|def|fn|sub|procedure|void)\b/;
+
+/**
+ * True when a line of `text` declares the function `name` (an identifier, so
+ * safe in a pattern): a declaration keyword opens the line and `name(` follows
+ * not as a member call, or the line is a method head `name(…) {` or a binding
+ * `const name = `. A call alone never counts.
+ */
+export function declaresFunction(text: string, name: string): boolean {
+  if (!/^\w{1,120}$/.test(name)) return false;
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- `name` is a bare identifier (checked above: word characters only), so it adds no metacharacter; each pattern runs on one line of at most MAX_DECLARATION_LINE characters with a single unbounded quantifier.
+  const call = new RegExp(`(?<![\\w.$])${name}\\s*[(<]`);
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- `name` is a bare identifier (checked above: word characters only), so it adds no metacharacter; each pattern runs on one line of at most MAX_DECLARATION_LINE characters with a single unbounded quantifier.
+  const methodHead = new RegExp(`^\\s*(?:async\\s+)?${name}\\s*\\([^\\n]*\\{\\s*$`);
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- `name` is a bare identifier (checked above: word characters only), so it adds no metacharacter; each pattern runs on one line of at most MAX_DECLARATION_LINE characters with a single unbounded quantifier.
+  const binding = new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var)\\s+${name}\\s*=`);
+  for (const raw of text.slice(0, MAX_SCANNED_CHARS).split("\n")) {
+    if (!raw.includes(name)) continue;
+    const line = raw.slice(0, MAX_DECLARATION_LINE);
+    if ((DECLARATION_KEYWORD_RE.test(line) && call.test(line)) || methodHead.test(line))
+      return true;
+    if (binding.test(line)) return true;
+  }
+  return false;
+}
+
 export interface NotVisibleClaim {
   /** The name or path the plan called not visible. */
   named: string;
@@ -76,15 +120,18 @@ export function createDefaultSymbolFileLookup(projectId: string): SymbolFileLook
 export const MAX_LOOKED_UP_NAMES = 50;
 
 /**
- * Every name or path a "not visible" sentence of `plan` backticks that was in
- * fact in `contextFiles`: the path itself, or a function `lookup` places in
- * one of them.
+ * Every name or path a "not visible" sentence of `plan` backticks that the
+ * plan was in fact shown: a path on `context.files`, or a function whose
+ * source the context included — a snippet in `context.bodies`, or a source
+ * excerpt of a file `lookup` places it in that declares it. A function known
+ * only by its locator or as a caller is not flagged.
  */
 export async function findNotVisibleClaims(
   plan: string,
-  contextFiles: readonly string[],
+  context: PlanContextShown,
   lookup: SymbolFileLookup,
 ): Promise<NotVisibleClaim[]> {
+  const { files: contextFiles, bodies = [], excerpts = [] } = context;
   if (contextFiles.length === 0) return [];
   const inContext = new Set(contextFiles);
   const claimedPaths: string[] = [];
@@ -105,12 +152,19 @@ export async function findNotVisibleClaims(
       out.push({ named: p, file: p });
     }
   }
-  const names = [...new Set(claimedNames)];
+  const names = [...new Set(claimedNames)].filter((n) => !seen.has(n));
   if (names.length === 0) return out;
-  const files = await lookup(names);
+  const shownBody = new Map<string, string>();
+  for (const b of bodies) if (!shownBody.has(b.name)) shownBody.set(b.name, b.filePath);
+  const unresolved = names.filter((n) => !shownBody.has(n));
+  const files = unresolved.length > 0 && excerpts.length > 0 ? await lookup(unresolved) : new Map();
   for (const name of names) {
-    const file = (files.get(name) ?? []).find((f) => inContext.has(f));
-    if (file && !seen.has(name)) {
+    const file =
+      shownBody.get(name) ??
+      (files.get(name) ?? []).find((f: string) =>
+        excerpts.some((e) => e.filePath === f && declaresFunction(e.text, name)),
+      );
+    if (file) {
       seen.add(name);
       out.push({ named: name, file });
     }
