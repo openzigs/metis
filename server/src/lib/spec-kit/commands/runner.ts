@@ -121,6 +121,14 @@ export interface RunCommandInput {
    */
   phase?: string;
   phaseProgress?: number;
+  /**
+   * #1144 — set by a command that makes several calls with the same
+   * constitution + RAG context and different base prompts (`/speckit.plan`'s
+   * five artifacts): the prompt cache is written at the end of that shared
+   * prefix so the later calls read it. Unset ⇒ no cache write is requested,
+   * since a single call cannot reuse one.
+   */
+  cacheSharedPrefix?: boolean;
 }
 
 export interface RunCommandOutput {
@@ -301,11 +309,12 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
   // constitution must LEAD the system prompt, then the (untrusted) RAG
   // reference block, then the base command prompt — constitution → RAG → base.
   const rag = (input.ragContext ?? "").trim();
-  const sections: string[] = [];
-  if (constitution && constitution.trim().length > 0) sections.push(constitution);
-  if (rag.length > 0) sections.push(rag);
-  sections.push(input.systemPrompt);
-  const fullSystem = sections.join("\n\n---\n\n");
+  const shared: string[] = [];
+  if (constitution && constitution.trim().length > 0) shared.push(constitution);
+  if (rag.length > 0) shared.push(rag);
+  const fullSystem = [...shared, input.systemPrompt].join("\n\n---\n\n");
+  // #1144 — the part of the system a sibling call repeats byte for byte.
+  const sharedPrefix = shared.join("\n\n---\n\n");
 
   // 3. Inbound safety pass on the user prompt.
   let userText = input.userPrompt;
@@ -339,15 +348,19 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
   const chatOpts = {
     systemMessage: fullSystem,
     sessionId: sessionId ?? undefined,
-    // #700 — attribute cache-hit telemetry to the spec-kit workload and cache
-    // the system prefix. The constitution LEADS `fullSystem` (constitution →
-    // RAG → base) and is stable per project, so the leading bytes are reusable
-    // across commands within the cache TTL; the trust-ordered layout is left
-    // unchanged. `messages` is omitted (single-shot user turn is unique).
-    // Honoured on BedrockDirect/native-Anthropic; inert on the plain
-    // OpenAI-compatible path, where transparent gateway caching applies instead.
+    // #700 — attribute cache-hit telemetry to the spec-kit workload.
     callType: "spec-kit" as const,
-    promptCaching: { system: true },
+    // #1144 — a cache write is billed above the input price and pays back only
+    // when a later call reads it. A breakpoint at the end of the system cached
+    // constitution + RAG + base prompt as one entry, which no other call
+    // repeats, so every call wrote and none read (Claude A/B: ~46% of plan
+    // cost). Now only a caller whose calls share the constitution + RAG prefix
+    // (the five plan artifacts) asks for caching, with the breakpoint at the end
+    // of that prefix; a single-call command asks for none. `messages` is never
+    // cached (the single-shot user turn is unique).
+    ...(input.cacheSharedPrefix && sharedPrefix.length > 0
+      ? { promptCaching: { system: true, systemPrefix: sharedPrefix } }
+      : {}),
     // #1057 — an explicit output cap and reasoning effort (config-driven), so
     // a thinking-by-default model cannot spend the provider default reasoning.
     ...resolveSpecKitOutputOptions(provider.model),

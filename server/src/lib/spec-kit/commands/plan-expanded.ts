@@ -267,6 +267,9 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
       ragContext: rag.context,
       ragChunksUsed: rag.usedChunks,
       format,
+      // #1144 — all five calls carry this constitution + RAG prefix: the first
+      // writes the cache at its end and the other four read it.
+      cacheSharedPrefix: true,
     });
     totalTokens += run.tokensUsed;
     if (run.truncated) truncated.push(key);

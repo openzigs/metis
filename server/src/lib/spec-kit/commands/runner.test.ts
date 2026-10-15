@@ -1,10 +1,11 @@
 /**
- * #700 — spec-kit runner cache wiring.
+ * #700 / #1144 — spec-kit runner cache wiring.
  *
- * `runSpecKitAgent` must tag its single provider.chat() call with
- * `callType: "spec-kit"` and request `promptCaching: { system: true }` so the
- * per-project-stable constitution prefix is cacheable and the call is
- * attributable in the cache-hit telemetry endpoint. The governance chain
+ * `runSpecKitAgent` tags every provider.chat() call with `callType: "spec-kit"`
+ * so it is attributable in the cache-hit telemetry endpoint. It requests a
+ * cache write only for a caller that will reuse it (`cacheSharedPrefix`, the
+ * five plan calls), and then breaks the cache at the end of the shared
+ * constitution + RAG prefix rather than at the end of the system (#1144). The governance chain
  * (budget, safety, audit, constitution, ledger) is mocked so the test is
  * hermetic and asserts only the provider-call options.
  */
@@ -74,7 +75,7 @@ function capturingProvider(): {
 describe("runSpecKitAgent cache wiring (#700)", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("tags the chat call with callType=spec-kit and caches the system prefix", async () => {
+  it("tags the chat call with callType=spec-kit and requests no cache write by default (#1144)", async () => {
     const { provider, calls } = capturingProvider();
 
     await runSpecKitAgent({
@@ -87,7 +88,8 @@ describe("runSpecKitAgent cache wiring (#700)", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0].opts.callType).toBe("spec-kit");
-    expect(calls[0].opts.promptCaching).toEqual({ system: true });
+    // #1144 — a single-call command cannot reuse a write, so it requests none.
+    expect(calls[0].opts.promptCaching).toBeUndefined();
     // The constitution leads the system prompt (constitution -> RAG -> base).
     expect(String(calls[0].opts.systemMessage)).toMatch(/^## Constitution v1\.0/);
   });
@@ -113,7 +115,34 @@ describe("runSpecKitAgent cache wiring (#700)", () => {
     });
   });
 
-  it("does not request messages-caching (single-shot user turn is unique)", async () => {
+  it("#1144 — a shared-prefix caller breaks the cache after constitution + RAG, not after the base prompt", async () => {
+    const { provider, calls } = capturingProvider();
+
+    for (const base of ["PLAN-PROMPT", "RESEARCH-PROMPT"]) {
+      await runSpecKitAgent({
+        command: "plan",
+        project,
+        systemPrompt: base,
+        userPrompt: "Plan it.",
+        ragContext: "RAG-BLOCK",
+        cacheSharedPrefix: true,
+        deps: { provider },
+      });
+    }
+
+    const prefix = "## Constitution v1.0\nBe truthful.\n\n---\n\nRAG-BLOCK";
+    for (const call of calls) {
+      // The single-shot user turn is unique, so it is never messages-cached.
+      expect(call.opts.promptCaching).toEqual({ system: true, systemPrefix: prefix });
+      expect(String(call.opts.systemMessage).startsWith(`${prefix}\n\n---\n\n`)).toBe(true);
+    }
+    // Both calls carry the same cacheable prefix, so the second reads the first's write.
+    expect(calls[0].opts.systemMessage).not.toBe(calls[1].opts.systemMessage);
+  });
+
+  it("#1144 — a shared-prefix caller with no constitution and no RAG requests no cache write", async () => {
+    const meta = await import("../constitution-meta.js");
+    vi.mocked(meta.loadAsPreamble).mockResolvedValueOnce(null);
     const { provider, calls } = capturingProvider();
 
     await runSpecKitAgent({
@@ -121,14 +150,16 @@ describe("runSpecKitAgent cache wiring (#700)", () => {
       project,
       systemPrompt: "Base.",
       userPrompt: "Plan it.",
+      ragContext: "   ",
+      cacheSharedPrefix: true,
       deps: { provider },
     });
 
-    const caching = calls[0].opts.promptCaching as { messages?: boolean };
-    expect(caching.messages).toBeUndefined();
+    expect(calls[0].opts.systemMessage).toBe("Base.");
+    expect(calls[0].opts.promptCaching).toBeUndefined();
   });
 
-  it("keeps the constitution -> RAG -> base order while still caching the prefix", async () => {
+  it("keeps the constitution -> RAG -> base order", async () => {
     const { provider, calls } = capturingProvider();
 
     await runSpecKitAgent({
@@ -142,14 +173,13 @@ describe("runSpecKitAgent cache wiring (#700)", () => {
     });
 
     const sys = String(calls[0].opts.systemMessage);
-    // Constitution leads, then RAG, then base — the stable constitution prefix
-    // is what the `promptCaching.system` flag makes cacheable.
+    // Constitution leads, then RAG, then base (trust order, #373).
     expect(sys.indexOf("Constitution")).toBeLessThan(sys.indexOf("RAG-BLOCK"));
     expect(sys.indexOf("RAG-BLOCK")).toBeLessThan(sys.indexOf("BASE-PROMPT"));
     expect(calls[0].opts.callType).toBe("spec-kit");
   });
 
-  it("falls back to the raw constitution and still tags + caches", async () => {
+  it("falls back to the raw constitution and still tags the call", async () => {
     const meta = await import("../constitution-meta.js");
     const con = await import("../constitution.js");
     vi.mocked(meta.loadAsPreamble).mockResolvedValueOnce(null);
@@ -165,7 +195,7 @@ describe("runSpecKitAgent cache wiring (#700)", () => {
     });
 
     expect(String(calls[0].opts.systemMessage)).toMatch(/^RAW-CONSTITUTION-BODY/);
-    expect(calls[0].opts.promptCaching).toEqual({ system: true });
+    expect(calls[0].opts.callType).toBe("spec-kit");
   });
 
   it("audits + rethrows an inbound safety denial before the provider call", async () => {

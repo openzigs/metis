@@ -516,6 +516,22 @@ describe("runSpecifyFeature", () => {
     expect(r.message).toContain("spec.md");
   });
 
+  it("#1144 — a one-call specify requests no prompt-cache write it cannot reuse", async () => {
+    const seen: unknown[] = [];
+    class OptsRecorder extends FakeProvider {
+      async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+        seen.push((o as { promptCaching?: unknown }).promptCaching);
+        return super.chat(m, o);
+      }
+    }
+    await runSpecifyFeature({
+      projectId: "p1",
+      prompt: "Build the billing dashboard.",
+      deps: { provider: new OptsRecorder("# Spec\n\nbody") },
+    });
+    expect(seen).toEqual([undefined]);
+  });
+
   it("re-uses existing feature when featureSlugOverride matches", async () => {
     seedFeature("p1", "042-existing");
     const r = await runSpecifyFeature({
@@ -636,6 +652,37 @@ describe("runPlanExpanded", () => {
     expect(research.content).toMatch(/Resolved Unknowns: none/);
     // Feature status promoted to 'planned'.
     expect(featureRows.get(fid)!.status).toBe("planned");
+  });
+
+  it("#1144 — the plan's calls share one cacheable system prefix, broken before each base prompt", async () => {
+    const fid = seedFeature("p1", "003-cache");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const opts: Array<{ systemMessage: string; promptCaching?: { systemPrefix?: string } }> = [];
+    class OptsRecorder extends FakeProvider {
+      async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+        opts.push(o as (typeof opts)[number]);
+        return super.chat(m, o);
+      }
+    }
+    await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "003-cache",
+      deps: {
+        provider: new OptsRecorder(
+          "openapi: 3.1.0\ninfo:\n  title: x\n  version: 1.0.0\npaths: {}",
+        ),
+      },
+    });
+    expect(opts).toHaveLength(5);
+    const prefix = opts[0]!.promptCaching?.systemPrefix;
+    expect(prefix).toBeTruthy();
+    for (const o of opts) {
+      expect(o.promptCaching).toEqual({ system: true, systemPrefix: prefix });
+      expect(o.systemMessage.startsWith(prefix!)).toBe(true);
+      // The base prompt after the breakpoint is what differs per artifact.
+      expect(o.systemMessage.length).toBeGreaterThan(prefix!.length);
+    }
+    expect(new Set(opts.map((o) => o.systemMessage)).size).toBe(5);
   });
 
   it("does not append 'Resolved Unknowns: none' when spec has [NEEDS CLARIFICATION] markers", async () => {

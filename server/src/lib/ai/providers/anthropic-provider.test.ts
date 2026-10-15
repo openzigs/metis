@@ -229,6 +229,60 @@ describe("AnthropicProvider prompt caching — chat()", () => {
       cache_control: { type: "ephemeral" },
     });
   });
+
+  // #1144 — a breakpoint at the END of the system prompt only caches the whole
+  // system, so five plan calls that differ only in their trailing base prompt
+  // never read each other's write. With `systemPrefix` the breakpoint goes at
+  // the end of the shared prefix and the varying tail is a second, uncached block.
+  it("#1144 — places the system breakpoint at the end of systemPrefix, tail uncached", async () => {
+    await provider().chat([{ role: "user", content: "q" }], {
+      systemMessage: "CONSTITUTION + RAG\n\n---\n\nBASE PROMPT",
+      promptCaching: { system: true, systemPrefix: "CONSTITUTION + RAG" },
+    });
+    const sys = lastCreateBody().system as Block[];
+    expect(sys).toHaveLength(2);
+    expect(sys[0]).toEqual({
+      type: "text",
+      text: "CONSTITUTION + RAG",
+      cache_control: { type: "ephemeral" },
+    });
+    expect(sys[1]).toEqual({ type: "text", text: "\n\n---\n\nBASE PROMPT" });
+    // The model still reads the same system text, byte for byte.
+    expect(sys.map((b) => b.text).join("")).toBe("CONSTITUTION + RAG\n\n---\n\nBASE PROMPT");
+  });
+
+  it("#1144 — a systemPrefix that is not a strict prefix of the system falls back to one block", async () => {
+    for (const systemPrefix of ["PROMPT", "SYS PROMPT"]) {
+      await provider().chat(messages, { promptCaching: { system: true, systemPrefix } });
+      const sys = lastCreateBody().system as Block[];
+      expect(sys).toEqual([
+        { type: "text", text: "SYS PROMPT", cache_control: { type: "ephemeral" } },
+      ]);
+    }
+  });
+
+  it("#1144 — a rejected systemPrefix is logged, not silent", async () => {
+    logDebugSpy.mockClear();
+    await provider().chat(messages, { promptCaching: { system: true, systemPrefix: "PROMPT" } });
+    expect(logDebugSpy).toHaveBeenCalledWith(
+      expect.stringContaining("systemPrefix"),
+      expect.anything(),
+    );
+    logDebugSpy.mockClear();
+    await provider().chat(messages, {
+      promptCaching: { system: true, systemPrefix: "SYS" },
+    });
+    expect(logDebugSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("systemPrefix"),
+      expect.anything(),
+    );
+  });
+
+  it("#1144 — systemPrefix without promptCaching.system writes no breakpoint", async () => {
+    await provider().chat(messages, { promptCaching: { systemPrefix: "SYS" } });
+    expect(lastCreateBody().system).toBe("SYS PROMPT");
+    expect(JSON.stringify(lastCreateBody())).not.toContain("cache_control");
+  });
 });
 
 describe("AnthropicProvider prompt caching — stream()", () => {
