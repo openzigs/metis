@@ -68,6 +68,7 @@ import {
 } from "../grounding.js";
 import type { PlanLocalisationSource } from "../plan-localisation.js";
 import { SpecKitJobStopError, reportSpecKitJobPhase } from "../job-scope.js";
+import { describePlanDesignDiff, diffPlanDesign, previousPlanSection } from "../plan-diff.js";
 
 const log = createChildLogger("spec-kit-plan");
 
@@ -210,6 +211,10 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     throw new GateUnmetError("specGate", "spec.md is required — run /speckit.specify first");
   }
   const project = await loadProjectContext(input.projectId);
+  // #1134 — a re-run revises the current plan instead of designing afresh, and
+  // its result says what changed against it.
+  const storedPlan = await getFeatureArtifact(feature.id, "plan.md");
+  const previousPlan = storedPlan && storedPlan.content.trim().length > 0 ? storedPlan : null;
 
   // #786 — ground every artifact the way `/plan` is grounded (#375 / #20 /
   // #785): retrieve on the spec's own requirement text, always include code
@@ -298,6 +303,7 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     "plan.md",
     PLAN_SYSTEM_PROMPT,
     `Produce plan.md per the system instructions. ${PLAN_REST_SURFACE_ASK}`,
+    previousPlan ? `${userBase}\n\n${previousPlanSection(previousPlan)}` : userBase,
   );
   if (!/^##\s+Constitution Compliance Check/m.test(planContent)) {
     planContent = `${planContent.trim()}\n\n## Constitution Compliance Check\n\n| Principle | Status | Notes |\n| --- | --- | --- |\n| (auto-generated) | n/a | populate per principle from .specify/memory/constitution.md |\n`;
@@ -478,10 +484,18 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
       ? ` The complete previous ${kept.map((k) => `\`${k}\``).join(", ")} ${kept.length === 1 ? "is" : "are"} kept as current; the cut-off ${kept.length === 1 ? "reply was" : "replies were"} not saved and ${kept.length === 1 ? "is" : "are"} returned in \`partialContent\`.`
       : "";
   const statusNote = planCut ? " The feature was not marked planned." : "";
+  // #1134 — only when this run's plan.md is the one saved: a kept plan did not change.
+  const designNote =
+    previousPlan && plan.version !== previousPlan.version
+      ? describePlanDesignDiff(
+          previousPlan.version,
+          diffPlanDesign(previousPlan.content, plan.content),
+        )
+      : "";
 
   return {
     artifacts,
-    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${contextNote}${pathNote}${noneNote}${mermaidNote}${contractNote}${truncationWarning(truncated)}${keptNote}${statusNote}`,
+    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${designNote}${contextNote}${pathNote}${noneNote}${mermaidNote}${contractNote}${truncationWarning(truncated)}${keptNote}${statusNote}`,
     tokensUsed: totalTokens,
     retrievedFiles: rag.files,
     ...(kept.length > 0 ? { partialContent } : {}),

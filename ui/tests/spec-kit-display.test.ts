@@ -80,6 +80,13 @@ describe("displayArtifactText", () => {
   });
 });
 
+describe("displayArtifactText — the plan-source stamp (#1134)", () => {
+  it("drops the metis stamp line, which react-markdown would show as text", () => {
+    const md = "# Tasks\n- [ ] T001\n\n<!-- metis: generated from plan.md v3 -->\n";
+    expect(displayArtifactText(md)).toBe("# Tasks\n- [ ] T001\n\n");
+  });
+});
+
 describe("isMarkdownArtifact", () => {
   it("renders .md and leaves the YAML contract as text", () => {
     expect(isMarkdownArtifact("checklists/security.md")).toBe(true);

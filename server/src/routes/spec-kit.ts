@@ -61,6 +61,7 @@ import { runTasks } from "../lib/spec-kit/commands/tasks.js";
 import { runClarify } from "../lib/spec-kit/commands/clarify.js";
 import { runAnalyze } from "../lib/spec-kit/commands/analyze.js";
 import { runImplement } from "../lib/spec-kit/commands/implement.js";
+import { findStaleArtifacts } from "../lib/spec-kit/plan-provenance.js";
 import { runConstitution } from "../lib/spec-kit/commands/constitution.js";
 import { runChecklist } from "../lib/spec-kit/commands/checklist.js";
 import { runPlanExpanded } from "../lib/spec-kit/commands/plan-expanded.js";
@@ -978,7 +979,8 @@ export function specKitRouter(): Router {
         const feature = await resolveFeatureBySlug(projectId, String(req.params.slug ?? ""));
         if (!feature) throw new AppError(404, "SPECKIT_FEATURE_NOT_FOUND", "Feature not found");
         const artifacts = await listFeatureArtifacts(feature.id);
-        res.json(ok({ feature, artifacts }));
+        // #1134 — the plan-derived artifacts generated from an earlier plan.md.
+        res.json(ok({ feature, artifacts, stale: findStaleArtifacts(artifacts) }));
       } catch (err) {
         rethrow(err);
       }

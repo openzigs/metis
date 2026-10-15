@@ -261,6 +261,11 @@ export default function SpecKitPage() {
       [...(featureArtifactsQuery.data?.artifacts ?? [])].sort((a, b) => a.key.localeCompare(b.key)),
     [featureArtifactsQuery.data],
   );
+  // #1134 — plan-derived artifacts generated from an earlier plan.md, by key.
+  const staleByKey = useMemo(
+    () => new Map((featureArtifactsQuery.data?.stale ?? []).map((s) => [s.key, s])),
+    [featureArtifactsQuery.data],
+  );
 
   const selectedArtifact = useMemo(
     () => filesQuery.data?.artifacts.find((a) => a.name === selectedName) ?? null,
@@ -973,21 +978,36 @@ export default function SpecKitPage() {
               <p className="text-xs text-muted-foreground">No artifacts yet.</p>
             ) : (
               <ul className="space-y-1">
-                {featureArtifacts.map((a) => (
-                  <li key={a.key}>
-                    <button
-                      type="button"
-                      data-testid={`spec-kit-feature-artifact-${a.key}`}
-                      onClick={() => setSelectedKey(a.key)}
-                      className={`flex w-full items-center justify-between rounded px-2 py-1 text-sm hover:bg-muted ${
-                        selectedKey === a.key ? "bg-muted" : ""
-                      }`}
-                    >
-                      <span className="truncate">{a.key}</span>
-                      <span className="text-xs text-muted-foreground">v{a.version}</span>
-                    </button>
-                  </li>
-                ))}
+                {featureArtifacts.map((a) => {
+                  const stale = staleByKey.get(a.key);
+                  return (
+                    <li key={a.key}>
+                      <button
+                        type="button"
+                        data-testid={`spec-kit-feature-artifact-${a.key}`}
+                        onClick={() => setSelectedKey(a.key)}
+                        className={`flex w-full items-center justify-between rounded px-2 py-1 text-sm hover:bg-muted ${
+                          selectedKey === a.key ? "bg-muted" : ""
+                        }`}
+                      >
+                        <span className="truncate">{a.key}</span>
+                        <span className="text-xs text-muted-foreground">v{a.version}</span>
+                      </button>
+                      {stale ? (
+                        <p
+                          className="px-2 text-xs text-warning"
+                          data-testid={`spec-kit-feature-artifact-stale-${a.key}`}
+                        >
+                          Out of date:{" "}
+                          {stale.planVersion === null
+                            ? `generated before plan.md v${stale.currentPlanVersion}`
+                            : `generated from plan.md v${stale.planVersion}, plan.md is now v${stale.currentPlanVersion}`}
+                          .
+                        </p>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </Card>

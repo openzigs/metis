@@ -350,6 +350,35 @@ describe("/plan", () => {
     expect(r.artifact.content).toContain("# Plan");
   });
 
+  it("#1134 — a re-run starts from the previous plan.md and says what changed", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
+    const first = await runPlan({
+      projectId: "p1",
+      deps: {
+        provider: new FakeProvider("## Components\n- `PUT /v1/entries/read` in `api/entry.go`"),
+      },
+    });
+    expect(first.message).not.toContain("Compared with plan.md");
+    const prompts: string[] = [];
+    class Recording extends FakeProvider {
+      async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+        prompts.push(m.map((x) => String(x.content)).join("\n"));
+        return super.chat(m, o as never);
+      }
+    }
+    const second = await runPlan({
+      projectId: "p1",
+      deps: {
+        provider: new Recording("## Components\n- `PUT /v1/entries/read` in `api/entry.go`"),
+      },
+    });
+    expect(prompts[0]).toContain("Previous plan.md (v1) — the starting point");
+    expect(prompts[0]).toContain("`api/entry.go`");
+    expect(second.message).toContain(
+      "Compared with plan.md v1: the same endpoints, files and functions.",
+    );
+  });
+
   it("grounds the plan on project RAG when the knowledge service returns hits (#375)", async () => {
     await writeArtifact({ projectId: "p1", name: "spec.md", content: "spec body" });
     const ks = fakeKnowledgeService([
@@ -898,6 +927,23 @@ describe("/implement", () => {
     await expect(runImplement({ projectId: "p1" })).rejects.toMatchObject({
       code: "SPEC_KIT_IMPLEMENT_INCOMPLETE",
     });
+  });
+
+  it("#1134 — warns when tasks.md was generated from an earlier plan.md", async () => {
+    await writeArtifact({ projectId: "p1", name: "spec.md", content: "s" });
+    await writeArtifact({ projectId: "p1", name: "plan.md", content: "p" });
+    await writeArtifact({ projectId: "p1", name: "plan.md", content: "p2" });
+    await writeArtifact({
+      projectId: "p1",
+      name: "tasks.md",
+      content: "t\n\n<!-- metis: generated from plan.md v1 -->\n",
+    });
+    const r = await runImplement({ projectId: "p1", actorId: "u1" });
+    expect(r.message).toContain(
+      "Warning: tasks.md was generated from plan.md v1; plan.md is now v2 — re-run /tasks before implementing",
+    );
+    const audited = auditCalls.find((c) => c.action === "spec_kit.command.implement");
+    expect(audited?.metadata?.staleTasks).toBe(true);
   });
 
   it("returns the orchestrator handoff payload + audits success", async () => {

@@ -9,6 +9,9 @@ import { SpecKitCommandPendingError, SpecKitJobUnreachableError } from "@/lib/sp
 /** The checklist's hidden record of the checks it generated (base64 JSON, #787). */
 const GENERATED_CHECKS_MARKER = "<!-- speckit-generated-checks:";
 
+/** #1134 — the line naming the plan.md version a derived artifact was generated from. */
+const PLAN_SOURCE_MARKER = "<!-- metis: generated from plan.md";
+
 /**
  * The artifact text to display: lines that only carry a machine marker are
  * dropped. The stored artifact (and the editor) keep them — the next
@@ -17,7 +20,10 @@ const GENERATED_CHECKS_MARKER = "<!-- speckit-generated-checks:";
 export function displayArtifactText(content: string): string {
   return content
     .split("\n")
-    .filter((line) => !line.trimStart().startsWith(GENERATED_CHECKS_MARKER))
+    .filter((line) => {
+      const t = line.trimStart();
+      return !t.startsWith(GENERATED_CHECKS_MARKER) && !t.startsWith(PLAN_SOURCE_MARKER);
+    })
     .join("\n");
 }
 

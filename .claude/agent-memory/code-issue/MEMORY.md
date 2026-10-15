@@ -71,6 +71,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Decline guards: every token](project_decline-guards-need-every-continuation-token.md) — silent-success holes evade throw-fuzz (#1084)
 - [Regex negatives pass incidentally](project_speckit-regex-negatives-pass-incidentally.md) — test the one-change near-miss (#1083)
 - [Go resolver binds by bare name](project_go-call-resolver-binds-by-bare-name.md) — false positives for claims (#1086)
+- [HTML comment shows as text](project_html-comment-marker-renders-as-text-in-spec-kit-viewer.md) — filter markers in displayArtifactText (#1134)
 - [Pin skipHtml on textContent](project_react-markdown-skiphtml-needs-textcontent-assert.md) — no-<img> passes anyway (#1086)
 - [Weak Tested-by: check counts](project_weak-tested-by-relation-check-every-count.md) — aggregates ignore weak vs strict (#1069)
 - [Next catch-all segments are decoded](project_next-catch-all-segments-are-decoded.md) — decide proxy policy on resolved pathname (#1069)

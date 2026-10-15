@@ -26,6 +26,7 @@ import {
   CONSISTENCY_SYSTEM_PROMPT,
   parseConsistencyReport,
 } from "../../analysis/cross-doc-validator.js";
+import { stampPlanSource } from "../plan-provenance.js";
 
 /**
  * Issue #218 — the spec-kit `/analyze` system prompt is now the shared
@@ -154,7 +155,12 @@ export async function runAnalyze(input: AnalyzeInput): Promise<AnalyzeResult> {
   const block = `${REPORT_HEADER(now().toISOString())}\n${run.content.trim()}\n${contractSection}`;
   const next = `${prev.trimEnd()}\n${block}`;
 
-  const artifact = await scope.write("analysis.md", next, input.actorId ?? null);
+  // #1134 — the report names the plan it checked; the last report's plan is the one stamped.
+  const artifact = await scope.write(
+    "analysis.md",
+    stampPlanSource(next, plan.version),
+    input.actorId ?? null,
+  );
 
   const n = contradictions.length;
   const contractNote =

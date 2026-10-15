@@ -12,6 +12,7 @@ import {
 } from "../artifact-scope.js";
 import { runSpecKitAgent, loadProjectContext, truncationWarning, type RunDeps } from "./runner.js";
 import { findTestsAfterImplementation } from "../grounding.js";
+import { stampPlanSource } from "../plan-provenance.js";
 
 /**
  * Exported for the structural-contract tests (#376) — see specify.ts.
@@ -118,7 +119,12 @@ export async function runTasks(input: TasksInput): Promise<TasksResult> {
     deps: input.deps,
   });
 
-  const artifact = await scope.write("tasks.md", run.content, input.actorId ?? null);
+  // #1134 — name the plan this was generated from, so a later plan marks it out of date.
+  const artifact = await scope.write(
+    "tasks.md",
+    stampPlanSource(run.content, plan.version),
+    input.actorId ?? null,
+  );
 
   // #20 — make a test-last ordering visible rather than trusting the prompt.
   const late = findTestsAfterImplementation(run.content);
