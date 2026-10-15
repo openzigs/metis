@@ -30,6 +30,14 @@ import type { PlanLocalisationSource } from "../plan-localisation.js";
 import { PLAN_SYSTEM_PROMPT } from "./prompts.js";
 import { describeUndeclaredMermaidNodes, findUndeclaredMermaidNodes } from "../mermaid-check.js";
 import { describePlanDesignDiff, diffPlanDesign, previousPlanSection } from "../plan-diff.js";
+import {
+  createDefaultSymbolFileLookup,
+  describeNotVisibleClaims,
+  describeParameterRenames,
+  findNotVisibleClaims,
+  findParameterRenames,
+  type SymbolFileLookup,
+} from "../plan-checks.js";
 export { PLAN_SYSTEM_PROMPT } from "./prompts.js";
 
 const SYSTEM_PROMPT = PLAN_SYSTEM_PROMPT;
@@ -55,6 +63,8 @@ export interface PlanInput {
   callerLookup?: CallerLookup;
   /** #1060 — injectable code-graph source for the localisation. Defaults to the production wiring. */
   localisationSource?: PlanLocalisationSource;
+  /** #1135 — injectable function → file lookup for the "not visible" check. */
+  symbolFileLookup?: SymbolFileLookup;
 }
 
 export interface PlanResult {
@@ -183,11 +193,22 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
         diffPlanDesign(previousPlan.content, run.content),
       )
     : "";
+  // #1135 — the same checks as `/speckit.plan`. `/plan` keeps no plan-context.md,
+  // so the files are named as "the plan's context".
+  const checkNote =
+    describeNotVisibleClaims(
+      await findNotVisibleClaims(
+        run.content,
+        rag,
+        input.symbolFileLookup ?? createDefaultSymbolFileLookup(input.projectId),
+      ),
+      null,
+    ) + describeParameterRenames(findParameterRenames(spec.content, run.content));
 
   return {
     artifact,
     tokensUsed: run.tokensUsed,
     retrievedFiles: rag.files,
-    message: `Generated plan.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${designNote}${describeContextDropped(rag.dropped)}${pathNote}${noneNote}${mermaidNote}${truncationWarning(run.truncated ? ["plan.md"] : [])}`,
+    message: `Generated plan.md (v${artifact.version}) in ${run.tokensUsed} tokens — ${describeGrounding(rag)}.${designNote}${describeContextDropped(rag.dropped)}${pathNote}${noneNote}${mermaidNote}${checkNote}${truncationWarning(run.truncated ? ["plan.md"] : [])}`,
   };
 }

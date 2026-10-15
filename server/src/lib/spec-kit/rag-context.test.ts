@@ -95,6 +95,35 @@ describe("buildSpecKitRagContext — flag ON", () => {
     expect(res.context).not.toContain("[1] Doc (class)");
   });
 
+  it("#1135 — reports as shown only the source it rendered: a placed snippet, a repo chunk", async () => {
+    const deps = fused(
+      [
+        {
+          symbolId: "s2",
+          filePath: "y",
+          name: "Validator",
+          kind: "class",
+          score: 2,
+          snippet: "class Validator {\n  check() {}\n}",
+        },
+        { symbolId: "s3", filePath: "z", name: "Rules", kind: "class", score: 1 },
+      ],
+      {
+        s2: { filePath: "src/Validator.java", startLine: 20, endLine: 55 },
+        s3: { filePath: "src/Rules.java", startLine: 1, endLine: 9 },
+      },
+    );
+    const res = await buildSpecKitRagContext("p1", "validator", {
+      knowledgeService: knowledgeService([docHit]),
+      fusedCode: deps,
+    });
+    expect(res.context).toContain("class Validator {");
+    // `Rules` is named by its locator only: its file is listed, its body is not shown.
+    expect(res.files).toContain("src/Rules.java");
+    expect(res.bodies).toEqual([{ name: "Validator", filePath: "src/Validator.java" }]);
+    expect(res.excerpts).toEqual([{ filePath: "main/java/Doc.java", text: "public class Doc {}" }]);
+  });
+
   it("#547 — an upload sharing a repo path does not suppress the code symbol", async () => {
     const deps = fused([{ symbolId: "s1", filePath: "x", name: "Doc", kind: "class", score: 2 }], {
       s1: { filePath: "main/java/Doc.java", startLine: 1, endLine: 9 },
@@ -130,7 +159,15 @@ describe("buildSpecKitRagContext — flag ON", () => {
       knowledgeService: knowledgeService([]),
       fusedCode: deps,
     });
-    expect(res).toEqual({ context: "", usedChunks: 0, usedSymbols: 0, files: [], dropped: [] });
+    expect(res).toEqual({
+      context: "",
+      usedChunks: 0,
+      usedSymbols: 0,
+      files: [],
+      dropped: [],
+      bodies: [],
+      excerpts: [],
+    });
   });
 });
 

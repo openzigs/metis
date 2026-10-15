@@ -69,6 +69,14 @@ import {
 import type { PlanLocalisationSource } from "../plan-localisation.js";
 import { SpecKitJobStopError, reportSpecKitJobPhase } from "../job-scope.js";
 import { describePlanDesignDiff, diffPlanDesign, previousPlanSection } from "../plan-diff.js";
+import {
+  createDefaultSymbolFileLookup,
+  describeNotVisibleClaims,
+  describeParameterRenames,
+  findNotVisibleClaims,
+  findParameterRenames,
+  type SymbolFileLookup,
+} from "../plan-checks.js";
 
 const log = createChildLogger("spec-kit-plan");
 
@@ -166,6 +174,8 @@ export interface PlanInput {
   pathLookup?: PlanPathLookup;
   /** #1060 — injectable code-graph source for the localisation. Defaults to the production wiring. */
   localisationSource?: PlanLocalisationSource;
+  /** #1135 — injectable function → file lookup for the "not visible" check. */
+  symbolFileLookup?: SymbolFileLookup;
 }
 
 export interface PlanResult {
@@ -478,6 +488,18 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
       ? ` The ${rag.files.length} file${rag.files.length === 1 ? "" : "s"} the plan was given ${rag.files.length === 1 ? "is" : "are"} recorded in \`${PLAN_CONTEXT_ARTIFACT}\`.${describeContextDropped(rag.dropped, PLAN_CONTEXT_ARTIFACT)}`
       : ` \`${PLAN_CONTEXT_ARTIFACT}\` (the record of the files this plan was given) could not be saved; an earlier one, if present, describes an earlier plan.md.${describeContextDropped(rag.dropped)}`;
 
+  // #1135 — what the plan says it could not see, against what it was given, and
+  // the names the spec states that it renamed without saying so.
+  const checkNote =
+    describeNotVisibleClaims(
+      await findNotVisibleClaims(
+        plan.content,
+        rag,
+        input.symbolFileLookup ?? createDefaultSymbolFileLookup(input.projectId),
+      ),
+      PLAN_CONTEXT_ARTIFACT,
+    ) + describeParameterRenames(findParameterRenames(spec.content, plan.content));
+
   const kept = Object.keys(partialContent);
   const keptNote =
     kept.length > 0
@@ -495,7 +517,7 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
 
   return {
     artifacts,
-    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${designNote}${contextNote}${pathNote}${noneNote}${mermaidNote}${contractNote}${truncationWarning(truncated)}${keptNote}${statusNote}`,
+    message: `Generated 5 plan artifacts for ${feature.slug} (${totalTokens} tokens) — ${describeGrounding(rag)}.${designNote}${contextNote}${pathNote}${noneNote}${mermaidNote}${contractNote}${checkNote}${truncationWarning(truncated)}${keptNote}${statusNote}`,
     tokensUsed: totalTokens,
     retrievedFiles: rag.files,
     ...(kept.length > 0 ? { partialContent } : {}),

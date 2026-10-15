@@ -20,11 +20,14 @@ import {
 import {
   EDIT_POOL,
   fileScore,
+  isReadPathBug,
   isSchemaSymbol,
   MAX_EDIT_FILES,
   MAX_RELATED,
   MAX_SYMBOLS_PER_EDIT_FILE,
   prismaSeedSymbolLoader,
+  prismaWriterIdLoader,
+  READ_PATH_HANDLER_BOOST,
   rankEditFiles,
   RELATED_CONFIDENCE_FACTOR,
   resolveChangeSeeds,
@@ -423,6 +426,22 @@ describe("prismaSeedSymbolLoader (#1036)", () => {
     expect(first[0].where.projectId).toBe("proj-9");
     expect(first[0].where.id.in).toHaveLength(500);
   });
+
+  it("returns each symbol's signature, which the #1135 handler boost reads (PR #1164 panel)", async () => {
+    const stored = {
+      ...row("H", "ui/h.go"),
+      signature: "func h(w http.ResponseWriter, r *http.Request)",
+    };
+    // Answers only the fields the query selects, as Prisma does.
+    const findMany = vi.fn(async ({ select }: { select: Record<string, boolean> }) => [
+      Object.fromEntries(Object.entries(stored).filter(([k]) => select[k])),
+    ]);
+    const [loaded] = await prismaSeedSymbolLoader({ codeSymbol: { findMany } } as never)(
+      ["H"],
+      "p1",
+    );
+    expect(loaded!.signature).toBe(stored.signature);
+  });
 });
 
 describe("resolveChangeSeeds — which channels answered (#1036, PR #1090 review)", () => {
@@ -648,5 +667,146 @@ describe("seedQueries — the request is cut BEFORE it is cleaned, and the query
     // With real text in the head, the first MAX_SEED_QUERY_CHARS are the same.
     const wordy = `${"alpha beta ".repeat(PART_LIMIT)}after`;
     expect(now(request(wordy))).toBe(before(request(wordy)));
+  });
+});
+
+// ── #1135: a read-path bug ───────────────────────────────────────────────────
+
+describe("resolveChangeSeeds — a read-path bug (#1135)", () => {
+  const request = (kind: ChangeRequest["kind"], title: string, body: string): ChangeRequest => ({
+    title,
+    kind,
+    primaryRequest: body,
+    subAspects: [],
+    context: [],
+    ignored: [],
+  });
+  const bug = (title: string, body: string) => ({
+    title,
+    body,
+    request: request("bug", title, body),
+  });
+  /** The #4386 shape: the storage status writer outscores the page handler. */
+  const HANDLER_SIG =
+    "func (h *handler) showFeedEntriesPage(w http.ResponseWriter, r *http.Request)";
+  const rows = [
+    row("MarkFeedAsRead", "internal/storage/entry.go"),
+    row("ClientMarkFeedAsRead", "client/client.go"),
+    row("markPageAsReadAction", "internal/ui/static/js/app.js", { language: "js" }),
+    row("showFeedEntriesPage", "internal/ui/feed_entries.go", { signature: HANDLER_SIG }),
+  ];
+  const scores = {
+    MarkFeedAsRead: 10,
+    ClientMarkFeedAsRead: 9,
+    markPageAsReadAction: 8,
+    showFeedEntriesPage: 4,
+  };
+  const BUG_4386 = bug(
+    "After 'Mark this page as read' the feed shows 0 entries",
+    "On the last page of a feed, marking the page as read leaves an empty page with a (0) count.",
+  );
+
+  it("keeps table writers out of the files to edit and ranks the handler in", async () => {
+    const loadWriterIds = vi.fn(
+      async (ids: string[]) => new Set(ids.filter((i) => i === "MarkFeedAsRead")),
+    );
+    const seeds = await resolveChangeSeeds(BUG_4386, "p1", {
+      ...fixed(rows, scores),
+      loadWriterIds,
+    });
+    const editFiles = [...new Set(seeds.editCandidates.map((m) => m.filePath))];
+    expect(editFiles).toContain("internal/ui/feed_entries.go");
+    expect(editFiles).not.toContain("internal/storage/entry.go");
+    // The writer is still there, for review.
+    expect(seeds.related.map((m) => m.codeSymbolId)).toContain("MarkFeedAsRead");
+    expect(loadWriterIds).toHaveBeenCalledWith(expect.arrayContaining(["MarkFeedAsRead"]), "p1");
+  });
+
+  it("changes nothing for a feature request, or a bug that changes stored data", async () => {
+    for (const c of [
+      { ...BUG_4386, request: request("feature", BUG_4386.title, BUG_4386.body) },
+      bug("read_at is never set", "Add a new column read_at to entries and a migration."),
+    ]) {
+      const loadWriterIds = vi.fn(async () => new Set(["MarkFeedAsRead"]));
+      const seeds = await resolveChangeSeeds(c, "p1", { ...fixed(rows, scores), loadWriterIds });
+      const editFiles = [...new Set(seeds.editCandidates.map((m) => m.filePath))];
+      expect(editFiles).toContain("internal/storage/entry.go");
+      expect(editFiles).not.toContain("internal/ui/feed_entries.go");
+      expect(loadWriterIds).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a failed writer lookup keeps the writers as edit candidates", async () => {
+    const loadWriterIds = vi.fn(async () => {
+      throw new Error("db down");
+    });
+    const seeds = await resolveChangeSeeds(BUG_4386, "p1", {
+      ...fixed(rows, scores),
+      loadWriterIds,
+    });
+    expect(seeds.editCandidates.map((m) => m.filePath)).toContain("internal/storage/entry.go");
+    // The handler boost does not need the lookup.
+    expect(seeds.editCandidates.map((m) => m.filePath)).toContain("internal/ui/feed_entries.go");
+  });
+
+  it("isReadPathBug: a bug report that asks to store nothing new", () => {
+    expect(isReadPathBug(BUG_4386)).toBe(true);
+    expect(isReadPathBug({ ...BUG_4386, request: { kind: "feature" } as ChangeRequest })).toBe(
+      false,
+    );
+    expect(isReadPathBug({ title: BUG_4386.title, body: BUG_4386.body })).toBe(false);
+    expect(isReadPathBug(bug("Timestamps lost", "The migration drops the column."))).toBe(false);
+    expect(isReadPathBug(bug("Keep it", "We should persist the setting."))).toBe(false);
+    expect(READ_PATH_HANDLER_BOOST).toBeGreaterThan(1);
+  });
+
+  it("isReadPathBug: a write-path bug is not a read-path bug (writers stay editable)", () => {
+    expect(isReadPathBug(bug("Settings not saved", "Settings does not save."))).toBe(false);
+    expect(
+      isReadPathBug(
+        bug("Mark as read does not update status", "The status is never written to the database."),
+      ),
+    ).toBe(false);
+    expect(
+      isReadPathBug(bug("Delete feed fails", "Deleting a feed leaves entries in the table.")),
+    ).toBe(false);
+    expect(isReadPathBug(bug("Entries hidden", "The page shows 0 entries."))).toBe(true);
+  });
+
+  it("isReadPathBug: a negative corpus of write-path symptom phrasings keeps the writers (PR #1164 panel)", () => {
+    // Each of these names a failed WRITE; reading one as a read-path bug drops
+    // the writer that needs the fix from the files to edit.
+    for (const [title, body] of [
+      ["Read status lost", "The status isn't saved."],
+      ["Stale entries", "Entries don't get updated."],
+      ["Feed removal broken", "Deleting a feed throws an error."],
+      ["Bulk action broken", "Mark all as read does nothing."],
+      ["Settings", "The setting won't save after a reload."],
+      ["Starred", "Starring an entry: the flag was not marked as starred."],
+    ] as const) {
+      expect(isReadPathBug(bug(title, body)), body).toBe(false);
+    }
+    // The opposite class: the motivating #4386 report, verbatim, stays read-path.
+    const [issue] = extractChangesByShape(read("miniflux-4386.md"));
+    expect(issue!.request!.kind).toBe("bug");
+    expect(isReadPathBug(issue!)).toBe(true);
+    expect(isReadPathBug(BUG_4386)).toBe(true);
+    expect(isReadPathBug(bug("Wrong count", "The unread counter shows (0) after paging."))).toBe(
+      true,
+    );
+  });
+
+  it("prismaWriterIdLoader reads write edges for the given symbols, project-scoped and chunked", async () => {
+    const findMany = vi
+      .fn()
+      .mockResolvedValueOnce([{ fromSymbolId: "a" }])
+      .mockResolvedValueOnce([{ fromSymbolId: "z" }]);
+    const ids = Array.from({ length: 501 }, (_, i) => `s${i}`);
+    const out = await prismaWriterIdLoader({ codeEdge: { findMany } } as never)(ids, "p1");
+    expect(out).toEqual(new Set(["a", "z"]));
+    expect(findMany).toHaveBeenCalledTimes(2);
+    const where = findMany.mock.calls[0]![0].where;
+    expect(where).toMatchObject({ projectId: "p1", kind: { in: ["writes", "persists-to"] } });
+    expect(where.fromSymbolId.in).toHaveLength(500);
   });
 });

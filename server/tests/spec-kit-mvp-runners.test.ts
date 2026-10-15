@@ -2896,3 +2896,85 @@ describe("#1134 — a re-planned feature marks what the earlier plan generated",
     expect(readPlanSource(all.find((a) => a.key === "checklist-security.md")!.content)).toBe(1);
   });
 });
+
+describe("#1135 — /speckit.plan reports a renamed parameter on its result", () => {
+  it("names the spec's parameter the plan replaced, and is quiet when the plan keeps it", async () => {
+    const fid = seedFeature("p1", "009-read-at");
+    seedFeatureArtifact(
+      fid,
+      "spec.md",
+      "# Spec\n\n## In scope\n- support filtering with read_at_after / read_at_before",
+    );
+    const renamed = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "009-read-at",
+      symbolFileLookup: async () => new Map(),
+      deps: { provider: new FakeProvider("## Components\n- filters read_after and read_before") },
+    });
+    expect(renamed.message).toContain(
+      "Check: plan.md renames names the spec states (`read_at_after` → `read_after`, `read_at_before` → `read_before`) without saying why",
+    );
+
+    const kept = await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "009-read-at",
+      symbolFileLookup: async () => new Map(),
+      deps: {
+        provider: new FakeProvider("## Components\n- filters read_at_after and read_at_before"),
+      },
+    });
+    expect(kept.message).not.toContain("renames");
+  });
+});
+
+describe("#1135 — /speckit.plan reports a 'not visible' claim about code whose source it was given", () => {
+  const ENTRY = "internal/storage/entry.go";
+  const SOURCE = "func (s *Storage) MarkAllAsRead(userID int64) error {\n\treturn nil\n}";
+  const PLAN =
+    "## Risks & mitigations\n- `MarkAllAsRead` is not visible in the retrieved context; read it before relying on it.";
+  /** One retrieved function: with its snippet (source shown), or without (locator only). */
+  const run = (snippet: string | undefined) =>
+    runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "010-mark",
+      knowledgeService: { search: vi.fn(async () => ({ hits: [] })) },
+      fusedCode: {
+        searcher: {
+          search: vi.fn(async () => [
+            {
+              symbolId: "s-mark",
+              filePath: ENTRY,
+              name: "MarkAllAsRead",
+              kind: "function",
+              score: 1,
+              ...(snippet ? { snippet } : {}),
+            },
+          ]),
+        },
+        lineLookup: {
+          resolve: vi.fn(
+            async () => new Map([["s-mark", { filePath: ENTRY, startLine: 506, endLine: 508 }]]),
+          ),
+        },
+      },
+      siblingLookup: { findInFiles: vi.fn(async () => []) },
+      callerLookup: { findCallers: vi.fn(async () => []) },
+      localisationSource: fakeSource({ symbols: [], edges: [] }),
+      symbolFileLookup: async () => new Map(),
+      deps: { provider: new FakeProvider(PLAN) },
+    });
+
+  it("flags it when the function's source was shown, and not when only its locator was", async () => {
+    const fid = seedFeature("p1", "010-mark");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nMark all entries as read.");
+    const shown = await run(SOURCE);
+    expect(shown.retrievedFiles).toContain(ENTRY);
+    expect(shown.message).toContain(
+      " Check: plan.md says it could not see `MarkAllAsRead` (in `internal/storage/entry.go`), but that file was in the plan's context (`plan-context.md`)",
+    );
+    // PR #1164 panel: the same file, the function named only by its locator.
+    const locatorOnly = await run(undefined);
+    expect(locatorOnly.retrievedFiles).toContain(ENTRY);
+    expect(locatorOnly.message).not.toContain("could not see");
+  });
+});
