@@ -235,14 +235,112 @@ export interface AttributionResult {
   unattributed: AnsweredQuestion[];
 }
 
+/** Case- and whitespace-insensitive title, for the exact-title tier. */
+function titleKey(title: string): string {
+  return normalised(title).toLowerCase();
+}
+
+/**
+ * Issue #1031 — decide which persisted row IS each structured requirement.
+ *
+ * The old per-answer loop took the first row with the highest title-in-body
+ * score. Two adjacent requirements routinely tie — "Mark all items up to here
+ * as read" explains itself as "every entry OLDER than this one", which contains
+ * every word of its neighbour "Mark all as read older than X" — and the tie went
+ * to whichever row came first. So the answers followed a position, not the
+ * requirement the question was asked about.
+ *
+ * Now the match is made once, for EVERY structured requirement (answered or
+ * not), one row per requirement and one requirement per row, best first:
+ *   1. a row whose title IS the structured title (promotion copies it, #730);
+ *   2. then the containment score over title + body, as before;
+ *   3. then how much of the title is in the row's TITLE rather than its body.
+ * A row taken by one requirement is not available to its neighbour, so a
+ * rejected requirement's answers cannot fall onto the row next to it. Where
+ * the best candidates are still level, nobody gets the row: a missed match is
+ * reported to the user, a wrong one is not. Row and question order play no part.
+ */
+function matchStructuredToRows(
+  structured: readonly StructuredRequirement[],
+  rows: ReadonlyArray<{ id: string; title: string; body: string }>,
+): Map<string, string> {
+  const rowFeatures = rows.map((r) => ({
+    id: r.id,
+    titleKey: titleKey(r.title),
+    titleTokens: significantTokens(r.title),
+    tokens: significantTokens(`${r.title} ${r.body}`),
+  }));
+
+  interface Candidate {
+    structuredId: string;
+    rowId: string;
+    exact: number;
+    score: number;
+    titleScore: number;
+  }
+  const candidates: Candidate[] = [];
+  for (const req of structured) {
+    const key = titleKey(req.title);
+    const needle = significantTokens(req.title);
+    for (const row of rowFeatures) {
+      const exact = key.length > 0 && key === row.titleKey ? 1 : 0;
+      const score = containmentScore(needle, row.tokens);
+      if (exact === 0 && score < ATTRIBUTION_THRESHOLD) continue;
+      candidates.push({
+        structuredId: req.id,
+        rowId: row.id,
+        exact,
+        score,
+        titleScore: containmentScore(needle, row.titleTokens),
+      });
+    }
+  }
+  const compare = (a: Candidate, b: Candidate) =>
+    b.exact - a.exact || b.score - a.score || b.titleScore - a.titleScore;
+  candidates.sort(compare);
+
+  const matched = new Map<string, string>();
+  const taken = new Set<string>();
+  const blocked = new Set<string>();
+  const open = (c: Candidate) =>
+    !matched.has(c.structuredId) &&
+    !blocked.has(c.structuredId) &&
+    !taken.has(c.rowId) &&
+    !blocked.has(`row:${c.rowId}`);
+
+  for (let i = 0; i < candidates.length;) {
+    let j = i;
+    while (j < candidates.length && compare(candidates[i]!, candidates[j]!) === 0) j++;
+    const level = candidates.slice(i, j).filter(open);
+    i = j;
+    const perStructured = new Map<string, number>();
+    const perRow = new Map<string, number>();
+    for (const c of level) {
+      perStructured.set(c.structuredId, (perStructured.get(c.structuredId) ?? 0) + 1);
+      perRow.set(c.rowId, (perRow.get(c.rowId) ?? 0) + 1);
+    }
+    for (const c of level) {
+      if (perStructured.get(c.structuredId) === 1 && perRow.get(c.rowId) === 1) {
+        matched.set(c.structuredId, c.rowId);
+        taken.add(c.rowId);
+      } else {
+        // Level with another candidate: refuse to guess for either side.
+        blocked.add(c.structuredId);
+        blocked.add(`row:${c.rowId}`);
+      }
+    }
+  }
+  return matched;
+}
+
 /**
  * Attribute answers to persisted requirement rows.
  *
  * There is no id spine between the two representations: the clarify question
- * names a `StructuredRequirement` id (`REQ-3`), while the persisted rows come
- * from synthesis and carry cuid2 ids and `finding:<id>` labels. So the join is
- * made on the structured requirement's TITLE — the one field the clarify
- * resolution pass does not rewrite (it rewrites `description`).
+ * names a `StructuredRequirement` id (`REQ-3`), while the persisted rows carry
+ * cuid2 ids. So the question's requirement id picks the structured requirement,
+ * and {@link matchStructuredToRows} finds that requirement's row by its TITLE —
+ * the one field the clarify resolution pass does not rewrite.
  */
 export function attributeAnswers(input: {
   answered: AnsweredQuestion[];
@@ -252,11 +350,7 @@ export function attributeAnswers(input: {
   const byRequirementId = new Map<string, AnsweredQuestion[]>();
   const unattributed: AnsweredQuestion[] = [];
 
-  const structuredById = new Map((input.structured ?? []).map((r) => [r.id, r]));
-  const rowTokens = input.requirements.map((r) => ({
-    id: r.id,
-    tokens: significantTokens(`${r.title} ${r.body}`),
-  }));
+  const rowByStructuredId = matchStructuredToRows(input.structured ?? [], input.requirements);
 
   // Group first so one match decision covers every answer about the same
   // requirement — per-answer matching would let two answers to the same
@@ -270,22 +364,8 @@ export function attributeAnswers(input: {
   }
 
   for (const [key, answers] of grouped) {
-    const structured = structuredById.get(key);
-    if (!structured) {
-      unattributed.push(...answers);
-      continue;
-    }
-    const needle = significantTokens(structured.title);
-    let bestId: string | null = null;
-    let bestScore = 0;
-    for (const row of rowTokens) {
-      const score = containmentScore(needle, row.tokens);
-      if (score > bestScore) {
-        bestScore = score;
-        bestId = row.id;
-      }
-    }
-    if (bestId === null || bestScore < ATTRIBUTION_THRESHOLD) {
+    const bestId = rowByStructuredId.get(key);
+    if (bestId === undefined) {
       unattributed.push(...answers);
       continue;
     }

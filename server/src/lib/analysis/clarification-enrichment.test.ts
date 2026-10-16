@@ -467,6 +467,183 @@ describe("#1000 — flagging acceptance criteria the answers may have changed", 
   });
 });
 
+/**
+ * Issue #1031 — run 6, J1.3: three answers about "older than X" landed on R5
+ * "Mark all items up to here as read" instead of R6 "Mark all as read older
+ * than X". R5's body says what "up to here" means — every entry OLDER than this
+ * one — so it contains every token of R6's title, both rows scored 1.0, and
+ * the first row in the list won the tie. The answer went to a position.
+ */
+describe("#1031 — an answer goes to its own requirement, never the neighbour", () => {
+  const withBody = (r: StructuredRequirement, description: string): StructuredRequirement => ({
+    ...r,
+    description,
+  });
+  const R5 = withBody(
+    structured("REQ-5", "Mark all items up to here as read"),
+    "Mark every entry older than the selected one as read in a single action.",
+  );
+  const R6 = withBody(
+    structured("REQ-6", "Mark all as read older than X"),
+    "Mark as read all entries older than a chosen age.",
+  );
+  // Promotion (#730) writes each approved structured requirement's title and
+  // description onto its row, in the reviewed order.
+  const rowOf = (r: StructuredRequirement) => ({
+    id: `row-${r.id}`,
+    title: r.title,
+    body: r.description,
+  });
+  const olderThan = [
+    answer({ questionId: "q1", requirementId: "REQ-6", answer: "7 days by default." }),
+    answer({ questionId: "q2", requirementId: "REQ-6", answer: "Measured from publish date." }),
+    answer({ questionId: "q3", requirementId: "REQ-6", answer: "Starred entries are kept." }),
+  ];
+
+  it("files R6's answers under R6 when R5's body mentions every word of R6's title", () => {
+    const out = attributeAnswers({
+      answered: olderThan,
+      structured: [R5, R6],
+      requirements: [rowOf(R5), rowOf(R6)],
+    });
+    expect(out.byRequirementId.get("row-REQ-6")).toHaveLength(3);
+    expect(out.byRequirementId.has("row-REQ-5")).toBe(false);
+    expect(out.unattributed).toEqual([]);
+  });
+
+  it("does not depend on the order of the rows", () => {
+    const out = attributeAnswers({
+      answered: olderThan,
+      structured: [R6, R5],
+      requirements: [rowOf(R6), rowOf(R5)],
+    });
+    expect([...out.byRequirementId.keys()]).toEqual(["row-REQ-6"]);
+  });
+
+  it("keeps each requirement's answers apart when both have answers", () => {
+    const upToHere = answer({
+      questionId: "q4",
+      requirementId: "REQ-5",
+      answer: "Only the visible list.",
+    });
+    const out = attributeAnswers({
+      answered: [upToHere, ...olderThan],
+      structured: [R5, R6],
+      requirements: [rowOf(R5), rowOf(R6)],
+    });
+    expect(out.byRequirementId.get("row-REQ-5")?.map((a) => a.questionId)).toEqual(["q4"]);
+    expect(out.byRequirementId.get("row-REQ-6")?.map((a) => a.questionId)).toEqual([
+      "q1",
+      "q2",
+      "q3",
+    ]);
+  });
+
+  it("does not depend on the order the questions were asked in (#1129 asks ticked ones first)", () => {
+    // Ticked R6 asked first, R5 later; and a filtered round holding only R6's.
+    for (const answered of [[...olderThan].reverse(), olderThan.slice(1)]) {
+      const out = attributeAnswers({
+        answered,
+        structured: [R5, R6],
+        requirements: [rowOf(R5), rowOf(R6)],
+      });
+      expect([...out.byRequirementId.keys()]).toEqual(["row-REQ-6"]);
+    }
+  });
+
+  it("reports R6's answers as unattributed when R6 was rejected and has no row", () => {
+    const out = attributeAnswers({
+      answered: olderThan,
+      structured: [R5, R6],
+      requirements: [rowOf(R5)],
+    });
+    expect(out.byRequirementId.size).toBe(0);
+    expect(out.unattributed).toHaveLength(3);
+  });
+
+  it("reports R6's answers as unattributed when R6 was left out of the run's structured list", () => {
+    const out = attributeAnswers({
+      answered: olderThan,
+      structured: [R5],
+      requirements: [rowOf(R5)],
+    });
+    expect(out.byRequirementId.size).toBe(0);
+    expect(out.unattributed).toHaveLength(3);
+  });
+
+  it("refuses to guess between two rows the title fits equally, rather than taking the first", () => {
+    // Synthesis-written rows (no approval checkpoint): neither title is R6's.
+    const out = attributeAnswers({
+      answered: olderThan,
+      structured: [R6],
+      requirements: [
+        { id: "row-a", title: "Bulk read actions", body: "Mark entries older than one as read." },
+        { id: "row-b", title: "Bulk read actions", body: "Mark entries older than a date read." },
+      ],
+    });
+    expect(out.byRequirementId.size).toBe(0);
+    expect(out.unattributed).toHaveLength(3);
+  });
+
+  it("gives a row to neither of two requirements it fits equally", () => {
+    const twin = { ...R6, id: "REQ-7" };
+    const out = attributeAnswers({
+      answered: [...olderThan, answer({ questionId: "q9", requirementId: "REQ-7" })],
+      structured: [R6, twin],
+      requirements: [rowOf(R6)],
+    });
+    expect(out.byRequirementId.size).toBe(0);
+    expect(out.unattributed).toHaveLength(4);
+  });
+
+  it("still finds the row by its title when the row's title was edited after promotion", () => {
+    const out = attributeAnswers({
+      answered: olderThan,
+      structured: [R5, R6],
+      requirements: [rowOf(R5), { ...rowOf(R6), title: "Mark all as read older than N days" }],
+    });
+    expect([...out.byRequirementId.keys()]).toEqual(["row-REQ-6"]);
+  });
+
+  it("writes the block onto R6's row and not R5's, end to end", async () => {
+    store.dialogThrows = false;
+    store.dialogState = JSON.stringify({
+      analysisId: ANALYSIS_ID,
+      currentRound: 1,
+      maxRounds: 3,
+      rounds: [
+        {
+          round: 1,
+          questions: olderThan.map((a) => ({
+            id: a.questionId,
+            requirementId: a.requirementId,
+            ambiguityField: "age",
+            question: a.question,
+            context: "",
+            answer: a.answer,
+          })),
+          answers: [],
+        },
+      ],
+      resolvedAmbiguities: [],
+      escalatedToSonnet: false,
+      completed: false,
+    } satisfies ClarificationState);
+    store.metadata = JSON.stringify({
+      structuredRequirements: { requirements: [R5, R6], totalAmbiguities: 0 },
+    });
+    store.requirements = [R5, R6].map((r) => ({
+      ...rowOf(r),
+      analysisId: ANALYSIS_ID,
+      deletedAt: null,
+    }));
+    const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+    expect(store.requirements[0]!.body).not.toContain(CLARIFICATIONS_START);
+    expect(store.requirements[1]!.body).toContain("7 days by default.");
+    expect(out?.answers?.map((a) => a.requirementTitle)).toEqual([R6.title, R6.title, R6.title]);
+  });
+});
+
 describe("applyClarificationsToRequirements", () => {
   const dialog: ClarificationState = {
     analysisId: ANALYSIS_ID,
