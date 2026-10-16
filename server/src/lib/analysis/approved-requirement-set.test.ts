@@ -390,15 +390,59 @@ describe("#1033 — the title fallback refuses a tie instead of breaking it by o
     expect(matchSynthesized([req], [b, a]).size).toBe(0);
   });
 
-  it("still lets a tied item's requirement take a lower-scoring item that is clearly its own", () => {
+  it("never lets a requirement refused for a tie take a weaker item later", () => {
     const other = synth("Mark selected entry as read", {
       body: "Only the selected entry.",
       evidenceFindingIndexes: [9],
     });
-    // Tied at 1.0 on `item`, so neither takes it. On `other` REQ-5 scores 2/3
-    // and REQ-6 2/4: no tie, so REQ-5 takes it and REQ-6 stays empty.
-    const matches = matchSynthesized([markRead, markOlder], [item, other]);
-    expect(matches.get("REQ-5")).toBe(other);
-    expect(matches.has("REQ-6")).toBe(false);
+    // Level on `item`, so both are refused for the tie. REQ-5 would score 2/3
+    // on `other`, but a wrong attribution is worse than none: no fallback.
+    for (const items of [
+      [item, other],
+      [other, item],
+    ]) {
+      expect(matchSynthesized([markRead, markOlder], items).size).toBe(0);
+    }
+  });
+
+  /**
+   * #1187 review, run 9 (`cmva6wd6c0uov3g9k925losyd`, exported read-only). The
+   * categories item is level between the two requirements and /v1/feeds also
+   * reaches its own item; counting rivals once per level refused /v1/feeds and
+   * let categories fall to /v1/feeds's item.
+   */
+  it("run 9: /v1/feeds keeps its own item and categories never takes it", () => {
+    const feeds = structured(
+      "f8a264a8-79e0-4beb-ac77-dc9039566824",
+      "Expose GET /v1/feeds API",
+      "The API must expose GET /v1/feeds, which returns the user's feeds.",
+    );
+    const categories = structured(
+      "a0db1925-7574-4ab6-bbd1-bc9d51d2aec3",
+      "Expose GET /v1/categories/{id}/feeds API",
+      "The API must expose GET /v1/categories/{id}/feeds, which returns the feeds belonging to the specified category for the authenticated user.",
+    );
+    const item27 = synth("Expose GET /v1/feeds API route", {
+      body: "The API must expose GET /v1/feeds, which returns the user's feeds. api.go maps GET /v1/feeds to handler.getFeedsHandler.",
+      evidenceFindingIndexes: [33],
+    });
+    const item28 = synth("Expose GET /v1/categories/{id}/feeds API route", {
+      body: "The API must expose GET /v1/categories/{id}/feeds, which returns the feeds belonging to the specified category. api.go maps GET /v1/categories/{categoryID}/feeds to handler.getCategoryFeedsHandler.",
+      evidenceFindingIndexes: [34],
+    });
+    for (const reqs of [
+      [feeds, categories],
+      [categories, feeds],
+    ]) {
+      for (const items of [
+        [item27, item28],
+        [item28, item27],
+      ]) {
+        const matches = matchSynthesized(reqs, items);
+        expect(matches.get(feeds.id)).toBe(item27);
+        expect(matches.get(categories.id)).not.toBe(item27);
+        expect([undefined, item28]).toContain(matches.get(categories.id));
+      }
+    }
   });
 });

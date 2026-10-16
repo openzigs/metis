@@ -22,6 +22,11 @@ import {
   containmentScore,
   significantTokens,
 } from "./clarification-enrichment.js";
+import {
+  compareTiersDescending,
+  matchOneToOneRefusingTies,
+  type OneToOneCandidate,
+} from "./one-to-one-match.js";
 import type { StructuredRequirement } from "./types/requirements.js";
 
 const PRIORITY_BY_STRUCTURED: Record<string, SynthesizedRequirement["priority"]> = {
@@ -69,10 +74,9 @@ const MAX_CRITERIA = 20;
  * since): one-to-one, best score first, so a guess never puts the same evidence
  * on two rows. Candidates are ranked by the #1031 tiers — the same title, then
  * the containment score, then how much of the title is in the item's title —
- * and a tie on all three is refused, as #1031 refuses it for clarification
- * answers: an item two requirements match equally well goes to neither, and a
- * requirement two items match equally well takes neither. List order never
- * decides. `structured` is the whole reviewed list, whose ids are the ones an
+ * and resolved by {@link matchOneToOneRefusingTies}, the rule #1031 shares: a
+ * tie on all three tiers is refused, a requirement or item refused for a tie
+ * takes no weaker match, and list order never decides. `structured` is the whole reviewed list, whose ids are the ones an
  * item can name; it defaults to `approved`.
  *
  * Issue #1129 — exported so the ticked/added split reads the same #1063
@@ -102,7 +106,7 @@ export function matchSynthesized(
   const synthTokens = synthesized.map((s) => significantTokens(`${s.title} ${s.body}`));
   const synthTitleTokens = synthesized.map((s) => significantTokens(s.title));
   const synthTitleKeys = synthesized.map((s) => titleKey(s.title));
-  const candidates: Array<{ structuredId: string; synthIdx: number; rank: string }> = [];
+  const candidates: Array<OneToOneCandidate<string, number, number[]>> = [];
   for (const req of approved) {
     if (byStructuredId.has(req.id)) continue;
     const needle = significantTokens(req.title);
@@ -113,39 +117,20 @@ export function matchSynthesized(
       if (score < ATTRIBUTION_THRESHOLD) return;
       // The #1031 tiers, best first: the same title; then the containment
       // score; then how much of the title is in the item's TITLE, not its body.
-      const rank = [
-        synthTitleKeys[synthIdx] === key ? 1 : 0,
-        score,
-        containmentScore(needle, synthTitleTokens[synthIdx]!),
-      ];
-      candidates.push({ structuredId: req.id, synthIdx, rank: rankKey(rank) });
+      candidates.push({
+        left: req.id,
+        right: synthIdx,
+        score: [
+          synthTitleKeys[synthIdx] === key ? 1 : 0,
+          score,
+          containmentScore(needle, synthTitleTokens[synthIdx]!),
+        ],
+      });
     });
   }
-  // Best score first, one level at a time. Within a level, an item two live
-  // requirements both reach is withheld from both, and a requirement two live
-  // items both reach takes neither — a tie is never broken by list order.
-  const usedSynth = new Set<number>();
-  const refused = new Set<string>();
-  const levels = [...new Set(candidates.map((c) => c.rank))].sort().reverse();
-  for (const level of levels) {
-    const live = candidates.filter(
-      (c) =>
-        c.rank === level &&
-        !byStructuredId.has(c.structuredId) &&
-        !refused.has(c.structuredId) &&
-        !usedSynth.has(c.synthIdx),
-    );
-    const perItem = countBy(live, (c) => c.synthIdx);
-    const perRequirement = countBy(live, (c) => c.structuredId);
-    for (const c of live) {
-      if (perItem.get(c.synthIdx)! > 1) usedSynth.add(c.synthIdx);
-      if (perRequirement.get(c.structuredId)! > 1) refused.add(c.structuredId);
-    }
-    for (const c of live) {
-      if (usedSynth.has(c.synthIdx) || refused.has(c.structuredId)) continue;
-      byStructuredId.set(c.structuredId, synthesized[c.synthIdx]!);
-      usedSynth.add(c.synthIdx);
-    }
+  const { matches } = matchOneToOneRefusingTies(candidates, { compare: compareTiersDescending });
+  for (const [structuredId, synthIdx] of matches) {
+    byStructuredId.set(structuredId, synthesized[synthIdx]!);
   }
   return byStructuredId;
 }
@@ -153,20 +138,6 @@ export function matchSynthesized(
 /** Case- and whitespace-insensitive title, for the same-title tier. */
 function titleKey(title: string): string {
   return title.replace(/\s+/g, " ").trim().toLowerCase();
-}
-
-/**
- * A rank as a string that sorts like the tuple: each part is in [0, 1], fixed
- * to 6 places, so a lexicographic sort is a numeric one, tier by tier.
- */
-function rankKey(rank: readonly number[]): string {
-  return rank.map((n) => n.toFixed(6)).join("|");
-}
-
-function countBy<T, K>(items: readonly T[], key: (item: T) => K): Map<K, number> {
-  const counts = new Map<K, number>();
-  for (const item of items) counts.set(key(item), (counts.get(key(item)) ?? 0) + 1);
-  return counts;
 }
 
 /** Several items naming one requirement, joined: lists united in order, scalars from the first. */
