@@ -41,6 +41,9 @@ const db = vi.hoisted(() => ({
   failures: 0,
   /** When true, listing a workspace's projects fails. */
   listDown: false,
+  /** Live-project reads in flight now, and the most ever at once. */
+  inFlight: 0,
+  maxInFlight: 0,
 }));
 
 const audit = vi.hoisted(() => vi.fn());
@@ -75,6 +78,11 @@ vi.mock("../src/lib/prisma.js", () => ({
     project: {
       // `canAccessProjectDiscussions`: a live project.
       findFirst: vi.fn(async ({ where }: { where: Where }) => {
+        db.inFlight += 1;
+        db.maxInFlight = Math.max(db.maxInFlight, db.inFlight);
+        // Yield, so reads that are allowed to overlap do.
+        await new Promise((r) => setImmediate(r));
+        db.inFlight -= 1;
         if (db.failures > 0) {
           db.failures -= 1;
           throw new Error("db down");
@@ -146,7 +154,11 @@ import {
   type ProjectRoomSocket,
 } from "../src/lib/socket/project-rooms.js";
 import { registerSocketServer } from "../src/lib/socket/registry.js";
-import { revalidateLocalSockets, type MetisIOServer } from "../src/lib/socket/server.js";
+import {
+  REVALIDATE_CONCURRENCY,
+  revalidateLocalSockets,
+  type MetisIOServer,
+} from "../src/lib/socket/server.js";
 
 // ── The in-process transport ────────────────────────────────────────────────
 interface FakeSocket {
@@ -254,6 +266,8 @@ beforeEach(() => {
   db.gate = null;
   db.failures = 0;
   db.listDown = false;
+  db.inFlight = 0;
+  db.maxInFlight = 0;
   audit.mockClear();
   _resetJobLifecycleMemory();
 });
@@ -441,6 +455,34 @@ describe("#1212 — a member who loses access stops receiving the room's events"
     expect(mallory.inRoom("p-mallory")).toBe(true);
   });
 
+  it("bounds the fallback when a deleted workspace's projects cannot be listed (no unbounded fan-out)", async () => {
+    const analysts = Array.from({ length: 12 }, (_, i) => `analyst-${i}`);
+    for (const id of analysts) db.members.push({ userId: id, workspaceId: "ws1" });
+    const subscribed = analysts.map((id) => connect(id));
+    for (const s of subscribed) await s.subscribe("p1");
+
+    db.deletedWorkspaces.add("ws1");
+    db.listDown = true;
+    db.maxInFlight = 0;
+    await evictWorkspaceProjectRooms("ws1");
+
+    expect(subscribed.every((s) => !s.inRoom("p1"))).toBe(true);
+    expect(db.maxInFlight).toBeGreaterThan(0);
+    expect(db.maxInFlight).toBeLessThanOrEqual(REVALIDATE_CONCURRENCY);
+  });
+
+  it("bounds a room re-judgement too", async () => {
+    const analysts = Array.from({ length: 12 }, (_, i) => `analyst-${i}`);
+    for (const id of analysts) db.members.push({ userId: id, workspaceId: "ws1" });
+    const subscribed = analysts.map((id) => connect(id));
+    for (const s of subscribed) await s.subscribe("p1");
+
+    db.maxInFlight = 0;
+    await evictProjectRoom("p1");
+    expect(subscribed.every((s) => s.inRoom("p1"))).toBe(true);
+    expect(db.maxInFlight).toBeLessThanOrEqual(REVALIDATE_CONCURRENCY);
+  });
+
   it("does not keep a join whose access read was in flight when the member was removed", async () => {
     let reached!: () => void;
     const atRead = new Promise<void>((r) => (reached = r));
@@ -476,6 +518,22 @@ describe("#1212 — a legacy project assigned to a workspace", () => {
     expect(mallory.jobs()).toEqual([]);
     expect(alice.jobs()).toHaveLength(1);
     expect(alice.inRoom("p-legacy")).toBe(true);
+  });
+});
+
+describe("#1212 — a project soft-deleted", () => {
+  it("takes every non-admin out of its room; an admin stays", async () => {
+    db.roles.set("root", "admin");
+    const alice = connect("alice");
+    const root = connect("root");
+    await alice.subscribe("p1");
+    await root.subscribe("p1");
+
+    db.projects.find((p) => p.id === "p1")!.deletedAt = new Date();
+    await evictProjectRoom("p1");
+    emitProgress();
+    expect(alice.jobs()).toEqual([]);
+    expect(root.jobs()).toHaveLength(1);
   });
 });
 

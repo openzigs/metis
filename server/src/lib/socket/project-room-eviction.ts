@@ -4,8 +4,8 @@
  *
  * `subscribe:project` admits every member of the project's workspace, and
  * anyone for a legacy project with no workspace (`canJoinProjectRoom`), but it
- * judges a socket only when it joins. Three writes can revoke a join, and the
- * routes call these right after each one commits:
+ * judges a socket only when it joins. Four writes can revoke a join, and their
+ * callers run these right after each one commits:
  *
  * - a member removed from a workspace → `evictMemberProjectRooms`: that user's
  *   sockets re-judge every project room they are in. No project lookup is
@@ -15,7 +15,13 @@
  * - a workspace deleted → `evictWorkspaceProjectRooms`: its projects' rooms are
  *   re-judged in place. The workspace is soft-deleted, so every non-admin
  *   leaves and an admin (whom the rule still admits) stays subscribed. If the
- *   project lookup fails, every local socket's project rooms are re-judged.
+ *   project lookup fails, the database is likely unwell, so rather than
+ *   re-judge every socket at once and fail closed (the reconnect storm #659
+ *   avoids), each replica runs the bounded, single-flight re-validation pass
+ *   (`revalidateLocalSockets(io, "listen")`), which re-judges project rooms
+ *   `REVALIDATE_CONCURRENCY` users at a time.
+ * - a project soft-deleted (`deleteProject`) → `evictProjectRoom`: the room is
+ *   re-judged, so every non-admin leaves.
  * - a legacy project assigned to a workspace → `evictProjectRoom`: the room is
  *   re-judged in place. Members of the new workspace stay subscribed (their UI
  *   never re-subscribes on its own, so evicting them would silently stop their
@@ -28,6 +34,9 @@
  * sockets. A relay that is lost is caught by the re-validation pass
  * (`revalidateLocalSockets`), which re-judges every project room too.
  *
+ * Every re-judgement runs at most `REVALIDATE_CONCURRENCY` sockets at a time,
+ * so a large room cannot fan out unbounded against the database.
+ *
  * Best-effort: these run after the database write committed, so nothing here
  * throws into the route.
  */
@@ -37,7 +46,12 @@ import { createChildLogger } from "../logger.js";
 import { runDetached } from "./client-event-handler.js";
 import { rejudgeProjectRooms } from "./project-rooms.js";
 import { getSocketServer } from "./registry.js";
-import type { MetisIOServer, MetisSocket } from "./server.js";
+import {
+  REVALIDATE_CONCURRENCY,
+  revalidateLocalSockets,
+  type MetisIOServer,
+  type MetisSocket,
+} from "./server.js";
 import { bumpEpoch, onRelayedRevocation, relayRevocation } from "./revocation-relay.js";
 
 const log = createChildLogger("project-room-eviction");
@@ -55,13 +69,18 @@ function localSockets(io: MetisIOServer, keep: (socket: LocalSocket) => boolean)
   return [...io.of("/").sockets.values()].filter(keep);
 }
 
-/** Re-judge `sockets`' project rooms (all, or `only`), fail closed. Never rejects. */
+/**
+ * Re-judge `sockets`' project rooms (all, or `only`), fail closed,
+ * `REVALIDATE_CONCURRENCY` sockets at a time. Never rejects.
+ */
 async function rejudge(sockets: LocalSocket[], only?: string): Promise<void> {
-  await Promise.all(
-    sockets.map((socket) =>
-      rejudgeProjectRooms(socket, socket.data.user, { failClosed: true, only }),
-    ),
-  );
+  const queue = [...sockets];
+  const worker = async (): Promise<void> => {
+    for (let socket = queue.shift(); socket; socket = queue.shift()) {
+      await rejudgeProjectRooms(socket, socket.data.user, { failClosed: true, only });
+    }
+  };
+  await Promise.all(Array.from({ length: REVALIDATE_CONCURRENCY }, worker));
 }
 
 const rejudgeRoomLocally = (io: MetisIOServer, projectId: string) => {
@@ -73,7 +92,6 @@ const rejudgeRoomLocally = (io: MetisIOServer, projectId: string) => {
 };
 const rejudgeUserLocally = (io: MetisIOServer, userId: string) =>
   rejudge(localSockets(io, (s) => s.data.user.userId === userId));
-const rejudgeAllLocally = (io: MetisIOServer) => rejudge(localSockets(io, () => true));
 
 /** Ids of every project in `workspaceId`, or `null` when the lookup failed. */
 async function workspaceProjectIds(workspaceId: string): Promise<string[] | null> {
@@ -100,7 +118,7 @@ export async function evictWorkspaceProjectRooms(workspaceId: string): Promise<v
   bumpEpoch(io, "eviction");
   if (projectIds === null) {
     relayRevocation(io, REJUDGE_ALL_PROJECT_ROOMS_EVENT, "workspace-lookup-failed");
-    await rejudgeAllLocally(io);
+    await revalidateLocalSockets(io, "listen");
     return;
   }
   for (const projectId of projectIds) relayRevocation(io, REJUDGE_PROJECT_ROOM_EVENT, projectId);
@@ -121,9 +139,9 @@ export async function evictMemberProjectRooms(userId: string, workspaceId: strin
 }
 
 /**
- * `projectId` changed hands (a legacy project assigned to a workspace): the
- * sockets in its room are re-judged in place — members of the new workspace
- * stay, everyone else leaves.
+ * `projectId`'s access rule changed — a legacy project assigned to a
+ * workspace, or the project soft-deleted: the sockets in its room are re-judged
+ * in place, so whoever the rule now refuses leaves and everyone else stays.
  */
 export async function evictProjectRoom(projectId: string): Promise<void> {
   const io = getSocketServer();
@@ -149,6 +167,6 @@ export function wireProjectRoomEvictionRelay(io: MetisIOServer, clustered: boole
   });
   onRelayedRevocation(io, clustered, REJUDGE_ALL_PROJECT_ROOMS_EVENT, 1, () => {
     bumpEpoch(io, "eviction");
-    runDetached(rejudgeAllLocally(io), "relayed project room re-judgement of every socket");
+    runDetached(revalidateLocalSockets(io, "listen"), "relayed re-validation pass");
   });
 }

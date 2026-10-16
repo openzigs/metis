@@ -277,6 +277,9 @@ export async function deleteProject(projectId: string, actor: ProjectActor) {
     where: { id: projectId },
     data: { deletedAt: new Date(), status: "archived" },
   });
+  // #1212 — a soft-deleted project is closed to non-admins; its socket room is
+  // re-judged now that the write has committed.
+  await evictProjectRoom(projectId);
   await fireArchiveHooks(projectId);
 }
 

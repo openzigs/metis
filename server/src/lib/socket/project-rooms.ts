@@ -158,7 +158,7 @@ export function wireProjectRoomHandlers(socket: ProjectRoomSocket): void {
  * where a database blip is not evidence of revocation and the next pass
  * re-judges). Failing closed, it leaves the room AND closes the transport, as
  * the #649 `listen` pass does: the client reconnects and re-subscribes from
- * live state (`keepRoomSubscribed`), so a member the error wrongly removed is
+ * live state (`keepSubscribed`), so a member the error wrongly removed is
  * re-admitted rather than silently left without live updates. Never rejects.
  */
 export async function rejudgeProjectRooms(

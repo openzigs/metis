@@ -11,6 +11,8 @@ const projectFindMany = vi.hoisted(() => vi.fn());
 vi.mock("../prisma.js", () => ({ prisma: { project: { findMany: projectFindMany } } }));
 const rejudge = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}));
 vi.mock("./project-rooms.js", () => ({ rejudgeProjectRooms: rejudge }));
+const revalidate = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}));
+vi.mock("./server.js", () => ({ REVALIDATE_CONCURRENCY: 2, revalidateLocalSockets: revalidate }));
 
 import {
   REJUDGE_ALL_PROJECT_ROOMS_EVENT,
@@ -57,6 +59,7 @@ beforeEach(() => {
   projectFindMany.mockReset();
   projectFindMany.mockResolvedValue([{ id: "p1" }, { id: "p2" }]);
   rejudge.mockClear();
+  revalidate.mockClear();
 });
 afterEach(() => registerSocketServer(null as unknown as MetisIOServer));
 
@@ -82,18 +85,33 @@ describe("project-room eviction", () => {
     expect(epochAtRejudge).toBe(1);
   });
 
-  it("re-judges every local socket, fail closed, when the workspace's projects cannot be listed", async () => {
+  it("runs the bounded re-validation pass, not a fan-out, when the workspace's projects cannot be listed", async () => {
     const f = fakeServer();
     registerSocketServer(f.server);
     projectFindMany.mockRejectedValue(new Error("db down"));
     await expect(evictWorkspaceProjectRooms("ws-1")).resolves.toBeUndefined();
-    expect(rejudged()).toEqual([
-      ["s-alice", "*"],
-      ["s-bob", "*"],
-      ["s-carol", "*"],
-    ]);
-    expect(rejudge.mock.calls[0]![2]).toEqual({ failClosed: true, only: undefined });
+    expect(revalidate).toHaveBeenCalledWith(f.server, "listen");
+    expect(rejudge).not.toHaveBeenCalled();
     expect(readEpoch(f.server, "eviction")).toBe(1);
+  });
+
+  it("re-judges at most REVALIDATE_CONCURRENCY sockets at once", async () => {
+    const f = fakeServer();
+    registerSocketServer(f.server);
+    let inFlight = 0;
+    let most = 0;
+    rejudge.mockImplementation(async () => {
+      most = Math.max(most, ++inFlight);
+      await new Promise((r) => setImmediate(r));
+      inFlight -= 1;
+    });
+    await evictProjectRoom("p2");
+    await evictMemberProjectRooms("bob", "ws-1");
+    const s = f.io.of().sockets;
+    for (let i = 0; i < 6; i++) s.set(`s-x${i}`, sock(`s-x${i}`, `x${i}`, ["project:p9"]));
+    await evictProjectRoom("p9");
+    expect(rejudge).toHaveBeenCalledTimes(2 + 1 + 6);
+    expect(most).toBe(2);
   });
 
   it("does nothing more for a deleted workspace with no projects", async () => {
@@ -167,15 +185,13 @@ describe("project-room eviction relay", () => {
     f.listeners.get(REJUDGE_PROJECT_ROOM_EVENT)!("p1");
     f.listeners.get(REJUDGE_USER_PROJECT_ROOMS_EVENT)!("carol");
     f.listeners.get(REJUDGE_ALL_PROJECT_ROOMS_EVENT)!("workspace-lookup-failed");
-    await vi.waitFor(() => expect(rejudge).toHaveBeenCalledTimes(6));
+    await vi.waitFor(() => expect(rejudge).toHaveBeenCalledTimes(3));
     expect(rejudged()).toEqual([
       ["s-alice", "project:p1"],
       ["s-bob", "project:p1"],
       ["s-carol", "*"],
-      ["s-alice", "*"],
-      ["s-bob", "*"],
-      ["s-carol", "*"],
     ]);
+    expect(revalidate).toHaveBeenCalledWith(f.server, "listen");
     expect(epochAtRejudge).toBe(1);
     expect(readEpoch(f.server, "eviction")).toBe(3);
   });
