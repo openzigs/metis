@@ -26,9 +26,9 @@ is therefore the primary interface for everything below, not a fallback (#1180):
 
 | Task | Command |
 |------|---------|
-| Create an epic or issue | `gh issue create --title ... --body-file /tmp/body.md --label epic --label "priority: <tier>" --label "area: <name>" --project "METIS roadmap"` |
+| Create an epic or issue | `gh issue create --title ... --body-file <scratchpad>/issue-<slug>-body.md --label epic --label "priority: <tier>" --label "area: <name>" --project "METIS roadmap"` |
 | Read existing issues (avoid duplicates) | `gh issue list --search "<terms>" --state all --json number,title` |
-| Update an issue body | `gh issue edit {N} --body-file /tmp/body.md` |
+| Update an issue body | `gh issue edit {N} --body-file <scratchpad>/issue-{N}-body.md` |
 | List a parent's sub-issues | `gh api repos/{owner}/{repo}/issues/{PARENT}/sub_issues` |
 | Link a sub-issue to a parent | see below — it takes a **database id**, not a number |
 | Current user context | `gh api user --jq .login` |
@@ -51,7 +51,9 @@ one in the issue list.
 
 Always write issue bodies to a file and pass `--body-file`. **Never** `--body "$(cat
 body.md)"`: command substitution re-scans the heredoc, so backticked identifiers in the
-body execute as commands.
+body execute as commands. Name each file per issue or epic (`issue-<slug>-body.md`,
+`epic-<slug>.md`) in your scratchpad: parallel agents share it, and a generic `body.md`
+has been published onto the wrong PR (#1187).
 
 The main session, which does hold MCP tools, may use `mcp__github__*` for the same operations. <!-- mcp: main-session only -->
 
@@ -181,7 +183,7 @@ Present the plan to the user for approval before creating issues.
 
 ### Step 3: Create the Master Epic (if full system)
 
-Create it with `gh issue create --label epic --label "priority: <tier>" --label "area: <name>" --project "METIS roadmap" --title ... --body-file /tmp/epic.md`:
+Create it with `gh issue create --label epic --label "priority: <tier>" --label "area: <name>" --project "METIS roadmap" --title ... --body-file <scratchpad>/epic-<slug>.md`:
 
 **Title**: `[MASTER EPIC] {System Name} — Order of Operations`
 
@@ -433,7 +435,7 @@ erDiagram
 
 After all child epics and sub-issues are created:
 
-1. Rewrite the Master Epic body: `gh issue edit {MASTER} --body-file /tmp/master.md`
+1. Rewrite the Master Epic body: `gh issue edit {MASTER} --body-file <scratchpad>/epic-{MASTER}.md`
 2. Fill in all issue numbers in the Child Epics table
 3. Update the Mermaid diagrams with actual issue references
 4. Calculate and fill in total story points

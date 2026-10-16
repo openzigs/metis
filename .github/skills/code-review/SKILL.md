@@ -84,6 +84,9 @@ Execute with the **Code Review** agent (`code-review.agent.md`), which has the s
    gh pr view {PR_NUMBER} --json files --jq '.files[].path'
    ```
 6. **Read each changed file in full** — not just the diff hunks. Context matters.
+   To run or read the PR's tree, use a scratch worktree of your own
+   (`git worktree add <scratch-dir> <head-sha>`). **Never `git checkout` in the main
+   checkout**: reviewers have moved its HEAD twice (2026-09-30, #1214).
 7. **Check CI status immediately** — run this before reading any code:
    ```bash
    gh pr view {PR_NUMBER} --json statusCheckRollup --jq '.statusCheckRollup[] | {name: .name, conclusion: .conclusion}'
@@ -257,9 +260,13 @@ Other people or automated reviewers (e.g., GitHub Copilot code review) may have 
    | ui | ✅ Passed | — | — |
    ```
 
-   > **Note:** This repository does NOT have a CodeQL workflow on pull requests. Do not expect
-   > or wait for CodeQL entries in `gh pr checks` output. **Every other check is real, and
-   > the set is listed once, in CLAUDE.md > "CI and merging"** (#844: twenty-one since #848, with the
+   > **Note:** CodeQL runs on every pull request (`.github/workflows/codeql.yml`, as Step 1b's
+   > auto-detect finds): expect `Analyze javascript-typescript`, `Analyze python` and `CodeQL`,
+   > and read the set only once all three have finished. On every head measured (#1112, #1217)
+   > the `CodeQL` check-run is created after the `Analyze` jobs start and finishes before
+   > `Analyze javascript-typescript`: a green read taken before `CodeQL` exists is too early,
+   > and a green `CodeQL` does not mean the `Analyze` jobs are done.
+   > **The set is listed once, in CLAUDE.md > "CI and merging"** (#844: twenty-one since #848, with the
    > e2e suite sharded as `e2e (1/3)`–`e2e (3/3)` and read through `e2e-outcome`, and
    > `postgres-adapter` reading `skipping` on a PR that touches no Postgres path, and the
    > schedule-only `nightly-report` always reading `skipping`). This note used to end *"Only CI jobs (`api`, `ui`) will
@@ -442,10 +449,12 @@ inline comment — in a **single** API call.
 #### The working form — one JSON payload via `--input`
 
 ```bash
+# 0. Name every file with the PR number: parallel reviewers share one scratchpad, and
+#    a generic /tmp/review.json can be posted onto the wrong PR (PR bodies were, #1187).
 # 1. Write the review body to a FILE. Do NOT use BODY=$(cat <<'EOF' ... EOF):
 #    command substitution re-scans the heredoc, so any backtick in the body — and a
 #    review body is mostly backticked identifiers — is executed as a command.
-cat > /tmp/review-body.md <<'EOF'
+cat > <scratchpad>/review-{PR_NUMBER}-body.md <<'EOF'
 ### Verdict: REQUEST_CHANGES
 
 ## Code Review Summary — PR #123
@@ -460,7 +469,7 @@ git diff main...HEAD -U0 -- <paths> | grep -E '^(\+\+\+|@@)'
 
 # 3. Write the inline comments as JSON. `line` must be inside a range from step 2,
 #    and `side` is RIGHT for added/changed lines, LEFT for deleted ones.
-cat > /tmp/review-comments.json <<'EOF'
+cat > <scratchpad>/review-{PR_NUMBER}-comments.json <<'EOF'
 [
   { "path": "server/src/routes/hooks.ts", "line": 42, "side": "RIGHT",
     "body": "**High** — `projectId` is not in the `where` clause, so this IDORs." }
@@ -472,14 +481,16 @@ python3 - <<'PY'
 import json, pathlib
 payload = {
     "event": "REQUEST_CHANGES",
-    "body": pathlib.Path("/tmp/review-body.md").read_text(),
-    "comments": json.loads(pathlib.Path("/tmp/review-comments.json").read_text()),
+    "body": pathlib.Path("<scratchpad>/review-{PR_NUMBER}-body.md").read_text(),
+    "comments": json.loads(pathlib.Path("<scratchpad>/review-{PR_NUMBER}-comments.json").read_text()),
 }
-pathlib.Path("/tmp/review.json").write_text(json.dumps(payload))
+pathlib.Path("<scratchpad>/review-{PR_NUMBER}.json").write_text(json.dumps(payload))
 PY
 
-# 5. Publish.
-gh api --method POST repos/{owner}/{repo}/pulls/{PR_NUMBER}/reviews --input /tmp/review.json
+# 5. Publish, then confirm the review landed on THIS PR: the printed URL must end in
+#    /pulls/{PR_NUMBER}.
+gh api --method POST repos/{owner}/{repo}/pulls/{PR_NUMBER}/reviews \
+  --input <scratchpad>/review-{PR_NUMBER}.json --jq '.pull_request_url'
 ```
 
 #### Two failures that cost real turns, repeatedly
@@ -509,7 +520,7 @@ Two smaller ones worth knowing:
   `422`, losing every other comment with it — which is why step 2 derives the ranges
   rather than trusting the line numbers you read the file at. If a finding is in an
   untouched line, move it into the body rather than dropping the whole review.
-- `gh pr review {PR_NUMBER} --request-changes --body-file /tmp/review-body.md` is the
+- `gh pr review {PR_NUMBER} --request-changes --body-file <scratchpad>/review-{PR_NUMBER}-body.md` is the
   one-liner for a **body-only** review with no inline comments. It cannot carry them,
   so it is not a substitute for the form above — and use `--body-file`, never
   `--body "$(...)"`, for the same backtick reason as step 1.

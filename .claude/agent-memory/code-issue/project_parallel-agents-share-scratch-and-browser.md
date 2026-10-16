@@ -17,3 +17,35 @@ Measured on 2026-09-29 with up to eight parallel implementers:
 **Why:** these are shared machine resources, not per-worktree state, and nothing warns on collision.
 
 **How to apply:** give every scratch file a name unique to the issue (`mktemp`); after `gh pr create/edit`, check `gh pr view <n> --json closingIssuesReferences` names only your issue; never use `git stash` in a worktree — commit a WIP instead. Links: [[local-ui-walkthrough-setup]].
+
+## 2026-10-16 additions (scratchpad and worktree hygiene)
+
+Checked against `main` at b16dcc30.
+
+- **PR-body files and closing links** are now a rule in the code-issue skill's Step 6
+  (`pr-<N>-body.md`, re-read `closingIssuesReferences` after every create/edit). It recurred
+  twice on 2026-10-16: generic `body.md` / `body-new.md` landed on the wrong PRs (#1187
+  closed #1190; #1205 closed #1145).
+- **Logs and scripts too.** Name every scratch file with the issue number, not only PR
+  bodies (#1186).
+- **The worktree-isolation guard refuses compound Bash** (Claude Code harness behaviour for
+  agents dispatched with `isolation: "worktree"`, not a hook in this repo) that runs `git` or `gh api` inside a
+  loop, `$()` or a long `&&` chain, and a loop passing a variable to `sed`. Write multi-step
+  work to a script file (with the Write tool) and run `bash <file>` as its own call; run git
+  one call at a time.
+- **Run Prettier from the repo root, or not at all on docs.** `npx prettier --write` on a
+  markdown file from `scripts/` reformatted it differently (padded tables, broken wraps), #1205.
+- **Do not symlink `server/node_modules` into a throwaway worktree.** pnpm workspace links are
+  relative, so `@metis/shared` resolved to the main checkout's build: false
+  `VALIDATION_ERROR`s and unresolvable UI imports (#1210 re-review). Run a real
+  `pnpm install --frozen-lockfile --prod=false` in the worktree (12 s on 2026-10-16), or read
+  CI logs.
+- **A stale `@metis/shared` build fails vitest assertions too**, not only typecheck, after a
+  rebase onto a PR that changed it (#1186). Run `pnpm --filter @metis/shared build` first.
+
+Older entries, folded here (retired from the index 2026-10-16; files unchanged):
+
+- [[pgrep-f-wait-loop-matches-itself]] — a `pgrep -f` wait loop matches its own command line
+  and never exits; use `ps` + `grep "node .*(vitest|tsc)"`.
+- [[next-env-churn]] — `next build`/`dev` rewrite `ui/next-env.d.ts`; revert it to `main`
+  before committing a UI PR.

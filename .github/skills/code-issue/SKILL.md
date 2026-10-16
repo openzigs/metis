@@ -187,6 +187,15 @@ Before creating the PR, perform a comprehensive security review:
    - Hardcoded credentials
    - Insecure crypto
    - OWASP Top 10 issues
+   - **A new route needs its own rate limiters — copy `server/src/middleware/runs-rate-limit.ts`.**
+     There is no global limiter. Chain `<preAuthLimiter>, requireAuth, <userLimiter>, …`
+     inline on each route, each limiter a module-scoped `rateLimit()` result: CodeQL's
+     `js/missing-rate-limiting` counts only a limiter ahead of `requireAuth`. Key the
+     pre-auth one on the user id in a token this server signed (expiry ignored), else the
+     TCP peer; never on `req.ip` (client-writable `X-Forwarded-For` under `trust proxy`),
+     nor on the presented token. `spec-kit-delete-rate-limit.ts` keys on `req.ip`: it is the
+     example to avoid, not a template. Copy `runs-rate-limit.ts`'s tests too,
+     including the expired-token case (`runs-rate-limit.test.ts`).
 3. **Report to user** — Present findings with severity and suggested fixes
 4. **Apply fixes** — Fix all identified vulnerabilities and re-run tests
 
@@ -383,18 +392,28 @@ that instruction ever goes missing (#1168).
 3. Push branch to origin
 4. Create the PR with `gh pr create`, passing the body as a **file**:
    ```bash
-   cat > /tmp/pr-body.md <<'EOF'
+   cat > <scratchpad>/pr-{issue-number}-body.md <<'EOF'
    ## Summary
    ...
 
    Closes #{issue-number}
    EOF
    gh pr create --title "feat: Resolve #{issue-number} — {description}" \
-     --body-file /tmp/pr-body.md --base main
+     --body-file <scratchpad>/pr-{issue-number}-body.md --base main
+   gh pr view {PR_NUMBER} --json closingIssuesReferences   # re-read after every create/edit
    ```
    - **`--body-file`, never `--body "$(cat ...)"`.** Command substitution re-scans the
      heredoc, so any backtick in the body — and a PR body is mostly backticked
      identifiers — executes as a command.
+   - **Name every scratch file with the issue number.** Parallel agents share one
+     scratchpad: generic `pr.md` / `body.md` files have been published onto the wrong PRs,
+     closing the wrong issues (#1187 closed #1190; #1205 closed #1145).
+   - **Re-read `closingIssuesReferences` after every `gh pr create`/`edit`** until it names
+     exactly your issues. Editing `Closes #N` out of a body does not unlink it, so a PR that
+     defers a criterion needs its follow-up issue filed before merge; and a squash title
+     saying `Resolve #N` closes N whatever the body says, so keep it out of a Refs-only
+     title or pass `gh pr merge --subject`. After merging, check
+     `gh issue view N --json state`: a closing keyword has also failed to close (#439).
    - The body must include: a summary of all changes, `Closes #N` for **every**
      resolved issue, the coverage summary, and the security scan result.
 5. Add inline comments only if a specific line needs one — the review-publishing form
@@ -403,11 +422,14 @@ that instruction ever goes missing (#1168).
 
 ### Step 6.5: CI Verification
 
-**There is no CodeQL workflow in this repository.** `.github/workflows/codeql.yml` does not
-exist, so `Analyze (javascript-typescript)` and `CodeQL` never appear in `gh pr checks` and
-waiting for them means waiting forever. This step used to say the opposite and gate handoff
-on two jobs that cannot run — the fourth copy of a stale CI claim found in one audit (#1282).
-The static-analysis that *does* run on a PR is **`Semgrep`** and **`Dependency audit`**.
+**CodeQL runs on every PR.** `.github/workflows/codeql.yml` reports `Analyze javascript-typescript`,
+`Analyze python` and `CodeQL`, next to **`Semgrep`** and **`Dependency audit`**. A new alert
+fails `CodeQL` like any other check: new routes have raised `js/missing-rate-limiting` and
+`js/missing-token-validation`. Read the alert, fix the code, and re-check. Read
+`gh pr checks` only once `CodeQL` **and** both `Analyze` jobs are done. The `CodeQL` check-run
+is created after the `Analyze` jobs start and finishes before `Analyze javascript-typescript`
+(every head measured, #1112 and #1217): a green read before `CodeQL` exists is too early,
+and a green `CodeQL` does not mean the `Analyze` jobs are done.
 
 1. **Wait for checks to complete.** `gh pr checks {PR_NUMBER} --watch` blocks, but it has
    exited 0 with jobs still pending and can return a transient empty set — so finish with a

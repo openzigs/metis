@@ -197,11 +197,15 @@ gh api --method POST "repos/{owner}/{repo}/pulls/{PR}/comments/{COMMENT_ID}/repl
 ```
 
 If the reply body contains backticks, write it to a file and pass the whole payload as
-one JSON document instead — `-f body="$(cat ...)"` executes the backticks:
+one JSON document instead — `-f body="$(cat ...)"` executes the backticks. Name the files
+with the PR and comment ids: parallel agents share one scratchpad, and a generic file can
+post onto the wrong PR.
+
+The `--input` call must print a `pull_request_url` that ends in `/pulls/{PR}`:
 
 ```bash
-python3 -c 'import json,pathlib,sys; pathlib.Path("/tmp/reply.json").write_text(json.dumps({"body": pathlib.Path("/tmp/reply.md").read_text()}))'
-gh api --method POST "repos/{owner}/{repo}/pulls/{PR}/comments/{COMMENT_ID}/replies" --input /tmp/reply.json
+python3 -c 'import json,pathlib,sys; pathlib.Path("<scratchpad>/reply-{PR}-{COMMENT_ID}.json").write_text(json.dumps({"body": pathlib.Path("<scratchpad>/reply-{PR}-{COMMENT_ID}.md").read_text()}))'
+gh api --method POST "repos/{owner}/{repo}/pulls/{PR}/comments/{COMMENT_ID}/replies" --input <scratchpad>/reply-{PR}-{COMMENT_ID}.json --jq '.pull_request_url'
 ```
 
 Never mix the two: `gh api --input` **silently demotes** any `-f`/`-F` alongside it to a

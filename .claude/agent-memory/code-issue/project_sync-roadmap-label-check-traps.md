@@ -1,6 +1,6 @@
 ---
 name: sync-roadmap-label-check-traps
-description: Two traps in the roadmap sync's label check (#1181) — main() tests hit the real write throttle, and the "exactly one" rule is backed only by a missing check.
+description: Roadmap sync traps — main() tests hit the real write throttle, the "exactly one" label rule is backed only by a missing check (#1181), and whole-list replace writes need completed iterations in the fixture (#1205).
 metadata:
   type: project
 ---
@@ -25,3 +25,17 @@ assume the report enforces the rule's "exactly one" or "blocked as well".
 
 **How to apply:** before claiming a check enforces a filing rule, compare each quantifier in the
 rule ("exactly one", "as well") with what the check actually tests.
+
+## 3. Replace-the-whole-list writes (#1205, 2026-10-16)
+
+`updateProjectV2Field` replaces a field's whole list, for single-select options and for
+iterations alike. What keeps ids and item values is now written in the comments above
+`UPDATE_FIELD` and `UPDATE_ITERATIONS` in `sync-roadmap-core.mjs` (every existing element goes
+back with its `id`, completed iterations too), and the sync refuses an iteration write when an
+existing iteration has no id. Read those comments; do not re-measure.
+
+**Test it with every kind of existing element in the fixture.** #1205's `withCycles` helper
+first left `completedIterations` empty, and a payload dropping them passed 83/83. The tests now
+have `withCycles([c1], [c0])` cases; keep one for any new replace path, break the payload on
+purpose before trusting it, and re-read the field before writing. More shapes like this:
+[[test-falsifiability-traps]].
