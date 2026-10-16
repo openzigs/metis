@@ -130,3 +130,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Verify your worktree](project_verify-your-worktree-before-committing.md) — HEAD vs your branch; worktree list; no stash pop; a lock failed
 - [Cut-off doc? Lazy render](project_cutoff-doc-lazy.md) — read stored body, scroll (#1170)
 - [CRLF in md scanners](project_crlf-md-scanners.md) — normalise or match \r?$ (#1170)
+- [Roadmap label check traps](project_sync-roadmap-label-check-traps.md) — main() tests hit 1s/write; check is missing-only (#1181)
