@@ -71,6 +71,27 @@ curl -s -XPOST $B/api/ai/chat -H "authorization: Bearer $TOK" \
 
 A non-empty `content` = the app round-trips through whatever `AI_PROVIDER` is set.
 
+## 3b. A second stack from a worktree (ports, local sources)
+
+For a browser walkthrough from `.claude/worktrees/*` while another stack holds the defaults:
+
+- **Ports.** The UI `dev` script hard-codes `-p 3000` (`ui/package.json`). Run
+  `cd ui && METIS_API_URL=http://localhost:<api-port>/api pnpm exec next dev --webpack -p <ui-port>`
+  instead; `METIS_API_URL` is the upstream base, `/api` included (`ui/src/lib/config.ts`).
+  Give the server `PORT` (`server/src/index.ts`, default 4000) and `CORS_ORIGIN` set to the
+  UI origin (`server/src/app.ts`, default `http://localhost:3000`) in the shell: `dev` loads
+  `--env-file=../.env`, and Node's `--env-file` does not override a variable already set, so
+  the shared `.env` need not change.
+- **`LOCAL_SOURCE_ROOTS` is split on `path.delimiter`** — `:` on macOS/Linux, `;` on
+  Windows — never commas (`server/src/lib/connectors/repo/local-source.ts`). Relative entries
+  are dropped; unset means local ingestion is disabled.
+- **Fast seed:** a **Local directory (server path)** connector (project → Connections; `POST
+  /api/projects/:projectId/connectors/repos/local`, `admin` role only) under a `LOCAL_SOURCE_ROOTS` root fills a
+  project with real files in minutes (~85 files on 2026-09-29).
+- **Budget deep ingest:** METIS's own `server/src` + `ui/src` with local embeddings took
+  **~50 min** (~17k symbols, ~2.1k documents; measured 2026-09-29) — seed something smaller
+  unless the run needs that corpus.
+
 ## 4. Local LLM (run METIS fully on-device)
 
 `.env`: `AI_PROVIDER=local-gemma`, `LOCAL_GEMMA_BASE_URL=http://localhost:11434/v1`,

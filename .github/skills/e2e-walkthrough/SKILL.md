@@ -70,7 +70,9 @@ results were not comparable. Do not reorder.
    (`ulimit -n 10240` in the shell that starts the servers).
 5. **Workspace first, then the project inside it.** Membership has no invite UI (#941): invite
    over the API, open `/invites/<token>` as the invitee, then log them in afresh. Reviewers
-   must be workspace members. A project *outside* a workspace can only be created with
+   must be workspace members. **The operator creates the `coordinator` and `developer`
+   memberships here, before wave B**: in run 9 the harness classifier refused the invite in
+   waves B and D and allowed it only in F, so a wave cannot be relied on to do it. A project *outside* a workspace can only be created with
    `POST /api/projects`. #731 (PR #927) now lets an existing
    project join a workspace, but create it inside so runs stay comparable; wave B tests the
    move on a throwaway project. Enable lineage and database-aware analysis. **Save the
@@ -156,7 +158,9 @@ publishes count toward the run's cap of 2, so leave it a slot or let it dry-run 
    A fix no wave can verify, such as walkthrough tooling, gets `{"skip": "<reason>"}` there and
    is listed under `excluded`, and in the scope comment. Edit a `check` line that would not tell a wave agent what to look at. This review also screens
    the check text: when the map gives none it defaults to the issue or PR title, and that text goes
-   verbatim into briefs the wave agents act on.
+   verbatim into briefs the wave agents act on. **A check that needs the server log** (a log
+   line, such as #1158's) **is the operator's**: ui-vision cannot read the dev server's
+   stdout, so say in the check that the operator greps it, and grep it after the wave.
 3. **Post the scope** on #706 before wave A: `gh issue comment 706 --body-file <run>/scope.md`.
 4. **Fill the briefs.** Write `<run>/state.json`:
    `{"placeholders": {"RUN_NUMBER": "5", "UI_URL": "…", …}, "requiredPrs": [952]}`, then
@@ -209,15 +213,18 @@ allowed it in waves D and F. The cap is 2 real sandbox issues per run; assign th
   `fetch` calls that send `UPDATE` SQL (the read-only query probe). Plan those with the
   operator — who runs or approves them, using no-op writes (`… WHERE false`) — or verify them
   from the database tables, and record which.
-- **Spec Kit issue export (S21) cannot publish until #953 lands.** The dry run lists the
-  titles and the target repo; Publish then stays disabled with the "not available on this
-  server yet" reason. Spend no sandbox slot on it. If Publish is enabled, #953 has landed:
-  publish within the 2-issue cap, to `openzigs/flux-v2` only. **Finding-publish has no dry
+- **Spec Kit issue export (S21) publishes since #953.** The dry run lists the titles and the
+  target repo, then Publish is enabled. Publish within the 2-issue cap, to `openzigs/flux-v2`
+  only, from a throwaway feature: tick one task in the export picker (#993) and run the dry
+  run again, or cut `tasks.md` to 1 task. **Finding-publish has no dry
   run**: it publishes at once and counts against the cap. Impact analyses have no draft path.
 - **Wave G** (optional) writes **only** to `openzigs/flux-v2`, and **only** as a push of its
   branch `walkthrough/run-<N>-<issue>`. **No pull requests**, no issues and no comments on any
   repository, and **nothing at all on `miniflux/v2`**. Before pushing, `git remote get-url origin`
-  must be `openzigs/flux-v2`. No secrets in the code or commit messages; no `.env` committed.
+  must be `openzigs/flux-v2`. **Any brief that clones the fork** must say
+  `git remote remove upstream && gh repo set-default openzigs/flux-v2` right after
+  `gh repo clone openzigs/flux-v2`, which adds an `upstream` remote and makes `miniflux/v2` gh's
+  default, and pass `--repo openzigs/flux-v2` to every `gh` command. No secrets in the code or commit messages; no `.env` committed.
   **Budget:** about **$3** of the agent's spend or **45 minutes**, whichever comes first; a stop
   is scored as it stands ("builds: not reached"), not as a fail of METIS. The check below covers
   wave G too.
