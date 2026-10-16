@@ -7,7 +7,7 @@
  * updates, and the @AI-mention → ai-respond trigger.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper } from "./test-utils";
 
@@ -22,6 +22,8 @@ vi.mock("@/lib/discussions-api", async (orig) => {
     listMessages: vi.fn(),
     postMessage: vi.fn(),
     streamAiReply: vi.fn(),
+    editMessage: vi.fn(),
+    deleteMessage: vi.fn(),
   };
 });
 
@@ -49,7 +51,13 @@ import { useSocket } from "@/lib/socket-client";
 import { followedRooms } from "@/lib/socket-subscription";
 import { presenceRoom, threadRoom } from "@metis/shared";
 import { createFakeSocket } from "./helpers/fake-socket";
-import { listMessages, postMessage, streamAiReply } from "@/lib/discussions-api";
+import {
+  deleteMessage,
+  editMessage,
+  listMessages,
+  postMessage,
+  streamAiReply,
+} from "@/lib/discussions-api";
 import { toast } from "sonner";
 import {
   DiscussionMessageList,
@@ -771,5 +779,147 @@ describe("DiscussionThreadView", () => {
     renderView({ projectId: "p1", isMember: false });
     await waitFor(() => expect(listMessagesMock).toHaveBeenCalled());
     expect(screen.queryByTestId("thread-settings-toggle")).not.toBeInTheDocument();
+  });
+
+  describe("#734 — edit and delete your own message", () => {
+    const editMock = editMessage as ReturnType<typeof vi.fn>;
+    const deleteMock = deleteMessage as ReturnType<typeof vi.fn>;
+
+    it("offers Edit/Delete only on the viewer's own human messages", async () => {
+      listMessagesMock.mockResolvedValue([
+        humanMsg({ id: "mine", body: "my words" }),
+        humanMsg({ id: "theirs", authorUserId: "u2", authorName: "Bob", body: "bob words" }),
+        aiMsg(),
+      ]);
+      renderView();
+      await screen.findByText("bob words");
+      expect(screen.getAllByTestId("edit-action")).toHaveLength(1);
+      expect(screen.getAllByTestId("delete-action")).toHaveLength(1);
+      const mine = screen.getByText("my words").closest("li")!;
+      expect(mine.querySelector('[data-testid="edit-action"]')).not.toBeNull();
+    });
+
+    it("offers nothing on a non-human row, even one naming the viewer", async () => {
+      listMessagesMock.mockResolvedValue([aiMsg({ authorUserId: "u1", body: "ai words" })]);
+      renderView();
+      await screen.findByText("ai words");
+      expect(screen.queryByTestId("edit-action")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("delete-action")).not.toBeInTheDocument();
+    });
+
+    it("offers nothing when the viewer is unknown", async () => {
+      listMessagesMock.mockResolvedValue([humanMsg({ body: "anon" })]);
+      renderView({ currentUserId: undefined });
+      await screen.findByText("anon");
+      expect(screen.queryByTestId("edit-action")).not.toBeInTheDocument();
+    });
+
+    it("edits in place, saves through the API and marks the message edited", async () => {
+      listMessagesMock.mockResolvedValue([humanMsg({ body: "first draft" })]);
+      editMock.mockResolvedValue(
+        humanMsg({ body: "second draft", editedAt: new Date().toISOString() }),
+      );
+      const user = userEvent.setup();
+      renderView();
+      await user.click(await screen.findByTestId("edit-action"));
+      const box = screen.getByLabelText("Edit message");
+      await user.clear(box);
+      await user.type(box, "second draft");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(editMock).toHaveBeenCalledWith("t1", "m1", "second draft");
+      expect(await screen.findByText("second draft")).toBeInTheDocument();
+      expect(screen.getByTestId("edited-marker")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Edit message")).not.toBeInTheDocument();
+    });
+
+    it("cancel leaves the message untouched", async () => {
+      listMessagesMock.mockResolvedValue([humanMsg({ body: "keep me" })]);
+      const user = userEvent.setup();
+      renderView();
+      await user.click(await screen.findByTestId("edit-action"));
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(screen.getByText("keep me")).toBeInTheDocument();
+      expect(editMock).not.toHaveBeenCalled();
+    });
+
+    it("keeps the editor open and toasts when the server refuses the edit", async () => {
+      listMessagesMock.mockResolvedValue([humanMsg({ body: "orig" })]);
+      editMock.mockRejectedValue(new Error("You can only edit your own messages"));
+      const user = userEvent.setup();
+      renderView();
+      await user.click(await screen.findByTestId("edit-action"));
+      await user.type(screen.getByLabelText("Edit message"), "!");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() =>
+        expect(toastErrorMock).toHaveBeenCalledWith("You can only edit your own messages"),
+      );
+      expect(screen.getByLabelText("Edit message")).toBeInTheDocument();
+    });
+
+    it("deletes after confirmation and removes the row", async () => {
+      listMessagesMock.mockResolvedValue([humanMsg({ body: "goodbye" })]);
+      deleteMock.mockResolvedValue(undefined);
+      const user = userEvent.setup();
+      renderView();
+      await user.click(await screen.findByTestId("delete-action"));
+      // Nothing is deleted until the dialog is confirmed.
+      expect(deleteMock).not.toHaveBeenCalled();
+      await user.click(
+        within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete" }),
+      );
+      expect(deleteMock).toHaveBeenCalledWith("t1", "m1");
+      await waitFor(() => expect(screen.queryByText("goodbye")).not.toBeInTheDocument());
+    });
+
+    it("toasts and keeps the row when the delete fails", async () => {
+      listMessagesMock.mockResolvedValue([humanMsg({ body: "sticky" })]);
+      deleteMock.mockRejectedValue(new Error("nope"));
+      const user = userEvent.setup();
+      renderView();
+      await user.click(await screen.findByTestId("delete-action"));
+      await user.click(
+        within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete" }),
+      );
+      await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith("nope"));
+      expect(screen.getByText("sticky")).toBeInTheDocument();
+    });
+
+    it("applies another member's live edit and delete from the thread room", async () => {
+      listMessagesMock.mockResolvedValue([
+        humanMsg({ id: "b1", authorUserId: "u2", body: "bob v1" }),
+        humanMsg({ id: "b2", authorUserId: "u2", body: "bob other" }),
+      ]);
+      renderView();
+      await screen.findByText("bob v1");
+      act(() => {
+        socketHandler("message:updated")!({
+          threadId: "t1",
+          message: humanMsg({ id: "b1", authorUserId: "u2", body: "bob v2" }),
+          ts: 1,
+        });
+        // An edit for another thread, or for a message this view never had, is ignored.
+        socketHandler("message:updated")!({
+          threadId: "other",
+          message: humanMsg({ id: "b2", body: "wrong thread" }),
+          ts: 1,
+        });
+        socketHandler("message:updated")!({
+          threadId: "t1",
+          message: humanMsg({ id: "ghost", body: "never seen" }),
+          ts: 1,
+        });
+      });
+      expect(await screen.findByText("bob v2")).toBeInTheDocument();
+      expect(screen.queryByText("wrong thread")).not.toBeInTheDocument();
+      expect(screen.queryByText("never seen")).not.toBeInTheDocument();
+
+      act(() => {
+        socketHandler("message:deleted")!({ threadId: "other", messageId: "b2", ts: 2 });
+        socketHandler("message:deleted")!({ threadId: "t1", messageId: "b1", ts: 2 });
+      });
+      await waitFor(() => expect(screen.queryByText("bob v2")).not.toBeInTheDocument());
+      expect(screen.getByText("bob other")).toBeInTheDocument();
+    });
   });
 });

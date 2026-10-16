@@ -398,11 +398,13 @@ What counts:
   1. In `/projects/:id/discussions`, create a thread (`POST /api/discussions/threads`), post a message that mentions a second user, and ask for an AI reply (`POST …/threads/:id/ai-respond`).
   2. Open `/projects/:id/discussions/:discussionId` in **two browser contexts** to check presence. The harness classifier refuses `browser_run_code_unsafe` on a second context; plan this check with the operator, or verify presence from the database.
   3. Comment on a requirement and reply to it (`POST /api/requirements/:reqId/comments`, then `POST /api/comments/:threadId/replies`).
+  4. Edit, then delete, one of your own discussion messages (`PATCH` / `DELETE /api/discussions/threads/:id/messages/:messageId`, #734) while the second context has the thread open. As the second user, try the same calls on that message.
 - **Works:**
   - Both users see each other's presence avatars (`components/presence/PresenceAvatars`).
   - The @mention picker offers only users who can open the project (#870).
   - The mentioned user gets a notification (`/api/notifications`) that names the author and opens the comment (#735).
-  - Edit and delete work.
+  - Edit and delete work for requirement comments and for discussion messages. A discussion edit is marked "(edited)" and appears live in the other context, and a deletion disappears there live. The second user gets 403 on the first user's message (#734).
+  - A teammate's live discussion message shows their display name, not a raw user id (#734).
 - **Useful:** the AI reply cites project sources and answers the thread's question about Miniflux.
 
 ### Phase 12 — Publishing (issues, PRs, batches) — sandbox only

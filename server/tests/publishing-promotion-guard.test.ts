@@ -29,7 +29,8 @@ vi.mock("../src/lib/prisma.js", () => ({
         [...drafts.values()].filter((d) => where.id.in.includes(d.id) && !d.deletedAt),
       ),
     },
-    repoConnection: { findMany: vi.fn(async () => []) },
+    // #1180 — the cross-project guard's case-insensitive lookup (`$queryRaw`).
+    $queryRaw: vi.fn(async () => []),
     // #619 — approval gate off; this file tests the #257 promotion guard.
     project: {
       findUnique: vi.fn(async () => ({ requireApprovedReview: false })),

@@ -7,6 +7,10 @@
  * that shows exactly where the PR would go and what it would write; only then
  * is "Open draft PR" offered. There is no owner/repo field — the server uses
  * the project's saved publish target and refuses the analysed repository.
+ *
+ * #1180 — a live run into a repository another project connects is refused
+ * (`REPO_CROSS_PROJECT`) until the user confirms, as on the Publish page;
+ * confirming retries the same run with `confirmCrossProject`.
  */
 import { useEffect, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
@@ -24,6 +28,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  CrossProjectConfirmDialog,
+  extractCrossProjectRefusal,
+  type CrossProjectRefusal,
+} from "@/components/publishing/cross-project-confirm-dialog";
+
+const PR_CONSEQUENCE =
+  "A draft pull request opened from this project will appear in that repository alongside its work.";
 
 export interface DraftPullRequestDialogProps {
   projectId: string;
@@ -59,10 +71,23 @@ export function DraftPullRequestDialog({
       publishingApi.draftPullRequest(projectId, draft!.id, { ...body(), dryRun: true }),
     onSuccess: setPlan,
   });
+  // #1180 — the refusal is KEPT while the confirm is open: deriving it from
+  // `openMutation.error` loses it the moment the retry starts (the error resets),
+  // and the open confirm would flip to "another project" and the plan's repo.
+  const [crossProject, setCrossProject] = useState<CrossProjectRefusal | null>(null);
   const openMutation = useMutation({
-    mutationFn: () =>
-      publishingApi.draftPullRequest(projectId, draft!.id, { ...body(), dryRun: false }),
+    // `true` only from the cross-project confirm (#1180).
+    mutationFn: (confirmCrossProject: boolean | void) =>
+      publishingApi.draftPullRequest(projectId, draft!.id, {
+        ...body(),
+        dryRun: false,
+        ...(confirmCrossProject === true ? { confirmCrossProject: true } : {}),
+      }),
     onSuccess: setPlan,
+    onError: (err) => {
+      const refusal = extractCrossProjectRefusal(err);
+      if (refusal) setCrossProject(refusal);
+    },
   });
   const hint = vaultRefHint(secretRef);
   const opened = plan?.pullRequest ?? null;
@@ -73,6 +98,7 @@ export function DraftPullRequestDialog({
       onOpenChange={(open) => {
         if (!open) {
           setPlan(null);
+          setCrossProject(null);
           planMutation.reset();
           openMutation.reset();
         }
@@ -171,6 +197,20 @@ export function DraftPullRequestDialog({
             </Button>
           </div>
         </div>
+        <CrossProjectConfirmDialog
+          open={crossProject !== null}
+          onOpenChange={(next) => {
+            if (!next) setCrossProject(null);
+          }}
+          refusal={crossProject}
+          fallbackRepo={plan ? `${plan.target.owner}/${plan.target.repo}` : ""}
+          pending={openMutation.isPending}
+          consequence={PR_CONSEQUENCE}
+          onConfirm={() => {
+            // Stays open (its buttons disabled) until the retry settles.
+            openMutation.mutate(true, { onSettled: () => setCrossProject(null) });
+          }}
+        />
       </DialogContent>
     </Dialog>
   );

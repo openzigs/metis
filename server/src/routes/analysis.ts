@@ -136,6 +136,10 @@ import { BedrockDirectProvider } from "../lib/ai/providers/bedrock-direct-provid
 import { prisma } from "../lib/prisma.js";
 // Epic #176 / #179 — publish an analysis finding via the shared finding publisher.
 import { publishAnalysisFinding } from "../lib/publishing/analysis-finding-publish.js";
+import {
+  CrossProjectRepoError,
+  describeCrossProjectRefusal,
+} from "../lib/publishing/cross-project-guard.js";
 import { PublishError } from "../lib/publishing/finding-publisher.js";
 
 function ok<T>(data: T): ApiResponse<T> {
@@ -1712,6 +1716,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
             provider,
             extraLabels: parsed.data.extraLabels,
             target: parsed.data.target,
+            confirmCrossProject: parsed.data.confirmCrossProject === true,
           });
           links.push({ provider, url: link.externalUrl, issueKey: link.externalId });
         }
@@ -1730,6 +1735,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
 
         res.json(ok({ links }));
       } catch (err) {
+        // #1180 — a GitHub target another project connects needs the caller's
+        // confirmation; name that project only if this caller may open it.
+        // GitHub is published before Jira, so a refusal here writes nothing.
+        if (err instanceof CrossProjectRepoError && req.user) {
+          throw await describeCrossProjectRefusal(err, req.user);
+        }
         if (err instanceof PublishError) {
           const msg = err.message?.slice(0, 1000) ?? "publish failed";
           // Missing/incomplete destination config is a client-actionable 400

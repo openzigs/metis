@@ -27,7 +27,7 @@ import { PublishError } from "./types.js";
 const MAX_CONFLICTS = 5;
 
 /**
- * Thrown by `createBatch`. The conflicting project ids are kept OFF `details`
+ * Thrown by `assertNotCrossProject`. The conflicting project ids are kept OFF `details`
  * (which `asAppError` forwards to the client verbatim) so that only
  * `describeCrossProjectRefusal`, which checks access, decides what is shown.
  */
@@ -45,25 +45,53 @@ export class CrossProjectRepoError extends PublishError {
   }
 }
 
-/** The ids of other projects that have `owner/repo` connected (live connectors only). */
+/**
+ * The ids of other projects that have `owner/repo` connected (live connectors
+ * only), at most {@link MAX_CONFLICTS}.
+ *
+ * #1180 — matched case-insensitively. GitHub owner and repository names are
+ * case-insensitive, so `MiniFlux/V2` is the repository another project
+ * connected as `miniflux/v2`; Prisma's `equals` is case-sensitive on SQLite,
+ * and its `mode: "insensitive"` exists only in the Postgres-generated client.
+ * Both sides are folded with `LOWER()` instead, which SQLite and Postgres both
+ * provide, in a tagged `$queryRaw`: every value is a bound parameter.
+ * (`LOWER` folds ASCII on SQLite; GitHub names are ASCII.)
+ */
 export async function findCrossProjectOwners(input: {
   projectId: string;
   targetOwner: string;
   targetRepo: string;
 }): Promise<string[]> {
-  const rows = await prisma.repoConnection.findMany({
-    where: {
-      ownerOrOrg: input.targetOwner,
-      repoName: input.targetRepo,
-      projectId: { not: input.projectId },
-      deletedAt: null,
-    },
-    select: { projectId: true },
-    distinct: ["projectId"],
-    orderBy: { projectId: "asc" },
-    take: MAX_CONFLICTS,
-  });
-  return rows.map((r) => r.projectId);
+  const rows = await prisma.$queryRaw<Array<{ projectId: string }>>`
+    SELECT DISTINCT "projectId" FROM "repo_connections"
+    WHERE LOWER("ownerOrOrg") = LOWER(${input.targetOwner})
+      AND LOWER("repoName") = LOWER(${input.targetRepo})
+      AND "projectId" <> ${input.projectId}
+      AND "deletedAt" IS NULL
+    ORDER BY "projectId" ASC`;
+  return rows.slice(0, MAX_CONFLICTS).map((r) => r.projectId);
+}
+
+/**
+ * The service-layer cross-project check. Called by batch publish
+ * (`createBatch`), finding publish (`publishAnalysisFinding`) and the draft
+ * pull request (`openDraftPullRequest`, #1180). The Spec Kit tasks-to-issues
+ * export (`spec-kit/commands/taskstoissues-github.ts`) also writes to the saved
+ * publish target and does NOT call it yet. Throws
+ * `CrossProjectRepoError` when another project has `owner/repo` connected,
+ * unless the caller confirmed — and only a literal `true` confirms.
+ */
+export async function assertNotCrossProject(input: {
+  projectId: string;
+  targetOwner: string;
+  targetRepo: string;
+  confirmed?: boolean;
+}): Promise<void> {
+  if (input.confirmed === true) return;
+  const conflicting = await findCrossProjectOwners(input);
+  if (conflicting.length > 0) {
+    throw new CrossProjectRepoError(`${input.targetOwner}/${input.targetRepo}`, conflicting);
+  }
 }
 
 /**

@@ -197,7 +197,8 @@ vi.mock("../src/lib/prisma.js", async () => {
         return next;
       }),
     },
-    repoConnection: { findMany: vi.fn(async () => []) },
+    // #1180 — the cross-project guard's case-insensitive lookup (`$queryRaw`).
+    $queryRaw: vi.fn(async () => []),
   });
   return { prisma };
 });

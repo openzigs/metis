@@ -562,7 +562,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(calls).toEqual([]);
       });
 
-      const live = (projectId: string, draftId: string) =>
+      // #1180 — `miniflux/v2` is connected to project P, so a PF/PD run into it
+      // is cross-project and is refused before the fork-network check unless
+      // confirmed. The fork-network cases confirm, to reach the check they test.
+      const live = (projectId: string, draftId: string, confirmCrossProject?: boolean) =>
         openDraftPullRequest({
           projectId,
           draftId,
@@ -570,6 +573,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           actorRole: ROLE,
           dryRun: false,
           secretRef: "${vault:github-flux-v2-sandbox}",
+          confirmCrossProject,
         });
       const writes = () => calls.filter((c) => c.method !== "GET");
 
@@ -613,7 +617,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             c.method === "GET" && c.url === "/repos/me/v2"
               ? { status: 200, data: { default_branch: "main", fork: true, ...network } }
               : undefined;
-          await expect(live(PF, d.id)).rejects.toMatchObject({
+          await expect(live(PF, d.id, true)).rejects.toMatchObject({
             status: 409,
             code: "PUBLISH_TARGET_IS_ANALYSED_REPO",
           });
@@ -622,6 +626,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           expect(calls.find((c) => c.url === "/repos/me/v2")?.token).toBe(TOKEN);
         },
       );
+
+      it("#1180 — unconfirmed, a target another project connects is refused before any GitHub call", async () => {
+        await db.project.update({
+          where: { id: PF },
+          data: { publishGithubOwner: "miniflux", publishGithubRepo: "v2" },
+        });
+        const d = await draft({ projectId: PF });
+        const err = (await live(PF, d.id).catch((e: unknown) => e)) as Error & {
+          conflictingProjectIds?: readonly string[];
+        };
+        expect(err).toMatchObject({ status: 409, code: "REPO_CROSS_PROJECT" });
+        expect(err.conflictingProjectIds).toEqual([P]);
+        expect(calls).toEqual([]);
+      });
 
       it("REFUSES a target that is the parent of a SOFT-DELETED analysed fork", async () => {
         await db.project.update({
@@ -661,7 +679,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const d = await draft({ projectId: PF });
         respond = (c) =>
           c.method === "GET" && c.url === "/repos/me/v2" ? { status: 404, data: {} } : undefined;
-        const err = (await live(PF, d.id).catch((e: unknown) => e)) as Error & {
+        const err = (await live(PF, d.id, true).catch((e: unknown) => e)) as Error & {
           status?: number;
           code?: string;
         };
