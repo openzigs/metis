@@ -51,7 +51,6 @@ export interface BaselineItemSnapshot {
   type: string | null;
   labels: string | null;
   storyPoints: number | null;
-  reviewStatus: string | null;
 }
 
 export interface BaselineItem {

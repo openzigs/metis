@@ -43,7 +43,7 @@ const FIELD_ORDER = [
   "type",
   "labels",
   "storyPoints",
-  "reviewStatus",
+  // #1162 — no `reviewStatus`: it is the verdict on a version, not versioned.
   // #990 — versioned since the Edit dialog can change it.
   "acceptanceCriteria",
 ] as const;
