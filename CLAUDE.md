@@ -99,8 +99,10 @@ javascript-typescript`, `Analyze python`, `CodeQL`, `Check CLA signature`, `Depe
 `fail` when a newer push superseded the run (a cancelled shard), so check for a newer run first. On a PR, `postgres-adapter` reads
 **`skipping`** when no Postgres path changed and `api` skips its image build when no image
 path did — the `changes` job's summary says why; both always run on `main` and nightly.
-`skipping` on `postgres-adapter` is expected, and on `nightly-report` always (schedule-only:
-it files a `ci-nightly` issue on a red nightly, #848); anywhere else it is not.
+`skipping` on `postgres-adapter` is expected, on `nightly-report` always (schedule-only:
+it files a `ci-nightly` issue on a red nightly, #848), and on `Check CLA signature` for a
+PR the maintainer opened (`cla.yml`'s `if:`); anywhere else it is not. A PR touching
+`docs/**` also gets `docs-site.yml`'s `build`, and `deploy` reading `skipping`.
 
 Never merge a PR with genuinely failing or pending checks.
 
