@@ -93,12 +93,29 @@ vi.mock("../src/lib/prisma.js", () => {
 
 const { BUILT_IN_AGENTS } = await import("../src/lib/custom-agents/index.js");
 const { ToolRegistry } = await import("../src/lib/ai/tool-registry.js");
-const { registerRequirementTools, LIST_REQUIREMENTS_TOOL_NAME, GET_REQUIREMENT_TOOL_NAME } =
-  await import("../src/lib/requirements/requirements-chat-tools.js");
+const {
+  registerRequirementTools,
+  createListRequirementsTool,
+  createGetRequirementTool,
+  LIST_REQUIREMENTS_TOOL_NAME,
+  GET_REQUIREMENT_TOOL_NAME,
+} = await import("../src/lib/requirements/requirements-chat-tools.js");
 const { buildSearchKnowledgeTool } = await import("../src/lib/rag/search-knowledge-tool.js");
 const { resolveSessionTools } = await import("../src/lib/ai/tool-runtime/session-tools.js");
 
 const REQ_TOOLS = [LIST_REQUIREMENTS_TOOL_NAME, GET_REQUIREMENT_TOOL_NAME];
+
+/**
+ * Every tool a built-in persona may name, each read-only: knowledge search,
+ * the code-search tools and the requirement reads. Adding to this list is a
+ * deliberate, reviewed decision; a write tool does not belong on it.
+ */
+const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  "search-knowledge",
+  "search_code_graph",
+  "search_code_symbols",
+  ...REQ_TOOLS,
+]);
 
 function req(id: string, projectId: string, title: string): ReqRow {
   return {
@@ -214,19 +231,50 @@ describe("#1050 built-in persona allowlists", () => {
     for (const name of ["Architect", "PO", "QA"]) {
       for (const t of REQ_TOOLS) expect(tools(name), name).toContain(t);
     }
-    // Every tool any built-in names is read-only (the registry's `low` risk).
-    const r = registry();
-    const lowRisk = new Set(
-      r
-        .list()
-        .filter((t) => t.risk === "low")
-        .map((t) => t.name),
-    );
-    const codeReadTools = new Set(["search_code_graph", "search_code_symbols"]);
+    // An EXPLICIT read-only list, not inferred from risk: a built-in naming
+    // any tool outside it fails here, so a write tool cannot slip in.
     for (const def of BUILT_IN_AGENTS) {
       for (const t of def.tools) {
-        expect(lowRisk.has(t) || codeReadTools.has(t), `${def.name}: ${t}`).toBe(true);
+        expect(READ_ONLY_TOOLS.has(t), `${def.name}: ${t} is not on the read-only list`).toBe(true);
       }
+    }
+  });
+});
+
+describe("#1050 the requirement tools' input schemas name no project", () => {
+  // The model must never choose a project: scope comes only from the session.
+  // A `projectId` field, or loose/passthrough parsing that lets one through,
+  // would make `args.projectId ?? ctx.projectId` possible in a handler.
+  const defs = [createListRequirementsTool(), createGetRequirementTool()];
+
+  it.each(defs.map((d) => [d.name, d] as const))(
+    "%s declares no project field and drops an injected one",
+    (_name, def) => {
+      const shape = Object.keys(def.schema.shape);
+      expect(shape.filter((k) => /project|workspace|tenant/i.test(k))).toEqual([]);
+      const base = def.name === GET_REQUIREMENT_TOOL_NAME ? { requirementId: "r" } : {};
+      const parsed = def.schema.parse({ ...base, projectId: "p2", extra: 1 }) as Record<
+        string,
+        unknown
+      >;
+      expect(parsed).not.toHaveProperty("projectId");
+      // Not loose/passthrough: no unknown key survives parsing.
+      expect(Object.keys(parsed).filter((k) => !shape.includes(k))).toEqual([]);
+    },
+  );
+
+  it("the wire schema a tool-capable model is sent has no project property", async () => {
+    const rt = await chatTools("BA", "p1");
+    for (const name of REQ_TOOLS) {
+      const spec = rt.toolset.specs().find((s) => s.name === name)!;
+      const props = Object.keys(
+        (spec.parameters as { properties?: Record<string, unknown> }).properties ?? {},
+      );
+      expect(props.length, name).toBeGreaterThan(0);
+      expect(
+        props.filter((k) => /project/i.test(k)),
+        name,
+      ).toEqual([]);
     }
   });
 });
