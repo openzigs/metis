@@ -24,6 +24,8 @@ import { keepRoomSubscribed } from "@/lib/socket-subscription";
 import { threadFollow } from "@/lib/socket-rooms";
 import { useOnReconnect } from "@/hooks/use-on-reconnect";
 import {
+  deleteMessage,
+  editMessage,
   listMessages,
   postMessage,
   streamAiReply,
@@ -45,6 +47,11 @@ import { PausableLiveRegion } from "@/components/a11y/pausable-live-region";
 interface DiscussionMessageNewEvent {
   threadId: string;
   message: DiscussionMessage;
+  ts: number;
+}
+interface DiscussionMessageDeletedEvent {
+  threadId: string;
+  messageId: string;
   ts: number;
 }
 interface DiscussionMessageStreamEvent {
@@ -246,12 +253,28 @@ export function DiscussionThreadView({
       });
     }
 
+    // #734 — an author's edit or delete, fanned out to the thread room.
+    function onUpdated(evt: DiscussionMessageNewEvent) {
+      if (evt.threadId !== threadId) return;
+      setMessages((prev) =>
+        prev.some((m) => m.id === evt.message.id) ? upsert(prev, evt.message) : prev,
+      );
+    }
+    function onDeleted(evt: DiscussionMessageDeletedEvent) {
+      if (evt.threadId !== threadId) return;
+      setMessages((prev) => prev.filter((m) => m.id !== evt.messageId));
+    }
+
     socket.on("message:new", onNew);
     socket.on("message:stream", onStream);
+    socket.on("message:updated", onUpdated);
+    socket.on("message:deleted", onDeleted);
     return () => {
       release();
       socket.off("message:new", onNew);
       socket.off("message:stream", onStream);
+      socket.off("message:updated", onUpdated);
+      socket.off("message:deleted", onDeleted);
     };
   }, [socket, threadId]);
 
@@ -354,6 +377,32 @@ export function DiscussionThreadView({
     [threadId, currentUserId, mode, triggerAiReply],
   );
 
+  // ---- 5. Edit / delete your own message (#734) ----------------------------
+  const handleEdit = useCallback(
+    async (message: DiscussionListMessage, body: string) => {
+      try {
+        const saved = await editMessage(threadId, message.id, body);
+        setMessages((prev) => upsert(prev, saved));
+      } catch (err) {
+        toast.error((err as Error).message || "Failed to edit message");
+        throw err;
+      }
+    },
+    [threadId],
+  );
+  const handleDelete = useCallback(
+    async (message: DiscussionListMessage) => {
+      try {
+        await deleteMessage(threadId, message.id);
+        setMessages((prev) => prev.filter((m) => m.id !== message.id));
+      } catch (err) {
+        toast.error((err as Error).message || "Failed to delete message");
+        throw err;
+      }
+    },
+    [threadId],
+  );
+
   // Cancel any in-flight stream on unmount.
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -399,6 +448,9 @@ export function DiscussionThreadView({
           loading={loading}
           error={error}
           onPromote={canPromote ? setPromoteTarget : undefined}
+          currentUserId={currentUserId}
+          onEdit={handleEdit}
+          onDelete={handleDelete}
         />
       </PausableLiveRegion>
       {canPromote && promoteTarget ? (

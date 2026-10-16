@@ -5,6 +5,7 @@
  *   POST /threads                      — create a project-scoped thread
  *   GET  /threads/:id/messages         — paginated message history (attribution)
  *   POST /threads/:id/messages         — post a HUMAN message
+ *   PATCH/DELETE /threads/:id/messages/:messageId — edit / delete own message (#734)
  *
  * Cost-control guarantee: posting a human message never calls `buildProvider()`
  * and never writes an `AITokenUsage` row — human↔human messages are free by
@@ -30,6 +31,11 @@ import {
 import { emitMessageNew, emitMessageStream } from "../lib/discussions/socket-emitter.js";
 import { scheduleMirrorToTeams } from "../lib/teams/outbound-sync.js";
 import { createHumanDiscussionMessage } from "../lib/discussions/create-message.js";
+import {
+  deleteHumanDiscussionMessage,
+  editHumanDiscussionMessage,
+  MessageChangeError,
+} from "../lib/discussions/edit-message.js";
 import { promoteMessageToRequirement, PromoteError } from "../lib/discussions/promote.js";
 import { AI_RESPONSE_MODES, shouldAIRespond } from "../lib/discussions/ai-gate.js";
 import {
@@ -135,6 +141,23 @@ function actorFromReq(req: Request): ThreadActor {
  */
 function threadNotFound(): AppError {
   return new AppError(404, "THREAD_NOT_FOUND", "Discussion thread not found");
+}
+
+/**
+ * #734 — run an edit/delete and map its refusals: not the author → 403 (the
+ * caller is a member and can already read the message), missing → 404.
+ */
+async function asMessageChange<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof MessageChangeError) {
+      throw err.code === "NOT_AUTHOR"
+        ? new AppError(403, "FORBIDDEN", err.message)
+        : new AppError(404, err.code, err.message);
+    }
+    throw err;
+  }
 }
 
 /** A project the caller may not open: the project seam's own 404. */
@@ -374,6 +397,56 @@ export function discussionsRouter(): Router {
     });
 
     res.status(201).json({ success: true, data: message });
+  });
+
+  // PATCH /api/discussions/threads/:id/messages/:messageId — edit own message.
+  // DELETE same path — soft-delete own message. #734: thread access first
+  // (`canAccessThread`, so a non-member gets the thread's 404 and learns
+  // nothing about the message), then author-only (`edit-message.ts`).
+  r.patch("/threads/:id/messages/:messageId", requireAuth, async (req: Request, res: Response) => {
+    const actor = actorFromReq(req);
+    const threadId = String(req.params.id);
+    const messageId = String(req.params.messageId);
+
+    const parsed = postMessageSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(400, "VALIDATION_ERROR", "Invalid message payload", {
+        issues: parsed.error.flatten(),
+      });
+    }
+
+    const access = await canAccessThread(actor, threadId);
+    if (!access.ok) throw threadNotFound();
+
+    const message = await asMessageChange(() =>
+      editHumanDiscussionMessage({
+        threadId,
+        projectId: access.projectId,
+        messageId,
+        actorId: actor.id,
+        body: parsed.data.body,
+      }),
+    );
+    res.json({ success: true, data: message });
+  });
+
+  r.delete("/threads/:id/messages/:messageId", requireAuth, async (req: Request, res: Response) => {
+    const actor = actorFromReq(req);
+    const threadId = String(req.params.id);
+    const messageId = String(req.params.messageId);
+
+    const access = await canAccessThread(actor, threadId);
+    if (!access.ok) throw threadNotFound();
+
+    await asMessageChange(() =>
+      deleteHumanDiscussionMessage({
+        threadId,
+        projectId: access.projectId,
+        messageId,
+        actorId: actor.id,
+      }),
+    );
+    res.json({ success: true, data: { id: messageId, deleted: true } });
   });
 
   // POST /api/discussions/threads/:id/ai-respond — triggered AI reply (#484).

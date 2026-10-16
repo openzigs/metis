@@ -41,7 +41,7 @@ export interface DiscussionMessage {
   body: string;
   createdAt: string;
   editedAt: string | null;
-  /** #734 — the human author's display name, on history reads. */
+  /** #734 — the human author's display name, on history reads and live events. */
   authorName?: string;
 }
 
@@ -122,6 +122,31 @@ export async function postMessage(threadId: string, body: string): Promise<Discu
     `/discussions/threads/${encodeURIComponent(threadId)}/messages`,
     { method: "POST", body: { body } },
   );
+}
+
+function messagePath(threadId: string, messageId: string): string {
+  return `/discussions/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(
+    messageId,
+  )}`;
+}
+
+/** #734 — edit your own message. The server fans the edit out to the thread. */
+export async function editMessage(
+  threadId: string,
+  messageId: string,
+  body: string,
+): Promise<DiscussionMessage> {
+  return apiFetch<DiscussionMessage>(messagePath(threadId, messageId), {
+    method: "PATCH",
+    body: { body },
+  });
+}
+
+/** #734 — delete your own message. The server fans the deletion out to the thread. */
+export async function deleteMessage(threadId: string, messageId: string): Promise<void> {
+  await apiFetch<{ id: string; deleted: boolean }>(messagePath(threadId, messageId), {
+    method: "DELETE",
+  });
 }
 
 /** Promote a message into a tracked Requirement, preserving provenance. */

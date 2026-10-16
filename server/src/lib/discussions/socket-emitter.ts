@@ -3,9 +3,11 @@
  *
  * Fans out discussion events to the per-thread room `thread:{id}` (joined via
  * the authz-gated `subscribe:thread` handler from #480, so only thread members
- * ever receive these). Two events:
- *   - `message:new`    — a message was posted (human now; AI in Phase 3).
- *   - `message:stream` — an incremental chunk of a streaming AI reply.
+ * ever receive these). Four events:
+ *   - `message:new`     — a message was posted (human now; AI in Phase 3).
+ *   - `message:stream`  — an incremental chunk of a streaming AI reply.
+ *   - `message:updated` — an author edited their message (#734).
+ *   - `message:deleted` — an author deleted their message (#734).
  *
  * Like the other module emitters (`rag/socket-emitter.ts`,
  * `publishing/socket-emitter.ts`, `socket/job-events.ts`), this resolves the
@@ -15,6 +17,8 @@
  * hiccup never breaks the REST request that triggered the emit.
  */
 import type {
+  DiscussionMessageDeletedEvent,
+  DiscussionMessageUpdatedEvent,
   DiscussionMessageNewEvent,
   DiscussionMessagePayload,
   DiscussionMessageStreamEvent,
@@ -37,6 +41,8 @@ export interface DiscussionMessageRow {
   body: string;
   createdAt: Date | string;
   editedAt?: Date | string | null;
+  /** #734 — the human author's display name, when the caller read it. */
+  authorName?: string | null;
 }
 
 /** Normalize a Date|string|null into the wire ISO-string|null shape. */
@@ -58,6 +64,7 @@ export function toMessagePayload(row: DiscussionMessageRow): DiscussionMessagePa
     body: row.body,
     createdAt: toIso(row.createdAt) ?? new Date(0).toISOString(),
     editedAt: toIso(row.editedAt),
+    ...(row.authorName ? { authorName: row.authorName } : {}),
   };
 }
 
@@ -101,5 +108,39 @@ export function emitMessageStream(
     io.to(threadRoom(threadId)).emit("message:stream", payload);
   } catch (err) {
     log.warn("emitMessageStream failed", { threadId, error: (err as Error).message });
+  }
+}
+
+/**
+ * #734 — emit `message:updated` (an author edited their message) to
+ * `thread:{threadId}`. No-ops when IO is not registered; never throws.
+ */
+export function emitMessageUpdated(threadId: string, message: DiscussionMessageRow): void {
+  const io = getSocketServer();
+  if (!io) return;
+  try {
+    const payload: DiscussionMessageUpdatedEvent = {
+      threadId,
+      message: toMessagePayload(message),
+      ts: Date.now(),
+    };
+    io.to(threadRoom(threadId)).emit("message:updated", payload);
+  } catch (err) {
+    log.warn("emitMessageUpdated failed", { threadId, error: (err as Error).message });
+  }
+}
+
+/**
+ * #734 — emit `message:deleted` to `thread:{threadId}`. Carries the id only, so
+ * the deleted body never goes back over the wire. Never throws.
+ */
+export function emitMessageDeleted(threadId: string, messageId: string): void {
+  const io = getSocketServer();
+  if (!io) return;
+  try {
+    const payload: DiscussionMessageDeletedEvent = { threadId, messageId, ts: Date.now() };
+    io.to(threadRoom(threadId)).emit("message:deleted", payload);
+  } catch (err) {
+    log.warn("emitMessageDeleted failed", { threadId, error: (err as Error).message });
   }
 }

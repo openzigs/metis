@@ -1128,6 +1128,8 @@ The AI answers from **this project's own sources**, as the project chat does: it
 
 **Getting someone's attention (@mentions).** Mention a teammate by name (e.g. `@alex`) in a message and they receive an in-app **notification** — it appears in the bell/notification drawer (see §8.5) with a link straight back to the discussion, and arrives live if they're online. Only people who can open the project are notified — the same people who can open the thread (you can't ping someone outside the project), you're never notified for mentioning yourself, and repeated mentions of the same person in one thread are de-duplicated so nobody gets spammed.
 
+**Editing or deleting your message.** Hover one of your own messages and click **Edit** to change it in place, or **Delete** to remove it (you are asked to confirm). Everyone viewing the thread sees the change live, and an edited message is marked **(edited)**. You can only change your own messages; AI replies can't be edited. If an edit adds a new @mention, that person is notified, but people already mentioned are not notified again.
+
 **Turning a message into a requirement.** When the discussion lands on something worth tracking, hover any message and click **Promote to requirement**. A small form opens (title pre-filled from the message, plus type and priority); on save, METIS creates a tracked Requirement and links you straight to it, preserving where it came from (the source message and thread) in the audit trail. (A future enhancement — "Ask AI to draft acceptance criteria" — is noted in the form but not yet available.)
 
 **Configuring the thread.** Click **Settings** (top of the thread) to open the thread settings panel:

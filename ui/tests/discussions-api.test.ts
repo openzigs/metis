@@ -8,6 +8,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createThread,
+  deleteMessage,
+  editMessage,
   listThreads,
   listMessages,
   postMessage,
@@ -139,6 +141,28 @@ describe("discussions-api REST", () => {
     const r = await promoteMessage("t1", "m1", { title: "New req", type: "feature" });
     expect(r.requirementId).toBe("r1");
     expect(fetchMock.mock.calls.at(-1)![0]).toBe("/api/discussions/threads/t1/messages/m1/promote");
+  });
+
+  it("#734 — editMessage PATCHes the new body to the message endpoint", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ success: true, data: { id: "m1", body: "edited", authorKind: "human" } }),
+    );
+    const m = await editMessage("t1", "m 1", "edited");
+    expect(m.body).toBe("edited");
+    const [url, init] = fetchMock.mock.calls.at(-1)!;
+    expect(url).toBe("/api/discussions/threads/t1/messages/m%201");
+    expect((init as RequestInit).method).toBe("PATCH");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ body: "edited" });
+  });
+
+  it("#734 — deleteMessage DELETEs the message endpoint", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ success: true, data: { id: "m1", deleted: true } }),
+    );
+    await deleteMessage("t1", "m1");
+    const [url, init] = fetchMock.mock.calls.at(-1)!;
+    expect(url).toBe("/api/discussions/threads/t1/messages/m1");
+    expect((init as RequestInit).method).toBe("DELETE");
   });
 });
 

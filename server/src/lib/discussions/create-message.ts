@@ -22,13 +22,30 @@
  * Factoring this out means the bot handler does not bypass any invariant, member
  * check, or fan-out, and the two entry points can never drift apart.
  */
-import type { PrismaClient } from "@prisma/client";
+import type { DiscussionMessage, PrismaClient } from "@prisma/client";
 
 import { prisma as defaultPrisma } from "../prisma.js";
 import { buildHumanMessageData } from "./message-invariant.js";
 import { emitMessageNew } from "./socket-emitter.js";
 import { dispatchDiscussionMentions } from "./notify.js";
 import { scheduleMirrorToTeams } from "../teams/outbound-sync.js";
+
+/** #734 — a persisted message with its human author's display name, if any. */
+export type DiscussionMessageWithAuthorName = DiscussionMessage & { authorName?: string };
+
+/** #734 — read only the author's display name alongside a message row. */
+export const AUTHOR_NAME_INCLUDE = { authorUser: { select: { displayName: true } } } as const;
+
+/**
+ * Flatten the `authorUser` relation to an `authorName` field, so the user row
+ * itself never reaches a response or the socket.
+ */
+export function withAuthorName(
+  row: DiscussionMessage & { authorUser?: { displayName: string | null } | null },
+): DiscussionMessageWithAuthorName {
+  const { authorUser, ...message } = row;
+  return authorUser?.displayName ? { ...message, authorName: authorUser.displayName } : message;
+}
 
 /** Where the message came from — the #550 loop-guard discriminator. */
 export type MessageOrigin = "metis" | "teams";
@@ -69,12 +86,13 @@ function defaultDeps(): CreateHumanMessageDeps {
  * route via `canAccessThread`; the bot handler via `canAccessThread` against the
  * resolved sender). This function does NOT re-authorize.
  *
- * Returns the persisted message row.
+ * Returns the persisted message row, plus the author's display name when the
+ * user has one (#734).
  */
 export async function createHumanDiscussionMessage(
   input: CreateHumanMessageInput,
   overrides: Partial<CreateHumanMessageDeps> = {},
-): Promise<Awaited<ReturnType<PrismaClient["discussionMessage"]["create"]>>> {
+): Promise<DiscussionMessageWithAuthorName> {
   const deps: CreateHumanMessageDeps = { ...defaultDeps(), ...overrides };
   const origin: MessageOrigin = input.origin ?? "metis";
 
@@ -85,10 +103,14 @@ export async function createHumanDiscussionMessage(
     body: input.body,
   });
 
-  // 2. Persist, stamping the loop-guard origin.
-  const message = await deps.db.discussionMessage.create({
+  // 2. Persist, stamping the loop-guard origin. #734 — the author's display
+  // name is read with the row so the live `message:new` names a teammate
+  // instead of showing their raw user id; only the name is read.
+  const created = await deps.db.discussionMessage.create({
     data: { ...base, origin },
+    include: AUTHOR_NAME_INCLUDE,
   });
+  const message = withAuthorName(created);
 
   // 3. @mention notifications — fire-and-forget, member-only, never throws.
   deps.dispatchMentions({
