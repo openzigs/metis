@@ -43,9 +43,27 @@ describe("buildSynthesisPrompt — extracted requirement ids (#1033)", () => {
       ...promptInput,
       refinedRequirements: REFINED,
     });
-    expect(systemMessage).toMatch(/14\. Each requirement in the EXTRACTED REQUIREMENTS/);
+    // Straight after rule 9, the only conditional rule present: no gap.
+    expect(systemMessage).toMatch(
+      /\n9\. [^\n]*\n10\. Each requirement in the EXTRACTED REQUIREMENTS/,
+    );
     expect(systemMessage).toMatch(/Do not fold two listed requirements into one requirement/);
     expect(systemMessage).toContain('"structuredIds": ["<id from EXTRACTED REQUIREMENTS>"]');
+  });
+
+  it("numbers the id rule after the last conditional rule present", () => {
+    const withItems = buildSynthesisPrompt({
+      ...promptInput,
+      refinedRequirements: REFINED,
+      sourceItems: [{ id: "NR-1", title: "Imported" }],
+    }).systemMessage;
+    expect(withItems).toMatch(/\n13\. The IMPORTED ITEMS[^\n]*\n14\. Each requirement/);
+    const withPanel = buildSynthesisPrompt({
+      ...promptInput,
+      refinedRequirements: REFINED,
+      panelGuidance: true,
+    }).systemMessage;
+    expect(withPanel).toMatch(/\n11\. [^\n]*\n12\. Each requirement/);
   });
 
   it("names the clarified section once someone has answered", () => {
@@ -80,7 +98,7 @@ describe("buildSynthesisPrompt — extracted requirement ids (#1033)", () => {
     const withIds = buildSynthesisPrompt({ ...promptInput, refinedRequirements: REFINED });
     const stripped = withIds.systemMessage
       .split("\n")
-      .filter((l) => !l.startsWith("14. "))
+      .filter((l) => !l.startsWith("10. "))
       .join("\n")
       .replace(',\n      "structuredIds": ["<id from EXTRACTED REQUIREMENTS>"]', "");
     expect(stripped).toBe(plain.systemMessage);

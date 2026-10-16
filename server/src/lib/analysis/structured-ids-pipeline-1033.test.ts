@@ -105,6 +105,7 @@ vi.mock("./custom-agent-phase.js", () => ({
     results: [],
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
   })),
+  persistAgentPhaseResults: vi.fn(async () => undefined),
 }));
 vi.mock("../teams/notification-hooks.js", () => ({
   notifyAnalysisComplete: vi.fn(async () => undefined),

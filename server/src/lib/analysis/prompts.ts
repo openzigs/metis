@@ -739,6 +739,21 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
       ? escapeContext(input.alreadySynthesizedTitles.map((t) => `- ${t}`).join("\n"))
       : "";
 
+  // #1033 — rules 9 to 13 keep their fixed numbers (changing them would change
+  // every existing prompt); the id rule follows whichever of them is present.
+  const structuredIdsRuleNumber =
+    1 +
+    Math.max(
+      8,
+      ...[
+        [9, safeRefined],
+        [10, safeSchema],
+        [11, input.panelGuidance],
+        [12, safeAlready],
+        [13, safeSourceItems],
+      ].flatMap(([n, present]) => (present ? [n as number] : [])),
+    );
+
   const systemMessage = [
     `You are ${persona.name}, the reviewer/synthesis agent in METIS.`,
     persona.description,
@@ -767,8 +782,9 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
     safeAlready ? `12. ${SYNTHESIS_CONTINUATION_RULE}` : "",
     // #1063 — only on a run started from imported items.
     safeSourceItems ? `13. ${SYNTHESIS_SOURCE_ITEMS_RULE}` : "",
-    // #1033 — only when the extracted requirements carry ids.
-    refinedIds ? `14. ${SYNTHESIS_STRUCTURED_IDS_RULE}` : "",
+    // #1033 — only when the extracted requirements carry ids, numbered straight
+    // after the last rule present so the list has no gap before it.
+    refinedIds ? `${structuredIdsRuleNumber}. ${SYNTHESIS_STRUCTURED_IDS_RULE}` : "",
     "",
     "Respond with a single JSON object:",
     `{

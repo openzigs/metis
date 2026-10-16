@@ -306,4 +306,99 @@ describe("#1033 — criteria and code links are carried by requirement id", () =
     expect(row!.evidenceFindingIndexes).toHaveLength(50);
     expect(row!.acceptanceCriteria).toHaveLength(20);
   });
+  it("gives an approved requirement all of an item's criteria, its rejected sibling's included", () => {
+    // Pinned on purpose (PR #1187 review): the criteria are not split, so the
+    // rejected requirement's criterion rides on the approved one it was named with.
+    const out = buildApprovedRequirementSet({
+      structured: [BASIC_AUTH, EMPTY_CREDS, CONSTANT_TIME],
+      approvedIds: new Set(["REQ-C"]),
+      synthesis: { summary: "s", requirements: [CONSOLIDATED] },
+    });
+    expect(out.requirements).toHaveLength(1);
+    expect(out.requirements[0]!.acceptanceCriteria).toEqual([
+      CRIT_NO_HEADER,
+      CRIT_EMPTY,
+      CRIT_CONSTANT,
+    ]);
+    expect(out.requirements[0]!.evidenceFindingIndexes).toEqual([7, 8, 9]);
+  });
+
+  it("never title-matches an item that says it restates no listed requirement", () => {
+    const req = structured("REQ-1", "Export user feeds as OPML");
+    const out = buildApprovedRequirementSet({
+      structured: [req],
+      approvedIds: new Set(["REQ-1"]),
+      synthesis: {
+        summary: "s",
+        requirements: [
+          synth("Export user feeds as OPML", {
+            evidenceFindingIndexes: [3],
+            acceptanceCriteria: ["The export is valid OPML."],
+            structuredIds: [],
+          }),
+        ],
+      },
+    });
+    expect(out.requirements[0]!.evidenceFindingIndexes).toEqual([]);
+    expect(out.requirements[0]!.acceptanceCriteria).toEqual([]);
+  });
+});
+
+describe("#1033 — the title fallback refuses a tie instead of breaking it by order", () => {
+  // Neither title is the item's, and both are wholly contained in its title
+  // and its body: level on all three #1031 tiers.
+  const markRead = structured("REQ-5", "Mark entries read");
+  const markOlder = structured("REQ-6", "Mark older entries read");
+  const item = synth("Mark older entries as read", {
+    body: "Mark every entry older than the selected one as read.",
+    evidenceFindingIndexes: [4],
+    acceptanceCriteria: ["Entries older than the selected one are marked read."],
+  });
+
+  it("gives an item two requirements match equally well to neither, in either order", () => {
+    expect(matchSynthesized([markRead, markOlder], [item]).size).toBe(0);
+    expect(matchSynthesized([markOlder, markRead], [item]).size).toBe(0);
+  });
+
+  it("lets the one requirement that matches an item take it", () => {
+    const other = structured("REQ-7", "Refresh feeds via -refresh-feeds option");
+    const matches = matchSynthesized([other, markOlder], [item]);
+    expect(matches.get("REQ-6")).toBe(item);
+    expect(matches.has("REQ-7")).toBe(false);
+  });
+
+  it("breaks a containment tie on the #1031 tiers before refusing it", () => {
+    // Same containment for both; the item's title IS REQ-6's, so REQ-6 takes it.
+    const exact = synth("Mark older entries read", {
+      body: "Mark every entry older than the selected one as read.",
+    });
+    for (const reqs of [
+      [markRead, markOlder],
+      [markOlder, markRead],
+    ]) {
+      const matches = matchSynthesized(reqs, [exact]);
+      expect(matches.get("REQ-6")).toBe(exact);
+      expect(matches.has("REQ-5")).toBe(false);
+    }
+  });
+
+  it("gives a requirement two items match equally well neither, in either order", () => {
+    const req = structured("REQ-1", "Flush sessions");
+    const a = synth("Flush sessions on logout", { evidenceFindingIndexes: [1] });
+    const b = synth("Flush sessions on password reset", { evidenceFindingIndexes: [2] });
+    expect(matchSynthesized([req], [a, b]).size).toBe(0);
+    expect(matchSynthesized([req], [b, a]).size).toBe(0);
+  });
+
+  it("still lets a tied item's requirement take a lower-scoring item that is clearly its own", () => {
+    const other = synth("Mark selected entry as read", {
+      body: "Only the selected entry.",
+      evidenceFindingIndexes: [9],
+    });
+    // Tied at 1.0 on `item`, so neither takes it. On `other` REQ-5 scores 2/3
+    // and REQ-6 2/4: no tie, so REQ-5 takes it and REQ-6 stays empty.
+    const matches = matchSynthesized([markRead, markOlder], [item, other]);
+    expect(matches.get("REQ-5")).toBe(other);
+    expect(matches.has("REQ-6")).toBe(false);
+  });
 });

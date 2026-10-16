@@ -44,21 +44,36 @@ const MAX_CRITERIA = 20;
  *
  * Issue #1033 — by id first. Synthesis names the structured requirements each
  * of its items restates (`structuredIds`). An item may consolidate several of
- * them, and then EVERY requirement it names receives its criteria and evidence:
- * joining on title alone gave such an item to the best-matching requirement and
- * left the others promoted with no criteria and no code link (#706 runs 6, 9).
- * The criteria are not split between them — on the run-6 text no word-overlap
- * score put each criterion on its own requirement, and a wrong criterion reads
- * as authored where a shared one is at least the model's own grouping. Several
- * items naming one requirement are joined into one. An item that names an id
- * of this list belongs to that id alone, even when it names only a rejected or
- * pending requirement, so it is never lent to another by title.
+ * them, and then EVERY approved requirement it names receives its criteria and
+ * evidence: joining on title alone gave such an item to the best-matching
+ * requirement and left the others promoted with no criteria and no code link
+ * (#706 runs 6, 9). Several items naming one requirement are joined into one.
+ *
+ * The criteria are not split between the requirements an item names, and that
+ * includes a rejected or pending one it names alongside an approved one: the
+ * approved requirement receives ALL of the item's criteria, the ones written
+ * for its rejected sibling among them. Splitting needs word overlap to say
+ * which criterion is whose, and on the run-6 text it could not — siblings share
+ * their domain words, so no criterion is ever clearly one requirement's alone,
+ * and a looser rule put criteria on the wrong requirement, which reads as
+ * authored where a shared one is at least the model's own grouping.
+ *
+ * An item that names any id of this list, or says it names none
+ * (`structuredIds: []`), is never matched to another requirement by title: it
+ * goes only to the approved requirements it names, and to none when it names
+ * only rejected or pending ones.
  *
  * The title join is the fallback, for a requirement no item names and over the
- * items that name no id of the list (output from before #1033, a degraded run,
- * a list re-extracted since): one-to-one, best score first, so a guess never
- * puts the same evidence on two rows. `structured` is the whole reviewed list,
- * whose ids are the ones an item can name; it defaults to `approved`.
+ * items that did not say (`structuredIds` absent: output from before #1033, a
+ * degraded run) or name only ids no longer in the list (a list re-extracted
+ * since): one-to-one, best score first, so a guess never puts the same evidence
+ * on two rows. Candidates are ranked by the #1031 tiers — the same title, then
+ * the containment score, then how much of the title is in the item's title —
+ * and a tie on all three is refused, as #1031 refuses it for clarification
+ * answers: an item two requirements match equally well goes to neither, and a
+ * requirement two items match equally well takes neither. List order never
+ * decides. `structured` is the whole reviewed list, whose ids are the ones an
+ * item can name; it defaults to `approved`.
  *
  * Issue #1129 — exported so the ticked/added split reads the same #1063
  * `sourceIds` this join carries onto the promoted row (and so onto the
@@ -70,7 +85,13 @@ export function matchSynthesized(
   structured: ReadonlyArray<Pick<StructuredRequirement, "id">> = approved,
 ): Map<string, SynthesizedRequirement> {
   const listIds = new Set(structured.map((r) => r.id));
-  const namesListId = synthesized.map((s) => (s.structuredIds ?? []).some((id) => listIds.has(id)));
+  // Absent: the item did not say. `[]`: it says it restates no listed one.
+  // Only ids no longer in the list (a re-extraction) count as not saying.
+  const titlePool = synthesized.map(
+    (s) =>
+      s.structuredIds === undefined ||
+      (s.structuredIds.length > 0 && !s.structuredIds.some((id) => listIds.has(id))),
+  );
 
   const byStructuredId = new Map<string, SynthesizedRequirement>();
   for (const req of approved) {
@@ -79,29 +100,73 @@ export function matchSynthesized(
   }
 
   const synthTokens = synthesized.map((s) => significantTokens(`${s.title} ${s.body}`));
-  const candidates: Array<{ structuredId: string; synthIdx: number; score: number }> = [];
+  const synthTitleTokens = synthesized.map((s) => significantTokens(s.title));
+  const synthTitleKeys = synthesized.map((s) => titleKey(s.title));
+  const candidates: Array<{ structuredId: string; synthIdx: number; rank: string }> = [];
   for (const req of approved) {
     if (byStructuredId.has(req.id)) continue;
     const needle = significantTokens(req.title);
+    const key = titleKey(req.title);
     synthTokens.forEach((tokens, synthIdx) => {
-      if (namesListId[synthIdx]) return;
+      if (!titlePool[synthIdx]) return;
       const score = containmentScore(needle, tokens);
-      if (score >= ATTRIBUTION_THRESHOLD) {
-        candidates.push({ structuredId: req.id, synthIdx, score });
-      }
+      if (score < ATTRIBUTION_THRESHOLD) return;
+      // The #1031 tiers, best first: the same title; then the containment
+      // score; then how much of the title is in the item's TITLE, not its body.
+      const rank = [
+        synthTitleKeys[synthIdx] === key ? 1 : 0,
+        score,
+        containmentScore(needle, synthTitleTokens[synthIdx]!),
+      ];
+      candidates.push({ structuredId: req.id, synthIdx, rank: rankKey(rank) });
     });
   }
-  candidates.sort((a, b) => b.score - a.score);
-
+  // Best score first, one level at a time. Within a level, an item two live
+  // requirements both reach is withheld from both, and a requirement two live
+  // items both reach takes neither — a tie is never broken by list order.
   const usedSynth = new Set<number>();
-  for (const c of candidates) {
-    if (byStructuredId.has(c.structuredId) || usedSynth.has(c.synthIdx)) continue;
-    const match = synthesized[c.synthIdx];
-    if (!match) continue;
-    byStructuredId.set(c.structuredId, match);
-    usedSynth.add(c.synthIdx);
+  const refused = new Set<string>();
+  const levels = [...new Set(candidates.map((c) => c.rank))].sort().reverse();
+  for (const level of levels) {
+    const live = candidates.filter(
+      (c) =>
+        c.rank === level &&
+        !byStructuredId.has(c.structuredId) &&
+        !refused.has(c.structuredId) &&
+        !usedSynth.has(c.synthIdx),
+    );
+    const perItem = countBy(live, (c) => c.synthIdx);
+    const perRequirement = countBy(live, (c) => c.structuredId);
+    for (const c of live) {
+      if (perItem.get(c.synthIdx)! > 1) usedSynth.add(c.synthIdx);
+      if (perRequirement.get(c.structuredId)! > 1) refused.add(c.structuredId);
+    }
+    for (const c of live) {
+      if (usedSynth.has(c.synthIdx) || refused.has(c.structuredId)) continue;
+      byStructuredId.set(c.structuredId, synthesized[c.synthIdx]!);
+      usedSynth.add(c.synthIdx);
+    }
   }
   return byStructuredId;
+}
+
+/** Case- and whitespace-insensitive title, for the same-title tier. */
+function titleKey(title: string): string {
+  return title.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * A rank as a string that sorts like the tuple: each part is in [0, 1], fixed
+ * to 6 places, so a lexicographic sort is a numeric one, tier by tier.
+ */
+function rankKey(rank: readonly number[]): string {
+  return rank.map((n) => n.toFixed(6)).join("|");
+}
+
+function countBy<T, K>(items: readonly T[], key: (item: T) => K): Map<K, number> {
+  const counts = new Map<K, number>();
+  for (const item of items) counts.set(key(item), (counts.get(key(item)) ?? 0) + 1);
+  return counts;
 }
 
 /** Several items naming one requirement, joined: lists united in order, scalars from the first. */
