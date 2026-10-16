@@ -169,7 +169,7 @@ test.describe("Epic #776 — Inbound Importers", () => {
 
     await po.runNowButton.click();
 
-    // The run badge surfaces "+created/~updated" — exactly 5 created, 0 updated.
+    // The run badge surfaces "N new · M updated" — exactly 5 created, 0 updated.
     await expect(po.runCountBadge(5, 0)).toBeVisible();
   });
 

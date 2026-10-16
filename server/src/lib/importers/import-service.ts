@@ -34,6 +34,8 @@ import { createImporter, sourceUsesToken, type ImporterDeps } from "./registry.j
 import type { JiraSearchClient } from "./jira-importer.js";
 import { runImport, type RequirementStore } from "./base-importer.js";
 import type { ImporterFetchContext, MappedRequirement } from "./types.js";
+import { parseSourcePending } from "./source-sync.js";
+import { parseRequirementLabels } from "../analysis/requirement-labels.js";
 import { audit } from "../audit/audit-service.js";
 import {
   RequirementVersionError,
@@ -154,6 +156,9 @@ type ImportRunRow = {
   createdCount: number;
   updatedCount: number;
   skippedCount: number;
+  /** #1220 — absent on rows written by test fakes that predate the columns. */
+  keptLocalCount?: number;
+  divergedCount?: number;
   totalFetched: number;
   errorMessage: string | null;
   startedAt: Date | null;
@@ -670,6 +675,8 @@ export class ImportService {
           createdCount: result.created,
           updatedCount: result.updated,
           skippedCount: result.skipped,
+          keptLocalCount: result.keptLocal,
+          divergedCount: result.diverged,
           totalFetched: result.total,
           completedAt: this.now(),
         },
@@ -684,6 +691,8 @@ export class ImportService {
         importSourceId,
         created: result.created,
         updated: result.updated,
+        keptLocal: result.keptLocal,
+        diverged: result.diverged,
         skipped: result.skipped,
       });
       // Issue #424 — terminal success drives the success toast (#423 useJobToast)
@@ -692,7 +701,7 @@ export class ImportService {
         "import-sync",
         run.id,
         row.projectId,
-        `Imported ${result.created} new, ${result.updated} updated from ${row.label}`,
+        importRunSummary(result, row.label),
       );
       return toRunView(completed);
     } catch (err) {
@@ -765,8 +774,34 @@ export class ImportService {
       async findByExternal(projectId, externalSource, externalId) {
         const existing = await prisma.requirement.findFirst({
           where: { projectId, externalSource, externalId, deletedAt: null },
+          select: {
+            id: true,
+            title: true,
+            body: true,
+            type: true,
+            priority: true,
+            labels: true,
+            sourceFingerprint: true,
+            sourcePending: true,
+            externalUrl: true,
+            importSourceId: true,
+          },
         });
-        return existing ? { id: existing.id } : null;
+        if (!existing) return null;
+        return {
+          id: existing.id,
+          local: {
+            title: existing.title,
+            body: existing.body,
+            type: existing.type,
+            priority: existing.priority,
+            labels: parseRequirementLabels(existing.labels),
+          },
+          sourceFingerprint: existing.sourceFingerprint ?? null,
+          sourcePending: parseSourcePending(existing.sourcePending),
+          externalUrl: existing.externalUrl ?? null,
+          importSourceId: existing.importSourceId ?? null,
+        };
       },
       async create(input) {
         const created = await prisma.requirement.create({
@@ -782,6 +817,7 @@ export class ImportService {
             externalId: input.externalId,
             externalUrl: input.externalUrl,
             importSourceId: input.importSourceId,
+            sourceFingerprint: input.sourceFingerprint,
           },
         });
         return { id: created.id };
@@ -818,6 +854,9 @@ export class ImportService {
             untrackedData: {
               externalUrl: input.externalUrl,
               importSourceId: input.importSourceId,
+              // #1220 — the row now equals the source it was synced to.
+              sourceFingerprint: input.sourceFingerprint,
+              sourcePending: null,
             },
             actorId: null,
             reason: IMPORT_RESYNC_VERSION_REASON,
@@ -832,6 +871,26 @@ export class ImportService {
           return { id, skipped: true };
         }
         return { id };
+      },
+      // #1220 — sync-state columns only: untracked, so `version` (and with it
+      // every review pinned to this requirement) is untouched.
+      async recordSourceSync(id, write) {
+        await prisma.requirement.updateMany({
+          where: { id, deletedAt: null },
+          // Named untracked keys only (the #1162 write guard). Prisma leaves a
+          // column alone when its value is `undefined`.
+          data: {
+            sourceFingerprint: write.sourceFingerprint,
+            sourcePending:
+              write.sourcePending === undefined
+                ? undefined
+                : write.sourcePending === null
+                  ? null
+                  : JSON.stringify(write.sourcePending),
+            externalUrl: write.externalUrl,
+            importSourceId: write.importSourceId,
+          },
+        });
       },
       async setParent(childId: string, parentId: string) {
         await prisma.requirement.update({ where: { id: childId }, data: { parentId } });
@@ -891,6 +950,23 @@ function toPreview(m: MappedRequirement): MappedRequirementPreview {
   };
 }
 
+/**
+ * Issue #1220 — the run's completion message: what was created and updated,
+ * and — only when there were any — the analyst edits it kept and the rows it
+ * left diverged from their source.
+ */
+export function importRunSummary(
+  result: { created: number; updated: number; keptLocal: number; diverged: number },
+  label: string,
+): string {
+  const parts = [`${result.created} new`, `${result.updated} updated`];
+  if (result.keptLocal > 0) {
+    parts.push(`kept ${result.keptLocal} local ${result.keptLocal === 1 ? "edit" : "edits"}`);
+  }
+  if (result.diverged > 0) parts.push(`${result.diverged} diverged from source`);
+  return `Imported ${parts.join(", ")} from ${label}`;
+}
+
 function toRunView(row: ImportRunRow): ImportRunView {
   return {
     id: row.id,
@@ -902,6 +978,8 @@ function toRunView(row: ImportRunRow): ImportRunView {
     createdCount: row.createdCount,
     updatedCount: row.updatedCount,
     skippedCount: row.skippedCount,
+    keptLocalCount: row.keptLocalCount ?? 0,
+    divergedCount: row.divergedCount ?? 0,
     totalFetched: row.totalFetched,
     errorMessage: row.errorMessage,
     startedAt: row.startedAt ? row.startedAt.toISOString() : null,

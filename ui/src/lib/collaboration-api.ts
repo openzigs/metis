@@ -140,6 +140,35 @@ export const assignmentApi = {
   },
 };
 
+/** Issue #1220 — the answer to an imported requirement diverged from its source. */
+export interface ResolveSourceDivergenceInput {
+  choice: "source" | "local";
+  /** `sourceDivergence.sourceFingerprint` from the snapshot the card showed. */
+  sourceFingerprint: string;
+  /** The version the card showed; checked when taking the source. */
+  version?: number;
+}
+
+export interface ResolveSourceDivergenceResult {
+  id: string;
+  choice: "source" | "local";
+  version: number;
+  changed: boolean;
+}
+
+export const requirementSourceApi = {
+  /** "Take the source version" / "Keep mine". */
+  async resolveDivergence(
+    requirementId: string,
+    input: ResolveSourceDivergenceInput,
+  ): Promise<ResolveSourceDivergenceResult> {
+    return apiFetch<ResolveSourceDivergenceResult>(
+      `/requirements/${encodeURIComponent(requirementId)}/source-divergence`,
+      { method: "POST", body: input },
+    );
+  },
+};
+
 export const requirementUpdateApi = {
   /** Update a requirement with optimistic-lock version. */
   async update(

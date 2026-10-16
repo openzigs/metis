@@ -42,6 +42,8 @@ export function registerImportTaskHandlers(
         status: run.status,
         created: run.createdCount,
         updated: run.updatedCount,
+        keptLocal: run.keptLocalCount,
+        diverged: run.divergedCount,
         skipped: run.skippedCount,
       };
     },

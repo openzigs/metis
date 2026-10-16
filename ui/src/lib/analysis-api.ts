@@ -29,6 +29,7 @@ import type {
   RequirementDiff,
   SpecKitHandoffRecord,
   LedgerTokens,
+  RequirementSourceDivergence,
 } from "@metis/shared";
 
 export type {
@@ -243,6 +244,11 @@ export interface RequirementSummary {
    * not recorded, and the card says nothing.
    */
   sourceItems?: AnalysisSourceRequirement[] | null;
+  /**
+   * Issue #1220 — the source's newer content when re-sync left this imported
+   * requirement diverged from it. Null or absent: not diverged.
+   */
+  sourceDivergence?: RequirementSourceDivergence | null;
 }
 
 export interface AnalysisListItem {

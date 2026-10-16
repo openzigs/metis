@@ -44,6 +44,8 @@ export interface ImportRunView {
   createdCount: number;
   updatedCount: number;
   skippedCount: number;
+  keptLocalCount: number;
+  divergedCount: number;
   totalFetched: number;
   errorMessage: string | null;
   startedAt: string | null;
@@ -117,6 +119,8 @@ export function buildRun(
     createdCount: 0,
     updatedCount: 0,
     skippedCount: 0,
+    keptLocalCount: 0,
+    divergedCount: 0,
     totalFetched: 0,
     errorMessage: null,
     startedAt: now,

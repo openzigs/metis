@@ -1,6 +1,7 @@
 /**
  * Epic #770 — Requirement version-history API client (history, restore, export).
  */
+import type { RequirementSourceDecision } from "@metis/shared";
 import { ApiError, apiFetch, streamFetch } from "@/lib/api-client";
 
 // ---- Types ------------------------------------------------------------------
@@ -42,6 +43,11 @@ export interface RequirementHistoryPage {
     snapshot: RequirementVersionSnapshot;
     source?: "reversed" | "current";
   };
+  /**
+   * #1220 — the analyst's last answer to an import-source divergence. "Keep
+   * mine" changes no content, so it has no version row: this is its record.
+   */
+  sourceDecision?: RequirementSourceDecision | null;
 }
 
 export interface RestoreResult {

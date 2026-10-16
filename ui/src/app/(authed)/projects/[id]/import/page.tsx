@@ -37,6 +37,7 @@ import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/ui/page-header";
 import { VaultPicker } from "@/components/connectors/vault-picker";
 import { vaultRefHint, VAULT_REF_EXAMPLE } from "@/lib/vault-ref";
+import { importRunSummary } from "@/lib/import-run-summary";
 
 const SOURCE_LABELS: Record<ImportSourceKind, string> = {
   github: "GitHub",
@@ -545,8 +546,12 @@ function ImportHistory({
               </div>
               <div className="flex items-center gap-2">
                 {s.lastRun && (
-                  <Badge variant={s.lastRun.status === "failed" ? "destructive" : "outline"}>
-                    +{s.lastRun.createdCount}/~{s.lastRun.updatedCount}
+                  // #1220 — say what re-sync kept and left diverged, not just +/~.
+                  <Badge
+                    variant={s.lastRun.status === "failed" ? "destructive" : "outline"}
+                    data-testid={`import-run-summary-${s.id}`}
+                  >
+                    {importRunSummary(s.lastRun)}
                   </Badge>
                 )}
                 <Button

@@ -75,6 +75,7 @@ import {
   resolveSourceItems,
   serializeSourceCandidateIds,
 } from "./source-items.js";
+import { toSourceDivergence } from "../importers/source-sync.js";
 import {
   RequirementVersionError,
   updateRequirementWithHistory,
@@ -823,6 +824,9 @@ function reviewedRequirementWhere(
       // after a later system write appends a row of its own.
       { versions: { some: { actorId: { not: null } } } },
       { AND: [{ version: { gt: 0 } }, { versions: { none: { version: 1 } } }] },
+      // Issue #1220 — a person answered an import divergence. "Keep mine" writes
+      // no version row (the text is unchanged), so this is its only trace here.
+      { sourceDecisionActorId: { not: null } },
       { outgoingLinks: { some: {} } },
       { incomingLinks: { some: {} } },
       { dataMappings: { some: { deletedAt: null } } },
@@ -1778,6 +1782,8 @@ interface AnalysisRowWithIncludes {
     acceptanceCriteria?: string | null;
     /** Issue #1063 — JSON array of NR ids; optional so earlier fixtures still type. */
     sourceCandidateIds?: string | null;
+    /** Issue #1220 — JSON of the source's newer content while diverged. */
+    sourcePending?: string | null;
     version: number;
   }>;
 }
@@ -1904,6 +1910,9 @@ function toSnapshot(
       // the analysis added it, null when not recorded. Title and URL come from
       // the analysis record, never from the model.
       sourceItems: resolveSourceItems(r.sourceCandidateIds, runSourceRequirements),
+      // Issue #1220 — the source's newer content when re-sync left this
+      // imported requirement diverged from it; null otherwise.
+      sourceDivergence: toSourceDivergence(r.sourcePending),
       // Epic #34 (AC2) — surface the optimistic-lock version so the edit form
       // can submit the version it rendered and reliably 409 on a stale form.
       version: r.version,
