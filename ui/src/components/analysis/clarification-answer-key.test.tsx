@@ -71,11 +71,7 @@ describe("#1031 — the Questions panel submits each answer under its own questi
   ])("keys the answer to R6's question when %s", async (_label, questions) => {
     renderWith(questions);
 
-    const box = screen
-      .getByText(olderThan.question)
-      .closest("div")!
-      .querySelector("input") as HTMLInputElement;
-    fireEvent.change(box, { target: { value: "7 days." } });
+    fireEvent.change(screen.getByLabelText(olderThan.question), { target: { value: "7 days." } });
     fireEvent.click(screen.getByRole("button", { name: /submit answers/i }));
 
     await waitFor(() => expect(submitClarifyAnswers).toHaveBeenCalled());

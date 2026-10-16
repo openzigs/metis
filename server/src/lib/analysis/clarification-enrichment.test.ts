@@ -25,6 +25,8 @@ const store = {
   metadata: null as string | null,
   dialogState: null as string | null,
   dialogThrows: false,
+  // #1031 — whether the analysis has requirement approvals (promoted rows).
+  hasApprovals: false,
 };
 
 vi.mock("../prisma.js", () => ({
@@ -48,6 +50,9 @@ vi.mock("../prisma.js", () => ({
         store.metadata = data.metadata;
         return { id: ANALYSIS_ID };
       }),
+    },
+    approvalRequest: {
+      findFirst: vi.fn(async () => (store.hasApprovals ? { id: "ap_1" } : null)),
     },
     clarificationDialogState: {
       findUnique: vi.fn(async () => {
@@ -596,7 +601,10 @@ describe("#1031 — an answer goes to its own requirement, never the neighbour",
     expect(out.unattributed).toHaveLength(4);
   });
 
-  it("still finds the row by its title when the row's title was edited after promotion", () => {
+  it("leaves the edited row to R6 once R5 has taken its own row by exact title", () => {
+    // R5's exact title claims R5's row first, so R6 is left with one open
+    // candidate. This pins the one-row-per-requirement claim, not the title tier
+    // (that is the next test).
     const out = attributeAnswers({
       answered: olderThan,
       structured: [R5, R6],
@@ -605,16 +613,166 @@ describe("#1031 — an answer goes to its own requirement, never the neighbour",
     expect([...out.byRequirementId.keys()]).toEqual(["row-REQ-6"]);
   });
 
-  it("writes the block onto R6's row and not R5's, end to end", async () => {
-    store.dialogThrows = false;
-    store.dialogState = JSON.stringify({
+  it("tier 3 — prefers the row whose TITLE holds the words over one whose body does", () => {
+    // R5 is not in the list to claim its row, and R6's row title was edited, so
+    // neither row is an exact title: both hold every R6 token in title + body,
+    // and only the title-alone score separates them.
+    const out = attributeAnswers({
+      answered: olderThan,
+      structured: [R6],
+      requirements: [rowOf(R5), { ...rowOf(R6), title: "Mark all as read older than N days" }],
+    });
+    expect([...out.byRequirementId.keys()]).toEqual(["row-REQ-6"]);
+    expect(out.unattributed).toEqual([]);
+  });
+
+  it("tier 1 — prefers the row whose title IS the requirement's title", () => {
+    const S = structured("REQ-1", "Export orders to CSV");
+    const out = attributeAnswers({
+      answered: [answer({ requirementId: "REQ-1" })],
+      structured: [S],
+      requirements: [
+        { id: "row-reworded", title: "CSV: export orders", body: "" },
+        { id: "row-exact", title: "Export orders to CSV", body: "" },
+      ],
+    });
+    expect([...out.byRequirementId.keys()]).toEqual(["row-exact"]);
+  });
+
+  it("an exact title matches even when the title has no word long enough to score", () => {
+    const S = structured("REQ-1", "Go to it");
+    const out = attributeAnswers({
+      answered: [answer({ requirementId: "REQ-1" })],
+      structured: [S],
+      requirements: [{ id: "row-go", title: "Go to it", body: "" }],
+    });
+    expect([...out.byRequirementId.keys()]).toEqual(["row-go"]);
+  });
+
+  it("tells two identically titled requirements apart by the description promotion copied", () => {
+    const orders = withBody(structured("REQ-1", "Export data"), "Export orders as CSV.");
+    const customers = withBody(structured("REQ-2", "Export data"), "Export customers as JSON.");
+    const out = attributeAnswers({
+      answered: [
+        answer({ questionId: "q1", requirementId: "REQ-1" }),
+        answer({ questionId: "q2", requirementId: "REQ-2" }),
+      ],
+      structured: [orders, customers],
+      requirements: [
+        { id: "row-customers", title: "Export data", body: "Export customers as JSON." },
+        {
+          id: "row-orders",
+          title: "Export data",
+          // An earlier pass already appended our block; it is ignored here.
+          body: applyClarificationBlock("Export orders as CSV.", [answer()]),
+        },
+      ],
+    });
+    expect(out.byRequirementId.get("row-orders")?.map((a) => a.questionId)).toEqual(["q1"]);
+    expect(out.byRequirementId.get("row-customers")?.map((a) => a.questionId)).toEqual(["q2"]);
+  });
+
+  it("a requirement level on two rows blocks only itself — its neighbour still gets its row", () => {
+    const S1 = structured("REQ-1", "Bulk read");
+    const S2 = structured("REQ-2", "Bulk read archive purge");
+    const out = attributeAnswers({
+      answered: [
+        answer({ questionId: "q1", requirementId: "REQ-1" }),
+        answer({ questionId: "q2", requirementId: "REQ-2" }),
+      ],
+      structured: [S1, S2],
+      requirements: [
+        { id: "row-1", title: "Bulk read toggle", body: "" },
+        { id: "row-2", title: "Bulk read archive", body: "Purge." },
+      ],
+    });
+    expect([...out.byRequirementId.entries()].map(([k, v]) => [k, v[0]!.questionId])).toEqual([
+      ["row-2", "q2"],
+    ]);
+    expect(out.unattributed.map((a) => a.questionId)).toEqual(["q1"]);
+  });
+
+  it("a row two requirements are level on goes to neither, nor to a weaker third", () => {
+    const S1 = structured("REQ-1", "Export orders");
+    const S2 = structured("REQ-2", "Export of orders");
+    const S3 = structured("REQ-3", "Export orders invoices refunds");
+    const out = attributeAnswers({
+      answered: [answer({ questionId: "q3", requirementId: "REQ-3" })],
+      structured: [S1, S2, S3],
+      requirements: [{ id: "row-r", title: "Orders export", body: "Invoices and refunds." }],
+    });
+    expect(out.byRequirementId.size).toBe(0);
+    expect(out.unattributed).toHaveLength(1);
+  });
+
+  describe("synthesized rows (no approval checkpoint)", () => {
+    const S5 = structured("REQ-5", "Export orders to CSV");
+    const S6 = structured("REQ-6", "Export invoices to CSV");
+    const consolidated = {
+      id: "row-csv",
+      title: "CSV export",
+      body: "Export orders and invoices to CSV files.",
+    };
+    const both = [
+      answer({ questionId: "q5", requirementId: "REQ-5" }),
+      answer({ questionId: "q6", requirementId: "REQ-6" }),
+    ];
+
+    it("puts both requirements' answers on the one row synthesis wrote for them", () => {
+      const out = attributeAnswers({
+        answered: both,
+        structured: [S5, S6],
+        requirements: [consolidated],
+        rowOrigin: "synthesized",
+      });
+      expect(out.byRequirementId.get("row-csv")?.map((a) => a.questionId)).toEqual(["q5", "q6"]);
+      expect(out.unattributed).toEqual([]);
+    });
+
+    it("keeps promoted rows one-to-one: the same shape is refused there", () => {
+      const out = attributeAnswers({
+        answered: both,
+        structured: [S5, S6],
+        requirements: [consolidated],
+        rowOrigin: "promoted",
+      });
+      expect(out.byRequirementId.size).toBe(0);
+      expect(out.unattributed).toHaveLength(2);
+    });
+
+    it("still files R6's answers under R6, not the neighbour that comes first", () => {
+      const out = attributeAnswers({
+        answered: olderThan,
+        structured: [R5, R6],
+        requirements: [rowOf(R5), rowOf(R6)],
+        rowOrigin: "synthesized",
+      });
+      expect([...out.byRequirementId.keys()]).toEqual(["row-REQ-6"]);
+    });
+
+    it("still refuses to guess between two rows the title fits equally", () => {
+      const out = attributeAnswers({
+        answered: olderThan,
+        structured: [R6],
+        requirements: [
+          { id: "row-a", title: "Bulk read actions", body: "Mark entries older than one as read." },
+          { id: "row-b", title: "Bulk read actions", body: "Mark entries older than a date read." },
+        ],
+        rowOrigin: "synthesized",
+      });
+      expect(out.byRequirementId.size).toBe(0);
+    });
+  });
+
+  const dialogFor = (answers: ReturnType<typeof answer>[]): string =>
+    JSON.stringify({
       analysisId: ANALYSIS_ID,
       currentRound: 1,
       maxRounds: 3,
       rounds: [
         {
           round: 1,
-          questions: olderThan.map((a) => ({
+          questions: answers.map((a) => ({
             id: a.questionId,
             requirementId: a.requirementId,
             ambiguityField: "age",
@@ -629,6 +787,11 @@ describe("#1031 — an answer goes to its own requirement, never the neighbour",
       escalatedToSonnet: false,
       completed: false,
     } satisfies ClarificationState);
+
+  it("writes the block onto R6's row and not R5's, end to end (promoted rows)", async () => {
+    store.dialogThrows = false;
+    store.hasApprovals = true;
+    store.dialogState = dialogFor(olderThan);
     store.metadata = JSON.stringify({
       structuredRequirements: { requirements: [R5, R6], totalAmbiguities: 0 },
     });
@@ -641,6 +804,48 @@ describe("#1031 — an answer goes to its own requirement, never the neighbour",
     expect(store.requirements[0]!.body).not.toContain(CLARIFICATIONS_START);
     expect(store.requirements[1]!.body).toContain("7 days by default.");
     expect(out?.answers?.map((a) => a.requirementTitle)).toEqual([R6.title, R6.title, R6.title]);
+  });
+
+  it("an analysis with approvals leaves a rejected R6's answers off R5's row, end to end", async () => {
+    // Without the approval read this is the synthesized path, where R5's row is
+    // R6's unique best and the answers would be misfiled onto it.
+    store.dialogThrows = false;
+    store.hasApprovals = true;
+    store.dialogState = dialogFor(olderThan);
+    store.metadata = JSON.stringify({
+      structuredRequirements: { requirements: [R5, R6], totalAmbiguities: 0 },
+    });
+    store.requirements = [{ ...rowOf(R5), analysisId: ANALYSIS_ID, deletedAt: null }];
+    const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+    expect(store.requirements[0]!.body).not.toContain(CLARIFICATIONS_START);
+    expect(out).toMatchObject({ appliedCount: 0, unattributedCount: 3 });
+  });
+
+  it("an analysis without approvals writes two requirements' answers onto their shared row", async () => {
+    store.dialogThrows = false;
+    store.hasApprovals = false;
+    const S5 = structured("REQ-5", "Export orders to CSV");
+    const S6 = structured("REQ-6", "Export invoices to CSV");
+    store.dialogState = dialogFor([
+      answer({ questionId: "q5", requirementId: "REQ-5", answer: "Daily." }),
+      answer({ questionId: "q6", requirementId: "REQ-6", answer: "Monthly." }),
+    ]);
+    store.metadata = JSON.stringify({
+      structuredRequirements: { requirements: [S5, S6], totalAmbiguities: 0 },
+    });
+    store.requirements = [
+      {
+        id: "row-csv",
+        analysisId: ANALYSIS_ID,
+        title: "CSV export",
+        body: "Export orders and invoices to CSV files.",
+        deletedAt: null,
+      },
+    ];
+    const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+    expect(store.requirements[0]!.body).toContain("Daily.");
+    expect(store.requirements[0]!.body).toContain("Monthly.");
+    expect(out).toMatchObject({ appliedCount: 2, unattributedCount: 0 });
   });
 });
 
@@ -672,6 +877,7 @@ describe("applyClarificationsToRequirements", () => {
 
   beforeEach(() => {
     store.dialogThrows = false;
+    store.hasApprovals = false;
     store.dialogState = JSON.stringify(dialog);
     store.metadata = JSON.stringify({
       structuredRequirements: {
