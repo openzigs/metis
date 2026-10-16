@@ -60,7 +60,7 @@ import {
   BedrockDirectProvider,
   OpenAICompatibleProvider,
 } from "../ai/providers/bedrock-direct-provider.js";
-import type { AIProvider, ChatMessage } from "../ai/types.js";
+import type { AIProvider, ChatChunk, ChatMessage } from "../ai/types.js";
 import { resolveClaimModelOverride } from "../ai/claim-model-config.js";
 import {
   detectRepetitionLoop,
@@ -79,8 +79,12 @@ import {
   renderCitationFootnotes,
   renderedCitationLength,
 } from "./citation-footnotes.js";
-import { scopedToGeneration } from "./generation-control.js";
-import { isGenerationStop, throwIfGenerationStopped } from "./generation-scope.js";
+import { recordDroppedCall, scopedToGeneration } from "./generation-control.js";
+import {
+  currentGenerationScope,
+  isGenerationStop,
+  throwIfGenerationStopped,
+} from "./generation-scope.js";
 import {
   batchWordBudget,
   CHARS_PER_WORD,
@@ -226,8 +230,11 @@ import {
 import { ClaimExtractor } from "./grounding/claim-extractor.js";
 import type { GroundingUsageEvent } from "./grounding/grounding-usage.js";
 import {
+  abortableSleep,
   classifyGroundingError,
+  DEFAULT_GROUNDING_ATTEMPTS,
   describeGroundingErrorClass,
+  withTransientRetry,
   type GroundingErrorClass,
 } from "./grounding/transient-retry.js";
 import {
@@ -6761,10 +6768,32 @@ Write the markdown for the **${group.label}** section group now, following the i
 }
 
 /**
- * #114 — draft attempts for a local section whose stream drops mid-response:
- * the original plus ONE immediate retry with the identical prompt.
+ * #114 / #1174 — draft attempts for a section whose stream drops part-way
+ * through the reply: the original plus up to two retries with the identical
+ * prompt, on every provider — the grounding calls' bound (#246).
  */
-export const MID_STREAM_DROP_ATTEMPTS = 2;
+export const MID_STREAM_DROP_ATTEMPTS = DEFAULT_GROUNDING_ATTEMPTS;
+
+/** Classes that are never a dropped stream, whatever the error's text says. */
+const NEVER_A_DROP: ReadonlySet<GroundingErrorClass> = new Set([
+  "cancelled",
+  "config-error",
+  "client-error",
+]);
+
+/**
+ * #1174 — true when a section draft failed because its stream dropped
+ * part-way through the reply. `isConnectionDropped` reads undici's own error;
+ * the grounding classification also reads it once the Anthropic adapter has
+ * wrapped it (`anthropic stream failed (TypeError): terminated`, stamped 502 —
+ * walkthrough run 9's error, which `isConnectionDropped` does not recognise).
+ * A cancel, a configuration error and a 4xx are never a drop; a first-token
+ * timeout is excluded by the caller's chunk count (#111).
+ */
+function isMidStreamDrop(err: unknown, cls: GroundingErrorClass): boolean {
+  if (NEVER_A_DROP.has(cls)) return false;
+  return cls === "stream-terminated" || isConnectionDropped(err);
+}
 
 async function generateSectionGroup(
   group: SectionGroup,
@@ -6800,45 +6829,65 @@ async function generateSectionGroup(
   const sessionBase = `docs-synth-${projectId}-${docType}-${group.id}`;
 
   // ── Draft pass ────────────────────────────────────────────────────────────
-  // #114 — on the LOCAL provider a connection that drops MID-STREAM (after the
-  // first chunk arrived) is retried once, immediately, with the identical
-  // prompt: llama-server saves the prompt to its cache when a request is
-  // cancelled (`srv prompt_save`), so the retry skips almost all of the prefill
-  // that dominated the first attempt. A drop BEFORE the first chunk, a
-  // timeout, or any other error is not retried here — re-sending a prompt the
-  // runtime never finished processing repeats the whole prefill (#111).
+  // #114 / #1174 — a connection that drops MID-STREAM (after the first chunk
+  // arrived) is retried with the identical prompt, on every provider, up to
+  // MID_STREAM_DROP_ATTEMPTS tries with the grounding calls' backoff (#246).
+  // On a local runtime the retry also skips most of the prefill: llama-server
+  // saves the prompt to its cache when a request is cancelled. A drop BEFORE
+  // the first chunk is not retried — re-sending a prompt the runtime never
+  // finished processing repeats the whole prefill (#111) — and neither is a
+  // cancel, a configuration error, a 4xx, or any other error.
+  //
+  // Each attempt is its own call in the ledger: a retry is recorded under its
+  // own session id (`…-retryN`), and the dropped attempt is recorded by
+  // `streamSectionContent` and noted to the run, so the run's cost and token
+  // ceilings (#855) count every attempt. A stopped run — a cancel, or a ceiling
+  // that the dropped attempt's spend reached — is never retried, and a cancel
+  // during the backoff wait rejects the wait at once with the run's stop error.
   const draftSessionId = `${sessionBase}-draft-${Date.now()}-${randomBytes(3).toString("hex")}`;
-  let draft: SectionStreamResult | undefined;
-  for (let attempt = 1; draft === undefined; attempt++) {
-    const progress = { chunks: 0 };
-    try {
-      draft = await streamSectionContent(provider, {
-        sessionId: draftSessionId,
+  // #208 — the caller's "reply began" signal fires once, however many attempts.
+  let firstOutputSeen = false;
+  const onFirstChunk = onFirstOutput
+    ? () => {
+        if (firstOutputSeen) return;
+        firstOutputSeen = true;
+        onFirstOutput();
+      }
+    : undefined;
+  let attempt = 0;
+  let progress = { chunks: 0 };
+  const draft = await withTransientRetry(
+    () => {
+      throwIfGenerationStopped();
+      attempt += 1;
+      progress = { chunks: 0 };
+      return streamSectionContent(provider, {
+        sessionId: attempt === 1 ? draftSessionId : `${draftSessionId}-retry${attempt - 1}`,
         systemMessage,
         userMessage,
         supportsCaching,
         projectId,
         progress,
-        onFirstChunk: onFirstOutput,
+        onFirstChunk,
       });
-    } catch (err) {
-      if (
-        !isLocal ||
-        attempt >= MID_STREAM_DROP_ATTEMPTS ||
-        progress.chunks === 0 ||
-        !isConnectionDropped(err)
-      ) {
-        throw err;
-      }
-      log.warn("Local section stream dropped mid-response; retrying once with the same prompt", {
+    },
+    {
+      stage: "section-draft",
+      signal: currentGenerationScope()?.signal,
+      logFields: {
         projectId,
         docType,
         group: group.id,
-        chunksBeforeDrop: progress.chunks,
-        err: String(err),
-      });
-    }
-  }
+        provider: provider.key,
+      },
+    },
+    {
+      attempts: MID_STREAM_DROP_ATTEMPTS,
+      sleep: abortableSleep,
+      isRetryable: (err, cls) =>
+        progress.chunks > 0 && !isGenerationStop(err) && isMidStreamDrop(err, cls),
+    },
+  );
   // #1226 — the DRAFT's truncation verdict is the baseline: the refine pass
   // below is opt-in, local-only, and can only ever be accepted when it
   // preserved the draft's content, so it cannot clear a truncated draft. When
@@ -6968,35 +7017,57 @@ async function streamSectionContent(
   // model's known ceiling.
   const maxTokens = resolveSectionMaxOutputTokens(provider.model);
   let firstChunk = true;
-  for await (const chunk of provider.stream(messages, {
-    sessionId: opts.sessionId,
-    disableTools: true,
-    maxTokens,
-    // #390 — tag prompt-cache hit-ratio telemetry by workload.
-    callType: "synthesis",
-    ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
-    // Cache ONLY the shared section-writer system prompt (reused across all ~6
-    // sections). The large per-section facts/grounding blob in the user turn is
-    // unique to THIS section group and not reused across calls, so a
-    // message-level cache write would just burn the write premium with no later
-    // read to amortise it (#389). #anthropic-prompt-caching.
-    promptCaching: singleShotPromptCaching(opts.supportsCaching),
-  })) {
-    if (firstChunk) {
-      firstChunk = false;
-      opts.onFirstChunk?.();
+  let received = 0;
+  let outputChars = 0;
+  let reportedUsage: Extract<ChatChunk, { type: "usage" }>["usage"] | undefined;
+  try {
+    for await (const chunk of provider.stream(messages, {
+      sessionId: opts.sessionId,
+      disableTools: true,
+      maxTokens,
+      // #390 — tag prompt-cache hit-ratio telemetry by workload.
+      callType: "synthesis",
+      ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+      // Cache ONLY the shared section-writer system prompt (reused across all ~6
+      // sections). The large per-section facts/grounding blob in the user turn is
+      // unique to THIS section group and not reused across calls, so a
+      // message-level cache write would just burn the write premium with no later
+      // read to amortise it (#389). #anthropic-prompt-caching.
+      promptCaching: singleShotPromptCaching(opts.supportsCaching),
+    })) {
+      if (firstChunk) {
+        firstChunk = false;
+        opts.onFirstChunk?.();
+      }
+      received += 1;
+      if (opts.progress) opts.progress.chunks += 1;
+      if (chunk.type === "delta") {
+        chunks.push(chunk.content);
+        outputChars += chunk.content.length;
+      } else if (chunk.type === "usage") {
+        reportedUsage = chunk.usage;
+        promptTokens = chunk.usage.promptTokens;
+        completionTokens = chunk.usage.completionTokens;
+        cacheReadTokens = chunk.usage.cacheReadTokens ?? 0;
+        cacheWriteTokens = chunk.usage.cacheWriteTokens ?? 0;
+      } else if (chunk.type === "done") {
+        finishReason = chunk.finishReason;
+      }
     }
-    if (opts.progress) opts.progress.chunks += 1;
-    if (chunk.type === "delta") {
-      chunks.push(chunk.content);
-    } else if (chunk.type === "usage") {
-      promptTokens = chunk.usage.promptTokens;
-      completionTokens = chunk.usage.completionTokens;
-      cacheReadTokens = chunk.usage.cacheReadTokens ?? 0;
-      cacheWriteTokens = chunk.usage.cacheWriteTokens ?? 0;
-    } else if (chunk.type === "done") {
-      finishReason = chunk.finishReason;
+  } catch (err) {
+    // #1174 — a reply that started and then died was still billed. Record it
+    // as its own call (a retry is recorded separately, under its own session).
+    // A call the run stopped is recorded by `scopedToGeneration` instead.
+    if (opts.projectId && received > 0 && !isGenerationStop(err)) {
+      recordDroppedCall({
+        projectId: opts.projectId,
+        sessionId: opts.sessionId,
+        provider,
+        messages,
+        seen: { usage: reportedUsage, outputChars },
+      });
     }
+    throw err;
   }
   // Record token usage for the project usage dashboard.
   if (opts.projectId && (promptTokens > 0 || completionTokens > 0)) {

@@ -16,6 +16,9 @@
  * after it started, which is what the live run hit. The bound is small
  * ({@link DEFAULT_GROUNDING_ATTEMPTS} tries) so the product of the two layers
  * stays bounded too.
+ *
+ * #1174 — section drafting reuses the same loop, classification and backoff,
+ * narrowed by `isRetryable` to a stream that dropped part-way through a reply.
  */
 import { AIError } from "../../ai/errors.js";
 import { createChildLogger } from "../../logger.js";
@@ -50,6 +53,21 @@ export interface GroundingRetryOptions {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Injectable jitter source in [0, 1) (tests). */
   random?: () => number;
+  /**
+   * #1174 — which failures are asked again. Defaults to
+   * {@link isTransientGroundingError} on the class; a caller may narrow it (a
+   * section draft retries only a stream that dropped part-way through a reply).
+   * A cancelled run is never retried, whatever this returns.
+   */
+  isRetryable?: (err: unknown, cls: GroundingErrorClass) => boolean;
+}
+
+/** Which call {@link withTransientRetry} is retrying, for its log line. */
+export interface TransientRetryContext {
+  stage: "claims" | "verdicts" | "section-draft";
+  signal?: AbortSignal;
+  /** Extra fields for the retry log line (the section, the provider). */
+  logFields?: Record<string, unknown>;
 }
 
 const errorText = (err: unknown): string => {
@@ -205,7 +223,7 @@ export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> 
  */
 export async function withTransientRetry<T>(
   call: () => Promise<T>,
-  context: { stage: "claims" | "verdicts"; signal?: AbortSignal },
+  context: TransientRetryContext,
   opts: GroundingRetryOptions = {},
 ): Promise<T> {
   const attempts = Math.min(
@@ -215,19 +233,24 @@ export async function withTransientRetry<T>(
   const base = Math.max(0, opts.baseDelayMs ?? DEFAULT_GROUNDING_RETRY_BASE_MS);
   const sleep = opts.sleep ?? abortableSleep;
   const random = opts.random ?? Math.random;
+  const isRetryable =
+    opts.isRetryable ??
+    ((_err: unknown, cls: GroundingErrorClass) => isTransientGroundingError(cls));
   for (let attempt = 1; ; attempt++) {
     try {
       return await call();
     } catch (err) {
       const cls = classifyGroundingError(err, context.signal);
-      if (!isTransientGroundingError(cls) || attempt >= attempts) throw err;
+      if (cls === "cancelled" || !isRetryable(err, cls) || attempt >= attempts) throw err;
       const window = Math.min(MAX_GROUNDING_RETRY_DELAY_MS, base * 2 ** (attempt - 1));
       // Half fixed, half jitter: never zero, never above the window.
       const delayMs = Math.round(window / 2 + (window / 2) * random());
-      log.warn("Transient grounding-call failure; retrying with backoff", {
+      log.warn("Transient model-call failure; retrying with backoff", {
+        ...context.logFields,
         stage: context.stage,
         errorClass: cls,
         attempt,
+        nextAttempt: attempt + 1,
         maxAttempts: attempts,
         delayMs,
       });

@@ -867,7 +867,9 @@ run registers an `AbortController` (`generation-control.ts`), and every docs-gen
 is wrapped so each `chat`/`stream` call carries its signal, so an in-flight request is
 aborted rather than awaited. A call cut off that way reported no usage, so its spend is
 recorded as an estimate (agent step `docs-gen-aborted`; the provider's own usage chunk
-when one arrived, otherwise prompt and streamed characters at 3.5 per token). A run on
+when one arrived, otherwise prompt and streamed characters at 3.5 per token). A section
+draft whose stream dropped part-way through the reply is recorded the same way (#1174) and
+counted toward the ceiling, so its bounded retry cannot spend past it. A run on
 another replica is reached through its heartbeat, which also stops a run whose row was
 deleted or re-claimed. The run ends `cancelled`: it keeps the sections it finished as
 content (when there is no published version) and keeps the checkpoint, and `regenerate`
