@@ -23,7 +23,13 @@ import { createChildLogger } from "../logger.js";
 import { recordUsage } from "../finops/index.js";
 import { getConfigService, type ConfigService } from "../config/config-service.js";
 import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../ai/types.js";
-import { RunUsage, estimateRunCost, type RunUsageEvent } from "./run-cost.js";
+import {
+  DOCS_GEN_AGENT_STEP,
+  RunUsage,
+  estimateRunCost,
+  noteRunUsage,
+  type RunUsageEvent,
+} from "./run-cost.js";
 import { UnpublishableGenerationError, type UnpublishableReason } from "./generation-checkpoint.js";
 import { currentGenerationScope, type GenerationScope } from "./generation-scope.js";
 
@@ -46,7 +52,11 @@ export const DEFAULT_MAX_RUN_COST_CENTS = 2_500;
  */
 export const DEFAULT_MAX_RUN_TOKENS = 20_000_000;
 
-/** Agent step of a usage row ESTIMATED for a call the run aborted mid-flight. */
+/**
+ * Agent step of a usage row ESTIMATED for a call that ended mid-flight without
+ * reporting usage: one the run aborted, or (#1174) a section draft whose stream
+ * dropped part-way through the reply ({@link recordDroppedCall}).
+ */
 export const ABORTED_CALL_AGENT_STEP = "docs-gen-aborted";
 /** Characters per token for the estimate — the same conservative ratio section batching uses. */
 const ESTIMATE_CHARS_PER_TOKEN = 3.5;
@@ -215,6 +225,45 @@ function recordAbortedCall(
     });
   } catch (err) {
     log.warn("Could not record an aborted docs-gen call's usage", { err: String(err) });
+  }
+}
+
+/**
+ * #1174 — record a call whose stream DROPPED part-way through the reply (the
+ * run was not stopped, so {@link scopedToGeneration} did not record it). The
+ * provider bills the prompt of a reply that started, so the attempt is its own
+ * ledger row — its reported usage when a usage chunk arrived before the drop
+ * (agent step `docs-gen`), otherwise an estimate from the prompt and the reply
+ * streamed so far ({@link ABORTED_CALL_AGENT_STEP}) — and it is noted to the
+ * run, so a retried section's attempts all count toward the run's ceiling.
+ * Never throws.
+ */
+export function recordDroppedCall(input: {
+  projectId: string;
+  sessionId: string;
+  provider: Pick<AIProvider, "key" | "model">;
+  messages: readonly ChatMessage[];
+  seen: { usage?: Extract<ChatChunk, { type: "usage" }>["usage"]; outputChars: number };
+}): void {
+  try {
+    const { provider, seen } = input;
+    const tokens = {
+      provider: provider.key,
+      model: provider.model,
+      inputTokens: seen.usage?.promptTokens ?? tokensOf(contentChars(input.messages)),
+      outputTokens: seen.usage?.completionTokens ?? tokensOf(seen.outputChars),
+      cacheReadTokens: seen.usage?.cacheReadTokens ?? 0,
+      cacheWriteTokens: seen.usage?.cacheWriteTokens ?? 0,
+    };
+    recordUsage({
+      projectId: input.projectId,
+      sessionId: input.sessionId,
+      agentStep: seen.usage ? DOCS_GEN_AGENT_STEP : ABORTED_CALL_AGENT_STEP,
+      ...tokens,
+    });
+    noteRunUsage(tokens);
+  } catch (err) {
+    log.warn("Could not record a dropped docs-gen call's usage", { err: String(err) });
   }
 }
 

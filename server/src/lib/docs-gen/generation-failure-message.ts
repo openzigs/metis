@@ -268,7 +268,7 @@ export function classifyTransportFailure(err: unknown): TransportFailure | undef
     // #152 — undici's socket close under `fetch failed` happened before any
     // response: not "dropped while the response was arriving". Deliberately
     // UND_ERR_SOCKET only: an ECONNRESET under `fetch failed` keeps its #114
-    // "dropped" reading, which the local mid-stream retry keys on.
+    // "dropped" reading, which the section mid-stream retry keys on.
     if (code === "UND_ERR_SOCKET" && chain.slice(0, i).some(isFetchFailedWrapper)) {
       return "closed";
     }
@@ -294,7 +294,7 @@ export function isProviderUnreachable(err: unknown): boolean {
 
 /**
  * #114 — true when the connection was reset or closed while a response was
- * arriving. The docs-gen section loop retries a local section once on this
+ * arriving. The docs-gen section loop retries a section's draft on this
  * (see `generateSectionGroup`); a timeout or a refused connect is not a drop.
  */
 export function isConnectionDropped(err: unknown): boolean {
@@ -304,7 +304,7 @@ export function isConnectionDropped(err: unknown): boolean {
 /**
  * #165 — true when a reset (`ECONNRESET`/`EPIPE`) sits under undici's
  * `fetch failed` wrapper, i.e. the connection died before any response. For
- * generation this stays "dropped" (the local mid-stream retry keys on it); a
+ * generation this stays "dropped" (the section mid-stream retry keys on it); a
  * caller whose requests are not streamed — indexing's embedding calls — reads
  * it as "closed before any response" instead.
  */

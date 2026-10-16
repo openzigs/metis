@@ -218,6 +218,35 @@ describe("withTransientRetry", () => {
     await expect(pending).rejects.toThrow("cancelled by user");
     expect(call).toHaveBeenCalledTimes(1);
   });
+
+  it("#1174 — a caller's isRetryable narrows what is asked again", async () => {
+    const err = status(503);
+    const call = vi.fn().mockRejectedValue(err);
+    const sleep = vi.fn(async () => {});
+    const isRetryable = vi.fn(() => false);
+    await expect(
+      withTransientRetry(call, { stage: "section-draft" }, { sleep, isRetryable }),
+    ).rejects.toBe(err);
+    expect(isRetryable).toHaveBeenCalledWith(err, "server-error");
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("#1174 — a cancelled run is never retried, even when isRetryable says yes", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const call = vi.fn().mockRejectedValue(new Error("terminated"));
+    const sleep = vi.fn(async () => {});
+    await expect(
+      withTransientRetry(
+        call,
+        { stage: "section-draft", signal: ac.signal },
+        { sleep, isRetryable: () => true },
+      ),
+    ).rejects.toThrow("terminated");
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
 });
 
 describe("abortableSleep", () => {

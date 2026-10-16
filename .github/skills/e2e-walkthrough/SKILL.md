@@ -266,6 +266,18 @@ FROM token_usages
 WHERE "projectId" = :project AND "createdAt" >= :since AND "createdAt" < :until
 GROUP BY 1 ORDER BY 3 DESC;
 
+-- docs-gen section retries (#1174), per document: a section draft whose stream dropped
+-- mid-reply is retried, and each retry is billed under a session id
+-- docs-synth-<project>-<docType>-<group>-draft-…-retryN. Substitute the document's type
+-- (brd, architecture, …) for :docType. A lower bound, for two reasons: a retry that
+-- failed before its first chunk wrote no row, and a retry whose stream reported no usage
+-- writes no row either. The exact count is the server log's "Transient model-call
+-- failure; retrying" lines with stage section-draft and that docType.
+SELECT COUNT(DISTINCT "sessionId") AS section_retries
+FROM token_usages
+WHERE "projectId" = :project AND "createdAt" >= :since AND "createdAt" < :until
+  AND "sessionId" LIKE 'docs-synth-%-' || :docType || '-%-draft-%-retry%';
+
 -- lineage: schema edges by kind and provenance (run 2: 1,436 reads/writes)
 SELECT kind, source, COUNT(*) AS n FROM code_edges
 WHERE "projectId" = :project AND kind IN ('reads', 'writes', 'persists-to')
@@ -281,7 +293,8 @@ within a cent per summed view, so a larger mismatch is a finding. Run 3, before 
 **Docs generation against its caps (#855, #741).** Record `DOCS_GEN_MAX_RUN_COST_CENTS`
 (default 2500), `DOCS_GEN_MAX_RUN_TOKENS` (20M), `DOCS_GEN_SECTION_MAX_CHARS` (60,000) and
 `DOCS_GEN_DOCUMENT_MAX_CHARS` (250,000) as set for the run. Per document, report its cost
-against the ceiling, whether a ceiling stopped it, and its body and longest-section length.
+against the ceiling, whether a ceiling stopped it, its body and longest-section length, and
+how many section retries happened during its generation (the `section_retries` query, #1174).
 Test **Cancel generation** once on purpose (wave C). Run 3's BRD was 2.19 MB and $4.61;
 **run 4's was $1.91, 30 min and 171 KB under a 500¢ cap** — the baseline to compare against.
 **Regenerate** works only on a failed, cancelled, or degraded-with-no-version document, so test

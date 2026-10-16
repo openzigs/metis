@@ -596,14 +596,21 @@ mode. (The older vLLM `guided_json` extra-body param is deprecated and not used.
   (never a hard failure). On `stream()` this happens pre-first-byte, so no
   partial output leaks and the "never retry mid-stream" rule (§ #388) holds. A
   non-capability 4xx (401/404) is not retried.
-- **Mid-stream drop on the local provider (#114).** The provider still never
-  retries mid-stream. One level up, `generateSectionGroup` retries a LOCAL
-  section's draft once, immediately, with the identical prompt when the stream
-  dropped after its first chunk (`TypeError: terminated` / `ECONNRESET`,
-  `isConnectionDropped`): the partial text is discarded, not stitched, and
-  llama-server saved the prompt to its cache on cancel, so the retry skips most
-  of the prefill. A drop before the first chunk and every timeout are not
-  retried (#111).
+- **Mid-stream drop of a section draft (#114, #1174).** The provider still never
+  retries mid-stream. One level up, `generateSectionGroup` retries a section's
+  draft with the identical prompt when the stream dropped after its first chunk
+  (`TypeError: terminated` / `ECONNRESET`, `isConnectionDropped`, or the
+  Anthropic adapter's wrapped `anthropic stream failed (TypeError): terminated`
+  that the grounding classification reads), on **every** provider, up to 3 tries
+  with the grounding calls' backoff (`withTransientRetry`, #246). The partial
+  text is discarded, not stitched; on a local runtime llama-server saved the
+  prompt to its cache on cancel, so the retry skips most of the prefill. A drop
+  before the first chunk (#111), a cancelled run, a configuration error and a
+  4xx are not retried. Each attempt is its own ledger row: the dropped one is
+  recorded (`recordDroppedCall` — reported usage, else an estimate under
+  `docs-gen-aborted`) and noted to the run, so the #855 ceilings count it, and a
+  retry's session id ends `-retryN`. A cancel during the backoff wait rejects it
+  at once.
 - **Schemas** (`docs-gen/grounding/structured-output-schemas.ts`) are
   strict-mode-valid and mirror the shapes the extractor/judge already
   Zod-validate after parsing, so the constrained output and the parser cannot
