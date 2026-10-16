@@ -11,7 +11,9 @@ Two traps in `scripts/lib/sync-roadmap-core.mjs` and its tests, found on PR #118
 its own client with the real `sleep`. A `main` test whose fake board makes even five writes times
 out at vitest's 5 s default. The first draft of the #1181 exit-code test did exactly this. Seed the
 fake board with items that already hold every value, so nothing is written, and assert
-`gh.mutations` is `[]`. Or test through `run()`/`sync()`, which inject `sleep: async () => {}`.
+`gh.mutations` is `[]`. Or test through the test file's own `run()` helper
+(`scripts/lib/sync-roadmap-core.test.mjs`, around line 582; not an export of the core module),
+which calls the exported `sync()` with a client built with `sleep: async () => {}`.
 
 **2. An "exactly one X label" rule may be backed only by a missing-X check.** #1181's rule says
 exactly one tier and exactly one `area:`. `missingLabels`/`labelGaps` report only *absence*: two

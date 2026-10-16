@@ -140,9 +140,9 @@ Never merge a PR with genuinely failing or pending checks.
   so retire superseded pointers to the store's `ARCHIVE.md`, which is never loaded and
   never deletes the file (#1206).
 - **Every new issue gets** one tier (`priority: now|next|later`, + `blocked` if so; Now only on the
-  owner's say), one `area:`, a type label, and `gh issue create … --project "METIS roadmap"` (no
-  `project` scope: the nightly sync adds it). Rule and lists: `docs/ops/roadmap-board.md` >
-  "Filing an issue" (#1181).
+  owner's say), one existing `area:`, a type label, and
+  `gh issue create … --project "METIS roadmap"` (no `project` scope: the nightly sync adds it).
+  Rule and lists: `docs/ops/roadmap-board.md` > "Filing an issue" (#1181).
 
 ## Agents and skills
 
