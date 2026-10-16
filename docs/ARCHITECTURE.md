@@ -5372,6 +5372,8 @@ METIS uses **Socket.IO** for real-time, bi-directional communication between the
 | `subscribe:project` | User opens a project | Project ID (to receive that project's updates) |
 | `unsubscribe:project` | User leaves a project | Project ID |
 
+**Who may join `project:{id}` (#1212).** The rule of `GET /projects/:id`: `canJoinProjectRoom` (`server/src/lib/socket/room-access.ts`) delegates to `canAccessProjectDiscussions` → `assertProjectAccess` — admins, every live member of the project's workspace, and anyone for a legacy project with no workspace; a soft-deleted project is closed to non-admins. Membership is read from the database at join time. An unknown project and a forbidden one get the same `FORBIDDEN: no access to project`, and the denial is audited (`socket.subscribe:project.denied`). It was the creator-only `actorCanAccessProject` before, so a teammate saw a job finish only on reload. Removing a member from a workspace, or deleting the workspace, evicts the affected sockets from that workspace's project rooms (`server/src/lib/socket/project-room-eviction.ts`, relayed across replicas, with the #613 eviction epoch closing the join-during-removal race). Every event sent to the room — `job:lifecycle`, `job:doc-section`, `connector:progress`, `connector:discovery`, `document:status`, `bg-run:status`, `drift:detected`, `usage:tick` — carries nothing the same member could not read over REST; `usage:tick` drops the chat `sessionId`, since a session is its owner's alone (#142).
+
 The connection status is displayed in the UI header as a green dot (connected) or red dot (disconnected). Socket.IO automatically reconnects with exponential backoff (1 second to 30 seconds, up to 10 attempts).
 
 **Socket token refresh (#414).** The handshake authenticates ONCE from the 1h `metis.at` access cookie (`ui/src/lib/socket-client.ts`, `withCredentials: true`, no `socket.auth` token), so socket.io's plain auto-reconnect would re-send the SAME cookie and the server would reject it `TOKEN_EXPIRED` once it lapses. To keep realtime alive past the 1h mark, a successful `/auth/refresh` in `ui/src/lib/api-client.ts` (its single `refreshOnce()` choke point — covering both the reactive 401 retry and the proactive sliding-session timer, #410) fires `setOnRefreshSuccess`, which the socket-client subscribes to and uses to drive a **debounced** (~250ms, one reconnect per burst) `socket.disconnect()` + `socket.connect()` so the next handshake carries the FRESH cookie. The manual disconnect is flagged as a deliberate renewal so the connection-status store reports `reconnecting → connected` rather than parking at `disconnected`; it no-ops when no socket exists, and a refresh FAILURE never reconnects (that path stays on `setOnRefreshFailure`→logout).
@@ -7798,7 +7800,7 @@ Real-time ingestion feedback, auto-ingest on first repo, multi-repo token manage
 
 | Room Pattern | Subscription Event | Events Emitted | Purpose |
 |---|---|---|---|
-| `project:{projectId}` | `subscribe:project` | `connector:progress`, `connector:discovery` | Project-level progress and discovery broadcasts |
+| `project:{projectId}` | `subscribe:project` (any project member, #1212) | `connector:progress`, `connector:discovery` | Project-level progress and discovery broadcasts |
 | `connector:{connectorId}` | `subscribe:connector` | `connector:progress`, `connector:status` | Per-connector targeted subscriptions |
 
 **Progress event payload** (`connector:progress`):

@@ -6,11 +6,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { io as ioClient, type Socket as ClientSocket } from "socket.io-client";
 
 /**
- * #255 — `subscribe:project` now authorizes the user against their accessible
- * projects via `actorCanAccessProject` → `prisma.project.findMany`. The mock
- * grants the developer `u1` access to project `p1` only (they "created" it), so
- * cross-project isolation can be asserted: `p1` joins, `p-other` is rejected.
- * Admins bypass the DB check entirely.
+ * #255 — `subscribe:project` authorizes the user against the project. Since
+ * #1212 that is the project read rule (`canJoinProjectRoom` →
+ * `assertProjectAccess`): the mock makes `u1` the only member of `p1`'s
+ * workspace, so `p1` joins and `p-other` (which does not exist) is rejected.
+ * Admins bypass the DB check entirely. The multi-member scenario lives in
+ * `socket-project-room-members-1212.test.ts`.
  */
 /**
  * #617 — the handshake re-reads the user and the durable role. Every user is

@@ -1,6 +1,6 @@
 /**
- * #655 — who may join a `connector:{id}`, `run:{id}` or `job:{id}` room, and
- * (#679) a `presence:{type}:{id}` room.
+ * #655 — who may join a `connector:{id}`, `run:{id}` or `job:{id}` room,
+ * (#679) a `presence:{type}:{id}` room, and (#1212) a `project:{id}` room.
  *
  * Each room carries reads of the resource it is named after, so joining it
  * takes the same rule as the REST read of that resource: the resource exists,
@@ -17,7 +17,7 @@
  */
 import { isSpecKitArtifactName, type AuthPayload, type PresenceArtifactType } from "@metis/shared";
 import { prisma } from "../prisma.js";
-import { canAccessThread } from "../discussions/access.js";
+import { canAccessProjectDiscussions, canAccessThread } from "../discussions/access.js";
 import { assertProjectAccess } from "../custom-agents/authz.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { loadAccessibleImpactDetail } from "../impact-analysis/impact-detail-access.js";
@@ -39,6 +39,29 @@ async function passes(check: () => Promise<unknown>): Promise<boolean> {
 
 function canReachProject(user: AuthPayload, projectId: string): Promise<boolean> {
   return passes(() => assertProjectAccess(user, projectId));
+}
+
+/**
+ * #1212 — `project:{id}` carries the project's live job, document, connector,
+ * usage, background-run and drift events, so joining it takes the rule of
+ * `GET /projects/:id`: `assertProjectAccess` (admins, the members of the
+ * project's workspace, anyone for a legacy project with no workspace), plus
+ * "the project is not soft-deleted" for a non-admin. It is the same function
+ * the project's discussions, comments and mentions use (#734), so a teammate
+ * who can open the project gets its live updates and nobody else does. It used
+ * to be the scheduler's `actorCanAccessProject`, which admits only the
+ * project's creator, so every other member saw a job finish only on reload.
+ *
+ * Membership is read from the database at join time, not from the handshake's
+ * snapshot, and a denial is audited. An unknown project and a project the
+ * caller cannot reach both answer `false`.
+ */
+export function canJoinProjectRoom(user: AuthPayload, projectId: string): Promise<boolean> {
+  return canAccessProjectDiscussions({ id: user.userId, role: user.role }, projectId, {
+    resource: "project_room",
+    resourceId: projectId,
+    action: "socket.subscribe:project",
+  });
 }
 
 /**

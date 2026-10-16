@@ -48,12 +48,22 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({
   audit: vi.fn(),
 }));
 
+// #1212 — the routes evict sockets from the workspace's project rooms.
+vi.mock("../src/lib/socket/project-room-eviction.js", () => ({
+  evictMemberProjectRooms: vi.fn(async () => {}),
+  evictWorkspaceProjectRooms: vi.fn(async () => {}),
+}));
+
 // Mock requireAuth to be a passthrough (user injected in test app setup)
 vi.mock("../src/middleware/auth.js", () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 
 import { prisma } from "../src/lib/prisma.js";
+import {
+  evictMemberProjectRooms,
+  evictWorkspaceProjectRooms,
+} from "../src/lib/socket/project-room-eviction.js";
 import { workspacesRouter } from "../src/routes/workspaces.js";
 import { requireWorkspaceRole } from "../src/middleware/require-workspace-role.js";
 import { AppError } from "../src/middleware/error-handler.js";
@@ -226,6 +236,8 @@ describe("Workspace Routes", () => {
         where: { workspaceId: "ws-1", consumedAt: null },
         data: { consumedAt: data.deletedAt },
       });
+      // #1212 — its project rooms are emptied too.
+      expect(evictWorkspaceProjectRooms).toHaveBeenCalledWith("ws-1");
     });
 
     it("prevents deleting the default workspace", async () => {
@@ -688,6 +700,8 @@ describe("Workspace Routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.data.removed).toBe(true);
+      // #1212 — the removed member's sockets leave the workspace's project rooms.
+      expect(evictMemberProjectRooms).toHaveBeenCalledWith("user-2", "ws-1");
     });
 
     it("rejects removing sole owner", async () => {

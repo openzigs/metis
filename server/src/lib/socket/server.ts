@@ -14,7 +14,9 @@
  *     Delivers `comment:mention` and `sla:deadline_expired` to exactly that user.
  *     The id is ALWAYS derived from `socket.data.user.userId` (verified JWT,
  *     re-read from the user row at handshake).
- *   - `project:{id}` — broadcast scope for project-level updates.
+ *   - `project:{id}` — broadcast scope for project-level updates. #1212 — any
+ *     user who can open the project may join (`canJoinProjectRoom`), and a
+ *     member removed from the workspace is evicted (`project-room-eviction.ts`).
  *   - `analysis:{id}` — analysis run progress.
  *   - `session:{id}` — chat / agent session events.
  *
@@ -64,10 +66,14 @@ import {
   type ServerToClientEvents,
 } from "@metis/shared";
 import { verifyAccessToken } from "../auth/jwt.js";
-import { actorCanAccessProject } from "../scheduler/project-access.js";
 import { loadAuthorizedSession } from "../ai/conversation/session-access.js";
 import { canJoinAnalysisRoom } from "./analysis-room-access.js";
-import { canJoinBgRunRoom, canJoinConnectorRoom, resolveJobRoomScope } from "./room-access.js";
+import {
+  canJoinBgRunRoom,
+  canJoinConnectorRoom,
+  canJoinProjectRoom,
+  resolveJobRoomScope,
+} from "./room-access.js";
 import { getLastDocSections, getLastJobLifecycle, type JobScope } from "./job-events.js";
 import { wireThreadRoomHandlers } from "./discussion-rooms.js";
 import {
@@ -86,7 +92,8 @@ import { loadLiveAuthPayload } from "../auth/live-auth-payload.js";
 import { createChildLogger } from "../logger.js";
 import { mcpStatusEvictionEpoch, wireMcpStatusEvictionRelay } from "./mcp-status-eviction.js";
 import { userSocketRevocationEpoch, wireUserRevocationRelay } from "./user-disconnect.js";
-import { bumpEpoch } from "./revocation-relay.js";
+import { wireProjectRoomEvictionRelay } from "./project-room-eviction.js";
+import { bumpEpoch, readEpoch } from "./revocation-relay.js";
 import { MAX_TIMEOUT_MS, envMs } from "../config/env-ms.js";
 import { onClientEvent, onConnection, runDetached } from "./client-event-handler.js";
 import { onRoomJoin, roomFromField } from "./join-rate-limit.js";
@@ -187,6 +194,7 @@ export function createSocketServer(
   // this replica's transports (see `reconnectUserSockets`).
   wireUserRevocationRelay(io, Boolean(opts.adapter));
   wireMcpStatusEvictionRelay(io, Boolean(opts.adapter));
+  wireProjectRoomEvictionRelay(io, Boolean(opts.adapter));
   opts.onAdapterListening?.(() =>
     runDetached(revalidateLocalSockets(io, "listen"), "revalidateLocalSockets listen"),
   );
@@ -577,39 +585,44 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   onRoomJoin(socket, "subscribe:project", projectRoomOf, (payload) => {
     const projectId: unknown = payload?.projectId;
     if (!projectId || typeof projectId !== "string") return;
-    // #255 — per-project authorization. The `project:{id}` room fans out
-    // job-lifecycle, presence, and comment events; an authenticated client must
-    // not be able to subscribe to a project it has no access to (OWASP A01,
-    // broken access control). Mirror the route-layer project-scoping used by
-    // epics #207/#208 via the shared `actorCanAccessProject` helper, which also
-    // emits an audit row on denial. Admins pass; non-members are rejected and
-    // never join the room (so they receive no events).
+    // #255 — per-project authorization: the `project:{id}` room fans out job,
+    // document, connector, usage, background-run and drift events, so a client
+    // must not subscribe to a project it cannot open (OWASP A01). #1212 — the
+    // rule is `GET /projects/:id`'s (`canJoinProjectRoom` → `assertProjectAccess`):
+    // admins and every member of the project's workspace, not only its creator.
+    // An unknown project and a forbidden one get the same refusal.
+    const refuse = (): void => {
+      socket.emit("auth:error", { message: "FORBIDDEN: no access to project" });
+    };
     return (async () => {
       try {
-        const allowed = await actorCanAccessProject(
-          { id: user.userId, role: user.role },
-          projectId,
-          { resource: "project_room", resourceId: projectId, action: "socket.subscribe:project" },
-        );
-        if (!allowed) {
+        // #1212 — taken BEFORE the access read: a member removed while the read
+        // is in flight is evicted (`project-room-eviction.ts`) before this
+        // socket is in the room, so a moved epoch means re-check after joining.
+        const evictionEpoch = readEpoch(socket.nsp.server, "eviction");
+        if (!(await canJoinProjectRoom(user, projectId))) {
           log.warn("Socket subscribe:project rejected — no project access", {
             socketId: socket.id,
             userId: user.userId,
             projectId,
           });
-          socket.emit("auth:error", {
-            message: "FORBIDDEN: no access to project",
-          });
+          refuse();
           return;
         }
         await socket.join(projectRoom(projectId));
+        if (readEpoch(socket.nsp.server, "eviction") === evictionEpoch) return;
+        if (!(await canJoinProjectRoom(user, projectId))) {
+          await socket.leave(projectRoom(projectId));
+          refuse();
+        }
       } catch (err) {
         log.warn("Socket subscribe:project failed", {
           socketId: socket.id,
           projectId,
           error: (err as Error).message,
         });
-        socket.emit("auth:error", { message: "FORBIDDEN: no access to project" });
+        await socket.leave(projectRoom(projectId));
+        refuse();
       }
     })();
   });
