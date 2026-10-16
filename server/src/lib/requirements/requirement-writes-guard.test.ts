@@ -96,8 +96,10 @@ function requirementAliases(sf: ts.SourceFile): Set<string> {
  *
  * Known gaps, none present in the tree: a delegate reached through a function
  * call or another file (`getRepo().update(...)`), a method name that is not a
- * string literal (`requirement[method](...)`), and an alias re-bound by
- * assignment rather than declaration.
+ * string literal (`requirement[method](...)`), an alias re-bound by
+ * assignment rather than declaration, a cast or parenthesised delegate
+ * (`(tx.requirement as X).update(...)`), and a non-null assertion
+ * (`requirement!.update(...)`).
  */
 export function findTrackedRequirementWrites(source: string, file: string): Violation[] {
   const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);

@@ -1026,6 +1026,8 @@ export interface EnhancementMetadata {
     answeredCount: number;
     appliedCount: number;
     unattributedCount: number;
+    /** #1162 — answers not written because their block was edited. */
+    blockEditedCount?: number;
     requirementsUpdated: number;
     requirementsAvailable: boolean;
     updatedAt: string;
@@ -1043,6 +1045,11 @@ export interface EnhancementMetadata {
        * Absent on analyses clarified before #1000.
        */
       provenance?: "suggested" | "edited" | "typed";
+      /**
+       * #1162 — matched to `requirementTitle` but not written: that
+       * requirement's clarifications block was edited out of shape.
+       */
+      notApplied?: { reason: "clarification-block-edited"; requirementTitle: string };
     }>;
   };
   /**

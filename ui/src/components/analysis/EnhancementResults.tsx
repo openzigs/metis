@@ -144,6 +144,7 @@ export function ClarificationImpactNote({
 }): React.ReactElement | null {
   if (!application || application.answeredCount === 0) return null;
   const { answeredCount, appliedCount, unattributedCount, requirementsAvailable } = application;
+  const blockEditedCount = application.blockEditedCount ?? 0;
   // Issue #979 — absent on analyses clarified before the per-answer record.
   const outcomes = application.answers ?? [];
   const applied = outcomes.filter((a) => a.requirementTitle !== null);
@@ -197,12 +198,28 @@ export function ClarificationImpactNote({
           requirement text shown here but will not appear in a published issue.
         </p>
       )}
+      {requirementsAvailable && blockEditedCount > 0 && (
+        <p className="text-warning" data-testid="clarification-block-edited">
+          {blockEditedCount} answer{blockEditedCount === 1 ? " was" : "s were"} not written because
+          the Clarifications section of{" "}
+          {blockEditedCount === 1 ? "its requirement" : "their requirements"} was edited. Restore
+          its start and end markers, or delete the section, then submit the answers again.
+        </p>
+      )}
       {requirementsAvailable && unmatched.length > 0 && (
         <details data-testid="clarification-unmatched-list">
           <summary className="cursor-pointer">Show the answers that were not applied</summary>
           <ul className="mt-1 list-disc space-y-0.5 pl-4">
             {unmatched.map((a) => (
-              <li key={a.questionId}>{a.question}</li>
+              <li key={a.questionId}>
+                {a.question}
+                {a.notApplied ? (
+                  <span data-testid="clarification-not-applied-reason">
+                    {" "}
+                    (Clarifications section of “{a.notApplied.requirementTitle}” was edited)
+                  </span>
+                ) : null}
+              </li>
             ))}
           </ul>
         </details>

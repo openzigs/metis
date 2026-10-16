@@ -116,6 +116,7 @@ const {
   resolvePromotedCandidates,
   applyClarificationBlock,
   planClarificationBlock,
+  CLARIFICATION_BLOCK_EDITED,
   PROVENANCE_TAGS,
   answerProvenance,
   applyClarificationsToRequirements,
@@ -475,60 +476,123 @@ describe("applying the block to a body", () => {
     expect(applyClarificationBlock(once, [])).toBe("Body.");
   });
 
-  it("survives a truncated block whose end marker was lost", () => {
-    expect(stripClarificationBlock(`Body.\n\n${CLARIFICATIONS_START}\n## Clarifications`)).toBe(
-      "Body.",
-    );
+  it("leaves a block truncated before its end marker exactly as it is (#1162: malformed)", () => {
+    const truncated = `Body.\n\n${CLARIFICATIONS_START}\n## Clarifications`;
+    expect(stripClarificationBlock(truncated)).toBe(truncated);
     expect(stripClarificationBlock("Body.")).toBe("Body.");
   });
 
-  describe("#1162 — a block whose markers the analyst edited", () => {
-    const count = (body: string, needle: string) => body.split(needle).length - 1;
-    const block = () => applyClarificationBlock("Body.", [answer()]);
+  describe("#1162 — one rule: replace a well-formed block, leave anything else untouched", () => {
+    const headings = (body: string) =>
+      body.split(/\r?\n/).filter((l) => l.trim() === CLARIFICATIONS_HEADING).length;
+    const answerLines = (body: string) => body.split("**A:**").length - 1;
+    const old = () => renderClarificationBlock([answer()]);
+    const next = [answer({ answer: "The Fed rate." })];
+    const fresh = () => renderClarificationBlock(next);
+    const untouched = (body: string) => {
+      const plan = planClarificationBlock(body, next);
+      expect(plan).toEqual({ body, malformed: true });
+      return plan.body;
+    };
 
-    it("END deleted: keeps everything the analyst wrote after the block and appends a fresh one", () => {
-      const edited = `${block().replace(CLARIFICATIONS_END, "")}\n\nAnalyst trailer.`;
-      const plan = planClarificationBlock(edited, [answer({ answer: "The Fed rate." })]);
-      expect(plan.malformed).toBe("missing-end");
-      expect(plan.body).toContain("Analyst trailer.");
-      expect(plan.body.indexOf("Analyst trailer.")).toBeLessThan(
-        plan.body.indexOf(CLARIFICATIONS_START),
-      );
-      expect(count(plan.body, CLARIFICATIONS_START)).toBe(1);
-      expect(plan.body.endsWith(CLARIFICATIONS_END)).toBe(true);
-      expect(plan.body).toContain("The Fed rate.");
-      // The orphan START is gone, so the next pass is well formed and idempotent.
-      const again = planClarificationBlock(plan.body, [answer({ answer: "The Fed rate." })]);
-      expect(again).toEqual({ body: plan.body, malformed: null });
+    it("END deleted, analyst trailer after it: untouched", () => {
+      const body = `Body.\n\n${old().replace(`\n${CLARIFICATIONS_END}`, "")}\n\nAnalyst trailer.`;
+      const out = untouched(body);
+      expect([headings(out), answerLines(out)]).toEqual([1, 1]);
     });
 
-    it("END deleted with nothing but generated lines after START is a truncated block, still replaced", () => {
-      const truncated = block().replace(CLARIFICATIONS_END, "");
-      const plan = planClarificationBlock(truncated, [answer()]);
-      expect(plan).toEqual({ body: block(), malformed: null });
-    });
-
-    it("START deleted and the block edited: leaves the body alone rather than writing the answers twice", () => {
-      const edited = block()
+    it("START deleted, an answer edited: untouched, the edit kept", () => {
+      const body = `Body.\n\n${old()
         .replace(`${CLARIFICATIONS_START}\n`, "")
-        .replace(CLARIFICATIONS_HEADING, `${CLARIFICATIONS_HEADING}\nAnalyst note inside.`);
-      const plan = planClarificationBlock(edited, [answer({ answer: "The Fed rate." })]);
-      expect(plan).toEqual({ body: edited, malformed: "missing-start" });
-      expect(count(plan.body, "**A:**")).toBe(1);
+        .replace("The ECB daily rate.", "ECB rate, confirmed by Finance.")}`;
+      const out = untouched(body);
+      expect(out).toContain("ECB rate, confirmed by Finance.");
+      expect([headings(out), answerLines(out)]).toEqual([1, 1]);
     });
 
-    it("START deleted but the block is untouched from its heading: replaced in place, once", () => {
-      const edited = block().replace(`${CLARIFICATIONS_START}\n`, "");
-      const plan = planClarificationBlock(edited, [answer({ answer: "The Fed rate." })]);
-      expect(plan.malformed).toBeNull();
-      expect(count(plan.body, "**A:**")).toBe(1);
-      expect(plan.body).toContain("The Fed rate.");
-      expect(plan.body.startsWith("Body.")).toBe(true);
+    it("END deleted, analyst added a Q bullet: untouched, the bullet kept", () => {
+      const body = `Body.\n\n${old().replace(
+        CLARIFICATIONS_END,
+        "- **Q:** Who signs off?\n  **A:** Finance.",
+      )}`;
+      const out = untouched(body);
+      expect(out).toContain("Who signs off?");
+      expect([headings(out), answerLines(out)]).toEqual([1, 2]);
     });
 
-    it("stripClarificationBlock leaves a malformed block, and the analyst text in it, alone", () => {
-      const edited = `${block().replace(CLARIFICATIONS_END, "")}\n\nAnalyst trailer.`;
-      expect(stripClarificationBlock(edited)).toBe(edited);
+    it("two blocks, the first END deleted: untouched, the text between kept", () => {
+      const first = old().replace(`\n${CLARIFICATIONS_END}`, "");
+      const body = `Body.\n\n${first}\n\nBetween the blocks.\n\n${old()}`;
+      const out = untouched(body);
+      expect(out).toContain("Between the blocks.");
+      expect([headings(out), answerLines(out)]).toEqual([2, 2]);
+    });
+
+    it("two well-formed blocks: untouched", () => {
+      const out = untouched(`Body.\n\n${old()}\n\n${old()}`);
+      expect([headings(out), answerLines(out)]).toEqual([2, 2]);
+    });
+
+    it("END before START: untouched", () => {
+      const out = untouched(`${CLARIFICATIONS_END}\nBody.\n${CLARIFICATIONS_START}`);
+      expect([headings(out), answerLines(out)]).toEqual([0, 0]);
+    });
+
+    it("a heading with no markers: untouched", () => {
+      const out = untouched(`Body.\n\n${CLARIFICATIONS_HEADING}\n\nMy own notes.`);
+      expect([headings(out), answerLines(out)]).toEqual([1, 0]);
+    });
+
+    it("truncated mid-preamble: untouched", () => {
+      const body = `Body.\n\n${CLARIFICATIONS_START}\n${CLARIFICATIONS_HEADING}\n\n_Answers recorded dur`;
+      const out = untouched(body);
+      expect([headings(out), answerLines(out)]).toEqual([1, 0]);
+    });
+
+    it("a CRLF block with a marker missing: untouched, CRLF kept", () => {
+      const body = `Body.\r\n\r\n${old().replace(`\n${CLARIFICATIONS_END}`, "").replace(/\n/g, "\r\n")}`;
+      const out = untouched(body);
+      expect([headings(out), answerLines(out)]).toEqual([1, 1]);
+    });
+
+    it("a well-formed CRLF block: replaced once", () => {
+      const body = `Body.\r\n\r\n${old().replace(/\n/g, "\r\n")}`;
+      const plan = planClarificationBlock(body, next);
+      expect(plan).toEqual({ body: `Body.\n\n${fresh()}`, malformed: false });
+      expect([headings(plan.body), answerLines(plan.body)]).toEqual([1, 1]);
+    });
+
+    it("whitespace-variant markers: recognised, replaced once", () => {
+      const body = `Body.\n\n${old()
+        .replace(CLARIFICATIONS_START, "<!--metis:clarifications:start-->")
+        .replace(CLARIFICATIONS_END, "<!--  metis:clarifications:end  -->")}`;
+      const plan = planClarificationBlock(body, next);
+      expect(plan).toEqual({ body: `Body.\n\n${fresh()}`, malformed: false });
+      expect([headings(plan.body), answerLines(plan.body)]).toEqual([1, 1]);
+    });
+
+    it("a well-formed block with text before and after: replaced, the text kept", () => {
+      const body = `Before.\n\n${old()}\n\nAfter.`;
+      const plan = planClarificationBlock(body, next);
+      expect(plan).toEqual({
+        body: `Before.\n\n\n\nAfter.\n\n${fresh()}`,
+        malformed: false,
+      });
+      expect([headings(plan.body), answerLines(plan.body)]).toEqual([1, 1]);
+    });
+
+    it("no block: a fresh one appended", () => {
+      const plan = planClarificationBlock("Body.", next);
+      expect(plan).toEqual({ body: `Body.\n\n${fresh()}`, malformed: false });
+      expect([headings(plan.body), answerLines(plan.body)]).toEqual([1, 1]);
+    });
+
+    it("re-applying the same answers to a well-formed block changes nothing", () => {
+      const once = planClarificationBlock("Body.", next).body;
+      expect(planClarificationBlock(once, next)).toEqual({
+        body: once,
+        malformed: false,
+      });
     });
   });
 
@@ -1251,10 +1315,12 @@ describe("applyClarificationsToRequirements", () => {
       expect(out).toMatchObject({ requirementsUpdated: 1 });
     });
 
-    it("keeps the analyst's text when they deleted the block's end marker", async () => {
+    it("leaves a requirement whose block was edited out of shape untouched, and says so", async () => {
       await applyClarificationsToRequirements(ANALYSIS_ID);
       const row = store.requirements[0];
       row.body = `${row.body.replace(CLARIFICATIONS_END, "")}\n\nAnalyst trailer.`;
+      const edited = row.body;
+      const versionsBefore = store.versions.length;
       store.dialogState = JSON.stringify({
         ...dialog,
         rounds: [
@@ -1264,10 +1330,23 @@ describe("applyClarificationsToRequirements", () => {
           },
         ],
       });
-      await applyClarificationsToRequirements(ANALYSIS_ID);
-      expect(row.body).toContain("Analyst trailer.");
-      expect(row.body).toContain("The Fed rate.");
-      expect(row.body.endsWith(CLARIFICATIONS_END)).toBe(true);
+
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+
+      expect(row.body).toBe(edited);
+      expect(store.versions).toHaveLength(versionsBefore);
+      expect(out).toMatchObject({
+        appliedCount: 0,
+        blockEditedCount: 1,
+        requirementsUpdated: 0,
+      });
+      expect(out?.answers?.[0]).toMatchObject({
+        requirementTitle: null,
+        notApplied: {
+          reason: CLARIFICATION_BLOCK_EDITED,
+          requirementTitle: "Display product prices in the shopper's currency",
+        },
+      });
     });
 
     it("skips a row deleted between the read and the write", async () => {
