@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { stripMetisMarkers } from "./metis-markers.js";
 
 describe("stripMetisMarkers — #1170", () => {
-  it("removes the clarification markers with their lines and keeps the block", () => {
+  it("removes the clarification markers and keeps the block", () => {
     const body = [
       "Body.",
       "",
@@ -14,7 +14,15 @@ describe("stripMetisMarkers — #1170", () => {
       "After.",
     ].join("\n");
     expect(stripMetisMarkers(body)).toBe(
-      ["Body.", "", "## Clarifications", "- **Q:** q", "", "After."].join("\n"),
+      ["Body.", "", "", "## Clarifications", "- **Q:** q", "", "", "After."].join("\n"),
+    );
+  });
+
+  it("keeps a paragraph typed straight after the end marker apart from the last answer", () => {
+    // A marker line is a line break; removing it outright would make "Typed."
+    // a lazy continuation of the list item above.
+    expect(stripMetisMarkers("- **A:** a\n<!-- metis:clarifications:end -->\nTyped.")).toBe(
+      "- **A:** a\n\nTyped.",
     );
   });
 

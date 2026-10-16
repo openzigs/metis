@@ -15,17 +15,18 @@ function internalMarkerPattern(): RegExp {
 }
 
 /**
- * The text with METIS's internal markers removed. A marker that was alone on its
- * line takes the line with it, so no run of blank lines is left behind; one
- * written inline leaves the text around it as it was, less trailing spaces.
+ * The text with METIS's internal markers removed. A marker alone on its line
+ * leaves a blank line, never nothing: the marker line is what separates the
+ * block's last list item from a paragraph typed after it, and dropping the line
+ * would join the two. One written inline leaves the text around it as it was,
+ * less trailing spaces.
  */
 export function stripMetisMarkers(text: string): string {
   return text
     .split("\n")
-    .flatMap((line) => {
+    .map((line) => {
       const stripped = line.replace(internalMarkerPattern(), "");
-      if (stripped === line) return [line];
-      return stripped.trim() === "" ? [] : [stripped.replace(/[ \t]+$/, "")];
+      return stripped === line ? line : stripped.replace(/[ \t]+$/, "");
     })
     .join("\n");
 }
