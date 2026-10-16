@@ -35,6 +35,7 @@ function makePrisma() {
   const importRun = new Map<string, Row>();
   const analysis = new Map<string, Row>();
   const requirement = new Map<string, Row>();
+  const requirementVersion = new Map<string, Row>();
   let seq = 0;
   const id = (p: string) => `${p}_${(seq += 1)}`;
 
@@ -97,9 +98,36 @@ function makePrisma() {
       createdAt: new Date(),
     })),
     analysis: table(analysis, "an", () => ({ id: "" })),
-    requirement: table(requirement, "req", () => ({ id: "", deletedAt: null })),
+    requirement: {
+      ...table(requirement, "req", () => ({ id: "", deletedAt: null, version: 0 })),
+      // #1162 — the version-history service reads and writes through these.
+      findUnique: vi.fn(async ({ where }: { where: { id: string; deletedAt?: null } }) => {
+        const row = requirement.get(where.id);
+        if (!row || ("deletedAt" in where && row.deletedAt !== null)) return null;
+        return { ...row, updatedAt: new Date(0) };
+      }),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string; version: number };
+          data: Record<string, unknown>;
+        }) => {
+          const row = requirement.get(where.id);
+          if (!row || row.version !== where.version) return { count: 0 };
+          requirement.set(where.id, { ...row, ...data });
+          return { count: 1 };
+        },
+      ),
+    },
+    requirementVersion: table(requirementVersion, "ver", () => ({ id: "" })),
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
   };
-  return { prisma, stores: { importSource, importRun, analysis, requirement } };
+  return {
+    prisma,
+    stores: { importSource, importRun, analysis, requirement, requirementVersion },
+  };
 }
 
 function githubFetch(issues: unknown[]) {
@@ -477,6 +505,142 @@ describe("ImportService.runSource", () => {
     const second = await svc.runSource("src_1", { trigger: "manual" });
     expect(second.updatedCount).toBe(2);
     expect(second.createdCount).toBe(0);
+  });
+});
+
+describe("#1162 — import re-sync writes through version history", () => {
+  const seedSource = (ctx: ReturnType<typeof makeDeps>) =>
+    ctx.prisma.stores.importSource.set("src_1", {
+      id: "src_1",
+      projectId: "p1",
+      analysisId: "an_1",
+      source: "github",
+      label: "GH",
+      filter: JSON.stringify({ owner: "o", repo: "r", state: "open" }),
+      baseUrl: null,
+      jiraConnectionId: null,
+      secretId: "secret_1",
+      syncEnabled: false,
+      scheduledJobId: null,
+      consecutiveFailures: 0,
+      createdById: "user_1",
+      deletedAt: null,
+    });
+  const rows = (ctx: ReturnType<typeof makeDeps>) =>
+    [...ctx.prisma.stores.requirement.values()].sort((a, b) => a.id.localeCompare(b.id));
+  const versions = (ctx: ReturnType<typeof makeDeps>) => [
+    ...ctx.prisma.stores.requirementVersion.values(),
+  ];
+
+  it("records a version row for an issue that changed upstream, and none for one that did not", async () => {
+    const issues = [ghIssue(1), ghIssue(2)];
+    const ctx = makeDeps();
+    ctx.deps.importerDeps = { ...ctx.deps.importerDeps!, fetchFn: githubFetch(issues) };
+    seedSource(ctx);
+    const svc = new ImportService(ctx.deps);
+    await svc.runSource("src_1", { trigger: "manual" });
+    expect(versions(ctx)).toHaveLength(0);
+
+    issues[0] = { ...issues[0], title: "Issue 1, renamed", body: "new body" };
+    const second = await svc.runSource("src_1", { trigger: "manual" });
+
+    expect(second.updatedCount).toBe(2);
+    const [changed, unchanged] = rows(ctx);
+    expect(changed).toMatchObject({ title: "Issue 1, renamed", body: "new body", version: 1 });
+    expect(unchanged).toMatchObject({ title: "Issue 2", version: 0 });
+    expect(versions(ctx)).toHaveLength(1);
+    const [row] = versions(ctx);
+    expect(row).toMatchObject({ requirementId: changed.id, version: 1, actorId: null });
+    expect(row.reason).toMatch(/import/i);
+    expect(JSON.parse(row.changedFields as string)).toEqual({
+      title: { from: "Issue 1", to: "Issue 1, renamed" },
+      body: { from: "b", to: "new body" },
+    });
+  });
+
+  it("keeps the untracked source link current without minting a version", async () => {
+    const issues = [ghIssue(1)];
+    const ctx = makeDeps();
+    ctx.deps.importerDeps = { ...ctx.deps.importerDeps!, fetchFn: githubFetch(issues) };
+    seedSource(ctx);
+    const svc = new ImportService(ctx.deps);
+    await svc.runSource("src_1", { trigger: "manual" });
+
+    issues[0] = { ...issues[0], html_url: "moved-url" };
+    await svc.runSource("src_1", { trigger: "manual" });
+
+    expect(rows(ctx)[0]).toMatchObject({ externalUrl: "moved-url", version: 0 });
+    expect(versions(ctx)).toHaveLength(0);
+  });
+
+  it("an analyst edit landing mid-sync is kept in the history and the run still completes", async () => {
+    const issues = [ghIssue(1), ghIssue(2)];
+    const ctx = makeDeps();
+    ctx.deps.importerDeps = { ...ctx.deps.importerDeps!, fetchFn: githubFetch(issues) };
+    seedSource(ctx);
+    const svc = new ImportService(ctx.deps);
+    await svc.runSource("src_1", { trigger: "manual" });
+    const [first] = rows(ctx);
+
+    // The analyst's edit commits between the sync's read and its conditional write.
+    const updateMany = ctx.prisma.prisma.requirement.updateMany;
+    const real = updateMany.getMockImplementation()!;
+    updateMany.mockImplementationOnce(async (args) => {
+      const row = ctx.prisma.stores.requirement.get(first.id)!;
+      ctx.prisma.stores.requirement.set(first.id, {
+        ...row,
+        body: "analyst edit",
+        version: (row.version as number) + 1,
+      });
+      ctx.prisma.stores.requirementVersion.set("ver_analyst", {
+        id: "ver_analyst",
+        requirementId: first.id,
+        version: 1,
+        changedFields: JSON.stringify({ body: { from: "b", to: "analyst edit" } }),
+      });
+      return real(args);
+    });
+    issues[0] = { ...issues[0], body: "upstream body" };
+    const run = await svc.runSource("src_1", { trigger: "manual" });
+
+    expect(run.status).toBe("completed");
+    // Re-sync is "the source system wins", as before — but the analyst's edit
+    // stays in the history as its own version, and the overwrite is the next one.
+    expect(rows(ctx)[0]).toMatchObject({ body: "upstream body", version: 2 });
+    const sync = versions(ctx).find((v) => v.version === 2)!;
+    expect(JSON.parse(sync.changedFields as string)).toEqual({
+      body: { from: "analyst edit", to: "upstream body" },
+    });
+  });
+
+  it("skips a row that keeps losing to concurrent edits instead of failing the run", async () => {
+    const issues = [ghIssue(1), ghIssue(2)];
+    const ctx = makeDeps();
+    ctx.deps.importerDeps = { ...ctx.deps.importerDeps!, fetchFn: githubFetch(issues) };
+    seedSource(ctx);
+    const svc = new ImportService(ctx.deps);
+    await svc.runSource("src_1", { trigger: "manual" });
+    const [first, second] = rows(ctx);
+
+    ctx.prisma.prisma.requirement.updateMany.mockImplementation(async ({ where, data }) => {
+      const row = ctx.prisma.stores.requirement.get(where.id)!;
+      if (where.id === first.id) {
+        ctx.prisma.stores.requirement.set(where.id, {
+          ...row,
+          version: (row.version as number) + 1,
+        });
+        return { count: 0 };
+      }
+      ctx.prisma.stores.requirement.set(where.id, { ...row, ...data });
+      return { count: 1 };
+    });
+    issues[0] = { ...issues[0], body: "upstream 1" };
+    issues[1] = { ...issues[1], body: "upstream 2" };
+    const run = await svc.runSource("src_1", { trigger: "manual" });
+
+    expect(run.status).toBe("completed");
+    expect(ctx.prisma.stores.requirement.get(first.id)!.body).toBe("b");
+    expect(ctx.prisma.stores.requirement.get(second.id)!.body).toBe("upstream 2");
   });
 });
 

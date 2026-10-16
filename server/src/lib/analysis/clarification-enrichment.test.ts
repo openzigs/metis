@@ -18,10 +18,24 @@ interface ReqRow {
   body: string;
   deletedAt: Date | null;
   acceptanceCriteria?: string;
+  version?: number;
+}
+
+interface VersionRowFake {
+  requirementId: string;
+  version: number;
+  changedFields: string;
+  actorId: string | null;
+  reason: string | null;
 }
 
 const store = {
   requirements: [] as ReqRow[],
+  // #1162 — the history the version service appends; a bypass leaves it empty.
+  versions: [] as VersionRowFake[],
+  // #1162 — runs inside the conditional write, before it compares versions: a
+  // concurrent analyst edit landing between enrichment's read and its write.
+  beforeWrite: null as ((row: ReqRow) => void) | null,
   metadata: null as string | null,
   dialogState: null as string | null,
   dialogThrows: false,
@@ -36,12 +50,40 @@ vi.mock("../prisma.js", () => ({
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn((await import("../prisma.js")).prisma),
     ),
+    // #1162 — no `update`: a body write that bypasses the version service
+    // throws here, and the enrichment's own catch turns that into `null`.
     requirement: {
-      findMany: vi.fn(async () => store.requirements.filter((r) => r.deletedAt === null)),
-      update: vi.fn(async ({ where, data }: { where: { id: string }; data: { body: string } }) => {
-        const row = store.requirements.find((r) => r.id === where.id)!;
-        row.body = data.body;
-        return row;
+      findMany: vi.fn(async () =>
+        store.requirements
+          .filter((r) => r.deletedAt === null)
+          .map((r) => ({ ...r, version: r.version ?? 0 })),
+      ),
+      findUnique: vi.fn(async ({ where }: { where: { id: string; deletedAt?: null } }) => {
+        const row = store.requirements.find((r) => r.id === where.id);
+        if (!row || ("deletedAt" in where && row.deletedAt !== null)) return null;
+        return { ...row, version: row.version ?? 0, updatedAt: new Date(0) };
+      }),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string; version: number };
+          data: Partial<ReqRow>;
+        }) => {
+          const row = store.requirements.find((r) => r.id === where.id);
+          if (!row) return { count: 0 };
+          store.beforeWrite?.(row);
+          if ((row.version ?? 0) !== where.version) return { count: 0 };
+          Object.assign(row, data);
+          return { count: 1 };
+        },
+      ),
+    },
+    requirementVersion: {
+      create: vi.fn(async ({ data }: { data: VersionRowFake }) => {
+        store.versions.push(data);
+        return data;
       }),
     },
     analysis: {
@@ -956,6 +998,8 @@ describe("applyClarificationsToRequirements", () => {
   beforeEach(() => {
     store.dialogThrows = false;
     store.hasApprovals = false;
+    store.versions = [];
+    store.beforeWrite = null;
     store.dialogState = JSON.stringify(dialog);
     store.metadata = JSON.stringify({
       structuredRequirements: {
@@ -1079,6 +1123,80 @@ describe("applyClarificationsToRequirements", () => {
     await applyClarificationsToRequirements(ANALYSIS_ID);
     expect(store.requirements[0].body).toContain("The ECB daily rate.");
     expect(store.requirements[0].body).not.toContain(CRITERIA_FLAG_MARKER);
+  });
+
+  describe("#1162 — the body is written through version history", () => {
+    it("bumps the version and records the body change, so a pinned review can be rebuilt", async () => {
+      store.requirements[0].version = 4;
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      expect(store.requirements[0].version).toBe(5);
+      expect(store.versions).toHaveLength(1);
+      const [row] = store.versions;
+      expect(row).toMatchObject({ requirementId: "row-1", version: 5, actorId: null });
+      expect(row.reason).toMatch(/clarification/i);
+      const diff = JSON.parse(row.changedFields) as Record<string, { from: string; to: string }>;
+      expect(Object.keys(diff)).toEqual(["body"]);
+      expect(diff.body.from).toBe("Convert before display.");
+      expect(diff.body.to).toContain("The ECB daily rate.");
+    });
+
+    it("records nothing on a re-run that leaves the body as it is", async () => {
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      expect(store.versions).toHaveLength(1);
+    });
+
+    it("re-applies the answers on top of a concurrent analyst edit instead of overwriting it", async () => {
+      store.beforeWrite = (row) => {
+        store.beforeWrite = null;
+        row.body = "Analyst rewrote this.";
+        row.version = (row.version ?? 0) + 1;
+        store.versions.push({
+          requirementId: row.id,
+          version: row.version,
+          changedFields: "{}",
+          actorId: "analyst",
+          reason: null,
+        });
+      };
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+      const body = store.requirements[0].body;
+      expect(body.startsWith("Analyst rewrote this.")).toBe(true);
+      expect(body).toContain("The ECB daily rate.");
+      expect(store.requirements[0].version).toBe(2);
+      expect(store.versions.map((v) => v.version)).toEqual([1, 2]);
+      expect(out).toMatchObject({ requirementsUpdated: 1 });
+    });
+
+    it("skips a row that keeps losing to concurrent edits, without failing the run", async () => {
+      store.requirements.push({
+        id: "row-2",
+        analysisId: ANALYSIS_ID,
+        title: "Unrelated",
+        body: "Untouched.",
+        deletedAt: null,
+      });
+      store.beforeWrite = (row) => {
+        row.version = (row.version ?? 0) + 1;
+      };
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+      expect(out).not.toBeNull();
+      expect(out).toMatchObject({ appliedCount: 1, requirementsUpdated: 0 });
+      expect(store.requirements[0].body).toBe("Convert before display.");
+      expect(store.versions).toHaveLength(0);
+      // The accounting is still recorded, so the panel reflects this pass.
+      expect(JSON.parse(store.metadata!).clarificationApplication.answeredCount).toBe(1);
+    });
+
+    it("skips a row deleted between the read and the write", async () => {
+      store.beforeWrite = (row) => {
+        row.deletedAt = new Date();
+        row.version = (row.version ?? 0) + 1;
+      };
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+      expect(out).toMatchObject({ requirementsUpdated: 0 });
+      expect(store.versions).toHaveLength(0);
+    });
   });
 
   it("shortens a long question in the per-answer record", async () => {

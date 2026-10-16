@@ -751,7 +751,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         actor: { id: actor.id },
         action: "analysis.requirement.update",
         target: { type: "requirement", id: reqId },
-        metadata: { analysisId: id, fields: Object.keys(parsed.data) },
+        metadata: {
+          analysisId: id,
+          fields: Object.keys(parsed.data),
+          // #1162 — the status is not versioned, so its from/to lives here.
+          ...(updated.reviewStatusChange ? { reviewStatus: updated.reviewStatusChange } : {}),
+        },
       });
       // `version` is additive: the next optimistic-lock token for the caller.
       res.json(ok({ id: reqId, version: updated.version }));

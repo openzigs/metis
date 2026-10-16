@@ -35,6 +35,11 @@
 import { parseAcceptanceCriteria } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
+import {
+  RequirementVersionError,
+  updateRequirementWithHistory,
+  type VersionPrismaClient,
+} from "../requirements/requirement-version-service.js";
 import { getStructuredRequirements, persistAnalysisEnhancement } from "./analysis-service.js";
 import {
   CRITERIA_FLAG_LINE,
@@ -556,6 +561,75 @@ async function readRowOrigin(analysisId: string): Promise<RowOrigin> {
   return approval ? "promoted" : "synthesized";
 }
 
+/** #1162 — the reason recorded on the version row an enrichment write appends. */
+export const CLARIFICATION_VERSION_REASON = "Clarification answers applied";
+
+/**
+ * #1162 — how many times one row's body write re-reads and re-applies after a
+ * concurrent edit won the version check. Past this the row is skipped for this
+ * pass (the next pass regenerates the block from scratch), never the whole run.
+ */
+export const CLARIFICATION_WRITE_ATTEMPTS = 3;
+
+interface EnrichmentRow {
+  id: string;
+  title: string;
+  body: string | null;
+  acceptanceCriteria: string | null;
+  version: number;
+}
+
+/**
+ * #1162 — write one row's regenerated body through the version history.
+ *
+ * The write carries the version the body was computed from. If an analyst
+ * edited the row in between, the version check fails and the row is re-read
+ * and the block re-applied on top of THEIR body: an unversioned write would
+ * have silently overwritten the analyst's edit with text computed from the old
+ * body. Returns whether the body changed; a row that keeps losing, or is
+ * deleted meanwhile, is skipped and logged rather than failing the run.
+ */
+async function writeClarifiedBody(
+  row: EnrichmentRow,
+  answers: ReadonlyArray<AnsweredQuestion>,
+  analysisId: string,
+): Promise<boolean> {
+  let current: EnrichmentRow | null = row;
+  for (let attempt = 1; current; attempt++) {
+    // #1000 — the criteria are not regenerated from the answers, so flag them.
+    const nextBody = applyClarificationBlock(current.body ?? "", answers, {
+      hasAcceptanceCriteria: parseAcceptanceCriteria(current.acceptanceCriteria).length > 0,
+    });
+    if (nextBody === (current.body ?? "")) return false;
+    try {
+      await updateRequirementWithHistory(prisma as unknown as VersionPrismaClient, {
+        requirementId: current.id,
+        patch: { body: nextBody },
+        expectedVersion: current.version,
+        actorId: null,
+        reason: CLARIFICATION_VERSION_REASON,
+      });
+      return true;
+    } catch (err) {
+      if (!(err instanceof RequirementVersionError)) throw err;
+      if (err.code !== "VERSION_CONFLICT" || attempt >= CLARIFICATION_WRITE_ATTEMPTS) {
+        log.warn("Clarification answers not written to a requirement this pass", {
+          analysisId,
+          requirementId: row.id,
+          reason: err.code,
+          attempts: attempt,
+        });
+        return false;
+      }
+    }
+    current = (await prisma.requirement.findUnique({
+      where: { id: row.id, deletedAt: null },
+      select: { id: true, title: true, body: true, acceptanceCriteria: true, version: true },
+    })) as EnrichmentRow | null;
+  }
+  return false;
+}
+
 /**
  * Write every answered clarifying question into the persisted requirement it
  * was asked about, and record what happened to each answer.
@@ -579,7 +653,7 @@ export async function applyClarificationsToRequirements(
     const structured: StructuredRequirements | null = await getStructuredRequirements(analysisId);
     const rows = await prisma.requirement.findMany({
       where: { analysisId, deletedAt: null },
-      select: { id: true, title: true, body: true, acceptanceCriteria: true },
+      select: { id: true, title: true, body: true, acceptanceCriteria: true, version: true },
     });
 
     const { byRequirementId, unattributed } = attributeAnswers({
@@ -594,13 +668,7 @@ export async function applyClarificationsToRequirements(
     for (const row of rows) {
       const answers = byRequirementId.get(row.id) ?? [];
       for (const a of answers) appliedTo.set(a.questionId, row.title);
-      // #1000 — the criteria are not regenerated from the answers, so flag them.
-      const nextBody = applyClarificationBlock(row.body ?? "", answers, {
-        hasAcceptanceCriteria: parseAcceptanceCriteria(row.acceptanceCriteria).length > 0,
-      });
-      if (nextBody === (row.body ?? "")) continue;
-      await prisma.requirement.update({ where: { id: row.id }, data: { body: nextBody } });
-      requirementsUpdated++;
+      if (await writeClarifiedBody(row, answers, analysisId)) requirementsUpdated++;
     }
 
     const application: ClarificationApplication = {

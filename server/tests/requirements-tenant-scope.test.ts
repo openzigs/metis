@@ -110,6 +110,7 @@ const mockUpdateWithHistory = vi.fn(async (..._args: unknown[]) => ({
   updatedAt: new Date("2026-07-28T00:00:00Z"),
   changed: true,
   changedFields: {},
+  untrackedChanges: {},
 }));
 const mockRestoreVersion = vi.fn(async (..._args: unknown[]) => ({
   id: "req_1",

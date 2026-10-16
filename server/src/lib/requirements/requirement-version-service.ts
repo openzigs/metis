@@ -22,6 +22,17 @@ import {
 /**
  * Tracked requirement fields that participate in version history. Order is
  * stable so CSV/JSON exports and reconstructed snapshots are deterministic.
+ *
+ * #1162 — `reviewStatus` is deliberately NOT tracked. A version is the content
+ * a reviewer is asked to approve; the status is the verdict ON a version, not
+ * part of it. Tracking it would make the review its own subject: submitting a
+ * review pins version N and then moves the status, so every submission (and
+ * every verdict) would mint a new version straight after the pin, put a
+ * spurious `reviewStatus` change into every baseline compare, and let a
+ * restore silently revert a verdict. Its audit trail is the review's own
+ * `review.*` audit-log events, and a manual change through the edit routes is
+ * audited there too. Old version rows that recorded a `reviewStatus` change
+ * still parse; replay ignores the field (see {@link applyReverse}).
  */
 export const TRACKED_FIELDS = [
   "title",
@@ -30,7 +41,6 @@ export const TRACKED_FIELDS = [
   "type",
   "labels",
   "storyPoints",
-  "reviewStatus",
   // #990 — editable in the Edit dialog, so versioned like the body. Stored as
   // a JSON string (like `labels`); appended last to keep the CSV columns of
   // existing exports where they were.
@@ -38,6 +48,19 @@ export const TRACKED_FIELDS = [
 ] as const;
 
 export type TrackedField = (typeof TRACKED_FIELDS)[number];
+
+/**
+ * #1162 — the untracked columns a caller may write in the same transaction as
+ * a tracked patch. They never enter a version row and never bump `version`.
+ * An allowlist, so a tracked field cannot be slipped past the history as
+ * "untracked" data.
+ */
+export const UNTRACKED_WRITABLE_FIELDS = ["reviewStatus", "externalUrl", "importSourceId"] as const;
+
+export type UntrackedWritableField = (typeof UNTRACKED_WRITABLE_FIELDS)[number];
+
+/** Untracked columns written alongside a tracked patch. */
+export type UntrackedRequirementData = Partial<Record<UntrackedWritableField, string | null>>;
 
 /** A snapshot of the tracked subset of a requirement. */
 export type RequirementSnapshot = Record<TrackedField, unknown>;
@@ -252,11 +275,12 @@ export interface OriginalVersion {
  * row — and simply discarded it. This returns it under the version it held:
  * one below the earliest row, or the current version when there are no rows.
  *
- * This is NOT guaranteed to be the text as it was pinned. Some writers change
- * tracked fields without a version row (clarification enrichment, import
- * re-sync, review status), and reversing recorded changes cannot undo them.
  * With no rows at all the snapshot is simply the current row, so `source`
  * says which it is and callers must not present `current` as pinned text.
+ * Since #1162 every writer of a tracked field goes through
+ * {@link updateRequirementWithHistory} (a guard test enforces it), but a
+ * requirement written before that fix may still carry an unrecorded change,
+ * which reversing recorded changes cannot undo.
  *
  * Chosen over writing a v0 row at promotion: it needs no migration or backfill,
  * so it also covers every review requested before this change.
@@ -288,14 +312,28 @@ const TRACKED_SELECT = {
   type: true,
   labels: true,
   storyPoints: true,
-  reviewStatus: true,
   acceptanceCriteria: true,
+} as const;
+
+/** {@link TRACKED_SELECT} plus the untracked columns an update may also write. */
+const UPDATE_SELECT = {
+  ...TRACKED_SELECT,
+  reviewStatus: true,
+  externalUrl: true,
+  importSourceId: true,
 } as const;
 
 export interface UpdateWithHistoryParams {
   requirementId: string;
   /** Patch of tracked fields. `labels` must already be a JSON string. */
   patch: Partial<RequirementSnapshot>;
+  /**
+   * #1162 — untracked columns to write in the same transaction (and the same
+   * conditional write) as the patch. Recorded in no version row; an
+   * untracked-only change leaves `version` alone. Only changed values are
+   * written, and reported back as {@link UpdateWithHistoryResult.untrackedChanges}.
+   */
+  untrackedData?: UntrackedRequirementData;
   actorId?: string | null;
   reason?: string | null;
   /**
@@ -359,6 +397,29 @@ export interface UpdateWithHistoryResult {
   updatedAt: Date;
   changed: boolean;
   changedFields: ChangedFields;
+  /** #1162 — the untracked columns this call actually changed (never versioned). */
+  untrackedChanges: ChangedFields;
+}
+
+/**
+ * #1162 — refuse a write that would put a column past the history: a
+ * non-tracked key in `patch` would be written with no version row, and a
+ * tracked key in `untrackedData` would be written as if it were untracked.
+ * Both are programming errors, so they throw rather than being dropped.
+ */
+function assertWritableKeys(params: UpdateWithHistoryParams): void {
+  for (const key of Object.keys(params.patch)) {
+    if (!(TRACKED_FIELDS as readonly string[]).includes(key)) {
+      throw new TypeError(
+        `"${key}" is not a tracked field; pass it as untrackedData so it is written deliberately`,
+      );
+    }
+  }
+  for (const key of Object.keys(params.untrackedData ?? {})) {
+    if (!(UNTRACKED_WRITABLE_FIELDS as readonly string[]).includes(key)) {
+      throw new TypeError(`"${key}" cannot be written as untracked data`);
+    }
+  }
 }
 
 /**
@@ -371,6 +432,7 @@ export async function updateRequirementWithHistory(
   client: VersionPrismaClient,
   params: UpdateWithHistoryParams,
 ): Promise<UpdateWithHistoryResult> {
+  assertWritableKeys(params);
   // A versioned edit that lost the race is the caller's conflict to resolve;
   // an unversioned one asked for last-writer-wins, so retry on the new row.
   return retryLostRace(params.expectedVersion === undefined, () => updateOnce(client, params));
@@ -402,8 +464,8 @@ async function updateOnce(
         ...(params.projectId ? { projectId: params.projectId } : {}),
         ...(params.analysisId ? { analysisId: params.analysisId } : {}),
       },
-      select: TRACKED_SELECT,
-    })) as (RequirementSnapshot & { id: string; version: number }) | null;
+      select: UPDATE_SELECT,
+    })) as (RequirementSnapshot & { id: string; version: number } & Record<string, unknown>) | null;
 
     if (!existing) {
       throw new RequirementVersionError("NOT_FOUND", "Requirement not found");
@@ -436,6 +498,15 @@ async function updateOnce(
     const changed = Object.keys(changedFields).length > 0;
     const nextVersion = existing.version + 1;
 
+    const untrackedChanges: ChangedFields = {};
+    const untrackedWrite: Record<string, unknown> = {};
+    for (const [field, value] of Object.entries(params.untrackedData ?? {})) {
+      const from = nullish(existing[field]);
+      if (valuesEqual(from, value)) continue;
+      untrackedChanges[field] = { from, to: nullish(value) };
+      untrackedWrite[field] = value;
+    }
+
     // #877 — a no-op writes nothing and appends no history. The version check
     // above already ran in this transaction, so there is no race to lose; and
     // an empty conditional UPDATE matches no row on a real database (Prisma
@@ -444,7 +515,7 @@ async function updateOnce(
     if (changed) {
       const { count } = await txc.requirement.updateMany({
         where: { id: params.requirementId, version: existing.version, deletedAt: null },
-        data: { ...patch, version: nextVersion },
+        data: { ...patch, ...untrackedWrite, version: nextVersion },
       });
       if (count !== 1) throw versionConflict();
 
@@ -457,6 +528,13 @@ async function updateOnce(
           reason: params.reason ?? null,
         },
       });
+    } else if (Object.keys(untrackedWrite).length > 0) {
+      // #1162 — an untracked-only change: the same conditional write, no version.
+      const { count } = await txc.requirement.updateMany({
+        where: { id: params.requirementId, version: existing.version, deletedAt: null },
+        data: untrackedWrite,
+      });
+      if (count !== 1) throw versionConflict();
     }
 
     const updated = (await txc.requirement.findUnique({
@@ -470,6 +548,7 @@ async function updateOnce(
       updatedAt: updated.updatedAt,
       changed,
       changedFields,
+      untrackedChanges,
     };
   });
 }

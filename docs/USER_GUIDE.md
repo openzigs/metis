@@ -1712,6 +1712,8 @@ Restoring is limited to **coordinators and admins**.
 
 Restoring does **not** overwrite history — it creates a **new** version with the restored contents, so the full trail (including the restore itself) is always preserved.
 
+Changes METIS makes on its own are recorded too: writing clarification answers into a requirement shows as a version with the reason *"Clarification answers applied"*, and an import re-sync that brings in a changed title or description shows as *"Import re-sync from the source system"*. A requirement's **review status** (draft, approved, rejected, deferred) is not part of its versions — it is the verdict *on* a version — so approving or rejecting does not create one, and restoring an old version does not change the status.
+
 #### Exporting the history
 
 Use the **Export** dropdown at the top of the History panel to download the **complete** version history (all versions, not just the current page) as **CSV** or **JSON** — handy for compliance records and offline audits.

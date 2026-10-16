@@ -48,7 +48,7 @@ describe("computeChangedFields", () => {
   });
 
   it("treats null and undefined as equal (no spurious diff)", () => {
-    const diff = computeChangedFields({ reviewStatus: undefined }, { reviewStatus: null });
+    const diff = computeChangedFields({ storyPoints: undefined }, { storyPoints: null });
     expect(diff).toEqual({});
   });
 
@@ -402,6 +402,121 @@ describe("updateRequirementWithHistory", () => {
     await expect(
       updateRequirementWithHistory(client, { requirementId: "missing", patch: { title: "x" } }),
     ).rejects.toBeInstanceOf(RequirementVersionError);
+  });
+
+  describe("#1162 — untracked fields ride along without entering the history", () => {
+    const ROW = { ...ROW_V2, reviewStatus: "draft", externalUrl: "https://x/1" };
+
+    it("reviewStatus is not a tracked field: a review verdict is not content", () => {
+      expect(TRACKED_FIELDS as readonly string[]).not.toContain("reviewStatus");
+    });
+
+    it("writes untracked data with a tracked change in ONE conditional write, recording only the tracked diff", async () => {
+      const { client, requirement, requirementVersion } = makeClient();
+      requirement.findUnique
+        .mockResolvedValueOnce(ROW)
+        .mockResolvedValueOnce({ id: "r1", version: 3, updatedAt: new Date() });
+
+      const result = await updateRequirementWithHistory(client, {
+        requirementId: "r1",
+        patch: { title: "New" },
+        untrackedData: { externalUrl: "https://x/2", importSourceId: null },
+      });
+
+      expect(requirement.updateMany).toHaveBeenCalledTimes(1);
+      expect(requirement.updateMany).toHaveBeenCalledWith({
+        where: { id: "r1", version: 2, deletedAt: null },
+        data: { title: "New", externalUrl: "https://x/2", version: 3 },
+      });
+      const created = requirementVersion.create.mock.calls[0][0] as {
+        data: { changedFields: string };
+      };
+      expect(JSON.parse(created.data.changedFields)).toEqual({
+        title: { from: "Old", to: "New" },
+      });
+      expect(result.untrackedChanges).toEqual({
+        externalUrl: { from: "https://x/1", to: "https://x/2" },
+      });
+    });
+
+    it("writes an untracked-only change without bumping the version or appending a row", async () => {
+      const { client, requirement, requirementVersion } = makeClient();
+      requirement.findUnique
+        .mockResolvedValueOnce(ROW)
+        .mockResolvedValueOnce({ id: "r1", version: 2, updatedAt: new Date() });
+
+      const result = await updateRequirementWithHistory(client, {
+        requirementId: "r1",
+        patch: { title: "Old" },
+        untrackedData: { reviewStatus: "approved" },
+      });
+
+      expect(result).toMatchObject({ changed: false, version: 2 });
+      expect(result.untrackedChanges).toEqual({
+        reviewStatus: { from: "draft", to: "approved" },
+      });
+      expect(requirement.updateMany).toHaveBeenCalledWith({
+        where: { id: "r1", version: 2, deletedAt: null },
+        data: { reviewStatus: "approved" },
+      });
+      expect(requirementVersion.create).not.toHaveBeenCalled();
+    });
+
+    it("writes nothing when the untracked values are already current", async () => {
+      const { client, requirement } = makeClient();
+      requirement.findUnique
+        .mockResolvedValueOnce(ROW)
+        .mockResolvedValueOnce({ id: "r1", version: 2, updatedAt: new Date() });
+
+      const result = await updateRequirementWithHistory(client, {
+        requirementId: "r1",
+        patch: {},
+        untrackedData: { reviewStatus: "draft" },
+      });
+
+      expect(result.untrackedChanges).toEqual({});
+      expect(requirement.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("an untracked-only write that loses the race is a VERSION_CONFLICT for a versioned caller", async () => {
+      const { client, requirement } = makeClient();
+      requirement.findUnique.mockResolvedValue(ROW);
+      requirement.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        updateRequirementWithHistory(client, {
+          requirementId: "r1",
+          patch: {},
+          untrackedData: { reviewStatus: "approved" },
+          expectedVersion: 2,
+        }),
+      ).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
+    });
+
+    it("refuses a non-tracked field smuggled into the patch, which would be written unrecorded", async () => {
+      const { client, requirement } = makeClient();
+      requirement.findUnique.mockResolvedValue(ROW);
+      await expect(
+        updateRequirementWithHistory(client, {
+          requirementId: "r1",
+          patch: { reviewStatus: "approved" } as never,
+        }),
+      ).rejects.toThrow(/not a tracked field/);
+      expect(requirement.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("refuses a tracked field passed as untracked data, which would bypass the history", async () => {
+      const { client, requirement } = makeClient();
+      requirement.findUnique.mockResolvedValue(ROW);
+      await expect(
+        updateRequirementWithHistory(client, {
+          requirementId: "r1",
+          patch: {},
+          untrackedData: { body: "sneaky" } as never,
+        }),
+      ).rejects.toThrow(/cannot be written as untracked/);
+      expect(requirement.updateMany).not.toHaveBeenCalled();
+    });
   });
 });
 

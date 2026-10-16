@@ -36,12 +36,20 @@ import { runImport, type RequirementStore } from "./base-importer.js";
 import type { ImporterFetchContext, MappedRequirement } from "./types.js";
 import { audit } from "../audit/audit-service.js";
 import {
+  RequirementVersionError,
+  updateRequirementWithHistory,
+  type VersionPrismaClient,
+} from "../requirements/requirement-version-service.js";
+import {
   jobEvents as defaultJobEvents,
   genericFailureMessage,
   type JobEventEmitter,
 } from "../socket/job-events.js";
 
 const log = createChildLogger("import-service");
+
+/** #1162 — the reason recorded on the version row a re-sync appends. */
+export const IMPORT_RESYNC_VERSION_REASON = "Import re-sync from the source system";
 
 /** Cap on items pulled during a preview so a huge filter can't hang the UI. */
 const PREVIEW_MAX_SCAN = IMPORT_PREVIEW_SAMPLE_SIZE;
@@ -778,20 +786,51 @@ export class ImportService {
         });
         return { id: created.id };
       },
+      /**
+       * #1162 — a re-sync is an edit like any other, so it goes through the
+       * version history: a changed issue appends a version row, an unchanged
+       * one writes nothing (it used to rewrite every row on every sync).
+       *
+       * Conflicts: the write is unversioned, so the source system wins as it
+       * always has — but a concurrent analyst edit is no longer lost from the
+       * record. The service re-reads and re-diffs on top of the winner's row
+       * (bounded retries), so the analyst's edit stays in the history as its
+       * own version and the overwrite is the next one, restorable either way.
+       * A row that keeps losing, or is deleted mid-run, is skipped and logged:
+       * the next sync retries it, and the rest of the run is not failed.
+       *
+       * Each row is its own transaction (read, conditional write, version row).
+       * The run as a whole is not one transaction and never was: it streams
+       * pages from the source API, and holding a write transaction across those
+       * network calls would lock the database for the length of the import.
+       */
       async update(id, input) {
-        const updated = await prisma.requirement.update({
-          where: { id },
-          data: {
-            type: input.type,
-            title: input.title,
-            body: input.body,
-            priority: input.priority,
-            labels: JSON.stringify(input.labels),
-            externalUrl: input.externalUrl,
+        try {
+          await updateRequirementWithHistory(prisma as unknown as VersionPrismaClient, {
+            requirementId: id,
+            patch: {
+              type: input.type,
+              title: input.title,
+              body: input.body,
+              priority: input.priority,
+              labels: JSON.stringify(input.labels),
+            },
+            untrackedData: {
+              externalUrl: input.externalUrl,
+              importSourceId: input.importSourceId,
+            },
+            actorId: null,
+            reason: IMPORT_RESYNC_VERSION_REASON,
+          });
+        } catch (err) {
+          if (!(err instanceof RequirementVersionError)) throw err;
+          log.warn("Import re-sync skipped a requirement this run", {
+            requirementId: id,
             importSourceId: input.importSourceId,
-          },
-        });
-        return { id: updated.id };
+            reason: err.code,
+          });
+        }
+        return { id };
       },
       async setParent(childId: string, parentId: string) {
         await prisma.requirement.update({ where: { id: childId }, data: { parentId } });

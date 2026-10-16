@@ -32,6 +32,7 @@ import {
 // string[] on the wire; a malformed/legacy value reads as no labels rather than
 // throwing inside the lock's pre-flight read.
 import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
+import { audit } from "../lib/audit/audit-service.js";
 import {
   ACCEPTANCE_CRITERIA_CLEARED,
   ACCEPTANCE_CRITERIA_MAX_ITEMS,
@@ -242,7 +243,12 @@ export function requirementsCollaborationRouter(): Router {
       if (parsed.data.type !== undefined) patch.type = parsed.data.type;
       if (parsed.data.labels !== undefined) patch.labels = JSON.stringify(parsed.data.labels);
       if (parsed.data.storyPoints !== undefined) patch.storyPoints = parsed.data.storyPoints;
-      if (parsed.data.reviewStatus !== undefined) patch.reviewStatus = parsed.data.reviewStatus;
+      // #1162 — the review status is the verdict on a version, not part of it:
+      // written in the same transaction, recorded in the audit log, not versioned.
+      const untrackedData =
+        parsed.data.reviewStatus !== undefined
+          ? { reviewStatus: parsed.data.reviewStatus }
+          : undefined;
       if (parsed.data.acceptanceCriteria !== undefined) {
         // #990 — `[]` is an explicit clear: store the marker so the issue draft
         // does not refill the list from the body or a Gherkin text.
@@ -264,6 +270,7 @@ export function requirementsCollaborationRouter(): Router {
         const result = await updateRequirementWithHistory(prisma, {
           requirementId,
           patch,
+          untrackedData,
           actorId: req.user.userId,
           reason: parsed.data.reason,
           // Defence in depth: the scope lives in the service's own query, not
@@ -274,6 +281,7 @@ export function requirementsCollaborationRouter(): Router {
           // keep the hidden `finding:<id>` traceability labels it cannot show.
           keepHiddenLabels: true,
         });
+        auditReviewStatusChange(req.user.userId, requirementId, result.untrackedChanges);
         res.json({
           success: true,
           data: { id: result.id, version: result.version, updatedAt: result.updatedAt },
@@ -307,4 +315,23 @@ export function requirementsCollaborationRouter(): Router {
   r.use("/", requirementHistoryRouter());
 
   return r;
+}
+
+/**
+ * #1162 — a manual review-status change is not versioned (see `TRACKED_FIELDS`),
+ * so it is recorded here instead, like the review workflow's own transitions.
+ */
+function auditReviewStatusChange(
+  actorId: string,
+  requirementId: string,
+  untrackedChanges: Record<string, { from: unknown; to: unknown }>,
+): void {
+  const change = untrackedChanges.reviewStatus;
+  if (!change) return;
+  audit({
+    actor: { id: actorId },
+    action: "requirement.review_status.set",
+    target: { type: "requirement", id: requirementId },
+    metadata: { from: change.from, to: change.to },
+  });
 }
