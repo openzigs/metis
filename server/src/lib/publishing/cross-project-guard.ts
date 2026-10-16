@@ -67,9 +67,11 @@ export async function findCrossProjectOwners(input: {
 }
 
 /**
- * The service-layer check every live publish into a caller-chosen repository
- * runs: batch publish (`createBatch`), finding publish (`publishAnalysisFinding`)
- * and the draft pull request (`openDraftPullRequest`, #1180). Throws
+ * The service-layer cross-project check. Called by batch publish
+ * (`createBatch`), finding publish (`publishAnalysisFinding`) and the draft
+ * pull request (`openDraftPullRequest`, #1180). The Spec Kit tasks-to-issues
+ * export (`spec-kit/commands/taskstoissues-github.ts`) also writes to the saved
+ * publish target and does NOT call it yet. Throws
  * `CrossProjectRepoError` when another project has `owner/repo` connected,
  * unless the caller confirmed — and only a literal `true` confirms.
  */
