@@ -419,11 +419,10 @@ that instruction ever goes missing (#1168).
 
 ### Step 6.5: CI Verification
 
-**There is no CodeQL workflow in this repository.** `.github/workflows/codeql.yml` does not
-exist, so `Analyze (javascript-typescript)` and `CodeQL` never appear in `gh pr checks` and
-waiting for them means waiting forever. This step used to say the opposite and gate handoff
-on two jobs that cannot run — the fourth copy of a stale CI claim found in one audit (#1282).
-The static-analysis that *does* run on a PR is **`Semgrep`** and **`Dependency audit`**.
+**CodeQL runs on every PR.** `.github/workflows/codeql.yml` reports `Analyze javascript-typescript`,
+`Analyze python` and `CodeQL`, next to **`Semgrep`** and **`Dependency audit`**. A new alert
+fails `CodeQL` like any other check: new routes have raised `js/missing-rate-limiting` and
+`js/missing-token-validation`. Read the alert, fix the code, and re-check.
 
 1. **Wait for checks to complete.** `gh pr checks {PR_NUMBER} --watch` blocks, but it has
    exited 0 with jobs still pending and can return a transient empty set — so finish with a
