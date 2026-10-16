@@ -74,9 +74,11 @@ const MAX_CRITERIA = 20;
  * since): one-to-one, best score first, so a guess never puts the same evidence
  * on two rows. Candidates are ranked by the #1031 tiers — the same title, then
  * the containment score, then how much of the title is in the item's title —
- * and resolved by {@link matchOneToOneRefusingTies}, the rule #1031 shares: a
- * tie on all three tiers is refused, a requirement or item refused for a tie
- * takes no weaker match, and list order never decides. `structured` is the whole reviewed list, whose ids are the ones an
+ * and resolved by {@link matchOneToOneRefusingTies}, the rule #1031 shares: at
+ * each level a pair is taken only if it is in every maximum matching of that
+ * level's candidates, so no pair is a guess; every other requirement or item
+ * with a candidate there is refused and takes no weaker match; list order
+ * never decides. `structured` is the whole reviewed list, whose ids are the ones an
  * item can name; it defaults to `approved`.
  *
  * Issue #1129 — exported so the ticked/added split reads the same #1063

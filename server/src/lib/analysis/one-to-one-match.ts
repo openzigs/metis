@@ -1,38 +1,37 @@
 /**
- * One-to-one matching that refuses ties instead of breaking them by list order.
+ * One-to-one matching that never guesses: a pair is taken only when the
+ * candidates FORCE it.
  *
- * Two joins pair things by words and must never let the position of an item in
- * a list decide where it lands: promotion's title fallback (#1033, synthesis
- * output → approved structured requirement) and clarification attribution
- * (#1031, structured requirement → persisted row). Both rank candidate pairs on
- * a tuple of tiers and both refuse a tie. This module is that rule, once, so the
- * two cannot drift apart.
+ * Two joins pair things by words, and neither may let list order, or any other
+ * arbitrary choice, decide where an item lands. They are promotion's title
+ * fallback (#1033, synthesis output → approved structured requirement) and
+ * clarification attribution (#1031, structured requirement → persisted row).
+ * Both rank candidate pairs on a tuple of tiers. This module is their shared
+ * rule, so the two cannot drift apart. A wrong attribution is worse than none
+ * (owner's decision on #1187).
  *
  * The candidates are grouped into LEVELS by `compare` (equal ⇒ same level) and
- * resolved best level first. Within a level the live pairs form a bipartite
- * graph, resolved to a fixed point. Each round reads a snapshot of the graph,
- * so neither list order nor the order of rounds' own work decides anything:
+ * resolved best level first. At each level the live candidates form a
+ * bipartite graph, and a pair is taken **only if it is in every maximum
+ * matching of that graph**. Any other choice would be one of several equally
+ * good assignments, and so a guess. Examples:
  *
- *   - **Genuine tie.** A vertex that is the ONLY candidate of two or more
- *     vertices on the other side cannot go to all of them. It and those
- *     dependants are refused.
- *   - **Forced pair.** A vertex with exactly one live candidate, whose partner
- *     is not in a genuine tie, takes it, and both leave the graph.
+ *   - S1 level on R1 and R2, S2 reaching only R2: the only maximum matching is
+ *     {S1–R1, S2–R2}, so both pairs are taken.
+ *   - S1:{R1}, S2:{R1,R2}, S3:{R2}: three maximum matchings, and no pair is in
+ *     all of them, so nothing is taken.
+ *   - R1 and R2 both reaching only S1: either pair is a maximum matching, so
+ *     neither is taken.
  *
- * The rounds repeat until neither applies. Whatever is still live then has two
- * or more equally good candidates on both sides, so it is ambiguous and is
- * refused too.
+ * Every vertex that had a live candidate at the level and did not get a forced
+ * pair is REFUSED. It takes no weaker match at a later level, whether it was in
+ * a tie itself or only lost its options to others' ties (the #1186 rule: no
+ * fallback).
  *
- * Counting rivals once per level, before anything is removed, cascades: a
- * vertex whose only rival is itself about to be refused still counts that rival
- * (#1187 review, run 9). The fixed point is what stops that. With S1 level on R1
- * and R2, and S2 reaching only R2, R2 takes S2 and S1 takes R1. That is the
- * only one-to-one assignment the level allows.
- *
- * **No fallback after a tie.** A vertex refused for a tie never takes a weaker
- * match at a later level: a wrong attribution is worse than none (owner's
- * decision on #1187, and #1186's rule). A vertex that simply lost its options
- * to forced pairs was in no tie, and may still match at a weaker level.
+ * The result depends only on the candidate graph, never on candidate order.
+ * Membership in every maximum matching is checked per connected component by
+ * removing the edge and re-measuring the maximum (augmenting paths). The levels
+ * these joins produce are small.
  */
 
 export interface OneToOneCandidate<L, R, S> {
@@ -44,18 +43,19 @@ export interface OneToOneCandidate<L, R, S> {
 export interface OneToOneResult<L, R> {
   /** Each matched left and the right it took. */
   matches: Map<L, R>;
-  /** Lefts refused because they were in a tie; they match nothing. */
-  tiedLefts: Set<L>;
-  /** Rights refused because they were in a tie; nothing matches them. */
-  tiedRights: Set<R>;
+  /** Lefts that had a candidate but no forced pair; they match nothing. */
+  refusedLefts: Set<L>;
+  /** Rights that had a candidate but no forced pair; nothing matches them. */
+  refusedRights: Set<R>;
 }
 
 /**
- * Match lefts to rights one-to-one, best level first, refusing ties.
+ * Match lefts to rights one-to-one, best level first, taking only the pairs in
+ * every maximum matching of their level.
  *
  * `compare(a, b)` orders scores like a sort comparator, BEST FIRST: negative
  * when `a` is the better score, 0 when the two are level. It must be a total
- * preorder. A repeated `(left, right)` pair is read once, at its best score.
+ * preorder. A repeated `(left, right)` pair is read at its best level.
  */
 export function matchOneToOneRefusingTies<L, R, S>(
   candidates: ReadonlyArray<OneToOneCandidate<L, R, S>>,
@@ -72,60 +72,94 @@ export function matchOneToOneRefusingTies<L, R, S>(
 
   const matches = new Map<L, R>();
   const takenRights = new Set<R>();
-  const tiedLefts = new Set<L>();
-  const tiedRights = new Set<R>();
-  const available = (l: L, r: R): boolean =>
-    !matches.has(l) && !takenRights.has(r) && !tiedLefts.has(l) && !tiedRights.has(r);
+  const refusedLefts = new Set<L>();
+  const refusedRights = new Set<R>();
 
   for (const level of levels) {
-    let live = level.filter((c) => available(c.left, c.right));
-    for (;;) {
-      const leftAdj = new Map<L, Set<R>>();
-      const rightAdj = new Map<R, Set<L>>();
-      for (const c of live) {
-        leftAdj.set(c.left, (leftAdj.get(c.left) ?? new Set<R>()).add(c.right));
-        rightAdj.set(c.right, (rightAdj.get(c.right) ?? new Set<L>()).add(c.left));
-      }
-      const newTiedLefts = new Set<L>();
-      const newTiedRights = new Set<R>();
-      for (const [r, ls] of rightAdj) {
-        const dependants = [...ls].filter((l) => leftAdj.get(l)!.size === 1);
-        if (dependants.length >= 2) {
-          newTiedRights.add(r);
-          for (const l of dependants) newTiedLefts.add(l);
-        }
-      }
-      for (const [l, rs] of leftAdj) {
-        const dependants = [...rs].filter((r) => rightAdj.get(r)!.size === 1);
-        if (dependants.length >= 2) {
-          newTiedLefts.add(l);
-          for (const r of dependants) newTiedRights.add(r);
-        }
-      }
-      const forced = new Map<L, R>();
-      for (const [l, rs] of leftAdj) {
-        if (newTiedLefts.has(l)) continue;
-        for (const r of rs) {
-          if (newTiedRights.has(r)) continue;
-          if (rs.size === 1 || rightAdj.get(r)!.size === 1) forced.set(l, r);
-        }
-      }
-      if (newTiedLefts.size === 0 && newTiedRights.size === 0 && forced.size === 0) break;
-      for (const l of newTiedLefts) tiedLefts.add(l);
-      for (const r of newTiedRights) tiedRights.add(r);
-      for (const [l, r] of forced) {
-        matches.set(l, r);
-        takenRights.add(r);
-      }
-      live = live.filter((c) => available(c.left, c.right));
+    const edges = new Map<L, Set<R>>();
+    for (const c of level) {
+      if (matches.has(c.left) || refusedLefts.has(c.left)) continue;
+      if (takenRights.has(c.right) || refusedRights.has(c.right)) continue;
+      edges.set(c.left, (edges.get(c.left) ?? new Set<R>()).add(c.right));
     }
-    // Everything still live has two or more level candidates on both sides.
-    for (const c of live) {
-      tiedLefts.add(c.left);
-      tiedRights.add(c.right);
+    const forced = forcedPairs(edges);
+    for (const [l, r] of forced) {
+      matches.set(l, r);
+      takenRights.add(r);
+    }
+    for (const [l, rs] of edges) {
+      if (!forced.has(l)) refusedLefts.add(l);
+      for (const r of rs) if (!takenRights.has(r)) refusedRights.add(r);
     }
   }
-  return { matches, tiedLefts, tiedRights };
+  return { matches, refusedLefts, refusedRights };
+}
+
+/** The pairs in EVERY maximum matching of a bipartite graph (left → rights). */
+function forcedPairs<L, R>(edges: ReadonlyMap<L, ReadonlySet<R>>): Map<L, R> {
+  const forced = new Map<L, R>();
+  for (const component of components(edges)) {
+    // A pair in EVERY maximum matching is in this one; one that is not is
+    // exposed by removing it and finding a maximum just as large.
+    const matching = maximumMatching(component);
+    for (const [l, r] of matching) {
+      const without = new Map(component);
+      const rest = new Set(component.get(l));
+      rest.delete(r);
+      without.set(l, rest);
+      if (maximumMatching(without).size < matching.size) forced.set(l, r);
+    }
+  }
+  return forced;
+}
+
+/** A maximum matching (left → right) by augmenting paths. */
+function maximumMatching<L, R>(edges: ReadonlyMap<L, ReadonlySet<R>>): Map<L, R> {
+  const leftOf = new Map<R, L>();
+  const augment = (l: L, seen: Set<R>): boolean => {
+    for (const r of edges.get(l) ?? []) {
+      if (seen.has(r)) continue;
+      seen.add(r);
+      const holder = leftOf.get(r);
+      if (holder === undefined || augment(holder, seen)) {
+        leftOf.set(r, l);
+        return true;
+      }
+    }
+    return false;
+  };
+  for (const l of edges.keys()) augment(l, new Set<R>());
+  const matching = new Map<L, R>();
+  for (const [r, l] of leftOf) matching.set(l, r);
+  return matching;
+}
+
+/** The connected components of a bipartite graph, each as its own edge map. */
+function components<L, R>(edges: ReadonlyMap<L, ReadonlySet<R>>): Array<Map<L, Set<R>>> {
+  const leftsOf = new Map<R, L[]>();
+  for (const [l, rs] of edges) for (const r of rs) leftsOf.set(r, [...(leftsOf.get(r) ?? []), l]);
+  const seen = new Set<L>();
+  const out: Array<Map<L, Set<R>>> = [];
+  for (const start of edges.keys()) {
+    if (seen.has(start)) continue;
+    const component = new Map<L, Set<R>>();
+    const queue = [start];
+    seen.add(start);
+    while (queue.length > 0) {
+      const l = queue.pop()!;
+      component.set(l, new Set(edges.get(l)));
+      for (const r of edges.get(l) ?? []) {
+        for (const other of leftsOf.get(r) ?? []) {
+          if (!seen.has(other)) {
+            seen.add(other);
+            queue.push(other);
+          }
+        }
+      }
+    }
+    out.push(component);
+  }
+  return out;
 }
 
 /**

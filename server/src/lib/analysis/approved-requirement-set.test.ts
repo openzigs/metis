@@ -440,8 +440,8 @@ describe("#1033 — the title fallback refuses a tie instead of breaking it by o
       ]) {
         const matches = matchSynthesized(reqs, items);
         expect(matches.get(feeds.id)).toBe(item27);
-        expect(matches.get(categories.id)).not.toBe(item27);
-        expect([undefined, item28]).toContain(matches.get(categories.id));
+        // The level's only maximum matching pairs categories with its own item.
+        expect(matches.get(categories.id)).toBe(item28);
       }
     }
   });
