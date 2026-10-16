@@ -42,6 +42,12 @@ import {
   hasCriteriaFlag,
 } from "./clarification-criteria-flag.js";
 import { readDialogState } from "./clarification-dialog-store.js";
+import {
+  compareTiersDescending,
+  matchOneToOneRefusingTies,
+  type OneToOneCandidate,
+  type OneToOneResult,
+} from "./one-to-one-match.js";
 import type {
   AnswerProvenance,
   ClarificationApplication,
@@ -254,38 +260,25 @@ function titleKey(title: string): string {
  */
 export type RowOrigin = "promoted" | "synthesized";
 
-interface Candidate {
-  structuredId: string;
-  rowId: string;
-  /** 1 when the row's title IS the structured title (promotion copies it). */
-  exact: number;
-  /**
-   * 1 when, on top of an exact title, the row's body (less our generated block)
-   * IS the structured description — promotion copies that too, so it tells two
-   * identically titled requirements apart. Clarify may rewrite the description
-   * later, so it only ever breaks a tie inside the exact tier.
-   */
-  description: number;
-  /** Containment of the structured title's tokens in the row's title + body. */
-  score: number;
-  /** Containment of the structured title's tokens in the row's title alone. */
-  titleScore: number;
-}
-
-/** Best first: exact title, then description, then title+body, then title alone. */
-function compareCandidates(a: Candidate, b: Candidate): number {
-  return (
-    b.exact - a.exact ||
-    b.description - a.description ||
-    b.score - a.score ||
-    b.titleScore - a.titleScore
-  );
-}
+/**
+ * A candidate pairing of a structured requirement (left) with a persisted row
+ * (right). Its score is a tuple of tiers, compared best first with
+ * {@link compareTiersDescending}:
+ *   0. exact — 1 when the row's title IS the structured title (promotion copies it, #730);
+ *   1. description — 1 when, on top of an exact title, the row's body (less our
+ *      generated block) IS the structured description. Promotion copies that
+ *      too, so it tells two identically titled requirements apart. Clarify may
+ *      rewrite the description later, so it only ever breaks a tie inside the
+ *      exact tier;
+ *   2. containment of the structured title's tokens in the row's title + body;
+ *   3. containment of the structured title's tokens in the row's title alone.
+ */
+export type RowCandidate = OneToOneCandidate<string, string, number[]>;
 
 function buildCandidates(
   structured: readonly StructuredRequirement[],
   rows: ReadonlyArray<{ id: string; title: string; body: string }>,
-): Candidate[] {
+): RowCandidate[] {
   const rowFeatures = rows.map((r) => ({
     id: r.id,
     titleKey: titleKey(r.title),
@@ -293,7 +286,7 @@ function buildCandidates(
     titleTokens: significantTokens(r.title),
     tokens: significantTokens(`${r.title} ${r.body}`),
   }));
-  const candidates: Candidate[] = [];
+  const candidates: RowCandidate[] = [];
   for (const req of structured) {
     const key = titleKey(req.title);
     const descriptionKey = normalised(req.description ?? "");
@@ -304,25 +297,65 @@ function buildCandidates(
       // An exact title is the strongest evidence there is, so it does not also
       // have to clear the token threshold (a title of short words has none).
       if (exact === 0 && score < ATTRIBUTION_THRESHOLD) continue;
+      const description =
+        exact === 1 && descriptionKey.length > 0 && descriptionKey === row.bodyKey ? 1 : 0;
       candidates.push({
-        structuredId: req.id,
-        rowId: row.id,
-        exact,
-        description:
-          exact === 1 && descriptionKey.length > 0 && descriptionKey === row.bodyKey ? 1 : 0,
-        score,
-        titleScore: containmentScore(needle, row.titleTokens),
+        left: req.id,
+        right: row.id,
+        score: [exact, description, score, containmentScore(needle, row.titleTokens)],
       });
     }
   }
-  return candidates.sort(compareCandidates);
+  return candidates;
 }
 
-/** The candidates level with the first one, i.e. the best tier of a sorted list. */
-function bestLevel(sorted: readonly Candidate[]): Candidate[] {
-  const first = sorted[0];
-  if (!first) return [];
-  return sorted.filter((c) => compareCandidates(first, c) === 0);
+/**
+ * Issue #1031 — the largest connected component of one level's candidates
+ * that the strict "in every maximum matching" proof is run on.
+ *
+ * Unlike synthesis output (capped at 100 items), nothing caps an analysis's
+ * persisted requirement rows or its structured list, and the proof costs about
+ * (matched edges × V·E) per component — a complete 300 × 300 level takes
+ * seconds. Above this many edges the component is refused outright, which is
+ * always safe here: an answer reported as not applied, never a guess. A real
+ * component of this size means hundreds of requirements level with each other,
+ * which no title match could separate anyway.
+ */
+export const MAX_ATTRIBUTION_PROOF_EDGES = 2_500;
+
+/**
+ * Promoted rows — one row per requirement and one requirement per row, by the
+ * rule #1033's promotion fallback shares ({@link matchOneToOneRefusingTies}):
+ * at each level a pair is taken only if it is in every maximum matching of
+ * that level's candidates; every other requirement or row with a candidate
+ * there is refused and takes nothing weaker later. Exported so the shared tie
+ * table (`ONE_TO_ONE_TIE_CASES`) runs against exactly this resolution.
+ */
+export function resolvePromotedCandidates(
+  candidates: readonly RowCandidate[],
+): OneToOneResult<string, string> {
+  return matchOneToOneRefusingTies(candidates, {
+    compare: compareTiersDescending,
+    maxComponentEdges: MAX_ATTRIBUTION_PROOF_EDGES,
+  });
+}
+
+/**
+ * Synthesized rows — MANY-TO-ONE by design, and so deliberately outside the
+ * one-to-one helper: synthesis may consolidate several structured requirements
+ * into one row, and each of them belongs on it. Each requirement independently
+ * takes its own best row when that best is unique; a level best is refused.
+ */
+function resolveSynthesizedCandidates(candidates: readonly RowCandidate[]): Map<string, string> {
+  const byLeft = new Map<string, RowCandidate[]>();
+  for (const c of candidates) byLeft.set(c.left, [...(byLeft.get(c.left) ?? []), c]);
+  const matched = new Map<string, string>();
+  for (const [left, list] of byLeft) {
+    const sorted = [...list].sort((a, b) => compareTiersDescending(a.score, b.score));
+    const best = sorted.filter((c) => compareTiersDescending(sorted[0]!.score, c.score) === 0);
+    if (best.length === 1) matched.set(left, best[0]!.right);
+  }
+  return matched;
 }
 
 /**
@@ -335,22 +368,10 @@ function bestLevel(sorted: readonly Candidate[]): Candidate[] {
  * to whichever row came first. So the answers followed a position, not the
  * requirement the question was asked about.
  *
- * Candidates are ranked by {@link compareCandidates}. Where the best candidates
- * for a decision are still level, nobody is given the row: a missed match is
- * reported to the user, a wrong one is not. Row and question order play no part.
- *
- * `synthesized` rows: each structured requirement independently takes its own
- * best row when that best is unique; several may share one row.
- *
- * `promoted` rows: one row per requirement and one requirement per row, made
- * once for EVERY structured requirement (answered or not), best level first, so
- * a row taken by one requirement is not available to its neighbour. Within a
- * level:
- *   - a requirement level on two rows is left unmatched, and only it — the rows
- *     stay open, so an unambiguous neighbour still gets its own row;
- *   - a row two requirements are level on goes to neither, and neither of them
- *     falls back to a weaker row (that would be the guess this refuses), nor
- *     does a weaker requirement get the row they were level on.
+ * The match is made once for EVERY structured requirement, answered or not, so
+ * a row that is one requirement's cannot be handed to its neighbour. A tie the
+ * tiers cannot settle is refused: a missed match is reported to the user, a
+ * wrong one is not. Row and question order play no part.
  */
 function matchStructuredToRows(
   structured: readonly StructuredRequirement[],
@@ -358,55 +379,9 @@ function matchStructuredToRows(
   origin: RowOrigin,
 ): Map<string, string> {
   const candidates = buildCandidates(structured, rows);
-  const matched = new Map<string, string>();
-
-  if (origin === "synthesized") {
-    const byStructured = new Map<string, Candidate[]>();
-    for (const c of candidates) {
-      const list = byStructured.get(c.structuredId);
-      if (list) list.push(c);
-      else byStructured.set(c.structuredId, [c]);
-    }
-    for (const [structuredId, list] of byStructured) {
-      const best = bestLevel(list);
-      if (best.length === 1) matched.set(structuredId, best[0]!.rowId);
-    }
-    return matched;
-  }
-
-  const takenRows = new Set<string>();
-  const blockedStructured = new Set<string>();
-  const blockedRows = new Set<string>();
-  const open = (c: Candidate) =>
-    !matched.has(c.structuredId) &&
-    !blockedStructured.has(c.structuredId) &&
-    !takenRows.has(c.rowId) &&
-    !blockedRows.has(c.rowId);
-
-  for (let i = 0; i < candidates.length;) {
-    let j = i;
-    while (j < candidates.length && compareCandidates(candidates[i]!, candidates[j]!) === 0) j++;
-    const level = candidates.slice(i, j).filter(open);
-    i = j;
-    const perStructured = new Map<string, number>();
-    const perRow = new Map<string, number>();
-    for (const c of level) {
-      perStructured.set(c.structuredId, (perStructured.get(c.structuredId) ?? 0) + 1);
-      perRow.set(c.rowId, (perRow.get(c.rowId) ?? 0) + 1);
-    }
-    for (const c of level) {
-      const rowContested = (perRow.get(c.rowId) ?? 0) > 1;
-      const requirementTied = (perStructured.get(c.structuredId) ?? 0) > 1;
-      if (!rowContested && !requirementTied) {
-        matched.set(c.structuredId, c.rowId);
-        takenRows.add(c.rowId);
-        continue;
-      }
-      blockedStructured.add(c.structuredId);
-      if (rowContested) blockedRows.add(c.rowId);
-    }
-  }
-  return matched;
+  return origin === "synthesized"
+    ? resolveSynthesizedCandidates(candidates)
+    : resolvePromotedCandidates(candidates).matches;
 }
 
 /**

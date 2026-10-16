@@ -69,6 +69,8 @@ const {
   CLARIFICATIONS_START,
   MAX_OUTCOME_QUESTION,
   MAX_PUBLISHED_ANSWER,
+  MAX_ATTRIBUTION_PROOF_EDGES,
+  resolvePromotedCandidates,
   applyClarificationBlock,
   PROVENANCE_TAGS,
   answerProvenance,
@@ -82,6 +84,8 @@ const {
   significantTokens,
   stripClarificationBlock,
 } = await import("./clarification-enrichment.js");
+
+const { ONE_TO_ONE_TIE_CASES } = await import("./one-to-one-match.cases.js");
 
 const { CRITERIA_FLAG_LINE, CRITERIA_FLAG_MARKER, clearCriteriaFlag, hasCriteriaFlag } =
   await import("./clarification-criteria-flag.js");
@@ -672,7 +676,30 @@ describe("#1031 — an answer goes to its own requirement, never the neighbour",
     expect(out.byRequirementId.get("row-customers")?.map((a) => a.questionId)).toEqual(["q2"]);
   });
 
-  it("a requirement level on two rows blocks only itself — its neighbour still gets its row", () => {
+  it("probe A — S1 level on two rows, S2 reaching only one of them: both are forced", () => {
+    // The cascade from the #1186 review. The only maximum matching at this
+    // level is {S1–row-1, S2–row-2}, so neither pair is a guess.
+    const S1 = structured("REQ-1", "Bulk read");
+    const S2 = structured("REQ-2", "Archive bulk read");
+    const out = attributeAnswers({
+      answered: [
+        answer({ questionId: "q1", requirementId: "REQ-1" }),
+        answer({ questionId: "q2", requirementId: "REQ-2" }),
+      ],
+      structured: [S1, S2],
+      requirements: [
+        { id: "row-1", title: "Bulk read toggle", body: "" },
+        { id: "row-2", title: "Bulk read archive", body: "" },
+      ],
+    });
+    expect(out.byRequirementId.get("row-1")?.map((a) => a.questionId)).toEqual(["q1"]);
+    expect(out.byRequirementId.get("row-2")?.map((a) => a.questionId)).toEqual(["q2"]);
+    expect(out.unattributed).toEqual([]);
+  });
+
+  it("no fallback — a row refused for a tie is not given to a weaker requirement one level down", () => {
+    // S2 reaches row-2 only BELOW S1's tie (title-only 0.75 against 1), so
+    // row-2 was refused at that tie and S2 does not take it afterwards.
     const S1 = structured("REQ-1", "Bulk read");
     const S2 = structured("REQ-2", "Bulk read archive purge");
     const out = attributeAnswers({
@@ -686,10 +713,8 @@ describe("#1031 — an answer goes to its own requirement, never the neighbour",
         { id: "row-2", title: "Bulk read archive", body: "Purge." },
       ],
     });
-    expect([...out.byRequirementId.entries()].map(([k, v]) => [k, v[0]!.questionId])).toEqual([
-      ["row-2", "q2"],
-    ]);
-    expect(out.unattributed.map((a) => a.questionId)).toEqual(["q1"]);
+    expect(out.byRequirementId.size).toBe(0);
+    expect(out.unattributed.map((a) => a.questionId).sort()).toEqual(["q1", "q2"]);
   });
 
   it("a row two requirements are level on goes to neither, nor to a weaker third", () => {
@@ -846,6 +871,59 @@ describe("#1031 — an answer goes to its own requirement, never the neighbour",
     expect(store.requirements[0]!.body).toContain("Daily.");
     expect(store.requirements[0]!.body).toContain("Monthly.");
     expect(out).toMatchObject({ appliedCount: 2, unattributedCount: 0 });
+  });
+});
+
+describe("#1031 — promoted-row attribution shares the one-to-one tie rule (#1187)", () => {
+  const permutations = <T>(items: readonly T[]): T[][] =>
+    items.length <= 1
+      ? [[...items]]
+      : items.flatMap((item, i) =>
+          permutations([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [
+            item,
+            ...rest,
+          ]),
+        );
+
+  for (const tc of ONE_TO_ONE_TIE_CASES) {
+    it(`${tc.name} (every candidate order)`, () => {
+      for (const order of permutations(tc.candidates)) {
+        const out = resolvePromotedCandidates(order);
+        expect(Object.fromEntries(out.matches)).toEqual(tc.matches);
+        expect([...out.refusedLefts].sort()).toEqual([...tc.refusedLefts].sort());
+        expect([...out.refusedRights].sort()).toEqual([...tc.refusedRights].sort());
+      }
+    });
+  }
+
+  /** S_i level on R_1 … R_i: exactly one perfect matching, S_i–R_i. */
+  const staircase = (n: number) => {
+    const out: Array<{ left: string; right: string; score: number[] }> = [];
+    for (let s = 1; s <= n; s++) {
+      for (let r = 1; r <= s; r++) out.push({ left: `S${s}`, right: `R${r}`, score: [0, 0, 1, 1] });
+    }
+    return out;
+  };
+
+  it("proves a component up to MAX_ATTRIBUTION_PROOF_EDGES — a staircase just under it is forced", () => {
+    const n = 70; // 2,485 edges
+    const candidates = staircase(n);
+    expect(candidates.length).toBeLessThanOrEqual(MAX_ATTRIBUTION_PROOF_EDGES);
+    const out = resolvePromotedCandidates(candidates);
+    expect(out.matches.size).toBe(n);
+    expect(out.matches.get("S70")).toBe("R70");
+  });
+
+  it("refuses a component over MAX_ATTRIBUTION_PROOF_EDGES whole, and still matches a separate pair", () => {
+    // Nothing caps an analysis's rows; the proof is ~O(matched × V·E) per
+    // component. Over the limit it is refused instead — even this staircase,
+    // which the proof would force pair by pair.
+    const n = 71; // 2,556 edges
+    const candidates = [...staircase(n), { left: "S-solo", right: "R-solo", score: [0, 0, 1, 1] }];
+    expect(candidates.length - 1).toBeGreaterThan(MAX_ATTRIBUTION_PROOF_EDGES);
+    const out = resolvePromotedCandidates(candidates);
+    expect(Object.fromEntries(out.matches)).toEqual({ "S-solo": "R-solo" });
+    expect(out.refusedLefts.size).toBe(n);
   });
 });
 
