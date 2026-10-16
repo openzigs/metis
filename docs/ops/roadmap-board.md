@@ -47,9 +47,12 @@ it the changes are made. Node built-ins only, nothing to install. Its tests are
   - after the write, every iteration read before must come back; if one does not, the run counts a
     failure and writes no Cycle value for the rest of the run.
 
-  A guard that trips writes nothing more and fails the run, so the workflow goes red. When adding
-  cannot help (the field has no iterations, or today falls before the first or in a gap between
-  two) it says so in a `board:` line instead.
+  A tripped guard counts as a failed write, so the workflow goes red, and the rest of the run
+  carries on. The first two add no iteration, and items are still set from the iterations already
+  there. The third stops every further Cycle write for the run, because the field can no longer be
+  trusted. Every other field is still synced. When adding cannot help (the field has no
+  iterations, or today falls before the first or in a gap between two) it says so in a `board:`
+  line instead.
 - **Touches Status in one case only.** GitHub's built-in workflows own Status (item closed or pull
   request merged → Done), and an epic never gets a pull request of its own, so an epic would read
   Todo with half its work done. The exception
@@ -77,10 +80,12 @@ it the changes are made. Node built-ins only, nothing to install. Its tests are
   Cycle covering today (Now items then keep their Cycle), or no Cycle after it (Next items keep
   theirs). Tier, Kind, Area, Progress % and Sub-issues done are required: without one, the run
   stops.
-- **Reports linked pull requests it cannot read** in one `board:` line, and carries on. The
-  nightly's App token reads issues and writes projects; if GitHub refuses it the linked-PR
-  connection, Started falls back to the creation date, and only fills an empty Started, so a date
-  set from a pull request on an earlier run is never rewritten.
+- **Reports linked pull requests it cannot read** in one `board:` line, and carries on. It falls
+  back on **any** GitHub error while reading linked pull requests. The nightly's App token reads
+  issues and writes projects and may lack a pull-request read, but a transient error triggers the
+  fallback too, and the next night's run tries again. In fallback, Started comes from the creation
+  date and only fills an empty Started, so a date set from a pull request on an earlier run is
+  never rewritten.
 
 ## The fields
 

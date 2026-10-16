@@ -1248,7 +1248,7 @@ export async function sync({
     if (!(error instanceof GraphQLError)) throw error;
     prsReadable = false;
     notes.push(
-      `board: linked pull requests could not be read (${error.message}); Started falls back to the creation date where it is empty`,
+      `board: could not read linked pull requests: ${error.message}; Started falls back to the creation date where it is empty`,
     );
   };
   /** @type {Map<number, Issue>} */

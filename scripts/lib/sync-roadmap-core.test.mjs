@@ -1852,6 +1852,8 @@ describe("sync — #1190 guarded Cycle iterations", () => {
       issue(50, { labels: ["priority: next"] }),
       issue(51, { state: "CLOSED", closedAt: "2026-10-01T00:00:00Z" }),
       issue(52, { labels: ["priority: now"] }),
+      // Now, with no Cycle yet: it would get one, so "no Cycle write" can be observed.
+      issue(53, { labels: ["priority: now"] }),
     ],
     items: [
       { number: 51, values: { Cycle: "c0" } },
@@ -1876,6 +1878,7 @@ describe("sync — #1190 guarded Cycle iterations", () => {
       [51, "c0"],
       [52, "c1"],
       [50, "it_1"],
+      [53, "c1"],
     ]);
   });
 
@@ -1996,7 +1999,7 @@ describe("sync — #1190 linked pull requests the token cannot read", () => {
     const { counts, lines } = await run(gh);
     expect(counts.failed).toBe(0);
     expect(lines).toContain(
-      "board: linked pull requests could not be read (Resource not accessible by integration); Started falls back to the creation date where it is empty",
+      "board: could not read linked pull requests: Resource not accessible by integration; Started falls back to the creation date where it is empty",
     );
     expect(gh.board.map((b) => [b.number, b.values.Started])).toEqual([
       [2, "2026-10-04"],
@@ -2015,7 +2018,9 @@ describe("sync — #1190 linked pull requests the token cannot read", () => {
     });
     const { counts, lines } = await run(gh);
     expect(counts.failed).toBe(0);
-    expect(lines.filter((l) => l.startsWith("board: linked pull requests"))).toHaveLength(1);
+    expect(
+      lines.filter((l) => l.startsWith("board: could not read linked pull requests")),
+    ).toHaveLength(1);
     expect(gh.board.find((b) => b.number === 10)?.values.Started).toBe("2026-09-02");
   });
 });
