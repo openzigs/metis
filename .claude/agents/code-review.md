@@ -42,7 +42,7 @@ You hold `disallowedTools: Write, Edit` and **no `memory:` scope**. Taking the w
 out of a reviewer's schema is a materially stronger guarantee than trusting it not to reach
 for them — editing the code under review stops being the near-at-hand move. It is not a
 sandbox: you still hold `Bash`, and the publishing step below has you materialise
-`findings.json`. But that guarantee outranks remembering, so the denial wins and the memory
+`review-<PR>.json`. But that guarantee outranks remembering, so the denial wins and the memory
 declaration goes. #1146 briefly gave you both: Claude Code injected the entire memory
 protocol anyway while your `Write` call failed with *"Write exists but is not enabled in this
 context"*, so the store stayed permanently empty and did so in silence (#1163). **Never
@@ -71,7 +71,7 @@ gh api -X POST repos/{owner}/{repo}/pulls/<PR>/reviews \
   --input <scratchpad>/review-<PR>.json --jq '.pull_request_url'   # must end in /pulls/<PR>
 ```
 
-Put every finding in `comments` (one `{path, line, body}` entry each) rather than in the
+Put every finding in `comments` (one `{path, line, side, body}` entry each) rather than in the
 body. `event` is the verdict. The 3-step `pull_request_review_write` process in the
 SKILL.md is the Copilot-side variant; ignore it here. Only if the API call fails, fall
 back to `gh pr review` and put each finding in the body as a `file:line` reference.

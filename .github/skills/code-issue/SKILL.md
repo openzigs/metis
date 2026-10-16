@@ -426,8 +426,10 @@ that instruction ever goes missing (#1168).
 `Analyze python` and `CodeQL`, next to **`Semgrep`** and **`Dependency audit`**. A new alert
 fails `CodeQL` like any other check: new routes have raised `js/missing-rate-limiting` and
 `js/missing-token-validation`. Read the alert, fix the code, and re-check. Read
-`gh pr checks` only once `CodeQL` **and** both `Analyze` jobs are done: their order varies
-(on #1217 `CodeQL` completed before `Analyze javascript-typescript`).
+`gh pr checks` only once `CodeQL` **and** both `Analyze` jobs are done. The `CodeQL` check-run
+is created after the `Analyze` jobs start and finishes before `Analyze javascript-typescript`
+(every head measured, #1112 and #1217): a green read before `CodeQL` exists is too early,
+and a green `CodeQL` does not mean the `Analyze` jobs are done.
 
 1. **Wait for checks to complete.** `gh pr checks {PR_NUMBER} --watch` blocks, but it has
    exited 0 with jobs still pending and can return a transient empty set — so finish with a

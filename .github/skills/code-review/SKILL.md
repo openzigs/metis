@@ -262,8 +262,10 @@ Other people or automated reviewers (e.g., GitHub Copilot code review) may have 
 
    > **Note:** CodeQL runs on every pull request (`.github/workflows/codeql.yml`, as Step 1b's
    > auto-detect finds): expect `Analyze javascript-typescript`, `Analyze python` and `CodeQL`,
-   > and read the set only once all three have finished: their order varies (on #1217
-   > `CodeQL` completed before `Analyze javascript-typescript`; on #1112 after `Analyze`).
+   > and read the set only once all three have finished. On every head measured (#1112, #1217)
+   > the `CodeQL` check-run is created after the `Analyze` jobs start and finishes before
+   > `Analyze javascript-typescript`: a green read taken before `CodeQL` exists is too early,
+   > and a green `CodeQL` does not mean the `Analyze` jobs are done.
    > **The set is listed once, in CLAUDE.md > "CI and merging"** (#844: twenty-one since #848, with the
    > e2e suite sharded as `e2e (1/3)`–`e2e (3/3)` and read through `e2e-outcome`, and
    > `postgres-adapter` reading `skipping` on a PR that touches no Postgres path, and the
