@@ -6,7 +6,8 @@
  * deep-dive error → retry path.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { ApiError } from "@/lib/api-client";
 
 const deepDiveFinding = vi.fn();
 const publishFinding = vi.fn();
@@ -344,5 +345,67 @@ describe("<DeepDiveDialog /> — publish target (#733)", () => {
     await screen.findByTestId("deep-dive-title");
     await new Promise((r) => setTimeout(r, 20));
     expect(screen.getByTestId("deep-dive-target-owner")).toHaveValue("");
+  });
+});
+
+describe("<DeepDiveDialog /> — cross-project confirm (#1180)", () => {
+  function refuse(projects: string[]) {
+    publishFinding.mockRejectedValueOnce(
+      new ApiError(409, "openzigs/flux-v2 is already connected", "REPO_CROSS_PROJECT", {
+        repo: "openzigs/flux-v2",
+        projects,
+      }),
+    );
+  }
+
+  async function publishOnce() {
+    renderDialog();
+    await screen.findByTestId("deep-dive-title");
+    await waitForSavedTarget();
+    fireEvent.click(screen.getByTestId("deep-dive-publish"));
+  }
+
+  it("asks before filing into a repo another project connects, then retries with the confirm", async () => {
+    refuse(["Flux sandbox"]);
+    await publishOnce();
+
+    expect(await screen.findByTestId("cross-project-confirm-text")).toHaveTextContent(
+      "openzigs/flux-v2 is already connected to the project “Flux sandbox”",
+    );
+    expect(publishFinding.mock.calls[0][3]).not.toHaveProperty("confirmCrossProject");
+
+    fireEvent.click(screen.getByTestId("cross-project-confirm-button"));
+    await screen.findByTestId("deep-dive-links");
+    expect(publishFinding).toHaveBeenCalledTimes(2);
+    expect(publishFinding.mock.calls[1][3]).toMatchObject({
+      confirmCrossProject: true,
+      target: { owner: "openzigs", repo: "flux-v2" },
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId("cross-project-confirm")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("says 'another project' when the server names none, and Cancel files nothing", async () => {
+    refuse([]);
+    await publishOnce();
+
+    const confirm = await screen.findByTestId("cross-project-confirm");
+    expect(screen.getByTestId("cross-project-confirm-text")).toHaveTextContent(
+      "is already connected to another project",
+    );
+    fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByTestId("cross-project-confirm")).not.toBeInTheDocument(),
+    );
+    expect(publishFinding).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("deep-dive-links")).not.toBeInTheDocument();
+  });
+
+  it("any other publish error opens no confirm", async () => {
+    publishFinding.mockRejectedValueOnce(new Error("boom"));
+    await publishOnce();
+    expect(await screen.findByTestId("deep-dive-error")).toBeInTheDocument();
+    expect(screen.queryByTestId("cross-project-confirm")).not.toBeInTheDocument();
   });
 });

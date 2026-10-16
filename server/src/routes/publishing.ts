@@ -226,9 +226,15 @@ export function publishingRouter(): Router {
         actorRole: req.user.role,
         dryRun: body.dryRun,
         secretRef: body.secretRef,
+        confirmCrossProject: body.confirmCrossProject === true,
       });
       res.status(body.dryRun ? 200 : 201).json(ok(result));
     } catch (err) {
+      // #1180 — name the other project only if this caller may open it.
+      if (err instanceof CrossProjectRepoError && req.user) {
+        next(await describeCrossProjectRefusal(err, req.user));
+        return;
+      }
       next(asAppError(err));
     }
   });

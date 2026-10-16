@@ -9,6 +9,9 @@
  * way to set. This dialog is that confirmation; confirming retries the same
  * batch with the flag set by the page.
  *
+ * #1180 — the Deep Dive finding publish and the draft pull request offer the
+ * same confirm; `consequence` says what lands in the other repository.
+ *
  * The server names the other project only when the user may open it (and says
  * "another project" otherwise), so this renders exactly the names it is given
  * and never guesses one.
@@ -69,7 +72,12 @@ export interface CrossProjectConfirmDialogProps {
   fallbackRepo: string;
   pending: boolean;
   onConfirm: () => void;
+  /** What appears in the repository; defaults to the batch publish's issues. */
+  consequence?: string;
 }
+
+const ISSUES_CONSEQUENCE =
+  "Issues published from this project will appear in that repository alongside its work.";
 
 export function CrossProjectConfirmDialog({
   open,
@@ -78,6 +86,7 @@ export function CrossProjectConfirmDialog({
   fallbackRepo,
   pending,
   onConfirm,
+  consequence = ISSUES_CONSEQUENCE,
 }: CrossProjectConfirmDialogProps) {
   const repo = refusal?.repo || fallbackRepo;
   return (
@@ -88,8 +97,7 @@ export function CrossProjectConfirmDialog({
         </DialogHeader>
         <p className="mt-2 text-sm" data-testid="cross-project-confirm-text">
           <span className="font-mono">{repo}</span> is already connected to{" "}
-          {otherProjectsLabel(refusal?.projects ?? [])}. Issues published from this project will
-          appear in that repository alongside its work.
+          {otherProjectsLabel(refusal?.projects ?? [])}. {consequence}
         </p>
         <p className="mt-2 text-xs text-muted-foreground">
           Check the owner and repository if you did not mean to share it.

@@ -429,6 +429,11 @@ export const draftPullRequestRequestSchema = z
   .object({
     dryRun: z.boolean().default(true),
     secretRef: z.string().min(1).max(256).optional(),
+    /**
+     * #1180 — set only by the UI's cross-project confirm, after the server
+     * refused a live run with `REPO_CROSS_PROJECT`. Must be a boolean.
+     */
+    confirmCrossProject: z.boolean().optional(),
   })
   .strict();
 export type DraftPullRequestRequest = z.infer<typeof draftPullRequestRequestSchema>;

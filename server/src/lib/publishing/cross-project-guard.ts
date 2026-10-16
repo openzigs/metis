@@ -27,7 +27,7 @@ import { PublishError } from "./types.js";
 const MAX_CONFLICTS = 5;
 
 /**
- * Thrown by `createBatch`. The conflicting project ids are kept OFF `details`
+ * Thrown by `assertNotCrossProject`. The conflicting project ids are kept OFF `details`
  * (which `asAppError` forwards to the client verbatim) so that only
  * `describeCrossProjectRefusal`, which checks access, decides what is shown.
  */
@@ -64,6 +64,26 @@ export async function findCrossProjectOwners(input: {
     take: MAX_CONFLICTS,
   });
   return rows.map((r) => r.projectId);
+}
+
+/**
+ * The service-layer check every live publish into a caller-chosen repository
+ * runs: batch publish (`createBatch`), finding publish (`publishAnalysisFinding`)
+ * and the draft pull request (`openDraftPullRequest`, #1180). Throws
+ * `CrossProjectRepoError` when another project has `owner/repo` connected,
+ * unless the caller confirmed — and only a literal `true` confirms.
+ */
+export async function assertNotCrossProject(input: {
+  projectId: string;
+  targetOwner: string;
+  targetRepo: string;
+  confirmed?: boolean;
+}): Promise<void> {
+  if (input.confirmed === true) return;
+  const conflicting = await findCrossProjectOwners(input);
+  if (conflicting.length > 0) {
+    throw new CrossProjectRepoError(`${input.targetOwner}/${input.targetRepo}`, conflicting);
+  }
 }
 
 /**

@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // ---- Mocks (must be declared before the import-under-test) ---------------
 
 const mockPrisma = {
-  repoConnection: { findFirst: vi.fn() },
+  // `findMany` is the #1180 cross-project guard's query; no other project by default.
+  repoConnection: { findFirst: vi.fn(), findMany: vi.fn(async () => [] as unknown[]) },
   jiraConnection: { findFirst: vi.fn() },
   project: { findUnique: vi.fn() },
   issueLink: { upsert: vi.fn(), findFirst: vi.fn() },
@@ -195,5 +196,76 @@ describe("publishAnalysisFinding", () => {
     const labels = (request.mock.calls[0][0] as { data: { labels: string[] } }).data.labels;
     expect(labels.filter((l) => l.startsWith("metis"))).toEqual(["metis", "metis-analysis"]);
     expect(labels).toContain("bug");
+  });
+
+  describe("#1180 — the cross-project guard", () => {
+    it("refuses a GitHub target another project connects, before any GitHub call", async () => {
+      upstreamConnector();
+      mockPrisma.repoConnection.findMany.mockResolvedValueOnce([{ projectId: "proj-other" }]);
+      const { acquirePublishOctokit } = await import("./octokit-factory.js");
+      vi.mocked(acquirePublishOctokit).mockClear();
+      await expect(publishAnalysisFinding(analysisInput)).rejects.toMatchObject({
+        code: "REPO_CROSS_PROJECT",
+        repo: "o/r",
+        conflictingProjectIds: ["proj-other"],
+      });
+      expect(mockPrisma.repoConnection.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            ownerOrOrg: "o",
+            repoName: "r",
+            projectId: { not: "proj-1" },
+          }),
+        }),
+      );
+      expect(acquirePublishOctokit).not.toHaveBeenCalled();
+      expect(mockPrisma.issueLink.upsert).not.toHaveBeenCalled();
+    });
+
+    it("publishes once confirmed, without the lookup", async () => {
+      upstreamConnector();
+      const link = await publishAnalysisFinding({ ...analysisInput, confirmCrossProject: true });
+      expect(link.externalId).toBe("7");
+      expect(mockPrisma.repoConnection.findMany).not.toHaveBeenCalled();
+    });
+
+    it("an already-published finding returns its link without the guard", async () => {
+      upstreamConnector();
+      mockPrisma.issueLink.findFirst.mockResolvedValue({
+        id: "L7",
+        findingId: "fnd-1",
+        provider: "github",
+        externalId: "77",
+        externalUrl: "https://github.com/o/r/issues/77",
+      });
+      mockPrisma.repoConnection.findMany.mockResolvedValueOnce([{ projectId: "proj-other" }]);
+      const link = await publishAnalysisFinding(analysisInput);
+      expect(link.externalId).toBe("77");
+      expect(mockPrisma.repoConnection.findMany).not.toHaveBeenCalled();
+    });
+
+    it("a Jira publish is not guarded (no GitHub target)", async () => {
+      mockPrisma.issueLink.findFirst.mockResolvedValue(null);
+      mockPrisma.project.findUnique.mockResolvedValue({
+        jiraConnectionId: "jc-1",
+        jiraProjectKey: "IMP",
+      });
+      mockPrisma.jiraConnection.findFirst.mockResolvedValue({
+        id: "jc-1",
+        baseUrl: "https://jira.example.com",
+        edition: "cloud",
+        username: "svc",
+        secretId: "sec-jira",
+        status: "active",
+        proxyUrl: null,
+        tlsRejectUnauthorized: true,
+        tlsCaSecretId: null,
+      });
+      mockPrisma.issueLink.upsert.mockImplementation(
+        async (args: { create: Record<string, unknown> }) => ({ id: "L1", ...args.create }),
+      );
+      await publishAnalysisFinding({ ...analysisInput, provider: "jira" });
+      expect(mockPrisma.repoConnection.findMany).not.toHaveBeenCalled();
+    });
   });
 });

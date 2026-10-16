@@ -819,6 +819,8 @@ export interface PublishFindingInput {
   extraLabels?: string[];
   /** #733 — the GitHub repository to file into; else the project's saved target. */
   target?: { owner: string; repo: string };
+  /** #1180 — set only by the cross-project confirm. */
+  confirmCrossProject?: boolean;
 }
 
 export interface PublishedIssueLink {

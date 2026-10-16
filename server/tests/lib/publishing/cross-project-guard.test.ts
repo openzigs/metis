@@ -27,6 +27,7 @@ vi.mock("../../../src/lib/custom-agents/authz.js", () => ({
 
 import { prisma } from "../../../src/lib/prisma.js";
 import {
+  assertNotCrossProject,
   CrossProjectRepoError,
   crossProjectDryRunNotice,
   crossProjectMessage,
@@ -120,6 +121,37 @@ describe("describeCrossProjectRefusal", () => {
     );
     expect(out.message).toContain("another project");
     expect(out.details).toEqual({ repo: "o/r", projects: [] });
+  });
+});
+
+describe("assertNotCrossProject (#1180)", () => {
+  const input = { projectId: "proj_me", targetOwner: "o", targetRepo: "r" };
+
+  it("throws CrossProjectRepoError carrying the ids when another project connects the repo", async () => {
+    vi.mocked(prisma.repoConnection.findMany).mockResolvedValueOnce([
+      { projectId: "proj_hidden" },
+    ] as never);
+    const err = await assertNotCrossProject(input).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CrossProjectRepoError);
+    expect((err as CrossProjectRepoError).repo).toBe("o/r");
+    expect((err as CrossProjectRepoError).conflictingProjectIds).toEqual(["proj_hidden"]);
+  });
+
+  it("passes when no other project connects the repo", async () => {
+    vi.mocked(prisma.repoConnection.findMany).mockResolvedValueOnce([]);
+    await expect(assertNotCrossProject(input)).resolves.toBeUndefined();
+  });
+
+  it("a literal true confirms without a lookup; false does not", async () => {
+    vi.mocked(prisma.repoConnection.findMany).mockClear();
+    await expect(assertNotCrossProject({ ...input, confirmed: true })).resolves.toBeUndefined();
+    expect(prisma.repoConnection.findMany).not.toHaveBeenCalled();
+    vi.mocked(prisma.repoConnection.findMany).mockResolvedValueOnce([
+      { projectId: "proj_seen" },
+    ] as never);
+    await expect(assertNotCrossProject({ ...input, confirmed: false })).rejects.toBeInstanceOf(
+      CrossProjectRepoError,
+    );
   });
 });
 
