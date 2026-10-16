@@ -3940,7 +3940,10 @@ export class AnalysisOrchestrator {
     // Analysis.metadata by the clarify route #211) into synthesis so answering
     // clarifying questions measurably changes the generated requirement set.
     const refined = await getStructuredRequirements(input.analysisId);
+    // #1033 — with its id, so each output names the requirements it restates
+    // and promotion joins criteria and evidence by id, not by title.
     const refinedRequirements = (refined?.requirements ?? []).map((r) => ({
+      id: r.id,
       title: r.title,
       description: r.description,
     }));

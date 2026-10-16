@@ -68,6 +68,9 @@ export function classifyRequirementOrigins(
   const matches = matchSynthesized(
     requirements.filter((r) => !rejected.has(r.id)),
     synthesized,
+    // #1033 — the whole list, as promotion passes it: an output naming a
+    // rejected requirement's id is that requirement's, not a title match.
+    requirements,
   );
   const needles = sources.map((s) => significantTokens(s.title)).filter((t) => t.size > 0);
   for (const r of requirements) {

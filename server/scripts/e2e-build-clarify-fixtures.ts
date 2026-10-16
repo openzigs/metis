@@ -177,7 +177,15 @@ export async function main(): Promise<void> {
   const { systemMessage, userMessage } = buildSynthesisPrompt({
     projectName: PROJECT_NAME,
     findingsTable,
-    refinedRequirements: [{ title: AMBIGUOUS_REQUIREMENT.title, description: REFINED_DESCRIPTION }],
+    // #1033 — under its id, exactly as the orchestrator now sends it: the id is
+    // in the prompt, so leaving it out keys a fixture the runtime never asks for.
+    refinedRequirements: [
+      {
+        id: AMBIGUOUS_REQUIREMENT.id,
+        title: AMBIGUOUS_REQUIREMENT.title,
+        description: REFINED_DESCRIPTION,
+      },
+    ],
     // #1000 — the loop answers its question before regenerating, so the
     // orchestrator labels the section CLARIFIED (`hasAnsweredClarification`).
     refinedHumanAnswered: true,

@@ -22,6 +22,11 @@ import {
   containmentScore,
   significantTokens,
 } from "./clarification-enrichment.js";
+import {
+  compareTiersDescending,
+  matchOneToOneRefusingTies,
+  type OneToOneCandidate,
+} from "./one-to-one-match.js";
 import type { StructuredRequirement } from "./types/requirements.js";
 
 const PRIORITY_BY_STRUCTURED: Record<string, SynthesizedRequirement["priority"]> = {
@@ -34,12 +39,47 @@ const MAX_TITLE = 255;
 const MAX_BODY = 4096;
 /** `synthesizedRequirementSchema.labels` caps the list at 16. */
 const MAX_LABELS = 16;
+/** `synthesizedRequirementSchema` caps evidence at 50 and criteria at 20. */
+const MAX_EVIDENCE = 50;
+const MAX_CRITERIA = 20;
 
 /**
- * Pair each approved structured requirement with at most one synthesized
- * requirement (and each synthesized requirement with at most one structured
- * one), best score first, so evidence and criteria are never duplicated onto
- * two rows.
+ * The synthesized requirement each approved structured requirement draws its
+ * criteria and evidence from.
+ *
+ * Issue #1033 — by id first. Synthesis names the structured requirements each
+ * of its items restates (`structuredIds`). An item may consolidate several of
+ * them, and then EVERY approved requirement it names receives its criteria and
+ * evidence: joining on title alone gave such an item to the best-matching
+ * requirement and left the others promoted with no criteria and no code link
+ * (#706 runs 6, 9). Several items naming one requirement are joined into one.
+ *
+ * The criteria are not split between the requirements an item names, and that
+ * includes a rejected or pending one it names alongside an approved one: the
+ * approved requirement receives ALL of the item's criteria, the ones written
+ * for its rejected sibling among them. Splitting needs word overlap to say
+ * which criterion is whose, and on the run-6 text it could not — siblings share
+ * their domain words, so no criterion is ever clearly one requirement's alone,
+ * and a looser rule put criteria on the wrong requirement, which reads as
+ * authored where a shared one is at least the model's own grouping.
+ *
+ * An item that names any id of this list, or says it names none
+ * (`structuredIds: []`), is never matched to another requirement by title: it
+ * goes only to the approved requirements it names, and to none when it names
+ * only rejected or pending ones.
+ *
+ * The title join is the fallback, for a requirement no item names and over the
+ * items that did not say (`structuredIds` absent: output from before #1033, a
+ * degraded run) or name only ids no longer in the list (a list re-extracted
+ * since): one-to-one, best score first, so a guess never puts the same evidence
+ * on two rows. Candidates are ranked by the #1031 tiers — the same title, then
+ * the containment score, then how much of the title is in the item's title —
+ * and resolved by {@link matchOneToOneRefusingTies}, the rule #1031 shares: at
+ * each level a pair is taken only if it is in every maximum matching of that
+ * level's candidates, so no pair is a guess; every other requirement or item
+ * with a candidate there is refused and takes no weaker match; list order
+ * never decides. `structured` is the whole reviewed list, whose ids are the ones an
+ * item can name; it defaults to `approved`.
  *
  * Issue #1129 — exported so the ticked/added split reads the same #1063
  * `sourceIds` this join carries onto the promoted row (and so onto the
@@ -48,30 +88,79 @@ const MAX_LABELS = 16;
 export function matchSynthesized(
   approved: ReadonlyArray<Pick<StructuredRequirement, "id" | "title">>,
   synthesized: readonly SynthesizedRequirement[],
+  structured: ReadonlyArray<Pick<StructuredRequirement, "id">> = approved,
 ): Map<string, SynthesizedRequirement> {
-  const synthTokens = synthesized.map((s) => significantTokens(`${s.title} ${s.body}`));
-  const candidates: Array<{ structuredId: string; synthIdx: number; score: number }> = [];
-  for (const req of approved) {
-    const needle = significantTokens(req.title);
-    synthTokens.forEach((tokens, synthIdx) => {
-      const score = containmentScore(needle, tokens);
-      if (score >= ATTRIBUTION_THRESHOLD) {
-        candidates.push({ structuredId: req.id, synthIdx, score });
-      }
-    });
-  }
-  candidates.sort((a, b) => b.score - a.score);
+  const listIds = new Set(structured.map((r) => r.id));
+  // Absent: the item did not say. `[]`: it says it restates no listed one.
+  // Only ids no longer in the list (a re-extraction) count as not saying.
+  const titlePool = synthesized.map(
+    (s) =>
+      s.structuredIds === undefined ||
+      (s.structuredIds.length > 0 && !s.structuredIds.some((id) => listIds.has(id))),
+  );
 
   const byStructuredId = new Map<string, SynthesizedRequirement>();
-  const usedSynth = new Set<number>();
-  for (const c of candidates) {
-    if (byStructuredId.has(c.structuredId) || usedSynth.has(c.synthIdx)) continue;
-    const match = synthesized[c.synthIdx];
-    if (!match) continue;
-    byStructuredId.set(c.structuredId, match);
-    usedSynth.add(c.synthIdx);
+  for (const req of approved) {
+    const named = synthesized.filter((s) => s.structuredIds?.includes(req.id));
+    if (named.length > 0) byStructuredId.set(req.id, joinItems(named));
+  }
+
+  const synthTokens = synthesized.map((s) => significantTokens(`${s.title} ${s.body}`));
+  const synthTitleTokens = synthesized.map((s) => significantTokens(s.title));
+  const synthTitleKeys = synthesized.map((s) => titleKey(s.title));
+  const candidates: Array<OneToOneCandidate<string, number, number[]>> = [];
+  for (const req of approved) {
+    if (byStructuredId.has(req.id)) continue;
+    const needle = significantTokens(req.title);
+    const key = titleKey(req.title);
+    synthTokens.forEach((tokens, synthIdx) => {
+      if (!titlePool[synthIdx]) return;
+      const score = containmentScore(needle, tokens);
+      if (score < ATTRIBUTION_THRESHOLD) return;
+      // The #1031 tiers, best first: the same title; then the containment
+      // score; then how much of the title is in the item's TITLE, not its body.
+      candidates.push({
+        left: req.id,
+        right: synthIdx,
+        score: [
+          synthTitleKeys[synthIdx] === key ? 1 : 0,
+          score,
+          containmentScore(needle, synthTitleTokens[synthIdx]!),
+        ],
+      });
+    });
+  }
+  const { matches } = matchOneToOneRefusingTies(candidates, { compare: compareTiersDescending });
+  for (const [structuredId, synthIdx] of matches) {
+    byStructuredId.set(structuredId, synthesized[synthIdx]!);
   }
   return byStructuredId;
+}
+
+/** Case- and whitespace-insensitive title, for the same-title tier. */
+function titleKey(title: string): string {
+  return title.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/** Several items naming one requirement, joined: lists united in order, scalars from the first. */
+function joinItems(parts: readonly SynthesizedRequirement[]): SynthesizedRequirement {
+  const first = parts[0]!;
+  if (parts.length === 1) return first;
+  const unite = <T>(pick: (s: SynthesizedRequirement) => readonly T[] | undefined): T[] => [
+    ...new Set(parts.flatMap((p) => pick(p) ?? [])),
+  ];
+  const sourceIds = parts.some((p) => p.sourceIds !== undefined)
+    ? unite((p) => p.sourceIds)
+    : undefined;
+  const storyPoints = parts.find((p) => p.storyPoints !== undefined)?.storyPoints;
+  return {
+    ...first,
+    labels: unite((p) => p.labels).slice(0, MAX_LABELS),
+    evidenceFindingIndexes: unite((p) => p.evidenceFindingIndexes).slice(0, MAX_EVIDENCE),
+    acceptanceCriteria: unite((p) => p.acceptanceCriteria).slice(0, MAX_CRITERIA),
+    ...(storyPoints !== undefined ? { storyPoints } : {}),
+    ...(sourceIds !== undefined ? { sourceIds } : {}),
+  };
 }
 
 export interface RequirementApprovalRow {
@@ -113,7 +202,7 @@ export function buildApprovedRequirementSet(input: {
   synthesis: SynthesisOutput | null;
 }): SynthesisOutput {
   const approved = input.structured.filter((r) => input.approvedIds.has(r.id));
-  const matches = matchSynthesized(approved, input.synthesis?.requirements ?? []);
+  const matches = matchSynthesized(approved, input.synthesis?.requirements ?? [], input.structured);
 
   const requirements: SynthesizedRequirement[] = approved.map((req) => {
     const match = matches.get(req.id);

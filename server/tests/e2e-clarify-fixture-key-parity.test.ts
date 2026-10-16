@@ -168,8 +168,13 @@ describe("generative-e2e clarify fixtures", () => {
       projectName: PROJECT_NAME,
       findings,
       model: LOOP_MODEL_ID,
+      // #1033 — the orchestrator passes each reviewed requirement's id.
       refinedRequirements: [
-        { title: AMBIGUOUS_REQUIREMENT.title, description: REFINED_DESCRIPTION },
+        {
+          id: AMBIGUOUS_REQUIREMENT.id,
+          title: AMBIGUOUS_REQUIREMENT.title,
+          description: REFINED_DESCRIPTION,
+        },
       ],
       // #1000 — the e2e loop has answered by the time it regenerates, so the
       // orchestrator passes this; without it the key is the EXTRACTED prompt's.
