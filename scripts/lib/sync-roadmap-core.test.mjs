@@ -8,16 +8,20 @@ import {
   ADD_ITEM,
   CLEAR_VALUE,
   ISSUES_QUERY,
+  ISSUES_QUERY_NO_PRS,
+  RECHECK_QUERY,
   ITEMS_QUERY,
   MAX_MUTATIONS,
   ONE_ISSUE_QUERY,
   PROJECT_QUERY,
   SET_VALUE,
   SUB_ISSUES_QUERY,
+  SUB_ISSUES_QUERY_NO_PRS,
   UPDATE_FIELD,
   UPDATE_ITERATIONS,
   addDays,
   areaOf,
+  canPromoteFrom,
   createClient,
   cycleFor,
   cyclesAt,
@@ -39,6 +43,7 @@ import {
   promotedStatus,
   resolveStarted,
   resolveTier,
+  subIssueCounts,
   progressOf,
   shouldAdd,
   summaryLine,
@@ -337,7 +342,8 @@ describe("parseArgs", () => {
  *
  * @param {Partial<{ number: number, title: string, state: string, closedAt: string | null,
  *   updatedAt: string, labels: string[], summary: any, parent: number | null,
- *   parentRepo: string, createdAt: string, prs: string[], repo: string }>} [over]
+ *   parentRepo: string, createdAt: string, prs: string[], repo: string,
+ *   stateReason: string | null }>} [over]
  * @param {number} number
  */
 function issue(number, over = {}) {
@@ -352,6 +358,7 @@ function issue(number, over = {}) {
     parent: /** @type {number | null} */ (null),
     parentRepo: "openzigs/metis",
     createdAt: "2026-10-01T09:00:00Z",
+    stateReason: /** @type {string | null} */ (null),
     /** Each linked pull request's createdAt. */
     prs: /** @type {string[]} */ ([]),
     repo: "openzigs/metis",
@@ -360,14 +367,25 @@ function issue(number, over = {}) {
   return { ...base, updatedAt: over.updatedAt ?? base.closedAt ?? "2026-10-14T12:00:00Z" };
 }
 
+/**
+ * @param {ReturnType<typeof issue>} i
+ * @param {boolean} [withPrs] false for a `…_NO_PRS` query, which does not ask for linked PRs
+ */
+function issueNode(i, withPrs = true) {
+  const node = issueNodeWithPrs(i);
+  if (!withPrs) delete (/** @type {any} */ (node).closedByPullRequestsReferences);
+  return node;
+}
+
 /** @param {ReturnType<typeof issue>} i */
-function issueNode(i) {
+function issueNodeWithPrs(i) {
   return {
     id: i.id,
     number: i.number,
     title: i.title,
     state: i.state,
     closedAt: i.closedAt,
+    stateReason: i.stateReason,
     createdAt: i.createdAt,
     closedByPullRequestsReferences: { nodes: i.prs.map((createdAt) => ({ createdAt })) },
     repository: { nameWithOwner: i.repo },
@@ -438,11 +456,11 @@ const BOARD = [
   { id: "F_finished", name: "Finished", dataType: "DATE" },
   CYCLE_FIELD,
 ];
-/** @param {any[]} iterations */
-const withCycles = (iterations) =>
+/** @param {any[]} iterations @param {any[]} [completedIterations] */
+const withCycles = (iterations, completedIterations = []) =>
   BOARD.map((f) =>
     f.name === "Cycle"
-      ? { ...f, configuration: { duration: 14, iterations, completedIterations: [] } }
+      ? { ...f, configuration: { duration: 14, iterations, completedIterations } }
       : f,
   );
 
@@ -458,7 +476,9 @@ const MAX_ONE_ISSUE_READS = 20;
  *
  * @param {{ issues: ReturnType<typeof issue>[], items?: Array<{ number: number, archived?: boolean,
  *   values?: Record<string, any>, repo?: string }>, fields?: any[], project?: boolean, pageSize?: number,
- *   fail?: (query: string, variables: any) => boolean }} opts
+ *   fail?: (query: string, variables: any) => boolean, prsError?: boolean | "subIssues",
+ *   onRequest?: (query: string, variables: any) => void,
+ *   tamper?: (query: string, variables: any) => any }} opts
  */
 function fakeGitHub({
   issues,
@@ -467,6 +487,9 @@ function fakeGitHub({
   project = true,
   pageSize = 100,
   fail = () => false,
+  prsError = false,
+  onRequest = () => {},
+  tamper = (_query, variables) => variables,
 }) {
   const fields = structuredClone(initialFields);
   let optionSeq = 0;
@@ -502,7 +525,10 @@ function fakeGitHub({
   /** @param {string} url @param {any} init */
   const impl = vi.fn(async (url, init) => {
     requests.push({ url, init });
-    const { query, variables } = JSON.parse(init.body);
+    const { query, variables: sent } = JSON.parse(init.body);
+    onRequest(query, sent);
+    // `tamper` stands in for GitHub doing something other than what was asked.
+    const variables = tamper(query, sent);
     /** @param {any} data */
     // Cloned, as JSON off the wire would be: the script must never see the fake's own state.
     const ok = (data) => ({ ok: true, status: 200, json: async () => structuredClone({ data }) });
@@ -511,13 +537,25 @@ function fakeGitHub({
         organization: { projectV2: project ? { id: "PVT_1", fields: { nodes: fields } } : null },
       });
     }
-    if (query === ISSUES_QUERY) {
+    // The App token may not read linked pull requests: GitHub then answers with an error.
+    // `prsError: "subIssues"` fails only the sub-issue read.
+    if ((prsError === true && query === ISSUES_QUERY) || (prsError && query === SUB_ISSUES_QUERY)) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ errors: [{ message: "Resource not accessible by integration" }] }),
+      };
+    }
+    if (query === ISSUES_QUERY || query === ISSUES_QUERY_NO_PRS) {
       const f = variables.filter;
       const matching = issues.filter(
         (i) => f.states.includes(i.state) && (!f.since || i.updatedAt >= f.since),
       );
       const p = page(matching, variables.after);
-      return ok({ repository: { issues: { ...p, nodes: p.nodes.map(issueNode) } } });
+      const withPrs = query === ISSUES_QUERY;
+      return ok({
+        repository: { issues: { ...p, nodes: p.nodes.map((i) => issueNode(i, withPrs)) } },
+      });
     }
     if (query === ONE_ISSUE_QUERY) {
       // A walk that re-reads what it has read never ends; cap it so it fails as a named test,
@@ -552,7 +590,7 @@ function fakeGitHub({
                       if (typeof v === "number") return { number: v, field };
                       const def = fields.find((x) => x.name === name);
                       if (def?.dataType === "DATE") return { date: v, field };
-                      if (def?.dataType === "ITERATION") return { title: v, field };
+                      if (def?.dataType === "ITERATION") return { iterationId: v, field };
                       return def?.dataType === "TEXT" ? { text: v, field } : { name: v, field };
                     }),
                   ],
@@ -563,11 +601,28 @@ function fakeGitHub({
         },
       });
     }
-    if (query === SUB_ISSUES_QUERY) {
+    if (query === RECHECK_QUERY) {
+      const b = board.find((x) => x.id === variables.item);
+      const i = issues.find((x) => x.number === b?.number);
+      return ok({
+        node: b
+          ? {
+              fieldValueByName: b.values.Status ? { name: b.values.Status } : null,
+              content: i ? { state: i.state } : {},
+            }
+          : null,
+      });
+    }
+    if (query === SUB_ISSUES_QUERY || query === SUB_ISSUES_QUERY_NO_PRS) {
       // Every sub-issue, in the window or not, as GitHub's subIssues connection returns them.
       const children = issues.filter((i) => i.parent === variables.number);
       const p = page(children, variables.after);
-      return ok({ repository: { issue: { subIssues: { ...p, nodes: p.nodes.map(issueNode) } } } });
+      const withPrs = query === SUB_ISSUES_QUERY;
+      return ok({
+        repository: {
+          issue: { subIssues: { ...p, nodes: p.nodes.map((i) => issueNode(i, withPrs)) } },
+        },
+      });
     }
     mutations.push({ query, variables });
     if (fail(query, variables)) {
@@ -576,19 +631,24 @@ function fakeGitHub({
     if (query === UPDATE_ITERATIONS) {
       // Measured on GitHub: an iteration sent back with its id keeps it; any other is new, and an
       // item holding a dropped iteration is emptied.
+      // Completed iterations stay completed, as GitHub reports them apart.
       const f = fieldById(variables.field);
       const kept = new Set(variables.config.iterations.map((/** @type {any} */ i) => i.id));
       for (const old of iterationsIn(f)) {
         if (kept.has(old.id)) continue;
-        for (const b of board) if (b.values[f.name] === old.title) delete b.values[f.name];
+        for (const b of board) if (b.values[f.name] === old.id) delete b.values[f.name];
       }
+      const completed = new Set(
+        (f.configuration?.completedIterations ?? []).map((/** @type {any} */ i) => i.id),
+      );
+      const sent = variables.config.iterations.map((/** @type {any} */ i) => ({
+        ...i,
+        id: i.id ?? `it_${(iterationSeq += 1)}`,
+      }));
       f.configuration = {
         duration: variables.config.duration,
-        iterations: variables.config.iterations.map((/** @type {any} */ i) => ({
-          ...i,
-          id: i.id ?? `it_${(iterationSeq += 1)}`,
-        })),
-        completedIterations: [],
+        iterations: sent.filter((/** @type {any} */ i) => !completed.has(i.id)),
+        completedIterations: sent.filter((/** @type {any} */ i) => completed.has(i.id)),
       };
       return ok({
         updateProjectV2Field: {
@@ -645,7 +705,7 @@ function fakeGitHub({
             : "date" in v
               ? v.date
               : "iterationId" in v
-                ? iterationsIn(field).find((/** @type {any} */ i) => i.id === v.iterationId).title
+                ? iterationsIn(field).find((/** @type {any} */ i) => i.id === v.iterationId).id
                 : field.options.find((/** @type {any} */ o) => o.id === v.singleSelectOptionId)
                     .name;
       return ok({ updateProjectV2ItemFieldValue: { projectV2Item: { id: target.id } } });
@@ -705,8 +765,6 @@ describe("sync", () => {
       Kind: "Epic",
       "Progress %": 25,
       "Sub-issues done": "1 of 4",
-      // #1190: an open epic with a sub-issue done moves to In Progress.
-      Status: "In Progress",
     });
   });
 
@@ -877,12 +935,16 @@ describe("sync", () => {
       issues,
       items: issues.map((i) => ({ number: i.number, values: { Kind: "Issue" } })),
     });
-    const { counts } = await run(gh);
+    const { counts, lines } = await run(gh);
     expect(gh.mutations.length).toBe(MAX_MUTATIONS);
     // Two writes each: 199 items done, the 200th stops after its first write, two deferred.
     expect(counts.changed).toBe(200);
     expect(counts.skipped).toBe(2);
     expect(gh.board[199].values).toEqual({ Kind: "Issue", Tier: "Unranked" });
+    // The part-written 200th still has a change waiting, so it counts as carried over.
+    expect(lines).toContain(
+      `write budget of ${MAX_MUTATIONS} reached: 3 issues continue on the next run`,
+    );
   });
 
   it("fails clearly when the project or a managed field is missing", async () => {
@@ -1414,8 +1476,8 @@ describe("cyclesAt / cycleFor / iterationsToAppend", () => {
 
   it("maps each tier to a cycle: Now current, Next following, the rest none", () => {
     const cycles = { current: c1, next: c2 };
-    expect(cycleFor("Now", cycles)).toBe("Cycle 1");
-    expect(cycleFor("Next", cycles)).toBe("Cycle 2");
+    expect(cycleFor("Now", cycles)).toBe("c1");
+    expect(cycleFor("Next", cycles)).toBe("c2");
     for (const tier of ["Later", "Blocked", "Unranked"]) expect(cycleFor(tier, cycles)).toBeNull();
     // The iteration the tier needs is missing: undefined, so the item keeps what it has.
     expect(cycleFor("Now", { current: null, next: c2 })).toBeUndefined();
@@ -1478,19 +1540,18 @@ describe("promotedStatus", () => {
 
 describe("fieldChanges / encodeValue for #1190's fields", () => {
   it("leaves a field the desired values do not name alone", () => {
-    expect(
-      fieldChanges({ Tier: "Now" }, { Tier: "Now", Cycle: "Cycle 1", Status: "Done" }),
-    ).toEqual([]);
-    expect(fieldChanges({ Cycle: null }, { Cycle: "Cycle 1" })).toEqual([["Cycle", null]]);
+    expect(fieldChanges({ Tier: "Now" }, { Tier: "Now", Cycle: "c1", Status: "Done" })).toEqual([]);
+    expect(fieldChanges({ Cycle: null }, { Cycle: "c1" })).toEqual([["Cycle", null]]);
   });
 
-  it("encodes a date, and an iteration by title", () => {
+  it("encodes a date, and an iteration by id, never by title", () => {
     expect(encodeValue({ id: "f", name: "Started", dataType: "DATE" }, "2026-10-03")).toEqual({
       date: "2026-10-03",
     });
-    expect(encodeValue(CYCLE_FIELD, "Cycle 0")).toEqual({ iterationId: "c0" });
-    expect(encodeValue(CYCLE_FIELD, "Cycle 2")).toEqual({ iterationId: "c2" });
-    expect(encodeValue(CYCLE_FIELD, "Cycle 9")).toBeNull();
+    expect(encodeValue(CYCLE_FIELD, "c0")).toEqual({ iterationId: "c0" });
+    expect(encodeValue(CYCLE_FIELD, "c2")).toEqual({ iterationId: "c2" });
+    expect(encodeValue(CYCLE_FIELD, "Cycle 2")).toBeNull();
+    expect(encodeValue(CYCLE_FIELD, "c9")).toBeNull();
   });
 });
 
@@ -1519,8 +1580,8 @@ describe("sync — #1190 dates, cycles and epic Status", () => {
       ],
       items: [
         // A closed item keeps the cycle it finished in.
-        { number: 12, values: { Cycle: "Cycle 0" } },
-        { number: 14, values: { Cycle: "Cycle 1" } },
+        { number: 12, values: { Cycle: "c0" } },
+        { number: 14, values: { Cycle: "c1" } },
       ],
     });
     const { counts } = await run(gh);
@@ -1529,17 +1590,17 @@ describe("sync — #1190 dates, cycles and epic Status", () => {
     const values = (n) => gh.board.find((b) => b.number === n)?.values;
     expect(values(10)).toMatchObject({
       Started: "2025-12-01",
-      Cycle: "Cycle 1",
+      Cycle: "c1",
       Status: "In Progress",
     });
     expect(values(10)?.Finished).toBeUndefined();
-    expect(values(11)).toMatchObject({ Started: "2026-10-03", Cycle: "Cycle 1" });
+    expect(values(11)).toMatchObject({ Started: "2026-10-03", Cycle: "c1" });
     expect(values(12)).toMatchObject({
       Started: "2026-10-01",
       Finished: "2026-10-10",
-      Cycle: "Cycle 0",
+      Cycle: "c0",
     });
-    expect(values(13)).toMatchObject({ Started: "2026-09-01", Cycle: "Cycle 2" });
+    expect(values(13)).toMatchObject({ Started: "2026-09-01", Cycle: "c2" });
     for (const n of [14, 15, 16]) expect(values(n)?.Cycle).toBeUndefined();
     // A non-epic's Status is never written.
     expect(
@@ -1640,8 +1701,8 @@ describe("sync — #1190 dates, cycles and epic Status", () => {
         issue(52, { labels: ["priority: now"] }),
       ],
       items: [
-        { number: 51, values: { Cycle: "Cycle 0" } },
-        { number: 52, values: { Cycle: "Cycle 1" } },
+        { number: 51, values: { Cycle: "c0" } },
+        { number: 52, values: { Cycle: "c1" } },
       ],
     });
     const { lines } = await run(gh);
@@ -1656,9 +1717,9 @@ describe("sync — #1190 dates, cycles and epic Status", () => {
     });
     expect(lines[0]).toBe("add Cycle iterations Cycle 2 (2026-10-26)");
     expect(gh.board.map((b) => [b.number, b.values.Cycle])).toEqual([
-      [51, "Cycle 0"],
-      [52, "Cycle 1"],
-      [50, "Cycle 2"],
+      [51, "c0"],
+      [52, "c1"],
+      [50, "it_1"],
     ]);
     // The Next item is set with the id GitHub returned for the new iteration.
     const set50 = gh.mutations.find(
@@ -1693,7 +1754,7 @@ describe("sync — #1190 dates, cycles and epic Status", () => {
     const gh = fakeGitHub({
       fields: withCycles([later]),
       issues: [issue(70, { labels: ["priority: now"] }), issue(71, { labels: ["priority: next"] })],
-      items: [{ number: 70, values: { Cycle: "Cycle 9" } }],
+      items: [{ number: 70, values: { Cycle: "c9" } }],
     });
     const { counts, lines } = await run(gh);
     expect(counts.failed).toBe(0);
@@ -1701,8 +1762,8 @@ describe("sync — #1190 dates, cycles and epic Status", () => {
     expect(lines.some((l) => l.includes("no Cycle after"))).toBe(false);
     expect(gh.mutations.some((m) => m.query === UPDATE_ITERATIONS)).toBe(false);
     expect(gh.board.map((b) => [b.number, b.values.Cycle])).toEqual([
-      [70, "Cycle 9"],
-      [71, "Cycle 9"],
+      [70, "c9"],
+      [71, "c9"],
     ]);
   });
 
@@ -1726,7 +1787,7 @@ describe("sync — #1190 dates, cycles and epic Status", () => {
     expect(lines).toContain("board: no Cycle after Cycle 1; Next items keep their Cycle");
     expect(counts.failed).toBe(1);
     expect(gh.board.map((b) => [b.number, b.values.Cycle])).toEqual([
-      [80, "Cycle 1"],
+      [80, "c1"],
       [81, undefined],
     ]);
   });
@@ -1750,5 +1811,280 @@ describe("sync — #1190 dates, cycles and epic Status", () => {
     expect(new Set(reads)).toEqual(new Set([90, 91]));
     // #93 lives elsewhere and is dropped; #91's earliest is #92.
     expect(gh.board.find((b) => b.number === 90)?.values.Started).toBe("2026-10-07");
+  });
+});
+
+// --- #1190 review fixes (PR #1205): guarded iteration writes, PR read fallback, Status race ------
+
+describe("canPromoteFrom / subIssueCounts", () => {
+  it("promotes only from empty or Todo, by name, never by option order", () => {
+    expect(canPromoteFrom(null)).toBe(true);
+    expect(canPromoteFrom(undefined)).toBe(true);
+    expect(canPromoteFrom("Todo")).toBe(true);
+    for (const status of ["Backlog", "In Progress", "Done"]) {
+      expect(canPromoteFrom(status)).toBe(false);
+    }
+    // "Backlog" is ordered before In Progress here, and is still left alone.
+    const options = ["Backlog", "Todo", "In Progress", "Done"];
+    const epic = { state: "OPEN", labels: ["epic"] };
+    expect(promotedStatus(epic, "Backlog", options, true)).toBeUndefined();
+    expect(promotedStatus(epic, "Todo", options, true)).toBe("In Progress");
+  });
+
+  it("counts a sub-issue In Progress or closed as completed; not a duplicate or not planned", () => {
+    expect(subIssueCounts({ state: "OPEN", stateReason: null }, "In Progress")).toBe(true);
+    expect(subIssueCounts({ state: "OPEN", stateReason: "REOPENED" }, "Todo")).toBe(false);
+    expect(subIssueCounts({ state: "OPEN", stateReason: null }, undefined)).toBe(false);
+    expect(subIssueCounts({ state: "CLOSED", stateReason: "COMPLETED" }, undefined)).toBe(true);
+    expect(subIssueCounts({ state: "CLOSED", stateReason: null }, undefined)).toBe(true);
+    expect(subIssueCounts({ state: "CLOSED", stateReason: "NOT_PLANNED" }, "Done")).toBe(false);
+    expect(subIssueCounts({ state: "CLOSED", stateReason: "DUPLICATE" }, "Done")).toBe(false);
+  });
+});
+
+describe("sync — #1190 guarded Cycle iterations", () => {
+  const c0 = { id: "c0", title: "Cycle 0", startDate: "2026-09-28", duration: 14 };
+  const c1 = { id: "c1", title: "Cycle 1", startDate: "2026-10-12", duration: 14 };
+  const appendBoard = () => ({
+    // c0 is COMPLETED, as Cycle 1 will be on the first live append (2026-11-09).
+    fields: withCycles([c1], [c0]),
+    issues: [
+      issue(50, { labels: ["priority: next"] }),
+      issue(51, { state: "CLOSED", closedAt: "2026-10-01T00:00:00Z" }),
+      issue(52, { labels: ["priority: now"] }),
+    ],
+    items: [
+      { number: 51, values: { Cycle: "c0" } },
+      { number: 52, values: { Cycle: "c1" } },
+    ],
+  });
+  /** @param {ReturnType<typeof fakeGitHub>} gh */
+  const cycleWrites = (gh) =>
+    gh.mutations.filter((m) => m.query !== UPDATE_ITERATIONS && m.variables.field === "F_cycle");
+
+  it("sends completed iterations back with their ids, so a closed item keeps its finished Cycle", async () => {
+    const gh = fakeGitHub(appendBoard());
+    const { counts } = await run(gh);
+    expect(counts.failed).toBe(0);
+    const update = gh.mutations.find((m) => m.query === UPDATE_ITERATIONS);
+    expect(update?.variables.config.iterations).toEqual([
+      c0,
+      c1,
+      { title: "Cycle 2", startDate: "2026-10-26", duration: 14 },
+    ]);
+    expect(gh.board.map((b) => [b.number, b.values.Cycle])).toEqual([
+      [51, "c0"],
+      [52, "c1"],
+      [50, "it_1"],
+    ]);
+  });
+
+  it("refuses the write when an existing iteration has no id", async () => {
+    const gh = fakeGitHub({
+      ...appendBoard(),
+      fields: withCycles([c1], [{ ...c0, id: null }]),
+    });
+    const { counts, lines } = await run(gh);
+    expect(gh.mutations.some((m) => m.query === UPDATE_ITERATIONS)).toBe(false);
+    expect(counts.failed).toBe(1);
+    expect(lines).toContain(
+      "failed: add Cycle iterations: an existing iteration has no id; nothing added",
+    );
+  });
+
+  it.each([
+    [
+      "an iteration added by hand",
+      (/** @type {any} */ config) =>
+        config.iterations.push({
+          id: "hand",
+          title: "Hack week",
+          startDate: "2026-10-26",
+          duration: 7,
+        }),
+    ],
+    ["an iteration removed", (/** @type {any} */ config) => config.completedIterations.pop()],
+    [
+      "an iteration replaced",
+      (/** @type {any} */ config) => {
+        config.completedIterations[0] = { ...config.completedIterations[0], id: "other" };
+      },
+    ],
+  ])(
+    "refuses the write when the field changed between the read and the write: %s",
+    async (_, edit) => {
+      let projectReads = 0;
+      /** @type {ReturnType<typeof fakeGitHub>} */
+      let gh;
+      gh = fakeGitHub({
+        ...appendBoard(),
+        onRequest: (query) => {
+          if (query === PROJECT_QUERY && (projectReads += 1) === 2) {
+            edit(gh.fields.find((f) => f.name === "Cycle").configuration);
+          }
+        },
+      });
+      const { counts, lines } = await run(gh);
+      expect(projectReads).toBe(2);
+      expect(gh.mutations.some((m) => m.query === UPDATE_ITERATIONS)).toBe(false);
+      expect(counts.failed).toBe(1);
+      expect(lines).toContain(
+        "failed: add Cycle iterations: the Cycle field changed since it was read; nothing added",
+      );
+    },
+  );
+
+  it("stops writing Cycle for the run when an iteration does not come back", async () => {
+    const gh = fakeGitHub({
+      ...appendBoard(),
+      // GitHub drops c0 despite its id being sent.
+      tamper: (query, variables) =>
+        query === UPDATE_ITERATIONS
+          ? {
+              ...variables,
+              config: {
+                ...variables.config,
+                iterations: variables.config.iterations.filter(
+                  (/** @type {any} */ i) => i.id !== "c0",
+                ),
+              },
+            }
+          : variables,
+    });
+    const { counts, lines } = await run(gh);
+    expect(counts.failed).toBe(1);
+    expect(lines).toContain("failed: add Cycle iterations: iteration(s) c0 did not come back");
+    expect(lines).toContain(
+      "board: an iteration was lost adding Cycles; no Cycle is written this run",
+    );
+    expect(cycleWrites(gh)).toEqual([]);
+    // The rest of the run carries on.
+    expect(gh.board.find((b) => b.number === 50)?.values.Started).toBe("2026-10-01");
+  });
+
+  it("counts a failed append as an ordinary failed write, and a write returning no field as lost", async () => {
+    const gh = fakeGitHub({ ...appendBoard(), fail: (query) => query === UPDATE_ITERATIONS });
+    // A GraphQL error is an ordinary failed write: nothing was replaced, so Cycle still syncs.
+    const { counts, lines } = await run(gh);
+    expect(counts.failed).toBe(1);
+    expect(lines).toContain("failed: add Cycle iterations: boom");
+    expect(gh.board.find((b) => b.number === 52)?.values.Cycle).toBe("c1");
+
+    const { client, lines: lines2 } = clientFor(fakeGitHub(appendBoard()));
+    const real = client.mutate;
+    client.mutate = async (description, query, variables) =>
+      query === UPDATE_ITERATIONS
+        ? { updateProjectV2Field: null }
+        : real(description, query, variables);
+    await sync({ client, org: "openzigs", project: 2, now: NOW, log: (l) => lines2.push(l) });
+    expect(lines2).toContain("failed: add Cycle iterations: the write returned no field");
+  });
+});
+
+describe("sync — #1190 linked pull requests the token cannot read", () => {
+  it("falls back to the creation date, fills only an empty Started, reports it, and carries on", async () => {
+    const gh = fakeGitHub({
+      fields: BOARD,
+      prsError: true,
+      issues: [
+        issue(1, { prs: ["2026-10-03T00:00:00Z"] }),
+        issue(2, { prs: ["2026-10-04T00:00:00Z"], createdAt: "2026-09-20T00:00:00Z" }),
+      ],
+      // #2 already holds its PR-based Started from a run that could read pull requests.
+      items: [{ number: 2, values: { Started: "2026-10-04" } }],
+    });
+    const { counts, lines } = await run(gh);
+    expect(counts.failed).toBe(0);
+    expect(lines).toContain(
+      "board: linked pull requests could not be read (Resource not accessible by integration); Started falls back to the creation date where it is empty",
+    );
+    expect(gh.board.map((b) => [b.number, b.values.Started])).toEqual([
+      [2, "2026-10-04"],
+      [1, "2026-10-01"],
+    ]);
+  });
+
+  it("falls back when only the sub-issue read fails", async () => {
+    const gh = fakeGitHub({
+      fields: BOARD,
+      prsError: "subIssues",
+      issues: [
+        issue(10, { labels: ["epic"] }),
+        issue(11, { parent: 10, createdAt: "2026-09-02T00:00:00Z", prs: ["2026-09-05T00:00:00Z"] }),
+      ],
+    });
+    const { counts, lines } = await run(gh);
+    expect(counts.failed).toBe(0);
+    expect(lines.filter((l) => l.startsWith("board: linked pull requests"))).toHaveLength(1);
+    expect(gh.board.find((b) => b.number === 10)?.values.Started).toBe("2026-09-02");
+  });
+});
+
+describe("sync — #1190 an epic's Status, re-read before it is written", () => {
+  /** @param {(issues: any[], gh: any) => void} between @param {string} [status] */
+  async function promote(between, status = "Todo") {
+    const issues = [
+      issue(30, { labels: ["epic"] }),
+      issue(31, { parent: 30, state: "CLOSED", closedAt: "2026-10-10T00:00:00Z" }),
+    ];
+    /** @type {ReturnType<typeof fakeGitHub>} */
+    let gh;
+    gh = fakeGitHub({
+      fields: BOARD,
+      issues,
+      items: [{ number: 30, values: { Status: status } }],
+      onRequest: (query) => {
+        if (query === RECHECK_QUERY) between(issues, gh);
+      },
+    });
+    const result = await run(gh);
+    return { gh, ...result };
+  }
+
+  it("promotes when nothing changed in between", async () => {
+    const { gh } = await promote(() => {});
+    expect(gh.board[0].values.Status).toBe("In Progress");
+  });
+
+  it("skips an epic closed, and set Done, between the read and the write", async () => {
+    const { gh, lines, counts } = await promote((issues, fake) => {
+      issues[0].state = "CLOSED";
+      fake.board[0].values.Status = "Done";
+    });
+    expect(gh.mutations.some((m) => m.variables.field === "F_status")).toBe(false);
+    expect(gh.board[0].values.Status).toBe("Done");
+    expect(lines).toContain("skip #30 Status: closed, or moved to Done, since the read");
+    expect(counts.failed).toBe(0);
+  });
+
+  it("skips an epic moved by hand in between, and one closed with its Status untouched", async () => {
+    const moved = await promote((_, fake) => {
+      fake.board[0].values.Status = "In Progress";
+    });
+    expect(moved.gh.mutations.some((m) => m.variables.field === "F_status")).toBe(false);
+    const closed = await promote((issues) => {
+      issues[0].state = "CLOSED";
+    });
+    expect(closed.gh.mutations.some((m) => m.variables.field === "F_status")).toBe(false);
+    expect(closed.lines).toContain("skip #30 Status: closed, or moved to Todo, since the read");
+  });
+
+  it("does not promote an epic whose only closed sub-issue was a duplicate", async () => {
+    const gh = fakeGitHub({
+      fields: BOARD,
+      issues: [
+        issue(40, { labels: ["epic"], summary: { total: 2, completed: 1, percentCompleted: 50 } }),
+        issue(41, {
+          parent: 40,
+          state: "CLOSED",
+          closedAt: "2026-10-10T00:00:00Z",
+          stateReason: "DUPLICATE",
+        }),
+        issue(42, { parent: 40 }),
+      ],
+      items: [{ number: 40, values: { Status: "Todo" } }],
+    });
+    await run(gh);
+    expect(gh.board[0].values.Status).toBe("Todo");
   });
 });

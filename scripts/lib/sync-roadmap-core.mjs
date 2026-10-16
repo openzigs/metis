@@ -14,14 +14,15 @@
  *   2. Reads every item already on the board, once, into a map.
  *   3. ADDS to the board's Area single-select any `area:` label name it has no option for, keeping
  *      every existing option by id (so no item loses its Area). APPENDS Cycle iterations when none
- *      covers today or follows it, keeping every existing iteration by id (#1190).
+ *      covers today or follows it, keeping every existing iteration by id, behind three guards
+ *      (see ensureCycles; #1190).
  *   4. Reads every epic's sub-issues whole, closed long ago or not, for the epic's Started (#1190).
  *   5. ADDS every open issue that is not on the board. Never deletes, never archives, and leaves an
  *      archived item, and an item outside what it read, exactly as they are.
  *   6. SETS Tier, Kind, Area, Progress %, Sub-issues done, Started, Finished and Cycle, only where
  *      the value differs. Status is GitHub's (its built-in workflows own it) with ONE exception
- *      (#1190): an open epic with a sub-issue closed or In Progress is promoted to In Progress, and
- *      never demoted.
+ *      (#1190): an open epic with a sub-issue closed as completed, or In Progress, is promoted to
+ *      In Progress, only from empty or Todo, and re-read just before the write.
  *   7. REPORTS every open issue missing a tier (its own or an ancestor's), an `area:` label or a type
  *      label (#1181), one `missing labels:` line each and a count in the summary; and a missing
  *      Started, Finished or Cycle field, or a missing current or next cycle, one `board:` line each.
@@ -91,6 +92,10 @@ export const CYCLE = "Cycle";
 export const STATUS = "Status";
 export const IN_PROGRESS = "In Progress";
 export const EPIC_LABEL = "epic";
+/** #1190: an epic's Status is promoted only from empty or one of these, matched by name. */
+export const PROMOTABLE_STATUSES = /** @type {readonly string[]} */ (["Todo"]);
+/** Close reasons that are not work done, so they never promote an epic. */
+export const NOT_DONE_REASONS = /** @type {readonly string[]} */ (["NOT_PLANNED", "DUPLICATE"]);
 /** The run stops without these: every value in them is decided by this script. */
 export const REQUIRED_FIELDS = /** @type {const} */ ([TIER, KIND, AREA, PROGRESS, SUBS_DONE]);
 /**
@@ -118,7 +123,7 @@ export const MANAGED_FIELDS = /** @type {const} */ ([
  * @typedef {{
  *   id: string, number: number, title: string, state: string, closedAt: string | null,
  *   labels: string[], summary: SubIssuesSummary | null, parent: number | null,
- *   createdAt?: string | null, firstPrAt?: string | null
+ *   createdAt?: string | null, firstPrAt?: string | null, stateReason?: string | null
  * }} Issue
  * @typedef {string | number | null} FieldValue
  * @typedef {{ id: string | null, archived: boolean, values: Record<string, FieldValue> }} Item
@@ -409,32 +414,47 @@ export function iterationsToAppend(iterations, duration, today) {
  *
  * @param {string} tier
  * @param {Cycles} cycles
- * @returns {string | null | undefined} an iteration's title
+ * @returns {string | null | undefined} an iteration's id: an item is matched by id, never by title
  */
 export function cycleFor(tier, cycles) {
-  if (tier === "Now") return cycles.current?.title;
-  if (tier === "Next") return cycles.next?.title;
+  if (tier === "Now") return cycles.current ? cycles.current.id : undefined;
+  if (tier === "Next") return cycles.next ? cycles.next.id : undefined;
   return null;
 }
 
 /**
  * #1190 — the one Status write this script makes: an open `epic` with a sub-issue closed or In
- * Progress moves to In Progress. Never a demotion — only from empty or an option ordered before In
- * Progress (Todo); an option the field does not list is left alone. `undefined` = do not touch.
+ * Progress moves to In Progress. Only ever FROM an empty Status or one named in PROMOTABLE_STATUSES
+ * (Todo), by name, never by the field's option order: any other value (In Progress, Done, an option
+ * added by hand) is left alone, so an epic is never demoted. `undefined` = do not touch.
  *
  * @param {Pick<Issue, "state" | "labels">} issue
  * @param {FieldValue | undefined} current the item's Status
- * @param {string[]} optionNames the Status field's options, in order
- * @param {boolean} subIssueStarted a sub-issue is closed or In Progress
+ * @param {string[]} optionNames the Status field's options (In Progress must be one)
+ * @param {boolean} subIssueStarted a sub-issue is closed as completed, or In Progress
  * @returns {string | undefined}
  */
 export function promotedStatus(issue, current, optionNames, subIssueStarted) {
   if (issue.state !== "OPEN" || !isEpic(issue) || !subIssueStarted) return undefined;
-  const target = optionNames.indexOf(IN_PROGRESS);
-  if (target < 0) return undefined;
-  const at = current == null ? -1 : optionNames.indexOf(String(current));
-  if (current != null && at < 0) return undefined;
-  return at < target ? IN_PROGRESS : undefined;
+  if (!optionNames.includes(IN_PROGRESS)) return undefined;
+  return canPromoteFrom(current) ? IN_PROGRESS : undefined;
+}
+
+/** @param {FieldValue | undefined} status */
+export function canPromoteFrom(status) {
+  return status == null || PROMOTABLE_STATUSES.includes(String(status));
+}
+
+/**
+ * A sub-issue counts towards promoting its epic when it is open and In Progress on the board, or
+ * closed as completed. Closed as a duplicate or not planned is not work done.
+ *
+ * @param {Pick<Issue, "state" | "stateReason">} child
+ * @param {FieldValue | undefined} status the child's Status on the board
+ */
+export function subIssueCounts(child, status) {
+  if (child.state === "OPEN") return status === IN_PROGRESS;
+  return !NOT_DONE_REASONS.includes(String(child.stateReason ?? ""));
 }
 
 /**
@@ -472,21 +492,21 @@ export function inReadWindow(issue, now) {
 
 /**
  * The `value` argument of `updateProjectV2ItemFieldValue`, or null when a single-select field has
- * no option of that name, or an iteration field no iteration of that title (the board was edited by
+ * no option of that name, or an iteration field no iteration with that id (the board was edited by
  * hand; the item is left alone, said so in the log).
  *
  * @param {Field} field
  * @param {string | number} value
- * @returns {Record<string, string | number | null> | null} a null option or iteration id only in
- *   a dry run, for one the run would have added
+ * @returns {Record<string, string | number | null> | null} a null option id only in a dry run, for
+ *   an option the run would have added
  */
 export function encodeValue(field, value) {
   if (field.dataType === "NUMBER") return { number: Number(value) };
   if (field.dataType === "TEXT") return { text: String(value) };
   if (field.dataType === "DATE") return { date: String(value) };
   if (field.dataType === "ITERATION") {
-    // By title, as a single select is by name; the item's value reads back as the title.
-    const iteration = iterationsOf(field).find((i) => i.title === value);
+    // By id: two iterations may share a title; the item's value reads back as the id.
+    const iteration = iterationsOf(field).find((i) => i.id != null && i.id === value);
     return iteration ? { iterationId: iteration.id } : null;
   }
   const option = (field.options ?? []).find((o) => o.name === value);
@@ -625,24 +645,32 @@ export function createClient({
 
 /** @typedef {ReturnType<typeof createClient>} Client */
 
-// #1190: closed pull requests count too — one opened and abandoned still started the work.
 const ISSUE_FIELDS = `
-        id number title state closedAt createdAt
-        closedByPullRequestsReferences(first: 25, includeClosedPrs: true) { nodes { createdAt } }
+        id number title state stateReason closedAt createdAt
         labels(first: 50) { nodes { name } }
         parent { number repository { nameWithOwner } }
         subIssuesSummary { total completed percentCompleted }`;
+/**
+ * #1190: closed pull requests count too — one opened and abandoned still started the work. Kept
+ * apart because the nightly's App token is minted with `issues: read` and no pull-request read, and
+ * this connection may need one: when it cannot be read, the run reads without it and says so.
+ */
+const PR_FIELDS = `
+        closedByPullRequestsReferences(first: 25, includeClosedPrs: true) { nodes { createdAt } }`;
 
-export const ISSUES_QUERY = `
+/** @param {string} fields */
+const issuesQuery = (fields) => `
 query($owner: String!, $name: String!, $after: String, $filter: IssueFilters) {
   repository(owner: $owner, name: $name) {
     issues(first: 100, after: $after, filterBy: $filter, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
-      nodes {${ISSUE_FIELDS}
+      nodes {${fields}
       }
     }
   }
 }`;
+export const ISSUES_QUERY = issuesQuery(ISSUE_FIELDS + PR_FIELDS);
+export const ISSUES_QUERY_NO_PRS = issuesQuery(ISSUE_FIELDS);
 
 export const ONE_ISSUE_QUERY = `
 query($owner: String!, $name: String!, $number: Int!) {
@@ -652,16 +680,33 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }`;
 
-export const SUB_ISSUES_QUERY = `
+/** @param {string} fields */
+const subIssuesQuery = (fields) => `
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
       subIssues(first: 50, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes {${ISSUE_FIELDS}
+        nodes {${fields}
           repository { nameWithOwner }
         }
       }
+    }
+  }
+}`;
+export const SUB_ISSUES_QUERY = subIssuesQuery(ISSUE_FIELDS + PR_FIELDS);
+export const SUB_ISSUES_QUERY_NO_PRS = subIssuesQuery(ISSUE_FIELDS);
+
+/**
+ * #1190 — an epic's state and board Status, re-read immediately before its Status is written, so an
+ * epic closed (and set Done by GitHub's workflow) during the run is not overwritten.
+ */
+export const RECHECK_QUERY = `
+query($item: ID!) {
+  node(id: $item) {
+    ... on ProjectV2Item {
+      fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+      content { ... on Issue { state } }
     }
   }
 }`;
@@ -700,7 +745,7 @@ query($org: String!, $number: Int!, $after: String) {
               ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2FieldCommon { name } } }
               ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } }
               ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } }
-              ... on ProjectV2ItemFieldIterationValue { title field { ... on ProjectV2FieldCommon { name } } }
+              ... on ProjectV2ItemFieldIterationValue { iterationId field { ... on ProjectV2FieldCommon { name } } }
             }
           }
         }
@@ -766,6 +811,7 @@ function issueFromNode(node, repository) {
     number: node.number,
     title: node.title,
     state: node.state,
+    stateReason: node.stateReason ?? null,
     closedAt: node.closedAt ?? null,
     createdAt: node.createdAt ?? null,
     firstPrAt:
@@ -788,9 +834,10 @@ function issueFromNode(node, repository) {
  * @param {Client} client
  * @param {string} repository owner/name
  * @param {Date} now
+ * @param {boolean} [withPrs] read each issue's linked pull requests too (#1190)
  * @returns {Promise<Map<number, Issue>>}
  */
-export async function readIssues(client, repository, now) {
+export async function readIssues(client, repository, now, withPrs = true) {
   const [owner, name] = repository.split("/");
   const since = new Date(now.getTime() - CLOSED_WINDOW_DAYS * 86_400_000).toISOString();
   // A close updates the issue, so `since` (on updatedAt) catches every close in the window;
@@ -802,7 +849,12 @@ export async function readIssues(client, repository, now) {
     /** @type {string | null} */
     let after = null;
     for (;;) {
-      const data = await client.query(ISSUES_QUERY, { owner, name, after, filter });
+      const data = await client.query(withPrs ? ISSUES_QUERY : ISSUES_QUERY_NO_PRS, {
+        owner,
+        name,
+        after,
+        filter,
+      });
       const page = data.repository.issues;
       for (const node of page.nodes) {
         const issue = issueFromNode(node, repository);
@@ -870,7 +922,7 @@ export async function readItems(client, org, number, repository) {
       for (const value of node.fieldValues?.nodes ?? []) {
         const field = value?.field?.name;
         if (!field) continue;
-        for (const key of ["name", "number", "text", "date", "title"]) {
+        for (const key of ["name", "number", "text", "date", "iterationId"]) {
           if (key in value) values[field] = value[key];
         }
       }
@@ -933,9 +985,10 @@ export async function ensureAreaOptions(client, fields, issues) {
  * @param {Client} client
  * @param {string} repository owner/name
  * @param {Iterable<number>} epics
+ * @param {boolean} [withPrs] read each sub-issue's linked pull requests too
  * @returns {Promise<Map<number, Issue[]>>}
  */
-export async function readSubIssues(client, repository, epics) {
+export async function readSubIssues(client, repository, epics, withPrs = true) {
   const [owner, name] = repository.split("/");
   /** @type {Map<number, Issue[]>} */
   const subIssues = new Map();
@@ -949,7 +1002,12 @@ export async function readSubIssues(client, repository, epics) {
     /** @type {string | null} */
     let after = null;
     for (;;) {
-      const data = await client.query(SUB_ISSUES_QUERY, { owner, name, number, after });
+      const data = await client.query(withPrs ? SUB_ISSUES_QUERY : SUB_ISSUES_QUERY_NO_PRS, {
+        owner,
+        name,
+        number,
+        after,
+      });
       const page = data.repository?.issue?.subIssues;
       if (!page) break;
       for (const node of page.nodes) {
@@ -966,20 +1024,52 @@ export async function readSubIssues(client, repository, epics) {
 }
 
 /**
- * #1190 — appends Cycle iterations so that one covers today and one follows it. Every existing
- * iteration, active or completed, is sent back with its id (see UPDATE_ITERATIONS), so no item
- * loses its Cycle; the field is then replaced in `fields` by what GitHub returns.
+ * A guard in `ensureCycles` tripped. `lost` is set when the write happened and an iteration did not
+ * come back: the Cycle field is then not trusted for the rest of the run.
+ */
+export class CycleGuardError extends GraphQLError {
+  /** @param {string} message @param {boolean} lost */
+  constructor(message, lost) {
+    super(message);
+    this.lost = lost;
+  }
+}
+
+/** @param {Field | undefined} field @returns {Array<string | null>} */
+const iterationIds = (field) => iterationsOf(field).map((i) => i.id);
+
+/**
+ * #1190 — appends Cycle iterations so that one covers today and one follows it. The write replaces
+ * the field's WHOLE iteration list, so it is the one write that could empty every item's Cycle;
+ * three guards stand around it:
+ *   1. every existing iteration, active AND completed, must have an id to send back (see
+ *      UPDATE_ITERATIONS), or nothing is written;
+ *   2. the field is re-read immediately before the write, and nothing is written if its iteration
+ *      ids differ from the first read (an iteration added or removed by hand in between would
+ *      otherwise be deleted or resurrected);
+ *   3. after the write, every id read before must come back, or the run stops writing Cycle.
+ * A guard throws a CycleGuardError; the field is otherwise replaced in `fields` by what GitHub
+ * returns.
  *
  * @param {Client} client
  * @param {Map<string, Field>} fields
  * @param {string} today YYYY-MM-DD
+ * @param {() => Promise<Field | undefined>} reread the Cycle field as the board has it now
  */
-export async function ensureCycles(client, fields, today) {
+export async function ensureCycles(client, fields, today, reread) {
   const field = /** @type {Field} */ (fields.get(CYCLE));
   const iterations = iterationsOf(field);
   const duration = field.configuration?.duration;
   const append = iterationsToAppend(iterations, duration, today);
   if (append.length === 0 || !client.budgetLeft()) return;
+  if (iterations.some((i) => !i.id)) {
+    throw new CycleGuardError("an existing iteration has no id; nothing added", false);
+  }
+  const before = new Set(iterations.map((i) => /** @type {string} */ (i.id)));
+  const fresh = iterationIds(await reread());
+  if (fresh.length !== before.size || !fresh.every((id) => id != null && before.has(id))) {
+    throw new CycleGuardError("the Cycle field changed since it was read; nothing added", false);
+  }
   const config = {
     startDate: iterations[0].startDate,
     duration,
@@ -998,11 +1088,8 @@ export async function ensureCycles(client, fields, today) {
     UPDATE_ITERATIONS,
     { field: field.id, config },
   );
-  const result = data?.updateProjectV2Field?.projectV2Field;
-  if (result) {
-    fields.set(CYCLE, { ...result, name: CYCLE, dataType: "ITERATION" });
-  } else if (client.dryRun) {
-    // So a dry run shows the values it would then set.
+  if (client.dryRun) {
+    // So a dry run shows the values it would then set; the ids are placeholders, never sent.
     const configuration = field.configuration ?? {};
     fields.set(CYCLE, {
       ...field,
@@ -1010,11 +1097,22 @@ export async function ensureCycles(client, fields, today) {
         ...configuration,
         iterations: [
           ...(configuration.iterations ?? []),
-          ...append.map((i) => ({ ...i, id: null })),
+          ...append.map((i) => ({ ...i, id: `dry-run:${i.title}` })),
         ],
       },
     });
+    return;
   }
+  const result = data?.updateProjectV2Field?.projectV2Field;
+  const after = new Set(iterationIds(result));
+  const lost = [...before].filter((id) => !after.has(id));
+  if (!result || lost.length) {
+    throw new CycleGuardError(
+      result ? `iteration(s) ${lost.join(", ")} did not come back` : "the write returned no field",
+      true,
+    );
+  }
+  fields.set(CYCLE, { ...result, name: CYCLE, dataType: "ITERATION" });
 }
 
 /**
@@ -1052,7 +1150,21 @@ async function syncOne({ client, projectId, fields, issue, lookup, item, log, co
       break;
     }
     const field = /** @type {Field} */ (fields.get(fieldName));
-    const label = `#${number} ${fieldName} -> ${value == null ? "(clear)" : value}`;
+    // A Cycle value is an iteration id; the log names its title.
+    const shown =
+      fieldName === CYCLE
+        ? (iterationsOf(field).find((i) => i.id === value)?.title ?? value)
+        : value;
+    const label = `#${number} ${fieldName} -> ${value == null ? "(clear)" : shown}`;
+    if (fieldName === STATUS && item.id) {
+      // #1190: the epic may have closed (and GitHub set it Done) since the read. Re-read it now.
+      const node = (await client.query(RECHECK_QUERY, { item: item.id }))?.node;
+      const status = node?.fieldValueByName?.name ?? null;
+      if (node?.content?.state !== "OPEN" || !canPromoteFrom(status)) {
+        log(`skip #${number} Status: closed, or moved to ${status ?? "(empty)"}, since the read`);
+        continue;
+      }
+    }
     if (value == null) {
       await client.mutate(`set ${label}`, CLEAR_VALUE, {
         project: projectId,
@@ -1076,7 +1188,8 @@ async function syncOne({ client, projectId, fields, issue, lookup, item, log, co
     writes += 1;
   }
   // Changed only if a write happened; an item whose every change was skipped or deferred is not.
-  return { outcome: writes > 0 ? "changed" : "skipped", deferred: writes === 0 && deferred };
+  // Deferred whenever a change waits for the next run, a part-written item included.
+  return { outcome: writes > 0 ? "changed" : "skipped", deferred };
 }
 
 /**
@@ -1124,9 +1237,28 @@ export async function sync({
     notes.push(`board: Status has no option "${IN_PROGRESS}"; epics' Status is not synced`);
     fields.delete(STATUS);
   }
+  // The UTC date: at the nightly's 02:23 UTC, the previous evening in the Americas.
   const today = now.toISOString().slice(0, 10);
 
-  const issues = await readIssues(client, repository, now);
+  // #1190: the linked-PR read may need a permission the App token lacks. Without it, Started falls
+  // back to the creation date, and only fills an empty Started (never rewrites a PR-based one).
+  let prsReadable = true;
+  /** @param {unknown} error */
+  const prsUnreadable = (error) => {
+    if (!(error instanceof GraphQLError)) throw error;
+    prsReadable = false;
+    notes.push(
+      `board: linked pull requests could not be read (${error.message}); Started falls back to the creation date where it is empty`,
+    );
+  };
+  /** @type {Map<number, Issue>} */
+  let issues;
+  try {
+    issues = await readIssues(client, repository, now);
+  } catch (error) {
+    prsUnreadable(error);
+    issues = await readIssues(client, repository, now, false);
+  }
   /** @type {Map<number, Issue>} */
   const lookup = new Map([...(await readAncestors(client, repository, issues)), ...issues]);
   const items = await readItems(client, org, projectNumber, repository);
@@ -1144,14 +1276,26 @@ export async function sync({
 
   /** @type {Cycles} */
   let cycles = { current: null, next: null };
+  const reread = async () =>
+    (
+      await client.query(PROJECT_QUERY, { org, number: projectNumber })
+    ).organization?.projectV2?.fields?.nodes?.find(
+      (/** @type {Field | null} */ f) => f?.name === CYCLE,
+    );
   if (fields.has(CYCLE)) {
     try {
-      await ensureCycles(client, fields, today);
+      await ensureCycles(client, fields, today, reread);
     } catch (error) {
       if (!(error instanceof GraphQLError)) throw error;
       counts.failed += 1;
       log(`failed: add Cycle iterations: ${error.message}`);
+      if (error instanceof CycleGuardError && error.lost) {
+        fields.delete(CYCLE);
+        notes.push("board: an iteration was lost adding Cycles; no Cycle is written this run");
+      }
     }
+  }
+  if (fields.has(CYCLE)) {
     cycles = cyclesAt(iterationsOf(fields.get(CYCLE)), today);
     if (!cycles.current) notes.push(`board: no Cycle covers ${today}; Now items keep their Cycle`);
     if (!cycles.next) {
@@ -1162,20 +1306,22 @@ export async function sync({
   }
 
   const epics = [...issues.values()].filter(isEpic).map((i) => i.number);
-  const subIssues = fields.has(STARTED)
-    ? await readSubIssues(client, repository, epics)
-    : new Map();
-  // Epics with an open sub-issue the board shows In Progress; a closed one counts by the summary.
-  const inProgressParents = new Set(
-    [...issues.values()]
-      .filter((i) => i.parent != null && items.get(i.number)?.values[STATUS] === IN_PROGRESS)
-      .map((i) => i.parent),
-  );
+  /** @type {Map<number, Issue[]>} */
+  let subIssues = new Map();
+  if (fields.has(STARTED) || fields.has(STATUS)) {
+    try {
+      subIssues = await readSubIssues(client, repository, epics, prsReadable);
+    } catch (error) {
+      if (!prsReadable) throw error;
+      prsUnreadable(error);
+      subIssues = await readSubIssues(client, repository, epics, false);
+    }
+  }
   /** @param {Issue} issue @param {Item} item @returns {Record<string, FieldValue>} */
   const extra = (issue, item) => {
     /** @type {Record<string, FieldValue>} */
     const out = {};
-    if (fields.has(STARTED)) {
+    if (fields.has(STARTED) && (prsReadable || item.values[STARTED] == null)) {
       const started = resolveStarted(issue, subIssues);
       if (started) out[STARTED] = started;
     }
@@ -1186,8 +1332,10 @@ export async function sync({
       if (cycle !== undefined) out[CYCLE] = cycle;
     }
     if (fields.has(STATUS)) {
-      const subIssueStarted =
-        (issue.summary?.completed ?? 0) > 0 || inProgressParents.has(issue.number);
+      // A sub-issue closed as completed, or open and In Progress on the board.
+      const subIssueStarted = (subIssues.get(issue.number) ?? []).some((child) =>
+        subIssueCounts(child, items.get(child.number)?.values[STATUS]),
+      );
       const status = promotedStatus(issue, item.values[STATUS], statusOptions, subIssueStarted);
       if (status) out[STATUS] = status;
     }
