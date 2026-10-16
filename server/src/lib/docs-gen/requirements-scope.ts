@@ -264,6 +264,10 @@ function nestBodyHeadings(body: string): string {
   // `---` under them ends with a thematic break.
   let paragraphStart: number | null = null;
   let inContainer = false;
+  // Inside a list or quote across blank lines: an indented paragraph after one
+  // may be the item's continuation, and rewriting it at column 0 would end the
+  // list. Such a paragraph is left as it is (PR #1179, third panel).
+  let inList = false;
   for (const line of body.replace(/\r\n?/g, "\n").split("\n")) {
     if (fence !== null) {
       // CommonMark: a closing fence is the same character, at least as long as
@@ -286,13 +290,14 @@ function nestBodyHeadings(body: string): string {
       out.push(line);
       continue;
     }
-    const heading = /^ {0,3}(#{1,6})(?=[ \t]|$)/.exec(line);
+    const heading = /^( {0,3})(#{1,6})(?=[ \t]|$)/.exec(line);
     if (heading) {
       paragraphStart = null;
+      // The indent is kept, so a heading inside a list item stays in it.
       out.push(
-        heading[1]!.length >= BODY_MIN_HEADING_LEVEL
+        heading[2]!.length >= BODY_MIN_HEADING_LEVEL
           ? line
-          : "#".repeat(BODY_MIN_HEADING_LEVEL) + line.slice(heading[0].length),
+          : heading[1]! + "#".repeat(BODY_MIN_HEADING_LEVEL) + line.slice(heading[0].length),
       );
       continue;
     }
@@ -317,14 +322,19 @@ function nestBodyHeadings(body: string): string {
       // Ends any paragraph; never part of a heading's text (CommonMark).
       paragraphStart = null;
       inContainer = false;
+      inList = false;
     } else if (containerStart) {
       // A list item or quote interrupts the paragraph above it, and the text it
       // starts is inside the container, so no underline below can make it a heading.
       paragraphStart = out.length;
       inContainer = true;
+      inList = true;
     } else if (paragraphStart === null && !indentedCode) {
       paragraphStart = out.length;
-      inContainer = false;
+      // An indented paragraph after a list may continue an item; only an
+      // unindented one is certainly top level.
+      inList = inList && /^[ \t]/.test(line);
+      inContainer = inList;
     }
     // A table row: a `---` under it is never read as this paragraph's underline.
     if (line.includes("|")) inContainer = true;

@@ -419,6 +419,34 @@ describe("requirement bodies carrying METIS markers — #1170", () => {
     expect(bodyOf("Para\n    more\n===")).toBe("#### Para more");
   });
 
+  it("never reads a bare --- under a table row as a heading underline", () => {
+    expect(bodyOf("| a |\n---")).toBe("| a |\n---");
+    expect(bodyOf("Text\n| a | b |\n===")).toBe("Text\n| a | b |\n===");
+  });
+
+  it("ends the heading candidate at an ATX heading or a fence", () => {
+    // Without the reset, the `---` would fold "Para" and the heading or the
+    // fence into one "####" line.
+    expect(bodyOf("Para\n# H\n---")).toBe("Para\n#### H\n---");
+    expect(bodyOf("Para\n```\nx\n```\n---")).toBe("Para\n```\nx\n```\n---");
+  });
+
+  it("reads an indented list marker inside a paragraph as its text, not a new item", () => {
+    // Four columns of indent cannot start a list item: the line continues "Para".
+    expect(bodyOf("Para\n    - x\n---")).toBe("#### Para - x");
+  });
+
+  it("leaves a list item's continuation paragraph inside its item", () => {
+    // Third adversarial panel on PR #1179: rewritten at column 0, "para" ended the list.
+    for (const body of ["- item\n\n  para\n  ---\n  more", "1. item\n\n   para\n   ==="]) {
+      expect(bodyOf(body)).toBe(body);
+    }
+    // An ATX heading inside an item is nested and keeps its indent.
+    expect(bodyOf("- item\n\n  ## Inside")).toBe("- item\n\n  #### Inside");
+    // An unindented paragraph after the list is top level again.
+    expect(bodyOf("- item\n\nAfter\n---")).toBe("- item\n\n#### After");
+  });
+
   it("treats a tab-indented line as code, never as heading text", () => {
     expect(bodyOf("\tcode\n---")).toBe("\tcode\n---");
     expect(bodyOf("  \tcode\n===")).toBe("  \tcode\n===");
