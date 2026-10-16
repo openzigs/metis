@@ -13,7 +13,6 @@ const rejudge = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}));
 vi.mock("./project-rooms.js", () => ({ rejudgeProjectRooms: rejudge }));
 
 import {
-  EVICT_PROJECT_ROOM_EVENT,
   REJUDGE_ALL_PROJECT_ROOMS_EVENT,
   REJUDGE_PROJECT_ROOM_EVENT,
   REJUDGE_USER_PROJECT_ROOMS_EVENT,
@@ -40,8 +39,6 @@ function fakeServer() {
     ].map((s) => [s.id, s]),
   );
   const io = {
-    socketsLeave: vi.fn(),
-    local: { socketsLeave: vi.fn() },
     of: vi.fn(() => ({ sockets })),
     on: vi.fn((event: string, fn: (...args: unknown[]) => void) => listeners.set(event, fn)),
     serverSideEmit: vi.fn(),
@@ -64,21 +61,25 @@ beforeEach(() => {
 afterEach(() => registerSocketServer(null as unknown as MetisIOServer));
 
 describe("project-room eviction", () => {
-  it("empties every project room of a deleted workspace, after moving the epoch", async () => {
+  it("re-judges every room of a deleted workspace's projects in place, after moving the epoch", async () => {
     const f = fakeServer();
     registerSocketServer(f.server);
-    let epochAtLeave = -1;
-    f.io.socketsLeave.mockImplementation(() => {
-      epochAtLeave = readEpoch(f.server, "eviction");
+    let epochAtRejudge = -1;
+    rejudge.mockImplementation(async () => {
+      epochAtRejudge = readEpoch(f.server, "eviction");
     });
     await evictWorkspaceProjectRooms("ws-1");
     expect(projectFindMany).toHaveBeenCalledWith({
       where: { workspaceId: "ws-1" },
       select: { id: true },
     });
-    expect(f.io.socketsLeave).toHaveBeenCalledWith(["project:p1", "project:p2"]);
-    expect(epochAtLeave).toBe(1);
-    expect(rejudge).not.toHaveBeenCalled();
+    expect(rejudged()).toEqual([
+      ["s-alice", "project:p1"],
+      ["s-bob", "project:p1"],
+      ["s-bob", "project:p2"],
+      ["s-carol", "project:p2"],
+    ]);
+    expect(epochAtRejudge).toBe(1);
   });
 
   it("re-judges every local socket, fail closed, when the workspace's projects cannot be listed", async () => {
@@ -86,7 +87,6 @@ describe("project-room eviction", () => {
     registerSocketServer(f.server);
     projectFindMany.mockRejectedValue(new Error("db down"));
     await expect(evictWorkspaceProjectRooms("ws-1")).resolves.toBeUndefined();
-    expect(f.io.socketsLeave).not.toHaveBeenCalled();
     expect(rejudged()).toEqual([
       ["s-alice", "*"],
       ["s-bob", "*"],
@@ -101,17 +101,7 @@ describe("project-room eviction", () => {
     registerSocketServer(f.server);
     projectFindMany.mockResolvedValue([]);
     await evictWorkspaceProjectRooms("ws-1");
-    expect(f.io.socketsLeave).not.toHaveBeenCalled();
     expect(rejudge).not.toHaveBeenCalled();
-  });
-
-  it("does not throw when the adapter fails", async () => {
-    const f = fakeServer();
-    registerSocketServer(f.server);
-    f.io.socketsLeave.mockImplementation(() => {
-      throw new Error("adapter down");
-    });
-    await expect(evictWorkspaceProjectRooms("ws-1")).resolves.toBeUndefined();
   });
 
   it("re-judges every project room of only the removed member's sockets, with no project lookup", async () => {
@@ -159,8 +149,8 @@ describe("project-room eviction relay", () => {
     projectFindMany.mockRejectedValue(new Error("db down"));
     await evictWorkspaceProjectRooms("ws-2");
     expect(f.io.serverSideEmit.mock.calls).toEqual([
-      [EVICT_PROJECT_ROOM_EVENT, "p1"],
-      [EVICT_PROJECT_ROOM_EVENT, "p2"],
+      [REJUDGE_PROJECT_ROOM_EVENT, "p1"],
+      [REJUDGE_PROJECT_ROOM_EVENT, "p2"],
       [REJUDGE_USER_PROJECT_ROOMS_EVENT, "bob"],
       [REJUDGE_PROJECT_ROOM_EVENT, "p1"],
       [REJUDGE_ALL_PROJECT_ROOMS_EVENT, "workspace-lookup-failed"],
@@ -170,14 +160,10 @@ describe("project-room eviction relay", () => {
   it("applies each relayed eviction to local sockets, after moving this replica's epoch", async () => {
     const f = fakeServer();
     wireProjectRoomEvictionRelay(f.server, true);
-    let epochAtLeave = -1;
-    f.io.local.socketsLeave.mockImplementation(() => {
-      epochAtLeave = readEpoch(f.server, "eviction");
+    let epochAtRejudge = -1;
+    rejudge.mockImplementationOnce(async () => {
+      epochAtRejudge = readEpoch(f.server, "eviction");
     });
-    f.listeners.get(EVICT_PROJECT_ROOM_EVENT)!("p1");
-    expect(f.io.local.socketsLeave).toHaveBeenCalledWith("project:p1");
-    expect(epochAtLeave).toBe(1);
-
     f.listeners.get(REJUDGE_PROJECT_ROOM_EVENT)!("p1");
     f.listeners.get(REJUDGE_USER_PROJECT_ROOMS_EVENT)!("carol");
     f.listeners.get(REJUDGE_ALL_PROJECT_ROOMS_EVENT)!("workspace-lookup-failed");
@@ -190,7 +176,8 @@ describe("project-room eviction relay", () => {
       ["s-bob", "*"],
       ["s-carol", "*"],
     ]);
-    expect(readEpoch(f.server, "eviction")).toBe(4);
+    expect(epochAtRejudge).toBe(1);
+    expect(readEpoch(f.server, "eviction")).toBe(3);
   });
 
   it("neither listens nor relays without the cluster adapter", async () => {

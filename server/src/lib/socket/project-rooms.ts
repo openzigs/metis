@@ -46,7 +46,9 @@ export type ProjectRoomSocket = Pick<
 > & { nsp: { server: MetisIOServer } };
 
 /** The socket surface a re-judgement needs. */
-export type RejudgedSocket = Pick<ProjectRoomSocket, "id" | "rooms" | "leave">;
+export type RejudgedSocket = Pick<ProjectRoomSocket, "id" | "rooms" | "leave"> & {
+  conn: { close(): void };
+};
 
 /** Leave `room`, logging rather than throwing, so the caller always goes on. */
 async function leaveQuietly(socket: Pick<ProjectRoomSocket, "id" | "leave">, room: string) {
@@ -152,9 +154,12 @@ export function wireProjectRoomHandlers(socket: ProjectRoomSocket): void {
  * Re-judge the project rooms `socket` is in against `user` (the live user),
  * leaving each one the rule now refuses. `only` limits it to one room.
  *
- * A check that throws leaves the room when `failClosed`, and keeps it
- * otherwise (the periodic sweep, where a database blip is not evidence of
- * revocation and the next pass re-judges). Never rejects.
+ * A check that throws keeps the room when failing open (the periodic sweep,
+ * where a database blip is not evidence of revocation and the next pass
+ * re-judges). Failing closed, it leaves the room AND closes the transport, as
+ * the #649 `listen` pass does: the client reconnects and re-subscribes from
+ * live state (`keepRoomSubscribed`), so a member the error wrongly removed is
+ * re-admitted rather than silently left without live updates. Never rejects.
  */
 export async function rejudgeProjectRooms(
   socket: RejudgedSocket,
@@ -164,6 +169,7 @@ export async function rejudgeProjectRooms(
   const rooms = [...socket.rooms].filter(
     (room) => room.startsWith(PROJECT_ROOM_PREFIX) && (!opts.only || room === opts.only),
   );
+  let reconnect = false;
   for (const room of rooms) {
     const projectId = room.slice(PROJECT_ROOM_PREFIX.length);
     let allowed: boolean;
@@ -178,7 +184,9 @@ export async function rejudgeProjectRooms(
       });
       if (!opts.failClosed) continue;
       allowed = false;
+      reconnect = true;
     }
     if (!allowed) await leaveQuietly(socket, room);
   }
+  if (reconnect) socket.conn.close();
 }

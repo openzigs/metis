@@ -12,9 +12,10 @@
  *   needed, so a database error cannot skip the eviction; a re-judgement that
  *   throws leaves the room (fail closed — the member rejoins on their next
  *   subscribe).
- * - a workspace deleted → `evictWorkspaceProjectRooms`: every socket leaves its
- *   projects' rooms. If the project lookup fails, every local socket's project
- *   rooms are re-judged instead, fail closed.
+ * - a workspace deleted → `evictWorkspaceProjectRooms`: its projects' rooms are
+ *   re-judged in place. The workspace is soft-deleted, so every non-admin
+ *   leaves and an admin (whom the rule still admits) stays subscribed. If the
+ *   project lookup fails, every local socket's project rooms are re-judged.
  * - a legacy project assigned to a workspace → `evictProjectRoom`: the room is
  *   re-judged in place. Members of the new workspace stay subscribed (their UI
  *   never re-subscribes on its own, so evicting them would silently stop their
@@ -41,8 +42,6 @@ import { bumpEpoch, onRelayedRevocation, relayRevocation } from "./revocation-re
 
 const log = createChildLogger("project-room-eviction");
 
-/** Relayed after a deleted workspace's project room is emptied: `(projectId)`. */
-export const EVICT_PROJECT_ROOM_EVENT = "metis:project:evict-room";
 /** Relayed after a project room is re-judged in place: `(projectId)`. */
 export const REJUDGE_PROJECT_ROOM_EVENT = "metis:project:rejudge-room";
 /** Relayed after a removed member's project rooms are re-judged: `(userId)`. */
@@ -90,7 +89,10 @@ async function workspaceProjectIds(workspaceId: string): Promise<string[] | null
   }
 }
 
-/** Every socket leaves every project room of `workspaceId` — it was deleted. */
+/**
+ * `workspaceId` was deleted: the rooms of its projects are re-judged in place,
+ * so non-admins leave and admins stay.
+ */
 export async function evictWorkspaceProjectRooms(workspaceId: string): Promise<void> {
   const io = getSocketServer();
   if (!io) return;
@@ -101,16 +103,8 @@ export async function evictWorkspaceProjectRooms(workspaceId: string): Promise<v
     await rejudgeAllLocally(io);
     return;
   }
-  if (projectIds.length === 0) return;
-  try {
-    io.socketsLeave(projectIds.map(projectRoom));
-  } catch (err) {
-    log.warn("could not evict sockets from a deleted workspace's project rooms", {
-      workspaceId,
-      error: (err as Error).message,
-    });
-  }
-  for (const projectId of projectIds) relayRevocation(io, EVICT_PROJECT_ROOM_EVENT, projectId);
+  for (const projectId of projectIds) relayRevocation(io, REJUDGE_PROJECT_ROOM_EVENT, projectId);
+  await Promise.all(projectIds.map((projectId) => rejudgeRoomLocally(io, projectId)));
 }
 
 /**
@@ -145,10 +139,6 @@ export async function evictProjectRoom(projectId: string): Promise<void> {
  * then repeat the work on the local sockets. A no-op without the adapter.
  */
 export function wireProjectRoomEvictionRelay(io: MetisIOServer, clustered: boolean): void {
-  onRelayedRevocation(io, clustered, EVICT_PROJECT_ROOM_EVENT, 1, (projectId) => {
-    bumpEpoch(io, "eviction");
-    io.local.socketsLeave(projectRoom(projectId));
-  });
   onRelayedRevocation(io, clustered, REJUDGE_PROJECT_ROOM_EVENT, 1, (projectId) => {
     bumpEpoch(io, "eviction");
     runDetached(rejudgeRoomLocally(io, projectId), "relayed project room re-judgement");

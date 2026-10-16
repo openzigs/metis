@@ -225,6 +225,8 @@ function connect(userId: string, claim: Partial<AuthPayload> = {}) {
     /** Start `subscribe:project` without waiting for it. */
     subscribeLater: (projectId: string) => s.handlers.get("subscribe:project")!({ projectId }),
     inRoom: (projectId: string) => s.rooms.has(`project:${projectId}`),
+    /** Times the server closed this socket's transport (the client then reconnects). */
+    closed: () => socket.conn.close.mock.calls.length,
     jobs: () => s.inbox.filter((e) => e.event === "job:lifecycle").map((e) => e.payload),
     refusals: () => s.inbox.filter((e) => e.event === "local:auth:error").map((e) => e.payload),
   };
@@ -409,17 +411,21 @@ describe("#1212 — a member who loses access stops receiving the room's events"
     expect(bob.jobs()).toHaveLength(1);
   });
 
-  it("empties the project rooms of a deleted workspace", async () => {
+  it("takes every member out of a deleted workspace's project rooms; an admin stays", async () => {
+    db.roles.set("root", "admin");
     const alice = connect("alice");
     const bob = connect("bob");
+    const root = connect("root");
     await alice.subscribe("p1");
     await bob.subscribe("p1");
+    await root.subscribe("p1");
 
     db.deletedWorkspaces.add("ws1");
     await evictWorkspaceProjectRooms("ws1");
     emitProgress();
     expect(alice.jobs()).toEqual([]);
     expect(bob.jobs()).toEqual([]);
+    expect(root.jobs()).toHaveLength(1);
   });
 
   it("re-judges every project room when a deleted workspace's projects cannot be listed", async () => {
@@ -487,16 +493,20 @@ describe("#1212 — the re-validation pass re-judges project rooms", () => {
     expect(alice.inRoom("p1")).toBe(true);
   });
 
-  it("keeps the room on a lookup error in a sweep, and leaves it in a LISTEN pass", async () => {
+  it("keeps the room on a lookup error in a sweep; a LISTEN pass leaves it and closes the transport", async () => {
     const bob = connect("bob");
     await bob.subscribe("p1");
 
     db.failures = 1;
     await revalidateLocalSockets(io, "sweep");
     expect(bob.inRoom("p1")).toBe(true);
+    expect(bob.closed()).toBe(0);
 
+    // Closed so the client reconnects and re-subscribes from live state: a
+    // member is re-admitted rather than silently left without updates.
     db.failures = 1;
     await revalidateLocalSockets(io, "listen");
     expect(bob.inRoom("p1")).toBe(false);
+    expect(bob.closed()).toBe(1);
   });
 });

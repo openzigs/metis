@@ -107,6 +107,7 @@ describe("rejudgeProjectRooms", () => {
     leave: vi.fn(async function (this: void, room: string) {
       void room;
     }),
+    conn: { close: vi.fn() },
   });
 
   it("judges only project rooms, audited as a re-judgement, and leaves the refused ones", async () => {
@@ -127,12 +128,22 @@ describe("rejudgeProjectRooms", () => {
     expect(s.leave.mock.calls).toEqual([["project:p2"]]);
   });
 
-  it("on a lookup error keeps the room when failing open and leaves it when failing closed", async () => {
-    const s = socketIn("project:p1");
+  it("on a lookup error keeps the room failing open; failing closed it leaves and closes the transport once", async () => {
+    const s = socketIn("project:p1", "project:p2");
     canJoin.mockRejectedValue(new Error("db down"));
     await rejudgeProjectRooms(s, USER, { failClosed: false });
     expect(s.leave).not.toHaveBeenCalled();
+    expect(s.conn.close).not.toHaveBeenCalled();
+    await rejudgeProjectRooms(s, USER, { failClosed: true });
+    expect(s.leave.mock.calls).toEqual([["project:p1"], ["project:p2"]]);
+    expect(s.conn.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not close the transport for a plain refusal", async () => {
+    const s = socketIn("project:p1");
+    canJoin.mockResolvedValue(false);
     await rejudgeProjectRooms(s, USER, { failClosed: true });
     expect(s.leave.mock.calls).toEqual([["project:p1"]]);
+    expect(s.conn.close).not.toHaveBeenCalled();
   });
 });
