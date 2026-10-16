@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { parseAcceptanceCriteria, stripMetisMarkers } from "@metis/shared";
 import { prisma } from "../prisma.js";
-import { formatStartedAt } from "../publishing/epic-title.js";
+import { formatStartedAt } from "../analysis/run-start-label.js";
 
 /** Upper bound on an explicit selection, so one request cannot name the whole table. */
 export const MAX_SELECTED_REQUIREMENTS = 500;
@@ -248,26 +248,74 @@ const BODY_MIN_HEADING_LEVEL = 4;
  * clarification pass writes `## Clarifications` into the body; copied as it was,
  * every requirement put an H2 beside the document's `## Requirements`, so the
  * Contents listed five "Clarifications" siblings and split each requirement in
- * two. Headings inside fenced code are text, and are left alone.
+ * two. Setext headings (`Title` over `===` / `---`, common in imported issue
+ * bodies) are nested too, rewritten as ATX. Headings inside fenced code are
+ * text, and are left alone; a thematic break and a table's delimiter row are
+ * never read as an underline.
  */
 function nestBodyHeadings(body: string): string {
+  const out: string[] = [];
   let fence: string | null = null;
-  return body
-    .split("\n")
-    .map((line) => {
-      const opener = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-      if (opener) {
-        const mark = opener[1]!;
-        if (fence === null) fence = mark;
-        else if (mark[0] === fence[0] && mark.length >= fence.length) fence = null;
-        return line;
-      }
-      if (fence !== null) return line;
-      const heading = /^ {0,3}(#{1,6})(?=[ \t]|$)/.exec(line);
-      if (!heading || heading[1]!.length >= BODY_MIN_HEADING_LEVEL) return line;
-      return "#".repeat(BODY_MIN_HEADING_LEVEL) + line.slice(heading[0].length);
-    })
-    .join("\n");
+  // Index in `out` of the first line of the open paragraph, or null. Only a plain
+  // paragraph can be a setext heading's text: not a list item or quote, which a
+  // `---` under them ends with a thematic break.
+  let paragraphStart: number | null = null;
+  let inContainer = false;
+  for (const line of body.split("\n")) {
+    if (fence !== null) {
+      // CommonMark: a closing fence is the same character, at least as long as
+      // the opener, and carries no info string — ` ```js ` inside is content.
+      const closer = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (closer && closer[1]![0] === fence[0] && closer[1]!.length >= fence.length) fence = null;
+      out.push(line);
+      continue;
+    }
+    const opener = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (opener) {
+      fence = opener[1]!;
+      paragraphStart = null;
+      out.push(line);
+      continue;
+    }
+    if (line.trim() === "") {
+      paragraphStart = null;
+      inContainer = false;
+      out.push(line);
+      continue;
+    }
+    const heading = /^ {0,3}(#{1,6})(?=[ \t]|$)/.exec(line);
+    if (heading) {
+      paragraphStart = null;
+      out.push(
+        heading[1]!.length >= BODY_MIN_HEADING_LEVEL
+          ? line
+          : "#".repeat(BODY_MIN_HEADING_LEVEL) + line.slice(heading[0].length),
+      );
+      continue;
+    }
+    // A setext underline (`===` or `---`, nothing else on the line) under a plain
+    // paragraph makes that paragraph a heading: rewrite it as an ATX H4.
+    if (/^ {0,3}(?:=+|-+)[ \t]*$/.test(line) && paragraphStart !== null && !inContainer) {
+      const text = out
+        .splice(paragraphStart)
+        .map((l) => l.trim())
+        .join(" ");
+      out.push(`${"#".repeat(BODY_MIN_HEADING_LEVEL)} ${text}`);
+      paragraphStart = null;
+      continue;
+    }
+    if (paragraphStart === null) {
+      // A thematic break, or a line indented as code, opens no paragraph.
+      const thematicBreak =
+        !/^ {4}/.test(line) && /^(?:-{3,}|\*{3,}|_{3,})$/.test(line.replace(/[ \t]/g, ""));
+      if (!thematicBreak && !/^ {4}/.test(line)) paragraphStart = out.length;
+      inContainer = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)|^ {0,3}>/.test(line);
+    }
+    // A table row: a `---` under it is never read as this paragraph's underline.
+    if (line.includes("|")) inContainer = true;
+    out.push(line);
+  }
+  return out.join("\n");
 }
 
 /**

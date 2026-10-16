@@ -128,3 +128,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [createBatch query breaks 5 mocks](project_createbatch-repoconnection-query-breaks-five-mocks.md) — 3 fail only in full test (#1171)
 - [Batch row decides dryRun](project_runbatch-batch-row-decides-dry-run.md) — BATCH_IS_DRY_RUN in runBatch (#1171)
 - [Verify your worktree](project_verify-your-worktree-before-committing.md) — HEAD vs your branch; worktree list; no stash pop; a lock failed
+- [Cut-off doc: lazy render?](project_cut-off-doc-lazy-render.md) — pending sections hide from innerText; read stored body, scroll (#1170)

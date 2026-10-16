@@ -341,6 +341,62 @@ describe("requirement bodies carrying METIS markers — #1170", () => {
     expect(md).toContain("```md\n## kept in code\n```");
     expect(md).toContain("##### Deep");
   });
+
+  const bodyOf = (body: string) => {
+    const md = renderRequirementsDocument("BRD", { analysisId: "a" }, [req({ body })]);
+    const start = md.indexOf("\n\n", md.indexOf("**Type:**")) + 2;
+    return md.slice(start, md.indexOf("\n\n#### Acceptance criteria"));
+  };
+
+  it("does not close a fence on a line that carries an info string", () => {
+    // CommonMark: a closing fence takes no info string, so "```js" is content.
+    const body = "```md\n```js\n## inside the block\n```\n## after";
+    expect(bodyOf(body)).toBe("```md\n```js\n## inside the block\n```\n#### after");
+  });
+
+  it("closes a fence only with the same character, at least as long", () => {
+    expect(bodyOf("````\n```\n## still code\n~~~~\n````\n# out")).toBe(
+      "````\n```\n## still code\n~~~~\n````\n#### out",
+    );
+  });
+
+  it("nests setext headings as ATX H4, joining a multi-line title", () => {
+    expect(bodyOf("Background\n==========\n\nText.\n\nScope of\nthe change\n---\n\nMore.")).toBe(
+      "#### Background\n\nText.\n\n#### Scope of the change\n\nMore.",
+    );
+  });
+
+  it("keeps a thematic break, a list's or quote's break, and a table delimiter as they are", () => {
+    const body = [
+      "Para.",
+      "",
+      "---",
+      "",
+      "- item",
+      "---",
+      "",
+      "> quote",
+      "---",
+      "",
+      "| a | b |",
+      "| --- | --- |",
+      "| 1 | 2 |",
+      "",
+      "a | b",
+      "--- | ---",
+      "",
+      "***",
+      "    indented code",
+      "---",
+    ].join("\n");
+    expect(bodyOf(body)).toBe(body);
+  });
+
+  it("nests a setext heading after an ATX heading or a fence without a blank line", () => {
+    expect(bodyOf("# One\nTwo\n===\n```\nx\n```\nThree\n---")).toBe(
+      "#### One\n#### Two\n```\nx\n```\n#### Three",
+    );
+  });
 });
 
 describe("the run and review are named, never by id — #1170", () => {
