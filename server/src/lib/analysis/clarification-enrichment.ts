@@ -495,7 +495,7 @@ export function renderClarificationBlock(
 }
 
 /**
- * Where the generated block sits in a body. One rule (#1162), no recovery:
+ * Where the generated block sits in a body (CRLF or LF). One rule (#1162), no recovery:
  *
  * - `none` — no METIS clarification marker and no `## Clarifications` heading
  *   line: a fresh block is appended.
@@ -508,7 +508,7 @@ export function renderClarificationBlock(
  *
  * Markers are found with the shared pattern `stripMetisMarkers` hides them
  * with, so a whitespace variant (`<!--metis:clarifications:end-->`) counts.
- * Offsets are into the body with CRLF already normalised to LF.
+ * Offsets are into the body as given.
  */
 type BlockLocation =
   { kind: "none" } | { kind: "block"; from: number; to: number } | { kind: "malformed" };
@@ -521,6 +521,7 @@ function locateClarificationBlock(body: string): BlockLocation {
     (m) => m.name === START_NAME || m.name === END_NAME,
   );
   if (markers.length === 0) {
+    // CRLF-safe: `trim` drops the `\r` a CRLF line leaves behind.
     const hasHeading = body.split("\n").some((line) => line.trim() === CLARIFICATIONS_HEADING);
     return hasHeading ? { kind: "malformed" } : { kind: "none" };
   }
@@ -535,7 +536,7 @@ function normalizeNewlines(body: string): string {
   return body.replace(/\r\n/g, "\n");
 }
 
-/** The generated block in a (normalised) body, or null when there is none. */
+/** The generated block in a body, or null when there is none. */
 function extractClarificationBlock(body: string): string | null {
   const at = locateClarificationBlock(body);
   return at.kind === "block" ? body.slice(at.from, at.to) : null;
@@ -546,10 +547,9 @@ function extractClarificationBlock(body: string): string | null {
  * malformed block is left as it is.
  */
 export function stripClarificationBlock(body: string): string {
-  const source = normalizeNewlines(body);
-  const at = locateClarificationBlock(source);
+  const at = locateClarificationBlock(body);
   if (at.kind !== "block") return body;
-  return (source.slice(0, at.from) + source.slice(at.to)).replace(/\s+$/, "");
+  return (body.slice(0, at.from) + body.slice(at.to)).replace(/\s+$/, "");
 }
 
 /** The outcome of {@link planClarificationBlock}. */
@@ -586,10 +586,12 @@ export function planClarificationBlock(
   answers: ReadonlyArray<AnsweredQuestion>,
   opts: { hasAcceptanceCriteria?: boolean } = {},
 ): ClarificationBlockPlan {
-  const original = body ?? "";
-  const source = normalizeNewlines(original);
+  // Located and sliced on the body as stored. Only the comparison with the
+  // previous block normalises CRLF: rewriting a CRLF body's line endings
+  // would mint a version (and stale a pinned review) for no visible change.
+  const source = body ?? "";
   const at = locateClarificationBlock(source);
-  if (at.kind === "malformed") return { body: original, malformed: true };
+  if (at.kind === "malformed") return { body: source, malformed: true };
 
   const base =
     at.kind === "block"
@@ -597,7 +599,8 @@ export function planClarificationBlock(
       : source;
   const unflagged = renderClarificationBlock(answers);
   if (unflagged.length === 0) return { body: base, malformed: false };
-  const previous = extractClarificationBlock(source);
+  const stored = extractClarificationBlock(source);
+  const previous = stored === null ? null : normalizeNewlines(stored);
   const answersChanged = previous === null || clearCriteriaFlag(previous) !== unflagged;
   const flag =
     opts.hasAcceptanceCriteria === true &&

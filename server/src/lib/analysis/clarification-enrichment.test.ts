@@ -555,6 +555,19 @@ describe("applying the block to a body", () => {
       expect([headings(out), answerLines(out)]).toEqual([1, 1]);
     });
 
+    it("a CRLF body with no block and no answers: returned exactly, so nothing is written", () => {
+      const body = "Line one.\r\nLine two.";
+      expect(planClarificationBlock(body, [])).toEqual({ body, malformed: false });
+    });
+
+    it("a CRLF body with no block: the original lines kept, a block appended", () => {
+      const body = "Line one.\r\nLine two.";
+      expect(planClarificationBlock(body, next)).toEqual({
+        body: `${body}\n\n${fresh()}`,
+        malformed: false,
+      });
+    });
+
     it("a well-formed CRLF block: replaced once", () => {
       const body = `Body.\r\n\r\n${old().replace(/\n/g, "\r\n")}`;
       const plan = planClarificationBlock(body, next);
