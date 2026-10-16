@@ -42,6 +42,12 @@ import {
   hasCriteriaFlag,
 } from "./clarification-criteria-flag.js";
 import { readDialogState } from "./clarification-dialog-store.js";
+import {
+  compareTiersDescending,
+  matchOneToOneRefusingTies,
+  type OneToOneCandidate,
+  type OneToOneResult,
+} from "./one-to-one-match.js";
 import type {
   AnswerProvenance,
   ClarificationApplication,
@@ -235,28 +241,173 @@ export interface AttributionResult {
   unattributed: AnsweredQuestion[];
 }
 
+/** Case- and whitespace-insensitive title, for the exact-title tier. */
+function titleKey(title: string): string {
+  return normalised(title).toLowerCase();
+}
+
+/**
+ * Issue #1031 — where the persisted rows came from, which decides how strictly
+ * they are matched to structured requirements.
+ *
+ * - `promoted`: the analysis went through the approval checkpoint, so each row
+ *   was written from exactly one approved structured requirement (#730) — one
+ *   row per requirement, one requirement per row. A rejected requirement has no
+ *   row, and must not borrow its neighbour's.
+ * - `synthesized`: no approval requests; the rows are synthesis output, and one
+ *   row can legitimately cover several structured requirements, so several may
+ *   map onto it.
+ */
+export type RowOrigin = "promoted" | "synthesized";
+
+/**
+ * A candidate pairing of a structured requirement (left) with a persisted row
+ * (right). Its score is a tuple of tiers, compared best first with
+ * {@link compareTiersDescending}:
+ *   0. exact — 1 when the row's title IS the structured title (promotion copies it, #730);
+ *   1. description — 1 when, on top of an exact title, the row's body (less our
+ *      generated block) IS the structured description. Promotion copies that
+ *      too, so it tells two identically titled requirements apart. Clarify may
+ *      rewrite the description later, so it only ever breaks a tie inside the
+ *      exact tier;
+ *   2. containment of the structured title's tokens in the row's title + body;
+ *   3. containment of the structured title's tokens in the row's title alone.
+ */
+export type RowCandidate = OneToOneCandidate<string, string, number[]>;
+
+function buildCandidates(
+  structured: readonly StructuredRequirement[],
+  rows: ReadonlyArray<{ id: string; title: string; body: string }>,
+): RowCandidate[] {
+  const rowFeatures = rows.map((r) => ({
+    id: r.id,
+    titleKey: titleKey(r.title),
+    bodyKey: normalised(stripClarificationBlock(r.body ?? "")),
+    titleTokens: significantTokens(r.title),
+    tokens: significantTokens(`${r.title} ${r.body}`),
+  }));
+  const candidates: RowCandidate[] = [];
+  for (const req of structured) {
+    const key = titleKey(req.title);
+    const descriptionKey = normalised(req.description ?? "");
+    const needle = significantTokens(req.title);
+    for (const row of rowFeatures) {
+      const exact = key.length > 0 && key === row.titleKey ? 1 : 0;
+      const score = containmentScore(needle, row.tokens);
+      // An exact title is the strongest evidence there is, so it does not also
+      // have to clear the token threshold (a title of short words has none).
+      if (exact === 0 && score < ATTRIBUTION_THRESHOLD) continue;
+      const description =
+        exact === 1 && descriptionKey.length > 0 && descriptionKey === row.bodyKey ? 1 : 0;
+      candidates.push({
+        left: req.id,
+        right: row.id,
+        score: [exact, description, score, containmentScore(needle, row.titleTokens)],
+      });
+    }
+  }
+  return candidates;
+}
+
+/**
+ * Issue #1031 — the largest connected component of one level's candidates
+ * that the strict "in every maximum matching" proof is run on.
+ *
+ * Unlike synthesis output (capped at 100 items), nothing caps an analysis's
+ * persisted requirement rows or its structured list, and the proof costs about
+ * (matched edges × V·E) per component — a complete 300 × 300 level takes
+ * seconds. Above this many edges the component is refused outright, which is
+ * always safe here: an answer reported as not applied, never a guess. A real
+ * component of this size means hundreds of requirements level with each other,
+ * which no title match could separate anyway.
+ */
+export const MAX_ATTRIBUTION_PROOF_EDGES = 2_500;
+
+/**
+ * Promoted rows — one row per requirement and one requirement per row, by the
+ * rule #1033's promotion fallback shares ({@link matchOneToOneRefusingTies}):
+ * at each level a pair is taken only if it is in every maximum matching of
+ * that level's candidates; every other requirement or row with a candidate
+ * there is refused and takes nothing weaker later. Exported so the shared tie
+ * table (`ONE_TO_ONE_TIE_CASES`) runs against exactly this resolution.
+ */
+export function resolvePromotedCandidates(
+  candidates: readonly RowCandidate[],
+): OneToOneResult<string, string> {
+  return matchOneToOneRefusingTies(candidates, {
+    compare: compareTiersDescending,
+    maxComponentEdges: MAX_ATTRIBUTION_PROOF_EDGES,
+  });
+}
+
+/**
+ * Synthesized rows — MANY-TO-ONE by design, and so deliberately outside the
+ * one-to-one helper: synthesis may consolidate several structured requirements
+ * into one row, and each of them belongs on it. Each requirement independently
+ * takes its own best row when that best is unique; a level best is refused.
+ */
+function resolveSynthesizedCandidates(candidates: readonly RowCandidate[]): Map<string, string> {
+  const byLeft = new Map<string, RowCandidate[]>();
+  for (const c of candidates) byLeft.set(c.left, [...(byLeft.get(c.left) ?? []), c]);
+  const matched = new Map<string, string>();
+  for (const [left, list] of byLeft) {
+    const sorted = [...list].sort((a, b) => compareTiersDescending(a.score, b.score));
+    const best = sorted.filter((c) => compareTiersDescending(sorted[0]!.score, c.score) === 0);
+    if (best.length === 1) matched.set(left, best[0]!.right);
+  }
+  return matched;
+}
+
+/**
+ * Issue #1031 — decide which persisted row IS each structured requirement.
+ *
+ * The old per-answer loop took the first row with the highest title-in-body
+ * score. Two adjacent requirements routinely tie — "Mark all items up to here
+ * as read" explains itself as "every entry OLDER than this one", which contains
+ * every word of its neighbour "Mark all as read older than X" — and the tie went
+ * to whichever row came first. So the answers followed a position, not the
+ * requirement the question was asked about.
+ *
+ * The match is made once for EVERY structured requirement, answered or not, so
+ * a row that is one requirement's cannot be handed to its neighbour. A tie the
+ * tiers cannot settle is refused: a missed match is reported to the user, a
+ * wrong one is not. Row and question order play no part.
+ */
+function matchStructuredToRows(
+  structured: readonly StructuredRequirement[],
+  rows: ReadonlyArray<{ id: string; title: string; body: string }>,
+  origin: RowOrigin,
+): Map<string, string> {
+  const candidates = buildCandidates(structured, rows);
+  return origin === "synthesized"
+    ? resolveSynthesizedCandidates(candidates)
+    : resolvePromotedCandidates(candidates).matches;
+}
+
 /**
  * Attribute answers to persisted requirement rows.
  *
  * There is no id spine between the two representations: the clarify question
- * names a `StructuredRequirement` id (`REQ-3`), while the persisted rows come
- * from synthesis and carry cuid2 ids and `finding:<id>` labels. So the join is
- * made on the structured requirement's TITLE — the one field the clarify
- * resolution pass does not rewrite (it rewrites `description`).
+ * names a `StructuredRequirement` id (`REQ-3`), while the persisted rows carry
+ * cuid2 ids. So the question's requirement id picks the structured requirement,
+ * and {@link matchStructuredToRows} finds that requirement's row by its TITLE —
+ * the one field the clarify resolution pass does not rewrite. `rowOrigin`
+ * defaults to the strict `promoted` matching.
  */
 export function attributeAnswers(input: {
   answered: AnsweredQuestion[];
   structured: StructuredRequirement[] | undefined;
   requirements: ReadonlyArray<{ id: string; title: string; body: string }>;
+  rowOrigin?: RowOrigin;
 }): AttributionResult {
   const byRequirementId = new Map<string, AnsweredQuestion[]>();
   const unattributed: AnsweredQuestion[] = [];
 
-  const structuredById = new Map((input.structured ?? []).map((r) => [r.id, r]));
-  const rowTokens = input.requirements.map((r) => ({
-    id: r.id,
-    tokens: significantTokens(`${r.title} ${r.body}`),
-  }));
+  const rowByStructuredId = matchStructuredToRows(
+    input.structured ?? [],
+    input.requirements,
+    input.rowOrigin ?? "promoted",
+  );
 
   // Group first so one match decision covers every answer about the same
   // requirement — per-answer matching would let two answers to the same
@@ -270,22 +421,8 @@ export function attributeAnswers(input: {
   }
 
   for (const [key, answers] of grouped) {
-    const structured = structuredById.get(key);
-    if (!structured) {
-      unattributed.push(...answers);
-      continue;
-    }
-    const needle = significantTokens(structured.title);
-    let bestId: string | null = null;
-    let bestScore = 0;
-    for (const row of rowTokens) {
-      const score = containmentScore(needle, row.tokens);
-      if (score > bestScore) {
-        bestScore = score;
-        bestId = row.id;
-      }
-    }
-    if (bestId === null || bestScore < ATTRIBUTION_THRESHOLD) {
+    const bestId = rowByStructuredId.get(key);
+    if (bestId === undefined) {
       unattributed.push(...answers);
       continue;
     }
@@ -407,6 +544,19 @@ function shortenQuestion(question: string): string {
 }
 
 /**
+ * Issue #1031 — the rows came from the approval checkpoint exactly when the
+ * analysis has `requirement` approval requests; that is the same test
+ * `promoteApprovedRequirements` uses to choose the reviewed list over synthesis.
+ */
+async function readRowOrigin(analysisId: string): Promise<RowOrigin> {
+  const approval = await prisma.approvalRequest.findFirst({
+    where: { analysisId, type: "requirement" },
+    select: { id: true },
+  });
+  return approval ? "promoted" : "synthesized";
+}
+
+/**
  * Write every answered clarifying question into the persisted requirement it
  * was asked about, and record what happened to each answer.
  *
@@ -436,6 +586,7 @@ export async function applyClarificationsToRequirements(
       answered,
       structured: structured?.requirements,
       requirements: rows,
+      rowOrigin: await readRowOrigin(analysisId),
     });
 
     let requirementsUpdated = 0;

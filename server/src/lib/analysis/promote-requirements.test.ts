@@ -101,6 +101,9 @@ vi.mock("../prisma.js", () => {
       findMany: vi.fn(async ({ where }: { where: { type?: string } }) =>
         db.approvals.filter(() => where.type === "requirement"),
       ),
+      findFirst: vi.fn(async ({ where }: { where: { type?: string } }) =>
+        where.type === "requirement" ? (db.approvals[0] ?? null) : null,
+      ),
     },
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
       const run = txChain.then(async () => {

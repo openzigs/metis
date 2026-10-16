@@ -132,6 +132,8 @@ vi.mock("../prisma.js", () => ({
         return { id: ANALYSIS_ID };
       }),
     },
+    // #1031 — no approval requests: the rows are synthesis output.
+    approvalRequest: { findFirst: vi.fn(async () => null) },
     clarificationDialogState: {
       findUnique: vi.fn(async () => (store.dialogState ? { state: store.dialogState } : null)),
     },

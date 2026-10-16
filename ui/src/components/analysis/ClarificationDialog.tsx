@@ -336,7 +336,9 @@ export function ClarificationDialogPanel({
               className="rounded border border-border p-3"
               data-testid={isSelfResolved ? "grounded-question" : "open-question"}
             >
-              <Label className="mb-1 block text-sm font-medium">{q.question}</Label>
+              <Label htmlFor={`clarify-answer-${q.id}`} className="mb-1 block text-sm font-medium">
+                {q.question}
+              </Label>
               {q.context && <p className="mb-2 text-xs text-muted-foreground">{q.context}</p>}
 
               {isSelfResolved && (
@@ -369,6 +371,7 @@ export function ClarificationDialogPanel({
               )}
 
               <Input
+                id={`clarify-answer-${q.id}`}
                 placeholder={
                   isSelfResolved ? "Confirm or edit the suggested answer…" : "Your answer..."
                 }

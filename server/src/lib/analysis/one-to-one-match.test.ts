@@ -150,6 +150,46 @@ describe("matchOneToOneRefusingTies — edges", () => {
   });
 });
 
+describe("matchOneToOneRefusingTies — maxComponentEdges (#1031)", () => {
+  const probeA: Array<OneToOneCandidate<string, string, number[]>> = [
+    { left: "R1", right: "S1", score: [1] },
+    { left: "R2", right: "S1", score: [1] },
+    { left: "R2", right: "S2", score: [1] },
+  ];
+
+  it("proves a component at the limit, and refuses the same component one edge over it", () => {
+    const at = matchOneToOneRefusingTies(probeA, {
+      compare: compareTiersDescending,
+      maxComponentEdges: 3,
+    });
+    expect(Object.fromEntries(at.matches)).toEqual({ R1: "S1", R2: "S2" });
+
+    const over = matchOneToOneRefusingTies(probeA, {
+      compare: compareTiersDescending,
+      maxComponentEdges: 2,
+    });
+    expect(over.matches.size).toBe(0);
+    expect([...over.refusedLefts].sort()).toEqual(["R1", "R2"]);
+    expect([...over.refusedRights].sort()).toEqual(["S1", "S2"]);
+  });
+
+  it("refuses only the oversized component; a separate pair at the same level still matches", () => {
+    const out = matchOneToOneRefusingTies([...probeA, { left: "R9", right: "S9", score: [1] }], {
+      compare: compareTiersDescending,
+      maxComponentEdges: 2,
+    });
+    expect(Object.fromEntries(out.matches)).toEqual({ R9: "S9" });
+  });
+
+  it("an oversized component's vertices take nothing weaker later (no fallback)", () => {
+    const out = matchOneToOneRefusingTies([...probeA, { left: "R1", right: "S8", score: [0.5] }], {
+      compare: compareTiersDescending,
+      maxComponentEdges: 2,
+    });
+    expect(out.matches.size).toBe(0);
+  });
+});
+
 describe("compareTiersDescending", () => {
   it("orders by the first differing tier, higher first, padding with zeros", () => {
     expect(compareTiersDescending([1, 0], [0, 1])).toBeLessThan(0);

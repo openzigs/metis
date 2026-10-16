@@ -56,12 +56,19 @@ export interface OneToOneResult<L, R> {
  * `compare(a, b)` orders scores like a sort comparator, BEST FIRST: negative
  * when `a` is the better score, 0 when the two are level. It must be a total
  * preorder. A repeated `(left, right)` pair is read at its best level.
+ *
+ * `maxComponentEdges` (#1031) bounds the proof's cost, about (matched edges ×
+ * V·E) per connected component of a level. A component with more live edges
+ * than this is not proved: none of its pairs is taken, and all of its vertices
+ * are refused, as for any unresolved tie. That is always safe under this rule (a
+ * refusal, never a guess). Unset, every component is proved.
  */
 export function matchOneToOneRefusingTies<L, R, S>(
   candidates: ReadonlyArray<OneToOneCandidate<L, R, S>>,
-  options: { compare: (a: S, b: S) => number },
+  options: { compare: (a: S, b: S) => number; maxComponentEdges?: number },
 ): OneToOneResult<L, R> {
   const { compare } = options;
+  const maxComponentEdges = options.maxComponentEdges ?? Number.POSITIVE_INFINITY;
   const sorted = [...candidates].sort((a, b) => compare(a.score, b.score));
   const levels: Array<Array<OneToOneCandidate<L, R, S>>> = [];
   for (const c of sorted) {
@@ -82,7 +89,7 @@ export function matchOneToOneRefusingTies<L, R, S>(
       if (takenRights.has(c.right) || refusedRights.has(c.right)) continue;
       edges.set(c.left, (edges.get(c.left) ?? new Set<R>()).add(c.right));
     }
-    const forced = forcedPairs(edges);
+    const forced = forcedPairs(edges, maxComponentEdges);
     for (const [l, r] of forced) {
       matches.set(l, r);
       takenRights.add(r);
@@ -96,9 +103,15 @@ export function matchOneToOneRefusingTies<L, R, S>(
 }
 
 /** The pairs in EVERY maximum matching of a bipartite graph (left → rights). */
-function forcedPairs<L, R>(edges: ReadonlyMap<L, ReadonlySet<R>>): Map<L, R> {
+function forcedPairs<L, R>(
+  edges: ReadonlyMap<L, ReadonlySet<R>>,
+  maxComponentEdges: number,
+): Map<L, R> {
   const forced = new Map<L, R>();
   for (const component of components(edges)) {
+    let size = 0;
+    for (const rs of component.values()) size += rs.size;
+    if (size > maxComponentEdges) continue; // too large to prove: refused whole
     // A pair in EVERY maximum matching is in this one; one that is not is
     // exposed by removing it and finding a maximum just as large.
     const matching = maximumMatching(component);
