@@ -400,10 +400,13 @@ export interface ServerToClientEvents {
   "scheduler:status": (data: SchedulerStatusEvent) => void;
   "task:status": (data: TaskStatusEvent) => void;
   "task:progress": (data: TaskProgressEvent) => void;
-  /** Epic #164 — per-call FinOps tick broadcast on `project:{id}`. */
+  /**
+   * Epic #164 — per-call FinOps tick broadcast on `project:{id}`. #1212 — no
+   * `sessionId`: the room admits every workspace member, and a chat session
+   * is its owner's alone.
+   */
   "usage:tick": (data: {
     projectId: string;
-    sessionId: string;
     provider: string;
     model: string;
     inputTokens: number;

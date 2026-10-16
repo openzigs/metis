@@ -36,6 +36,9 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 const auditSpy = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: auditSpy }));
+// #1212 — the project's socket room is re-judged once the assignment commits.
+const evictProjectRoom = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("../src/lib/socket/project-room-eviction.js", () => ({ evictProjectRoom }));
 
 const { projectsRouter } = await import("../src/routes/projects.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
@@ -137,6 +140,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           metadata: { workspaceId: WS },
         }),
       );
+      // #1212 — and its socket room is re-judged against the new workspace.
+      expect(evictProjectRoom).toHaveBeenCalledWith(id);
     });
 
     it("a workspace admin role (not only owner) is enough", async () => {
@@ -209,6 +214,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("a project already in a workspace cannot be moved to another (409); the same one is a no-op", async () => {
       const id = await newProject("u-owner", WS);
+      evictProjectRoom.mockClear();
       const moved = await put(id, bearer("u-owner", "coordinator", [WS]), {
         workspaceId: WS_OTHER,
       });
@@ -223,6 +229,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const same = await put(id, bearer("u-owner", "coordinator", [WS]), { workspaceId: WS });
       expect(same.status).toBe(200);
       expect(same.body.data.workspaceId).toBe(WS);
+      // #1212 — nothing changed hands, so no socket room is re-judged.
+      expect(evictProjectRoom).not.toHaveBeenCalled();
     });
 
     it("of two concurrent moves only one lands", async () => {

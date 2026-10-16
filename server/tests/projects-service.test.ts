@@ -38,6 +38,10 @@ interface MockWorkspace {
 }
 const workspaces = new Map<string, MockWorkspace>();
 
+// #1212 — a soft delete re-judges the project's socket room.
+const evictProjectRoom = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}));
+vi.mock("../src/lib/socket/project-room-eviction.js", () => ({ evictProjectRoom }));
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     auditLog: { create: vi.fn(async () => ({})) },
@@ -329,15 +333,22 @@ describe("deleteProject", () => {
     const p = await createProject({ name: "A", slug: "a" }, owner);
     const hook = vi.fn();
     onArchive(hook);
+    evictProjectRoom.mockImplementationOnce(async () => {
+      // #1212 — the room is re-judged after the soft delete has committed.
+      expect(await getProject(p.id)).toBeNull();
+    });
     await deleteProject(p.id, owner);
     const after = await getProject(p.id);
     expect(after).toBeNull();
     expect(hook).toHaveBeenCalledWith(p.id);
+    expect(evictProjectRoom).toHaveBeenCalledWith(p.id);
   });
 
   it("rejects non-owners", async () => {
     const p = await createProject({ name: "A", slug: "a" }, owner);
+    evictProjectRoom.mockClear();
     await expect(deleteProject(p.id, someoneElse)).rejects.toMatchObject({ status: 403 });
+    expect(evictProjectRoom).not.toHaveBeenCalled();
   });
 });
 

@@ -14,7 +14,9 @@
  *     Delivers `comment:mention` and `sla:deadline_expired` to exactly that user.
  *     The id is ALWAYS derived from `socket.data.user.userId` (verified JWT,
  *     re-read from the user row at handshake).
- *   - `project:{id}` — broadcast scope for project-level updates.
+ *   - `project:{id}` — broadcast scope for project-level updates. #1212 — any
+ *     user who can open the project may join (`canJoinProjectRoom`), and a
+ *     member removed from the workspace is evicted (`project-room-eviction.ts`).
  *   - `analysis:{id}` — analysis run progress.
  *   - `session:{id}` — chat / agent session events.
  *
@@ -53,7 +55,6 @@ import {
   connectorRoom,
   hasPermission,
   jobRoom,
-  projectRoom,
   publishRoom,
   SCHEDULER_STATUS_ROOM,
   sessionRoom,
@@ -64,10 +65,10 @@ import {
   type ServerToClientEvents,
 } from "@metis/shared";
 import { verifyAccessToken } from "../auth/jwt.js";
-import { actorCanAccessProject } from "../scheduler/project-access.js";
 import { loadAuthorizedSession } from "../ai/conversation/session-access.js";
 import { canJoinAnalysisRoom } from "./analysis-room-access.js";
 import { canJoinBgRunRoom, canJoinConnectorRoom, resolveJobRoomScope } from "./room-access.js";
+import { rejudgeProjectRooms, wireProjectRoomHandlers } from "./project-rooms.js";
 import { getLastDocSections, getLastJobLifecycle, type JobScope } from "./job-events.js";
 import { wireThreadRoomHandlers } from "./discussion-rooms.js";
 import {
@@ -86,6 +87,7 @@ import { loadLiveAuthPayload } from "../auth/live-auth-payload.js";
 import { createChildLogger } from "../logger.js";
 import { mcpStatusEvictionEpoch, wireMcpStatusEvictionRelay } from "./mcp-status-eviction.js";
 import { userSocketRevocationEpoch, wireUserRevocationRelay } from "./user-disconnect.js";
+import { wireProjectRoomEvictionRelay } from "./project-room-eviction.js";
 import { bumpEpoch } from "./revocation-relay.js";
 import { MAX_TIMEOUT_MS, envMs } from "../config/env-ms.js";
 import { onClientEvent, onConnection, runDetached } from "./client-event-handler.js";
@@ -131,7 +133,7 @@ export interface CreateSocketServerOptions {
   revalidateIntervalMs?: number;
 }
 
-type MetisSocket = Socket<
+export type MetisSocket = Socket<
   ClientToServerEvents,
   ServerToClientEvents,
   Record<string, never>,
@@ -187,6 +189,7 @@ export function createSocketServer(
   // this replica's transports (see `reconnectUserSockets`).
   wireUserRevocationRelay(io, Boolean(opts.adapter));
   wireMcpStatusEvictionRelay(io, Boolean(opts.adapter));
+  wireProjectRoomEvictionRelay(io, Boolean(opts.adapter));
   opts.onAdapterListening?.(() =>
     runDetached(revalidateLocalSockets(io, "listen"), "revalidateLocalSockets listen"),
   );
@@ -272,7 +275,9 @@ const revalidations = new WeakMap<MetisIOServer, RevalidationState>();
  *   - a user no longer live is disconnected, and a changed role re-handshakes
  *     (`applyLiveUser`, as #613's re-check);
  *   - a socket still in an `mcp:status` workspace room it no longer has a live
- *     membership of leaves it (#588).
+ *     membership of leaves it (#588);
+ *   - a socket in a `project:{id}` room the live user may no longer join
+ *     leaves it (#1212, `rejudgeProjectRooms`).
  * What a failed lookup (either one) does depends on the trigger. A pass that
  * serves a `LISTEN` (re)connect fails closed: a publish may really have been
  * missed, so the transport closes and the client re-handshakes and
@@ -383,6 +388,13 @@ async function revalidateUserSockets(
     });
   }
   const kept = sockets.filter((socket) => applyLiveUser(socket, live));
+  // #1212 — every project room a kept socket is in is re-judged against the
+  // live user with the join's own rule, so a removal whose eviction or relay
+  // was lost is applied here. A `listen` pass fails closed, a sweep keeps the
+  // room on a lookup error (as below).
+  if (live) {
+    await Promise.all(kept.map((socket) => rejudgeProjectRooms(socket, live, { failClosed })));
+  }
   // Each socket's workspace rooms BEFORE the membership read. A `subscribe:mcp`
   // that finishes during the read can join a workspace granted after the read's
   // snapshot, so only rooms held before the read are judged by it.
@@ -536,7 +548,6 @@ function applyLiveUser(socket: MetisSocket, live: AuthPayload | null | undefined
  * #682 — the room each `subscribe:*` payload asks for, which the join rate
  * limit (`join-rate-limit.ts`) names in its refusal.
  */
-const projectRoomOf = roomFromField("projectId", projectRoom);
 const analysisRoomOf = roomFromField("analysisId", analysisRoom);
 const sessionRoomOf = roomFromField("sessionId", sessionRoom);
 const connectorRoomOf = roomFromField("connectorId", connectorRoom);
@@ -574,50 +585,10 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   // missing payload threw inside socket.io's nextTick dispatch, an uncaught
   // exception that took the whole API process down. Each reads its field with
   // `?.` and ignores anything that is not a non-empty string.
-  onRoomJoin(socket, "subscribe:project", projectRoomOf, (payload) => {
-    const projectId: unknown = payload?.projectId;
-    if (!projectId || typeof projectId !== "string") return;
-    // #255 — per-project authorization. The `project:{id}` room fans out
-    // job-lifecycle, presence, and comment events; an authenticated client must
-    // not be able to subscribe to a project it has no access to (OWASP A01,
-    // broken access control). Mirror the route-layer project-scoping used by
-    // epics #207/#208 via the shared `actorCanAccessProject` helper, which also
-    // emits an audit row on denial. Admins pass; non-members are rejected and
-    // never join the room (so they receive no events).
-    return (async () => {
-      try {
-        const allowed = await actorCanAccessProject(
-          { id: user.userId, role: user.role },
-          projectId,
-          { resource: "project_room", resourceId: projectId, action: "socket.subscribe:project" },
-        );
-        if (!allowed) {
-          log.warn("Socket subscribe:project rejected — no project access", {
-            socketId: socket.id,
-            userId: user.userId,
-            projectId,
-          });
-          socket.emit("auth:error", {
-            message: "FORBIDDEN: no access to project",
-          });
-          return;
-        }
-        await socket.join(projectRoom(projectId));
-      } catch (err) {
-        log.warn("Socket subscribe:project failed", {
-          socketId: socket.id,
-          projectId,
-          error: (err as Error).message,
-        });
-        socket.emit("auth:error", { message: "FORBIDDEN: no access to project" });
-      }
-    })();
-  });
-  onClientEvent(socket, "unsubscribe:project", (payload) => {
-    const projectId: unknown = payload?.projectId;
-    if (!projectId || typeof projectId !== "string") return;
-    return socket.leave(projectRoom(projectId));
-  });
+  // #255 / #1212 — per-project authorization for `project:{id}`: the rule of
+  // `GET /projects/:id` (any member of the project's workspace), not only the
+  // creator. The handler and the re-judgement live in `project-rooms.ts`.
+  wireProjectRoomHandlers(socket);
 
   // Epic #475 (Phase 2, #480) — authz-gated discussion-thread rooms
   // (`thread:{id}`). Subscribing requires `canAccessThread` to pass; non-members

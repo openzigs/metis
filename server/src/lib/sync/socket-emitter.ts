@@ -6,9 +6,9 @@
  * connected client. The pending-drift badge (#78) needs that nudge to re-read
  * its count without a page reload.
  *
- * Fans out to the `project:{id}` room, which `subscribe:project` gates on
- * `actorCanAccessProject` (#255) — a client without access to the project never
- * joins the room, so this adds no new read path.
+ * Fans out to the `project:{id}` room, which `subscribe:project` gates on the
+ * project read rule (#255; `canJoinProjectRoom` since #1212) — a client without
+ * access to the project never joins the room, so this adds no new read path.
  *
  * The payload is deliberately an IDENTIFIER-ONLY notification: no issue title,
  * body or field diff. The badge re-reads `GET /sync/drift/count`, which is
