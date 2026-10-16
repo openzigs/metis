@@ -1,5 +1,5 @@
 ---
-name: cut-off-doc-lazy-render
+name: cutoff-doc-lazy
 description: A generated document that looks truncated in a walkthrough screenshot or an innerText read can be the MarkdownPreviewer's progressive rendering, not lost content. Check the stored body and scroll first.
 metadata:
   type: project
@@ -10,12 +10,12 @@ A generated document that "stops" partway in a walkthrough screenshot or an `inn
 **Why:** #1170 (walkthrough run 9, J1.7) reported a requirements BRD that "stops right after R2's start marker, R3 to R5 missing". The implementer and the PR #1179 reviewer each reached the same conclusion independently: no content was lost.
 - The stored body (`generated_documents.content`, and the version body) held all five requirements.
 - jsdom rendered all of them.
-- Headless Chrome against the live stack: on load, the content's `innerText` ended exactly at R2's marker, and all 13 sections appeared after scrolling.
+- Headless Chrome against the live stack (one run): on load, the content's `innerText` ended exactly at R2's marker, and all 13 sections appeared after scrolling.
 
 The cause is `ui/src/components/markdown-previewer.tsx`:
 - It splits the document at H2/H3 and renders only `INITIAL_RENDERED_SECTIONS = 3` up front.
 - Every other section is a `PendingSection` holding raw Markdown with `content-visibility: auto`. It renders when an IntersectionObserver (1500px margin) reaches it.
-- Skipped content is not in `innerText`, and an early screenshot shows a blank area.
+- Skipped content was missing from `innerText` (observed in one headless run, not checked across browsers), and an early screenshot shows a blank area.
 - Body headings that are H2 or H3 (here `## Clarifications`) add more sections, so the cut-off point lands earlier.
 
 **How to apply:**
