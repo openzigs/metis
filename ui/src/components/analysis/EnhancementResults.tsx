@@ -137,6 +137,21 @@ const PROVENANCE_LABELS: Record<"suggested" | "edited" | "typed", string> = {
   typed: "typed by you",
 };
 
+/** #1162 — why an answer matched to a requirement was not written into it. */
+const NOT_APPLIED_REASONS: Record<
+  NonNullable<
+    NonNullable<
+      NonNullable<EnhancementMetadata["clarificationApplication"]>["answers"]
+    >[number]["notApplied"]
+  >["reason"],
+  (title: string) => string
+> = {
+  "clarification-block-edited": (t) => `Clarifications section of “${t}” was edited`,
+  "requirement-changed-during-write": (t) =>
+    `“${t}” kept changing while the answers were written; they are retried on the next pass`,
+  "requirement-deleted": (t) => `“${t}” was deleted`,
+};
+
 export function ClarificationImpactNote({
   application,
 }: {
@@ -216,7 +231,7 @@ export function ClarificationImpactNote({
                 {a.notApplied ? (
                   <span data-testid="clarification-not-applied-reason">
                     {" "}
-                    (Clarifications section of “{a.notApplied.requirementTitle}” was edited)
+                    ({NOT_APPLIED_REASONS[a.notApplied.reason](a.notApplied.requirementTitle)})
                   </span>
                 ) : null}
               </li>

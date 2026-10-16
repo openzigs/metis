@@ -548,6 +548,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await titles()).toEqual(["A", "B"]);
     });
 
+    it("#1162 — an edit from before version history, then a system write, still protects the set", async () => {
+      const [a] = await seedSet(["A", "B"]);
+      // version 1 was a pre-#770 edit with no row; version 2 is a system write.
+      await db.requirement.update({ where: { id: a }, data: { version: 2 } });
+      await db.requirementVersion.create({
+        data: { requirementId: a, version: 2, changedFields: "{}", actorId: null },
+      });
+      await seedSet(["C"]);
+      expect(await titles()).toEqual(["A", "B"]);
+    });
+
     it("an explicit 'draft' review status is not review work — the set is replaced", async () => {
       const [a] = await seedSet(["A"]);
       await db.requirement.update({ where: { id: a }, data: { reviewStatus: "draft" } });

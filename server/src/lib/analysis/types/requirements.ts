@@ -225,6 +225,11 @@ export interface ClarificationApplication {
    * analyst edited out of shape, so they were not written. Absent before #1162.
    */
   blockEditedCount?: number;
+  /**
+   * #1162 — answers matched to a requirement that kept changing under the
+   * write, or was deleted, so they were not written this pass. Absent before.
+   */
+  notWrittenCount?: number;
   /** Distinct `Requirement` rows whose body changed in this pass. */
   requirementsUpdated: number;
   /**
@@ -258,7 +263,11 @@ export interface ClarificationAnswerOutcome {
    * its clarifications block was edited out of shape (`requirementTitle` above
    * is then null).
    */
-  notApplied?: { reason: "clarification-block-edited"; requirementTitle: string };
+  notApplied?: {
+    reason:
+      "clarification-block-edited" | "requirement-changed-during-write" | "requirement-deleted";
+    requirementTitle: string;
+  };
 }
 
 /**

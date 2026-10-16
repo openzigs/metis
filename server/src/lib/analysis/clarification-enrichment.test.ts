@@ -560,19 +560,55 @@ describe("applying the block to a body", () => {
       expect(planClarificationBlock(body, [])).toEqual({ body, malformed: false });
     });
 
-    it("a CRLF body with no block: the original lines kept, a block appended", () => {
+    const crlf = (s: string) => s.replace(/\n/g, "\r\n");
+
+    it("a CRLF body with no block: the original lines kept, a CRLF block appended", () => {
       const body = "Line one.\r\nLine two.";
       expect(planClarificationBlock(body, next)).toEqual({
-        body: `${body}\n\n${fresh()}`,
+        body: `${body}\r\n\r\n${crlf(fresh())}`,
         malformed: false,
       });
     });
 
-    it("a well-formed CRLF block: replaced once", () => {
-      const body = `Body.\r\n\r\n${old().replace(/\n/g, "\r\n")}`;
+    it("a well-formed CRLF block with changed answers: replaced once, in CRLF", () => {
+      const body = crlf(`Body.\n\n${old()}`);
       const plan = planClarificationBlock(body, next);
-      expect(plan).toEqual({ body: `Body.\n\n${fresh()}`, malformed: false });
+      expect(plan).toEqual({ body: crlf(`Body.\n\n${fresh()}`), malformed: false });
       expect([headings(plan.body), answerLines(plan.body)]).toEqual([1, 1]);
+    });
+
+    describe("same answers: the body is returned byte-for-byte", () => {
+      const same = [answer()];
+      it.each([
+        ["a well-formed LF block", `Body.\n\n${renderClarificationBlock(same)}`],
+        ["a well-formed CRLF block", crlf(`Body.\n\n${renderClarificationBlock(same)}`)],
+        ["text after the block (LF)", `Before.\n\n${renderClarificationBlock(same)}\n\nAfter.`],
+        [
+          "text after the block (CRLF)",
+          crlf(`Before.\n\n${renderClarificationBlock(same)}\n\nAfter.`),
+        ],
+        [
+          "CRLF prose with an LF block",
+          `Line one.\r\nLine two.\n\n${renderClarificationBlock(same)}`,
+        ],
+      ])("%s", (_name, body) => {
+        expect(planClarificationBlock(body, same)).toEqual({ body, malformed: false });
+      });
+    });
+
+    it("changed answers keep the block where it was, text after it included (CRLF)", () => {
+      const body = crlf(`Before.\n\n${old()}\n\nAfter.`);
+      expect(planClarificationBlock(body, next)).toEqual({
+        body: crlf(`Before.\n\n${fresh()}\n\nAfter.`),
+        malformed: false,
+      });
+    });
+
+    it("no answers left: the block and its framing blank lines go, the text around it stays", () => {
+      expect(planClarificationBlock(`Before.\n\n${old()}\n\nAfter.`, [])).toEqual({
+        body: "Before.\n\nAfter.",
+        malformed: false,
+      });
     });
 
     it("whitespace-variant markers: recognised, replaced once", () => {
@@ -584,11 +620,11 @@ describe("applying the block to a body", () => {
       expect([headings(plan.body), answerLines(plan.body)]).toEqual([1, 1]);
     });
 
-    it("a well-formed block with text before and after: replaced, the text kept", () => {
+    it("a well-formed block with text before and after: replaced in place, the text kept", () => {
       const body = `Before.\n\n${old()}\n\nAfter.`;
       const plan = planClarificationBlock(body, next);
       expect(plan).toEqual({
-        body: `Before.\n\n\n\nAfter.\n\n${fresh()}`,
+        body: `Before.\n\n${fresh()}\n\nAfter.`,
         malformed: false,
       });
       expect([headings(plan.body), answerLines(plan.body)]).toEqual([1, 1]);
@@ -1310,7 +1346,15 @@ describe("applyClarificationsToRequirements", () => {
       };
       const out = await applyClarificationsToRequirements(ANALYSIS_ID);
       expect(out).not.toBeNull();
-      expect(out).toMatchObject({ appliedCount: 1, requirementsUpdated: 0 });
+      // #1162 — not written, so not counted as applied: reported with a reason.
+      expect(out).toMatchObject({ appliedCount: 0, notWrittenCount: 1, requirementsUpdated: 0 });
+      expect(out?.answers?.[0]).toMatchObject({
+        requirementTitle: null,
+        notApplied: {
+          reason: "requirement-changed-during-write",
+          requirementTitle: "Display product prices in the shopper's currency",
+        },
+      });
       expect(store.requirements[0].body).toBe("Convert before display.");
       expect(store.versions).toHaveLength(0);
       // The accounting is still recorded, so the panel reflects this pass.
@@ -1368,8 +1412,23 @@ describe("applyClarificationsToRequirements", () => {
         row.version = (row.version ?? 0) + 1;
       };
       const out = await applyClarificationsToRequirements(ANALYSIS_ID);
-      expect(out).toMatchObject({ requirementsUpdated: 0 });
+      expect(out).toMatchObject({ appliedCount: 0, notWrittenCount: 1, requirementsUpdated: 0 });
+      expect(out?.answers?.[0]?.notApplied?.reason).toBe("requirement-deleted");
       expect(store.versions).toHaveLength(0);
+    });
+
+    it("writes no version when the answers are unchanged, for a CRLF body with text after the block", async () => {
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      const row = store.requirements[0];
+      row.body = `${row.body}\n\nAnalyst note after the block.`.replace(/\n/g, "\r\n");
+      const stored = row.body;
+      const versionsBefore = store.versions.length;
+
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+
+      expect(row.body).toBe(stored);
+      expect(store.versions).toHaveLength(versionsBefore);
+      expect(out).toMatchObject({ appliedCount: 1, requirementsUpdated: 0 });
     });
   });
 

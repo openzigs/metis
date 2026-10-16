@@ -134,6 +134,40 @@ describe("ClarificationImpactNote", () => {
     );
   });
 
+  it("#1162 — says why an answer was not written when its requirement changed or was deleted", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          appliedCount: 10,
+          notWrittenCount: 2,
+          answers: [
+            {
+              questionId: "q4",
+              question: "Which currency?",
+              requirementTitle: null,
+              notApplied: {
+                reason: "requirement-changed-during-write",
+                requirementTitle: "Prices",
+              },
+            },
+            {
+              questionId: "q5",
+              question: "Which locale?",
+              requirementTitle: null,
+              notApplied: { reason: "requirement-deleted", requirementTitle: "Locales" },
+            },
+          ],
+        }}
+      />,
+    );
+    const list = screen.getByTestId("clarification-unmatched-list");
+    expect(list).toHaveTextContent(
+      /Which currency\?\s*\(“Prices” kept changing while the answers were written/,
+    );
+    expect(list).toHaveTextContent(/Which locale\?\s*\(“Locales” was deleted\)/);
+  });
+
   it("#1162 — no block-edited warning when every matched answer was written", () => {
     render(<ClarificationImpactNote application={{ ...base, blockEditedCount: 0 }} />);
     expect(screen.queryByTestId("clarification-block-edited")).toBeNull();

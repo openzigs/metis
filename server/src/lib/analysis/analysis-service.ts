@@ -818,10 +818,11 @@ function reviewedRequirementWhere(
       // #1162 — only a PERSON's edit is review work. System writes (clarification
       // answers, import re-sync) now record history too, with a null actor, and
       // must not freeze a set nobody touched — the same reasoning as #939's
-      // checkpoint approval. A version bump with no history at all predates
-      // #770's rows and still counts.
+      // checkpoint approval. A bump with no row for version 1 was made before
+      // #770 recorded history, so it is a person's edit and still counts — even
+      // after a later system write appends a row of its own.
       { versions: { some: { actorId: { not: null } } } },
-      { AND: [{ version: { gt: 0 } }, { versions: { none: {} } }] },
+      { AND: [{ version: { gt: 0 } }, { versions: { none: { version: 1 } } }] },
       { outgoingLinks: { some: {} } },
       { incomingLinks: { some: {} } },
       { dataMappings: { some: { deletedAt: null } } },
