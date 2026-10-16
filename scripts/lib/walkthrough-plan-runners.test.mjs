@@ -311,26 +311,30 @@ describe("Spec Kit issue export (S21) instructions after #936", () => {
     }
   });
 
-  it("says Publish stays disabled until #953, spends no slot, and caps any publish at 2 in the sandbox", () => {
+  // #1172 — #953 landed (run 9): Publish is enabled after the dry run. The docs must stop
+  // saying it stays disabled, and must keep the cap, the sandbox and the 1-task throwaway.
+  it("says Publish is enabled since #953, within the 2-issue cap, in the sandbox, from a 1-task feature", () => {
     for (const rel of docs) {
       const line = read(rel)
         .split(/\n(?=- |\| |\n)/)
         .find((para) => para.includes("#953"));
       expect(line, rel).toBeDefined();
-      expect(line, rel).toMatch(/disabled/);
-      expect(line, rel).toMatch(/target repo/);
-      expect(line, rel).toMatch(/no sandbox slot|Keep the sandbox slot/);
+      expect(line, rel).not.toMatch(/stays disabled|cannot publish until #953/);
+      expect(line, rel).toMatch(/Publish is enabled|then Publish is enabled|Publish is\s+enabled/);
+      expect(line, rel).toMatch(/target\s+repo/);
       expect(line, rel).toMatch(/2-issue cap/);
+      expect(line, rel).toMatch(/cut to 1 task/);
       expect(line, rel).toContain("openzigs/flux-v2");
     }
   });
 
-  it("quotes the reason the Spec Kit page actually shows", () => {
+  it("treats the page's no-client reason as a failure, quoting what the page actually shows", () => {
     const page = read("ui/src/app/(authed)/projects/[id]/spec-kit/page.tsx");
     expect(page).toContain("Publishing issues to GitHub is not available on this server yet.");
-    expect(read("docs/walkthroughs/TEST_PLAN.md")).toContain(
-      "Publishing issues to GitHub is not available on this server yet",
-    );
+    const plan = read("docs/walkthroughs/TEST_PLAN.md");
+    const row = plan.split("\n").find((l) => l.startsWith("| S21 |"));
+    expect(row).toContain("Publishing issues to GitHub is not available on this server yet");
+    expect(row).toMatch(/no live issue client: a FAIL/);
   });
 });
 

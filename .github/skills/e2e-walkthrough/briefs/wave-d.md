@@ -24,9 +24,10 @@ names the UI control for each step and marks the few checks that are *API only*.
 those; anything else that needs `fetch` is a finding. Chat no longer runs or suggests Spec Kit
 commands (#931).
 
-- **S3b:** `developer` is not a member of a fresh run's workspace. Invite, accept, then log
-  out and back in as `developer` before the read-only check (3 of the 20 logins per 15
-  minutes).
+- **S3b:** the operator made `developer` a workspace member at setup (the skill, section 1,
+  step 5). Log out and back in as `developer` before the read-only check. If `developer` is
+  not a member, stop and ask the operator rather than inviting from this wave (run 9's
+  classifier refused the invite in wave D).
 - **S6 then S6b changes the design.** Save `plan.md` and `tasks.md` only after S6b to S6d,
   and run `/speckit.analyze` and the handoff after them.
 - **S9 budget:** the handoff analysis took 20 minutes and $0.35 in run 8, and one Continue
@@ -34,9 +35,12 @@ commands (#931).
 - **Spec Kit commands take the leading slash** in the palette (`/speckit.specify`).
 - **S9 handoff:** **Start analysis with these artifacts** once. It must start a new run, never
   `{{ANALYSIS_RUN_ID}}`; record its ID and cost, with test custom agents disabled first.
-- **S21:** the dry run lists the titles and the target repo; Publish stays disabled with the
-  "not available on this server yet" reason until #953 lands. Keep the sandbox slot. If
-  Publish is enabled, #953 has landed: publish within the 2-issue cap, to `openzigs/flux-v2` only.
+- **S21:** the dry run lists the titles and the target repo. #953 has landed, so Publish is
+  enabled after it, and its confirm names the repo and the count. Publish within the 2-issue cap, to `openzigs/flux-v2` only, from a
+  throwaway feature whose `tasks.md` is cut to 1 task (see the standing rules below).
+- **S24** (optional): close then reopen the S21 issue; reopen must untick the task. Bullet tasks
+  are only ticked; `<!-- closed via #N -->` is written for table rows only. It needs a tunnel
+  that forwards only `POST /api/webhooks/github/pr|issues`, which the operator sets up.
 
 ## Fixes to verify this wave
 

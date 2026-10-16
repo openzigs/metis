@@ -25,7 +25,10 @@ build and test it. You are an implementing agent, not `ui-vision`: no browser, n
 
 1. **Note the wall-clock start** and your own usage so far. Your spend is measured from your
    own usage, not from METIS's `token_usages`.
-2. **Set up.** Clone into `{{SCRATCH_DIR}}/wave-g/flux-v2`, then
+2. **Set up.** Clone into `{{SCRATCH_DIR}}/wave-g/flux-v2`. `gh repo clone openzigs/flux-v2`
+   adds an `upstream` remote and sets gh's default repo to `miniflux/v2`, so first run
+   `git remote remove upstream && gh repo set-default openzigs/flux-v2`, and pass
+   `--repo openzigs/flux-v2` to every `gh` command. Then
    `git checkout -b walkthrough/run-{{RUN_NUMBER}}-{{FEATURE_ISSUE}} c4d54f87`.
    Miniflux `v2.3.3` declares `go 1.26.0` in `go.mod`: check `go version` first. A toolchain
    that cannot build the base commit is an environment problem; stop and say so before task 1.
@@ -35,9 +38,13 @@ build and test it. You are an implementing agent, not `ui-vision`: no browser, n
    so the feature works, but record the task as **needed correction**, with a one-line reason
    (for example "T004 adds a `users` column; `MarkAllAsReadBeforeDate` already exists"). A task
    you had to add counts too: record it as `+ <what>` with its reason.
-5. **Prove it.** From the repository root run `go build ./...`, `go vet ./...` and
-   `go test ./...`. The API integration tests skip unless `TEST_MINIFLUX_*` is set, so no running
-   Miniflux or database is needed. Record each exit code, and the failing package names.
+5. **Prove it.** From the repository root run `CGO_ENABLED=0 go build ./...`,
+   `CGO_ENABLED=0 go vet ./...` and `CGO_ENABLED=0 go test ./...`, as Miniflux's `Makefile`
+   does (a macOS host without SDK headers fails with cgo on). The API integration tests skip
+   unless `TEST_MINIFLUX_*` is set, so no running Miniflux or database is needed. Storage, web UI
+   and Fever/Google Reader tests skip too, with no Miniflux Postgres harness (13 of 15 new tests
+   in run 9): count your new tests as written / ran / skipped, and never report a skip as a
+   pass. Record each exit code, and the failing package names.
 6. **Score the diff** `git diff c4d54f87..HEAD` against `#{{FEATURE_ISSUE}}`'s reference change
    set, by the plan's "Scoring a change plan" rules: file and function `tp` / `fp` / `fn`. Test
    files are excluded from both sides, so count the new tests separately.
@@ -78,7 +85,7 @@ one line to `steps.jsonl` with `wave` `"G"`, `phase` `"G"` and `chapter` `"Imple
    |---|---|
    | Builds | yes / no / not reached (`go build ./...`) |
    | Tests pass | yes / no / not reached, with failing package names (`go test ./...`) |
-   | New tests written | count |
+   | New tests written | count, and how many of them skipped (no Postgres harness) |
    | Tasks needing correction | N of M, each with its reason (below) |
    | Diff vs reference change set | files P/R (tp/fp/fn); functions P/R (tp/fp/fn) |
    | Agent cost | your own tokens and dollars, **separate from METIS spend** |

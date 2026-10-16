@@ -205,7 +205,7 @@
     "1119": {
       "wave": "C",
       "phase": "9",
-      "check": "Only with `DOCS_GEN_TOPIC_PLAN=on` in force for the full-scope BRD (state the value; record not-exercised if it is off): the server log has a `Planned document fit by section` entry for that run. Report, per section, the characters kept against the characters the cut without a plan would have kept, and name every section that kept less under the plan (the guarantee is on the document total, not per section). Every statement the document's consistency note quotes is present in the exported BRD (check up to 5), and no footnote label runs over more than one line"
+      "check": "Only with `DOCS_GEN_TOPIC_PLAN=on` in force for the full-scope BRD (state the value; record not-exercised if it is off): the server log has a `Planned document fit by section` entry for that run (the **operator** greps the dev server's stdout for it; ui-vision cannot read server stdout). Report, per section, the characters kept against the characters the cut without a plan would have kept, and name every section that kept less under the plan (the guarantee is on the document total, not per section). Every statement the document's consistency note quotes is present in the exported BRD (check up to 5), and no footnote label runs over more than one line"
     },
     "1007": {
       "wave": "E",
@@ -316,7 +316,7 @@
     "1145": {
       "wave": "B",
       "phase": "7",
-      "check": "With the project's model on Auto, every agent of the analysis runs on the project's model: every `token_usages` row of the run names the same model (DeepSeek `deepseek-flash`), with no Claude or other model mixed in. The Models settings page offers the Claude 5.5 models. Report the distinct models in the run's rows"
+      "check": "With the project's model on Auto, every agent of the analysis runs on the project's model: every `token_usages` ledger row of the wave is on the project's configured model (on this run's DeepSeek deployment, `deepseek-flash`), with no other model mixed in. Provider-aware: the Models settings page lists only the configured provider's models, so a DeepSeek deployment lists no Claude models by design; that is not a finding. Report the distinct models in the run's rows"
     },
     "1144": {
       "wave": "D",
@@ -336,7 +336,7 @@
     "1098": {
       "wave": "F",
       "phase": "J1.2",
-      "check": "On the analysis of the 5 imported items, the server log has one line recording imported / given to the code agent / folded in / left out; the code agent is given the 5 imported items (`NR-1`..`NR-5`) and no unrelated document requirement. Report those four numbers"
+      "check": "On the analysis of the 5 imported items (the **operator** greps the dev server's stdout for the line; ui-vision cannot read server stdout), the server log has one line recording imported / given to the code agent / folded in / left out; the code agent is given the 5 imported items (`NR-1`..`NR-5`) and no unrelated document requirement. Report those four numbers"
     },
     "1129": {
       "wave": "F",

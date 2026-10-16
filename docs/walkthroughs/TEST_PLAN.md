@@ -150,7 +150,7 @@ Run 1 set things up in the wrong order, and three things could not be recovered 
 1. **Start the SQL lineage sidecar first.** Set `SQL_LINEAGE_MODE=sidecar`, `SQL_LINEAGE_URL=http://127.0.0.1:5070` and `SQL_LINEAGE_TOKEN` in `.env`, then restart the server.
    - Deep Ingest is incremental. Turning lineage on after the first ingest leaves **0** `reads`/`writes` edges (#721).
 2. **Create the workspace first, then create the project inside it.** #731 (PR #927) now lets an existing project join a workspace, but create it inside so runs stay comparable; Phase 5 tests the move on a throwaway project. Without a workspace, requirement links, workspace traceability, DB identity and the custom-agent wizard (`/workspaces/:id/agents/new`) are all unavailable.
-3. **Workspace membership has no invite UI** (#941). To add a member: `POST /api/workspaces/:id/invites`, then open `/invites/<token>` as that user, then log that user in afresh. Reviewers (Phase 8) must be workspace members.
+3. **Workspace membership has no invite UI** (#941). To add a member: `POST /api/workspaces/:id/invites`, then open `/invites/<token>` as that user, then log that user in afresh. Reviewers (Phase 8) must be workspace members. **The operator creates the `coordinator` and `developer` memberships before wave B**; run 9's classifier refused the invite in waves B and D and allowed it only in F.
 4. **Add the repo connector pinned to `v2.3.3` before anything auto-ingests `main`.** Never click **Test** on it afterwards, because Test resets the branch to the default (#714).
 5. **There is no `ChangeLog` at v2.3.3.** Phase 3 uploads `miniflux.1` (renamed `.txt`; `.1` is rejected) instead.
 6. **Never reject an approval item on a run you still need.** One rejection permanently blocked promotion, Deep Dive and publishing for that run (#723); PR #902 changes that, and wave B re-verifies it on a throwaway run.
@@ -267,7 +267,7 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
   5. **Request review** on the Requirements page for `coordinator` (a workspace member; see Setup order 3). It is listed on `/reviews`.
 - **Works:** requirements approved in the checkpoint arrive on the hub already **Approved**, not "Awaiting review", so they need no second Approve (#939); links persist, the workspace roll-up counts match (the moved project from Phase 5 appears in it), the baseline compare shows the edit, and `request-review-done` confirms the review.
 - **Useful:**
-  - The requirement "a user cannot subscribe to the same feed URL twice" traces to `unique (user_id, feed_url)` (`internal/database/migrations.go:69`) and to the feed validator in `internal/validator/feed.go` or `subscription.go`. Run 8's analysis produced no such requirement (its 19 were deployment pin, polling, CLI commands, validators, metrics and TLS), so the trace could not be checked. Seed it as a requirement before Phase 8, or fall back to a validator requirement such as "Reading Speed Validation" and check that it traces to `internal/validator/user.go`; record which was used.
+  - *Conditional on the requirement existing.* The requirement "a user cannot subscribe to the same feed URL twice" traces to `unique (user_id, feed_url)` (`internal/database/migrations.go:69`) and to the feed validator in `internal/validator/feed.go` or `subscription.go`. Runs 8 and 9 produced neither it nor the "Reading Speed Validation" fallback, so the analysis cannot be relied on to produce a named requirement. Either **seed** the feed-URL requirement on the hub before Phase 8 (and say so: a seeded requirement tests the trace, not the extraction), or take the first requirement whose mapped code is in `internal/validator/` and check it traces to that validator file. If neither exists, record this bar as **n/a**, not a fail. Record which was used.
   - Approved requirements keep their acceptance criteria and code links (#730, #909). Report how many promoted requirements have none of each (run 3: 29/29 without criteria; run 4: 3/37).
 
 ### Phase 9 — Docs generation
@@ -438,11 +438,12 @@ Run this phase only after Phase 9's documents finish: a repo refresh during docs
 ### Phase 14 — Spec Kit (see dedicated section below)
 
 ### Phase 15 — PR reviews and change analysis
+- **Steps 1–2 run on a sandbox project, never the main one.** `/projects/:id/pulls` lists only reviews that the `pull_request` webhook created, and `miniflux/v2` must never be wired to a webhook. **Record steps 1–2 as blocked until #1169 lands**: `Project.autoReviewPrs` has no UI or API setter, so no webhook review is ever made. Once it lands, use a sandbox project whose repo connector is `openzigs/flux-v2`, and **delete that connector before wave F**, or J1.8's publish fails with `REPO_CROSS_PROJECT` (#1171).
 - **Steps:**
-  1. In `/projects/:id/pulls`, open a recent merged Miniflux PR at `/projects/:id/pulls/:prNumber` (`GET /api/projects/:id/pr-reviews/:prNumber`).
-  2. Click **re-review** (`POST …/:prNumber/re-review`). Do not post the review to GitHub.
-  3. In `/projects/:id/changes`, run a change analysis (`POST /api/projects/:id/change-analyses`).
-- **Works:** the review renders inline comments in METIS only, and the change analysis completes. The PR review step needs a public webhook; record it as blocked without one (runs 3 and 4).
+  1. *(Sandbox project.)* In `/projects/:id/pulls`, open a PR review at `/projects/:id/pulls/:prNumber` (`GET /api/projects/:id/pr-reviews/:prNumber`).
+  2. *(Sandbox project.)* Click **re-review** (`POST …/:prNumber/re-review`). Do not post the review to GitHub.
+  3. On the main project, in `/projects/:id/changes`, run a change analysis (`POST /api/projects/:id/change-analyses`).
+- **Works:** the review renders inline comments in METIS only, and the change analysis completes. Steps 1–2 need #1169 and a public webhook; record them as blocked otherwise (runs 3, 4 and 9).
 - **Useful:** at least one review comment points at a real changed line and makes a substantive point, such as a missing test, an SQL error-handling gap or a migration ordering issue.
 
 ### Phase 16 — Impact analysis
@@ -453,7 +454,7 @@ Run this phase only after Phase 9's documents finish: a repo refresh during docs
 ### Phase 17 — "Tested by" in traceability
 Replaces the Test Coverage page, whose imports and runs were removed in #818 and #819 (epic #812, [ADR 0019](../decisions/0019-replace-test-coverage-with-tested-by.md)).
 - **Steps:**
-  1. Open the completed analysis's **Requirements** tab and expand the requirement "password ≥ 6 chars". Read its **Tested by** section. If the analysis produced no such requirement, use a validator requirement instead. For the #1071 check (the LinkTaco requirement; run 8's reviewed analysis has none) name "Selectable Polling Scheduler" (`feed_test.go:79`) or "Reading Speed Validation" (`user_test.go:40`, `TestValidateReadingSpeed`) as the fallback. To check through the API, use `GET /api/projects/:projectId/requirements/:requirementId/traceability`, field `testedBy`.
+  1. Open the completed analysis's **Requirements** tab and pick the requirement **by rule, not by name**: the analysis's names change from run to run (run 9 had none of the ones earlier runs named). Prefer "password ≥ 6 chars" if present; otherwise take the first requirement whose mapped code is in `internal/validator/` and whose package has a `_test.go` file; otherwise the first with any mapped code in a package that has tests. Record which requirement was used and why. Expand it and read its **Tested by** section. For the #1071 check (Tested by through a bound Go method call), use the LinkTaco API-token requirement if present; otherwise apply the same rule, restricted to requirements whose **Tested by** names a test that reaches the mapped code through a method call, and check that call in the source. To check through the API, use `GET /api/projects/:projectId/requirements/:requirementId/traceability`, field `testedBy`.
   2. Open the analysis's **Traceability** tab. Read the matrix's **Tests** column and the **Untested requirements** list below it (`GET /api/projects/:projectId/traceability/test-gaps?analysisId=:id`).
   3. Open the workspace traceability rollup and read the project's **Tested** column. Hover it to see the strict figure.
 - **Works:** the Tested by section, the untested list and the Tested column render, and no model call is made (the ledger delta for this phase is 0).
@@ -461,7 +462,7 @@ Replaces the Test Coverage page, whose imports and runs were removed in #818 and
 
 ### Phase 18 — Usage and cost
 - **Steps:**
-  1. Open `/settings/usage?project=:id`. `/projects/:id/usage` redirects there (`ui/src/lib/legacy-routes.ts`).
+  1. Open `/projects/:id/usage`. It redirects to `/settings/usage?scope=project&projectId=:id` (`ui/src/lib/legacy-routes.ts:40-42`); check the redirect lands there with the project selected.
   2. Check `GET /api/projects/:id/usage`, `GET /api/projects/:id/usage-summary` and `GET /api/projects/:id/token-breakdown`, and download the CSV (`…/usage/csv`).
   3. Open `/workspaces/:id/finops` → `/api/workspaces/:wid/finops/budget|rules|events|usage-totals`.
   4. Compare the Usage page, its **All projects** view and `GET /api/admin/usage` with the ledger queries in the skill.
@@ -499,7 +500,7 @@ Replaces the Test Coverage page, whose imports and runs were removed in #818 and
 
 **Type the leading slash.** This plan writes Spec Kit commands without one (`speckit.specify`) so the drift check does not read them as pages, but the command palette requires it: type `/speckit.specify`, `/speckit.plan` and so on. Where a step says to run `speckit.<name>`, that means `/speckit.<name>` in the palette. The API paths are unaffected. <!-- drift-check: skip -->
 
-**S6 then S6b changes the design**, so save `plan.md` and `tasks.md` only after S6b to S6d, and run `speckit.analyze` and the handoff after them. Budget 45 minutes for S9 when #1062 is exercised (run 8: 20 minutes and $0.35, and one Continue added 23 minutes and $0.41). In S3b, `developer` is not a member of a fresh run's workspace: invite, accept, then log out and in.
+**S6 then S6b changes the design**, so save `plan.md` and `tasks.md` only after S6b to S6d, and run `speckit.analyze` and the handoff after them. Budget 45 minutes for S9 when #1062 is exercised (run 8: 20 minutes and $0.35, and one Continue added 23 minutes and $0.41). In S3b, `developer` is a member from setup (Setup order 3): log out and in as `developer`.
 
 **Sources:**
 - API: `server/src/routes/spec-kit.ts`, mounted at `/api/projects/:projectId/spec-kit`.
@@ -543,12 +544,12 @@ Feature for this run: **"Mark all entries as read older than N days"** (Miniflux
 | S16 | **Feature required** | UI: `speckit.plan` with **Project** selected. *API only:* the 400 | The page refuses before sending ("Select a feature first"); the API returns **400 `SPECKIT_FEATURE_REQUIRED`** without `featureSlug`, then 200 with it | It has the expanded plan sections |
 | S17 | **Feature artifacts** | UI: list and read in the feature tree. *API only:* `PUT …/features/:slug/artifacts/*key` with `{content}`, and an unknown slug | Round trip OK; an unknown slug returns 404 `SPECKIT_FEATURE_NOT_FOUND` | — |
 | S18 | **Status gates** | UI: the gate list in the Features panel (`spec-kit-feature-gates`); `GET …/features/:slug/status` | `spec`, `plan`, `tasks` and `implement` gates match what exists | — |
-| S19 | **Checklists** | UI: **Generate checklists** right after S4, before `speckit.plan`, and again after it. *API only:* adding a reviewer line to a checklist (feature artifacts have no Edit) | **412** before `plan.md`, its message shown in `spec-kit-error`. After: five domain checklists (security, performance, accessibility, observability, testability). Re-run (merge is the default): the reviewer's line and its tick survive below the regenerated items (#925) | The items are specific to this feature, for example a bounded `UPDATE` on `entries` or an index on `published_at` |
+| S19 | **Checklists** | UI: **Generate checklists** right after S4, before `speckit.plan`, and again after it. *API only:* adding a reviewer line to a checklist (feature artifacts have no Edit) | Before `plan.md`: a **failed job** with `SPECKIT_GATE_UNMET`, its message shown in `spec-kit-error` (no longer an HTTP 412). After: five domain checklists (security, performance, accessibility, observability, testability). Re-run (merge is the default): the reviewer's line and its tick survive below the regenerated items (#925) | The items are specific to this feature, for example a bounded `UPDATE` on `entries` or an index on `published_at` |
 | S20 | **Namespaced commands** | UI (S5–S9 already ran them) | Same results as the legacy commands, with no `Deprecation` header | — |
-| S21 | **Issue export** | UI: **Preview issue export (dry run)**, then **Publish issues to the saved target** (`openzigs/flux-v2` only) | The dry run lists the issue titles and the target repo (`openzigs/flux-v2`). **Publish stays disabled after the dry run**, with the reason "Publishing issues to GitHub is not available on this server yet", until the live issue client lands (#953). Spend no sandbox slot. If Publish is ever enabled, #953 has landed: publish within the 2-issue cap, to `openzigs/flux-v2` only | Issue bodies map one-to-one to tasks |
+| S21 | **Issue export** | UI: **Preview issue export (dry run)**, then **Publish issues to the saved target** (`openzigs/flux-v2` only) | The dry run lists the issue titles and the target repo (`openzigs/flux-v2`). #953 has landed, so **Publish is enabled after the dry run**, and its confirm names the repo and the issue count. Publish within the 2-issue cap, to `openzigs/flux-v2` only: the UI publishes one issue per task, so publish from a **throwaway feature whose `tasks.md` is cut to 1 task**, never the run's main feature. Created issues match the dry run's titles. Publish disabled with "Publishing issues to GitHub is not available on this server yet" means the server has no live issue client: a FAIL | Issue bodies map one-to-one to tasks |
 | S22 | **Archive and restore** | UI: **Archive**, tick **Show archived**, **Restore** (`POST …/features/:slug/archive`, then `…/restore`) | Hidden from `GET …/features`, shown with `?includeArchived=1`, then back | — |
 | S23 | **Install** | *API only:* `POST …/spec-kit/install` | **501 `SPECKIT_ATTACHED_WORKSPACE_NOT_IMPLEMENTED`**. This is expected; do not file it | — |
-| S24 | *(Optional; needs a public webhook)* **Issue sync** | Close a sandbox issue made by S21 (`routes/webhooks-github.ts` → `syncIssueEvent`, #433) | The matching `tasks.md` item is ticked | — |
+| S24 | *(Optional; needs a public webhook)* **Issue sync** | Close a sandbox issue made by S21 (`routes/webhooks-github.ts` → `syncIssueEvent`, #433), then reopen it. Expose only the webhook receivers through a tunnel: a proxy that forwards `POST /api/webhooks/github/pr|issues` and nothing else, never the whole server | Close ticks the matching `tasks.md` item, and **reopen unticks it**. A table-form task row also gains `<!-- closed via #N -->` (`server/src/lib/spec-kit/issue-sync.ts:122`); a bullet task is only ticked, with no marker | — |
 
 ## Persona scenarios
 
@@ -979,11 +980,17 @@ dispatched to an implementing agent, not `ui-vision`: no browser and no METIS ca
 - **Steps:**
   1. Clone `openzigs/flux-v2` and check out `c4d54f87` (= `v2.3.3`; the fork has the commit but
      **not the `v2.3.3` tag**, so branch from the SHA). Miniflux `v2.3.3` declares `go 1.26.0`.
+     `gh repo clone` adds an `upstream` remote and makes `miniflux/v2` gh's default: run
+     `git remote remove upstream && gh repo set-default openzigs/flux-v2` before anything else.
   2. Create the branch `walkthrough/run-<N>-<issue>`, for example `walkthrough/run-7-4478`.
   3. Implement the tasks in order, **one commit per task**.
-  4. Run `go build ./...`, `go vet ./...` and `go test ./...`. The API integration tests
-     (`internal/api/api_integration_test.go`) skip unless the `TEST_MINIFLUX_*` variables are
-     set, so no running Miniflux or database is needed.
+  4. Run `go build ./...`, `go vet ./...` and `go test ./...`, all with `CGO_ENABLED=0`, as
+     Miniflux's own `Makefile` does (a macOS host without the SDK headers fails otherwise). The
+     API integration tests (`internal/api/api_integration_test.go`) skip unless the
+     `TEST_MINIFLUX_*` variables are set, so no running Miniflux or database is needed. Storage,
+     web UI and Fever/Google Reader tests also **skip without a Miniflux Postgres harness**
+     (13 of 15 new tests skipped in run 9): report new tests as written / ran / skipped, and do
+     not count a skip as a pass.
   5. Score the diff (`git diff c4d54f87..HEAD`) against the request's reference change set, by
      the "Scoring a change plan" rules above. Test files are excluded there, so the new tests
      are counted on their own row.
@@ -1002,7 +1009,7 @@ dispatched to an implementing agent, not `ui-vision`: no browser and no METIS ca
 |---|---|
 | Builds | yes / no (`go build ./...`) |
 | Tests pass | yes / no, with failing package names (`go test ./...`) |
-| New tests written | count |
+| New tests written | count, and how many of them skipped (no Postgres harness) |
 | Tasks needing correction | N of M, each with its reason |
 | Diff vs reference change set | file and function precision and recall, by "Scoring a change plan" |
 | Agent cost | the implementing agent's own tokens and dollars, reported **separately** from METIS spend |

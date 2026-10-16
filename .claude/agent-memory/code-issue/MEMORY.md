@@ -18,7 +18,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [CodeQL limiter goes BEFORE requireAuth](project_codeql-rate-limit-must-precede-requireauth.md) — a per-user limiter after auth still alerts (291)
 - [Object ACL side channels](project_object-acl-side-channels.md) — #349: owner-only routes leaked via tool list, socket room, error text, 409
 - [Socket rooms fixed at handshake](project_socket-rooms-fixed-at-handshake.md) — JWT-claim rooms change on reconnect, not refresh (#353)
-- [Local UI walkthrough setup](project_local-ui-walkthrough-setup.md) — mock login is `password`; port overrides; Playwright upload root; quarantine
 - [Shared scratch/stash/browser](project_parallel-agents-share-scratch-and-browser.md) — unique temp names; verify closing refs
 - [Squash title closes issues](project_squash-title-closes-issues.md) — "Resolve #N" in a PR title closes N even if the body says Refs
 - [Late-mount scroll must cancel](project_late-mount-scroll-must-cancel.md) — wait-for-element effects need a cancel per never-mounts path (#434)
@@ -127,3 +126,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Fallback test: make paths disagree](project_fallback-test-needs-fixture-where-paths-disagree.md) — else deleting the filter stays green (#1129)
 - [Free-text classifier: negative corpus](project_free-text-classifier-needs-negative-corpus.md) — test symptom phrasings + opposite class (#1135)
 - [Declaration checks mistake calls](project_declaration-check-mistakes-calls.md) — test foo(() => {, return foo(1), = foo(3);, void foo(x); (#1135)
+- [Walkthrough run 9 findings](project_walkthrough-run9-durable-findings.md) — Spec Kit/chat shapes, autoReviewPrs, budgets, harness tips (#1172)
