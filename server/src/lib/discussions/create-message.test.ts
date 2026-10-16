@@ -84,7 +84,27 @@ describe("createHumanDiscussionMessage", () => {
     });
     expect(h.emit).toHaveBeenCalledWith("t-1", h.created);
     expect(h.scheduleMirror).toHaveBeenCalledWith("t-1", h.created);
-    expect(msg).toBe(h.created);
+    expect(msg).toEqual(h.created);
+  });
+
+  it("#734 — reads the author's display name with the row, so the live emit names them", async () => {
+    h.create.mockResolvedValueOnce({ ...h.created, authorUser: { displayName: "Bob Analyst" } });
+    const msg = await createHumanDiscussionMessage(
+      { threadId: "t-1", authorUserId: "u-1", projectId: "p-1", body: "hello" },
+      {
+        db: h.db,
+        emit: h.emit,
+        dispatchMentions: h.dispatchMentions,
+        scheduleMirror: h.scheduleMirror,
+      },
+    );
+    expect(h.create.mock.calls[0][0].include).toEqual({
+      authorUser: { select: { displayName: true } },
+    });
+    // The relation is flattened to a name — the user row never reaches the wire.
+    expect(msg).toEqual({ ...h.created, authorName: "Bob Analyst" });
+    expect(msg).not.toHaveProperty("authorUser");
+    expect(h.emit).toHaveBeenCalledWith("t-1", { ...h.created, authorName: "Bob Analyst" });
   });
 
   it("rejects (does not persist) when the human invariant is violated", async () => {

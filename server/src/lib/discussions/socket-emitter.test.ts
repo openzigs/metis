@@ -8,8 +8,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MetisIOServer } from "../socket/server.js";
 import {
+  emitMessageDeleted,
   emitMessageNew,
   emitMessageStream,
+  emitMessageUpdated,
   toMessagePayload,
   type DiscussionMessageRow,
 } from "./socket-emitter.js";
@@ -88,6 +90,14 @@ describe("toMessagePayload", () => {
     expect(p.authorUserId).toBeNull();
     expect(p.aiProvider).toBeNull();
     expect(p.editedAt).toBeNull();
+    expect(p).not.toHaveProperty("authorName");
+  });
+
+  it("#734 — carries the human author's display name when the row has one", () => {
+    expect(toMessagePayload({ ...HUMAN_ROW, authorName: "Bob Analyst" }).authorName).toBe(
+      "Bob Analyst",
+    );
+    expect(toMessagePayload({ ...HUMAN_ROW, authorName: null })).not.toHaveProperty("authorName");
   });
 });
 
@@ -191,5 +201,49 @@ describe("emitMessageStream", () => {
     const io = { to: vi.fn(() => ({ emit })) } as unknown as MetisIOServer;
     vi.spyOn(registry, "getSocketServer").mockReturnValue(io);
     expect(() => emitMessageStream("t1", { delta: "x" })).not.toThrow();
+  });
+});
+
+describe("#734 — emitMessageUpdated / emitMessageDeleted", () => {
+  it("emits message:updated to the thread room only, with the projected payload", () => {
+    const { io, to, emit } = makeFakeIo();
+    vi.spyOn(registry, "getSocketServer").mockReturnValue(io);
+
+    emitMessageUpdated("t1", { ...HUMAN_ROW, body: "edited", editedAt: new Date(0) });
+
+    expect(to).toHaveBeenCalledTimes(1);
+    expect(to).toHaveBeenCalledWith("thread:t1");
+    const [name, payload] = emit.mock.calls[0] as [string, Record<string, unknown>];
+    expect(name).toBe("message:updated");
+    expect(payload.threadId).toBe("t1");
+    expect((payload.message as { body: string }).body).toBe("edited");
+    expect((payload.message as { editedAt: string }).editedAt).toBe("1970-01-01T00:00:00.000Z");
+  });
+
+  it("emits message:deleted with only the message id to the thread room", () => {
+    const { io, to, emit } = makeFakeIo();
+    vi.spyOn(registry, "getSocketServer").mockReturnValue(io);
+
+    emitMessageDeleted("t1", "m1");
+
+    expect(to).toHaveBeenCalledTimes(1);
+    expect(to).toHaveBeenCalledWith("thread:t1");
+    const [name, payload] = emit.mock.calls[0] as [string, Record<string, unknown>];
+    expect(name).toBe("message:deleted");
+    expect(payload).toEqual({ threadId: "t1", messageId: "m1", ts: expect.any(Number) });
+  });
+
+  it("both are silent no-ops without IO and swallow transport errors", () => {
+    vi.spyOn(registry, "getSocketServer").mockReturnValue(null);
+    expect(() => emitMessageUpdated("t1", HUMAN_ROW)).not.toThrow();
+    expect(() => emitMessageDeleted("t1", "m1")).not.toThrow();
+
+    const emit = vi.fn(() => {
+      throw new Error("down");
+    });
+    const io = { to: vi.fn(() => ({ emit })) } as unknown as MetisIOServer;
+    vi.spyOn(registry, "getSocketServer").mockReturnValue(io);
+    expect(() => emitMessageUpdated("t1", HUMAN_ROW)).not.toThrow();
+    expect(() => emitMessageDeleted("t1", "m1")).not.toThrow();
   });
 });

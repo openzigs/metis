@@ -251,12 +251,31 @@ export interface DiscussionMessagePayload {
   body: string;
   createdAt: string;
   editedAt: string | null;
+  /**
+   * #734 — the human author's display name, when known, so a teammate's live
+   * message does not render as a raw user id.
+   */
+  authorName?: string;
 }
 
 /** Epic #475 (#481) — a new message was posted to a discussion thread. */
 export interface DiscussionMessageNewEvent {
   threadId: string;
   message: DiscussionMessagePayload;
+  ts: number;
+}
+
+/** #734 — a discussion message was edited by its author. */
+export interface DiscussionMessageUpdatedEvent {
+  threadId: string;
+  message: DiscussionMessagePayload;
+  ts: number;
+}
+
+/** #734 — a discussion message was deleted by its author. */
+export interface DiscussionMessageDeletedEvent {
+  threadId: string;
+  messageId: string;
   ts: number;
 }
 
@@ -283,6 +302,10 @@ export interface ServerToClientEvents {
   "message:new": (data: DiscussionMessageNewEvent) => void;
   /** Epic #475 (#481) — a streaming AI-reply chunk for a thread message. */
   "message:stream": (data: DiscussionMessageStreamEvent) => void;
+  /** #734 — a message in `thread:{id}` was edited by its author. */
+  "message:updated": (data: DiscussionMessageUpdatedEvent) => void;
+  /** #734 — a message in `thread:{id}` was deleted by its author. */
+  "message:deleted": (data: DiscussionMessageDeletedEvent) => void;
   /** Epic #238 (#239) — unified job-lifecycle event. */
   "job:lifecycle": (data: JobLifecycleEvent) => void;
   /** Epic #238 (#243) — per-section doc-generation progress + warnings. */

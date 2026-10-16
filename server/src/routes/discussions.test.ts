@@ -94,6 +94,25 @@ vi.mock("../lib/discussions/promote.js", () => ({
   PromoteError,
 }));
 
+// #734 — edit/delete is unit-tested in lib/discussions/edit-message.test.ts; the
+// route mocks it and asserts the thread gate runs first + the error mapping.
+const editHumanDiscussionMessage = vi.fn();
+const deleteHumanDiscussionMessage = vi.fn();
+class MessageChangeError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "MessageChangeError";
+  }
+}
+vi.mock("../lib/discussions/edit-message.js", () => ({
+  editHumanDiscussionMessage: (...a: unknown[]) => editHumanDiscussionMessage(...a),
+  deleteHumanDiscussionMessage: (...a: unknown[]) => deleteHumanDiscussionMessage(...a),
+  MessageChangeError,
+}));
+
 // Epic #475 (#481) — the realtime emitter is unit-tested separately; here we
 // only assert the route wires the fan-out after persisting a human message.
 const emitMessageNew = vi.fn();
@@ -1299,6 +1318,126 @@ describe("discussions routes", () => {
         .send({ title: "x" });
       expect(res.status).toBe(404);
       expect(res.body.error.code).toBe("MESSAGE_NOT_FOUND");
+    });
+  });
+
+  describe("#734 — PATCH/DELETE /threads/:id/messages/:messageId", () => {
+    it("rate-limits both routes: a pre-auth limiter, then auth, then the per-user limiter", async () => {
+      const { discussionMessageChangePreAuthRateLimiter, discussionMessageChangeUserRateLimiter } =
+        await import("../middleware/discussion-message-change-rate-limit.js");
+      const { requireAuth } = await import("../middleware/auth.js");
+      type Layer = {
+        route?: {
+          path: string;
+          methods: Record<string, boolean>;
+          stack: Array<{ handle: unknown }>;
+        };
+      };
+      const stack = (discussionsRouter() as unknown as { stack: Layer[] }).stack;
+      for (const method of ["patch", "delete"]) {
+        const layer = stack.find(
+          (l) => l.route?.path === "/threads/:id/messages/:messageId" && l.route.methods[method],
+        );
+        expect(layer?.route?.stack.slice(0, 3).map((s) => s.handle)).toEqual([
+          discussionMessageChangePreAuthRateLimiter,
+          requireAuth,
+          discussionMessageChangeUserRateLimiter,
+        ]);
+      }
+    });
+
+    it("edits through the thread gate, passing the caller and the thread's project", async () => {
+      currentUser = { userId: "alice", role: "analyst", workspaces: ["ws1"] };
+      canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
+      editHumanDiscussionMessage.mockResolvedValue({ id: "m1", body: "new", authorName: "Alice" });
+
+      const res = await request(app)
+        .patch("/discussions/threads/t1/messages/m1")
+        .send({ body: "new" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ id: "m1", body: "new", authorName: "Alice" });
+      expect(canAccessThread).toHaveBeenCalledWith(
+        { id: "alice", role: "analyst", workspaces: ["ws1"] },
+        "t1",
+      );
+      expect(editHumanDiscussionMessage).toHaveBeenCalledWith({
+        threadId: "t1",
+        projectId: "p1",
+        messageId: "m1",
+        actorId: "alice",
+        body: "new",
+      });
+    });
+
+    it("answers a non-member the thread's 404 and never reaches the message", async () => {
+      canAccessThread.mockResolvedValue({ ok: false, reason: "forbidden" });
+      const patch = await request(app)
+        .patch("/discussions/threads/t1/messages/m1")
+        .send({ body: "x" });
+      const del = await request(app).delete("/discussions/threads/t1/messages/m1");
+      for (const res of [patch, del]) {
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe("THREAD_NOT_FOUND");
+      }
+      expect(editHumanDiscussionMessage).not.toHaveBeenCalled();
+      expect(deleteHumanDiscussionMessage).not.toHaveBeenCalled();
+    });
+
+    it("validates the edited body (empty and over-long are 400)", async () => {
+      canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
+      const empty = await request(app)
+        .patch("/discussions/threads/t1/messages/m1")
+        .send({ body: "" });
+      const long = await request(app)
+        .patch("/discussions/threads/t1/messages/m1")
+        .send({ body: "x".repeat(10_001) });
+      expect(empty.status).toBe(400);
+      expect(long.status).toBe(400);
+      expect(editHumanDiscussionMessage).not.toHaveBeenCalled();
+    });
+
+    it("maps NOT_AUTHOR to 403 and MESSAGE_NOT_FOUND to 404", async () => {
+      canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
+      editHumanDiscussionMessage.mockRejectedValueOnce(
+        new MessageChangeError("NOT_AUTHOR", "You can only edit your own messages"),
+      );
+      const forbidden = await request(app)
+        .patch("/discussions/threads/t1/messages/m1")
+        .send({ body: "x" });
+      expect(forbidden.status).toBe(403);
+      expect(forbidden.body.error.code).toBe("FORBIDDEN");
+
+      deleteHumanDiscussionMessage.mockRejectedValueOnce(
+        new MessageChangeError("MESSAGE_NOT_FOUND", "Message not found in this thread"),
+      );
+      const missing = await request(app).delete("/discussions/threads/t1/messages/ghost");
+      expect(missing.status).toBe(404);
+      expect(missing.body.error.code).toBe("MESSAGE_NOT_FOUND");
+    });
+
+    it("rethrows anything that is not a refusal (500)", async () => {
+      canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
+      editHumanDiscussionMessage.mockRejectedValueOnce(new Error("db down"));
+      const res = await request(app)
+        .patch("/discussions/threads/t1/messages/m1")
+        .send({ body: "x" });
+      expect(res.status).toBe(500);
+    });
+
+    it("deletes the caller's message and answers its id", async () => {
+      currentUser = { userId: "alice", role: "analyst" };
+      canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
+      deleteHumanDiscussionMessage.mockResolvedValue(undefined);
+      const res = await request(app).delete("/discussions/threads/t1/messages/m1");
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ id: "m1", deleted: true });
+      expect(deleteHumanDiscussionMessage).toHaveBeenCalledWith({
+        threadId: "t1",
+        projectId: "p1",
+        messageId: "m1",
+        actorId: "alice",
+      });
     });
   });
 });

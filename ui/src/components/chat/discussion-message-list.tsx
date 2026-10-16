@@ -8,7 +8,11 @@
  * bodies render through the XSS-safe {@link ChatMarkdown} renderer — no raw HTML
  * reaches the DOM. AI messages that are still streaming show a live cursor.
  */
+import { useState } from "react";
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
+import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/alert-dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { DiscussionMessage } from "@/lib/discussions-api";
 
@@ -48,19 +52,63 @@ export function isPromotable(message: DiscussionListMessage): boolean {
   return !message.id.startsWith("local-") && !message.id.startsWith("ai-local-");
 }
 
+/**
+ * #734 — the viewer may edit or delete only their own persisted human message
+ * (the server enforces the same rule; this only hides what would be refused).
+ */
+export function isOwnEditable(message: DiscussionListMessage, currentUserId?: string): boolean {
+  return (
+    !!currentUserId &&
+    message.authorKind === "human" &&
+    message.authorUserId === currentUserId &&
+    isPromotable(message)
+  );
+}
+
+/** Edit/delete callbacks; each resolves once the server accepted the change. */
+export interface MessageOwnerActions {
+  currentUserId?: string;
+  onEdit?: (message: DiscussionListMessage, body: string) => Promise<void>;
+  onDelete?: (message: DiscussionListMessage) => Promise<void>;
+}
+
+const actionClass =
+  "rounded px-1.5 py-0.5 text-[0.7rem] font-medium text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100";
+
 /** A single message row — exported for focused tests. */
 export function DiscussionMessageItem({
   message,
   onPromote,
+  currentUserId,
+  onEdit,
+  onDelete,
 }: {
   message: DiscussionListMessage;
   /** Member-only promote action. When omitted, no promote button renders. */
   onPromote?: (message: DiscussionListMessage) => void;
-}) {
+} & MessageOwnerActions) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(message.body);
+  const [saving, setSaving] = useState(false);
   const isAi = message.authorKind === "ai";
   const label = isAi ? "AI" : (message.authorName ?? message.authorUserId ?? "Unknown");
   const seed = isAi ? "ai" : (message.authorUserId ?? label);
-  const showPromote = !!onPromote && isPromotable(message);
+  const showPromote = !!onPromote && isPromotable(message) && !editing;
+  const own = isOwnEditable(message, currentUserId) && !editing;
+
+  async function save() {
+    const body = draft.trim();
+    if (!body || !onEdit) return;
+    setSaving(true);
+    try {
+      await onEdit(message, body);
+      setEditing(false);
+    } catch {
+      // The caller surfaces the failure; keep the draft open to retry.
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <li
@@ -93,19 +141,74 @@ export function DiscussionMessageItem({
               human
             </span>
           ) : null}
-          {showPromote ? (
-            <button
-              type="button"
-              onClick={() => onPromote?.(message)}
-              className="ml-auto rounded px-1.5 py-0.5 text-[0.7rem] font-medium text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-              data-testid="promote-action"
-            >
-              Promote to requirement
-            </button>
+          {message.editedAt ? (
+            <span className="text-[0.7rem] text-muted-foreground" data-testid="edited-marker">
+              (edited)
+            </span>
           ) : null}
+          <span className="ml-auto flex gap-1">
+            {own && onEdit ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setDraft(message.body);
+                  setEditing(true);
+                }}
+                className={actionClass}
+                data-testid="edit-action"
+              >
+                Edit
+              </button>
+            ) : null}
+            {own && onDelete ? (
+              <ConfirmDialog
+                trigger={
+                  <button
+                    type="button"
+                    className={cn(actionClass, "hover:text-destructive")}
+                    data-testid="delete-action"
+                  >
+                    Delete
+                  </button>
+                }
+                title="Delete this message?"
+                description="It is removed in METIS for everyone in this discussion. Copies already posted to a linked Teams channel are not changed."
+                confirmLabel="Delete"
+                confirmVariant="destructive"
+                onConfirm={() => void onDelete(message).catch(() => {})}
+              />
+            ) : null}
+            {showPromote ? (
+              <button
+                type="button"
+                onClick={() => onPromote?.(message)}
+                className={actionClass}
+                data-testid="promote-action"
+              >
+                Promote to requirement
+              </button>
+            ) : null}
+          </span>
         </div>
         <div className={cn("mt-0.5 text-sm", message.isError && "text-destructive")}>
-          {message.isError ? (
+          {editing ? (
+            <div className="flex flex-col gap-1">
+              <Textarea
+                aria-label="Edit message"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                className="min-h-[60px] text-sm"
+              />
+              <div className="flex gap-1">
+                <Button size="sm" onClick={() => void save()} disabled={saving || !draft.trim()}>
+                  Save
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : message.isError ? (
             <span className="whitespace-pre-wrap">{`⚠ ${message.body}`}</span>
           ) : message.body ? (
             <ChatMarkdown content={message.body} streaming={message.streaming} />
@@ -120,7 +223,7 @@ export function DiscussionMessageItem({
   );
 }
 
-export interface DiscussionMessageListProps {
+export interface DiscussionMessageListProps extends MessageOwnerActions {
   messages: DiscussionListMessage[];
   loading?: boolean;
   error?: string | null;
@@ -133,6 +236,9 @@ export function DiscussionMessageList({
   loading,
   error,
   onPromote,
+  currentUserId,
+  onEdit,
+  onDelete,
 }: DiscussionMessageListProps) {
   if (error) {
     return (
@@ -162,7 +268,14 @@ export function DiscussionMessageList({
   return (
     <ul className="space-y-4" aria-label="Discussion messages">
       {messages.map((m) => (
-        <DiscussionMessageItem key={m.id} message={m} onPromote={onPromote} />
+        <DiscussionMessageItem
+          key={m.id}
+          message={m}
+          onPromote={onPromote}
+          currentUserId={currentUserId}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
       ))}
     </ul>
   );
