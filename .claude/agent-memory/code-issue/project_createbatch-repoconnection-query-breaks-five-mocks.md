@@ -17,5 +17,4 @@ When #1171 moved the query from `findFirst` to `findMany`, the first two broke i
 
 **Why:** these mocks are partial objects rather than `importOriginal` wrappers, so any change to the guard's Prisma method or shape is a mock-level break in every file that reaches `createBatch`.
 
-**How to apply:** before changing the guard's query, run
-`grep -rln "repoConnection" server/tests | xargs grep -l "createBatch\|publishing"` and update every hit in the same commit. Then run the full server suite, not just the publishing files you touched.
+**How to apply:** before changing the guard's query, update the `repoConnection` mock in all five files in the same commit: `server/tests/publishing-service.test.ts`, `server/tests/publishing-routes.test.ts`, `server/tests/publishing-batch-lifecycle.test.ts`, `server/tests/publishing-promotion-guard.test.ts` and `server/tests/publishing-cross-project-idor.test.ts`. A sixth that reaches `createBatch` later is found by running the full server suite (`pnpm --filter ./server test`), not just the publishing files you touched. A grep for `repoConnection` in `server/tests` also matches unrelated generated-doc and draft-generator files.

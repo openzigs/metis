@@ -4,27 +4,27 @@ Entries are capped at 150 bytes and the whole file at 17,500 (`pnpm agents:verif
 Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never loaded.
 
 - [Tag-ref caches are unreadable](project_tag-ref-gha-cache-is-write-only.md) — only that tag can restore it; check per-ref size
-- [Budget rationale in 3 places](project_image-budget-rationale-lives-in-three-places.md) — docs + 2 comments; grep the tree when correcting one
+- [Budget rationale in 3 places](project_image-budget-rationale-lives-in-three-places.md) — docs + 2 comments; grep before correcting one
 - [Probe real default paths](project_storage-probes-must-target-real-default-paths.md) — a /tmp probe passed while <cwd>/data was EACCES (#54)
-- [Module wiring needs the smoke](project_module-wiring-needs-the-image-smoke.md) — import-time / registration-order bugs pass unit tests (#55, #60)
+- [Module wiring needs the smoke](project_module-wiring-needs-the-image-smoke.md) — import-order bugs pass unit tests (#55, #60)
 - [A run outruns its service](project_coverage-run-spans-more-phases-than-the-service.md) — bill from `task-runner.ts` phases (#72)
 - [Whole-module vi.mock 500s later](project_whole-module-vi-mock-stubs-500-at-runtime.md) — one-export stub rots; use `importOriginal` (#67)
 - [Sanitise the superseded field too](project_sanitise-the-superseded-field-too.md) — UI legacy parsers still read the old column (#67/#86)
 - [Socket guard half-checks](project_socket-contract-guard-half-checks.md) — prove it with a typo copy beside the real name (#91/#113)
 - [Row matchers drop scope](project_row-matchers-drop-scope-assertions.md) — the columns the matcher omits stop being asserted (#94)
-- [Filter the capped list](project_capped-list-filter-must-share-the-fits-function.md) — filter and render share one fits() or items vanish (#163)
+- [Filter the capped list](project_capped-list-filter-must-share-the-fits-function.md) — filter + render share one fits() (#163)
 - [Splitter fixtures](project_splitter-fixtures-need-real-sections-and-fences.md) — test on a real dev.db section + an unclosed fence (#162)
-- [CodeQL limiter goes BEFORE requireAuth](project_codeql-rate-limit-must-precede-requireauth.md) — a per-user limiter after auth still alerts (291)
+- [CodeQL limiter goes BEFORE requireAuth](project_codeql-rate-limit-must-precede-requireauth.md) — per-user limiter after auth still alerts
 - [Object ACL side channels](project_object-acl-side-channels.md) — #349: owner-only routes leaked via tool list, socket room, error text, 409
 - [Socket rooms fixed at handshake](project_socket-rooms-fixed-at-handshake.md) — JWT-claim rooms change on reconnect, not refresh (#353)
 - [Shared scratch/stash/browser](project_parallel-agents-share-scratch-and-browser.md) — unique temp names; verify closing refs
 - [Squash title closes issues](project_squash-title-closes-issues.md) — "Resolve #N" in a PR title closes N even if the body says Refs
-- [Late-mount scroll must cancel](project_late-mount-scroll-must-cancel.md) — wait-for-element effects need a cancel per never-mounts path (#434)
+- [Late-mount scroll must cancel](project_late-mount-scroll-must-cancel.md) — cancel each never-mounts path (#434)
 - [Grounding misses tools](project_grounding-from-auto-rag-misses-tools.md) — auto-RAG capture never sees tool retrieval (#437)
 - [Verify the issue premise](project_verify-issue-premise-before-copy.md) — grep the write path and tests before copy or "no test" issues
 - [Split advisory fixes deadlock](project_split-advisory-fixes-deadlock-audit.md) — fix all new HIGHs on one branch (#431)
 - [TanStack stale data](project_tanstack-stale-data-after-failed-refetch.md) — a failed refetch keeps .data; persist on a confirmed fetch
-- [Once-mocks and retries](project_vitest-once-mocks-and-retries-hide-leaks.md) — retry:2 hides leaks; --retry=0; assert reason; fresh deferreds
+- [Once-mocks and retries](project_vitest-once-mocks-and-retries-hide-leaks.md) — retry:2 hides leaks; --retry=0; fresh deferreds
 - [Pass-through permission mock](project_permission-mock-hides-removed-gate.md) — test the route's gate and limiter wiring (#454)
 - [CI guards parse the step](project_ci-guards-must-parse-the-step.md) — reject if:, `||`, continue-on-error (#458)
 - [Cap gendoc-sized ids](project_gendoc-ids-are-long.md) — id caps (cursor, schema, path) must fit ~94-char gendoc- ids (#469)
@@ -34,16 +34,16 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Write after end](project_write-after-end-is-an-error-event.md) — guard SSE writes with writableEnded; assert the listener logs (#511/#546)
 - [Filename prefixes](project_filename-prefix-classifiers.md) — classify on documents.source; UI labels read prefixes too (#516/#540)
 - [Job id reused per run](project_job-id-reused-across-runs.md) — docId is the jobId; reset per-job caches on started (#515)
-- [Scroll clips focus ring](project_scrollable-tablist-clips-focus-ring.md) — overflow-x-auto on a tab row clips offset rings; inset them (#520)
+- [Scroll clips focus ring](project_scrollable-tablist-clips-focus-ring.md) — overflow-x-auto clips offset rings; inset (#520)
 - [Race guards need tests](project_conditional-write-guards-need-a-race-test.md) — delete the where-unchanged clause; a test must go red (#518)
 - [Three model entry points](project_model-resolution-three-entry-points.md) — start, resume and regenerate each resolve the model (#523)
 - [Import pass 1 commits](project_logical-import-pass1-commits-early.md) — sanitise untrusted fields before batch.push (#531)
 - [Workspace delete is soft](project_workspace-delete-is-soft.md) — filter deletedAt in membership scope and at sinks (#549, #561)
-- [Dependency audit flips](project_dependency-audit-flips-on-new-advisories.md) — new advisories redden all PRs; fix once, update-branch (#555)
+- [Dependency audit flips](project_dependency-audit-flips-on-new-advisories.md) — fix once, update-branch (#555)
 - [Section splitter cost](project_markdown-sections-cost-and-harness.md) — cache lines; bound on chars; mixed-CRLF rows; divergent def first
 - [Env helpers](project_env-helpers-read-everything-from-env.md) — read AI_FIXTURE_DIR etc. from the passed env, not process.env (#565)
 - [Stale PR deferrals](project_stale-blocked-on-pr-deferrals.md) — re-check the blocking PR's state before a deferral (#559)
-- [SQLite tests skip on Postgres](project_sqlite-tests-skip-on-postgres-adapter.md) — mocked sibling asserts controls; run a PG twin for raw SQL
+- [SQLite tests skip on Postgres](project_sqlite-tests-skip-on-postgres-adapter.md) — run a PG twin for raw SQL
 - [Parallel PR semantic conflicts](project_parallel-prs-semantic-conflicts.md) — clean merge can bypass a guard; updateMany bumps @updatedAt
 - [Time-bounded refs need recheck](project_time-dependent-refs-need-recheck.md) — one-shot retirement; test fakes miss new methods
 - [Test harness false greens](project_test-harness-false-greens.md) — pipe-to-tail exit codes; helper-only tests; fireEvent file input
@@ -56,17 +56,17 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Access rule in fixtures](project_access-rule-in-fixtures.md) — socket/discussion tests encode access in mocks; update together
 - [Compaction truncates evidence](project_compaction-truncates-evidence.md) — 600-char tool-result cut; check before blaming tools
 - [e2e replay provider is not offline](project_e2e-replay-provider-not-offline.md) — detect stub by key "offline-stub" too (#900)
-- [cancelled no-runner checks](project_cancelled-no-runner-checks.md) — 0 steps + log 404 = queue cancel; re-run, never trust unrun postgres-adapter
+- [cancelled no-runner checks](project_cancelled-no-runner-checks.md) — 0 steps + log 404 = queue cancel; re-run it
 - [seeded mappings symbol-bound](project_seeded-mappings-are-symbol-bound.md) — fixtures must match seeder shapes (#897)
 - [structured req ids repeat](project_structured-req-ids-repeat.md) — REQ-001 ids repeat across re-runs; scope promoted ids to run (#902)
 - [simple-git 4 env guard](project_simple-git-4-env-guard.md) — GIT_* env needs allowEnvironment; use real-git test (#906)
-- [dependabot tilde + stale audit](project_dependabot-tilde-and-stale-audit.md) — group PRs cross ~0.x minors; old green audit may be stale (#907)
-- [vitest 5 jest-dom second copy](project_vitest5-jest-dom-second-copy.md) — jest-dom/vitest loads another vitest copy; extend expect locally (#668)
+- [dependabot tilde + stale audit](project_dependabot-tilde-and-stale-audit.md) — ~0.x groups cross minors; stale green audit (#907)
+- [vitest 5 jest-dom second copy](project_vitest5-jest-dom-second-copy.md) — jest-dom loads a 2nd vitest; extend expect locally (#668)
 - [float USD to cents](project_float-usd-to-cents.md) — costUsd*100 float error; round to cents before sign/zero checks (#950)
 - [Decline guards: every token](project_decline-guards-need-every-continuation-token.md) — silent-success holes evade throw-fuzz (#1084)
 - [Regex negatives pass incidentally](project_speckit-regex-negatives-pass-incidentally.md) — test the one-change near-miss (#1083)
 - [Go resolver binds by bare name](project_go-call-resolver-binds-by-bare-name.md) — false positives for claims (#1086)
-- [HTML comment shows as text](project_html-comment-marker-renders-as-text-in-spec-kit-viewer.md) — filter markers in displayArtifactText (#1134)
+- [HTML comment shows as text](project_html-comment-marker-renders-as-text-in-spec-kit-viewer.md) — filter in displayArtifactText (#1134)
 - [Pin skipHtml on textContent](project_react-markdown-skiphtml-needs-textcontent-assert.md) — no-<img> passes anyway (#1086)
 - [Weak Tested-by: check counts](project_weak-tested-by-relation-check-every-count.md) — aggregates ignore weak vs strict (#1069)
 - [Next catch-all segments are decoded](project_next-catch-all-segments-are-decoded.md) — decide proxy policy on resolved pathname (#1069)
@@ -75,22 +75,22 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Readers re-check side-columns](project_side-column-readers-apply-writer-invariant.md) — use ledgerRowSummedRequests, not shape-only (#1092)
 - [Impact offline replay + pinned shapes](project_impact-offline-replay-and-pinned-shapes.md) — measure with no model; 4 far-away tests
 - [Gate over LLM output: probes](project_deterministic-gate-over-llm-output-probes.md) — adversarial answer, context cue, regex timing
-- [Model-cannot claims: sweep at the engine](project_model-cannot-claims-need-engine-level-sweep.md) — every LLM dep on; no near-idle timing bound
+- [Model-cannot claims: sweep at the engine](project_model-cannot-claims-need-engine-level-sweep.md) — every LLM dep on; no idle-timing bound
 - [Spec Kit plan context: replay + graph gaps](project_speckit-plan-context-replay-and-graph-gaps.md) — misses are rank, not top-k (#1060)
 - [Cap claims: one fixture per MAX_*](project_never-dropped-silently-needs-a-fixture-per-cap.md) — upstream caps cut uncounted (#1094)
 - [Read live ≠ read completely](project_read-live-is-not-read-completely.md) — no completeness proof: mark, never delete (#1093)
 - [Mapper precision rule vs recall](project_mapper-precision-rules-halve-impact-recall.md) — run both evals; option, not global (#1063)
 - [0 findings: read token_usages](project_zero-findings-read-token-usages-first.md) — output == cap + empty reply = reasoning (#1063)
 - [Synthesis field must fail soft](project_synthesis-optional-field-must-fail-soft.md) — one null discards every requirement (#1063)
-- [Binding more edges: check fallback consumers](project_binding-more-edges-check-fallback-consumers.md) — diff replay `tables:` + per-seed (#1071)
-- [Identifier shape change: old fixtures stay green](project_identifier-shape-change-rerun-other-features-probes.md) — re-probe real graph (#1071)
+- [Binding more edges: check fallback consumers](project_binding-more-edges-check-fallback-consumers.md) — diff replay tables per seed (#1071)
+- [Identifier shape change: old fixtures stay green](project_identifier-shape-change-rerun-other-features-probes.md) — re-probe (#1071)
 - [Decided verdict needs positive evidence](project_decided-verdicts-need-positive-evidence.md) — else stay undecided for the fallback (#1071)
 - [Code-graph extractor version](project_code-graph-extractor-version.md) — bump + EXTRACTOR_UPGRADES; upgrade marks the graph (#1071)
 - [Recursion audit: bound work, not depth](project_recursion-audit-must-bound-work-not-depth.md) — lattice + scaling ratio (#1071)
 - [Test helper keys must be unique](project_test-helper-keys-must-be-unique.md) — throw on a duplicate key (#1071)
 - [Suppression needs evidence, once](project_suppression-rule-needs-positive-evidence-acknowledged-once.md) — not a missing field (#1071)
 - [Spec Kit jobs: test seams](project_speckit-jobs-test-seams-and-runner-choice.md) — mock job-store; park the stub, no sleeps (#1059)
-- [Job tables: DB commit + one clock](project_heartbeat-sweep-tables-db-commit-and-one-clock.md) — in-memory stop misses other replicas (#1059)
+- [Job tables: DB commit + one clock](project_heartbeat-sweep-tables-db-commit-and-one-clock.md) — in-memory stop misses replicas (#1059)
 - [New Prisma model: 3 PG artefacts](project_new-prisma-model-three-postgres-artefacts.md) — baseline CREATE TABLE; run schema-parity (#1059)
 - [Lock key = resource width](project_lock-key-as-wide-as-the-resource.md) — reserve after cheap failures; idempotency token; req.ip (#1059)
 - [Test the STAMPED body](project_publishing-safety-is-tested-on-the-stamped-body.md) — strip split a code span; double honours status
@@ -111,19 +111,20 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Retained counter sees only its own](project_retained-counter-sees-only-what-it-was-written-for.md) — probe every type form; watchdog (#1104)
 - [Memory probe: own members × tables/call](project_memory-probe-own-members-times-tables.md) — cap + growth watchdog (#1104)
 - [Fix the lookup rule, not the depth](project_fix-the-lookup-rule-not-the-reported-depth.md) — move the fixture ±1 level (#1104)
-- [Embed-retrieval corpus limits](project_embed-retrieval-corpus-limits-and-document-ab.md) — no receivers/tables; 1-line spans inflate (#1072)
+- [Embed-retrieval corpus limits](project_embed-retrieval-corpus-limits-and-document-ab.md) — no receivers/tables (#1072)
 - [A/B: rank depth + snippet budget](project_retrieval-ab-rank-depth-and-snippet-budget.md) — print lost ranks; locators first (#1126)
 - [Fake API filters lie](project_fake-api-filters-must-match-github-semantics.md) — since is updatedAt, not closedAt; clone replies (#1148)
-- [zod default misses null/lone obj](project_zod-default-repair-misses-null-and-lone-object.md) — probe null + a lone object per array field (#1143)
+- [zod default misses null/lone obj](project_zod-default-repair-misses-null-and-lone-object.md) — probe null + lone object per array (#1143)
 - [Card and run resolve model apart](project_model-card-and-run-resolve-model-separately.md) — test Auto on both, aiModel + prefs (#1145)
-- [Version history has gaps](project_requirement-version-history-is-incomplete.md) — enrichment/import/review skip rows; reversed≠pinned (#1162)
+- [Version history has gaps](project_requirement-version-history-is-incomplete.md) — some writers skip rows; reversed≠pinned (#1162)
 - [Imported provenance is recorded](project_imported-item-provenance-is-already-recorded.md) — read #1063 sourceIds, not word overlap (#1129)
-- [Closes #N sticks: file follow-up](project_closes-link-cannot-be-unlinked-file-follow-up.md) — deferring a criterion? file the issue pre-merge
+- [Closes #N sticks: file follow-up](project_closes-link-cannot-be-unlinked-file-follow-up.md) — file deferred criteria pre-merge
 - [Affected-code cap 8 < 25 imported](project_affected-code-cap-below-imported-cap.md) — NR-* keyed logic loses items 9+; test >8 (#1158)
-- [Fallback test: make paths disagree](project_fallback-test-needs-fixture-where-paths-disagree.md) — else deleting the filter stays green (#1129)
-- [Free-text classifier: negative corpus](project_free-text-classifier-needs-negative-corpus.md) — test symptom phrasings + opposite class (#1135)
-- [Declaration checks mistake calls](project_declaration-check-mistakes-calls.md) — test foo(() => {, return foo(1), = foo(3);, void foo(x); (#1135)
-- [Walkthrough run 9 findings](project_walkthrough-run9-durable-findings.md) — Spec Kit/chat shapes, autoReviewPrs, budgets, harness tips (#1172)
+- [Fallback test: make paths disagree](project_fallback-test-needs-fixture-where-paths-disagree.md) — else a deleted filter stays green (#1129)
+- [Free-text classifier: negative corpus](project_free-text-classifier-needs-negative-corpus.md) — symptom phrasings + opposite class (#1135)
+- [Declaration checks mistake calls](project_declaration-check-mistakes-calls.md) — test callback, return, assign and void forms (#1135)
+- [Walkthrough run 9 findings](project_walkthrough-run9-durable-findings.md) — Spec Kit/chat shapes, budgets, harness tips (#1172)
 - [Walkthrough docs: read the code](project_walkthrough-docs-describe-code-not-memory.md) — open function + page controls; grep archived facts
-- [createBatch query breaks 5 mocks](project_createbatch-repoconnection-query-breaks-five-mocks.md) — 3 fail only in full pnpm test (#1171)
-- [Batch row decides dryRun](project_runbatch-batch-row-decides-dry-run.md) — runBatch BATCH_IS_DRY_RUN guard (#1171)
+- [createBatch query breaks 5 mocks](project_createbatch-repoconnection-query-breaks-five-mocks.md) — 3 fail only in full test (#1171)
+- [Batch row decides dryRun](project_runbatch-batch-row-decides-dry-run.md) — BATCH_IS_DRY_RUN in runBatch (#1171)
+- [Verify your worktree](project_verify-your-worktree-before-committing.md) — HEAD vs your branch; worktree list; no stash pop; a lock failed
