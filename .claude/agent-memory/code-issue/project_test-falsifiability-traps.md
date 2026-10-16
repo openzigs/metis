@@ -28,6 +28,17 @@ New (2026-10-16, #1185, #1205, #1206 reviews; checked against `main` at b16dcc30
   (`server/src/lib/custom-agents/index.ts`) also needs it in the `registryWith(...)` registries
   of `server/tests/custom-agents.test.ts` and `server/tests/agent-tool-refs-238.test.ts`, or
   `ensureBuiltInAgents` refuses to seed.
+- **Key-registry file snapshot.** Adding a key to `server/src/lib/config/key-registry.ts`
+  fails the `toMatchFileSnapshot` in
+  `server/tests/lib/config/key-registry-parse-semantics.test.ts`, seen only in the full server
+  run (#1214). Refresh from `server/` with
+  `npx vitest run tests/lib/config/key-registry-parse-semantics.test.ts -u` and check that the
+  diff adds only the new key.
+- **Runbook greps inside markdown tables always pass.** A table cell needs `\|` for a pipe,
+  and an agent copies it raw. Under `grep -E`, `\|` is a literal pipe, so an alternation
+  check matches nothing and a "must find nothing" check passes vacuously. (Measured on this
+  Mac's grep, ugrep 7.8.4: BRE `a\|foo` alternates, `-E 'a\|foo'` does not.) Put commands in
+  fenced blocks outside tables (#1214 review).
 
 Older single-trap entries, folded here (retired from the index 2026-10-16; files unchanged):
 

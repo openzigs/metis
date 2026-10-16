@@ -11,4 +11,8 @@ Three times on 2026-09-30 an agent worked in a checkout that was not its own: th
 
 **How to apply:** Before the first commit, compare `git rev-parse --abbrev-ref HEAD` with the branch you were given; find a PR branch's worktree with `git worktree list`, never by the agent-<issue> name; never `git stash pop`; never git checkout in the repo root.
 
+**Recurred 2026-10-16 (#1214 review):** a reviewer ran `git checkout --detach` in the main
+checkout; it was restored by hand. The code-review skill's Step 1 now says to use a scratch
+worktree (`git worktree add`) and never `git checkout` in the main checkout (#1215).
+
 **Retiring this pointer was wrong once (PR #1178, 2026-10-16).** It was moved to `ARCHIVE.md` as "superseded by CLAUDE.md's worktree-isolation rule". Review found that none of the checks above appear in CLAUDE.md, the skills or the agents, and the pointer was restored. Before retiring any pointer as superseded, `git grep` each of its concrete checks in `CLAUDE.md`, `.github/skills`, `.claude/agents` and `.github/instructions`. A general rule does not supersede a lesson whose own text says the general measure failed (here: "a worktree lock did not prevent it").

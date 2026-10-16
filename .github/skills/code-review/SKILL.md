@@ -84,6 +84,9 @@ Execute with the **Code Review** agent (`code-review.agent.md`), which has the s
    gh pr view {PR_NUMBER} --json files --jq '.files[].path'
    ```
 6. **Read each changed file in full** — not just the diff hunks. Context matters.
+   To run or read the PR's tree, use a scratch worktree of your own
+   (`git worktree add <scratch-dir> <head-sha>`). **Never `git checkout` in the main
+   checkout**: reviewers have moved its HEAD twice (2026-09-30, #1214).
 7. **Check CI status immediately** — run this before reading any code:
    ```bash
    gh pr view {PR_NUMBER} --json statusCheckRollup --jq '.statusCheckRollup[] | {name: .name, conclusion: .conclusion}'
