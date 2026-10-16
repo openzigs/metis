@@ -24,6 +24,7 @@ import { assertCodeLinksMatchTarget } from "./draft-code-links.js";
 import { canCreateTickets } from "../analysis/approval-checkpoint.js";
 import { assertDraftsPublishable } from "../reviews/approval-gate.js";
 import { PublishError } from "./types.js";
+import { CrossProjectRepoError, findCrossProjectOwners } from "./cross-project-guard.js";
 import { isVaultRef } from "../connectors/vault-resolver.js";
 import { bindSecretRef } from "../vault/bound-secret.js";
 import { AppError } from "../../middleware/error-handler.js";
@@ -83,9 +84,10 @@ export interface CreateBatchOptions {
   actorId: string;
   /**
    * F6: when true, the caller has explicitly acknowledged that the target
-   * repo is owned by another project and wants to override the
+   * repo is connected to another project and wants to override the
    * cross-project guard. Defaults to false. Routes set this when the
-   * client passes `metadata.confirmCrossProject=true`.
+   * client passes `metadata.confirmCrossProject=true` — which the publish
+   * page does after the user confirms (#1171). Dry runs never need it.
    */
   confirmCrossProject?: boolean;
 }
@@ -185,27 +187,22 @@ export async function createBatch(opts: CreateBatchOptions): Promise<SharedPubli
   // #1092/#1094 — reject a malformed/missing credential ref before the batch
   // row is created, so a validation failure leaves no orphaned `pending` row.
   assertValidSecretRef(input.secretRef, input.dryRun);
-  // F6: defence in depth — the route also checks this, but the service
-  // layer must NEVER accept a cross-project repo without explicit
-  // confirmation regardless of how it was called. Internal callers who
+  // F6: defence in depth — the service layer must NEVER accept a LIVE
+  // publish into a repo another project has connected without explicit
+  // confirmation, regardless of how it was called. Internal callers who
   // bypass the route would otherwise be able to write into another
   // project's repo.
-  if (!opts.confirmCrossProject) {
-    const conflicting = await prisma.repoConnection.findFirst({
-      where: {
-        ownerOrOrg: input.targetOwner,
-        repoName: input.targetRepo,
-        projectId: { not: input.projectId },
-        deletedAt: null,
-      },
-      select: { id: true },
-    });
-    if (conflicting) {
-      throw new PublishError(
-        409,
-        "REPO_CROSS_PROJECT",
-        `repo ${input.targetOwner}/${input.targetRepo} is owned by another project; pass confirmCrossProject=true to override`,
-      );
+  //
+  // #1171 — a dry run is not refused. It writes nothing outside this project
+  // (M1: no GitHub call, no DNS, no allow-list lookup) and its dedup read is
+  // scoped to this project's own rows, so there is nothing to protect; the
+  // live publish is where the user is asked. The refusal carries the
+  // conflicting ids off the wire — `describeCrossProjectRefusal` names only
+  // the ones the caller may open.
+  if (!opts.confirmCrossProject && !input.dryRun) {
+    const conflicting = await findCrossProjectOwners(input);
+    if (conflicting.length > 0) {
+      throw new CrossProjectRepoError(`${input.targetOwner}/${input.targetRepo}`, conflicting);
     }
   }
   const drafts = await prisma.issueDraft.findMany({

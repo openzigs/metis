@@ -68,6 +68,12 @@ const drafts = new Map<string, DraftRow>();
 const batches = new Map<string, BatchRow>();
 const repoConns = new Map<string, RepoConnRow>();
 let n = 0;
+/** #1171 — a project the logged-in (non-admin) caller cannot open. */
+const HIDDEN_PROJECT = "proj_test_hidden";
+const PROJECT_NAMES: Record<string, string> = {
+  proj_test_002: "Flux sandbox",
+  [HIDDEN_PROJECT]: "Acquisition target X",
+};
 
 // #619 — mutable approval-gate state (defaults preserve pre-gate behavior).
 let requireApprovedReview = false;
@@ -96,7 +102,14 @@ vi.mock("../src/lib/prisma.js", async () => {
     project: {
       // #619 — gate off by default so pre-existing route tests keep their
       // original (ungated) behavior; gate cases mutate the state above.
-      findUnique: vi.fn(async () => {
+      findUnique: vi.fn(async ({ where }: { where?: { id?: string } } = {}) => {
+        // #1171 — a project in a workspace the caller is not a member of.
+        if (where?.id === HIDDEN_PROJECT) {
+          return {
+            workspaceId: "ws_other",
+            workspace: { deletedAt: null, members: [] },
+          };
+        }
         if (gateProjectLookupThrows) throw new Error("db down");
         return {
           publishDestination: "github",
@@ -105,6 +118,10 @@ vi.mock("../src/lib/prisma.js", async () => {
           requireApprovedReview,
         };
       }),
+      // #1171 — the names the cross-project refusal may show.
+      findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+        where.id.in.map((id) => ({ name: PROJECT_NAMES[id] ?? null })),
+      ),
     },
     requirement: {
       findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
@@ -209,7 +226,8 @@ vi.mock("../src/lib/prisma.js", async () => {
       }),
     },
     repoConnection: {
-      findFirst: vi.fn(
+      // #1171 — the guard lists every conflicting project.
+      findMany: vi.fn(
         async ({
           where,
         }: {
@@ -218,18 +236,16 @@ vi.mock("../src/lib/prisma.js", async () => {
             repoName: string;
             projectId: { not: string };
           };
-        }) => {
-          for (const r of repoConns.values()) {
-            if (r.deletedAt) continue;
-            if (
-              r.ownerOrOrg === where.ownerOrOrg &&
-              r.repoName === where.repoName &&
-              r.projectId !== where.projectId.not
+        }) =>
+          [...repoConns.values()]
+            .filter(
+              (r) =>
+                !r.deletedAt &&
+                r.ownerOrOrg === where.ownerOrOrg &&
+                r.repoName === where.repoName &&
+                r.projectId !== where.projectId.not,
             )
-              return r;
-          }
-          return null;
-        },
+            .map((r) => ({ projectId: r.projectId })),
       ),
     },
   });
@@ -697,49 +713,76 @@ describe("POST /batches", () => {
     expect(res.status).toBe(201);
   });
 
-  it("cross-project repo without confirmCrossProject → 409", async () => {
-    repoConns.set("rc1", {
-      id: "rc1",
-      projectId: "proj_test_002",
+  function connectElsewhere(projectId: string): void {
+    repoConns.set(`rc_${projectId}`, {
+      id: `rc_${projectId}`,
+      projectId,
       ownerOrOrg: "acme",
       repoName: "metis",
       deletedAt: null,
     });
-    const token = await login("admin");
+  }
+  const LIVE_BODY = {
+    targetOwner: "acme",
+    targetRepo: "metis",
+    provider: "github",
+    dryRun: false,
+    draftIds: ["draft_test_x01"],
+    secretRef: "${vault:gh}",
+  };
+
+  it("cross-project repo, live, without confirmCrossProject → 409 naming a visible project", async () => {
+    connectElsewhere("proj_test_002");
+    const token = await login("coordinator");
     const res = await request(app)
       .post("/api/projects/proj_test_001/publishing/batches")
       .set("Authorization", `Bearer ${token}`)
-      .send({
-        targetOwner: "acme",
-        targetRepo: "metis",
-        provider: "github",
-        dryRun: true,
-        draftIds: ["draft_test_x01"],
-      });
+      .send(LIVE_BODY);
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe("REPO_CROSS_PROJECT");
+    // #1171 — the text a UI user sees names the project, and no API parameter.
+    expect(res.body.error.message).toBe(
+      'acme/metis is already connected to the project "Flux sandbox". Confirm to publish to it anyway.',
+    );
+    expect(res.body.error.message).not.toMatch(/confirmCrossProject/);
+    expect(res.body.error.details).toEqual({ repo: "acme/metis", projects: ["Flux sandbox"] });
+    expect(batches.size).toBe(0);
   });
 
-  it("cross-project repo WITH confirmCrossProject=true → 201", async () => {
-    repoConns.set("rc1", {
-      id: "rc1",
-      projectId: "proj_test_002",
-      ownerOrOrg: "acme",
-      repoName: "metis",
-      deletedAt: null,
-    });
+  it("#1171 — never names (or ids) a conflicting project the caller cannot open", async () => {
+    connectElsewhere(HIDDEN_PROJECT);
+    const token = await login("coordinator");
+    const res = await request(app)
+      .post("/api/projects/proj_test_001/publishing/batches")
+      .set("Authorization", `Bearer ${token}`)
+      .send(LIVE_BODY);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("REPO_CROSS_PROJECT");
+    expect(res.body.error.message).toBe(
+      "acme/metis is already connected to another project. Confirm to publish to it anyway.",
+    );
+    const wire = JSON.stringify(res.body);
+    expect(wire).not.toContain("Acquisition target X");
+    expect(wire).not.toContain(HIDDEN_PROJECT);
+  });
+
+  it("#1171 — a cross-project DRY RUN is not refused", async () => {
+    connectElsewhere("proj_test_002");
     const token = await login("admin");
     const res = await request(app)
       .post("/api/projects/proj_test_001/publishing/batches")
       .set("Authorization", `Bearer ${token}`)
-      .send({
-        targetOwner: "acme",
-        targetRepo: "metis",
-        provider: "github",
-        dryRun: true,
-        draftIds: ["draft_test_x01"],
-        metadata: { confirmCrossProject: true },
-      });
+      .send({ ...LIVE_BODY, dryRun: true, secretRef: undefined });
+    expect(res.status).toBe(201);
+  });
+
+  it("cross-project repo, live, WITH confirmCrossProject=true → 201", async () => {
+    connectElsewhere("proj_test_002");
+    const token = await login("coordinator");
+    const res = await request(app)
+      .post("/api/projects/proj_test_001/publishing/batches")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ ...LIVE_BODY, metadata: { confirmCrossProject: true } });
     expect(res.status).toBe(201);
   });
 

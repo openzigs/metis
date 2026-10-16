@@ -88,7 +88,8 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     repoConnection: {
-      findFirst: vi.fn(async () => null),
+      // #1171 — the guard lists every conflicting project (findMany).
+      findMany: vi.fn(async () => []),
     },
     // #619 — approval gate off by default so pre-existing service tests keep
     // their original (ungated) behavior. The gate describe flips this.
@@ -431,9 +432,9 @@ describe("F6 — cross-project guard at the service layer", () => {
 
   it("rejects when targetOwner/targetRepo is owned by another project", async () => {
     const { prisma } = (await import("../src/lib/prisma.js")) as unknown as {
-      prisma: { repoConnection: { findFirst: ReturnType<typeof vi.fn> } };
+      prisma: { repoConnection: { findMany: ReturnType<typeof vi.fn> } };
     };
-    prisma.repoConnection.findFirst.mockResolvedValueOnce({ id: "repo_other" });
+    prisma.repoConnection.findMany.mockResolvedValueOnce([{ projectId: "proj_other" }]);
     await expect(
       createBatch({
         actorId: "user_1",
@@ -451,11 +452,66 @@ describe("F6 — cross-project guard at the service layer", () => {
     ).rejects.toMatchObject({ code: "REPO_CROSS_PROJECT", status: 409 });
   });
 
+  it("#1171 — the service refusal names no API parameter and carries no project id", async () => {
+    const { prisma } = (await import("../src/lib/prisma.js")) as unknown as {
+      prisma: { repoConnection: { findMany: ReturnType<typeof vi.fn> } };
+    };
+    prisma.repoConnection.findMany.mockResolvedValueOnce([{ projectId: "proj_other" }]);
+    const err: { message: string; details?: unknown } = await createBatch({
+      actorId: "user_1",
+      input: {
+        projectId: "proj_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+        provider: "github",
+        dryRun: false,
+        draftIds: ["d_cp"],
+        additionalLabels: [],
+        secretRef: "${vault:gh}",
+      },
+    }).then(
+      () => ({ message: "resolved" }),
+      (e: unknown) => e as { message: string; details?: unknown },
+    );
+    expect(err.message).toBe(
+      "acme/metis is already connected to another project. Confirm to publish to it anyway.",
+    );
+    expect(err.message).not.toMatch(/confirmCrossProject/);
+    expect(JSON.stringify(err.details)).not.toContain("proj_other");
+    expect(batches.size).toBe(0);
+  });
+
+  it("#1171 — a dry run is not refused: it writes nothing outside this project", async () => {
+    const { prisma } = (await import("../src/lib/prisma.js")) as unknown as {
+      prisma: { repoConnection: { findMany: ReturnType<typeof vi.fn> } };
+    };
+    prisma.repoConnection.findMany.mockClear();
+    prisma.repoConnection.findMany.mockResolvedValue([{ projectId: "proj_other" }]);
+    try {
+      const out = await createBatch({
+        actorId: "user_1",
+        input: {
+          projectId: "proj_1",
+          targetOwner: "acme",
+          targetRepo: "metis",
+          provider: "github",
+          dryRun: true,
+          draftIds: ["d_cp"],
+          additionalLabels: [],
+        },
+      });
+      expect(out.dryRun).toBe(true);
+      expect(prisma.repoConnection.findMany).not.toHaveBeenCalled();
+    } finally {
+      prisma.repoConnection.findMany.mockResolvedValue([]);
+    }
+  });
+
   it("allows when confirmCrossProject=true is passed in", async () => {
     const { prisma } = (await import("../src/lib/prisma.js")) as unknown as {
-      prisma: { repoConnection: { findFirst: ReturnType<typeof vi.fn> } };
+      prisma: { repoConnection: { findMany: ReturnType<typeof vi.fn> } };
     };
-    prisma.repoConnection.findFirst.mockResolvedValueOnce({ id: "repo_other" });
+    prisma.repoConnection.findMany.mockResolvedValueOnce([{ projectId: "proj_other" }]);
     const out = await createBatch({
       actorId: "user_1",
       confirmCrossProject: true,

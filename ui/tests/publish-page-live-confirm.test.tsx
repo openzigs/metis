@@ -15,6 +15,7 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
 import { makeWrapper } from "./test-utils";
+import { ApiError } from "@/lib/api-client";
 import { followedRooms } from "@/lib/socket-subscription";
 import { publishRoom } from "@metis/shared";
 import { createFakeSocket } from "./helpers/fake-socket";
@@ -429,5 +430,68 @@ describe("#646 — a watched batch reconciles events missed while disconnected",
 
     await waitFor(() => expect(listBatches.mock.calls.length).toBe(readsBefore + 1));
     expect(await screen.findByText("completed")).toBeInTheDocument();
+  });
+});
+describe("#1171 — a repository another project connects is confirmed in the UI", () => {
+  async function publishLiveAndConfirm(): Promise<void> {
+    renderPage();
+    await armLivePublish();
+    fireEvent.click(screen.getByRole("button", { name: "Publish now" }));
+    await screen.findByTestId("publish-confirm-total");
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Publish to openzigs\/example-requirements/,
+      }),
+    );
+  }
+
+  it("shows a confirm naming the other project; confirming retries with confirmCrossProject", async () => {
+    createBatch.mockRejectedValueOnce(
+      new ApiError(
+        409,
+        'openzigs/example-requirements is already connected to the project "Flux sandbox". Confirm to publish to it anyway.',
+        "REPO_CROSS_PROJECT",
+        { repo: "openzigs/example-requirements", projects: ["Flux sandbox"] },
+      ),
+    );
+    await publishLiveAndConfirm();
+
+    const text = await screen.findByTestId("cross-project-confirm-text");
+    expect(text).toHaveTextContent("openzigs/example-requirements");
+    expect(text).toHaveTextContent("Flux sandbox");
+    // The first attempt did not set the flag; no text shown names an API parameter.
+    expect(createBatch.mock.calls[0][1].metadata).not.toHaveProperty("confirmCrossProject");
+    expect(document.body.textContent).not.toMatch(/confirmCrossProject/);
+
+    fireEvent.click(screen.getByTestId("cross-project-confirm-button"));
+
+    await waitFor(() => expect(createBatch).toHaveBeenCalledTimes(2));
+    expect(createBatch.mock.calls[1][1]).toMatchObject({
+      targetOwner: "openzigs",
+      targetRepo: "example-requirements",
+      dryRun: false,
+      draftIds: [DRAFT.id],
+      metadata: { confirmCrossProject: true },
+    });
+  });
+
+  it("says 'another project' when the server names none, and Cancel writes nothing more", async () => {
+    createBatch.mockRejectedValueOnce(
+      new ApiError(
+        409,
+        "openzigs/example-requirements is already connected to another project. Confirm to publish to it anyway.",
+        "REPO_CROSS_PROJECT",
+        { repo: "openzigs/example-requirements", projects: [] },
+      ),
+    );
+    await publishLiveAndConfirm();
+
+    const text = await screen.findByTestId("cross-project-confirm-text");
+    expect(text).toHaveTextContent("is already connected to another project");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByTestId("cross-project-confirm")).not.toBeInTheDocument(),
+    );
+    expect(createBatch).toHaveBeenCalledTimes(1);
   });
 });

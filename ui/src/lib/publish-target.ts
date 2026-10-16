@@ -71,3 +71,18 @@ export function isAnalysedRepo(
   if (!target.owner || !target.repo) return false;
   return sameTarget(target, { owner: connector.ownerOrOrg, repo: connector.repoName });
 }
+
+/**
+ * #1171 — what the batch form shows when the selected drafts name no target:
+ * the Generate form's target when it is complete, else the project's saved
+ * publish target. Owner and repository always come from the SAME source, so a
+ * half-typed Generate form never pairs its owner with the saved repository.
+ */
+export function batchFallbackTarget(
+  generateForm: PublishTarget,
+  saved: PublishTarget,
+): PublishTarget {
+  if (generateForm.owner.trim() && generateForm.repo.trim()) return generateForm;
+  if (saved.owner.trim() && saved.repo.trim()) return saved;
+  return generateForm;
+}

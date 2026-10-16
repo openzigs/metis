@@ -170,7 +170,7 @@ vi.mock("../src/lib/prisma.js", async () => {
         return next;
       }),
     },
-    repoConnection: { findFirst: vi.fn(async () => null) },
+    repoConnection: { findMany: vi.fn(async () => []) },
   });
   return { prisma };
 });

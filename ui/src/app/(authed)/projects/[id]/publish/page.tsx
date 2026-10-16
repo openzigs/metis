@@ -27,7 +27,7 @@ import { publishFollow } from "@/lib/socket-rooms";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { publishDestinationApi } from "@/lib/change-analysis-api";
 import { queryKeys } from "@/lib/query-keys";
-import { commonDraftTarget, draftTargetsConflict } from "@/lib/publish-target";
+import { batchFallbackTarget, commonDraftTarget, draftTargetsConflict } from "@/lib/publish-target";
 import { generateTargetBaseUrl } from "@/lib/generate-target-base-url";
 import { AnalysedRepoWarning } from "@/components/publishing/analysed-repo-warning";
 import { DraftDiffDialog } from "@/components/publishing/draft-diff-dialog";
@@ -47,6 +47,10 @@ import { vaultRefHint } from "@/lib/vault-ref";
 import { VaultPicker } from "@/components/connectors/vault-picker";
 import { DryRunPlanPanel, parseDryRunPlan } from "@/components/publishing/dry-run-plan-panel";
 import { PublishConfirmDialog } from "@/components/publishing/publish-confirm-dialog";
+import {
+  CrossProjectConfirmDialog,
+  extractCrossProjectRefusal,
+} from "@/components/publishing/cross-project-confirm-dialog";
 import { BatchRowActions } from "@/components/publishing/batch-row-actions";
 import { ArchiveBatchDialog } from "@/components/publishing/archive-batch-dialog";
 import { DraftRequirementPicker } from "@/components/publishing/draft-requirement-picker";
@@ -338,13 +342,19 @@ export default function PublishingPage() {
   const draftTargetConflict = draftTargetsConflict(selectedDraftRows);
   const inheritedTarget = draftTargetConflict
     ? { owner: "", repo: "" }
-    : (commonDraftTarget(selectedDraftRows) ?? { owner: targetOwner, repo: targetRepo });
+    : (commonDraftTarget(selectedDraftRows) ??
+      // #1171 — the Generate form's target, else the project's saved one.
+      batchFallbackTarget(
+        { owner: targetOwner, repo: targetRepo },
+        { owner: savedOwner, repo: savedRepo },
+      ));
   // The one request body, shared by the publish itself and by the plan the
   // confirmation renders — so the confirmation can never describe a different
   // batch from the one that runs (#1104 D).
   const effectiveOwner = (batchOwner ?? inheritedTarget.owner).trim();
   const effectiveRepo = (batchRepo ?? inheritedTarget.repo).trim();
-  const batchBody = () => ({
+  // #1171 — `confirmCrossProject` is set only by the cross-project confirm.
+  const batchBody = (confirmCrossProject = false) => ({
     targetOwner: effectiveOwner,
     targetRepo: effectiveRepo,
     targetBaseUrl: batchBaseUrl.trim() || undefined,
@@ -358,11 +368,21 @@ export default function PublishingPage() {
       .filter(Boolean),
     milestone: undefined,
     secretRef: batchSecret || undefined,
-    metadata: { copilotWorkspace, projectsV2 },
+    metadata: {
+      copilotWorkspace,
+      projectsV2,
+      ...(confirmCrossProject ? { confirmCrossProject: true } : {}),
+    },
   });
 
+  const [crossProjectOpen, setCrossProjectOpen] = useState(false);
   const publish = useMutation({
-    mutationFn: () => publishingApi.createBatch(projectId, batchBody()),
+    // `true` only from the cross-project confirm (#1171).
+    mutationFn: (confirmCrossProject: boolean | void) =>
+      publishingApi.createBatch(projectId, batchBody(confirmCrossProject === true)),
+    onError: (err) => {
+      if (extractCrossProjectRefusal(err)) setCrossProjectOpen(true);
+    },
     // #1104 (E) — onSettled, not onSuccess. A rejected publish still writes a
     // `failed` row, and the panel used to keep showing "No batches yet." until
     // a manual reload.
@@ -371,6 +391,11 @@ export default function PublishingPage() {
       qc.invalidateQueries({ queryKey: keys.drafts(projectId) });
     },
   });
+
+  // ── Cross-project confirmation (#1171) ───────────────────────────────
+  // A live publish into a repository another project connects is refused
+  // until the user confirms; the confirm retries the same batch with the flag.
+  const crossProjectRefusal = extractCrossProjectRefusal(publish.error);
 
   // ── Live-publish confirmation (#1104 D) ────────────────────────────────
   // Dry runs write nothing and are fired directly; a LIVE publish must be
@@ -1053,6 +1078,18 @@ export default function PublishingPage() {
         counts={bulkCounts}
         pending={bulkPending}
         onConfirm={runBulkApprove}
+      />
+      {/* #1171 — the repository is connected to another project. */}
+      <CrossProjectConfirmDialog
+        open={crossProjectOpen}
+        onOpenChange={setCrossProjectOpen}
+        refusal={crossProjectRefusal}
+        fallbackRepo={`${effectiveOwner}/${effectiveRepo}`}
+        pending={publish.isPending}
+        onConfirm={() => {
+          setCrossProjectOpen(false);
+          publish.mutate(true);
+        }}
       />
       {/* #1104 (D) — nothing is written until this is confirmed. */}
       <PublishConfirmDialog

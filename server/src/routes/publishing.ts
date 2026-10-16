@@ -49,6 +49,10 @@ import {
   VAULT_REF_FORMAT_MESSAGE,
 } from "../lib/publishing/publishing-service.js";
 import { PublishError } from "../lib/publishing/types.js";
+import {
+  CrossProjectRepoError,
+  describeCrossProjectRefusal,
+} from "../lib/publishing/cross-project-guard.js";
 import { editDraft } from "../lib/publishing/draft-edit.js";
 import { listDraftCandidates } from "../lib/publishing/draft-generator.js";
 import { openDraftPullRequest } from "../lib/publishing/draft-pull-request.js";
@@ -300,7 +304,8 @@ export function publishingRouter(): Router {
             { type: "publish_batch", id: "new" },
           );
       // F6: route-layer hint only; the service layer is the authoritative
-      // enforcer of the cross-project guard.
+      // enforcer of the cross-project guard. The publish page sets this after
+      // the user confirms the REPO_CROSS_PROJECT refusal (#1171).
       const meta = parsed.metadata as Record<string, unknown> | undefined;
       const confirmCrossProject = meta?.confirmCrossProject === true;
       assertBindingWriteWindowOpen(until); // #552
@@ -313,6 +318,11 @@ export function publishingRouter(): Router {
       const detail = await getBatch(batch.id, projectId);
       res.status(201).json(ok({ batch: detail, run: result }));
     } catch (err) {
+      // #1171 — name the other project only if this caller may open it.
+      if (err instanceof CrossProjectRepoError && req.user) {
+        next(await describeCrossProjectRefusal(err, req.user));
+        return;
+      }
       next(asAppError(err));
     }
   });
