@@ -129,6 +129,24 @@ describe("classifyRequirementOrigins — recorded #1063 provenance decides first
     ).toBe("ticked");
   });
 
+  it("#1033 — does not lend a rejected requirement's synthesized entry to another by title", () => {
+    // S1 names REQ-B by id, and REQ-B is rejected. Promotion therefore gives S1
+    // to no row, so REQ-A's badge must not come from S1's recorded ticked item.
+    const requirements = [
+      req("REQ-B", "Per-feed refresh interval setting"),
+      req("REQ-A", "Feed polling schedule"),
+    ];
+    const synthesized = [
+      { ...synth("Feed polling schedule", "", ["NR-1"]), structuredIds: ["REQ-B"] },
+    ];
+
+    expect(
+      classifyRequirementOrigins(requirements, ticked, synthesized, {
+        rejectedIds: new Set(["REQ-B"]),
+      }).get("REQ-A"),
+    ).toBe("added");
+  });
+
   it("falls back to the word join per requirement when its synthesized match recorded nothing", () => {
     const requirements = [
       req("REQ-1", "Per-feed refresh interval setting"),
