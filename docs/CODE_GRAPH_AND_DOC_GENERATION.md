@@ -945,6 +945,28 @@ plan took about a tenth of a second and the prompts grew by about 18k input toke
 calls (1.3%). The setting is off until a model run has measured it; turning it on rewrites
 a BRD's sections once.
 
+**A main document and an appendix (#1175, business requirements only; off by default).**
+Run 9's full-scope BRD was 247,171 characters, about 60–70 pages, because the document cap
+was spread over the catalogue sections. With `DOCS_GEN_BRD_LAYOUT=reader` (`brd-layout.ts`)
+a BRD generated from code, of any code scope, opens with a **main document** for a business
+reader: Executive Summary, Scope & Domain (8k), Core Business Capabilities (12k), Key
+Business Rules (12k, at the catalogue rules' faithfulness bar and with their mined-rule
+inventory) and Requirements Reconstructed from the Code (16k, `RC-n`, under a fixed METIS
+lead-in saying they are inferred from the code and are not the approved requirements). Each
+is a single-call section of the topic plan asking for its own target, 48k together. Then
+comes `# Appendix: Module-by-Module Detail`, holding the catalogue sections unchanged
+(Business Rules & Policies, Key Workflows, Calculations & Formulas, Data & Domain Model,
+Integrations & Glossary). The layout plans the document whatever `DOCS_GEN_TOPIC_PLAN` says.
+The main part is planned first, within `min(48k, 40%)` of the document budget, and the
+appendix in the rest. At assembly the main part is fitted to `min(60k, 50%)` of the body
+limit: Capabilities and Key Business Rules, whose detail is in the appendix, give up text
+first, down to 4k each, and only then the opening and the requirements, whose cut text is
+nowhere else (each note says which). The appendix is fitted to the body limit less the main
+part as fitted and the divider. 48k is what Overview and Capabilities asked of the plan
+before, so under the default cap the appendix's catalogue is planned the same budget, topic
+for topic. That holds at planning time only, and the layout does not by itself reduce the
+topics left out for length (#995). See `docs/decisions/0021-reader-sized-brd-main-plus-appendix.md`.
+
 **Publication and scope limits.** A committed version queues the separate shared
 publication lifecycle described above. Generation `ready`/`degraded`/`failed`
 is distinct from publication/indexing state; revision fences and deletion cleanup

@@ -315,6 +315,17 @@ import {
   type SectionParts,
 } from "./document-plan.js";
 import {
+  APPENDIX_DIVIDER,
+  BRD_LAYOUT_KEY,
+  BRD_MAIN_SECTION_TARGETS,
+  BRD_MAIN_SUMMARY_SECTIONS,
+  fitReaderDocument,
+  isMainSection,
+  mainPlanBudget,
+  readBrdLayoutSetting,
+  withRequirementsLeadIn,
+} from "./brd-layout.js";
+import {
   buildFactSheet,
   canonicalFactSource,
   FACT_SHEET_VERSION,
@@ -4215,7 +4226,13 @@ export async function synthesizeFinalDocument(
     };
   }
 
-  const groups = sectionGroupsFor(docType, sectionContext);
+  // #1175 — read ONCE per document: a business-requirements document in the
+  // reader layout is a main document plus an appendix, and is always planned.
+  const readerLayout = docType === "business-requirements" && brdReaderLayoutEnabled();
+  const groups = sectionGroupsFor(
+    docType,
+    readerLayout ? { ...sectionContext, brdLayout: "reader" } : sectionContext,
+  );
   const sectionMarkdowns: string[] = [];
   const manifestSections: Array<{
     sectionLabel: string;
@@ -4270,13 +4287,22 @@ export async function synthesizeFinalDocument(
   // #1070 — the document's topic plan and canonical facts sheet, settled before
   // any section is written, from the facts alone (no model call). Business
   // requirements only; `null` leaves every other document type exactly as it was.
-  const planning = documentTypeIsPlanned(docType)
-    ? planDocumentTopics({ facts, groups, router, sectionMaxChars, documentMaxChars })
-    : null;
+  const planning =
+    readerLayout || documentTypeIsPlanned(docType)
+      ? planDocumentTopics({
+          facts,
+          groups,
+          router,
+          sectionMaxChars,
+          documentMaxChars,
+          ...(readerLayout ? { readerLayout } : {}),
+        })
+      : null;
   if (planning) {
     log.info("Document topic plan", {
       projectId,
       docType,
+      ...(readerLayout ? { layout: "reader", mainBudgetChars: planning.plan.mainBudgetChars } : {}),
       budgetChars: planning.plan.budgetChars,
       unallocatedChars: planning.plan.unallocatedChars,
       sections: summarizeDocumentPlan(planning.plan),
@@ -5351,22 +5377,44 @@ export async function synthesizeFinalDocument(
   // have kept of the same sections, headings counted, when that fit is itself
   // within the cap; a single section can keep much less (`document-plan.ts`,
   // "what that guarantee is, exactly").
-  const planFit = planning
-    ? fitDocumentToPlan(
-        sectionMarkdowns.map((markdown, i) => ({
-          markdown,
-          budgetChars:
-            planning.plan.sections.find(
-              (s) => s.sectionId === groups[manifestSections[sectionOwners[i]].sectionIndex]?.id,
-            )?.budgetChars ?? 1,
-          ...(sectionParts[i] ? { parts: sectionParts[i] } : {}),
-          alreadyOmitted: alreadyOmitted[i],
-        })),
+  // #1175 — the reconstructed requirements carry a fixed lead-in, written by
+  // METIS rather than the model, saying they are not the approved ones.
+  const sectionIdAt = (i: number): string =>
+    groups[manifestSections[sectionOwners[i]].sectionIndex]?.id ?? "";
+  if (readerLayout) {
+    sectionMarkdowns.forEach((markdown, i) => {
+      if (sectionIdAt(i) === "requirements") sectionMarkdowns[i] = withRequirementsLeadIn(markdown);
+    });
+  }
+  const planInput = planning
+    ? sectionMarkdowns.map((markdown, i) => ({
+        markdown,
+        budgetChars:
+          planning.plan.sections.find(
+            (s) => s.sectionId === groups[manifestSections[sectionOwners[i]].sectionIndex]?.id,
+          )?.budgetChars ?? 1,
+        ...(sectionParts[i] ? { parts: sectionParts[i] } : {}),
+        alreadyOmitted: alreadyOmitted[i],
+      }))
+    : [];
+  // #1175 — the reader layout: the main part to its own cap first, then the
+  // appendix to what is left of the document cap (`brd-layout.ts`).
+  const isMain = readerLayout ? sectionMarkdowns.map((_, i) => isMainSection(sectionIdAt(i))) : [];
+  const readerFit = readerLayout
+    ? fitReaderDocument(
+        planInput,
+        isMain,
         bodyMaxChars,
         renderedCitationLength,
         documentMaxChars,
+        sectionMarkdowns.map((_, i) => BRD_MAIN_SUMMARY_SECTIONS.has(sectionIdAt(i))),
       )
     : null;
+  const planFit =
+    readerFit ??
+    (planning
+      ? fitDocumentToPlan(planInput, bodyMaxChars, renderedCitationLength, documentMaxChars)
+      : null);
   const fittedSections =
     planFit ??
     fitSectionsToDocumentBudget(
@@ -5387,6 +5435,9 @@ export async function synthesizeFinalDocument(
       bodyMaxChars,
       cut: planFit.mode,
       unplannedWithinCap: planFit.unplannedWithinCap,
+      ...(readerFit
+        ? { mainChars: readerFit.mainChars, appendixMaxChars: readerFit.appendixMaxChars }
+        : {}),
       sections: planFit.kept.map((kept, i) => ({
         section: groups[manifestSections[sectionOwners[i]].sectionIndex]?.id ?? null,
         cut: planFit.cuts[i],
@@ -5412,7 +5463,20 @@ export async function synthesizeFinalDocument(
     const omitted = fittedSections.omittedTopics[i];
     if (omitted.length > 0) finalManifestSections[owner].omittedTopics = omitted;
   });
-  const body = dedupeH2Sections(fittedSections.sections.join("\n\n"));
+  // #1175 — the appendix divider goes before the first appendix section. Each
+  // part is de-duplicated on its own, so the divider is never swallowed by a
+  // duplicate heading before it.
+  const firstAppendix = readerLayout ? isMain.indexOf(false) : -1;
+  const body =
+    firstAppendix < 0
+      ? dedupeH2Sections(fittedSections.sections.join("\n\n"))
+      : [
+          ...(firstAppendix > 0
+            ? [dedupeH2Sections(fittedSections.sections.slice(0, firstAppendix).join("\n\n"))]
+            : []),
+          APPENDIX_DIVIDER,
+          dedupeH2Sections(fittedSections.sections.slice(firstAppendix).join("\n\n")),
+        ].join("\n\n");
   // #1226 — a section can survive generation and still not reach the reader:
   // `dedupeH2Sections` keeps only the FIRST block per H2 heading, so two groups
   // that happened to lead with the same heading collapse into one and the
@@ -5767,6 +5831,9 @@ const SECTION_FACT_SLICES: Record<string, readonly FactSlice[]> = {
   formulas: ["summary", "formulas"],
   "data-model": ["summary", "entities", "capabilities"],
   "integrations-and-glossary": ["summary", "integrations", "capabilities", "entities"],
+  // business-requirements, reader layout (#1175): the main part's own sections
+  "key-rules": ["summary", "rules"],
+  requirements: ["summary", "capabilities", "workflows", "rules"],
   // architecture
   "overview-and-context": ["summary", "integrations", "capabilities", "notes"],
   components: ["summary", "entities", "capabilities", "integrations"],
@@ -6451,6 +6518,24 @@ export function documentTypeIsPlanned(docType: DocType): boolean {
 }
 
 /**
+ * #1175 — whether a business-requirements document is written in the reader
+ * layout (`DOCS_GEN_BRD_LAYOUT=reader`; default: the catalogue layout). The
+ * reader layout plans the document whatever `DOCS_GEN_TOPIC_PLAN` says: the
+ * main part's length is the plan's per-section targets.
+ */
+export function brdReaderLayoutEnabled(): boolean {
+  const setting = readBrdLayoutSetting();
+  if (setting.unrecognised !== undefined) {
+    log.warn("Unrecognised BRD layout setting; the catalogue layout is used", {
+      key: BRD_LAYOUT_KEY,
+      value: setting.unrecognised.slice(0, 40),
+      accepted: ["reader", "catalogue"],
+    });
+  }
+  return setting.layout === "reader";
+}
+
+/**
  * #1070 — plan a document before any section is written: one topic per module
  * with content for each batched section (owned by that section), ranked as
  * the section ranks its modules and sized by the batch planner's own output
@@ -6463,8 +6548,14 @@ export function planDocumentTopics(input: {
   router: Phase2Router;
   sectionMaxChars: number;
   documentMaxChars: number;
+  /**
+   * #1175 — the reader layout: each main section asks for its own target and
+   * is planned first, within `mainPlanBudget`; the appendix in the rest.
+   */
+  readerLayout?: boolean;
 }): DocumentPlanning {
   const { facts, groups } = input;
+  const reader = input.readerLayout === true;
   const sheet = buildFactSheet(facts);
   const topicModules = new Map<string, ModuleFacts>();
   const demands: SectionDemand[] = groups.map((group) => {
@@ -6478,6 +6569,20 @@ export function planDocumentTopics(input: {
             resolveSectionMaxOutputTokens(bundle.provider.model),
           )
         : null;
+    // #1175 — in the reader layout every section is in one part or the other.
+    const part: Pick<SectionDemand, "part"> = reader
+      ? { part: isMainSection(group.id) ? "main" : "appendix" }
+      : {};
+    if (reader && isMainSection(group.id)) {
+      return {
+        sectionId: group.id,
+        label: group.label,
+        kind: "single",
+        topics: [],
+        askChars: BRD_MAIN_SECTION_TARGETS[group.id],
+        ...part,
+      };
+    }
     if (!unbounded || unbounded.modules.length === 0) {
       return {
         sectionId: group.id,
@@ -6487,6 +6592,7 @@ export function planDocumentTopics(input: {
         // With batching off a catalogue section is bounded by the section cap
         // alone, as it always was: that is what it asks of the plan.
         ...(group.batched && !batchedSectionsEnabled() ? { askChars: input.sectionMaxChars } : {}),
+        ...part,
       };
     }
     // One topic per module: a module split into parts is still one topic.
@@ -6499,6 +6605,7 @@ export function planDocumentTopics(input: {
       sectionId: group.id,
       label: group.label,
       kind: "enumerative",
+      ...part,
       topics: ranked.map(([module, estimatedChars], rank) => {
         const path = repositoryPathIdentity(
           module.repository,
@@ -6534,6 +6641,8 @@ export function planDocumentTopics(input: {
     documentMaxChars: input.documentMaxChars,
     sectionMaxChars: input.sectionMaxChars,
     reservedChars,
+    // #1175 — the main part first, within its own budget.
+    ...(reader ? { mainBudgetChars: mainPlanBudget(input.documentMaxChars - reservedChars) } : {}),
   });
   const budgets = new Map<string, Map<ModuleFacts, number | null>>();
   /** Per section id, the modules the plan left out of it, by repository and path. */
@@ -6576,7 +6685,10 @@ export function planDocumentTopics(input: {
           (section) =>
             section.kind === "single" &&
             !batchedOff.has(section.sectionId) &&
-            section.budgetChars < section.demandChars,
+            // #1175 — a main section of the reader layout is always told its
+            // target: the main part's length is what the layout is for.
+            (section.budgetChars < section.demandChars ||
+              (reader && isMainSection(section.sectionId))),
         )
         .map((section) => section.sectionId),
     ),
@@ -6594,11 +6706,14 @@ function lengthLimitNote(budgetChars: number): string {
 
 /**
  * Business-requirements section-group ids whose content is DERIVED FROM CODE
- * (Business Rules, Workflows, Calculations, Data Model, Integrations) rather than
- * abstractive domain narrative (`overview`, `capabilities`). These are gated at
- * the code-fidelity faithfulness bar, so every factual claim must trace to the
- * provided facts/sources. They receive the {@link CODE_DERIVED_GROUNDING_GUIDANCE}
- * cite-or-omit instruction; narrative sections deliberately do not.
+ * (Business Rules, Workflows, Calculations, Data Model, Integrations, and the
+ * reader layout's Key Business Rules and reconstructed requirements, #1175)
+ * rather than abstractive domain narrative (`overview`, `capabilities`). They
+ * receive the {@link CODE_DERIVED_GROUNDING_GUIDANCE} cite-or-omit
+ * instruction; narrative sections deliberately do not. Most are gated at the
+ * code-fidelity faithfulness bar; the reconstruction sections (Key Workflows,
+ * Data & Domain Model, the reconstructed requirements) at the moderate
+ * {@link RECONSTRUCTION_FAITHFULNESS_THRESHOLD} their group declares.
  */
 const CODE_DERIVED_SECTION_IDS = new Set<string>([
   "rules",
@@ -6606,6 +6721,9 @@ const CODE_DERIVED_SECTION_IDS = new Set<string>([
   "formulas",
   "data-model",
   "integrations-and-glossary",
+  // #1175 — the reader layout's Key Business Rules and reconstructed requirements.
+  "key-rules",
+  "requirements",
 ]);
 
 /**
@@ -7348,6 +7466,8 @@ const SECTION_TOPIC_KEYWORDS: Record<string, string[]> = {
   formulas: ["calculation", "formula", "pricing", "computation", "math"],
   "data-model": ["entities", "data model", "schema", "relationships", "fields"],
   "integrations-and-glossary": ["integrations", "external systems", "APIs", "glossary", "terms"],
+  "key-rules": ["business rules", "policies", "limits", "retention", "eligibility"],
+  requirements: ["requirements", "acceptance criteria", "features", "business needs"],
   "overview-and-context": ["architecture overview", "context", "components", "system design"],
   components: ["components", "modules", "data flow", "APIs"],
   "data-architecture": ["database", "schema", "tables", "entities", "persistence", "migrations"],
@@ -7385,6 +7505,12 @@ export function buildSectionTopicQuery(
 export interface SectionGroupContext {
   /** #1061 — the project's schema inventory; absent means no schema source. */
   schemaInventory?: SchemaInventory;
+  /**
+   * #1175 — `reader` lays a business-requirements document out as a main
+   * document and an appendix ({@link readerBrdGroups}). Absent: the catalogue
+   * layout, exactly as before.
+   */
+  brdLayout?: "reader";
 }
 
 const DATA_ARCHITECTURE_NARRATIVE = `- Describe data stores (databases, caches, message queues) and why each was chosen. Something that is not a database table — an in-memory queue, a cache, a struct, a view, an external store — is described here as what it is, never as a table.
@@ -7469,6 +7595,88 @@ ${body}`,
 }
 
 /**
+ * #1175 — the reader layout of a business-requirements document: a MAIN
+ * document for a business reader (Executive Summary, Scope and Domain; Core
+ * Business Capabilities; Key Business Rules; Requirements Reconstructed from
+ * the Code), then the APPENDIX of module-by-module detail: the catalogue
+ * sections exactly as the catalogue layout writes them (Business Rules &
+ * Policies, Key Workflows, Calculations & Formulas, Data & Domain Model,
+ * Integrations & Glossary). Main section ids are the keys of
+ * `BRD_MAIN_SECTION_TARGETS`; the main part is planned and fitted to its own
+ * length (`brd-layout.ts`).
+ */
+function readerBrdGroups(catalogue: readonly SectionGroup[]): SectionGroup[] {
+  const byId = new Map(catalogue.map((group) => [group.id, group]));
+  const take = (id: string): SectionGroup => byId.get(id)!;
+  const overview: SectionGroup = {
+    ...take("overview"),
+    label: "Executive Summary, Scope & Domain",
+    instructions: `Produce three sections. This is the opening of a business requirements document for stakeholders who do not know the code: write in business language, and leave out function names, file paths, SQL and HTTP detail.
+
+## Executive Summary
+One or two short paragraphs a sponsor can read on its own and stop: what business problem the system solves, who uses it, the key business outcomes it delivers, and what this document asks the reader to agree to (the scope and the business rules that follow, and the requirements reconstructed from the code).
+
+## Scope
+- **In scope**: a bulleted list of the business capabilities and processes this document covers.
+- **Out of scope**: what the facts show the system leaves to other systems or people. Do not invent exclusions; if the facts show none, write one line saying so.
+- **Users and stakeholders**: the roles that use or depend on the system.
+
+## Business Domain Overview
+Describe the business context: the domain, the main actors (roles, user types, external participants) and the broader business process the system fits into.
+
+After the prose, include a Mermaid \`graph LR\` diagram (max 10 nodes) showing the key actors and how they interact with the system.`,
+  };
+  // The rules a reader signs off are held to the same bar, and given the same
+  // inputs (the rules slice and the mined-rule inventory with `file:line`), as
+  // the appendix's catalogue of them: they state literal limits and defaults.
+  const keyRules: SectionGroup = {
+    id: "key-rules",
+    factSlices: SECTION_FACT_SLICES["key-rules"],
+    minedRules: true,
+    label: "Key Business Rules",
+    instructions: `Produce ONE section:
+
+## Key Business Rules
+The rules a business stakeholder must agree to, in business language: the policies, limits, eligibility checks, retention periods, status rules and constraints that decide what the system allows. This is a SUMMARY for a reader who does not know the code. The complete module-by-module catalogue is in the appendix (Business Rules & Policies), so do not try to list every validation.
+
+Group the rules under H3 headings by business area (for example "Accounts & Access", "Scheduling", "Retention"). Under each heading, a numbered list; each rule in one or two sentences: the condition and what happens, with the concrete value (a limit, a default, a period) where the facts state one. Name a setting only when an administrator changes the rule through it.
+
+Leave out implementation detail: function names, file paths, SQL, HTTP status codes and internal error strings.`,
+  };
+  // Reconstructed from the code, not read from the project's approved
+  // requirements: the heading says so, and METIS (not the model) puts a fixed
+  // lead-in under it at assembly (`withRequirementsLeadIn`).
+  const requirements: SectionGroup = {
+    id: "requirements",
+    factSlices: SECTION_FACT_SLICES["requirements"],
+    minedRules: false,
+    label: "Requirements Reconstructed from the Code",
+    faithfulnessThreshold: RECONSTRUCTION_FAITHFULNESS_THRESHOLD,
+    reconstruction: true,
+    instructions: `Produce ONE section:
+
+## Requirements Reconstructed from the Code
+The business requirements the system's code shows it meets, reconstructed from the capabilities, workflows and rules in the facts: one requirement per distinct business need, NOT one per module or function. Order them by business importance. These are NOT the project's approved requirements, and you are not given those: do not call them approved, agreed or signed off. A fixed note saying where they come from is added under the heading for you; do not write one.
+
+For EACH requirement:
+- An H3 of exactly this form: ### RC-<n>: <short title>  (n = 1, 2, 3, … in order)
+- One sentence stating the requirement in business language: "The system shall …"
+- **Acceptance criteria:** a bulleted list of 2-4 testable conditions, each written as Given / When / Then or as a plain check a tester could run, with the concrete values (limits, defaults, periods, allowed statuses) the facts give.
+
+Do not invent requirements, thresholds or behaviour the facts do not support. Leave out implementation detail: function names, file paths and SQL.`,
+  };
+  const main = [overview, take("capabilities"), keyRules, requirements];
+  const appendix = [
+    "rules",
+    "workflows",
+    "formulas",
+    "data-model",
+    "integrations-and-glossary",
+  ].map(take);
+  return [...main, ...appendix];
+}
+
+/**
  * The ordered section groups for a document type, each carrying its
  * instructions and (where applicable) its per-section faithfulness gating
  * (`faithfulnessThreshold` + `narrative`/`reconstruction`). Exported so the
@@ -7479,8 +7687,8 @@ export function sectionGroupsFor(
   context: SectionGroupContext = {},
 ): SectionGroup[] {
   switch (docType) {
-    case "business-requirements":
-      return [
+    case "business-requirements": {
+      const catalogue: SectionGroup[] = [
         {
           id: "overview",
           factSlices: SECTION_FACT_SLICES["overview"],
@@ -7656,6 +7864,8 @@ What external systems, databases, message queues, or services this system depend
 Alphabetical list of domain terms, abbreviations, and acronyms with concise definitions. Aim for 15-30 entries. Use a two-column table: | Term | Definition |`,
         },
       ];
+      return context.brdLayout === "reader" ? readerBrdGroups(catalogue) : catalogue;
+    }
 
     case "architecture":
       return [
