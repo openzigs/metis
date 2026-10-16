@@ -26,7 +26,7 @@ is therefore the primary interface for everything below, not a fallback (#1180):
 
 | Task | Command |
 |------|---------|
-| Create an epic or issue | `gh issue create --title ... --body-file /tmp/body.md --label epic --label "priority: next" --label "area: <name>" --project "METIS roadmap"` |
+| Create an epic or issue | `gh issue create --title ... --body-file /tmp/body.md --label epic --label "priority: <tier>" --label "area: <name>" --project "METIS roadmap"` |
 | Read existing issues (avoid duplicates) | `gh issue list --search "<terms>" --state all --json number,title` |
 | Update an issue body | `gh issue edit {N} --body-file /tmp/body.md` |
 | List a parent's sub-issues | `gh api repos/{owner}/{repo}/issues/{PARENT}/sub_issues` |
@@ -63,11 +63,11 @@ issue"; in short:
 
 | Kind | Labels | Rule |
 |------|--------|------|
-| **Tier** — exactly one | `priority: now`, `priority: next`, `priority: later` (+ `blocked` when blocked) | Now only on the owner's decision (#1146). Next for walkthrough findings and defects a user would hit. Later for follow-ups, nits and optional work. A sub-issue that follows its epic's tier may omit it — say so in the body |
+| **Tier** — exactly one | `priority: now`, `priority: next`, `priority: later` (+ `blocked` when blocked) | Now only on the owner's decision (#1146). Next for walkthrough findings and defects a user would hit. Later for follow-ups, nits and optional work. Analyst-facing defects rank ahead of developer-side precision (#1146). A sub-issue that follows its epic's tier may omit it — say so in the body |
 | **Area** — exactly one | `area: run-state`, `area: analyst-flow`, `area: plan-impact`, `area: docs`, `area: review-trace-chat`, `area: security`, `area: model-json`, `area: walkthrough`, `area: ci`, `area: code-graph`, `area: cleanup`, `area: ui` | A new area only on the owner's say |
 | **Type** — at least one | `epic`, `bug`, `enhancement` (or `feature`), `documentation`, `testing`, `dependencies` | `epic` on every epic, master and child |
 | Severity — optional | `priority: high` | A severity, **not** a tier: it sets no tier |
-| Component — optional | `frontend`, `backend`, `database`, `infra`, `security` | Extra detail only; never instead of an `area:` label |
+| Component — optional | `frontend`, `backend`, `database`, `infra` | Extra detail only; never instead of an `area:` label |
 
 Every `gh issue create` below also takes **`--project "METIS roadmap"`**, which adds the issue to
 the board at once. The flag needs a token with the `project` scope; if it fails, re-run without

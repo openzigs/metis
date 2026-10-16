@@ -46,7 +46,8 @@ it the changes are made. Node built-ins only, nothing to install. Its tests are
   `missing labels N` in the summary. A tier inherited from an ancestor counts as present, exactly
   as the Tier field resolves it, and the `roadmap` plan issue (#1146) is exempt. It is a report,
   not a failure: it never changes the exit code and never writes a label
-  ([#1181](https://github.com/openzigs/metis/issues/1181)).
+  ([#1181](https://github.com/openzigs/metis/issues/1181)). It is lenient: `blocked` alone counts
+  as a tier, and duplicate tier or `area:` labels are not reported.
 
 ## The fields
 
@@ -71,6 +72,8 @@ the board only when the sync next runs.
    - **Now** only on the owner's decision, recorded on #1146.
    - **Next** for walkthrough findings and defects a user would hit.
    - **Later** for review follow-ups, nits and optional work.
+   - METIS is mainly for business analysts (#1146), so analyst-facing defects rank ahead of
+     developer-side precision.
    - A sub-issue that should follow its epic's tier may omit the label; say so in its body. The
      sync and its label check both resolve the tier up the parent chain.
 2. **Exactly one `area:` label** from the existing set: `run-state`, `analyst-flow`,
@@ -82,9 +85,7 @@ the board only when the sync next runs.
 4. **Board membership at creation:** pass `--project "METIS roadmap"` to `gh issue create`. The
    flag needs a token with the **`project`** scope (`gh auth refresh -s project`); if it fails, file
    the issue without it and the nightly sync adds it within a day. Say which happened.
-5. `priority: high` is a **severity** label, separate from the tier, and sets no tier. METIS is
-   mainly for business analysts (#1146), so rank analyst-facing defects ahead of developer-side
-   precision.
+5. `priority: high` is a **severity** label, separate from the tier, and sets no tier.
 6. An issue filed into Now or Next gets a line in #1146's matching section.
 
 ```bash

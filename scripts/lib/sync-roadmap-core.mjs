@@ -200,7 +200,9 @@ export function missingAreaOptions(issues, optionNames) {
 export function missingLabels(issue, lookup) {
   /** @type {Array<"tier" | "area" | "type">} */
   const missing = [];
-  if (resolveTier(issue.number, lookup) === UNRANKED) missing.push("tier");
+  // An issue absent from `lookup` still counts its own tier label.
+  const tier = lookup.has(issue.number) ? resolveTier(issue.number, lookup) : tierOf(issue.labels);
+  if (tier === UNRANKED) missing.push("tier");
   if (areaOf(issue.labels) == null) missing.push("area");
   const labels = new Set(issue.labels);
   if (!TYPE_LABELS.some((type) => labels.has(type))) missing.push("type");

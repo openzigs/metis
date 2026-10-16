@@ -139,11 +139,10 @@ Never merge a PR with genuinely failing or pending checks.
   entry at 150** by `agents:verify`: past ~25,000 the index is silently not loaded at all,
   so retire superseded pointers to the store's `ARCHIVE.md`, which is never loaded and
   never deletes the file (#1206).
-- **Every issue filed here gets, at creation:** one tier (`priority: now|next|later`, plus
-  `blocked` if so; Now only on the owner's say), one `area:` label from the existing set, a
-  type label (`bug`, `enhancement`, `epic`, `documentation`, …), and `gh issue create …
-  --project "METIS roadmap"` — needs the token's `project` scope; else the nightly sync adds
-  it. Full rule and area list: `docs/ops/roadmap-board.md` > "Filing an issue" (#1181).
+- **Every new issue gets** one tier (`priority: now|next|later`, + `blocked` if so; Now only on the
+  owner's say), one `area:`, a type label, and `gh issue create … --project "METIS roadmap"` (no
+  `project` scope: the nightly sync adds it). Rule and lists: `docs/ops/roadmap-board.md` >
+  "Filing an issue" (#1181).
 
 ## Agents and skills
 

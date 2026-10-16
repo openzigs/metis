@@ -271,6 +271,12 @@ describe("missingLabels / labelGaps", () => {
     expect(missingLabels(orphan, new Map([[13, orphan]]))).toEqual(["tier"]);
   });
 
+  it("counts the issue's own tier label when the issue is not in lookup", () => {
+    const own = node(6, ["priority: later", "area: ci", "bug"]);
+    expect(missingLabels(own, new Map())).toEqual([]);
+    expect(missingLabels(node(7, ["area: ci", "bug"]), new Map())).toEqual(["tier"]);
+  });
+
   it("does not count an empty area: label as an area", () => {
     const i = node(5, ["priority: later", "bug", "area: "]);
     expect(missingLabels(i, new Map([[5, i]]))).toEqual(["area"]);
