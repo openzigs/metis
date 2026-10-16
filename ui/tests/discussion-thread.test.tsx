@@ -799,6 +799,14 @@ describe("DiscussionThreadView", () => {
       expect(mine.querySelector('[data-testid="edit-action"]')).not.toBeNull();
     });
 
+    it("offers nothing on a non-human row, even one naming the viewer", async () => {
+      listMessagesMock.mockResolvedValue([aiMsg({ authorUserId: "u1", body: "ai words" })]);
+      renderView();
+      await screen.findByText("ai words");
+      expect(screen.queryByTestId("edit-action")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("delete-action")).not.toBeInTheDocument();
+    });
+
     it("offers nothing when the viewer is unknown", async () => {
       listMessagesMock.mockResolvedValue([humanMsg({ body: "anon" })]);
       renderView({ currentUserId: undefined });

@@ -103,6 +103,19 @@ describe("editHumanDiscussionMessage", () => {
     expect(h.update).not.toHaveBeenCalled();
   });
 
+  it("refuses a non-human row even if it names the caller as author (defence in depth)", async () => {
+    // The message invariant forbids an AI row carrying authorUserId; this pins
+    // the authorKind arm on its own, so it cannot be dropped silently.
+    const h = harness({ ...EXISTING, authorKind: "ai", authorUserId: "alice" });
+    await expect(editHumanDiscussionMessage({ ...EDIT, body: "x" }, h.deps)).rejects.toMatchObject({
+      code: "NOT_AUTHOR",
+    });
+    await expect(deleteHumanDiscussionMessage(EDIT, h.deps)).rejects.toMatchObject({
+      code: "NOT_AUTHOR",
+    });
+    expect(h.update).not.toHaveBeenCalled();
+  });
+
   it("answers a missing, deleted or other-thread message with MESSAGE_NOT_FOUND", async () => {
     const h = harness(null);
     await expect(editHumanDiscussionMessage({ ...EDIT, body: "x" }, h.deps)).rejects.toMatchObject({
