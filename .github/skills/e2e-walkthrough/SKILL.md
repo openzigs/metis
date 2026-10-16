@@ -300,6 +300,12 @@ to the run's METIS totals or the `ledger` / `waves` figures. They go in `run.jso
 **Approved requirements.** Report how many promoted requirements have no acceptance criteria and
 no code link (#909, #926; the query is in wave B's brief).
 
+**Filing the run's issues.** Every issue the run files follows `docs/ops/roadmap-board.md` >
+"Filing an issue" (#1181): `priority: next` (a walkthrough finding), one `area:` label — the
+product area at fault, or `area: walkthrough` for the runbook and `TEST_PLAN.md` — a type
+label (`bug` for a defect), and `gh issue create … --project "METIS roadmap"`. If the
+`--project` flag fails, the nightly sync adds the issue within a day; say which happened.
+
 Results go in a comment built from `docs/walkthroughs/RESULTS_TEMPLATE.md`, including its
 run-to-run comparison table, on #706 or a tracking issue that links back. Fix any step the run
 found wrong in `TEST_PLAN.md`, in a PR.

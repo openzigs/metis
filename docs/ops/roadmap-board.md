@@ -17,7 +17,8 @@ GH_TOKEN=$(gh auth token) node scripts/sync-roadmap.mjs --org openzigs --project
 ```
 
 `--dry-run` reads everything and prints each change it would make, then a summary line
-(`added`, `changed` — items where a write happened — `unchanged`, `skipped`, `failed`); without
+(`added`, `changed` — items where a write happened — `unchanged`, `skipped`, `failed`,
+`missing labels`); without
 it the changes are made. Node built-ins only, nothing to install. Its tests are
 `scripts/lib/sync-roadmap-core.test.mjs`, part of `pnpm test`.
 
@@ -40,6 +41,13 @@ it the changes are made. Node built-ins only, nothing to install. Its tests are
 - Runs twice, changes nothing the second time: values are written only where they differ, and
   adding an issue that is already on the board returns the item that is there.
 - At most 399 writes a run, about one a second; anything past that carries on the next night.
+- **Reports every open issue missing a label** that [Filing an issue](#filing-an-issue) requires:
+  one line per issue, `missing labels: #N tier, area, type` (whichever apply), and the count as
+  `missing labels N` in the summary. A tier inherited from an ancestor counts as present, exactly
+  as the Tier field resolves it, and the `roadmap` plan issue (#1146) is exempt. It is a report,
+  not a failure: it never changes the exit code and never writes a label
+  ([#1181](https://github.com/openzigs/metis/issues/1181)). It is lenient: `blocked` alone counts
+  as a tier, and duplicate tier or `area:` labels are not reported.
 
 ## The fields
 
@@ -51,6 +59,45 @@ it the changes are made. Node built-ins only, nothing to install. Its tests are
 | **Sub-issues done** | text | the same, as "10 of 23"; cleared for an issue with none |
 | **Area** | single select | the issue's `area: <name>` label → `<name>`. Several: the first by name. None: cleared. To move an issue, change its label, not the board |
 | Status, Parent issue, Sub-issues progress | built in | GitHub, not the script |
+
+## Filing an issue
+
+Every issue filed in `openzigs/metis` — by a person, the main session or any subagent — gets these
+at creation ([#1181](https://github.com/openzigs/metis/issues/1181), the owner's rule of
+2026-10-16). Without them an issue reads Unranked, its Area is cleared every night, and it reaches
+the board only when the sync next runs.
+
+1. **Exactly one tier label:** `priority: now`, `priority: next` or `priority: later`; add
+   `blocked` as well when it is blocked.
+   - **Now** only on the owner's decision, recorded on #1146.
+   - **Next** for walkthrough findings and defects a user would hit.
+   - **Later** for review follow-ups, nits and optional work.
+   - METIS is mainly for business analysts (#1146), so analyst-facing defects rank ahead of
+     developer-side precision.
+   - A sub-issue that should follow its epic's tier may omit the label; say so in its body. The
+     sync and its label check both resolve the tier up the parent chain.
+2. **Exactly one `area:` label** from the existing set: `run-state`, `analyst-flow`,
+   `plan-impact`, `docs`, `review-trace-chat`, `security`, `model-json`, `walkthrough`, `ci`,
+   `code-graph`, `cleanup`, `ui`. A new area only on the owner's say; the sync then creates the
+   board option for it.
+3. **A type label:** `bug`, `enhancement` (or `feature`), `epic`, `documentation`, `testing` or
+   `dependencies`.
+4. **Board membership at creation:** pass `--project "METIS roadmap"` to `gh issue create`. The
+   flag needs a token with the **`project`** scope (`gh auth refresh -s project`); if it fails, file
+   the issue without it and the nightly sync adds it within a day. Say which happened.
+5. `priority: high` is a **severity** label, separate from the tier, and sets no tier.
+6. An issue filed into Now or Next gets a line in #1146's matching section.
+
+```bash
+gh issue create --repo openzigs/metis \
+  --title "Review cards lose the edited acceptance criteria" \
+  --body-file /tmp/body.md \
+  --label bug --label "priority: next" --label "area: review-trace-chat" \
+  --project "METIS roadmap"
+```
+
+Pass the body as `--body-file`, never `--body "$(cat …)"`: command substitution runs any
+backticks in it. The nightly sync lists every open issue still missing one of these (see above).
 
 ## The App behind the token
 
