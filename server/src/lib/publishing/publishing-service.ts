@@ -200,7 +200,12 @@ export async function createBatch(opts: CreateBatchOptions): Promise<SharedPubli
   // conflicting ids off the wire — `describeCrossProjectRefusal` names only
   // the ones the caller may open.
   if (!input.dryRun) {
-    await assertNotCrossProject({ ...input, confirmed: opts.confirmCrossProject });
+    await assertNotCrossProject({
+      projectId: input.projectId,
+      targetOwner: input.targetOwner,
+      targetRepo: input.targetRepo,
+      confirmed: opts.confirmCrossProject,
+    });
   }
   const drafts = await prisma.issueDraft.findMany({
     where: { id: { in: input.draftIds }, projectId: input.projectId, deletedAt: null },

@@ -31,6 +31,7 @@ import { Label } from "@/components/ui/label";
 import {
   CrossProjectConfirmDialog,
   extractCrossProjectRefusal,
+  type CrossProjectRefusal,
 } from "@/components/publishing/cross-project-confirm-dialog";
 
 const PR_CONSEQUENCE =
@@ -70,7 +71,10 @@ export function DraftPullRequestDialog({
       publishingApi.draftPullRequest(projectId, draft!.id, { ...body(), dryRun: true }),
     onSuccess: setPlan,
   });
-  const [crossProjectOpen, setCrossProjectOpen] = useState(false);
+  // #1180 — the refusal is KEPT while the confirm is open: deriving it from
+  // `openMutation.error` loses it the moment the retry starts (the error resets),
+  // and the open confirm would flip to "another project" and the plan's repo.
+  const [crossProject, setCrossProject] = useState<CrossProjectRefusal | null>(null);
   const openMutation = useMutation({
     // `true` only from the cross-project confirm (#1180).
     mutationFn: (confirmCrossProject: boolean | void) =>
@@ -81,10 +85,10 @@ export function DraftPullRequestDialog({
       }),
     onSuccess: setPlan,
     onError: (err) => {
-      if (extractCrossProjectRefusal(err)) setCrossProjectOpen(true);
+      const refusal = extractCrossProjectRefusal(err);
+      if (refusal) setCrossProject(refusal);
     },
   });
-  const crossProjectRefusal = extractCrossProjectRefusal(openMutation.error);
   const hint = vaultRefHint(secretRef);
   const opened = plan?.pullRequest ?? null;
 
@@ -94,7 +98,7 @@ export function DraftPullRequestDialog({
       onOpenChange={(open) => {
         if (!open) {
           setPlan(null);
-          setCrossProjectOpen(false);
+          setCrossProject(null);
           planMutation.reset();
           openMutation.reset();
         }
@@ -194,15 +198,17 @@ export function DraftPullRequestDialog({
           </div>
         </div>
         <CrossProjectConfirmDialog
-          open={crossProjectOpen}
-          onOpenChange={setCrossProjectOpen}
-          refusal={crossProjectRefusal}
+          open={crossProject !== null}
+          onOpenChange={(next) => {
+            if (!next) setCrossProject(null);
+          }}
+          refusal={crossProject}
           fallbackRepo={plan ? `${plan.target.owner}/${plan.target.repo}` : ""}
           pending={openMutation.isPending}
           consequence={PR_CONSEQUENCE}
           onConfirm={() => {
             // Stays open (its buttons disabled) until the retry settles.
-            openMutation.mutate(true, { onSettled: () => setCrossProjectOpen(false) });
+            openMutation.mutate(true, { onSettled: () => setCrossProject(null) });
           }}
         />
       </DialogContent>

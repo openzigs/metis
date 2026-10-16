@@ -243,29 +243,21 @@ vi.mock("../src/lib/prisma.js", async () => {
         return next;
       }),
     },
-    repoConnection: {
-      // #1171 — the guard lists every conflicting project.
-      findMany: vi.fn(
-        async ({
-          where,
-        }: {
-          where: {
-            ownerOrOrg: string;
-            repoName: string;
-            projectId: { not: string };
-          };
-        }) =>
-          [...repoConns.values()]
-            .filter(
-              (r) =>
-                !r.deletedAt &&
-                r.ownerOrOrg === where.ownerOrOrg &&
-                r.repoName === where.repoName &&
-                r.projectId !== where.projectId.not,
-            )
-            .map((r) => ({ projectId: r.projectId })),
-      ),
-    },
+    // #1171 — the guard lists every conflicting project. #1180 — it is a tagged
+    // `$queryRaw` bound as (owner, repo, projectId), matched case-insensitively
+    // (`LOWER()` on both sides); this stand-in folds case the same way.
+    $queryRaw: vi.fn(
+      async (_sql: TemplateStringsArray, owner: string, repo: string, projectId: string) =>
+        [...repoConns.values()]
+          .filter(
+            (r) =>
+              !r.deletedAt &&
+              r.ownerOrOrg.toLowerCase() === owner.toLowerCase() &&
+              r.repoName.toLowerCase() === repo.toLowerCase() &&
+              r.projectId !== projectId,
+          )
+          .map((r) => ({ projectId: r.projectId })),
+    ),
   });
   return { prisma };
 });

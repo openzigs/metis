@@ -14,7 +14,7 @@ import express from "express";
 import request from "supertest";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
   createMigratedSqlite,
@@ -25,7 +25,11 @@ import {
 const state = vi.hoisted(() => {
   process.env.RATE_LIMIT_MAX = "100000";
   process.env.AI_OFFLINE = "1";
-  return { db: null as unknown };
+  return {
+    db: null as unknown,
+    /** Every Jira issue the fake Jira client was asked to create. */
+    jiraIssues: [] as unknown[],
+  };
 });
 vi.mock("../src/lib/prisma.js", async () => {
   const { Prisma } = await import("@prisma/client");
@@ -35,6 +39,20 @@ vi.mock("../src/lib/prisma.js", async () => {
     },
     Prisma,
   };
+});
+
+// #1180 — the Jira edge: record each issue, and let the Jira host through.
+vi.mock("../src/lib/connectors/jira/jira-client.js", () => ({
+  createJiraClient: () => ({
+    createIssue: async (fields: unknown) => {
+      state.jiraIssues.push(fields);
+      return { key: `IMP-${state.jiraIssues.length}` };
+    },
+  }),
+}));
+vi.mock("../src/lib/connectors/network-allowlist.js", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, assertConnectorHostAllowed: async () => undefined };
 });
 
 const { publishingRouter } = await import("../src/routes/publishing.js");
@@ -48,7 +66,7 @@ const { __setPublishOctokitFactory, __resetPublishOctokitCache } =
 
 const MASTER_KEY = Buffer.alloc(32, 11).toString("base64");
 const COORD_ID = "u1180-coord";
-const P = "p1180";
+const P = "proj-1180-cross-project";
 /** In the caller's workspace — may be named. */
 const VISIBLE = "p1180-visible";
 const VISIBLE_NAME = "Flux sandbox 1180";
@@ -59,6 +77,9 @@ const HIDDEN_NAME = "Acquisition target 1180";
 const SHARED_VISIBLE = { owner: "sandbox-org", repo: "shared-1180" };
 /** Connected to HIDDEN. */
 const SHARED_HIDDEN = { owner: "secret-org", repo: "shared-1180" };
+/** #1180 — the same repositories, typed in another case: GitHub names are case-insensitive. */
+const SHARED_VISIBLE_CASED = { owner: "Sandbox-ORG", repo: "Shared-1180" };
+const SHARED_HIDDEN_CASED = { owner: "SECRET-org", repo: "SHARED-1180" };
 /** Connected to no other project. */
 const OWN = { owner: "sandbox-org", repo: "own-1180" };
 const TOKEN = "ghp_publish_token_1180";
@@ -83,6 +104,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let sqlite: MigratedSqlite;
     let db: PrismaClient;
     let COORD = "";
+    let secretId = "";
     const calls: Call[] = [];
     let seq = 0;
     const prevKey = process.env.VAULT_MASTER_KEY;
@@ -186,6 +208,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const secret = await vault.create(SECRET_LABEL, TOKEN, "global", {
         createdById: COORD_ID,
       });
+      secretId = secret.id;
       // This project's analysed repository; its bound secret is the finding
       // publisher's credential.
       await db.repoConnection.create({
@@ -287,6 +310,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expectNoHiddenLeak(res);
       });
 
+      it("refuses a case variant of a repo another project connects (GitHub names are case-insensitive)", async () => {
+        await setTarget(SHARED_VISIBLE_CASED);
+        const d = await issueDraft();
+        const res = await post(prUrl(d.id), live);
+        expectRefusal(res, "Sandbox-ORG/Shared-1180", [VISIBLE_NAME]);
+      });
+
       it("opens the PR once the caller confirms", async () => {
         await setTarget(SHARED_VISIBLE);
         const d = await issueDraft();
@@ -349,6 +379,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expectNoHiddenLeak(res);
       });
 
+      it("refuses a case variant of a repo another project connects, and names none it may not", async () => {
+        const f = await finding();
+        const visible = await post(f.url, { draft: DRAFT, target: SHARED_VISIBLE_CASED });
+        expectRefusal(visible, "Sandbox-ORG/Shared-1180", [VISIBLE_NAME]);
+        const hidden = await post(f.url, { draft: DRAFT, target: SHARED_HIDDEN_CASED });
+        expectRefusal(hidden, "SECRET-org/SHARED-1180", []);
+        expectNoHiddenLeak(hidden);
+      });
+
       it("guards the saved target too, when the request names none", async () => {
         await setTarget(SHARED_VISIBLE);
         const f = await finding();
@@ -403,6 +442,97 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const f = await finding();
         const res = await post(f.url, { draft: DRAFT, target: OWN });
         expect(res.status, JSON.stringify(res.body)).toBe(200);
+      });
+
+      it("a re-publish to a DIFFERENT, cross-project repo returns the original link and files nothing", async () => {
+        const f = await finding();
+        const first = await post(f.url, { draft: DRAFT, target: OWN });
+        expect(first.status, JSON.stringify(first.body)).toBe(200);
+        expect(first.body.data.links[0].url).toBe(
+          "https://github.com/sandbox-org/own-1180/issues/9",
+        );
+        calls.length = 0;
+        // Idempotency is per (finding, provider): the existing link wins, so
+        // nothing is written to the other project's repository either.
+        const again = await post(f.url, { draft: DRAFT, target: SHARED_VISIBLE });
+        expect(again.status, JSON.stringify(again.body)).toBe(200);
+        expect(again.body.data.links).toEqual(first.body.data.links);
+        expect(writes()).toEqual([]);
+        expect(await db.issueLink.count({ where: { findingId: f.id } })).toBe(1);
+      });
+
+      describe("GitHub + Jira destination", () => {
+        beforeEach(async () => {
+          state.jiraIssues.length = 0;
+          const jira = await db.jiraConnection.upsert({
+            where: { projectId_label: { projectId: P, label: "jira-1180" } },
+            update: {},
+            create: {
+              projectId: P,
+              label: "jira-1180",
+              edition: "cloud",
+              baseUrl: "https://jira-1180.example.test",
+              username: "svc",
+              secretId,
+              status: "ok",
+              createdById: COORD_ID,
+            },
+          });
+          await db.project.update({
+            where: { id: P },
+            data: { publishDestination: "both", jiraConnectionId: jira.id, jiraProjectKey: "IMP" },
+          });
+        });
+        afterEach(async () => {
+          await db.project.update({
+            where: { id: P },
+            data: { publishDestination: "github", jiraConnectionId: null, jiraProjectKey: null },
+          });
+        });
+
+        it("a refused GitHub publish writes no Jira issue either", async () => {
+          const f = await finding();
+          const res = await post(f.url, { draft: DRAFT, target: SHARED_VISIBLE });
+          expectRefusal(res, "sandbox-org/shared-1180", [VISIBLE_NAME]);
+          expect(state.jiraIssues).toEqual([]);
+          expect(await db.issueLink.count({ where: { findingId: f.id } })).toBe(0);
+        });
+
+        it("once confirmed, both are filed (the harness can reach Jira)", async () => {
+          const f = await finding();
+          const res = await post(f.url, {
+            draft: DRAFT,
+            target: SHARED_VISIBLE,
+            confirmCrossProject: true,
+          });
+          expect(res.status, JSON.stringify(res.body)).toBe(200);
+          expect(res.body.data.links.map((l: { provider: string }) => l.provider)).toEqual([
+            "github",
+            "jira",
+          ]);
+          expect(state.jiraIssues).toHaveLength(1);
+          expect(await db.issueLink.count({ where: { findingId: f.id } })).toBe(2);
+        });
+      });
+    });
+
+    // ---- POST /batches (#1171's path, #1180's case fix) ----------------------
+
+    describe("POST /publishing/batches", () => {
+      it("refuses a live batch into a case variant of a repo another project connects", async () => {
+        const d = await db.issueDraft.create({
+          data: { projectId: P, title: `Batch 1180 ${++seq}`, body: "b", status: "approved" },
+        });
+        const res = await post(`/api/projects/${P}/publishing/batches`, {
+          targetOwner: SHARED_VISIBLE_CASED.owner,
+          targetRepo: SHARED_VISIBLE_CASED.repo,
+          provider: "github",
+          draftIds: [d.id],
+          dryRun: false,
+          secretRef: `\${vault:${SECRET_LABEL}}`,
+        });
+        expectRefusal(res, "Sandbox-ORG/Shared-1180", [VISIBLE_NAME]);
+        expect(await db.publishBatch.count({ where: { projectId: P } })).toBe(0);
       });
     });
   },

@@ -10,7 +10,8 @@ const names = new Map<string, string>();
 
 vi.mock("../../../src/lib/prisma.js", () => ({
   prisma: {
-    repoConnection: { findMany: vi.fn(async () => []) },
+    // #1180 — the guard's case-insensitive lookup is a tagged `$queryRaw`.
+    $queryRaw: vi.fn(async () => []),
     project: {
       findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
         where.id.in.map((id) => ({ name: names.get(id) ?? null })),
@@ -128,9 +129,7 @@ describe("assertNotCrossProject (#1180)", () => {
   const input = { projectId: "proj_me", targetOwner: "o", targetRepo: "r" };
 
   it("throws CrossProjectRepoError carrying the ids when another project connects the repo", async () => {
-    vi.mocked(prisma.repoConnection.findMany).mockResolvedValueOnce([
-      { projectId: "proj_hidden" },
-    ] as never);
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([{ projectId: "proj_hidden" }] as never);
     const err = await assertNotCrossProject(input).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(CrossProjectRepoError);
     expect((err as CrossProjectRepoError).repo).toBe("o/r");
@@ -138,17 +137,15 @@ describe("assertNotCrossProject (#1180)", () => {
   });
 
   it("passes when no other project connects the repo", async () => {
-    vi.mocked(prisma.repoConnection.findMany).mockResolvedValueOnce([]);
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([]);
     await expect(assertNotCrossProject(input)).resolves.toBeUndefined();
   });
 
   it("a literal true confirms without a lookup; false does not", async () => {
-    vi.mocked(prisma.repoConnection.findMany).mockClear();
+    vi.mocked(prisma.$queryRaw).mockClear();
     await expect(assertNotCrossProject({ ...input, confirmed: true })).resolves.toBeUndefined();
-    expect(prisma.repoConnection.findMany).not.toHaveBeenCalled();
-    vi.mocked(prisma.repoConnection.findMany).mockResolvedValueOnce([
-      { projectId: "proj_seen" },
-    ] as never);
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([{ projectId: "proj_seen" }] as never);
     await expect(assertNotCrossProject({ ...input, confirmed: false })).rejects.toBeInstanceOf(
       CrossProjectRepoError,
     );
@@ -157,38 +154,50 @@ describe("assertNotCrossProject (#1180)", () => {
 
 describe("findCrossProjectOwners", () => {
   it("queries live connectors of OTHER projects for the exact repo", async () => {
-    vi.mocked(prisma.repoConnection.findMany).mockResolvedValueOnce([
-      { projectId: "proj_seen" },
-    ] as never);
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([{ projectId: "proj_seen" }] as never);
     const ids = await findCrossProjectOwners({
       projectId: "proj_1",
       targetOwner: "openzigs",
       targetRepo: "flux-v2",
     });
     expect(ids).toEqual(["proj_seen"]);
-    expect(prisma.repoConnection.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          ownerOrOrg: "openzigs",
-          repoName: "flux-v2",
-          projectId: { not: "proj_1" },
-          deletedAt: null,
-        },
-      }),
+    // Tagged template: (strings, ...values) — every value is bound, never spliced.
+    const [strings, ...values] = vi.mocked(prisma.$queryRaw).mock.calls[0] as unknown as [
+      TemplateStringsArray,
+      ...unknown[],
+    ];
+    expect(values).toEqual(["openzigs", "flux-v2", "proj_1"]);
+    const sql = strings.join("?").replace(/\s+/g, " ");
+    // #1180 — both sides folded, so a case variant of the name still matches.
+    expect(sql).toContain('LOWER("ownerOrOrg") = LOWER(?)');
+    expect(sql).toContain('LOWER("repoName") = LOWER(?)');
+    expect(sql).toContain('"projectId" <> ?');
+    expect(sql).toContain('"deletedAt" IS NULL');
+  });
+
+  it("returns at most five conflicting projects", async () => {
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce(
+      ["a", "b", "c", "d", "e", "f", "g"].map((projectId) => ({ projectId })) as never,
     );
+    const ids = await findCrossProjectOwners({
+      projectId: "proj_1",
+      targetOwner: "o",
+      targetRepo: "r",
+    });
+    expect(ids).toEqual(["a", "b", "c", "d", "e"]);
   });
 });
 describe("crossProjectDryRunNotice (#1171)", () => {
   const input = { projectId: "proj_1", targetOwner: "o", targetRepo: "r" };
 
   it("is null when no other project connects the repo", async () => {
-    vi.mocked(prisma.repoConnection.findMany).mockResolvedValueOnce([] as never);
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([] as never);
     expect(await crossProjectDryRunNotice(input, user)).toBeNull();
   });
 
   it("names only projects the caller may open", async () => {
     accessible.add("proj_seen");
-    vi.mocked(prisma.repoConnection.findMany).mockResolvedValueOnce([
+    vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([
       { projectId: "proj_hidden" },
       { projectId: "proj_seen" },
     ] as never);
@@ -199,7 +208,7 @@ describe("crossProjectDryRunNotice (#1171)", () => {
   });
 
   it("says nothing it cannot back: a lookup failure yields no notice, not an error", async () => {
-    vi.mocked(prisma.repoConnection.findMany).mockRejectedValueOnce(new Error("db down"));
+    vi.mocked(prisma.$queryRaw).mockRejectedValueOnce(new Error("db down"));
     expect(await crossProjectDryRunNotice(input, user)).toBeNull();
   });
 });

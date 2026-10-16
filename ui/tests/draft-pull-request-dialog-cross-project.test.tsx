@@ -86,6 +86,33 @@ describe("<DraftPullRequestDialog /> — cross-project confirm (#1180)", () => {
     );
   });
 
+  it("keeps naming the project, buttons disabled, while the confirmed retry is pending", async () => {
+    let finish!: (v: unknown) => void;
+    draftPullRequest
+      .mockResolvedValueOnce(PLAN)
+      .mockRejectedValueOnce(refusal(["Flux sandbox"]))
+      .mockReturnValueOnce(new Promise((r) => (finish = r)));
+    await planThenOpen();
+
+    await screen.findByTestId("cross-project-confirm-text");
+    fireEvent.click(screen.getByTestId("cross-project-confirm-button"));
+    // The retry is in flight: the mutation's error has been reset, but the
+    // confirm still shows the refusal it opened for.
+    await waitFor(() =>
+      expect(screen.getByTestId("cross-project-confirm-button")).toHaveTextContent("Publishing…"),
+    );
+    expect(screen.getByTestId("cross-project-confirm-text")).toHaveTextContent(
+      "openzigs/flux-v2 is already connected to the project “Flux sandbox”",
+    );
+    expect(screen.getByTestId("cross-project-confirm-button")).toBeDisabled();
+
+    finish(OPENED);
+    await screen.findByText("#7");
+    await waitFor(() =>
+      expect(screen.queryByTestId("cross-project-confirm")).not.toBeInTheDocument(),
+    );
+  });
+
   it("says 'another project' when the server names none, and Cancel opens nothing", async () => {
     draftPullRequest.mockResolvedValueOnce(PLAN).mockRejectedValueOnce(refusal([]));
     await planThenOpen();

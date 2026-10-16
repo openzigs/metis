@@ -994,6 +994,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration spec-kit-job-store-1059-postgres
 
+      # Issue #1180 — the cross-project publish guard matches `owner/repo`
+      # case-insensitively with a raw `LOWER()` query; the SQLite route suite
+      # skips on this client, so prove the same query on real Postgres.
+      - name: Prove the case-insensitive cross-project guard lookup on real Postgres
+        working-directory: server
+        run: pnpm test:integration cross-project-guard-1180-postgres
+
       - name: Remove the Postgres container
         if: always()
         run: docker rm -f "metis-ci-postgres-${GITHUB_JOB}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true
