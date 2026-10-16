@@ -1322,6 +1322,25 @@ describe("discussions routes", () => {
   });
 
   describe("#734 — PATCH/DELETE /threads/:id/messages/:messageId", () => {
+    it("rate-limits both routes ahead of the auth check", async () => {
+      const { discussionMessageChangeRateLimiter } =
+        await import("../middleware/discussion-message-change-rate-limit.js");
+      type Layer = {
+        route?: {
+          path: string;
+          methods: Record<string, boolean>;
+          stack: Array<{ handle: unknown }>;
+        };
+      };
+      const stack = (discussionsRouter() as unknown as { stack: Layer[] }).stack;
+      for (const method of ["patch", "delete"]) {
+        const layer = stack.find(
+          (l) => l.route?.path === "/threads/:id/messages/:messageId" && l.route.methods[method],
+        );
+        expect(layer?.route?.stack[0]?.handle).toBe(discussionMessageChangeRateLimiter);
+      }
+    });
+
     it("edits through the thread gate, passing the caller and the thread's project", async () => {
       currentUser = { userId: "alice", role: "analyst", workspaces: ["ws1"] };
       canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });

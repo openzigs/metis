@@ -21,6 +21,7 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
+import { discussionMessageChangeRateLimiter } from "../middleware/discussion-message-change-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import {
@@ -403,51 +404,61 @@ export function discussionsRouter(): Router {
   // DELETE same path — soft-delete own message. #734: thread access first
   // (`canAccessThread`, so a non-member gets the thread's 404 and learns
   // nothing about the message), then author-only (`edit-message.ts`).
-  r.patch("/threads/:id/messages/:messageId", requireAuth, async (req: Request, res: Response) => {
-    const actor = actorFromReq(req);
-    const threadId = String(req.params.id);
-    const messageId = String(req.params.messageId);
+  r.patch(
+    "/threads/:id/messages/:messageId",
+    discussionMessageChangeRateLimiter,
+    requireAuth,
+    async (req: Request, res: Response) => {
+      const actor = actorFromReq(req);
+      const threadId = String(req.params.id);
+      const messageId = String(req.params.messageId);
 
-    const parsed = postMessageSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw new AppError(400, "VALIDATION_ERROR", "Invalid message payload", {
-        issues: parsed.error.flatten(),
-      });
-    }
+      const parsed = postMessageSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid message payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
 
-    const access = await canAccessThread(actor, threadId);
-    if (!access.ok) throw threadNotFound();
+      const access = await canAccessThread(actor, threadId);
+      if (!access.ok) throw threadNotFound();
 
-    const message = await asMessageChange(() =>
-      editHumanDiscussionMessage({
-        threadId,
-        projectId: access.projectId,
-        messageId,
-        actorId: actor.id,
-        body: parsed.data.body,
-      }),
-    );
-    res.json({ success: true, data: message });
-  });
+      const message = await asMessageChange(() =>
+        editHumanDiscussionMessage({
+          threadId,
+          projectId: access.projectId,
+          messageId,
+          actorId: actor.id,
+          body: parsed.data.body,
+        }),
+      );
+      res.json({ success: true, data: message });
+    },
+  );
 
-  r.delete("/threads/:id/messages/:messageId", requireAuth, async (req: Request, res: Response) => {
-    const actor = actorFromReq(req);
-    const threadId = String(req.params.id);
-    const messageId = String(req.params.messageId);
+  r.delete(
+    "/threads/:id/messages/:messageId",
+    discussionMessageChangeRateLimiter,
+    requireAuth,
+    async (req: Request, res: Response) => {
+      const actor = actorFromReq(req);
+      const threadId = String(req.params.id);
+      const messageId = String(req.params.messageId);
 
-    const access = await canAccessThread(actor, threadId);
-    if (!access.ok) throw threadNotFound();
+      const access = await canAccessThread(actor, threadId);
+      if (!access.ok) throw threadNotFound();
 
-    await asMessageChange(() =>
-      deleteHumanDiscussionMessage({
-        threadId,
-        projectId: access.projectId,
-        messageId,
-        actorId: actor.id,
-      }),
-    );
-    res.json({ success: true, data: { id: messageId, deleted: true } });
-  });
+      await asMessageChange(() =>
+        deleteHumanDiscussionMessage({
+          threadId,
+          projectId: access.projectId,
+          messageId,
+          actorId: actor.id,
+        }),
+      );
+      res.json({ success: true, data: { id: messageId, deleted: true } });
+    },
+  );
 
   // POST /api/discussions/threads/:id/ai-respond — triggered AI reply (#484).
   //
