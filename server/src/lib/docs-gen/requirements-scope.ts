@@ -13,8 +13,9 @@
  */
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { parseAcceptanceCriteria } from "@metis/shared";
+import { parseAcceptanceCriteria, stripMetisMarkers } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { formatStartedAt } from "../analysis/run-start-label.js";
 
 /** Upper bound on an explicit selection, so one request cannot name the whole table. */
 export const MAX_SELECTED_REQUIREMENTS = 500;
@@ -203,19 +204,159 @@ function prLink(prNumber: number, prUrl: string): string {
     : `PR #${prNumber}`;
 }
 
-function selectionSummary(filter: RequirementsScopeFilter, count: number): string {
+/**
+ * #1170 — how the introduction names what the document covers. A reader cannot
+ * use an internal id, so the run is named by its start time (as the publish epic
+ * is, #1064) and a review by its title; neither id is ever printed.
+ */
+export interface RequirementsSourceNames {
+  analysisStartedAt?: Date | null;
+  reviewTitle?: string | null;
+}
+
+function runName(startedAt: Date | null | undefined): string {
+  const when = formatStartedAt(startedAt);
+  return when ? `the analysis run started ${when}` : "the selected analysis run";
+}
+
+function reviewName(title: string | null | undefined): string {
+  return title?.trim() ? `review “${cell(title)}”` : "the selected review";
+}
+
+function selectionSummary(
+  filter: RequirementsScopeFilter,
+  count: number,
+  names: RequirementsSourceNames,
+): string {
   const sources: string[] = [];
   // #1129 — a selection within one run is a subset OF that run, not a second source.
   const chosenFromRun = Boolean(filter.analysisId && filter.requirementIds);
   if (filter.analysisId)
-    sources.push(
-      `${chosenFromRun ? "those chosen from " : ""}analysis run \`${cell(filter.analysisId)}\``,
-    );
-  if (filter.reviewRequestId) sources.push(`review \`${cell(filter.reviewRequestId)}\``);
+    sources.push(`${chosenFromRun ? "those chosen from " : ""}${runName(names.analysisStartedAt)}`);
+  if (filter.reviewRequestId) sources.push(reviewName(names.reviewTitle));
   if (filter.requirementIds && !chosenFromRun)
     sources.push(`${filter.requirementIds.length} selected requirement(s)`);
   const approved = filter.approvedOnly ? ", approved requirements only" : "";
   return `This document covers ${count} requirement(s) from ${sources.join(" and ")}${approved}.`;
+}
+
+/** The shallowest heading a requirement body may use: below its own `### Rn.` title. */
+const BODY_MIN_HEADING_LEVEL = 4;
+
+/**
+ * #1170 — a body's own headings, nested under the requirement's title. The
+ * clarification pass writes `## Clarifications` into the body; copied as it was,
+ * every requirement put an H2 beside the document's `## Requirements`, so the
+ * Contents listed five "Clarifications" siblings and split each requirement in
+ * two. Setext headings (`Title` over `===` / `---`, common in imported issue
+ * bodies) are nested too, rewritten as ATX. Headings inside fenced code are
+ * text, and are left alone; a thematic break and a table's delimiter row are
+ * never read as an underline.
+ *
+ * Line endings are normalised first: a body imported from a tracker can carry
+ * CRLF, and every pattern below anchors on `$`, which a trailing `\r` defeats.
+ */
+function nestBodyHeadings(body: string): string {
+  const out: string[] = [];
+  let fence: string | null = null;
+  // Index in `out` of the first line of the open paragraph, or null. Only a plain
+  // paragraph can be a setext heading's text: not a list item or quote, which a
+  // `---` under them ends with a thematic break.
+  let paragraphStart: number | null = null;
+  let inContainer = false;
+  // Inside a list or quote across blank lines: an indented paragraph after one
+  // may be the item's continuation, and rewriting it at column 0 would end the
+  // list. Such a paragraph is left as it is (PR #1179, third panel).
+  let inList = false;
+  for (const line of body.replace(/\r\n?/g, "\n").split("\n")) {
+    if (fence !== null) {
+      // CommonMark: a closing fence is the same character, at least as long as
+      // the opener, and carries no info string — ` ```js ` inside is content.
+      const closer = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (closer && closer[1]![0] === fence[0] && closer[1]!.length >= fence.length) fence = null;
+      out.push(line);
+      continue;
+    }
+    const opener = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (opener) {
+      fence = opener[1]!;
+      paragraphStart = null;
+      out.push(line);
+      continue;
+    }
+    if (line.trim() === "") {
+      paragraphStart = null;
+      inContainer = false;
+      out.push(line);
+      continue;
+    }
+    const heading = /^( {0,3})(#{1,6})(?=[ \t]|$)/.exec(line);
+    if (heading) {
+      paragraphStart = null;
+      // The indent is kept, so a heading inside a list item stays in it.
+      out.push(
+        heading[2]!.length >= BODY_MIN_HEADING_LEVEL
+          ? line
+          : heading[1]! + "#".repeat(BODY_MIN_HEADING_LEVEL) + line.slice(heading[0].length),
+      );
+      continue;
+    }
+    // A setext underline (`===` or `---`, nothing else on the line) under a plain
+    // paragraph makes that paragraph a heading: rewrite it as an ATX H4.
+    if (/^ {0,3}(?:=+|-+)[ \t]*$/.test(line) && paragraphStart !== null && !inContainer) {
+      const text = out
+        .splice(paragraphStart)
+        .map((l) => l.trim())
+        .join(" ");
+      out.push(`${"#".repeat(BODY_MIN_HEADING_LEVEL)} ${text}`);
+      paragraphStart = null;
+      continue;
+    }
+    // Four columns of indent — four spaces, or a tab within the first four — is code.
+    const indentedCode = /^(?: {0,3}\t| {4})/.test(line);
+    const thematicBreak =
+      !indentedCode && /^(?:-{3,}|\*{3,}|_{3,})$/.test(line.replace(/[ \t]/g, ""));
+    const containerStart =
+      !indentedCode && /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)|^ {0,3}>/.test(line);
+    if (thematicBreak) {
+      // Ends any paragraph; never part of a heading's text (CommonMark).
+      paragraphStart = null;
+      inContainer = false;
+      inList = false;
+    } else if (containerStart) {
+      // A list item or quote interrupts the paragraph above it, and the text it
+      // starts is inside the container, so no underline below can make it a heading.
+      paragraphStart = out.length;
+      inContainer = true;
+      inList = true;
+    } else if (paragraphStart === null && !indentedCode) {
+      paragraphStart = out.length;
+      // An indented paragraph after a list may continue an item; only an
+      // unindented one is certainly top level.
+      inList = inList && /^[ \t]/.test(line);
+      inContainer = inList;
+    }
+    // A table row: a `---` under it is never read as this paragraph's underline.
+    if (line.includes("|")) inContainer = true;
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
+/**
+ * A requirement body as BRD content: METIS's internal markers removed first
+ * (#1170 — escaped by {@link neutralizeHtml} they became visible
+ * `<!-- metis:clarifications:start -->` text), its headings nested under the
+ * requirement, then any other raw HTML neutralised.
+ */
+export function requirementBodyMarkdown(body: string): string {
+  // Leading blank lines only, not `trim()`: the first line's indent is Markdown
+  // (a tab-indented line is code), and dropping it can turn code into a heading.
+  return neutralizeHtml(
+    nestBodyHeadings(stripMetisMarkers(body))
+      .replace(/^(?:[ \t]*\n)+/, "")
+      .trimEnd(),
+  );
 }
 
 /**
@@ -236,6 +377,7 @@ export function renderRequirementsDocument(
   title: string,
   filter: RequirementsScopeFilter,
   requirements: readonly ScopedRequirement[],
+  names: RequirementsSourceNames = {},
 ): string {
   const linked = requirements.filter(
     (r) => r.codeMappings.length > 0 || r.implementations.length > 0,
@@ -243,7 +385,7 @@ export function renderRequirementsDocument(
   const out: string[] = [
     `# ${cell(headingWithCount(title, requirements.length))}`,
     "",
-    selectionSummary(filter, requirements.length),
+    selectionSummary(filter, requirements.length, names),
     `${linked} of ${requirements.length} have recorded code links.`,
     "",
     "## Summary",
@@ -268,7 +410,7 @@ export function renderRequirementsDocument(
         r.reviewStatus ?? "draft",
       )} · **Verdict:** ${cell(r.verdict ?? "not assessed")}`,
       "",
-      neutralizeHtml(r.body.trim()) || "_No description recorded._",
+      requirementBodyMarkdown(r.body) || "_No description recorded._",
       "",
       "#### Acceptance criteria",
       "",
@@ -300,6 +442,28 @@ export function renderRequirementsDocument(
   return `${out.join("\n")}\n`;
 }
 
+/** The start time and review title the introduction names, read within the project. */
+async function loadSourceNames(
+  projectId: string,
+  filter: RequirementsScopeFilter,
+): Promise<RequirementsSourceNames> {
+  const [analysis, review] = await Promise.all([
+    filter.analysisId
+      ? prisma.analysis.findFirst({
+          where: { id: filter.analysisId, projectId },
+          select: { startedAt: true },
+        })
+      : null,
+    filter.reviewRequestId
+      ? prisma.reviewRequest.findFirst({
+          where: { id: filter.reviewRequestId, projectId },
+          select: { title: true },
+        })
+      : null,
+  ]);
+  return { analysisStartedAt: analysis?.startedAt ?? null, reviewTitle: review?.title ?? null };
+}
+
 /** Load, render and fingerprint the requirements a document is scoped to. */
 export async function synthesizeRequirementsDocument(
   projectId: string,
@@ -311,7 +475,12 @@ export async function synthesizeRequirementsDocument(
     throw new Error("No requirements match this document's scope");
   }
   return {
-    markdown: renderRequirementsDocument(title, filter, requirements),
+    markdown: renderRequirementsDocument(
+      title,
+      filter,
+      requirements,
+      await loadSourceNames(projectId, filter),
+    ),
     sourceFingerprint: requirementsSourceFingerprint(requirements),
     requirementCount: requirements.length,
   };

@@ -3,6 +3,7 @@
 import { createElement, useMemo, type ComponentPropsWithoutRef } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { stripMetisMarkers } from "@metis/shared";
 
 /**
  * Issue #979 — a requirement's body, rendered as Markdown.
@@ -28,14 +29,12 @@ import remarkGfm from "remark-gfm";
  */
 
 /**
- * Every METIS block marker, not only the clarification pair: the criteria flag
- * (`<!-- metis:criteria-predate-answers -->`, #1116) is written inline too (#998).
+ * The body with METIS's internal block markers removed — every one, not only the
+ * clarification pair: the criteria flag is written inline too (#998). The same
+ * helper builds the requirements-scoped BRD (#1170).
  */
-const INTERNAL_MARKER = /<!--\s*metis:[\w:-]+\s*-->/g;
-
-/** The body with METIS's internal block markers removed. */
 export function stripInternalMarkers(body: string): string {
-  return body.replace(INTERNAL_MARKER, "").trim();
+  return stripMetisMarkers(body).trim();
 }
 
 /** A Markdown image, as text: never an `<img>`, so nothing is fetched on view. */

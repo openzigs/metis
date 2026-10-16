@@ -36,6 +36,8 @@
  * renamed epic would publish as a second issue.
  */
 
+import { formatStartedAt } from "../analysis/run-start-label.js";
+
 /** Maximum length of the part after `[Epic] <project> — `. */
 export const EPIC_TITLE_SUBJECT_MAX = 80;
 
@@ -78,12 +80,9 @@ function truncate(subject: string): string {
   return `${cut.trimEnd()}…`;
 }
 
-export function formatStartedAt(startedAt: Date | null | undefined): string | null {
-  if (!(startedAt instanceof Date) || Number.isNaN(startedAt.getTime())) return null;
-  // "2026-09-29T14:05:33.000Z" → "2026-09-29 14:05:33 UTC" — to the second, so
-  // runs started in the same minute stay apart.
-  return `${startedAt.toISOString().slice(0, 19).replace("T", " ")} UTC`;
-}
+// #1170 — lives with the analysis code so the BRD can name a run without
+// importing publishing; re-exported here for the existing callers.
+export { formatStartedAt };
 
 const LIST_LINE_RE = /^(\s*)(?:[-*+]|\d{1,9}[.)])\s+\S/;
 
