@@ -837,6 +837,16 @@ export const synthesizedRequirementSchema = z.object({
    * list is dropped whatever its length, so a cap could only reject the reply.
    */
   sourceIds: z.array(z.string().catch("")).optional().catch(undefined),
+  /**
+   * Issue #1033 — the ids of the EXTRACTED (structured) requirements this
+   * requirement restates, so promotion joins its criteria and evidence onto the
+   * reviewed requirement by id. Joining by title alone gave a consolidated
+   * item to one of the requirements it covered and left the rest with no
+   * criteria and no code link. ABSENT means the model did not say, and the
+   * title join applies. Fails soft for the same reason as `sourceIds`; ids not
+   * in the run's list are dropped in `runSynthesis`.
+   */
+  structuredIds: z.array(z.string().catch("")).optional().catch(undefined),
 });
 export type SynthesizedRequirement = z.infer<typeof synthesizedRequirementSchema>;
 

@@ -506,6 +506,96 @@ describe("#730 — promote the requirements the user approved, not a different s
   });
 });
 
+/**
+ * Issue #1033 — through the persisted synthesis JSON: the ids synthesis wrote
+ * survive `readSynthesisOutput`'s schema parse and decide which approved
+ * requirement gets which criteria and evidence.
+ */
+describe("#1033 — criteria and evidence reach the requirements synthesis names", () => {
+  const structuredReq = (id: string, title: string) => ({
+    id,
+    title,
+    description: title,
+    type: "functional",
+    stakeholders: [],
+    priority: "must-have",
+    ambiguities: [],
+    evidenceNeeds: [],
+    rawSource: "",
+  });
+  const item = (title: string, extra: Record<string, unknown>) => ({
+    type: "feature",
+    title,
+    body: title,
+    priority: "medium",
+    labels: [],
+    acceptanceCriteria: [],
+    evidenceFindingIndexes: [],
+    ...extra,
+  });
+
+  beforeEach(() => {
+    db.structured = {
+      requirements: [
+        structuredReq("REQ-1", "Require HTTP Basic Authentication for Metrics Endpoint"),
+        structuredReq("REQ-2", "Restrict Debian package publishing to the sandbox repository"),
+        structuredReq("REQ-3", "Reject Empty Username or Password for Metrics Endpoint"),
+        structuredReq("REQ-4", "Constant-Time Credential Comparison for Metrics Endpoint"),
+      ],
+    };
+    db.approvals = ["REQ-1", "REQ-2", "REQ-3", "REQ-4"].map((itemId) => ({
+      itemId,
+      status: "approved",
+    }));
+    db.synthesisOutput = JSON.stringify({
+      summary: "s",
+      requirements: [
+        item("Require HTTP Basic auth on the metrics endpoint with constant-time checks", {
+          evidenceFindingIndexes: [7, 8],
+          acceptanceCriteria: ["Empty credentials are rejected.", "Comparison is constant-time."],
+          structuredIds: ["REQ-3", "REQ-4"],
+        }),
+        item("Require HTTP Basic authentication for the metrics endpoint", {
+          evidenceFindingIndexes: [6],
+          acceptanceCriteria: ["No Authorization header gets 404."],
+          structuredIds: ["REQ-1"],
+        }),
+      ],
+    });
+  });
+
+  function persisted() {
+    const input = persistRequirements.mock.calls[0]?.[0] as {
+      synthesis: {
+        requirements: Array<{
+          title: string;
+          labels: string[];
+          acceptanceCriteria: string[];
+          evidenceFindingIndexes: number[];
+        }>;
+      };
+    };
+    return input.synthesis.requirements;
+  }
+
+  it("gives the confirmed requirements after the first their criteria and evidence", async () => {
+    await promoteApprovedRequirements(ANALYSIS_ID);
+    const [basic, publishing, empty, constant] = persisted();
+    expect(basic).toMatchObject({
+      acceptanceCriteria: ["No Authorization header gets 404."],
+      evidenceFindingIndexes: [6],
+    });
+    for (const r of [empty, constant]) {
+      expect(r).toMatchObject({
+        acceptanceCriteria: ["Empty credentials are rejected.", "Comparison is constant-time."],
+        evidenceFindingIndexes: [7, 8],
+      });
+    }
+    // Nothing in the code could confirm it: no evidence, so no code link.
+    expect(publishing).toMatchObject({ acceptanceCriteria: [], evidenceFindingIndexes: [] });
+  });
+});
+
 describe("#723 — a rejected requirement is dropped, and can be reopened after promotion", () => {
   /** Titles of the requirement rows that COMMITTED (see the transactional model). */
   const created = () => committed.rows;

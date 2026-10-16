@@ -81,6 +81,12 @@ export interface SynthesisInput {
 
 /** A single clarification-refined requirement passed into synthesis (#212). */
 export interface RefinedRequirementInput {
+  /**
+   * Issue #1033 — the structured requirement's id. When present the prompt
+   * lists the requirement under it and asks which ids each output restates,
+   * so promotion joins criteria and evidence by id rather than by title.
+   */
+  id?: string;
   title: string;
   description: string;
 }
@@ -515,6 +521,8 @@ const MAX_EVIDENCE = 50;
 const MAX_LABELS = 16;
 const MAX_CRITERIA = 20;
 const MAX_SOURCE_IDS = 20;
+/** #1033 — a requirement restating more extracted requirements than this is not one requirement. */
+const MAX_STRUCTURED_IDS = 20;
 
 const normalizeTitle = (title: string): string => title.trim().toLowerCase().replace(/\s+/g, " ");
 
@@ -572,6 +580,10 @@ export async function runSynthesis(
   const isValidIndex = (i: number): boolean => Number.isInteger(i) && i >= 0 && i < total;
   // #1063 — the only ids a requirement may claim as its source.
   const knownSourceIds = new Set((input.sourceItems ?? []).map((s) => s.id));
+  // #1033 — the only ids a requirement may claim to restate.
+  const knownStructuredIds = new Set(
+    (input.refinedRequirements ?? []).flatMap((r) => (r.id ? [r.id] : [])),
+  );
 
   // #751 — requirements kept so far, in the order the model wrote them.
   const kept: SynthesizedRequirement[] = [];
@@ -604,12 +616,15 @@ export async function runSynthesis(
     for (const r of reqs) {
       // #1063 — `sourceIds` is model output: keep only this run's ids, and
       // drop the key entirely when the model did not (usably) say.
-      const { sourceIds: claimedSourceIds, ...rest } = r;
+      const { sourceIds: claimedSourceIds, structuredIds: claimedStructuredIds, ...rest } = r;
       const sourceIds = cleanSourceIds(claimedSourceIds, knownSourceIds);
+      // #1033 — the same check for the extracted requirements it restates.
+      const structuredIds = cleanSourceIds(claimedStructuredIds, knownStructuredIds);
       const clean: SynthesizedRequirement = {
         ...rest,
         evidenceFindingIndexes: r.evidenceFindingIndexes.filter(isValidIndex),
         ...(sourceIds !== undefined ? { sourceIds } : {}),
+        ...(structuredIds !== undefined ? { structuredIds } : {}),
       };
       const key = normalizeTitle(clean.title);
       const evidence = new Set(clean.evidenceFindingIndexes);
@@ -632,6 +647,13 @@ export async function runSynthesis(
         prior.labels = union(prior.labels, clean.labels, MAX_LABELS);
         if (clean.sourceIds !== undefined) {
           prior.sourceIds = union(prior.sourceIds ?? [], clean.sourceIds, MAX_SOURCE_IDS);
+        }
+        if (clean.structuredIds !== undefined) {
+          prior.structuredIds = union(
+            prior.structuredIds ?? [],
+            clean.structuredIds,
+            MAX_STRUCTURED_IDS,
+          );
         }
         prior.acceptanceCriteria = union(
           prior.acceptanceCriteria,

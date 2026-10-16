@@ -605,7 +605,7 @@ export interface SynthesisPromptInput {
    * authoritative, human-clarified section so synthesis reflects answers to
    * clarifying questions. Untrusted data, never treated as instructions.
    */
-  refinedRequirements?: Array<{ title: string; description: string }>;
+  refinedRequirements?: Array<{ id?: string; title: string; description: string }>;
   /**
    * Issue #1000 — whether a person has answered any clarifying question for
    * this run. Synthesis normally runs before anyone has, and the section used to
@@ -684,6 +684,15 @@ export const SYNTHESIS_EXTRACTED_RULE =
 const SYNTHESIS_SOURCE_ITEMS_RULE =
   "The IMPORTED ITEMS section lists the tracker items this analysis was started from, each with an id. In every requirement set `sourceIds` to the ids of the imported items that requirement restates, refines or specifies — normally exactly one. Set `sourceIds` to an empty array for a requirement that is your own addition (a cross-cutting chore, a prerequisite, a gap no imported item asked for). Use only ids from that section, never an id that is not listed, and do not put an id on a requirement merely because it mentions the same area.";
 
+/**
+ * Issue #1033 — the id rule. Promotion joins each reviewed requirement to the
+ * output that names its id, and used to join on title alone: an output that
+ * restated three listed requirements reached only one of them, so the other two
+ * were promoted with no acceptance criteria and no code link.
+ */
+export const SYNTHESIS_STRUCTURED_IDS_RULE =
+  "Each requirement in the EXTRACTED REQUIREMENTS (or CLARIFIED REQUIREMENTS) section is listed under its id. In every requirement set `structuredIds` to the ids of the listed requirements it restates, refines or verifies — normally exactly one — and to an empty array for a requirement no listed one asks for. Use only listed ids. Do not fold two listed requirements into one requirement: when the findings bear on several listed requirements, write one requirement for each, with its own acceptanceCriteria and its own evidenceFindingIndexes, even when they cite the same finding.";
+
 export function buildSynthesisPrompt(input: SynthesisPromptInput): {
   systemMessage: string;
   userMessage: string;
@@ -702,9 +711,19 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
   const refined = (input.refinedRequirements ?? []).filter(
     (r) => r.title.trim().length > 0 || r.description.trim().length > 0,
   );
+  // #1033 — listed under its own id when it has one, so the model can name it;
+  // `[R<n>]` (a position) only for a caller that passes no ids.
+  const refinedIds = refined.length > 0 && refined.every((r) => (r.id ?? "").trim().length > 0);
   const safeRefined =
     refined.length > 0
-      ? escapeContext(refined.map((r, i) => `[R${i}] ${r.title}: ${r.description}`).join("\n"))
+      ? escapeContext(
+          refined
+            .map(
+              (r, i) =>
+                `[${refinedIds ? r.id!.replace(/\s+/g, " ").trim() : `R${i}`}] ${r.title}: ${r.description}`,
+            )
+            .join("\n"),
+        )
       : "";
   // #1000 — "clarified" only once a person has answered a question.
   const refinedLabel = input.refinedHumanAnswered
@@ -748,6 +767,8 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
     safeAlready ? `12. ${SYNTHESIS_CONTINUATION_RULE}` : "",
     // #1063 — only on a run started from imported items.
     safeSourceItems ? `13. ${SYNTHESIS_SOURCE_ITEMS_RULE}` : "",
+    // #1033 — only when the extracted requirements carry ids.
+    refinedIds ? `14. ${SYNTHESIS_STRUCTURED_IDS_RULE}` : "",
     "",
     "Respond with a single JSON object:",
     `{
@@ -763,7 +784,7 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
       "evidenceFindingIndexes": [<ints>],
       "acceptanceCriteria": ["<testable statement naming the artifact and pass condition>"]${
         safeSourceItems ? ',\n      "sourceIds": ["<id from IMPORTED ITEMS>"]' : ""
-      }
+      }${refinedIds ? `,\n      "structuredIds": ["<id from ${refinedLabel}>"]` : ""}
     }
   ]
 }`,
