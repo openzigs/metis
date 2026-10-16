@@ -13,14 +13,19 @@
  *      Tier chain resolves; ancestors decide Tier and nothing else.
  *   2. Reads every item already on the board, once, into a map.
  *   3. ADDS to the board's Area single-select any `area:` label name it has no option for, keeping
- *      every existing option by id (so no item loses its Area).
- *   4. ADDS every open issue that is not on the board. Never deletes, never archives, and leaves an
+ *      every existing option by id (so no item loses its Area). APPENDS Cycle iterations when none
+ *      covers today or follows it, keeping every existing iteration by id (#1190).
+ *   4. Reads every epic's sub-issues whole, closed long ago or not, for the epic's Started (#1190).
+ *   5. ADDS every open issue that is not on the board. Never deletes, never archives, and leaves an
  *      archived item, and an item outside what it read, exactly as they are.
- *   5. SETS Tier, Kind, Area, Progress % and Sub-issues done, only where the value differs. NEVER
- *      touches Status (GitHub's built-in workflows own it).
- *   6. REPORTS every open issue missing a tier (its own or an ancestor's), an `area:` label or a type
- *      label (#1181), one `missing labels:` line each and a count in the summary. A report only: it
- *      never fails the run and never writes a label.
+ *   6. SETS Tier, Kind, Area, Progress %, Sub-issues done, Started, Finished and Cycle, only where
+ *      the value differs. Status is GitHub's (its built-in workflows own it) with ONE exception
+ *      (#1190): an open epic with a sub-issue closed or In Progress is promoted to In Progress, and
+ *      never demoted.
+ *   7. REPORTS every open issue missing a tier (its own or an ancestor's), an `area:` label or a type
+ *      label (#1181), one `missing labels:` line each and a count in the summary; and a missing
+ *      Started, Finished or Cycle field, or a missing current or next cycle, one `board:` line each.
+ *      A report only: it never fails the run and never writes a label.
  *
  * How METIS differs from On Your Left, deliberately:
  *   - Tier is the issue's own label (`priority: now|next|later`, then `blocked`), else the nearest
@@ -80,19 +85,49 @@ export const KIND = "Kind";
 export const AREA = "Area";
 export const PROGRESS = "Progress %";
 export const SUBS_DONE = "Sub-issues done";
+export const STARTED = "Started";
+export const FINISHED = "Finished";
+export const CYCLE = "Cycle";
+export const STATUS = "Status";
+export const IN_PROGRESS = "In Progress";
+export const EPIC_LABEL = "epic";
+/** The run stops without these: every value in them is decided by this script. */
+export const REQUIRED_FIELDS = /** @type {const} */ ([TIER, KIND, AREA, PROGRESS, SUBS_DONE]);
+/**
+ * #1190: synced when the board has them with this data type, and reported (not fatal) when it has
+ * not. Status is GitHub's own field; the script only ever promotes an open epic's (see
+ * `promotedStatus`).
+ */
+export const OPTIONAL_FIELDS = /** @type {const} */ ([
+  [STARTED, "DATE"],
+  [FINISHED, "DATE"],
+  [CYCLE, "ITERATION"],
+  [STATUS, "SINGLE_SELECT"],
+]);
 /** The order fields are written in, and the ONLY fields this script ever writes. */
-export const MANAGED_FIELDS = /** @type {const} */ ([TIER, KIND, AREA, PROGRESS, SUBS_DONE]);
+export const MANAGED_FIELDS = /** @type {const} */ ([
+  ...REQUIRED_FIELDS,
+  STARTED,
+  FINISHED,
+  CYCLE,
+  STATUS,
+]);
 
 /**
  * @typedef {{ total: number, completed: number, percentCompleted: number }} SubIssuesSummary
  * @typedef {{
  *   id: string, number: number, title: string, state: string, closedAt: string | null,
- *   labels: string[], summary: SubIssuesSummary | null, parent: number | null
+ *   labels: string[], summary: SubIssuesSummary | null, parent: number | null,
+ *   createdAt?: string | null, firstPrAt?: string | null
  * }} Issue
  * @typedef {string | number | null} FieldValue
  * @typedef {{ id: string | null, archived: boolean, values: Record<string, FieldValue> }} Item
  * @typedef {{ id: string | null, name: string, color?: string, description?: string }} Option
- * @typedef {{ id: string | null, name: string, dataType?: string, options?: Option[] }} Field
+ * @typedef {{ id: string | null, title: string, startDate: string, duration: number }} Iteration
+ * @typedef {{ duration?: number, iterations?: Iteration[], completedIterations?: Iteration[] }} IterationConfig
+ * @typedef {{ id: string | null, name: string, dataType?: string, options?: Option[],
+ *   configuration?: IterationConfig }} Field
+ * @typedef {{ current: Iteration | null, next: Iteration | null }} Cycles
  * @typedef {{ added: number, changed: number, unchanged: number, skipped: number, failed: number }} Counts
  */
 
@@ -251,9 +286,161 @@ export function desiredFields(issue, lookup = new Map([[issue.number, issue]])) 
   };
 }
 
+/** @param {string | null | undefined} iso @returns {string | null} the UTC calendar date */
+export function dayOf(iso) {
+  if (!iso) return null;
+  const time = Date.parse(iso);
+  return Number.isNaN(time) ? null : new Date(time).toISOString().slice(0, 10);
+}
+
+/** @param {string} day YYYY-MM-DD @param {number} days @returns {string} */
+export function addDays(day, days) {
+  return new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** @param {Pick<Issue, "labels">} issue */
+export function isEpic(issue) {
+  return issue.labels.includes(EPIC_LABEL);
+}
+
 /**
- * Every managed field whose value differs, in write order; a null value clears. An absent value
- * and null are the same (an empty field); JSON numbers compare exactly (86 vs 85 differs).
+ * #1190 — an issue's own Started: the day its first linked pull request was opened, else the day it
+ * was created.
+ *
+ * @param {Pick<Issue, "createdAt" | "firstPrAt">} issue
+ * @returns {string | null}
+ */
+export function ownStarted(issue) {
+  return dayOf(issue.firstPrAt) ?? dayOf(issue.createdAt);
+}
+
+/**
+ * An epic's Started is the earliest Started of its sub-issues (a sub-issue that is itself an epic
+ * counts by the same rule); with no sub-issues, or for any other issue, its own. A cycle is cut.
+ *
+ * @param {Issue} issue
+ * @param {Map<number, Issue[]>} subIssues an epic's number → its sub-issues
+ * @param {Set<number>} [seen]
+ * @returns {string | null}
+ */
+export function resolveStarted(issue, subIssues, seen = new Set()) {
+  const children = isEpic(issue) && !seen.has(issue.number) ? subIssues.get(issue.number) : null;
+  seen.add(issue.number);
+  const days = (children ?? [])
+    .map((child) => resolveStarted(child, subIssues, seen))
+    .filter((day) => day != null)
+    .sort();
+  return days[0] ?? ownStarted(issue);
+}
+
+/**
+ * Finished: the day a closed issue closed; null (clears) for an open one, so a reopen clears it.
+ *
+ * @param {Pick<Issue, "state" | "closedAt">} issue
+ * @returns {string | null}
+ */
+export function finishedOf(issue) {
+  return issue.state === "OPEN" ? null : dayOf(issue.closedAt);
+}
+
+/** Active and completed iterations, by start date. @param {Field | undefined} field */
+export function iterationsOf(field) {
+  const config = field?.configuration ?? {};
+  return [...(config.completedIterations ?? []), ...(config.iterations ?? [])].sort((a, b) =>
+    a.startDate.localeCompare(b.startDate),
+  );
+}
+
+/**
+ * The iteration covering `today`, and the first one starting on or after its end (or after today,
+ * with no current one).
+ *
+ * @param {Iteration[]} iterations
+ * @param {string} today YYYY-MM-DD
+ * @returns {Cycles}
+ */
+export function cyclesAt(iterations, today) {
+  const sorted = [...iterations].sort((a, b) => a.startDate.localeCompare(b.startDate));
+  const current =
+    sorted.find((i) => i.startDate <= today && today < addDays(i.startDate, i.duration)) ?? null;
+  const after = current ? addDays(current.startDate, current.duration) : addDays(today, 1);
+  const next = sorted.find((i) => i.startDate >= after) ?? null;
+  return { current, next };
+}
+
+/**
+ * The iterations to append so that one covers today and one follows it, each `duration` days and
+ * contiguous with the last, titled on from the last one's number ("Cycle 3" → "Cycle 4"). None when
+ * nothing is missing, and none when appending cannot help (the field has no iterations, today falls
+ * in a gap between two, or before the first): the run reports that instead.
+ *
+ * @param {Iteration[]} iterations
+ * @param {number | undefined} duration
+ * @param {string} today
+ * @returns {Array<{ title: string, startDate: string, duration: number }>}
+ */
+export function iterationsToAppend(iterations, duration, today) {
+  const sorted = [...iterations].sort((a, b) => a.startDate.localeCompare(b.startDate));
+  const last = sorted.at(-1);
+  if (!last || !duration || duration < 1) return [];
+  const { current, next } = cyclesAt(sorted, today);
+  if (current && next) return [];
+  let start = addDays(last.startDate, last.duration);
+  // No current iteration while the last one has not ended: today is in a gap, or before the first.
+  if (!current && today < start) return [];
+  const match = /^(.*?)(\d+)\s*$/.exec(last.title);
+  const prefix = match ? match[1] : "Cycle ";
+  let n = match ? Number(match[2]) : sorted.length;
+  const out = [];
+  let covered = Boolean(current);
+  for (;;) {
+    out.push({ title: `${prefix}${(n += 1)}`, startDate: start, duration });
+    const end = addDays(start, duration);
+    if (covered) return out;
+    if (start <= today && today < end) covered = true;
+    start = end;
+  }
+}
+
+/**
+ * #1190 — Cycle from the resolved Tier: Now → the current cycle, Next → the following one, any other
+ * tier → null (clears). `undefined` when the iteration the tier needs is not on the board: the item
+ * keeps what it has, and the run reports the gap.
+ *
+ * @param {string} tier
+ * @param {Cycles} cycles
+ * @returns {string | null | undefined} an iteration's title
+ */
+export function cycleFor(tier, cycles) {
+  if (tier === "Now") return cycles.current?.title;
+  if (tier === "Next") return cycles.next?.title;
+  return null;
+}
+
+/**
+ * #1190 — the one Status write this script makes: an open `epic` with a sub-issue closed or In
+ * Progress moves to In Progress. Never a demotion — only from empty or an option ordered before In
+ * Progress (Todo); an option the field does not list is left alone. `undefined` = do not touch.
+ *
+ * @param {Pick<Issue, "state" | "labels">} issue
+ * @param {FieldValue | undefined} current the item's Status
+ * @param {string[]} optionNames the Status field's options, in order
+ * @param {boolean} subIssueStarted a sub-issue is closed or In Progress
+ * @returns {string | undefined}
+ */
+export function promotedStatus(issue, current, optionNames, subIssueStarted) {
+  if (issue.state !== "OPEN" || !isEpic(issue) || !subIssueStarted) return undefined;
+  const target = optionNames.indexOf(IN_PROGRESS);
+  if (target < 0) return undefined;
+  const at = current == null ? -1 : optionNames.indexOf(String(current));
+  if (current != null && at < 0) return undefined;
+  return at < target ? IN_PROGRESS : undefined;
+}
+
+/**
+ * Every managed field present in `desired` whose value differs, in write order; a null value
+ * clears, and a field absent from `desired` is left alone. An absent current value and null are the
+ * same (an empty field); JSON numbers compare exactly (86 vs 85 differs).
  *
  * @param {Record<string, FieldValue>} desired
  * @param {Record<string, FieldValue>} current
@@ -261,7 +448,7 @@ export function desiredFields(issue, lookup = new Map([[issue.number, issue]])) 
  */
 export function fieldChanges(desired, current) {
   return MANAGED_FIELDS.filter(
-    (field) => (desired[field] ?? null) !== (current[field] ?? null),
+    (field) => field in desired && (desired[field] ?? null) !== (current[field] ?? null),
   ).map((field) => [field, desired[field]]);
 }
 
@@ -285,16 +472,23 @@ export function inReadWindow(issue, now) {
 
 /**
  * The `value` argument of `updateProjectV2ItemFieldValue`, or null when a single-select field has
- * no option of that name (the board was edited by hand; the item is left alone, said so in the log).
+ * no option of that name, or an iteration field no iteration of that title (the board was edited by
+ * hand; the item is left alone, said so in the log).
  *
  * @param {Field} field
  * @param {string | number} value
- * @returns {Record<string, string | number | null> | null} a null option id only in a dry run,
- *   for an option the run would have added
+ * @returns {Record<string, string | number | null> | null} a null option or iteration id only in
+ *   a dry run, for one the run would have added
  */
 export function encodeValue(field, value) {
   if (field.dataType === "NUMBER") return { number: Number(value) };
   if (field.dataType === "TEXT") return { text: String(value) };
+  if (field.dataType === "DATE") return { date: String(value) };
+  if (field.dataType === "ITERATION") {
+    // By title, as a single select is by name; the item's value reads back as the title.
+    const iteration = iterationsOf(field).find((i) => i.title === value);
+    return iteration ? { iterationId: iteration.id } : null;
+  }
   const option = (field.options ?? []).find((o) => o.name === value);
   return option ? { singleSelectOptionId: option.id } : null;
 }
@@ -431,8 +625,10 @@ export function createClient({
 
 /** @typedef {ReturnType<typeof createClient>} Client */
 
+// #1190: closed pull requests count too — one opened and abandoned still started the work.
 const ISSUE_FIELDS = `
-        id number title state closedAt
+        id number title state closedAt createdAt
+        closedByPullRequestsReferences(first: 25, includeClosedPrs: true) { nodes { createdAt } }
         labels(first: 50) { nodes { name } }
         parent { number repository { nameWithOwner } }
         subIssuesSummary { total completed percentCompleted }`;
@@ -456,6 +652,23 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }`;
 
+export const SUB_ISSUES_QUERY = `
+query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      subIssues(first: 50, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {${ISSUE_FIELDS}
+          repository { nameWithOwner }
+        }
+      }
+    }
+  }
+}`;
+
+const ITERATIONS =
+  "iterations { id title startDate duration } completedIterations { id title startDate duration }";
+
 export const PROJECT_QUERY = `
 query($org: String!, $number: Int!) {
   organization(login: $org) {
@@ -465,6 +678,7 @@ query($org: String!, $number: Int!) {
         nodes {
           ... on ProjectV2FieldCommon { id name dataType }
           ... on ProjectV2SingleSelectField { options { id name color description } }
+          ... on ProjectV2IterationField { configuration { duration ${ITERATIONS} } }
         }
       }
     }
@@ -480,11 +694,13 @@ query($org: String!, $number: Int!, $after: String) {
         nodes {
           id isArchived
           content { ... on Issue { number repository { nameWithOwner } } }
-          fieldValues(first: 30) {
+          fieldValues(first: 50) {
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
               ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2FieldCommon { name } } }
               ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } }
+              ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } }
+              ... on ProjectV2ItemFieldIterationValue { title field { ... on ProjectV2FieldCommon { name } } }
             }
           }
         }
@@ -516,6 +732,19 @@ mutation($field: ID!, $options: [ProjectV2SingleSelectFieldOptionInput!]) {
   }
 }`;
 
+/**
+ * #1190 — replaces the field's WHOLE iteration list. Measured on a scratch project (2026-10-16): an
+ * iteration sent back with its `id`, active or completed, keeps that id and every item holding it
+ * keeps its value; one sent without an id is created new. So every existing iteration goes back with
+ * its id, and only the appended ones go without.
+ */
+export const UPDATE_ITERATIONS = `
+mutation($field: ID!, $config: ProjectV2IterationFieldConfigurationInput!) {
+  updateProjectV2Field(input: {fieldId: $field, iterationConfiguration: $config}) {
+    projectV2Field { ... on ProjectV2IterationField { id name dataType configuration { duration ${ITERATIONS} } } }
+  }
+}`;
+
 export const CLEAR_VALUE = `
 mutation($project: ID!, $item: ID!, $field: ID!) {
   clearProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field}) {
@@ -538,6 +767,12 @@ function issueFromNode(node, repository) {
     title: node.title,
     state: node.state,
     closedAt: node.closedAt ?? null,
+    createdAt: node.createdAt ?? null,
+    firstPrAt:
+      (node.closedByPullRequestsReferences?.nodes ?? [])
+        .map((/** @type {{ createdAt?: string }} */ pr) => pr?.createdAt)
+        .filter(Boolean)
+        .sort()[0] ?? null,
     labels: (node.labels?.nodes ?? []).map((/** @type {{ name: string }} */ l) => l.name),
     summary: node.subIssuesSummary ?? null,
     parent:
@@ -635,7 +870,7 @@ export async function readItems(client, org, number, repository) {
       for (const value of node.fieldValues?.nodes ?? []) {
         const field = value?.field?.name;
         if (!field) continue;
-        for (const key of ["name", "number", "text"]) {
+        for (const key of ["name", "number", "text", "date", "title"]) {
           if (key in value) values[field] = value[key];
         }
       }
@@ -690,14 +925,108 @@ export async function ensureAreaOptions(client, fields, issues) {
 }
 
 /**
+ * #1190 — every epic's sub-issues, by the epic's number, read whole (closed long ago or not) so an
+ * epic's Started does not drift as its sub-issues age out of the read window. A sub-issue that is
+ * itself an epic has its own read; one in another repository is dropped (its number means a
+ * different issue here). Each epic is read once, so a cycle cannot loop.
+ *
+ * @param {Client} client
+ * @param {string} repository owner/name
+ * @param {Iterable<number>} epics
+ * @returns {Promise<Map<number, Issue[]>>}
+ */
+export async function readSubIssues(client, repository, epics) {
+  const [owner, name] = repository.split("/");
+  /** @type {Map<number, Issue[]>} */
+  const subIssues = new Map();
+  const pending = [...epics];
+  while (pending.length) {
+    const number = /** @type {number} */ (pending.pop());
+    if (subIssues.has(number)) continue;
+    /** @type {Issue[]} */
+    const children = [];
+    subIssues.set(number, children);
+    /** @type {string | null} */
+    let after = null;
+    for (;;) {
+      const data = await client.query(SUB_ISSUES_QUERY, { owner, name, number, after });
+      const page = data.repository?.issue?.subIssues;
+      if (!page) break;
+      for (const node of page.nodes) {
+        if (node?.repository?.nameWithOwner !== repository) continue;
+        const child = issueFromNode(node, repository);
+        children.push(child);
+        if (isEpic(child)) pending.push(child.number);
+      }
+      if (!page.pageInfo.hasNextPage) break;
+      after = page.pageInfo.endCursor;
+    }
+  }
+  return subIssues;
+}
+
+/**
+ * #1190 — appends Cycle iterations so that one covers today and one follows it. Every existing
+ * iteration, active or completed, is sent back with its id (see UPDATE_ITERATIONS), so no item
+ * loses its Cycle; the field is then replaced in `fields` by what GitHub returns.
+ *
+ * @param {Client} client
+ * @param {Map<string, Field>} fields
+ * @param {string} today YYYY-MM-DD
+ */
+export async function ensureCycles(client, fields, today) {
+  const field = /** @type {Field} */ (fields.get(CYCLE));
+  const iterations = iterationsOf(field);
+  const duration = field.configuration?.duration;
+  const append = iterationsToAppend(iterations, duration, today);
+  if (append.length === 0 || !client.budgetLeft()) return;
+  const config = {
+    startDate: iterations[0].startDate,
+    duration,
+    iterations: [
+      ...iterations.map((i) => ({
+        id: i.id,
+        title: i.title,
+        startDate: i.startDate,
+        duration: i.duration,
+      })),
+      ...append,
+    ],
+  };
+  const data = await client.mutate(
+    `add Cycle iterations ${append.map((i) => `${i.title} (${i.startDate})`).join(", ")}`,
+    UPDATE_ITERATIONS,
+    { field: field.id, config },
+  );
+  const result = data?.updateProjectV2Field?.projectV2Field;
+  if (result) {
+    fields.set(CYCLE, { ...result, name: CYCLE, dataType: "ITERATION" });
+  } else if (client.dryRun) {
+    // So a dry run shows the values it would then set.
+    const configuration = field.configuration ?? {};
+    fields.set(CYCLE, {
+      ...field,
+      configuration: {
+        ...configuration,
+        iterations: [
+          ...(configuration.iterations ?? []),
+          ...append.map((i) => ({ ...i, id: null })),
+        ],
+      },
+    });
+  }
+}
+
+/**
  * One issue's add and writes. Returns what to count it as, and whether it was deferred by the
  * write budget. A write that throws propagates to the caller, which counts the item as failed.
  *
  * @param {{ client: Client, projectId: string, fields: Map<string, Field>, issue: Issue,
- *   lookup: Map<number, Issue>, item: Item | undefined, log: (line: string) => void, counts: Counts }} ctx
+ *   lookup: Map<number, Issue>, item: Item | undefined, log: (line: string) => void, counts: Counts,
+ *   extra: (issue: Issue, item: Item) => Record<string, FieldValue> }} ctx
  * @returns {Promise<{ outcome: "changed" | "unchanged" | "skipped" | "ignored", deferred: boolean }>}
  */
-async function syncOne({ client, projectId, fields, issue, lookup, item, log, counts }) {
+async function syncOne({ client, projectId, fields, issue, lookup, item, log, counts, extra }) {
   const { number } = issue;
   if (item?.archived) return { outcome: "skipped", deferred: false };
   if (!item) {
@@ -710,7 +1039,10 @@ async function syncOne({ client, projectId, fields, issue, lookup, item, log, co
     item = { id: data?.addProjectV2ItemById?.item?.id ?? null, archived: false, values: {} };
     counts.added += 1;
   }
-  const changes = fieldChanges(desiredFields(issue, lookup), item.values);
+  const changes = fieldChanges(
+    { ...desiredFields(issue, lookup), ...extra(issue, item) },
+    item.values,
+  );
   if (changes.length === 0) return { outcome: "unchanged", deferred: false };
   let writes = 0;
   let deferred = false;
@@ -770,13 +1102,29 @@ export async function sync({
   /** @type {Map<string, Field>} */
   const fields = new Map();
   for (const f of project.fields.nodes) if (f?.name) fields.set(f.name, f);
-  for (const name of MANAGED_FIELDS) {
+  for (const name of REQUIRED_FIELDS) {
     if (!fields.has(name)) {
       throw new GraphQLError(
         `the board has no field named ${JSON.stringify(name)} (docs/ops/roadmap-board.md)`,
       );
     }
   }
+  // #1190: a missing optional field is reported, not fatal; its values are left alone.
+  /** @type {string[]} */
+  const notes = [];
+  const unusable = OPTIONAL_FIELDS.filter(([name, type]) => fields.get(name)?.dataType !== type);
+  for (const [name] of unusable) fields.delete(name);
+  if (unusable.length) {
+    notes.push(
+      `board: no ${unusable.map(([name, type]) => `${name} (${type})`).join(", ")} field; not synced`,
+    );
+  }
+  const statusOptions = (fields.get(STATUS)?.options ?? []).map((o) => o.name);
+  if (fields.has(STATUS) && !statusOptions.includes(IN_PROGRESS)) {
+    notes.push(`board: Status has no option "${IN_PROGRESS}"; epics' Status is not synced`);
+    fields.delete(STATUS);
+  }
+  const today = now.toISOString().slice(0, 10);
 
   const issues = await readIssues(client, repository, now);
   /** @type {Map<number, Issue>} */
@@ -794,6 +1142,58 @@ export async function sync({
     log(`failed: add Area options: ${error.message}`);
   }
 
+  /** @type {Cycles} */
+  let cycles = { current: null, next: null };
+  if (fields.has(CYCLE)) {
+    try {
+      await ensureCycles(client, fields, today);
+    } catch (error) {
+      if (!(error instanceof GraphQLError)) throw error;
+      counts.failed += 1;
+      log(`failed: add Cycle iterations: ${error.message}`);
+    }
+    cycles = cyclesAt(iterationsOf(fields.get(CYCLE)), today);
+    if (!cycles.current) notes.push(`board: no Cycle covers ${today}; Now items keep their Cycle`);
+    if (!cycles.next) {
+      notes.push(
+        `board: no Cycle after ${cycles.current?.title ?? today}; Next items keep their Cycle`,
+      );
+    }
+  }
+
+  const epics = [...issues.values()].filter(isEpic).map((i) => i.number);
+  const subIssues = fields.has(STARTED)
+    ? await readSubIssues(client, repository, epics)
+    : new Map();
+  // Epics with an open sub-issue the board shows In Progress; a closed one counts by the summary.
+  const inProgressParents = new Set(
+    [...issues.values()]
+      .filter((i) => i.parent != null && items.get(i.number)?.values[STATUS] === IN_PROGRESS)
+      .map((i) => i.parent),
+  );
+  /** @param {Issue} issue @param {Item} item @returns {Record<string, FieldValue>} */
+  const extra = (issue, item) => {
+    /** @type {Record<string, FieldValue>} */
+    const out = {};
+    if (fields.has(STARTED)) {
+      const started = resolveStarted(issue, subIssues);
+      if (started) out[STARTED] = started;
+    }
+    if (fields.has(FINISHED)) out[FINISHED] = finishedOf(issue);
+    // A closed item keeps its Cycle, so finished work stays where it happened.
+    if (fields.has(CYCLE) && issue.state === "OPEN") {
+      const cycle = cycleFor(resolveTier(issue.number, lookup), cycles);
+      if (cycle !== undefined) out[CYCLE] = cycle;
+    }
+    if (fields.has(STATUS)) {
+      const subIssueStarted =
+        (issue.summary?.completed ?? 0) > 0 || inProgressParents.has(issue.number);
+      const status = promotedStatus(issue, item.values[STATUS], statusOptions, subIssueStarted);
+      if (status) out[STATUS] = status;
+    }
+    return out;
+  };
+
   let deferred = 0;
   for (const number of [...issues.keys()].sort((a, b) => a - b)) {
     const issue = /** @type {Issue} */ (issues.get(number));
@@ -807,6 +1207,7 @@ export async function sync({
         item: items.get(number),
         log,
         counts,
+        extra,
       });
       if (result.deferred) deferred += 1;
       if (result.outcome !== "ignored") counts[result.outcome] += 1;
@@ -827,6 +1228,7 @@ export async function sync({
   // #1181: a report only — it changes no count that decides the exit code.
   const gaps = labelGaps(issues, lookup);
   for (const gap of gaps) log(`missing labels: #${gap.number} ${gap.missing.join(", ")}`);
+  for (const note of notes) log(note);
   log(summaryLine(counts, gaps.length) + (client.dryRun ? " (dry run)" : ""));
   return counts;
 }
