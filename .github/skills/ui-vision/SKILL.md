@@ -209,7 +209,9 @@ If bugs were found during the walkthrough:
 1. **Create GitHub issues** for the bugs:
    - One issue per bug (or group related bugs into a single issue)
    - Include the bug documentation, reproduction steps, and severity
-   - Label with `bug` and the appropriate severity label
+   - Label with `bug`, the appropriate severity label, a tier (`priority: next` for a
+     walkthrough finding) and one `area:` label, and pass `--project "METIS roadmap"` —
+     the rule in `docs/ops/roadmap-board.md` > "Filing an issue" (#1181)
    - Reference the walkthrough context and screenshots
 
 2. **Call the Code Issue agent** to fix the bugs:

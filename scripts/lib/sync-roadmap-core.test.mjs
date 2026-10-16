@@ -21,7 +21,9 @@ import {
   fieldChanges,
   inReadWindow,
   kindOf,
+  labelGaps,
   main,
+  missingLabels,
   missingAreaOptions,
   ownTier,
   parseArgs,
@@ -225,9 +227,67 @@ describe("encodeValue / summaryLine", () => {
   });
 
   it("summarises", () => {
-    expect(summaryLine({ added: 1, changed: 2, unchanged: 3, skipped: 4, failed: 5 })).toBe(
-      "summary: added 1, changed 2, unchanged 3, skipped 4, failed 5",
+    expect(summaryLine({ added: 1, changed: 2, unchanged: 3, skipped: 4, failed: 5 }, 6)).toBe(
+      "summary: added 1, changed 2, unchanged 3, skipped 4, failed 5, missing labels 6",
     );
+  });
+});
+
+describe("missingLabels / labelGaps", () => {
+  /** @param {number} number @param {string[]} labels @param {number | null} [parent] */
+  const node = (number, labels, parent = null) => ({ number, labels, parent, state: "OPEN" });
+
+  it("names each of tier, area and type that an issue lacks, in that order", () => {
+    const lookup = new Map([[1, node(1, [])]]);
+    expect(missingLabels(node(1, []), lookup)).toEqual(["tier", "area", "type"]);
+    const full = node(2, ["priority: later", "area: ci", "documentation"]);
+    expect(missingLabels(full, new Map([[2, full]]))).toEqual([]);
+  });
+
+  it("accepts every type label, and not a severity or an unknown label as a type", () => {
+    for (const type of [
+      "bug",
+      "enhancement",
+      "feature",
+      "epic",
+      "documentation",
+      "testing",
+      "dependencies",
+    ]) {
+      const i = node(3, ["priority: next", "area: ui", type]);
+      expect(missingLabels(i, new Map([[3, i]]))).toEqual([]);
+    }
+    const severity = node(4, ["priority: next", "area: ui", "priority: high", "question"]);
+    expect(missingLabels(severity, new Map([[4, severity]]))).toEqual(["type"]);
+  });
+
+  it("counts a tier inherited from an ancestor as present, and priority: high as no tier", () => {
+    const epic = node(10, ["priority: now", "epic", "area: ci"]);
+    const mid = node(11, ["epic", "area: ci"], 10);
+    const leaf = node(12, ["bug", "area: ci"], 11);
+    const lookup = new Map([epic, mid, leaf].map((i) => [i.number, i]));
+    expect(missingLabels(leaf, lookup)).toEqual([]);
+    const orphan = node(13, ["bug", "area: ci", "priority: high"], 99);
+    expect(missingLabels(orphan, new Map([[13, orphan]]))).toEqual(["tier"]);
+  });
+
+  it("does not count an empty area: label as an area", () => {
+    const i = node(5, ["priority: later", "bug", "area: "]);
+    expect(missingLabels(i, new Map([[5, i]]))).toEqual(["area"]);
+  });
+
+  it("lists open issues only, by number, and exempts the roadmap plan issue", () => {
+    const issues = new Map([
+      [7, node(7, ["bug"])],
+      [3, node(3, [])],
+      [1146, node(1146, ["roadmap"])],
+      [8, { ...node(8, []), state: "CLOSED" }],
+      [9, node(9, ["priority: next", "area: ui", "enhancement"])],
+    ]);
+    expect(labelGaps(issues, issues)).toEqual([
+      { number: 3, missing: ["tier", "area", "type"] },
+      { number: 7, missing: ["tier", "area"] },
+    ]);
   });
 });
 
@@ -646,7 +706,8 @@ describe("sync", () => {
       "would add #50 New thing",
       "would set #50 Tier -> Next",
       "would set #50 Kind -> Issue",
-      "summary: added 1, changed 1, unchanged 0, skipped 0, failed 0 (dry run)",
+      "missing labels: #50 area, type",
+      "summary: added 1, changed 1, unchanged 0, skipped 0, failed 0, missing labels 1 (dry run)",
     ]);
     expect(lines.join("\n")).not.toContain(TOKEN);
     // The token travels in the Authorization header and nowhere else.
@@ -654,6 +715,27 @@ describe("sync", () => {
       expect(r.init.headers.Authorization).toBe(`bearer ${TOKEN}`);
       expect(r.init.body).not.toContain(TOKEN);
     }
+  });
+
+  it("reports each open issue missing a tier, an area or a type label, without failing", async () => {
+    const gh = fakeGitHub({
+      issues: [
+        // An epic closed long ago, read only as an ancestor: its tier still counts.
+        issue(1, { state: "CLOSED", closedAt: "2026-01-01T00:00:00Z", labels: ["priority: next"] }),
+        issue(20, { labels: ["epic", "area: ci"], parent: 1 }),
+        issue(21, { labels: ["bug", "area: ui"], parent: 20 }),
+        issue(22, { labels: ["bug"] }),
+        issue(23, { labels: ["priority: later", "area: ci", "testing"] }),
+        issue(24, { labels: ["roadmap"] }),
+        issue(25, { state: "CLOSED", closedAt: "2026-10-10T00:00:00Z" }),
+      ],
+    });
+    const { counts, lines } = await run(gh);
+    expect(counts.failed).toBe(0);
+    expect(lines.filter((l) => l.startsWith("missing labels:"))).toEqual([
+      "missing labels: #22 tier, area",
+    ]);
+    expect(lines.at(-1)).toMatch(/, failed 0, missing labels 1$/);
   });
 
   it("skips a value the board has no option for, and says so", async () => {
@@ -810,7 +892,8 @@ describe("sync", () => {
       "would set #90 Tier -> Unranked",
       "would set #90 Kind -> Issue",
       "would set #90 Area -> docs",
-      "summary: added 1, changed 1, unchanged 0, skipped 0, failed 0 (dry run)",
+      "missing labels: #90 tier, type",
+      "summary: added 1, changed 1, unchanged 0, skipped 0, failed 0, missing labels 1 (dry run)",
     ]);
   });
 
@@ -1081,6 +1164,24 @@ describe("main", () => {
     });
     return { code, out, err };
   }
+
+  it("exits 0 when issues are missing labels: the check is a report, not a failure", async () => {
+    // Already on the board with every value, so the run writes nothing and never waits.
+    const values = { Tier: "Unranked", Kind: "Issue" };
+    const gh = fakeGitHub({
+      issues: [issue(1), issue(2, { labels: ["bug"] })],
+      items: [
+        { number: 1, values },
+        { number: 2, values: { ...values, Kind: "Bug" } },
+      ],
+    });
+    const { code, out, err } = await cli(gh, { GH_TOKEN: TOKEN });
+    expect(gh.mutations).toEqual([]);
+    expect(code).toBe(0);
+    expect(err).toEqual([]);
+    expect(out).toContain("missing labels: #1 tier, area, type");
+    expect(out).toContain("missing labels: #2 tier, area");
+  });
 
   it("exits 0 on a clean run, reading the token from GH_TOKEN or GITHUB_TOKEN", async () => {
     const gh = fakeGitHub({ issues: [issue(1)] });

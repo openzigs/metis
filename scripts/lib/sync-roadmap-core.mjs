@@ -18,6 +18,9 @@
  *      archived item, and an item outside what it read, exactly as they are.
  *   5. SETS Tier, Kind, Area, Progress % and Sub-issues done, only where the value differs. NEVER
  *      touches Status (GitHub's built-in workflows own it).
+ *   6. REPORTS every open issue missing a tier (its own or an ancestor's), an `area:` label or a type
+ *      label (#1181), one `missing labels:` line each and a count in the summary. A report only: it
+ *      never fails the run and never writes a label.
  *
  * How METIS differs from On Your Left, deliberately:
  *   - Tier is the issue's own label (`priority: now|next|later`, then `blocked`), else the nearest
@@ -58,6 +61,19 @@ export const TIER_BY_LABEL = /** @type {const} */ ([
 export const UNRANKED = "Unranked";
 
 export const AREA_PREFIX = "area:";
+
+/** #1181: every issue carries one of these; `feature` is accepted beside `enhancement`. */
+export const TYPE_LABELS = /** @type {const} */ ([
+  "bug",
+  "enhancement",
+  "feature",
+  "epic",
+  "documentation",
+  "testing",
+  "dependencies",
+]);
+/** The roadmap plan issue (#1146) carries this label and is exempt from the label check. */
+export const EXEMPT_LABEL = "roadmap";
 
 export const TIER = "Tier";
 export const KIND = "Kind";
@@ -174,6 +190,39 @@ export function missingAreaOptions(issues, optionNames) {
 }
 
 /**
+ * #1181 — which of a tier, an area and a type label an issue lacks, in that order. Tier is resolved
+ * exactly as the Tier field is, so one inherited from an ancestor counts as present.
+ *
+ * @param {Pick<Issue, "number" | "labels">} issue
+ * @param {Map<number, Pick<Issue, "number" | "labels" | "parent">>} lookup
+ * @returns {Array<"tier" | "area" | "type">}
+ */
+export function missingLabels(issue, lookup) {
+  /** @type {Array<"tier" | "area" | "type">} */
+  const missing = [];
+  if (resolveTier(issue.number, lookup) === UNRANKED) missing.push("tier");
+  if (areaOf(issue.labels) == null) missing.push("area");
+  const labels = new Set(issue.labels);
+  if (!TYPE_LABELS.some((type) => labels.has(type))) missing.push("type");
+  return missing;
+}
+
+/**
+ * Every open issue missing a label, by number; the `roadmap` plan issue is exempt.
+ *
+ * @param {Map<number, Pick<Issue, "number" | "labels" | "state">>} issues
+ * @param {Map<number, Pick<Issue, "number" | "labels" | "parent">>} lookup
+ * @returns {Array<{ number: number, missing: Array<"tier" | "area" | "type"> }>}
+ */
+export function labelGaps(issues, lookup) {
+  return [...issues.values()]
+    .filter((issue) => issue.state === "OPEN" && !issue.labels.includes(EXEMPT_LABEL))
+    .map((issue) => ({ number: issue.number, missing: missingLabels(issue, lookup) }))
+    .filter((gap) => gap.missing.length > 0)
+    .sort((a, b) => a.number - b.number);
+}
+
+/**
  * [Progress %, Sub-issues done] from `subIssuesSummary`; [null, null] clears both.
  *
  * @param {SubIssuesSummary | null | undefined} summary
@@ -248,9 +297,12 @@ export function encodeValue(field, value) {
   return option ? { singleSelectOptionId: option.id } : null;
 }
 
-/** @param {Counts} counts */
-export function summaryLine(counts) {
-  return `summary: added ${counts.added}, changed ${counts.changed}, unchanged ${counts.unchanged}, skipped ${counts.skipped}, failed ${counts.failed}`;
+/**
+ * @param {Counts} counts
+ * @param {number} missingLabelCount open issues missing a tier, an area or a type label (#1181)
+ */
+export function summaryLine(counts, missingLabelCount) {
+  return `summary: added ${counts.added}, changed ${counts.changed}, unchanged ${counts.unchanged}, skipped ${counts.skipped}, failed ${counts.failed}, missing labels ${missingLabelCount}`;
 }
 
 /**
@@ -770,7 +822,10 @@ export async function sync({
   if (deferred) {
     log(`write budget of ${MAX_MUTATIONS} reached: ${deferred} issues continue on the next run`);
   }
-  log(summaryLine(counts) + (client.dryRun ? " (dry run)" : ""));
+  // #1181: a report only — it changes no count that decides the exit code.
+  const gaps = labelGaps(issues, lookup);
+  for (const gap of gaps) log(`missing labels: #${gap.number} ${gap.missing.join(", ")}`);
+  log(summaryLine(counts, gaps.length) + (client.dryRun ? " (dry run)" : ""));
   return counts;
 }
 

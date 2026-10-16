@@ -26,7 +26,7 @@ is therefore the primary interface for everything below, not a fallback (#1180):
 
 | Task | Command |
 |------|---------|
-| Create an epic or issue | `gh issue create --title ... --body-file /tmp/body.md --label epic` |
+| Create an epic or issue | `gh issue create --title ... --body-file /tmp/body.md --label epic --label "priority: next" --label "area: <name>" --project "METIS roadmap"` |
 | Read existing issues (avoid duplicates) | `gh issue list --search "<terms>" --state all --json number,title` |
 | Update an issue body | `gh issue edit {N} --body-file /tmp/body.md` |
 | List a parent's sub-issues | `gh api repos/{owner}/{repo}/issues/{PARENT}/sub_issues` |
@@ -57,20 +57,22 @@ The main session, which does hold MCP tools, may use `mcp__github__*` for the sa
 
 ## Labels
 
-Create and use these labels on every issue. If the label doesn't exist in the repo, create it.
+Every issue filed in `openzigs/metis` carries **a tier, an area and a type label, and joins the
+roadmap board at creation** (#1181). The full rule is `docs/ops/roadmap-board.md` > "Filing an
+issue"; in short:
 
-| Label | Color (hex) | Description |
-|-------|-------------|-------------|
-| `epic` | `#7057ff` | Top-level planning epic |
-| `feature` | `#1d76db` | New feature or enhancement |
-| `frontend` | `#0075ca` | React / UI / Tailwind work |
-| `backend` | `#d93f0b` | Server-side / API work |
-| `database` | `#0e8a16` | Schema, migrations, data access |
-| `infra` | `#fbca04` | Docker, CI/CD, deployment config |
-| `docs` | `#d4c5f9` | Documentation updates |
-| `testing` | `#bfd4f2` | Test coverage and QA |
-| `security` | `#b60205` | Security-related work |
-| `blocked` | `#e4e669` | Waiting on another issue |
+| Kind | Labels | Rule |
+|------|--------|------|
+| **Tier** — exactly one | `priority: now`, `priority: next`, `priority: later` (+ `blocked` when blocked) | Now only on the owner's decision (#1146). Next for walkthrough findings and defects a user would hit. Later for follow-ups, nits and optional work. A sub-issue that follows its epic's tier may omit it — say so in the body |
+| **Area** — exactly one | `area: run-state`, `area: analyst-flow`, `area: plan-impact`, `area: docs`, `area: review-trace-chat`, `area: security`, `area: model-json`, `area: walkthrough`, `area: ci`, `area: code-graph`, `area: cleanup`, `area: ui` | A new area only on the owner's say |
+| **Type** — at least one | `epic`, `bug`, `enhancement` (or `feature`), `documentation`, `testing`, `dependencies` | `epic` on every epic, master and child |
+| Severity — optional | `priority: high` | A severity, **not** a tier: it sets no tier |
+| Component — optional | `frontend`, `backend`, `database`, `infra`, `security` | Extra detail only; never instead of an `area:` label |
+
+Every `gh issue create` below also takes **`--project "METIS roadmap"`**, which adds the issue to
+the board at once. The flag needs a token with the `project` scope; if it fails, re-run without
+it — the nightly sync adds the issue within a day — and say which happened. An epic filed into
+Now or Next gets a line in #1146's matching section.
 
 ## Story Points (Fibonacci Scale)
 
@@ -179,7 +181,7 @@ Present the plan to the user for approval before creating issues.
 
 ### Step 3: Create the Master Epic (if full system)
 
-Create it with `gh issue create --label epic --title ... --body-file /tmp/epic.md`:
+Create it with `gh issue create --label epic --label "priority: <tier>" --label "area: <name>" --project "METIS roadmap" --title ... --body-file /tmp/epic.md`:
 
 **Title**: `[MASTER EPIC] {System Name} — Order of Operations`
 
@@ -298,11 +300,11 @@ graph LR
 - `docs/USER_GUIDE.md` — Maintained by Code Issue agent during implementation
 ````
 
-**Labels**: `epic`
+**Labels**: `epic`, one tier, one `area:` (see Labels)
 
 ### Step 4: Create Child Epics
 
-For each child epic, run `gh issue create`, then link it to the master epic with the `sub_issues` call from the Tools section (resolve the child's database `id` first).
+For each child epic, run `gh issue create` with `--label epic`, a tier, an `area:` label and `--project "METIS roadmap"` (see Labels), then link it to the master epic with the `sub_issues` call from the Tools section (resolve the child's database `id` first).
 
 **Child Epic body template**:
 
@@ -351,7 +353,7 @@ For each child epic, run `gh issue create`, then link it to the master epic with
 
 ### Step 5: Create Sub-Issues
 
-For each sub-issue under every epic, run `gh issue create`, then link it to its parent epic with the `sub_issues` call from the Tools section (resolve the sub-issue's database `id` first).
+For each sub-issue under every epic, run `gh issue create` with a type label, an `area:` label, a tier (or a line in the body saying it follows its epic's) and `--project "METIS roadmap"` (see Labels), then link it to its parent epic with the `sub_issues` call from the Tools section (resolve the sub-issue's database `id` first).
 
 **Sub-Issue body template**:
 
