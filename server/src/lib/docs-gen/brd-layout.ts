@@ -39,6 +39,7 @@
 import { getConfigService, type ConfigService } from "../config/config-service.js";
 import {
   fitDocumentToPlan,
+  waterFill,
   type PlanFitResult,
   type PlanFitSection,
   type SectionCutKind,
@@ -191,9 +192,10 @@ const sum = (values: readonly number[]): number => values.reduce((n, v) => n + v
 /**
  * Fit a reader-layout document: the main sections (`isMain[i]`) to
  * {@link mainFitCap} of `bodyMaxChars` — the summary sections (`isSummary[i]`)
- * first, to what the other main sections leave of that cap but not below
- * {@link MAIN_SUMMARY_FLOOR_CHARS} each, then the others to what the summaries
- * kept — then the appendix sections to what is
+ * first, each fitted on its own: they share what the other main sections
+ * leave of that cap (max-min, so a short one keeps all of itself), and each
+ * keeps at least {@link MAIN_SUMMARY_FLOOR_CHARS} of its own (all of itself
+ * when shorter); then the others to what the summaries kept — then the appendix sections to what is
  * left of `bodyMaxChars` after the main part as fitted and the divider. Each
  * part is fitted by `fitDocumentToPlan`, so within a part nothing is cut while
  * it fits, and what is cut is listed. Room the main part does not use is the
@@ -215,29 +217,33 @@ export function fitReaderDocument(
   const limit = mainFitCap(bodyMaxChars);
   const joins = 2 * Math.max(0, mainAt.length - 1);
   const cap = Math.max(0, limit - joins);
-  // The summaries first: they get what the other main sections leave of the
-  // cap, but never less than their floor while they are longer than it.
+  // The summaries first, each on its own floor: every summary keeps at least
+  // MAIN_SUMMARY_FLOOR_CHARS of itself (all of itself when shorter), and the
+  // room the other main sections leave above the floors is shared max-min.
   const summaryAt = mainAt.filter((i) => isSummary[i] === true);
   const ownAt = mainAt.filter((i) => isSummary[i] !== true);
-  const length = (at: readonly number[]): number =>
-    sum(at.map((i) => measure(sections[i].markdown)));
-  const summaryFloor = Math.min(length(summaryAt), MAIN_SUMMARY_FLOOR_CHARS * summaryAt.length);
-  const summaries = fitDocumentToPlan(
-    summaryAt.map((i) => sections[i]),
-    Math.max(0, Math.min(cap, Math.max(summaryFloor, cap - length(ownAt)))),
-    measure,
-    limit,
-    "BRD_MAIN_SUMMARY",
+  const lengthOf = (i: number): number => measure(sections[i].markdown);
+  const floors = summaryAt.map((i) => Math.min(lengthOf(i), MAIN_SUMMARY_FLOOR_CHARS));
+  const room = Math.min(cap, Math.max(sum(floors), cap - sum(ownAt.map(lengthOf))));
+  const extras = waterFill(
+    summaryAt.map((i, k) => lengthOf(i) - floors[k]),
+    Math.max(0, room - sum(floors)),
+  );
+  const summaries = summaryAt.map((i, k) =>
+    fitDocumentToPlan([sections[i]], floors[k] + extras[k], measure, limit, "BRD_MAIN_SUMMARY"),
+  );
+  const summariesKept = sum(
+    summaries.map((fit) => sum(fit.sections.map((section) => measure(section)))),
   );
   const own = fitDocumentToPlan(
     ownAt.map((i) => sections[i]),
-    Math.max(0, cap - sum(summaries.sections.map((section) => measure(section)))),
+    Math.max(0, cap - summariesKept),
     measure,
     limit,
     "BRD_MAIN_PART",
   );
   const main = mergeFits(mainAt.length, [
-    { at: summaryAt.map((i) => mainAt.indexOf(i)), result: summaries },
+    ...summaryAt.map((i, k) => ({ at: [mainAt.indexOf(i)], result: summaries[k] })),
     { at: ownAt.map((i) => mainAt.indexOf(i)), result: own },
   ]);
   const mainChars = sum(main.sections.map((section) => measure(section))) + joins;

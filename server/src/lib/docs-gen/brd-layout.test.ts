@@ -422,6 +422,67 @@ describe("fitReaderDocument", () => {
       expect(fit.cuts[0]).toBe("whole");
     });
 
+    it("keeps each summary's own floor, however unequal their sizes", () => {
+      // Capabilities three times the size of Key Rules; the requirements alone
+      // over the cap, so both summaries come down to their floors.
+      const sections = [
+        { markdown: section("Executive Summary", 2, 1_000), budgetChars: 8_000 },
+        { markdown: section("Core Business Capabilities", 120, 300), budgetChars: 12_000 },
+        { markdown: section("Key Business Rules", 40, 300), budgetChars: 12_000 },
+        {
+          markdown: section("Requirements Reconstructed from the Code", 60, 1_250),
+          budgetChars: 16_000,
+        },
+      ];
+      const fit = fitReaderDocument(sections, isMain, 245_000, length, 250_000, isSummary);
+      expect(sections[1].markdown.length).toBeGreaterThan(3 * sections[2].markdown.length - 1_000);
+      for (const i of [1, 2]) {
+        expect({ i, cut: fit.cuts[i] !== "whole" }).toEqual({ i, cut: true });
+        // Each at its own floor: not one 8k budget the larger section takes.
+        expect(fit.sections[i].length).toBeLessThanOrEqual(MAIN_SUMMARY_FLOOR_CHARS);
+        expect(fit.sections[i].length).toBeGreaterThan(MAIN_SUMMARY_FLOOR_CHARS - 600);
+      }
+      expect(fit.mainChars).toBeLessThanOrEqual(BRD_MAIN_MAX_CHARS);
+    });
+
+    it("keeps a summary shorter than its floor whole, and gives the other the rest of the room", () => {
+      const sections = [
+        { markdown: section("Executive Summary", 2, 1_000), budgetChars: 8_000 },
+        { markdown: section("Core Business Capabilities", 120, 300), budgetChars: 12_000 },
+        { markdown: section("Key Business Rules", 6, 300), budgetChars: 12_000 },
+        {
+          markdown: section("Requirements Reconstructed from the Code", 60, 1_250),
+          budgetChars: 16_000,
+        },
+      ];
+      expect(sections[2].markdown.length).toBeLessThan(MAIN_SUMMARY_FLOOR_CHARS);
+      const fit = fitReaderDocument(sections, isMain, 245_000, length, 250_000, isSummary);
+      expect(fit.sections[2]).toBe(sections[2].markdown);
+      expect(fit.cuts[2]).toBe("whole");
+      expect(fit.sections[1].length).toBeLessThanOrEqual(MAIN_SUMMARY_FLOOR_CHARS);
+      expect(fit.sections[1].length).toBeGreaterThan(MAIN_SUMMARY_FLOOR_CHARS - 600);
+    });
+
+    it("shares the room above the floors max-min between unequal summaries", () => {
+      // The requirements are short, so the summaries share most of the cap:
+      // the shorter one keeps all of itself and the longer one the rest.
+      const sections = [
+        { markdown: section("Executive Summary", 2, 1_000), budgetChars: 8_000 },
+        { markdown: section("Core Business Capabilities", 200, 400), budgetChars: 12_000 },
+        { markdown: section("Key Business Rules", 30, 400), budgetChars: 12_000 },
+        {
+          markdown: section("Requirements Reconstructed from the Code", 10, 500),
+          budgetChars: 16_000,
+        },
+      ];
+      const fit = fitReaderDocument(sections, isMain, 245_000, length, 250_000, isSummary);
+      expect(fit.sections[2]).toBe(sections[2].markdown);
+      expect(fit.sections[3]).toBe(sections[3].markdown);
+      expect(fit.cuts[1]).not.toBe("whole");
+      expect(fit.mainChars).toBeLessThanOrEqual(BRD_MAIN_MAX_CHARS);
+      expect(fit.mainChars).toBeGreaterThan(BRD_MAIN_MAX_CHARS - 1_500);
+    });
+
     it("cuts nothing while the main part fits", () => {
       const sections = main({ caps: 300, rules: 300, reqs: 200 });
       const fit = fitReaderDocument(sections, isMain, 245_000, length, 250_000, isSummary);
