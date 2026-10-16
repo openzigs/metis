@@ -18,6 +18,13 @@ describe("stripMetisMarkers — #1170", () => {
     );
   });
 
+  it("strips a long run of trailing tabs in linear time", () => {
+    const line = `x${"\t".repeat(100_000)}y <!-- metis:a -->`;
+    const started = performance.now();
+    expect(stripMetisMarkers(line)).toBe(`x${"\t".repeat(100_000)}y`);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
   it("keeps a paragraph typed straight after the end marker apart from the last answer", () => {
     // A marker line is a line break; removing it outright would make "Typed."
     // a lazy continuation of the list item above.

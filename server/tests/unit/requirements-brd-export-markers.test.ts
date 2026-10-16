@@ -92,6 +92,8 @@ describe("requirements BRD exports — #1170", () => {
     const out = await exportDocument(markdown, "BRD", "docx");
     const zip = await JSZip.loadAsync(out.buffer);
     const xml = (await zip.file("word/document.xml")?.async("string")) ?? "";
-    expectWholeAndClean(xml.replace(/<[^>]+>/g, ""));
+    // The document's text is the content of its `w:t` runs.
+    const text = [...xml.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map((m) => m[1]).join("");
+    expectWholeAndClean(text);
   });
 });

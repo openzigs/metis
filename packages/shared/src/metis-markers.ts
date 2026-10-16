@@ -26,7 +26,9 @@ export function stripMetisMarkers(text: string): string {
     .split("\n")
     .map((line) => {
       const stripped = line.replace(internalMarkerPattern(), "");
-      return stripped === line ? line : stripped.replace(/[ \t]+$/, "");
+      // `trimEnd`, not a `[ \t]+$` regex: that backtracks quadratically on a long
+      // run of tabs in stored text (CodeQL js/polynomial-redos).
+      return stripped === line ? line : stripped.trimEnd();
     })
     .join("\n");
 }
