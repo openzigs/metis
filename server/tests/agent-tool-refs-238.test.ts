@@ -67,6 +67,8 @@ const { __resetSearchKnowledgeRegistration, registerSearchKnowledgeTool } =
   await import("../src/lib/rag/search-knowledge-tool.js");
 const { registerSearchKnowledgeGlobalTool } =
   await import("../src/lib/rag/search-knowledge-global-tool.js");
+const { registerRequirementTools } =
+  await import("../src/lib/requirements/requirements-chat-tools.js");
 const {
   BUILT_IN_AGENTS,
   CustomAgentError,
@@ -326,15 +328,16 @@ describe("#727 agentSelectableTools — the authoring picker offers the code too
 
 describe("#238 the built-in custom agents", () => {
   it("name only tools the boot registry (or the chat code tools) really carries", () => {
-    // The two knowledge tools `server.ts` registers before it seeds the built-ins.
+    // The knowledge and requirement tools `server.ts` registers before it seeds the built-ins.
     registerSearchKnowledgeTool();
     registerSearchKnowledgeGlobalTool();
+    registerRequirementTools(getToolRegistry());
     const known = knownToolNames(getToolRegistry());
     for (const def of BUILT_IN_AGENTS) {
       expect(unknownToolRefs(def.tools, known), def.name).toEqual([]);
     }
-    // Deliberate: every built-in but the PO carries at least one tool.
-    expect(BUILT_IN_AGENTS.filter((d) => d.tools.length === 0).map((d) => d.name)).toEqual(["PO"]);
+    // #1050 — every built-in carries at least one tool (the PO reads requirements).
+    expect(BUILT_IN_AGENTS.filter((d) => d.tools.length === 0).map((d) => d.name)).toEqual([]);
   });
 
   it("are refused LOUDLY, before any row is written, when a built-in names an unknown tool", async () => {
@@ -347,7 +350,9 @@ describe("#238 the built-in custom agents", () => {
   });
 
   it("are seeded when every tool they name is registered", async () => {
-    await expect(ensureBuiltInAgents(registryWith("search-knowledge"))).resolves.toBeUndefined();
+    await expect(
+      ensureBuiltInAgents(registryWith("search-knowledge", "list_requirements", "get_requirement")),
+    ).resolves.toBeUndefined();
   });
 });
 

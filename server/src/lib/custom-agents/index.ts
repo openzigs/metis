@@ -206,19 +206,29 @@ export function nextAgentVersion(current: string | null | undefined): string {
 
 /**
  * #238 — each built-in's `tools` names only tools METIS really has: the
- * project knowledge search (`search-knowledge`) and the chat code tools. They
- * once named `search_documents`, `search_code` and `record_project_memory`,
- * which no tool carries, so — the allowlist being enforced exactly — every
- * built-in ran with no tools at all. `ensureBuiltInAgents` now refuses to seed
- * a built-in that names an unknown tool.
+ * project knowledge search (`search-knowledge`), the chat code tools and the
+ * requirement tools. They once named `search_documents`, `search_code` and
+ * `record_project_memory`, which no tool carries, so — the allowlist being
+ * enforced exactly — every built-in ran with no tools at all.
+ * `ensureBuiltInAgents` now refuses to seed a built-in that names an unknown
+ * tool.
+ *
+ * #1050 — every built-in reads the project's requirements in chat
+ * (`list_requirements` / `get_requirement`: read-only, `low` risk, scoped by
+ * the server to the session's project). No built-in is given a write tool.
  */
+// Literal names, not imports: `requirements-chat-tools.ts` pulls in the
+// analysis and traceability services. The seed check above fails loudly if
+// either name ever stops matching a registered tool.
+const REQUIREMENT_READ_TOOLS = ["list_requirements", "get_requirement"] as const;
+
 const BUILT_INS: ReadonlyArray<CustomAgentDefinition & { description: string }> = [
   {
     name: "BA",
     description: "Business Analyst — extracts goals, stakeholders, and rules from scope docs.",
     systemPrompt:
       "You are a Business Analyst. Read the supplied scope documents and emit clear, structured business goals, stakeholder lists, and explicit business rules. Be concise and avoid implementation detail.",
-    tools: ["search-knowledge"],
+    tools: ["search-knowledge", ...REQUIREMENT_READ_TOOLS],
     model: null,
     reasoningEffort: "medium",
   },
@@ -227,7 +237,12 @@ const BUILT_INS: ReadonlyArray<CustomAgentDefinition & { description: string }> 
     description: "Solution Architect — identifies components, APIs, and architectural impact.",
     systemPrompt:
       "You are a Solution Architect. Inspect the codebase and document the architecture: components, APIs, data flow, and risks. Cite file paths.",
-    tools: ["search-knowledge", "search_code_graph", "search_code_symbols"],
+    tools: [
+      "search-knowledge",
+      "search_code_graph",
+      "search_code_symbols",
+      ...REQUIREMENT_READ_TOOLS,
+    ],
     model: null,
     reasoningEffort: "high",
   },
@@ -237,9 +252,10 @@ const BUILT_INS: ReadonlyArray<CustomAgentDefinition & { description: string }> 
       "Product Owner — turns goals into prioritised user stories with acceptance criteria.",
     systemPrompt:
       "You are a Product Owner. Convert the analysis into concrete user stories using Given/When/Then acceptance criteria, prioritised by business value.",
-    // Deliberately none: the PO works from the analysis it is given, and METIS
-    // has no project-memory tool for it to write to (#238).
-    tools: [],
+    // Requirements only (#1050): stories are written against the project's
+    // existing requirements. No knowledge search — the PO works from the
+    // analysis it is given — and METIS has no project-memory tool to write to (#238).
+    tools: [...REQUIREMENT_READ_TOOLS],
     model: null,
     reasoningEffort: "medium",
   },
@@ -248,7 +264,7 @@ const BUILT_INS: ReadonlyArray<CustomAgentDefinition & { description: string }> 
     description: "QA Lead — derives a test plan and edge cases from user stories.",
     systemPrompt:
       "You are a QA Lead. Derive a test plan from the user stories: scenario coverage, edge cases, and explicit non-functional requirements.",
-    tools: ["search-knowledge"],
+    tools: ["search-knowledge", ...REQUIREMENT_READ_TOOLS],
     model: null,
     reasoningEffort: "medium",
   },
