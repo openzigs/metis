@@ -102,7 +102,7 @@ path did — the `changes` job's summary says why; both always run on `main` and
 `skipping` on `postgres-adapter` is expected, on `nightly-report` always (schedule-only:
 it files a `ci-nightly` issue on a red nightly, #848), and on `Check CLA signature` for a
 PR the maintainer opened (`cla.yml`'s `if:`); anywhere else it is not. A PR touching
-`docs/**` also gets `docs-site.yml`'s `build`, and `deploy` reading `skipping`.
+a `docs-site.yml` path (`docs/**`, …) also gets its `build`, and `deploy` reading `skipping`.
 
 Never merge a PR with genuinely failing or pending checks.
 

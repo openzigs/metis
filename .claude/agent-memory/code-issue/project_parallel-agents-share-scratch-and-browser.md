@@ -28,7 +28,8 @@ Checked against `main` at b16dcc30.
   closed #1190; #1205 closed #1145).
 - **Logs and scripts too.** Name every scratch file with the issue number, not only PR
   bodies (#1186).
-- **The worktree-isolation guard refuses compound Bash** that runs `git` or `gh api` inside a
+- **The worktree-isolation guard refuses compound Bash** (Claude Code harness behaviour for
+  agents dispatched with `isolation: "worktree"`, not a hook in this repo) that runs `git` or `gh api` inside a
   loop, `$()` or a long `&&` chain, and a loop passing a variable to `sed`. Write multi-step
   work to a script file (with the Write tool) and run `bash <file>` as its own call; run git
   one call at a time.

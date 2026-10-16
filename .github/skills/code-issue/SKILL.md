@@ -193,7 +193,8 @@ Before creating the PR, perform a comprehensive security review:
      `js/missing-rate-limiting` counts only a limiter ahead of `requireAuth`. Key the
      pre-auth one on the user id in a token this server signed (expiry ignored), else the
      TCP peer; never on `req.ip` (client-writable `X-Forwarded-For` under `trust proxy`),
-     as `spec-kit-delete-rate-limit.ts` does, nor on the presented token. Copy its tests too,
+     nor on the presented token. `spec-kit-delete-rate-limit.ts` keys on `req.ip`: it is the
+     example to avoid, not a template. Copy `runs-rate-limit.ts`'s tests too,
      including the expired-token case (`runs-rate-limit.test.ts`).
 3. **Report to user** — Present findings with severity and suggested fixes
 4. **Apply fixes** — Fix all identified vulnerabilities and re-run tests
@@ -410,7 +411,9 @@ that instruction ever goes missing (#1168).
    - **Re-read `closingIssuesReferences` after every `gh pr create`/`edit`** until it names
      exactly your issues. Editing `Closes #N` out of a body does not unlink it, so a PR that
      defers a criterion needs its follow-up issue filed before merge; and a squash title
-     saying `Resolve #N` closes N whatever the body says.
+     saying `Resolve #N` closes N whatever the body says, so keep it out of a Refs-only
+     title or pass `gh pr merge --subject`. After merging, check
+     `gh issue view N --json state`: a closing keyword has also failed to close (#439).
    - The body must include: a summary of all changes, `Closes #N` for **every**
      resolved issue, the coverage summary, and the security scan result.
 5. Add inline comments only if a specific line needs one — the review-publishing form
@@ -422,7 +425,9 @@ that instruction ever goes missing (#1168).
 **CodeQL runs on every PR.** `.github/workflows/codeql.yml` reports `Analyze javascript-typescript`,
 `Analyze python` and `CodeQL`, next to **`Semgrep`** and **`Dependency audit`**. A new alert
 fails `CodeQL` like any other check: new routes have raised `js/missing-rate-limiting` and
-`js/missing-token-validation`. Read the alert, fix the code, and re-check.
+`js/missing-token-validation`. Read the alert, fix the code, and re-check. Read
+`gh pr checks` only once `CodeQL` **and** both `Analyze` jobs are done: their order varies
+(on #1217 `CodeQL` completed before `Analyze javascript-typescript`).
 
 1. **Wait for checks to complete.** `gh pr checks {PR_NUMBER} --watch` blocks, but it has
    exited 0 with jobs still pending and can return a transient empty set — so finish with a

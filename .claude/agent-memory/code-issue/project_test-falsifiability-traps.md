@@ -25,9 +25,11 @@ New (2026-10-16, #1185, #1205, #1206 reviews; checked against `main` at b16dcc30
   runs the zod `parse`, whose default strips unknown keys, so a test passing a model-injected
   `projectId` does not prove the handler ignores it. Pin the schema shape (or `.strict()`).
 - **Hand-built tool registries.** Adding a tool to a built-in persona
-  (`server/src/lib/custom-agents/index.ts`) also needs it in the `registryWith(...)` registries
-  of `server/tests/custom-agents.test.ts` and `server/tests/agent-tool-refs-238.test.ts`, or
-  `ensureBuiltInAgents` refuses to seed.
+  (`server/src/lib/custom-agents/index.ts`) also needs it registered in the tests, or
+  `ensureBuiltInAgents` refuses to seed. `server/tests/custom-agents.test.ts` registers the
+  boot tools in its `beforeEach` (`registerSearchKnowledgeTool`, `registerRequirementTools`);
+  `server/tests/agent-tool-refs-238.test.ts` builds hand-made `registryWith(...)` registries
+  (defined around line 82).
 - **Key-registry file snapshot.** Adding a key to `server/src/lib/config/key-registry.ts`
   fails the `toMatchFileSnapshot` in
   `server/tests/lib/config/key-registry-parse-semantics.test.ts`, seen only in the full server
