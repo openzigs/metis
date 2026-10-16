@@ -308,6 +308,14 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "#1070 — whether a business-requirements document is planned before it is written (default off; only `on` turns it on). on: the document budget (DOCS_GEN_DOCUMENT_MAX_CHARS) is shared among the sections and each catalogue section's share among its topics (one per module) before generation, with no model call, and each prompt states its share; a topic that cannot have even a minimum share is left out by priority and listed with the section's omitted topics; a share is a target, so nothing is cut from a document that fits its caps, and when a cap is exceeded each overrunning part loses its own tail instead of the section losing its last topics, the document as a whole never keeping less than without a plan (headings counted; one section can keep less, and every planned run logs what each section kept); sections are given the canonical facts sheet (named constants and formulas read from the source) to cite; and the finished document is checked for one of those values stated differently from the source (an informational note, nothing is changed). off: generated exactly as before #1070. Other document types are never planned. Turning it on or off rewrites the document's sections once, on its next generation.",
     sensitive: false,
   },
+  DOCS_GEN_BRD_LAYOUT: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.enum(["reader", "catalogue"]),
+    description:
+      "#1175 — how a full-scope business-requirements document is laid out (default catalogue; only `reader` turns the new layout on). reader: a main document for a business reader, held to about 48k characters planned and 60k at most (Executive Summary, Scope & Domain; Core Business Capabilities; Key Business Rules; Requirements & Acceptance Criteria, each asked for its own length), followed in the same document by an appendix with the module-by-module detail (the Business Rules catalogue, Key Workflows, Calculations, Data Model, Integrations & Glossary) in the rest of DOCS_GEN_DOCUMENT_MAX_CHARS. It plans the document whatever DOCS_GEN_TOPIC_PLAN says. catalogue: generated exactly as before #1175. Requirements-scoped documents and other document types are not affected. Changing it rewrites a BRD's sections once, on its next generation.",
+    sensitive: false,
+  },
   DOCS_GEN_PHASE1_CHUNK_INPUT_TOKENS: {
     tier: "tunable",
     valueType: "int",

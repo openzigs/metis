@@ -55,8 +55,10 @@ the export of the full-scope BRD and of the architecture document (scope `reposi
 test plan ("Phase 9 — doc-quality answer key and rubric"). Read the whole document, not a
 keyword search: a fact is present when it is stated in substance. Check every concrete claim
 outside the key against the Miniflux source at `v2.3.3` before you count it as a
-hallucination, and grade every top-level section A, B, C or F. Return the fixed block under
-Return, item 2.
+hallucination, and grade every top-level section A, B, C or F. Then score the BRD on the
+sign-off rubric ("Phase 9 — BRD sign-off rubric", #1175): requirements with acceptance
+criteria, no raw markers, readable without the code, and a main part of 40–60k characters.
+Return the fixed block under Return, item 2.
 
 **Phase 10 — a follow-up keeps its citations (#773, PR #923).** In one project-scoped session,
 ask BA question 1, then follow up with `Show me the exact lines for the first citation`.
@@ -159,6 +161,12 @@ as plain text.
 
    (The numbers are a format sample.) Accuracy's denominator is coverage's numerator. The
    operator copies these into `run.json` as `docQuality` (`e2e-walkthrough` skill, section 5).
+   Then one sign-off line for the BRD (#1175), which goes in the results table's sign-off row,
+   not in `docQuality`:
+
+   ```
+   Sign-off — BRD: S1 pass (24/24 with criteria) · S2 pass · S3 weak (3 code names) · S4 pass (52,310 main / 231,004 total)
+   ```
 3. **Per-phase table**:
 
    | Phase | Wall time | Input tok | Output tok | Cache-read tok | Cost | Console errors | Works | Useful |

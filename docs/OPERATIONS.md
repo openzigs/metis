@@ -962,6 +962,34 @@ has measured a BRD generated with it on.
   and rewrite that section too. Catalogue sections read every module with content for
   them, so most were being rewritten for that module already.
 
+### 6.8 `DOCS_GEN_BRD_LAYOUT` (#1175): a main document plus an appendix, off by default
+
+`DOCS_GEN_BRD_LAYOUT` (default `catalogue`, registry tunable) set to `reader` writes a
+full-scope business-requirements document as a main document for a business reader (about
+48k characters planned, 60k at most) followed by an appendix with the module-by-module
+detail, in the same document. The decision and its reasoning are in
+`docs/decisions/0021-reader-sized-brd-main-plus-appendix.md`.
+
+- **The upgrade changes nothing.** Unset or `catalogue`, a BRD is generated exactly as
+  before. Any other value is the catalogue layout and is logged.
+- **Set it in Settings, not in the environment.** As with `DOCS_GEN_TOPIC_PLAN` (§6.5), a
+  `DOCS_GEN_*` variable in the process environment is part of every document's input
+  snapshot, so adding or changing it there queues a regeneration of every auto-update
+  document.
+- **`reader` plans the BRD** whatever `DOCS_GEN_TOPIC_PLAN` says, because the main part's
+  length is the plan's per-section targets. Everything §6.5 says of a planned BRD applies:
+  the canonical facts sheet, the consistency note, and one rewrite of each BRD's sections on
+  its next generation.
+- **What to watch in the log.** `Document topic plan` carries `layout: "reader"` and
+  `mainBudgetChars`; `Planned document fit by section` carries `mainChars` (the main part
+  as fitted) and `appendixMaxChars`. A main section that ran past the 60k main cap ends
+  with a note naming the main part, and what it lost is in the version's provenance as
+  omitted topics.
+- **It does not reduce the topics left out for length (#995).** The appendix is the same
+  catalogue with the same budget under the same cap.
+- **No migration and no backfill.** Requirements-scoped documents and other document types
+  are not affected.
+
 ## 7. Container Image Sizes
 
 The release pipeline ships three images:

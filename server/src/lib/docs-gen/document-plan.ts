@@ -180,6 +180,12 @@ export interface SectionDemand {
    * asks for the section cap, which is all that bounded it before.
    */
   askChars?: number;
+  /**
+   * #1175 — the part of a reader-layout document the section is in. Main
+   * sections are planned first, within the plan's `mainBudgetChars`; the
+   * appendix is planned in the rest. Absent everywhere = one part, as before.
+   */
+  part?: "main" | "appendix";
 }
 
 export interface PlannedTopic extends TopicCandidate {
@@ -213,6 +219,12 @@ export interface DocumentPlan {
   sections: PlannedSection[];
   /** Budget no section asked for. `budgetChars` = the sections' budgets + this. */
   unallocatedChars: number;
+  /**
+   * #1175 — present on a reader-layout plan only: what the main part was
+   * planned within. The appendix was planned in `budgetChars` less what the
+   * main sections were given.
+   */
+  mainBudgetChars?: number;
 }
 
 /**
@@ -308,11 +320,20 @@ export function planDocument(input: {
   sectionMaxChars: number;
   /** Room set aside before planning (the footnote definitions). */
   reservedChars?: number;
+  /**
+   * #1175 — with sections marked `part: "main"`: what the main part is
+   * planned within (never more than the document budget). The main sections
+   * are planned first, in that budget alone; the others in what is left.
+   */
+  mainBudgetChars?: number;
 }): DocumentPlan {
   const budgetChars = Math.max(
     0,
     Math.floor(input.documentMaxChars) - Math.max(0, Math.floor(input.reservedChars ?? 0)),
   );
+  if (input.mainBudgetChars !== undefined && input.sections.some((s) => s.part === "main")) {
+    return planInParts({ ...input, mainBudgetChars: input.mainBudgetChars }, budgetChars);
+  }
   const cap = Math.max(0, Math.floor(input.sectionMaxChars));
   const owned = new Set<string>();
   const demands = input.sections.map((section) => {
@@ -353,6 +374,46 @@ export function planDocument(input: {
     budgetChars,
     sections: planned,
     unallocatedChars: budgetChars - planned.reduce((n, s) => n + s.budgetChars, 0),
+  };
+}
+
+/**
+ * #1175 — a reader-layout plan: the main sections planned within
+ * `min(mainBudgetChars, budgetChars)`, the others within what the main
+ * sections were not given. Each part is planned by {@link planDocument} itself,
+ * so within a part every rule above holds; the sections come back in input
+ * order. A topic id is unique within its part.
+ */
+function planInParts(
+  input: {
+    sections: readonly SectionDemand[];
+    sectionMaxChars: number;
+    mainBudgetChars: number;
+  },
+  budgetChars: number,
+): DocumentPlan {
+  const isMain = input.sections.map((s) => s.part === "main");
+  const mainBudget = Math.min(budgetChars, Math.max(0, Math.floor(input.mainBudgetChars)));
+  const main = planDocument({
+    sections: input.sections.filter((_, i) => isMain[i]),
+    documentMaxChars: mainBudget,
+    sectionMaxChars: input.sectionMaxChars,
+  });
+  const mainGiven = main.sections.reduce((n, s) => n + s.budgetChars, 0);
+  const appendix = planDocument({
+    sections: input.sections.filter((_, i) => !isMain[i]),
+    documentMaxChars: budgetChars - mainGiven,
+    sectionMaxChars: input.sectionMaxChars,
+  });
+  let m = 0;
+  let a = 0;
+  const sections = isMain.map((main_) => (main_ ? main.sections[m++] : appendix.sections[a++]));
+  return {
+    version: TOPIC_PLAN_VERSION,
+    budgetChars,
+    sections,
+    unallocatedChars: budgetChars - sections.reduce((n, s) => n + s.budgetChars, 0),
+    mainBudgetChars: mainBudget,
   };
 }
 
@@ -409,7 +470,11 @@ export interface PlanFitSection {
 
 /** The cap a plan fit applies, for the note of a section it shortens. */
 export interface PlanFitLimit {
-  setting: "DOCS_GEN_SECTION_MAX_CHARS" | "DOCS_GEN_DOCUMENT_MAX_CHARS";
+  /**
+   * The limit exceeded. `BRD_MAIN_PART` (#1175) is the main part of a
+   * reader-layout BRD, which is not a setting of its own.
+   */
+  setting: "DOCS_GEN_SECTION_MAX_CHARS" | "DOCS_GEN_DOCUMENT_MAX_CHARS" | "BRD_MAIN_PART";
   maxChars: number;
 }
 
@@ -464,6 +529,9 @@ export interface PlanFitResult {
  * that was exceeded, with that limit's own value.
  */
 export function plannedOmissionNote(omitted: readonly string[], limit: PlanFitLimit): string {
+  if (limit.setting === "BRD_MAIN_PART") {
+    return `${SHORTENED_NOTE_LEAD} The main part of this document is limited to about ${Math.round(limit.maxChars / 1000)}k characters, so that it can be read through.${omittedTopicsSentence(omitted)} The module-by-module detail is in the appendix.`;
+  }
   const subject =
     limit.setting === "DOCS_GEN_SECTION_MAX_CHARS" ? "This section is" : "The document is";
   return `${SHORTENED_NOTE_LEAD} ${subject} limited to about ${Math.round(limit.maxChars / 1000)}k characters (${limit.setting}).${omittedTopicsSentence(omitted)} Narrow the document with path prefixes, or raise the limit, for the full detail.`;
@@ -1004,9 +1072,14 @@ export function fitDocumentToPlan(
   maxChars: number,
   measure: Measure = (markdown) => markdown.length,
   documentMaxChars: number = maxChars,
+  /** #1175 — the limit a closing note names; the document cap unless given. */
+  setting: Exclude<
+    PlanFitLimit["setting"],
+    "DOCS_GEN_SECTION_MAX_CHARS"
+  > = "DOCS_GEN_DOCUMENT_MAX_CHARS",
 ): PlanFitResult {
   const limit: PlanFitLimit = {
-    setting: "DOCS_GEN_DOCUMENT_MAX_CHARS",
+    setting,
     maxChars: documentMaxChars,
   };
   const tail = fitSectionsToDocumentBudget(
