@@ -42,7 +42,6 @@ const TRACKED_SELECT = {
   type: true,
   labels: true,
   storyPoints: true,
-  reviewStatus: true,
   acceptanceCriteria: true,
 } as const;
 

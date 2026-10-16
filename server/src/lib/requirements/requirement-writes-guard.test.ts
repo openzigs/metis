@@ -35,32 +35,90 @@ interface Violation {
   detail: string;
 }
 
-/** The written-data argument of a requirement write call, by method. */
-function writtenData(method: string, arg: ts.ObjectLiteralExpression): ts.Expression | undefined {
-  const key = method === "upsert" ? "update" : "data";
-  for (const prop of arg.properties) {
-    if (ts.isPropertyAssignment(prop) && prop.name.getText() === key) return prop.initializer;
+/**
+ * The static name of a property key: `body`, `"body"`, `['body']` all read as
+ * `body`. `undefined` for a computed key whose value is not a literal.
+ */
+function keyName(name: ts.PropertyName): string | undefined {
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+  if (ts.isComputedPropertyName(name) && ts.isStringLiteralLike(name.expression)) {
+    return name.expression.text;
   }
   return undefined;
 }
 
-/** Find writes of tracked requirement fields in one source file. */
+/** `a.b` or `a["b"]` → `{ object: a, name: "b" }`; anything else → undefined. */
+function member(expr: ts.Expression): { object: ts.Expression; name: string } | undefined {
+  if (ts.isPropertyAccessExpression(expr)) return { object: expr.expression, name: expr.name.text };
+  if (ts.isElementAccessExpression(expr) && ts.isStringLiteralLike(expr.argumentExpression)) {
+    return { object: expr.expression, name: expr.argumentExpression.text };
+  }
+  return undefined;
+}
+
+/** The written-data argument of a requirement write call, by method. */
+function writtenData(method: string, arg: ts.ObjectLiteralExpression): ts.Expression | undefined {
+  const key = method === "upsert" ? "update" : "data";
+  for (const prop of arg.properties) {
+    if (ts.isPropertyAssignment(prop) && keyName(prop.name) === key) return prop.initializer;
+  }
+  return undefined;
+}
+
+/**
+ * Local names bound to a requirement delegate in this file:
+ * `const reqs = prisma.requirement` and `const { requirement } = tx` (or
+ * `{ requirement: reqs }`).
+ */
+function requirementAliases(sf: ts.SourceFile): Set<string> {
+  const aliases = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      if (ts.isIdentifier(node.name) && member(node.initializer)?.name === "requirement") {
+        aliases.add(node.name.text);
+      } else if (ts.isObjectBindingPattern(node.name)) {
+        for (const el of node.name.elements) {
+          const from = el.propertyName ? keyName(el.propertyName) : el.name.getText();
+          if (from === "requirement" && ts.isIdentifier(el.name)) aliases.add(el.name.text);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return aliases;
+}
+
+/**
+ * Find writes of tracked requirement fields in one source file.
+ *
+ * Known gaps, none present in the tree: a delegate reached through a function
+ * call or another file (`getRepo().update(...)`), a method name that is not a
+ * string literal (`requirement[method](...)`), and an alias re-bound by
+ * assignment rather than declaration.
+ */
 export function findTrackedRequirementWrites(source: string, file: string): Violation[] {
   const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
   const tracked = new Set<string>(TRACKED_FIELDS);
+  const aliases = requirementAliases(sf);
   const out: Violation[] = [];
   const report = (node: ts.Node, detail: string) =>
     out.push({ file, line: sf.getLineAndCharacterOfPosition(node.getStart()).line + 1, detail });
 
+  const isRequirementDelegate = (expr: ts.Expression): boolean =>
+    member(expr)?.name === "requirement" || (ts.isIdentifier(expr) && aliases.has(expr.text));
+
   const visit = (node: ts.Node): void => {
+    const callee = ts.isCallExpression(node) ? member(node.expression) : undefined;
     if (
       ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      WRITE_METHODS.has(node.expression.name.text) &&
-      ts.isPropertyAccessExpression(node.expression.expression) &&
-      node.expression.expression.name.text === "requirement"
+      callee &&
+      WRITE_METHODS.has(callee.name) &&
+      isRequirementDelegate(callee.object)
     ) {
-      const method = node.expression.name.text;
+      const method = callee.name;
       const [arg] = node.arguments;
       const data = arg && ts.isObjectLiteralExpression(arg) ? writtenData(method, arg) : undefined;
       if (!data || !ts.isObjectLiteralExpression(data)) {
@@ -69,8 +127,14 @@ export function findTrackedRequirementWrites(source: string, file: string): Viol
         for (const prop of data.properties) {
           if (ts.isSpreadAssignment(prop)) {
             report(prop, `requirement.${method} spreads unknown fields into its data`);
-          } else if (prop.name && tracked.has(prop.name.getText())) {
-            report(prop, `requirement.${method} writes tracked field "${prop.name.getText()}"`);
+            continue;
+          }
+          if (!prop.name) continue;
+          const name = keyName(prop.name);
+          if (name === undefined) {
+            report(prop, `requirement.${method} writes a computed key this guard cannot read`);
+          } else if (tracked.has(name)) {
+            report(prop, `requirement.${method} writes tracked field "${name}"`);
           }
         }
       }
@@ -126,6 +190,49 @@ describe("#1162 — tracked requirement fields are written only through version 
       expect(check(`prisma.requirement.update({ where: {}, data: patch })`)).toHaveLength(1);
       expect(check(`prisma.requirement.update({ where: {}, data: { ...patch } })`)).toHaveLength(1);
       expect(check(`prisma.requirement.update(args)`)).toHaveLength(1);
+    });
+
+    it("reads a quoted or literal-computed key as the field it names", () => {
+      expect(check(`prisma.requirement.update({ where: {}, data: { "body": x } })`)).toEqual([
+        { file: "x.ts", line: 1, detail: expect.stringContaining('"body"') },
+      ]);
+      expect(
+        check(`prisma.requirement.update({ where: {}, data: { ["title"]: x } })`),
+      ).toHaveLength(1);
+      expect(check(`prisma.requirement.update({ where: {}, "data": { body: x } })`)).toHaveLength(
+        1,
+      );
+    });
+
+    it("flags a computed key it cannot resolve", () => {
+      expect(check(`prisma.requirement.update({ where: {}, data: { [field]: x } })`)).toEqual([
+        { file: "x.ts", line: 1, detail: expect.stringContaining("computed key") },
+      ]);
+    });
+
+    it("sees element access on the delegate and the method", () => {
+      expect(check(`prisma.requirement["update"]({ where: {}, data: { body: x } })`)).toHaveLength(
+        1,
+      );
+      expect(
+        check(`prisma["requirement"].updateMany({ where: {}, data: { labels: x } })`),
+      ).toHaveLength(1);
+    });
+
+    it("sees a write through an aliased delegate", () => {
+      expect(
+        check(`const reqs = prisma.requirement;\nreqs.update({ where: {}, data: { body: x } });`),
+      ).toEqual([{ file: "x.ts", line: 2, detail: expect.stringContaining('"body"') }]);
+      expect(
+        check(
+          `const { requirement } = tx;\nrequirement.updateMany({ where: {}, data: { title: x } });`,
+        ),
+      ).toHaveLength(1);
+      expect(
+        check(
+          `const { requirement: r } = tx;\nr.upsert({ where: {}, create: {}, update: { type: x } });`,
+        ),
+      ).toHaveLength(1);
     });
 
     it("allows untracked columns, creates, and other models", () => {

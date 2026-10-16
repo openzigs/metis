@@ -3,12 +3,11 @@ issue: 1162
 section: Fixed
 ---
 
-- Writing clarification answers into a requirement and re-syncing an import now
-  record a version, so a review pinned at an earlier version shows the text the
-  reviewer was actually asked to approve. A concurrent analyst edit is kept
-  rather than overwritten, and never fails the enrichment or the import run.
-- A requirement's review status is no longer part of its version history: it is
-  the verdict on a version, so approving or rejecting no longer counts as a
-  change, and restoring an old version leaves the status alone. Manual status
-  changes are recorded in the audit log, and the history CSV export drops its
-  `reviewStatus` column.
+- Clarification answers and import re-syncs now record a version, so a pinned
+  review shows the text the reviewer approved. A concurrent edit fails neither.
+- An import re-sync still reverts local edits with the source text, but the
+  edit stays in History and can be restored. A content change from an import
+  makes an approved review stale, so publish or export needs a new review.
+- Review status is no longer versioned: a manual approve no longer makes a
+  pinned review stale, and status changes go to the audit log. The history CSV
+  export no longer has a `reviewStatus` column.

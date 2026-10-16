@@ -149,6 +149,32 @@ describe("runImport idempotency", () => {
     expect(child?.body).toMatch(/parent:req_1/);
   });
 
+  it("#1162 — an update the store skipped counts as skipped and is never parent-linked", async () => {
+    const { store, rows } = makeStore();
+    const run = () =>
+      runImport({
+        importer: fixtureImporter([
+          issue("parent"),
+          issue("child", { parentExternalId: "parent" }),
+        ]),
+        filter: {},
+        store,
+        ...ctx,
+      });
+    await run();
+    const setParentCalls: string[] = [];
+    const childId = [...rows.values()].find((r) => r.externalId === "child")!.id;
+    store.update = async (id) => ({ id, skipped: id === childId });
+    store.setParent = async (child) => {
+      setParentCalls.push(child);
+    };
+
+    const second = await run();
+
+    expect(second).toMatchObject({ created: 0, updated: 1, skipped: 1, total: 2 });
+    expect(setParentCalls).not.toContain(childId);
+  });
+
   it("stops fetching when the signal is aborted", async () => {
     const { store, rows } = makeStore();
     const controller = new AbortController();

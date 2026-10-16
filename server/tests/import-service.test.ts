@@ -639,8 +639,38 @@ describe("#1162 — import re-sync writes through version history", () => {
     const run = await svc.runSource("src_1", { trigger: "manual" });
 
     expect(run.status).toBe("completed");
+    expect(run).toMatchObject({ updatedCount: 1, skippedCount: 1 });
     expect(ctx.prisma.stores.requirement.get(first.id)!.body).toBe("b");
     expect(ctx.prisma.stores.requirement.get(second.id)!.body).toBe("upstream 2");
+  });
+
+  it("skips a row deleted between the lookup and the write (NOT_FOUND), and counts it as skipped", async () => {
+    const issues = [ghIssue(1), ghIssue(2)];
+    const ctx = makeDeps();
+    ctx.deps.importerDeps = { ...ctx.deps.importerDeps!, fetchFn: githubFetch(issues) };
+    seedSource(ctx);
+    const svc = new ImportService(ctx.deps);
+    await svc.runSource("src_1", { trigger: "manual" });
+    const [first, second] = rows(ctx);
+
+    // The lookup still finds the row; it is soft-deleted before the versioned write reads it.
+    const findUnique = ctx.prisma.prisma.requirement.findUnique;
+    const real = findUnique.getMockImplementation()!;
+    findUnique.mockImplementation(async (args) => {
+      if (args.where.id === first.id && "deletedAt" in args.where) {
+        const row = ctx.prisma.stores.requirement.get(first.id)!;
+        ctx.prisma.stores.requirement.set(first.id, { ...row, deletedAt: new Date() });
+      }
+      return real(args);
+    });
+    issues[0] = { ...issues[0], body: "upstream 1" };
+    issues[1] = { ...issues[1], body: "upstream 2" };
+    const run = await svc.runSource("src_1", { trigger: "manual" });
+
+    expect(run).toMatchObject({ status: "completed", updatedCount: 1, skippedCount: 1 });
+    expect(ctx.prisma.stores.requirement.get(first.id)!.body).toBe("b");
+    expect(ctx.prisma.stores.requirement.get(second.id)!.body).toBe("upstream 2");
+    expect(versions(ctx).map((v) => v.requirementId)).toEqual([second.id]);
   });
 });
 

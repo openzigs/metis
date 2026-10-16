@@ -108,12 +108,14 @@ vi.mock("../prisma.js", () => ({
 const {
   ATTRIBUTION_THRESHOLD,
   CLARIFICATIONS_END,
+  CLARIFICATIONS_HEADING,
   CLARIFICATIONS_START,
   MAX_OUTCOME_QUESTION,
   MAX_PUBLISHED_ANSWER,
   MAX_ATTRIBUTION_PROOF_EDGES,
   resolvePromotedCandidates,
   applyClarificationBlock,
+  planClarificationBlock,
   PROVENANCE_TAGS,
   answerProvenance,
   applyClarificationsToRequirements,
@@ -478,6 +480,56 @@ describe("applying the block to a body", () => {
       "Body.",
     );
     expect(stripClarificationBlock("Body.")).toBe("Body.");
+  });
+
+  describe("#1162 — a block whose markers the analyst edited", () => {
+    const count = (body: string, needle: string) => body.split(needle).length - 1;
+    const block = () => applyClarificationBlock("Body.", [answer()]);
+
+    it("END deleted: keeps everything the analyst wrote after the block and appends a fresh one", () => {
+      const edited = `${block().replace(CLARIFICATIONS_END, "")}\n\nAnalyst trailer.`;
+      const plan = planClarificationBlock(edited, [answer({ answer: "The Fed rate." })]);
+      expect(plan.malformed).toBe("missing-end");
+      expect(plan.body).toContain("Analyst trailer.");
+      expect(plan.body.indexOf("Analyst trailer.")).toBeLessThan(
+        plan.body.indexOf(CLARIFICATIONS_START),
+      );
+      expect(count(plan.body, CLARIFICATIONS_START)).toBe(1);
+      expect(plan.body.endsWith(CLARIFICATIONS_END)).toBe(true);
+      expect(plan.body).toContain("The Fed rate.");
+      // The orphan START is gone, so the next pass is well formed and idempotent.
+      const again = planClarificationBlock(plan.body, [answer({ answer: "The Fed rate." })]);
+      expect(again).toEqual({ body: plan.body, malformed: null });
+    });
+
+    it("END deleted with nothing but generated lines after START is a truncated block, still replaced", () => {
+      const truncated = block().replace(CLARIFICATIONS_END, "");
+      const plan = planClarificationBlock(truncated, [answer()]);
+      expect(plan).toEqual({ body: block(), malformed: null });
+    });
+
+    it("START deleted and the block edited: leaves the body alone rather than writing the answers twice", () => {
+      const edited = block()
+        .replace(`${CLARIFICATIONS_START}\n`, "")
+        .replace(CLARIFICATIONS_HEADING, `${CLARIFICATIONS_HEADING}\nAnalyst note inside.`);
+      const plan = planClarificationBlock(edited, [answer({ answer: "The Fed rate." })]);
+      expect(plan).toEqual({ body: edited, malformed: "missing-start" });
+      expect(count(plan.body, "**A:**")).toBe(1);
+    });
+
+    it("START deleted but the block is untouched from its heading: replaced in place, once", () => {
+      const edited = block().replace(`${CLARIFICATIONS_START}\n`, "");
+      const plan = planClarificationBlock(edited, [answer({ answer: "The Fed rate." })]);
+      expect(plan.malformed).toBeNull();
+      expect(count(plan.body, "**A:**")).toBe(1);
+      expect(plan.body).toContain("The Fed rate.");
+      expect(plan.body.startsWith("Body.")).toBe(true);
+    });
+
+    it("stripClarificationBlock leaves a malformed block, and the analyst text in it, alone", () => {
+      const edited = `${block().replace(CLARIFICATIONS_END, "")}\n\nAnalyst trailer.`;
+      expect(stripClarificationBlock(edited)).toBe(edited);
+    });
   });
 
   it("produces a bare block when the requirement had no body at all", () => {
@@ -1186,6 +1238,36 @@ describe("applyClarificationsToRequirements", () => {
       expect(store.versions).toHaveLength(0);
       // The accounting is still recorded, so the panel reflects this pass.
       expect(JSON.parse(store.metadata!).clarificationApplication.answeredCount).toBe(1);
+    });
+
+    it("records the title the write last read, so a rename during a retry shows in the accounting", async () => {
+      store.beforeWrite = (row) => {
+        store.beforeWrite = null;
+        row.title = "Renamed by the analyst";
+        row.version = (row.version ?? 0) + 1;
+      };
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+      expect(out?.answers?.[0].requirementTitle).toBe("Renamed by the analyst");
+      expect(out).toMatchObject({ requirementsUpdated: 1 });
+    });
+
+    it("keeps the analyst's text when they deleted the block's end marker", async () => {
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      const row = store.requirements[0];
+      row.body = `${row.body.replace(CLARIFICATIONS_END, "")}\n\nAnalyst trailer.`;
+      store.dialogState = JSON.stringify({
+        ...dialog,
+        rounds: [
+          {
+            ...dialog.rounds[0],
+            questions: [{ ...dialog.rounds[0].questions[0], answer: "The Fed rate." }],
+          },
+        ],
+      });
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      expect(row.body).toContain("Analyst trailer.");
+      expect(row.body).toContain("The Fed rate.");
+      expect(row.body.endsWith(CLARIFICATIONS_END)).toBe(true);
     });
 
     it("skips a row deleted between the read and the write", async () => {

@@ -494,21 +494,80 @@ export function renderClarificationBlock(
   ].join("\n");
 }
 
-/** The generated block in a body, or null when there is none. */
-function extractClarificationBlock(body: string): string | null {
-  const start = body.indexOf(CLARIFICATIONS_START);
-  if (start === -1) return null;
-  const end = body.indexOf(CLARIFICATIONS_END, start);
-  return body.slice(start, end === -1 ? body.length : end + CLARIFICATIONS_END.length);
+/**
+ * #1162 — whether every line of `text` is one the block renderer writes. Used
+ * to tell a generated block that lost a marker (safe to remove) from one an
+ * analyst has written into (which must be kept).
+ */
+function isGeneratedBlockText(text: string): boolean {
+  return text
+    .split("\n")
+    .every(
+      (line) =>
+        line.trim() === "" ||
+        line === CLARIFICATIONS_HEADING ||
+        line === CLARIFICATIONS_PREAMBLE ||
+        line === CRITERIA_FLAG_LINE ||
+        line.startsWith("- **Q:** ") ||
+        line.startsWith("  **A:** "),
+    );
 }
 
-/** Remove a previously generated block (and its surrounding blank lines). */
-export function stripClarificationBlock(body: string): string {
+/**
+ * Where the generated block sits in a body.
+ *
+ * - `none` — no block.
+ * - `block` — `[from, to)` is the block, safe to replace. Includes a block
+ *   whose END marker was lost to truncation when nothing but generated lines
+ *   follow its START, and one whose START marker is gone when the heading
+ *   through END is still entirely generated.
+ * - `malformed` — a marker is missing and the analyst has written text the
+ *   block would otherwise swallow (#1162: re-applying used to cut from START to
+ *   the end of the body), or that cannot be told apart from the old answers.
+ */
+type BlockLocation =
+  | { kind: "none" }
+  | { kind: "block"; from: number; to: number }
+  | { kind: "malformed"; missing: "end" | "start"; marker: number };
+
+function locateClarificationBlock(body: string): BlockLocation {
   const start = body.indexOf(CLARIFICATIONS_START);
-  if (start === -1) return body;
-  const end = body.indexOf(CLARIFICATIONS_END, start);
-  const after = end === -1 ? body.length : end + CLARIFICATIONS_END.length;
-  return (body.slice(0, start) + body.slice(after)).replace(/\s+$/, "");
+  if (start !== -1) {
+    const end = body.indexOf(CLARIFICATIONS_END, start);
+    if (end !== -1) return { kind: "block", from: start, to: end + CLARIFICATIONS_END.length };
+    return isGeneratedBlockText(body.slice(start + CLARIFICATIONS_START.length))
+      ? { kind: "block", from: start, to: body.length }
+      : { kind: "malformed", missing: "end", marker: start };
+  }
+  const end = body.indexOf(CLARIFICATIONS_END);
+  if (end === -1) return { kind: "none" };
+  const heading = body.lastIndexOf(CLARIFICATIONS_HEADING, end);
+  return heading !== -1 && isGeneratedBlockText(body.slice(heading, end))
+    ? { kind: "block", from: heading, to: end + CLARIFICATIONS_END.length }
+    : { kind: "malformed", missing: "start", marker: end };
+}
+
+/** The generated block in a body, or null when there is none. */
+function extractClarificationBlock(body: string): string | null {
+  const at = locateClarificationBlock(body);
+  return at.kind === "block" ? body.slice(at.from, at.to) : null;
+}
+
+/**
+ * Remove a previously generated block (and its surrounding blank lines). A
+ * malformed block is left as it is — it holds analyst text.
+ */
+export function stripClarificationBlock(body: string): string {
+  const at = locateClarificationBlock(body);
+  if (at.kind !== "block") return body;
+  return (body.slice(0, at.from) + body.slice(at.to)).replace(/\s+$/, "");
+}
+
+/** The outcome of {@link planClarificationBlock}. */
+export interface ClarificationBlockPlan {
+  body: string;
+  /** #1162 — set when a marker was missing and the analyst's text was kept. */
+  malformed: "missing-end" | "missing-start" | null;
 }
 
 /**
@@ -525,7 +584,48 @@ export function applyClarificationBlock(
   answers: ReadonlyArray<AnsweredQuestion>,
   opts: { hasAcceptanceCriteria?: boolean } = {},
 ): string {
+  return planClarificationBlock(body, answers, opts).body;
+}
+
+/**
+ * {@link applyClarificationBlock}, saying whether the body's block was
+ * malformed (#1162). An analyst who deleted a marker has made the block theirs:
+ *
+ * - END missing — everything after START is kept (only the orphan START marker
+ *   is dropped, so a later pass cannot pair it with a new END and swallow the
+ *   text between), and a fresh block is appended.
+ * - START missing — the body is left exactly as it is: the old answers cannot
+ *   be told apart from the analyst's edits, and appending a fresh block would
+ *   write every answer twice.
+ */
+export function planClarificationBlock(
+  body: string,
+  answers: ReadonlyArray<AnsweredQuestion>,
+  opts: { hasAcceptanceCriteria?: boolean } = {},
+): ClarificationBlockPlan {
   const source = body ?? "";
+  const at = locateClarificationBlock(source);
+  if (at.kind === "malformed" && at.missing === "start") {
+    return { body: source, malformed: "missing-start" };
+  }
+  if (at.kind === "malformed") {
+    const kept = (
+      source.slice(0, at.marker) + source.slice(at.marker + CLARIFICATIONS_START.length)
+    ).replace(/\s+$/, "");
+    const block = renderClarificationBlock(answers, opts.hasAcceptanceCriteria === true);
+    return {
+      body: block.length === 0 ? kept : kept.length > 0 ? `${kept}\n\n${block}` : block,
+      malformed: "missing-end",
+    };
+  }
+  return { body: applyToWellFormed(source, answers, opts), malformed: null };
+}
+
+function applyToWellFormed(
+  source: string,
+  answers: ReadonlyArray<AnsweredQuestion>,
+  opts: { hasAcceptanceCriteria?: boolean },
+): string {
   const base = stripClarificationBlock(source);
   const unflagged = renderClarificationBlock(answers);
   if (unflagged.length === 0) return base;
@@ -593,14 +693,24 @@ async function writeClarifiedBody(
   row: EnrichmentRow,
   answers: ReadonlyArray<AnsweredQuestion>,
   analysisId: string,
-): Promise<boolean> {
+): Promise<{ updated: boolean; title: string }> {
   let current: EnrichmentRow | null = row;
+  let title = row.title;
   for (let attempt = 1; current; attempt++) {
+    title = current.title;
     // #1000 — the criteria are not regenerated from the answers, so flag them.
-    const nextBody = applyClarificationBlock(current.body ?? "", answers, {
+    const plan = planClarificationBlock(current.body ?? "", answers, {
       hasAcceptanceCriteria: parseAcceptanceCriteria(current.acceptanceCriteria).length > 0,
     });
-    if (nextBody === (current.body ?? "")) return false;
+    if (plan.malformed) {
+      log.warn("Clarification block markers were edited; the analyst's text is kept", {
+        analysisId,
+        requirementId: row.id,
+        malformed: plan.malformed,
+      });
+    }
+    const nextBody = plan.body;
+    if (nextBody === (current.body ?? "")) return { updated: false, title };
     try {
       await updateRequirementWithHistory(prisma as unknown as VersionPrismaClient, {
         requirementId: current.id,
@@ -609,7 +719,7 @@ async function writeClarifiedBody(
         actorId: null,
         reason: CLARIFICATION_VERSION_REASON,
       });
-      return true;
+      return { updated: true, title };
     } catch (err) {
       if (!(err instanceof RequirementVersionError)) throw err;
       if (err.code !== "VERSION_CONFLICT" || attempt >= CLARIFICATION_WRITE_ATTEMPTS) {
@@ -619,7 +729,7 @@ async function writeClarifiedBody(
           reason: err.code,
           attempts: attempt,
         });
-        return false;
+        return { updated: false, title };
       }
     }
     current = (await prisma.requirement.findUnique({
@@ -627,7 +737,7 @@ async function writeClarifiedBody(
       select: { id: true, title: true, body: true, acceptanceCriteria: true, version: true },
     })) as EnrichmentRow | null;
   }
-  return false;
+  return { updated: false, title };
 }
 
 /**
@@ -667,8 +777,11 @@ export async function applyClarificationsToRequirements(
     const appliedTo = new Map<string, string>();
     for (const row of rows) {
       const answers = byRequirementId.get(row.id) ?? [];
-      for (const a of answers) appliedTo.set(a.questionId, row.title);
-      if (await writeClarifiedBody(row, answers, analysisId)) requirementsUpdated++;
+      // The title is the one the write last read, so an analyst rename made
+      // while enrichment was retrying shows in the accounting.
+      const written = await writeClarifiedBody(row, answers, analysisId);
+      for (const a of answers) appliedTo.set(a.questionId, written.title);
+      if (written.updated) requirementsUpdated++;
     }
 
     const application: ClarificationApplication = {

@@ -829,6 +829,7 @@ export class ImportService {
             importSourceId: input.importSourceId,
             reason: err.code,
           });
+          return { id, skipped: true };
         }
         return { id };
       },
