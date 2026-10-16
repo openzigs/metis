@@ -495,3 +495,81 @@ describe("#1171 — a repository another project connects is confirmed in the UI
     expect(createBatch).toHaveBeenCalledTimes(1);
   });
 });
+describe("#1171 — the cross-project confirm and dry-run notice", () => {
+  it("keeps the confirm open, disabled, until the confirmed retry settles", async () => {
+    createBatch.mockRejectedValueOnce(
+      new ApiError(409, "m", "REPO_CROSS_PROJECT", {
+        repo: "openzigs/example-requirements",
+        projects: [],
+      }),
+    );
+    let settle: (v: unknown) => void = () => {};
+    createBatch.mockImplementationOnce(() => new Promise((r) => (settle = r)));
+
+    renderPage();
+    await armLivePublish();
+    fireEvent.click(screen.getByRole("button", { name: "Publish now" }));
+    await screen.findByTestId("publish-confirm-total");
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Publish to openzigs\/example-requirements/,
+      }),
+    );
+    fireEvent.click(await screen.findByTestId("cross-project-confirm-button"));
+
+    await waitFor(() => expect(createBatch).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("cross-project-confirm")).toBeInTheDocument();
+    expect(screen.getByTestId("cross-project-confirm-button")).toBeDisabled();
+
+    await act(async () => {
+      settle({
+        batch: { id: "batch_new_2", dryRunPlan: null },
+        run: { status: "completed" },
+      });
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId("cross-project-confirm")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("a dry run into a repo another project connects says the live publish will ask", async () => {
+    createBatch.mockResolvedValueOnce({
+      batch: { id: "batch_dry_1", dryRunPlan: null },
+      run: { status: "completed" },
+      crossProject: {
+        repo: "openzigs/example-requirements",
+        projects: ["Flux sandbox"],
+      },
+    });
+    renderPage();
+    fireEvent.click(await findDraftCheckbox());
+    fireEvent.change(screen.getByLabelText("Owner"), {
+      target: { value: "openzigs" },
+    });
+    fireEvent.change(screen.getByLabelText("Repo"), {
+      target: { value: "example-requirements" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run dry-run" }));
+
+    const notice = await screen.findByTestId("cross-project-dry-run-notice");
+    expect(notice).toHaveTextContent(
+      "openzigs/example-requirements is already connected to the project “Flux sandbox”. Publishing for real will ask you to confirm.",
+    );
+    expect(screen.queryByTestId("cross-project-confirm")).not.toBeInTheDocument();
+  });
+
+  it("a dry run with no cross-project connection shows no notice", async () => {
+    renderPage();
+    fireEvent.click(await findDraftCheckbox());
+    fireEvent.change(screen.getByLabelText("Owner"), {
+      target: { value: "openzigs" },
+    });
+    fireEvent.change(screen.getByLabelText("Repo"), {
+      target: { value: "example-requirements" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run dry-run" }));
+    await waitFor(() => expect(createBatch).toHaveBeenCalledTimes(1));
+    await screen.findByText("completed");
+    expect(screen.queryByTestId("cross-project-dry-run-notice")).not.toBeInTheDocument();
+  });
+});

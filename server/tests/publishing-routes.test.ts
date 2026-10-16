@@ -70,8 +70,14 @@ const repoConns = new Map<string, RepoConnRow>();
 let n = 0;
 /** #1171 — a project the logged-in (non-admin) caller cannot open. */
 const HIDDEN_PROJECT = "proj_test_hidden";
+/** #1171 — a project in a workspace the coordinator IS a member of. */
+const MEMBER_PROJECT = "proj_test_002";
+const MEMBER_WORKSPACE = "ws_member";
+/** #1171 — a pre-workspace project (`workspaceId: null`), open to any caller. */
+const LEGACY_PROJECT = "proj_test_legacy";
 const PROJECT_NAMES: Record<string, string> = {
-  proj_test_002: "Flux sandbox",
+  [MEMBER_PROJECT]: "Flux sandbox",
+  [LEGACY_PROJECT]: "Legacy board",
   [HIDDEN_PROJECT]: "Acquisition target X",
 };
 
@@ -87,7 +93,12 @@ vi.mock("../src/lib/prisma.js", async () => {
   const { withRouteAuth } = await import("./helpers/route-auth-prisma.js");
   const prisma = withRouteAuth({
     $queryRawUnsafe: vi.fn(async () => 1),
-    workspaceMember: { findMany: vi.fn(async () => []) },
+    // #1171 — the coordinator is a member of MEMBER_WORKSPACE only.
+    workspaceMember: {
+      findMany: vi.fn(async ({ where }: { where?: { userId?: string } } = {}) =>
+        where?.userId === "user_coordinator" ? [{ workspaceId: MEMBER_WORKSPACE }] : [],
+      ),
+    },
     user: {
       upsert: vi.fn(
         async ({
@@ -108,6 +119,13 @@ vi.mock("../src/lib/prisma.js", async () => {
           return {
             workspaceId: "ws_other",
             workspace: { deletedAt: null, members: [] },
+          };
+        }
+        // #1171 — admitted through workspace membership, not the legacy branch.
+        if (where?.id === MEMBER_PROJECT) {
+          return {
+            workspaceId: MEMBER_WORKSPACE,
+            workspace: { deletedAt: null, members: [{ id: "wm_coordinator" }] },
           };
         }
         if (gateProjectLookupThrows) throw new Error("db down");
@@ -732,7 +750,7 @@ describe("POST /batches", () => {
   };
 
   it("cross-project repo, live, without confirmCrossProject → 409 naming a visible project", async () => {
-    connectElsewhere("proj_test_002");
+    connectElsewhere(MEMBER_PROJECT);
     const token = await login("coordinator");
     const res = await request(app)
       .post("/api/projects/proj_test_001/publishing/batches")
@@ -766,18 +784,71 @@ describe("POST /batches", () => {
     expect(wire).not.toContain(HIDDEN_PROJECT);
   });
 
-  it("#1171 — a cross-project DRY RUN is not refused", async () => {
-    connectElsewhere("proj_test_002");
-    const token = await login("admin");
+  it("#1171 — names a pre-workspace (legacy) project, open to any caller", async () => {
+    connectElsewhere(LEGACY_PROJECT);
+    const token = await login("coordinator");
+    const res = await request(app)
+      .post("/api/projects/proj_test_001/publishing/batches")
+      .set("Authorization", `Bearer ${token}`)
+      .send(LIVE_BODY);
+    expect(res.status).toBe(409);
+    expect(res.body.error.details).toEqual({ repo: "acme/metis", projects: ["Legacy board"] });
+  });
+
+  it("#1171 — a non-boolean confirmCrossProject is ignored", async () => {
+    connectElsewhere(MEMBER_PROJECT);
+    const token = await login("coordinator");
+    for (const confirmCrossProject of ["true", 1, "yes", {}]) {
+      const res = await request(app)
+        .post("/api/projects/proj_test_001/publishing/batches")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ ...LIVE_BODY, metadata: { confirmCrossProject } });
+      expect(res.status, JSON.stringify(confirmCrossProject)).toBe(409);
+      expect(res.body.error.code).toBe("REPO_CROSS_PROJECT");
+    }
+    expect(batches.size).toBe(0);
+  });
+
+  it("#1171 — a cross-project DRY RUN is not refused, and says the live publish will ask", async () => {
+    connectElsewhere(MEMBER_PROJECT);
+    const token = await login("coordinator");
     const res = await request(app)
       .post("/api/projects/proj_test_001/publishing/batches")
       .set("Authorization", `Bearer ${token}`)
       .send({ ...LIVE_BODY, dryRun: true, secretRef: undefined });
     expect(res.status).toBe(201);
+    expect(res.body.data.crossProject).toEqual({ repo: "acme/metis", projects: ["Flux sandbox"] });
+    // Never persisted into the batch's stored plan or metadata.
+    const stored = JSON.stringify([...batches.values()]);
+    expect(stored).not.toContain("Flux sandbox");
+  });
+
+  it("#1171 — the dry-run notice never names a project the caller cannot open", async () => {
+    connectElsewhere(HIDDEN_PROJECT);
+    const token = await login("coordinator");
+    const res = await request(app)
+      .post("/api/projects/proj_test_001/publishing/batches")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ ...LIVE_BODY, dryRun: true, secretRef: undefined });
+    expect(res.status).toBe(201);
+    expect(res.body.data.crossProject).toEqual({ repo: "acme/metis", projects: [] });
+    const wire = JSON.stringify(res.body);
+    expect(wire).not.toContain("Acquisition target X");
+    expect(wire).not.toContain(HIDDEN_PROJECT);
+  });
+
+  it("#1171 — a dry run with no cross-project connection carries no notice", async () => {
+    const token = await login("coordinator");
+    const res = await request(app)
+      .post("/api/projects/proj_test_001/publishing/batches")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ ...LIVE_BODY, dryRun: true, secretRef: undefined });
+    expect(res.status).toBe(201);
+    expect(res.body.data).not.toHaveProperty("crossProject");
   });
 
   it("cross-project repo, live, WITH confirmCrossProject=true → 201", async () => {
-    connectElsewhere("proj_test_002");
+    connectElsewhere(MEMBER_PROJECT);
     const token = await login("coordinator");
     const res = await request(app)
       .post("/api/projects/proj_test_001/publishing/batches")

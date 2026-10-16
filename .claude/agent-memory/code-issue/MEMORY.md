@@ -30,7 +30,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Cap gendoc-sized ids](project_gendoc-ids-are-long.md) — id caps (cursor, schema, path) must fit ~94-char gendoc- ids (#469)
 - [Tests can pin a bug](project_tests-can-lock-in-bugs.md) — grep tests for the old constant before calling it a regression (#483)
 - [Re-run nulls draft links](project_rerun-nulls-requirement-links.md) — re-runs recreate requirements; requirementId goes null (#485/#490)
-- [Verify your worktree](project_verify-your-worktree-before-committing.md) — check the branch is yours before committing (#327/#529)
 - [vi.mock vs default param](project_vi-mock-const-misses-default-param.md) — mocking an export misses a same-module default parameter (#509)
 - [Write after end](project_write-after-end-is-an-error-event.md) — guard SSE writes with writableEnded; assert the listener logs (#511/#546)
 - [Filename prefixes](project_filename-prefix-classifiers.md) — classify on documents.source; UI labels read prefixes too (#516/#540)
@@ -126,3 +125,5 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Declaration checks mistake calls](project_declaration-check-mistakes-calls.md) — test foo(() => {, return foo(1), = foo(3);, void foo(x); (#1135)
 - [Walkthrough run 9 findings](project_walkthrough-run9-durable-findings.md) — Spec Kit/chat shapes, autoReviewPrs, budgets, harness tips (#1172)
 - [Walkthrough docs: read the code](project_walkthrough-docs-describe-code-not-memory.md) — open function + page controls; grep archived facts
+- [createBatch query breaks 5 mocks](project_createbatch-repoconnection-query-breaks-five-mocks.md) — 3 fail only in full pnpm test (#1171)
+- [Batch row decides dryRun](project_runbatch-batch-row-decides-dry-run.md) — runBatch BATCH_IS_DRY_RUN guard (#1171)

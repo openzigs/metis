@@ -28,6 +28,7 @@ vi.mock("../../../src/lib/custom-agents/authz.js", () => ({
 import { prisma } from "../../../src/lib/prisma.js";
 import {
   CrossProjectRepoError,
+  crossProjectDryRunNotice,
   crossProjectMessage,
   describeCrossProjectRefusal,
   findCrossProjectOwners,
@@ -143,5 +144,30 @@ describe("findCrossProjectOwners", () => {
         },
       }),
     );
+  });
+});
+describe("crossProjectDryRunNotice (#1171)", () => {
+  const input = { projectId: "proj_1", targetOwner: "o", targetRepo: "r" };
+
+  it("is null when no other project connects the repo", async () => {
+    vi.mocked(prisma.repoConnection.findMany).mockResolvedValueOnce([] as never);
+    expect(await crossProjectDryRunNotice(input, user)).toBeNull();
+  });
+
+  it("names only projects the caller may open", async () => {
+    accessible.add("proj_seen");
+    vi.mocked(prisma.repoConnection.findMany).mockResolvedValueOnce([
+      { projectId: "proj_hidden" },
+      { projectId: "proj_seen" },
+    ] as never);
+    expect(await crossProjectDryRunNotice(input, user)).toEqual({
+      repo: "o/r",
+      projects: ["Flux sandbox"],
+    });
+  });
+
+  it("says nothing it cannot back: a lookup failure yields no notice, not an error", async () => {
+    vi.mocked(prisma.repoConnection.findMany).mockRejectedValueOnce(new Error("db down"));
+    expect(await crossProjectDryRunNotice(input, user)).toBeNull();
   });
 });

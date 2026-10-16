@@ -44,6 +44,23 @@ export function otherProjectsLabel(projects: readonly string[]): string {
   return `the projects ${projects.map((p) => `“${p}”`).join(", ")}`;
 }
 
+/**
+ * #1171 — shown with a dry run's result when its target is connected to
+ * another project: the dry run went ahead, and the live publish will ask.
+ */
+export function CrossProjectDryRunNotice({ notice }: { notice: CrossProjectRefusal }) {
+  return (
+    <p
+      className="mt-2 text-xs text-warning"
+      role="status"
+      data-testid="cross-project-dry-run-notice"
+    >
+      <span className="font-mono">{notice.repo}</span> is already connected to{" "}
+      {otherProjectsLabel(notice.projects)}. Publishing for real will ask you to confirm.
+    </p>
+  );
+}
+
 export interface CrossProjectConfirmDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;

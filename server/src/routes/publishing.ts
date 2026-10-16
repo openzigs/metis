@@ -51,6 +51,7 @@ import {
 import { PublishError } from "../lib/publishing/types.js";
 import {
   CrossProjectRepoError,
+  crossProjectDryRunNotice,
   describeCrossProjectRefusal,
 } from "../lib/publishing/cross-project-guard.js";
 import { editDraft } from "../lib/publishing/draft-edit.js";
@@ -316,7 +317,16 @@ export function publishingRouter(): Router {
       });
       const result = await executeBatch({ batchId: batch.id, actorId: actor(req) });
       const detail = await getBatch(batch.id, projectId);
-      res.status(201).json(ok({ batch: detail, run: result }));
+      // #1171 — a dry run into a repo another project connects is not
+      // refused; it says the live publish will ask, naming only projects
+      // this caller may open. Per response, never persisted in the plan.
+      const crossProject =
+        parsed.dryRun && !confirmCrossProject
+          ? await crossProjectDryRunNotice(parsed, req.user)
+          : null;
+      res
+        .status(201)
+        .json(ok({ batch: detail, run: result, ...(crossProject ? { crossProject } : {}) }));
     } catch (err) {
       // #1171 — name the other project only if this caller may open it.
       if (err instanceof CrossProjectRepoError && req.user) {

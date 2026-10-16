@@ -49,6 +49,7 @@ import { DryRunPlanPanel, parseDryRunPlan } from "@/components/publishing/dry-ru
 import { PublishConfirmDialog } from "@/components/publishing/publish-confirm-dialog";
 import {
   CrossProjectConfirmDialog,
+  CrossProjectDryRunNotice,
   extractCrossProjectRefusal,
 } from "@/components/publishing/cross-project-confirm-dialog";
 import { BatchRowActions } from "@/components/publishing/batch-row-actions";
@@ -988,6 +989,9 @@ export default function PublishingPage() {
           const plan = parseDryRunPlan(publish.data?.batch.dryRunPlan);
           return plan ? <DryRunPlanPanel plan={plan} /> : null;
         })()}
+        {publish.data?.crossProject ? (
+          <CrossProjectDryRunNotice notice={publish.data.crossProject} />
+        ) : null}
       </Card>
 
       <Card className="p-4">
@@ -1087,8 +1091,8 @@ export default function PublishingPage() {
         fallbackRepo={`${effectiveOwner}/${effectiveRepo}`}
         pending={publish.isPending}
         onConfirm={() => {
-          setCrossProjectOpen(false);
-          publish.mutate(true);
+          // Stays open (its buttons disabled) until the retry settles.
+          publish.mutate(true, { onSettled: () => setCrossProjectOpen(false) });
         }}
       />
       {/* #1104 (D) — nothing is written until this is confirmed. */}

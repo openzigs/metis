@@ -80,17 +80,24 @@ export function crossProjectMessage(repo: string, names: readonly string[]): str
   return `${repo} is already connected to ${who}. Confirm to publish to it anyway.`;
 }
 
+/** What a caller may be told about the other projects connecting a repo. */
+export interface CrossProjectNotice {
+  /** `owner/repo`. */
+  repo: string;
+  /** Names of the other projects the caller may open; empty = name none. */
+  projects: string[];
+}
+
 /**
- * Turn the service's refusal into the client error for `user`: the other
- * projects are named only where `assertProjectAccess` admits the caller.
- * Fails closed — any lookup error leaves the project unnamed.
+ * The names of `projectIds` that `user` may open, per `assertProjectAccess`.
+ * Fails closed — any access or lookup error leaves a project unnamed.
  */
-export async function describeCrossProjectRefusal(
-  err: CrossProjectRepoError,
+export async function nameableProjects(
+  projectIds: readonly string[],
   user: AuthPayload,
-): Promise<AppError> {
+): Promise<string[]> {
   const visible: string[] = [];
-  for (const id of err.conflictingProjectIds) {
+  for (const id of projectIds) {
     try {
       await assertProjectAccess(user, id);
       visible.push(id);
@@ -98,21 +105,56 @@ export async function describeCrossProjectRefusal(
       // Not reachable by this caller (or the lookup failed): stays unnamed.
     }
   }
-  let names: string[] = [];
-  if (visible.length > 0) {
-    try {
-      const rows = await prisma.project.findMany({
-        where: { id: { in: visible } },
-        select: { name: true },
-        orderBy: { name: "asc" },
-      });
-      names = rows.map((r) => r.name).filter((n): n is string => typeof n === "string" && !!n);
-    } catch {
-      names = [];
-    }
+  if (visible.length === 0) return [];
+  try {
+    const rows = await prisma.project.findMany({
+      where: { id: { in: visible } },
+      select: { name: true },
+      orderBy: { name: "asc" },
+    });
+    return rows.map((r) => r.name).filter((n): n is string => typeof n === "string" && !!n);
+  } catch {
+    return [];
   }
+}
+
+/**
+ * Turn the service's refusal into the client error for `user`: the other
+ * projects are named only where `assertProjectAccess` admits the caller.
+ */
+export async function describeCrossProjectRefusal(
+  err: CrossProjectRepoError,
+  user: AuthPayload,
+): Promise<AppError> {
+  const names = await nameableProjects(err.conflictingProjectIds, user);
   return new AppError(409, "REPO_CROSS_PROJECT", crossProjectMessage(err.repo, names), {
     repo: err.repo,
     projects: names,
   });
+}
+
+/**
+ * #1171 — the notice a DRY RUN carries when its target is connected to another
+ * project: the live publish will ask for confirmation. Same naming rule as the
+ * refusal. Null when nothing conflicts, and null on any failure — a dry run
+ * must never fail because its advisory notice could not be built.
+ *
+ * Computed per response, never persisted in the batch's plan: the plan is read
+ * back by anyone who can see the batch, who may not be able to open the other
+ * project.
+ */
+export async function crossProjectDryRunNotice(
+  input: { projectId: string; targetOwner: string; targetRepo: string },
+  user: AuthPayload,
+): Promise<CrossProjectNotice | null> {
+  try {
+    const ids = await findCrossProjectOwners(input);
+    if (ids.length === 0) return null;
+    return {
+      repo: `${input.targetOwner}/${input.targetRepo}`,
+      projects: await nameableProjects(ids, user),
+    };
+  } catch {
+    return null;
+  }
 }

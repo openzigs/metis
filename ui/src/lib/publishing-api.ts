@@ -33,6 +33,12 @@ export interface GenerateDraftsResponse {
 export interface BatchExecuteResponse {
   batch: PublishBatch & { publishedIssues: PublishedIssue[] };
   run: { status: string };
+  /**
+   * #1171 — on a dry run whose target another project connects: the live
+   * publish will ask for confirmation. `projects` names only projects the
+   * caller may open (empty = "another project").
+   */
+  crossProject?: { repo: string; projects: string[] };
 }
 
 export const publishingApi = {
