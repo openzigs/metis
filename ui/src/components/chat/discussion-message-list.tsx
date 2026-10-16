@@ -172,7 +172,7 @@ export function DiscussionMessageItem({
                   </button>
                 }
                 title="Delete this message?"
-                description="It is removed for everyone in this discussion."
+                description="It is removed in METIS for everyone in this discussion. Copies already posted to a linked Teams channel are not changed."
                 confirmLabel="Delete"
                 confirmVariant="destructive"
                 onConfirm={() => void onDelete(message).catch(() => {})}

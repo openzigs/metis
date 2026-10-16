@@ -18,6 +18,7 @@
  * client-side, keeping the UI honest with the server gate.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { DiscussionMessageDeletedEvent, DiscussionMessageUpdatedEvent } from "@metis/shared";
 import { toast } from "sonner";
 import { useSocket } from "@/lib/socket-client";
 import { keepRoomSubscribed } from "@/lib/socket-subscription";
@@ -47,11 +48,6 @@ import { PausableLiveRegion } from "@/components/a11y/pausable-live-region";
 interface DiscussionMessageNewEvent {
   threadId: string;
   message: DiscussionMessage;
-  ts: number;
-}
-interface DiscussionMessageDeletedEvent {
-  threadId: string;
-  messageId: string;
   ts: number;
 }
 interface DiscussionMessageStreamEvent {
@@ -254,7 +250,7 @@ export function DiscussionThreadView({
     }
 
     // #734 — an author's edit or delete, fanned out to the thread room.
-    function onUpdated(evt: DiscussionMessageNewEvent) {
+    function onUpdated(evt: DiscussionMessageUpdatedEvent) {
       if (evt.threadId !== threadId) return;
       setMessages((prev) =>
         prev.some((m) => m.id === evt.message.id) ? upsert(prev, evt.message) : prev,

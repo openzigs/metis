@@ -24,21 +24,37 @@ const EXISTING = {
   body: "hi @bob",
 };
 
-function harness(existing: Record<string, unknown> | null = EXISTING) {
-  const findFirst = vi.fn().mockResolvedValue(existing);
-  const update = vi.fn(async (args: { where: { id: string }; data: Record<string, unknown> }) => ({
-    ...EXISTING,
-    aiProvider: null,
-    aiModel: null,
-    aiSessionId: null,
-    origin: "metis",
-    createdAt: new Date(0),
-    editedAt: null,
-    deletedAt: null,
-    ...args.data,
-    authorUser: { displayName: "Alice Analyst" },
-  }));
-  const db = { discussionMessage: { findFirst, update } } as never;
+/**
+ * `existing` is what the ownership read sees; `writeCount` is what the
+ * conditional write reports (0 = the row changed under us, e.g. a concurrent
+ * delete). The read-back after an edit (the call with `include`) returns the
+ * row as written.
+ */
+function harness(existing: Record<string, unknown> | null = EXISTING, writeCount = 1) {
+  let written: Record<string, unknown> = {};
+  const findFirst = vi.fn(async (args: { where?: Record<string, unknown>; include?: unknown }) =>
+    args.include
+      ? {
+          ...EXISTING,
+          aiProvider: null,
+          aiModel: null,
+          aiSessionId: null,
+          origin: "metis",
+          createdAt: new Date(0),
+          editedAt: null,
+          deletedAt: null,
+          ...written,
+          authorUser: { displayName: "Alice Analyst" },
+        }
+      : existing,
+  );
+  const update = vi.fn(
+    async (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+      written = args.data;
+      return { count: writeCount };
+    },
+  );
+  const db = { discussionMessage: { findFirst, updateMany: update } } as never;
   const emitUpdated = vi.fn();
   const emitDeleted = vi.fn();
   const dispatchMentions = vi.fn();
@@ -53,6 +69,15 @@ function harness(existing: Record<string, unknown> | null = EXISTING) {
 }
 
 const EDIT = { threadId: "t1", projectId: "p1", messageId: "m1", actorId: "alice" };
+
+/** The write re-checks every condition the ownership read checked. */
+const OWN_LIVE_WHERE = {
+  id: "m1",
+  threadId: "t1",
+  deletedAt: null,
+  authorKind: "human",
+  authorUserId: "alice",
+};
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -71,8 +96,10 @@ describe("editHumanDiscussionMessage", () => {
     const h = harness();
     const row = await editHumanDiscussionMessage({ ...EDIT, body: "updated" }, h.deps);
 
+    expect(h.update.mock.calls[0][0].where).toEqual(OWN_LIVE_WHERE);
     const data = h.update.mock.calls[0][0].data;
     expect(data.body).toBe("updated");
+    expect(row.body).toBe("updated");
     expect(data.editedAt).toBeInstanceOf(Date);
     expect(row.authorName).toBe("Alice Analyst");
     expect(row).not.toHaveProperty("authorUser");
@@ -148,7 +175,7 @@ describe("deleteHumanDiscussionMessage", () => {
   it("soft-deletes the author's message and emits only its id to the thread room", async () => {
     const h = harness();
     await deleteHumanDiscussionMessage(EDIT, h.deps);
-    expect(h.update.mock.calls[0][0].where).toEqual({ id: "m1" });
+    expect(h.update.mock.calls[0][0].where).toEqual(OWN_LIVE_WHERE);
     expect(h.update.mock.calls[0][0].data.deletedAt).toBeInstanceOf(Date);
     expect(h.emitDeleted).toHaveBeenCalledWith("t1", "m1");
     expect(audit).toHaveBeenCalledWith(
@@ -171,5 +198,39 @@ describe("deleteHumanDiscussionMessage", () => {
       code: "MESSAGE_NOT_FOUND",
     });
     expect(h.emitDeleted).not.toHaveBeenCalled();
+  });
+
+  it("a concurrent delete wins once: the second write matches nothing → not found, no emit, no audit", async () => {
+    const h = harness(EXISTING, 0);
+    await expect(deleteHumanDiscussionMessage(EDIT, h.deps)).rejects.toMatchObject({
+      code: "MESSAGE_NOT_FOUND",
+    });
+    expect(h.emitDeleted).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+});
+
+describe("#734 — an edit racing a delete", () => {
+  it("the conditional write matches nothing → not found, no emit, no notification, no audit", async () => {
+    const h = harness(EXISTING, 0);
+    await expect(
+      editHumanDiscussionMessage({ ...EDIT, body: "late edit @carol" }, h.deps),
+    ).rejects.toMatchObject({ code: "MESSAGE_NOT_FOUND" });
+    expect(h.update.mock.calls[0][0].where).toEqual(OWN_LIVE_WHERE);
+    expect(h.emitUpdated).not.toHaveBeenCalled();
+    expect(h.dispatchMentions).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it("a row deleted between the write and the read-back is also not found, with no fan-out", async () => {
+    const h = harness();
+    h.findFirst.mockImplementation(async (args: { include?: unknown }) =>
+      args.include ? null : EXISTING,
+    );
+    await expect(
+      editHumanDiscussionMessage({ ...EDIT, body: "x @carol" }, h.deps),
+    ).rejects.toMatchObject({ code: "MESSAGE_NOT_FOUND" });
+    expect(h.emitUpdated).not.toHaveBeenCalled();
+    expect(h.dispatchMentions).not.toHaveBeenCalled();
   });
 });

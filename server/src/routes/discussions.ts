@@ -21,7 +21,10 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
-import { discussionMessageChangeRateLimiter } from "../middleware/discussion-message-change-rate-limit.js";
+import {
+  discussionMessageChangePreAuthRateLimiter,
+  discussionMessageChangeUserRateLimiter,
+} from "../middleware/discussion-message-change-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import {
@@ -406,8 +409,9 @@ export function discussionsRouter(): Router {
   // nothing about the message), then author-only (`edit-message.ts`).
   r.patch(
     "/threads/:id/messages/:messageId",
-    discussionMessageChangeRateLimiter,
+    discussionMessageChangePreAuthRateLimiter,
     requireAuth,
+    discussionMessageChangeUserRateLimiter,
     async (req: Request, res: Response) => {
       const actor = actorFromReq(req);
       const threadId = String(req.params.id);
@@ -438,8 +442,9 @@ export function discussionsRouter(): Router {
 
   r.delete(
     "/threads/:id/messages/:messageId",
-    discussionMessageChangeRateLimiter,
+    discussionMessageChangePreAuthRateLimiter,
     requireAuth,
+    discussionMessageChangeUserRateLimiter,
     async (req: Request, res: Response) => {
       const actor = actorFromReq(req);
       const threadId = String(req.params.id);

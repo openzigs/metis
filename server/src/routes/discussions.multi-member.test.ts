@@ -66,9 +66,16 @@ const db = vi.hoisted(() => ({
 
 const WORKSPACE_MEMBERS = Object.values(USERS).map((u) => ({ userId: u.id, workspaceId: u.ws }));
 const PROJECT = { id: "p1", workspaceId: "ws1", deletedAt: null };
-const THREAD = { id: "t1", projectId: "p1", deletedAt: null };
+// Two threads in the same project, so a message id from one can be aimed at the other.
+const THREADS = [
+  { id: "t1", projectId: "p1", title: "Wave C", deletedAt: null },
+  { id: "t2", projectId: "p1", title: "Another thread", deletedAt: null },
+];
 
 type Where = Record<string, unknown>;
+/** A row matches a flat Prisma `where` when every named column is equal. */
+const matches = (row: Record<string, unknown>, where: Where) =>
+  Object.entries(where).every(([k, v]) => row[k] === v);
 const authorName = (row: Record<string, unknown>) => ({
   ...row,
   authorUser: {
@@ -109,10 +116,12 @@ vi.mock("../lib/prisma.js", () => ({
         })),
     },
     discussionThread: {
-      findFirst: async ({ where }: { where: Where }) =>
-        where.id === THREAD.id ? { id: THREAD.id, projectId: THREAD.projectId } : null,
+      findFirst: async ({ where }: { where: Where }) => {
+        const t = THREADS.find((x) => x.id === where.id);
+        return t ? { id: t.id, projectId: t.projectId } : null;
+      },
       findMany: async ({ where }: { where: Where }) =>
-        where.projectId === THREAD.projectId ? [{ ...THREAD, title: "Wave C" }] : [],
+        THREADS.filter((t) => t.projectId === where.projectId),
     },
     discussionMessage: {
       create: async ({ data, include }: { data: Record<string, unknown>; include?: unknown }) => {
@@ -131,26 +140,16 @@ vi.mock("../lib/prisma.js", () => ({
         return include ? authorName({ ...row }) : { ...row };
       },
       findMany: async ({ where }: { where: Where }) =>
-        db.messages
-          .filter((m) => m.threadId === where.threadId && m.deletedAt === null)
-          .map(authorName),
-      findFirst: async ({ where }: { where: Where }) =>
-        db.messages.find(
-          (m) => m.id === where.id && m.threadId === where.threadId && m.deletedAt === null,
-        ) ?? null,
-      update: async ({
-        where,
-        data,
-        include,
-      }: {
-        where: Where;
-        data: Record<string, unknown>;
-        include?: unknown;
-      }) => {
-        const row = db.messages.find((m) => m.id === where.id);
-        if (!row) throw new Error("not found");
-        Object.assign(row, data);
+        db.messages.filter((m) => matches(m, where)).map(authorName),
+      findFirst: async ({ where, include }: { where: Where; include?: unknown }) => {
+        const row = db.messages.find((m) => matches(m, where));
+        if (!row) return null;
         return include ? authorName({ ...row }) : { ...row };
+      },
+      updateMany: async ({ where, data }: { where: Where; data: Record<string, unknown> }) => {
+        const rows = db.messages.filter((m) => matches(m, where));
+        for (const row of rows) Object.assign(row, data);
+        return { count: rows.length };
       },
     },
     user: {
@@ -283,12 +282,14 @@ describe("#734 — two workspace members and one non-member", () => {
     for (const who of ["alice", "bob"] as const) {
       const res = await as(who).get("/discussions/threads?projectId=p1");
       expect(res.status).toBe(200);
-      expect(res.body.data.map((t: { id: string }) => t.id)).toEqual(["t1"]);
+      expect(res.body.data.map((t: { id: string }) => t.id)).toEqual(["t1", "t2"]);
     }
     const denied = await as("mallory").get("/discussions/threads?projectId=p1");
+    const unknown = await as("mallory").get("/discussions/threads?projectId=nope");
     expect(denied.status).toBe(404);
     expect(denied.body.error.code).toBe("NOT_FOUND");
-    expect(JSON.stringify(denied.body)).not.toContain("t1");
+    // Byte-identical to an unknown project: no existence oracle.
+    expect(denied.body).toEqual(unknown.body);
   });
 
   it("read + post: a member reads and posts; the non-member gets the same 404 as an unknown thread", async () => {
@@ -391,10 +392,26 @@ describe("#734 — two workspace members and one non-member", () => {
     const posted = await as("alice").post("/discussions/threads/t1/messages").send({ body: "v1" });
     const path = `/discussions/threads/t1/messages/${posted.body.data.id}`;
 
+    // The non-member's answers are byte-identical to an unknown thread's.
+    const unknownPatch = await as("mallory")
+      .patch("/discussions/threads/nope/messages/x")
+      .send({ body: "pwned" });
+    const unknownDelete = await as("mallory").delete("/discussions/threads/nope/messages/x");
     const outsider = await as("mallory").patch(path).send({ body: "pwned" });
     expect(outsider.status).toBe(404);
-    expect(outsider.body.error.code).toBe("THREAD_NOT_FOUND");
-    expect((await as("mallory").delete(path)).status).toBe(404);
+    expect(outsider.body).toEqual(unknownPatch.body);
+    const outsiderDelete = await as("mallory").delete(path);
+    expect(outsiderDelete.status).toBe(404);
+    expect(outsiderDelete.body).toEqual(unknownDelete.body);
+
+    // A message id aimed at the OTHER thread of the same project is not found
+    // there, even for its own author, and the message is untouched.
+    const crossPath = `/discussions/threads/t2/messages/${posted.body.data.id}`;
+    const crossEdit = await as("alice").patch(crossPath).send({ body: "moved?" });
+    expect(crossEdit.status).toBe(404);
+    expect(crossEdit.body.error.code).toBe("MESSAGE_NOT_FOUND");
+    expect((await as("alice").delete(crossPath)).status).toBe(404);
+    expect(db.messages[0]).toMatchObject({ body: "v1", deletedAt: null });
 
     const teammate = await as("bob").patch(path).send({ body: "not mine" });
     expect(teammate.status).toBe(403);

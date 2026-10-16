@@ -1322,9 +1322,10 @@ describe("discussions routes", () => {
   });
 
   describe("#734 — PATCH/DELETE /threads/:id/messages/:messageId", () => {
-    it("rate-limits both routes ahead of the auth check", async () => {
-      const { discussionMessageChangeRateLimiter } =
+    it("rate-limits both routes: a pre-auth limiter, then auth, then the per-user limiter", async () => {
+      const { discussionMessageChangePreAuthRateLimiter, discussionMessageChangeUserRateLimiter } =
         await import("../middleware/discussion-message-change-rate-limit.js");
+      const { requireAuth } = await import("../middleware/auth.js");
       type Layer = {
         route?: {
           path: string;
@@ -1337,7 +1338,11 @@ describe("discussions routes", () => {
         const layer = stack.find(
           (l) => l.route?.path === "/threads/:id/messages/:messageId" && l.route.methods[method],
         );
-        expect(layer?.route?.stack[0]?.handle).toBe(discussionMessageChangeRateLimiter);
+        expect(layer?.route?.stack.slice(0, 3).map((s) => s.handle)).toEqual([
+          discussionMessageChangePreAuthRateLimiter,
+          requireAuth,
+          discussionMessageChangeUserRateLimiter,
+        ]);
       }
     });
 

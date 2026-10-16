@@ -75,13 +75,29 @@ async function loadOwnMessage(
     where: { id: target.messageId, threadId: target.threadId, deletedAt: null },
     select: { id: true, authorKind: true, authorUserId: true, body: true },
   });
-  if (!message) {
-    throw new MessageChangeError("MESSAGE_NOT_FOUND", "Message not found in this thread");
-  }
+  if (!message) throw gone();
   if (message.authorKind !== "human" || message.authorUserId !== target.actorId) {
     throw new MessageChangeError("NOT_AUTHOR", `You can only ${verb} your own messages`);
   }
   return message;
+}
+
+function gone(): MessageChangeError {
+  return new MessageChangeError("MESSAGE_NOT_FOUND", "Message not found in this thread");
+}
+
+/**
+ * The write's own guard: the same conditions `loadOwnMessage` checked, so the
+ * write applies only if they still hold when it lands.
+ */
+function liveOwnMessageWhere(target: MessageChangeTarget) {
+  return {
+    id: target.messageId,
+    threadId: target.threadId,
+    deletedAt: null,
+    authorKind: "human",
+    authorUserId: target.actorId,
+  };
 }
 
 /** Edit the actor's own message. Returns the updated row with its author name. */
@@ -94,13 +110,19 @@ export async function editHumanDiscussionMessage(
   const before = new Set(parseMentions(existing.body));
   const added = parseMentions(input.body).filter((u) => !before.has(u));
 
-  const updated = withAuthorName(
-    await deps.db.discussionMessage.update({
-      where: { id: existing.id },
-      data: { body: input.body, editedAt: new Date() },
-      include: AUTHOR_NAME_INCLUDE,
-    }),
-  );
+  // Conditional write: a delete that lands between the read above and this
+  // write leaves nothing to edit — not found, no emit, no notification.
+  const { count } = await deps.db.discussionMessage.updateMany({
+    where: liveOwnMessageWhere(input),
+    data: { body: input.body, editedAt: new Date() },
+  });
+  if (count === 0) throw gone();
+  const row = await deps.db.discussionMessage.findFirst({
+    where: { id: existing.id, deletedAt: null },
+    include: AUTHOR_NAME_INCLUDE,
+  });
+  if (!row) throw gone();
+  const updated = withAuthorName(row);
 
   audit({
     actor: { id: input.actorId },
@@ -131,10 +153,12 @@ export async function deleteHumanDiscussionMessage(
   const deps: MessageChangeDeps = { ...defaultDeps(), ...overrides };
   const existing = await loadOwnMessage(deps.db, input, "delete");
 
-  await deps.db.discussionMessage.update({
-    where: { id: existing.id },
+  // Conditional write, as for an edit: a concurrent delete wins once.
+  const { count } = await deps.db.discussionMessage.updateMany({
+    where: liveOwnMessageWhere(input),
     data: { deletedAt: new Date() },
   });
+  if (count === 0) throw gone();
 
   audit({
     actor: { id: input.actorId },
