@@ -15,6 +15,7 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
 import { makeWrapper } from "./test-utils";
+import { ApiError } from "@/lib/api-client";
 import { followedRooms } from "@/lib/socket-subscription";
 import { publishRoom } from "@metis/shared";
 import { createFakeSocket } from "./helpers/fake-socket";
@@ -429,5 +430,146 @@ describe("#646 — a watched batch reconciles events missed while disconnected",
 
     await waitFor(() => expect(listBatches.mock.calls.length).toBe(readsBefore + 1));
     expect(await screen.findByText("completed")).toBeInTheDocument();
+  });
+});
+describe("#1171 — a repository another project connects is confirmed in the UI", () => {
+  async function publishLiveAndConfirm(): Promise<void> {
+    renderPage();
+    await armLivePublish();
+    fireEvent.click(screen.getByRole("button", { name: "Publish now" }));
+    await screen.findByTestId("publish-confirm-total");
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Publish to openzigs\/example-requirements/,
+      }),
+    );
+  }
+
+  it("shows a confirm naming the other project; confirming retries with confirmCrossProject", async () => {
+    createBatch.mockRejectedValueOnce(
+      new ApiError(
+        409,
+        'openzigs/example-requirements is already connected to the project "Flux sandbox". Confirm to publish to it anyway.',
+        "REPO_CROSS_PROJECT",
+        { repo: "openzigs/example-requirements", projects: ["Flux sandbox"] },
+      ),
+    );
+    await publishLiveAndConfirm();
+
+    const text = await screen.findByTestId("cross-project-confirm-text");
+    expect(text).toHaveTextContent("openzigs/example-requirements");
+    expect(text).toHaveTextContent("Flux sandbox");
+    // The first attempt did not set the flag; no text shown names an API parameter.
+    expect(createBatch.mock.calls[0][1].metadata).not.toHaveProperty("confirmCrossProject");
+    expect(document.body.textContent).not.toMatch(/confirmCrossProject/);
+
+    fireEvent.click(screen.getByTestId("cross-project-confirm-button"));
+
+    await waitFor(() => expect(createBatch).toHaveBeenCalledTimes(2));
+    expect(createBatch.mock.calls[1][1]).toMatchObject({
+      targetOwner: "openzigs",
+      targetRepo: "example-requirements",
+      dryRun: false,
+      draftIds: [DRAFT.id],
+      metadata: { confirmCrossProject: true },
+    });
+  });
+
+  it("says 'another project' when the server names none, and Cancel writes nothing more", async () => {
+    createBatch.mockRejectedValueOnce(
+      new ApiError(
+        409,
+        "openzigs/example-requirements is already connected to another project. Confirm to publish to it anyway.",
+        "REPO_CROSS_PROJECT",
+        { repo: "openzigs/example-requirements", projects: [] },
+      ),
+    );
+    await publishLiveAndConfirm();
+
+    const text = await screen.findByTestId("cross-project-confirm-text");
+    expect(text).toHaveTextContent("is already connected to another project");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByTestId("cross-project-confirm")).not.toBeInTheDocument(),
+    );
+    expect(createBatch).toHaveBeenCalledTimes(1);
+  });
+});
+describe("#1171 — the cross-project confirm and dry-run notice", () => {
+  it("keeps the confirm open, disabled, until the confirmed retry settles", async () => {
+    createBatch.mockRejectedValueOnce(
+      new ApiError(409, "m", "REPO_CROSS_PROJECT", {
+        repo: "openzigs/example-requirements",
+        projects: [],
+      }),
+    );
+    let settle: (v: unknown) => void = () => {};
+    createBatch.mockImplementationOnce(() => new Promise((r) => (settle = r)));
+
+    renderPage();
+    await armLivePublish();
+    fireEvent.click(screen.getByRole("button", { name: "Publish now" }));
+    await screen.findByTestId("publish-confirm-total");
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Publish to openzigs\/example-requirements/,
+      }),
+    );
+    fireEvent.click(await screen.findByTestId("cross-project-confirm-button"));
+
+    await waitFor(() => expect(createBatch).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("cross-project-confirm")).toBeInTheDocument();
+    expect(screen.getByTestId("cross-project-confirm-button")).toBeDisabled();
+
+    await act(async () => {
+      settle({
+        batch: { id: "batch_new_2", dryRunPlan: null },
+        run: { status: "completed" },
+      });
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId("cross-project-confirm")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("a dry run into a repo another project connects says the live publish will ask", async () => {
+    createBatch.mockResolvedValueOnce({
+      batch: { id: "batch_dry_1", dryRunPlan: null },
+      run: { status: "completed" },
+      crossProject: {
+        repo: "openzigs/example-requirements",
+        projects: ["Flux sandbox"],
+      },
+    });
+    renderPage();
+    fireEvent.click(await findDraftCheckbox());
+    fireEvent.change(screen.getByLabelText("Owner"), {
+      target: { value: "openzigs" },
+    });
+    fireEvent.change(screen.getByLabelText("Repo"), {
+      target: { value: "example-requirements" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run dry-run" }));
+
+    const notice = await screen.findByTestId("cross-project-dry-run-notice");
+    expect(notice).toHaveTextContent(
+      "openzigs/example-requirements is already connected to the project “Flux sandbox”. Publishing for real will ask you to confirm.",
+    );
+    expect(screen.queryByTestId("cross-project-confirm")).not.toBeInTheDocument();
+  });
+
+  it("a dry run with no cross-project connection shows no notice", async () => {
+    renderPage();
+    fireEvent.click(await findDraftCheckbox());
+    fireEvent.change(screen.getByLabelText("Owner"), {
+      target: { value: "openzigs" },
+    });
+    fireEvent.change(screen.getByLabelText("Repo"), {
+      target: { value: "example-requirements" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run dry-run" }));
+    await waitFor(() => expect(createBatch).toHaveBeenCalledTimes(1));
+    await screen.findByText("completed");
+    expect(screen.queryByTestId("cross-project-dry-run-notice")).not.toBeInTheDocument();
   });
 });

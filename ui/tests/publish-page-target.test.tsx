@@ -170,6 +170,16 @@ describe("batch form inherits the drafts' target (#733)", () => {
     expect(screen.getByLabelText("Repo")).toHaveValue("flux-v2");
   });
 
+  it("#1171 — prefills the saved publish target even when the Generate form is cleared", async () => {
+    getDest.mockResolvedValue(dest("openzigs", "flux-v2"));
+    renderPage();
+    await waitFor(() => expect(screen.getByLabelText("Target owner")).toHaveValue("openzigs"));
+    fireEvent.change(screen.getByLabelText("Target owner"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Target repo"), { target: { value: "" } });
+    expect(screen.getByLabelText("Owner")).toHaveValue("openzigs");
+    expect(screen.getByLabelText("Repo")).toHaveValue("flux-v2");
+  });
+
   it("keeps a value the user typed into the batch form", async () => {
     listDrafts.mockResolvedValue([draft("d1", "One", meta("openzigs", "flux-v2"))]);
     renderPage();

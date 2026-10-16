@@ -1877,7 +1877,8 @@ Two pieces are required: the destination repo and a credential.
 
 1. **Destination repo** — set `targetOwner` and `targetRepo` on the publishing form. For GitHub Enterprise, also set `GHE base URL` to the Enterprise API URL (e.g. `https://github.example.com/api/v3`). Public github.com leaves it blank.
 2. **Vault secret reference** — store your Personal Access Token (PAT) in the METIS vault and reference it as `vault:<secret-name>` in the `Vault secret ref` field. Tokens are never logged and are only resolved at the moment of the live publish call.
-3. **Cross-project safety** — if a different METIS project has already connected the same `owner/repo`, the API rejects the publish with `REPO_CROSS_PROJECT` (HTTP 409). Set `metadata.confirmCrossProject = true` to acknowledge and proceed.
+3. **Cross-project safety** — if a different METIS project has already connected the same `owner/repo`, a **live** publish asks you to confirm before anything is written: the dialog names the other project when you can open it (otherwise it says "another project"), and **Publish anyway** retries the batch. A dry run is not stopped, because it writes nothing to GitHub; its result says the live publish will ask, with the same naming rule. A batch created as a dry run can never be published live later (`BATCH_IS_DRY_RUN`), including by a scheduled `publish-batch` task. Over the API the refusal is `REPO_CROSS_PROJECT` (HTTP 409); send `metadata.confirmCrossProject = true` to proceed. [#1171]
+4. **Batch form target** — when the selected drafts do not record a target, the batch form's Owner and Repo come from the Generate form, or else from the project's saved publish target.
 
 #### 13.7.2 Generating Drafts From Analysis
 

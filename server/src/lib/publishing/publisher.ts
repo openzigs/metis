@@ -228,6 +228,19 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
   if (batch.status === "cancelled") {
     throw new PublishError(409, "BATCH_CANCELLED", "batch was cancelled; nothing to do");
   }
+  // #1171 — the batch ROW decides whether a run may write, not the caller.
+  // A dry run is exempt from the cross-project confirmation and the approval
+  // gate at creation because it writes nothing, so a batch created as a dry
+  // run must never be run live afterwards — e.g. by the scheduler's
+  // `publish-batch` handler, which always passes `dryRun: false`. Before this
+  // guard, only that handler's lack of a credential stood in the way.
+  if (!input.dryRun && batch.dryRun) {
+    throw new PublishError(
+      409,
+      "BATCH_IS_DRY_RUN",
+      "this batch was created as a dry run and cannot be published; start a live batch instead",
+    );
+  }
   const drafts = await prisma.issueDraft.findMany({
     where: {
       projectId: batch.projectId,

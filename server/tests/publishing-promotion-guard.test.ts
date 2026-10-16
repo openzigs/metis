@@ -29,7 +29,7 @@ vi.mock("../src/lib/prisma.js", () => ({
         [...drafts.values()].filter((d) => where.id.in.includes(d.id) && !d.deletedAt),
       ),
     },
-    repoConnection: { findFirst: vi.fn(async () => null) },
+    repoConnection: { findMany: vi.fn(async () => []) },
     // #619 — approval gate off; this file tests the #257 promotion guard.
     project: {
       findUnique: vi.fn(async () => ({ requireApprovedReview: false })),

@@ -1,6 +1,7 @@
 /** #733 — publish-target helpers. */
 import { describe, expect, it } from "vitest";
 import {
+  batchFallbackTarget,
   commonDraftTarget,
   draftTargetsConflict,
   isAnalysedRepo,
@@ -85,5 +86,25 @@ describe("isAnalysedRepo", () => {
   it("is false for an incomplete target", () => {
     expect(isAnalysedRepo({ owner: "", repo: "" }, { ownerOrOrg: "", repoName: "" })).toBe(false);
     expect(isAnalysedRepo({ owner: "miniflux", repo: "" }, conn)).toBe(false);
+  });
+});
+
+describe("batchFallbackTarget (#1171)", () => {
+  const saved = { owner: "openzigs", repo: "flux-v2" };
+  it("prefers a complete Generate-form target", () => {
+    expect(batchFallbackTarget({ owner: "me", repo: "sandbox" }, saved)).toEqual({
+      owner: "me",
+      repo: "sandbox",
+    });
+  });
+  it("falls back to the saved publish target when the Generate form is empty", () => {
+    expect(batchFallbackTarget({ owner: "", repo: "" }, saved)).toEqual(saved);
+  });
+  it("never pairs a half-typed Generate owner with the saved repository", () => {
+    expect(batchFallbackTarget({ owner: "me", repo: " " }, saved)).toEqual(saved);
+  });
+  it("returns the Generate form as-is when nothing is saved", () => {
+    const form = { owner: "me", repo: "" };
+    expect(batchFallbackTarget(form, { owner: "", repo: "" })).toBe(form);
   });
 });
