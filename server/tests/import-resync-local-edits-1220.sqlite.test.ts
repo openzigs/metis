@@ -357,6 +357,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       issues = [ghIssue(3)];
       await sync();
       const id = await importedId(3);
+      // A traceability label METIS adds itself; not content, never the source's.
+      await db.requirement.update({
+        where: { id },
+        data: { labels: JSON.stringify(["export", "finding:f-apply"]) },
+      });
       const before = await row(id);
 
       issues = [ghIssue(3, { title: "Export orders 3 to CSV", labels: [{ name: "csv" }] })];
@@ -364,14 +369,55 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       expect(run).toMatchObject({ updatedCount: 1, keptLocalCount: 0, divergedCount: 0 });
       const after = await row(id);
-      expect(after).toMatchObject({
-        title: "Export orders 3 to CSV",
-        labels: JSON.stringify(["csv"]),
-        sourcePending: null,
-      });
+      expect(after).toMatchObject({ title: "Export orders 3 to CSV", sourcePending: null });
+      // The source's labels, plus the hidden one it never carries (#1220).
+      const labels = JSON.parse(after.labels) as string[];
+      expect(labels).toHaveLength(2);
+      expect(labels).toEqual(expect.arrayContaining(["csv", "finding:f-apply"]));
       expect(after.sourceFingerprint).not.toBe(before.sourceFingerprint);
       // And the applied source is now the baseline: a further sync does nothing.
       expect(await sync()).toMatchObject({ updatedCount: 0, keptLocalCount: 0, divergedCount: 0 });
+    });
+
+    it("an analyst save landing between re-sync's read and its write is never overwritten", async () => {
+      issues = [ghIssue(30)];
+      await sync();
+      const id = await importedId(30);
+      issues = [ghIssue(30, { body: "Changed upstream" })];
+
+      // The reviewer's probe: the store's read happens, THEN a versioned PUT
+      // lands, THEN re-sync writes what it decided from the stale read.
+      const original = db.requirement.findFirst.bind(db.requirement);
+      let landed = false;
+      const spy = vi.spyOn(db.requirement, "findFirst").mockImplementation((async (
+        args: Parameters<typeof original>[0],
+      ) => {
+        const result = await original(args);
+        const where = (args as { where?: { externalId?: string } } | undefined)?.where;
+        if (!landed && where?.externalId === "30") {
+          landed = true;
+          const saved = await edit(id, { body: "Concurrent analyst edit", version: 0 });
+          expect(saved.status).toBe(200);
+        }
+        return result;
+      }) as unknown as typeof db.requirement.findFirst);
+      let run;
+      try {
+        run = await sync();
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(landed).toBe(true);
+      // Not counted as updated: decided again from the analyst's row, it is
+      // edited AND its source changed, so it is flagged.
+      expect(run).toMatchObject({ updatedCount: 0, divergedCount: 1, skippedCount: 0 });
+      const after = await row(id);
+      expect(after).toMatchObject({ body: "Concurrent analyst edit", version: 1 });
+      expect(JSON.parse(after.sourcePending!)).toMatchObject({ body: "Changed upstream" });
+      const history = await versionsOf(id);
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({ actorId: ANALYST });
     });
 
     it("both changed: diverged — keeps the analyst's text, records the source's, review stays current", async () => {
@@ -431,7 +477,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const h = await history(id);
       expect(h.body.data.sourceDecision).toMatchObject({ choice: "local", actorId: ANALYST });
       expect(audit).toHaveBeenCalledWith(
-        expect.objectContaining({ action: "requirement.source_divergence.resolve" }),
+        expect.objectContaining({
+          action: "requirement.source_divergence.resolve",
+          metadata: expect.objectContaining({
+            projectId: PROJECT,
+            choice: "local",
+            sourceFingerprint: fingerprint,
+          }),
+        }),
       );
 
       // The declined source is now the baseline: the next sync keeps the edit.
@@ -471,25 +524,28 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await sync()).toMatchObject({ keptLocalCount: 0, divergedCount: 0, updatedCount: 0 });
     });
 
-    it("rows imported before the fingerprint: equal ones are recorded, edited ones flagged, never overwritten", async () => {
-      issues = [ghIssue(7), ghIssue(8)];
+    it("rows imported before the fingerprint: History decides — unedited ones follow the source, edited ones are flagged", async () => {
+      issues = [ghIssue(7), ghIssue(8), ghIssue(71)];
       await sync();
       const same = await importedId(7);
       const edited = await importedId(8);
+      const behind = await importedId(71);
       // What the sync records for #7: the fingerprint of its (unchanged) source.
       const expectedFingerprint = (await row(same)).sourceFingerprint;
       expect(expectedFingerprint).toMatch(/^v1:/);
-      // As a pre-#1220 import left them: no fingerprint; #8 edited since.
+      // #8 edited by the analyst — a real, versioned edit with an actor.
+      expect((await edit(edited, { body: "Edited before #1220", version: 0 })).status).toBe(200);
+      // As a pre-#1220 import left them: no fingerprint.
       await db.requirement.updateMany({
-        where: { id: { in: [same, edited] } },
+        where: { id: { in: [same, edited, behind] } },
         data: { sourceFingerprint: null },
       });
-      await db.requirement.update({ where: { id: edited }, data: { body: "Edited before #1220" } });
-      expect((await row(same)).sourceFingerprint).toBeNull();
+      // #9's source moved on upstream; nobody touched it in METIS.
+      issues = [ghIssue(7), ghIssue(8), ghIssue(71, { body: "Changed upstream" })];
 
       const run = await sync();
 
-      expect(run).toMatchObject({ updatedCount: 0, keptLocalCount: 0, divergedCount: 1 });
+      expect(run).toMatchObject({ updatedCount: 1, keptLocalCount: 0, divergedCount: 1 });
       expect(await row(same)).toMatchObject({
         sourceFingerprint: expectedFingerprint,
         sourcePending: null,
@@ -497,7 +553,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       const flagged = await row(edited);
       expect(flagged).toMatchObject({ body: "Edited before #1220", sourceFingerprint: null });
-      expect(JSON.parse(flagged.sourcePending!)).toMatchObject({ body: "As imported" });
+      expect(JSON.parse(flagged.sourcePending!)).toMatchObject({
+        body: "As imported",
+        baselineUnknown: true,
+      });
+      const snapshot = await getAnalysisSnapshot(ANALYSIS);
+      expect(snapshot!.requirements.find((r) => r.id === edited)!.sourceDivergence).toMatchObject({
+        baselineUnknown: true,
+      });
+      // Never edited: applied, as every sync did before, and now fingerprinted.
+      const applied = await row(behind);
+      expect(applied).toMatchObject({ body: "Changed upstream", sourcePending: null });
+      expect(applied.sourceFingerprint).toMatch(/^v1:/);
     });
 
     it("after Keep mine, the requirement set is protected from replacement by a re-synthesis (#769)", async () => {
@@ -523,11 +590,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         issues = [ghIssue(n)];
         await sync();
         const id = await importedId(n);
-        // A pre-#1220 edit: written straight to the row, so no version, no actor.
-        await db.requirement.update({
-          where: { id },
-          data: { body: "Edited before #1220", sourceFingerprint: null },
-        });
+        // The local copy changed without a person's edit (no version, no
+        // actor — so nothing yet counts as review work), and so did the source.
+        await db.requirement.update({ where: { id }, data: { body: "Changed locally" } });
+        issues = [ghIssue(n, { body: "Changed upstream" })];
         expect(await sync()).toMatchObject({ divergedCount: 1 });
         expect(await row(id)).toMatchObject({ version: 0 });
         return { analysisId, id };
@@ -573,7 +639,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await resynthesise(kept.analysisId)).toHaveBeenCalledWith(
         expect.objectContaining({ reason: "reviewed-work" }),
       );
-      expect(await row(kept.id)).toMatchObject({ body: "Edited before #1220" });
+      expect(await row(kept.id)).toMatchObject({ body: "Changed locally" });
     });
 
     it("Take the source version keeps METIS's hidden traceability labels", async () => {
@@ -585,7 +651,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       const fingerprint = JSON.parse((await row(id)).sourcePending!).fingerprint as string;
 
-      const taken = await resolve(id, { choice: "source", sourceFingerprint: fingerprint });
+      const taken = await resolve(id, {
+        choice: "source",
+        sourceFingerprint: fingerprint,
+        version: 1,
+      });
 
       expect(taken.status).toBe(200);
       const labels = JSON.parse((await row(id)).labels) as string[];
@@ -600,10 +670,63 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     describe("POST /api/requirements/:id/source-divergence", () => {
       it("refuses an answer to a source that moved since it was loaded", async () => {
         const id = await diverge(9);
-        const r = await resolve(id, { choice: "source", sourceFingerprint: "v1:stale" });
+        const r = await resolve(id, {
+          choice: "source",
+          sourceFingerprint: "v1:stale",
+          version: 1,
+        });
         expect(r.status).toBe(409);
         expect(r.body.error.code).toBe("SOURCE_MOVED");
         expect((await row(id)).body).toBe("Refined by the analyst");
+      });
+
+      it("a take-source a newer re-sync superseded is audited as superseded, not resolved", async () => {
+        const id = await diverge(31);
+        const pending = JSON.parse((await row(id)).sourcePending!) as Record<string, unknown>;
+        const newer = JSON.stringify({
+          ...pending,
+          body: "Changed again",
+          fingerprint: "v1:newer",
+        });
+
+        // A re-sync records a newer source after the content write and before
+        // the divergence is settled (the settle is the write naming
+        // `sourceDecision`; every other write passes straight through).
+        const original = db.requirement.updateMany.bind(db.requirement);
+        const spy = vi.spyOn(db.requirement, "updateMany").mockImplementation((async (
+          args: Parameters<typeof original>[0],
+        ) => {
+          const data = (args as { data?: Record<string, unknown> }).data ?? {};
+          if ("sourceDecision" in data) {
+            await db.requirement.update({ where: { id }, data: { sourcePending: newer } });
+          }
+          return original(args);
+        }) as unknown as typeof db.requirement.updateMany);
+        let r;
+        try {
+          r = await resolve(id, {
+            choice: "source",
+            sourceFingerprint: pending.fingerprint,
+            version: 1,
+          });
+        } finally {
+          spy.mockRestore();
+        }
+
+        expect(r.status).toBe(200);
+        expect(r.body.data).toMatchObject({ choice: "source", changed: true, superseded: true });
+        // The content was taken, but the divergence stands — against the newer source.
+        expect(await row(id)).toMatchObject({
+          body: "Changed upstream",
+          sourcePending: newer,
+          sourceDecisionActorId: null,
+        });
+        expect(audit).toHaveBeenCalledWith(
+          expect.objectContaining({ action: "requirement.source_divergence.superseded" }),
+        );
+        expect(audit).not.toHaveBeenCalledWith(
+          expect.objectContaining({ action: "requirement.source_divergence.resolve" }),
+        );
       });
 
       it("refuses a requirement that is not diverged", async () => {
@@ -630,15 +753,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       it("validates the body", async () => {
         const id = await diverge(12);
-        for (const body of [{}, { choice: "both", sourceFingerprint: "x" }, { choice: "local" }]) {
+        for (const body of [
+          {},
+          { choice: "both", sourceFingerprint: "x" },
+          { choice: "local" },
+          // Taking the source needs the version the analyst saw (never blind).
+          { choice: "source", sourceFingerprint: "x" },
+        ]) {
           expect((await resolve(id, body)).status).toBe(400);
         }
+        expect((await row(id)).body).toBe("Refined by the analyst");
       });
 
       it("is the project's: a reader cannot answer, an outsider cannot see it", async () => {
         const id = await diverge(13);
         const fingerprint = JSON.parse((await row(id)).sourcePending!).fingerprint as string;
-        const body = { choice: "source", sourceFingerprint: fingerprint };
+        const body = { choice: "source", sourceFingerprint: fingerprint, version: 1 };
 
         expect((await resolve(id, body, READER_TOKEN)).status).toBe(403);
         expect((await resolve(id, body, OUTSIDER_TOKEN)).status).toBe(404);

@@ -7,6 +7,7 @@ import {
   parseSourceDecision,
   parseSourcePending,
   sourceFingerprint,
+  toSourceDivergence,
   type SourceContent,
   type SourcePending,
 } from "./source-sync.js";
@@ -189,18 +190,50 @@ describe("decideResync", () => {
       });
     });
 
-    it("different from the source: diverged (source unknown), never overwritten", () => {
+    it("different from the source and edited by a person: diverged, baseline unknown", () => {
       const d = decideResync({
         local: analystEdit,
         stored: null,
         pending: null,
         source: original,
         now: NOW,
+        editedInMetis: true,
       });
       expect(d.outcome).toBe("diverged");
       expect(d.write).toEqual({
-        sourcePending: { ...original, fingerprint: fp(original), detectedAt: NOW.toISOString() },
+        sourcePending: {
+          ...original,
+          fingerprint: fp(original),
+          detectedAt: NOW.toISOString(),
+          baselineUnknown: true,
+        },
       });
+    });
+
+    it("different from the source but never edited by a person: applies the source", () => {
+      for (const editedInMetis of [false, undefined]) {
+        const d = decideResync({
+          local: original,
+          stored: null,
+          pending: null,
+          source: upstream,
+          now: NOW,
+          editedInMetis,
+        });
+        expect(d).toEqual({ outcome: "apply_source", fingerprint: fp(upstream), write: null });
+      }
+    });
+
+    it("the History evidence is ignored once a fingerprint is stored", () => {
+      const d = decideResync({
+        local: original,
+        stored: fp(original),
+        pending: null,
+        source: upstream,
+        now: NOW,
+        editedInMetis: true,
+      });
+      expect(d.outcome).toBe("apply_source");
     });
   });
 });
@@ -209,6 +242,10 @@ describe("parseSourcePending / parseSourceDecision", () => {
   it("round-trips well-formed values", () => {
     const pending: SourcePending = { ...upstream, fingerprint: "v1:x", detectedAt: "t" };
     expect(parseSourcePending(JSON.stringify(pending))).toEqual(pending);
+    const unknown: SourcePending = { ...pending, baselineUnknown: true };
+    expect(parseSourcePending(JSON.stringify(unknown))).toEqual(unknown);
+    expect(toSourceDivergence(JSON.stringify(unknown))).toMatchObject({ baselineUnknown: true });
+    expect(toSourceDivergence(JSON.stringify(pending))).not.toHaveProperty("baselineUnknown");
     const decision = { choice: "local" as const, fingerprint: "v1:x", actorId: "u1", at: "t" };
     expect(parseSourceDecision(JSON.stringify(decision))).toEqual(decision);
     expect(parseSourceDecision(JSON.stringify({ ...decision, actorId: null }))).toMatchObject({

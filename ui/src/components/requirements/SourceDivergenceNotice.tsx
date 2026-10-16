@@ -65,8 +65,12 @@ export function SourceDivergenceNotice({
         sourceFingerprint: divergence!.sourceFingerprint,
         ...(choice === "source" ? { version } : {}),
       }),
-    successMessage: (_d, choice) =>
-      choice === "source" ? "Took the source version" : "Kept your version",
+    successMessage: (d, choice) =>
+      choice === "local"
+        ? "Kept your version"
+        : d.superseded
+          ? "Took that source version, but the source has changed again — compare again"
+          : "Took the source version",
     invalidateKeys,
     // A 409 means the source moved again or the copy changed: reload either
     // way, so the comparison shown is the one the next answer is about.
@@ -91,10 +95,21 @@ export function SourceDivergenceNotice({
         >
           Diverged from source
         </span>
-        <span className="text-muted-foreground">
-          The source changed
-          {Number.isNaN(detected.getTime()) ? "" : ` (seen ${detected.toLocaleString()})`} and so
-          did this copy. Re-sync kept your text.
+        <span className="text-muted-foreground" data-testid="source-divergence-explanation">
+          {divergence.baselineUnknown ? (
+            // Synced before METIS tracked its source: there is no record of the
+            // source at the time of the edit, only that it now differs.
+            <>
+              This requirement was edited in METIS before METIS tracked its source; the source has
+              changed. Compare and choose.
+            </>
+          ) : (
+            <>
+              The source changed
+              {Number.isNaN(detected.getTime()) ? "" : ` (seen ${detected.toLocaleString()})`} and
+              so did this copy. Re-sync kept your text.
+            </>
+          )}
         </span>
         <Button size="sm" variant="ghost" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
           {open ? "Hide comparison" : "Compare"}

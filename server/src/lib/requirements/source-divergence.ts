@@ -66,10 +66,18 @@ export interface ResolveSourceDivergenceParams {
 
 export interface ResolveSourceDivergenceResult {
   id: string;
+  /** The requirement's project, for the audit entry. */
+  projectId: string;
   choice: SourceDivergenceChoice;
   version: number;
   /** True when the requirement's content changed (a History version row). */
   changed: boolean;
+  /**
+   * "Take the source version" only: the content was written, but a re-sync
+   * recorded a newer source in the meantime, so the divergence is NOT
+   * resolved (no decision recorded, the newer source is still to answer).
+   */
+  superseded: boolean;
 }
 
 type ResolverClient = Pick<PrismaClient, "requirement">;
@@ -92,7 +100,7 @@ export async function resolveSourceDivergence(
       deletedAt: null,
       ...(params.projectId ? { projectId: params.projectId } : {}),
     },
-    select: { id: true, version: true, sourcePending: true },
+    select: { id: true, projectId: true, version: true, sourcePending: true },
   });
   if (!row) throw new SourceDivergenceError("NOT_FOUND", "Requirement not found");
 
@@ -129,7 +137,14 @@ export async function resolveSourceDivergence(
 
   if (params.choice === "local") {
     if ((await settle()).count !== 1) throw sourceMoved();
-    return { id: params.requirementId, choice: "local", version: row.version, changed: false };
+    return {
+      id: params.requirementId,
+      projectId: row.projectId,
+      choice: "local",
+      version: row.version,
+      changed: false,
+      superseded: false,
+    };
   }
 
   const result = await updateRequirementWithHistory(client as unknown as VersionPrismaClient, {
@@ -148,13 +163,15 @@ export async function resolveSourceDivergence(
     projectId: params.projectId,
     expectedVersion: params.expectedVersion,
   });
-  // The content is written; a newer source recorded meanwhile stays as the
-  // divergence to answer next.
-  await settle();
+  // The content is written. A newer source recorded meanwhile stays as the
+  // divergence to answer next, and the caller is told it was superseded.
+  const { count } = await settle();
   return {
     id: params.requirementId,
+    projectId: row.projectId,
     choice: "source",
     version: result.version,
     changed: result.changed,
+    superseded: count !== 1,
   };
 }

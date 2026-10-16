@@ -151,9 +151,12 @@ export interface ResolveSourceDivergenceInput {
 
 export interface ResolveSourceDivergenceResult {
   id: string;
+  projectId: string;
   choice: "source" | "local";
   version: number;
   changed: boolean;
+  /** Take source only: written, but the source changed again meanwhile. */
+  superseded: boolean;
 }
 
 export const requirementSourceApi = {

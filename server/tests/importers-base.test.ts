@@ -17,6 +17,8 @@ type Row = Omit<RequirementUpsertInput, "sourceFingerprint"> & {
   id: string;
   sourceFingerprint: string | null;
   sourcePending: SourcePending | null;
+  version?: number;
+  editedInMetis?: boolean;
 };
 
 /** In-memory requirement store keyed on (externalSource, externalId). */
@@ -38,6 +40,8 @@ function makeStore() {
         sourcePending: hit.sourcePending,
         externalUrl: hit.externalUrl,
         importSourceId: hit.importSourceId,
+        version: hit.version ?? 0,
+        editedInMetis: hit.editedInMetis ?? false,
       };
     },
     async create(input) {
@@ -333,21 +337,61 @@ describe("runImport re-sync keeps analysts' edits (#1220)", () => {
     expect(syncWrites).toEqual([]);
   });
 
-  it("a row synced before the fingerprint is never overwritten", async () => {
+  it("a row synced before the fingerprint: History decides, an edited one is never overwritten", async () => {
     const { store, rows } = makeStore();
-    await run(store, [issue("1"), issue("2")]);
-    const [same, edited] = [...rows.values()];
+    await run(store, [issue("1"), issue("2"), issue("3")]);
+    const [same, edited, behind] = [...rows.values()];
     rows.set(same!.id, { ...same!, sourceFingerprint: null });
-    rows.set(edited!.id, { ...edited!, sourceFingerprint: null, body: "Edited before #1220" });
+    rows.set(edited!.id, {
+      ...edited!,
+      sourceFingerprint: null,
+      body: "Edited before #1220",
+      editedInMetis: true,
+    });
+    // Never edited in METIS; its source simply moved on since the last sync.
+    rows.set(behind!.id, { ...behind!, sourceFingerprint: null, body: "older source body" });
 
-    const r = await run(store, [issue("1"), issue("2")]);
+    const r = await run(store, [issue("1"), issue("2"), issue("3")]);
 
-    expect(r).toMatchObject({ updated: 0, keptLocal: 0, diverged: 1 });
+    expect(r).toMatchObject({ updated: 1, keptLocal: 0, diverged: 1 });
     expect(rows.get(same!.id)?.sourceFingerprint).toBe(same!.sourceFingerprint);
     expect(rows.get(edited!.id)).toMatchObject({
       body: "Edited before #1220",
       sourceFingerprint: null,
-      sourcePending: expect.objectContaining({ body: "body" }),
+      sourcePending: expect.objectContaining({ body: "body", baselineUnknown: true }),
     });
+    expect(rows.get(behind!.id)).toMatchObject({ body: "body", sourcePending: null });
+  });
+
+  it("a lost race is decided again in the same run, and a second loss is skipped", async () => {
+    const { store, rows } = makeStore();
+    await run(store, [issue("1"), issue("2")]);
+    const [first, second] = [...rows.values()];
+    const realUpdate = store.update.bind(store);
+    let calls = 0;
+    // #1 loses once to an analyst save, which is the row read again; #2 loses
+    // every time.
+    store.update = async (id, input, expectedVersion) => {
+      calls += 1;
+      if (id === first!.id && calls === 1) {
+        rows.set(id, { ...rows.get(id)!, body: "Concurrent analyst edit", version: 1 });
+        return { id, skipped: true, conflict: true };
+      }
+      if (id === second!.id) return { id, skipped: true, conflict: true };
+      return realUpdate(id, input, expectedVersion);
+    };
+
+    const r = await run(store, [
+      issue("1", { body: "upstream" }),
+      issue("2", { body: "upstream" }),
+    ]);
+
+    expect(r).toMatchObject({ updated: 0, diverged: 1, skipped: 1 });
+    expect(rows.get(first!.id)).toMatchObject({
+      body: "Concurrent analyst edit",
+      sourcePending: expect.objectContaining({ body: "upstream" }),
+    });
+    // The skipped row's fingerprint did not advance: the next sync decides it.
+    expect(rows.get(second!.id)?.sourceFingerprint).toBe(second!.sourceFingerprint);
   });
 });

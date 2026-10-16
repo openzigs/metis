@@ -17,10 +17,12 @@
  * | yes            | no           | `apply_source` — the source is applied      |
  * | yes            | yes          | `diverged` — kept, and the source recorded  |
  *
- * A row that predates the fingerprint (`null`) cannot tell the two apart: if
- * the local copy equals the source the fingerprint is recorded and nothing
- * else happens; otherwise it is `diverged` ("local edited, source unknown").
- * It is never silently overwritten.
+ * A row that predates the fingerprint (`null`) has no baseline, so it asks the
+ * requirement's History instead (`editedInMetis`, from the caller's store):
+ * equal to the source — record the fingerprint, nothing else; never edited by
+ * a person (no version row with an actor, no legacy pre-#770 bump) — apply the
+ * source, as every sync did before; edited — `diverged` with
+ * `baselineUnknown`, never silently overwritten.
  *
  * Pure: no database. The writes the outcome implies are returned for the
  * caller's store to perform.
@@ -44,6 +46,12 @@ export interface SourcePending extends SourceContent {
   fingerprint: string;
   /** ISO time the re-sync first saw this source content. */
   detectedAt: string;
+  /**
+   * The row was synced before #1220 and edited in METIS since, so there is no
+   * record of what the source said when it was edited: the card says so
+   * rather than "the source changed and so did this copy".
+   */
+  baselineUnknown?: true;
 }
 
 /** The analyst's last answer to a divergence, shown in the requirement's History. */
@@ -109,6 +117,8 @@ export function sourceFingerprint(content: SourceContent): string {
  * @param pending        the divergence it is already flagged with, if any
  * @param source         the content the source system has now
  * @param now            the time to stamp a new divergence with
+ * @param editedInMetis  only read when `stored` is null: whether a person ever
+ *                       edited the row (its History), the only evidence left
  */
 export function decideResync(params: {
   local: SourceContent;
@@ -116,13 +126,14 @@ export function decideResync(params: {
   pending: SourcePending | null;
   source: SourceContent;
   now: Date;
+  editedInMetis?: boolean;
 }): ResyncDecision {
   const { stored, pending, source, now } = params;
   const fingerprint = sourceFingerprint(source);
   const localFingerprint = sourceFingerprint(params.local);
 
   const clearPending = (): SourceSyncWrite | null => (pending ? { sourcePending: null } : null);
-  const diverged = (): ResyncDecision => ({
+  const diverged = (baselineUnknown = false): ResyncDecision => ({
     outcome: "diverged",
     fingerprint,
     // Already flagged with this very source content: nothing to write, and the
@@ -130,7 +141,14 @@ export function decideResync(params: {
     write:
       pending?.fingerprint === fingerprint
         ? null
-        : { sourcePending: { ...source, fingerprint, detectedAt: now.toISOString() } },
+        : {
+            sourcePending: {
+              ...source,
+              fingerprint,
+              detectedAt: now.toISOString(),
+              ...(baselineUnknown ? { baselineUnknown: true as const } : {}),
+            },
+          },
   });
 
   // The local copy already says what the source says — whatever happened on
@@ -147,9 +165,14 @@ export function decideResync(params: {
     };
   }
 
-  // Synced before #1220 and different now: the edit may be the analyst's or the
-  // source's; there is no way to know, so keep the local copy and flag it.
-  if (stored === null) return diverged();
+  // Synced before #1220 and different now. There is no baseline to compare
+  // against, but analyst edits are versioned (#770): a row no person edited is
+  // simply behind its source, so apply it; an edited one is flagged.
+  if (stored === null) {
+    return params.editedInMetis
+      ? diverged(true)
+      : { outcome: "apply_source", fingerprint, write: null };
+  }
 
   const sourceChanged = fingerprint !== stored;
   const localEdited = localFingerprint !== stored;
@@ -198,6 +221,7 @@ export function parseSourcePending(raw: string | null | undefined): SourcePendin
         priority: v.priority,
         labels: v.labels,
         detectedAt: v.detectedAt,
+        ...(v.baselineUnknown === true ? { baselineUnknown: true as const } : {}),
       };
     }
   } catch {
@@ -235,8 +259,13 @@ export function toSourceDivergence(
 ): RequirementSourceDivergence | null {
   const pending = parseSourcePending(raw);
   if (!pending) return null;
-  const { fingerprint, detectedAt, ...source } = pending;
-  return { sourceFingerprint: fingerprint, detectedAt, source };
+  const { fingerprint, detectedAt, baselineUnknown, ...source } = pending;
+  return {
+    sourceFingerprint: fingerprint,
+    detectedAt,
+    source,
+    ...(baselineUnknown ? { baselineUnknown: true } : {}),
+  };
 }
 
 /** History's view of the last answer (`RequirementSourceDecision`); `null` when none. */

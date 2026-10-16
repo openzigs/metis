@@ -51,6 +51,18 @@ export interface ExistingImportedRequirement {
   /** Source-owned link metadata, refreshed whatever happens to the content. */
   externalUrl: string | null;
   importSourceId: string | null;
+  /**
+   * The `version` this read saw. Applying the source is conditional on it, so
+   * an analyst save landing between this read and the write is never
+   * overwritten (the write loses, and the row is decided again).
+   */
+  version: number;
+  /**
+   * Whether a person ever edited the row (History: a version row with an
+   * actor, or a pre-#770 bump with no row for version 1). Read only for a row
+   * synced before #1220, which has no fingerprint to compare.
+   */
+  editedInMetis: boolean;
 }
 
 /**
@@ -73,12 +85,17 @@ export interface RequirementStore {
   ): Promise<ExistingImportedRequirement | null>;
   create(input: RequirementUpsertInput): Promise<{ id: string }>;
   /**
-   * Apply the source's content to a row whose local copy was not edited.
+   * Apply the source's content to a row whose local copy was not edited, only
+   * if the row is still at `expectedVersion` (#1220).
    * `skipped` (#1162): the row was not written this run (deleted meanwhile, or
-   * it kept losing to concurrent edits). It counts as skipped, not updated,
-   * and takes no part in parent linking.
+   * it changed since it was read — then also `conflict`). It counts as
+   * skipped, not updated, and takes no part in parent linking.
    */
-  update(id: string, input: RequirementUpsertInput): Promise<{ id: string; skipped?: boolean }>;
+  update(
+    id: string,
+    input: RequirementUpsertInput,
+    expectedVersion: number,
+  ): Promise<{ id: string; skipped?: boolean; conflict?: boolean }>;
   /**
    * Issue #1220 — write only the sync-state columns (never title, body, type,
    * priority or labels, and never `version`, so a pinned review stays current).
@@ -267,32 +284,54 @@ export async function runImport<F>(opts: RunImportOptions<F>): Promise<RunImport
     if (existing) {
       // Issue #1220 — apply the source only when it changed and the local copy
       // was not edited; never overwrite an analyst's edit.
-      const decision = decideResync({
-        local: existing.local,
-        stored: existing.sourceFingerprint,
-        pending: existing.sourcePending,
-        source,
-        now: now(),
-      });
-      requirementId = existing.id;
-      if (decision.outcome === "apply_source") {
-        const res = await store.update(existing.id, input);
-        if (res.skipped) {
-          skipped += 1;
-          continue;
+      const decide = (row: ExistingImportedRequirement) =>
+        decideResync({
+          local: row.local,
+          stored: row.sourceFingerprint,
+          pending: row.sourcePending,
+          source,
+          now: now(),
+          editedInMetis: row.editedInMetis,
+        });
+      let row = existing;
+      let decision = decide(row);
+      // The write is conditional on the version the decision was made from. A
+      // lost race means someone saved in between: read the row and decide
+      // again (once), so their save is kept or flagged in this run. A second
+      // loss is skipped; the fingerprint did not advance, so the next sync
+      // decides it afresh.
+      let written = false;
+      for (let attempt = 0; decision.outcome === "apply_source" && !written; attempt++) {
+        const res = await store.update(row.id, input, row.version);
+        if (!res.skipped) {
+          written = true;
+          break;
         }
-        requirementId = res.id;
+        const reread =
+          res.conflict && attempt === 0
+            ? await store.findByExternal(projectId, mapped.externalSource, mapped.externalId)
+            : null;
+        if (!reread) break;
+        row = reread;
+        decision = decide(row);
+      }
+      if (decision.outcome === "apply_source" && !written) {
+        skipped += 1;
+        continue;
+      }
+      requirementId = row.id;
+      if (written) {
         updated += 1;
       } else {
         // The content is the analyst's (or already the source's), but the link
         // is the source's alone: a recreated source or a moved issue still
         // re-points it, as every sync did before #1220.
         const write: ImportedRowSyncWrite = { ...decision.write };
-        if (existing.externalUrl !== input.externalUrl) write.externalUrl = input.externalUrl;
-        if (existing.importSourceId !== input.importSourceId) {
+        if (row.externalUrl !== input.externalUrl) write.externalUrl = input.externalUrl;
+        if (row.importSourceId !== input.importSourceId) {
           write.importSourceId = input.importSourceId;
         }
-        if (Object.keys(write).length > 0) await store.recordSourceSync(existing.id, write);
+        if (Object.keys(write).length > 0) await store.recordSourceSync(row.id, write);
         if (decision.outcome === "kept_local") keptLocal += 1;
         if (decision.outcome === "diverged") diverged += 1;
       }

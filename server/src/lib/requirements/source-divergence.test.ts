@@ -31,7 +31,12 @@ const pending = JSON.stringify({
 
 function client(opts: { updateManyCount: number }) {
   const requirement = {
-    findFirst: vi.fn(async () => ({ id: "r1", version: 2, sourcePending: pending })),
+    findFirst: vi.fn(async () => ({
+      id: "r1",
+      projectId: "p1",
+      version: 2,
+      sourcePending: pending,
+    })),
     updateMany: vi.fn(async () => ({ count: opts.updateManyCount })),
   };
   return { db: { requirement } as unknown as PrismaClient, requirement };
@@ -68,7 +73,14 @@ describe("resolveSourceDivergence — a newer source recorded meanwhile", () => 
       now: new Date("2026-10-16T11:00:00.000Z"),
     });
     // No version row and no bump: the version read is the version returned.
-    expect(result).toEqual({ id: "r1", choice: "local", version: 2, changed: false });
+    expect(result).toEqual({
+      id: "r1",
+      projectId: "p1",
+      choice: "local",
+      version: 2,
+      changed: false,
+      superseded: false,
+    });
     expect(updateRequirementWithHistory).not.toHaveBeenCalled();
     expect(requirement.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: "r1", deletedAt: null } }),
@@ -87,5 +99,53 @@ describe("resolveSourceDivergence — a newer source recorded meanwhile", () => 
       actorId: "u1",
       at: "2026-10-16T11:00:00.000Z",
     });
+  });
+});
+
+describe("resolveSourceDivergence — Take the source version superseded by a newer re-sync", () => {
+  it("writes the content but reports the divergence as NOT resolved", async () => {
+    updateRequirementWithHistory.mockClear();
+    updateRequirementWithHistory.mockResolvedValueOnce({
+      id: "r1",
+      version: 3,
+      updatedAt: new Date(),
+      changed: true,
+      changedFields: {},
+    });
+    // The conditional settle matches nothing: a newer source was recorded.
+    const { db } = client({ updateManyCount: 0 });
+
+    const result = await resolveSourceDivergence(db, {
+      requirementId: "r1",
+      choice: "source",
+      sourceFingerprint: "v1:src",
+      actorId: "u1",
+      expectedVersion: 2,
+    });
+
+    expect(updateRequirementWithHistory).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ actorId: "u1", expectedVersion: 2, keepHiddenLabels: true }),
+    );
+    expect(result).toMatchObject({ choice: "source", changed: true, superseded: true });
+  });
+
+  it("a settled take-source is not superseded", async () => {
+    updateRequirementWithHistory.mockResolvedValueOnce({
+      id: "r1",
+      version: 3,
+      updatedAt: new Date(),
+      changed: true,
+      changedFields: {},
+    });
+    const { db } = client({ updateManyCount: 1 });
+    const result = await resolveSourceDivergence(db, {
+      requirementId: "r1",
+      choice: "source",
+      sourceFingerprint: "v1:src",
+      actorId: "u1",
+      expectedVersion: 2,
+    });
+    expect(result.superseded).toBe(false);
   });
 });

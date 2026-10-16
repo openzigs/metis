@@ -1579,6 +1579,12 @@ export interface RequirementSourceDivergence {
   sourceFingerprint: string;
   /** When re-sync first saw this source content. */
   detectedAt: string;
+  /**
+   * The requirement was edited in METIS before METIS tracked its source, so
+   * there is no record of the source at the time of that edit: only that the
+   * source now differs. The card words it accordingly.
+   */
+  baselineUnknown?: boolean;
   source: {
     title: string;
     body: string;

@@ -587,7 +587,7 @@ describe("#1162 — import re-sync writes through version history", () => {
     expect(versions(ctx)).toHaveLength(0);
   });
 
-  it("an analyst edit landing mid-sync is kept in the history and the run still completes", async () => {
+  it("an analyst edit landing mid-sync is never overwritten: the row is decided again and flagged (#1220)", async () => {
     const issues = [ghIssue(1), ghIssue(2)];
     const ctx = makeDeps();
     ctx.deps.importerDeps = { ...ctx.deps.importerDeps!, fetchFn: githubFetch(issues) };
@@ -618,13 +618,14 @@ describe("#1162 — import re-sync writes through version history", () => {
     const run = await svc.runSource("src_1", { trigger: "manual" });
 
     expect(run.status).toBe("completed");
-    // Re-sync is "the source system wins", as before — but the analyst's edit
-    // stays in the history as its own version, and the overwrite is the next one.
-    expect(rows(ctx)[0]).toMatchObject({ body: "upstream body", version: 2 });
-    const sync = versions(ctx).find((v) => v.version === 2)!;
-    expect(JSON.parse(sync.changedFields as string)).toEqual({
-      body: { from: "analyst edit", to: "upstream body" },
-    });
+    // #1220 — the write was conditional on the version the decision was made
+    // from, so it lost to the analyst's save; read again, the row is edited AND
+    // its source changed, so it is diverged, not overwritten.
+    expect(run).toMatchObject({ updatedCount: 0, divergedCount: 1 });
+    const after = rows(ctx)[0]!;
+    expect(after).toMatchObject({ body: "analyst edit", version: 1 });
+    expect(JSON.parse(after.sourcePending as string)).toMatchObject({ body: "upstream body" });
+    expect(versions(ctx).find((v) => v.version === 2)).toBeUndefined();
   });
 
   it("skips a row that keeps losing to concurrent edits instead of failing the run", async () => {

@@ -124,6 +124,41 @@ describe("SourceDivergenceNotice", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: KEY });
   });
 
+  it("says 'so did this copy' only when it knows; a row edited before tracking is worded honestly", () => {
+    renderNotice();
+    expect(screen.getByTestId("source-divergence-explanation")).toHaveTextContent(
+      /and so did this copy/,
+    );
+  });
+
+  it("a row edited in METIS before its source was tracked: no claim about what changed when", () => {
+    renderNotice({ ...divergence, baselineUnknown: true });
+    const text = screen.getByTestId("source-divergence-explanation");
+    expect(text).toHaveTextContent(
+      "This requirement was edited in METIS before METIS tracked its source; the source has changed. Compare and choose.",
+    );
+    expect(text).not.toHaveTextContent(/so did this copy/);
+    expect(screen.getByRole("button", { name: "Keep mine" })).toBeInTheDocument();
+  });
+
+  it("a take-source the source overtook says so instead of claiming it was taken", async () => {
+    resolveDivergence.mockResolvedValue({
+      id: "req-1",
+      projectId: "p1",
+      choice: "source",
+      version: 4,
+      changed: true,
+      superseded: true,
+    });
+    renderNotice();
+    fireEvent.click(screen.getByRole("button", { name: "Take the source version" }));
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        "Took that source version, but the source has changed again — compare again",
+      ),
+    );
+  });
+
   it("a refused answer (the source moved again) reports the error and refetches", async () => {
     resolveDivergence.mockRejectedValue(new Error("The source changed again"));
     const { invalidate } = renderNotice();

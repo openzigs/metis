@@ -73,13 +73,19 @@ const updateRequirementSchema = z.object({
 });
 
 /// Issue #1220 — the analyst's answer to a "diverged from source" requirement.
-const resolveSourceDivergenceSchema = z.object({
-  choice: z.enum(["source", "local"]),
-  /// The source content the analyst compared against (from the snapshot).
-  sourceFingerprint: z.string().min(1).max(200),
-  /// The requirement version the analyst saw; checked when taking the source.
-  version: z.number().int().optional(),
-});
+const resolveSourceDivergenceSchema = z
+  .object({
+    choice: z.enum(["source", "local"]),
+    /// The source content the analyst compared against (from the snapshot).
+    sourceFingerprint: z.string().min(1).max(200),
+    /// The requirement version the analyst saw. Required when taking the
+    /// source, so it never overwrites an edit the analyst had not seen.
+    version: z.number().int().optional(),
+  })
+  .refine((b) => b.choice !== "source" || b.version !== undefined, {
+    message: "`version` is required when taking the source version",
+    path: ["version"],
+  });
 
 const assignSchema = z.object({
   assigneeId: z.string().min(1),
@@ -366,9 +372,19 @@ export function requirementsCollaborationRouter(): Router {
         });
         audit({
           actor: req.user.userId,
-          action: "requirement.source_divergence.resolve",
+          // A take-source whose divergence a newer re-sync superseded wrote
+          // the content but resolved nothing; say exactly that.
+          action: result.superseded
+            ? "requirement.source_divergence.superseded"
+            : "requirement.source_divergence.resolve",
           target: { type: "requirement", id: requirementId },
-          metadata: { choice: result.choice, changed: result.changed, version: result.version },
+          metadata: {
+            projectId: result.projectId,
+            choice: result.choice,
+            sourceFingerprint: parsed.data.sourceFingerprint,
+            changed: result.changed,
+            version: result.version,
+          },
         });
         res.json({ success: true, data: result });
       } catch (err) {

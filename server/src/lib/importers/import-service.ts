@@ -785,9 +785,21 @@ export class ImportService {
             sourcePending: true,
             externalUrl: true,
             importSourceId: true,
+            version: true,
+            // #1220 — History's evidence of a person's edit, for a row synced
+            // before the fingerprint: a version row with an actor, or (the
+            // #1162 legacy rule) a bump with no row for version 1.
+            versions: {
+              where: { OR: [{ actorId: { not: null } }, { version: 1 }] },
+              select: { actorId: true, version: true },
+            },
           },
         });
         if (!existing) return null;
+        const history = existing.versions ?? [];
+        const editedInMetis =
+          history.some((v) => v.actorId !== null) ||
+          (existing.version > 0 && !history.some((v) => v.version === 1));
         return {
           id: existing.id,
           local: {
@@ -801,6 +813,8 @@ export class ImportService {
           sourcePending: parseSourcePending(existing.sourcePending),
           externalUrl: existing.externalUrl ?? null,
           importSourceId: existing.importSourceId ?? null,
+          version: existing.version,
+          editedInMetis,
         };
       },
       async create(input) {
@@ -827,20 +841,19 @@ export class ImportService {
        * version history: a changed issue appends a version row, an unchanged
        * one writes nothing (it used to rewrite every row on every sync).
        *
-       * Conflicts: the write is unversioned, so the source system wins as it
-       * always has — but a concurrent analyst edit is no longer lost from the
-       * record. The service re-reads and re-diffs on top of the winner's row
-       * (bounded retries), so the analyst's edit stays in the history as its
-       * own version and the overwrite is the next one, restorable either way.
-       * A row that keeps losing, or is deleted mid-run, is skipped and logged:
-       * the next sync retries it, and the rest of the run is not failed.
+       * Conflicts (#1220): the write is versioned at the row the re-sync
+       * decided from (`expectedVersion`), so a concurrent analyst save wins and
+       * is never overwritten: this returns `conflict`, and `runImport` reads
+       * the row and decides again. A row that is deleted mid-run, or loses
+       * twice, is skipped and logged: the next sync decides it afresh, and the
+       * rest of the run is not failed.
        *
        * Each row is its own transaction (read, conditional write, version row).
        * The run as a whole is not one transaction and never was: it streams
        * pages from the source API, and holding a write transaction across those
        * network calls would lock the database for the length of the import.
        */
-      async update(id, input) {
+      async update(id, input, expectedVersion) {
         try {
           await updateRequirementWithHistory(prisma as unknown as VersionPrismaClient, {
             requirementId: id,
@@ -858,8 +871,14 @@ export class ImportService {
               sourceFingerprint: input.sourceFingerprint,
               sourcePending: null,
             },
+            // The source never carries METIS's hidden traceability labels; keep
+            // them, as "Take the source version" does (#1220).
+            keepHiddenLabels: true,
             actorId: null,
             reason: IMPORT_RESYNC_VERSION_REASON,
+            // #1220 — only onto the row the re-sync decided from: an analyst
+            // save since that read wins, and the row is decided again.
+            expectedVersion,
           });
         } catch (err) {
           if (!(err instanceof RequirementVersionError)) throw err;
@@ -868,7 +887,7 @@ export class ImportService {
             importSourceId: input.importSourceId,
             reason: err.code,
           });
-          return { id, skipped: true };
+          return { id, skipped: true, conflict: err.code === "VERSION_CONFLICT" };
         }
         return { id };
       },
