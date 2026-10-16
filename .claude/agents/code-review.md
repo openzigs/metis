@@ -64,9 +64,11 @@ Publish with **one** `gh api` call, which does post inline comments — `gh pr r
 cannot, and a review without them reads as empty:
 
 ```bash
+# One JSON document: { "event", "body", "comments": [ { "path", "line", "side", "body" } ] }.
+# Never add -f beside --input (it is demoted to the query string: HTTP 414). Name the file
+# per PR; parallel reviewers share one scratchpad. Full form: the skill's Step 9.
 gh api -X POST repos/{owner}/{repo}/pulls/<PR>/reviews \
-  -f event=REQUEST_CHANGES -f body="<summary>" \
-  --input findings.json   # { "comments": [ { "path", "line", "body" }, ... ] }
+  --input <scratchpad>/review-<PR>.json --jq '.pull_request_url'   # must end in /pulls/<PR>
 ```
 
 Put every finding in `comments` (one `{path, line, body}` entry each) rather than in the
