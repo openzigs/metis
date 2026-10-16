@@ -13,8 +13,9 @@
  */
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { parseAcceptanceCriteria } from "@metis/shared";
+import { parseAcceptanceCriteria, stripMetisMarkers } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { formatStartedAt } from "../publishing/epic-title.js";
 
 /** Upper bound on an explicit selection, so one request cannot name the whole table. */
 export const MAX_SELECTED_REQUIREMENTS = 500;
@@ -203,19 +204,80 @@ function prLink(prNumber: number, prUrl: string): string {
     : `PR #${prNumber}`;
 }
 
-function selectionSummary(filter: RequirementsScopeFilter, count: number): string {
+/**
+ * #1170 — how the introduction names what the document covers. A reader cannot
+ * use an internal id, so the run is named by its start time (as the publish epic
+ * is, #1064) and a review by its title; neither id is ever printed.
+ */
+export interface RequirementsSourceNames {
+  analysisStartedAt?: Date | null;
+  reviewTitle?: string | null;
+}
+
+function runName(startedAt: Date | null | undefined): string {
+  const when = formatStartedAt(startedAt);
+  return when ? `the analysis run started ${when}` : "the selected analysis run";
+}
+
+function reviewName(title: string | null | undefined): string {
+  return title?.trim() ? `review “${cell(title)}”` : "the selected review";
+}
+
+function selectionSummary(
+  filter: RequirementsScopeFilter,
+  count: number,
+  names: RequirementsSourceNames,
+): string {
   const sources: string[] = [];
   // #1129 — a selection within one run is a subset OF that run, not a second source.
   const chosenFromRun = Boolean(filter.analysisId && filter.requirementIds);
   if (filter.analysisId)
-    sources.push(
-      `${chosenFromRun ? "those chosen from " : ""}analysis run \`${cell(filter.analysisId)}\``,
-    );
-  if (filter.reviewRequestId) sources.push(`review \`${cell(filter.reviewRequestId)}\``);
+    sources.push(`${chosenFromRun ? "those chosen from " : ""}${runName(names.analysisStartedAt)}`);
+  if (filter.reviewRequestId) sources.push(reviewName(names.reviewTitle));
   if (filter.requirementIds && !chosenFromRun)
     sources.push(`${filter.requirementIds.length} selected requirement(s)`);
   const approved = filter.approvedOnly ? ", approved requirements only" : "";
   return `This document covers ${count} requirement(s) from ${sources.join(" and ")}${approved}.`;
+}
+
+/** The shallowest heading a requirement body may use: below its own `### Rn.` title. */
+const BODY_MIN_HEADING_LEVEL = 4;
+
+/**
+ * #1170 — a body's own headings, nested under the requirement's title. The
+ * clarification pass writes `## Clarifications` into the body; copied as it was,
+ * every requirement put an H2 beside the document's `## Requirements`, so the
+ * Contents listed five "Clarifications" siblings and split each requirement in
+ * two. Headings inside fenced code are text, and are left alone.
+ */
+function nestBodyHeadings(body: string): string {
+  let fence: string | null = null;
+  return body
+    .split("\n")
+    .map((line) => {
+      const opener = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+      if (opener) {
+        const mark = opener[1]!;
+        if (fence === null) fence = mark;
+        else if (mark[0] === fence[0] && mark.length >= fence.length) fence = null;
+        return line;
+      }
+      if (fence !== null) return line;
+      const heading = /^ {0,3}(#{1,6})(?=[ \t]|$)/.exec(line);
+      if (!heading || heading[1]!.length >= BODY_MIN_HEADING_LEVEL) return line;
+      return "#".repeat(BODY_MIN_HEADING_LEVEL) + line.slice(heading[0].length);
+    })
+    .join("\n");
+}
+
+/**
+ * A requirement body as BRD content: METIS's internal markers removed first
+ * (#1170 — escaped by {@link neutralizeHtml} they became visible
+ * `<!-- metis:clarifications:start -->` text), its headings nested under the
+ * requirement, then any other raw HTML neutralised.
+ */
+export function requirementBodyMarkdown(body: string): string {
+  return neutralizeHtml(nestBodyHeadings(stripMetisMarkers(body)).trim());
 }
 
 /**
@@ -236,6 +298,7 @@ export function renderRequirementsDocument(
   title: string,
   filter: RequirementsScopeFilter,
   requirements: readonly ScopedRequirement[],
+  names: RequirementsSourceNames = {},
 ): string {
   const linked = requirements.filter(
     (r) => r.codeMappings.length > 0 || r.implementations.length > 0,
@@ -243,7 +306,7 @@ export function renderRequirementsDocument(
   const out: string[] = [
     `# ${cell(headingWithCount(title, requirements.length))}`,
     "",
-    selectionSummary(filter, requirements.length),
+    selectionSummary(filter, requirements.length, names),
     `${linked} of ${requirements.length} have recorded code links.`,
     "",
     "## Summary",
@@ -268,7 +331,7 @@ export function renderRequirementsDocument(
         r.reviewStatus ?? "draft",
       )} · **Verdict:** ${cell(r.verdict ?? "not assessed")}`,
       "",
-      neutralizeHtml(r.body.trim()) || "_No description recorded._",
+      requirementBodyMarkdown(r.body) || "_No description recorded._",
       "",
       "#### Acceptance criteria",
       "",
@@ -300,6 +363,28 @@ export function renderRequirementsDocument(
   return `${out.join("\n")}\n`;
 }
 
+/** The start time and review title the introduction names, read within the project. */
+async function loadSourceNames(
+  projectId: string,
+  filter: RequirementsScopeFilter,
+): Promise<RequirementsSourceNames> {
+  const [analysis, review] = await Promise.all([
+    filter.analysisId
+      ? prisma.analysis.findFirst({
+          where: { id: filter.analysisId, projectId },
+          select: { startedAt: true },
+        })
+      : null,
+    filter.reviewRequestId
+      ? prisma.reviewRequest.findFirst({
+          where: { id: filter.reviewRequestId, projectId },
+          select: { title: true },
+        })
+      : null,
+  ]);
+  return { analysisStartedAt: analysis?.startedAt ?? null, reviewTitle: review?.title ?? null };
+}
+
 /** Load, render and fingerprint the requirements a document is scoped to. */
 export async function synthesizeRequirementsDocument(
   projectId: string,
@@ -311,7 +396,12 @@ export async function synthesizeRequirementsDocument(
     throw new Error("No requirements match this document's scope");
   }
   return {
-    markdown: renderRequirementsDocument(title, filter, requirements),
+    markdown: renderRequirementsDocument(
+      title,
+      filter,
+      requirements,
+      await loadSourceNames(projectId, filter),
+    ),
     sourceFingerprint: requirementsSourceFingerprint(requirements),
     requirementCount: requirements.length,
   };

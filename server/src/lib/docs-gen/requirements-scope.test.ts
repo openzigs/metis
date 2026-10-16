@@ -4,8 +4,19 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { findMany, count } = vi.hoisted(() => ({ findMany: vi.fn(), count: vi.fn() }));
-vi.mock("../prisma.js", () => ({ prisma: { requirement: { findMany, count } } }));
+const { findMany, count, analysisFindFirst, reviewFindFirst } = vi.hoisted(() => ({
+  findMany: vi.fn(),
+  count: vi.fn(),
+  analysisFindFirst: vi.fn(),
+  reviewFindFirst: vi.fn(),
+}));
+vi.mock("../prisma.js", () => ({
+  prisma: {
+    requirement: { findMany, count },
+    analysis: { findFirst: analysisFindFirst },
+    reviewRequest: { findFirst: reviewFindFirst },
+  },
+}));
 
 import {
   countScopedRequirements,
@@ -41,6 +52,8 @@ function req(overrides: Partial<ScopedRequirement> = {}): ScopedRequirement {
 beforeEach(() => {
   findMany.mockReset();
   count.mockReset();
+  analysisFindFirst.mockReset().mockResolvedValue(null);
+  reviewFindFirst.mockReset().mockResolvedValue(null);
 });
 
 describe("requirementsScopeFilterSchema", () => {
@@ -136,7 +149,7 @@ describe("renderRequirementsDocument", () => {
       req({ id: "req-2", title: "Audit log", reviewStatus: null, verdict: null, body: "  " }),
     ]);
     expect(md).toContain("# Invoices BRD (2 requirements)\n");
-    expect(md).toContain("covers 2 requirement(s) from analysis run `run-7`");
+    expect(md).toContain("covers 2 requirement(s) from the selected analysis run.");
     expect(md).toContain("1 of 2 have recorded code links.");
     expect(md).toContain(
       "| R1 | Export invoices | feature | medium | approved | implemented | 2 |",
@@ -160,7 +173,7 @@ describe("renderRequirementsDocument", () => {
       [req({ acceptanceCriteria: "[]" })],
     );
     expect(md).toContain(
-      "from review `rv-1` and 2 selected requirement(s), approved requirements only.",
+      "from the selected review and 2 selected requirement(s), approved requirements only.",
     );
     expect(md).toContain("_No acceptance criteria were derived for this requirement._");
   });
@@ -250,7 +263,7 @@ describe("requirements chosen from one run — #1129", () => {
     );
     expect(md.startsWith("# Business Requirements (5 requirements)\n")).toBe(true);
     expect(md).toContain(
-      "This document covers 5 requirement(s) from those chosen from analysis run `run-8`.",
+      "This document covers 5 requirement(s) from those chosen from the selected analysis run.",
     );
     expect(md).not.toContain("selected requirement(s)");
   });
@@ -261,5 +274,130 @@ describe("requirements chosen from one run — #1129", () => {
     expect(headingWithCount("BRD — 15 requirements", 5)).toBe(
       "BRD — 15 requirements (5 requirements)",
     );
+  });
+});
+
+/**
+ * #1170 — walkthrough run 9: the scoped BRD escaped the clarification markers
+ * into visible text, listed every body's "## Clarifications" in the outline as a
+ * sibling of "## Requirements", and named the run by its internal id.
+ */
+describe("requirement bodies carrying METIS markers — #1170", () => {
+  const clarified = (n: number, flag: boolean) =>
+    [
+      `Requirement ${n} body.`,
+      "",
+      "<!-- metis:clarifications:start -->",
+      "## Clarifications",
+      "",
+      "_Answers recorded during METIS clarification, verbatim._",
+      "",
+      ...(flag
+        ? [
+            "> **Check the acceptance criteria.** Edit them. <!-- metis:criteria-predate-answers -->",
+            "",
+          ]
+        : []),
+      `- **Q:** Question ${n}?`,
+      `  **A:** Answer ${n}. _(typed by the requester)_`,
+      "<!-- metis:clarifications:end -->",
+    ].join("\n");
+  const five = [1, 2, 3, 4, 5].map((n) =>
+    req({
+      id: `r${n}`,
+      title: `Requirement ${n}`,
+      body: clarified(n, n === 2),
+      acceptanceCriteria: JSON.stringify([`Criterion ${n}.`]),
+    }),
+  );
+
+  it("renders no marker, escaped or raw, and keeps the clarification text", () => {
+    const md = renderRequirementsDocument("BRD", { analysisId: "a" }, five);
+    expect(md).not.toMatch(/metis:/);
+    expect(md).not.toContain("&lt;!--");
+    expect(md).toContain("- **Q:** Question 2?\n  **A:** Answer 2. _(typed by the requester)_");
+    expect(md).toContain("> **Check the acceptance criteria.** Edit them.\n");
+  });
+
+  it("contains every requirement the summary lists, each with its criteria", () => {
+    const md = renderRequirementsDocument("BRD", { analysisId: "a" }, five);
+    for (const n of [1, 2, 3, 4, 5]) {
+      expect(md).toContain(`| R${n} | Requirement ${n} |`);
+      expect(md).toContain(`### R${n}. Requirement ${n}`);
+      expect(md).toContain(`- Criterion ${n}.`);
+      expect(md).toContain(`Answer ${n}.`);
+    }
+  });
+
+  it("nests a body's own headings under its requirement, outside code fences only", () => {
+    const md = renderRequirementsDocument("BRD", { analysisId: "a" }, [
+      req({ body: "# Top\n\n## Clarifications\n\n```md\n## kept in code\n```\n\n##### Deep" }),
+    ]);
+    // The document's outline is its own: one H2 per part, one H3 per requirement.
+    // (The third match is the fenced line, which is code and stays as written.)
+    expect(md.match(/^## .*/gm)).toEqual(["## Summary", "## Requirements", "## kept in code"]);
+    expect(md).toContain("#### Top\n");
+    expect(md).toContain("#### Clarifications\n");
+    expect(md).toContain("```md\n## kept in code\n```");
+    expect(md).toContain("##### Deep");
+  });
+});
+
+describe("the run and review are named, never by id — #1170", () => {
+  it("names the analysis run by its start time", () => {
+    const md = renderRequirementsDocument(
+      "BRD",
+      { analysisId: "cmvahloo52ogq3g9kw84hy7wp", requirementIds: ["a"] },
+      [req()],
+      { analysisStartedAt: new Date("2026-10-16T04:48:09.123Z") },
+    );
+    expect(md).not.toContain("cmvahloo52ogq3g9kw84hy7wp");
+    expect(md).toContain(
+      "This document covers 1 requirement(s) from those chosen from the analysis run started 2026-10-16 04:48:09 UTC.",
+    );
+  });
+
+  it("names a review by its title, and falls back to words when either is unknown", () => {
+    const named = renderRequirementsDocument("BRD", { reviewRequestId: "rv-secret-id" }, [req()], {
+      reviewTitle: "Sprint 12 | intake <b>",
+    });
+    expect(named).not.toContain("rv-secret-id");
+    expect(named).toContain("from review “Sprint 12 \\| intake &lt;b>”.");
+    const unnamed = renderRequirementsDocument(
+      "BRD",
+      { analysisId: "run-x", reviewRequestId: "rv-y" },
+      [req()],
+    );
+    expect(unnamed).not.toMatch(/run-x|rv-y/);
+    expect(unnamed).toContain("from the selected analysis run and the selected review.");
+  });
+
+  it("loads the start time and the review title within the project", async () => {
+    findMany.mockResolvedValue([req()]);
+    analysisFindFirst.mockResolvedValue({ startedAt: new Date("2026-10-16T04:48:09Z") });
+    reviewFindFirst.mockResolvedValue({ title: "Intake review" });
+    const out = await synthesizeRequirementsDocument(
+      "p1",
+      { analysisId: "a1", reviewRequestId: "rv1" },
+      "BRD",
+    );
+    expect(analysisFindFirst).toHaveBeenCalledWith({
+      where: { id: "a1", projectId: "p1" },
+      select: { startedAt: true },
+    });
+    expect(reviewFindFirst).toHaveBeenCalledWith({
+      where: { id: "rv1", projectId: "p1" },
+      select: { title: true },
+    });
+    expect(out.markdown).toContain(
+      "from the analysis run started 2026-10-16 04:48:09 UTC and review “Intake review”.",
+    );
+  });
+
+  it("does not read a run or review the filter does not name", async () => {
+    findMany.mockResolvedValue([req()]);
+    await synthesizeRequirementsDocument("p1", { requirementIds: ["r1"] }, "BRD");
+    expect(analysisFindFirst).not.toHaveBeenCalled();
+    expect(reviewFindFirst).not.toHaveBeenCalled();
   });
 });

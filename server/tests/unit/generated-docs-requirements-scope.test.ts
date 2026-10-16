@@ -39,6 +39,10 @@ vi.mock("../../src/lib/prisma.js", () => ({
       findUnique: vi.fn(async () => ({ workspaceId: "ws-a", requireApprovedReview: false })),
     },
     requirement: reqState,
+    // #1170 — the introduction names the run by its start time.
+    analysis: {
+      findFirst: vi.fn(async () => ({ startedAt: new Date("2026-10-16T04:48:09Z") })),
+    },
     generatedDocument: {
       create: docCreateSpy,
       findFirst: vi.fn(async () => ({
@@ -235,6 +239,8 @@ describe("#991 — POST /generate with a requirements scope", () => {
     const version = versionCreateSpy.mock.calls[0]![0].data;
     expect(version.content).toContain("### R1. Export invoices");
     expect(version.content).toContain("`src/export.ts:10-40`");
+    expect(version.content).toContain("the analysis run started 2026-10-16 04:48:09 UTC");
+    expect(version.content).not.toContain("run-1");
     const manifest = JSON.parse(version.provenanceManifest as string);
     expect(manifest.generation.pipeline).toBe("requirements");
     expect(manifest.document.docType).toBe("business-requirements");

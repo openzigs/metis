@@ -1,0 +1,31 @@
+/**
+ * METIS writes HTML-comment markers into requirement bodies so a later pass can
+ * find its own blocks: `<!-- metis:clarifications:start -->` / `:end -->`
+ * around the clarification answers (#1116) and the inline
+ * `<!-- metis:criteria-predate-answers -->` flag (#1000). They are bookkeeping,
+ * never content, so every view and every document built from a body removes
+ * them — the requirement card (#998), the baseline and review views (#1086) and
+ * the requirements-scoped BRD (#1170), which used to escape them into visible
+ * text instead.
+ */
+
+/** Every METIS block marker. A fresh pattern per call, so no shared `lastIndex`. */
+function internalMarkerPattern(): RegExp {
+  return /<!--\s*metis:[\w:-]+\s*-->/g;
+}
+
+/**
+ * The text with METIS's internal markers removed. A marker that was alone on its
+ * line takes the line with it, so no run of blank lines is left behind; one
+ * written inline leaves the text around it as it was, less trailing spaces.
+ */
+export function stripMetisMarkers(text: string): string {
+  return text
+    .split("\n")
+    .flatMap((line) => {
+      const stripped = line.replace(internalMarkerPattern(), "");
+      if (stripped === line) return [line];
+      return stripped.trim() === "" ? [] : [stripped.replace(/[ \t]+$/, "")];
+    })
+    .join("\n");
+}

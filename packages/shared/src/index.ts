@@ -58,6 +58,8 @@ export * from "./conversation.js";
 export * from "./agents.js";
 // #346 — PATCH schemas whose omitted fields stay omitted under zod 4.
 export * from "./zod-patch.js";
+// #1170 — METIS's internal requirement-body markers, removed wherever a body is shown.
+export * from "./metis-markers.js";
 
 export const SHARED_PACKAGE_NAME = "@metis/shared";
 
