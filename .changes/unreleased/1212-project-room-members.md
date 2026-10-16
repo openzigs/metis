@@ -7,7 +7,8 @@ section: Fixed
   (analysis and document progress, connector, usage and drift events), not only
   the analyst who created the project. Before, teammates saw a job finish only
   after reloading the page.
-- A member removed from a workspace, or everyone in a deleted workspace, stops
-  receiving those updates straight away.
+- Anyone who loses access stops receiving those updates straight away: a
+  member removed from a workspace, everyone in a deleted workspace, and
+  non-members of a workspace an older project is moved into.
 - Live usage updates no longer include the id of the chat session that made the
   call.

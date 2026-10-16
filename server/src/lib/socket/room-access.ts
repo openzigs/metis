@@ -54,13 +54,18 @@ function canReachProject(user: AuthPayload, projectId: string): Promise<boolean>
  *
  * Membership is read from the database at join time, not from the handshake's
  * snapshot, and a denial is audited. An unknown project and a project the
- * caller cannot reach both answer `false`.
+ * caller cannot reach both answer `false`. `action` names the denial's audit
+ * row: a join, or a re-judgement of a socket already in the room.
  */
-export function canJoinProjectRoom(user: AuthPayload, projectId: string): Promise<boolean> {
+export function canJoinProjectRoom(
+  user: AuthPayload,
+  projectId: string,
+  action = "socket.subscribe:project",
+): Promise<boolean> {
   return canAccessProjectDiscussions({ id: user.userId, role: user.role }, projectId, {
     resource: "project_room",
     resourceId: projectId,
-    action: "socket.subscribe:project",
+    action,
   });
 }
 

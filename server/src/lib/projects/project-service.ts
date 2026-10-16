@@ -24,6 +24,7 @@ import {
 import { prisma } from "../prisma.js";
 import { SUPPORTED_PROVIDER_KEYS } from "../ai/config.js";
 import { audit } from "../audit/audit-service.js";
+import { evictProjectRoom } from "../socket/project-room-eviction.js";
 import { resolveProjectDatabaseAwareState } from "../analysis/schema-impact-producer.js";
 import {
   resolveProjectSqlLineage,
@@ -244,6 +245,10 @@ export async function assignProjectWorkspace(
       "Project already belongs to a workspace",
     );
   }
+  // #1212 — a legacy project's room admitted any authenticated user; now only
+  // the new workspace's members may hold it. Re-judged in place after the
+  // write committed: members stay subscribed, everyone else leaves.
+  await evictProjectRoom(projectId);
   audit({
     actor: { id: actor.id },
     action: "project.workspace.assign",
