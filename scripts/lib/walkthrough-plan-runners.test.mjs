@@ -312,18 +312,22 @@ describe("Spec Kit issue export (S21) instructions after #936", () => {
   });
 
   // #1172 — #953 landed (run 9): Publish is enabled after the dry run. The docs must stop
-  // saying it stays disabled, and must keep the cap, the sandbox and the 1-task throwaway.
-  it("says Publish is enabled since #953, within the 2-issue cap, in the sandbox, from a 1-task feature", () => {
+  // saying it stays disabled, and must keep the cap, the sandbox and the throwaway feature,
+  // narrowed to one task through #993's export picker (or a 1-task `tasks.md`).
+  it("says Publish is enabled since #953, within the 2-issue cap, in the sandbox, one task via the picker", () => {
     for (const rel of docs) {
       const line = read(rel)
         .split(/\n(?=- |\| |\n)/)
         .find((para) => para.includes("#953"));
       expect(line, rel).toBeDefined();
       expect(line, rel).not.toMatch(/stays disabled|cannot publish until #953/);
-      expect(line, rel).toMatch(/Publish is enabled|then Publish is enabled|Publish is\s+enabled/);
+      expect(line, rel).toMatch(/Publish is\s+enabled/);
       expect(line, rel).toMatch(/target\s+repo/);
       expect(line, rel).toMatch(/2-issue cap/);
-      expect(line, rel).toMatch(/cut to 1 task/);
+      expect(line, rel).toMatch(/throwaway\s+feature/);
+      expect(line, rel).toMatch(/one task in the\s+export picker/);
+      expect(line, rel).toMatch(/#993/);
+      expect(line, rel).toMatch(/cut `tasks\.md` to 1 task/);
       expect(line, rel).toContain("openzigs/flux-v2");
     }
   });
@@ -335,6 +339,38 @@ describe("Spec Kit issue export (S21) instructions after #936", () => {
     const row = plan.split("\n").find((l) => l.startsWith("| S21 |"));
     expect(row).toContain("Publishing issues to GitHub is not available on this server yet");
     expect(row).toMatch(/no live issue client: a FAIL/);
+  });
+
+  it("names the picker the page actually renders", () => {
+    const page = read("ui/src/app/(authed)/projects/[id]/spec-kit/page.tsx");
+    expect(page).toContain('data-testid="spec-kit-export-tasks"');
+    const row = read("docs/walkthroughs/TEST_PLAN.md")
+      .split("\n")
+      .find((l) => l.startsWith("| S21 |"));
+    expect(row).toContain("spec-kit-export-tasks");
+  });
+
+  // #1172 review — issue-sync's toggleCheckbox never ticks a table row: close writes a
+  // `closed via` marker and reopen swaps it for `<!-- open -->`. Only a bullet is (un)ticked.
+  it("describes S24 sync as the code does: bullets tick, table rows get markers", () => {
+    const sync = read("server/src/lib/spec-kit/issue-sync.ts");
+    expect(sync).toContain('"<!-- open -->"');
+    expect(sync).toContain("<!-- closed via ${ref} -->");
+    const s24 = read("docs/walkthroughs/TEST_PLAN.md")
+      .split("\n")
+      .find((l) => l.startsWith("| S24 |"));
+    const brief = read(".github/skills/e2e-walkthrough/briefs/wave-d.md")
+      .split(/\n(?=- )/)
+      .find((p) => p.startsWith("- **S24**"));
+    for (const [rel, text] of [
+      ["TEST_PLAN.md S24", s24],
+      ["wave-d.md S24", brief],
+    ]) {
+      expect(text, rel).toBeDefined();
+      expect(text, rel).toMatch(/table-form(\*\*)? row is never\s+ticked/);
+      expect(text, rel).toContain("<!-- open -->");
+      expect(text, rel).not.toMatch(/reopen (must )?untick(s)? (it|the task)\b/);
+    }
   });
 });
 

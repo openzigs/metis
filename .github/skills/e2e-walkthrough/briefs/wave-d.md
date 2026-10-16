@@ -37,9 +37,11 @@ commands (#931).
   `{{ANALYSIS_RUN_ID}}`; record its ID and cost, with test custom agents disabled first.
 - **S21:** the dry run lists the titles and the target repo. #953 has landed, so Publish is
   enabled after it, and its confirm names the repo and the count. Publish within the 2-issue cap, to `openzigs/flux-v2` only, from a
-  throwaway feature whose `tasks.md` is cut to 1 task (see the standing rules below).
-- **S24** (optional): close then reopen the S21 issue; reopen must untick the task. Bullet tasks
-  are only ticked; `<!-- closed via #N -->` is written for table rows only. It needs a tunnel
+  throwaway feature: tick one task in the export picker (#993) and run the dry run again, or
+  cut `tasks.md` to 1 task (see the standing rules below).
+- **S24** (optional): close then reopen the S21 issue. A bullet task is ticked on close and
+  unticked on reopen. A table-form row is never ticked: close writes `<!-- closed via #N -->`
+  and reopen replaces it with `<!-- open -->`. It needs a tunnel
   that forwards only `POST /api/webhooks/github/pr|issues`, which the operator sets up.
 
 ## Fixes to verify this wave

@@ -215,7 +215,8 @@ allowed it in waves D and F. The cap is 2 real sandbox issues per run; assign th
   from the database tables, and record which.
 - **Spec Kit issue export (S21) publishes since #953.** The dry run lists the titles and the
   target repo, then Publish is enabled. Publish within the 2-issue cap, to `openzigs/flux-v2`
-  only, from a throwaway feature whose `tasks.md` is cut to 1 task. **Finding-publish has no dry
+  only, from a throwaway feature: tick one task in the export picker (#993) and run the dry
+  run again, or cut `tasks.md` to 1 task. **Finding-publish has no dry
   run**: it publishes at once and counts against the cap. Impact analyses have no draft path.
 - **Wave G** (optional) writes **only** to `openzigs/flux-v2`, and **only** as a push of its
   branch `walkthrough/run-<N>-<issue>`. **No pull requests**, no issues and no comments on any
