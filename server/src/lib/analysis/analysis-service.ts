@@ -815,8 +815,14 @@ function reviewedRequirementWhere(
         ],
       },
       // An edit bumps `version` and appends a `RequirementVersion` row (#770).
-      { version: { gt: 0 } },
-      { versions: { some: {} } },
+      // #1162 — only a PERSON's edit is review work. System writes (clarification
+      // answers, import re-sync) now record history too, with a null actor, and
+      // must not freeze a set nobody touched — the same reasoning as #939's
+      // checkpoint approval. A bump with no row for version 1 was made before
+      // #770 recorded history, so it is a person's edit and still counts — even
+      // after a later system write appends a row of its own.
+      { versions: { some: { actorId: { not: null } } } },
+      { AND: [{ version: { gt: 0 } }, { versions: { none: { version: 1 } } }] },
       { outgoingLinks: { some: {} } },
       { incomingLinks: { some: {} } },
       { dataMappings: { some: { deletedAt: null } } },
@@ -1445,7 +1451,13 @@ export async function updateRequirementRow(input: {
    * (`VERSION_CONFLICT`); `undefined` skips the check.
    */
   expectedVersion?: number;
-}): Promise<{ id: string; version: number; changed: boolean } | null> {
+}): Promise<{
+  id: string;
+  version: number;
+  changed: boolean;
+  /** #1162 — set when the review status changed; it is audited, not versioned. */
+  reviewStatusChange?: { from: unknown; to: unknown };
+} | null> {
   const existing = await prisma.requirement.findFirst({
     where: {
       id: input.requirementId,
@@ -1462,8 +1474,10 @@ export async function updateRequirementRow(input: {
   if (input.patch.priority !== undefined) patch.priority = input.patch.priority;
   if (input.patch.type !== undefined) patch.type = input.patch.type;
   if (input.patch.storyPoints !== undefined) patch.storyPoints = input.patch.storyPoints;
-  // Review status is now a typed column (#M4).
-  if (input.patch.reviewStatus !== undefined) patch.reviewStatus = input.patch.reviewStatus;
+  // Review status is a typed column (#M4). #1162 — it is the verdict on a
+  // version, not part of one, so it is written untracked (the route audits it).
+  const untrackedData =
+    input.patch.reviewStatus !== undefined ? { reviewStatus: input.patch.reviewStatus } : undefined;
 
   // Labels keep the `finding:*` traceability labels the caller never sees, and
   // lose any legacy `review:*` label so the JSON blob stays clean. Written only
@@ -1488,10 +1502,17 @@ export async function updateRequirementRow(input: {
       requirementId: input.requirementId,
       analysisId: input.analysisId,
       patch,
+      untrackedData,
       actorId: input.actorId ?? null,
       expectedVersion: input.expectedVersion,
     });
-    return { id: result.id, version: result.version, changed: result.changed };
+    const reviewStatusChange = result.untrackedChanges.reviewStatus;
+    return {
+      id: result.id,
+      version: result.version,
+      changed: result.changed,
+      ...(reviewStatusChange ? { reviewStatusChange } : {}),
+    };
   } catch (err) {
     // Deleted between the read above and the transaction.
     if (err instanceof RequirementVersionError && err.code === "NOT_FOUND") return null;

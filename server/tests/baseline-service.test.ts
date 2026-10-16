@@ -24,7 +24,6 @@ function snap(overrides: Partial<RequirementSnapshot> = {}): RequirementSnapshot
     type: "functional",
     labels: null,
     storyPoints: 5,
-    reviewStatus: "approved",
     acceptanceCriteria: "[]",
     ...overrides,
   };
@@ -80,7 +79,9 @@ describe("snapshotAtVersion", () => {
       }),
       ...VERSIONS_DESC,
     ];
-    const currentV4 = snap({ storyPoints: 8, reviewStatus: "changes_requested" });
+    // #1162 — `reviewStatus` is no longer tracked; a legacy row that recorded
+    // it still replays, the field simply ignored.
+    const currentV4 = snap({ storyPoints: 8 });
     expect(snapshotAtVersion(currentV4, laterVersions, 2)).toEqual(snap({ priority: "medium" }));
   });
 

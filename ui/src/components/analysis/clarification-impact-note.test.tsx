@@ -107,6 +107,72 @@ describe("ClarificationImpactNote", () => {
     expect(unmatched).not.toHaveTextContent(/Which format/);
   });
 
+  it("#1162 — says which answers were not written because a Clarifications section was edited, and how to fix it", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          appliedCount: 11,
+          unattributedCount: 2,
+          blockEditedCount: 1,
+          answers: [
+            {
+              questionId: "q3",
+              question: "Which rate?",
+              requirementTitle: null,
+              notApplied: { reason: "clarification-block-edited", requirementTitle: "Show prices" },
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByTestId("clarification-block-edited")).toHaveTextContent(
+      /1 answer was not written because the Clarifications section of its requirement was edited\. Restore its start and end markers, or delete the section/,
+    );
+    expect(screen.getByTestId("clarification-unmatched-list")).toHaveTextContent(
+      /Which rate\?\s*\(Clarifications section of “Show prices” was edited\)/,
+    );
+  });
+
+  it("#1162 — says why an answer was not written when its requirement changed or was deleted", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          appliedCount: 10,
+          notWrittenCount: 2,
+          answers: [
+            {
+              questionId: "q4",
+              question: "Which currency?",
+              requirementTitle: null,
+              notApplied: {
+                reason: "requirement-changed-during-write",
+                requirementTitle: "Prices",
+              },
+            },
+            {
+              questionId: "q5",
+              question: "Which locale?",
+              requirementTitle: null,
+              notApplied: { reason: "requirement-deleted", requirementTitle: "Locales" },
+            },
+          ],
+        }}
+      />,
+    );
+    const list = screen.getByTestId("clarification-unmatched-list");
+    expect(list).toHaveTextContent(
+      /Which currency\?\s*\(“Prices” kept changing while the answers were written/,
+    );
+    expect(list).toHaveTextContent(/Which locale\?\s*\(“Locales” was deleted\)/);
+  });
+
+  it("#1162 — no block-edited warning when every matched answer was written", () => {
+    render(<ClarificationImpactNote application={{ ...base, blockEditedCount: 0 }} />);
+    expect(screen.queryByTestId("clarification-block-edited")).toBeNull();
+  });
+
   it("shows no per-answer lists for metadata written before #979", () => {
     render(<ClarificationImpactNote application={base} />);
     expect(screen.queryByTestId("clarification-applied-list")).toBeNull();

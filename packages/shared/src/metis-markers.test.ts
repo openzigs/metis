@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { stripMetisMarkers } from "./metis-markers.js";
+import { findMetisMarkers, stripMetisMarkers } from "./metis-markers.js";
+
+describe("findMetisMarkers — #1162", () => {
+  it("finds every marker the stripper hides, whitespace variants included", () => {
+    const text = "a <!--metis:clarifications:start--> b <!--  metis:clarifications:end  --> c";
+    expect(findMetisMarkers(text)).toEqual([
+      { name: "clarifications:start", index: 2, length: 33 },
+      { name: "clarifications:end", index: 38, length: 35 },
+    ]);
+    expect(stripMetisMarkers(text)).not.toContain("metis:");
+  });
+
+  it("finds nothing in plain text or a non-METIS comment", () => {
+    expect(findMetisMarkers("Body. <!-- other:thing -->")).toEqual([]);
+  });
+});
 
 describe("stripMetisMarkers — #1170", () => {
   it("removes the clarification markers and keeps the block", () => {

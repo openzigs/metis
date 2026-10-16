@@ -34,7 +34,12 @@ export interface RequirementStore {
     externalId: string,
   ): Promise<{ id: string } | null>;
   create(input: RequirementUpsertInput): Promise<{ id: string }>;
-  update(id: string, input: RequirementUpsertInput): Promise<{ id: string }>;
+  /**
+   * `skipped` (#1162): the row was not written this run (deleted meanwhile, or
+   * it kept losing to concurrent edits). It counts as skipped, not updated,
+   * and takes no part in parent linking.
+   */
+  update(id: string, input: RequirementUpsertInput): Promise<{ id: string; skipped?: boolean }>;
   /** Optional: set a requirement's parent (Azure DevOps hierarchy). */
   setParent?(childId: string, parentId: string): Promise<void>;
 }
@@ -198,6 +203,10 @@ export async function runImport<F>(opts: RunImportOptions<F>): Promise<RunImport
     let requirementId: string;
     if (existing) {
       const res = await store.update(existing.id, input);
+      if (res.skipped) {
+        skipped += 1;
+        continue;
+      }
       requirementId = res.id;
       updated += 1;
     } else {

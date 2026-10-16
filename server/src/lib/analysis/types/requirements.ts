@@ -220,6 +220,16 @@ export interface ClarificationApplication {
   appliedCount: number;
   /** Answers with no requirement to attach to (see `requirementsAvailable`). */
   unattributedCount: number;
+  /**
+   * #1162 — answers matched to a requirement whose clarifications block the
+   * analyst edited out of shape, so they were not written. Absent before #1162.
+   */
+  blockEditedCount?: number;
+  /**
+   * #1162 — answers matched to a requirement that kept changing under the
+   * write, or was deleted, so they were not written this pass. Absent before.
+   */
+  notWrittenCount?: number;
   /** Distinct `Requirement` rows whose body changed in this pass. */
   requirementsUpdated: number;
   /**
@@ -248,6 +258,16 @@ export interface ClarificationAnswerOutcome {
   requirementTitle: string | null;
   /** Issue #1000 — who wrote the answer. Absent on metadata written before #1000. */
   provenance?: AnswerProvenance;
+  /**
+   * #1162 — set when the answer was matched to a requirement but not written:
+   * its clarifications block was edited out of shape (`requirementTitle` above
+   * is then null).
+   */
+  notApplied?: {
+    reason:
+      "clarification-block-edited" | "requirement-changed-during-write" | "requirement-deleted";
+    requirementTitle: string;
+  };
 }
 
 /**

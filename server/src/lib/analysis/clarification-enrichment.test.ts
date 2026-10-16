@@ -18,10 +18,24 @@ interface ReqRow {
   body: string;
   deletedAt: Date | null;
   acceptanceCriteria?: string;
+  version?: number;
+}
+
+interface VersionRowFake {
+  requirementId: string;
+  version: number;
+  changedFields: string;
+  actorId: string | null;
+  reason: string | null;
 }
 
 const store = {
   requirements: [] as ReqRow[],
+  // #1162 — the history the version service appends; a bypass leaves it empty.
+  versions: [] as VersionRowFake[],
+  // #1162 — runs inside the conditional write, before it compares versions: a
+  // concurrent analyst edit landing between enrichment's read and its write.
+  beforeWrite: null as ((row: ReqRow) => void) | null,
   metadata: null as string | null,
   dialogState: null as string | null,
   dialogThrows: false,
@@ -36,12 +50,40 @@ vi.mock("../prisma.js", () => ({
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn((await import("../prisma.js")).prisma),
     ),
+    // #1162 — no `update`: a body write that bypasses the version service
+    // throws here, and the enrichment's own catch turns that into `null`.
     requirement: {
-      findMany: vi.fn(async () => store.requirements.filter((r) => r.deletedAt === null)),
-      update: vi.fn(async ({ where, data }: { where: { id: string }; data: { body: string } }) => {
-        const row = store.requirements.find((r) => r.id === where.id)!;
-        row.body = data.body;
-        return row;
+      findMany: vi.fn(async () =>
+        store.requirements
+          .filter((r) => r.deletedAt === null)
+          .map((r) => ({ ...r, version: r.version ?? 0 })),
+      ),
+      findUnique: vi.fn(async ({ where }: { where: { id: string; deletedAt?: null } }) => {
+        const row = store.requirements.find((r) => r.id === where.id);
+        if (!row || ("deletedAt" in where && row.deletedAt !== null)) return null;
+        return { ...row, version: row.version ?? 0, updatedAt: new Date(0) };
+      }),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string; version: number };
+          data: Partial<ReqRow>;
+        }) => {
+          const row = store.requirements.find((r) => r.id === where.id);
+          if (!row) return { count: 0 };
+          store.beforeWrite?.(row);
+          if ((row.version ?? 0) !== where.version) return { count: 0 };
+          Object.assign(row, data);
+          return { count: 1 };
+        },
+      ),
+    },
+    requirementVersion: {
+      create: vi.fn(async ({ data }: { data: VersionRowFake }) => {
+        store.versions.push(data);
+        return data;
       }),
     },
     analysis: {
@@ -66,12 +108,15 @@ vi.mock("../prisma.js", () => ({
 const {
   ATTRIBUTION_THRESHOLD,
   CLARIFICATIONS_END,
+  CLARIFICATIONS_HEADING,
   CLARIFICATIONS_START,
   MAX_OUTCOME_QUESTION,
   MAX_PUBLISHED_ANSWER,
   MAX_ATTRIBUTION_PROOF_EDGES,
   resolvePromotedCandidates,
   applyClarificationBlock,
+  planClarificationBlock,
+  CLARIFICATION_BLOCK_EDITED,
   PROVENANCE_TAGS,
   answerProvenance,
   applyClarificationsToRequirements,
@@ -431,11 +476,173 @@ describe("applying the block to a body", () => {
     expect(applyClarificationBlock(once, [])).toBe("Body.");
   });
 
-  it("survives a truncated block whose end marker was lost", () => {
-    expect(stripClarificationBlock(`Body.\n\n${CLARIFICATIONS_START}\n## Clarifications`)).toBe(
-      "Body.",
-    );
+  it("leaves a block truncated before its end marker exactly as it is (#1162: malformed)", () => {
+    const truncated = `Body.\n\n${CLARIFICATIONS_START}\n## Clarifications`;
+    expect(stripClarificationBlock(truncated)).toBe(truncated);
     expect(stripClarificationBlock("Body.")).toBe("Body.");
+  });
+
+  describe("#1162 — one rule: replace a well-formed block, leave anything else untouched", () => {
+    const headings = (body: string) =>
+      body.split(/\r?\n/).filter((l) => l.trim() === CLARIFICATIONS_HEADING).length;
+    const answerLines = (body: string) => body.split("**A:**").length - 1;
+    const old = () => renderClarificationBlock([answer()]);
+    const next = [answer({ answer: "The Fed rate." })];
+    const fresh = () => renderClarificationBlock(next);
+    const untouched = (body: string) => {
+      const plan = planClarificationBlock(body, next);
+      expect(plan).toEqual({ body, malformed: true });
+      return plan.body;
+    };
+
+    it("END deleted, analyst trailer after it: untouched", () => {
+      const body = `Body.\n\n${old().replace(`\n${CLARIFICATIONS_END}`, "")}\n\nAnalyst trailer.`;
+      const out = untouched(body);
+      expect([headings(out), answerLines(out)]).toEqual([1, 1]);
+    });
+
+    it("START deleted, an answer edited: untouched, the edit kept", () => {
+      const body = `Body.\n\n${old()
+        .replace(`${CLARIFICATIONS_START}\n`, "")
+        .replace("The ECB daily rate.", "ECB rate, confirmed by Finance.")}`;
+      const out = untouched(body);
+      expect(out).toContain("ECB rate, confirmed by Finance.");
+      expect([headings(out), answerLines(out)]).toEqual([1, 1]);
+    });
+
+    it("END deleted, analyst added a Q bullet: untouched, the bullet kept", () => {
+      const body = `Body.\n\n${old().replace(
+        CLARIFICATIONS_END,
+        "- **Q:** Who signs off?\n  **A:** Finance.",
+      )}`;
+      const out = untouched(body);
+      expect(out).toContain("Who signs off?");
+      expect([headings(out), answerLines(out)]).toEqual([1, 2]);
+    });
+
+    it("two blocks, the first END deleted: untouched, the text between kept", () => {
+      const first = old().replace(`\n${CLARIFICATIONS_END}`, "");
+      const body = `Body.\n\n${first}\n\nBetween the blocks.\n\n${old()}`;
+      const out = untouched(body);
+      expect(out).toContain("Between the blocks.");
+      expect([headings(out), answerLines(out)]).toEqual([2, 2]);
+    });
+
+    it("two well-formed blocks: untouched", () => {
+      const out = untouched(`Body.\n\n${old()}\n\n${old()}`);
+      expect([headings(out), answerLines(out)]).toEqual([2, 2]);
+    });
+
+    it("END before START: untouched", () => {
+      const out = untouched(`${CLARIFICATIONS_END}\nBody.\n${CLARIFICATIONS_START}`);
+      expect([headings(out), answerLines(out)]).toEqual([0, 0]);
+    });
+
+    it("a heading with no markers: untouched", () => {
+      const out = untouched(`Body.\n\n${CLARIFICATIONS_HEADING}\n\nMy own notes.`);
+      expect([headings(out), answerLines(out)]).toEqual([1, 0]);
+    });
+
+    it("truncated mid-preamble: untouched", () => {
+      const body = `Body.\n\n${CLARIFICATIONS_START}\n${CLARIFICATIONS_HEADING}\n\n_Answers recorded dur`;
+      const out = untouched(body);
+      expect([headings(out), answerLines(out)]).toEqual([1, 0]);
+    });
+
+    it("a CRLF block with a marker missing: untouched, CRLF kept", () => {
+      const body = `Body.\r\n\r\n${old().replace(`\n${CLARIFICATIONS_END}`, "").replace(/\n/g, "\r\n")}`;
+      const out = untouched(body);
+      expect([headings(out), answerLines(out)]).toEqual([1, 1]);
+    });
+
+    it("a CRLF body with no block and no answers: returned exactly, so nothing is written", () => {
+      const body = "Line one.\r\nLine two.";
+      expect(planClarificationBlock(body, [])).toEqual({ body, malformed: false });
+    });
+
+    const crlf = (s: string) => s.replace(/\n/g, "\r\n");
+
+    it("a CRLF body with no block: the original lines kept, a CRLF block appended", () => {
+      const body = "Line one.\r\nLine two.";
+      expect(planClarificationBlock(body, next)).toEqual({
+        body: `${body}\r\n\r\n${crlf(fresh())}`,
+        malformed: false,
+      });
+    });
+
+    it("a well-formed CRLF block with changed answers: replaced once, in CRLF", () => {
+      const body = crlf(`Body.\n\n${old()}`);
+      const plan = planClarificationBlock(body, next);
+      expect(plan).toEqual({ body: crlf(`Body.\n\n${fresh()}`), malformed: false });
+      expect([headings(plan.body), answerLines(plan.body)]).toEqual([1, 1]);
+    });
+
+    describe("same answers: the body is returned byte-for-byte", () => {
+      const same = [answer()];
+      it.each([
+        ["a well-formed LF block", `Body.\n\n${renderClarificationBlock(same)}`],
+        ["a well-formed CRLF block", crlf(`Body.\n\n${renderClarificationBlock(same)}`)],
+        ["text after the block (LF)", `Before.\n\n${renderClarificationBlock(same)}\n\nAfter.`],
+        [
+          "text after the block (CRLF)",
+          crlf(`Before.\n\n${renderClarificationBlock(same)}\n\nAfter.`),
+        ],
+        [
+          "CRLF prose with an LF block",
+          `Line one.\r\nLine two.\n\n${renderClarificationBlock(same)}`,
+        ],
+      ])("%s", (_name, body) => {
+        expect(planClarificationBlock(body, same)).toEqual({ body, malformed: false });
+      });
+    });
+
+    it("changed answers keep the block where it was, text after it included (CRLF)", () => {
+      const body = crlf(`Before.\n\n${old()}\n\nAfter.`);
+      expect(planClarificationBlock(body, next)).toEqual({
+        body: crlf(`Before.\n\n${fresh()}\n\nAfter.`),
+        malformed: false,
+      });
+    });
+
+    it("no answers left: the block and its framing blank lines go, the text around it stays", () => {
+      expect(planClarificationBlock(`Before.\n\n${old()}\n\nAfter.`, [])).toEqual({
+        body: "Before.\n\nAfter.",
+        malformed: false,
+      });
+    });
+
+    it("whitespace-variant markers: recognised, replaced once", () => {
+      const body = `Body.\n\n${old()
+        .replace(CLARIFICATIONS_START, "<!--metis:clarifications:start-->")
+        .replace(CLARIFICATIONS_END, "<!--  metis:clarifications:end  -->")}`;
+      const plan = planClarificationBlock(body, next);
+      expect(plan).toEqual({ body: `Body.\n\n${fresh()}`, malformed: false });
+      expect([headings(plan.body), answerLines(plan.body)]).toEqual([1, 1]);
+    });
+
+    it("a well-formed block with text before and after: replaced in place, the text kept", () => {
+      const body = `Before.\n\n${old()}\n\nAfter.`;
+      const plan = planClarificationBlock(body, next);
+      expect(plan).toEqual({
+        body: `Before.\n\n${fresh()}\n\nAfter.`,
+        malformed: false,
+      });
+      expect([headings(plan.body), answerLines(plan.body)]).toEqual([1, 1]);
+    });
+
+    it("no block: a fresh one appended", () => {
+      const plan = planClarificationBlock("Body.", next);
+      expect(plan).toEqual({ body: `Body.\n\n${fresh()}`, malformed: false });
+      expect([headings(plan.body), answerLines(plan.body)]).toEqual([1, 1]);
+    });
+
+    it("re-applying the same answers to a well-formed block changes nothing", () => {
+      const once = planClarificationBlock("Body.", next).body;
+      expect(planClarificationBlock(once, next)).toEqual({
+        body: once,
+        malformed: false,
+      });
+    });
   });
 
   it("produces a bare block when the requirement had no body at all", () => {
@@ -956,6 +1163,8 @@ describe("applyClarificationsToRequirements", () => {
   beforeEach(() => {
     store.dialogThrows = false;
     store.hasApprovals = false;
+    store.versions = [];
+    store.beforeWrite = null;
     store.dialogState = JSON.stringify(dialog);
     store.metadata = JSON.stringify({
       structuredRequirements: {
@@ -1079,6 +1288,148 @@ describe("applyClarificationsToRequirements", () => {
     await applyClarificationsToRequirements(ANALYSIS_ID);
     expect(store.requirements[0].body).toContain("The ECB daily rate.");
     expect(store.requirements[0].body).not.toContain(CRITERIA_FLAG_MARKER);
+  });
+
+  describe("#1162 — the body is written through version history", () => {
+    it("bumps the version and records the body change, so a pinned review can be rebuilt", async () => {
+      store.requirements[0].version = 4;
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      expect(store.requirements[0].version).toBe(5);
+      expect(store.versions).toHaveLength(1);
+      const [row] = store.versions;
+      expect(row).toMatchObject({ requirementId: "row-1", version: 5, actorId: null });
+      expect(row.reason).toMatch(/clarification/i);
+      const diff = JSON.parse(row.changedFields) as Record<string, { from: string; to: string }>;
+      expect(Object.keys(diff)).toEqual(["body"]);
+      expect(diff.body.from).toBe("Convert before display.");
+      expect(diff.body.to).toContain("The ECB daily rate.");
+    });
+
+    it("records nothing on a re-run that leaves the body as it is", async () => {
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      expect(store.versions).toHaveLength(1);
+    });
+
+    it("re-applies the answers on top of a concurrent analyst edit instead of overwriting it", async () => {
+      store.beforeWrite = (row) => {
+        store.beforeWrite = null;
+        row.body = "Analyst rewrote this.";
+        row.version = (row.version ?? 0) + 1;
+        store.versions.push({
+          requirementId: row.id,
+          version: row.version,
+          changedFields: "{}",
+          actorId: "analyst",
+          reason: null,
+        });
+      };
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+      const body = store.requirements[0].body;
+      expect(body.startsWith("Analyst rewrote this.")).toBe(true);
+      expect(body).toContain("The ECB daily rate.");
+      expect(store.requirements[0].version).toBe(2);
+      expect(store.versions.map((v) => v.version)).toEqual([1, 2]);
+      expect(out).toMatchObject({ requirementsUpdated: 1 });
+    });
+
+    it("skips a row that keeps losing to concurrent edits, without failing the run", async () => {
+      store.requirements.push({
+        id: "row-2",
+        analysisId: ANALYSIS_ID,
+        title: "Unrelated",
+        body: "Untouched.",
+        deletedAt: null,
+      });
+      store.beforeWrite = (row) => {
+        row.version = (row.version ?? 0) + 1;
+      };
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+      expect(out).not.toBeNull();
+      // #1162 — not written, so not counted as applied: reported with a reason.
+      expect(out).toMatchObject({ appliedCount: 0, notWrittenCount: 1, requirementsUpdated: 0 });
+      expect(out?.answers?.[0]).toMatchObject({
+        requirementTitle: null,
+        notApplied: {
+          reason: "requirement-changed-during-write",
+          requirementTitle: "Display product prices in the shopper's currency",
+        },
+      });
+      expect(store.requirements[0].body).toBe("Convert before display.");
+      expect(store.versions).toHaveLength(0);
+      // The accounting is still recorded, so the panel reflects this pass.
+      expect(JSON.parse(store.metadata!).clarificationApplication.answeredCount).toBe(1);
+    });
+
+    it("records the title the write last read, so a rename during a retry shows in the accounting", async () => {
+      store.beforeWrite = (row) => {
+        store.beforeWrite = null;
+        row.title = "Renamed by the analyst";
+        row.version = (row.version ?? 0) + 1;
+      };
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+      expect(out?.answers?.[0].requirementTitle).toBe("Renamed by the analyst");
+      expect(out).toMatchObject({ requirementsUpdated: 1 });
+    });
+
+    it("leaves a requirement whose block was edited out of shape untouched, and says so", async () => {
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      const row = store.requirements[0];
+      row.body = `${row.body.replace(CLARIFICATIONS_END, "")}\n\nAnalyst trailer.`;
+      const edited = row.body;
+      const versionsBefore = store.versions.length;
+      store.dialogState = JSON.stringify({
+        ...dialog,
+        rounds: [
+          {
+            ...dialog.rounds[0],
+            questions: [{ ...dialog.rounds[0].questions[0], answer: "The Fed rate." }],
+          },
+        ],
+      });
+
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+
+      expect(row.body).toBe(edited);
+      expect(store.versions).toHaveLength(versionsBefore);
+      expect(out).toMatchObject({
+        appliedCount: 0,
+        blockEditedCount: 1,
+        requirementsUpdated: 0,
+      });
+      expect(out?.answers?.[0]).toMatchObject({
+        requirementTitle: null,
+        notApplied: {
+          reason: CLARIFICATION_BLOCK_EDITED,
+          requirementTitle: "Display product prices in the shopper's currency",
+        },
+      });
+    });
+
+    it("skips a row deleted between the read and the write", async () => {
+      store.beforeWrite = (row) => {
+        row.deletedAt = new Date();
+        row.version = (row.version ?? 0) + 1;
+      };
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+      expect(out).toMatchObject({ appliedCount: 0, notWrittenCount: 1, requirementsUpdated: 0 });
+      expect(out?.answers?.[0]?.notApplied?.reason).toBe("requirement-deleted");
+      expect(store.versions).toHaveLength(0);
+    });
+
+    it("writes no version when the answers are unchanged, for a CRLF body with text after the block", async () => {
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      const row = store.requirements[0];
+      row.body = `${row.body}\n\nAnalyst note after the block.`.replace(/\n/g, "\r\n");
+      const stored = row.body;
+      const versionsBefore = store.versions.length;
+
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+
+      expect(row.body).toBe(stored);
+      expect(store.versions).toHaveLength(versionsBefore);
+      expect(out).toMatchObject({ appliedCount: 1, requirementsUpdated: 0 });
+    });
   });
 
   it("shortens a long question in the per-answer record", async () => {

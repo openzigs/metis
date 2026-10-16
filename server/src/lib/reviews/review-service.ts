@@ -140,6 +140,12 @@ function requirementIdsInScope(items: ReviewItemRow[]): string[] {
 
 type ReviewTx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
+// #1162 — every `reviewStatus` write in this module is deliberately outside
+// the requirement version history: the status is the verdict on a version,
+// not part of it (see `TRACKED_FIELDS`). Versioning it would mint a new
+// version straight after the submit pins one. Each transition is recorded by
+// this module's `review.*` audit-log entries instead.
+
 /**
  * #989 — put back the reviewStatus each requirement held before the review was
  * submitted. Used when a review leaves `in_review` without a verdict (withdraw,

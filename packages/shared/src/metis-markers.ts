@@ -9,9 +9,34 @@
  * text instead.
  */
 
-/** Every METIS block marker. A fresh pattern per call, so no shared `lastIndex`. */
+/**
+ * Every METIS block marker, its name captured. A fresh pattern per call, so no
+ * shared `lastIndex`. The one definition of what counts as a marker: hiding
+ * them ({@link stripMetisMarkers}) and finding them ({@link findMetisMarkers})
+ * must agree, or a whitespace variant hidden from view is invisible to the
+ * pass that manages the block (#1162).
+ */
 function internalMarkerPattern(): RegExp {
-  return /<!--\s*metis:[\w:-]+\s*-->/g;
+  return /<!--\s*metis:([\w:-]+)\s*-->/g;
+}
+
+/** One METIS marker found in a text. */
+export interface MetisMarker {
+  /** The name after `metis:`, e.g. `clarifications:start`. */
+  name: string;
+  /** Offset of the marker's `<!--`. */
+  index: number;
+  /** Length of the whole marker as written. */
+  length: number;
+}
+
+/** Every METIS marker in `text`, in order — whitespace variants included. */
+export function findMetisMarkers(text: string): MetisMarker[] {
+  return [...text.matchAll(internalMarkerPattern())].map((m) => ({
+    name: m[1] ?? "",
+    index: m.index ?? 0,
+    length: m[0].length,
+  }));
 }
 
 /**

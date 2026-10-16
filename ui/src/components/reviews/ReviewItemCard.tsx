@@ -17,8 +17,11 @@ import { queryKeys } from "@/lib/query-keys";
 import type { ReviewItem } from "@/lib/reviews-api";
 import { VersionDiff } from "./VersionDiff";
 
-/** Snapshot fields rendered as metadata under the body. */
-const META_FIELDS = ["priority", "type", "storyPoints", "reviewStatus"] as const;
+/**
+ * Snapshot fields rendered as metadata under the body. #1162 — no
+ * `reviewStatus`: a snapshot no longer carries it (it is not versioned).
+ */
+const META_FIELDS = ["priority", "type", "storyPoints"] as const;
 
 export function ReviewItemCard({ item }: { item: ReviewItem }) {
   const requirementId = item.requirementId;

@@ -43,6 +43,7 @@ interface ReqRow {
   verdict: string | null;
   createdAt: Date;
   deletedAt: Date | null;
+  version?: number;
 }
 
 interface DraftRow {
@@ -68,6 +69,8 @@ const store = {
   metadata: null as string | null,
   dialogState: null as string | null,
   seq: 0,
+  // #1162 — the version rows the enrichment's body write appends.
+  versions: [] as Array<{ requirementId: string; version: number; changedFields: string }>,
 };
 
 vi.mock("../prisma.js", () => ({
@@ -120,6 +123,37 @@ vi.mock("../prisma.js", () => ({
         Object.assign(row, data);
         return row;
       }),
+      // #1162 — the enrichment writes through the version-history service.
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+        const row = store.requirements.find((r) => r.id === where.id && r.deletedAt === null);
+        return row ? { ...row, version: row.version ?? 0, updatedAt: new Date(0) } : null;
+      }),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string; version: number };
+          data: Partial<ReqRow>;
+        }) => {
+          const row = store.requirements.find((r) => r.id === where.id);
+          if (!row || (row.version ?? 0) !== where.version) return { count: 0 };
+          Object.assign(row, data);
+          return { count: 1 };
+        },
+      ),
+    },
+    requirementVersion: {
+      create: vi.fn(
+        async ({
+          data,
+        }: {
+          data: { requirementId: string; version: number; changedFields: string };
+        }) => {
+          store.versions.push(data);
+          return data;
+        },
+      ),
     },
     analysis: {
       findFirst: vi.fn(async ({ where }: { where: { id: string } }) =>

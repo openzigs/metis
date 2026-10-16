@@ -252,7 +252,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "a version-history row",
         (id) =>
           db.requirementVersion.create({
-            data: { requirementId: id, version: 1, changedFields: "[]" },
+            data: { requirementId: id, version: 1, changedFields: "[]", actorId: USER },
           }),
       ],
       [
@@ -516,6 +516,47 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       expect(await titles()).toEqual(["F1", "F2"]);
       expect(await metadata()).toEqual(before);
+    });
+
+    it("#1162 — a system write (clarification answers, import re-sync) is not review work — the set is replaced", async () => {
+      const [a] = await seedSet(["A", "B"]);
+      await db.requirement.update({ where: { id: a }, data: { version: 1, body: "with answers" } });
+      await db.requirementVersion.create({
+        data: {
+          requirementId: a,
+          version: 1,
+          changedFields: '{"body":{"from":"","to":"with answers"}}',
+          actorId: null,
+          reason: "Clarification answers applied",
+        },
+      });
+      const ids = await seedSet(["C"]);
+      expect(ids).toHaveLength(1);
+      expect(await titles()).toEqual(["C"]);
+    });
+
+    it("#1162 — a person's edit after a system write still protects the set", async () => {
+      const [a] = await seedSet(["A", "B"]);
+      await db.requirement.update({ where: { id: a }, data: { version: 2 } });
+      await db.requirementVersion.createMany({
+        data: [
+          { requirementId: a, version: 1, changedFields: "{}", actorId: null },
+          { requirementId: a, version: 2, changedFields: "{}", actorId: USER },
+        ],
+      });
+      await seedSet(["C"]);
+      expect(await titles()).toEqual(["A", "B"]);
+    });
+
+    it("#1162 — an edit from before version history, then a system write, still protects the set", async () => {
+      const [a] = await seedSet(["A", "B"]);
+      // version 1 was a pre-#770 edit with no row; version 2 is a system write.
+      await db.requirement.update({ where: { id: a }, data: { version: 2 } });
+      await db.requirementVersion.create({
+        data: { requirementId: a, version: 2, changedFields: "{}", actorId: null },
+      });
+      await seedSet(["C"]);
+      expect(await titles()).toEqual(["A", "B"]);
     });
 
     it("an explicit 'draft' review status is not review work — the set is replaced", async () => {

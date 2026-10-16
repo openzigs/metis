@@ -32,9 +32,14 @@
  * module persists is what tells the user that (see `ClarificationApplication`
  * and the UI note it feeds).
  */
-import { parseAcceptanceCriteria } from "@metis/shared";
+import { findMetisMarkers, parseAcceptanceCriteria } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
+import {
+  RequirementVersionError,
+  updateRequirementWithHistory,
+  type VersionPrismaClient,
+} from "../requirements/requirement-version-service.js";
 import { getStructuredRequirements, persistAnalysisEnhancement } from "./analysis-service.js";
 import {
   CRITERIA_FLAG_LINE,
@@ -489,21 +494,63 @@ export function renderClarificationBlock(
   ].join("\n");
 }
 
-/** The generated block in a body, or null when there is none. */
-function extractClarificationBlock(body: string): string | null {
-  const start = body.indexOf(CLARIFICATIONS_START);
-  if (start === -1) return null;
-  const end = body.indexOf(CLARIFICATIONS_END, start);
-  return body.slice(start, end === -1 ? body.length : end + CLARIFICATIONS_END.length);
+/**
+ * Where the generated block sits in a body (CRLF or LF). One rule (#1162), no recovery:
+ *
+ * - `none` — no METIS clarification marker and no `## Clarifications` heading
+ *   line: a fresh block is appended.
+ * - `block` — exactly one START, then exactly one END after it: `[from, to)`
+ *   is the block, and it is replaced.
+ * - `malformed` — anything else: a lone START or END, two blocks, markers out
+ *   of order, or a heading with no markers. The analyst has edited the block,
+ *   and every attempt to guess which lines are still METIS's lost or
+ *   duplicated their text, so the body is left exactly as it is.
+ *
+ * Markers are found with the shared pattern `stripMetisMarkers` hides them
+ * with, so a whitespace variant (`<!--metis:clarifications:end-->`) counts.
+ * Offsets are into the body as given.
+ */
+type BlockLocation =
+  { kind: "none" } | { kind: "block"; from: number; to: number } | { kind: "malformed" };
+
+const START_NAME = "clarifications:start";
+const END_NAME = "clarifications:end";
+
+function locateClarificationBlock(body: string): BlockLocation {
+  const markers = findMetisMarkers(body).filter(
+    (m) => m.name === START_NAME || m.name === END_NAME,
+  );
+  if (markers.length === 0) {
+    // CRLF-safe: `trim` drops the `\r` a CRLF line leaves behind.
+    const hasHeading = body.split("\n").some((line) => line.trim() === CLARIFICATIONS_HEADING);
+    return hasHeading ? { kind: "malformed" } : { kind: "none" };
+  }
+  const [start, end] = markers;
+  if (markers.length === 2 && start.name === START_NAME && end.name === END_NAME) {
+    return { kind: "block", from: start.index, to: end.index + end.length };
+  }
+  return { kind: "malformed" };
 }
 
-/** Remove a previously generated block (and its surrounding blank lines). */
+function normalizeNewlines(body: string): string {
+  return body.replace(/\r\n/g, "\n");
+}
+
+/**
+ * Remove a previously generated block (and its surrounding blank lines). A
+ * malformed block is left as it is.
+ */
 export function stripClarificationBlock(body: string): string {
-  const start = body.indexOf(CLARIFICATIONS_START);
-  if (start === -1) return body;
-  const end = body.indexOf(CLARIFICATIONS_END, start);
-  const after = end === -1 ? body.length : end + CLARIFICATIONS_END.length;
-  return (body.slice(0, start) + body.slice(after)).replace(/\s+$/, "");
+  const at = locateClarificationBlock(body);
+  if (at.kind !== "block") return body;
+  return (body.slice(0, at.from) + body.slice(at.to)).replace(/\s+$/, "");
+}
+
+/** The outcome of {@link planClarificationBlock}. */
+export interface ClarificationBlockPlan {
+  body: string;
+  /** #1162 — the block was edited out of shape; `body` is the input, untouched. */
+  malformed: boolean;
 }
 
 /**
@@ -520,17 +567,59 @@ export function applyClarificationBlock(
   answers: ReadonlyArray<AnsweredQuestion>,
   opts: { hasAcceptanceCriteria?: boolean } = {},
 ): string {
+  return planClarificationBlock(body, answers, opts).body;
+}
+
+/**
+ * {@link applyClarificationBlock}, saying whether the block was malformed
+ * (#1162). A malformed body is returned exactly as given: the caller writes
+ * nothing and reports the answers as not applied.
+ */
+export function planClarificationBlock(
+  body: string,
+  answers: ReadonlyArray<AnsweredQuestion>,
+  opts: { hasAcceptanceCriteria?: boolean } = {},
+): ClarificationBlockPlan {
+  // #1162 — every rewrite mints a version and stales a review pinned at the
+  // old one, so the body is touched only where the answers changed: the block
+  // is replaced IN PLACE, in the body's own line endings, and an unchanged
+  // block leaves the body byte-for-byte as stored.
   const source = body ?? "";
-  const base = stripClarificationBlock(source);
+  const at = locateClarificationBlock(source);
+  if (at.kind === "malformed") return { body: source, malformed: true };
+  const eol = source.includes("\r\n") ? "\r\n" : "\n";
   const unflagged = renderClarificationBlock(answers);
-  if (unflagged.length === 0) return base;
-  const previous = extractClarificationBlock(source);
-  const answersChanged = previous === null || clearCriteriaFlag(previous) !== unflagged;
-  const flag =
-    opts.hasAcceptanceCriteria === true &&
-    (answersChanged || (previous !== null && hasCriteriaFlag(previous)));
+
+  if (at.kind === "none") {
+    if (unflagged.length === 0) return { body: source, malformed: false };
+    const flagged = opts.hasAcceptanceCriteria === true;
+    const block = withEol(renderClarificationBlock(answers, flagged), eol);
+    const base = source.replace(/\s+$/, "");
+    return { body: base.length > 0 ? `${base}${eol}${eol}${block}` : block, malformed: false };
+  }
+
+  const before = source.slice(0, at.from);
+  const after = source.slice(at.to);
+  if (unflagged.length === 0) {
+    // No answers left: remove the block and the blank lines that framed it.
+    const head = before.replace(/\s+$/, "");
+    const tail = after.replace(/^\s+/, "");
+    return {
+      body: head.length > 0 && tail.length > 0 ? `${head}${eol}${eol}${tail}` : head || tail,
+      malformed: false,
+    };
+  }
+  const previous = normalizeNewlines(source.slice(at.from, at.to));
+  const answersChanged = clearCriteriaFlag(previous) !== unflagged;
+  const flag = opts.hasAcceptanceCriteria === true && (answersChanged || hasCriteriaFlag(previous));
   const block = flag ? renderClarificationBlock(answers, true) : unflagged;
-  return base.length > 0 ? `${base}\n\n${block}` : block;
+  if (block === previous) return { body: source, malformed: false };
+  return { body: `${before}${withEol(block, eol)}${after}`, malformed: false };
+}
+
+/** A rendered (LF) block in the line endings of the body it goes into. */
+function withEol(block: string, eol: string): string {
+  return eol === "\n" ? block : block.replace(/\n/g, eol);
 }
 
 // ── The DB pass ─────────────────────────────────────────────────────────
@@ -557,6 +646,119 @@ async function readRowOrigin(analysisId: string): Promise<RowOrigin> {
 }
 
 /**
+ * #1162 — why an answer attributed to a requirement was not written: the
+ * requirement's clarifications block was edited out of shape (a marker deleted,
+ * a second block, a heading with no markers). The body is left untouched until
+ * the analyst restores the markers or deletes the block.
+ */
+export const CLARIFICATION_BLOCK_EDITED = "clarification-block-edited";
+
+/**
+ * #1162 — why else an attributed answer was not written this pass: the
+ * requirement kept changing under the write (every retry lost to a concurrent
+ * edit), or it was deleted. The next pass tries again.
+ */
+export const CLARIFICATION_WRITE_CONFLICT = "requirement-changed-during-write";
+export const CLARIFICATION_REQUIREMENT_DELETED = "requirement-deleted";
+
+/** Why an attributed answer was not written into its requirement. */
+export type ClarificationNotAppliedReason =
+  | typeof CLARIFICATION_BLOCK_EDITED
+  | typeof CLARIFICATION_WRITE_CONFLICT
+  | typeof CLARIFICATION_REQUIREMENT_DELETED;
+
+/** #1162 — the reason recorded on the version row an enrichment write appends. */
+export const CLARIFICATION_VERSION_REASON = "Clarification answers applied";
+
+/**
+ * #1162 — how many times one row's body write re-reads and re-applies after a
+ * concurrent edit won the version check. Past this the row is skipped for this
+ * pass (the next pass regenerates the block from scratch), never the whole run.
+ */
+export const CLARIFICATION_WRITE_ATTEMPTS = 3;
+
+interface EnrichmentRow {
+  id: string;
+  title: string;
+  body: string | null;
+  acceptanceCriteria: string | null;
+  version: number;
+}
+
+/**
+ * #1162 — write one row's regenerated body through the version history.
+ *
+ * The write carries the version the body was computed from. If an analyst
+ * edited the row in between, the version check fails and the row is re-read
+ * and the block re-applied on top of THEIR body: an unversioned write would
+ * have silently overwritten the analyst's edit with text computed from the old
+ * body. Returns whether the body changed; a row that keeps losing, or is
+ * deleted meanwhile, is skipped and logged rather than failing the run. A row
+ * whose block the analyst edited out of shape is not written at all. In each
+ * of those cases `notApplied` says why, so its answers are reported as not
+ * applied rather than counted as written.
+ */
+async function writeClarifiedBody(
+  row: EnrichmentRow,
+  answers: ReadonlyArray<AnsweredQuestion>,
+  analysisId: string,
+): Promise<{ updated: boolean; title: string; notApplied: ClarificationNotAppliedReason | null }> {
+  let current: EnrichmentRow | null = row;
+  let title = row.title;
+  for (let attempt = 1; current; attempt++) {
+    title = current.title;
+    // #1000 — the criteria are not regenerated from the answers, so flag them.
+    const plan = planClarificationBlock(current.body ?? "", answers, {
+      hasAcceptanceCriteria: parseAcceptanceCriteria(current.acceptanceCriteria).length > 0,
+    });
+    if (plan.malformed) {
+      log.warn("Clarification block was edited out of shape; requirement left as it is", {
+        analysisId,
+        requirementId: row.id,
+        reason: CLARIFICATION_BLOCK_EDITED,
+      });
+      return { updated: false, title, notApplied: CLARIFICATION_BLOCK_EDITED };
+    }
+    const nextBody = plan.body;
+    if (nextBody === (current.body ?? "")) return { updated: false, title, notApplied: null };
+    try {
+      await updateRequirementWithHistory(prisma as unknown as VersionPrismaClient, {
+        requirementId: current.id,
+        patch: { body: nextBody },
+        expectedVersion: current.version,
+        actorId: null,
+        reason: CLARIFICATION_VERSION_REASON,
+      });
+      return { updated: true, title, notApplied: null };
+    } catch (err) {
+      if (!(err instanceof RequirementVersionError)) throw err;
+      if (err.code !== "VERSION_CONFLICT" || attempt >= CLARIFICATION_WRITE_ATTEMPTS) {
+        log.warn("Clarification answers not written to a requirement this pass", {
+          analysisId,
+          requirementId: row.id,
+          reason: err.code,
+          attempts: attempt,
+        });
+        return {
+          updated: false,
+          title,
+          notApplied:
+            err.code === "VERSION_CONFLICT"
+              ? CLARIFICATION_WRITE_CONFLICT
+              : CLARIFICATION_REQUIREMENT_DELETED,
+        };
+      }
+    }
+    current = (await prisma.requirement.findUnique({
+      where: { id: row.id, deletedAt: null },
+      select: { id: true, title: true, body: true, acceptanceCriteria: true, version: true },
+    })) as EnrichmentRow | null;
+  }
+  // The re-read found the row gone.
+  return { updated: false, title, notApplied: CLARIFICATION_REQUIREMENT_DELETED };
+}
+
+/**
  * Write every answered clarifying question into the persisted requirement it
  * was asked about, and record what happened to each answer.
  *
@@ -579,7 +781,7 @@ export async function applyClarificationsToRequirements(
     const structured: StructuredRequirements | null = await getStructuredRequirements(analysisId);
     const rows = await prisma.requirement.findMany({
       where: { analysisId, deletedAt: null },
-      select: { id: true, title: true, body: true, acceptanceCriteria: true },
+      select: { id: true, title: true, body: true, acceptanceCriteria: true, version: true },
     });
 
     const { byRequirementId, unattributed } = attributeAnswers({
@@ -591,22 +793,38 @@ export async function applyClarificationsToRequirements(
 
     let requirementsUpdated = 0;
     const appliedTo = new Map<string, string>();
+    // #1162 — answers attributed to a requirement but not written into it.
+    const notAppliedAt = new Map<
+      string,
+      { reason: ClarificationNotAppliedReason; requirementTitle: string }
+    >();
     for (const row of rows) {
       const answers = byRequirementId.get(row.id) ?? [];
-      for (const a of answers) appliedTo.set(a.questionId, row.title);
-      // #1000 — the criteria are not regenerated from the answers, so flag them.
-      const nextBody = applyClarificationBlock(row.body ?? "", answers, {
-        hasAcceptanceCriteria: parseAcceptanceCriteria(row.acceptanceCriteria).length > 0,
-      });
-      if (nextBody === (row.body ?? "")) continue;
-      await prisma.requirement.update({ where: { id: row.id }, data: { body: nextBody } });
-      requirementsUpdated++;
+      // The title is the one the write last read, so an analyst rename made
+      // while enrichment was retrying shows in the accounting.
+      const written = await writeClarifiedBody(row, answers, analysisId);
+      for (const a of answers) {
+        if (written.notApplied) {
+          notAppliedAt.set(a.questionId, {
+            reason: written.notApplied,
+            requirementTitle: written.title,
+          });
+        } else {
+          appliedTo.set(a.questionId, written.title);
+        }
+      }
+      if (written.updated) requirementsUpdated++;
     }
+    const blockEditedCount = [...notAppliedAt.values()].filter(
+      (n) => n.reason === CLARIFICATION_BLOCK_EDITED,
+    ).length;
 
     const application: ClarificationApplication = {
       answeredCount: answered.length,
-      appliedCount: answered.length - unattributed.length,
+      appliedCount: answered.length - unattributed.length - notAppliedAt.size,
       unattributedCount: unattributed.length,
+      blockEditedCount,
+      notWrittenCount: notAppliedAt.size - blockEditedCount,
       requirementsUpdated,
       requirementsAvailable: rows.length > 0,
       updatedAt: new Date().toISOString(),
@@ -615,6 +833,7 @@ export async function applyClarificationsToRequirements(
         question: shortenQuestion(a.question),
         requirementTitle: appliedTo.get(a.questionId) ?? null,
         provenance: a.provenance,
+        ...(notAppliedAt.has(a.questionId) ? { notApplied: notAppliedAt.get(a.questionId) } : {}),
       })),
     };
     await persistAnalysisEnhancement(analysisId, { clarificationApplication: application });

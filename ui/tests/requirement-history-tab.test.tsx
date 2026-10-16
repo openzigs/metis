@@ -152,6 +152,20 @@ describe("RequirementHistoryTab", () => {
     );
   });
 
+  it("#1162 — the compared text has no review status line, which is not versioned", async () => {
+    list.mockResolvedValue(
+      page([entry(2, { snapshot: { title: "T2" } }), entry(1, { snapshot: { title: "T1" } })]),
+    );
+    render(<RequirementHistoryTab requirementId="req-1" />);
+    await waitFor(() => expect(screen.getByText("Version 2")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /Version 2/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Version 1/ }));
+
+    const compared = await screen.findByTestId("diff-new");
+    expect(compared).toHaveTextContent("title: T2");
+    expect(compared).not.toHaveTextContent("reviewStatus");
+  });
+
   it("hides restore controls for readers", async () => {
     list.mockResolvedValue(page([entry(1)]));
     render(<RequirementHistoryTab requirementId="req-1" />);
