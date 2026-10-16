@@ -132,7 +132,8 @@ import {
   listAgents,
   updateAgent,
 } from "../src/lib/custom-agents/index.js";
-import { __resetToolRegistrySingleton } from "../src/lib/ai/tool-registry.js";
+import { __resetToolRegistrySingleton, getToolRegistry } from "../src/lib/ai/tool-registry.js";
+import { registerRequirementTools } from "../src/lib/requirements/requirements-chat-tools.js";
 import {
   __resetSearchKnowledgeRegistration,
   registerSearchKnowledgeTool,
@@ -145,6 +146,7 @@ beforeEach(() => {
   __resetToolRegistrySingleton();
   __resetSearchKnowledgeRegistration();
   registerSearchKnowledgeTool();
+  registerRequirementTools(getToolRegistry());
 });
 afterEach(() => reset());
 
