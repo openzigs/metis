@@ -20,6 +20,9 @@
  *    pre-filled from the project's saved publish target and editable. It is
  *    never defaulted to the analysed repo connector's (upstream) repository,
  *    and a target that IS that repository is called out.
+ *  - #1180 — a GitHub target another project connects is refused
+ *    (`REPO_CROSS_PROJECT`) until the user confirms, as on the Publish page;
+ *    confirming retries the same publish with `confirmCrossProject`.
  */
 import * as React from "react";
 import { toast } from "sonner";
@@ -42,6 +45,11 @@ import { analysisApi, type FindingIssueDraft, type PublishedIssueLink } from "@/
 import { publishDestinationApi } from "@/lib/change-analysis-api";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { AnalysedRepoWarning } from "@/components/publishing/analysed-repo-warning";
+import {
+  CrossProjectConfirmDialog,
+  extractCrossProjectRefusal,
+  type CrossProjectRefusal,
+} from "@/components/publishing/cross-project-confirm-dialog";
 
 export interface DeepDiveDialogFinding {
   id: string;
@@ -89,6 +97,8 @@ export function DeepDiveDialog({
   const [phase, setPhase] = React.useState<Phase>("idle");
   const [error, setError] = React.useState<string | null>(null);
   const [links, setLinks] = React.useState<PublishedIssueLink[]>([]);
+  // #1180 — set while the cross-project confirm is open.
+  const [crossProject, setCrossProject] = React.useState<CrossProjectRefusal | null>(null);
 
   // Editable draft fields. Multi-line collections are kept as raw text and
   // split on submit so editing stays natural (one item per line).
@@ -190,6 +200,7 @@ export function DeepDiveDialog({
     setPhase("idle");
     setError(null);
     setLinks([]);
+    setCrossProject(null);
     setTargetOwner("");
     setTargetRepo("");
     setDestinationKind(null);
@@ -243,7 +254,8 @@ export function DeepDiveDialog({
     }
   }
 
-  async function handlePublish(): Promise<void> {
+  /** `confirmCrossProject` is true only from the cross-project confirm (#1180). */
+  async function handlePublish(confirmCrossProject = false): Promise<void> {
     if (!finding) return;
     setPhase("publishing");
     setError(null);
@@ -254,11 +266,15 @@ export function DeepDiveDialog({
         ...(publishesToGitHub && {
           target: { owner: targetOwner.trim(), repo: targetRepo.trim() },
         }),
+        ...(confirmCrossProject && { confirmCrossProject: true }),
       });
+      setCrossProject(null);
       setLinks(res.links);
       setPhase("published");
       toast.success(res.links.length > 1 ? `Created ${res.links.length} issues` : "Issue created");
     } catch (err) {
+      // Opens (or keeps) the confirm for a cross-project refusal; closes it otherwise.
+      setCrossProject(extractCrossProjectRefusal(err));
       setError(errMessage(err, "Publish failed. Your edits are preserved — please retry."));
       setPhase("editing");
     }
@@ -476,6 +492,16 @@ export function DeepDiveDialog({
             </Button>
           ) : null}
         </DialogFooter>
+        <CrossProjectConfirmDialog
+          open={crossProject !== null}
+          onOpenChange={(next) => {
+            if (!next) setCrossProject(null);
+          }}
+          refusal={crossProject}
+          fallbackRepo={`${targetOwner.trim()}/${targetRepo.trim()}`}
+          pending={publishing}
+          onConfirm={() => void handlePublish(true)}
+        />
       </DialogContent>
     </Dialog>
   );

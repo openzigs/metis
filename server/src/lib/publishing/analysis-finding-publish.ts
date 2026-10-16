@@ -8,6 +8,7 @@ import type { AnalysisAgentKey, AnalysisAgentSource, FindingIssueDraft } from "@
 import { prisma } from "../prisma.js";
 import { getPersona } from "../analysis/personas.js";
 import { findSavedGitHubTarget } from "./saved-target.js";
+import { assertNotCrossProject } from "./cross-project-guard.js";
 import { PublishError, publishFinding } from "./finding-publisher.js";
 import type {
   ExistingIssueLink,
@@ -95,11 +96,27 @@ function reporterAttribution(
  * Publisher ports for analysis findings. Reuses the shared ports for issue
  * creation + audit, and keys idempotency on `IssueLink.findingId`: the engine's
  * `sourceId` is the analysis finding id.
+ *
+ * #1180 — GitHub issue creation runs the cross-project guard first (the
+ * batch-publish rule, #1171). It sits on the creation port, not before the
+ * engine, so an already-published finding still gets its existing link back
+ * without being asked again: that path writes nothing.
  */
-function buildAnalysisPublisherPorts(): PublisherPorts {
+function buildAnalysisPublisherPorts(confirmCrossProject: boolean | undefined): PublisherPorts {
   const base = buildSharedFindingPublisherPorts(PUBLISH_AUDIT_SUBJECTS.analysis);
   return {
     ...base,
+    async createGitHubIssue(args) {
+      if (args.target) {
+        await assertNotCrossProject({
+          projectId: args.projectId,
+          targetOwner: args.target.owner,
+          targetRepo: args.target.repo,
+          confirmed: confirmCrossProject,
+        });
+      }
+      return base.createGitHubIssue(args);
+    },
     async findExistingLink(findingId, provider) {
       const row = await prisma.issueLink.findFirst({ where: { findingId, provider } });
       if (!row) return null;
@@ -142,6 +159,8 @@ export interface PublishAnalysisFindingInput {
   extraLabels?: readonly string[];
   /** #733 — the GitHub repository to file into; else the project's configured target. */
   target?: GitHubIssueTarget;
+  /** #1180 — the caller confirmed a target another project has connected. */
+  confirmCrossProject?: boolean;
 }
 
 /**
@@ -203,7 +222,7 @@ export async function publishAnalysisFinding(
   };
 
   const extraLabels = [...input.draft.suggestedLabels, ...(input.extraLabels ?? [])];
-  const ports = buildAnalysisPublisherPorts();
+  const ports = buildAnalysisPublisherPorts(input.confirmCrossProject);
   const outcome = await publishFinding(ports, {
     finding: payload,
     provider: input.provider,

@@ -1291,6 +1291,11 @@ export const publishFindingSchema = z
      * rather than defaulting to the analysed repo connector's repository.
      */
     target: githubPublishTargetSchema.optional(),
+    /**
+     * #1180 — set only by the UI's cross-project confirm, after the server
+     * refused a GitHub publish with `REPO_CROSS_PROJECT`. Must be a boolean.
+     */
+    confirmCrossProject: z.boolean().optional(),
   })
   .strict();
 export type PublishFindingInput = z.infer<typeof publishFindingSchema>;

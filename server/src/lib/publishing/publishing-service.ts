@@ -24,7 +24,7 @@ import { assertCodeLinksMatchTarget } from "./draft-code-links.js";
 import { canCreateTickets } from "../analysis/approval-checkpoint.js";
 import { assertDraftsPublishable } from "../reviews/approval-gate.js";
 import { PublishError } from "./types.js";
-import { CrossProjectRepoError, findCrossProjectOwners } from "./cross-project-guard.js";
+import { assertNotCrossProject } from "./cross-project-guard.js";
 import { isVaultRef } from "../connectors/vault-resolver.js";
 import { bindSecretRef } from "../vault/bound-secret.js";
 import { AppError } from "../../middleware/error-handler.js";
@@ -199,11 +199,13 @@ export async function createBatch(opts: CreateBatchOptions): Promise<SharedPubli
   // live publish is where the user is asked. The refusal carries the
   // conflicting ids off the wire — `describeCrossProjectRefusal` names only
   // the ones the caller may open.
-  if (!opts.confirmCrossProject && !input.dryRun) {
-    const conflicting = await findCrossProjectOwners(input);
-    if (conflicting.length > 0) {
-      throw new CrossProjectRepoError(`${input.targetOwner}/${input.targetRepo}`, conflicting);
-    }
+  if (!input.dryRun) {
+    await assertNotCrossProject({
+      projectId: input.projectId,
+      targetOwner: input.targetOwner,
+      targetRepo: input.targetRepo,
+      confirmed: opts.confirmCrossProject,
+    });
   }
   const drafts = await prisma.issueDraft.findMany({
     where: { id: { in: input.draftIds }, projectId: input.projectId, deletedAt: null },

@@ -33,6 +33,9 @@
  *  - A live run passes the same approval and promotion gates as a batch.
  *  - Only the public GitHub API is used (no caller-chosen host), so the token
  *    goes only to the service that issued it — the batch-publish rule (#358).
+ *  - A live run into a repository ANOTHER project has connected is refused
+ *    with `REPO_CROSS_PROJECT` until the caller confirms — the batch-publish
+ *    rule (#1171, #1180). A dry run writes nothing and is not refused.
  */
 import type { AuthPayload, DraftPullRequestResult } from "@metis/shared";
 import { prisma } from "../prisma.js";
@@ -55,6 +58,7 @@ import {
   upstreamsOfAnalysed,
 } from "./analysed-repo-guard.js";
 import { assertCodeLinksMatchTarget } from "./draft-code-links.js";
+import { assertNotCrossProject } from "./cross-project-guard.js";
 import { PublishError, type PublishOctokitLike } from "./types.js";
 
 const log = createChildLogger("draft-pull-request");
@@ -77,6 +81,8 @@ export interface OpenDraftPullRequestInput {
   actorRole: AuthPayload["role"];
   dryRun: boolean;
   secretRef?: string;
+  /** #1180 — the caller confirmed a target another project has connected. */
+  confirmCrossProject?: boolean;
 }
 
 export async function openDraftPullRequest(
@@ -148,6 +154,14 @@ export async function openDraftPullRequest(
     plan.credentialCheck = await checkCredential(input.secretRef);
     return plan;
   }
+
+  // #1180 — before the credential is bound or anything is sent.
+  await assertNotCrossProject({
+    projectId: input.projectId,
+    targetOwner: target.owner,
+    targetRepo: target.repo,
+    confirmed: input.confirmCrossProject,
+  });
 
   if (!input.secretRef) {
     throw new PublishError(
