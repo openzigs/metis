@@ -252,6 +252,9 @@ const BODY_MIN_HEADING_LEVEL = 4;
  * bodies) are nested too, rewritten as ATX. Headings inside fenced code are
  * text, and are left alone; a thematic break and a table's delimiter row are
  * never read as an underline.
+ *
+ * Line endings are normalised first: a body imported from a tracker can carry
+ * CRLF, and every pattern below anchors on `$`, which a trailing `\r` defeats.
  */
 function nestBodyHeadings(body: string): string {
   const out: string[] = [];
@@ -261,7 +264,7 @@ function nestBodyHeadings(body: string): string {
   // `---` under them ends with a thematic break.
   let paragraphStart: number | null = null;
   let inContainer = false;
-  for (const line of body.split("\n")) {
+  for (const line of body.replace(/\r\n?/g, "\n").split("\n")) {
     if (fence !== null) {
       // CommonMark: a closing fence is the same character, at least as long as
       // the opener, and carries no info string — ` ```js ` inside is content.
@@ -304,12 +307,24 @@ function nestBodyHeadings(body: string): string {
       paragraphStart = null;
       continue;
     }
-    if (paragraphStart === null) {
-      // A thematic break, or a line indented as code, opens no paragraph.
-      const thematicBreak =
-        !/^ {4}/.test(line) && /^(?:-{3,}|\*{3,}|_{3,})$/.test(line.replace(/[ \t]/g, ""));
-      if (!thematicBreak && !/^ {4}/.test(line)) paragraphStart = out.length;
-      inContainer = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)|^ {0,3}>/.test(line);
+    // Four columns of indent — four spaces, or a tab within the first four — is code.
+    const indentedCode = /^(?: {0,3}\t| {4})/.test(line);
+    const thematicBreak =
+      !indentedCode && /^(?:-{3,}|\*{3,}|_{3,})$/.test(line.replace(/[ \t]/g, ""));
+    const containerStart =
+      !indentedCode && /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)|^ {0,3}>/.test(line);
+    if (thematicBreak) {
+      // Ends any paragraph; never part of a heading's text (CommonMark).
+      paragraphStart = null;
+      inContainer = false;
+    } else if (containerStart) {
+      // A list item or quote interrupts the paragraph above it, and the text it
+      // starts is inside the container, so no underline below can make it a heading.
+      paragraphStart = out.length;
+      inContainer = true;
+    } else if (paragraphStart === null && !indentedCode) {
+      paragraphStart = out.length;
+      inContainer = false;
     }
     // A table row: a `---` under it is never read as this paragraph's underline.
     if (line.includes("|")) inContainer = true;
@@ -325,7 +340,13 @@ function nestBodyHeadings(body: string): string {
  * requirement, then any other raw HTML neutralised.
  */
 export function requirementBodyMarkdown(body: string): string {
-  return neutralizeHtml(nestBodyHeadings(stripMetisMarkers(body)).trim());
+  // Leading blank lines only, not `trim()`: the first line's indent is Markdown
+  // (a tab-indented line is code), and dropping it can turn code into a heading.
+  return neutralizeHtml(
+    nestBodyHeadings(stripMetisMarkers(body))
+      .replace(/^(?:[ \t]*\n)+/, "")
+      .trimEnd(),
+  );
 }
 
 /**

@@ -392,6 +392,38 @@ describe("requirement bodies carrying METIS markers — #1170", () => {
     expect(bodyOf(body)).toBe(body);
   });
 
+  it("handles CRLF bodies: a fence closes, setext and ATX headings nest, markers go", () => {
+    // Review 5548504686: with a trailing \r the closer did not match, so the
+    // fence stayed open and "## After" kept its H2.
+    expect(bodyOf("```\r\ncode\r\n```\r\n## After\r\n")).toBe("```\ncode\n```\n#### After");
+    expect(bodyOf("Title\r\n===\r\n\r\nText.\r\n\r\nSub\r\n---\r\n")).toBe(
+      "#### Title\n\nText.\n\n#### Sub",
+    );
+    const md = renderRequirementsDocument("BRD", { analysisId: "a" }, [
+      req({
+        body: "Body.\r\n\r\n<!-- metis:clarifications:start -->\r\n## Clarifications\r\n- **Q:** q\r\n  **A:** a\r\n<!-- metis:clarifications:end -->\r\n",
+      }),
+    ]);
+    expect(md).not.toMatch(/metis:|\r/);
+    expect(md).toContain("#### Clarifications\n- **Q:** q\n  **A:** a");
+  });
+
+  it("ends the heading candidate at a list item, a quote or a thematic break", () => {
+    // CommonMark: each interrupts the paragraph, so the `---` under it is a
+    // thematic break and nothing is folded into a heading.
+    for (const body of ["Para\n- item\n---", "Para\n> quote\n---", "Para\n1. one\n---"]) {
+      expect(bodyOf(body)).toBe(body);
+    }
+    expect(bodyOf("Para\n***\nNext\n---")).toBe("Para\n***\n#### Next");
+    // An indented line cannot interrupt a paragraph: it continues it.
+    expect(bodyOf("Para\n    more\n===")).toBe("#### Para more");
+  });
+
+  it("treats a tab-indented line as code, never as heading text", () => {
+    expect(bodyOf("\tcode\n---")).toBe("\tcode\n---");
+    expect(bodyOf("  \tcode\n===")).toBe("  \tcode\n===");
+  });
+
   it("nests a setext heading after an ATX heading or a fence without a blank line", () => {
     expect(bodyOf("# One\nTwo\n===\n```\nx\n```\nThree\n---")).toBe(
       "#### One\n#### Two\n```\nx\n```\n#### Three",
