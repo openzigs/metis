@@ -29,7 +29,7 @@ import {
   type Phase2Router,
 } from "./holistic-synthesizer.js";
 import { GENERATION_PROVIDER_DROPPED_MESSAGE } from "./generation-failure-message.js";
-import { GenerationControl } from "./generation-control.js";
+import { GenerationControl, scopedToGeneration } from "./generation-control.js";
 import { withGenerationScope } from "./generation-scope.js";
 import { UnpublishableGenerationError } from "./generation-checkpoint.js";
 
@@ -71,10 +71,15 @@ type Step =
   | "anthropic-drop-mid"
   | "drop-mid-after-usage"
   | "anthropic-400-mid"
-  | "config-mid";
+  | "config-mid"
+  | "client-error-reset-mid"
+  | "stop-then-drop";
 
 /** One step per SECTION stream call, in order; exhausted → "ok". */
-const state: { plan: Step[]; sectionCalls: string[] } = { plan: [], sectionCalls: [] };
+const state: { plan: Step[]; sectionCalls: string[]; stopRun?: () => void } = {
+  plan: [],
+  sectionCalls: [],
+};
 
 /** undici's mid-stream failure: `TypeError: terminated`, socket error under `.cause`. */
 function terminated(): TypeError {
@@ -126,6 +131,22 @@ function makeProvider(key: string): AIProvider {
         );
       }
       if (step === "config-mid") throw new AIConfigError("ANTHROPIC_API_KEY is not set");
+      if (step === "client-error-reset-mid") {
+        // Reads as a drop to `isConnectionDropped` (an ECONNRESET under it), but
+        // the server's answer was a 4xx: never a drop (NEVER_A_DROP).
+        throw Object.assign(
+          new AIProviderError("anthropic stream failed (BadRequestError): 400 bad request", 400),
+          { cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }) },
+        );
+      }
+      if (step === "stop-then-drop") {
+        yield {
+          type: "usage",
+          usage: { promptTokens: 77_777, completionTokens: 7, totalTokens: 77_784 },
+        };
+        state.stopRun?.();
+        throw terminated();
+      }
       if (step === "reset-mid") {
         throw new TypeError("fetch failed", {
           cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
@@ -158,10 +179,13 @@ const groups = sectionGroupsFor("architecture");
 
 type Kind = "local" | "bedrock" | "anthropic";
 
-function router(kind: Kind): Phase2Router {
+function router(kind: Kind, opts: { scoped?: boolean } = {}): Phase2Router {
   const key =
     kind === "local" ? "local-gemma" : kind === "anthropic" ? "anthropic" : "bedrock-gateway";
-  const provider = makeProvider(key);
+  // `scoped` wraps the provider as production does (`scopedToGeneration`), so a
+  // call the run aborted is recorded by the wrapper.
+  const raw = makeProvider(key);
+  const provider = opts.scoped ? scopedToGeneration(raw) : raw;
   const tuningKind = kind === "local" ? "local" : "bedrock";
   const tuning = docsGenTuning(tuningKind, "fixture");
   return {
@@ -176,13 +200,13 @@ function router(kind: Kind): Phase2Router {
   };
 }
 
-function synth(kind: Kind) {
+function synth(kind: Kind, opts: { scoped?: boolean } = {}) {
   return synthesizeFinalDocument(
     facts,
     meta,
     "architecture",
     "Architecture",
-    router(kind),
+    router(kind, opts),
     "p",
     undefined as GroundingContext | undefined,
   );
@@ -200,6 +224,7 @@ const draftUsageRows = () =>
 beforeEach(() => {
   state.plan = [];
   state.sectionCalls = [];
+  state.stopRun = undefined;
   sleeper.calls = [];
   sleeper.impl = async () => {};
   finops.recordUsage.mockReset();
@@ -294,6 +319,7 @@ describe("a cloud section whose stream drops mid-reply is retried with backoff (
   it.each<[string, Step]>([
     ["a 4xx", "anthropic-400-mid"],
     ["a configuration error", "config-mid"],
+    ["a 4xx whose cause reads as a connection reset", "client-error-reset-mid"],
     ["an error that is not a drop", "boom-mid"],
     ["a drop before the first chunk", "drop-before"],
   ])("does NOT retry %s", async (_label, step) => {
@@ -351,10 +377,13 @@ describe("a section retry respects the run's stop switch and ceilings (#855)", (
     });
     state.plan = ["drop-mid-after-usage"];
     const run = withGenerationScope(control, () => synth("anthropic"));
-    // The run ends (the drop error surfaces once the run has been stopped,
-    // which `isGenerationStop` reads as a stop), and the reason is the ceiling.
-    await expect(run).rejects.toThrow();
+    // The run ends: the drop error surfaces unchanged once the run has been
+    // stopped (`isGenerationStop` reads any error after a stop as the stop), and
+    // the run's stop error is the ceiling's.
+    await expect(run).rejects.toThrow("anthropic stream failed (TypeError): terminated");
     expect(control.reason).toBe("budget");
+    expect(control.stopError()).toBeInstanceOf(UnpublishableGenerationError);
+    expect(control.stopError()?.message).toBe("Generation reached its cost ceiling");
     const first = state.sectionCalls[0];
     expect(state.sectionCalls.filter((c) => c === first)).toHaveLength(1);
     expect(sleeper.calls).toHaveLength(0);
@@ -362,5 +391,42 @@ describe("a section retry respects the run's stop switch and ceilings (#855)", (
     const dropped = draftUsageRows().filter((r) => r.inputTokens === 100_000);
     expect(dropped).toHaveLength(1);
     expect(dropped[0].agentStep).toBe("docs-gen");
+  });
+
+  it("a stop that lands while the backoff wait resolves is not followed by another attempt", async () => {
+    const control = new GenerationControl("doc-3", "p");
+    state.plan = ["anthropic-drop-mid"];
+    // The wait itself resolves (no abort listener), so only the per-attempt
+    // stop check stands between the stop and a re-sent prompt.
+    sleeper.impl = async () => {
+      control.stop("aborted");
+    };
+    const run = withGenerationScope(control, () => synth("anthropic"));
+    const err = await run.then(
+      () => null,
+      (e: unknown) => e,
+    );
+    // The run's own stop error, from the per-attempt stop check.
+    expect(err).toBeInstanceOf(UnpublishableGenerationError);
+    expect(err).toBe(control.stopError());
+    const first = state.sectionCalls[0];
+    expect(state.sectionCalls.filter((c) => c === first)).toHaveLength(1);
+  });
+
+  it("a call the run stopped mid-stream is recorded once, by the wrapper, and not noted twice", async () => {
+    const control = new GenerationControl("doc-4", "p");
+    const noteSpend = vi.spyOn(control, "noteSpend");
+    state.plan = ["stop-then-drop"];
+    state.stopRun = () => control.stop("aborted");
+    const run = withGenerationScope(control, () => synth("anthropic", { scoped: true }));
+    await expect(run).rejects.toThrow();
+    const rows = draftUsageRows().filter((r) => r.inputTokens === 77_777);
+    // Exactly one ledger row for the stopped call: the wrapper's aborted-call row.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].agentStep).toBe("docs-gen-aborted");
+    expect(draftUsageRows().filter((r) => r.sessionId === rows[0].sessionId)).toHaveLength(1);
+    // The wrapper records a stopped call to the ledger only (#855), so the run's
+    // tally is not given this call's spend a second time by the drop path.
+    expect(noteSpend.mock.calls.filter(([e]) => e.inputTokens === 77_777)).toHaveLength(0);
   });
 });

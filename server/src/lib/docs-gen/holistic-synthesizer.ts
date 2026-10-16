@@ -6874,12 +6874,13 @@ async function generateSectionGroup(
     {
       stage: "section-draft",
       signal: currentGenerationScope()?.signal,
-      logFields: {
+      logFields: () => ({
         projectId,
         docType,
         group: group.id,
         provider: provider.key,
-      },
+        chunksBeforeDrop: progress.chunks,
+      }),
     },
     {
       attempts: MID_STREAM_DROP_ATTEMPTS,

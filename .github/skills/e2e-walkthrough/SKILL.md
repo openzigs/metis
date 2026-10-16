@@ -266,14 +266,17 @@ FROM token_usages
 WHERE "projectId" = :project AND "createdAt" >= :since AND "createdAt" < :until
 GROUP BY 1 ORDER BY 3 DESC;
 
--- docs-gen section retries (#1174): a section draft whose stream dropped mid-reply is
--- retried, and each retry is billed under a session id ending -retryN. A lower bound —
--- a retry that itself failed before its first chunk wrote no row; the exact count is
--- the server log's "Transient model-call failure; retrying" lines with stage section-draft.
+-- docs-gen section retries (#1174), per document: a section draft whose stream dropped
+-- mid-reply is retried, and each retry is billed under a session id
+-- docs-synth-<project>-<docType>-<group>-draft-…-retryN. Substitute the document's type
+-- (brd, architecture, …) for :docType. A lower bound, for two reasons: a retry that
+-- failed before its first chunk wrote no row, and a retry whose stream reported no usage
+-- writes no row either. The exact count is the server log's "Transient model-call
+-- failure; retrying" lines with stage section-draft and that docType.
 SELECT COUNT(DISTINCT "sessionId") AS section_retries
 FROM token_usages
 WHERE "projectId" = :project AND "createdAt" >= :since AND "createdAt" < :until
-  AND "sessionId" LIKE 'docs-synth-%-draft-%-retry%';
+  AND "sessionId" LIKE 'docs-synth-%-' || :docType || '-%-draft-%-retry%';
 
 -- lineage: schema edges by kind and provenance (run 2: 1,436 reads/writes)
 SELECT kind, source, COUNT(*) AS n FROM code_edges

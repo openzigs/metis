@@ -66,8 +66,11 @@ export interface GroundingRetryOptions {
 export interface TransientRetryContext {
   stage: "claims" | "verdicts" | "section-draft";
   signal?: AbortSignal;
-  /** Extra fields for the retry log line (the section, the provider). */
-  logFields?: Record<string, unknown>;
+  /**
+   * Extra fields for the retry log line (the section, the provider). A function
+   * is read when the line is written, for a value that changes per attempt.
+   */
+  logFields?: Record<string, unknown> | (() => Record<string, unknown>);
 }
 
 const errorText = (err: unknown): string => {
@@ -216,10 +219,15 @@ export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> 
 }
 
 /**
- * Run `call`, retrying it on a transient failure (see
- * {@link isTransientGroundingError}) with exponential backoff and jitter, up to
- * the configured number of tries. A non-transient failure, a cancelled run, or
- * the last try's failure is re-thrown unchanged.
+ * Run `call`, retrying it on a retryable failure with exponential backoff and
+ * jitter, up to the configured number of tries. Retryable is
+ * {@link isTransientGroundingError} by default, or the caller's
+ * `opts.isRetryable` (#1174 — a section draft narrows it to a stream that
+ * dropped mid-reply). A cancelled run is never retried, whatever the predicate
+ * says, and a cancel during the backoff wait rejects the wait at once. A
+ * failure that is not retried, or the last try's failure, is re-thrown
+ * unchanged. Each retry is logged with `context.stage`, the error class, the
+ * attempt numbers and `context.logFields`.
  */
 export async function withTransientRetry<T>(
   call: () => Promise<T>,
@@ -246,7 +254,7 @@ export async function withTransientRetry<T>(
       // Half fixed, half jitter: never zero, never above the window.
       const delayMs = Math.round(window / 2 + (window / 2) * random());
       log.warn("Transient model-call failure; retrying with backoff", {
-        ...context.logFields,
+        ...(typeof context.logFields === "function" ? context.logFields() : context.logFields),
         stage: context.stage,
         errorClass: cls,
         attempt,
