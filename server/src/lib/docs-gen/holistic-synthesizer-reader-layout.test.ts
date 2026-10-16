@@ -23,8 +23,10 @@ vi.mock("../finops/index.js", async (importOriginal) => {
 
 import type { AIProvider, ChatChunk, ChatMessage } from "../ai/types.js";
 import { logger } from "../logger.js";
+import { RECONSTRUCTION_FAITHFULNESS_THRESHOLD } from "./grounding/degraded-warnings.js";
 import {
   APPENDIX_DIVIDER,
+  REQUIREMENTS_LEAD_IN,
   BRD_MAIN_MAX_CHARS,
   BRD_MAIN_SECTION_TARGETS,
   BRD_MAIN_TARGET_CHARS,
@@ -268,7 +270,7 @@ describe("the reader layout's sections", () => {
       "Executive Summary, Scope & Domain",
       "Core Business Capabilities",
       "Key Business Rules",
-      "Requirements & Acceptance Criteria",
+      "Requirements Reconstructed from the Code",
     ]);
   });
 
@@ -291,23 +293,40 @@ describe("the reader layout's sections", () => {
     expect(overview.factSlices).toEqual(before.factSlices);
   });
 
-  it("asks for requirements with acceptance criteria, and a summary of the rules", () => {
+  it("asks for requirements reconstructed from the code, never presented as the approved ones", () => {
     const requirements = READER.find((g) => g.id === "requirements")!;
-    expect(requirements.instructions).toContain("## Requirements & Acceptance Criteria");
-    expect(requirements.instructions).toContain("### BR-<n>: <short title>");
+    expect(requirements.label).toBe("Requirements Reconstructed from the Code");
+    expect(requirements.instructions).toContain("## Requirements Reconstructed from the Code");
+    expect(requirements.instructions).toContain("### RC-<n>: <short title>");
+    expect(requirements.instructions).not.toContain("BR-<n>");
     expect(requirements.instructions).toContain("**Acceptance criteria:**");
     expect(requirements.instructions).toContain("NOT one per module");
-    const rules = READER.find((g) => g.id === "key-rules")!;
-    expect(rules.instructions).toContain("## Key Business Rules");
-    expect(rules.instructions).toContain("SUMMARY");
-    expect(rules.instructions).toContain("appendix (Business Rules & Policies)");
-    for (const group of [requirements, rules]) {
-      // Neither reads the per-module mined-rule inventory: that is the catalogue's.
-      expect(group.minedRules).toBe(false);
-      expect(group.batched).toBeUndefined();
-      expect(group.reconstruction).toBe(true);
-    }
-    // No H2 heading of the main part repeats one of the appendix.
+    expect(requirements.instructions).toContain("NOT the project's approved requirements");
+    expect(requirements.minedRules).toBe(false);
+    expect(requirements.batched).toBeUndefined();
+    expect(requirements.reconstruction).toBe(true);
+    expect(requirements.faithfulnessThreshold).toBe(RECONSTRUCTION_FAITHFULNESS_THRESHOLD);
+  });
+
+  it("holds the key rules to the bar, and gives them the inputs, of the appendix's rules catalogue", () => {
+    const keyRules = READER.find((g) => g.id === "key-rules")!;
+    const catalogueRules = CATALOGUE.find((g) => g.id === "rules")!;
+    expect(keyRules.instructions).toContain("## Key Business Rules");
+    expect(keyRules.instructions).toContain("SUMMARY");
+    expect(keyRules.instructions).toContain("appendix (Business Rules & Policies)");
+    // The default code-fidelity bar (no lower override), as the catalogue's.
+    expect(keyRules.faithfulnessThreshold).toBeUndefined();
+    expect(keyRules.faithfulnessThreshold).toBe(catalogueRules.faithfulnessThreshold);
+    expect(keyRules.reconstruction).toBeUndefined();
+    expect(keyRules.narrative).toBeUndefined();
+    // The same inputs: the rules slice and the mined-rule inventory.
+    expect(keyRules.minedRules).toBe(true);
+    expect(catalogueRules.minedRules).toBe(true);
+    expect(keyRules.factSlices).toEqual(catalogueRules.factSlices);
+    expect(keyRules.batched).toBeUndefined();
+  });
+
+  it("has no main H2 heading that repeats one of the appendix", () => {
     const headings = (ids: string[]): string[] =>
       READER.filter((g) => ids.includes(g.id)).flatMap((g) =>
         [...g.instructions.matchAll(/^## (.+)$/gm)].map((m) => m[1]),
@@ -414,6 +433,45 @@ describe("planDocumentTopics in the reader layout", () => {
   });
 });
 
+describe("the prompts of the reader layout's own sections", () => {
+  it("give the key rules and the reconstructed requirements the cite-or-omit guidance, as the catalogue's", async () => {
+    const provider = fakeModel();
+    await run(project(6), provider);
+    for (const id of ["key-rules", "requirements", "rules"]) {
+      const [call] = callsFor(provider, label(id));
+      expect({ id, guided: call.system.includes("GROUNDING DISCIPLINE") }).toEqual({
+        id,
+        guided: true,
+      });
+    }
+    // The narrative opening does not get it, as before.
+    expect(callsFor(provider, label("overview"))[0].system).not.toContain("GROUNDING DISCIPLINE");
+  });
+
+  it("give the key rules the mined-rule inventory the catalogue's rules read", async () => {
+    const facts = project(4);
+    facts[0] = {
+      ...facts[0],
+      minedRules: [
+        {
+          language: "go",
+          kind: "validation",
+          expression: "len(password) < 6",
+          summary: "Password must be at least 6 characters",
+          file: "src/m00/user.go",
+          line: 163,
+          context: null,
+        },
+      ],
+    };
+    const provider = fakeModel();
+    await run(facts, provider);
+    const [keyRules] = callsFor(provider, label("key-rules"));
+    expect(keyRules.user).toContain("src/m00/user.go:163");
+    expect(callsFor(provider, label("requirements"))[0].user).not.toContain("src/m00/user.go:163");
+  });
+});
+
 describe("a reader-layout document", () => {
   it("has the main document, the appendix divider, then the appendix, in that order", async () => {
     const provider = fakeModel();
@@ -435,6 +493,54 @@ describe("a reader-layout document", () => {
     expect(main.length).toBeLessThanOrEqual(BRD_MAIN_MAX_CHARS);
     expect(main).not.toContain(`## ${label("rules")}`);
     expect(main).not.toContain("Shortened for length");
+  });
+
+  it("opens the reconstructed requirements with the fixed lead-in, written by METIS", async () => {
+    const provider = fakeModel();
+    const result = await run(project(6), provider);
+    const section = sectionOf(result.markdown, label("requirements"));
+    expect(section.startsWith(`## ${label("requirements")}\n\n${REQUIREMENTS_LEAD_IN}\n\n`)).toBe(
+      true,
+    );
+    // The model was not asked to write it, and did not.
+    const [call] = callsFor(provider, label("requirements"));
+    expect(call.user).not.toContain(REQUIREMENTS_LEAD_IN);
+    expect(result.markdown.split(REQUIREMENTS_LEAD_IN)).toHaveLength(2);
+  });
+
+  it("de-duplicates the main part and the appendix each on its own", async () => {
+    // The requirements reply repeats the appendix's rules heading: one
+    // de-duplication over the whole body would drop the appendix's section.
+    const provider = fakeModel({
+      inject: (call) =>
+        call.group === label("requirements")
+          ? `\n\n## ${label("rules")}\n\nA heading the model repeated.\n\n`
+          : "",
+    });
+    const result = await run(project(6), provider);
+    const appendix = result.markdown.slice(result.markdown.indexOf(APPENDIX_DIVIDER));
+    expect(sectionOf(appendix, label("rules"))).toContain("### About m00");
+    expect(result.warnings.filter((w) => w.kind === "section-missing")).toEqual([]);
+  });
+
+  it("cuts the summaries before the reconstructed requirements, whose text is nowhere else", async () => {
+    // The two summary sections written at five times their target; the
+    // opening and the requirements at theirs.
+    const summaries = [label("capabilities"), label("key-rules")];
+    const provider = fakeModel({
+      overrun: (call) => (summaries.includes(call.group) ? 5 : 0.8),
+    });
+    const result = await run(project(12), provider);
+    expect(mainPartOf(result.markdown).length).toBeLessThanOrEqual(BRD_MAIN_MAX_CHARS);
+    for (const heading of summaries) {
+      const section = sectionOf(result.markdown, heading);
+      expect(section).toContain("The detail behind this section is in the appendix.");
+    }
+    const requirements = sectionOf(result.markdown, label("requirements"));
+    expect(requirements).not.toContain("Shortened for length");
+    expect(requirements).toContain("### About m11");
+    const cut = result.sections.find((s) => s.sectionLabel === label("requirements"));
+    expect(cut?.omittedTopics ?? []).toEqual([]);
   });
 
   it("holds the main part to 60k when the model overruns, and lists what it left out", async () => {

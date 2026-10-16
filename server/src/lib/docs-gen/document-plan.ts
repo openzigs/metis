@@ -471,10 +471,16 @@ export interface PlanFitSection {
 /** The cap a plan fit applies, for the note of a section it shortens. */
 export interface PlanFitLimit {
   /**
-   * The limit exceeded. `BRD_MAIN_PART` (#1175) is the main part of a
-   * reader-layout BRD, which is not a setting of its own.
+   * The limit exceeded. `BRD_MAIN_SUMMARY` and `BRD_MAIN_PART` (#1175) are
+   * the main part of a reader-layout BRD, which is not a setting of its own:
+   * the first for a summary section whose detail is in the appendix, the
+   * second for a section nothing in the appendix stands behind.
    */
-  setting: "DOCS_GEN_SECTION_MAX_CHARS" | "DOCS_GEN_DOCUMENT_MAX_CHARS" | "BRD_MAIN_PART";
+  setting:
+    | "DOCS_GEN_SECTION_MAX_CHARS"
+    | "DOCS_GEN_DOCUMENT_MAX_CHARS"
+    | "BRD_MAIN_SUMMARY"
+    | "BRD_MAIN_PART";
   maxChars: number;
 }
 
@@ -529,8 +535,13 @@ export interface PlanFitResult {
  * that was exceeded, with that limit's own value.
  */
 export function plannedOmissionNote(omitted: readonly string[], limit: PlanFitLimit): string {
-  if (limit.setting === "BRD_MAIN_PART") {
-    return `${SHORTENED_NOTE_LEAD} The main part of this document is limited to about ${Math.round(limit.maxChars / 1000)}k characters, so that it can be read through.${omittedTopicsSentence(omitted)} The module-by-module detail is in the appendix.`;
+  if (limit.setting === "BRD_MAIN_SUMMARY" || limit.setting === "BRD_MAIN_PART") {
+    // Kept shorter than the generic note, so a tail cut's note is reworded.
+    const where =
+      limit.setting === "BRD_MAIN_SUMMARY"
+        ? "The detail behind this section is in the appendix."
+        : "What was left out is not elsewhere in this document; provenance lists it.";
+    return `${SHORTENED_NOTE_LEAD} The main part of this document is limited to about ${Math.round(limit.maxChars / 1000)}k characters.${omittedTopicsSentence(omitted)} ${where}`;
   }
   const subject =
     limit.setting === "DOCS_GEN_SECTION_MAX_CHARS" ? "This section is" : "The document is";

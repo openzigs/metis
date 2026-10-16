@@ -123,7 +123,7 @@ Lineage edges (reads + writes): {{…}}.
 | Lineage reads/writes edges | 1,436 | | |
 | Repo connector Go files ingested | 421 / 421 | | |
 | Docs-gen: largest document / longest section (chars) | – (run 3 BRD: 2.19 MB) | | |
-| Docs-gen: BRD sign-off rubric S1 / S2 / S3 / S4, and main part / whole BRD (chars) (TEST_PLAN Phase 9, #1175) | – (run 9: 247,171 chars, no main part) | | |
+| Docs-gen: BRD sign-off rubric SO1 / SO2 / SO3 / SO4, and main part / whole body (chars, `wc -m`) (TEST_PLAN Phase 9, #1175) | – (run 9: 247,171 chars, no main part) | | |
 | Docs-gen: any run stopped by a cost or token ceiling | – | | |
 | Promoted requirements with zero acceptance criteria | – | | |
 | Promoted requirements with no code link | – | | |

@@ -964,8 +964,9 @@ has measured a BRD generated with it on.
 
 ### 6.8 `DOCS_GEN_BRD_LAYOUT` (#1175): a main document plus an appendix, off by default
 
-`DOCS_GEN_BRD_LAYOUT` (default `catalogue`, registry tunable) set to `reader` writes a
-full-scope business-requirements document as a main document for a business reader (about
+`DOCS_GEN_BRD_LAYOUT` (default `catalogue`, registry tunable) set to exactly `reader` writes
+every business-requirements document generated from code (scope full, repository or path
+prefix; a requirements-scoped BRD is not affected) as a main document for a business reader (about
 48k characters planned, 60k at most) followed by an appendix with the module-by-module
 detail, in the same document. The decision and its reasoning are in
 `docs/decisions/0021-reader-sized-brd-main-plus-appendix.md`.
@@ -986,7 +987,15 @@ detail, in the same document. The decision and its reasoning are in
   with a note naming the main part, and what it lost is in the version's provenance as
   omitted topics.
 - **It does not reduce the topics left out for length (#995).** The appendix is the same
-  catalogue with the same budget under the same cap.
+  catalogue, planned the same budget under the same cap. That equality is at planning time:
+  what the appendix loses at assembly depends on how long the main part is written, which
+  #1074 measures.
+- **What it costs (an estimate, not measured).** Two more section calls (Key Business Rules
+  and the reconstructed requirements), each with its own fact-check (claim extraction and
+  judge): about 4–6 more model calls per BRD, more with hybrid escalation, and roughly
+  160–260k more input and 16–20k more output tokens. That is about **$0.05–0.10 more per
+  BRD on `deepseek-flash`**, about $0.30–0.40 on `deepseek-v4-pro`, less with cache reads,
+  and paid again on a regenerate. Turning the plan on adds about 18k input tokens (§6.5).
 - **No migration and no backfill.** Requirements-scoped documents and other document types
   are not affected.
 

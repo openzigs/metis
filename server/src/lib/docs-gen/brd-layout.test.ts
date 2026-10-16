@@ -13,9 +13,12 @@ import {
   BRD_MAIN_TARGET_CHARS,
   fitReaderDocument,
   isMainSection,
+  MAIN_SUMMARY_FLOOR_CHARS,
   mainFitCap,
   mainPlanBudget,
   readBrdLayoutSetting,
+  REQUIREMENTS_LEAD_IN,
+  withRequirementsLeadIn,
 } from "./brd-layout.js";
 import {
   fitDocumentToPlan,
@@ -34,18 +37,17 @@ describe("DOCS_GEN_BRD_LAYOUT", () => {
   it("is the catalogue layout unless set to reader", () => {
     expect(process.env.DOCS_GEN_BRD_LAYOUT).toBeUndefined();
     expect(readBrdLayoutSetting()).toEqual({ layout: "catalogue" });
-    for (const value of ["reader", " Reader ", "READER"]) {
-      vi.stubEnv("DOCS_GEN_BRD_LAYOUT", value);
-      expect(readBrdLayoutSetting()).toEqual({ layout: "reader" });
-    }
-    for (const value of ["catalogue", "", "  "]) {
+    vi.stubEnv("DOCS_GEN_BRD_LAYOUT", "reader");
+    expect(readBrdLayoutSetting()).toEqual({ layout: "reader" });
+    for (const value of ["catalogue", ""]) {
       vi.stubEnv("DOCS_GEN_BRD_LAYOUT", value);
       expect(readBrdLayoutSetting()).toEqual({ layout: "catalogue" });
     }
   });
 
-  it("returns any other value as unrecognised, in the catalogue layout", () => {
-    for (const value of ["on", "true", "main+appendix"]) {
+  it("returns any other value as unrecognised, in the catalogue layout, as the registry's enum would", () => {
+    // The registry schema is z.enum(["reader", "catalogue"]): no case folding.
+    for (const value of ["on", "true", "main+appendix", "Reader", "READER"]) {
       vi.stubEnv("DOCS_GEN_BRD_LAYOUT", value);
       expect(readBrdLayoutSetting()).toEqual({ layout: "catalogue", unrecognised: value });
     }
@@ -215,21 +217,45 @@ describe("planDocument in two parts", () => {
 });
 
 describe("plannedOmissionNote for the main part", () => {
-  it("names the main part and points at the appendix, not a setting", () => {
-    const note = plannedOmissionNote(["BR-9: Exports"], {
+  const generic = plannedOmissionNote(["RC-9: Exports"], {
+    setting: "DOCS_GEN_DOCUMENT_MAX_CHARS",
+    maxChars: 60_000,
+  });
+
+  it("says, for a section with nothing behind it in the appendix, that what was cut is nowhere else", () => {
+    const note = plannedOmissionNote(["RC-9: Exports"], {
       setting: "BRD_MAIN_PART",
       maxChars: 60_000,
     });
     expect(note.startsWith(SHORTENED_NOTE_LEAD)).toBe(true);
     expect(note).toContain("The main part of this document is limited to about 60k characters");
-    expect(note).toContain("BR-9: Exports");
-    expect(note).toContain("The module-by-module detail is in the appendix.");
+    expect(note).toContain("RC-9: Exports");
+    expect(note).toContain("What was left out is not elsewhere in this document");
+    expect(note).not.toContain("appendix");
     expect(note).not.toContain("DOCS_GEN_");
   });
 
+  it("points a summary section at the appendix that holds its detail", () => {
+    const note = plannedOmissionNote(["Retention"], {
+      setting: "BRD_MAIN_SUMMARY",
+      maxChars: 60_000,
+    });
+    expect(note).toContain("The main part of this document is limited to about 60k characters");
+    expect(note).toContain("The detail behind this section is in the appendix.");
+    expect(note).not.toContain("not elsewhere");
+  });
+
+  it("is shorter than the generic note, so a tail cut's note is reworded to it", () => {
+    for (const setting of ["BRD_MAIN_PART", "BRD_MAIN_SUMMARY"] as const) {
+      expect(
+        plannedOmissionNote(["RC-9: Exports"], { setting, maxChars: 60_000 }).length,
+      ).toBeLessThan(generic.length);
+    }
+  });
+
   it("is what fitDocumentToPlan writes when it is given that limit", () => {
-    const topic = (n: number): string => `### BR-${n}: Topic ${n}\n\n${"Body text. ".repeat(40)}`;
-    const section = `## Requirements & Acceptance Criteria\n\n${Array.from({ length: 12 }, (_, i) => topic(i + 1)).join("\n\n")}`;
+    const topic = (n: number): string => `### RC-${n}: Topic ${n}\n\n${"Body text. ".repeat(40)}`;
+    const section = `## Requirements Reconstructed from the Code\n\n${Array.from({ length: 12 }, (_, i) => topic(i + 1)).join("\n\n")}`;
     const fit = fitDocumentToPlan(
       [{ markdown: section, budgetChars: 3_000 }],
       3_000,
@@ -239,8 +265,39 @@ describe("plannedOmissionNote for the main part", () => {
     );
     expect(fit.trimmed).toBe(1);
     expect(fit.sections[0]).toContain("The main part of this document is limited to about 3k");
+    expect(fit.sections[0]).toContain("not elsewhere in this document");
     expect(fit.sections[0]).not.toContain("DOCS_GEN_DOCUMENT_MAX_CHARS");
     expect(fit.sections[0].length).toBeLessThanOrEqual(3_000);
+  });
+});
+
+describe("withRequirementsLeadIn", () => {
+  it("puts the fixed lead-in directly under the section heading", () => {
+    const md =
+      "## Requirements Reconstructed from the Code\n\n### RC-1: Sign in\n\nThe system shall …";
+    const out = withRequirementsLeadIn(md);
+    expect(out).toBe(
+      `## Requirements Reconstructed from the Code\n\n${REQUIREMENTS_LEAD_IN}\n\n### RC-1: Sign in\n\nThe system shall …`,
+    );
+    // Idempotent: a section that already has it is unchanged.
+    expect(withRequirementsLeadIn(out)).toBe(out);
+  });
+
+  it("puts it at the top of a section with no heading", () => {
+    expect(withRequirementsLeadIn("### RC-1: Sign in")).toBe(
+      `${REQUIREMENTS_LEAD_IN}\n\n### RC-1: Sign in`,
+    );
+  });
+
+  it("says the requirements are inferred from the code, where the approved ones are, and that the numbers are local", () => {
+    expect(REQUIREMENTS_LEAD_IN).toContain("Reconstructed from the code");
+    expect(REQUIREMENTS_LEAD_IN).toContain("not the project's approved requirements");
+    expect(REQUIREMENTS_LEAD_IN).toContain("**Requirements**");
+    expect(REQUIREMENTS_LEAD_IN).toContain("scoped to Requirements");
+    expect(REQUIREMENTS_LEAD_IN).toContain("local to this document");
+    // A blockquote paragraph: one unit a length fit keeps first, never splits.
+    expect(REQUIREMENTS_LEAD_IN.startsWith("> ")).toBe(true);
+    expect(REQUIREMENTS_LEAD_IN).not.toContain("\n");
   });
 });
 
@@ -280,7 +337,8 @@ describe("fitReaderDocument", () => {
     ];
     const isMain = [true, false, true];
     const fit = fitReaderDocument(sections, isMain, 245_000, length, 250_000);
-    const mainChars = fit.sections[0].length + fit.sections[2].length;
+    // The two main sections and the blank line that joins them.
+    const mainChars = fit.sections[0].length + fit.sections[2].length + 2;
     expect(fit.mainChars).toBe(mainChars);
     expect(mainChars).toBeLessThanOrEqual(BRD_MAIN_MAX_CHARS);
     // The requirements ran over; the summary did not.
@@ -314,6 +372,62 @@ describe("fitReaderDocument", () => {
     expect(fit.mainChars + APPENDIX_DIVIDER.length + 2 + appendix).toBeLessThanOrEqual(bodyMax);
     // The room is used: the appendix is not left far short of its limit.
     expect(appendix).toBeGreaterThan(fit.appendixMaxChars - 5_000);
+  });
+
+  describe("the order the main part gives up text in", () => {
+    // Opening, capabilities, key rules, requirements: as the reader layout orders them.
+    const main = (sizes: { caps: number; rules: number; reqs: number }) => [
+      { markdown: section("Executive Summary", 2, 1_000), budgetChars: 8_000 },
+      { markdown: section("Core Business Capabilities", 40, sizes.caps), budgetChars: 12_000 },
+      { markdown: section("Key Business Rules", 40, sizes.rules), budgetChars: 12_000 },
+      {
+        markdown: section("Requirements Reconstructed from the Code", 60, sizes.reqs),
+        budgetChars: 16_000,
+      },
+    ];
+    const isMain = [true, true, true, true];
+    const isSummary = [false, true, true, false];
+
+    it("cuts the summaries first and leaves the requirements whole while they fit", () => {
+      // 4 + 40 + 40 + 30 = ~114k against a 60k cap: the requirements (~30k) fit
+      // in what the summaries leave.
+      const sections = main({ caps: 1_000, rules: 1_000, reqs: 500 });
+      const fit = fitReaderDocument(sections, isMain, 245_000, length, 250_000, isSummary);
+      expect(fit.mainChars).toBeLessThanOrEqual(BRD_MAIN_MAX_CHARS);
+      expect(fit.cuts[0]).toBe("whole");
+      expect(fit.cuts[3]).toBe("whole");
+      expect(fit.sections[3]).toBe(sections[3].markdown);
+      for (const i of [1, 2]) {
+        expect(fit.cuts[i]).not.toBe("whole");
+        expect(fit.sections[i]).toContain("behind this section is in the appendix");
+      }
+      // The room the requirements leave is used by the summaries.
+      expect(fit.mainChars).toBeGreaterThan(BRD_MAIN_MAX_CHARS - 3_000);
+    });
+
+    it("keeps the summaries at their floor and cuts the requirements, saying what was lost is nowhere else", () => {
+      // The requirements alone (~76k) are over the cap.
+      const sections = main({ caps: 1_000, rules: 1_000, reqs: 1_250 });
+      const fit = fitReaderDocument(sections, isMain, 245_000, length, 250_000, isSummary);
+      expect(fit.mainChars).toBeLessThanOrEqual(BRD_MAIN_MAX_CHARS);
+      // The summaries kept their floor between them, and no more than it.
+      const summaries = fit.sections[1].length + fit.sections[2].length;
+      expect(summaries).toBeLessThanOrEqual(2 * MAIN_SUMMARY_FLOOR_CHARS);
+      expect(summaries).toBeGreaterThan(2 * MAIN_SUMMARY_FLOOR_CHARS - 2_500);
+      expect(fit.cuts[3]).not.toBe("whole");
+      expect(fit.sections[3]).toContain("not elsewhere in this document");
+      expect(fit.sections[3]).not.toContain("in the appendix");
+      expect(fit.omittedTopics[3][0]).toMatch(/^Requirements Reconstructed from the Code topic/);
+      // The opening, short, is whole.
+      expect(fit.cuts[0]).toBe("whole");
+    });
+
+    it("cuts nothing while the main part fits", () => {
+      const sections = main({ caps: 300, rules: 300, reqs: 200 });
+      const fit = fitReaderDocument(sections, isMain, 245_000, length, 250_000, isSummary);
+      expect(fit.cuts).toEqual(["whole", "whole", "whole", "whole"]);
+      expect(fit.sections).toEqual(sections.map((s) => s.markdown));
+    });
   });
 
   it("reserves no room for a divider when there is no appendix", () => {

@@ -387,23 +387,39 @@ What counts:
 #### Phase 9 — BRD sign-off rubric (#1175)
 
 The answer key measures whether the facts are right; this rubric measures whether a
-stakeholder could read the BRD and sign it off. Score the exported full-scope BRD here, and the
-requirements-scoped BRD of J1.7 with the J1.7 readings below. Each check is **pass**, **weak**
-or **fail**; the document passes sign-off only when all four pass.
+stakeholder could read the BRD and sign it off. Score the exported BRD of scope `full` here,
+and the requirements-scoped BRD of J1.7 with the J1.7 readings in the table. Each check is
+**pass**, **weak** or **fail**; the document passes sign-off only when all four pass. The ids
+are `SO1`–`SO4` ("sign-off"): `S1`… are Spec Kit ids in Phase 14, and `R1.`… are requirement
+headings in a requirements-scoped BRD.
 
-The **main part** of a reader-layout BRD is everything from the start of the document to the
-heading `# Appendix: Module-by-Module Detail`:
-`awk '/^# Appendix: Module-by-Module Detail/{exit} {print}' brd.md | wc -c`.
+Run the commands below from the directory holding the export, saved as `brd.md`. They are
+outside the table on purpose: copy them as they are written here.
+
+```bash
+# The main part: from the start of the document to the appendix heading (characters, not bytes).
+awk '/^# Appendix: Module-by-Module Detail/{exit} {print}' brd.md | LC_ALL=en_US.UTF-8 wc -m
+
+# The whole body: everything before the first footnote definition.
+awk '/^\[\^src-[0-9]+\]:/{exit} {print}' brd.md | LC_ALL=en_US.UTF-8 wc -m
+
+# SO1: the reconstructed requirements, and the lead-in METIS puts under their heading.
+grep -cE '^### RC-[0-9]+:' brd.md
+grep -c 'Reconstructed from the code.' brd.md
+
+# SO2: raw markers and citation tokens. Must print nothing.
+grep -nE '\[(facts|rag|web):|<!--|\{\{|metis-source' brd.md
+```
 
 | Id | Check | Pass | Weak | Fail |
 |---|---|---|---|---|
-| S1 | Every in-scope requirement is present, with acceptance criteria | Full scope: the main part has a **Requirements & Acceptance Criteria** section, and every `BR-n` in it has at least two acceptance criteria a tester could check (a concrete value or an observable outcome). J1.7: exactly J1.2's five requirements, each with the criteria J1.4 left it with | Every requirement present, but some have one criterion, or criteria nobody could test ("works correctly") | A requirement with no criteria, or no requirements section |
-| S2 | No raw marker or citation token | `grep -nE '\[(facts\|rag\|web):\|<!--\|\{\{\|metis-source' brd.md` prints nothing. Footnote references (`[^3]`) and `_(inferred)_` are deliberate and do not count | – | Any match: list each with its line |
-| S3 | Readable by someone who does not know the code | The Executive Summary and Scope name no function, file, package, table or SQL; the rest of the main part names code only where a reader acts on it (a setting an administrator changes, a status a user sees). J1.7: the whole document | Up to five other code names in the main part: list them | More than five, or the Executive Summary needs the code to be understood |
-| S4 | A sensible length | The main part is 40,000–60,000 characters (about 12–18 pages) and the whole body is within `DOCS_GEN_DOCUMENT_MAX_CHARS`. J1.7: within the cap; a five-requirement document has no floor | The main part is under 40,000 characters | No main part (the catalogue layout), or a main part over 60,000 |
+| SO1 | Every requirement is present, with acceptance criteria | Scope `full`: the main part has the **Requirements Reconstructed from the Code** section, opening with METIS's fixed "Reconstructed from the code" lead-in. Every `RC-n` in it has at least two acceptance criteria a tester could check (a concrete value or an observable outcome), and is traceable to the Miniflux source at `v2.3.3`, read as the answer key reads a fact. Report `with criteria / RC-n listed` and, as coverage, how many of the answer key's BRD-1 to BRD-15 appear as an `RC-n` or a Key Business Rule (`k/15`). J1.7: exactly J1.2's five requirements, each with the criteria J1.4 left it with (`n/5`) | Every `RC-n` traceable, but some have one criterion, or criteria nobody could test ("works correctly") | The lead-in is missing, a requirement has no criteria, there is no requirements section, or an `RC-n` is not traceable to the source (also count it as a hallucination) |
+| SO2 | No raw marker or citation token | The SO2 command prints nothing. Footnote references (`[^src-3]`) and `_(inferred)_` are deliberate and do not count | – | Any match: list each with its line |
+| SO3 | Readable by someone who does not know the code | The Executive Summary and Scope name no function, file, package, table or SQL; the rest of the main part names code only where a reader acts on it (a setting an administrator changes, a status a user sees). J1.7: the whole document | Up to five other code names in the main part: list them | More than five, or the Executive Summary needs the code to be understood |
+| SO4 | A sensible length | The main part is 40,000–60,000 characters (about 12–18 pages), and the whole body is at most `DOCS_GEN_DOCUMENT_MAX_CHARS` (250,000) plus the header, under 1,000. J1.7: the whole body within the cap; a five-requirement document has no floor | The main part is under 40,000 characters | No main part (the catalogue layout), or a main part over 60,000 |
 
 Report one line under the doc-quality lines, for example
-`Sign-off — BRD: S1 pass (24/24 with criteria) · S2 pass · S3 weak (3 code names) · S4 pass (52,310 main / 231,004 total)`,
+`Sign-off — BRD: SO1 pass (22/22 with criteria, 11/15 key facts) · SO2 pass · SO3 weak (3 code names) · SO4 pass (52,310 main / 231,004 body)`,
 and copy it into the results table's sign-off row. Read a requirement as present in
 substance, as for the answer key.
 
@@ -951,7 +967,7 @@ and the reviewer's name (`coordinator`).
 | J1.4 | Invites the reviewer from `/settings/workspaces/:id`, approves the checkpoint (leaving out what the analysis added), requests review on `/projects/:id/requirements` of her five only, edits one requirement's acceptance criteria | The Approvals checkpoint lists "From your ticked items" apart from "Added by the analysis"; **Leave out the N added by the analysis** (`POST …/approvals/reject-added`, asks for confirmation) rejects the added ones in one action, and **Approve all** then approves the five (#1129). Record the clicks needed to end with the five. The Request review form's **Only the N from ticked items** limits the review, and the form says "This review covers 5 of N requirements" before it is sent (#1129). Approval flows through to the requirements (#939). The edit keeps links, labels and version history (#940). The review appears on `/reviews`. **Withdraw review** is offered on the review page and on its `/reviews` row while it is in review; after confirming, the review is a draft and every requirement shows the status it had before the request (#1032, #989) |
 | J1.5 | Opens traceability for her 5 requirements | Each links to code. "Tested by" shows real tests or says untested (#905) |
 | J1.6 | Asks `/chat`, scoped to her project, "which of these touch the database?" | The answer cites her requirements and the schema, with valid `file:line` |
-| J1.7 | Generates a BRD scoped to her requirements in `/projects/:id/documentation` (scope "Requirements", her run, then **Only the N from ticked items**) | The form says it will cover 5; the document's title and introduction state 5 requirements (#1129). It covers only those 5, with citations, inside the cap. It passes the Phase 9 sign-off rubric (S1–S4, with the J1.7 readings): report its sign-off line (#1175) |
+| J1.7 | Generates a BRD scoped to her requirements in `/projects/:id/documentation` (scope "Requirements", her run, then **Only the N from ticked items**) | The form says it will cover 5; the document's title and introduction state 5 requirements (#1129). It covers only those 5, with citations, inside the cap. It passes the Phase 9 sign-off rubric (SO1–SO4, with the J1.7 readings): report its sign-off line (#1175) |
 | J1.8 | Dry-runs, then publishes 2 issues to `openzigs/flux-v2` from `/projects/:id/publish` | Bodies carry her edited criteria and a **Related code** section with her requirement's code links, or a line saying none were recorded (#1064). Because `openzigs/flux-v2` is not the analysed repository, the paths and symbols are plain code: no link, no `miniflux/v2`, no commit SHA, and the section's last line says so (#1064). No internal IDs appear as labels (#744) or in the visible body of either issue, the epic included: the footer reads `Generated by METIS`, the epic names its analysis by start time and lists sub-issues by title, and the ids are in a hidden `metis-source` comment on the last lines of the published issue's source (#1064). The dry-run plan shows every `issue.create` title even when it stops at 25 rows, and its "not shown" line counts what is left out (#1064). The epic is not named after one of her five requirements (#1064). Counts against the run's cap of 2 |
 | J1.9 | Checks what it cost on `/projects/:id/usage` | The usage page shows the journey's spend, and it matches the ledger delta |
 

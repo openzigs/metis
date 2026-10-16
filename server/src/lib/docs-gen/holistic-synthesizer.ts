@@ -318,10 +318,12 @@ import {
   APPENDIX_DIVIDER,
   BRD_LAYOUT_KEY,
   BRD_MAIN_SECTION_TARGETS,
+  BRD_MAIN_SUMMARY_SECTIONS,
   fitReaderDocument,
   isMainSection,
   mainPlanBudget,
   readBrdLayoutSetting,
+  withRequirementsLeadIn,
 } from "./brd-layout.js";
 import {
   buildFactSheet,
@@ -5375,6 +5377,15 @@ export async function synthesizeFinalDocument(
   // have kept of the same sections, headings counted, when that fit is itself
   // within the cap; a single section can keep much less (`document-plan.ts`,
   // "what that guarantee is, exactly").
+  // #1175 — the reconstructed requirements carry a fixed lead-in, written by
+  // METIS rather than the model, saying they are not the approved ones.
+  const sectionIdAt = (i: number): string =>
+    groups[manifestSections[sectionOwners[i]].sectionIndex]?.id ?? "";
+  if (readerLayout) {
+    sectionMarkdowns.forEach((markdown, i) => {
+      if (sectionIdAt(i) === "requirements") sectionMarkdowns[i] = withRequirementsLeadIn(markdown);
+    });
+  }
   const planInput = planning
     ? sectionMarkdowns.map((markdown, i) => ({
         markdown,
@@ -5388,13 +5399,16 @@ export async function synthesizeFinalDocument(
     : [];
   // #1175 — the reader layout: the main part to its own cap first, then the
   // appendix to what is left of the document cap (`brd-layout.ts`).
-  const isMain = readerLayout
-    ? sectionMarkdowns.map((_, i) =>
-        isMainSection(groups[manifestSections[sectionOwners[i]].sectionIndex]?.id ?? ""),
-      )
-    : [];
+  const isMain = readerLayout ? sectionMarkdowns.map((_, i) => isMainSection(sectionIdAt(i))) : [];
   const readerFit = readerLayout
-    ? fitReaderDocument(planInput, isMain, bodyMaxChars, renderedCitationLength, documentMaxChars)
+    ? fitReaderDocument(
+        planInput,
+        isMain,
+        bodyMaxChars,
+        renderedCitationLength,
+        documentMaxChars,
+        sectionMarkdowns.map((_, i) => BRD_MAIN_SUMMARY_SECTIONS.has(sectionIdAt(i))),
+      )
     : null;
   const planFit =
     readerFit ??
@@ -6692,11 +6706,14 @@ function lengthLimitNote(budgetChars: number): string {
 
 /**
  * Business-requirements section-group ids whose content is DERIVED FROM CODE
- * (Business Rules, Workflows, Calculations, Data Model, Integrations) rather than
- * abstractive domain narrative (`overview`, `capabilities`). These are gated at
- * the code-fidelity faithfulness bar, so every factual claim must trace to the
- * provided facts/sources. They receive the {@link CODE_DERIVED_GROUNDING_GUIDANCE}
- * cite-or-omit instruction; narrative sections deliberately do not.
+ * (Business Rules, Workflows, Calculations, Data Model, Integrations, and the
+ * reader layout's Key Business Rules and reconstructed requirements, #1175)
+ * rather than abstractive domain narrative (`overview`, `capabilities`). They
+ * receive the {@link CODE_DERIVED_GROUNDING_GUIDANCE} cite-or-omit
+ * instruction; narrative sections deliberately do not. Most are gated at the
+ * code-fidelity faithfulness bar; the reconstruction sections (Key Workflows,
+ * Data & Domain Model, the reconstructed requirements) at the moderate
+ * {@link RECONSTRUCTION_FAITHFULNESS_THRESHOLD} their group declares.
  */
 const CODE_DERIVED_SECTION_IDS = new Set<string>([
   "rules",
@@ -6704,7 +6721,7 @@ const CODE_DERIVED_SECTION_IDS = new Set<string>([
   "formulas",
   "data-model",
   "integrations-and-glossary",
-  // #1175 — the reader layout's main-part summaries of rules and requirements.
+  // #1175 — the reader layout's Key Business Rules and reconstructed requirements.
   "key-rules",
   "requirements",
 ]);
@@ -7580,8 +7597,8 @@ ${body}`,
 /**
  * #1175 — the reader layout of a business-requirements document: a MAIN
  * document for a business reader (Executive Summary, Scope and Domain; Core
- * Business Capabilities; Key Business Rules; Requirements & Acceptance
- * Criteria), then the APPENDIX of module-by-module detail: the catalogue
+ * Business Capabilities; Key Business Rules; Requirements Reconstructed from
+ * the Code), then the APPENDIX of module-by-module detail: the catalogue
  * sections exactly as the catalogue layout writes them (Business Rules &
  * Policies, Key Workflows, Calculations & Formulas, Data & Domain Model,
  * Integrations & Glossary). Main section ids are the keys of
@@ -7597,7 +7614,7 @@ function readerBrdGroups(catalogue: readonly SectionGroup[]): SectionGroup[] {
     instructions: `Produce three sections. This is the opening of a business requirements document for stakeholders who do not know the code: write in business language, and leave out function names, file paths, SQL and HTTP detail.
 
 ## Executive Summary
-One or two short paragraphs a sponsor can read on its own and stop: what business problem the system solves, who uses it, the key business outcomes it delivers, and what this document asks the reader to agree to (the scope, the business rules and the requirements that follow).
+One or two short paragraphs a sponsor can read on its own and stop: what business problem the system solves, who uses it, the key business outcomes it delivers, and what this document asks the reader to agree to (the scope and the business rules that follow, and the requirements reconstructed from the code).
 
 ## Scope
 - **In scope**: a bulleted list of the business capabilities and processes this document covers.
@@ -7609,13 +7626,14 @@ Describe the business context: the domain, the main actors (roles, user types, e
 
 After the prose, include a Mermaid \`graph LR\` diagram (max 10 nodes) showing the key actors and how they interact with the system.`,
   };
+  // The rules a reader signs off are held to the same bar, and given the same
+  // inputs (the rules slice and the mined-rule inventory with `file:line`), as
+  // the appendix's catalogue of them: they state literal limits and defaults.
   const keyRules: SectionGroup = {
     id: "key-rules",
     factSlices: SECTION_FACT_SLICES["key-rules"],
-    minedRules: false,
+    minedRules: true,
     label: "Key Business Rules",
-    faithfulnessThreshold: RECONSTRUCTION_FAITHFULNESS_THRESHOLD,
-    reconstruction: true,
     instructions: `Produce ONE section:
 
 ## Key Business Rules
@@ -7625,20 +7643,23 @@ Group the rules under H3 headings by business area (for example "Accounts & Acce
 
 Leave out implementation detail: function names, file paths, SQL, HTTP status codes and internal error strings.`,
   };
+  // Reconstructed from the code, not read from the project's approved
+  // requirements: the heading says so, and METIS (not the model) puts a fixed
+  // lead-in under it at assembly (`withRequirementsLeadIn`).
   const requirements: SectionGroup = {
     id: "requirements",
     factSlices: SECTION_FACT_SLICES["requirements"],
     minedRules: false,
-    label: "Requirements & Acceptance Criteria",
+    label: "Requirements Reconstructed from the Code",
     faithfulnessThreshold: RECONSTRUCTION_FAITHFULNESS_THRESHOLD,
     reconstruction: true,
     instructions: `Produce ONE section:
 
-## Requirements & Acceptance Criteria
-The business requirements this system meets, written so a stakeholder can sign them off. Derive them from the capabilities, workflows and rules in the facts: one requirement per distinct business need, NOT one per module or function. Order them by business importance.
+## Requirements Reconstructed from the Code
+The business requirements the system's code shows it meets, reconstructed from the capabilities, workflows and rules in the facts: one requirement per distinct business need, NOT one per module or function. Order them by business importance. These are NOT the project's approved requirements, and you are not given those: do not call them approved, agreed or signed off. A fixed note saying where they come from is added under the heading for you; do not write one.
 
 For EACH requirement:
-- An H3 of exactly this form: ### BR-<n>: <short title>  (n = 1, 2, 3, … in order)
+- An H3 of exactly this form: ### RC-<n>: <short title>  (n = 1, 2, 3, … in order)
 - One sentence stating the requirement in business language: "The system shall …"
 - **Acceptance criteria:** a bulleted list of 2-4 testable conditions, each written as Given / When / Then or as a plain check a tester could run, with the concrete values (limits, defaults, periods, allowed statuses) the facts give.
 
