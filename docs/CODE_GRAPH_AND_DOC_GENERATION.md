@@ -952,7 +952,10 @@ a BRD generated from code, of any code scope, opens with a **main document** for
 reader: Executive Summary, Scope & Domain (8k), Core Business Capabilities (12k), Key
 Business Rules (12k, at the catalogue rules' faithfulness bar and with their mined-rule
 inventory) and Requirements Reconstructed from the Code (16k, `RC-n`, under a fixed METIS
-lead-in saying they are inferred from the code and are not the approved requirements). Each
+lead-in saying they are inferred from the code and are not the approved requirements; #1218:
+when the project has approved requirements, the section is **Approved Requirements**: those of
+the newest completed run that has any, rendered from the stored rows by `approved-requirements-section.ts` with no model call, whole
+requirements only, within its share of the main part, then a pointer to the full list). Each
 is a single-call section of the topic plan asking for its own target, 48k together. Then
 comes `# Appendix: Module-by-Module Detail`, holding the catalogue sections unchanged
 (Business Rules & Policies, Key Workflows, Calculations & Formulas, Data & Domain Model,
@@ -973,7 +976,9 @@ is in the prompt and a check, not the model. Each main section's prompt carries
 `MAIN_PART_LANGUAGE_RULES` (`main-part-language.ts`), and `findCodeIdentifiers` checks each
 main section as fitted, recording `codeIdentifiers` (count and examples) on its provenance
 section entry. It flags only: a rewrite would be another model call per section, changing
-text after its claims were judged.
+text after its claims were judged. The Approved Requirements section (#1218) is not
+checked and carries no `codeIdentifiers`: no model wrote it, and the analysts' text is
+listed verbatim, so a code name in it is theirs to keep.
 
 **Publication and scope limits.** A committed version queues the separate shared
 publication lifecycle described above. Generation `ready`/`degraded`/`failed`
