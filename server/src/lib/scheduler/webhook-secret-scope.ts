@@ -17,34 +17,49 @@
  * secret carries one. The one ownership concept the vault enforces is
  * `Secret.createdById`, judged by #344.
  *
- * Write time — `assertWebhookSecretBinding`, run by `SchedulerService.createJob`
- * and `updateJob` after the project-access check: a caller without
- * `vault.reveal` may name only a secret they created, and may not move a job
- * that names someone else's secret to another URL, project or task type. An
- * unknown reference and a foreign one are refused identically (403
- * SECRET_BINDING_FORBIDDEN, audited as `vault.binding_refused`).
+ * A job's BINDING is what decides which secret goes where: its task type, URL,
+ * project and `authHeader` reference. A write that changes any of them is a
+ * binding write, and the principal who made it is a BINDER.
  *
- * Fire time — `authorizeWebhookSecretRef`, run by the webhook handler before it
- * reads the vault: the job's creator, at their CURRENT role, must still reach
- * the job's project and must still be allowed the secret under the same rule.
- * So a job saved before this check, or whose owner has since been demoted or
- * removed from the workspace, sends nothing. The handler reads the secret by
- * the id approved here, never by label again.
+ * Write time — `assertWebhookSecretBinding`, run by `SchedulerService.createJob`
+ * and `updateJob` after the project-access check. A binding write judges the
+ * caller against the whole resulting binding: without `vault.reveal` they may
+ * name only a secret they created, and the reference must resolve to exactly
+ * one live secret, as it must when the job fires. A write that moves nothing
+ * (rename, pause, a body edit) judges nothing. Every refusal is the same 403
+ * SECRET_BINDING_FORBIDDEN body, audited as `vault.binding_refused`. Each
+ * update records `webhookBinding` (did this write bind?) on its
+ * `scheduled-job.update` audit row.
+ *
+ * Fire time — `resolveWebhookSecret`, run by the webhook handler. It judges
+ * every principal the CURRENT binding rests on (`bindersOf`): the binder of the
+ * most recent recorded binding write; or, for a job never bound since #1235,
+ * its author plus everyone recorded as editing its payload, project or task
+ * type before #1235, when no write was judged. Each of them, at their CURRENT
+ * role, must be an active user, reach the job's project, and be allowed the
+ * secret under the #344 rule. So a job created or tampered with before this
+ * check, or whose binder has since been demoted, deprovisioned or removed from
+ * the workspace, sends nothing. The plaintext is decrypted from the same row
+ * whose owner was judged, re-read by id, and every failure maps to one fixed
+ * message, so the task row never names a secret.
  */
 import { hasPermission, type AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
+import { AppError } from "../../middleware/error-handler.js";
 import { resolveDurableRole } from "../auth/durable-roles.js";
+import { getVaultService } from "../vault/vault-service.js";
 import {
+  SECRET_BINDING_FORBIDDEN,
   assertSecretBindingAllowed,
   reaches,
   readCandidateSecrets,
   refBodyOf,
+  type CandidateSecret,
 } from "../vault/secret-binding.js";
 import { actorHasProjectAccess } from "./project-access.js";
+import { VAULT_REFERENCING_TASK_TYPE } from "./task-retry-window.js";
 import type { TaskRecord } from "./types.js";
-
-export const WEBHOOK_TASK_TYPE = "http-webhook";
 
 /**
  * The error a refused fire-time resolution records on the task. Fixed text: it
@@ -61,6 +76,16 @@ export class WebhookSecretRefusedError extends Error {
   }
 }
 
+/** The audit action of a `SchedulerService.updateJob` write. */
+export const JOB_UPDATE_ACTION = "scheduled-job.update";
+
+/**
+ * The fields an update named before #1235 that could have changed the binding.
+ * Such a row carries only `changes: Object.keys(opts)`, so `payload` cannot be
+ * told apart from a body-only edit and counts as a binding write.
+ */
+const LEGACY_BINDING_FIELDS = new Set(["payload", "projectId", "taskType"]);
+
 /** The parts of a job that decide which secret it sends, and where. */
 export interface WebhookJobShape {
   taskType: string;
@@ -70,7 +95,7 @@ export interface WebhookJobShape {
 
 /** The `${vault:x}` body a job's `authHeader` names, as a list (empty when none). */
 export function webhookSecretRefs(job: WebhookJobShape): string[] {
-  if (job.taskType !== WEBHOOK_TASK_TYPE) return [];
+  if (job.taskType !== VAULT_REFERENCING_TASK_TYPE) return [];
   const header = job.payload?.authHeader;
   const body = typeof header === "string" ? refBodyOf(header) : null;
   return body ? [body] : [];
@@ -81,11 +106,7 @@ function urlOf(job: WebhookJobShape): string {
   return typeof url === "string" ? url.trim() : "";
 }
 
-/**
- * Does `after` send the header somewhere `before` did not? A task-type change
- * needs no term here: only an `http-webhook` job names a secret, so it either
- * leaves `after` with no reference or makes every reference in `after` new.
- */
+/** Does `after` send the header somewhere `before` did not? */
 export function webhookDestinationChanged(
   before: WebhookJobShape,
   after: WebhookJobShape,
@@ -94,10 +115,53 @@ export function webhookDestinationChanged(
 }
 
 /**
+ * Is this write a binding write: does it change which secret the job sends, or
+ * where? `before === null` is a create.
+ */
+export function webhookBindingChanged(
+  before: WebhookJobShape | null,
+  after: WebhookJobShape,
+): boolean {
+  if (before === null) return true;
+  return (
+    before.taskType !== after.taskType ||
+    webhookDestinationChanged(before, after) ||
+    webhookSecretRefs(before).join("\n") !== webhookSecretRefs(after).join("\n")
+  );
+}
+
+/**
+ * The ONE live secret `ref` sends, as the handler would resolve it: the row
+ * with that id, else the only row the label reaches. Null when it reaches none,
+ * or several by label (#358).
+ */
+function resolvedTarget(ref: string, reachable: CandidateSecret[]): CandidateSecret | null {
+  const byId = reachable.find((row) => row.id === ref);
+  if (byId) return byId;
+  return reachable.length === 1 ? reachable[0] : null;
+}
+
+/** Live rows the reference body reaches. */
+async function reachableBy(ref: string): Promise<CandidateSecret[]> {
+  return (await readCandidateSecrets([ref])).filter((row) => reaches(ref, row));
+}
+
+export interface WebhookBindingVerdict {
+  /** The #552 window end, for `assertBindingWriteWindowOpen` before the write. */
+  until: Date | null;
+  /** True when the write is a binding write, recorded on the update's audit row. */
+  bindingChanged: boolean;
+}
+
+/**
  * The #344 check for a job write. `before === null` is a create.
  *
- * @returns the #552 binding-write window end (`null` when nothing was stamped),
- *   for `assertBindingWriteWindowOpen` immediately before the write.
+ * A binding write judges the caller against every reference the job will hold
+ * (`destinationChanged: true`), so the caller is a binder whose authority the
+ * fire-time check may rely on. A reference that resolves to no live secret, or
+ * to several by label, is refused here too, so a job is not saved only to fail
+ * on every run.
+ *
  * @throws AppError 403 SECRET_BINDING_FORBIDDEN (audited) — see the module comment.
  */
 export async function assertWebhookSecretBinding(
@@ -105,19 +169,32 @@ export async function assertWebhookSecretBinding(
   before: WebhookJobShape | null,
   after: WebhookJobShape,
   target: { id: string; projectId: string | null },
-): Promise<Date | null> {
-  return assertSecretBindingAllowed(
+): Promise<WebhookBindingVerdict> {
+  const bindingChanged = webhookBindingChanged(before, after);
+  if (!bindingChanged) return { until: null, bindingChanged };
+  const refs = webhookSecretRefs(after);
+  const auditTarget = { type: "scheduled-job", id: target.id };
+  const until = await assertSecretBindingAllowed(
     user,
-    {
-      before: before ? webhookSecretRefs(before) : [],
-      after: webhookSecretRefs(after),
-      destinationChanged: before === null || webhookDestinationChanged(before, after),
-    },
-    {
-      target: { type: "scheduled-job", id: target.id },
-      metadata: { projectId: target.projectId },
-    },
+    { before: before ? webhookSecretRefs(before) : [], after: refs, destinationChanged: true },
+    { target: auditTarget, metadata: { projectId: target.projectId } },
   );
+  for (const ref of refs) {
+    if (resolvedTarget(ref, await reachableBy(ref))) continue;
+    audit({
+      actor: { id: user.userId },
+      action: "vault.binding_refused",
+      target: auditTarget,
+      metadata: { projectId: target.projectId, reason: "unresolved_reference" },
+    });
+    // The body every #344 attach refusal answers, so this is no oracle either.
+    throw new AppError(
+      403,
+      SECRET_BINDING_FORBIDDEN,
+      "You can only attach vault secrets you created. Ask an admin to bind this secret.",
+    );
+  }
+  return { until, bindingChanged };
 }
 
 function refuse(task: TaskRecord, jobId: string | null, reason: string): never {
@@ -130,44 +207,135 @@ function refuse(task: TaskRecord, jobId: string | null, reason: string): never {
   throw new WebhookSecretRefusedError();
 }
 
-/**
- * Fire-time re-check of a webhook task's vault reference against the job it
- * belongs to. Returns the id of the ONE live secret the reference may send.
- *
- * @throws WebhookSecretRefusedError — no job, no owner, the owner no longer
- *   reaches the job's project, the reference names no live secret or more than
- *   one, or the owner may not use it. Audited as `scheduler.webhook.secret_refused`.
- */
-export async function authorizeWebhookSecretRef(ref: string, task: TaskRecord): Promise<string> {
-  if (!task.scheduledJobId) refuse(task, null, "no-job");
-  const job = await prisma.scheduledJob.findUnique({
-    where: { id: task.scheduledJobId },
-    select: { id: true, projectId: true, createdById: true, deletedAt: true },
-  });
-  if (!job || job.deletedAt) refuse(task, task.scheduledJobId, "no-job");
-  if (!job.createdById) refuse(task, job.id, "no-owner");
+function parseMetadata(raw: string | null): Record<string, unknown> {
+  if (!raw) return {};
+  const parsed: unknown = JSON.parse(raw);
+  return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+}
 
-  const owner = job.createdById;
-  const role = await resolveDurableRole(owner);
-  const reachesProject = await actorHasProjectAccess({ id: owner, role }, job.projectId, {
+/**
+ * The principals the job's CURRENT binding rests on, from its
+ * `scheduled-job.update` audit trail (oldest first). A row written since
+ * #1235 records `webhookBinding`; its binder was judged on the whole binding at
+ * write time, so a binding row replaces the set. A row written before #1235
+ * was never judged, so if it may have bound anything its actor is ADDED to the
+ * set. A null entry is a binder nobody can be judged as, and is refused.
+ *
+ * @throws whatever the audit read throws; the caller fails closed on it.
+ */
+async function bindersOf(jobId: string, author: string | null): Promise<Array<string | null>> {
+  const rows = await prisma.auditLog.findMany({
+    where: { action: JOB_UPDATE_ACTION, targetType: "scheduled-job", targetId: jobId },
+    select: { actorId: true, metadata: true, ts: true },
+    orderBy: [{ ts: "asc" }, { id: "asc" }],
+  });
+  let binders = new Set<string | null>([author]);
+  let boundAt: number | null = null;
+  for (const row of rows) {
+    const meta = parseMetadata(row.metadata);
+    if (typeof meta.webhookBinding === "boolean") {
+      if (!meta.webhookBinding) continue;
+      const at = row.ts.getTime();
+      // Two binding writes stamped in the same millisecond cannot be ordered,
+      // so both binders are judged.
+      if (boundAt !== at) binders = new Set();
+      binders.add(row.actorId);
+      boundAt = at;
+      continue;
+    }
+    const changes = meta.changes;
+    const legacyBinding =
+      !Array.isArray(changes) || changes.some((field) => LEGACY_BINDING_FIELDS.has(String(field)));
+    if (legacyBinding) binders.add(row.actorId);
+  }
+  return [...binders];
+}
+
+/** Is this principal still allowed to send `reachable` from the job's project? */
+async function judgePrincipal(
+  principal: string,
+  job: { id: string; projectId: string | null },
+  reachable: CandidateSecret[],
+): Promise<string | null> {
+  const user = await prisma.user.findUnique({
+    where: { id: principal },
+    select: { status: true, deletedAt: true },
+  });
+  // `resolveDurableRole` does not consider deprovisioning: SCIM delete keeps a
+  // local or SCIM `admin` row, so a deleted admin would still resolve to admin.
+  if (!user || user.deletedAt || user.status !== "active") return "principal_inactive";
+  const role = await resolveDurableRole(principal);
+  const reachesProject = await actorHasProjectAccess({ id: principal, role }, job.projectId, {
     resource: "scheduled-job",
     resourceId: job.id,
     action: "scheduler.webhook.secret",
   });
-  if (!reachesProject) refuse(task, job.id, "project-access");
-
-  const reachable = (await readCandidateSecrets([ref])).filter((row) => reaches(ref, row));
-  const target = reachable.find((row) => row.id === ref) ?? reachable[0];
-  if (!target || (reachable.length > 1 && target.id !== ref)) {
-    refuse(task, job.id, "unresolved");
-  }
-  // #344 rule 1, on the owner's current role: every row the reference could
+  if (!reachesProject) return "project_access";
+  // #344 rule 1 on the principal's current role: every row the reference could
   // reach must be theirs unless they hold `vault.reveal`.
   if (
     !hasPermission(role, "vault.reveal") &&
-    !reachable.every((row) => row.createdById === owner)
+    !reachable.every((r) => r.createdById === principal)
   ) {
-    refuse(task, job.id, "secret-not-owned");
+    return "secret_not_owned";
   }
-  return target.id;
+  return null;
+}
+
+async function authorizeAndRead(ref: string, task: TaskRecord): Promise<string> {
+  if (!task.scheduledJobId) refuse(task, null, "no_job");
+  const job = await prisma.scheduledJob.findUnique({
+    where: { id: task.scheduledJobId },
+    select: { id: true, projectId: true, createdById: true, deletedAt: true },
+  });
+  if (!job || job.deletedAt) refuse(task, task.scheduledJobId, "no_job");
+
+  let binders: Array<string | null>;
+  try {
+    binders = await bindersOf(job.id, job.createdById);
+  } catch {
+    refuse(task, job.id, "audit_unreadable");
+  }
+
+  const reachable = await reachableBy(ref);
+  const target = resolvedTarget(ref, reachable);
+  if (!target) refuse(task, job.id, "unresolved_reference");
+
+  for (const principal of binders) {
+    if (principal === null) refuse(task, job.id, "no_owner");
+    const reason = await judgePrincipal(principal, job, reachable);
+    if (reason) refuse(task, job.id, reason);
+  }
+
+  // Decrypt the row as it is NOW, and only if its owner is still the one judged
+  // above. An admin's confirmed "Rotate anyway" moves `createdById` to that
+  // admin (#502), so a value supplied by someone not judged is never sent; a
+  // secret deleted since reads as no row. Either way: refused, nothing named.
+  const row = await prisma.secret.findFirst({
+    where: { id: target.id, deletedAt: null },
+    select: { createdById: true, ciphertext: true, algorithm: true, keyVersion: true },
+  });
+  if (!row || row.createdById !== target.createdById) refuse(task, job.id, "secret_changed");
+  return getVaultService().decrypt({
+    ciphertext: row.ciphertext,
+    algorithm: row.algorithm,
+    keyVersion: row.keyVersion,
+  });
+}
+
+/**
+ * Fire-time re-check of a webhook task's vault reference against the job it
+ * belongs to, then the plaintext of the ONE live secret it may send.
+ *
+ * @throws WebhookSecretRefusedError — for every failure, including a database
+ *   or decryption error, so the task's error never names a secret. Audited as
+ *   `scheduler.webhook.secret_refused` with a reason code.
+ */
+export async function resolveWebhookSecret(ref: string, task: TaskRecord): Promise<string> {
+  try {
+    return await authorizeAndRead(ref, task);
+  } catch (err) {
+    if (err instanceof WebhookSecretRefusedError) throw err;
+    refuse(task, task.scheduledJobId, "check_failed");
+  }
 }

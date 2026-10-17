@@ -72,6 +72,9 @@ const USERS: Record<string, { role: RoleKey; ws: string | null }> = {
   cora: { role: "coordinator", ws: WS_A },
   cole: { role: "coordinator", ws: WS_A },
   bea: { role: "coordinator", ws: WS_B },
+  // Admins whose standing changes mid-test: Dora is demoted, Ed deprovisioned.
+  dora: { role: "admin", ws: WS_A },
+  ed: { role: "admin", ws: null },
 };
 type Who = keyof typeof USERS;
 
@@ -197,6 +200,43 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       return db.auditLog.findMany({ where: { action } });
     };
     const jobCount = () => db.scheduledJob.count();
+    /**
+     * A `scheduled-job.update` audit row as `updateJob` wrote it BEFORE #1235:
+     * `changes` only, no `webhookBinding`.
+     */
+    const legacyEdit = (jobId: string, actorId: string | null, changes: string[]) =>
+      db.auditLog.create({
+        data: {
+          actorId,
+          action: "scheduled-job.update",
+          targetType: "scheduled-job",
+          targetId: jobId,
+          metadata: JSON.stringify({ changes }),
+        },
+      });
+    /** Run the job through `POST /:id/run` and the real queue; the finished task row. */
+    const runToEnd = async (jobId: string, who: Who) => {
+      const run = await post(`/api/scheduler/${jobId}/run`, who);
+      expect(run.status).toBe(202);
+      const taskId = run.body.data.taskId as string;
+      return vi.waitFor(
+        async () => {
+          const t = await db.task.findUniqueOrThrow({ where: { id: taskId } });
+          expect(["completed", "failed"]).toContain(t.status);
+          return t;
+        },
+        { timeout: 10_000, interval: 50 },
+      );
+    };
+    const refusalReasons = async (jobId: string) =>
+      (await audits("scheduler.webhook.secret_refused"))
+        .filter((r) => r.targetId === jobId)
+        .map((r) => JSON.parse(r.metadata ?? "{}").reason as string);
+    const setRole = async (userId: string, roleKey: RoleKey) => {
+      const role = await db.role.findUniqueOrThrow({ where: { key: roleKey } });
+      await db.userRole.deleteMany({ where: { userId } });
+      await db.userRole.create({ data: { userId, roleId: role.id } });
+    };
 
     beforeAll(async () => {
       sqlite = createMigratedSqlite("1235-webhook-secret-scope");
@@ -397,7 +437,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           (r) => r.targetId === job.id,
         );
         expect(refused).toHaveLength(1);
-        expect(refused[0].metadata).toContain("secret-not-owned");
+        expect(refused[0].metadata).toContain("secret_not_owned");
       });
 
       it("a job naming its author's own secret fires, sending that secret to the job's URL", async () => {
@@ -458,6 +498,190 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           await expect(fire(task)).rejects.toThrow(WEBHOOK_SECRET_REFUSED_MESSAGE);
         }
         expect(fetchSpy).not.toHaveBeenCalled();
+      });
+
+      it("refuses a label two different creators share, and audits it as unresolved", async () => {
+        const vault = getVaultService();
+        await vault.create("shared-1235", "fake-shared-cora", "global", { createdById: "cora" });
+        await vault.create("shared-1235", "fake-shared-bea", "project", { createdById: "bea" });
+        // Authored by an admin, so ownership cannot be what refuses it.
+        const job = await legacyJob("ada", PA, ref("shared-1235"));
+        await expect(fire(taskFor(job.id, PA, ref("shared-1235")))).rejects.toThrow(
+          WEBHOOK_SECRET_REFUSED_MESSAGE,
+        );
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(await refusalReasons(job.id)).toEqual(["unresolved_reference"]);
+      });
+    });
+
+    // ── Fire time: whose authority the binding rests on ─────────────────────
+
+    describe("fire time — every principal who set the job's binding is judged", () => {
+      it("an admin-authored job a coordinator retargeted or re-keyed before the fix is refused: no request", async () => {
+        const tampers = [
+          // URL moved, on the allow-listed host so the host check cannot be what refuses it.
+          { header: ref(ADMIN_SECRET), url: `http://${HOST}/cora-collects` },
+          // authHeader swapped to a secret the coordinator could never name.
+          { header: ref(B_SECRET), url: `http://${HOST}/in` },
+        ];
+        for (const { header, url } of tampers) {
+          const job = await legacyJob("ada", PA, ref(ADMIN_SECRET));
+          // What a pre-#1235 PATCH by Cora left behind: the row, and its audit.
+          await db.scheduledJob.update({
+            where: { id: job.id },
+            data: { payload: JSON.stringify(webhook(header, url)) },
+          });
+          await legacyEdit(job.id, "cora", ["payload"]);
+
+          const task = await runToEnd(job.id, "cora");
+          expect(task.status).toBe("failed");
+          expect(task.errorMessage).toBe(WEBHOOK_SECRET_REFUSED_MESSAGE);
+          expect(fetchSpy).not.toHaveBeenCalled();
+          expect(await refusalReasons(job.id)).toEqual(["secret_not_owned"]);
+        }
+      });
+
+      it("pre-fix edits by the author, and pauses by anyone, do not count against the job", async () => {
+        const job = await legacyJob("ada", PA, ref(B_SECRET));
+        await legacyEdit(job.id, "ada", ["payload"]);
+        await legacyEdit(job.id, "cora", ["enabled"]);
+        await expect(fire(taskFor(job.id, PA, ref(B_SECRET)))).resolves.toMatchObject({
+          status: 204,
+        });
+        expect(fetchSpy).toHaveBeenCalledOnce();
+      });
+
+      it("a binding write after the fix supersedes a pre-fix tamper; a later rename does not", async () => {
+        const job = await legacyJob("ada", PA, ref(ADMIN_SECRET));
+        await legacyEdit(job.id, "cora", ["payload"]);
+        await expect(fire(taskFor(job.id, PA, ref(ADMIN_SECRET)))).rejects.toThrow(
+          WEBHOOK_SECRET_REFUSED_MESSAGE,
+        );
+        // Ada re-points it: she is now the binder, judged on the whole binding.
+        const rebound = await patch(`/api/scheduler/${job.id}`, "ada", {
+          payload: webhook(ref(ADMIN_SECRET), `http://${HOST}/ada-checked`),
+        });
+        expect(rebound.status).toBe(200);
+        expect((await patch(`/api/scheduler/${job.id}`, "cora", { name: "renamed" })).status).toBe(
+          200,
+        );
+        await audits("scheduled-job.update");
+        await expect(fire(taskFor(job.id, PA, ref(ADMIN_SECRET)))).resolves.toMatchObject({
+          status: 204,
+        });
+        expect(fetchSpy).toHaveBeenCalledOnce();
+      });
+
+      it("a coordinator who edits another's job to send their OWN secret is the binder: write and fire agree", async () => {
+        const created = await post("/api/scheduler", "cora", jobBody(PA, ref(CORA_SECRET)));
+        expect(created.status).toBe(201);
+        const id = created.body.data.id as string;
+        // Cole may not take Cora's secret …
+        const foreign = await patch(`/api/scheduler/${id}`, "cole", {
+          payload: webhook(ref(CORA_SECRET), `http://${HOST}/cole`),
+        });
+        expect(foreign.status).toBe(403);
+        // … but may bind his own, and then it is sent: it rests on Cole, not Cora.
+        const own = await patch(`/api/scheduler/${id}`, "cole", {
+          payload: webhook(ref(COLE_SECRET)),
+        });
+        expect(own.status).toBe(200);
+        await audits("scheduled-job.update");
+        const task = await runToEnd(id, "cole");
+        expect(task.status).toBe("completed");
+        expect(fetchSpy).toHaveBeenCalledOnce();
+        const [, init] = fetchSpy.mock.calls[0] as [string, { headers: Record<string, string> }];
+        expect(init.headers.authorization).toBe("fake-cole-value");
+      });
+
+      it("re-pointing a reference at the same secret by another name is a binding write too", async () => {
+        const seeded = await post("/api/scheduler", "ada", jobBody(PA, ref(ADMIN_SECRET)));
+        expect(seeded.status).toBe(201);
+        // Same row, by label instead of id: Cora would become its binder, and she
+        // may not bind Ada's secret, so it is refused now rather than on every run.
+        const res = await patch(`/api/scheduler/${seeded.body.data.id as string}`, "cora", {
+          payload: webhook(ref("ada-hook-token-1235")),
+        });
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe(FORBIDDEN);
+      });
+    });
+
+    // ── Fire time: the principal's CURRENT standing ─────────────────────────
+
+    describe("fire time — judged at the principal's current role and status", () => {
+      it("an admin-authored job naming another user's secret fires; once the admin is demoted it is refused", async () => {
+        const ada = await legacyJob("ada", PA, ref(B_SECRET));
+        await expect(fire(taskFor(ada.id, PA, ref(B_SECRET)))).resolves.toMatchObject({
+          status: 204,
+        });
+        const [, init] = fetchSpy.mock.calls[0] as [string, { headers: Record<string, string> }];
+        expect(init.headers.authorization).toBe("fake-b-token-value");
+        fetchSpy.mockClear();
+
+        const job = await legacyJob("dora", PA, ref(B_SECRET));
+        await expect(fire(taskFor(job.id, PA, ref(B_SECRET)))).resolves.toMatchObject({
+          status: 204,
+        });
+        fetchSpy.mockClear();
+        await setRole("dora", "coordinator");
+        try {
+          await expect(fire(taskFor(job.id, PA, ref(B_SECRET)))).rejects.toThrow(
+            WEBHOOK_SECRET_REFUSED_MESSAGE,
+          );
+          expect(fetchSpy).not.toHaveBeenCalled();
+          // Dora still reaches PA as a workspace member: ownership is what refuses it.
+          expect(await refusalReasons(job.id)).toEqual(["secret_not_owned"]);
+        } finally {
+          await setRole("dora", "admin");
+        }
+      });
+
+      it("a deprovisioned admin's job is refused — disabled, or soft-deleted", async () => {
+        const job = await legacyJob("ed", PA, ref(B_SECRET));
+        await expect(fire(taskFor(job.id, PA, ref(B_SECRET)))).resolves.toMatchObject({
+          status: 204,
+        });
+        fetchSpy.mockClear();
+        for (const data of [{ status: "disabled" }, { deletedAt: new Date() }]) {
+          await db.user.update({ where: { id: "ed" }, data });
+          try {
+            await expect(fire(taskFor(job.id, PA, ref(B_SECRET)))).rejects.toThrow(
+              WEBHOOK_SECRET_REFUSED_MESSAGE,
+            );
+          } finally {
+            await db.user.update({
+              where: { id: "ed" },
+              data: { status: "active", deletedAt: null },
+            });
+          }
+        }
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(await refusalReasons(job.id)).toEqual(["principal_inactive", "principal_inactive"]);
+      });
+    });
+
+    // ── Write time agrees with fire time on resolution ──────────────────────
+
+    describe("write time — a reference must resolve to exactly one live secret", () => {
+      it("refuses a label reaching two of the caller's own secrets, with the foreign-secret body", async () => {
+        const vault = getVaultService();
+        await vault.create("cora-twice-1235", "fake-twice-1", "global", { createdById: "cora" });
+        await vault.create("cora-twice-1235", "fake-twice-2", "project", { createdById: "cora" });
+        const foreign = await post("/api/scheduler", "cora", jobBody(PA, ref(B_SECRET)));
+        const before = await jobCount();
+        const twice = await post("/api/scheduler", "cora", jobBody(PA, ref("cora-twice-1235")));
+        expect(twice.status).toBe(403);
+        expect(twice.body).toEqual(foreign.body);
+        // The same for an admin, who skips the ownership rule but not resolution.
+        const admin = await post("/api/scheduler", "ada", jobBody(PA, ref("cora-twice-1235")));
+        expect(admin.status).toBe(403);
+        expect(admin.body).toEqual(foreign.body);
+        expect(await jobCount()).toBe(before);
+        const refused = (await audits("vault.binding_refused")).filter((r) =>
+          (r.metadata ?? "").includes("unresolved_reference"),
+        );
+        expect(refused.map((r) => r.actorId).sort()).toEqual(["ada", "cora"]);
       });
     });
   },

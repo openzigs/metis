@@ -3255,10 +3255,13 @@ the request is timed out after `WEBHOOK_TIMEOUT_MS`, and the
 time so secrets never sit in the saved payload. Unless you are an admin, you
 can only name a vault secret you created, and you cannot change the URL or
 project of a job that names someone else's secret (403
-`SECRET_BINDING_FORBIDDEN`). The check runs again every time the job fires: if
-the job's author may no longer use the secret, or no longer has access to the
-job's project, no request is sent and the run fails with "webhook authHeader
-names a vault secret this job may not use; no request was sent". [#1235]
+`SECRET_BINDING_FORBIDDEN`). A label must match exactly one secret. The check
+runs again every time the job fires, against whoever last set the job's URL,
+project or secret: if they may no longer use the secret, have been deactivated,
+or no longer have access to the job's project, no request is sent and the run
+fails with "webhook authHeader names a vault secret this job may not use; no
+request was sent". A `${vault:label}` reference now resolves by label; before
+this change only a secret id worked. [#1235]
 
 ---
 

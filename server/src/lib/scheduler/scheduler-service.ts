@@ -17,10 +17,11 @@
  *   barrier so future callers (queue handlers, internal jobs, CLI) can never
  *   accidentally bypass authorization.
  *
- *   #1235 — after the project check, a create or update of an `http-webhook`
- *   job whose `authHeader` names a vault secret runs the #344 binding rule
- *   (`assertWebhookSecretBinding`), so a caller without `vault.reveal` cannot
- *   send a secret they did not create to a URL they chose.
+ *   #1235 — after the project check, a create or update that changes a job's
+ *   binding (task type, URL, project or `authHeader` reference) runs the #344
+ *   binding rule (`assertWebhookSecretBinding`), so a caller without
+ *   `vault.reveal` cannot send a secret they did not create to a URL they
+ *   chose. Each update's audit row records whether it was a binding write.
  */
 import { Cron } from "croner";
 import { audit } from "../audit/audit-service.js";
@@ -32,7 +33,11 @@ import type { ScheduledJob as PrismaScheduledJob } from "@prisma/client";
 import type { TaskQueue } from "./task-queue.js";
 import { validateCron } from "./cron-validator.js";
 import { assertBindingWriteWindowOpen } from "../vault/binding-write-mark.js";
-import { assertWebhookSecretBinding } from "./webhook-secret-scope.js";
+import {
+  JOB_UPDATE_ACTION,
+  assertWebhookSecretBinding,
+  webhookBindingChanged,
+} from "./webhook-secret-scope.js";
 import {
   type SchedulerConfig,
   type SchedulerEmitter,
@@ -112,7 +117,7 @@ export class SchedulerService {
     const validation = validateCron(opts.cron, {
       minIntervalSec: this.deps.config.minCronIntervalSec,
     });
-    const bindingUntil = actor
+    const binding = actor
       ? await assertWebhookSecretBinding(
           { userId: actor.id, role: actor.role },
           null,
@@ -120,7 +125,7 @@ export class SchedulerService {
           { id: opts.key, projectId: opts.projectId ?? null },
         )
       : null;
-    assertBindingWriteWindowOpen(bindingUntil);
+    assertBindingWriteWindowOpen(binding?.until ?? null);
     const row = await prisma.scheduledJob.create({
       data: {
         key: opts.key,
@@ -202,19 +207,21 @@ export class SchedulerService {
     // #1235 — judged on exactly the values written below, so a job cannot be
     // moved (URL, project or task type) while keeping a secret the caller may
     // not send there, even when the patch leaves `authHeader` untouched.
-    const bindingUntil = actorObj
+    const beforeShape = {
+      taskType: existing.taskType,
+      payload: parsePayload(existing.payload),
+      projectId: existing.projectId,
+    };
+    const afterShape = { taskType, payload: parsePayload(payload), projectId };
+    const binding = actorObj
       ? await assertWebhookSecretBinding(
           { userId: actorObj.id, role: actorObj.role },
-          {
-            taskType: existing.taskType,
-            payload: parsePayload(existing.payload),
-            projectId: existing.projectId,
-          },
-          { taskType, payload: parsePayload(payload), projectId },
+          beforeShape,
+          afterShape,
           { id, projectId },
         )
-      : null;
-    assertBindingWriteWindowOpen(bindingUntil);
+      : { until: null, bindingChanged: webhookBindingChanged(beforeShape, afterShape) };
+    assertBindingWriteWindowOpen(binding.until);
     const row = await prisma.scheduledJob.update({
       where: { id },
       data: {
@@ -231,10 +238,12 @@ export class SchedulerService {
     this.unregisterCron(id);
     if (row.enabled && this.startedAt) this.registerCron(row);
     audit({
-      action: "scheduled-job.update",
+      action: JOB_UPDATE_ACTION,
       actor: actorObj?.id ?? null,
       target: { type: "scheduled-job", id: row.id },
-      metadata: { changes: Object.keys(opts) },
+      // #1235 — `webhookBinding` tells the fire-time check whether this actor
+      // set the job's current binding (`webhook-secret-scope.ts`, `bindersOf`).
+      metadata: { changes: Object.keys(opts), webhookBinding: binding.bindingChanged },
     });
     this.deps.emitter.schedulerStatus({
       jobId: row.id,

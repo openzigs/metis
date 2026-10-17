@@ -14,9 +14,9 @@
  *     redirects so vault secrets cannot leak (C2).
  *   - Auth header value MAY be a vault reference (`${vault:label}`) — resolved
  *     at fire-time so secrets never sit in payloads. #1235: before the vault is
- *     read, `authorizeWebhookSecretRef` re-checks that the job's owner may
- *     still send that secret from the job's project; a refusal fails closed
- *     (no request is sent) with an error naming no secret.
+ *     read, `resolveWebhookSecret` re-checks that every principal the job's
+ *     binding rests on may still send that secret from the job's project; a
+ *     refusal fails closed (no request is sent) with an error naming no secret.
  *   - Outbound payload capped at `WEBHOOK_MAX_BYTES` (default 64 KiB).
  *   - Outbound timeout from `WEBHOOK_TIMEOUT_MS` (default 10 s).
  *   - Audit logs the host (NOT the full URL) and the response status only —
@@ -30,12 +30,11 @@ import {
   resolveAndAssertConnectorHost,
   type PinnedHost,
 } from "../connectors/network-allowlist.js";
-import { getVaultService } from "../vault/vault-service.js";
 import { refBodyOf } from "../vault/secret-binding.js";
 import { audit } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
 import type { TaskHandlerFn, TaskRecord } from "./types.js";
-import { authorizeWebhookSecretRef } from "./webhook-secret-scope.js";
+import { resolveWebhookSecret } from "./webhook-secret-scope.js";
 
 const log = createChildLogger("task-webhook");
 
@@ -91,8 +90,8 @@ export interface CreateWebhookHandlerOptions {
   /** Test seam — defaults to live DNS allow-list resolver. */
   resolveHost?: typeof resolveAndAssertConnectorHost;
   /**
-   * Test seam — defaults to the #1235 fire-time check
-   * (`authorizeWebhookSecretRef`) followed by a vault read of the approved id.
+   * Test seam — defaults to the #1235 fire-time check and read
+   * (`resolveWebhookSecret`).
    */
   resolveVaultRef?: (ref: string, task: TaskRecord) => Promise<string>;
   /** Test seam — overrides the undici dispatcher factory entirely. */
@@ -104,16 +103,7 @@ export function createHttpWebhookHandler(opts: CreateWebhookHandlerOptions = {})
   const fetchImpl = opts.fetchImpl ?? fetch;
   const resolveHost = opts.resolveHost ?? resolveAndAssertConnectorHost;
   const dispatcherFactory = opts.dispatcherFactory ?? makePinnedDispatcher;
-  const resolveVault =
-    opts.resolveVaultRef ??
-    (async (ref: string, task: TaskRecord) => {
-      const secretId = await authorizeWebhookSecretRef(ref, task);
-      const v = await getVaultService().read(secretId);
-      if (typeof v?.plaintext !== "string") {
-        throw new Error("webhook authHeader vault secret could not be read");
-      }
-      return v.plaintext;
-    });
+  const resolveVault = opts.resolveVaultRef ?? resolveWebhookSecret;
 
   return async (ctx) => {
     const payload = ctx.task.payload as {
