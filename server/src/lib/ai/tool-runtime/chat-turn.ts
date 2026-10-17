@@ -158,12 +158,19 @@ export interface ChatToolTurnOptions {
    */
   outputContract?: string;
   /**
-   * #1139 — a model call whose stream dropped mid-reply is about to be retried
-   * from the last complete tool result. The /stream route uses it to take back
-   * the text the failed attempt had already streamed. A throwing listener
-   * never stops the retry.
+   * #1139 — a model call whose stream dropped mid-reply is being retried from
+   * the last complete tool result: called once the backoff wait is over, just
+   * before the retry's request. The /stream route uses it to take back the text
+   * the failed attempt had already streamed. A throwing listener never stops
+   * the retry.
    */
   onModelCallRetry?: (info: ModelCallRetry) => void;
+  /**
+   * #1139 — a model call is about to make its first attempt (native and text
+   * protocol alike). The /stream route marks where that call's text starts, so
+   * a retry takes back exactly what the dropped attempt streamed.
+   */
+  onModelCallStart?: () => void;
   /** #1139 — test seam: the backoff wait before the retry (must reject on abort). */
   retrySleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
@@ -212,9 +219,20 @@ export async function runChatToolTurn(
   // resumes from the last complete tool result rather than re-running the turn.
   const callModel = (m: ChatMessage[], o: ChatOptions): Promise<ChatResponse> => {
     let attempt = 0;
+    let droppedClass: GroundingErrorClass = "stream-terminated";
     return withTransientRetry(
       () => {
         attempt++;
+        // PR #1234 review — both listeners fire here, in either protocol: the
+        // start before a model call's first attempt, and the retry only once
+        // the backoff wait is over and the retry really starts. A Stop during
+        // that wait rejects the wait, so the dropped attempt's text is kept.
+        try {
+          if (attempt === 1) options.onModelCallStart?.();
+          else options.onModelCallRetry?.({ attempt: attempt - 1, errorClass: droppedClass });
+        } catch {
+          /* a listener must never break the loop */
+        }
         return baseCallModel(m, o);
       },
       {
@@ -227,11 +245,7 @@ export async function runChatToolTurn(
         ...(options.retrySleep ? { sleep: options.retrySleep } : {}),
         isRetryable: (err, cls) => {
           if (attempt >= CHAT_MODEL_CALL_ATTEMPTS || !isMidStreamDrop(err, cls)) return false;
-          try {
-            options.onModelCallRetry?.({ attempt, errorClass: cls });
-          } catch {
-            /* a listener must never break the loop */
-          }
+          droppedClass = cls;
           return true;
         },
       },

@@ -107,7 +107,7 @@ describe("chat page — #1139 a dropped model stream", () => {
     expect(screen.queryByTestId("chat-retry-turn")).toBeNull();
   });
 
-  it("shows the retry note while the retried call streams", async () => {
+  it("shows the retry note until the retried answer starts (or the turn ends)", async () => {
     let release: () => void = () => undefined;
     state.hold = new Promise<void>((r) => (release = r));
     state.turns = [

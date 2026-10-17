@@ -12,7 +12,7 @@
  * before deciding, and must resume exactly once.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useSearchParams } from "next/navigation";
 import { makeWrapper } from "./test-utils";
 import { acceptedTurn, sendChatMessage } from "./chat-send";
@@ -45,6 +45,9 @@ vi.mock("@/components/chat/loaded-skills-panel", () => ({
 
 // Deliberately reports the REAL contract, including the hydration flag.
 // #1139 — the scope the page opens on (the top bar's active project) varies.
+// The default "All projects" is what the real hook gives a user with NO
+// project (or an unreadable list). For a user with one, see
+// chat-page-unscoped-resume.test.tsx, which runs the real hook (PR #1234 P1).
 let openedScope: { mode: "all" | "selected"; projectIds: string[] } = {
   mode: "all",
   projectIds: [],
@@ -106,6 +109,23 @@ describe("<ChatPage /> — restore on bare /chat (#1367)", () => {
     // The second send reuses it.
     await sendChatMessage("second");
     await waitFor(() => expect(aiClient.streamChat).toHaveBeenCalledTimes(2));
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("PR #1234 review: two sends in the same tick stream ONE turn", async () => {
+    render(<ChatPage />, { wrapper: makeWrapper() });
+    const box = screen.getByLabelText("Message") as HTMLInputElement;
+    await waitFor(() => expect(box.disabled).toBe(false));
+    fireEvent.change(box, { target: { value: "once" } });
+    // A double Enter: both submits land before React re-renders (one batch).
+    const form = box.closest("form")!;
+    act(() => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await waitFor(() => expect(aiClient.streamChat).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(aiClient.streamChat).toHaveBeenCalledTimes(1);
     expect(createMock).toHaveBeenCalledTimes(1);
   });
 

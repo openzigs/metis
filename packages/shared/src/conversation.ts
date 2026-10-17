@@ -8,6 +8,29 @@
  */
 import type { SdkReasoningEffort } from "./sdk-alignment.js";
 
+/** The title a chat session carries until its first question names it (#980). */
+export const DEFAULT_SESSION_TITLE = "New Chat";
+/** The title of a Workbench session created before its first question was known. */
+export const WORKBENCH_SESSION_TITLE = "Workbench";
+const AUTO_TITLE_MAX_CHARS = 80;
+
+/**
+ * #980 — a session title from its first question: whitespace collapsed, cut at
+ * a word boundary to 80 characters with an ellipsis. `null` for a question
+ * with no visible text. #1139 (PR #1234 review) — the ONE rule: the server
+ * renames a {@link DEFAULT_SESSION_TITLE} session with it on the first stored
+ * question, and the UI uses the same function so Recent lists the title the
+ * server stored, never a label of its own.
+ */
+export function titleFromQuestion(text: string): string | null {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (!flat) return null;
+  if (flat.length <= AUTO_TITLE_MAX_CHARS) return flat;
+  const cut = flat.slice(0, AUTO_TITLE_MAX_CHARS - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > AUTO_TITLE_MAX_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
 /** One piece of a transcript message's content. */
 export type TranscriptPart =
   | { type: "text"; text: string }

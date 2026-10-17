@@ -231,4 +231,97 @@ describe("runChatToolTurn — #1139 a stream that drops mid-reply", () => {
     );
     expect(out.finalResponse).toBe("The answer is 42. ");
   });
+
+  // PR #1234 review — the take-back happens when the retry STARTS, not when
+  // the drop is classified: a Stop during the backoff must keep the text.
+  it("tells the listener only once the backoff wait is over", async () => {
+    const { callModel } = scripted(1);
+    const order: string[] = [];
+    await runChatToolTurn(
+      new OfflineStubProvider({ script: [] }),
+      {
+        messages: [{ role: "user", content: "q" }],
+        toolset: makeToolset([lookupTool()]),
+        native: true,
+        ctx: CTX,
+        gate: gate(),
+      },
+      {
+        callModel,
+        retrySleep: async () => {
+          order.push("wait");
+        },
+        onModelCallStart: () => order.push("start"),
+        onModelCallRetry: () => order.push("retry"),
+      },
+    );
+    // One start per model call (three), the retry after its wait.
+    expect(order).toEqual(["start", "start", "start", "wait", "retry"]);
+  });
+
+  it("a Stop during the backoff wait takes nothing back and does not retry", async () => {
+    const ac = new AbortController();
+    const { callModel, tries } = scripted(1);
+    const retries: ModelCallRetry[] = [];
+    await expect(
+      runChatToolTurn(
+        new OfflineStubProvider({ script: [] }),
+        {
+          messages: [{ role: "user", content: "q" }],
+          toolset: makeToolset([lookupTool()]),
+          native: true,
+          ctx: CTX,
+          gate: gate(),
+        },
+        {
+          callModel,
+          signal: ac.signal,
+          // The user presses Stop while the retry waits.
+          retrySleep: async () => {
+            ac.abort();
+            throw new Error("aborted");
+          },
+          onModelCallRetry: (r) => retries.push(r),
+        },
+      ),
+    ).rejects.toThrow(/aborted/);
+    expect(retries).toEqual([]);
+    expect(tries()).toBe(1);
+  });
+
+  it("retries on the text protocol too, marking each call's start", async () => {
+    let n = 0;
+    const callModel = vi.fn(async (): Promise<ChatResponse> => {
+      n++;
+      if (n === 1) throw droppedStream();
+      return {
+        content: "Plain answer.",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "m",
+        provider: "anthropic",
+      };
+    });
+    const starts = vi.fn();
+    const retries: ModelCallRetry[] = [];
+    const out = await runChatToolTurn(
+      new OfflineStubProvider({ script: [] }),
+      {
+        messages: [{ role: "user", content: "q" }],
+        toolset: makeToolset([lookupTool()]),
+        native: false,
+        ctx: CTX,
+        gate: gate(),
+      },
+      {
+        callModel,
+        retrySleep: noWait,
+        onModelCallStart: starts,
+        onModelCallRetry: (r) => retries.push(r),
+      },
+    );
+    expect(out.finalResponse).toBe("Plain answer.");
+    expect(callModel).toHaveBeenCalledTimes(2);
+    expect(starts).toHaveBeenCalledTimes(1);
+    expect(retries).toEqual([{ attempt: 1, errorClass: "stream-terminated" }]);
+  });
 });

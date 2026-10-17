@@ -65,6 +65,11 @@ describe("withoutApprovalGatedTools", () => {
     expect(out.runtime.toolset.withheld("hidden_by_agent")).toBeDefined();
     // A withheld tool no longer resolves, so a call to it cannot reach the gate.
     expect(out.runtime.toolset.resolve("inspect_schema")).toBeUndefined();
+    // PR #1234 review — but it is known as needing an approver, by any spelling.
+    expect(out.runtime.toolset.needsApprover?.("inspect_schema")).toBe("inspect_schema");
+    expect(out.runtime.toolset.needsApprover?.("inspect-schema")).toBe("inspect_schema");
+    expect(out.runtime.toolset.needsApprover?.("search")).toBeUndefined();
+    expect(out.runtime.toolset.needsApprover?.("no_such_tool")).toBeUndefined();
   });
 
   it("keeps a prompt-once tool this session already approved", async () => {

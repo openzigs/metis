@@ -33,12 +33,16 @@ import {
 } from "@/lib/ai-client";
 import { AgentPicker, loadStoredAgentKey, storeAgentKey } from "@/components/chat/agent-picker";
 import { LoadedSkillsPanel } from "@/components/chat/loaded-skills-panel";
-import { ProjectScopeSelector, useProjectScope } from "@/components/chat/project-scope-selector";
+import {
+  ProjectScopeSelector,
+  loadStoredScope,
+  useProjectScope,
+} from "@/components/chat/project-scope-selector";
 import { ScopeDegradationNotice } from "@/components/chat/scope-degradation-notice";
 import { GroundingBadge, UngroundedScopeNotice } from "@/components/chat/grounding";
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
 import { sanitizeAssistantText } from "@/lib/sanitize-assistant-text";
-import { recentSessionLabel, recentTracker } from "@/lib/recent-tracker";
+import { recentTracker, sessionTitleAfterTurn } from "@/lib/recent-tracker";
 import { ToolActivityList, TranscriptToolCalls } from "@/components/chat/tool-activity";
 import { useToolApprovals } from "@/hooks/use-tool-approvals";
 import { PageHeader } from "@/components/ui/page-header";
@@ -119,6 +123,8 @@ export default function ChatPage() {
     sessionIdRef.current = session?.id ?? null;
   }, [session]);
   const abortRef = useRef<AbortController | null>(null);
+  // A send in progress, known synchronously (see `handleSend`).
+  const sendingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   // Only the FIRST run of the session effect may resume. A later run means the
   // user changed agent or scope, which must start a fresh session.
@@ -159,6 +165,8 @@ export default function ChatPage() {
   // Clearing the choice changes `agentKey`, which would otherwise re-run the
   // session effect and create a SECOND session for a chat that already has one.
   const skipAgentRecreateRef = useRef(false);
+  // Likewise for the scope change that follows a resumed "All projects" session.
+  const keepResumedSessionRef = useRef(false);
 
   async function pickSessionAgent(
     selection: string | null,
@@ -198,6 +206,12 @@ export default function ChatPage() {
       skipAgentRecreateRef.current = false;
       return;
     }
+    // PR #1234 review (P1) — this run was caused by moving the scope to "All
+    // projects" for the unscoped session just resumed; keep it.
+    if (keepResumedSessionRef.current) {
+      keepResumedSessionRef.current = false;
+      return;
+    }
     let cancelled = false;
     scopeGenRef.current += 1;
     pendingCreateRef.current = null;
@@ -232,9 +246,21 @@ export default function ChatPage() {
         // to the scope the page opened on: chat opens on the project active in
         // the top bar, not on whichever project the previous chat was in.
         const opened = pickerProjectId ?? null;
-        if (!resumeSessionId && (restored.session.projectId ?? null) !== opened) {
-          storeActiveSessionId(null);
-          return;
+        const resumedProject = restored.session.projectId ?? null;
+        if (!resumeSessionId && resumedProject !== opened) {
+          // PR #1234 review (P1) — except an "All projects" conversation the
+          // user was last in: a reload resumes it (#1367) and the scope
+          // follows it back to "All projects" rather than losing the thread.
+          // Only when "All projects" is what they last picked here, and no
+          // `?projectId=` asks for a project.
+          const resumeUnscoped =
+            resumedProject === null && !effectiveProjectId && loadStoredScope()?.mode === "all";
+          if (!resumeUnscoped) {
+            storeActiveSessionId(null);
+            return;
+          }
+          keepResumedSessionRef.current = true;
+          setScope({ mode: "all", projectIds: [] });
         }
         setSession(restored.session);
         setMessages(fromServer(restored.messages));
@@ -364,13 +390,17 @@ export default function ChatPage() {
    * here on the first send; a turn that failed is re-sent through `retryTurn`.
    */
   async function handleSend(text: string = input) {
-    if (!ready || !text.trim() || streaming || sendBlocked) return;
+    // PR #1234 review — `streaming` is this render's value, so two sends in one
+    // tick (a double Enter) would both pass it; the ref is set at once.
+    if (!ready || !text.trim() || streaming || sendingRef.current || sendBlocked) return;
+    sendingRef.current = true;
     setStreaming(true);
     setError(null);
     const active = await ensureSession();
     // The create failed, the scope changed, or the server refused the scope:
     // the composer keeps what the user typed.
     if (!active) {
+      sendingRef.current = false;
       setStreaming(false);
       return;
     }
@@ -411,6 +441,7 @@ export default function ChatPage() {
       const aborted = controller.signal.aborted || (err as Error)?.name === "AbortError";
       if (!aborted) setError((err as Error).message);
     } finally {
+      sendingRef.current = false;
       setStreaming(false);
       setQueueNote(null);
       setRetryNote(null);
@@ -433,9 +464,14 @@ export default function ChatPage() {
       // has actually happened, so the widget reflects real chat activity.
       // #422 — only an accepted turn: a refused send stored nothing.
       if (accepted) {
-        // #1139 — by title: a new chat is named after its first question, as
-        // the server names it, rather than listed as "New Chat".
-        const label = recentSessionLabel(active.title, userMsg.content);
+        // #1139 — by title: the one the server now holds. A new chat is named
+        // after its first question (the server's rule, same inputs); a later
+        // turn or a resumed session keeps its stored title.
+        const label = sessionTitleAfterTurn(
+          active.title,
+          userMsg.content,
+          !messages.some((m) => m.role === "user"),
+        );
         if (label !== active.title) {
           setSession((prev) => (prev?.id === active.id ? { ...prev, title: label } : prev));
         }
@@ -513,6 +549,8 @@ export default function ChatPage() {
         );
         break;
       case "delta":
+        // The retried answer is arriving: the "asking again" note has done its job.
+        setRetryNote(null);
         setMessages((prev) =>
           prev.map((m) =>
             m.id === assistantMsgId ? { ...m, content: m.content + ev.content } : m,

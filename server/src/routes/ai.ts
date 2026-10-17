@@ -1463,9 +1463,11 @@ export function aiRouter(): Router {
         model,
       });
       // #1139 — with nobody there to answer a prompt, a tool that needs one is
-      // not offered at all (the gate's immediate refusal stays as the backstop
-      // for a call the model makes anyway). An unreadable room counts as
-      // someone present: that only ever asks, never skips the gate.
+      // not offered at all. A call the model makes to it anyway never reaches
+      // the gate (the executor resolves the tool first): it is refused as a
+      // tool that needs an approver nobody here can be, and does not run. An
+      // unreadable room counts as someone present: that only ever asks, never
+      // skips the gate.
       if (approverPresent && !(await approverPresent().catch(() => true))) {
         const approverless = await withoutApprovalGatedTools(tools, session);
         tools = approverless.runtime;
@@ -2268,6 +2270,11 @@ export function aiRouter(): Router {
             },
             // #243 — each model call's usage as it returns.
             onUsage: (u) => meter.add(u),
+            // PR #1234 review — marked for every model call in either protocol,
+            // not only in the native `callModel` below.
+            onModelCallStart: () => {
+              attemptStart = streamedText.length;
+            },
             onModelCallRetry: ({ attempt, errorClass }) => {
               streamedText = streamedText.slice(0, attemptStart);
               finalAnswer = streamedText;
@@ -2287,7 +2294,6 @@ export function aiRouter(): Router {
             ...(native
               ? {
                   callModel: async (m: ChatMessage[], o: ChatOptions) => {
-                    attemptStart = streamedText.length;
                     const turnSlot = streamProvider.key === "local-gemma" ? slotSignal() : null;
                     // Separate one model turn's text from the previous one's.
                     let first = streamedText.length > 0 && !streamedText.endsWith("\n");

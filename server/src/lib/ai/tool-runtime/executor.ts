@@ -166,6 +166,15 @@ export async function executeToolCall(
       );
       return refuse("TOOL_NOT_ALLOWED", { decision: decision.decision, reason: decision.reason });
     }
+    // #1139 — a tool left out of the offer because nobody can approve it on
+    // this request: say so (#861's wording), rather than calling it unknown.
+    const gated = deps.toolset.needsApprover?.(call.name);
+    if (gated) {
+      return refuse("TOOL_DENIED", {
+        reason: NO_INTERACTIVE_APPROVER,
+        modelText: `Error: the tool "${gated}" needs the user's approval and no one is available to approve it on this request, so it was not offered and did not run. Answer as well as you can without this tool, and say what it would have checked. Do not call it again in this reply.`,
+      });
+    }
     const available = deps.toolset.tools.map((t) => t.wireName).join(", ");
     return refuse("TOOL_UNKNOWN", {
       modelText: `Error: Unknown tool "${call.name}". Available tools: ${available}`,

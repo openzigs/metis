@@ -42,7 +42,8 @@ import {
   MIN_PCT,
   type WorkbenchLayout,
 } from "@/lib/workbench-storage";
-import { recentSessionLabel, recentTracker } from "@/lib/recent-tracker";
+import { recentTracker } from "@/lib/recent-tracker";
+import { WORKBENCH_SESSION_TITLE, titleFromQuestion } from "@metis/shared";
 import { readStoredActiveProjectId, resolveActiveProjectId } from "@/lib/active-project";
 import { LoadedSkillsPanel } from "@/components/chat/loaded-skills-panel";
 import { AgentPicker } from "@/components/chat/agent-picker";
@@ -71,6 +72,8 @@ export default function WorkbenchPage() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // #1139 — shown while a dropped model stream is asked again.
+  const [retryNote, setRetryNote] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   // #142/#143 — a project-scoped Workbench session is offered the same tools
   // as Chat, so it must show their calls and answer their approval prompts
@@ -208,7 +211,7 @@ export default function WorkbenchPage() {
    * click and a send in flight together create ONE session. Resolves null when
    * the create fails (the error is shown) or the scope changed meanwhile.
    */
-  async function ensureSession(): Promise<AISession | null> {
+  async function ensureSession(question?: string): Promise<AISession | null> {
     if (session) return session;
     const scope = scopeRef.current;
     let pending = pendingCreateRef.current;
@@ -216,7 +219,10 @@ export default function WorkbenchPage() {
       const controller = new AbortController();
       const promise = createSession(
         {
-          title: "Workbench",
+          // #1139 — created by the first send, so it is titled from that
+          // question (the shared #980 rule, on what the user typed rather than
+          // the attachment list) and Recent lists that stored title.
+          title: (question && titleFromQuestion(question)) || WORKBENCH_SESSION_TITLE,
           ...(activeProjectId ? { projectId: activeProjectId } : {}),
           ...sessionAgentInput(layout.agentKey, activeProjectId),
         },
@@ -253,7 +259,7 @@ export default function WorkbenchPage() {
     if (!input.trim() || streaming) return;
     setStreaming(true);
     setError(null);
-    const active = await ensureSession();
+    const active = await ensureSession(input);
     if (!active) {
       setStreaming(false);
       return;
@@ -296,23 +302,18 @@ export default function WorkbenchPage() {
       if (!aborted) setError((err as Error).message);
     } finally {
       setStreaming(false);
+      setRetryNote(null);
       abortRef.current = null;
     }
     // #361 — recorded once a turn has been accepted (as Chat does, #422), so
     // an unused session never reaches Recent or the dashboard's Recent
     // activity. Chat resumes a session from `?sessionId=`.
     if (!accepted) return;
-    // #1139 — listed by title: a session still called "Workbench" is named
-    // after its first question (what the user typed, not the attached context),
-    // and keeps that name for its later turns.
-    const label = recentSessionLabel(active.title, input);
-    if (label !== active.title) {
-      setSession((prev) => (prev?.id === active.id ? { ...prev, title: label } : prev));
-    }
+    // #1139 — listed by its stored title (set at create, see `ensureSession`).
     recentTracker.touch({
       kind: "session",
       id: active.id,
-      label,
+      label: active.title,
       href: `/chat?sessionId=${encodeURIComponent(active.id)}`,
       ...(active.projectId ? { projectId: active.projectId } : {}),
     });
@@ -320,11 +321,14 @@ export default function WorkbenchPage() {
 
   function handleStream(ev: StreamEvent, assistantMsgId: string) {
     if (ev.type === "delta") {
+      setRetryNote(null);
       setMessages((prev) =>
         prev.map((m) => (m.id === assistantMsgId ? { ...m, content: m.content + ev.content } : m)),
       );
     } else if (ev.type === "retry") {
-      // #1139 — a dropped model stream is asked again: take back its text.
+      // #1139 — a dropped model stream is asked again: take back its text and
+      // say so, as Chat does, until the retried answer starts arriving.
+      setRetryNote(ev.message);
       setMessages((prev) =>
         prev.map((m) =>
           m.id === assistantMsgId ? { ...m, content: m.content.slice(0, ev.keepChars) } : m,
@@ -554,6 +558,15 @@ export default function WorkbenchPage() {
               </ul>
             )}
           </div>
+          {retryNote ? (
+            <p
+              role="status"
+              data-testid="workbench-retry-note"
+              className="mt-2 text-xs text-muted-foreground"
+            >
+              {retryNote}
+            </p>
+          ) : null}
           {toolApprovals.items.length > 0 ? (
             <div className="mt-2 max-h-48 overflow-y-auto">
               <ToolActivityList

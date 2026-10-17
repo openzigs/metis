@@ -51,8 +51,8 @@ export function normaliseScope(scope: ProjectScope): ProjectScope {
   return { mode: "selected", projectIds: [scope.projectIds[0]] };
 }
 
-/** The persisted scope, or `null` when the user has never picked one. */
-function loadStoredScope(): ProjectScope | null {
+/** The scope last picked in this selector, or `null` when the user has never picked one. */
+export function loadStoredScope(): ProjectScope | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);

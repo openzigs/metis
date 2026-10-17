@@ -746,6 +746,50 @@ describe("#142 the approval gate through the routes", () => {
     expect(replyText(reply)).toBe("Counting.\n\nThere a");
   });
 
+  // PR #1234 review — the retry's take-back point is marked on the text
+  // protocol too (a model that cannot call tools natively; the curated code
+  // tools ride the prompt, through non-streaming chat()).
+  it("#1139 /stream: the text protocol retries a dropped model call once", async () => {
+    process.env.CHAT_CODE_SEARCH_TOOLS = "true";
+    try {
+      const model = stubModel([{ content: "Both tables have 7 rows." }]);
+      Object.defineProperty(model, "capabilities", {
+        value: { ...model.capabilities, nativeToolCalls: false },
+      });
+      const original = model.chat.bind(model);
+      let chats = 0;
+      model.chat = async (m, o) => {
+        chats++;
+        if (chats === 1) {
+          throw Object.assign(new Error("anthropic chat failed (Error): terminated"), {
+            status: 502,
+          });
+        }
+        return original(m, o);
+      };
+      const app = makeApp();
+      const sid = await newSession(app, { policy: { high: "auto" } });
+      const res = await stream(app, sid);
+      expect(res.status).toBe(200);
+      expect(chats).toBe(2);
+      // Text protocol: the tools were not on the wire, they were in the prompt.
+      expect(model.requests[0]!.opts.tools).toBeUndefined();
+      expect(frames(res.text, "retry")).toEqual([
+        expect.objectContaining({ type: "retry", keepChars: 0 }),
+      ]);
+      expect(frames(res.text, "error")).toEqual([]);
+      expect(
+        frames(res.text, "delta")
+          .map((d) => d.content)
+          .join(""),
+      ).toBe("Both tables have 7 rows.");
+      const reply = aiMessageRows.filter((r) => r.role === "assistant").at(-1)!;
+      expect(replyText(reply)).toBe("Both tables have 7 rows.");
+    } finally {
+      delete process.env.CHAT_CODE_SEARCH_TOOLS;
+    }
+  });
+
   // #210 — a code-tool turn on /stream is metered into the per-project store
   // the budget gate reads: every model call of the loop, summed, in one row.
   it("/stream meters a code-tool turn's summed usage into the project store (#210)", async () => {
@@ -1381,8 +1425,12 @@ describe("#861 /chat when nobody can answer an approval", () => {
     // Nobody was asked, so there is no approval outcome to report or record.
     expect(res.body.data.toolApprovals).toBeUndefined();
     expect(approvalRows).toEqual([]);
+    // PR #1234 review — the model is told why, not that the tool does not exist.
     const toolMsg = model.requests[1]!.messages.find((m) => m.role === "tool")!;
-    expect(String(toolMsg.content)).toMatch(/Unknown tool "inspect_schema"/);
+    expect(String(toolMsg.content)).toMatch(
+      /"inspect_schema" needs the user's approval and no one is available to approve it/,
+    );
+    expect(String(toolMsg.content)).not.toMatch(/Unknown tool/);
   });
 
   it("#1139: a prompt-once tool already approved in this session is still offered and runs", async () => {

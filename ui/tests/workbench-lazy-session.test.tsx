@@ -141,7 +141,11 @@ beforeEach(() => {
       { id: "p2", name: "Beta" },
     ],
   });
-  createSessionMock.mockResolvedValue(session("sess-1"));
+  // The server stores the title it is sent.
+  createSessionMock.mockImplementation(async (input) => ({
+    ...session("sess-1"),
+    ...(input.title ? { title: input.title } : {}),
+  }));
   streamChatMock.mockImplementation((_id, _msg, _signal, _idle, onAccepted) =>
     reply("hello back", onAccepted),
   );
@@ -170,6 +174,25 @@ describe("Workbench — opens on the active project (#1139)", () => {
     await send("q");
     await screen.findByText(/The whole answer\./);
     expect(screen.queryByText(/Half an ans/)).toBeNull();
+  });
+
+  it("says it is asking again until the retried answer starts arriving (PR #1234 review)", async () => {
+    let next: () => void = () => {};
+    streamChatMock.mockImplementation(async function* (_id, _msg, _signal, _idle, onAccepted) {
+      onAccepted?.();
+      yield { type: "delta", content: "Half an ans" };
+      yield { type: "retry", keepChars: 0, message: "asking again" };
+      await new Promise<void>((r) => (next = r));
+      yield { type: "delta", content: "The whole answer." };
+      yield { type: "done" };
+    });
+    renderStrict();
+    await waitForProject();
+    await send("q");
+    expect(await screen.findByTestId("workbench-retry-note")).toHaveTextContent("asking again");
+    next();
+    await screen.findByText(/The whole answer\./);
+    expect(screen.queryByTestId("workbench-retry-note")).toBeNull();
   });
 
   it("falls back to the first project when the stored one is no longer listed", async () => {
@@ -209,7 +232,8 @@ describe("Workbench — no session until the first message (#361)", () => {
     expect(await screen.findByText(/hello back/)).toBeInTheDocument();
     expect(createSessionMock).toHaveBeenCalledTimes(1);
     expect(createSessionMock.mock.calls[0]![0]).toMatchObject({
-      title: "Workbench",
+      // #1139 — created by the first send, so titled from its question.
+      title: "what is this?",
       projectId: "p1",
       agentKey: "architect",
     });
@@ -238,7 +262,7 @@ describe("Workbench — no session until the first message (#361)", () => {
     expect(touchMock).toHaveBeenCalledWith({
       kind: "session",
       id: "sess-1",
-      // #1139 — by title: a "Workbench" session is named after its first question.
+      // #1139 — by the session's stored title: its first question.
       label: "hi",
       // The Chat page resumes from `sessionId`, not `session`.
       href: "/chat?sessionId=sess-1",
@@ -315,6 +339,12 @@ describe("Workbench — loading skills before the first message (PR #385 panel)"
     await waitFor(() => expect(streamChatMock).toHaveBeenCalledTimes(1));
     expect(createSessionMock).toHaveBeenCalledTimes(1);
     expect(streamChatMock.mock.calls[0]?.[0]).toBe("sess-1");
+    // #1139 (PR #1234 review) — created before any question, it is titled
+    // "Workbench", and Recent lists that stored title rather than a label the
+    // page made up from the question.
+    expect(createSessionMock.mock.calls[0]![0]).toMatchObject({ title: "Workbench" });
+    await waitFor(() => expect(touchMock).toHaveBeenCalledTimes(1));
+    expect(touchMock.mock.calls[0]![0]).toMatchObject({ label: "Workbench" });
   });
 
   it("a Start-session click and a send while the create is in flight share ONE create", async () => {

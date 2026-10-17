@@ -1,36 +1,33 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { recentSessionLabel, recentTracker, _MAX_PER_KIND } from "@/lib/recent-tracker";
+import { titleFromQuestion } from "@metis/shared";
+import { recentTracker, sessionTitleAfterTurn, _MAX_PER_KIND } from "@/lib/recent-tracker";
 
-describe("recentSessionLabel (#1139)", () => {
-  it("keeps a real title", () => {
-    expect(recentSessionLabel("Invoice tables", "something else")).toBe("Invoice tables");
+/**
+ * #1139 (PR #1234 review) — Recent lists the title the server holds. The
+ * server renames only a "New Chat" session, only on its first stored question,
+ * with the shared `titleFromQuestion`; this is the same rule on the same inputs.
+ */
+describe("sessionTitleAfterTurn (#1139)", () => {
+  it("names a new chat after its first question, exactly as the server does", () => {
+    const q = "  Which   tables\nhold invoices? ";
+    expect(sessionTitleAfterTurn("New Chat", q, true)).toBe("Which tables hold invoices?");
+    expect(sessionTitleAfterTurn("New Chat", q, true)).toBe(titleFromQuestion(q));
+    const long = `${"word ".repeat(30)}end`;
+    expect(sessionTitleAfterTurn("New Chat", long, true)).toBe(titleFromQuestion(long));
   });
 
-  it.each(["New Chat", "Workbench", "chat", "", null, undefined])(
-    "names a placeholder-titled (%j) session after its question",
-    (title) => {
-      expect(recentSessionLabel(title, "  Which   tables\nhold invoices? ")).toBe(
-        "Which tables hold invoices?",
-      );
-    },
-  );
-
-  it("cuts a long question at a word boundary, as the server titles it", () => {
-    const q = `${"word ".repeat(30)}end`;
-    const label = recentSessionLabel("New Chat", q);
-    expect(label.length).toBeLessThanOrEqual(80);
-    expect(label.endsWith("…")).toBe(true);
-    expect(label).not.toMatch(/wor…$/);
+  it("keeps the stored title on a later turn, e.g. after a resume", () => {
+    expect(sessionTitleAfterTurn("New Chat", "a later question", false)).toBe("New Chat");
+    expect(sessionTitleAfterTurn("Invoice tables", "something else", false)).toBe("Invoice tables");
   });
 
-  it("cuts mid-word when there is no late space", () => {
-    const label = recentSessionLabel("New Chat", "x".repeat(200));
-    expect(label).toBe(`${"x".repeat(79)}…`);
+  it("never renames a title the server would not: a Workbench or a chosen title", () => {
+    expect(sessionTitleAfterTurn("Workbench", "first question", true)).toBe("Workbench");
+    expect(sessionTitleAfterTurn("Invoice tables", "first question", true)).toBe("Invoice tables");
   });
 
-  it("falls back to the title, then 'Chat', for an empty question", () => {
-    expect(recentSessionLabel("Workbench", "   ")).toBe("Workbench");
-    expect(recentSessionLabel("", "   ")).toBe("Chat");
+  it("keeps 'New Chat' for a question with no visible text", () => {
+    expect(sessionTitleAfterTurn("New Chat", "   ", true)).toBe("New Chat");
   });
 });
 

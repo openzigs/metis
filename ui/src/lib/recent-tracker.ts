@@ -5,6 +5,7 @@
  * tracking the user's own recent activity in localStorage. The store caps
  * the list at 10 entries per kind and orders by most-recent-first.
  */
+import { DEFAULT_SESSION_TITLE, titleFromQuestion } from "@metis/shared";
 
 export type RecentKind = "session" | "analysis";
 
@@ -92,24 +93,20 @@ export const recentTracker = {
 
 export const _MAX_PER_KIND = MAX_PER_KIND;
 
-/** Titles a session carries until its first question names it. */
-const PLACEHOLDER_TITLES = new Set(["", "new chat", "workbench", "chat"]);
-const TITLE_MAX_CHARS = 80;
-
 /**
- * #1139 — the title a session is listed under in Recent. A session still
- * carrying a placeholder ("New Chat", "Workbench") is named after its first
- * question, as the server names it (#980 `titleFromQuestion`: whitespace
- * collapsed, cut at a word boundary to 80 characters). Before, every new chat
- * was listed as "New Chat", so Recent could not tell the sessions apart.
+ * #1139 — the session's title once a turn has been stored: the title Recent
+ * lists it under. This is the server's own rename (#980), applied to the same
+ * inputs, so the label is the title the server now holds: a session still
+ * called {@link DEFAULT_SESSION_TITLE} is named after its FIRST question by the
+ * shared {@link titleFromQuestion}; any other title, and any later turn, keeps
+ * the title as it is. (PR #1234 review — a label rebuilt on every resume from
+ * whatever question came first drifted away from the stored title.)
  */
-export function recentSessionLabel(title: string | null | undefined, question: string): string {
-  const current = (title ?? "").trim();
-  if (!PLACEHOLDER_TITLES.has(current.toLowerCase())) return current;
-  const flat = question.replace(/\s+/g, " ").trim();
-  if (!flat) return current || "Chat";
-  if (flat.length <= TITLE_MAX_CHARS) return flat;
-  const cut = flat.slice(0, TITLE_MAX_CHARS - 1);
-  const space = cut.lastIndexOf(" ");
-  return `${(space > TITLE_MAX_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+export function sessionTitleAfterTurn(
+  title: string,
+  question: string,
+  firstQuestion: boolean,
+): string {
+  if (!firstQuestion || title !== DEFAULT_SESSION_TITLE) return title;
+  return titleFromQuestion(question) ?? title;
 }

@@ -57,6 +57,7 @@ import {
   buildSessionToolset,
   codeRuntimeTool,
   makeToolset,
+  separatorFree,
   type McpToolsetSource,
   type RuntimeToolset,
 } from "./toolset.js";
@@ -493,12 +494,23 @@ export async function withoutApprovalGatedTools(
   };
   const kept: RuntimeTool[] = [];
   const withheld: string[] = [];
+  // PR #1234 review — a call the model makes to one anyway is refused by the
+  // executor as needing an approver (not as an unknown tool), by any spelling.
+  const gatedBySpelling = new Map<string, string>();
   for (const tool of runtime.toolset.tools) {
-    if (await needsPerson(tool)) withheld.push(tool.name);
-    else kept.push(tool);
+    if (await needsPerson(tool)) {
+      withheld.push(tool.name);
+      gatedBySpelling.set(separatorFree(tool.name), tool.name);
+      gatedBySpelling.set(separatorFree(tool.wireName), tool.name);
+    } else kept.push(tool);
   }
   if (withheld.length === 0) return { runtime, withheld };
-  const toolset = makeToolset(kept, runtime.toolset.withheldTools);
+  const base = makeToolset(kept, runtime.toolset.withheldTools);
+  const toolset: RuntimeToolset = {
+    ...base,
+    needsApprover: (name) =>
+      base.resolve(name) ? undefined : gatedBySpelling.get(separatorFree(name)),
+  };
   const progressive = Boolean(toolset.resolve(LOAD_SKILL_TOOL_NAME));
   return {
     runtime: {
