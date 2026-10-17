@@ -326,6 +326,11 @@ import {
   withRequirementsLeadIn,
 } from "./brd-layout.js";
 import {
+  codeIdentifierReport,
+  MAIN_PART_LANGUAGE_RULES,
+  type CodeIdentifierReport,
+} from "./main-part-language.js";
+import {
   buildFactSheet,
   canonicalFactSource,
   FACT_SHEET_VERSION,
@@ -4183,6 +4188,8 @@ export async function synthesizeFinalDocument(
       groundingSourceIds: string[];
       /** #995 — topics a length cap left out of the section. */
       omittedTopics?: string[];
+      /** #1223 — code identifiers in a reader-layout main section, as fitted. */
+      codeIdentifiers?: CodeIdentifierReport;
     }>;
     selectedEvidence: GroundingSource[];
     sectionSynthesis?: SectionSynthesis;
@@ -4242,6 +4249,7 @@ export async function synthesizeFinalDocument(
     factsSourceIds: string[];
     groundingSourceIds: string[];
     omittedTopics?: string[];
+    codeIdentifiers?: CodeIdentifierReport;
   }> = [];
   // #995 — `sectionMarkdowns[i]` belongs to `manifestSections[sectionOwners[i]]`
   // (a section that produced nothing has a manifest entry and no markdown).
@@ -5463,6 +5471,31 @@ export async function synthesizeFinalDocument(
     const omitted = fittedSections.omittedTopics[i];
     if (omitted.length > 0) finalManifestSections[owner].omittedTopics = omitted;
   });
+  // #1223 — the main part is signed off by business readers (SO3): each main
+  // section, as fitted, is checked for code identifiers. It only flags, in
+  // provenance; nothing is rewritten (`main-part-language.ts`).
+  if (readerLayout) {
+    sectionOwners.forEach((owner, i) => {
+      if (!isMain[i]) return;
+      finalManifestSections[owner].codeIdentifiers = codeIdentifierReport(
+        fittedSections.sections[i],
+      );
+    });
+    log.info("Main-part code identifier check", {
+      projectId,
+      docType,
+      sections: sectionOwners.flatMap((owner, i) =>
+        isMain[i]
+          ? [
+              {
+                section: sectionIdAt(i),
+                codeIdentifiers: finalManifestSections[owner].codeIdentifiers?.count ?? 0,
+              },
+            ]
+          : [],
+      ),
+    });
+  }
   // #1175 — the appendix divider goes before the first appendix section. Each
   // part is de-duplicated on its own, so the divider is never swallowed by a
   // duplicate heading before it.
@@ -7624,7 +7657,21 @@ One or two short paragraphs a sponsor can read on its own and stop: what busines
 ## Business Domain Overview
 Describe the business context: the domain, the main actors (roles, user types, external participants) and the broader business process the system fits into.
 
-After the prose, include a Mermaid \`graph LR\` diagram (max 10 nodes) showing the key actors and how they interact with the system.`,
+After the prose, include a Mermaid \`graph LR\` diagram (max 10 nodes) showing the key actors and how they interact with the system.
+
+${MAIN_PART_LANGUAGE_RULES}`,
+  };
+  // #1223 — the catalogue's capabilities prompt asks for "the specific
+  // features", which both models wrote as code; the reader's is a summary in
+  // business language, its detail in the appendix.
+  const capabilities: SectionGroup = {
+    ...take("capabilities"),
+    instructions: `Produce ONE section:
+
+## Core Business Capabilities
+What the system does for the people who use it, grouped into its major business capabilities (NOT one entry per code module: synthesize). This is a SUMMARY for a reader who does not know the code; the module-by-module detail is in the appendix. Use an H3 per capability. For each, 2-3 sentences on what it lets whom do and why that matters to them, then a bullet list of the features within it, each written as something a user, an administrator or the business can do or rely on. Cover ALL major functional areas visible in the source facts.
+
+${MAIN_PART_LANGUAGE_RULES}`,
   };
   // The rules a reader signs off are held to the same bar, and given the same
   // inputs (the rules slice and the mined-rule inventory with `file:line`), as
@@ -7641,7 +7688,7 @@ The rules a business stakeholder must agree to, in business language: the polici
 
 Group the rules under H3 headings by business area (for example "Accounts & Access", "Scheduling", "Retention"). Under each heading, a numbered list; each rule in one or two sentences: the condition and what happens, with the concrete value (a limit, a default, a period) where the facts state one. Name a setting only when an administrator changes the rule through it.
 
-Leave out implementation detail: function names, file paths, SQL, HTTP status codes and internal error strings.`,
+${MAIN_PART_LANGUAGE_RULES}`,
   };
   // Reconstructed from the code, not read from the project's approved
   // requirements: the heading says so, and METIS (not the model) puts a fixed
@@ -7661,11 +7708,13 @@ The business requirements the system's code shows it meets, reconstructed from t
 For EACH requirement:
 - An H3 of exactly this form: ### RC-<n>: <short title>  (n = 1, 2, 3, … in order)
 - One sentence stating the requirement in business language: "The system shall …"
-- **Acceptance criteria:** a bulleted list of 2-4 testable conditions, each written as Given / When / Then or as a plain check a tester could run, with the concrete values (limits, defaults, periods, allowed statuses) the facts give.
+- **Acceptance criteria:** a bulleted list of 2-4 testable conditions, each written as Given / When / Then or as a plain check a tester could run, with the concrete values (limits, defaults, periods, allowed statuses) the facts give. Write each from the point of view of a user, an administrator or the business (what they do, and what they see or get), not as an API or database contract.
 
-Do not invent requirements, thresholds or behaviour the facts do not support. Leave out implementation detail: function names, file paths and SQL.`,
+Do not invent requirements, thresholds or behaviour the facts do not support.
+
+${MAIN_PART_LANGUAGE_RULES}`,
   };
-  const main = [overview, take("capabilities"), keyRules, requirements];
+  const main = [overview, capabilities, keyRules, requirements];
   const appendix = [
     "rules",
     "workflows",

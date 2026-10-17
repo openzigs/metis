@@ -3,6 +3,12 @@ import { z } from "zod";
 import type { EvidencePolicy } from "./evidence-policy.js";
 import type { DocType } from "./holistic-synthesizer.js";
 import type { GroundingSource } from "./grounding/grounding-context.js";
+import {
+  CODE_IDENTIFIER_EXAMPLE_MAX_CHARS,
+  CODE_IDENTIFIER_EXAMPLES_MAX,
+  CODE_IDENTIFIER_KINDS,
+  type CodeIdentifierReport,
+} from "./main-part-language.js";
 import type { RepositoryIdentity } from "./repository-identity.js";
 import type { DocsGenTuning, Phase2Router } from "./holistic-synthesizer.js";
 import { generationInputSnapshotSchema } from "./regeneration-plan.js";
@@ -81,6 +87,27 @@ const sectionManifestSchema = z
      * out, in document order. Absent = nothing was left out.
      */
     omittedTopics: z.array(z.string()).optional(),
+    /**
+     * #1223 — on a reader-layout BRD's main section: the code identifiers
+     * found in it as fitted (distinct count, first few examples). A flag for a
+     * business sign-off; nothing is rewritten. Absent = not a main section.
+     */
+    codeIdentifiers: z
+      .object({
+        count: z.number().int().min(0),
+        examples: z
+          .array(
+            z
+              .object({
+                kind: z.enum(CODE_IDENTIFIER_KINDS),
+                text: z.string().min(1).max(CODE_IDENTIFIER_EXAMPLE_MAX_CHARS),
+              })
+              .strict(),
+          )
+          .max(CODE_IDENTIFIER_EXAMPLES_MAX),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -471,6 +498,8 @@ export function buildGeneratedDocVersionManifest(input: {
     groundingSourceIds: string[];
     /** #995 — topics a length cap left out of the section. */
     omittedTopics?: string[];
+    /** #1223 — code identifiers in a reader-layout main section. */
+    codeIdentifiers?: CodeIdentifierReport;
   }>;
 }): string {
   const primary =
@@ -567,6 +596,14 @@ export function buildGeneratedDocVersionManifest(input: {
       factsSourceIds: [...section.factsSourceIds],
       groundingSourceIds: [...section.groundingSourceIds],
       ...(section.omittedTopics?.length ? { omittedTopics: [...section.omittedTopics] } : {}),
+      ...(section.codeIdentifiers
+        ? {
+            codeIdentifiers: {
+              count: section.codeIdentifiers.count,
+              examples: section.codeIdentifiers.examples.map((e) => ({ ...e })),
+            },
+          }
+        : {}),
     })),
     historicalCitations: {
       status: input.historicalCitations?.status ?? "unavailable",
