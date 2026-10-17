@@ -20,11 +20,13 @@ import {
 import {
   BRD_MAIN_MAX_CHARS,
   BRD_MAIN_PLAN_SHARE,
+  BRD_MAIN_SECTION_TARGETS,
   BRD_MAIN_TARGET_CHARS,
   fitReaderDocument,
   mainFitCap,
   mainPlanBudget,
 } from "./brd-layout.js";
+import { findCodeIdentifiers } from "./main-part-language.js";
 import type { ScopedRequirement } from "./requirements-scope.js";
 
 function req(n: number, overrides: Partial<ScopedRequirement> = {}): ScopedRequirement {
@@ -97,6 +99,47 @@ describe("approvedRequirementsMaxChars", () => {
       Math.floor((mainFitCap(90_000) * 28_000) / BRD_MAIN_MAX_CHARS),
     );
     expect(approvedRequirementsMaxChars(0)).toBe(0);
+  });
+
+  it("leaves room for every other main section, the #1223 reader Capabilities included", () => {
+    // #1223 gave Capabilities its own reader prompt, not a new section id: the
+    // main part is still four sections, so the other three are 32k.
+    const others = Object.entries(BRD_MAIN_SECTION_TARGETS).filter(([id]) => id !== "requirements");
+    expect(others.map(([id]) => id).sort()).toEqual(["capabilities", "key-rules", "overview"]);
+    const otherChars = others.reduce((n, [, chars]) => n + chars, 0);
+    expect(otherChars).toBe(32_000);
+    for (const body of [250_000, 120_000, 90_000, 40_000]) {
+      expect(
+        approvedRequirementsMaxChars(body) + otherChars * (mainFitCap(body) / BRD_MAIN_MAX_CHARS),
+      ).toBeLessThanOrEqual(mainFitCap(body) + 1);
+    }
+  });
+});
+
+describe("the main-part code identifier check (#1223) on the section's own text", () => {
+  it("finds nothing in the R<n>. headings, the id line, the lead-in or the pointer", () => {
+    const requirements = [
+      req(1, { id: "cmg1x2y3z0000abcd" }),
+      req(2, { id: "REQ-001" }),
+      req(3, { id: "R3." }),
+    ];
+    const { markdown } = renderApprovedRequirementsSection(requirements, 28_000);
+    expect(markdown).toContain("### R1. Requirement 1");
+    expect(markdown).toContain("**Requirement id:** `REQ-001`");
+    expect(findCodeIdentifiers(markdown)).toEqual([]);
+    const cut = renderApprovedRequirementsSection(requirements, 1_200).markdown;
+    expect(cut).toContain("did not fit");
+    expect(findCodeIdentifiers(cut)).toEqual([]);
+  });
+
+  it("would flag analyst-written code names and a snake_case stored id, which is why the section is exempt", () => {
+    const { markdown } = renderApprovedRequirementsSection(
+      [req(1, { id: "req_12", body: "The `markAsRead()` call updates entry_status." })],
+      28_000,
+    );
+    expect(findCodeIdentifiers(markdown).map((h) => h.text)).toEqual(
+      expect.arrayContaining(["req_12", "markAsRead()", "entry_status"]),
+    );
   });
 });
 

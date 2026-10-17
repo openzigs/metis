@@ -976,7 +976,9 @@ is in the prompt and a check, not the model. Each main section's prompt carries
 `MAIN_PART_LANGUAGE_RULES` (`main-part-language.ts`), and `findCodeIdentifiers` checks each
 main section as fitted, recording `codeIdentifiers` (count and examples) on its provenance
 section entry. It flags only: a rewrite would be another model call per section, changing
-text after its claims were judged.
+text after its claims were judged. The Approved Requirements section (#1218) is not
+checked and carries no `codeIdentifiers`: no model wrote it, and the analysts' text is
+listed verbatim, so a code name in it is theirs to keep.
 
 **Publication and scope limits.** A committed version queues the separate shared
 publication lifecycle described above. Generation `ready`/`degraded`/`failed`

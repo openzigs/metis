@@ -43,6 +43,7 @@ import {
   type Phase2ProviderBundle,
   type Phase2Router,
 } from "./holistic-synthesizer.js";
+import { findCodeIdentifiers, MAIN_PART_LANGUAGE_RULES } from "./main-part-language.js";
 import type { ScopedRequirement } from "./requirements-scope.js";
 
 // ── Fixture ───────────────────────────────────────────────────────────────
@@ -209,6 +210,27 @@ describe("the reader layout's requirements section", () => {
     expect(without.find((g) => g.id === "requirements")!.label).toBe(RECONSTRUCTED);
   });
 
+  it("keeps #1223's business-language rules and criteria sentence on the reconstructed fallback", () => {
+    const reconstructed = sectionGroupsFor("business-requirements", { brdLayout: "reader" }).find(
+      (g) => g.id === "requirements",
+    )!;
+    expect(reconstructed.instructions.endsWith(MAIN_PART_LANGUAGE_RULES)).toBe(true);
+    expect(reconstructed.instructions).toContain(
+      "Write each from the point of view of a user, an administrator or the business (what they do, and what they see or get), not as an API or database contract.",
+    );
+    // The reader main part is still the four sections the budget is sized for.
+    const main = sectionGroupsFor("business-requirements", {
+      brdLayout: "reader",
+      approvedRequirements: [req(1)],
+    }).filter((g) => Object.hasOwn(BRD_MAIN_SECTION_TARGETS, g.id));
+    expect(main.map((g) => g.id)).toEqual([
+      "overview",
+      "capabilities",
+      "key-rules",
+      "requirements",
+    ]);
+  });
+
   it("is reconstructed from the code when there are none, and in the catalogue layout", () => {
     const empty = sectionGroupsFor("business-requirements", {
       brdLayout: "reader",
@@ -286,6 +308,36 @@ describe("a reader-layout document", () => {
     expect(manifest?.model).toBe(APPROVED_REQUIREMENTS_MODEL);
     expect(manifest?.factsSourceIds).toEqual([]);
     expect(result.warnings.filter((w) => w.kind === "section-missing")).toEqual([]);
+  });
+
+  it("lists a requirement holding code names verbatim, and leaves it out of the #1223 code identifier check", async () => {
+    const provider = fakeModel();
+    const body = "The `markAsRead()` call updates entry_status in internal/storage/entry.go.";
+    const criterion = "Given `GET /v1/entries`, the user_id column is NOT NULL.";
+    const requirements = [
+      req(1, { id: "req_12", body, acceptanceCriteria: JSON.stringify([criterion]) }),
+    ];
+    const result = await run(provider, requirements);
+    const section = sectionOf(result.markdown, APPROVED_REQUIREMENTS_HEADING);
+    // As the analyst wrote it: nothing stripped, reworded or re-prompted.
+    expect(section).toContain("**Requirement id:** `req_12`");
+    expect(section).toContain(`\n${body}\n`);
+    expect(section).toContain(`- ${criterion}`);
+    expect(provider.calls.map((c) => c.group)).not.toContain(APPROVED_REQUIREMENTS_HEADING);
+    // The detector would flag it; the section is not checked, so nothing is recorded.
+    expect(findCodeIdentifiers(section).length).toBeGreaterThan(0);
+    const approved = result.sections.find((s) => s.sectionLabel === APPROVED_REQUIREMENTS_HEADING);
+    expect(approved).toBeDefined();
+    expect(approved).not.toHaveProperty("codeIdentifiers");
+    // The model-written main sections still are.
+    const checked = result.sections.filter((s) => s.codeIdentifiers !== undefined);
+    expect(checked.map((s) => s.sectionLabel).sort()).toEqual(
+      [
+        "Core Business Capabilities",
+        "Executive Summary, Scope & Domain",
+        "Key Business Rules",
+      ].sort(),
+    );
   });
 
   it("falls back to the requirements reconstructed from the code, under the #1175 lead-in, when none are approved", async () => {

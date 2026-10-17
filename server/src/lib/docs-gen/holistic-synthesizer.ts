@@ -5603,9 +5603,14 @@ export async function synthesizeFinalDocument(
   // #1223 — the main part is signed off by business readers (SO3): each main
   // section, as fitted, is checked for code identifiers. It only flags, in
   // provenance; nothing is rewritten (`main-part-language.ts`).
+  // #1218 — except the approved requirements: no model wrote them, so there is
+  // no prompt the flag could measure, and the analysts' stored text (a code
+  // name they wrote, a `snake_case` requirement id) is listed verbatim by
+  // design. Counting it would report approved content as a language defect.
+  const checkedForCode = (i: number): boolean => isMain[i] && i !== approvedRequirementsAt;
   if (readerLayout) {
     sectionOwners.forEach((owner, i) => {
-      if (!isMain[i]) return;
+      if (!checkedForCode(i)) return;
       finalManifestSections[owner].codeIdentifiers = codeIdentifierReport(
         fittedSections.sections[i],
       );
@@ -5614,7 +5619,7 @@ export async function synthesizeFinalDocument(
       projectId,
       docType,
       sections: sectionOwners.flatMap((owner, i) =>
-        isMain[i]
+        checkedForCode(i)
           ? [
               {
                 section: sectionIdAt(i),
