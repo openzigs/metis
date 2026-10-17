@@ -276,7 +276,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           const res = await request(app())
             .post(route)
             .set("Authorization", `Bearer ${alice}`)
-            .send({ sessionId: sid, message: "Count the rows, please." });
+            // #1139 — /chat with nobody to approve withholds the gated tools
+            // (`danger_write`); this client answers prompts itself, so every
+            // tool is offered, as on /stream.
+            .send({
+              sessionId: sid,
+              message: "Count the rows, please.",
+              ...(route === "/api/ai/chat" ? { awaitToolApproval: true } : {}),
+            });
           expect(res.status, res.text.slice(0, 500)).toBe(200);
 
           const parent = seen.filter((s) => !s.sub);

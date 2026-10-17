@@ -969,7 +969,7 @@ Each widget shows a skeleton while loading, an actionable empty state with a dee
 
 The Workbench is your hands-on artifact editor. The right rail's **Recent** panel mirrors your most recently touched chat sessions and analyses for quick re-entry. Recent entries are stored client-side and validated against a same-origin allow-list — links are only honoured when they begin with a single `/`, so a poisoned `localStorage` value can never redirect you to an external URL.
 
-A Workbench chat session is opened by your first message, not by opening the page, and it is added to **Recent** only once the server has accepted that message. A message the server refuses (for example a read-only session or an exhausted project budget) adds nothing; one it accepted is added even if you switch project, press Stop, or lose the connection before the answer starts. Chat follows the same rule. Switching project or agent while the first message is still opening a session cancels it. Older builds opened an empty "Workbench" session on every page load; those entries need no cleanup. **Recent** keeps the 10 newest sessions per browser, so newer sessions push the old entries out. The empty sessions themselves never appear under **Activity → Sessions**, because that list shows only sessions whose conversation snapshot has been written, which happens when a turn is stored. [#361, #390, #422]
+A Workbench chat session is opened by your first message, not by opening the page, and it is added to **Recent** only once the server has accepted that message. A message the server refuses (for example a read-only session or an exhausted project budget) adds nothing; one it accepted is added even if you switch project, press Stop, or lose the connection before the answer starts. Chat follows the same rule. Switching project or agent while the first message is still opening a session cancels it. Older builds opened an empty "Workbench" session on every page load; those entries need no cleanup. **Recent** keeps the 10 newest sessions per browser, so newer sessions push the old entries out. A session is listed under its title, which is taken from its first question rather than "New Chat" or "Workbench". The Workbench opens on the project active in the top bar. [#1139] The empty sessions themselves never appear under **Activity → Sessions**, because that list shows only sessions whose conversation snapshot has been written, which happens when a turn is stored. [#361, #390, #422]
 
 The left **Documents** panel lists every document in the project. Type in the filter box to narrow it by file name or path as you type. Uploaded documents are grouped at the top under **Uploaded**; repository files sit under **Repositories**, one folder tree per repository, named after the repository and collapsed until you open it. Documents from other connectors — database schemas, Confluence pages and Jira issues — sit under **Other sources**, one group per source. Hover a repository file to see its full path. While a filter is active every matching folder is shown open, and at most 300 matches are drawn at once — keep typing to narrow further. The panel loads up to 10,000 documents and says so when a project holds more. [#32]
 
@@ -2474,6 +2474,19 @@ The AI Chat is your interactive assistant for asking questions, getting help wit
 3. Type your question or message in the text box at the bottom
 4. Press **Enter** to send (use **Shift+Enter** for a new line within your message)
 
+Chat opens on the project active in the top bar. The project you last picked in
+chat's own project selector is used only when no project is active. The chat
+you last had open comes back when it belongs to that project. A new chat is
+saved only when you send its first message, so opening Chat or clicking
+**New chat** does not add an empty "New Chat" to your session list. Recent
+lists each chat under its title, which is taken from its first question.
+
+If the connection to the AI model drops part-way through an answer, METIS asks
+the model again once, from the last step it completed. The chat says it is
+retrying, and the dropped text is replaced. If the answer still fails, the
+partial answer stays on screen, marked incomplete, with a **Retry** button that
+asks the same question again.
+
 The AI responds in a chat-bubble format — your messages appear on the right in blue, and the AI's responses appear on the left in gray. While the AI is thinking, you'll see three bouncing dots (a typing indicator).
 
 ### 14.2 What the AI Can Help With
@@ -2547,9 +2560,11 @@ change this with `AI_TOOL_APPROVAL_TIMEOUT_MS`).
 
 Over the API, `POST /api/ai/chat` can only show a prompt to a client that has
 the chat open (subscribed to the session's socket room). With none, a tool that
-needs approval is refused at once instead of waiting two minutes: the AI is told
-nobody could approve it and answers without it, and the response lists the
-refused call under `toolApprovals` (reason `no_interactive_approver`). A client
+needs approval is not offered to the AI at all, so it never reaches for a tool
+nobody can approve; the response names those tools under `toolsWithheld`. If
+the AI names one anyway it does not run, and nothing waits. A refusal the
+approval step does make (for example `policy=deny`) is listed under
+`toolApprovals`. A client
 that answers prompts itself through
 `POST /api/ai/sessions/:id/approvals/:approvalId` while the request is open
 sends `"awaitToolApproval": true` to wait as before. Nothing the AI writes, and
