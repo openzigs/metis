@@ -19,9 +19,12 @@
  *
  * #1174 — section drafting reuses the same loop, classification and backoff,
  * narrowed by `isRetryable` to a stream that dropped part-way through a reply.
+ * #1139 — a chat tool turn's model call reuses it too, with the same narrowing
+ * ({@link isMidStreamDrop}).
  */
 import { AIError } from "../../ai/errors.js";
 import { createChildLogger } from "../../logger.js";
+import { isConnectionDropped } from "../generation-failure-message.js";
 
 const log = createChildLogger("docs-gen:grounding-retry");
 
@@ -64,7 +67,7 @@ export interface GroundingRetryOptions {
 
 /** Which call {@link withTransientRetry} is retrying, for its log line. */
 export interface TransientRetryContext {
-  stage: "claims" | "verdicts" | "section-draft";
+  stage: "claims" | "verdicts" | "section-draft" | "chat-turn";
   signal?: AbortSignal;
   /**
    * Extra fields for the retry log line (the section, the provider). A function
@@ -197,6 +200,28 @@ export function describeGroundingErrorClass(cls: GroundingErrorClass): string {
     default:
       return "the grounding call failed";
   }
+}
+
+/** Classes that are never a dropped stream, whatever the error's text says. */
+const NEVER_A_DROP: ReadonlySet<GroundingErrorClass> = new Set([
+  "cancelled",
+  "config-error",
+  "client-error",
+]);
+
+/**
+ * #1174 — true when a model call failed because its stream dropped part-way
+ * through the reply. `isConnectionDropped` reads undici's own error; the
+ * grounding classification also reads it once the Anthropic adapter has
+ * wrapped it (`anthropic stream failed (TypeError): terminated`, stamped 502 —
+ * walkthrough run 9's error, which `isConnectionDropped` does not recognise).
+ * A cancel, a configuration error and a 4xx are never a drop. Shared by the
+ * section draft (whose caller also excludes a first-token timeout by its chunk
+ * count, #111) and the chat tool loop (#1139).
+ */
+export function isMidStreamDrop(err: unknown, cls: GroundingErrorClass): boolean {
+  if (NEVER_A_DROP.has(cls)) return false;
+  return cls === "stream-terminated" || isConnectionDropped(err);
 }
 
 /** Sleep that rejects as soon as `signal` aborts. */

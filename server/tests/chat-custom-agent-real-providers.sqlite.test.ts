@@ -92,7 +92,8 @@ interface Seen {
 const NOT_ALLOWED = "this tool is not allowed for this session's agent";
 // #861 — `/chat` with no client in the session's room refuses a prompt at once
 // rather than letting it expire: the call still needed (and lacked) approval.
-const NOT_APPROVED = "this tool needs the user's approval and no one is available to approve it";
+/** #1139 — a prompt someone could have answered, and nobody did in time. */
+const NOT_APPROVED_IN_TIME = "the user did not approve this tool call in time";
 
 /**
  * What the model "decides", from what it can see. Turn one: load its skill,
@@ -319,11 +320,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     const createSession = (token: string, body: Record<string, unknown>) =>
       request(app()).post("/api/ai/sessions").set("Authorization", `Bearer ${token}`).send(body);
 
-    const say = (route: string, sessionId: string, message: string) =>
+    const say = (
+      route: string,
+      sessionId: string,
+      message: string,
+      extra: Record<string, unknown> = {},
+    ) =>
       request(app())
         .post(route)
         .set("Authorization", `Bearer ${alice}`)
-        .send({ sessionId, message });
+        .send({ sessionId, message, ...extra });
 
     for (const p of PROVIDERS) {
       for (const route of ["/api/ai/stream", "/api/ai/chat"] as const) {
@@ -400,12 +406,32 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         policy: { low: "auto", medium: "auto", high: "auto" },
       });
       expect(created.status).toBe(201);
+      // #1139 — over /chat with nobody to approve, a tool that now needs a
+      // person is not offered at all.
       const res = await say("/api/ai/chat", created.body.data.session.id, "count once");
+      expect(res.status).toBe(200);
+      expect(seen[0]!.tools).toEqual([]);
+      expect(res.body.data.toolsWithheld).toEqual(["count_rows"]);
+      expect(countExec).not.toHaveBeenCalled();
+    });
+
+    it("…and a client that will answer the prompt is offered it: unanswered, it never runs", async () => {
+      process.env.AI_TOOL_APPROVAL_TIMEOUT_MS = "50";
+      setAIProviderForTests(PROVIDERS[0]!.make());
+      const created = await createSession(alice, {
+        projectId: IDS.project,
+        agentRef: "custom:c-strict",
+        policy: { low: "auto", medium: "auto", high: "auto" },
+      });
+      expect(created.status).toBe(201);
+      const res = await say("/api/ai/chat", created.body.data.session.id, "count once", {
+        awaitToolApproval: true,
+      });
       expect(res.status).toBe(200);
       expect(seen[0]!.tools).toEqual(["count_rows"]);
       // Nobody approved within the window: the call did not run.
       expect(countExec).not.toHaveBeenCalled();
-      expect(seen[1]!.results[0]).toContain(NOT_APPROVED);
+      expect(seen[1]!.results[0]).toContain(NOT_APPROVED_IN_TIME);
     });
 
     it("a sub-agent of a custom session agent passes the approval gate too, and the agent is never its own sub-agent", async () => {
@@ -418,7 +444,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         policy: { low: "auto", medium: "auto", high: "always-prompt" },
       });
       expect(created.status).toBe(201);
-      const res = await say("/api/ai/chat", created.body.data.session.id, "plain");
+      // A client that answers prompts itself: every gated tool is still offered.
+      const res = await say("/api/ai/chat", created.body.data.session.id, "plain", {
+        awaitToolApproval: true,
+      });
       expect(res.status).toBe(200);
       const tools = seen[0]!.tools;
       expect(tools).toContain("danger_write");

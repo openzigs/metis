@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { useSearchParams } from "next/navigation";
 import { makeWrapper } from "./test-utils";
+import { acceptedTurn, sendChatMessage } from "./chat-send";
 import ChatPage from "@/app/(authed)/chat/page";
 import * as aiClient from "@/lib/ai-client";
 
@@ -60,15 +61,31 @@ const fakeSession: aiClient.AISession = {
 beforeEach(() => {
   vi.clearAllMocks();
   createSessionMock.mockResolvedValue({ session: fakeSession, scope: null });
+  vi.mocked(aiClient.streamChat).mockImplementation(acceptedTurn as typeof aiClient.streamChat);
 });
 
 describe("<ChatPage /> — projectId threading (#236)", () => {
+  it("#1139: opening the page creates no session; the first send does", async () => {
+    useSearchParamsMock.mockReturnValue(
+      new URLSearchParams() as ReturnType<typeof useSearchParams>,
+    );
+    render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    const box = screen.getByLabelText("Message") as HTMLInputElement;
+    await waitFor(() => expect(box.disabled).toBe(false));
+    expect(createSessionMock).not.toHaveBeenCalled();
+    await sendChatMessage("hello");
+    await waitFor(() => expect(createSessionMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(aiClient.streamChat).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(aiClient.streamChat).mock.calls[0]![0]).toBe("sess-1");
+  });
+
   it("creates a session WITHOUT projectId when no query param is set", async () => {
     useSearchParamsMock.mockReturnValue(
       new URLSearchParams() as ReturnType<typeof useSearchParams>,
     );
     const Wrapper = makeWrapper({ withAuth: false });
     render(<ChatPage />, { wrapper: Wrapper });
+    await sendChatMessage();
 
     await waitFor(() => {
       expect(createSessionMock).toHaveBeenCalledTimes(1);
@@ -85,6 +102,7 @@ describe("<ChatPage /> — projectId threading (#236)", () => {
     );
     const Wrapper = makeWrapper({ withAuth: false });
     render(<ChatPage />, { wrapper: Wrapper });
+    await sendChatMessage();
 
     await waitFor(() => {
       expect(createSessionMock).toHaveBeenCalledTimes(1);
@@ -101,6 +119,7 @@ describe("<ChatPage /> — projectId threading (#236)", () => {
     );
     const Wrapper = makeWrapper({ withAuth: false });
     render(<ChatPage />, { wrapper: Wrapper });
+    await sendChatMessage();
 
     await waitFor(() => {
       expect(screen.getByText(/bedrock-gateway/)).toBeInTheDocument();

@@ -18,6 +18,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
+import {
+  projectSwitcherQuery,
+  readStoredActiveProjectId,
+  resolveActiveProjectId,
+} from "@/lib/active-project";
 
 const STORAGE_KEY = "metis.chat.projectScope";
 
@@ -46,8 +51,8 @@ export function normaliseScope(scope: ProjectScope): ProjectScope {
   return { mode: "selected", projectIds: [scope.projectIds[0]] };
 }
 
-/** The persisted scope, or `null` when the user has never picked one. */
-function loadStoredScope(): ProjectScope | null {
+/** The scope last picked in this selector, or `null` when the user has never picked one. */
+export function loadStoredScope(): ProjectScope | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -63,16 +68,21 @@ function loadStoredScope(): ProjectScope | null {
 }
 
 /**
- * #18 — the scope a user who has never picked one starts on. "All projects"
- * runs no retrieval, so with exactly one project there is nothing to choose
- * between and the chat starts grounded in it. With none or several, "All
- * projects" stays the default (picking one of several for the user would be a
- * guess) and the page says that answers are not grounded.
+ * #1139 — the scope `/chat` opens on: the project active in the top bar. The
+ * scope stored by this selector is used only when no project is active (the
+ * user has none, or their list cannot be read); with neither, "All projects".
+ *
+ * Before, a stored scope always won, so chat opened on whichever project was
+ * last picked HERE — in the walkthrough, a different project from the one the
+ * top bar showed. (#18's "start grounded in your only project" still holds: a
+ * user with one project has it active.)
  */
-export function defaultScope(projects: readonly AccessibleProject[]): ProjectScope {
-  return projects.length === 1
-    ? { mode: "selected", projectIds: [projects[0].id] }
-    : { mode: "all", projectIds: [] };
+export function initialChatScope(
+  activeProjectId: string | null,
+  stored: ProjectScope | null,
+): ProjectScope {
+  if (activeProjectId) return { mode: "selected", projectIds: [activeProjectId] };
+  return stored ?? { mode: "all", projectIds: [] };
 }
 
 function storeScope(scope: ProjectScope): void {
@@ -224,43 +234,30 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
   );
 }
 
-/** Hook to manage project scope state with localStorage persistence. */
+/**
+ * The chat's project scope: it starts on {@link initialChatScope} (the top
+ * bar's active project, else the stored scope) and follows the selector after.
+ */
 export function useProjectScope() {
   const [scope, setScope] = useState<ProjectScope>({ mode: "all", projectIds: [] });
-  // #1367 — the stored scope arrives one tick after mount, so a consumer that
-  // keys work off `scope` would otherwise act once on the default and again on
-  // the real value. `hydrated` lets it wait for the real one.
+  // #1367 — the starting scope is known only once the project list is read, so
+  // a consumer that keys work off `scope` would otherwise act once on the
+  // default and again on the real value. `hydrated` lets it wait for the real one.
   const [hydrated, setHydrated] = useState(false);
-  // #18 — with nothing stored, the default depends on how many projects the
-  // user can reach, so hydration waits for that list too (a session created on
-  // "all" and then again on the one project would burn the resume, #1367).
-  const [needsDefault, setNeedsDefault] = useState(false);
-  const projects = useQuery({
-    queryKey: ["search", "accessible-projects"],
-    queryFn: fetchAccessibleProjects,
-    enabled: needsDefault,
-  });
+  // #1139 — the top bar's own list, so the active project is the one it shows.
+  const projects = useQuery(projectSwitcherQuery);
 
   useEffect(() => {
-    const stored = loadStoredScope();
-    if (stored) {
-      setScope(stored);
-      setHydrated(true);
-    } else {
-      setNeedsDefault(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!needsDefault || hydrated) return;
+    if (hydrated) return;
     if (projects.isSuccess) {
-      // Not stored: the default follows the project list until the user picks.
-      setScope(defaultScope(projects.data));
+      const active = resolveActiveProjectId(readStoredActiveProjectId(), projects.data.items);
+      setScope(initialChatScope(active, loadStoredScope()));
       setHydrated(true);
     } else if (projects.isError) {
+      setScope(initialChatScope(null, loadStoredScope()));
       setHydrated(true);
     }
-  }, [needsDefault, hydrated, projects.isSuccess, projects.isError, projects.data]);
+  }, [hydrated, projects.isSuccess, projects.isError, projects.data]);
 
   return { scope, setScope, hydrated };
 }

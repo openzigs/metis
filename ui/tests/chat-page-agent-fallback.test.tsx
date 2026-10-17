@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { useSearchParams } from "next/navigation";
 import { makeWrapper } from "./test-utils";
+import { acceptedTurn, sendChatMessage } from "./chat-send";
 import ChatPage from "@/app/(authed)/chat/page";
 import * as aiClient from "@/lib/ai-client";
 
@@ -78,6 +79,7 @@ beforeEach(() => {
     new URLSearchParams({ projectId: "proj-a" }) as ReturnType<typeof useSearchParams>,
   );
   createMock.mockResolvedValue({ session: fakeSession, scope: null });
+  vi.mocked(aiClient.streamChat).mockImplementation(acceptedTurn as typeof aiClient.streamChat);
 });
 
 /** Let every pending effect and promise settle. */
@@ -89,6 +91,8 @@ describe("<ChatPage /> — a saved custom agent this project cannot bind (#236)"
   it("creates the session with the default agent, clears the choice, and says so once", async () => {
     listMock.mockResolvedValue([agentOfA]); // proj-a does not offer custom:ag-b
     render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    // #1139 — the session (and the agent check) happen on the first send.
+    await sendChatMessage();
 
     const notice = await screen.findByTestId("chat-agent-fallback-notice");
     expect(notice).toHaveTextContent(/default agent/i);
@@ -101,9 +105,11 @@ describe("<ChatPage /> — a saved custom agent this project cannot bind (#236)"
     expect(storeAgentKey).toHaveBeenCalledWith(null);
     expect(screen.getByTestId("agent-picker")).toHaveTextContent("Default");
 
-    // Clearing the choice must NOT start a second session for this chat.
+    // Clearing the choice must NOT start a second session for this chat, and
+    // the turn that created it still runs on it.
     await settle();
     expect(createMock).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(aiClient.streamChat).mock.calls[0]![0]).toBe("sess-a");
     expect(screen.getAllByTestId("chat-agent-fallback-notice")).toHaveLength(1);
   });
 
@@ -117,6 +123,8 @@ describe("<ChatPage /> — a saved custom agent this project cannot bind (#236)"
       droppedAgentRef: "custom:ag-b",
     });
     render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    // #1139 — the session (and the agent check) happen on the first send.
+    await sendChatMessage();
 
     expect(await screen.findByTestId("chat-agent-fallback-notice")).toBeInTheDocument();
     expect(createMock.mock.calls[0]![0].agentRef).toBe("custom:ag-b");
@@ -129,6 +137,8 @@ describe("<ChatPage /> — a saved custom agent this project cannot bind (#236)"
     storedAgent = "custom:ag-a";
     listMock.mockResolvedValue([agentOfA]);
     render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    // #1139 — the session (and the agent check) happen on the first send.
+    await sendChatMessage();
 
     await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
     expect(createMock.mock.calls[0]![0].agentRef).toBe("custom:ag-a");

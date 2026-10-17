@@ -12,6 +12,7 @@
  *      dropped), then refresh the derived session snapshot.
  */
 import type { SdkReasoningEffort, TranscriptPart } from "@metis/shared";
+import { DEFAULT_SESSION_TITLE, titleFromQuestion } from "@metis/shared";
 import type { ChatMessage, ChatToolSpec, TokenUsage } from "../types.js";
 import { prisma } from "../../prisma.js";
 import { createChildLogger } from "../../logger.js";
@@ -183,23 +184,8 @@ export function calibrationPromptChars(
   return toolCalls.length > 0 ? null : turn.promptChars;
 }
 
-/** The title a chat session carries until its first question names it (#980). */
-export const DEFAULT_SESSION_TITLE = "New Chat";
-const AUTO_TITLE_MAX_CHARS = 80;
-
-/**
- * #980 — a session title from its first question: whitespace collapsed, cut at
- * a word boundary to {@link AUTO_TITLE_MAX_CHARS} with an ellipsis. `null` for a
- * question with no visible text.
- */
-export function titleFromQuestion(text: string): string | null {
-  const flat = text.replace(/\s+/g, " ").trim();
-  if (!flat) return null;
-  if (flat.length <= AUTO_TITLE_MAX_CHARS) return flat;
-  const cut = flat.slice(0, AUTO_TITLE_MAX_CHARS - 1);
-  const space = cut.lastIndexOf(" ");
-  return `${(space > AUTO_TITLE_MAX_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
-}
+// #980 — the auto-title rule, shared with the UI's Recent list (#1139).
+export { DEFAULT_SESSION_TITLE, titleFromQuestion };
 
 export async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn> {
   const sessionId = input.session.id;

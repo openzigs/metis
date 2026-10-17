@@ -29,14 +29,21 @@ export class AgentChatPage {
   }
 
   /**
-   * Pick an agent and return the id of the session the page creates for it
-   * (switching agents always starts a new session).
+   * Pick an agent. #1139 — no session exists yet: the page creates it on the
+   * first send, for whichever agent is picked then (see {@link sendFirst}).
    */
-  async pickAgent(agentKey: string): Promise<string> {
+  async pickAgent(agentKey: string): Promise<void> {
     await expect(this.agentPicker.locator(`option[value="${agentKey}"]`)).toHaveCount(1);
-    // Match the create FOR THIS AGENT. The page also creates an agent-less session
-    // on load, and when that response lands after the picker is populated it used
-    // to satisfy this wait, so `agentId` read back as null (seen on PR #255).
+    await this.agentPicker.selectOption(agentKey);
+    await expect(this.messageInput).toBeEnabled();
+  }
+
+  /**
+   * Send the chat's first message and return the id of the session the send
+   * created for `agentKey`. Matched on the agent, so a create for any other
+   * agent can never satisfy the wait (seen on PR #255).
+   */
+  async sendFirst(text: string, agentKey: string): Promise<string> {
     const created = this.page.waitForResponse(
       (r) =>
         r.request().method() === "POST" &&
@@ -44,11 +51,10 @@ export class AgentChatPage {
         r.status() === 201 &&
         (r.request().postDataJSON() as { agentKey?: string } | null)?.agentKey === agentKey,
     );
-    await this.agentPicker.selectOption(agentKey);
+    await this.send(text);
     const res = await created;
     const body = (await res.json()) as { data: { session: { id: string; agentId: string } } };
     expect(body.data.session.agentId).toBeTruthy();
-    await expect(this.messageInput).toBeEnabled();
     return body.data.session.id;
   }
 

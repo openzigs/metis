@@ -5,6 +5,7 @@
  * tracking the user's own recent activity in localStorage. The store caps
  * the list at 10 entries per kind and orders by most-recent-first.
  */
+import { DEFAULT_SESSION_TITLE, titleFromQuestion } from "@metis/shared";
 
 export type RecentKind = "session" | "analysis";
 
@@ -91,3 +92,21 @@ export const recentTracker = {
 };
 
 export const _MAX_PER_KIND = MAX_PER_KIND;
+
+/**
+ * #1139 — the session's title once a turn has been stored: the title Recent
+ * lists it under. This is the server's own rename (#980), applied to the same
+ * inputs, so the label is the title the server now holds: a session still
+ * called {@link DEFAULT_SESSION_TITLE} is named after its FIRST question by the
+ * shared {@link titleFromQuestion}; any other title, and any later turn, keeps
+ * the title as it is. (PR #1234 review — a label rebuilt on every resume from
+ * whatever question came first drifted away from the stored title.)
+ */
+export function sessionTitleAfterTurn(
+  title: string,
+  question: string,
+  firstQuestion: boolean,
+): string {
+  if (!firstQuestion || title !== DEFAULT_SESSION_TITLE) return title;
+  return titleFromQuestion(question) ?? title;
+}

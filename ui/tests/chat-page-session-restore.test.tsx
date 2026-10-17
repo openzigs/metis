@@ -12,9 +12,10 @@
  * before deciding, and must resume exactly once.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useSearchParams } from "next/navigation";
 import { makeWrapper } from "./test-utils";
+import { acceptedTurn, sendChatMessage } from "./chat-send";
 import ChatPage from "@/app/(authed)/chat/page";
 import * as aiClient from "@/lib/ai-client";
 
@@ -43,10 +44,18 @@ vi.mock("@/components/chat/loaded-skills-panel", () => ({
 }));
 
 // Deliberately reports the REAL contract, including the hydration flag.
+// #1139 — the scope the page opens on (the top bar's active project) varies.
+// The default "All projects" is what the real hook gives a user with NO
+// project (or an unreadable list). For a user with one, see
+// chat-page-unscoped-resume.test.tsx, which runs the real hook (PR #1234 P1).
+let openedScope: { mode: "all" | "selected"; projectIds: string[] } = {
+  mode: "all",
+  projectIds: [],
+};
 vi.mock("@/components/chat/project-scope-selector", () => ({
   ProjectScopeSelector: () => <div data-testid="project-scope-selector" />,
   useProjectScope: () => ({
-    scope: { mode: "all", projectIds: [] },
+    scope: openedScope,
     setScope: () => {},
     hydrated: true,
   }),
@@ -68,6 +77,8 @@ describe("<ChatPage /> — restore on bare /chat (#1367)", () => {
     localStorage.clear();
     useSearchParamsMock.mockReturnValue(new URLSearchParams() as never);
     createMock.mockResolvedValue({ session: { ...storedSession, id: "sess-new" } } as never);
+    vi.mocked(aiClient.streamChat).mockImplementation(acceptedTurn as typeof aiClient.streamChat);
+    openedScope = { mode: "all", projectIds: [] };
   });
 
   it("resumes the stored session instead of minting a new one", async () => {
@@ -86,21 +97,106 @@ describe("<ChatPage /> — restore on bare /chat (#1367)", () => {
     expect(aiClient.loadActiveSessionId()).toBe("sess-stored");
   });
 
-  it("creates exactly one session when there is nothing to resume", async () => {
+  it("#1139: creates no session on open, and exactly one on the first send", async () => {
     render(<ChatPage />, { wrapper: makeWrapper() });
 
-    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByLabelText("Message")).not.toBeDisabled());
+    expect(createMock).not.toHaveBeenCalled();
     expect(resumeMock).not.toHaveBeenCalled();
+    await sendChatMessage("first");
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(aiClient.loadActiveSessionId()).toBe("sess-new"));
+    // The second send reuses it.
+    await sendChatMessage("second");
+    await waitFor(() => expect(aiClient.streamChat).toHaveBeenCalledTimes(2));
+    expect(createMock).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to creating one session when the stored id is stale", async () => {
+  it("PR #1234 review: two sends in the same tick stream ONE turn", async () => {
+    render(<ChatPage />, { wrapper: makeWrapper() });
+    const box = screen.getByLabelText("Message") as HTMLInputElement;
+    await waitFor(() => expect(box.disabled).toBe(false));
+    fireEvent.change(box, { target: { value: "once" } });
+    // A double Enter: both submits land before React re-renders (one batch).
+    const form = box.closest("form")!;
+    act(() => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await waitFor(() => expect(aiClient.streamChat).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(aiClient.streamChat).toHaveBeenCalledTimes(1);
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a stale stored id creates nothing on open; the first send creates one", async () => {
     aiClient.storeActiveSessionId("sess-gone");
     resumeMock.mockResolvedValue(null as never);
 
     render(<ChatPage />, { wrapper: makeWrapper() });
 
+    await waitFor(() => expect(resumeMock).toHaveBeenCalledWith("sess-gone"));
+    await waitFor(() => expect(screen.getByLabelText("Message")).not.toBeDisabled());
+    expect(createMock).not.toHaveBeenCalled();
+    await sendChatMessage();
     await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
-    expect(resumeMock).toHaveBeenCalledWith("sess-gone");
+  });
+
+  it("#1139: the composer waits for the resume, so a send cannot start a second thread", async () => {
+    aiClient.storeActiveSessionId("sess-stored");
+    let finish: (v: unknown) => void = () => undefined;
+    resumeMock.mockReturnValue(new Promise((r) => (finish = r)) as never);
+    render(<ChatPage />, { wrapper: makeWrapper() });
+    await waitFor(() => expect(resumeMock).toHaveBeenCalled());
+    expect(screen.getByLabelText("Message")).toBeDisabled();
+    finish({ session: storedSession, messages: [] });
+    await waitFor(() => expect(screen.getByLabelText("Message")).not.toBeDisabled());
+  });
+
+  it("#1139: a stored session from another project is not resumed on the active one", async () => {
+    openedScope = { mode: "selected", projectIds: ["proj-active"] };
+    aiClient.storeActiveSessionId("sess-stored");
+    resumeMock.mockResolvedValue({
+      session: { ...storedSession, projectId: "proj-previous" },
+      messages: [{ role: "user", content: "a question about the old project", ordinal: 1 }],
+    } as never);
+
+    render(<ChatPage />, { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(resumeMock).toHaveBeenCalledWith("sess-stored"));
+    await waitFor(() => expect(screen.getByLabelText("Message")).not.toBeDisabled());
+    expect(screen.queryByText(/old project/i)).toBeNull();
+    expect(aiClient.loadActiveSessionId()).toBeNull();
+    await sendChatMessage();
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
+    expect(createMock.mock.calls[0]![0].projectIds).toEqual(["proj-active"]);
+  });
+
+  it("#1139: a stored session of the active project is resumed", async () => {
+    openedScope = { mode: "selected", projectIds: ["proj-active"] };
+    aiClient.storeActiveSessionId("sess-stored");
+    resumeMock.mockResolvedValue({
+      session: { ...storedSession, projectId: "proj-active" },
+      messages: [{ role: "user", content: "earlier question", ordinal: 1 }],
+    } as never);
+
+    render(<ChatPage />, { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(screen.getByText(/earlier question/i)).toBeInTheDocument());
+    expect(aiClient.loadActiveSessionId()).toBe("sess-stored");
+  });
+
+  it("#1139: an explicit sessionId in the URL is resumed whatever project it is in", async () => {
+    openedScope = { mode: "selected", projectIds: ["proj-active"] };
+    useSearchParamsMock.mockReturnValue(new URLSearchParams({ sessionId: "sess-stored" }) as never);
+    resumeMock.mockResolvedValue({
+      session: { ...storedSession, projectId: "proj-previous" },
+      messages: [{ role: "user", content: "earlier question", ordinal: 1 }],
+    } as never);
+
+    render(<ChatPage />, { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(screen.getByText(/earlier question/i)).toBeInTheDocument());
   });
 });
 
@@ -110,6 +206,8 @@ describe("<ChatPage /> — a read-only session (#149)", () => {
     localStorage.clear();
     useSearchParamsMock.mockReturnValue(new URLSearchParams() as never);
     createMock.mockResolvedValue({ session: { ...storedSession, id: "sess-new" } } as never);
+    vi.mocked(aiClient.streamChat).mockImplementation(acceptedTurn as typeof aiClient.streamChat);
+    openedScope = { mode: "all", projectIds: [] };
   });
 
   it("shows the server's notice, keeps the transcript and disables the composer", async () => {
@@ -156,10 +254,14 @@ describe("<ChatPage /> — a read-only session (#149)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /new chat/i }));
 
-    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(aiClient.loadActiveSessionId()).toBe("sess-new"));
     expect(screen.queryByTestId("chat-read-only-notice")).toBeNull();
     expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    // #1139 — "New chat" creates nothing until the first send.
+    expect(createMock).not.toHaveBeenCalled();
+    expect(aiClient.loadActiveSessionId()).toBeNull();
+    await sendChatMessage();
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(aiClient.loadActiveSessionId()).toBe("sess-new"));
   });
 
   it("a resumed session with no reason keeps the composer enabled", async () => {

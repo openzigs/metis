@@ -82,6 +82,12 @@ export interface RuntimeToolset {
   withheld(name: string): WithheldTool | undefined;
   /** #147 — every withheld tool (a sub-agent's toolset inherits the list). */
   withheldTools: readonly WithheldTool[];
+  /**
+   * #1139 — the canonical name of a tool left out of this turn's offer because
+   * it needs an approver and nobody can approve on this request; `undefined`
+   * otherwise. Set only by `withoutApprovalGatedTools`.
+   */
+  needsApprover?(name: string): string | undefined;
 }
 
 export function makeToolset(
@@ -141,7 +147,7 @@ export function makeToolset(
 }
 
 /** #772 — a tool name with `-` and `_` treated alike. */
-function separatorFree(name: string): string {
+export function separatorFree(name: string): string {
   return name.replace(/-/g, "_");
 }
 

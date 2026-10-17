@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { useSearchParams } from "next/navigation";
 import { makeWrapper } from "./test-utils";
+import { acceptedTurn, sendChatMessage } from "./chat-send";
 import ChatPage from "@/app/(authed)/chat/page";
 import * as aiClient from "@/lib/ai-client";
 
@@ -58,6 +59,7 @@ const fakeSession: aiClient.AISession = {
 beforeEach(() => {
   vi.clearAllMocks();
   useSearchParamsMock.mockReturnValue(new URLSearchParams() as ReturnType<typeof useSearchParams>);
+  vi.mocked(aiClient.streamChat).mockImplementation(acceptedTurn as typeof aiClient.streamChat);
 });
 
 describe("<ChatPage /> — multi-project scope degradation (#607)", () => {
@@ -72,6 +74,7 @@ describe("<ChatPage /> — multi-project scope degradation (#607)", () => {
       },
     });
     render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    await sendChatMessage("which tables?");
 
     await waitFor(() => {
       expect(createSessionWithScopeMock).toHaveBeenCalledTimes(1);
@@ -82,6 +85,11 @@ describe("<ChatPage /> — multi-project scope degradation (#607)", () => {
     const notice = await screen.findByTestId("scope-degradation-notice");
     expect(notice).toHaveTextContent(/single project/i);
     expect(notice).toHaveTextContent(/unscoped/i);
+    // #1368/#1139 — the first send created the session but did NOT run the
+    // turn: the user is told before an unscoped answer, and keeps the text.
+    expect(aiClient.streamChat).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Message")).toHaveValue("which tables?");
+    expect(screen.getByLabelText("Message")).toBeDisabled();
   });
 
   it("shows no notice when the scope was applied as requested", async () => {
@@ -94,6 +102,7 @@ describe("<ChatPage /> — multi-project scope degradation (#607)", () => {
       },
     });
     render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    await sendChatMessage();
 
     await waitFor(() => {
       expect(createSessionWithScopeMock).toHaveBeenCalledTimes(1);
@@ -106,6 +115,7 @@ describe("<ChatPage /> — multi-project scope degradation (#607)", () => {
   it("shows no notice against an older server that returns no scope metadata", async () => {
     createSessionWithScopeMock.mockResolvedValue({ session: fakeSession, scope: null });
     render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    await sendChatMessage();
 
     expect(await screen.findByText(/offline-stub/)).toBeInTheDocument();
     expect(screen.queryByTestId("scope-degradation-notice")).not.toBeInTheDocument();

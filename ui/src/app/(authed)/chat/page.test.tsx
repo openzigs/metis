@@ -142,6 +142,10 @@ describe("chat page — tool approvals (#142)", () => {
 
   it("a prompt from the session's socket room lands in the same list", async () => {
     render(<ChatPage />);
+    // #1139 — there is no session (and so no room) until the first send.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(socketHandlers.has("ai:tool:event")).toBe(false);
+    await send("hello");
     await waitFor(() => expect(socketHandlers.has("ai:tool:event")).toBe(true));
     act(() => socketHandlers.get("ai:tool:event")!(PROMPT));
     expect(await screen.findByRole("button", { name: "Approve query_database" })).toBeTruthy();

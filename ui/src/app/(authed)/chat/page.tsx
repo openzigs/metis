@@ -33,12 +33,16 @@ import {
 } from "@/lib/ai-client";
 import { AgentPicker, loadStoredAgentKey, storeAgentKey } from "@/components/chat/agent-picker";
 import { LoadedSkillsPanel } from "@/components/chat/loaded-skills-panel";
-import { ProjectScopeSelector, useProjectScope } from "@/components/chat/project-scope-selector";
+import {
+  ProjectScopeSelector,
+  loadStoredScope,
+  useProjectScope,
+} from "@/components/chat/project-scope-selector";
 import { ScopeDegradationNotice } from "@/components/chat/scope-degradation-notice";
 import { GroundingBadge, UngroundedScopeNotice } from "@/components/chat/grounding";
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
 import { sanitizeAssistantText } from "@/lib/sanitize-assistant-text";
-import { recentTracker } from "@/lib/recent-tracker";
+import { recentTracker, sessionTitleAfterTurn } from "@/lib/recent-tracker";
 import { ToolActivityList, TranscriptToolCalls } from "@/components/chat/tool-activity";
 import { useToolApprovals } from "@/hooks/use-tool-approvals";
 import { PageHeader } from "@/components/ui/page-header";
@@ -100,6 +104,11 @@ export default function ChatPage() {
   const [compactionNote, setCompactionNote] = useState<string | null>(null);
   // #204 — shown while the turn waits behind another local-model generation.
   const [queueNote, setQueueNote] = useState<string | null>(null);
+  // #1139 — shown while a dropped model stream is asked again.
+  const [retryNote, setRetryNote] = useState<string | null>(null);
+  // #1139 — false until the page knows whether it is resuming a session; a
+  // send before then would start a second one beside the resumed thread.
+  const [ready, setReady] = useState(false);
   const [forking, setForking] = useState(false);
   // #149 — set when the resumed session is read-only (its provider was removed).
   const [readOnlyReason, setReadOnlyReason] = useState<string | null>(null);
@@ -114,6 +123,8 @@ export default function ChatPage() {
     sessionIdRef.current = session?.id ?? null;
   }, [session]);
   const abortRef = useRef<AbortController | null>(null);
+  // A send in progress, known synchronously (see `handleSend`).
+  const sendingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   // Only the FIRST run of the session effect may resume. A later run means the
   // user changed agent or scope, which must start a fresh session.
@@ -123,6 +134,13 @@ export default function ChatPage() {
   // blocked with no way out; once rejected we fall back to the scope picker.
   const [rejectedProjectId, setRejectedProjectId] = useState<string | null>(null);
   const effectiveProjectId = projectId && projectId !== rejectedProjectId ? projectId : undefined;
+  // #1139 — sessions are created on the first send, never on page load (every
+  // visit used to leave an empty "New Chat" row). Bumped on every change of
+  // scope or agent, so a create still in flight from the old one is discarded.
+  const scopeGenRef = useRef(0);
+  const pendingCreateRef = useRef<{ gen: number; promise: Promise<AISession | null> } | null>(null);
+  // #1368 — the stale-project notice outlives the reset its own rejection causes.
+  const keepScopeNoticeRef = useRef(false);
 
   // Hydrate the persisted agent choice once on mount. Set BEFORE the
   // session-create effect so the first session is created under the right
@@ -147,6 +165,8 @@ export default function ChatPage() {
   // Clearing the choice changes `agentKey`, which would otherwise re-run the
   // session effect and create a SECOND session for a chat that already has one.
   const skipAgentRecreateRef = useRef(false);
+  // Likewise for the scope change that follows a resumed "All projects" session.
+  const keepResumedSessionRef = useRef(false);
 
   async function pickSessionAgent(
     selection: string | null,
@@ -176,10 +196,9 @@ export default function ChatPage() {
   const scopeKey = scope.mode === "all" ? "all" : `selected:${scope.projectIds.sort().join(",")}`;
 
   useEffect(() => {
-    // #1367 — agent and scope both arrive from localStorage one tick after
-    // mount. Running before they land burned the one allowed resume on a
-    // throwaway default-valued pass, so the real pass created a new session and
-    // overwrote the stored id: a reload of bare `/chat` lost the conversation.
+    // #1367 — agent and scope both arrive one tick after mount. Running before
+    // they land burned the one allowed resume on a throwaway default-valued
+    // pass: a reload of bare `/chat` lost the conversation.
     if (!agentHydrated || !scopeHydrated) return;
     // #236 — this run was caused by clearing an unusable agent choice after
     // the session had already been created with the default agent.
@@ -187,10 +206,19 @@ export default function ChatPage() {
       skipAgentRecreateRef.current = false;
       return;
     }
+    // PR #1234 review (P1) — this run was caused by moving the scope to "All
+    // projects" for the unscoped session just resumed; keep it.
+    if (keepResumedSessionRef.current) {
+      keepResumedSessionRef.current = false;
+      return;
+    }
     let cancelled = false;
+    scopeGenRef.current += 1;
+    pendingCreateRef.current = null;
     abortRef.current?.abort();
     setSession(null);
-    setSessionScope(null);
+    if (keepScopeNoticeRef.current) keepScopeNoticeRef.current = false;
+    else setSessionScope(null);
     setMessages([]);
     // A compaction note belongs to the session it happened in.
     setCompactionNote(null);
@@ -198,56 +226,58 @@ export default function ChatPage() {
     resetToolActivity();
     const firstRun = !mountedOnceRef.current;
     mountedOnceRef.current = true;
+    // #1367 — resume, never create: an explicit `?sessionId=`, or on the first
+    // run the session last open here. #1139 — a session is created only when
+    // the first message is sent (see `ensureSession`).
+    const restoreId = resumeSessionId ?? (firstRun ? loadActiveSessionId() : null);
+    if (!restoreId) {
+      setReady(true);
+      return () => {
+        cancelled = true;
+        abortRef.current?.abort();
+      };
+    }
+    setReady(false);
     void (async () => {
       try {
-        // #1367 — resume before creating. `main` always created a new session,
-        // so a reload silently destroyed the conversation.
-        const restoreId = resumeSessionId ?? (firstRun ? loadActiveSessionId() : null);
-        if (restoreId) {
-          const restored = await resumeChatSession(restoreId);
-          if (restored && !cancelled) {
-            setSession(restored.session);
-            setMessages(fromServer(restored.messages));
-            setReadOnlyReason(restored.readOnlyReason ?? null);
-            storeActiveSessionId(restored.session.id);
+        const restored = await resumeChatSession(restoreId);
+        if (!restored || cancelled) return;
+        // #1139 — the session last open here is resumed only when it belongs
+        // to the scope the page opened on: chat opens on the project active in
+        // the top bar, not on whichever project the previous chat was in.
+        const opened = pickerProjectId ?? null;
+        const resumedProject = restored.session.projectId ?? null;
+        if (!resumeSessionId && resumedProject !== opened) {
+          // PR #1234 review (P1) — except an "All projects" conversation the
+          // user was last in: a reload resumes it (#1367) and the scope
+          // follows it back to "All projects" rather than losing the thread.
+          // Only when "All projects" is what they last picked here, and no
+          // `?projectId=` asks for a project.
+          const resumeUnscoped =
+            resumedProject === null && !effectiveProjectId && loadStoredScope()?.mode === "all";
+          if (!resumeUnscoped) {
+            storeActiveSessionId(null);
             return;
           }
+          keepResumedSessionRef.current = true;
+          setScope({ mode: "all", projectIds: [] });
         }
-        const agent = await pickSessionAgent(agentKey);
-        if (cancelled) return;
-        const sessionOpts: Parameters<typeof createSessionWithScope>[0] = {
-          title: "New Chat",
-          ...sessionAgentInput(agent.selection, pickerProjectId),
-        };
-        // If a single projectId is in the URL, use it. Otherwise, pass
-        // the scope selector's projectIds for cross-project mode.
-        if (effectiveProjectId) {
-          sessionOpts.projectId = effectiveProjectId;
-        } else if (scope.mode === "selected" && scope.projectIds.length > 0) {
-          sessionOpts.projectIds = scope.projectIds;
-        }
-        const created = await createSessionWithScope(sessionOpts);
-        if (!cancelled) {
-          setSession(created.session);
-          setSessionScope(created.scope);
-          storeActiveSessionId(created.session.id);
-          if (created.scope?.reason === "stale-project" && effectiveProjectId) {
-            setRejectedProjectId(effectiveProjectId);
-          }
-          if (agent.dropped ?? created.droppedAgentRef) fallBackToDefaultAgent();
-        }
+        setSession(restored.session);
+        setMessages(fromServer(restored.messages));
+        setReadOnlyReason(restored.readOnlyReason ?? null);
+        storeActiveSessionId(restored.session.id);
       } catch (err) {
         if (!cancelled) setError((err as Error).message);
+      } finally {
+        if (!cancelled) setReady(true);
       }
     })();
     return () => {
       cancelled = true;
       abortRef.current?.abort();
     };
-    // Re-create the session whenever the user picks a different agent or
-    // the projectId query param changes — the AC explicitly calls for
-    // "Switching agents starts a new session" because the system prompt +
-    // default skills change at session-create.
+    // A different agent or scope starts a new session (on the next send): the
+    // system prompt and default skills are fixed at session-create.
   }, [
     agentKey,
     pickerProjectId,
@@ -260,38 +290,85 @@ export default function ChatPage() {
     resetToolActivity,
   ]);
 
+  /**
+   * #1139 — the current session, or a new one in the current scope and agent.
+   * Called by the first send, so opening `/chat` never leaves an empty session
+   * behind. Two sends racing share ONE create. Resolves null when the create
+   * failed (the error is shown), the scope changed meanwhile, or the server
+   * refused the stale `?projectId=` (#1368 — the notice is shown instead).
+   */
+  async function ensureSession(): Promise<AISession | null> {
+    if (session) return session;
+    const gen = scopeGenRef.current;
+    let pending = pendingCreateRef.current;
+    if (!pending || pending.gen !== gen) {
+      pending = { gen, promise: createInScope(gen) };
+      pendingCreateRef.current = pending;
+    }
+    try {
+      return await pending.promise;
+    } finally {
+      if (pendingCreateRef.current === pending) pendingCreateRef.current = null;
+    }
+  }
+
+  async function createInScope(gen: number): Promise<AISession | null> {
+    try {
+      const agent = await pickSessionAgent(agentKey);
+      if (scopeGenRef.current !== gen) return null;
+      const created = await createSessionWithScope({
+        title: "New Chat",
+        ...sessionAgentInput(agent.selection, pickerProjectId),
+        // A single projectId in the URL wins; otherwise the scope selector's.
+        ...(effectiveProjectId
+          ? { projectId: effectiveProjectId }
+          : scope.mode === "selected" && scope.projectIds.length > 0
+            ? { projectIds: scope.projectIds }
+            : {}),
+      });
+      if (scopeGenRef.current !== gen) return null;
+      setSessionScope(created.scope);
+      if (created.scope?.reason === "stale-project" && effectiveProjectId) {
+        // #1368 — not sent: the user is told first and re-sends in the
+        // selector's scope; the notice survives the reset this causes.
+        keepScopeNoticeRef.current = true;
+        setRejectedProjectId(effectiveProjectId);
+        return null;
+      }
+      setSession(created.session);
+      // Set now, not on the next render: this send's transcript re-read checks
+      // it, and may land before React has rendered the new session.
+      sessionIdRef.current = created.session.id;
+      storeActiveSessionId(created.session.id);
+      if (agent.dropped ?? created.droppedAgentRef) fallBackToDefaultAgent();
+      // #1368 — any other degraded scope blocks the send (see `scopeBlocked`):
+      // the turn is not sent, the notice is shown and the composer keeps the text.
+      if (created.scope?.degraded) return null;
+      return created.session;
+    } catch (err) {
+      if (scopeGenRef.current === gen) setError((err as Error).message);
+      return null;
+    }
+  }
+
   function handleNewChat() {
     abortRef.current?.abort();
     storeActiveSessionId(null);
+    scopeGenRef.current += 1;
+    pendingCreateRef.current = null;
     setMessages([]);
     setError(null);
     setCompactionNote(null);
     // Per-session UI state is reset here AND in the session-load effect; a
     // read-only notice left over from a resumed session would lock the new one.
     setReadOnlyReason(null);
+    setSessionScope(null);
     setSession(null);
-    void (async () => {
-      try {
-        const agent = await pickSessionAgent(agentKey);
-        const created = await createSessionWithScope({
-          title: "New Chat",
-          ...sessionAgentInput(agent.selection, pickerProjectId),
-          ...(effectiveProjectId
-            ? { projectId: effectiveProjectId }
-            : scope.mode === "selected" && scope.projectIds.length > 0
-              ? { projectIds: scope.projectIds }
-              : {}),
-        });
-        setSession(created.session);
-        setSessionScope(created.scope);
-        storeActiveSessionId(created.session.id);
-        if (agent.dropped ?? created.droppedAgentRef) fallBackToDefaultAgent();
-      } catch (err) {
-        setError((err as Error).message);
-      }
-    })();
+    resetToolActivity();
+    setReady(true);
+    // #1139 — the new session is created by the first send, not here.
+    inputRef.current?.focus();
   }
-
   function handleAgentChange(next: string | null) {
     setAgentNotice(null);
     storeAgentKey(next);
@@ -302,17 +379,35 @@ export default function ChatPage() {
   // the user picked. `main` let the turn run anyway and disclosed it afterwards,
   // by which point the model had already answered from the wrong corpus. The
   // send is now refused while the notice is on screen, so the user is told
-  // BEFORE the turn, not after it.
-  const scopeBlocked = Boolean(sessionScope?.degraded);
+  // BEFORE the turn, not after it. (#1139 — a stale `?projectId=` notice has no
+  // session behind it and blocks nothing: the next send uses the selector.)
+  const scopeBlocked = Boolean(sessionScope?.degraded) && session !== null;
   // #149 — a read-only session keeps its transcript but refuses new turns.
   const sendBlocked = scopeBlocked || readOnlyReason !== null;
 
-  async function handleSend() {
-    if (!session || !input.trim() || streaming || sendBlocked) return;
+  /**
+   * Send `text` (the composer's, by default). #1139 — the session is created
+   * here on the first send; a turn that failed is re-sent through `retryTurn`.
+   */
+  async function handleSend(text: string = input) {
+    // PR #1234 review — `streaming` is this render's value, so two sends in one
+    // tick (a double Enter) would both pass it; the ref is set at once.
+    if (!ready || !text.trim() || streaming || sendingRef.current || sendBlocked) return;
+    sendingRef.current = true;
+    setStreaming(true);
+    setError(null);
+    const active = await ensureSession();
+    // The create failed, the scope changed, or the server refused the scope:
+    // the composer keeps what the user typed.
+    if (!active) {
+      sendingRef.current = false;
+      setStreaming(false);
+      return;
+    }
     const userMsg: DisplayMessage = {
       id: crypto.randomUUID(),
       role: "user",
-      content: input,
+      content: text,
     };
     const assistantMsg: DisplayMessage = {
       id: crypto.randomUUID(),
@@ -321,9 +416,7 @@ export default function ChatPage() {
     };
     setMessages([...messages, userMsg, assistantMsg]);
     resetToolActivity();
-    setInput("");
-    setStreaming(true);
-    setError(null);
+    if (text === input) setInput("");
     const controller = new AbortController();
     abortRef.current = controller;
     // #422 — whether the server accepted the turn (see the Workbench, #390).
@@ -331,7 +424,7 @@ export default function ChatPage() {
     try {
       // #136 — only the new message goes up; the server holds the history.
       for await (const ev of streamChat(
-        session.id,
+        active.id,
         userMsg.content,
         controller.signal,
         undefined,
@@ -348,15 +441,17 @@ export default function ChatPage() {
       const aborted = controller.signal.aborted || (err as Error)?.name === "AbortError";
       if (!aborted) setError((err as Error).message);
     } finally {
+      sendingRef.current = false;
       setStreaming(false);
       setQueueNote(null);
+      setRetryNote(null);
       abortRef.current = null;
       // #136 — re-render from the server transcript: it is the record, and it
       // carries the ordinals "fork from here" needs. #212 — only what changed:
       // the rows after the last one this page already held (this turn's, and a
       // compaction summary), plus the compaction state of held rows a summary
       // folded. A failed read keeps what is on screen.
-      const sessionId = session.id;
+      const sessionId = active.id;
       const afterOrdinal = lastHeldOrdinal(messages);
       void getTranscriptSince(sessionId, afterOrdinal)
         .then((delta) => {
@@ -369,15 +464,38 @@ export default function ChatPage() {
       // has actually happened, so the widget reflects real chat activity.
       // #422 — only an accepted turn: a refused send stored nothing.
       if (accepted) {
+        // #1139 — by title: the one the server now holds. A new chat is named
+        // after its first question (the server's rule, same inputs); a later
+        // turn or a resumed session keeps its stored title.
+        const label = sessionTitleAfterTurn(
+          active.title,
+          userMsg.content,
+          !messages.some((m) => m.role === "user"),
+        );
+        if (label !== active.title) {
+          setSession((prev) => (prev?.id === active.id ? { ...prev, title: label } : prev));
+        }
         recentTracker.touch({
           kind: "session",
-          id: session.id,
-          label: session.title || "Chat",
-          href: `/chat?sessionId=${encodeURIComponent(session.id)}`,
-          ...(session.projectId ? { projectId: session.projectId } : {}),
+          id: active.id,
+          label,
+          href: `/chat?sessionId=${encodeURIComponent(active.id)}`,
+          ...(active.projectId ? { projectId: active.projectId } : {}),
         });
       }
     }
+  }
+
+  /**
+   * #1139 — ask the failed turn's question again. The failed reply stays in
+   * the transcript, marked incomplete, so nothing the user saw is lost.
+   */
+  function retryTurn(assistantIndex: number) {
+    const question = messages
+      .slice(0, assistantIndex)
+      .reverse()
+      .find((m) => m.role === "user")?.content;
+    if (question) void handleSend(question);
   }
 
   // #139 — start a new session from this reply, keeping model, agent and skills.
@@ -420,7 +538,19 @@ export default function ChatPage() {
             : null,
         );
         break;
+      case "retry":
+        // #1139 — the dropped attempt's text is taken back; the answer
+        // continues from the last completed step.
+        setRetryNote(ev.message);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMsgId ? { ...m, content: m.content.slice(0, ev.keepChars) } : m,
+          ),
+        );
+        break;
       case "delta":
+        // The retried answer is arriving: the "asking again" note has done its job.
+        setRetryNote(null);
         setMessages((prev) =>
           prev.map((m) =>
             m.id === assistantMsgId ? { ...m, content: m.content + ev.content } : m,
@@ -504,8 +634,12 @@ export default function ChatPage() {
                 <span className="text-sm text-muted-foreground">
                   {session.provider} · {session.model}
                 </span>
+              ) : ready ? (
+                <span className="text-sm text-muted-foreground" data-testid="chat-new-session-hint">
+                  New chat — starts when you send
+                </span>
               ) : (
-                <span className="text-sm text-muted-foreground">starting session…</span>
+                <span className="text-sm text-muted-foreground">loading…</span>
               )}
             </div>
           }
@@ -514,7 +648,13 @@ export default function ChatPage() {
         {/* #18 — a session with no project runs no retrieval; say so before the
             turn. A degraded scope has its own notice (and blocks the send). */}
         <UngroundedScopeNotice
-          show={Boolean(session) && !session?.projectId && !scopeBlocked && readOnlyReason === null}
+          show={
+            ready &&
+            // #1139 — before the first send, the scope the session will get.
+            !(session ? session.projectId : pickerProjectId) &&
+            !scopeBlocked &&
+            readOnlyReason === null
+          }
         />
         {agentNotice ? (
           <p role="status" data-testid="chat-agent-fallback-notice" className="text-sm">
@@ -533,6 +673,11 @@ export default function ChatPage() {
         {queueNote ? (
           <p role="status" data-testid="chat-queue-note" className="text-xs text-muted-foreground">
             {queueNote}
+          </p>
+        ) : null}
+        {retryNote ? (
+          <p role="status" data-testid="chat-retry-note" className="text-xs text-muted-foreground">
+            {retryNote}
           </p>
         ) : null}
         {compactionNote ? (
@@ -568,12 +713,10 @@ export default function ChatPage() {
               <div>
                 <h2 className="text-lg font-semibold">How can I help you today?</h2>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {session
-                    ? "Ask a question, or start from one of these:"
-                    : "Starting your session…"}
+                  {ready ? "Ask a question, or start from one of these:" : "Loading your chat…"}
                 </p>
               </div>
-              {session ? (
+              {ready ? (
                 <div className="grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2">
                   {SUGGESTED_PROMPTS.map((s) => (
                     <button
@@ -591,7 +734,7 @@ export default function ChatPage() {
             </div>
           ) : (
             <ul className="space-y-3">
-              {messages.map((m) =>
+              {messages.map((m, i) =>
                 m.role === "summary" ? (
                   <li
                     key={m.id}
@@ -652,6 +795,23 @@ export default function ChatPage() {
                         Incomplete answer — {m.incomplete}
                       </p>
                     ) : null}
+                    {/* #1139 — a failed turn keeps its partial answer and can be asked again. */}
+                    {m.role === "assistant" &&
+                    (m.incomplete || m.isError) &&
+                    i === messages.length - 1 &&
+                    !streaming &&
+                    !sendBlocked ? (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="mt-1"
+                        onClick={() => retryTurn(i)}
+                        data-testid="chat-retry-turn"
+                      >
+                        Retry
+                      </Button>
+                    ) : null}
                     {m.role === "assistant" &&
                     m.ordinal !== undefined &&
                     !streaming &&
@@ -697,14 +857,14 @@ export default function ChatPage() {
             }
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            disabled={!session || streaming || sendBlocked}
+            disabled={!ready || streaming || sendBlocked}
           />
           {streaming ? (
             <Button type="button" variant="destructive" onClick={handleStop}>
               Stop
             </Button>
           ) : (
-            <Button type="submit" disabled={!session || !input.trim() || sendBlocked}>
+            <Button type="submit" disabled={!ready || !input.trim() || sendBlocked}>
               Send
             </Button>
           )}

@@ -11,6 +11,7 @@ const getTranscriptSince = vi.fn();
 const state = vi.hoisted(() => ({
   projectId: null as string | null,
   events: [] as unknown[],
+  scope: { mode: "all", projectIds: [] } as { mode: "all" | "selected"; projectIds: string[] },
 }));
 
 vi.mock("next/navigation", () => ({
@@ -55,7 +56,7 @@ vi.mock("@/components/chat/loaded-skills-panel", () => ({ LoadedSkillsPanel: () 
 vi.mock("@/components/chat/project-scope-selector", () => ({
   ProjectScopeSelector: () => null,
   useProjectScope: () => ({
-    scope: { mode: "all", projectIds: [] },
+    scope: state.scope,
     setScope: vi.fn(),
     hydrated: true,
   }),
@@ -70,6 +71,7 @@ beforeEach(() => {
   getTranscriptSince.mockReset();
   state.projectId = null;
   state.events = [];
+  state.scope = { mode: "all", projectIds: [] };
 });
 
 async function send(text: string) {
@@ -89,6 +91,9 @@ describe("chat page — grounding (#18)", () => {
 
   it("shows no such notice for a session bound to a project", async () => {
     state.projectId = "p1";
+    // #1139 — before the first send there is no session: the notice follows
+    // the scope the session will be created in.
+    state.scope = { mode: "selected", projectIds: ["p1"] };
     render(<ChatPage />);
     await waitFor(() =>
       expect(screen.getByLabelText("Message")).not.toHaveProperty("disabled", true),
