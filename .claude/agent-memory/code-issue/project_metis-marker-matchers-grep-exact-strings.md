@@ -31,3 +31,5 @@ the same path are matched somewhere else.
   longer exact-matches. Spec-kit's `<!-- metis: generated from plan.md vN -->` stamp
   (`server/src/lib/spec-kit/plan-provenance.ts`, `ui/src/lib/spec-kit-display.ts`) is a separate
   marker the shared pattern does not match (space after the colon) and is still exact.
+- `hasCriteriaFlag` matters on its own only when someone edits a requirement's criteria. In `planClarificationBlock`, `canonicalizeCriteriaFlag` canonicalises `previous` first, so a test through `planClarificationBlock` passes even with an exact-string `hasCriteriaFlag`. Test the tolerant helpers through `clarification-criteria-flag.ts` or `requirement-version-service.ts`.
+- Known gap (#1237): the shared pattern's `\s*` also matches newlines. A marker split across lines is detected but not cleared by the line-by-line `clearCriteriaFlag`. In CRLF bodies, `lines[at+1] === ""` never matches `"\r"`.

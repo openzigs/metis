@@ -119,3 +119,9 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Docs-gen drop retry + ledger](project_docs-gen-drop-retry-and-ledger.md) — 2 drop checks; wrap test providers
 - [Prisma on SQLite + Postgres](project_prisma-cross-database.md) — LOWER() not mode:insensitive; PG suite step
 - [METIS markers: two matchers](project_metis-marker-matchers-grep-exact-strings.md) — variant fix: grep every exact metis: match
+- [Requirement writers + re-sync](project_requirement-history-writers-and-resync.md) — actorId null; expectedVersion; no-bump decisions (#1222)
+- [Widening access to members](project_membership-access-widening-checklist.md) — live-user lists; revocation points; audit names (#1233)
+- [Reader BRD traps](project_reader-brd-traps.md) — prompt override; opener regex; per-run rows; synth records (#1228)
+- [Chat withholding + retry](project_chat-tool-withholding-and-stream-retry.md) — first-send session; lookup before gate (#1234)
+- [Mapper subject rule](project_mapper-subject-rule-traps.md) — blast radius re-adds; stopwords; -es plural (#1227)
+- [Check-set read timing](project_check-set-read-timing.md) — CodeQL late/early; e2e-outcome vs shard; CLA skip
