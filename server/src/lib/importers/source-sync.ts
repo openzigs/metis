@@ -40,6 +40,18 @@ export interface SourceContent {
   labels: string[];
 }
 
+/**
+ * The fields a source system owns: exactly what the fingerprint covers. Only a
+ * person's edit to one of these makes a pre-#1220 row "edited" — story points
+ * or acceptance criteria are METIS's own and never in conflict with the source.
+ */
+export const SOURCE_OWNED_FIELDS = ["title", "body", "type", "priority", "labels"] as const;
+
+/** Whether a version row's changed fields touch a {@link SOURCE_OWNED_FIELDS} field. */
+export function touchesSourceOwnedField(changedFields: Record<string, unknown>): boolean {
+  return SOURCE_OWNED_FIELDS.some((f) => Object.prototype.hasOwnProperty.call(changedFields, f));
+}
+
 /** The source's newer content, held while a row is diverged from it. */
 export interface SourcePending extends SourceContent {
   /** {@link sourceFingerprint} of this content. */

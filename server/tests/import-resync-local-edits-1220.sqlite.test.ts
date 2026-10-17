@@ -567,6 +567,48 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(applied.sourceFingerprint).toMatch(/^v1:/);
     });
 
+    it("rows imported before the fingerprint: only an edit to what the source owns counts, and a pre-#770 bump does", async () => {
+      issues = [ghIssue(72), ghIssue(73)];
+      await sync();
+      const pointsOnly = await importedId(72);
+      const legacy = await importedId(73);
+      // #72 — a person edited only METIS's own field (story points): a version
+      // row with an actor, but nothing the source owns.
+      expect((await edit(pointsOnly, { storyPoints: 5, version: 0 })).status).toBe(200);
+      expect(await versionsOf(pointsOnly)).toHaveLength(1);
+      // #73 — an edit from before #770 recorded history: a bump with no rows.
+      await db.requirement.update({
+        where: { id: legacy },
+        data: { body: "Edited before history existed", version: 2 },
+      });
+      expect(await versionsOf(legacy)).toHaveLength(0);
+      await db.requirement.updateMany({
+        where: { id: { in: [pointsOnly, legacy] } },
+        data: { sourceFingerprint: null },
+      });
+      issues = [
+        ghIssue(72, { body: "Changed upstream" }),
+        ghIssue(73, { body: "Changed upstream" }),
+      ];
+
+      const run = await sync();
+
+      expect(run).toMatchObject({ updatedCount: 1, divergedCount: 1 });
+      // Story points are not the source's, so its change simply applies.
+      expect(await row(pointsOnly)).toMatchObject({
+        body: "Changed upstream",
+        storyPoints: 5,
+        sourcePending: null,
+      });
+      // The legacy bump is a person's edit (#1162's rule): flagged, not overwritten.
+      const flagged = await row(legacy);
+      expect(flagged).toMatchObject({ body: "Edited before history existed", version: 2 });
+      expect(JSON.parse(flagged.sourcePending!)).toMatchObject({
+        body: "Changed upstream",
+        baselineUnknown: true,
+      });
+    });
+
     it("after Keep mine, the requirement set is protected from replacement by a re-synthesis (#769)", async () => {
       // Each in its own analysis, so nothing else in the set counts as review work.
       const setUp = async (n: number) => {
