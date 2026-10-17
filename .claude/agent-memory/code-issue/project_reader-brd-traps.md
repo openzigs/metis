@@ -30,4 +30,10 @@ Collected from #1214, #1226 (#1223), #1228 (#1218) and the #1074 Sonnet run (202
 - `DOCS_GEN_ANTHROPIC_CLAIM_MODEL` and `_JUDGE_MODEL` pin model names and must be swapped along with the provider.
 - A cancelled document cannot be exported.
 
+**Run selection and staleness (#1230).**
+- The run read is `defaultRequirementsRunIdFor` (`analysis/requirement-runs.ts`), the shared `defaultRequirementsRunId` rule the hub also calls. Do not add a second run query.
+- The approved list is a reader BRD's input-snapshot item `approvedRequirements` (`generation-inputs.ts`). Changing what it hashes changes every reader BRD's fingerprint, so each auto-update reader BRD regenerates once.
+- That item is rechecked mid-run by `inputsStand`. An approval during a reader BRD generation stops the run with `inputs-changed`; this is intended, not a bug.
+- A requirement writer must call `noteRequirementsChanged` after commit. PATCH, PUT and review verdicts do; promote, change-analysis and import do not (yet).
+
 Related: [[docs-gen-drop-retry-and-ledger]], [[redos-fix-ships-beside-new-pattern-fuzz-all]].

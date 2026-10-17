@@ -3,6 +3,7 @@ import { prisma } from "../prisma.js";
 import { assertEvidencePolicy, type EvidencePolicy } from "./evidence-policy.js";
 import { filterPrimaryEvidence } from "./evidence-filter.js";
 import {
+  APPROVED_REQUIREMENTS_ITEM,
   fingerprintInputs,
   inputHash,
   type GenerationInputSnapshot,
@@ -20,6 +21,11 @@ import { loadRepositorySources, resolveSourcePath } from "./repository-sources.j
 import { SQL_SCAN_DIR_CAP } from "./module-grouping.js";
 import { loadAIConfig } from "../ai/config.js";
 import { isJunkSourcePath } from "@metis/shared";
+import {
+  approvedRequirementsFacts,
+  loadApprovedRequirements,
+  readsApprovedRequirements,
+} from "./approved-requirements-section.js";
 
 /** #855 — registry keys that bound a run's spend without changing its output. */
 const RUN_CEILING_KEYS: ReadonlySet<string> = new Set([
@@ -334,6 +340,19 @@ export async function captureGenerationInputs(
     prompt: PHASE1_PROMPT_VERSION,
     tuningEnv,
   });
+  // #1230 — a reader-layout BRD lists the project's approved requirements
+  // (#1218), so they are among its inputs: approving, un-approving or editing
+  // one changes this item, and the document is stale on the same terms as a
+  // code change (the auto-update check queues a run). A run in progress does
+  // NOT stop for it (`withRunStableItemsOf`): the section is rendered without
+  // a model. Hashed from the rendered fields, so the review status, which no
+  // version row records (#1162), counts like any edit, and a code-link change,
+  // which the section does not show, does not count.
+  if (readsApprovedRequirements(doc)) {
+    items[APPROVED_REQUIREMENTS_ITEM] = hash(
+      approvedRequirementsFacts(await loadApprovedRequirements(doc.projectId)),
+    );
+  }
   for (const [key, values] of entries) {
     values.sort().forEach((value, index) => {
       items[`${key}:${index}`] = value;

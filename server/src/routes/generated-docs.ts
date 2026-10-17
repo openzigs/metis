@@ -99,6 +99,8 @@ import {
 } from "../lib/docs-gen/generated-doc-provenance.js";
 import {
   isGraphRowsOnlyChange,
+  isRunStableItem,
+  withRunStableItemsOf,
   planRegeneration,
   type GenerationInputSnapshot,
 } from "../lib/docs-gen/regeneration-plan.js";
@@ -1292,8 +1294,10 @@ export async function generateDocumentAsync(
       rowPolicy: Parameters<typeof captureGenerationInputs>[1],
     ): Promise<boolean> => {
       if (!inputSnapshot) return true;
-      const fresh = await captureGenerationInputs(row, rowPolicy);
       const standsFor = upgrade.acknowledged?.snapshot ?? inputSnapshot;
+      // #1230 — approving or editing a requirement mid-run does not stop the
+      // run: the approved-requirements item is compared as the run captured it.
+      const fresh = withRunStableItemsOf(await captureGenerationInputs(row, rowPolicy), standsFor);
       if (fresh.fingerprint === standsFor.fingerprint) return true;
       if (!isGraphRowsOnlyChange(standsFor, fresh)) return false;
       // A run's own capture always records its graphs: no "older record" here.
@@ -1585,7 +1589,11 @@ export async function generateDocumentAsync(
         if (
           inputSnapshot &&
           Object.keys({ ...inputSnapshot.items, ...afterResearch.items }).some(
-            (key) => key !== "web" && inputSnapshot!.items[key] !== afterResearch.items[key],
+            (key) =>
+              key !== "web" &&
+              // #1230 — nor for an approval landing during the research.
+              !isRunStableItem(key) &&
+              inputSnapshot!.items[key] !== afterResearch.items[key],
           )
         ) {
           throw new Error("Generation inputs changed during web research");

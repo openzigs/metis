@@ -954,7 +954,7 @@ Business Rules (12k, at the catalogue rules' faithfulness bar and with their min
 inventory) and Requirements Reconstructed from the Code (16k, `RC-n`, under a fixed METIS
 lead-in saying they are inferred from the code and are not the approved requirements; #1218:
 when the project has approved requirements, the section is **Approved Requirements**: those of
-the newest completed run that has any, rendered from the stored rows by `approved-requirements-section.ts` with no model call, whole
+the run the Requirements hub opens on (#1230), rendered from the stored rows by `approved-requirements-section.ts` with no model call, whole
 requirements only, within its share of the main part, then a pointer to the full list). Each
 is a single-call section of the topic plan asking for its own target, 48k together. Then
 comes `# Appendix: Module-by-Module Detail`, holding the catalogue sections unchanged

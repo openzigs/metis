@@ -167,6 +167,11 @@ const promoteApprovedRequirements = vi.hoisted(() =>
 vi.mock("../src/lib/analysis/promote-requirements.js", () => ({
   promoteApprovedRequirements,
 }));
+// #1230 — a promoted set asks the reader-BRD staleness check to look again.
+const noteRequirementsChanged = vi.hoisted(() => vi.fn(async (_ids: readonly string[]) => {}));
+vi.mock("../src/lib/docs-gen/approved-requirements-staleness.js", () => ({
+  noteRequirementsChanged,
+}));
 
 import {
   estimateStoryPoints,
@@ -819,6 +824,8 @@ describe("generateDrafts", () => {
 
       expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis_1");
       expect(summary.features).toBe(2);
+      // #1230 — the promoted rows may be what a reader BRD lists.
+      expect(noteRequirementsChanged).toHaveBeenCalledWith(saved.map((r) => r.id));
     });
 
     it("says the approved requirements could not be promoted — never that they were rejected", async () => {

@@ -60,6 +60,8 @@ export * from "./agents.js";
 export * from "./zod-patch.js";
 // #1170 — METIS's internal requirement-body markers, removed wherever a body is shown.
 export * from "./metis-markers.js";
+// #1230 — the run the Requirements hub opens on and a reader BRD reads.
+export * from "./requirements-run.js";
 
 export const SHARED_PACKAGE_NAME = "@metis/shared";
 

@@ -19,6 +19,7 @@ const state = vi.hoisted(() => ({
   parseManifest: vi.fn(),
   generate: vi.fn(),
   warn: vi.fn(),
+  layout: vi.fn(),
   beforeReset: null as (() => void) | null,
 }));
 
@@ -99,6 +100,10 @@ vi.mock("../../src/lib/docs-gen/generated-doc-provenance.js", () => ({
   parseGeneratedDocVersionManifest: state.parseManifest,
 }));
 vi.mock("../../src/routes/generated-docs.js", () => ({ generateDocumentAsync: state.generate }));
+vi.mock("../../src/lib/docs-gen/brd-layout.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/lib/docs-gen/brd-layout.js")>()),
+  readBrdLayoutSetting: state.layout,
+}));
 
 import { prisma } from "../../src/lib/prisma.js";
 import {
@@ -162,6 +167,7 @@ beforeEach(() => {
   state.policy.mockResolvedValue({ actor: { userId: "u" } });
   state.snapshot.mockResolvedValue(current);
   state.generate.mockResolvedValue(undefined);
+  state.layout.mockReturnValue({ layout: "reader" });
   makeQueue();
 });
 
@@ -189,6 +195,34 @@ describe("regeneration durable payload #1356", () => {
     { fingerprint: "" },
   ])("rejects invalid fencing fields %j", (bad) => {
     expect(regenerationTaskSchema.safeParse({ ...valid, ...bad }).success).toBe(false);
+  });
+});
+
+describe("a requirement change checks only the documents that list approved requirements (#1230)", () => {
+  const brd = { ...document, id: "brd", scope: "full", scopeFilter: "{}" };
+  const architecture = {
+    ...document,
+    id: "arch",
+    scope: "full",
+    scopeFilter: '{"docType":"architecture"}',
+  };
+
+  it("captures inputs for reader BRDs alone, and for every document otherwise", async () => {
+    makeQueue(0);
+    state.findDocs.mockResolvedValue([architecture, brd]);
+    await checkIncrementalRegeneration("p", undefined, { approvedRequirementsOnly: true });
+    expect(state.snapshot.mock.calls.map(([doc]) => doc.id)).toEqual(["brd"]);
+    state.snapshot.mockClear();
+    await checkIncrementalRegeneration("p");
+    expect(state.snapshot.mock.calls.map(([doc]) => doc.id)).toEqual(["arch", "brd"]);
+  });
+
+  it("captures nothing under the catalogue layout", async () => {
+    makeQueue(0);
+    state.layout.mockReturnValue({ layout: "catalogue" });
+    state.findDocs.mockResolvedValue([architecture, brd]);
+    await checkIncrementalRegeneration("p", undefined, { approvedRequirementsOnly: true });
+    expect(state.snapshot).not.toHaveBeenCalled();
   });
 });
 

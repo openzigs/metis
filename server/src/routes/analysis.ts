@@ -141,6 +141,18 @@ import {
   describeCrossProjectRefusal,
 } from "../lib/publishing/cross-project-guard.js";
 import { PublishError } from "../lib/publishing/finding-publisher.js";
+import { noteProjectRequirementsChanged } from "../lib/docs-gen/approved-requirements-staleness.js";
+
+/**
+ * Promote an analysis's approved requirements (#1104) and, when rows were
+ * written, ask the reader-BRD check to look again (#1230): the promoted set is
+ * a run's requirements, and may move the run the Requirements hub opens on.
+ */
+async function promoteAndNote(analysisId: string, projectId: string): Promise<PromotionOutcome> {
+  const promotion = await promoteApprovedRequirements(analysisId);
+  if (promotion.status === "promoted") void noteProjectRequirementsChanged(projectId);
+  return promotion;
+}
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -1303,7 +1315,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // that already succeeded, it is reported on the response instead.
       let promotion: PromotionOutcome;
       try {
-        promotion = await promoteApprovedRequirements(analysisId);
+        promotion = await promoteAndNote(analysisId, projectId);
       } catch {
         promotion = {
           status: "unavailable",
@@ -1348,7 +1360,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
 
       let promotion: PromotionOutcome;
       try {
-        promotion = await promoteApprovedRequirements(analysisId);
+        promotion = await promoteAndNote(analysisId, projectId);
       } catch {
         promotion = {
           status: "unavailable",
@@ -1411,7 +1423,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // even when promotion fails, and the outcome is reported, not thrown.
       let promotion: PromotionOutcome;
       try {
-        promotion = await promoteApprovedRequirements(analysisId);
+        promotion = await promoteAndNote(analysisId, projectId);
       } catch {
         promotion = {
           status: "unavailable",
@@ -1461,7 +1473,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
 
       let promotion: PromotionOutcome;
       try {
-        promotion = await promoteApprovedRequirements(analysisId);
+        promotion = await promoteAndNote(analysisId, projectId);
       } catch {
         promotion = {
           status: "unavailable",

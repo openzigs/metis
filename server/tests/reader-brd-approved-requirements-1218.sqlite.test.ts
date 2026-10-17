@@ -56,7 +56,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
       // Older and newer runs of this project around the one the section reads:
       // an older completed run (superseded), a newer completed run with no
-      // approved requirement, and a newer run that is still running.
+      // live requirement (only a deleted one), and a newer run that is still
+      // running. #1230 — the run read is the Requirements hub's default.
       const run = (id: string, status: string, day: string) =>
         db.analysis.create({
           data: {
@@ -104,9 +105,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         reviewStatus: "approved",
         analysisId: "run-older",
       });
-      await req("newer-run-draft", PROJECT, {
-        reviewStatus: "draft",
+      await req("newer-run-deleted", PROJECT, {
+        reviewStatus: "approved",
         analysisId: "run-newer-unapproved",
+        deletedAt: new Date(),
       });
       await req("running-run-approved", PROJECT, {
         reviewStatus: "approved",
@@ -137,8 +139,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite?.cleanup();
     });
 
-    it("selects the live, approved requirements of the newest completed run that has any, highest priority first", async () => {
-      // Not the superseded run's, the running run's, or the newer run's drafts.
+    it("selects the live, approved requirements of the hub's default run, highest priority first", async () => {
+      // Not the superseded run's, the running run's, or the newer empty run's.
       const rows = await loadApprovedRequirements(PROJECT);
       expect(rows.map((r) => r.id)).toEqual(["mine-approved-critical", "mine-approved-low"]);
       expect(rows[0].codeMappings).toEqual([]);
