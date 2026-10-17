@@ -31,6 +31,7 @@ import {
   latestRequirementApprovals,
   planApprovedRequirementSet,
   type AmbiguousPromotionMatch,
+  type SharedPromotionMatch,
 } from "./approved-requirement-set.js";
 import { applyClarificationsToRequirements } from "./clarification-enrichment.js";
 import { describePromotionGate } from "./promotion-gate.js";
@@ -39,6 +40,8 @@ import {
   appendPromotionMatching,
   promotionMatchingRecord,
   readPromotionMatchingRecord,
+  sharedCriteriaRecords,
+  sharedRowsByStructuredId,
   withoutGivenItems,
 } from "./promotion-matching.js";
 import { computeCoverageForRequirements } from "./requirement-coverage.js";
@@ -151,6 +154,8 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
   const toPromote: SynthesisOutput = plan ? plan.output : (synthesis as SynthesisOutput);
   // #1204 — the approved requirements the title join could not decide.
   const ambiguous: AmbiguousPromotionMatch[] = plan?.ambiguous ?? [];
+  // #1203 — the approved requirements whose criteria an item wrote for several.
+  const shared: SharedPromotionMatch[] = plan?.shared ?? [];
   // Parallel to `toPromote.requirements` on the reviewed path (same filter, same order).
   const promotedStructuredIds = reviewed
     ? structured.filter((r) => approvedIds.has(r.id)).map((r) => r.id)
@@ -181,6 +186,7 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
         structuredRunId,
         approvedAt,
         ambiguous,
+        shared,
         itemsGivenTo: (ids) => itemsGivenTo({ structured, ids, synthesis }),
       });
       if (appended === "superseded") return { status: "unavailable", reason: SUPERSEDED_REASON };
@@ -254,8 +260,10 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
     promotionStatus: "allowed",
     ...(reviewed ? { promotedStructuredIds, promotedStructuredRunId: structuredRunId } : {}),
     // #1204 — written on every replacement, so an earlier set's record is cleared.
+    // #1203 — and which rows share criteria, on the same replacement.
     promotionMatching: promotionMatchingRecord(
       ambiguousPromotionRecords(ambiguous, requirementIds),
+      sharedCriteriaRecords(shared, requirementIds),
     ),
   });
 
@@ -321,6 +329,8 @@ async function appendNewlyApproved(input: {
   approvedAt: ReadonlyMap<string, Date | null>;
   /** #1204 — the approved requirements the title join could not decide. */
   ambiguous: readonly AmbiguousPromotionMatch[];
+  /** #1203 — the approved requirements whose criteria an item wrote for several. */
+  shared: readonly SharedPromotionMatch[];
   /** #1204 — the synthesis items the set promoted with `ids` gave its rows. */
   itemsGivenTo: (ids: ReadonlySet<string>) => ReadonlySet<number>;
 }): Promise<number | "superseded"> {
@@ -430,13 +440,23 @@ async function appendNewlyApproved(input: {
       rowIdByApprovedIndex[approvedIdx] = ids[k];
     });
     const earlierIds = new Set(recorded ?? input.promotedStructuredIds.filter((_, i) => !isNew(i)));
-    const promotionMatching = appendPromotionMatching(
-      readPromotionMatchingRecord(lockedMetadata.promotionMatching),
-      ambiguousPromotionRecords(
+    const earlierMatching = readPromotionMatchingRecord(lockedMetadata.promotionMatching);
+    // #1203 — the appended rows' shared criteria, linked to siblings an earlier
+    // promotion wrote; an earlier row's note gains the link to an appended one.
+    const promotionMatching = appendPromotionMatching(earlierMatching, {
+      ambiguous: ambiguousPromotionRecords(
         withoutGivenItems(input.ambiguous, input.itemsGivenTo(earlierIds)),
         rowIdByApprovedIndex,
       ),
-    );
+      shared: sharedCriteriaRecords(
+        input.shared,
+        rowIdByApprovedIndex,
+        sharedRowsByStructuredId(earlierMatching),
+      ),
+      rowsByStructuredId: new Map(
+        newIdx.map((approvedIdx, k) => [input.promotedStructuredIds[approvedIdx] ?? "", ids[k]!]),
+      ),
+    });
     await tx.analysis.update({
       where: { id: input.analysisId },
       data: {

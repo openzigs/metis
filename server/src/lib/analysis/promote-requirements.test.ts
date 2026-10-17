@@ -245,7 +245,12 @@ describe("#1104 B — promoting the requirements the approval gate withheld", ()
       promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 0 },
       promotionStatus: "allowed",
       // #1204 — written even when empty, so an earlier set's record is cleared.
-      promotionMatching: { ambiguousCount: 0, ambiguous: [], updatedAt: expect.any(String) },
+      promotionMatching: {
+        ambiguousCount: 0,
+        ambiguous: [],
+        shared: [],
+        updatedAt: expect.any(String),
+      },
     });
   });
 
@@ -652,7 +657,12 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
       promotionStatus: "allowed",
       promotedStructuredIds: ["REQ-1", "REQ-3"],
       promotedStructuredRunId: null,
-      promotionMatching: { ambiguousCount: 0, ambiguous: [], updatedAt: expect.any(String) },
+      promotionMatching: {
+        ambiguousCount: 0,
+        ambiguous: [],
+        shared: [],
+        updatedAt: expect.any(String),
+      },
     });
   });
 
@@ -936,7 +946,12 @@ describe("#909 — promoted ids are scoped to the extraction run", () => {
       // #939 — the appended row is the checkpoint's approval, recorded with it.
       checkpointApprovedRequirementIds: ["rq_new_1"],
       // #1204 — the append records its rows' refusals (none here) in the same write.
-      promotionMatching: { ambiguousCount: 0, ambiguous: [], updatedAt: expect.any(String) },
+      promotionMatching: {
+        ambiguousCount: 0,
+        ambiguous: [],
+        shared: [],
+        updatedAt: expect.any(String),
+      },
     });
   });
 
@@ -1056,6 +1071,7 @@ describe("#1204 — promotion records each requirement the title join refused", 
         promotionMatching: {
           ambiguousCount: 1,
           ambiguous: [{ requirementId: "rq_1", structuredId: "REQ-1", candidates: BOTH }],
+          shared: [],
           updatedAt: expect.any(String),
         },
       }),
@@ -1091,6 +1107,7 @@ describe("#1204 — promotion records each requirement the title join refused", 
     expect(recordOf()).toEqual({
       ambiguousCount: 2,
       ambiguous: [earlier, { requirementId: "rq_new_1", structuredId: "REQ-1", candidates: BOTH }],
+      shared: [],
       updatedAt: expect.any(String),
     });
   });
@@ -1133,6 +1150,7 @@ describe("#1204 — promotion records each requirement the title join refused", 
         { requirementId: "rq_new_1", structuredId: "REQ-3", candidates: onlyY },
         { requirementId: "rq_new_2", structuredId: "REQ-4", candidates: onlyY },
       ],
+      shared: [],
       updatedAt: expect.any(String),
     });
   });
@@ -1160,6 +1178,185 @@ describe("#1204 — promotion records each requirement the title join refused", 
     const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
 
     expect(outcome).toEqual({ status: "promoted", requirementCount: 1 });
-    expect(recordOf()).toEqual({ ambiguousCount: 0, ambiguous: [], updatedAt: expect.any(String) });
+    expect(recordOf()).toEqual({
+      ambiguousCount: 0,
+      ambiguous: [],
+      shared: [],
+      updatedAt: expect.any(String),
+    });
+  });
+});
+describe("#1203 — promotion records which requirements share criteria", () => {
+  const structuredReq = (id: string, title: string) => ({
+    id,
+    title,
+    description: `${title}.`,
+    type: "functional",
+    stakeholders: [],
+    priority: "should-have",
+    ambiguities: [],
+    evidenceNeeds: [],
+    rawSource: "",
+  });
+  const item = (title: string, structuredIds: string[], acceptanceCriteria: string[]) => ({
+    type: "feature",
+    title,
+    body: title,
+    priority: "medium",
+    labels: [],
+    acceptanceCriteria,
+    evidenceFindingIndexes: [],
+    structuredIds,
+  });
+  const GROUP = ["Logging out ends every session.", "A reset ends every session."];
+  const ALONE = ["Subscriptions export as OPML."];
+  const TITLES: Record<string, string> = {
+    "REQ-0": "Rate limit the public API",
+    "REQ-1": "Flush sessions on logout",
+    "REQ-2": "Flush sessions on reset",
+    "REQ-3": "Flush sessions on revoke",
+    "REQ-4": "Export subscriptions as OPML",
+  };
+  const sib = (structuredId: string, requirementId: string | null, approved = true) => ({
+    structuredId,
+    title: TITLES[structuredId]!,
+    requirementId,
+    approved,
+  });
+  const shared = (
+    requirementId: string,
+    structuredId: string,
+    sharedWith: ReturnType<typeof sib>[],
+  ) => ({
+    requirementId,
+    structuredId,
+    sharedWith,
+    sharedCriteria: GROUP,
+    promotedCriteria: GROUP,
+  });
+  const recordOf = () =>
+    (
+      JSON.parse(db.analysis?.metadata ?? "{}") as {
+        promotionMatching?: { shared?: unknown };
+      }
+    ).promotionMatching;
+  const writtenMatching = () =>
+    (
+      persistAnalysisEnhancement.mock.calls.at(-1) as unknown as
+        [string, { promotionMatching?: { shared?: unknown } }] | undefined
+    )?.[1].promotionMatching;
+
+  beforeEach(() => {
+    db.structured = {
+      requirements: Object.entries(TITLES).map(([id, title]) => structuredReq(id, title)),
+    };
+    db.synthesisOutput = JSON.stringify({
+      summary: "s",
+      requirements: [
+        item("Flush sessions", ["REQ-1", "REQ-2", "REQ-3"], GROUP),
+        item("OPML export", ["REQ-4"], ALONE),
+      ],
+    });
+  });
+
+  it("a three-requirement item gives each row a note naming the other two; a single one none", async () => {
+    // REQ-0 is rejected and listed FIRST: approved position ≠ reviewed position.
+    db.approvals = [
+      { itemId: "REQ-0", status: "rejected" },
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "REQ-2", status: "approved" },
+      { itemId: "REQ-3", status: "approved" },
+      { itemId: "REQ-4", status: "approved" },
+    ];
+    persistRequirements.mockImplementationOnce(async () => ["rq_1", "rq_2", "rq_3", "rq_4"]);
+
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome).toEqual({ status: "promoted", requirementCount: 4 });
+    expect(writtenMatching()?.shared).toEqual([
+      shared("rq_1", "REQ-1", [sib("REQ-2", "rq_2"), sib("REQ-3", "rq_3")]),
+      shared("rq_2", "REQ-2", [sib("REQ-1", "rq_1"), sib("REQ-3", "rq_3")]),
+      shared("rq_3", "REQ-3", [sib("REQ-1", "rq_1"), sib("REQ-2", "rq_2")]),
+    ]);
+  });
+
+  it("names a sibling that was not approved, with no row", async () => {
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "REQ-2", status: "rejected" },
+      { itemId: "REQ-3", status: "approved" },
+    ];
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(writtenMatching()?.shared).toEqual([
+      shared("rq_1", "REQ-1", [sib("REQ-2", null, false), sib("REQ-3", "rq_2")]),
+      shared("rq_2", "REQ-3", [sib("REQ-1", "rq_1"), sib("REQ-2", null, false)]),
+    ]);
+  });
+
+  it("two successive appends link every row's note to the siblings appended after it", async () => {
+    // 1. Only REQ-1 approved: its note names REQ-2 and REQ-3, neither approved yet.
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "REQ-2", status: "rejected" },
+      { itemId: "REQ-3", status: "rejected" },
+    ];
+    persistRequirements.mockImplementationOnce(async () => ["rq_1"]);
+    await promoteApprovedRequirements(ANALYSIS_ID);
+    const first = writtenMatching();
+    expect(first?.shared).toEqual([
+      shared("rq_1", "REQ-1", [sib("REQ-2", null, false), sib("REQ-3", null, false)]),
+    ]);
+    // What promotion persisted (the enhancement writer is mocked here).
+    db.requirementCount = 1;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({
+        promotedStructuredIds: ["REQ-1"],
+        promotionMatching: first,
+      }),
+    };
+
+    // 2. REQ-2 reopened and approved: appended, and REQ-1's note links to it.
+    db.approvals[1] = { itemId: "REQ-2", status: "approved" };
+    expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+      status: "promoted",
+      requirementCount: 1,
+    });
+    expect(recordOf()?.shared).toEqual([
+      shared("rq_1", "REQ-1", [sib("REQ-2", "rq_new_1"), sib("REQ-3", null, false)]),
+      shared("rq_new_1", "REQ-2", [sib("REQ-1", "rq_1"), sib("REQ-3", null, false)]),
+    ]);
+
+    // 3. REQ-3 too: every note now links to both of its siblings.
+    db.approvals[2] = { itemId: "REQ-3", status: "approved" };
+    expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+      status: "promoted",
+      requirementCount: 1,
+    });
+    expect(recordOf()?.shared).toEqual([
+      shared("rq_1", "REQ-1", [sib("REQ-2", "rq_new_1"), sib("REQ-3", "rq_new_2")]),
+      shared("rq_new_1", "REQ-2", [sib("REQ-1", "rq_1"), sib("REQ-3", "rq_new_2")]),
+      shared("rq_new_2", "REQ-3", [sib("REQ-1", "rq_1"), sib("REQ-2", "rq_new_1")]),
+    ]);
+  });
+
+  it("an append onto a set promoted before #1203 names the earlier sibling without a link", async () => {
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "REQ-2", status: "approved" },
+    ];
+    db.requirementCount = 1;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1"] }),
+    };
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(recordOf()?.shared).toEqual([
+      shared("rq_new_1", "REQ-2", [sib("REQ-1", null, true), sib("REQ-3", null, false)]),
+    ]);
   });
 });

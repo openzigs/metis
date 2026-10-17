@@ -28,7 +28,10 @@ import {
   deriveBodyAcceptanceCriteria,
   extractBodyAcceptanceCriteria as extractCriteriaFromBody,
   renderPublishedConfidenceNote,
+  renderSharedCriteriaIssueNote,
+  sharedCriteriaToMark,
   summarizeSupportPanels,
+  type SharedCriteriaRecord,
   type FindingSupportPanel,
   type RequirementSupportConfidence,
 } from "@metis/shared";
@@ -452,6 +455,9 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   // #490 — every requirement's content key, so a same-titled sibling never
   // falls back onto a draft whose text an exact match in this run will claim.
   const reservedKeys = new Set(requirements.map(requirementKey));
+  // #1203 — which rows share criteria a synthesis item wrote for several. Read
+  // after the rows: generating drafts can promote them, and the record with them.
+  const sharedCriteriaFor = await loadSharedCriteria(opts.projectId, opts.analysisId, live);
 
   // ----- Feature drafts -----
   for (const req of requirements) {
@@ -474,6 +480,7 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
       requirement: req,
       parentTitle: epicTitle,
       supportConfidence: confidenceByRequirement.get(req.id) ?? null,
+      sharedCriteria: sharedCriteriaFor(req),
       codeLinks: codeLinks && {
         repo: codeLinks.repo,
         links: codeLinks.byRequirement.get(req.id)?.links ?? [],
@@ -934,6 +941,15 @@ function renderFeatureBody(input: {
    */
   supportConfidence?: RequirementSupportConfidence | null;
   /**
+   * #1203 — the requirement's criteria were written for it and other
+   * requirements together, and the analyst has not edited them since. Omitted
+   * or `null` renders the criteria as before.
+   */
+  sharedCriteria?: {
+    record: SharedCriteriaRecord;
+    titleOf: (requirementId: string) => string | undefined;
+  } | null;
+  /**
    * #1064 — the requirement's persisted code links and the repository they can
    * be linked into. Omitted or `null` leaves the section out; an empty list
    * says in words that no link was recorded.
@@ -946,11 +962,14 @@ function renderFeatureBody(input: {
   } | null;
 }): string {
   const { requirement, parentTitle } = input;
+  const shared = input.sharedCriteria ?? null;
   const acceptance = renderAcceptanceCriteria({
     body: requirement.body,
     acceptanceCriteria: parseAcceptanceCriteria(requirement.acceptanceCriteria),
     cleared: isAcceptanceCriteriaCleared(requirement.acceptanceCriteria),
+    sharedCriteria: shared?.record.sharedCriteria,
   });
+  const sharedNote = shared ? renderSharedCriteriaIssueNote(shared.record, shared.titleOf) : null;
   // #1110 — placed directly under the description and ABOVE the acceptance
   // criteria: a caution a developer reads after the criteria they already
   // started working from is a caution that arrived too late.
@@ -965,6 +984,7 @@ function renderFeatureBody(input: {
     ...(confidenceNote ? [confidenceNote, ``] : []),
     `## Acceptance criteria`,
     ``,
+    ...(sharedNote ? [sharedNote, ``] : []),
     acceptance,
     ``,
     ...(input.codeLinks
@@ -1015,6 +1035,11 @@ function renderAcceptanceCriteria(req: {
   acceptanceCriteria?: string[];
   /** #990 — the user deliberately emptied the list in the editor. */
   cleared?: boolean;
+  /**
+   * #1203 — the criteria shared with other requirements. Marked only when some
+   * of the list is not shared; when all of it is, the note says so instead.
+   */
+  sharedCriteria?: readonly string[];
 }): string {
   const persisted = (req.acceptanceCriteria ?? []).map((c) => c.trim()).filter((c) => c.length > 0);
   // #990 — the editor is the single source: an explicit clear is honoured and
@@ -1023,9 +1048,46 @@ function renderAcceptanceCriteria(req: {
   const criteria =
     persisted.length > 0 ? persisted : req.cleared ? [] : deriveBodyAcceptanceCriteria(req.body);
   if (criteria.length > 0) {
-    return criteria.map((c) => `- [ ] ${c}`).join("\n");
+    const shared = new Set(req.sharedCriteria ?? []);
+    const mark = shared.size > 0 && criteria.some((c) => !shared.has(c));
+    return criteria
+      .map((c) => `- [ ] ${c}${mark && shared.has(c) ? " _(shared)_" : ""}`)
+      .join("\n");
   }
   return NO_ACCEPTANCE_CRITERIA_NOTE;
+}
+
+/**
+ * Issue #1203 — for each requirement, the shared-criteria record to publish
+ * with it: present only while its criteria are still the ones it was promoted
+ * with (once the analyst edits them, the edited list is published plainly).
+ * Siblings are named by their rows' current titles where they have one.
+ */
+async function loadSharedCriteria(
+  projectId: string,
+  analysisId: string,
+  rows: ReadonlyArray<{ id: string; title: string }>,
+): Promise<
+  (req: { id: string; acceptanceCriteria?: string | null }) => {
+    record: SharedCriteriaRecord;
+    titleOf: (requirementId: string) => string | undefined;
+  } | null
+> {
+  const fresh = await prisma.analysis.findFirst({
+    where: { id: analysisId, projectId },
+    select: { metadata: true },
+  });
+  const metadata = parseMetadata(fresh?.metadata ?? null);
+  const titles = new Map(rows.map((r) => [r.id, r.title] as const));
+  const titleOf = (id: string) => titles.get(id);
+  return (req) => {
+    const record = sharedCriteriaToMark(
+      metadata,
+      req.id,
+      parseAcceptanceCriteria(req.acceptanceCriteria ?? null),
+    );
+    return record ? { record, titleOf } : null;
+  };
 }
 
 /**
@@ -1204,6 +1266,8 @@ export const __testing = {
   mapReqTypeToDraftType,
   renderAcceptanceCriteria,
   selectRequirements,
+  // #1203 — the shared-criteria note's per-row resolution.
+  loadSharedCriteria,
   // #1096 — body renderers exercised directly so the acceptance-criteria and
   // sub-issue-id behaviour is testable without a database.
   renderFeatureBody,

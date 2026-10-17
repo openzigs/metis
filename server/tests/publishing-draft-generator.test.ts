@@ -1664,3 +1664,143 @@ describe("#863 — import-run drafts", () => {
     });
   });
 });
+describe("#1203 — a published issue notes criteria shared with other requirements", () => {
+  const GROUP = ["Logging out ends every session.", "A reset ends every session."];
+  const originalMetadata = fakeAnalysis.metadata;
+  const withCriteria = requirements as Array<
+    (typeof requirements)[number] & {
+      acceptanceCriteria?: string | null;
+    }
+  >;
+  const record = (requirementId: string, sharedWith: unknown[], promoted = GROUP) => ({
+    requirementId,
+    structuredId: `S-${requirementId}`,
+    sharedWith,
+    sharedCriteria: GROUP,
+    promotedCriteria: promoted,
+  });
+  const featureBody = (requirementId: string) =>
+    [...drafts.values()].find((d) => d.requirementId === requirementId)?.body ?? "";
+  const generate = () =>
+    generateDrafts({
+      projectId: "proj_1",
+      analysisId: "analysis_1",
+      targetOwner: "acme",
+      targetRepo: "metis",
+    });
+
+  afterEach(() => {
+    fakeAnalysis.metadata = originalMetadata;
+    for (const r of withCriteria) delete r.acceptanceCriteria;
+  });
+
+  function seed(shared: unknown[]): void {
+    fakeAnalysis.metadata = JSON.stringify({
+      promotionMatching: {
+        ambiguousCount: 0,
+        ambiguous: [],
+        shared,
+        updatedAt: "x",
+      },
+    });
+  }
+
+  it("names each sibling by its row's current title, above the unedited criteria", async () => {
+    withCriteria[0]!.acceptanceCriteria = JSON.stringify(GROUP);
+    withCriteria[1]!.acceptanceCriteria = JSON.stringify(GROUP);
+    seed([
+      record("req_1", [
+        {
+          structuredId: "S-req_2",
+          title: "Old title",
+          requirementId: "req_2",
+          approved: true,
+        },
+        {
+          structuredId: "S-9",
+          title: "Revoke tokens",
+          requirementId: null,
+          approved: false,
+        },
+      ]),
+      record("req_2", [
+        {
+          structuredId: "S-req_1",
+          title: "Login form",
+          requirementId: "req_1",
+          approved: true,
+        },
+      ]),
+    ]);
+
+    await generate();
+
+    const body = featureBody("req_1");
+    expect(body).toContain(
+      "> Shared with “Logout button” and “Revoke tokens” (not approved): the analysis wrote these acceptance criteria for the group, so some may belong to those requirements rather than this one.",
+    );
+    // The note sits between the heading and the criteria.
+    expect(body.indexOf("## Acceptance criteria")).toBeLessThan(body.indexOf("> Shared with"));
+    expect(body.indexOf("> Shared with")).toBeLessThan(body.indexOf(`- [ ] ${GROUP[0]}`));
+    expect(body).not.toContain("_(shared)_");
+    expect(featureBody("req_2")).toContain("> Shared with “Login form”:");
+  });
+
+  it("publishes the analyst's edited criteria with no note once they have edited them", async () => {
+    withCriteria[0]!.acceptanceCriteria = JSON.stringify([GROUP[0], "Edited by the analyst."]);
+    seed([
+      record("req_1", [
+        {
+          structuredId: "S-req_2",
+          title: "Logout",
+          requirementId: "req_2",
+          approved: true,
+        },
+      ]),
+    ]);
+
+    await generate();
+
+    const body = featureBody("req_1");
+    expect(body).not.toContain("Shared with");
+    expect(body).toContain("- [ ] Edited by the analyst.");
+  });
+
+  it("marks only the shared criteria when some of the list is the requirement's own", async () => {
+    const own = [...GROUP, "Own criterion."];
+    withCriteria[0]!.acceptanceCriteria = JSON.stringify(own);
+    seed([
+      record(
+        "req_1",
+        [
+          {
+            structuredId: "S-req_2",
+            title: "Logout",
+            requirementId: "req_2",
+            approved: true,
+          },
+        ],
+        own,
+      ),
+    ]);
+
+    await generate();
+
+    const body = featureBody("req_1");
+    expect(body).toContain("> The criteria marked _(shared)_ are shared with “Logout button”:");
+    expect(body).toContain(`- [ ] ${GROUP[0]} _(shared)_`);
+    expect(body).toContain("- [ ] Own criterion.\n");
+  });
+
+  it("adds nothing for a requirement with no record, or a malformed one", async () => {
+    withCriteria[0]!.acceptanceCriteria = JSON.stringify(GROUP);
+    fakeAnalysis.metadata = JSON.stringify({
+      promotionMatching: { shared: [{ nope: 1 }] },
+    });
+
+    await generate();
+
+    expect(featureBody("req_1")).not.toContain("Shared with");
+    expect(featureBody("req_2")).not.toContain("Shared with");
+  });
+});

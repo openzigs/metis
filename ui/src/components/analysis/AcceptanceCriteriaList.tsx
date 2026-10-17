@@ -10,7 +10,14 @@
 export const NO_CRITERIA_MESSAGE =
   "No acceptance criteria were derived — add them before implementation.";
 
-export function AcceptanceCriteriaList({ criteria }: { criteria: string[] }): React.ReactElement {
+export function AcceptanceCriteriaList({
+  criteria,
+  shared,
+}: {
+  criteria: string[];
+  /** #1203 — criteria written for this and other requirements, marked "shared". */
+  shared?: ReadonlySet<string>;
+}): React.ReactElement {
   return (
     <div className="mt-2" data-testid="acceptance-criteria">
       <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -19,7 +26,12 @@ export function AcceptanceCriteriaList({ criteria }: { criteria: string[] }): Re
       {criteria.length > 0 ? (
         <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-foreground">
           {criteria.map((c, i) => (
-            <li key={`${i}-${c.slice(0, 24)}`}>{c}</li>
+            <li key={`${i}-${c.slice(0, 24)}`}>
+              {c}
+              {shared?.has(c.trim()) ? (
+                <span className="ml-1 text-xs text-muted-foreground">(shared)</span>
+              ) : null}
+            </li>
           ))}
         </ul>
       ) : (

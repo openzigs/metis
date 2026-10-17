@@ -27,6 +27,7 @@ import { buildAuditLogData } from "../audit/audit-service.js";
 import { prisma } from "../prisma.js";
 import { dispatchReviewDecision, dispatchReviewSubmitted } from "./notify.js";
 import { noteRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
+import { attachSharedCriteria } from "./review-shared-criteria.js";
 import {
   REVIEW_STATUSES,
   aggregateDecisions,
@@ -785,5 +786,6 @@ export async function getReviewDetail(
     orderBy: { ts: "asc" },
     select: { id: true, action: true, actorId: true, metadata: true, ts: true },
   });
-  return { review, history };
+  // #1203 — the review card marks criteria written for several requirements.
+  return { review: await attachSharedCriteria(review), history };
 }

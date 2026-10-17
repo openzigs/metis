@@ -9,8 +9,13 @@
  * document version diffs are out of scope for this issue.
  */
 import { useQuery } from "@tanstack/react-query";
-import { parseAcceptanceCriteria } from "@metis/shared";
+import { criteriaAsPromoted, parseAcceptanceCriteria } from "@metis/shared";
 import { RequirementBody } from "@/components/analysis/RequirementBody";
+import {
+  requirementCardHref,
+  SharedCriteriaNote,
+  sharedCriteriaMarks,
+} from "@/components/analysis/SharedCriteriaNote";
 import { Card } from "@/components/ui/card";
 import { historyApi } from "@/lib/history-api";
 import { queryKeys } from "@/lib/query-keys";
@@ -76,7 +81,7 @@ export function ReviewItemCard({ item }: { item: ReviewItem }) {
         </p>
       ) : snapshot ? (
         <>
-          <PinnedContent snapshot={snapshot} />
+          <PinnedContent snapshot={snapshot} shared={item.sharedCriteria ?? null} />
           {entry ? (
             <div className="space-y-1">
               <h4 className="text-xs font-semibold text-muted-foreground">
@@ -106,10 +111,20 @@ export function ReviewItemCard({ item }: { item: ReviewItem }) {
 }
 
 /** The pinned body, acceptance criteria and metadata of a requirement snapshot. */
-function PinnedContent({ snapshot }: { snapshot: Record<string, unknown> }) {
+function PinnedContent({
+  snapshot,
+  shared,
+}: {
+  snapshot: Record<string, unknown>;
+  /** #1203 — the item's shared-criteria record, if promotion wrote one. */
+  shared: NonNullable<ReviewItem["sharedCriteria"]> | null;
+}) {
   const criteria = parseAcceptanceCriteria(
     typeof snapshot.acceptanceCriteria === "string" ? snapshot.acceptanceCriteria : null,
   );
+  // #1203 — marked only while the PINNED criteria are still the promoted ones.
+  const record = shared && criteriaAsPromoted(shared.record, criteria) ? shared.record : null;
+  const marks = sharedCriteriaMarks(record, criteria);
   return (
     <>
       {/* #998 — the pinned body is Markdown and carries METIS block markers; its
@@ -122,9 +137,21 @@ function PinnedContent({ snapshot }: { snapshot: Record<string, unknown> }) {
           <h4 className="text-xs font-semibold text-muted-foreground">Acceptance criteria</h4>
           <ul className="list-disc space-y-0.5 pl-5 text-sm">
             {criteria.map((c, i) => (
-              <li key={i}>{c}</li>
+              <li key={i}>
+                {c}
+                {marks.has(c.trim()) ? (
+                  <span className="ml-1 text-xs text-muted-foreground">(shared)</span>
+                ) : null}
+              </li>
             ))}
           </ul>
+          <SharedCriteriaNote
+            record={record}
+            criteria={criteria}
+            hrefFor={(id) =>
+              shared ? requirementCardHref(shared.projectId, shared.analysisId, id) : undefined
+            }
+          />
         </div>
       ) : null}
       <SnapshotMeta snapshot={snapshot} />

@@ -69,6 +69,7 @@ import { RequirementsEmptyState } from "@/components/analysis/RequirementsEmptyS
 import { SynthesisDegradedNotice } from "@/components/analysis/SynthesisDegradedNotice";
 import { RequirementReplacementWithheldNotice } from "@/components/analysis/RequirementReplacementWithheldNotice";
 import { AmbiguousMatchNotice } from "@/components/analysis/AmbiguousMatchNotice";
+import { RequirementCriteria } from "@/components/analysis/SharedCriteriaNote";
 import { AddDocumentsPanel } from "@/components/analysis/add-documents-panel";
 import { useRepoNames } from "@/hooks/use-repo-names";
 import { useScrollToAnchor } from "@/hooks/use-scroll-to-anchor";
@@ -97,7 +98,6 @@ import {
   findingConfidenceClasses,
   orderFindingsByConfidence,
 } from "@/components/analysis/SupportPanelBadge";
-import { AcceptanceCriteriaList } from "@/components/analysis/AcceptanceCriteriaList";
 import { VerificationBadge } from "@/components/analysis/VerificationBadge";
 // Issue #1232 — the run's outcome first, then a scannable finding body.
 import {
@@ -675,6 +675,11 @@ export default function AnalysisPage(): React.ReactElement {
   const requestedComments = searchParams?.get("comments") === "1";
   const appliedRequirementLink = useRef<string | null>(null);
   const snapshot = detail.data;
+  // #1203 — a sibling requirement's current title, for the shared-criteria note.
+  const requirementTitleOf = useMemo(() => {
+    const titles = new Map((snapshot?.requirements ?? []).map((r) => [r.id, r.title] as const));
+    return (id: string) => titles.get(id);
+  }, [snapshot]);
   useEffect(() => {
     if (!requestedRequirementId || !snapshot) return;
     const key = `${snapshot.id}:${requestedRequirementId}`;
@@ -1195,7 +1200,16 @@ export default function AnalysisPage(): React.ReactElement {
                           <RequirementConfidenceNote confidence={req.supportConfidence} />
                           {/* #1096 — the real criteria, or an explicit note that
                             none were derived. Never a placeholder. */}
-                          <AcceptanceCriteriaList criteria={req.acceptanceCriteria ?? []} />
+                          {/* #1203 — criteria one grouped item wrote for several
+                            requirements are marked, with links to the others. */}
+                          <RequirementCriteria
+                            metadata={detail.data.metadata}
+                            requirementId={req.id}
+                            criteria={req.acceptanceCriteria ?? []}
+                            projectId={projectId}
+                            analysisId={detail.data.id}
+                            titleOf={requirementTitleOf}
+                          />
                           {/* #1204 — why there are none: the grouped items were too
                             close to call, listed so the criteria can be copied. */}
                           <AmbiguousMatchNotice

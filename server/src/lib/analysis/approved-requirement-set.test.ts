@@ -492,3 +492,144 @@ describe("#1033 — the title fallback refuses a tie instead of breaking it by o
     }
   });
 });
+describe("#1203 — which approved requirements share criteria, from the id join", () => {
+  const R0 = structured("REQ-0", "Rate limit the public API");
+  const R1 = structured("REQ-1", "Flush sessions on logout");
+  const R2 = structured("REQ-2", "Flush sessions on reset");
+  const R3 = structured("REQ-3", "Flush sessions on revoke");
+  const R4 = structured("REQ-4", "Export subscriptions as OPML");
+  const LIST = [R0, R1, R2, R3, R4];
+  const GROUP = ["Logging out ends every session.", "A reset ends every session."];
+  const plan = (approved: string[], items: SynthesizedRequirement[], list = LIST) =>
+    planApprovedRequirementSet({
+      structured: list,
+      approvedIds: new Set(approved),
+      synthesis: { summary: "s", requirements: items },
+    });
+
+  it("an item naming one requirement shares nothing", () => {
+    const out = plan(
+      ["REQ-4"],
+      [
+        synth("OPML", {
+          structuredIds: ["REQ-4"],
+          acceptanceCriteria: ["Exports."],
+        }),
+      ],
+    );
+    expect(out.output.requirements[0]?.acceptanceCriteria).toEqual(["Exports."]);
+    expect(out.shared).toEqual([]);
+  });
+
+  it("an item naming three gives each the other two, keyed by approved position", () => {
+    const out = plan(
+      ["REQ-1", "REQ-2", "REQ-3", "REQ-4"],
+      [
+        synth("Flush", {
+          structuredIds: ["REQ-1", "REQ-2", "REQ-3"],
+          acceptanceCriteria: GROUP,
+        }),
+        synth("OPML", {
+          structuredIds: ["REQ-4"],
+          acceptanceCriteria: ["Exports."],
+        }),
+      ],
+    );
+    const s = (id: string, title: string, approvedIndex: number | null) => ({
+      structuredId: id,
+      title,
+      approvedIndex,
+    });
+    expect(out.shared).toEqual([
+      {
+        structuredId: "REQ-1",
+        approvedIndex: 0,
+        sharedWith: [s("REQ-2", R2.title, 1), s("REQ-3", R3.title, 2)],
+        sharedCriteria: GROUP,
+        promotedCriteria: GROUP,
+      },
+      {
+        structuredId: "REQ-2",
+        approvedIndex: 1,
+        sharedWith: [s("REQ-1", R1.title, 0), s("REQ-3", R3.title, 2)],
+        sharedCriteria: GROUP,
+        promotedCriteria: GROUP,
+      },
+      {
+        structuredId: "REQ-3",
+        approvedIndex: 2,
+        sharedWith: [s("REQ-1", R1.title, 0), s("REQ-2", R2.title, 1)],
+        sharedCriteria: GROUP,
+        promotedCriteria: GROUP,
+      },
+    ]);
+  });
+
+  it("names a sibling that is not approved, and ignores ids no longer in the list", () => {
+    const out = plan(
+      ["REQ-1"],
+      [
+        synth("Flush", {
+          structuredIds: ["REQ-1", "REQ-0", "REQ-99"],
+          acceptanceCriteria: GROUP,
+        }),
+      ],
+    );
+    expect(out.shared).toEqual([
+      {
+        structuredId: "REQ-1",
+        approvedIndex: 0,
+        sharedWith: [{ structuredId: "REQ-0", title: R0.title, approvedIndex: null }],
+        sharedCriteria: GROUP,
+        promotedCriteria: GROUP,
+      },
+    ]);
+    // Only stale ids beside it: nothing shared.
+    expect(
+      plan(
+        ["REQ-1"],
+        [
+          synth("Flush", {
+            structuredIds: ["REQ-1", "REQ-99"],
+            acceptanceCriteria: GROUP,
+          }),
+        ],
+      ).shared,
+    ).toEqual([]);
+  });
+
+  it("marks only the criteria from the shared item when another names the requirement alone", () => {
+    const out = plan(
+      ["REQ-1", "REQ-2"],
+      [
+        synth("Flush", {
+          structuredIds: ["REQ-1", "REQ-2"],
+          acceptanceCriteria: GROUP,
+        }),
+        synth("Logout", {
+          structuredIds: ["REQ-1"],
+          acceptanceCriteria: ["Own criterion."],
+        }),
+      ],
+    );
+    expect(out.shared[0]).toMatchObject({
+      structuredId: "REQ-1",
+      sharedCriteria: GROUP,
+      promotedCriteria: [...GROUP, "Own criterion."],
+    });
+  });
+
+  it("records nothing for a shared item with no criteria", () => {
+    const out = plan(["REQ-1", "REQ-2"], [synth("Flush", { structuredIds: ["REQ-1", "REQ-2"] })]);
+    expect(out.shared).toEqual([]);
+  });
+
+  it("the title fallback is one-to-one and never shares", () => {
+    const out = plan(
+      ["REQ-1", "REQ-4"],
+      [synth("Flush sessions on logout", { acceptanceCriteria: GROUP })],
+    );
+    expect(out.output.requirements[0]?.acceptanceCriteria).toEqual(GROUP);
+    expect(out.shared).toEqual([]);
+  });
+});

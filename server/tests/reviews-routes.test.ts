@@ -17,6 +17,8 @@ const mockPrisma = {
   project: { findUnique: vi.fn() },
   requirement: { findMany: vi.fn(), updateMany: vi.fn() },
   generatedDocument: { findMany: vi.fn() },
+  // #1203 — the review detail reads the analysis's shared-criteria record.
+  analysis: { findMany: vi.fn() },
   generatedDocumentVersion: { findFirst: vi.fn() },
   user: { findMany: vi.fn() },
   reviewRequest: {
@@ -1035,6 +1037,40 @@ describe("GET /reviews/:reviewId", () => {
       expect.objectContaining({
         where: { targetType: "review_request", targetId: "rev-1" },
       }),
+    );
+  });
+
+  it("#1203 — marks a requirement item whose criteria were shared with another requirement", async () => {
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview());
+    mockPrisma.auditLog.findMany.mockResolvedValue([]);
+    const record = {
+      requirementId: "req-1",
+      structuredId: "REQ-1",
+      sharedWith: [
+        { structuredId: "REQ-2", title: "Flush on reset", requirementId: null, approved: false },
+      ],
+      sharedCriteria: ["Logging out ends every session."],
+      promotedCriteria: ["Logging out ends every session."],
+    };
+    mockPrisma.requirement.findMany.mockResolvedValueOnce([{ id: "req-1", analysisId: "an-1" }]);
+    mockPrisma.analysis.findMany.mockResolvedValueOnce([
+      {
+        id: "an-1",
+        metadata: JSON.stringify({ promotionMatching: { ambiguous: [], shared: [record] } }),
+      },
+    ]);
+
+    const res = await request(app).get("/reviews/rev-1");
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.review.items[0].sharedCriteria).toEqual({
+      projectId: "proj-1",
+      analysisId: "an-1",
+      record,
+    });
+    // Scoped to the review's project.
+    expect(mockPrisma.requirement.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: { in: ["req-1"] }, projectId: "proj-1" } }),
     );
   });
 

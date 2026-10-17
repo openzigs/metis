@@ -155,7 +155,11 @@ import {
   latestRequirementApprovals,
   planApprovedRequirementSet,
 } from "./approved-requirement-set.js";
-import { ambiguousPromotionRecords, promotionMatchingRecord } from "./promotion-matching.js";
+import {
+  ambiguousPromotionRecords,
+  promotionMatchingRecord,
+  sharedCriteriaRecords,
+} from "./promotion-matching.js";
 import type { ApprovalType } from "./types/requirements.js";
 import { runSynthesis, type FlatFinding } from "./synthesis.js";
 import { hasAnsweredClarification } from "./clarification-enrichment.js";
@@ -4213,6 +4217,8 @@ export class AnalysisOrchestrator {
           ? {
               promotionMatching: promotionMatchingRecord(
                 ambiguousPromotionRecords(plan?.ambiguous ?? [], requirementIds),
+                // #1203 — which rows share criteria an item wrote for several.
+                sharedCriteriaRecords(plan?.shared ?? [], requirementIds),
               ),
             }
           : {}),

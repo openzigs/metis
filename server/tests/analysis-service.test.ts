@@ -1380,6 +1380,44 @@ describe("persistAnalysisEnhancement + getStructuredRequirements (Epic #922)", (
     expect(meta.promotionBlocked.blocked).toBe(false);
   });
 
+  // #1203 — the shared-criteria record rides inside `promotionMatching`, and a
+  // patch that does not carry it leaves it alone.
+  it("#1203 — persists promotionMatching with its shared entries, kept by unrelated patches", async () => {
+    const a = await createAnalysis({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["document"],
+    });
+    const promotionMatching = {
+      ambiguousCount: 0,
+      ambiguous: [],
+      shared: [
+        {
+          requirementId: "rq_1",
+          structuredId: "REQ-1",
+          sharedWith: [
+            {
+              structuredId: "REQ-2",
+              title: "Flush on reset",
+              requirementId: "rq_2",
+              approved: true,
+            },
+          ],
+          sharedCriteria: ["Logging out ends every session."],
+          promotedCriteria: ["Logging out ends every session."],
+        },
+      ],
+      updatedAt: "2026-10-17T00:00:00.000Z",
+    };
+    await persistAnalysisEnhancement(a.id, { promotionMatching });
+    await persistAnalysisEnhancement(a.id, {
+      promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 0 },
+    });
+
+    const meta = JSON.parse(analyses.get(a.id)!.metadata!);
+    expect(meta.promotionMatching).toEqual(promotionMatching);
+  });
+
   it("#909 — records the extraction run beside the list, and a clarification edit keeps it", async () => {
     const a = await createAnalysis({
       projectId: "proj-abcdefghij",
