@@ -23,6 +23,7 @@ import type { PrismaClient } from "@prisma/client";
 import { BM25Index, tokenizeCode } from "../code-graph/hybrid-search.js";
 import {
   ANALYSIS_LINK_MIN_SHARED_TERMS,
+  ANALYSIS_LINK_SEARCH_OPTIONS,
   Bm25CodeSymbolSearcher,
   MemoizingBm25CodeSymbolSearcher,
   denoiseRequirementQuery,
@@ -750,5 +751,49 @@ describe("path terms are not shared terms (PR #1095 review)", () => {
     expect(names(await seeds.search(TERMINATE, PROJECT))[0]).toBe("InlineKeyboardButton");
     expect(findMany).toHaveBeenCalledTimes(1);
     expect(await links.hasCodeGraph(PROJECT)).toBe(true);
+  });
+});
+
+/**
+ * #1063, reopened after #706 run 9 — the analysis path now passes
+ * `ANALYSIS_LINK_SEARCH_OPTIONS` (the two-term rule plus the subject rules and
+ * no test code). The PR #1095 probes must still hold with it, and the subject
+ * rules may only ever REMOVE links the two-term rule kept.
+ */
+describe("the PR #1095 probes with the analysis path's link options (#1063, run 9)", () => {
+  const full = () => new Bm25CodeSymbolSearcher(fakePrisma().prisma, ANALYSIS_LINK_SEARCH_OPTIONS);
+  const twoTerms = () =>
+    new Bm25CodeSymbolSearcher(fakePrisma().prisma, {
+      minSharedTerms: ANALYSIS_LINK_MIN_SHARED_TERMS,
+    });
+  const TELEGRAM = "internal/integration/telegrambot/client.go::InlineKeyboardButton";
+  const FORCE = "internal/config/options.go::configOptions::ForceRefreshInterval";
+  const PROBES = [
+    TERMINATE,
+    IPV,
+    "Add a button in the web client to terminate all sessions",
+    "Let users go to the client settings",
+    "Force IPv4 or IPv6 per feed in the internal model",
+    "OIDC provider display name",
+    "Keyboard handler should listen for Escape",
+  ];
+
+  it("no probe links InlineKeyboardButton or ForceRefreshInterval", async () => {
+    for (const q of PROBES) {
+      const linked = (await full().search(q, PROJECT, { limit: 50 })).map((h) => h.qualifiedName);
+      expect(linked).not.toContain(TELEGRAM);
+      expect(linked).not.toContain(FORCE);
+    }
+  });
+
+  it("only ever removes links the two-term rule kept, never adds one", async () => {
+    for (const q of PROBES) {
+      const kept = new Set(
+        (await twoTerms().search(q, PROJECT, { limit: 50 })).map((h) => h.qualifiedName),
+      );
+      for (const h of await full().search(q, PROJECT, { limit: 50 })) {
+        expect(kept.has(h.qualifiedName)).toBe(true);
+      }
+    }
   });
 });

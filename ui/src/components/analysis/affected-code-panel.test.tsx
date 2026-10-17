@@ -56,7 +56,9 @@ describe("AffectedCodePanel", () => {
     expect(screen.getByTestId("affected-code-candidate-NR-4")).toHaveTextContent("0 symbols");
     const empty = screen.getByTestId("affected-code-empty-NR-4");
     expect(empty).toHaveTextContent(/No code matched/);
-    expect(empty).toHaveTextContent(/No symbol's name shares two of this requirement's terms/);
+    expect(empty).toHaveTextContent(
+      /No symbol's name shares two of this requirement's terms and its subject/,
+    );
     expect(empty).toHaveTextContent(/nothing is linked rather than showing a weak guess/);
     // The agent's seed list is wider than what is shown (PR #1095 review).
     expect(empty).toHaveTextContent(
@@ -73,6 +75,12 @@ describe("AffectedCodePanel", () => {
       /symbol's name \(with its enclosing type or table, never its file path\)/,
     );
     expect(panel).toHaveTextContent(/callers and importers of a direct match are listed with it/);
+    // #1063 (run 9) — the subject rules and the test-code exclusion are stated.
+    expect(panel).toHaveTextContent(/the symbol must name it too/);
+    expect(panel).toHaveTextContent(
+      /a type or a table column is shown only when the requirement names that type or table/,
+    );
+    expect(panel).toHaveTextContent(/Test code is not shown/);
     expect(panel).toHaveTextContent(/not a probability/);
   });
 

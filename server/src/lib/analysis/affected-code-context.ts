@@ -46,12 +46,13 @@ import {
   PrismaCodeGraphDataSource,
 } from "../impact-analysis/impact-analysis-engine.js";
 import {
-  ANALYSIS_LINK_MIN_SHARED_TERMS,
+  ANALYSIS_LINK_SEARCH_OPTIONS,
   MemoizingBm25CodeSymbolSearcher,
   mapRequirementToCode,
   type RequirementCodeMatch,
 } from "../traceability/requirement-code-mapping.js";
 import type { CodeGraphDataSource } from "../code-graph/query-service.js";
+import { isTestPath } from "../code-graph/test-conventions.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 
 const log = createChildLogger("affected-code-context");
@@ -67,7 +68,9 @@ export function estimateAffectedCodeTokens(text: string): number {
  * It serves TWO readers, and since #1063 they do not get the same list:
  *   - a PERSON reads `result` on the analysis page as "this requirement affects
  *     this code". It carries only links that pass the shared-name-terms rule
- *     ({@link ANALYSIS_LINK_MIN_SHARED_TERMS}); a requirement with none says so.
+ *     (`ANALYSIS_LINK_MIN_SHARED_TERMS`) and, since run 9, the subject
+ *     rules and no test code at any depth ({@link ANALYSIS_LINK_SEARCH_OPTIONS});
+ *     a requirement with none says so.
  *   - the CODE AGENT is seeded with `block` and may cite `filePaths`. Both come
  *     from the mapper WITHOUT that rule, as before #1063: the agent verifies
  *     every seed with its tools, and the rule would have withheld symbols that
@@ -246,10 +249,10 @@ export async function computeAffectedCodeContext(opts: {
   // the links a person is shown need two shared NAME terms, because one shared
   // word linked "terminate all sessions" to a Telegram keyboard button; the code
   // agent's seeds do not, because the rule also drops symbols that are right.
+  // Run 9 added the subject rules and the test-code exclusion to the links only.
   const seedSearcher = new MemoizingBm25CodeSymbolSearcher(prisma);
-  const linkSearcher = seedSearcher.withOptions({
-    minSharedTerms: ANALYSIS_LINK_MIN_SHARED_TERMS,
-  });
+  const linkSearcher = seedSearcher.withOptions(ANALYSIS_LINK_SEARCH_OPTIONS);
+  const mapLinksExcludesTests = ANALYSIS_LINK_SEARCH_OPTIONS.excludeTestCode === true;
   const injectedMapper = opts.deps?.mapRequirement;
   const mapSeeds: MapRequirementFn =
     injectedMapper ??
@@ -279,7 +282,13 @@ export async function computeAffectedCodeContext(opts: {
         // We only want the code-symbol impact here — no schema crossing.
         includeSchemaImpact: false,
       });
-      return impact.affectedSymbols.slice(0, maxSymbols).map((s) => ({
+      // #1063 — a test that calls a linked symbol reaches the blast radius as its
+      // caller; the links a person is shown leave test code out at every depth.
+      const symbols =
+        use === "link" && mapLinksExcludesTests
+          ? impact.affectedSymbols.filter((s) => !isTestPath(s.filePath))
+          : impact.affectedSymbols;
+      return symbols.slice(0, maxSymbols).map((s) => ({
         filePath: s.filePath,
         qualifiedName: s.qualifiedName,
         startLine: s.startLine,

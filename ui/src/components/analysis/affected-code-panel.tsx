@@ -13,7 +13,9 @@
  * confidence. Candidates with no mapped code show an explicit empty state:
  * since #1063 a direct match is shown only when the symbol's NAME (with its
  * enclosing type or table; never its file path) shares two of the
- * requirement's terms, so "no link" is an ordinary, honest outcome. The code
+ * requirement's terms, and since #706 run 9 also its subject (the rules in
+ * `sharesRequirementSubject`, server side) and is not test code, so "no link"
+ * is an ordinary, honest outcome. The code
  * agent's own seed list is wider and is not what this panel shows.
  *
  * Renders nothing when there is no mapping (plain runs / no new requirements /
@@ -51,9 +53,11 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
       <p className="text-xs text-muted-foreground">
         Each new requirement mapped to existing code via Impact Analysis (mapper + blast radius). A
         direct match is shown only when the symbol&apos;s name (with its enclosing type or table,
-        never its file path) shares at least two of the requirement&apos;s terms; callers and
-        importers of a direct match are listed with it. Confidence is relative to the best link for
-        that requirement, not a probability.
+        never its file path) shares at least two of the requirement&apos;s terms and its subject:
+        when the requirement names something the project stores (such as a feed), the symbol must
+        name it too, and a type or a table column is shown only when the requirement names that type
+        or table. Test code is not shown, and callers and importers of a direct match are listed
+        with it. Confidence is relative to the best link for that requirement, not a probability.
         {affectedCode?.truncated
           ? " Some entries were omitted from the analysis prompt for length."
           : ""}
@@ -89,9 +93,9 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
                       className="text-xs text-muted-foreground"
                     >
                       No code matched. No symbol&apos;s name shares two of this requirement&apos;s
-                      terms, so nothing is linked rather than showing a weak guess. The code agent
-                      still investigates it, and may start from weaker candidates that are not shown
-                      here; see the coverage indicator.
+                      terms and its subject, so nothing is linked rather than showing a weak guess.
+                      The code agent still investigates it, and may start from weaker candidates
+                      that are not shown here; see the coverage indicator.
                     </p>
                   ) : (
                     <ul className="space-y-1.5">
