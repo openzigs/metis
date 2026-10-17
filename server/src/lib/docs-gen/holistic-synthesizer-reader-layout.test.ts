@@ -263,7 +263,8 @@ describe("the reader layout's sections", () => {
   it("is a main document then the catalogue sections, unchanged, as its appendix", () => {
     expect(READER.map((g) => g.id)).toEqual([...MAIN_IDS, ...APPENDIX_IDS]);
     // The appendix is the catalogue layout's own sections, unchanged.
-    for (const id of [...APPENDIX_IDS, "capabilities"]) {
+    // (#1223 — the capabilities keep their gating but ask for business language.)
+    for (const id of APPENDIX_IDS) {
       expect(READER.find((g) => g.id === id)).toEqual(CATALOGUE.find((g) => g.id === id));
     }
     expect(MAIN_LABELS).toEqual([

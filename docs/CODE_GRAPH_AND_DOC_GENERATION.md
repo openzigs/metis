@@ -967,6 +967,14 @@ before, so under the default cap the appendix's catalogue is planned the same bu
 for topic. That holds at planning time only, and the layout does not by itself reduce the
 topics left out for length (#995). See `docs/decisions/0021-reader-sized-brd-main-plus-appendix.md`.
 
+**Business language in the main part (#1223).** The #1074 comparison found both DeepSeek
+and Sonnet 5.5 writing Capabilities and the RC criteria as an engineering spec, so the fix
+is in the prompt and a check, not the model. Each main section's prompt carries
+`MAIN_PART_LANGUAGE_RULES` (`main-part-language.ts`), and `findCodeIdentifiers` checks each
+main section as fitted, recording `codeIdentifiers` (count and examples) on its provenance
+section entry. It flags only: a rewrite would be another model call per section, changing
+text after its claims were judged.
+
 **Publication and scope limits.** A committed version queues the separate shared
 publication lifecycle described above. Generation `ready`/`degraded`/`failed`
 is distinct from publication/indexing state; revision fences and deletion cleanup
