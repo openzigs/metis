@@ -4536,29 +4536,96 @@ export async function synthesizeFinalDocument(
       total: groups.length,
     });
     // #1218 — the approved requirements, as stored: rendered by METIS, no
-    // model call, nothing to fact-check and nothing to reuse. Rendered here
-    // within the document cap and again at assembly within the body limit
-    // (which the footnotes decide), so it is never cut mid-requirement.
+    // model call and nothing to fact-check. Rendered here within the document
+    // cap and again at assembly within the body limit (which the footnotes
+    // decide), so it is never cut mid-requirement.
     if (readerLayout && group.approvedRequirements?.length) {
+      const maxChars = approvedRequirementsMaxChars(documentMaxChars);
       const markdown = renderApprovedRequirementsSection(
         group.approvedRequirements,
-        approvedRequirementsMaxChars(documentMaxChars),
+        maxChars,
         renderedCitationLength,
       ).markdown;
+      // #857 — recorded for reuse like any written section, or the document's
+      // `sectionSynthesis` is never complete and every model-written section
+      // is rewritten on the next run. Always rendered afresh (it costs
+      // nothing); the hashes decide only whether it counts as unchanged. They
+      // cover every stored field of every requirement, in order, and the
+      // rendered text itself, so an edit, an approval or a renderer change
+      // makes it `changed`, never a stale reuse.
+      const inputHashes = hashSectionInputs({
+        facts: JSON.stringify(group.approvedRequirements),
+        formulas: "",
+        flow: "",
+        grounding: "",
+        context: JSON.stringify({ projectId, docType, section: group.id, index: gi }),
+        config: JSON.stringify({
+          version: SECTION_SYNTHESIS_VERSION,
+          effective: reuse?.effectiveConfigHash,
+          renderer: APPROVED_REQUIREMENTS_MODEL,
+          providerKind: router.primary.kind,
+          maxChars,
+        }),
+        prompts: markdown,
+      });
+      const previous = previousRecords.get(group.id);
+      const stillValid =
+        previous != null && JSON.stringify(previous.inputs) === JSON.stringify(inputHashes);
+      if (previous && stillValid) resume.reused.push(group.label);
+      else if (previous) {
+        const keys = Object.keys(inputHashes) as Array<keyof SectionInputHashes>;
+        resume.stale.push({
+          section: group.label,
+          changed: keys.filter((key) => previous.inputs[key] !== inputHashes[key]),
+        });
+      }
+      const dropped = carried.delete(group.id);
       approvedRequirementsAt = sectionMarkdowns.length;
       sectionMarkdowns.push(markdown);
       sectionOwners.push(manifestSections.length);
       sectionParts.push(undefined);
-      manifestSections.push({
-        sectionLabel: group.label,
-        sectionIndex: gi,
-        providerKind: router.primary.kind,
-        model: APPROVED_REQUIREMENTS_MODEL,
-        factsSourceIds: [],
-        groundingSourceIds: [],
-      });
+      // `providerKind` names the run's primary provider: no provider wrote this
+      // section (`model` says so), but the manifest schema has no "none" kind.
+      manifestSections.push(
+        previous && stillValid
+          ? previous.metadata
+          : {
+              sectionLabel: group.label,
+              sectionIndex: gi,
+              providerKind: router.primary.kind,
+              model: APPROVED_REQUIREMENTS_MODEL,
+              factsSourceIds: [],
+              groundingSourceIds: [],
+            },
+      );
       contributed.push({ label: group.label, heading: firstH2Heading(markdown) });
-      regeneratedSections.push(group.id);
+      if (previous && stillValid) {
+        synthesisRecords.push(previous);
+        reusedCount += 1;
+        await checkpoint();
+      } else {
+        regeneratedSections.push(group.id);
+        let recorded = false;
+        if (!sharedEscalationEnabled && reuse?.effectiveConfigHash) {
+          try {
+            synthesisRecords.push(
+              recordSectionSynthesis(group.id, inputHashes, {
+                markdown,
+                warnings: [],
+                score: null,
+                metadata: manifestSections[manifestSections.length - 1],
+                evidence: [],
+              }),
+            );
+            recorded = true;
+          } catch {
+            log.warn("Section reuse record incomplete; next synthesis must be full", {
+              section: group.id,
+            });
+          }
+        }
+        if (recorded || dropped) await checkpoint();
+      }
       reportSection({ section: group.label, status: "done", index: gi + 1, total: groups.length });
       continue;
     }

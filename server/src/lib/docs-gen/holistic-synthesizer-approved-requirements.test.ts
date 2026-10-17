@@ -147,7 +147,11 @@ function routerFor(provider: AIProvider): Phase2Router {
 const META = { name: "Fixture", totalFiles: 40, totalSymbols: 900, language: "go" } as never;
 const RECONSTRUCTED = "Requirements Reconstructed from the Code";
 
-function run(provider: AIProvider, approvedRequirements?: readonly ScopedRequirement[]) {
+function run(
+  provider: AIProvider,
+  approvedRequirements?: readonly ScopedRequirement[],
+  previousManifest?: { sectionSynthesis?: unknown },
+) {
   return synthesizeFinalDocument(
     FACTS,
     META,
@@ -159,7 +163,7 @@ function run(provider: AIProvider, approvedRequirements?: readonly ScopedRequire
     undefined,
     undefined,
     undefined,
-    { effectiveConfigHash: "cfg" },
+    { effectiveConfigHash: "cfg", previousManifest: previousManifest as never },
     approvedRequirements ? { approvedRequirements } : undefined,
   );
 }
@@ -341,5 +345,52 @@ describe("a reader-layout document", () => {
     const result = await run(provider, [req(1)]);
     expect(result.markdown).not.toContain(`## ${APPROVED_REQUIREMENTS_HEADING}`);
     expect(result.markdown).not.toContain(APPENDIX_DIVIDER);
+  });
+});
+
+describe("per-section reuse (#857) with approved requirements", () => {
+  it("records the section, so a second identical run reuses every section and is unchanged", async () => {
+    const requirements = [req(1), req(2)];
+    const first = await run(fakeModel(), requirements);
+    expect(first.sectionSynthesis?.complete).toBe(true);
+    const ids = first.sectionSynthesis!.records.map((r) => r.sectionId);
+    expect(ids).toContain("requirements");
+    expect(ids).toHaveLength(first.sections.length);
+
+    const provider = fakeModel();
+    const second = await run(provider, requirements, first);
+    expect(second.regeneration).toEqual({ mode: "unchanged", changed: [] });
+    expect(provider.calls).toEqual([]);
+    expect(second.sectionSynthesis?.complete).toBe(true);
+    expect(second.markdown).toBe(first.markdown);
+  });
+
+  it("re-renders only the requirements when one is edited, never reusing its old text", async () => {
+    const first = await run(fakeModel(), [req(1), req(2)]);
+    const provider = fakeModel();
+    const edited = [req(1, { title: "Retitled by the analyst" }), req(2)];
+    const second = await run(provider, edited, first);
+    expect(second.regeneration).toEqual({
+      mode: "sections",
+      changed: ["requirements"],
+      sections: ["requirements"],
+    });
+    expect(provider.calls).toEqual([]);
+    const section = sectionOf(second.markdown, APPROVED_REQUIREMENTS_HEADING);
+    expect(section).toContain("### R1. Retitled by the analyst");
+    expect(section).not.toContain("Analyst-edited requirement 1");
+    expect(second.resume?.stale.map((s) => s.section)).toEqual([APPROVED_REQUIREMENTS_HEADING]);
+    // The new record replaces the old: a third identical run is unchanged.
+    const third = await run(fakeModel(), edited, second);
+    expect(third.regeneration).toEqual({ mode: "unchanged", changed: [] });
+  });
+
+  it("re-renders the requirements when another is approved", async () => {
+    const first = await run(fakeModel(), [req(1)]);
+    const second = await run(fakeModel(), [req(1), req(2)], first);
+    expect(second.regeneration).toMatchObject({ mode: "sections", changed: ["requirements"] });
+    expect(sectionOf(second.markdown, APPROVED_REQUIREMENTS_HEADING)).toContain(
+      "### R2. Analyst-edited requirement 2",
+    );
   });
 });
