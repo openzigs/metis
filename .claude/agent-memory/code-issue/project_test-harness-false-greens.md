@@ -10,6 +10,7 @@ Seen 2026-09-30:
 - **Helper-only tests miss wiring.** #616 moved the 207 decision into `importStatus()`; every test called the helper, so reverting both route call sites left 215 route tests green. Test through the route.
 - **`fireEvent.change` on a file input always fires**, so it cannot catch "re-selecting the same file does nothing" (#630). `userEvent.upload` skips an unchanged selection, as a browser does.
 - **Parallel PRs copying one type change conflict on merge** even with green CI (#624 copied #616's `MCPImportResponse` change). Run `git merge-tree --write-tree origin/main <head>` after the sibling merges.
+- **A "merge-tree is clean" claim on a stacked PR goes stale as soon as `main` moves** (#1254 was clean at implementation, conflicting at review once #1249 landed). Re-run it at review time, not from the implementer's report.
 
 **Why:** each produced a green signal for a broken or unverified state.
 

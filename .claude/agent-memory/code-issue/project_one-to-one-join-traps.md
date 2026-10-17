@@ -55,3 +55,7 @@ refused and takes no weaker match later. Do not write a second matcher.
   per-append sets did not. Test append-path replays with two successive appends.
 - **Mutate each new branch of a fix** to learn which "fixed" claims are tested: the
   legacy no-recorded-ids append branch failed no test (`recorded ?? []` stayed green).
+- **Synthesis criteria are untrimmed; a row's are trimmed on read (#1203 review).**
+  `z.string().min(1)` vs `parseAcceptanceCriteria`. Any record that stores synthesis criteria
+  for later comparison with a row must trim at write time (`normalizeCriteria`), or a text
+  match against the row silently drops (the issue lost its `_(shared)_` marks).
