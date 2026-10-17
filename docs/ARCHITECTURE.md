@@ -4348,6 +4348,40 @@ contract as Phase 8's repo connectors:
 - `Authorization` headers passed via `payload.headers` are dropped — auth
   must use `payload.authHeader`, which may be a `${vault:label}` reference
   resolved at fire time so secrets never sit in payload JSON.
+- #1235 — a `${vault:…}` `authHeader` is held to the #344 binding rule
+  (`lib/scheduler/webhook-secret-scope.ts`). A job's *binding* is its task
+  type, URL, `projectId` and `authHeader` reference; a write that changes any of
+  them is a binding write. `SchedulerService.createJob` / `updateJob` run
+  `assertWebhookSecretBinding` after the project check, and a binding write
+  judges the caller against the whole resulting binding: without `vault.reveal`
+  they may name only a secret they created, and for everyone the reference must
+  resolve to exactly one live secret (403 `SECRET_BINDING_FORBIDDEN`, audited
+  `vault.binding_refused`; unknown, foreign and ambiguous references get the same
+  body). The judged caller is stored on the job (`webhookBinderId`,
+  `webhookBoundAt`) in the same UPDATE as the binding; a non-binding write
+  carries the pair it read forward, so the row never pairs one writer's binding
+  with another's binder and a lost audit row cannot change who is judged. At
+  fire time the handler runs `resolveWebhookSecret`. The task must carry the
+  job's *current* binding: a task is a snapshot of the job taken at enqueue,
+  replayed by `TaskQueue.retry` and by later attempts, so a task whose URL,
+  project, reference or type differs from the job's is refused
+  (`binding_stale`) before anything else is read. It then judges who that
+  binding rests on: the stored binder, or, for a job never bound since #1235
+  (`webhookBoundAt` NULL), its `createdById` plus every actor in its
+  `scheduled-job.update` audit trail who may have bound it (a pre-#1235 update
+  naming `payload`, `projectId` or `taskType`, or none; a row marking
+  `webhookBinding: true`). That read is bounded by the
+  `audit_logs [targetType, targetId, action]` index, which keeps per-fire rows
+  for the same job out of it. Each principal, at their current role,
+  must be an active, non-deleted user, reach the job's project, and own every
+  secret the reference reaches (or hold `vault.reveal`). The plaintext is
+  decrypted from a re-read of the approved row, only if its `createdById` is
+  unchanged (so a confirmed "Rotate anyway" in between is refused). Any failure,
+  including an unreadable audit trail or a database or decryption error, sends
+  nothing, is audited `scheduler.webhook.secret_refused` with a reason code, and
+  fails the run with one fixed message naming no secret. A `${vault:<label>}`
+  reference resolves by label (before #1235 the default resolver read by id
+  only, so label references failed every run).
 - Audit logs record only the hostname, status code, and method (never the
   URL, headers, or body).
 

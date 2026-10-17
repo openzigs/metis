@@ -16,6 +16,13 @@
  *   route layer also guards each handler — the service exists as a second
  *   barrier so future callers (queue handlers, internal jobs, CLI) can never
  *   accidentally bypass authorization.
+ *
+ *   #1235 — after the project check, a create or update that changes a job's
+ *   binding (task type, URL, project or `authHeader` reference) runs the #344
+ *   binding rule (`assertWebhookSecretBinding`), so a caller without
+ *   `vault.reveal` cannot send a secret they did not create to a URL they
+ *   chose. The judged caller is stored on the job (`webhookBinderId`) in the
+ *   same write as the binding, and is judged again when the job fires.
  */
 import { Cron } from "croner";
 import { audit } from "../audit/audit-service.js";
@@ -26,6 +33,12 @@ import { DURABLE_TASK_TYPES } from "./durable-task-types.js";
 import type { ScheduledJob as PrismaScheduledJob } from "@prisma/client";
 import type { TaskQueue } from "./task-queue.js";
 import { validateCron } from "./cron-validator.js";
+import { assertBindingWriteWindowOpen } from "../vault/binding-write-mark.js";
+import {
+  JOB_UPDATE_ACTION,
+  assertWebhookSecretBinding,
+  webhookBindingChanged,
+} from "./webhook-secret-scope.js";
 import {
   type SchedulerConfig,
   type SchedulerEmitter,
@@ -105,6 +118,15 @@ export class SchedulerService {
     const validation = validateCron(opts.cron, {
       minIntervalSec: this.deps.config.minCronIntervalSec,
     });
+    const binding = actor
+      ? await assertWebhookSecretBinding(
+          { userId: actor.id, role: actor.role },
+          null,
+          { taskType: opts.taskType, payload: opts.payload, projectId: opts.projectId ?? null },
+          { id: opts.key, projectId: opts.projectId ?? null },
+        )
+      : null;
+    assertBindingWriteWindowOpen(binding?.until ?? null);
     const row = await prisma.scheduledJob.create({
       data: {
         key: opts.key,
@@ -117,6 +139,9 @@ export class SchedulerService {
         maxAttempts: opts.maxAttempts ?? 3,
         nextRunAt: validation.nextRun,
         createdById: opts.createdById ?? actor?.id ?? null,
+        // #1235 — the judged binder, stored with the binding it was judged on.
+        // A create with no actor judged nobody: fire time reads the author.
+        ...(actor ? { webhookBinderId: actor.id, webhookBoundAt: new Date() } : {}),
       },
     });
     audit({
@@ -180,26 +205,58 @@ export class SchedulerService {
     if (opts.taskType && !this.deps.registry.get(opts.taskType)) {
       throw new SchedulerError(400, "UNKNOWN_TASK_TYPE", `unknown task type: ${opts.taskType}`);
     }
+    const taskType = opts.taskType ?? existing.taskType;
+    const payload = opts.payload ? JSON.stringify(opts.payload) : existing.payload;
+    const projectId = opts.projectId === undefined ? existing.projectId : opts.projectId;
+    // #1235 — judged on exactly the values written below, so a job cannot be
+    // moved (URL, project or task type) while keeping a secret the caller may
+    // not send there, even when the patch leaves `authHeader` untouched.
+    const beforeShape = {
+      taskType: existing.taskType,
+      payload: parsePayload(existing.payload),
+      projectId: existing.projectId,
+    };
+    const afterShape = { taskType, payload: parsePayload(payload), projectId };
+    const binding = actorObj
+      ? await assertWebhookSecretBinding(
+          { userId: actorObj.id, role: actorObj.role },
+          beforeShape,
+          afterShape,
+          { id, projectId },
+        )
+      : { until: null, bindingChanged: webhookBindingChanged(beforeShape, afterShape) };
+    assertBindingWriteWindowOpen(binding.until);
     const row = await prisma.scheduledJob.update({
       where: { id },
       data: {
         name: opts.name ?? existing.name,
         cron,
-        taskType: opts.taskType ?? existing.taskType,
-        payload: opts.payload ? JSON.stringify(opts.payload) : existing.payload,
-        projectId: opts.projectId === undefined ? existing.projectId : opts.projectId,
+        taskType,
+        payload,
+        projectId,
         enabled: opts.enabled ?? existing.enabled,
         maxAttempts: opts.maxAttempts ?? existing.maxAttempts,
         nextRunAt,
+        // #1235 — the binder is written in the same statement as the binding,
+        // from the same read, so the row never pairs one writer's binding with
+        // another's binder. A binding write records its caller (NULL when there
+        // is none: refused at fire time); any other write carries the pair it
+        // read forward unchanged.
+        ...(binding.bindingChanged
+          ? { webhookBinderId: actorObj?.id ?? null, webhookBoundAt: new Date() }
+          : { webhookBinderId: existing.webhookBinderId, webhookBoundAt: existing.webhookBoundAt }),
       },
     });
     this.unregisterCron(id);
     if (row.enabled && this.startedAt) this.registerCron(row);
     audit({
-      action: "scheduled-job.update",
+      action: JOB_UPDATE_ACTION,
       actor: actorObj?.id ?? null,
       target: { type: "scheduled-job", id: row.id },
-      metadata: { changes: Object.keys(opts) },
+      // #1235 — `webhookBinding` records whether this write bound the job. The
+      // binder fire time judges is the job's `webhookBinderId`, not this row;
+      // the trail is read only for a job never bound since #1235.
+      metadata: { changes: Object.keys(opts), webhookBinding: binding.bindingChanged },
     });
     this.deps.emitter.schedulerStatus({
       jobId: row.id,

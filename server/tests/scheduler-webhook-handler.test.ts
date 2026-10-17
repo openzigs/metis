@@ -20,16 +20,26 @@ vi.mock("../src/lib/connectors/network-allowlist.js", () => ({
       cb(null, "203.0.113.1", 4),
   ),
 }));
-vi.mock("../src/lib/vault/vault-service.js", () => ({
-  getVaultService: () => ({
-    read: vi.fn(async (label: string) => ({ summary: { id: label }, plaintext: "secret-value" })),
-  }),
+// #1235 — the fire-time check and read are tested in
+// webhook-secret-scope-1235.sqlite.test.ts (real database) and
+// webhook-secret-scope-1235.test.ts (each failure path); here they are a spy so
+// the handler's use of the verdict can be pinned.
+const resolveSecret = vi.hoisted(() =>
+  vi.fn(async (_ref: string, _task: unknown) => "secret-value"),
+);
+vi.mock("../src/lib/scheduler/webhook-secret-scope.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/scheduler/webhook-secret-scope.js")>()),
+  resolveWebhookSecret: resolveSecret,
 }));
 
 import {
   createHttpWebhookHandler,
   loadWebhookConfig,
 } from "../src/lib/scheduler/webhook-handler.js";
+import {
+  WEBHOOK_SECRET_REFUSED_MESSAGE,
+  WebhookSecretRefusedError,
+} from "../src/lib/scheduler/webhook-secret-scope.js";
 import type { TaskHandlerContext, TaskRecord } from "../src/lib/scheduler/types.js";
 
 function makeCtx(payload: Record<string, unknown>, signal?: AbortSignal): TaskHandlerContext {
@@ -185,8 +195,53 @@ describe("createHttpWebhookHandler()", () => {
       },
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    await handler(makeCtx({ url: "https://ok.example.com", authHeader: "${vault:my-secret}" }));
+    const ctx = makeCtx({ url: "https://ok.example.com", authHeader: "${vault:my-secret}" });
+    await handler(ctx);
     expect(observed!.authorization).toBe("secret-value");
+    // #1235 — the reference is judged against the task's job before any read.
+    expect(resolveSecret).toHaveBeenLastCalledWith("my-secret", ctx.task);
+  });
+
+  it("#1235: a refused vault reference fails closed — no request, no secret named", async () => {
+    resolveSecret.mockRejectedValueOnce(new WebhookSecretRefusedError());
+    const fetchImpl = vi.fn();
+    const handler = createHttpWebhookHandler({
+      config: {
+        allowedHosts: ["ok.example.com"],
+        maxBytes: 1024,
+        timeoutMs: 500,
+        requireHttps: false,
+      },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const err = await handler(
+      makeCtx({ url: "https://ok.example.com", authHeader: "${vault:other-team-token}" }),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WebhookSecretRefusedError);
+    expect((err as Error).message).toBe(WEBHOOK_SECRET_REFUSED_MESSAGE);
+    expect((err as Error).message).not.toContain("other-team-token");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("#1235: a literal (non-vault) authHeader is sent as-is without a scope check", async () => {
+    resolveSecret.mockClear();
+    let observed: Record<string, string> | null = null;
+    const fetchImpl = vi.fn(async (_url: unknown, init: { headers: Record<string, string> }) => {
+      observed = init.headers;
+      return { status: 200, headers: new Headers(), body: { cancel: async () => undefined } };
+    });
+    const handler = createHttpWebhookHandler({
+      config: {
+        allowedHosts: ["ok.example.com"],
+        maxBytes: 1024,
+        timeoutMs: 500,
+        requireHttps: false,
+      },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await handler(makeCtx({ url: "https://ok.example.com", authHeader: "Bearer fake-literal" }));
+    expect(observed!.authorization).toBe("Bearer fake-literal");
+    expect(resolveSecret).not.toHaveBeenCalled();
   });
 
   it("throws on non-2xx response", async () => {

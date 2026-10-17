@@ -3252,7 +3252,22 @@ The `http-webhook` handler is locked down: hosts must appear on the
 `WEBHOOK_ALLOWED_HOSTS` list, payload size is capped at `WEBHOOK_MAX_BYTES`,
 the request is timed out after `WEBHOOK_TIMEOUT_MS`, and the
 `Authorization` header may be a `${vault:label}` reference resolved at fire
-time so secrets never sit in the saved payload.
+time so secrets never sit in the saved payload. Unless you are an admin, you
+can only name a vault secret you created, and you cannot change the URL or
+project of a job that names someone else's secret (403
+`SECRET_BINDING_FORBIDDEN`). A label must match exactly one secret. The check
+runs again every time the job fires, against whoever last set the job's URL,
+project or secret: if they may no longer use the secret, have been deactivated,
+or no longer have access to the job's project, no request is sent and the run
+fails with "webhook authHeader names a vault secret this job may not use; no
+request was sent". Retrying an older run of a job whose URL, project or secret
+has changed since fails the same way: a retry sends only the job's current
+settings. A job edited before this check by someone who could not use its
+secret also fails this way. An admin clears it by saving a change to the job's
+URL, project or secret reference, which makes the admin the person the job is
+checked against; saving the same values again is not a change and does not
+clear it. A `${vault:label}` reference now resolves by label; before this
+change only a secret id worked. [#1235]
 
 ---
 
