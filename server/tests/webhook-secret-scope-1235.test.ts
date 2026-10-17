@@ -95,6 +95,20 @@ const marked = (actorId: string | null, webhookBinding: boolean) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks leaves mockResolvedValueOnce queues in place, so an unconsumed
+  // once-value leaks into the next test; reset the per-test doubles (not the
+  // vi.mock factory implementations) to drain them.
+  for (const fn of [
+    db.scheduledJob.findUnique,
+    db.auditLog.findMany,
+    db.secret.findMany,
+    db.secret.findFirst,
+    db.user.findUnique,
+    auditSpy,
+    decrypt,
+  ]) {
+    fn.mockReset();
+  }
   roles.clear();
   roles.set("cora", "coordinator");
   roles.set("bob", "coordinator");
