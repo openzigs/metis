@@ -34,9 +34,12 @@ import { createImporter, sourceUsesToken, type ImporterDeps } from "./registry.j
 import type { JiraSearchClient } from "./jira-importer.js";
 import { runImport, type RequirementStore } from "./base-importer.js";
 import type { ImporterFetchContext, MappedRequirement } from "./types.js";
+import { editedInMetisFromHistory, parseSourcePending } from "./source-sync.js";
+import { parseRequirementLabels } from "../analysis/requirement-labels.js";
 import { audit } from "../audit/audit-service.js";
 import {
   RequirementVersionError,
+  parseChangedFields,
   updateRequirementWithHistory,
   type VersionPrismaClient,
 } from "../requirements/requirement-version-service.js";
@@ -154,6 +157,9 @@ type ImportRunRow = {
   createdCount: number;
   updatedCount: number;
   skippedCount: number;
+  /** #1220 — absent on rows written by test fakes that predate the columns. */
+  keptLocalCount?: number;
+  divergedCount?: number;
   totalFetched: number;
   errorMessage: string | null;
   startedAt: Date | null;
@@ -670,6 +676,8 @@ export class ImportService {
           createdCount: result.created,
           updatedCount: result.updated,
           skippedCount: result.skipped,
+          keptLocalCount: result.keptLocal,
+          divergedCount: result.diverged,
           totalFetched: result.total,
           completedAt: this.now(),
         },
@@ -684,6 +692,8 @@ export class ImportService {
         importSourceId,
         created: result.created,
         updated: result.updated,
+        keptLocal: result.keptLocal,
+        diverged: result.diverged,
         skipped: result.skipped,
       });
       // Issue #424 — terminal success drives the success toast (#423 useJobToast)
@@ -692,7 +702,7 @@ export class ImportService {
         "import-sync",
         run.id,
         row.projectId,
-        `Imported ${result.created} new, ${result.updated} updated from ${row.label}`,
+        importRunSummary(result, row.label),
       );
       return toRunView(completed);
     } catch (err) {
@@ -765,8 +775,51 @@ export class ImportService {
       async findByExternal(projectId, externalSource, externalId) {
         const existing = await prisma.requirement.findFirst({
           where: { projectId, externalSource, externalId, deletedAt: null },
+          select: {
+            id: true,
+            title: true,
+            body: true,
+            type: true,
+            priority: true,
+            labels: true,
+            sourceFingerprint: true,
+            sourcePending: true,
+            externalUrl: true,
+            importSourceId: true,
+            version: true,
+          },
         });
-        return existing ? { id: existing.id } : null;
+        if (!existing) return null;
+        // #1220 — only a row synced before the fingerprint needs History's
+        // evidence of an edit (see `editedInMetisFromHistory`); read it then only.
+        let editedInMetis = false;
+        if (existing.sourceFingerprint == null) {
+          const rows = await prisma.requirementVersion.findMany({
+            where: { requirementId: existing.id },
+            select: { version: true, changedFields: true, reason: true },
+          });
+          editedInMetis = editedInMetisFromHistory(
+            existing.version,
+            rows.map((r) => ({ ...r, changedFields: parseChangedFields(r.changedFields) })),
+            IMPORT_RESYNC_VERSION_REASON,
+          );
+        }
+        return {
+          id: existing.id,
+          local: {
+            title: existing.title,
+            body: existing.body,
+            type: existing.type,
+            priority: existing.priority,
+            labels: parseRequirementLabels(existing.labels),
+          },
+          sourceFingerprint: existing.sourceFingerprint ?? null,
+          sourcePending: parseSourcePending(existing.sourcePending),
+          externalUrl: existing.externalUrl ?? null,
+          importSourceId: existing.importSourceId ?? null,
+          version: existing.version,
+          editedInMetis,
+        };
       },
       async create(input) {
         const created = await prisma.requirement.create({
@@ -782,6 +835,7 @@ export class ImportService {
             externalId: input.externalId,
             externalUrl: input.externalUrl,
             importSourceId: input.importSourceId,
+            sourceFingerprint: input.sourceFingerprint,
           },
         });
         return { id: created.id };
@@ -791,20 +845,19 @@ export class ImportService {
        * version history: a changed issue appends a version row, an unchanged
        * one writes nothing (it used to rewrite every row on every sync).
        *
-       * Conflicts: the write is unversioned, so the source system wins as it
-       * always has — but a concurrent analyst edit is no longer lost from the
-       * record. The service re-reads and re-diffs on top of the winner's row
-       * (bounded retries), so the analyst's edit stays in the history as its
-       * own version and the overwrite is the next one, restorable either way.
-       * A row that keeps losing, or is deleted mid-run, is skipped and logged:
-       * the next sync retries it, and the rest of the run is not failed.
+       * Conflicts (#1220): the write is versioned at the row the re-sync
+       * decided from (`expectedVersion`), so a concurrent analyst save wins and
+       * is never overwritten: this returns `conflict`, and `runImport` reads
+       * the row and decides again. A row that is deleted mid-run, or loses
+       * twice, is skipped and logged: the next sync decides it afresh, and the
+       * rest of the run is not failed.
        *
        * Each row is its own transaction (read, conditional write, version row).
        * The run as a whole is not one transaction and never was: it streams
        * pages from the source API, and holding a write transaction across those
        * network calls would lock the database for the length of the import.
        */
-      async update(id, input) {
+      async update(id, input, expectedVersion) {
         try {
           await updateRequirementWithHistory(prisma as unknown as VersionPrismaClient, {
             requirementId: id,
@@ -818,9 +871,18 @@ export class ImportService {
             untrackedData: {
               externalUrl: input.externalUrl,
               importSourceId: input.importSourceId,
+              // #1220 — the row now equals the source it was synced to.
+              sourceFingerprint: input.sourceFingerprint,
+              sourcePending: null,
             },
+            // The source never carries METIS's hidden traceability labels; keep
+            // them, as "Take the source version" does (#1220).
+            keepHiddenLabels: true,
             actorId: null,
             reason: IMPORT_RESYNC_VERSION_REASON,
+            // #1220 — only onto the row the re-sync decided from: an analyst
+            // save since that read wins, and the row is decided again.
+            expectedVersion,
           });
         } catch (err) {
           if (!(err instanceof RequirementVersionError)) throw err;
@@ -829,9 +891,29 @@ export class ImportService {
             importSourceId: input.importSourceId,
             reason: err.code,
           });
-          return { id, skipped: true };
+          return { id, skipped: true, conflict: err.code === "VERSION_CONFLICT" };
         }
         return { id };
+      },
+      // #1220 — sync-state columns only: untracked, so `version` (and with it
+      // every review pinned to this requirement) is untouched.
+      async recordSourceSync(id, write) {
+        await prisma.requirement.updateMany({
+          where: { id, deletedAt: null },
+          // Named untracked keys only (the #1162 write guard). Prisma leaves a
+          // column alone when its value is `undefined`.
+          data: {
+            sourceFingerprint: write.sourceFingerprint,
+            sourcePending:
+              write.sourcePending === undefined
+                ? undefined
+                : write.sourcePending === null
+                  ? null
+                  : JSON.stringify(write.sourcePending),
+            externalUrl: write.externalUrl,
+            importSourceId: write.importSourceId,
+          },
+        });
       },
       async setParent(childId: string, parentId: string) {
         await prisma.requirement.update({ where: { id: childId }, data: { parentId } });
@@ -891,6 +973,23 @@ function toPreview(m: MappedRequirement): MappedRequirementPreview {
   };
 }
 
+/**
+ * Issue #1220 — the run's completion message: what was created and updated,
+ * and — only when there were any — the analyst edits it kept and the rows it
+ * left diverged from their source.
+ */
+export function importRunSummary(
+  result: { created: number; updated: number; keptLocal: number; diverged: number },
+  label: string,
+): string {
+  const parts = [`${result.created} new`, `${result.updated} updated`];
+  if (result.keptLocal > 0) {
+    parts.push(`kept ${result.keptLocal} local ${result.keptLocal === 1 ? "edit" : "edits"}`);
+  }
+  if (result.diverged > 0) parts.push(`${result.diverged} diverged from source`);
+  return `Imported ${parts.join(", ")} from ${label}`;
+}
+
 function toRunView(row: ImportRunRow): ImportRunView {
   return {
     id: row.id,
@@ -902,6 +1001,8 @@ function toRunView(row: ImportRunRow): ImportRunView {
     createdCount: row.createdCount,
     updatedCount: row.updatedCount,
     skippedCount: row.skippedCount,
+    keptLocalCount: row.keptLocalCount ?? 0,
+    divergedCount: row.divergedCount ?? 0,
     totalFetched: row.totalFetched,
     errorMessage: row.errorMessage,
     startedAt: row.startedAt ? row.startedAt.toISOString() : null,

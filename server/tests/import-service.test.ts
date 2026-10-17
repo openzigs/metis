@@ -10,6 +10,7 @@ import {
   getImportService,
   __resetImportService,
   intervalToCron,
+  importRunSummary,
   type ImportServiceDeps,
 } from "../src/lib/importers/import-service.js";
 
@@ -111,12 +112,18 @@ function makePrisma() {
           where,
           data,
         }: {
-          where: { id: string; version: number };
+          where: { id: string; version?: number };
           data: Record<string, unknown>;
         }) => {
           const row = requirement.get(where.id);
-          if (!row || row.version !== where.version) return { count: 0 };
-          requirement.set(where.id, { ...row, ...data });
+          // A version condition only when the write carries one (#1220's
+          // sync-state write does not); `undefined` leaves a column alone, as
+          // in Prisma.
+          if (!row || (where.version !== undefined && row.version !== where.version)) {
+            return { count: 0 };
+          }
+          const set = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
+          requirement.set(where.id, { ...row, ...set });
           return { count: 1 };
         },
       ),
@@ -501,10 +508,15 @@ describe("ImportService.runSource", () => {
     const first = await svc.runSource("src_1", { runId: "run_seed" });
     expect(first.id).toBe("run_seed");
     expect(first.createdCount).toBe(2);
-    // Re-run: the two requirements already exist → update path.
+    // Re-run: the two requirements already exist, and neither side changed
+    // (#1220): nothing is rewritten, nothing kept or diverged.
     const second = await svc.runSource("src_1", { trigger: "manual" });
-    expect(second.updatedCount).toBe(2);
-    expect(second.createdCount).toBe(0);
+    expect(second).toMatchObject({
+      createdCount: 0,
+      updatedCount: 0,
+      keptLocalCount: 0,
+      divergedCount: 0,
+    });
   });
 });
 
@@ -544,7 +556,9 @@ describe("#1162 — import re-sync writes through version history", () => {
     issues[0] = { ...issues[0], title: "Issue 1, renamed", body: "new body" };
     const second = await svc.runSource("src_1", { trigger: "manual" });
 
-    expect(second.updatedCount).toBe(2);
+    // #1220 — only the issue that changed upstream is applied; the other is
+    // left alone (neither side changed), so it is not counted as updated.
+    expect(second).toMatchObject({ updatedCount: 1, keptLocalCount: 0, divergedCount: 0 });
     const [changed, unchanged] = rows(ctx);
     expect(changed).toMatchObject({ title: "Issue 1, renamed", body: "new body", version: 1 });
     expect(unchanged).toMatchObject({ title: "Issue 2", version: 0 });
@@ -573,7 +587,7 @@ describe("#1162 — import re-sync writes through version history", () => {
     expect(versions(ctx)).toHaveLength(0);
   });
 
-  it("an analyst edit landing mid-sync is kept in the history and the run still completes", async () => {
+  it("an analyst edit landing mid-sync is never overwritten: the row is decided again and flagged (#1220)", async () => {
     const issues = [ghIssue(1), ghIssue(2)];
     const ctx = makeDeps();
     ctx.deps.importerDeps = { ...ctx.deps.importerDeps!, fetchFn: githubFetch(issues) };
@@ -604,13 +618,14 @@ describe("#1162 — import re-sync writes through version history", () => {
     const run = await svc.runSource("src_1", { trigger: "manual" });
 
     expect(run.status).toBe("completed");
-    // Re-sync is "the source system wins", as before — but the analyst's edit
-    // stays in the history as its own version, and the overwrite is the next one.
-    expect(rows(ctx)[0]).toMatchObject({ body: "upstream body", version: 2 });
-    const sync = versions(ctx).find((v) => v.version === 2)!;
-    expect(JSON.parse(sync.changedFields as string)).toEqual({
-      body: { from: "analyst edit", to: "upstream body" },
-    });
+    // #1220 — the write was conditional on the version the decision was made
+    // from, so it lost to the analyst's save; read again, the row is edited AND
+    // its source changed, so it is diverged, not overwritten.
+    expect(run).toMatchObject({ updatedCount: 0, divergedCount: 1 });
+    const after = rows(ctx)[0]!;
+    expect(after).toMatchObject({ body: "analyst edit", version: 1 });
+    expect(JSON.parse(after.sourcePending as string)).toMatchObject({ body: "upstream body" });
+    expect(versions(ctx).find((v) => v.version === 2)).toBeUndefined();
   });
 
   it("skips a row that keeps losing to concurrent edits instead of failing the run", async () => {
@@ -958,5 +973,19 @@ describe("#763 — vault secret and unauthenticated GitHub import", () => {
     const { source } = await svc.createSource("p1", { ...ghFilter, token: "ghp_x" }, "user_1");
     await svc.deleteSource("p1", source.id, "user_1");
     expect(ctx.vault.delete).toHaveBeenCalledWith("secret_1");
+  });
+});
+
+describe("importRunSummary (#1220)", () => {
+  it("names new and updated, and kept edits and divergences only when there are any", () => {
+    expect(importRunSummary({ created: 2, updated: 1, keptLocal: 0, diverged: 0 }, "GH")).toBe(
+      "Imported 2 new, 1 updated from GH",
+    );
+    expect(importRunSummary({ created: 0, updated: 0, keptLocal: 1, diverged: 2 }, "GH")).toBe(
+      "Imported 0 new, 0 updated, kept 1 local edit, 2 diverged from source from GH",
+    );
+    expect(importRunSummary({ created: 0, updated: 0, keptLocal: 3, diverged: 0 }, "GH")).toBe(
+      "Imported 0 new, 0 updated, kept 3 local edits from GH",
+    );
   });
 });

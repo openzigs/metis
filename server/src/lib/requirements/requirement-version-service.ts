@@ -55,7 +55,15 @@ export type TrackedField = (typeof TRACKED_FIELDS)[number];
  * An allowlist, so a tracked field cannot be slipped past the history as
  * "untracked" data.
  */
-export const UNTRACKED_WRITABLE_FIELDS = ["reviewStatus", "externalUrl", "importSourceId"] as const;
+export const UNTRACKED_WRITABLE_FIELDS = [
+  "reviewStatus",
+  "externalUrl",
+  "importSourceId",
+  // #1220 — import re-sync's memory of the source (last-synced fingerprint,
+  // and the source content a diverged row is waiting on).
+  "sourceFingerprint",
+  "sourcePending",
+] as const;
 
 export type UntrackedWritableField = (typeof UNTRACKED_WRITABLE_FIELDS)[number];
 
@@ -321,6 +329,8 @@ const UPDATE_SELECT = {
   reviewStatus: true,
   externalUrl: true,
   importSourceId: true,
+  sourceFingerprint: true,
+  sourcePending: true,
 } as const;
 
 export interface UpdateWithHistoryParams {

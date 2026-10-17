@@ -116,6 +116,7 @@ import { RequirementLinksPanel } from "@/components/requirements/requirement-lin
 import { TraceabilityView } from "@/components/traceability/traceability-view";
 import { UntestedRequirementsPanel } from "@/components/traceability/untested-requirements-panel";
 import { RequirementHistoryTab } from "@/components/requirements/RequirementHistoryTab";
+import { SourceDivergenceNotice } from "@/components/requirements/SourceDivergenceNotice";
 import { findingsApi } from "@/lib/findings-api";
 // Epic #34 — collaboration on requirements (comments, assignees/SLA, optimistic-lock merge).
 import { useAuth } from "@/lib/auth-context";
@@ -1109,6 +1110,18 @@ export default function AnalysisPage(): React.ReactElement {
                               {/* #1063 — the imported item's own title and link, or
                                 "Added by the analysis"; nothing when not recorded. */}
                               <RequirementSourceItems sourceItems={req.sourceItems} />
+                              {/* #1220 — re-sync kept this copy over a source change. */}
+                              <SourceDivergenceNotice
+                                requirementId={req.id}
+                                version={req.version}
+                                divergence={req.sourceDivergence}
+                                local={req}
+                                invalidateKeys={
+                                  selectedAnalysisId
+                                    ? [queryKeys.analyses.detail(selectedAnalysisId)]
+                                    : []
+                                }
+                              />
                             </div>
                             <div className="flex gap-1">
                               <Button

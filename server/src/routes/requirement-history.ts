@@ -31,11 +31,14 @@ import {
   type VersionRow,
 } from "../lib/requirements/requirement-version-service.js";
 import { toCsv } from "../lib/requirements/csv.js";
+import { toSourceDecision } from "../lib/importers/source-sync.js";
 
 const TRACKED_SELECT = {
   id: true,
   projectId: true,
   version: true,
+  // #1220 — the last "take the source version" / "keep mine" answer.
+  sourceDecision: true,
   title: true,
   body: true,
   priority: true,
@@ -182,6 +185,12 @@ export function requirementHistoryRouter(): Router {
           // `source` says whether it was rebuilt ("reversed") or is simply the
           // current row ("current") because no change was ever recorded.
           original: originalVersionOf(pickTracked(reqRow), reqRow.version, rows),
+          // #1220 — the analyst's last answer to a divergence from the import
+          // source. "Keep mine" writes no version row (the text is unchanged),
+          // so this is where History shows it. Null when never asked.
+          sourceDecision: toSourceDecision(
+            typeof reqRow.sourceDecision === "string" ? reqRow.sourceDecision : null,
+          ),
         },
       });
     },

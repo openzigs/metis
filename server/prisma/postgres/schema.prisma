@@ -1419,6 +1419,27 @@ model Requirement {
   externalId       String? // stable id within the source (issue number/key/work-item id)
   externalUrl      String? // canonical URL back to the source item
   importSourceId   String? // FK to import_sources.id (scalar; soft link)
+  /// Issue #1220 — re-sync's memory of the source. `sourceFingerprint` is the
+  /// fingerprint of the source content (title, body, type, priority, labels)
+  /// this row was last synced to, so a re-sync can tell "the source changed"
+  /// from "an analyst edited the local copy" (`lib/importers/source-sync.ts`).
+  /// NULL: never imported, or imported before #1220.
+  sourceFingerprint String?
+  /// Issue #1220 — JSON of the source's newer content while the row is
+  /// "diverged from source" (both sides changed, or a pre-#1220 row that
+  /// differs from its source). NULL: not diverged. Untracked: writing it never
+  /// bumps `version`, so it never makes a pinned review stale.
+  sourcePending    String?
+  /// Issue #1220 — JSON of the analyst's last answer to a divergence ("take the
+  /// source version" / "keep mine"), shown in the requirement's History.
+  sourceDecision   String?
+  /// Issue #1220 — the person who gave that answer, and when. "Keep mine"
+  /// writes no version row (the text is unchanged, so an approved review stays
+  /// current); this column is how the #769 replacement guard still counts the
+  /// decision as review work. Scalar soft-link to users.id, like
+  /// RequirementVersion.actorId. The import itself never sets it.
+  sourceDecisionActorId String?
+  sourceDecidedAt  DateTime?
   /// Epic #728 — optimistic-locking version counter.
   version          Int       @default(0)
   createdAt        DateTime  @default(now())
@@ -1595,6 +1616,10 @@ model ImportRun {
   createdCount   Int       @default(0)
   updatedCount   Int       @default(0)
   skippedCount   Int       @default(0)
+  /// Issue #1220 — existing rows whose analyst edit the run kept (the source
+  /// had not changed), and rows it left diverged from a changed source.
+  keptLocalCount Int       @default(0)
+  divergedCount  Int       @default(0)
   totalFetched   Int       @default(0)
   errorMessage   String?
   startedAt      DateTime?

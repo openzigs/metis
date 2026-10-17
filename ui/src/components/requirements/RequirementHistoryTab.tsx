@@ -23,6 +23,7 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { hasMinRole } from "@metis/shared";
 import { historyApi, type RequirementHistoryEntry, type ExportFormat } from "@/lib/history-api";
+import type { RequirementSourceDecision } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
 import { RestoreVersionDialog } from "./RestoreVersionDialog";
 
@@ -80,6 +81,10 @@ export function RequirementHistoryTab({
   const [page, setPage] = React.useState(1);
   const [pageSize] = React.useState(20);
   const [currentVersion, setCurrentVersion] = React.useState<number | null>(null);
+  // #1220 — the last "take the source version" / "keep mine" answer.
+  const [sourceDecision, setSourceDecision] = React.useState<RequirementSourceDecision | null>(
+    null,
+  );
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [selected, setSelected] = React.useState<number[]>([]);
@@ -94,6 +99,7 @@ export function RequirementHistoryTab({
       setEntries(data.versions);
       setTotal(data.total);
       setCurrentVersion(data.currentVersion);
+      setSourceDecision(data.sourceDecision ?? null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to load history");
     } finally {
@@ -165,6 +171,15 @@ export function RequirementHistoryTab({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      {sourceDecision ? (
+        <p className="text-xs text-muted-foreground" data-testid="history-source-decision">
+          {sourceDecision.choice === "source"
+            ? "Took the import source's version over local edits"
+            : "Kept the local version over a change in the import source"}{" "}
+          on {new Date(sourceDecision.at).toLocaleString()}.
+        </p>
+      ) : null}
 
       {error ? (
         <p className="text-sm text-destructive" role="alert">

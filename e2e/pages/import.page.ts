@@ -99,7 +99,9 @@ export class ImportPage {
 
   /** The "+created/~updated" run badge text, e.g. "+5/~0". */
   runCountBadge(created: number, updated: number): Locator {
-    return this.page.getByText(`+${created}/~${updated}`);
+    // #1220 — the badge spells the counts out ("5 new · 0 updated", plus kept
+    // local edits and divergences when there are any).
+    return this.page.getByText(`${created} new · ${updated} updated`);
   }
 
   /** A history row's status line, e.g. /last run: running/. */

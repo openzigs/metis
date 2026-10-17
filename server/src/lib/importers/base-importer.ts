@@ -10,6 +10,13 @@
  * in-memory fixture (see import-dedup.test.ts).
  */
 import type { ExternalIssue, Importer, ImporterFetchContext, MappedRequirement } from "./types.js";
+import {
+  decideResync,
+  sourceFingerprint,
+  type SourceContent,
+  type SourcePending,
+  type SourceSyncWrite,
+} from "./source-sync.js";
 
 /** Shape persisted for each imported requirement. */
 export interface RequirementUpsertInput {
@@ -24,6 +31,49 @@ export interface RequirementUpsertInput {
   type: string;
   priority: string;
   labels: string[];
+  /**
+   * Issue #1220 — fingerprint of this source content. `create` and `update`
+   * store it as the row's last-synced source, and `update` clears any
+   * divergence (the row now equals the source).
+   */
+  sourceFingerprint: string;
+}
+
+/** Issue #1220 — an existing imported row, as a re-sync needs to see it. */
+export interface ExistingImportedRequirement {
+  id: string;
+  /** The row's current content (an analyst may have edited it). */
+  local: SourceContent;
+  /** Fingerprint of the source content last synced; `null` before #1220. */
+  sourceFingerprint: string | null;
+  /** The source content the row is diverged from, if it is. */
+  sourcePending: SourcePending | null;
+  /** Source-owned link metadata, refreshed whatever happens to the content. */
+  externalUrl: string | null;
+  importSourceId: string | null;
+  /**
+   * The `version` this read saw. Applying the source is conditional on it, so
+   * an analyst save landing between this read and the write is never
+   * overwritten (the write loses, and the row is decided again).
+   */
+  version: number;
+  /**
+   * Whether a person ever edited the row (History: a version row with an
+   * actor, or a pre-#770 bump with no row for version 1). Read only for a row
+   * synced before #1220, which has no fingerprint to compare.
+   */
+  editedInMetis: boolean;
+}
+
+/**
+ * Issue #1220 — what a re-sync writes to a row whose content it leaves alone:
+ * the sync-state columns, plus the source-owned link (`externalUrl`, the
+ * owning `importSourceId`) when it moved. None of these is tracked, so none
+ * bumps `version`.
+ */
+export interface ImportedRowSyncWrite extends SourceSyncWrite {
+  externalUrl?: string;
+  importSourceId?: string;
 }
 
 /** Persistence port. */
@@ -32,14 +82,25 @@ export interface RequirementStore {
     projectId: string,
     externalSource: string,
     externalId: string,
-  ): Promise<{ id: string } | null>;
+  ): Promise<ExistingImportedRequirement | null>;
   create(input: RequirementUpsertInput): Promise<{ id: string }>;
   /**
+   * Apply the source's content to a row whose local copy was not edited, only
+   * if the row is still at `expectedVersion` (#1220).
    * `skipped` (#1162): the row was not written this run (deleted meanwhile, or
-   * it kept losing to concurrent edits). It counts as skipped, not updated,
-   * and takes no part in parent linking.
+   * it changed since it was read — then also `conflict`). It counts as
+   * skipped, not updated, and takes no part in parent linking.
    */
-  update(id: string, input: RequirementUpsertInput): Promise<{ id: string; skipped?: boolean }>;
+  update(
+    id: string,
+    input: RequirementUpsertInput,
+    expectedVersion: number,
+  ): Promise<{ id: string; skipped?: boolean; conflict?: boolean }>;
+  /**
+   * Issue #1220 — write only the sync-state columns (never title, body, type,
+   * priority or labels, and never `version`, so a pinned review stays current).
+   */
+  recordSourceSync(id: string, write: ImportedRowSyncWrite): Promise<void>;
   /** Optional: set a requirement's parent (Azure DevOps hierarchy). */
   setParent?(childId: string, parentId: string): Promise<void>;
 }
@@ -52,11 +113,18 @@ export interface RunImportOptions<F> {
   analysisId: string;
   importSourceId: string;
   ctx?: ImporterFetchContext;
+  /** Clock for a new divergence's `detectedAt`; defaults to the wall clock. */
+  now?: () => Date;
 }
 
 export interface RunImportResult {
   created: number;
+  /** Existing rows the source's changes were applied to. */
   updated: number;
+  /** Issue #1220 — existing rows whose analyst edit was kept (source unchanged). */
+  keptLocal: number;
+  /** Issue #1220 — existing rows left "diverged from source" for the analyst to settle. */
+  diverged: number;
   skipped: number;
   total: number;
 }
@@ -161,12 +229,16 @@ export function defaultMap(issue: ExternalIssue): MappedRequirement {
 
 /**
  * Execute one import pass. Idempotent: items already present (matched on
- * externalSource + externalId) are updated, not duplicated.
+ * externalSource + externalId) are never duplicated; whether one is updated is
+ * the #1220 three-way decision in `source-sync.ts`.
  */
 export async function runImport<F>(opts: RunImportOptions<F>): Promise<RunImportResult> {
   const { importer, filter, store, projectId, analysisId, importSourceId, ctx } = opts;
+  const now = opts.now ?? (() => new Date());
   let created = 0;
   let updated = 0;
+  let keptLocal = 0;
+  let diverged = 0;
   let skipped = 0;
   let total = 0;
 
@@ -182,6 +254,13 @@ export async function runImport<F>(opts: RunImportOptions<F>): Promise<RunImport
       skipped += 1;
       continue;
     }
+    const source: SourceContent = {
+      title: mapped.title,
+      body: mapped.body,
+      type: mapped.type,
+      priority: mapped.priority,
+      labels: mapped.labels,
+    };
     const input: RequirementUpsertInput = {
       projectId,
       analysisId,
@@ -194,6 +273,7 @@ export async function runImport<F>(opts: RunImportOptions<F>): Promise<RunImport
       type: mapped.type,
       priority: mapped.priority,
       labels: mapped.labels,
+      sourceFingerprint: sourceFingerprint(source),
     };
     const existing = await store.findByExternal(
       projectId,
@@ -202,13 +282,59 @@ export async function runImport<F>(opts: RunImportOptions<F>): Promise<RunImport
     );
     let requirementId: string;
     if (existing) {
-      const res = await store.update(existing.id, input);
-      if (res.skipped) {
+      // Issue #1220 — apply the source only when it changed and the local copy
+      // was not edited; never overwrite an analyst's edit.
+      const decide = (row: ExistingImportedRequirement) =>
+        decideResync({
+          local: row.local,
+          stored: row.sourceFingerprint,
+          pending: row.sourcePending,
+          source,
+          now: now(),
+          editedInMetis: row.editedInMetis,
+        });
+      let row = existing;
+      let decision = decide(row);
+      // The write is conditional on the version the decision was made from. A
+      // lost race means someone saved in between: read the row and decide
+      // again (once), so their save is kept or flagged in this run. A second
+      // loss is skipped; the fingerprint did not advance, so the next sync
+      // decides it afresh.
+      let written = false;
+      for (let attempt = 0; decision.outcome === "apply_source" && !written; attempt++) {
+        const res = await store.update(row.id, input, row.version);
+        if (!res.skipped) {
+          written = true;
+          break;
+        }
+        const reread =
+          res.conflict && attempt === 0
+            ? await store.findByExternal(projectId, mapped.externalSource, mapped.externalId)
+            : null;
+        if (!reread) break;
+        row = reread;
+        decision = decide(row);
+      }
+      if (decision.outcome === "apply_source" && !written) {
         skipped += 1;
         continue;
       }
-      requirementId = res.id;
-      updated += 1;
+      requirementId = row.id;
+      if (written) {
+        updated += 1;
+      } else {
+        // The content is the analyst's (or already the source's), but the link
+        // is the source's alone: a recreated source or a moved issue still
+        // re-points it, as every sync did before #1220.
+        const write: ImportedRowSyncWrite = { ...decision.write };
+        if (row.externalUrl !== input.externalUrl) write.externalUrl = input.externalUrl;
+        if (row.importSourceId !== input.importSourceId) {
+          write.importSourceId = input.importSourceId;
+        }
+        if (Object.keys(write).length > 0) await store.recordSourceSync(row.id, write);
+        if (decision.outcome === "kept_local") keptLocal += 1;
+        if (decision.outcome === "diverged") diverged += 1;
+      }
     } else {
       const res = await store.create(input);
       requirementId = res.id;
@@ -234,5 +360,5 @@ export async function runImport<F>(opts: RunImportOptions<F>): Promise<RunImport
     }
   }
 
-  return { created, updated, skipped, total };
+  return { created, updated, keptLocal, diverged, skipped, total };
 }

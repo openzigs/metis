@@ -1506,6 +1506,12 @@ export interface AnalysisSnapshot {
      * written before #1063, or a synthesis that did not say).
      */
     sourceItems?: AnalysisSourceRequirement[] | null;
+    /**
+     * Issue #1220 — set when this imported requirement is "diverged from
+     * source": the source changed and so did the local copy, so re-sync kept
+     * the local text and recorded the source's. Null or absent otherwise.
+     */
+    sourceDivergence?: RequirementSourceDivergence | null;
   }>;
   /**
    * Epic #203 (#221) — first-class cross-document conflict / contradiction /
@@ -1559,6 +1565,40 @@ export interface AnalysisSnapshot {
    * imported requirements (and on every run before #1006).
    */
   sourceRequirements?: AnalysisSourceRequirement[];
+}
+
+// ---- Import re-sync divergence (Issue #1220) --------------------------------
+
+/**
+ * Issue #1220 — the source's newer content of an imported requirement that is
+ * diverged from it, for the analyst to compare with the local copy and answer
+ * with `POST /api/requirements/:id/source-divergence`.
+ */
+export interface RequirementSourceDivergence {
+  /** Sent back with the answer, so a source that moved again is not taken blind. */
+  sourceFingerprint: string;
+  /** When re-sync first saw this source content. */
+  detectedAt: string;
+  /**
+   * The requirement was edited in METIS before METIS tracked its source, so
+   * there is no record of the source at the time of that edit: only that the
+   * source now differs. The card words it accordingly.
+   */
+  baselineUnknown?: boolean;
+  source: {
+    title: string;
+    body: string;
+    type: string;
+    priority: string;
+    labels: string[];
+  };
+}
+
+/** Issue #1220 — the analyst's last answer to a divergence, shown in History. */
+export interface RequirementSourceDecision {
+  choice: "source" | "local";
+  actorId: string | null;
+  at: string;
 }
 
 // ---- Analysis from imported requirements (Issue #1006) ----------------------

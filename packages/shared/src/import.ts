@@ -208,8 +208,19 @@ export interface ImportRunView {
   status: ImportRunStatus;
   taskId: string | null;
   createdCount: number;
+  /** Existing requirements the source's changes were applied to. */
   updatedCount: number;
   skippedCount: number;
+  /**
+   * Issue #1220 — existing requirements whose analyst edit the run kept because
+   * the source had not changed.
+   */
+  keptLocalCount: number;
+  /**
+   * Issue #1220 — existing requirements left "diverged from source": both the
+   * source and the local copy changed, so the analyst chooses.
+   */
+  divergedCount: number;
   totalFetched: number;
   errorMessage: string | null;
   startedAt: string | null;

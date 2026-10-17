@@ -19,6 +19,8 @@ function fakeRun(over: Partial<ImportRunView> = {}): ImportRunView {
     createdCount: 3,
     updatedCount: 1,
     skippedCount: 0,
+    keptLocalCount: 0,
+    divergedCount: 0,
     totalFetched: 4,
     errorMessage: null,
     startedAt: null,
@@ -62,6 +64,8 @@ describe("registerImportTaskHandlers", () => {
       status: "completed",
       created: 3,
       updated: 1,
+      keptLocal: 0,
+      diverged: 0,
       skipped: 0,
     });
   });

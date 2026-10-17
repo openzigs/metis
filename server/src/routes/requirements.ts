@@ -6,6 +6,9 @@
  *   POST   /api/requirements/:requirementId/assignments — assign to user
  *   DELETE /api/requirements/:requirementId/assignments/:assigneeId — un-assign
  *   GET    /api/requirements/:requirementId/assignments — list assignments
+ *   POST   /api/requirements/:requirementId/source-divergence — #1220: "Take the
+ *          source version" / "Keep mine" on an imported requirement diverged
+ *          from its source
  *
  * Also exposes the comment sub-routes (delegated to the comments router).
  */
@@ -28,6 +31,14 @@ import {
   updateRequirementWithHistory,
   RequirementVersionError,
 } from "../lib/requirements/requirement-version-service.js";
+import {
+  resolveSourceDivergence,
+  SourceDivergenceError,
+} from "../lib/requirements/source-divergence.js";
+import {
+  sourceDivergencePreAuthRateLimiter,
+  sourceDivergenceUserRateLimiter,
+} from "../middleware/source-divergence-rate-limit.js";
 // `Requirement.labels` is a JSON-encoded string[] in the database and a plain
 // string[] on the wire; a malformed/legacy value reads as no labels rather than
 // throwing inside the lock's pre-flight read.
@@ -60,6 +71,21 @@ const updateRequirementSchema = z.object({
   /// Epic #770 — optional free-text reason recorded on the version row.
   reason: z.string().max(500).optional(),
 });
+
+/// Issue #1220 — the analyst's answer to a "diverged from source" requirement.
+const resolveSourceDivergenceSchema = z
+  .object({
+    choice: z.enum(["source", "local"]),
+    /// The source content the analyst compared against (from the snapshot).
+    sourceFingerprint: z.string().min(1).max(200),
+    /// The requirement version the analyst saw. Required when taking the
+    /// source, so it never overwrites an edit the analyst had not seen.
+    version: z.number().int().optional(),
+  })
+  .refine((b) => b.choice !== "source" || b.version !== undefined, {
+    message: "`version` is required when taking the source version",
+    path: ["version"],
+  });
 
 const assignSchema = z.object({
   assigneeId: z.string().min(1),
@@ -121,6 +147,10 @@ export function requirementsCollaborationRouter(): Router {
   // covered by construction rather than by remembering. It also runs before the
   // optimistic-lock loader, which would otherwise read a foreign row and leak
   // its field values through the 409 conflict diff.
+  // Issue #1220 — the pre-auth limiter must run before `requireAuth` (CodeQL
+  // js/missing-rate-limiting), and the guard below is where auth first runs.
+  r.use("/:requirementId/source-divergence", sourceDivergencePreAuthRateLimiter);
+
   r.use("/:requirementId", requireAuth, requireRequirementAccess);
 
   // Delegate comment sub-routes.
@@ -305,6 +335,70 @@ export function requirementsCollaborationRouter(): Router {
             expectedVersion,
           );
           return;
+        }
+        throw err;
+      }
+    },
+  );
+
+  // POST /api/requirements/:requirementId/source-divergence — Issue #1220.
+  // "Take the source version" writes the source's content through the version
+  // history, with the analyst as actor (a pinned review goes stale). "Keep
+  // mine" changes no content, writes no version, and records the analyst's
+  // decision on the row (`sourceDecisionActorId`), which the #769 guard reads.
+  r.post(
+    "/:requirementId/source-divergence",
+    requireAuth,
+    sourceDivergenceUserRateLimiter,
+    requirePermission("project.update"),
+    async (req: Request, res: Response) => {
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      const requirementId = String(req.params.requirementId);
+      const parsed = resolveSourceDivergenceSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid source-divergence payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      try {
+        const result = await resolveSourceDivergence(prisma, {
+          requirementId,
+          choice: parsed.data.choice,
+          sourceFingerprint: parsed.data.sourceFingerprint,
+          actorId: req.user.userId,
+          // Defence in depth alongside the router guard (#1118).
+          projectId: requirementScopeWhere(req).projectId,
+          expectedVersion: parsed.data.version,
+        });
+        audit({
+          actor: req.user.userId,
+          // A take-source whose divergence a newer re-sync superseded wrote
+          // the content but resolved nothing; say exactly that.
+          action: result.superseded
+            ? "requirement.source_divergence.superseded"
+            : "requirement.source_divergence.resolve",
+          target: { type: "requirement", id: requirementId },
+          metadata: {
+            projectId: result.projectId,
+            choice: result.choice,
+            sourceFingerprint: parsed.data.sourceFingerprint,
+            changed: result.changed,
+            version: result.version,
+          },
+        });
+        res.json({ success: true, data: result });
+      } catch (err) {
+        if (err instanceof SourceDivergenceError) {
+          if (err.code === "NOT_FOUND") {
+            throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+          }
+          throw new AppError(409, err.code, err.message);
+        }
+        if (err instanceof RequirementVersionError) {
+          if (err.code === "NOT_FOUND") {
+            throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+          }
+          throw new AppError(409, "VERSION_CONFLICT", err.message);
         }
         throw err;
       }
