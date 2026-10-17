@@ -43,6 +43,7 @@ import {
 import { getStructuredRequirements, persistAnalysisEnhancement } from "./analysis-service.js";
 import {
   CRITERIA_FLAG_LINE,
+  canonicalizeCriteriaFlag,
   clearCriteriaFlag,
   hasCriteriaFlag,
 } from "./clarification-criteria-flag.js";
@@ -612,6 +613,7 @@ export function planClarificationBlock(
     // No answers left: remove the block and the blank lines that framed it —
     // whole blank lines only (#1225): the indentation of the analyst's next
     // line (an indented code block) and a trailing two-space hard break stay.
+    // Only the marker lines themselves are trimmed where the block was cut.
     const head = withoutTrailingBlankLines(before);
     const tail = withoutLeadingBlankLines(after);
     return {
@@ -619,12 +621,15 @@ export function planClarificationBlock(
       malformed: false,
     };
   }
-  // #1225 — compare with the markers in their canonical form, so a block whose
-  // markers are a whitespace variant but whose answers are unchanged is a no-op.
-  const previous = normalizeNewlines(
-    CLARIFICATIONS_START +
-      source.slice(at.from + at.startLength, at.to - at.endLength) +
-      CLARIFICATIONS_END,
+  // #1225 — compare with the markers in their canonical form (start, end and
+  // the criteria flag), so a block whose markers are a whitespace variant but
+  // whose answers are unchanged is a no-op.
+  const previous = canonicalizeCriteriaFlag(
+    normalizeNewlines(
+      CLARIFICATIONS_START +
+        source.slice(at.from + at.startLength, at.to - at.endLength) +
+        CLARIFICATIONS_END,
+    ),
   );
   const answersChanged = clearCriteriaFlag(previous) !== unflagged;
   const flag = opts.hasAcceptanceCriteria === true && (answersChanged || hasCriteriaFlag(previous));
@@ -635,11 +640,13 @@ export function planClarificationBlock(
 
 /**
  * The text before a removed block, less the whole blank lines that framed it
- * (#1225). Trailing spaces on the last line of text — a Markdown hard break —
- * are kept.
+ * (#1225). The last line is what preceded the start marker on its own line, so
+ * its trailing whitespace goes; trailing spaces on any earlier line — a
+ * Markdown hard break — are kept.
  */
 function withoutTrailingBlankLines(text: string): string {
   const lines = text.split("\n");
+  lines[lines.length - 1] = lines[lines.length - 1].trimEnd();
   while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
   const kept = lines.join("\n");
   // The newline that ended the last kept line went with the blank lines; its
@@ -648,12 +655,15 @@ function withoutTrailingBlankLines(text: string): string {
 }
 
 /**
- * The text after a removed block, less the whole blank lines (and the rest of
- * the end-marker line) that framed it (#1225). The next line's indentation is
- * kept, so an indented code block stays a code block.
+ * The text after a removed block, less the whole blank lines that framed it
+ * (#1225). The first line is the rest of the end-marker line, so its leading
+ * whitespace goes — left in, four spaces would make text there an indented
+ * code block. Every later line keeps its indentation, so the analyst's own
+ * indented code block stays one.
  */
 function withoutLeadingBlankLines(text: string): string {
   const lines = text.split("\n");
+  lines[0] = lines[0].trimStart();
   let first = 0;
   while (first < lines.length && lines[first].trim() === "") first++;
   return lines.slice(first).join("\n");

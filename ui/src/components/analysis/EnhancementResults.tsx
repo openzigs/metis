@@ -239,6 +239,8 @@ export function ClarificationImpactNote({
           {notWrittenCount} answer{notWrittenCount === 1 ? " was" : "s were"} not written because{" "}
           {notWrittenCount === 1 ? "its requirement" : "their requirements"} changed or{" "}
           {notWrittenCount === 1 ? "was" : "were"} deleted while the answers were being saved.
+          Submit the answers again to retry; a deleted requirement is not restored, so nothing is
+          written into it.
         </p>
       )}
       {requirementsAvailable && unmatched.length > 0 && (

@@ -188,21 +188,28 @@ describe("ClarificationImpactNote", () => {
         }}
       />,
     );
+    // Anchored: the whole reason, not a substring of it.
     expect(screen.getByTestId("clarification-not-applied-reason")).toHaveTextContent(
-      "(“Regions” could not be updated)",
+      /^\(“Regions” could not be updated\)$/,
     );
   });
 
-  it("#1225 — says how many answers were not written because their requirement changed or was deleted", () => {
+  it("#1225 — says how many answers were not written, why, and what to do next", () => {
+    const next =
+      "Submit the answers again to retry; a deleted requirement is not restored, so nothing is " +
+      "written into it.";
     const { rerender } = render(
       <ClarificationImpactNote application={{ ...base, notWrittenCount: 2 }} />,
     );
-    expect(screen.getByTestId("clarification-not-written")).toHaveTextContent(
-      "2 answers were not written because their requirements changed or were deleted while the answers were being saved.",
+    // Exact: the whole warning, not a substring of it.
+    expect(screen.getByTestId("clarification-not-written").textContent).toBe(
+      "2 answers were not written because their requirements changed or were deleted while the " +
+        `answers were being saved. ${next}`,
     );
     rerender(<ClarificationImpactNote application={{ ...base, notWrittenCount: 1 }} />);
-    expect(screen.getByTestId("clarification-not-written")).toHaveTextContent(
-      "1 answer was not written because its requirement changed or was deleted while the answers were being saved.",
+    expect(screen.getByTestId("clarification-not-written").textContent).toBe(
+      "1 answer was not written because its requirement changed or was deleted while the " +
+        `answers were being saved. ${next}`,
     );
     rerender(<ClarificationImpactNote application={{ ...base, notWrittenCount: 0 }} />);
     expect(screen.queryByTestId("clarification-not-written")).toBeNull();
