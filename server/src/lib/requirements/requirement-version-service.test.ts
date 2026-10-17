@@ -262,6 +262,19 @@ describe("updateRequirementWithHistory", () => {
       expect(call?.data.body).toBe("Body.\n\n_Preamble._\n\n- **Q:** q\n  **A:** a");
     });
 
+    it("#1225 — removes a flag whose marker is a whitespace variant", async () => {
+      const variant = FLAGGED.replace(
+        "<!-- metis:criteria-predate-answers -->",
+        "<!--metis:criteria-predate-answers-->",
+      );
+      expect(variant).not.toBe(FLAGGED);
+      const call = await run(
+        { acceptanceCriteria: JSON.stringify(["new"]) },
+        row({ body: variant }),
+      );
+      expect(call?.data.body).toBe("Body.\n\n_Preamble._\n\n- **Q:** q\n  **A:** a");
+    });
+
     it("removes it from a body sent in the same edit", async () => {
       const call = await run({
         acceptanceCriteria: JSON.stringify(["new"]),

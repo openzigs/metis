@@ -43,6 +43,7 @@ import {
 import { getStructuredRequirements, persistAnalysisEnhancement } from "./analysis-service.js";
 import {
   CRITERIA_FLAG_LINE,
+  canonicalizeCriteriaFlag,
   clearCriteriaFlag,
   hasCriteriaFlag,
 } from "./clarification-criteria-flag.js";
@@ -511,7 +512,9 @@ export function renderClarificationBlock(
  * Offsets are into the body as given.
  */
 type BlockLocation =
-  { kind: "none" } | { kind: "block"; from: number; to: number } | { kind: "malformed" };
+  | { kind: "none" }
+  | { kind: "block"; from: number; to: number; startLength: number; endLength: number }
+  | { kind: "malformed" };
 
 const START_NAME = "clarifications:start";
 const END_NAME = "clarifications:end";
@@ -527,7 +530,13 @@ function locateClarificationBlock(body: string): BlockLocation {
   }
   const [start, end] = markers;
   if (markers.length === 2 && start.name === START_NAME && end.name === END_NAME) {
-    return { kind: "block", from: start.index, to: end.index + end.length };
+    return {
+      kind: "block",
+      from: start.index,
+      to: end.index + end.length,
+      startLength: start.length,
+      endLength: end.length,
+    };
   }
   return { kind: "malformed" };
 }
@@ -601,20 +610,63 @@ export function planClarificationBlock(
   const before = source.slice(0, at.from);
   const after = source.slice(at.to);
   if (unflagged.length === 0) {
-    // No answers left: remove the block and the blank lines that framed it.
-    const head = before.replace(/\s+$/, "");
-    const tail = after.replace(/^\s+/, "");
+    // No answers left: remove the block and the blank lines that framed it —
+    // whole blank lines only (#1225): the indentation of the analyst's next
+    // line (an indented code block) and a trailing two-space hard break stay.
+    // Only the marker lines themselves are trimmed where the block was cut.
+    const head = withoutTrailingBlankLines(before);
+    const tail = withoutLeadingBlankLines(after);
     return {
       body: head.length > 0 && tail.length > 0 ? `${head}${eol}${eol}${tail}` : head || tail,
       malformed: false,
     };
   }
-  const previous = normalizeNewlines(source.slice(at.from, at.to));
+  // #1225 — compare with the markers in their canonical form (start, end and
+  // the criteria flag), so a block whose markers are a whitespace variant but
+  // whose answers are unchanged is a no-op.
+  const previous = canonicalizeCriteriaFlag(
+    normalizeNewlines(
+      CLARIFICATIONS_START +
+        source.slice(at.from + at.startLength, at.to - at.endLength) +
+        CLARIFICATIONS_END,
+    ),
+  );
   const answersChanged = clearCriteriaFlag(previous) !== unflagged;
   const flag = opts.hasAcceptanceCriteria === true && (answersChanged || hasCriteriaFlag(previous));
   const block = flag ? renderClarificationBlock(answers, true) : unflagged;
   if (block === previous) return { body: source, malformed: false };
   return { body: `${before}${withEol(block, eol)}${after}`, malformed: false };
+}
+
+/**
+ * The text before a removed block, less the whole blank lines that framed it
+ * (#1225). The last line is what preceded the start marker on its own line, so
+ * its trailing whitespace goes; trailing spaces on any earlier line — a
+ * Markdown hard break — are kept.
+ */
+function withoutTrailingBlankLines(text: string): string {
+  const lines = text.split("\n");
+  lines[lines.length - 1] = lines[lines.length - 1].trimEnd();
+  while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+  const kept = lines.join("\n");
+  // The newline that ended the last kept line went with the blank lines; its
+  // CR goes too.
+  return kept.endsWith("\r") ? kept.slice(0, -1) : kept;
+}
+
+/**
+ * The text after a removed block, less the whole blank lines that framed it
+ * (#1225). The first line is the rest of the end-marker line, so its leading
+ * whitespace goes — left in, four spaces would make text there an indented
+ * code block. Every later line keeps its indentation, so the analyst's own
+ * indented code block stays one.
+ */
+function withoutLeadingBlankLines(text: string): string {
+  const lines = text.split("\n");
+  lines[0] = lines[0].trimStart();
+  let first = 0;
+  while (first < lines.length && lines[first].trim() === "") first++;
+  return lines.slice(first).join("\n");
 }
 
 /** A rendered (LF) block in the line endings of the body it goes into. */

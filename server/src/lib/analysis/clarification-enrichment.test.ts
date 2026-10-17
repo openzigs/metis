@@ -611,6 +611,106 @@ describe("applying the block to a body", () => {
       });
     });
 
+    describe("#1225 — no answers left: only whole blank lines go", () => {
+      it.each([
+        ["LF", (s: string) => s],
+        ["CRLF", crlf],
+      ])(
+        "keeps an indented code block after the block and a hard break before it (%s)",
+        (_n, eolOf) => {
+          const body = eolOf(
+            `Before with a hard break.  \n\n${old()}\n\n    code();\n    more();\n`,
+          );
+          expect(planClarificationBlock(body, [])).toEqual({
+            body: eolOf("Before with a hard break.  \n\n    code();\n    more();\n"),
+            malformed: false,
+          });
+        },
+      );
+
+      it.each([
+        ["LF", (s: string) => s],
+        ["CRLF", crlf],
+      ])("drops whitespace-only lines around the block (%s)", (_n, eolOf) => {
+        const body = eolOf(`Before.\n  \n\n${old()}\n\t\n\n  After.`);
+        expect(planClarificationBlock(body, [])).toEqual({
+          body: eolOf("Before.\n\n  After."),
+          malformed: false,
+        });
+      });
+
+      it("a body that was only the block becomes empty", () => {
+        expect(planClarificationBlock(`\n\n${old()}\n\n`, [])).toEqual({
+          body: "",
+          malformed: false,
+        });
+      });
+
+      it.each([
+        ["LF", (s: string) => s],
+        ["CRLF", crlf],
+      ])(
+        "text sharing a marker's line loses only the whitespace next to the marker (%s)",
+        (_n, eolOf) => {
+          expect(planClarificationBlock(eolOf(`intro ${old()}    trailing`), [])).toEqual({
+            body: eolOf("intro\n\ntrailing"),
+            malformed: false,
+          });
+          // The analyst's own lines that do not share a marker keep their
+          // whitespace: a hard break before, an indented code block after.
+          const body = eolOf(
+            `Hard break.  \nintro \t${old()}  \t  trailing\n    code();\nEnd.  \n`,
+          );
+          expect(planClarificationBlock(body, [])).toEqual({
+            body: eolOf("Hard break.  \nintro\n\ntrailing\n    code();\nEnd.  \n"),
+            malformed: false,
+          });
+        },
+      );
+    });
+
+    describe("#1225 — whitespace-variant markers with the same answers: byte-for-byte", () => {
+      const variant = (block: string) =>
+        block
+          .replace(CLARIFICATIONS_START, "<!--metis:clarifications:start-->")
+          .replace(CLARIFICATIONS_END, "<!--  metis:clarifications:end  -->");
+      it.each([
+        ["LF", `Before.\n\n${variant(old())}\n\nAfter.`],
+        ["CRLF", crlf(`Before.\n\n${variant(old())}\n\nAfter.`)],
+      ])("%s", (_n, body) => {
+        expect(planClarificationBlock(body, [answer()])).toEqual({ body, malformed: false });
+      });
+    });
+
+    describe("#1225 — a flagged block with whitespace-variant markers and the same answers: byte-for-byte", () => {
+      const flagged = () => renderClarificationBlock([answer()], true);
+      const variantEnds = (block: string) =>
+        block
+          .replace(CLARIFICATIONS_START, "<!--metis:clarifications:start-->")
+          .replace(CLARIFICATIONS_END, "<!--  metis:clarifications:end  -->");
+      const variantFlag = (block: string) =>
+        block.replace(CRITERIA_FLAG_MARKER, "<!--metis:criteria-predate-answers  -->");
+      it.each([
+        ["start/end variant, LF", (s: string) => s, variantEnds],
+        ["start/end variant, CRLF", crlf, variantEnds],
+        ["flag variant, LF", (s: string) => s, variantFlag],
+        ["flag variant, CRLF", crlf, variantFlag],
+        [
+          "every marker a variant, LF",
+          (s: string) => s,
+          (b: string) => variantFlag(variantEnds(b)),
+        ],
+        ["every marker a variant, CRLF", crlf, (b: string) => variantFlag(variantEnds(b))],
+      ])("%s", (_n, eolOf, variant) => {
+        const body = eolOf(`Before.\n\n${variant(flagged())}\n\nAfter.`);
+        expect(body).not.toBe(eolOf(`Before.\n\n${flagged()}\n\nAfter.`));
+        expect(planClarificationBlock(body, [answer()], { hasAcceptanceCriteria: true })).toEqual({
+          body,
+          malformed: false,
+        });
+      });
+    });
+
     it("whitespace-variant markers: recognised, replaced once", () => {
       const body = `Body.\n\n${old()
         .replace(CLARIFICATIONS_START, "<!--metis:clarifications:start-->")
@@ -675,6 +775,14 @@ describe("#1000 — flagging acceptance criteria the answers may have changed", 
     expect(
       applyClarificationBlock(edited, [answer({ answer: "A newer answer." })], withCriteria),
     ).toContain(CRITERIA_FLAG_LINE);
+  });
+
+  it("#1225 — finds and clears a flag whose marker is a whitespace variant", () => {
+    const flagged = applyClarificationBlock("Body.", [answer()], withCriteria);
+    const variant = flagged.replace(CRITERIA_FLAG_MARKER, "<!--metis:criteria-predate-answers-->");
+    expect(variant).not.toBe(flagged);
+    expect(hasCriteriaFlag(variant)).toBe(true);
+    expect(clearCriteriaFlag(variant)).toBe(applyClarificationBlock("Body.", [answer()]));
   });
 
   it("clearCriteriaFlag leaves a body without the flag untouched", () => {
@@ -1421,6 +1529,43 @@ describe("applyClarificationsToRequirements", () => {
       await applyClarificationsToRequirements(ANALYSIS_ID);
       const row = store.requirements[0];
       row.body = `${row.body}\n\nAnalyst note after the block.`.replace(/\n/g, "\r\n");
+      const stored = row.body;
+      const versionsBefore = store.versions.length;
+
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+
+      expect(row.body).toBe(stored);
+      expect(store.versions).toHaveLength(versionsBefore);
+      expect(out).toMatchObject({ appliedCount: 1, requirementsUpdated: 0 });
+    });
+
+    it("writes no version on a second pass when a flagged block's markers are a whitespace variant (#1225)", async () => {
+      store.requirements[0].acceptanceCriteria = JSON.stringify(["Rates refresh every 24 h."]);
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      const row = store.requirements[0];
+      expect(row.body).toContain(CRITERIA_FLAG_LINE);
+      row.body = row.body
+        .replace(CLARIFICATIONS_START, "<!--metis:clarifications:start-->")
+        .replace(CLARIFICATIONS_END, "<!--metis:clarifications:end-->")
+        .replace(CRITERIA_FLAG_MARKER, "<!--metis:criteria-predate-answers-->")
+        .replace(/\n/g, "\r\n");
+      const stored = row.body;
+      const versionsBefore = store.versions.length;
+
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+
+      expect(row.body).toBe(stored);
+      expect(store.versions).toHaveLength(versionsBefore);
+      expect(out).toMatchObject({ appliedCount: 1, requirementsUpdated: 0 });
+    });
+
+    it("writes no version on a second pass when the markers are a whitespace variant (#1225)", async () => {
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      const row = store.requirements[0];
+      row.body = row.body
+        .replace(CLARIFICATIONS_START, "<!--metis:clarifications:start-->")
+        .replace(CLARIFICATIONS_END, "<!--metis:clarifications:end-->")
+        .replace(/\n/g, "\r\n");
       const stored = row.body;
       const versionsBefore = store.versions.length;
 
