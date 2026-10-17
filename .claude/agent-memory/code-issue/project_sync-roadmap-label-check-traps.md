@@ -39,3 +39,5 @@ first left `completedIterations` empty, and a payload dropping them passed 83/83
 have `withCycles([c1], [c0])` cases; keep one for any new replace path, break the payload on
 purpose before trusting it, and re-read the field before writing. More shapes like this:
 [[test-falsifiability-traps]].
+
+**Iteration ids (measured on a scratch project, 2026-10-16).** `updateProjectV2Field` `iterationConfiguration` keeps iteration ids, and the items' values, only when every existing iteration, completed ones included, is sent back with its `id`. New iterations get fresh ids.

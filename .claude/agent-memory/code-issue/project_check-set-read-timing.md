@@ -1,0 +1,20 @@
+---
+name: check-set-read-timing
+description: When a PR's check set is really complete — CodeQL is created late and finishes early; e2e-outcome can pass while a shard is pending; Check CLA skips on maintainer PRs.
+metadata:
+  type: project
+---
+
+Measured across PR heads, 2026-10-16/17 (#1217 re-review, then every PR from #1222 to #1234).
+
+**CodeQL.**
+- The `CodeQL` check-run is created after the Analyze jobs start, so a green read without `CodeQL` in it was taken too early.
+- It finishes before `Analyze javascript-typescript` (6 of 6 heads), so a green `CodeQL` does not mean Analyze is done. Wait for all three.
+
+**e2e.** `e2e-outcome` once read `pass` while `e2e (1/3)` was still pending. Don't trust `e2e-outcome` alone while any shard is pending.
+
+**Expected skips.**
+- `Check CLA signature` skips on every maintainer PR (`cla.yml:68`).
+- `build` and `deploy` from the docs workflow also appear when a docs-site path changes, giving 23 rows. `build` should pass and `deploy` skip.
+
+**Correcting a fact in one place.** When you correct a CI or tooling fact in one skill, `git grep` the old claim across every skill, agent and instruction file. Fixing one copy turns a consistent error into two contradicting skills.

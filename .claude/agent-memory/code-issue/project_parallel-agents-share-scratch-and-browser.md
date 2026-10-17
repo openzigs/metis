@@ -49,3 +49,8 @@ Older entries, folded here (retired from the index 2026-10-16; files unchanged):
   and never exits; use `ps` + `grep "node .*(vitest|tsc)"`.
 - [[next-env-churn]] — `next build`/`dev` rewrite `ui/next-env.d.ts`; revert it to `main`
   before committing a UI PR.
+
+**Review payloads too (2026-10-17).**
+- Generic `review.json` and `comments.json` files in the shared scratchpad posted one PR's review onto another PR twice: #1227's payload landed on #1228. Use a per-PR subdirectory (`scratchpad/pr<N>c<cycle>/`), check that the body names the target PR before posting, and build payloads with `jq -n --rawfile`.
+- `gh api` sends every `-f` field before every `-F` field, so mixing the two inside `comments[][…]` splits each comment and returns a 422. Pass every `comments[][…]` field with `-F`.
+- In an isolated worktree the guard refuses `node`/`python3` heredocs, `cat >` into the scratchpad, `npx` with a glob, and compound git pipelines. Write the script with the Write tool, or with a one-line `printf '%s' '…' > file`, then run `node /path/script.mjs` as its own command.
