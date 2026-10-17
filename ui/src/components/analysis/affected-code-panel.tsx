@@ -54,10 +54,11 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
         Each new requirement mapped to existing code via Impact Analysis (mapper + blast radius). A
         direct match is shown only when the symbol&apos;s name (with its enclosing type or table,
         never its file path) shares at least two of the requirement&apos;s terms and its subject:
-        when the requirement names something the project stores (such as a feed), the symbol must
-        name it too, and a type or a table column is shown only when the requirement names that type
-        or table. Test code is not shown, and callers and importers of a direct match are listed
-        with it. Confidence is relative to the best link for that requirement, not a probability.
+        when the requirement names something the project stores (such as a feed), the symbol or the
+        type it belongs to must name it too; a type is shown only when the requirement uses the last
+        word of its name, and a table column only when the requirement names its table. Test code is
+        not shown, and callers and importers of a direct match are listed with it. Confidence is
+        relative to the best link for that requirement, not a probability.
         {affectedCode?.truncated
           ? " Some entries were omitted from the analysis prompt for length."
           : ""}

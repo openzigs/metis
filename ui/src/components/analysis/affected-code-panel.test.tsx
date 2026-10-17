@@ -76,9 +76,9 @@ describe("AffectedCodePanel", () => {
     );
     expect(panel).toHaveTextContent(/callers and importers of a direct match are listed with it/);
     // #1063 (run 9) — the subject rules and the test-code exclusion are stated.
-    expect(panel).toHaveTextContent(/the symbol must name it too/);
+    expect(panel).toHaveTextContent(/the symbol or the type it belongs to must name it too/);
     expect(panel).toHaveTextContent(
-      /a type or a table column is shown only when the requirement names that type or table/,
+      /a type is shown only when the requirement uses the last word of its name, and a table column only when the requirement names its table/,
     );
     expect(panel).toHaveTextContent(/Test code is not shown/);
     expect(panel).toHaveTextContent(/not a probability/);

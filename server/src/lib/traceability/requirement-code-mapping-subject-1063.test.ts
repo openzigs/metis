@@ -23,8 +23,10 @@ import {
   MemoizingBm25CodeSymbolSearcher,
   denoiseRequirementQuery,
   mapRequirementToCode,
+  requirementSubjectWords,
+  sameWord,
   sharesRequirementSubject,
-  singularTerm,
+  singularForms,
   symbolNameTerms,
   type Bm25SearcherOptions,
 } from "./requirement-code-mapping.js";
@@ -157,6 +159,12 @@ const RUN9: Array<[string, string, string, string]> = [
     "internal/storage/user.go",
     "column",
   ],
+  // Review of PR #1227: a table whose name is a #943 stopword (`entries`, `users`).
+  ["Entry", "internal/model/entry.go::Entry", "internal/model/entry.go", "class"],
+  ["reading_time", "entries.reading_time", "internal/storage/entry.go", "column"],
+  ["comments_url", "entries.comments_url", "internal/storage/entry.go", "column"],
+  ["show_reading_time", "users.show_reading_time", "internal/storage/user.go", "column"],
+  ["theme", "users.theme", "internal/database/migrations.go", "column"],
 ];
 
 const rows = RUN9.map(([name, qualifiedName, filePath, kind], i) => ({
@@ -259,7 +267,7 @@ describe("run 9 — with the analysis path's link options", () => {
     const after = await linked(NR2, ANALYSIS_LINK_SEARCH_OPTIONS);
     expect(after.length).toBeGreaterThan(0);
     for (const q of after) {
-      expect([...symbolNameTerms(rowOf(q))].map(singularTerm)).toContain("feed");
+      expect([...symbolNameTerms(rowOf(q))].some((t) => sameWord(t, "feed"))).toBe(true);
     }
   });
 
@@ -326,9 +334,8 @@ describe("each rule on its own", () => {
 });
 
 describe("sharesRequirementSubject", () => {
-  const entities = new Set(["feed", "user", "entry"]);
-  const words = (text: string) =>
-    new Set(tokenizeCode(denoiseRequirementQuery(text)).map(singularTerm));
+  const entities = new Set(["feeds", "users", "entries"]);
+  const words = requirementSubjectWords;
   const row = (qualifiedName: string) => rowOf(qualifiedName);
 
   it("rule 1: a requirement that names a stored entity needs a symbol that names it", () => {
@@ -362,7 +369,7 @@ describe("sharesRequirementSubject", () => {
   it("rule 1 is not triggered by an actor word #943 strips ('users')", () => {
     // "Given two users" names the actor, not the users table.
     const w = words("Given two users, mark all as read");
-    expect(w.has("user")).toBe(true);
+    expect(w.denoised.has("users")).toBe(true);
     expect(
       sharesRequirementSubject(
         row("internal/ui/unread_mark_all_read.go::handler::markAllAsRead"),
@@ -467,21 +474,137 @@ describe("sharesRequirementSubject", () => {
   });
 });
 
-describe("singularTerm", () => {
+describe("singularForms / sameWord — a plural and its singular are the same word", () => {
   it.each([
     ["feeds", "feed"],
     ["entries", "entry"],
     ["categories", "category"],
     ["keys", "key"],
     ["users", "user"],
-    ["status", "status"],
-    ["class", "class"],
-    ["analysis", "analysis"],
-    ["ies", "ies"],
-    ["api", "api"],
-    ["bus", "bus"],
-    ["feed", "feed"],
-  ])("%s → %s", (input, expected) => {
-    expect(singularTerm(input)).toBe(expected);
+    // Review of PR #1227: -es after s, x, z, ch and sh; -ies from -ie; -us plurals.
+    ["addresses", "address"],
+    ["statuses", "status"],
+    ["aliases", "alias"],
+    ["boxes", "box"],
+    ["buses", "bus"],
+    ["matches", "match"],
+    ["wishes", "wish"],
+    ["movies", "movie"],
+    ["cookies", "cookie"],
+    ["menus", "menu"],
+    // -s after e, where stripping -es would be wrong.
+    ["caches", "cache"],
+    ["responses", "response"],
+    ["cases", "case"],
+    ["types", "type"],
+  ])("%s ↔ %s", (plural, singular) => {
+    expect(sameWord(plural, singular)).toBe(true);
+    expect(sameWord(singular, plural)).toBe(true);
+    expect(sameWord(plural, plural)).toBe(true);
+    expect(sameWord(singular, singular)).toBe(true);
+  });
+
+  it.each([
+    ["feed", "fee"],
+    ["status", "statue"],
+    ["class", "clas"],
+    ["key", "keyboard"],
+    ["entry", "entries_count"],
+    ["api", "apis_x"],
+  ])("%s and %s are different words", (a, b) => {
+    expect(sameWord(a, b)).toBe(false);
+  });
+
+  it.each([
+    ["status", ["status", "statu"]],
+    ["class", ["class"]],
+    ["address", ["address"]],
+    ["feed", ["feed"]],
+    ["ies", ["ies"]],
+    ["bus", ["bus"]],
+    ["api", ["api"]],
+    ["movies", ["movies", "movie", "movi", "movy"]],
+  ])("singularForms(%s)", (word, forms) => {
+    expect(singularForms(word)).toEqual(forms);
+  });
+});
+
+describe("review of PR #1227 — a table whose name is a #943 stopword", () => {
+  it("rules 2 and 3 read every word of the requirement, not the denoised query", () => {
+    const w = requirementSubjectWords("Store the reading time for each entry");
+    expect(w.denoised.has("entry")).toBe(false);
+    expect(w.all.has("entry")).toBe(true);
+  });
+
+  it("an `entries` column links for a requirement that names an entry", async () => {
+    expect(
+      await linked("Store the reading time for each entry", ANALYSIS_LINK_SEARCH_OPTIONS),
+    ).toContain("entries.reading_time");
+    expect(
+      await linked(
+        "Store the reading time for each entry in the entries table",
+        ANALYSIS_LINK_SEARCH_OPTIONS,
+      ),
+    ).toContain("entries.reading_time");
+    expect(
+      await linked("Show the comments URL of an entry", ANALYSIS_LINK_SEARCH_OPTIONS),
+    ).toContain("entries.comments_url");
+  });
+
+  it("the user setting with the same words needs the requirement to name a user", async () => {
+    // Denoised to "show reading": `users.show_reading_time` shares both words but
+    // its table is never named; `entries.reading_time` shares only "reading".
+    expect(
+      await linked("Show the reading time of each entry", ANALYSIS_LINK_SEARCH_OPTIONS),
+    ).not.toContain("users.show_reading_time");
+    expect(
+      await linked("Let each user show the reading time", ANALYSIS_LINK_SEARCH_OPTIONS),
+    ).toContain("users.show_reading_time");
+  });
+
+  it("a `users` column is named by the singular 'user' as well as 'users'", () => {
+    const theme = rowOf("users.theme");
+    const entities = new Set(["feeds", "users", "entries"]);
+    expect(
+      sharesRequirementSubject(
+        theme,
+        requirementSubjectWords("Let a user choose the theme"),
+        entities,
+      ),
+    ).toBe(true);
+    expect(
+      sharesRequirementSubject(
+        theme,
+        requirementSubjectWords("Let users choose the theme"),
+        entities,
+      ),
+    ).toBe(true);
+    expect(
+      sharesRequirementSubject(theme, requirementSubjectWords("Choose the theme"), entities),
+    ).toBe(false);
+  });
+
+  it("the two-term rule, not the subject rules, decides 'Let a user choose the theme'", async () => {
+    // "user" is a #943 stopword, so the denoised query is "choose theme" and
+    // `users.theme` shares only "theme" through its own name.
+    expect(await linked("Let a user choose the theme", ANALYSIS_LINK_SEARCH_OPTIONS)).not.toContain(
+      "users.theme",
+    );
+  });
+
+  it("the Entry type links when the requirement names an entry, by rule 2", () => {
+    const entry = rowOf("internal/model/entry.go::Entry");
+    expect(
+      sharesRequirementSubject(entry, requirementSubjectWords("Archive an entry"), new Set()),
+    ).toBe(true);
+    expect(
+      sharesRequirementSubject(entry, requirementSubjectWords("Archive the entries"), new Set()),
+    ).toBe(true);
+  });
+
+  it("NR-1 still does not link users.mark_read_on_view, which it never names", async () => {
+    expect(await linked(NR1, ANALYSIS_LINK_SEARCH_OPTIONS)).not.toContain(
+      "users.mark_read_on_view",
+    );
   });
 });
