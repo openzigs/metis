@@ -42,12 +42,10 @@
  * | The concrete list of ids                              | `listAccessibleProjectIds` (`lib/acp/authz.ts`) |
  * | Guard one project by id on a request                  | `assertProjectAccess` / `requireProjectAccess` |
  *
- * Note that `lib/scheduler/project-access.ts` exports a same-named
- * `listAccessibleProjectIds` that is a DIFFERENT predicate (creator-ownership,
- * not workspace membership) still used by products, impact detail and run
- * access (#1232). The scheduler/task rows themselves moved to
- * `listMemberAccessibleProjectIds` (#1221). It is not part of this
- * unification; check the import path before assuming which one you have.
+ * `lib/scheduler/project-access.ts` used to export a same-named, creator-only
+ * `listAccessibleProjectIds`; it was removed in #1232. Its list form of this
+ * rule is `listMemberAccessibleProjectIds`, which reads the actor's workspaces
+ * live instead of from the token's claim.
  */
 
 /** Minimal actor shape the visibility rule reads: id, role + workspace ids. */

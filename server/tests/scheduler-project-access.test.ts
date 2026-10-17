@@ -88,7 +88,6 @@ import {
   actorHasProjectAccess,
   buildProjectAccessWhere,
   isAdminActor,
-  listAccessibleProjectIds,
   listMemberAccessibleProjectIds,
 } from "../src/lib/scheduler/project-access.js";
 import { audit } from "../src/lib/audit/audit-service.js";
@@ -151,14 +150,6 @@ describe("project-access helpers", () => {
     seedTeam();
     const ids = await listMemberAccessibleProjectIds({ id: "root", role: "admin" });
     expect(ids.sort()).toEqual(["p1", "p2"]);
-  });
-
-  it("listAccessibleProjectIds (creator-only, remaining callers) respects soft-deleted projects", async () => {
-    projects.set("p1", { id: "p1", createdById: "u1", workspaceId: null, deletedAt: null });
-    projects.set("p2", { id: "p2", createdById: "u1", workspaceId: null, deletedAt: new Date() });
-    const ids = await listAccessibleProjectIds({ id: "u1", role: "developer" });
-    expect(ids).toEqual(["p1"]);
-    expect(await listAccessibleProjectIds({ id: "root", role: "admin" })).toEqual(["p1"]);
   });
 
   it("admin actorHasProjectAccess is always true and skips audits", async () => {

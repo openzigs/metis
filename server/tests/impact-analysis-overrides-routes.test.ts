@@ -92,7 +92,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 // Make every project accessible to the test actor (authz path is tested elsewhere).
 vi.mock("../src/lib/scheduler/project-access.js", () => ({
   isAdminActor: () => true,
-  listAccessibleProjectIds: async () => ["proj1", "proj2"],
+  listMemberAccessibleProjectIds: async () => ["proj1", "proj2"],
 }));
 
 import { impactAnalysisRouter } from "../src/routes/impact-analysis.js";

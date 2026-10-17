@@ -12,9 +12,14 @@
  *   - 401 AUTH_REQUIRED     — `req.user` not populated (paranoid guard;
  *     `requireAuth` should already have rejected)
  *
- * Admins always pass; non-admins must be in the run's project access set as
- * defined by `listAccessibleProjectIds`. Runs with `projectId === null`
- * (system runs) are admin-only — same rule as the scheduler routes (#H2/#H3).
+ * Admins always pass; anyone else must pass the project-access rule on the
+ * run's project (`actorHasProjectAccess` → `assertProjectAccess`: the live
+ * members of the project's workspace, legacy workspace-less projects, never a
+ * soft-deleted project). #1232 — it used to admit only the project's creator,
+ * while `GET /api/runs` already listed the run to every member. Runs with
+ * `projectId === null` (system runs) are admin-only — same rule as the
+ * scheduler routes (#H2/#H3). Every route behind this is a read
+ * (`analysis.read`).
  *
  * Resolves the run once and stashes it on `res.locals.run` so handlers can
  * reuse it without a second DB hit.
@@ -22,8 +27,8 @@
 import type { RequestHandler } from "express";
 import { AppError } from "./error-handler.js";
 import {
+  actorHasProjectAccess,
   isAdminActor,
-  listAccessibleProjectIds,
   type SchedulerActor,
 } from "../lib/scheduler/project-access.js";
 import { getRun } from "../lib/replay/runs-service.js";
@@ -54,8 +59,12 @@ export const requireRunProjectAccess: RequestHandler = async (req, res, next) =>
       // System run — admin-only.
       throw runNotFound();
     }
-    const allowed = await listAccessibleProjectIds(actor);
-    if (!allowed.includes(projectId)) {
+    const allowed = await actorHasProjectAccess(actor, projectId, {
+      resource: "agent_run",
+      resourceId: id,
+      action: "run.read",
+    });
+    if (!allowed) {
       throw runNotFound();
     }
     res.locals.run = run;

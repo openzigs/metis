@@ -45,7 +45,7 @@ let adminFlag = false;
 let accessibleIds: string[] = ["project-001", "project-002"];
 vi.mock("../lib/scheduler/project-access.js", () => ({
   isAdminActor: () => adminFlag,
-  listAccessibleProjectIds: vi.fn(async () => accessibleIds),
+  listMemberAccessibleProjectIds: vi.fn(async () => accessibleIds),
 }));
 
 const triggerImpactAnalysis = vi.fn(async () => ({ id: "ia-1", status: "pending" }));

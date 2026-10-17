@@ -24,9 +24,10 @@
  * `hasPermission(role, "issue.draft")` in the chat commands — so a reader-role
  * member can read what the workspace shares and mutate nothing.
  *
- * `listAccessibleProjectIds` below is STILL the creator-only predicate. Its
- * remaining callers (products, impact-detail, run access) were not part of
- * #1221; they move in #1232.
+ * #1232 — products, impact-analysis detail and run access moved onto the same
+ * rule, and the creator-only `listAccessibleProjectIds` that served them was
+ * removed. (`listAccessibleProjectIds` in `lib/acp/authz.ts` is a different,
+ * member-aware function.)
  */
 import { prisma } from "../prisma.js";
 import type { RoleKey } from "@metis/shared";
@@ -84,25 +85,6 @@ export async function listMemberAccessibleProjectIds(actor: SchedulerActor): Pro
     select: { id: true },
   });
   return rows.map((p) => p.id);
-}
-
-/**
- * CREATOR-ONLY project ids (admins: every live project). Not used by any
- * #1221 surface; kept for its remaining callers until they move too.
- */
-export async function listAccessibleProjectIds(actor: SchedulerActor): Promise<string[]> {
-  if (isAdminActor(actor)) {
-    const all = await prisma.project.findMany({
-      where: { deletedAt: null },
-      select: { id: true },
-    });
-    return all.map((p) => p.id);
-  }
-  const owned = await prisma.project.findMany({
-    where: { deletedAt: null, createdById: actor.id },
-    select: { id: true },
-  });
-  return owned.map((p) => p.id);
 }
 
 /**

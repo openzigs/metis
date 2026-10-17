@@ -11,6 +11,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
+// #1232 — the queries take the project-access rule. Its two reads that do not
+// go through the injected db are answered from the same seed: the live
+// membership read (`readLiveWorkspaceIds`) and, for a workspace-less source
+// project, `actorHasProjectAccess` (open unless the project is unknown).
+const live = vi.hoisted(() => ({ seed: null as null | Seed }));
+vi.mock("../src/lib/auth/live-workspace-ids.js", () => ({
+  readLiveWorkspaceIds: async (userId: string) =>
+    Object.entries(live.seed?.members ?? {})
+      .filter(([, users]) => users.includes(userId))
+      .map(([ws]) => ws),
+}));
+vi.mock("../src/lib/scheduler/project-access.js", async (importActual) => ({
+  ...(await importActual<typeof import("../src/lib/scheduler/project-access.js")>()),
+  actorHasProjectAccess: async (actor: SchedulerActor, projectId: string) =>
+    actor.role === "admin" || live.seed?.projects[projectId]?.workspaceId === null,
+}));
+
 import {
   crossProjectImpact,
   whichProjectsUseObject,
@@ -49,6 +66,7 @@ interface Seed {
 }
 
 function makeFakePrisma(seed: Seed): CrossImpactPrisma {
+  live.seed = seed;
   return {
     workspaceMember: {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -321,12 +339,21 @@ describe("crossProjectImpact", () => {
     });
   });
 
-  it("404 when a non-owner member cannot access the source project even in their workspace", async () => {
+  it("#1232 — a workspace member who did not create the source project can read its impact", async () => {
     const seed = baseSeed();
-    // pOther is in wsA but owned by someone else; user-A is a wsA member but not owner.
+    // pOther is in wsA, created by a teammate; user-A is a wsA member, not its creator.
     seed.projects.pOther = { workspaceId: "wsA", createdById: "someone-else" };
+    seed.members.wsA.push("someone-else");
     const db = makeFakePrisma(seed);
-    await expect(crossProjectImpact(MEMBER_A, "pOther", db)).rejects.toMatchObject({
+    const res = await crossProjectImpact(MEMBER_A, "pOther", db);
+    expect(res).toMatchObject({ sourceProjectId: "pOther", workspaceId: "wsA" });
+  });
+
+  it("404 when the caller's membership is not live (disabled, soft-deleted or removed), even with a member row", async () => {
+    const db = makeFakePrisma(baseSeed());
+    // The WorkspaceMember row the fake db answers survives; the live read does not.
+    live.seed = { ...baseSeed(), members: {} };
+    await expect(crossProjectImpact(MEMBER_A, "pA1", db)).rejects.toMatchObject({
       statusCode: 404,
     });
   });

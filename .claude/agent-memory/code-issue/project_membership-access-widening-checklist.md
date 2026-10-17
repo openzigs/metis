@@ -15,10 +15,11 @@ Collected from #1212 / PR #1219 and #1221 / PR #1233 and their reviews (2026-10-
 - So a new list path that admits members must go through `readLiveWorkspaceIds` + `accessibleProjectWhere`. Its tests need disabled, soft-deleted and removed-member cases.
 - On #1233, `listMemberProjectsInWorkspace` missed this, which let a disabled user with an unexpired token search the whole workspace.
 
-**Two functions share a name but apply different rules.**
-- `listAccessibleProjectIds` in `scheduler/project-access.ts` is creator-only.
-- `listAccessibleProjectIds` in `acp/authz.ts` admits members.
-- Check the import path. #1232 tracks removing the creator-only one.
+**The creator-only predicates are gone (#1232).**
+- `listAccessibleProjectIds` in `scheduler/project-access.ts` and `listAccessibleProjectsInWorkspace` were removed. Products, impact detail, runs and cross-project impact now use the member rule.
+- `listAccessibleProjectIds` in `acp/authz.ts` still exists. It admits members, but it reads the token's workspace claim, not the live membership.
+- Mocked-prisma suites (`socket.test.ts`, `products-multi.authz.test.ts`) need `project.findMany` to honour `accessibleProjectWhere`'s `OR[].workspaceId.in`, and `workspaceMember.findMany` for the live read.
+- A test asserting "a non-creator member gets 404" is now pinning the old bug.
 
 **Socket rooms.**
 - Membership-gated rooms need their own eviction, hooked into `routes/workspaces.ts` and the shared eviction epoch; `project-room-eviction.ts` is the template.

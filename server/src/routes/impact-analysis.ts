@@ -28,7 +28,7 @@ import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
   isAdminActor,
-  listAccessibleProjectIds,
+  listMemberAccessibleProjectIds,
   type SchedulerActor,
 } from "../lib/scheduler/project-access.js";
 import {
@@ -417,12 +417,18 @@ function asAppError(err: unknown): unknown {
  * Ensure `actor` can access every requested project. Admins see all projects
  * (a missing id then means it doesn't exist → 404); non-admins get 403 for any
  * project outside their accessible set so existence is never leaked.
+ *
+ * #1232 — the accessible set is the project-access rule's list form
+ * (`listMemberAccessibleProjectIds`: the live members of a project's
+ * workspace, legacy workspace-less projects, never a soft-deleted one), no
+ * longer the projects the actor created. Every write that calls this gates its
+ * role permission first (`analysis.run`), so a reader-role member reads only.
  */
 async function assertProjectsAccessible(
   actor: SchedulerActor,
   projectIds: string[],
 ): Promise<void> {
-  const accessible = new Set(await listAccessibleProjectIds(actor));
+  const accessible = new Set(await listMemberAccessibleProjectIds(actor));
   const missing = projectIds.filter((id) => !accessible.has(id));
   if (missing.length === 0) return;
   if (isAdminActor(actor)) {
@@ -735,7 +741,7 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
       const actor = actorOf(req);
       const accessibleProjectIds = isAdminActor(actor)
         ? null
-        : await listAccessibleProjectIds(actor);
+        : await listMemberAccessibleProjectIds(actor);
       const projectId = typeof req.query.projectId === "string" ? req.query.projectId : "";
       if (projectId && accessibleProjectIds && !accessibleProjectIds.includes(projectId)) {
         res.json(ok([]));

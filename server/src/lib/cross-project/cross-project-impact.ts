@@ -15,7 +15,9 @@
  * access. The caller only ever sees resources/objects/projects within workspaces
  * they belong to (see cross-project-access.ts — non-members get 404, never a
  * leak). Project results are intersected with the caller's accessible-project
- * set even within a shared workspace.
+ * set even within a shared workspace. #1232 — that set is the project-access
+ * rule (`listMemberProjectsInWorkspace`: the live members of the workspace see
+ * its projects), no longer the projects the caller created.
  *
  * SAFETY: read-only, text-only. NEVER executes DDL. The engine stays
  * graph/BM25 — no LLM/RAG.
@@ -35,10 +37,10 @@ import { prisma as defaultPrisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import {
   assertWorkspaceAccessible,
-  listAccessibleProjectsInWorkspace,
+  listMemberProjectsInWorkspace,
   type AccessPrisma,
 } from "./cross-project-access.js";
-import type { SchedulerActor } from "../scheduler/project-access.js";
+import { actorHasProjectAccess, type SchedulerActor } from "../scheduler/project-access.js";
 
 /** Prisma surface for the cross-project queries (read-only). */
 export type CrossImpactPrisma = AccessPrisma &
@@ -79,7 +81,7 @@ function toIdentityView(row: {
  * object identified by `tableName` and their per-project usage. SHARED helper
  * used by both queries. `accessibleProjectIds` MUST already be intersected with
  * the actor's access — callers pass the result of
- * {@link listAccessibleProjectsInWorkspace}. Projects with no classification row
+ * {@link listMemberProjectsInWorkspace}. Projects with no classification row
  * for the object are omitted (they don't "use" it).
  */
 async function projectsUsingObject(
@@ -187,7 +189,7 @@ export async function whichProjectsUseObject(
 ): Promise<CrossProjectObjectUsage> {
   const db = resolvePrisma(prisma);
   // AUTHZ: membership + the accessible-project intersection inside the workspace.
-  const accessibleProjectIds = await listAccessibleProjectsInWorkspace(actor, workspaceId, db);
+  const accessibleProjectIds = await listMemberProjectsInWorkspace(actor, workspaceId, db);
 
   const schemaName = lookup.schemaName && lookup.schemaName.length > 0 ? lookup.schemaName : null;
   const objectType = lookup.objectType ?? "table";
@@ -256,13 +258,13 @@ export async function crossProjectImpact(
   if (!source.workspaceId) {
     // No workspace: nothing to aggregate across. Still assert the caller can see
     // the project so we never confirm existence of an inaccessible one.
-    await assertSourceAccessible(db, actor, sourceProjectId);
+    await assertSourceAccessible(actor, sourceProjectId);
     return { sourceProjectId, workspaceId: "", affectedObjects: [] };
   }
   const workspaceId = source.workspaceId;
 
   // AUTHZ: membership + accessible projects inside the workspace.
-  const accessibleProjectIds = await listAccessibleProjectsInWorkspace(actor, workspaceId, db);
+  const accessibleProjectIds = await listMemberProjectsInWorkspace(actor, workspaceId, db);
   if (!accessibleProjectIds.includes(sourceProjectId)) {
     // The caller belongs to the workspace but cannot access the source project.
     throw new AppError(404, "NOT_FOUND", "Project not found");
@@ -312,20 +314,17 @@ function splitQualified(qn: string): { schemaName: string | null; objectName: st
 
 /**
  * Assert the actor can access a project with no workspace (pre-migration / not
- * yet assigned). Mirrors the ownership-based project access used elsewhere;
- * admins always pass. Non-access → 404 (no leak).
+ * yet assigned) under the project-access rule (`actorHasProjectAccess`): open
+ * to authenticated users unless soft-deleted; admins always pass. #1232 — it
+ * used to admit only the project's creator. Non-access → 404 (no leak).
  */
-async function assertSourceAccessible(
-  db: CrossImpactPrisma,
-  actor: SchedulerActor,
-  projectId: string,
-): Promise<void> {
-  if (actor.role === "admin") return;
-  const owned = await db.project.findFirst({
-    where: { id: projectId, createdById: actor.id, deletedAt: null },
-    select: { id: true },
+async function assertSourceAccessible(actor: SchedulerActor, projectId: string): Promise<void> {
+  const allowed = await actorHasProjectAccess(actor, projectId, {
+    resource: "project",
+    resourceId: projectId,
+    action: "cross-project.impact",
   });
-  if (!owned) throw new AppError(404, "NOT_FOUND", "Project not found");
+  if (!allowed) throw new AppError(404, "NOT_FOUND", "Project not found");
 }
 
 export { assertWorkspaceAccessible };

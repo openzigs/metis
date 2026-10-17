@@ -652,11 +652,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       it("every route spends the signed-in user's budget, and answers 429 past it", async () => {
         process.env.RUNS_LIMIT_MAX = String(ROUTES.length);
         // One request to each route uses the budget up between them…
-        // (The by-id routes answer this user 404: a run's page is open to the
-        // project's creator and admins only. A 404 is a served request.)
+        // (#1232 — the by-id routes serve this user: a run's page is open to
+        // every live member of its project's workspace, and uRate1 is one.)
         const served: number[] = [];
         for (const path of ROUTES) served.push((await get(path, "rate1")).status);
-        expect(served).toEqual([200, 200, 404, 404, 404]);
+        expect(served).toEqual([200, 200, 200, 200, 200]);
         // …so each of them is now refused.
         for (const path of ROUTES) {
           const res = await get(path, "rate1");
@@ -712,10 +712,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         for (let i = 0; i < 5; i += 1) anonymous.push((await get("/api/runs/chat-turns")).status);
         expect(anonymous.slice(-2)).toEqual([429, 429]);
         // Same peer, same instant, a token this server signed: served, on every
-        // route (the by-id routes answer this user 404, which is a served request).
+        // route (#1232 — the by-id route too: uRate5 is a member of the run's workspace).
         const served: number[] = [];
         for (const path of ROUTES.slice(0, 3)) served.push((await get(path, "rate5")).status);
-        expect(served).toEqual([200, 200, 404]);
+        expect(served).toEqual([200, 200, 200]);
         // The peer is still refused.
         expect((await get("/api/runs/chat-turns")).status).toBe(429);
       });
