@@ -149,7 +149,7 @@ export async function listAccessibleProjectsInWorkspace(
  * use this, so a teammate sees the projects they can already open by id.
  *
  * {@link listAccessibleProjectsInWorkspace} is still the creator-only form for
- * the cross-project impact queries, which #1221 did not move.
+ * the cross-project impact queries, which #1221 did not move (#1232).
  */
 export async function listMemberProjectsInWorkspace(
   actor: SchedulerActor,

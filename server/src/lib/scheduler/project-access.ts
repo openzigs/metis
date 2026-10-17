@@ -26,7 +26,7 @@
  *
  * `listAccessibleProjectIds` below is STILL the creator-only predicate. Its
  * remaining callers (products, impact-detail, run access) were not part of
- * #1221; see the follow-up issue linked from the #1221 PR.
+ * #1221; they move in #1232.
  */
 import { prisma } from "../prisma.js";
 import type { RoleKey } from "@metis/shared";
