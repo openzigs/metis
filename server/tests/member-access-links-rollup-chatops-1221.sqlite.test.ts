@@ -72,7 +72,14 @@ const USERS: Record<string, { role: RoleKey; ws: string }> = {
   bob: { role: "coordinator", ws: WS1 },
   rita: { role: "reader", ws: WS1 },
   mallory: { role: "coordinator", ws: WS2 },
+  // #1233 review A01 — ws1 members whose access ended after their token was
+  // minted: Dora was disabled, Sid soft-deleted (SCIM, #612; both keep their
+  // WorkspaceMember row), Gus's membership row was deleted.
+  dora: { role: "coordinator", ws: WS1 },
+  sid: { role: "coordinator", ws: WS1 },
+  gus: { role: "coordinator", ws: WS1 },
 };
+const REVOKED = ["dora", "sid", "gus"] as const;
 type Who = keyof typeof USERS;
 const actorOf = (who: Who) => ({ id: who, role: USERS[who].role });
 
@@ -176,6 +183,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         },
       });
       draftA = (await db.issueDraft.create({ data: { projectId: PA, title: "D", body: "B" } })).id;
+      await db.user.update({ where: { id: "dora" }, data: { status: "disabled" } });
+      await db.user.update({ where: { id: "sid" }, data: { deletedAt: new Date() } });
+      await db.workspaceMember.deleteMany({ where: { userId: "gus" } });
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -270,6 +280,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           .set("Authorization", bearer("mallory"));
         expect(outsider.status).toBe(404);
       });
+
+      it("a disabled, soft-deleted or removed member's unexpired token searches nothing: 404, as on the per-id read", async () => {
+        for (const who of REVOKED) {
+          const byId = await request(app())
+            .get(`/api/requirements/${req.a1}/links`)
+            .set("Authorization", bearer(who));
+          expect(byId.status, `${who} per-id read`).toBe(404);
+          const search = await request(app())
+            .get(`/api/workspaces/${WS1}/requirements/search?q=Ledger`)
+            .set("Authorization", bearer(who));
+          expect(search.status, `${who} search`).toBe(404);
+          expect(search.body.data).toBeUndefined();
+        }
+      });
     });
 
     // ── Traceability roll-up ─────────────────────────────────────────────────
@@ -318,6 +342,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await expect(
           getWorkspaceTraceabilitySummary(actorOf("mallory"), WS1, { prisma: db as never }),
         ).rejects.toMatchObject({ statusCode: 404 });
+      });
+
+      it("the workspace summary is 404 for a disabled, soft-deleted or removed member", async () => {
+        for (const who of REVOKED) {
+          await expect(
+            getWorkspaceTraceabilitySummary(actorOf(who), WS1, { prisma: db as never }),
+            who,
+          ).rejects.toMatchObject({ statusCode: 404 });
+        }
       });
     });
 

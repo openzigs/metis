@@ -135,6 +135,14 @@ export function tasksRouter(): Router {
         });
         throw new AppError(409, "TASK_NOT_CANCELLABLE", "task is not in a cancellable state");
       }
+      // The queue's own `task.cancel` row carries no actor; name the member
+      // who cancelled, as the retry route does (#1233 review, A09).
+      audit({
+        actor: { id: a.id },
+        action: "task.cancel",
+        target: { type: "task", id: String(req.params.id) },
+        metadata: { projectId: row?.projectId ?? null },
+      });
       res.status(202).json(ok({ ok: true }));
     } catch (err) {
       next(asAppError(err));
@@ -154,6 +162,19 @@ export function tasksRouter(): Router {
       });
       if (!allowed) throw new AppError(404, "TASK_NOT_FOUND", "task not found");
       const retried = await queue.retry(String(req.params.id), original);
+      // The re-enqueued task keeps the ORIGINAL creator (its `task.enqueue`
+      // row names them), and since #1221 any member with `task.retry` may
+      // retry — so record who actually did (#1233 review, A09).
+      audit({
+        actor: { id: a.id },
+        action: "task.retry",
+        target: { type: "task", id: original.id },
+        metadata: {
+          retryTaskId: retried.id,
+          projectId: original.projectId,
+          originalCreatedById: original.createdById ?? null,
+        },
+      });
       res.status(202).json(ok({ taskId: retried.id, status: retried.status }));
     } catch (err) {
       next(asAppError(err));

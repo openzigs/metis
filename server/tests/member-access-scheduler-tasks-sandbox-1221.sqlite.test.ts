@@ -359,6 +359,41 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
         expect((await post(`/api/tasks/${task.id}/cancel`, "bob")).status).toBe(202);
         expect((await taskRow(task.id)).status).toBe("cancelled");
+        expect(auditSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            actor: { id: "bob" },
+            action: "task.cancel",
+            target: { type: "task", id: task.id },
+          }),
+        );
+      });
+
+      it("a retry by a second member is audited under that member, not the task's creator", async () => {
+        const task = await db.task.create({
+          data: {
+            type: "rerun-analysis",
+            status: "failed",
+            payload: JSON.stringify({ projectId: PA }),
+            projectId: PA,
+            maxAttempts: 1,
+            createdById: "alice",
+            completedAt: new Date(),
+            errorMessage: "boom",
+          },
+        });
+        auditSpy.mockClear();
+        const res = await post(`/api/tasks/${task.id}/retry`, "bob");
+        expect(res.status).toBe(202);
+        expect(auditSpy).toHaveBeenCalledWith({
+          actor: { id: "bob" },
+          action: "task.retry",
+          target: { type: "task", id: task.id },
+          metadata: {
+            retryTaskId: res.body.data.taskId,
+            projectId: PA,
+            originalCreatedById: "alice",
+          },
+        });
       });
 
       it("a second member retries a failed task; reader and non-member cannot", async () => {

@@ -44,7 +44,9 @@
  *
  * Note that `lib/scheduler/project-access.ts` exports a same-named
  * `listAccessibleProjectIds` that is a DIFFERENT predicate (creator-ownership,
- * not workspace membership) still used by products, impact detail and run access. The scheduler/task rows themselves moved to `listMemberAccessibleProjectIds` (#1221). It is not part of this
+ * not workspace membership) still used by products, impact detail and run
+ * access (#1232). The scheduler/task rows themselves moved to
+ * `listMemberAccessibleProjectIds` (#1221). It is not part of this
  * unification; check the import path before assuming which one you have.
  */
 

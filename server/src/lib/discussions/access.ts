@@ -51,7 +51,13 @@ export interface AccessAuditContext {
   action: string;
 }
 
-async function asAuthPayload(actor: ThreadActor): Promise<AuthPayload> {
+/**
+ * Adapt an actor to the `AuthPayload` `assertProjectAccess` reads. Its list
+ * twin `accessibleProjectWhere` takes the same input from here too
+ * (`lib/scheduler/project-access.ts`, `lib/cross-project/cross-project-access.ts`),
+ * so both forms resolve the actor's workspaces the same way (#1221).
+ */
+export async function asAuthPayload(actor: ThreadActor): Promise<AuthPayload> {
   const workspaces = actor.workspaces
     ? [...actor.workspaces]
     : await readLiveWorkspaceIds(actor.id);

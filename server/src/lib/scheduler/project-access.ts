@@ -31,8 +31,7 @@
 import { prisma } from "../prisma.js";
 import type { RoleKey } from "@metis/shared";
 import { audit } from "../audit/audit-service.js";
-import { canAccessProjectDiscussions } from "../discussions/access.js";
-import { readLiveWorkspaceIds } from "../auth/live-workspace-ids.js";
+import { asAuthPayload, canAccessProjectDiscussions } from "../discussions/access.js";
 import { accessibleProjectWhere } from "../acp/authz.js";
 
 export interface SchedulerActor {
@@ -78,15 +77,10 @@ export async function buildProjectAccessWhere(actor: SchedulerActor): Promise<Ac
  * from the database.
  */
 export async function listMemberAccessibleProjectIds(actor: SchedulerActor): Promise<string[]> {
-  const workspaces = isAdminActor(actor) ? [] : await readLiveWorkspaceIds(actor.id);
+  // An admin's workspaces do not enter the rule, so skip the read.
+  const payload = await asAuthPayload(isAdminActor(actor) ? { ...actor, workspaces: [] } : actor);
   const rows = await prisma.project.findMany({
-    where: accessibleProjectWhere({
-      userId: actor.id,
-      username: "",
-      role: actor.role,
-      permissions: [],
-      workspaces,
-    }),
+    where: accessibleProjectWhere(payload),
     select: { id: true },
   });
   return rows.map((p) => p.id);
