@@ -45,13 +45,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       for (const id of [PROJECT, OTHER_PROJECT]) {
         await db.project.create({ data: { id, name: id, slug: id, createdById: USER } });
         await db.analysis.create({
-          data: { id: `run-${id}`, projectId: id, startedById: USER, status: "completed" },
+          data: {
+            id: `run-${id}`,
+            projectId: id,
+            startedById: USER,
+            status: "completed",
+            startedAt: new Date("2026-10-05T00:00:00Z"),
+          },
         });
       }
+      // Older and newer runs of this project around the one the section reads:
+      // an older completed run (superseded), a newer completed run with no
+      // approved requirement, and a newer run that is still running.
+      const run = (id: string, status: string, day: string) =>
+        db.analysis.create({
+          data: {
+            id,
+            projectId: PROJECT,
+            startedById: USER,
+            status,
+            startedAt: new Date(`2026-10-${day}T00:00:00Z`),
+          },
+        });
+      await run("run-older", "completed", "01");
+      await run("run-newer-unapproved", "completed", "07");
+      await run("run-running", "running", "09");
       const req = (
         id: string,
         projectId: string,
-        extra: { reviewStatus?: string | null; priority?: string; deletedAt?: Date } = {},
+        extra: {
+          reviewStatus?: string | null;
+          priority?: string;
+          deletedAt?: Date;
+          analysisId?: string;
+        } = {},
       ) =>
         db.requirement.create({
           data: {
@@ -73,6 +100,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await req("mine-unreviewed", PROJECT, { reviewStatus: null });
       await req("mine-deleted", PROJECT, { reviewStatus: "approved", deletedAt: new Date() });
       await req("theirs-approved", OTHER_PROJECT, { reviewStatus: "approved" });
+      await req("older-run-approved", PROJECT, {
+        reviewStatus: "approved",
+        analysisId: "run-older",
+      });
+      await req("newer-run-draft", PROJECT, {
+        reviewStatus: "draft",
+        analysisId: "run-newer-unapproved",
+      });
+      await req("running-run-approved", PROJECT, {
+        reviewStatus: "approved",
+        analysisId: "run-running",
+      });
       // The analyst's edit after approval: the stored row is what is listed.
       await db.requirement.update({
         where: { id: "mine-approved-low" },
@@ -98,7 +137,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite?.cleanup();
     });
 
-    it("selects this project's live, approved requirements, highest priority first", async () => {
+    it("selects the live, approved requirements of the newest completed run that has any, highest priority first", async () => {
+      // Not the superseded run's, the running run's, or the newer run's drafts.
       const rows = await loadApprovedRequirements(PROJECT);
       expect(rows.map((r) => r.id)).toEqual(["mine-approved-critical", "mine-approved-low"]);
       expect(rows[0].codeMappings).toEqual([]);

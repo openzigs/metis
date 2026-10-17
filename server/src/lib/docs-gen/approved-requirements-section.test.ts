@@ -5,8 +5,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { findMany } = vi.hoisted(() => ({ findMany: vi.fn() }));
-vi.mock("../prisma.js", () => ({ prisma: { requirement: { findMany } } }));
+const { findMany, findFirst } = vi.hoisted(() => ({ findMany: vi.fn(), findFirst: vi.fn() }));
+vi.mock("../prisma.js", () => ({
+  prisma: { requirement: { findMany }, analysis: { findFirst } },
+}));
 
 import {
   APPROVED_REQUIREMENTS_HEADING,
@@ -48,16 +50,42 @@ function req(n: number, overrides: Partial<ScopedRequirement> = {}): ScopedRequi
   };
 }
 
-beforeEach(() => findMany.mockReset());
+beforeEach(() => {
+  findMany.mockReset();
+  findFirst.mockReset();
+});
 
 describe("loadApprovedRequirements", () => {
-  it("selects only live, approved requirements of the one project", async () => {
+  it("selects only live, approved requirements of the project's newest run that has any", async () => {
+    findFirst.mockResolvedValue({ id: "run-2" });
     findMany.mockResolvedValue([]);
     await loadApprovedRequirements("p1");
+    // The run is one of this project's: completed, live, with an approved requirement.
+    expect(findFirst.mock.calls[0][0]).toEqual({
+      where: {
+        projectId: "p1",
+        deletedAt: null,
+        status: "completed",
+        requirements: { some: { projectId: "p1", deletedAt: null, reviewStatus: "approved" } },
+      },
+      orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+      select: { id: true },
+    });
     const where = findMany.mock.calls[0][0].where;
-    expect(where).toEqual({ projectId: "p1", deletedAt: null, reviewStatus: "approved" });
+    expect(where).toEqual({
+      projectId: "p1",
+      deletedAt: null,
+      analysisId: "run-2",
+      reviewStatus: "approved",
+    });
     // The code links are read within the project too.
     expect(findMany.mock.calls[0][0].select.codeMappings.where).toEqual({ projectId: "p1" });
+  });
+
+  it("reads no requirements when no run has an approved one", async () => {
+    findFirst.mockResolvedValue(null);
+    expect(await loadApprovedRequirements("p1")).toEqual([]);
+    expect(findMany).not.toHaveBeenCalled();
   });
 });
 

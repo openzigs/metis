@@ -1,7 +1,9 @@
 /**
  * #1218 — the requirements section of a reader-layout BRD (`brd-layout.ts`,
  * #1175) when the project has approved requirements: the requirements the
- * analysts analysed, clarified, reviewed and approved in METIS, copied from
+ * analysts analysed, clarified, reviewed and approved in METIS, from ONE
+ * analysis run (the newest completed run with any approved, as the
+ * Requirements hub opens on the newest run with requirements), copied from
  * their stored rows as a requirements-scoped BRD shows them
  * (`requirements-scope.ts`): stored id, title, body and acceptance criteria,
  * with the analysts' edits. No model writes or rewords any of it.
@@ -24,6 +26,7 @@ import {
   BRD_MAIN_TARGET_CHARS,
   mainFitCap,
 } from "./brd-layout.js";
+import { prisma } from "../prisma.js";
 import {
   loadScopedRequirements,
   renderRequirementEntry,
@@ -38,12 +41,28 @@ export const APPROVED_REQUIREMENTS_HEADING = "Approved Requirements";
 export const APPROVED_REQUIREMENTS_MODEL = "none (stored approved requirements)";
 
 /**
- * The project's approved requirements, highest priority first. Read through
- * `requirementsScopeWhere`, so only live rows of THIS project whose review
- * status is `approved` are selected; another project's rows never are.
+ * The project's approved requirements, highest priority first, from the
+ * newest completed analysis run of the project that has any. Requirements
+ * belong to the run that produced them, and a re-run writes a new set, so
+ * reading every run's approved rows would list superseded and duplicate
+ * requirements. Both reads are filtered on `projectId`: the run is one of
+ * THIS project's, and its rows are read through `requirementsScopeWhere`
+ * (live rows of the project whose review status is `approved`), so another
+ * project's rows are never selected. No such run: none.
  */
-export function loadApprovedRequirements(projectId: string): Promise<ScopedRequirement[]> {
-  return loadScopedRequirements(projectId, { approvedOnly: true });
+export async function loadApprovedRequirements(projectId: string): Promise<ScopedRequirement[]> {
+  const run = await prisma.analysis.findFirst({
+    where: {
+      projectId,
+      deletedAt: null,
+      status: "completed",
+      requirements: { some: { projectId, deletedAt: null, reviewStatus: "approved" } },
+    },
+    orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+    select: { id: true },
+  });
+  if (!run) return [];
+  return loadScopedRequirements(projectId, { analysisId: run.id, approvedOnly: true });
 }
 
 /** The main part's other sections' targets: what the approved requirements leave them. */
@@ -68,7 +87,7 @@ export function approvedRequirementsMaxChars(bodyMaxChars: number): number {
 
 function leadIn(total: number): string {
   const noun = total === 1 ? "requirement" : "requirements";
-  return `> **Approved in METIS.** The project's ${total} approved ${noun}, as the analysts left them in METIS: each one's id, title, description and acceptance criteria are copied from the stored requirement, and no model wrote or reworded them. Highest priority first.`;
+  return `> **Approved in METIS.** The ${total} approved ${noun} of the project's latest analysis run that has any, as the analysts left them in METIS: each one's id, title, description and acceptance criteria are copied from the stored requirement, and no model wrote or reworded them. Highest priority first.`;
 }
 
 /**
@@ -78,7 +97,7 @@ function leadIn(total: number): string {
  */
 export function overflowPointer(listed: number, total: number): string {
   const rest = total - listed;
-  return `> **${listed} of ${total} approved requirements are listed here.** The other ${rest} did not fit in the main part of this document, so they are left out whole rather than cut short. The full list, each with its acceptance criteria, is in METIS under **Requirements**, and in a Business Requirements document generated with the scope **Requirements (analysis run)** and **Approved requirements only**.`;
+  return `> **${listed} of ${total} approved requirements are listed here.** The other ${rest} did not fit in the main part of this document, so they are left out whole rather than cut short. The full list, each with its acceptance criteria, is in METIS under **Requirements**, and in a Business Requirements document generated with the scope **Requirements (analysis run)**, the latest run with approved requirements chosen, and **Approved requirements only**.`;
 }
 
 /** What {@link renderApprovedRequirementsSection} returns. */
