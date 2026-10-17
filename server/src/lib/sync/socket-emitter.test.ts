@@ -5,7 +5,7 @@
  * connected client heard about them.
  *
  * The emitter fans out to the `project:{id}` room, which `subscribe:project`
- * gates on `actorCanAccessProject` — a client that cannot read the project is
+ * gates on project access — a client that cannot read the project is
  * never in the room, so this carries no drift detail to unauthorized users.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";

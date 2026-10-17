@@ -12,7 +12,7 @@
  * This module adds the workspace dimension and INTERSECTS it with the existing
  * project access (defence-in-depth): a project is cross-project-visible only if
  * the actor can access the project AND belongs to its workspace. Denials emit an
- * audit row, mirroring `actorCanAccessProject` (review finding L2).
+ * audit row, mirroring `actorHasProjectAccess` (review finding L2).
  *
  * Authz model (matches custom-agents/authz.ts IDOR hardening):
  *   - system admin (`role === "admin"`): sees every workspace/project.
@@ -139,6 +139,29 @@ export async function listAccessibleProjectsInWorkspace(
   // caller never sees a sibling project they cannot access even within a shared
   // workspace. When a real per-project membership table lands, swap this filter.
   return projects.filter((p) => p.createdById === actor.id).map((p) => p.id);
+}
+
+/**
+ * #1221 — the project ids inside `workspaceId` the actor may open under the
+ * project-access rule (`assertProjectAccess`): once workspace membership is
+ * asserted (404 for non-members, audited), that is every live project in the
+ * workspace. The requirement-link search and the workspace traceability roll-up
+ * use this, so a teammate sees the projects they can already open by id.
+ *
+ * {@link listAccessibleProjectsInWorkspace} is still the creator-only form for
+ * the cross-project impact queries, which #1221 did not move.
+ */
+export async function listMemberProjectsInWorkspace(
+  actor: SchedulerActor,
+  workspaceId: string,
+  prisma?: AccessPrisma,
+): Promise<string[]> {
+  await assertWorkspaceAccessible(actor, workspaceId, prisma);
+  const projects = await resolvePrisma(prisma).project.findMany({
+    where: { workspaceId, deletedAt: null },
+    select: { id: true },
+  });
+  return projects.map((p) => p.id);
 }
 
 export type { SchedulerActor, RoleKey };

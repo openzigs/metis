@@ -17,6 +17,7 @@ import {
   assertWorkspaceAccessible,
   listAccessibleProjectsInWorkspace,
   listAccessibleWorkspaceIds,
+  listMemberProjectsInWorkspace,
   type AccessPrisma,
 } from "../src/lib/cross-project/cross-project-access.js";
 import type { SchedulerActor } from "../src/lib/scheduler/project-access.js";
@@ -173,6 +174,31 @@ describe("listAccessibleProjectsInWorkspace — project INTERSECTION inside a wo
       projects: { p1: { workspaceId: "wsB", createdById: "other" } },
     });
     await expect(listAccessibleProjectsInWorkspace(MEMBER, "wsB", db)).rejects.toMatchObject({
+      statusCode: 404,
+    });
+  });
+});
+
+describe("listMemberProjectsInWorkspace — #1221 project-access rule inside a workspace", () => {
+  it("returns every workspace project to a member, including ones a teammate created", async () => {
+    const db = makeFakePrisma({
+      members: { wsA: ["user-1", "other"] },
+      projects: {
+        p1: { workspaceId: "wsA", createdById: "user-1" },
+        p2: { workspaceId: "wsA", createdById: "other" },
+        p3: { workspaceId: "wsB", createdById: "user-1" },
+      },
+    });
+    const ids = await listMemberProjectsInWorkspace(MEMBER, "wsA", db);
+    expect(new Set(ids)).toEqual(new Set(["p1", "p2"]));
+  });
+
+  it("DENIES (404) a non-member", async () => {
+    const db = makeFakePrisma({
+      members: { wsA: ["other"] },
+      projects: { p1: { workspaceId: "wsA", createdById: "other" } },
+    });
+    await expect(listMemberProjectsInWorkspace(MEMBER, "wsA", db)).rejects.toMatchObject({
       statusCode: 404,
     });
   });

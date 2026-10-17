@@ -9,8 +9,8 @@
  *
  * Tenant isolation: caller must (a) be authenticated, (b) carry the
  * `analysis.run` permission, and (c) be in the project's access set —
- * the same admin / project-creator rule the scheduler routes apply
- * (see `actorCanAccessProject`).
+ * the project-access rule (admins, the project's workspace members — #1221)
+ * (see `actorHasProjectAccess`).
  */
 import { Router } from "express";
 import type { ApiResponse } from "@metis/shared";
@@ -19,7 +19,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { sandboxRunOnceRateLimiter } from "../middleware/sandbox-run-once-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
-import { actorCanAccessProject } from "../lib/scheduler/project-access.js";
+import { actorHasProjectAccess } from "../lib/scheduler/project-access.js";
 import { getSandboxProvider } from "../lib/sandbox/factory.js";
 import { withSandbox } from "../lib/sandbox/with-sandbox.js";
 import { SANDBOX_HARD_LIMITS } from "../lib/sandbox/limits.js";
@@ -67,7 +67,7 @@ export function sandboxRouter(): Router {
           throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
         }
         const actor = { id: req.user.userId, role: req.user.role };
-        const allowed = await actorCanAccessProject(actor, projectId, {
+        const allowed = await actorHasProjectAccess(actor, projectId, {
           resource: "sandbox",
           resourceId: projectId,
           action: "sandbox.run-once",

@@ -114,7 +114,10 @@ vi.mock("../src/lib/prisma.js", () => ({
         },
       ),
     },
-    project: { findMany: vi.fn(async () => []) },
+    // No live project is reachable by a non-admin (`actorHasProjectAccess` reads
+    // `project.findFirst` for the live check before the workspace rule).
+    project: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null) },
+    workspaceMember: { findMany: vi.fn(async () => []) },
     task: {
       updateMany: vi.fn(
         async ({

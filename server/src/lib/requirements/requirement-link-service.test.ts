@@ -10,17 +10,16 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const actorCanAccessProject = vi.fn();
-const listAccessibleProjectsInWorkspace = vi.fn();
+const actorHasProjectAccess = vi.fn();
+const listMemberProjectsInWorkspace = vi.fn();
 const audit = vi.fn();
 
 vi.mock("../scheduler/project-access.js", () => ({
-  actorCanAccessProject: (...args: unknown[]) => actorCanAccessProject(...args),
+  actorHasProjectAccess: (...args: unknown[]) => actorHasProjectAccess(...args),
   isAdminActor: () => false,
 }));
 vi.mock("../cross-project/cross-project-access.js", () => ({
-  listAccessibleProjectsInWorkspace: (...args: unknown[]) =>
-    listAccessibleProjectsInWorkspace(...args),
+  listMemberProjectsInWorkspace: (...args: unknown[]) => listMemberProjectsInWorkspace(...args),
 }));
 vi.mock("../audit/audit-service.js", () => ({ audit: (...args: unknown[]) => audit(...args) }));
 
@@ -85,7 +84,7 @@ type MockDb = ReturnType<typeof createMockDb>;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  actorCanAccessProject.mockResolvedValue(true);
+  actorHasProjectAccess.mockResolvedValue(true);
   resolveDatabaseProviderMock.mockReturnValue("sqlite");
 });
 
@@ -141,7 +140,7 @@ describe("createRequirementLink", () => {
   });
 
   it("denies (403) when the SOURCE project is inaccessible", async () => {
-    actorCanAccessProject.mockImplementation(
+    actorHasProjectAccess.mockImplementation(
       async (_a, projectId: string) => projectId !== "projA",
     );
     await expect(
@@ -155,7 +154,7 @@ describe("createRequirementLink", () => {
   });
 
   it("denies (403) when the TARGET project is inaccessible", async () => {
-    actorCanAccessProject.mockImplementation(
+    actorHasProjectAccess.mockImplementation(
       async (_a, projectId: string) => projectId !== "projB",
     );
     await expect(
@@ -174,7 +173,7 @@ describe("createRequirementLink", () => {
       targetRequirementId: "tgt",
       type: "relates_to",
     });
-    const checked = actorCanAccessProject.mock.calls.map((c) => c[1]);
+    const checked = actorHasProjectAccess.mock.calls.map((c) => c[1]);
     expect(checked).toContain("projA");
     expect(checked).toContain("projB");
   });
@@ -353,7 +352,7 @@ describe("deleteRequirementLink", () => {
   // as for a non-existent one — the old 403-vs-404 split was an existence oracle
   // over the (server-generated) id space.
   it("returns 404 LINK_NOT_FOUND (not 403) when the source project is inaccessible", async () => {
-    actorCanAccessProject.mockImplementation(
+    actorHasProjectAccess.mockImplementation(
       async (_a, projectId: string) => projectId !== "projA",
     );
     await expect(deleteRequirementLink(db as never, actor, "link-1")).rejects.toMatchObject({
@@ -364,7 +363,7 @@ describe("deleteRequirementLink", () => {
   });
 
   it("returns 404 LINK_NOT_FOUND (not 403) when the target project is inaccessible", async () => {
-    actorCanAccessProject.mockImplementation(
+    actorHasProjectAccess.mockImplementation(
       async (_a, projectId: string) => projectId !== "projB",
     );
     await expect(deleteRequirementLink(db as never, actor, "link-1")).rejects.toMatchObject({
@@ -385,7 +384,7 @@ describe("deleteRequirementLink", () => {
       source: { projectId: "projA" },
       target: { projectId: "projB" },
     });
-    actorCanAccessProject.mockResolvedValue(false);
+    actorHasProjectAccess.mockResolvedValue(false);
     const denied = await deleteRequirementLink(db as never, actor, "link-1").catch((e) => e);
     expect(denied.statusCode).toBe(missing.statusCode);
     expect(denied.code).toBe(missing.code);
@@ -393,7 +392,7 @@ describe("deleteRequirementLink", () => {
   });
 
   it("propagates a non-authz error from the access check unchanged (not masked as 404)", async () => {
-    actorCanAccessProject.mockRejectedValue(new Error("db connection lost"));
+    actorHasProjectAccess.mockRejectedValue(new Error("db connection lost"));
     await expect(deleteRequirementLink(db as never, actor, "link-1")).rejects.toThrow(
       "db connection lost",
     );
@@ -432,7 +431,7 @@ describe("listRequirementLinks", () => {
   // #649: same existence-oracle fix as delete — an inaccessible requirement and a
   // missing one must be indistinguishable on this direct-by-id read.
   it("returns 404 REQUIREMENT_NOT_FOUND (not 403) when the requirement's own project is inaccessible", async () => {
-    actorCanAccessProject.mockResolvedValue(false);
+    actorHasProjectAccess.mockResolvedValue(false);
     await expect(listRequirementLinks(db as never, actor, "req")).rejects.toMatchObject({
       statusCode: 404,
       code: "REQUIREMENT_NOT_FOUND",
@@ -447,7 +446,7 @@ describe("listRequirementLinks", () => {
       projectId: "projA",
       deletedAt: null,
     });
-    actorCanAccessProject.mockResolvedValue(false);
+    actorHasProjectAccess.mockResolvedValue(false);
     const denied = await listRequirementLinks(db as never, actor, "req").catch((e) => e);
     expect(denied.statusCode).toBe(missing.statusCode);
     expect(denied.code).toBe(missing.code);
@@ -455,7 +454,7 @@ describe("listRequirementLinks", () => {
   });
 
   it("propagates a non-authz error from the access check unchanged (not masked as 404)", async () => {
-    actorCanAccessProject.mockRejectedValue(new Error("db connection lost"));
+    actorHasProjectAccess.mockRejectedValue(new Error("db connection lost"));
     await expect(listRequirementLinks(db as never, actor, "req")).rejects.toThrow(
       "db connection lost",
     );
@@ -497,7 +496,7 @@ describe("listRequirementLinks", () => {
 
   it("omits links whose counterpart project the caller cannot access (no leak)", async () => {
     // Own project projA accessible; counterpart projB is NOT.
-    actorCanAccessProject.mockImplementation(
+    actorHasProjectAccess.mockImplementation(
       async (_a, projectId: string) => projectId === "projA",
     );
     db.requirementLink.findMany.mockImplementation(
@@ -526,7 +525,7 @@ describe("searchWorkspaceRequirements", () => {
   let db: MockDb;
   beforeEach(() => {
     db = createMockDb();
-    listAccessibleProjectsInWorkspace.mockResolvedValue(["projA", "projB"]);
+    listMemberProjectsInWorkspace.mockResolvedValue(["projA", "projB"]);
     db.requirement.count.mockResolvedValue(1);
     db.requirement.findMany.mockResolvedValue([
       { id: "r1", title: "Login", projectId: "projA", project: { name: "Project A" } },
@@ -534,7 +533,7 @@ describe("searchWorkspaceRequirements", () => {
   });
 
   it("propagates the 404 when the workspace is not accessible", async () => {
-    listAccessibleProjectsInWorkspace.mockRejectedValue(
+    listMemberProjectsInWorkspace.mockRejectedValue(
       new AppError(404, "NOT_FOUND", "Workspace not found"),
     );
     await expect(
@@ -548,7 +547,7 @@ describe("searchWorkspaceRequirements", () => {
   });
 
   it("returns an empty page when no accessible projects remain", async () => {
-    listAccessibleProjectsInWorkspace.mockResolvedValue(["projA"]);
+    listMemberProjectsInWorkspace.mockResolvedValue(["projA"]);
     const result = await searchWorkspaceRequirements(
       actor,
       { workspaceId: "ws1", excludeProjectId: "projA", page: 1, pageSize: 20 },

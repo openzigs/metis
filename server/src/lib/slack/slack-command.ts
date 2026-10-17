@@ -26,7 +26,7 @@
  *     identity resolver; an UNMAPPED sender is REFUSED (never act as nobody).
  *   - AUTHZ: approval reuses the SAME role permission the REST path requires
  *     (`hasPermission(role, "issue.draft")`) AND the project-membership check
- *     (`actorCanAccessProject` on the draft's project). Status requires project
+ *     (`actorHasProjectAccess` on the draft's project). Status requires project
  *     access on the resolved project. Identity ≠ authorization.
  *   - All Slack input (command text, draft id in the action value) is UNTRUSTED:
  *     it flows only into parameterized Prisma lookups / the approval service,
@@ -42,7 +42,7 @@ import { hasPermission, type RoleKey } from "@metis/shared";
 
 import { createChildLogger } from "../logger.js";
 import { prisma as defaultPrisma } from "../prisma.js";
-import { actorCanAccessProject } from "../scheduler/project-access.js";
+import { actorHasProjectAccess } from "../scheduler/project-access.js";
 import { approveDraft } from "../publishing/publishing-service.js";
 import { PublishError } from "../publishing/types.js";
 import { summarizeProjectHealth } from "../teams/project-health.js";
@@ -146,8 +146,8 @@ export interface SlackActorContext {
 export interface SlackCommandDeps {
   resolver: SlackIdentityResolver;
   db: PrismaClient;
-  /** Project-membership guard. Defaults to `actorCanAccessProject`. */
-  authorizeProject: typeof actorCanAccessProject;
+  /** Project-membership guard. Defaults to `actorHasProjectAccess`. */
+  authorizeProject: typeof actorHasProjectAccess;
   /** Approval service. Defaults to `approveDraft`. */
   approve: typeof approveDraft;
   /** Project-health summarizer. Defaults to `summarizeProjectHealth`. */
@@ -157,7 +157,7 @@ export interface SlackCommandDeps {
 export interface SlackCommandOptions {
   resolver?: SlackIdentityResolver;
   db?: PrismaClient;
-  authorizeProject?: typeof actorCanAccessProject;
+  authorizeProject?: typeof actorHasProjectAccess;
   approve?: typeof approveDraft;
   summarize?: typeof summarizeProjectHealth;
 }
@@ -166,7 +166,7 @@ function resolveDeps(opts: SlackCommandOptions): SlackCommandDeps {
   return {
     resolver: opts.resolver ?? getSlackIdentityResolver(),
     db: opts.db ?? defaultPrisma,
-    authorizeProject: opts.authorizeProject ?? actorCanAccessProject,
+    authorizeProject: opts.authorizeProject ?? actorHasProjectAccess,
     approve: opts.approve ?? approveDraft,
     summarize: opts.summarize ?? summarizeProjectHealth,
   };

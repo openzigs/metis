@@ -20,7 +20,7 @@ import { audit } from "../lib/audit/audit-service.js";
 import { prisma } from "../lib/prisma.js";
 import { fetchTaskRecord, getSchedulerBootstrap, SchedulerError } from "../lib/scheduler/index.js";
 import {
-  actorCanAccessProject,
+  actorHasProjectAccess,
   buildProjectAccessWhere,
   type SchedulerActor,
 } from "../lib/scheduler/project-access.js";
@@ -61,7 +61,7 @@ export function tasksRouter(): Router {
       // set, return an empty page rather than 403 (mirror the IDOR-mitigated
       // 404 strategy on the singular routes).
       if (projectId !== undefined) {
-        const allowed = await actorCanAccessProject(a, projectId, {
+        const allowed = await actorHasProjectAccess(a, projectId, {
           resource: "task-list",
           resourceId: projectId,
           action: "task.read",
@@ -96,7 +96,7 @@ export function tasksRouter(): Router {
       const a = actor(req);
       const row = await prisma.task.findUnique({ where: { id: String(req.params.id) } });
       if (!row) throw new AppError(404, "TASK_NOT_FOUND", "task not found");
-      const allowed = await actorCanAccessProject(a, row.projectId, {
+      const allowed = await actorHasProjectAccess(a, row.projectId, {
         resource: "task",
         resourceId: row.id,
         action: "task.read",
@@ -113,7 +113,7 @@ export function tasksRouter(): Router {
       const a = actor(req);
       const row = await prisma.task.findUnique({ where: { id: String(req.params.id) } });
       if (row) {
-        const allowed = await actorCanAccessProject(a, row.projectId, {
+        const allowed = await actorHasProjectAccess(a, row.projectId, {
           resource: "task",
           resourceId: row.id,
           action: "task.cancel",
@@ -147,7 +147,7 @@ export function tasksRouter(): Router {
       const { queue } = getSchedulerBootstrap();
       const original = await fetchTaskRecord(String(req.params.id));
       if (!original) throw new AppError(404, "TASK_NOT_FOUND", "task not found");
-      const allowed = await actorCanAccessProject(a, original.projectId, {
+      const allowed = await actorHasProjectAccess(a, original.projectId, {
         resource: "task",
         resourceId: original.id,
         action: "task.retry",

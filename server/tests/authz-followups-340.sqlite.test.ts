@@ -477,15 +477,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await db.scheduledJob.count()).toBe(before);
       });
 
-      it("a same-workspace coordinator who cannot schedule there gets the same 404 (createJob's own rule, hoisted)", async () => {
-        const before = await db.scheduledJob.count();
+      // #1221 — a same-workspace coordinator who did not create the project now
+      // reaches it (the project-access rule), so the autopilot check runs for
+      // them as it does for the creator. It is not an oracle: they can open the
+      // project and read its autopilot setting anyway.
+      it("a same-workspace coordinator (not the creator) reaches the autopilot check like the creator", async () => {
         const none = await call("post", "/api/scheduler", PEER, job(NO_PROJECT, "autopilot-340-p"));
-        const on = await call("post", "/api/scheduler", PEER, job(PA, "autopilot-340-p"));
-        const off = await call("post", "/api/scheduler", PEER, job(PA_OFF, "autopilot-340-p"));
         expect(none.status, JSON.stringify(none.body)).toBe(404);
-        expect(on.text).toBe(none.text);
-        expect(off.text).toBe(none.text);
-        expect(await db.scheduledJob.count()).toBe(before);
+        const off = await call("post", "/api/scheduler", PEER, job(PA_OFF, "autopilot-340-p"));
+        expect(off.status, JSON.stringify(off.body)).toBe(400);
+        expect(off.body.error.code).toBe("AUTOPILOT_DISABLED");
+        const on = await call("post", "/api/scheduler", PEER, job(PA, "autopilot-340-p"));
+        expect(on.status, JSON.stringify(on.body)).toBe(201);
+        expect(on.body.data.projectId).toBe(PA);
+        await db.scheduledJob.delete({ where: { id: on.body.data.id as string } });
       });
 
       it("the caller's own project: the autopilot check still runs, and an enabled project is scheduled", async () => {

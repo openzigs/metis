@@ -16,7 +16,10 @@ const { projectFindMany } = vi.hoisted(() => ({
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
-    project: { findMany: projectFindMany },
+    // No live project is reachable: `actorHasProjectAccess` (#1221) checks the
+    // project is live (`findFirst`) before the workspace rule.
+    project: { findMany: projectFindMany, findFirst: vi.fn(async () => null) },
+    workspaceMember: { findMany: vi.fn(async () => []) },
   },
 }));
 

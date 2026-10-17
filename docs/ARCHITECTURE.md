@@ -1235,7 +1235,7 @@ workspace-less are *not* a shared tenant, so a link between them is rejected.
 
 **Service + authorization** (`lib/requirements/requirement-link-service.ts`).
 Every create/delete/read/search funnels both endpoints through the existing
-per-project guard `actorCanAccessProject` (`lib/scheduler/project-access.ts`) —
+per-project guard `actorHasProjectAccess` (`lib/scheduler/project-access.ts`, the project-access rule since #1221) —
 the security-critical invariant is **dual-project authorization**: a caller must
 be able to access the projects of BOTH endpoints, so an actor with access to one
 side can never wire into, learn about, or sever a link touching a project they
@@ -2109,7 +2109,7 @@ Epic #610 links two **requirements** directly (distinct from the requirement→s
 | Workspace summary | `GET /api/workspaces/:workspaceId/traceability/summary` | `{ projects: WorkspaceProjectTraceability[], crossProjectLinks: CrossProjectLinkEdge[] }` |
 
 - **Bounded traversal** — `getRequirementChainWithLinks` does a breadth-first walk over `RequirementLink` edges, clamping `depth` to `MAX_TRACEABILITY_LINK_DEPTH` (=3) and de-duplicating with a `visited` set so a cycle terminates. Without `includeLinked` the route returns the byte-for-byte #229 chain (regression-tested), so existing single-project behavior is unchanged.
-- **Access isolation (reuses #624 seams, no new scheme)** — the summary calls `listAccessibleProjectsInWorkspace` (`lib/cross-project/cross-project-access.ts`), which asserts workspace membership (→ `404`, no existence leak) and intersects the workspace's projects with the caller's accessible set; **every** count and link is then scoped to that project-id set, and a cross-project edge is emitted only when *both* endpoints sit in an accessible project. The linked-chain walk access-checks each counterpart's project with `actorCanAccessProject`; an inaccessible counterpart is surfaced as `{ restricted: true, chain: null }` (the edge is shown, its content is not) and is **not** expanded through. There is no unbounded graph walk — cost is fixed `in`-filtered queries plus O(#accessible projects).
+- **Access isolation (reuses #624 seams, no new scheme)** — the summary calls `listMemberProjectsInWorkspace` (`lib/cross-project/cross-project-access.ts`), which asserts workspace membership (→ `404`, no existence leak) and returns the workspace's live projects (#1221); **every** count and link is then scoped to that project-id set, and a cross-project edge is emitted only when *both* endpoints sit in an accessible project. The linked-chain walk access-checks each counterpart's project with `actorHasProjectAccess`; an inaccessible counterpart is surfaced as `{ restricted: true, chain: null }` (the edge is shown, its content is not) and is **not** expanded through. There is no unbounded graph walk — cost is fixed `in`-filtered queries plus O(#accessible projects).
 - **Coverage math** — per project, `specCoverage` / `codeCoverage` are the fraction of live requirements with ≥1 requirement→spec / direct requirement→code mapping (clamped to 1 to absorb mappings left over for soft-deleted requirements); `linkedCrossProject` counts distinct requirements participating in a cross-project link. **Tested coverage (#815)** — `codeMappedRequirements` counts live requirements with mapped code, directly or through a spec (the set the #814 test-gap list judges), and is the denominator of `testCoverage` (≥1 `testedBy` of any relation) and `strictTestCoverage` (`direct`/`exercises` only, not `naming` or `inferred-call`), both clamped to [0, 1]; `no-code` requirements do not drag them down. Each project runs `loadTestedByTargets` + `resolveTestedByForTargets` once in batch mode (`lib/traceability/tested-by.ts`), so the summary costs one link query plus O(#projects × constant) queries — asserted with a counting Prisma double.
 - **UI** — a workspace **Traceability** tab (`/workspaces/:id/traceability`) renders `WorkspaceTraceabilityRollup` (`ui/src/components/traceability/workspace-traceability-rollup.tsx`): the per-project coverage table plus a Mermaid render of the cross-project link map (strict-mode Mermaid sanitized with DOMPurify; falls back to the Mermaid source text on render failure). Client wrappers `traceabilityApi.workspaceSummary` / `chainWithLinks`.
 
@@ -4259,6 +4259,18 @@ with cron triggers, manual invocation, retries, cancellation, and live status
 streaming. It is bootstrapped once at server startup (`bootstrapScheduler({io})`
 in `server/src/server.ts`) and exposes a single in-process singleton via
 `getSchedulerBootstrap()`.
+
+**Who may see and act on a project's jobs and tasks (#1221).** The rule of
+`GET /projects/:id`: `actorHasProjectAccess` (`lib/scheduler/project-access.ts`)
+delegates to `canAccessProjectDiscussions` → `assertProjectAccess`, so admins, every
+live member of the project's workspace and anyone for a legacy workspace-less project
+pass, and a soft-deleted project is closed to non-admins; lists scope through
+`buildProjectAccessWhere` over the same rule. System rows (`projectId = null`) stay
+admin-only. Writes still need their role permission (`scheduler.manage`,
+`task.cancel`, `task.retry`), so a reader-role member reads and changes nothing. The
+sandbox `run-once` route, requirement links, the workspace traceability roll-up and the
+Slack/Teams `/metis` commands use the same helper. It replaced the creator-only
+`actorCanAccessProject`.
 
 ### 13.7.1 Module layout
 

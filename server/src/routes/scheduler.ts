@@ -33,7 +33,7 @@ import { AppError } from "../middleware/error-handler.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { prisma } from "../lib/prisma.js";
 import { getSchedulerBootstrap, SchedulerError } from "../lib/scheduler/index.js";
-import { actorCanAccessProject, type SchedulerActor } from "../lib/scheduler/project-access.js";
+import { actorHasProjectAccess, type SchedulerActor } from "../lib/scheduler/project-access.js";
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -89,7 +89,7 @@ export function schedulerRouter(): Router {
       // 404), hoisted, so an unreachable project answers exactly what an
       // unknown one does.
       if (input.projectId) {
-        const allowed = await actorCanAccessProject(actor(req), input.projectId, {
+        const allowed = await actorHasProjectAccess(actor(req), input.projectId, {
           resource: "scheduled-job",
           resourceId: input.key,
           action: "scheduled-job.create",
@@ -207,13 +207,13 @@ export function schedulerRouter(): Router {
       if (!job) {
         // Audit denied probes (L2) — getJob returns null both when the row is
         // missing AND when the actor isn't authorised, so we audit either
-        // way. The actorCanAccessProject helper records its own audit when
+        // way. The actorHasProjectAccess helper records its own audit when
         // the project membership check fails.
         const exists = await prisma.scheduledJob.findUnique({
           where: { id: String(req.params.id) },
         });
         if (exists) {
-          await actorCanAccessProject(a, exists.projectId, {
+          await actorHasProjectAccess(a, exists.projectId, {
             resource: "scheduled-job",
             resourceId: String(req.params.id),
             action: "scheduled-job.history",

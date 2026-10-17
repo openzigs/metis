@@ -278,7 +278,7 @@ export async function ingestTeamsActivity(
   // 4. MEMBER/TENANT authorization — identity is not authorization. The resolved
   // user must be able to access the target thread. We pass the LOWEST-privilege
   // role ("reader") deliberately: a Teams sender must earn access through actual
-  // project membership (`actorCanAccessProject`), never through a fabricated
+  // project access (`canAccessThread` → `assertProjectAccess`), never through a fabricated
   // global-admin role that would short-circuit the membership check.
   const access = await deps.authorize({ id: user.userId, role: "reader" }, link.threadId);
   if (!access.ok) {

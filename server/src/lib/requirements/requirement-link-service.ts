@@ -9,11 +9,11 @@
  * let an actor with access to one project learn about, or wire into, a
  * requirement in a project they cannot see (OWASP A01 / IDOR).
  *
- * The per-project check reuses the EXISTING `actorCanAccessProject` mechanism
- * (`lib/scheduler/project-access.ts`) — the same ownership-intersection guard
+ * The per-project check reuses the EXISTING `actorHasProjectAccess` mechanism
+ * (`lib/scheduler/project-access.ts`) — the project-access rule (#1221)
  * the scheduler/tasks routes use — rather than inventing a new authz path. It
  * emits an audit row on denial. Workspace scoping for search reuses
- * `listAccessibleProjectsInWorkspace` (`lib/cross-project/cross-project-access.ts`),
+ * `listMemberProjectsInWorkspace` (`lib/cross-project/cross-project-access.ts`),
  * which asserts workspace membership (404, no existence leak) and intersects
  * the workspace's projects with the actor's accessible set.
  *
@@ -28,8 +28,8 @@ import { isRequirementLinkType, isSelfLink, type RequirementLinkType } from "@me
 import { AppError } from "../../middleware/error-handler.js";
 import { Prisma, prisma as defaultPrisma, resolveDatabaseProvider } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
-import { actorCanAccessProject, type SchedulerActor } from "../scheduler/project-access.js";
-import { listAccessibleProjectsInWorkspace } from "../cross-project/cross-project-access.js";
+import { actorHasProjectAccess, type SchedulerActor } from "../scheduler/project-access.js";
+import { listMemberProjectsInWorkspace } from "../cross-project/cross-project-access.js";
 import { isUniqueViolation } from "../db/prisma-errors.js";
 
 /**
@@ -100,7 +100,7 @@ function isUniqueConstraintError(err: unknown): boolean {
 
 /**
  * Assert the actor can access `projectId`, reusing the shared per-project
- * ownership check. Throws 403 on denial (the underlying check emits its own
+ * project-access check. Throws 403 on denial (the underlying check emits its own
  * audit row). This is the single place the dual-project rule is applied — every
  * mutating / reading path funnels both endpoints through it.
  */
@@ -109,7 +109,7 @@ async function assertProjectAccessible(
   projectId: string,
   context: { resource: string; resourceId: string; action: string },
 ): Promise<void> {
-  const allowed = await actorCanAccessProject(actor, projectId, context);
+  const allowed = await actorHasProjectAccess(actor, projectId, context);
   if (!allowed) {
     throw new AppError(403, "FORBIDDEN", "You do not have access to one of the linked projects");
   }
@@ -452,7 +452,7 @@ export async function listRequirementLinks(
   const canAccess = async (projectId: string): Promise<boolean> => {
     const cached = accessCache.get(projectId);
     if (cached !== undefined) return cached;
-    const allowed = await actorCanAccessProject(actor, projectId, {
+    const allowed = await actorHasProjectAccess(actor, projectId, {
       resource: "requirement",
       resourceId: requirementId,
       action: "requirement.link.read",
@@ -577,7 +577,7 @@ async function searchWorkspaceRequirementsPostgres(
 /**
  * Workspace-scoped requirement search powering the link picker. Results are
  * confined to projects the caller can access WITHIN the given workspace —
- * `listAccessibleProjectsInWorkspace` asserts membership (404 for non-members,
+ * `listMemberProjectsInWorkspace` asserts membership (404 for non-members,
  * no existence leak) and intersects with the actor's accessible project set, so
  * a caller can never surface a requirement from another workspace or from a
  * sibling project they cannot access. Soft-deleted requirements are excluded.
@@ -585,11 +585,11 @@ async function searchWorkspaceRequirementsPostgres(
 export async function searchWorkspaceRequirements(
   actor: SchedulerActor,
   input: SearchInput,
-  db?: Parameters<typeof listAccessibleProjectsInWorkspace>[2] & LinkPrisma,
+  db?: Parameters<typeof listMemberProjectsInWorkspace>[2] & LinkPrisma,
 ): Promise<SearchResult> {
   const { workspaceId, query, excludeProjectId, page, pageSize } = input;
 
-  const accessibleProjectIds = await listAccessibleProjectsInWorkspace(actor, workspaceId, db);
+  const accessibleProjectIds = await listMemberProjectsInWorkspace(actor, workspaceId, db);
   const projectIds = accessibleProjectIds.filter((id) => id !== excludeProjectId);
 
   if (projectIds.length === 0) {
