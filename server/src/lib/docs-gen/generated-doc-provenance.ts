@@ -3,7 +3,12 @@ import { z } from "zod";
 import type { EvidencePolicy } from "./evidence-policy.js";
 import type { DocType } from "./holistic-synthesizer.js";
 import type { GroundingSource } from "./grounding/grounding-context.js";
-import { CODE_IDENTIFIER_KINDS, type CodeIdentifierReport } from "./main-part-language.js";
+import {
+  CODE_IDENTIFIER_EXAMPLE_MAX_CHARS,
+  CODE_IDENTIFIER_EXAMPLES_MAX,
+  CODE_IDENTIFIER_KINDS,
+  type CodeIdentifierReport,
+} from "./main-part-language.js";
 import type { RepositoryIdentity } from "./repository-identity.js";
 import type { DocsGenTuning, Phase2Router } from "./holistic-synthesizer.js";
 import { generationInputSnapshotSchema } from "./regeneration-plan.js";
@@ -90,14 +95,16 @@ const sectionManifestSchema = z
     codeIdentifiers: z
       .object({
         count: z.number().int().min(0),
-        examples: z.array(
-          z
-            .object({
-              kind: z.enum(CODE_IDENTIFIER_KINDS),
-              text: z.string().min(1),
-            })
-            .strict(),
-        ),
+        examples: z
+          .array(
+            z
+              .object({
+                kind: z.enum(CODE_IDENTIFIER_KINDS),
+                text: z.string().min(1).max(CODE_IDENTIFIER_EXAMPLE_MAX_CHARS),
+              })
+              .strict(),
+          )
+          .max(CODE_IDENTIFIER_EXAMPLES_MAX),
       })
       .strict()
       .optional(),

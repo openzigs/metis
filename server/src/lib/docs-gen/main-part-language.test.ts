@@ -100,6 +100,41 @@ describe("findCodeIdentifiers — what it flags", () => {
       { kind: "function-call", text: "refresh()" },
     ],
     [
+      "an unquoted PascalCase call name (#1226 review)",
+      "When ShouldMarkAsReadOnView is true, viewing an entry marks it read.",
+      { kind: "pascal-case", text: "ShouldMarkAsReadOnView" },
+    ],
+    [
+      "an unquoted PascalCase constant",
+      "Viewing an entry flips EntryStatusUnread to read.",
+      { kind: "pascal-case", text: "EntryStatusUnread" },
+    ],
+    [
+      "an unquoted three-hump PascalCase name",
+      "A request is capped at MaxEntryLimit articles.",
+      { kind: "pascal-case", text: "MaxEntryLimit" },
+    ],
+    [
+      "an unquoted endpoint",
+      "Readers call GET /v1/entries to list articles.",
+      { kind: "endpoint", text: "GET /v1/entries" },
+    ],
+    [
+      "an unquoted endpoint with a parameter, before a comma",
+      "Then DELETE /v1/feeds/{id}, and the feed is gone.",
+      { kind: "endpoint", text: "DELETE /v1/feeds/{id}" },
+    ],
+    [
+      "a backticked path without an extension",
+      "Requests go to `api/v1/entries` first.",
+      { kind: "inline-code", text: "api/v1/entries" },
+    ],
+    [
+      "a backticked dotted name",
+      "The `feeds.disabled` flag hides it.",
+      { kind: "inline-code", text: "feeds.disabled" },
+    ],
+    [
       "a SQL clause in prose",
       "Rows are taken FOR UPDATE SKIP LOCKED so two workers never share one.",
       { kind: "sql", text: "FOR UPDATE SKIP LOCKED" },
@@ -192,6 +227,25 @@ describe("findCodeIdentifiers — what it passes", () => {
     ["emphasis with underscores", "This is _important_ and __very__ so."],
     ["a lone parenthesis word", "Readers (and administrators) agree."],
     ["SQL words in ordinary prose", "Select a feed, update it, and order by date."],
+    [
+      "abbreviations, versions and file names (#1226 review)",
+      "At 9 a.m., e.g. daily, i.e. once; Node.js 18, PostgreSQL 14.2, version 2.3.3, see README.md.",
+    ],
+    [
+      "lower camel case brands",
+      "On iPhone, iPadOS, macOS, eBay or YouTube, hosted at miniflux.app.",
+    ],
+    [
+      "two-hump PascalCase brands",
+      "Export to PowerPoint, SharePoint, LinkedIn or PayPal; written in JavaScript or TypeScript on GitHub.",
+    ],
+    ["a plural and a slash label in prose", "Feed(s) can be read/unread (e.g. title or author)."],
+    ["a slash label in backticks", "The status is `read/unread`, or `Yes/No`."],
+    ["a two-hump PascalCase word", "The EntryStatus is shown."],
+    // Kept on purpose (see SETTING_NAME_RE): a constant in a setting's shape passes.
+    ["a constant in a setting's shape", "Set to `ENTRY_STATUS_UNREAD` or ENTRY_STATUS_READ."],
+    // Known blind spot (module doc): unquoted, a dotted name reads as a domain.
+    ["an unquoted dotted name", "The feeds.disabled flag hides it."],
   ])("%s", (_, markdown) => {
     expect(hits(markdown)).toEqual([]);
   });
@@ -264,11 +318,42 @@ describe("codeIdentifierReport", () => {
     });
   });
 
+  it("never cuts an example inside a surrogate pair", () => {
+    // 78 code units, then an emoji whose high surrogate is the 79th: a plain
+    // `slice(0, 79)` would end on it.
+    const long = `\`a_${"b".repeat(76)}\u{1F600}${"c".repeat(10)}\``;
+    const [example] = codeIdentifierReport(long).examples;
+    expect(example.text).toBe(`a_${"b".repeat(76)}…`);
+    expect(example.text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
   it("truncates a very long example", () => {
     const long = `a_${"b".repeat(300)}`;
     const [example] = codeIdentifierReport(long).examples;
     expect(example.text.length).toBeLessThanOrEqual(80);
     expect(example.text.endsWith("…")).toBe(true);
+  });
+});
+
+describe("findCodeIdentifiers — linear time on hostile input (#1226 review)", () => {
+  // Each of the first four shapes took seconds before the fix (1.9-2.8 s at
+  // 120k characters; the comment shape 0.3 s), growing four-fold per
+  // doubling. Each n is sized so a quadratic pattern takes several seconds
+  // here while the linear scan takes a few milliseconds: the bound leaves two
+  // orders of magnitude for a contended machine (#1379), so it cannot flake,
+  // and a regression cannot pass it.
+  it.each<[string, string]>([
+    ["link-target openers", "](".repeat(80_000)],
+    ["footnote openers", "[^".repeat(80_000)],
+    ["footnote openers with text", "[^a".repeat(55_000)],
+    ["unclosed HTML comments", "<!--".repeat(120_000)],
+    ["unclosed display math", `$$${"$x".repeat(100_000)}`],
+    ["a PascalCase run that fails at its end", `${"Aa".repeat(80_000)}_`],
+    ["an endpoint path that runs on", `GET /${"a/".repeat(80_000)}`],
+  ])("%s", (_, markdown) => {
+    const started = performance.now();
+    findCodeIdentifiers(markdown);
+    expect(performance.now() - started).toBeLessThan(1_000);
   });
 });
 
@@ -286,6 +371,13 @@ describe("MAIN_PART_LANGUAGE_RULES", () => {
     ]) {
       expect(MAIN_PART_LANGUAGE_RULES).toContain(text);
     }
+  });
+
+  it("keeps a Mermaid diagram the section asks for, despite the no-code-blocks rule", () => {
+    expect(MAIN_PART_LANGUAGE_RULES).toContain(
+      "The one exception is a Mermaid diagram this section asks for: draw it as asked",
+    );
+    expect(MAIN_PART_LANGUAGE_RULES).toContain("they do not withdraw a diagram");
   });
 
   it("overrides the system prompt's verbatim-names rule", () => {

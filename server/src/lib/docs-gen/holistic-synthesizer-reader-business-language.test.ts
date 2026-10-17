@@ -35,7 +35,11 @@ import {
   type Phase2ProviderBundle,
   type Phase2Router,
 } from "./holistic-synthesizer.js";
-import { MAIN_PART_LANGUAGE_RULES } from "./main-part-language.js";
+import {
+  CODE_IDENTIFIER_EXAMPLE_MAX_CHARS,
+  CODE_IDENTIFIER_EXAMPLES_MAX,
+  MAIN_PART_LANGUAGE_RULES,
+} from "./main-part-language.js";
 
 // ── Fixture ───────────────────────────────────────────────────────────────
 
@@ -224,6 +228,17 @@ describe("the main part's prompts", () => {
     expect(gating).toEqual(beforeGating);
   });
 
+  it("still ask the overview for its actor diagram (#1175), which the rules exempt (#1226 review)", () => {
+    const overview = READER.find((g) => g.id === "overview")!.instructions;
+    const diagram = overview.indexOf("include a Mermaid `graph LR` diagram");
+    expect(diagram).toBeGreaterThan(-1);
+    // The rules come after the diagram request, so they must not withdraw it.
+    expect(overview.indexOf(MAIN_PART_LANGUAGE_RULES)).toBeGreaterThan(diagram);
+    expect(MAIN_PART_LANGUAGE_RULES).toMatch(
+      /exception is a Mermaid diagram this section asks for/,
+    );
+  });
+
   it("ask for acceptance criteria a business reader can check, not API contracts", () => {
     const requirements = READER.find((g) => g.id === "requirements")!;
     expect(requirements.instructions).toContain("not as an API or database contract");
@@ -367,5 +382,30 @@ describe("the provenance manifest", () => {
     );
     raw.sections[0].codeIdentifiers.examples[0].kind = "guess";
     expect(() => parseGeneratedDocVersionManifest(raw)).toThrow();
+  });
+
+  it("caps examples and their text as the check writes them (#1226 review)", () => {
+    const written = (): { sections: { codeIdentifiers: { examples: unknown[] } }[] } =>
+      JSON.parse(
+        buildGeneratedDocVersionManifest(
+          input({
+            count: CODE_IDENTIFIER_EXAMPLES_MAX,
+            examples: Array.from({ length: CODE_IDENTIFIER_EXAMPLES_MAX }, (_, i) => ({
+              kind: "snake-case" as const,
+              text: i === 0 ? "x".repeat(CODE_IDENTIFIER_EXAMPLE_MAX_CHARS) : `f_${i}`,
+            })),
+          }),
+        ),
+      );
+    expect(() => parseGeneratedDocVersionManifest(written())).not.toThrow();
+    const tooMany = written();
+    tooMany.sections[0].codeIdentifiers.examples.push({ kind: "snake-case", text: "one_more" });
+    expect(() => parseGeneratedDocVersionManifest(tooMany)).toThrow();
+    const tooLong = written();
+    tooLong.sections[0].codeIdentifiers.examples[0] = {
+      kind: "snake-case",
+      text: "x".repeat(CODE_IDENTIFIER_EXAMPLE_MAX_CHARS + 1),
+    };
+    expect(() => parseGeneratedDocVersionManifest(tooLong)).toThrow();
   });
 });
