@@ -49,4 +49,9 @@ refused and takes no weaker match later. Do not write a second matcher.
   `orchestrator.ts` (replace), and `appendNewlyApproved`'s transaction (merge onto
   `lockedMetadata`, not `persistAnalysisEnhancement`). A sibling field (#1203) needs all
   three plus `applyEnhancementPatch`. Rows are keyed by `persistRequirements`' returned
-  ids, which are index-aligned with the approved list.
+  ids, which are index-aligned with the approved list. #1203 added `shared` this way.
+- **Replaying "what earlier rows carry" is faithful only for the FIRST append (#1204
+  review).** Re-planning over all `promotedStructuredIds` as one set can tie where the
+  per-append sets did not. Test append-path replays with two successive appends.
+- **Mutate each new branch of a fix** to learn which "fixed" claims are tested: the
+  legacy no-recorded-ids append branch failed no test (`recorded ?? []` stayed green).
