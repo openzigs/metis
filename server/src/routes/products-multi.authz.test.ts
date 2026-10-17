@@ -4,7 +4,7 @@
  *
  * Unlike products-multi.test.ts (handler-behaviour, admin caller), this suite
  * drives the REAL `requirePermission`, `assertProductAccessible`,
- * `assertProjectAccess`, `listAccessibleProjectIds`, and global `errorHandler`
+ * `assertProjectAccess`, `listMemberAccessibleProjectIds`, and global `errorHandler`
  * against a mocked Prisma so the tenant-scoping is exercised end-to-end:
  *   (a) a cross-tenant caller gets 404 on by-id reads + sub-resources
  *   (b) GET / and GET /repo-connections only surface caller-accessible rows
@@ -110,11 +110,30 @@ const mockPrisma = {
         };
       return null;
     }),
-    // listAccessibleProjectIds: admin → all; non-admin → ownership (createdById).
-    findMany: vi.fn(async ({ where }: { where: { createdById?: string } }) => {
-      if (where?.createdById === "u-mine") return [{ id: "proj-mine" }];
-      return [{ id: "proj-mine" }, { id: "proj-foreign" }];
-    }),
+    // `canAccessProjectDiscussions`' live-project read: both projects are live.
+    findFirst: vi.fn(async ({ where }: { where: { id: string } }) =>
+      ["proj-mine", "proj-foreign"].includes(where.id) ? { id: where.id } : null,
+    ),
+    // #1232 — `listMemberAccessibleProjectIds` (`accessibleProjectWhere`): admin
+    // → every project; anyone else → the projects of the workspaces named by
+    // the scope's `workspaceId: { in }` clause (the caller's LIVE workspaces).
+    findMany: vi.fn(
+      async ({ where }: { where: { OR?: Array<{ workspaceId?: { in?: string[] } }> } }) => {
+        const all = [
+          { id: "proj-mine", workspaceId: "ws-mine" },
+          { id: "proj-foreign", workspaceId: "ws-foreign" },
+        ];
+        if (!where?.OR) return all.map(({ id }) => ({ id }));
+        const live = where.OR.flatMap((c) => c.workspaceId?.in ?? []);
+        return all.filter((p) => live.includes(p.workspaceId)).map(({ id }) => ({ id }));
+      },
+    ),
+  },
+  // `readLiveWorkspaceIds`: u-mine is a live member of ws-mine only.
+  workspaceMember: {
+    findMany: vi.fn(async ({ where }: { where: { userId: string } }) =>
+      where.userId === "u-mine" ? [{ workspaceId: "ws-mine" }] : [],
+    ),
   },
   repoConnection: {
     findMany: vi.fn(async ({ where }: { where: { projectId?: { in: string[] } } }) => {
@@ -136,6 +155,7 @@ const mockPrisma = {
   },
 };
 vi.mock("../lib/prisma.js", () => ({ prisma: mockPrisma }));
+vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 // Import after mocks — requirePermission, product-access, authz, project-access,
 // and errorHandler all run for real.

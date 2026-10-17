@@ -21,7 +21,6 @@ vi.mock("../src/lib/auth/live-workspace-ids.js", () => ({
 import {
   actorIsWorkspaceMember,
   assertWorkspaceAccessible,
-  listAccessibleProjectsInWorkspace,
   listAccessibleWorkspaceIds,
   listMemberProjectsInWorkspace,
   type AccessPrisma,
@@ -141,47 +140,6 @@ describe("listAccessibleWorkspaceIds", () => {
     });
     const ids = await listAccessibleWorkspaceIds(ADMIN, db);
     expect(new Set(ids)).toEqual(new Set(["wsA", "wsB"]));
-  });
-});
-
-describe("listAccessibleProjectsInWorkspace — project INTERSECTION inside a workspace", () => {
-  it("returns only projects the non-admin both owns AND that are in the workspace", async () => {
-    const db = makeFakePrisma({
-      members: { wsA: ["user-1"] },
-      projects: {
-        // user-1 owns p1 (in wsA) -> visible
-        p1: { workspaceId: "wsA", createdById: "user-1" },
-        // sibling p2 in wsA but owned by someone else -> NOT visible (intersection)
-        p2: { workspaceId: "wsA", createdById: "other" },
-        // p3 owned by user-1 but in a different workspace -> not in this query
-        p3: { workspaceId: "wsB", createdById: "user-1" },
-      },
-    });
-    const ids = await listAccessibleProjectsInWorkspace(MEMBER, "wsA", db);
-    expect(ids).toEqual(["p1"]);
-  });
-
-  it("returns ALL workspace projects for an admin", async () => {
-    const db = makeFakePrisma({
-      members: {},
-      projects: {
-        p1: { workspaceId: "wsA", createdById: "a" },
-        p2: { workspaceId: "wsA", createdById: "b" },
-        p3: { workspaceId: "wsB", createdById: "c" },
-      },
-    });
-    const ids = await listAccessibleProjectsInWorkspace(ADMIN, "wsA", db);
-    expect(new Set(ids)).toEqual(new Set(["p1", "p2"]));
-  });
-
-  it("DENIES (404) when a non-member asks for a workspace's projects", async () => {
-    const db = makeFakePrisma({
-      members: { wsA: ["user-1"] },
-      projects: { p1: { workspaceId: "wsB", createdById: "other" } },
-    });
-    await expect(listAccessibleProjectsInWorkspace(MEMBER, "wsB", db)).rejects.toMatchObject({
-      statusCode: 404,
-    });
   });
 });
 

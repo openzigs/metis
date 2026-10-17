@@ -176,14 +176,15 @@ vi.mock("../src/lib/prisma.js", () => ({
       ),
     },
     project: {
-      // Non-admin path: returns the projects whose `createdById` matches the
-      // actor. Honour the `where.createdById` filter so each user only "owns"
-      // their own projects.
-      findMany: vi.fn(async (args?: { where?: { createdById?: string } }) => {
-        const createdById = args?.where?.createdById;
-        if (createdById === "u1") return [{ id: "p1", name: "P1" }];
-        return [];
-      }),
+      // #1232 — `listMemberAccessibleProjectIds` (`accessibleProjectWhere`): a
+      // non-admin sees `p1` only when its workspace `w1` is among the live
+      // workspaces the scope names (`u1`'s; see `workspaceMember` above).
+      findMany: vi.fn(
+        async (args?: { where?: { OR?: Array<{ workspaceId?: { in?: string[] } }> } }) => {
+          const live = (args?.where?.OR ?? []).flatMap((c) => c.workspaceId?.in ?? []);
+          return live.includes("w1") ? [{ id: "p1", name: "P1" }] : [];
+        },
+      ),
       // #734 — the discussions seam's live-project check: only `p1` exists.
       findFirst: vi.fn(async (args: { where: { id: string } }) => {
         if (args.where.id === "p-boom") throw new Error("db down");
@@ -210,7 +211,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 }));
 
 // #655 — the impact-analysis read rule behind a `job:{id}` join: `ia1` touches
-// `p1` only, which `u1` created (`listAccessibleProjectIds`).
+// `p1` only, which `u1` can open (`listMemberAccessibleProjectIds`, #1232).
 vi.mock("../src/lib/impact-analysis/impact-analysis-read.js", () => ({
   getImpactAnalysisDetail: vi.fn(async (id: string) =>
     id === "ia1" ? { id: "ia1", projectIds: ["p1"], startedById: "u1" } : null,

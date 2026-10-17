@@ -41,7 +41,7 @@ let adminFlag = false;
 let accessibleIds: string[] = ["project-001"];
 vi.mock("../lib/scheduler/project-access.js", () => ({
   isAdminActor: () => adminFlag,
-  listAccessibleProjectIds: vi.fn(async () => accessibleIds),
+  listMemberAccessibleProjectIds: vi.fn(async () => accessibleIds),
 }));
 
 const readUsageClassification = vi.fn(async () => [] as unknown[]);

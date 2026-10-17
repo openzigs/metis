@@ -7,14 +7,22 @@
  * and (b) its associated repo-connections' `projectId`. The union of those is a
  * product's tenant footprint.
  *
- * Two reuse seams, mirroring the sibling sub-issues:
- *   - by-id reads/mutations → resolve the product's bound projects and reuse
- *     `assertProjectAccess` (custom-agents/authz.ts): admin bypass, non-member →
- *     404 (no existence oracle), null-workspace projects open to authed users.
- *   - list endpoints → intersect rows against the caller's accessible project
- *     set via `listAccessibleProjectIds` (scheduler/project-access.ts). Admin
- *     sees all; a product/repo-connection bound to an inaccessible project is
- *     simply omitted (no error).
+ * One rule, two forms — the project-access rule (`assertProjectAccess`), with
+ * the caller's workspaces read live from the database rather than from the
+ * token's claim (#1232):
+ *   - by-id reads/mutations → resolve the product's bound projects and pass any
+ *     one through `canAccessProjectDiscussions` (discussions/access.ts, the
+ *     function `actorHasProjectAccess` wraps): admin
+ *     bypass, non-member → 404 (no existence oracle), null-workspace projects
+ *     open to authed users, soft-deleted projects closed.
+ *   - list endpoints → intersect rows against `listMemberAccessibleProjectIds`
+ *     (the list form of the same rule). Admin sees all; a product/repo-connection
+ *     bound to an inaccessible project is simply omitted (no error).
+ *
+ * #1232 — the list form used to be the projects the caller CREATED, so a
+ * workspace teammate could open a product by id that the list never showed
+ * them. Writes keep their role permission (`project.update` / `analysis.run`
+ * on the routes), so a reader-role member reads only.
  *
  * A product bound to NO project (pre-migration/global) is treated as open to any
  * authenticated user, matching `assertProjectAccess`'s null-workspace convention.
@@ -23,8 +31,9 @@ import type { AuthPayload } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
-import { assertProjectAccess } from "../custom-agents/authz.js";
-import { isAdminActor, listAccessibleProjectIds } from "../scheduler/project-access.js";
+import { audit } from "../audit/audit-service.js";
+import { canAccessProjectDiscussions } from "../discussions/access.js";
+import { isAdminActor, listMemberAccessibleProjectIds } from "../scheduler/project-access.js";
 
 function actorOf(user: AuthPayload): { id: string; role: AuthPayload["role"] } {
   return { id: user.userId, role: user.role };
@@ -67,14 +76,18 @@ export async function assertProductAccessible(user: AuthPayload, productId: stri
   // Unbound product (no repos, no project associations) → open to authed users,
   // mirroring assertProjectAccess's null-workspace convention.
   if (projectIds.length === 0) return;
+  const actor = actorOf(user);
   for (const projectId of projectIds) {
-    try {
-      await assertProjectAccess(user, projectId);
-      return; // reachable via at least one bound project
-    } catch {
-      // not reachable via this project — try the next
-    }
+    // No audit context per project: a product reachable through its second
+    // bound project is not a probe of its first. The one denial is audited below.
+    if (await canAccessProjectDiscussions(actor, projectId)) return;
   }
+  audit({
+    actor: { id: actor.id },
+    action: "product.access.denied",
+    target: { type: "product", id: productId },
+    metadata: { reason: "project-access-denied", projectIds },
+  });
   throw new AppError(404, "NOT_FOUND", "Product not found");
 }
 
@@ -88,7 +101,7 @@ export async function buildProductAccessWhere(
 ): Promise<Prisma.ProductWhereInput | undefined> {
   const actor = actorOf(user);
   if (isAdminActor(actor)) return undefined;
-  const accessibleIds = await listAccessibleProjectIds(actor);
+  const accessibleIds = await listMemberAccessibleProjectIds(actor);
   return {
     OR: [
       { repos: { some: { repoConnection: { projectId: { in: accessibleIds } } } } },
@@ -110,6 +123,6 @@ export async function repoConnectionProjectFilter(
 ): Promise<{ in: string[] } | null> {
   const actor = actorOf(user);
   if (isAdminActor(actor)) return null;
-  const accessibleIds = await listAccessibleProjectIds(actor);
+  const accessibleIds = await listMemberAccessibleProjectIds(actor);
   return { in: accessibleIds };
 }

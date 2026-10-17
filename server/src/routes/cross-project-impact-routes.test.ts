@@ -34,7 +34,7 @@ vi.mock("../middleware/require-permission.js", () => ({
 
 vi.mock("../lib/scheduler/project-access.js", () => ({
   isAdminActor: () => false,
-  listAccessibleProjectIds: vi.fn(async () => ["pA1"]),
+  listMemberAccessibleProjectIds: vi.fn(async () => ["pA1"]),
 }));
 
 const whichProjectsUseObject = vi.fn();

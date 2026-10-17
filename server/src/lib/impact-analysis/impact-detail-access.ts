@@ -7,7 +7,7 @@ import type { ImpactAnalysisDetail } from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
 import {
   isAdminActor,
-  listAccessibleProjectIds,
+  listMemberAccessibleProjectIds,
   type SchedulerActor,
 } from "../scheduler/project-access.js";
 import { getImpactAnalysisDetail } from "./impact-analysis-read.js";
@@ -30,6 +30,12 @@ import { getImpactAnalysisDetail } from "./impact-analysis-read.js";
  * A pre-#70 run with neither persisted projects nor items remains unattributable.
  * Rather than become invisible to everyone, it stays readable by the actor who
  * STARTED it — the one principal with a claim to it — and by nobody else.
+ *
+ * #1232 — "can access" is the project-access rule (`listMemberAccessibleProjectIds`,
+ * the list form of `assertProjectAccess` with the actor's workspaces read live),
+ * so a workspace teammate reads a run over the projects they can open. It used
+ * to be the projects the actor CREATED. The `job:{id}` socket room of an impact
+ * analysis takes this rule too (`resolveJobRoomScope`).
  */
 export async function loadAccessibleImpactDetail(
   actor: SchedulerActor,
@@ -50,7 +56,7 @@ export async function loadAccessibleImpactDetail(
     return detail;
   }
 
-  const accessible = new Set(await listAccessibleProjectIds(actor));
+  const accessible = new Set(await listMemberAccessibleProjectIds(actor));
   if (!detail.projectIds.every((pid) => accessible.has(pid))) {
     throw new AppError(404, "NOT_FOUND", "Impact analysis not found");
   }

@@ -162,7 +162,7 @@ function stubPrisma(
         databaseAwareAnalysis: opts.databaseAwareAnalysisSetting ?? "auto",
       })),
       findMany: vi.fn(async (args: { where?: Record<string, unknown> }) => {
-        // listAccessibleProjectsInWorkspace (admin) → all workspace projects; or
+        // listMemberProjectsInWorkspace (admin) → all workspace projects; or
         // projectsUsingObject's id→name lookup. Both satisfied by the two rows.
         const where = args?.where ?? {};
         if ("workspaceId" in where) {

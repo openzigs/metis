@@ -76,6 +76,17 @@ const {
   ),
 }));
 
+// #1232 — `requireRunProjectAccess` judges the run's project with the
+// project-access rule (`actorHasProjectAccess`); its own tests live in
+// `scheduler-project-access.test.ts` and the #1232 SQLite suite.
+const { actorHasProjectAccess } = vi.hoisted(() => ({
+  actorHasProjectAccess: vi.fn(async () => false),
+}));
+vi.mock("../src/lib/scheduler/project-access.js", async (importActual) => ({
+  ...(await importActual<typeof import("../src/lib/scheduler/project-access.js")>()),
+  actorHasProjectAccess,
+}));
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     project: { findUnique: findUniqueProject, findMany: projectFindMany },
@@ -222,9 +233,9 @@ describe("GET /api/runs/:id/sandbox-sessions (#419)", () => {
   });
 
   it("answers the unknown-id 404 when a non-admin tries to read sandbox sessions for another tenant's run (#419 IDOR, #340)", async () => {
-    // Developer is not the project's creator and not an admin → no access.
+    // Developer cannot reach the run's project and is not an admin → no access.
     sandboxSessionFindMany.mockClear();
-    projectFindMany.mockResolvedValueOnce([]);
+    actorHasProjectAccess.mockResolvedValueOnce(false);
     const res = await request(makeApp())
       .get("/api/runs/run_1/sandbox-sessions")
       .set("Authorization", `Bearer ${developerToken}`);
@@ -234,8 +245,8 @@ describe("GET /api/runs/:id/sandbox-sessions (#419)", () => {
     expect(sandboxSessionFindMany).not.toHaveBeenCalled();
   });
 
-  it("returns 200 when the developer owns the parent project", async () => {
-    projectFindMany.mockResolvedValueOnce([{ id: "p1" }]);
+  it("returns 200 when the developer can reach the parent project", async () => {
+    actorHasProjectAccess.mockResolvedValueOnce(true);
     sandboxSessionFindMany.mockResolvedValueOnce([]);
     const res = await request(makeApp())
       .get("/api/runs/run_1/sandbox-sessions")
@@ -247,7 +258,7 @@ describe("GET /api/runs/:id/sandbox-sessions (#419)", () => {
 
 describe("GET /api/runs/:id RBAC (#419 IDOR)", () => {
   it("answers the unknown-id 404 when a non-admin requests another tenant's run (#340)", async () => {
-    projectFindMany.mockResolvedValueOnce([]);
+    actorHasProjectAccess.mockResolvedValueOnce(false);
     const res = await request(makeApp())
       .get("/api/runs/run_1")
       .set("Authorization", `Bearer ${developerToken}`);
@@ -261,7 +272,7 @@ describe("GET /api/runs/:id RBAC (#419 IDOR)", () => {
   });
 
   it("/replay is also gated on project access", async () => {
-    projectFindMany.mockResolvedValueOnce([]);
+    actorHasProjectAccess.mockResolvedValueOnce(false);
     const res = await request(makeApp())
       .get("/api/runs/run_1/replay")
       .set("Authorization", `Bearer ${developerToken}`);

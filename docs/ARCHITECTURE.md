@@ -1247,10 +1247,10 @@ requirements, dual-project access, the same-workspace boundary
 `DUPLICATE_LINK` 409). `listRequirementLinks` additionally omits any link whose
 *counterpart* project the caller can't access — defence in depth beyond
 create-time authz. Workspace-scoped search
-(`searchWorkspaceRequirements`) reuses `listAccessibleProjectsInWorkspace`
-(`lib/cross-project/cross-project-access.ts`), which asserts workspace
-membership (404 with no existence leak) and intersects the workspace's projects
-with the caller's accessible set. REST surface
+(`searchWorkspaceRequirements`) reuses `listMemberProjectsInWorkspace`
+(`lib/cross-project/cross-project-access.ts`), which asserts live workspace
+membership (404 with no existence leak) and returns the workspace's projects
+the caller may open (#1221). REST surface
 (`routes/requirement-links.ts`): `POST`/`GET /api/requirements/:id/links`,
 `DELETE /api/requirement-links/:linkId`, and
 `GET /api/workspaces/:workspaceId/requirements/search`.
@@ -4160,9 +4160,11 @@ engine stays graph/BM25 with **no graph DB and no LLM/RAG**, and **never execute
 (`server/src/lib/cross-project/cross-project-access.ts`) adds the workspace
 dimension on top of the existing project access: `assertWorkspaceAccessible` returns
 **404 (never 403) with an audit row** for a non-member so workspace ids cannot be
-enumerated, and `listAccessibleProjectsInWorkspace` INTERSECTS the workspace's
+enumerated, and `listMemberProjectsInWorkspace` INTERSECTS the workspace's
 projects with the caller's accessible-project set so a caller never sees a sibling
-project they cannot access even within a shared workspace. A member of workspace A
+project they cannot access even within a shared workspace. Since #1232 that set is
+the project-access rule (the workspace's live members), not the projects the caller
+created; a workspace-less source project is checked with `actorHasProjectAccess`. A member of workspace A
 asking about workspace B gets a 404 — proven by dedicated cross-workspace denial
 tests.
 
@@ -4271,6 +4273,17 @@ admin-only. Writes still need their role permission (`scheduler.manage`,
 sandbox `run-once` route, requirement links, the workspace traceability roll-up and the
 Slack/Teams `/metis` commands use the same helper. It replaced the creator-only
 `actorCanAccessProject`.
+
+**Products, impact analyses, runs and cross-project impact (#1232).** The same rule,
+with the actor's workspaces read live: product lists and the repo-connection picker
+(`buildProductAccessWhere`, `repoConnectionProjectFilter`) and impact-analysis lists,
+detail, export, drift, Jira publish and the `job:{id}` room of an impact analysis
+(`loadAccessibleImpactDetail`) scope through `listMemberAccessibleProjectIds`; a
+product by id (`assertProductAccessible`) and a run by id (`requireRunProjectAccess`)
+go through `canAccessProjectDiscussions` / `actorHasProjectAccess`; the cross-project
+queries use `listMemberProjectsInWorkspace`. Writes keep their role permission
+(`project.update`, `analysis.run`). The creator-only `listAccessibleProjectIds`
+(scheduler) and `listAccessibleProjectsInWorkspace` were removed.
 
 ### 13.7.1 Module layout
 

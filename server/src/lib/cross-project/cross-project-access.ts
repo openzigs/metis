@@ -2,8 +2,8 @@
  * Workspace-membership access guard for cross-project reads — Epic #295 Phase 4
  * (#307/#309).
  *
- * Phases 1–3 gated impact reads purely by PROJECT access (`createdById`, see
- * `scheduler/project-access.ts`). Phase 4 introduces a NEW tenancy dimension:
+ * Phases 1–3 gated impact reads purely by PROJECT access (then `createdById`;
+ * since #1221/#1232 the project-access rule, `scheduler/project-access.ts`). Phase 4 introduces a NEW tenancy dimension:
  * `DatabaseResource` and `SchemaObjectIdentity` are WORKSPACE-scoped, and a
  * cross-project query can surface OTHER projects that share a resource. A user
  * must therefore only ever see resources / canonical objects / other-projects
@@ -120,35 +120,6 @@ function denyWorkspace(actor: SchedulerActor, workspaceId: string, reason: strin
 }
 
 /**
- * Resolve the set of project ids inside `workspaceId` that the actor may see:
- * the INTERSECTION of (a) the workspace's projects and (b) the actor's
- * accessible-project set. For admins this is simply every non-deleted project in
- * the workspace. Used by the cross-project queries so a caller never sees a
- * sibling project they lack access to even within a shared workspace.
- *
- * Asserts workspace membership first (throws 404 for non-members).
- */
-export async function listAccessibleProjectsInWorkspace(
-  actor: SchedulerActor,
-  workspaceId: string,
-  prisma?: AccessPrisma,
-): Promise<string[]> {
-  await assertWorkspaceAccessible(actor, workspaceId, prisma);
-  const db = resolvePrisma(prisma);
-  const projects = await db.project.findMany({
-    where: { workspaceId, deletedAt: null },
-    select: { id: true, createdById: true },
-  });
-  if (isAdminActor(actor)) return projects.map((p) => p.id);
-  // Non-admins: intersect the workspace's projects with the actor's accessible
-  // set. Today project access is ownership-based (`createdById`, mirroring
-  // scheduler/project-access.ts); we apply that filter against the SAME db so a
-  // caller never sees a sibling project they cannot access even within a shared
-  // workspace. When a real per-project membership table lands, swap this filter.
-  return projects.filter((p) => p.createdById === actor.id).map((p) => p.id);
-}
-
-/**
  * #1221 — the project ids inside `workspaceId` the actor may open under the
  * project-access rule (`assertProjectAccess`). The requirement-link search and
  * the workspace traceability roll-up use this, so a teammate sees the projects
@@ -161,8 +132,8 @@ export async function listAccessibleProjectsInWorkspace(
  * (#612) still holding an unexpired token gets the same audited 404 as a
  * non-member, matching the per-project read (#1233 review, A01).
  *
- * {@link listAccessibleProjectsInWorkspace} is still the creator-only form for
- * the cross-project impact queries, which #1221 did not move (#1232).
+ * #1232 — the cross-project impact queries use it too; the creator-only
+ * `listAccessibleProjectsInWorkspace` they used was removed.
  */
 export async function listMemberProjectsInWorkspace(
   actor: SchedulerActor,
