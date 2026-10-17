@@ -68,6 +68,7 @@ import { GenerateIssuesAction } from "@/components/analysis/GenerateIssuesAction
 import { RequirementsEmptyState } from "@/components/analysis/RequirementsEmptyState";
 import { SynthesisDegradedNotice } from "@/components/analysis/SynthesisDegradedNotice";
 import { RequirementReplacementWithheldNotice } from "@/components/analysis/RequirementReplacementWithheldNotice";
+import { AmbiguousMatchNotice } from "@/components/analysis/AmbiguousMatchNotice";
 import { AddDocumentsPanel } from "@/components/analysis/add-documents-panel";
 import { useRepoNames } from "@/hooks/use-repo-names";
 import { useScrollToAnchor } from "@/hooks/use-scroll-to-anchor";
@@ -1195,6 +1196,13 @@ export default function AnalysisPage(): React.ReactElement {
                           {/* #1096 — the real criteria, or an explicit note that
                             none were derived. Never a placeholder. */}
                           <AcceptanceCriteriaList criteria={req.acceptanceCriteria ?? []} />
+                          {/* #1204 — why there are none: the grouped items were too
+                            close to call, listed so the criteria can be copied. */}
+                          <AmbiguousMatchNotice
+                            metadata={detail.data.metadata}
+                            requirementId={req.id}
+                            hasCriteria={(req.acceptanceCriteria ?? []).length > 0}
+                          />
                           {req.labels.length > 0 ? (
                             <div className="mt-2 flex flex-wrap gap-1">
                               {req.labels.map((l) => (

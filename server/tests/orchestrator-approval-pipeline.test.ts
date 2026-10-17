@@ -704,6 +704,91 @@ describe("#216 — promotion is gated on resolved approvals", () => {
     const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
     expect(cleared).toBeDefined();
     expect(cleared).not.toHaveProperty("promotedStructuredIds");
+    // #1204 — nor a matching record: the earlier set's must survive.
+    expect(cleared).not.toHaveProperty("promotionMatching");
+  });
+
+  // #1204 — on a real replacement the orchestrator records which promoted
+  // requirement the title join refused, keyed by the row it became.
+  it("#1204 — records the requirement the title join refused, keyed by its row", async () => {
+    const svc = await import("../src/lib/analysis/analysis-service.js");
+    const structuredReq = (id: string, title: string) => ({
+      id,
+      title,
+      description: `${title}.`,
+      type: "functional" as const,
+      stakeholders: [],
+      priority: "should-have" as const,
+      ambiguities: [],
+      evidenceNeeds: [],
+      rawSource: "",
+    });
+    const item = (title: string, criterion: string) => ({
+      type: "feature",
+      title,
+      body: title,
+      priority: "medium",
+      labels: [],
+      acceptanceCriteria: [criterion],
+      evidenceFindingIndexes: [],
+    });
+    const logout = item("Flush sessions on logout", "Logging out ends every session.");
+    const reset = item("Flush sessions on password reset", "A reset ends every session.");
+    vi.mocked(svc.getStructuredRequirements).mockResolvedValueOnce({
+      requirements: [
+        structuredReq("r0", "Rate limit the public API"),
+        structuredReq("r1", "Flush sessions"),
+        structuredReq("r2", "Export subscriptions as OPML"),
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    runSynthesisMock.mockResolvedValueOnce({
+      output: { summary: "s", requirements: [logout, reset] },
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    });
+    vi.mocked(svc.persistRequirements).mockImplementationOnce((input) => {
+      persisted.requirements.push(input as unknown as Record<string, unknown>);
+      return Promise.resolve(["row-r1", "row-r2"]);
+    });
+    await approvalSvc.createApprovalRequests("ana-tie", [
+      { type: "requirement", itemId: "r0" },
+      { type: "requirement", itemId: "r1" },
+      { type: "requirement", itemId: "r2" },
+    ]);
+    await approvalSvc.reviewApprovalRequest("ana-tie", "ap-1", {
+      status: "rejected",
+      reviewerId: "u1",
+    });
+    for (const ap of ["ap-2", "ap-3"]) {
+      await approvalSvc.reviewApprovalRequest("ana-tie", ap, {
+        status: "approved",
+        reviewerId: "u1",
+      });
+    }
+
+    const { orch } = makeOrchestrator();
+    await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+      analysisId: "ana-tie",
+      ...synthInput,
+    });
+
+    const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
+    expect(cleared).toMatchObject({
+      promotionMatching: {
+        ambiguousCount: 1,
+        ambiguous: [
+          {
+            requirementId: "row-r1",
+            structuredId: "r1",
+            candidates: [
+              { title: logout.title, acceptanceCriteria: logout.acceptanceCriteria },
+              { title: reset.title, acceptanceCriteria: reset.acceptanceCriteria },
+            ],
+          },
+        ],
+      },
+    });
   });
 
   // Issue #723 — with every requirement rejected the approved set is EMPTY, so
@@ -755,6 +840,7 @@ describe("#216 — promotion is gated on resolved approvals", () => {
       const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
       expect(cleared).toBeDefined();
       expect(cleared).not.toHaveProperty("promotedStructuredIds");
+      expect(cleared).not.toHaveProperty("promotionMatching");
     });
 
     it("records the empty set when the replacement really happened", async () => {
@@ -772,6 +858,8 @@ describe("#216 — promotion is gated on resolved approvals", () => {
 
       const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
       expect(cleared).toMatchObject({ promotedStructuredIds: [] });
+      // #1204 — a real replacement clears an earlier set's record.
+      expect(cleared).toMatchObject({ promotionMatching: { ambiguousCount: 0, ambiguous: [] } });
     });
   });
 

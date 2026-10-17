@@ -90,6 +90,31 @@ export function matchSynthesized(
   synthesized: readonly SynthesizedRequirement[],
   structured: ReadonlyArray<Pick<StructuredRequirement, "id">> = approved,
 ): Map<string, SynthesizedRequirement> {
+  return matchSynthesizedReportingRefusals(approved, synthesized, structured).matches;
+}
+
+/**
+ * Issue #1204 — a requirement the title fallback refused: the items it was
+ * level on (indexes into the synthesis output), as the matcher reported them.
+ */
+export interface RefusedTitleMatch {
+  structuredId: string;
+  synthesizedIndexes: number[];
+}
+
+/**
+ * {@link matchSynthesized}, also reporting each requirement the title fallback
+ * refused and the items it was refused among (#1204). Nothing here is
+ * re-derived: the refusals are the shared matcher's own `refusedLeftOptions`.
+ */
+export function matchSynthesizedReportingRefusals(
+  approved: ReadonlyArray<Pick<StructuredRequirement, "id" | "title">>,
+  synthesized: readonly SynthesizedRequirement[],
+  structured: ReadonlyArray<Pick<StructuredRequirement, "id">> = approved,
+): {
+  matches: Map<string, SynthesizedRequirement>;
+  refused: RefusedTitleMatch[];
+} {
   const listIds = new Set(structured.map((r) => r.id));
   // Absent: the item did not say. `[]`: it says it restates no listed one.
   // Only ids no longer in the list (a re-extraction) count as not saying.
@@ -130,11 +155,20 @@ export function matchSynthesized(
       });
     });
   }
-  const { matches } = matchOneToOneRefusingTies(candidates, { compare: compareTiersDescending });
+  const { matches, refusedLeftOptions } = matchOneToOneRefusingTies(candidates, {
+    compare: compareTiersDescending,
+  });
   for (const [structuredId, synthIdx] of matches) {
     byStructuredId.set(structuredId, synthesized[synthIdx]!);
   }
-  return byStructuredId;
+  // In the reviewed order, so the record reads like the list.
+  const refused = approved
+    .filter((r) => refusedLeftOptions.has(r.id))
+    .map((r) => ({
+      structuredId: r.id,
+      synthesizedIndexes: [...refusedLeftOptions.get(r.id)!].sort((a, b) => a - b),
+    }));
+  return { matches: byStructuredId, refused };
 }
 
 /** Case- and whitespace-insensitive title, for the same-title tier. */
@@ -201,8 +235,78 @@ export function buildApprovedRequirementSet(input: {
   approvedIds: ReadonlySet<string>;
   synthesis: SynthesisOutput | null;
 }): SynthesisOutput {
+  return planApprovedRequirementSet(input).output;
+}
+
+/**
+ * Issue #1204 — an approved requirement that received no item because the
+ * title join could not tell which of several items was its own. Index-aligned
+ * with the persisted set through `approvedIndex` (the requirement's position in
+ * `output.requirements`), so the caller can key it by the row it became.
+ */
+export interface AmbiguousPromotionMatch {
+  structuredId: string;
+  approvedIndex: number;
+  /** The grouped items it was level on, with their criteria to copy across. */
+  candidates: Array<{ title: string; acceptanceCriteria: string[] }>;
+  /** Each candidate's index in the synthesis output, aligned with `candidates`. */
+  synthesizedIndexes: number[];
+}
+
+/**
+ * Issue #1204 review — the synthesis items (indexes) the title and id joins
+ * give the requirements in `ids`, as {@link planApprovedRequirementSet} would
+ * with exactly those approved. An append re-plans over the enlarged set, so
+ * this replays the set as it was first promoted to tell which items its rows
+ * already carry.
+ */
+export function itemsGivenTo(input: {
+  structured: StructuredRequirement[];
+  ids: ReadonlySet<string>;
+  synthesis: SynthesisOutput | null;
+}): Set<number> {
+  const synthesized = input.synthesis?.requirements ?? [];
+  const approved = input.structured.filter((r) => input.ids.has(r.id));
+  const { matches } = matchSynthesizedReportingRefusals(approved, synthesized, input.structured);
+  // Title matches are the synthesis items themselves. An id join can merge
+  // several items into a new object, found here by none of them; that is fine,
+  // as an item naming a listed id never enters the title fallback, so it is
+  // never a refused requirement's option.
+  const given = new Set<number>();
+  for (const item of matches.values()) {
+    const idx = synthesized.indexOf(item);
+    if (idx >= 0) given.add(idx);
+  }
+  return given;
+}
+
+/**
+ * {@link buildApprovedRequirementSet}, also returning every approved
+ * requirement the title join refused (#1204), so promotion can record why it
+ * was promoted with no criteria. One matching, read twice — never re-derived.
+ */
+export function planApprovedRequirementSet(input: {
+  structured: StructuredRequirement[];
+  approvedIds: ReadonlySet<string>;
+  synthesis: SynthesisOutput | null;
+}): { output: SynthesisOutput; ambiguous: AmbiguousPromotionMatch[] } {
   const approved = input.structured.filter((r) => input.approvedIds.has(r.id));
-  const matches = matchSynthesized(approved, input.synthesis?.requirements ?? [], input.structured);
+  const synthesized = input.synthesis?.requirements ?? [];
+  const { matches, refused } = matchSynthesizedReportingRefusals(
+    approved,
+    synthesized,
+    input.structured,
+  );
+  const approvedIndex = new Map(approved.map((r, i) => [r.id, i] as const));
+  const ambiguous: AmbiguousPromotionMatch[] = refused.map((r) => ({
+    structuredId: r.structuredId,
+    approvedIndex: approvedIndex.get(r.structuredId)!,
+    candidates: r.synthesizedIndexes.map((idx) => ({
+      title: synthesized[idx]!.title.slice(0, MAX_TITLE),
+      acceptanceCriteria: (synthesized[idx]!.acceptanceCriteria ?? []).slice(0, MAX_CRITERIA),
+    })),
+    synthesizedIndexes: r.synthesizedIndexes,
+  }));
 
   const requirements: SynthesizedRequirement[] = approved.map((req) => {
     const match = matches.get(req.id);
@@ -229,9 +333,12 @@ export function buildApprovedRequirementSet(input: {
   });
 
   return {
-    summary:
-      input.synthesis?.summary ??
-      `${requirements.length} approved requirement(s) promoted from the approval checkpoint.`,
-    requirements,
+    output: {
+      summary:
+        input.synthesis?.summary ??
+        `${requirements.length} approved requirement(s) promoted from the approval checkpoint.`,
+      requirements,
+    },
+    ambiguous,
   };
 }

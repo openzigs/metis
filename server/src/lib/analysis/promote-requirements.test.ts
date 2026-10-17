@@ -244,6 +244,8 @@ describe("#1104 B — promoting the requirements the approval gate withheld", ()
     expect(persistAnalysisEnhancement).toHaveBeenCalledWith(ANALYSIS_ID, {
       promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 0 },
       promotionStatus: "allowed",
+      // #1204 — written even when empty, so an earlier set's record is cleared.
+      promotionMatching: { ambiguousCount: 0, ambiguous: [], updatedAt: expect.any(String) },
     });
   });
 
@@ -650,6 +652,7 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
       promotionStatus: "allowed",
       promotedStructuredIds: ["REQ-1", "REQ-3"],
       promotedStructuredRunId: null,
+      promotionMatching: { ambiguousCount: 0, ambiguous: [], updatedAt: expect.any(String) },
     });
   });
 
@@ -932,6 +935,8 @@ describe("#909 — promoted ids are scoped to the extraction run", () => {
       promotedStructuredRunId: "run-1",
       // #939 — the appended row is the checkpoint's approval, recorded with it.
       checkpointApprovedRequirementIds: ["rq_new_1"],
+      // #1204 — the append records its rows' refusals (none here) in the same write.
+      promotionMatching: { ambiguousCount: 0, ambiguous: [], updatedAt: expect.any(String) },
     });
   });
 
@@ -982,5 +987,179 @@ describe("#909 — promoted ids are scoped to the extraction run", () => {
       "Export subscriptions as OPML",
       "Schedule feed refresh per category",
     ]);
+  });
+});
+
+describe("#1204 — promotion records each requirement the title join refused", () => {
+  const structuredReq = (id: string, title: string) => ({
+    id,
+    title,
+    description: `${title}.`,
+    type: "functional",
+    stakeholders: [],
+    priority: "should-have",
+    ambiguities: [],
+    evidenceNeeds: [],
+    rawSource: "",
+  });
+  const item = (title: string, criterion: string) => ({
+    type: "feature",
+    title,
+    body: title,
+    priority: "medium",
+    labels: [],
+    acceptanceCriteria: [criterion],
+    evidenceFindingIndexes: [],
+  });
+  /** REQ-1 is level on both items; REQ-2 matches neither. */
+  const LOGOUT = item("Flush sessions on logout", "Logging out ends every session.");
+  const RESET = item("Flush sessions on password reset", "A password reset ends every session.");
+  const BOTH = [
+    { title: LOGOUT.title, acceptanceCriteria: LOGOUT.acceptanceCriteria },
+    { title: RESET.title, acceptanceCriteria: RESET.acceptanceCriteria },
+  ];
+  const recordOf = () =>
+    (JSON.parse(db.analysis?.metadata ?? "{}") as { promotionMatching?: unknown })
+      .promotionMatching;
+
+  beforeEach(() => {
+    // REQ-0 is rejected and listed FIRST, so a requirement's position among
+    // the approved (what the rows are aligned with) differs from its position
+    // in the reviewed list: keying by the latter would name the wrong row.
+    db.structured = {
+      requirements: [
+        structuredReq("REQ-0", "Rate limit the public API"),
+        structuredReq("REQ-1", "Flush sessions"),
+        structuredReq("REQ-2", "Export subscriptions as OPML"),
+      ],
+    };
+    db.approvals = [
+      { itemId: "REQ-0", status: "rejected" },
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "REQ-2", status: "approved" },
+    ];
+    db.synthesisOutput = JSON.stringify({ summary: "s", requirements: [LOGOUT, RESET] });
+  });
+
+  it("keys the refusal by the row it became and names the items it was level on", async () => {
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome).toEqual({ status: "promoted", requirementCount: 2 });
+    // The rule is unchanged: the refused requirement gets no item's criteria.
+    const input = persistRequirements.mock.calls[0]?.[0] as {
+      synthesis: { requirements: Array<{ acceptanceCriteria: string[] }> };
+    };
+    expect(input.synthesis.requirements[0]?.acceptanceCriteria).toEqual([]);
+    expect(persistAnalysisEnhancement).toHaveBeenCalledWith(
+      ANALYSIS_ID,
+      expect.objectContaining({
+        promotionMatching: {
+          ambiguousCount: 1,
+          ambiguous: [{ requirementId: "rq_1", structuredId: "REQ-1", candidates: BOTH }],
+          updatedAt: expect.any(String),
+        },
+      }),
+    );
+  });
+
+  it("records nothing when the replacement is withheld (#769)", async () => {
+    db.withhold = true;
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(persistAnalysisEnhancement).not.toHaveBeenCalled();
+  });
+
+  it("an append keeps the earlier entries and adds the appended row's refusal", async () => {
+    const earlier = {
+      requirementId: "rq_old",
+      structuredId: "REQ-9",
+      candidates: [{ title: "Earlier item", acceptanceCriteria: [] }],
+    };
+    db.requirementCount = 1;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({
+        promotedStructuredIds: ["REQ-2"],
+        promotionMatching: { ambiguousCount: 1, ambiguous: [earlier], updatedAt: "x" },
+      }),
+    };
+
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome).toEqual({ status: "promoted", requirementCount: 1 });
+    expect(recordOf()).toEqual({
+      ambiguousCount: 2,
+      ambiguous: [earlier, { requirementId: "rq_new_1", structuredId: "REQ-1", candidates: BOTH }],
+      updatedAt: expect.any(String),
+    });
+  });
+
+  // #1204 review — the append re-plans over the ENLARGED approved set. Alone,
+  // REQ-1 reaches only X and the first promotion gave X to its row. With REQ-3
+  // and REQ-4 approved later, the level reads REQ-1:{X}, REQ-3:{X,Y},
+  // REQ-4:{Y}: three maximum matchings, nothing forced, all refused. X is on
+  // REQ-1's row already, so listing it on REQ-3's card would invite copying
+  // another requirement's criteria across.
+  it("an append never lists an item the earlier set's rows already carry", async () => {
+    const X = item("Flush sessions logout", "Logging out ends every session.");
+    const Y = item("Flush tokens logout", "Logging out revokes every token.");
+    db.structured = {
+      requirements: [
+        structuredReq("REQ-1", "Flush sessions"),
+        structuredReq("REQ-3", "Flush logout"),
+        structuredReq("REQ-4", "Flush tokens"),
+      ],
+    };
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "REQ-3", status: "approved" },
+      { itemId: "REQ-4", status: "approved" },
+    ];
+    db.synthesisOutput = JSON.stringify({ summary: "s", requirements: [X, Y] });
+    db.requirementCount = 1;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1"] }),
+    };
+
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome).toEqual({ status: "promoted", requirementCount: 2 });
+    const onlyY = [{ title: Y.title, acceptanceCriteria: Y.acceptanceCriteria }];
+    expect(recordOf()).toEqual({
+      ambiguousCount: 2,
+      ambiguous: [
+        { requirementId: "rq_new_1", structuredId: "REQ-3", candidates: onlyY },
+        { requirementId: "rq_new_2", structuredId: "REQ-4", candidates: onlyY },
+      ],
+      updatedAt: expect.any(String),
+    });
+  });
+
+  it("an append records no notice for a row whose only option an earlier row carries", async () => {
+    // Twins: alone, REQ-1 took X; together they tie on it and both are refused.
+    const X = item("Flush sessions on logout", "Logging out ends every session.");
+    db.structured = {
+      requirements: [
+        structuredReq("REQ-1", "Flush sessions"),
+        structuredReq("REQ-3", "Flush sessions"),
+      ],
+    };
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "REQ-3", status: "approved" },
+    ];
+    db.synthesisOutput = JSON.stringify({ summary: "s", requirements: [X] });
+    db.requirementCount = 1;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1"] }),
+    };
+
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome).toEqual({ status: "promoted", requirementCount: 1 });
+    expect(recordOf()).toEqual({ ambiguousCount: 0, ambiguous: [], updatedAt: expect.any(String) });
   });
 });

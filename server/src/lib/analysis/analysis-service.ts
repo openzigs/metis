@@ -97,6 +97,7 @@ import type { ToolCallTelemetry } from "./tool-telemetry.js";
 import type { NoVerdictReason } from "./structured-verdict.js";
 import type {
   ClarificationApplication,
+  PromotionMatchingRecord,
   StructuredRequirements,
   WebResearchResult,
 } from "./types/requirements.js";
@@ -297,6 +298,11 @@ export interface AnalysisEnhancementPatch {
    */
   promotedStructuredRunId?: string | null;
   /**
+   * Issue #1204 — the promoted requirements the title join refused to match
+   * (too close to call), so the requirement card can say why it has no criteria.
+   */
+  promotionMatching?: PromotionMatchingRecord;
+  /**
    * Issue #909 — identifies the extraction run that wrote
    * `structuredRequirements`. Written only by extraction, so a clarification
    * edit of the same list keeps it.
@@ -385,6 +391,7 @@ function applyEnhancementPatch(
   if (patch.promotedStructuredRunId !== undefined) {
     next.promotedStructuredRunId = patch.promotedStructuredRunId;
   }
+  if (patch.promotionMatching !== undefined) next.promotionMatching = patch.promotionMatching;
   if (patch.structuredRunId !== undefined) next.structuredRunId = patch.structuredRunId;
   return next;
 }

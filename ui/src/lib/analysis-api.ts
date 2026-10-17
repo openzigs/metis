@@ -1032,6 +1032,11 @@ export interface EnhancementMetadata {
     answeredCount: number;
     appliedCount: number;
     unattributedCount: number;
+    /**
+     * #1204 — of `unattributedCount`, the answers whose requirement matched
+     * several saved requirements equally well. Absent before #1204.
+     */
+    ambiguousCount?: number;
     /** #1162 — answers not written because their block was edited. */
     blockEditedCount?: number;
     /** #1162 — answers not written because their requirement changed or was deleted. */
@@ -1062,8 +1067,20 @@ export interface EnhancementMetadata {
           "clarification-block-edited" | "requirement-changed-during-write" | "requirement-deleted";
         requirementTitle: string;
       };
+      /**
+       * #1204 — not applied because the match was too close to call: the saved
+       * requirements (titles) its requirement was refused among. One title means
+       * that saved requirement fitted this and another reviewed requirement
+       * equally well, not that the answer fitted several.
+       */
+      ambiguousBetween?: string[];
     }>;
   };
+  /**
+   * Issue #1204 — the promoted requirements whose grouped items the analysis
+   * could not tell apart, so they were promoted with no acceptance criteria.
+   */
+  promotionMatching?: PromotionMatching;
   /**
    * Issue #1117 (findings B + C) — present only when synthesis fell back to the
    * deterministic clusterer, which is why every requirement in such a run is
@@ -1076,6 +1093,19 @@ export interface EnhancementMetadata {
    * one). Cleared by the next replacement that is allowed.
    */
   requirementReplacementWithheld?: RequirementReplacementWithheld;
+}
+
+/** Issue #1204 — `metadata.promotionMatching`, as promotion writes it. */
+export interface PromotionMatching {
+  ambiguousCount: number;
+  ambiguous: Array<{
+    /** The persisted requirement row id. */
+    requirementId: string;
+    structuredId: string;
+    /** The grouped items it could not be told apart among. */
+    candidates: Array<{ title: string; acceptanceCriteria: string[] }>;
+  }>;
+  updatedAt: string;
 }
 
 /** Narrow a snapshot's untyped `metadata` blob into the enhancement view. */

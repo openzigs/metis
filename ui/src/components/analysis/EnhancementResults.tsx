@@ -164,6 +164,21 @@ function notAppliedLabel(reason: string, title: string): string {
   return label ? label(title) : `“${title}” could not be updated`;
 }
 
+/**
+ * #1204 — why one answer could not be placed. Several titles: the answer's
+ * requirement fits each of those saved requirements equally well. ONE title is
+ * the other way round, and the commoner case: that saved requirement fits this
+ * answer's requirement and another reviewed requirement equally well, so the
+ * answer cannot be said to belong to it.
+ */
+export function describeTie(titles: readonly string[]): string {
+  const quoted = titles.map((t) => `“${t}”`);
+  if (quoted.length === 1) {
+    return `${quoted[0]} fits this and another requirement equally well, so the answer was given to neither`;
+  }
+  return `fits ${quoted.slice(0, -1).join(", ")} and ${quoted.at(-1)} equally well, so none was chosen`;
+}
+
 export function ClarificationImpactNote({
   application,
 }: {
@@ -177,6 +192,14 @@ export function ClarificationImpactNote({
   const outcomes = application.answers ?? [];
   const applied = outcomes.filter((a) => a.requirementTitle !== null);
   const unmatched = outcomes.filter((a) => a.requirementTitle === null);
+  // #1204 — answers not applied because their requirement could not be told apart.
+  const tied = unmatched.filter((a) => (a.ambiguousBetween?.length ?? 0) > 0);
+  const tiedSubject =
+    tied.length !== unattributedCount
+      ? `${tied.length} of them`
+      : tied.length === 1
+        ? "It"
+        : "They";
 
   return (
     <div
@@ -220,11 +243,25 @@ export function ClarificationImpactNote({
         </details>
       )}
       {requirementsAvailable && unattributedCount > 0 && (
-        <p className="text-warning" data-testid="clarification-unattributed">
-          {unattributedCount} answer{unattributedCount === 1 ? "" : "s"} could not be matched to a
-          saved requirement, so {unattributedCount === 1 ? "it refines" : "they refine"} the
-          requirement text shown here but will not appear in a published issue.
-        </p>
+        <div className="text-warning" data-testid="clarification-unattributed">
+          <p>
+            {unattributedCount} answer{unattributedCount === 1 ? "" : "s"} could not be matched to a
+            saved requirement, so {unattributedCount === 1 ? "it refines" : "they refine"} the
+            requirement text shown here but will not appear in a published issue.
+            {tied.length > 0
+              ? ` ${tiedSubject} could not be placed because the match was too close to call:`
+              : null}
+          </p>
+          {tied.length > 0 ? (
+            <ul className="mt-1 list-disc space-y-0.5 pl-4" data-testid="clarification-ambiguous">
+              {tied.map((a) => (
+                <li key={a.questionId}>
+                  {a.question} <span aria-hidden>→</span> {describeTie(a.ambiguousBetween!)}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
       )}
       {requirementsAvailable && blockEditedCount > 0 && (
         <p className="text-warning" data-testid="clarification-block-edited">

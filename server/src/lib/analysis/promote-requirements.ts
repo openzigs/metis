@@ -27,11 +27,20 @@ import {
 } from "./analysis-service.js";
 import { canCreateTickets } from "./approval-checkpoint.js";
 import {
-  buildApprovedRequirementSet,
+  itemsGivenTo,
   latestRequirementApprovals,
+  planApprovedRequirementSet,
+  type AmbiguousPromotionMatch,
 } from "./approved-requirement-set.js";
 import { applyClarificationsToRequirements } from "./clarification-enrichment.js";
 import { describePromotionGate } from "./promotion-gate.js";
+import {
+  ambiguousPromotionRecords,
+  appendPromotionMatching,
+  promotionMatchingRecord,
+  readPromotionMatchingRecord,
+  withoutGivenItems,
+} from "./promotion-matching.js";
 import { computeCoverageForRequirements } from "./requirement-coverage.js";
 import { computeVerdictsForRequirements, type VerdictFindingInput } from "./requirement-verdict.js";
 
@@ -138,9 +147,10 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
   const approvedIds = new Set(
     requirementApprovals.filter((a) => a.status === "approved").map((a) => a.itemId),
   );
-  const toPromote: SynthesisOutput = reviewed
-    ? buildApprovedRequirementSet({ structured, approvedIds, synthesis })
-    : (synthesis as SynthesisOutput);
+  const plan = reviewed ? planApprovedRequirementSet({ structured, approvedIds, synthesis }) : null;
+  const toPromote: SynthesisOutput = plan ? plan.output : (synthesis as SynthesisOutput);
+  // #1204 — the approved requirements the title join could not decide.
+  const ambiguous: AmbiguousPromotionMatch[] = plan?.ambiguous ?? [];
   // Parallel to `toPromote.requirements` on the reviewed path (same filter, same order).
   const promotedStructuredIds = reviewed
     ? structured.filter((r) => approvedIds.has(r.id)).map((r) => r.id)
@@ -170,6 +180,8 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
         promotedStructuredIds,
         structuredRunId,
         approvedAt,
+        ambiguous,
+        itemsGivenTo: (ids) => itemsGivenTo({ structured, ids, synthesis }),
       });
       if (appended === "superseded") return { status: "unavailable", reason: SUPERSEDED_REASON };
       if (appended > 0) return { status: "promoted", requirementCount: appended };
@@ -241,6 +253,10 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
     },
     promotionStatus: "allowed",
     ...(reviewed ? { promotedStructuredIds, promotedStructuredRunId: structuredRunId } : {}),
+    // #1204 — written on every replacement, so an earlier set's record is cleared.
+    promotionMatching: promotionMatchingRecord(
+      ambiguousPromotionRecords(ambiguous, requirementIds),
+    ),
   });
 
   log.info("Promoted withheld requirements", {
@@ -303,6 +319,10 @@ async function appendNewlyApproved(input: {
   structuredRunId: string | null;
   /** When each approved structured id was approved (its deciding approval). */
   approvedAt: ReadonlyMap<string, Date | null>;
+  /** #1204 — the approved requirements the title join could not decide. */
+  ambiguous: readonly AmbiguousPromotionMatch[];
+  /** #1204 — the synthesis items the set promoted with `ids` gave its rows. */
+  itemsGivenTo: (ids: ReadonlySet<string>) => ReadonlySet<number>;
 }): Promise<number | "superseded"> {
   const flat = await readFlattenedFindings(input.analysisId);
   let superseded = false;
@@ -400,11 +420,29 @@ async function appendNewlyApproved(input: {
           (x): x is string => typeof x === "string",
         )
       : [];
+    // #1204 — the appended rows' refusals, beside the earlier set's. The plan
+    // ran over the enlarged approved set, so a new row can be refused among
+    // items the earlier set's rows already carry; those are not its options.
+    // The earlier set is replayed from its recorded ids (same run, same
+    // synthesis output), or, before ids were recorded, the not-new ones.
+    const rowIdByApprovedIndex: Array<string | undefined> = [];
+    newIdx.forEach((approvedIdx, k) => {
+      rowIdByApprovedIndex[approvedIdx] = ids[k];
+    });
+    const earlierIds = new Set(recorded ?? input.promotedStructuredIds.filter((_, i) => !isNew(i)));
+    const promotionMatching = appendPromotionMatching(
+      readPromotionMatchingRecord(lockedMetadata.promotionMatching),
+      ambiguousPromotionRecords(
+        withoutGivenItems(input.ambiguous, input.itemsGivenTo(earlierIds)),
+        rowIdByApprovedIndex,
+      ),
+    );
     await tx.analysis.update({
       where: { id: input.analysisId },
       data: {
         metadata: JSON.stringify({
           ...lockedMetadata,
+          promotionMatching,
           [CHECKPOINT_APPROVED_IDS_KEY]: [...checkpointApproved, ...ids],
           promotedStructuredIds: [
             ...new Set([...(recorded ?? input.promotedStructuredIds), ...appendedIds]),

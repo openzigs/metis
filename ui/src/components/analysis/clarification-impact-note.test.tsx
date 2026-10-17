@@ -282,3 +282,119 @@ describe("ClarificationImpactNote", () => {
     );
   });
 });
+
+describe("ClarificationImpactNote — #1204 answers refused because the match was ambiguous", () => {
+  const tiedAnswer = (questionId: string, ambiguousBetween: string[]) => ({
+    questionId,
+    question: `Question ${questionId}?`,
+    requirementTitle: null,
+    ambiguousBetween,
+  });
+
+  it("says so in the existing warning and names the requirements each answer fitted", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          unattributedCount: 2,
+          ambiguousCount: 1,
+          answers: [
+            tiedAnswer("q1", ["Mark all as read", "Mark older entries read"]),
+            { questionId: "q2", question: "Other?", requirementTitle: null },
+          ],
+        }}
+      />,
+    );
+    const warning = screen.getByTestId("clarification-unattributed");
+    expect(warning).toHaveTextContent(
+      /1 of them could not be placed because the match was too close to call:/,
+    );
+    const list = screen.getByTestId("clarification-ambiguous");
+    expect(list).toHaveTextContent(
+      "Question q1? → fits “Mark all as read” and “Mark older entries read” equally well, so none was chosen",
+    );
+    expect(list).not.toHaveTextContent("Other?");
+  });
+
+  it("says “They” when every unmatched answer was ambiguous, and handles one named row", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          unattributedCount: 2,
+          ambiguousCount: 2,
+          answers: [tiedAnswer("q1", ["A", "B", "C"]), tiedAnswer("q2", ["Export orders"])],
+        }}
+      />,
+    );
+    expect(screen.getByTestId("clarification-unattributed")).toHaveTextContent(
+      /They could not be placed because the match was too close to call/,
+    );
+    const list = screen.getByTestId("clarification-ambiguous");
+    expect(list).toHaveTextContent("fits “A”, “B” and “C” equally well, so none was chosen");
+    expect(list).toHaveTextContent(
+      "“Export orders” fits this and another requirement equally well, so the answer was given to neither",
+    );
+  });
+
+  it("says “It” for a single ambiguous answer", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          unattributedCount: 1,
+          ambiguousCount: 1,
+          answers: [tiedAnswer("q1", ["A", "B"])],
+        }}
+      />,
+    );
+    expect(screen.getByTestId("clarification-unattributed")).toHaveTextContent(
+      /It could not be placed because the match was too close to call/,
+    );
+  });
+
+  // #1204 review — one title means two reviewed requirements tied on ONE saved
+  // row (the commonest tie). The old wording claimed the answer fitted several
+  // saved requirements, which was false.
+  it("one saved requirement: says it fits this and another requirement, never that the answer fitted several", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          unattributedCount: 1,
+          ambiguousCount: 1,
+          answers: [tiedAnswer("q1", ["Mark all as read"])],
+        }}
+      />,
+    );
+    const warning = screen.getByTestId("clarification-unattributed");
+    expect(warning).not.toHaveTextContent(/more than one saved requirement/);
+    expect(screen.getByTestId("clarification-ambiguous")).toHaveTextContent(
+      "Question q1? → “Mark all as read” fits this and another requirement equally well, so the answer was given to neither",
+    );
+  });
+
+  it("several saved requirements: names every one the answer fitted", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          unattributedCount: 1,
+          ambiguousCount: 1,
+          answers: [tiedAnswer("q1", ["Export orders", "Export invoices"])],
+        }}
+      />,
+    );
+    const list = screen.getByTestId("clarification-ambiguous");
+    expect(list).toHaveTextContent(
+      "Question q1? → fits “Export orders” and “Export invoices” equally well, so none was chosen",
+    );
+    expect(list).not.toHaveTextContent(/another requirement/);
+  });
+
+  it("adds nothing for unmatched answers that were not ambiguous", () => {
+    render(<ClarificationImpactNote application={base} />);
+    expect(screen.queryByTestId("clarification-ambiguous")).toBeNull();
+    expect(screen.getByTestId("clarification-unattributed")).not.toHaveTextContent(/equally well/);
+  });
+});
