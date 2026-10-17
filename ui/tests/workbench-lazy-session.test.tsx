@@ -52,7 +52,8 @@ vi.mock("@/lib/analysis-api", () => ({
 vi.mock("@/lib/scheduler-api", () => ({
   tasksApi: { list: vi.fn().mockResolvedValue({ items: [] }) },
 }));
-vi.mock("@/lib/recent-tracker", () => ({
+vi.mock("@/lib/recent-tracker", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/recent-tracker")>()),
   recentTracker: { touch: vi.fn(), list: () => [] },
 }));
 vi.mock("@/lib/templates", () => ({ consumeRunPayload: () => null }));
@@ -146,6 +147,38 @@ beforeEach(() => {
   );
 });
 
+describe("Workbench — opens on the active project (#1139)", () => {
+  it("opens on the project active in the top bar, not the first listed", async () => {
+    window.localStorage.setItem("metis.activeProjectId", "p2");
+    renderStrict();
+    await waitFor(() => expect(screen.getByTestId("workbench-project-picker")).toHaveValue("p2"));
+    await send("hi");
+    await waitFor(() => expect(createSessionMock).toHaveBeenCalledTimes(1));
+    expect(createSessionMock.mock.calls[0]![0]).toMatchObject({ projectId: "p2" });
+  });
+
+  it("a retry frame takes back what a dropped model stream had shown", async () => {
+    streamChatMock.mockImplementation(async function* (_id, _msg, _signal, _idle, onAccepted) {
+      onAccepted?.();
+      yield { type: "delta", content: "Half an ans" };
+      yield { type: "retry", keepChars: 0, message: "asking again" };
+      yield { type: "delta", content: "The whole answer." };
+      yield { type: "done" };
+    });
+    renderStrict();
+    await waitForProject();
+    await send("q");
+    await screen.findByText(/The whole answer\./);
+    expect(screen.queryByText(/Half an ans/)).toBeNull();
+  });
+
+  it("falls back to the first project when the stored one is no longer listed", async () => {
+    window.localStorage.setItem("metis.activeProjectId", "p-gone");
+    renderStrict();
+    await waitForProject();
+  });
+});
+
 describe("Workbench — no session until the first message (#361)", () => {
   it("a page load issues zero session-create requests, even under StrictMode", async () => {
     renderStrict();
@@ -205,7 +238,8 @@ describe("Workbench — no session until the first message (#361)", () => {
     expect(touchMock).toHaveBeenCalledWith({
       kind: "session",
       id: "sess-1",
-      label: "Workbench",
+      // #1139 — by title: a "Workbench" session is named after its first question.
+      label: "hi",
       // The Chat page resumes from `sessionId`, not `session`.
       href: "/chat?sessionId=sess-1",
       projectId: "p1",

@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useSearchParams } from "next/navigation";
 import { makeWrapper } from "./test-utils";
+import { acceptedTurn, sendChatMessage } from "./chat-send";
 import ChatPage from "@/app/(authed)/chat/page";
 import * as aiClient from "@/lib/ai-client";
 
@@ -88,12 +89,18 @@ describe("<ChatPage /> — a read-only session's notice clears on an agent / pro
     localStorage.clear();
     useSearchParamsMock.mockReturnValue(new URLSearchParams() as never);
     createMock.mockResolvedValue({ session: { ...storedSession, id: "sess-new" } } as never);
+    vi.mocked(aiClient.streamChat).mockImplementation(acceptedTurn as typeof aiClient.streamChat);
   });
 
   it("changing the agent starts a writable session without the old notice", async () => {
     await renderReadOnlySession();
 
     fireEvent.click(screen.getByTestId("pick-architect"));
+
+    // #1139 — the notice clears at once; the new session starts on the next send.
+    await waitFor(() => expectWritableFreshSession());
+    expect(createMock).not.toHaveBeenCalled();
+    await sendChatMessage();
 
     await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
     expect(createMock).toHaveBeenCalledWith(expect.objectContaining({ agentKey: "architect" }));
@@ -106,6 +113,11 @@ describe("<ChatPage /> — a read-only session's notice clears on an agent / pro
 
     useSearchParamsMock.mockReturnValue(new URLSearchParams("projectId=proj-2") as never);
     view.rerender(<ChatPage />);
+
+    // #1139 — the notice clears at once; the new session starts on the next send.
+    await waitFor(() => expectWritableFreshSession());
+    expect(createMock).not.toHaveBeenCalled();
+    await sendChatMessage();
 
     await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
     expect(createMock).toHaveBeenCalledWith(expect.objectContaining({ projectId: "proj-2" }));

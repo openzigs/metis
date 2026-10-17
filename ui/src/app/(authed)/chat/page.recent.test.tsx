@@ -17,6 +17,7 @@ type StreamImpl = (
 
 let streamImpl: StreamImpl;
 const touch = vi.fn();
+let sessionTitle = "t";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
@@ -31,7 +32,7 @@ vi.mock("@/lib/ai-client", async (importOriginal) => {
     createSessionWithScope: vi.fn(async () => ({
       session: {
         id: "sess-1",
-        title: "t",
+        title: sessionTitle,
         provider: "anthropic",
         model: "m",
         policy: { low: "auto", medium: "prompt-once", high: "always-prompt" },
@@ -67,7 +68,8 @@ vi.mock("@/components/chat/project-scope-selector", () => ({
     hydrated: true,
   }),
 }));
-vi.mock("@/lib/recent-tracker", () => ({
+vi.mock("@/lib/recent-tracker", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/recent-tracker")>()),
   recentTracker: { touch: (...a: unknown[]) => touch(...a) },
 }));
 
@@ -75,6 +77,7 @@ const { default: ChatPage } = await import("./page");
 
 beforeEach(() => {
   touch.mockReset();
+  sessionTitle = "t";
 });
 
 async function send(text: string) {
@@ -106,6 +109,26 @@ describe("chat page — Recent keys on an accepted turn (#422)", () => {
       href: "/chat?sessionId=sess-1",
       projectId: "proj-1",
     });
+  });
+
+  it("#1139: a new chat is listed by the title its first question gives it, not 'New Chat'", async () => {
+    sessionTitle = "New Chat";
+    streamImpl = async function* (_id, _msg, _signal, _idle, onAccepted) {
+      onAccepted?.();
+      yield { type: "done" };
+    };
+    render(<ChatPage />);
+    await send("Which   tables hold the invoices?");
+    await waitFor(() => expect(touch).toHaveBeenCalledTimes(1));
+    expect(touch.mock.calls[0]![0]).toMatchObject({
+      id: "sess-1",
+      label: "Which tables hold the invoices?",
+    });
+    // A later question does not rename it: the session keeps its title.
+    await idle();
+    await send("And the payments?");
+    await waitFor(() => expect(touch).toHaveBeenCalledTimes(2));
+    expect(touch.mock.calls[1]![0]).toMatchObject({ label: "Which tables hold the invoices?" });
   });
 
   it("a refused send does not reach Recent", async () => {

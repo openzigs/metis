@@ -72,6 +72,12 @@ export type StreamEvent =
    * against the response's own time limit.
    */
   | StreamQueueEvent
+  /**
+   * #1139 — the model's stream dropped mid-reply and is being asked again from
+   * the last completed step: keep only the first `keepChars` characters of the
+   * reply so far (what the dropped attempt streamed is taken back).
+   */
+  | { type: "retry"; keepChars: number; message: string }
   | { type: "done" }
   | { type: "error"; message: string; code?: string };
 
@@ -709,6 +715,17 @@ export function parseSseFrame(frame: string): StreamEvent | null {
         return { type: "queue", state: "acquired", waitedMs: num(p.waitedMs) };
       }
       return null;
+    }
+    case "retry": {
+      const p = payload as { keepChars?: unknown; message?: unknown };
+      if (typeof p.keepChars !== "number" || !Number.isInteger(p.keepChars) || p.keepChars < 0) {
+        return null;
+      }
+      return {
+        type: "retry",
+        keepChars: p.keepChars,
+        message: typeof p.message === "string" ? p.message : "The model is being asked again.",
+      };
     }
     case "done":
       return { type: "done" };

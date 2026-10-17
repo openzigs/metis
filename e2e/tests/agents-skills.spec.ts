@@ -106,10 +106,12 @@ test.describe("Epic #129 — agents and skills (#148)", () => {
 
       const chat = new AgentChatPage(page);
       await chat.gotoProjectChat(projectId);
-      const sessionId = await chat.pickAgent(agentKey);
+      await chat.pickAgent(agentKey);
+      // #1139 — the session is created by the first send, for the picked agent.
+      let sessionId = "";
 
       await test.step("chat: the skill is loaded on demand (with approval)", async () => {
-        await chat.send(`${MARKER} please draft the release notes`);
+        sessionId = await chat.sendFirst(`${MARKER} please draft the release notes`, agentKey);
         // The agent's approval override (low: always-prompt) applies to its
         // own load_skill call too — nothing runs unapproved.
         await expect(chat.toolRow("load_skill")).toContainText("waiting for your approval");

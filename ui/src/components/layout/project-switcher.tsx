@@ -15,27 +15,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { projectsApi, type Project } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
-
-const STORAGE_KEY = "metis.activeProjectId";
-
-function readStoredActiveId(): string | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return window.localStorage.getItem(STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredActiveId(id: string | null): void {
-  if (typeof window === "undefined") return;
-  try {
-    if (id) window.localStorage.setItem(STORAGE_KEY, id);
-    else window.localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    /* swallow */
-  }
-}
+import {
+  projectSwitcherQuery,
+  readStoredActiveProjectId as readStoredActiveId,
+  resolveActiveProjectId,
+  writeStoredActiveProjectId as writeStoredActiveId,
+} from "@/lib/active-project";
 
 /**
  * Extract the project id from `/projects/<id>/...` paths so the switcher
@@ -57,11 +42,7 @@ function projectIdFromPath(pathname: string | null): string | null {
 export function ProjectSwitcher() {
   const router = useRouter();
   const pathname = usePathname();
-  const projects = useQuery({
-    queryKey: ["projects", "switcher"],
-    queryFn: () => projectsApi.list({ limit: 50 }),
-    staleTime: 30_000,
-  });
+  const projects = useQuery(projectSwitcherQuery);
 
   const items: readonly Project[] = useMemo(
     () => projects.data?.items ?? [],
@@ -70,9 +51,7 @@ export function ProjectSwitcher() {
 
   const pathId = projectIdFromPath(pathname);
   const storedId = typeof window === "undefined" ? null : readStoredActiveId();
-  const activeId =
-    pathId ??
-    (storedId && items.some((p) => p.id === storedId) ? storedId : (items[0]?.id ?? null));
+  const activeId = pathId ?? resolveActiveProjectId(storedId, items);
   // #370 — the list is cached for 30s and capped at 50, so the project in the
   // URL (e.g. one just created) may be missing from it. Load that one project
   // rather than falling back to "No project" or a previously active name.

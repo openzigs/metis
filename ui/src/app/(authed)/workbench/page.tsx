@@ -42,7 +42,8 @@ import {
   MIN_PCT,
   type WorkbenchLayout,
 } from "@/lib/workbench-storage";
-import { recentTracker } from "@/lib/recent-tracker";
+import { recentSessionLabel, recentTracker } from "@/lib/recent-tracker";
+import { readStoredActiveProjectId, resolveActiveProjectId } from "@/lib/active-project";
 import { LoadedSkillsPanel } from "@/components/chat/loaded-skills-panel";
 import { AgentPicker } from "@/components/chat/agent-picker";
 import { ChatMarkdown } from "@/components/chat/chat-markdown";
@@ -97,7 +98,9 @@ export default function WorkbenchPage() {
         const list = await projectsApi.list({ limit: 50 });
         if (cancelled) return;
         setProjects(list.items);
-        if (list.items[0]) setActiveProjectId(list.items[0].id);
+        // #1139 — open on the project active in the top bar, not simply the
+        // first one listed (the picker opened on a different project).
+        setActiveProjectId(resolveActiveProjectId(readStoredActiveProjectId(), list.items));
       } catch (err) {
         if (!cancelled) setError((err as Error).message);
       }
@@ -299,10 +302,17 @@ export default function WorkbenchPage() {
     // an unused session never reaches Recent or the dashboard's Recent
     // activity. Chat resumes a session from `?sessionId=`.
     if (!accepted) return;
+    // #1139 — listed by title: a session still called "Workbench" is named
+    // after its first question (what the user typed, not the attached context),
+    // and keeps that name for its later turns.
+    const label = recentSessionLabel(active.title, input);
+    if (label !== active.title) {
+      setSession((prev) => (prev?.id === active.id ? { ...prev, title: label } : prev));
+    }
     recentTracker.touch({
       kind: "session",
       id: active.id,
-      label: active.title,
+      label,
       href: `/chat?sessionId=${encodeURIComponent(active.id)}`,
       ...(active.projectId ? { projectId: active.projectId } : {}),
     });
@@ -312,6 +322,13 @@ export default function WorkbenchPage() {
     if (ev.type === "delta") {
       setMessages((prev) =>
         prev.map((m) => (m.id === assistantMsgId ? { ...m, content: m.content + ev.content } : m)),
+      );
+    } else if (ev.type === "retry") {
+      // #1139 — a dropped model stream is asked again: take back its text.
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantMsgId ? { ...m, content: m.content.slice(0, ev.keepChars) } : m,
+        ),
       );
     } else if (ev.type === "tool_event") {
       // #142 — the server's approval gate decides every call; the owner answers

@@ -91,3 +91,25 @@ export const recentTracker = {
 };
 
 export const _MAX_PER_KIND = MAX_PER_KIND;
+
+/** Titles a session carries until its first question names it. */
+const PLACEHOLDER_TITLES = new Set(["", "new chat", "workbench", "chat"]);
+const TITLE_MAX_CHARS = 80;
+
+/**
+ * #1139 — the title a session is listed under in Recent. A session still
+ * carrying a placeholder ("New Chat", "Workbench") is named after its first
+ * question, as the server names it (#980 `titleFromQuestion`: whitespace
+ * collapsed, cut at a word boundary to 80 characters). Before, every new chat
+ * was listed as "New Chat", so Recent could not tell the sessions apart.
+ */
+export function recentSessionLabel(title: string | null | undefined, question: string): string {
+  const current = (title ?? "").trim();
+  if (!PLACEHOLDER_TITLES.has(current.toLowerCase())) return current;
+  const flat = question.replace(/\s+/g, " ").trim();
+  if (!flat) return current || "Chat";
+  if (flat.length <= TITLE_MAX_CHARS) return flat;
+  const cut = flat.slice(0, TITLE_MAX_CHARS - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > TITLE_MAX_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}

@@ -1,5 +1,38 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { recentTracker, _MAX_PER_KIND } from "@/lib/recent-tracker";
+import { recentSessionLabel, recentTracker, _MAX_PER_KIND } from "@/lib/recent-tracker";
+
+describe("recentSessionLabel (#1139)", () => {
+  it("keeps a real title", () => {
+    expect(recentSessionLabel("Invoice tables", "something else")).toBe("Invoice tables");
+  });
+
+  it.each(["New Chat", "Workbench", "chat", "", null, undefined])(
+    "names a placeholder-titled (%j) session after its question",
+    (title) => {
+      expect(recentSessionLabel(title, "  Which   tables\nhold invoices? ")).toBe(
+        "Which tables hold invoices?",
+      );
+    },
+  );
+
+  it("cuts a long question at a word boundary, as the server titles it", () => {
+    const q = `${"word ".repeat(30)}end`;
+    const label = recentSessionLabel("New Chat", q);
+    expect(label.length).toBeLessThanOrEqual(80);
+    expect(label.endsWith("…")).toBe(true);
+    expect(label).not.toMatch(/wor…$/);
+  });
+
+  it("cuts mid-word when there is no late space", () => {
+    const label = recentSessionLabel("New Chat", "x".repeat(200));
+    expect(label).toBe(`${"x".repeat(79)}…`);
+  });
+
+  it("falls back to the title, then 'Chat', for an empty question", () => {
+    expect(recentSessionLabel("Workbench", "   ")).toBe("Workbench");
+    expect(recentSessionLabel("", "   ")).toBe("Chat");
+  });
+});
 
 describe("recentTracker", () => {
   beforeEach(() => window.localStorage.clear());
