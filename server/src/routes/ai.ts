@@ -70,6 +70,7 @@ import type {
 import {
   resolveSessionTools,
   sessionGate,
+  withoutApprovalGatedTools,
   type SessionToolRuntime,
 } from "../lib/ai/tool-runtime/session-tools.js";
 import { runChatToolTurn, type ChatToolRecord } from "../lib/ai/tool-runtime/chat-turn.js";
@@ -358,6 +359,8 @@ const chatBodySchema = z.object({
    * room nobody can be shown an approval prompt, so a tool that needs one is
    * refused at once. A client that answers `POST …/approvals/:id` itself while
    * this request is open sets this to wait for that answer instead.
+   * #1139 — without it, such tools are not offered to the model at all; the
+   * response's `toolsWithheld` names them.
    */
   awaitToolApproval: z.boolean().optional(),
 });
@@ -365,6 +368,10 @@ const chatBodySchema = z.object({
 type ChatBody = z.infer<typeof chatBodySchema>;
 
 export const CLIENT_HISTORY_REJECTED = "CLIENT_HISTORY_REJECTED";
+
+/** #1139 — the `retry` frame's note: a dropped model stream is being asked again. */
+export const STREAM_RETRY_MESSAGE =
+  "The connection to the model dropped mid-reply, so METIS is asking again from the last completed step.";
 
 /** The new user message of a chat request, or a 400 explaining why not. */
 export function newUserMessage(body: ChatBody): string {
@@ -1402,6 +1409,8 @@ export function aiRouter(): Router {
     const toolCalls: ReplyToolCall[] = [];
     // #861 — the calls the approval step refused, reported in the response.
     const toolApprovals: ToolApprovalOutcome[] = [];
+    // #1139 — the tools not offered because nobody could approve them.
+    let toolsWithheld: string[] = [];
     // #861 — a prompt nobody can see is refused at once (see `awaitToolApproval`).
     const approverPresent = parsed.data.awaitToolApproval
       ? undefined
@@ -1448,11 +1457,26 @@ export function aiRouter(): Router {
       // not, none for an unscoped session. The text schemas (or the native
       // note) ride in the byte-stable prompt lead; with no tools the prompt is
       // byte-identical to before.
-      const tools = await resolveSessionTools({
+      let tools = await resolveSessionTools({
         session: { ...session, userId },
         provider: providerInstance,
         model,
       });
+      // #1139 — with nobody there to answer a prompt, a tool that needs one is
+      // not offered at all (the gate's immediate refusal stays as the backstop
+      // for a call the model makes anyway). An unreadable room counts as
+      // someone present: that only ever asks, never skips the gate.
+      if (approverPresent && !(await approverPresent().catch(() => true))) {
+        const approverless = await withoutApprovalGatedTools(tools, session);
+        tools = approverless.runtime;
+        toolsWithheld = approverless.withheld;
+        if (toolsWithheld.length > 0) {
+          log.info("Tools needing approval withheld: no approver on this request", {
+            sessionId: session.id,
+            tools: toolsWithheld,
+          });
+        }
+      }
       const librarySystem = await buildLibrarySystemMessages(session, toolLead(tools), {
         mode: tools.skillMode,
         catalog: tools.skillCatalog,
@@ -1769,6 +1793,7 @@ export function aiRouter(): Router {
           grounding,
           ...(turn.compaction ? { compaction: compactionEvent(turn.compaction) } : {}),
           ...(toolApprovals.length > 0 ? { toolApprovals } : {}),
+          ...(toolsWithheld.length > 0 ? { toolsWithheld } : {}),
         }),
       );
 
@@ -2210,6 +2235,11 @@ export function aiRouter(): Router {
           finalAnswer = streamedText;
           send("delta", { type: "delta", content: text });
         };
+        // #1139 — where the model call in flight started streaming. A call whose
+        // stream drops mid-reply is retried once from the last complete tool
+        // result; what that failed attempt had streamed is taken back first, on
+        // the client (`retry` frame) and in what a failed turn would keep.
+        let attemptStart = 0;
         const loop = await runChatToolTurn(
           streamProvider,
           {
@@ -2238,9 +2268,26 @@ export function aiRouter(): Router {
             },
             // #243 — each model call's usage as it returns.
             onUsage: (u) => meter.add(u),
+            onModelCallRetry: ({ attempt, errorClass }) => {
+              streamedText = streamedText.slice(0, attemptStart);
+              finalAnswer = streamedText;
+              log.warn("Chat model stream dropped mid-reply; retrying from the last tool result", {
+                sessionId: session.id,
+                provider: streamProvider.key,
+                model,
+                attempt,
+                errorClass,
+              });
+              send("retry", {
+                type: "retry",
+                keepChars: streamedText.length,
+                message: STREAM_RETRY_MESSAGE,
+              });
+            },
             ...(native
               ? {
                   callModel: async (m: ChatMessage[], o: ChatOptions) => {
+                    attemptStart = streamedText.length;
                     const turnSlot = streamProvider.key === "local-gemma" ? slotSignal() : null;
                     // Separate one model turn's text from the previous one's.
                     let first = streamedText.length > 0 && !streamedText.endsWith("\n");

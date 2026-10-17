@@ -43,7 +43,7 @@ import {
   type SubAgentLimits,
 } from "../../agent-runtime/subagents.js";
 import { resolveCapabilities } from "../capabilities.js";
-import type { AIProvider } from "../types.js";
+import type { AIProvider, RiskLevel } from "../types.js";
 import { getToolRegistry, type ToolRegistry } from "../tool-registry.js";
 import {
   ApprovalGateService,
@@ -441,4 +441,72 @@ export function sessionGate(input: SessionGateInput): ApprovalGateService {
       ...(input.approverPresent ? { approverPresent: input.approverPresent } : {}),
     }),
   });
+}
+
+export interface ApproverlessTools {
+  runtime: SessionToolRuntime;
+  /** Canonical names of the tools taken out of the offer. */
+  withheld: string[];
+}
+
+/**
+ * #1139 — the turn's tools for a channel where nobody can answer an approval
+ * prompt (`POST /api/ai/chat` with no client in the session's room): every tool
+ * a person would have to approve is taken OUT of the offer, so the model is
+ * never handed a tool it cannot use. Before, each such call reached the gate
+ * and was refused (`no_interactive_approver`), costing the model a step and
+ * the user a tool-free answer to a question it then had to work around.
+ *
+ * "Needs a person" is the gate's own rule, read ahead of time: an MCP tool its
+ * governance forces to a prompt, `always-prompt`, or `prompt-once` with no
+ * approval on record in this session. A `deny` policy is left to the gate,
+ * which refuses at once. Native mode only — the text protocol's schemas are in
+ * the prompt lead already; there the gate's immediate refusal still applies.
+ * An unreadable approval memory or governance read withholds (fail closed).
+ */
+export async function withoutApprovalGatedTools(
+  runtime: SessionToolRuntime,
+  session: { id: string; policy: string },
+  remembered: (toolName: string, risk: RiskLevel) => Promise<boolean> = sessionApprovalMemory(
+    session.id,
+  ),
+): Promise<ApproverlessTools> {
+  if (runtime.mode !== "native") return { runtime, withheld: [] };
+  const policy = effectivePolicy(parsePolicyJson(session.policy), runtime.approvalOverride);
+  const needsPerson = async (tool: RuntimeTool): Promise<boolean> => {
+    if (tool.forcePrompt === true) return true;
+    if (tool.forcePromptNow) {
+      try {
+        if (await tool.forcePromptNow()) return true;
+      } catch {
+        return true;
+      }
+    }
+    const rule = policy[tool.risk];
+    if (rule === "always-prompt") return true;
+    if (rule !== "prompt-once") return false;
+    try {
+      return !(await remembered(tool.name, tool.risk));
+    } catch {
+      return true;
+    }
+  };
+  const kept: RuntimeTool[] = [];
+  const withheld: string[] = [];
+  for (const tool of runtime.toolset.tools) {
+    if (await needsPerson(tool)) withheld.push(tool.name);
+    else kept.push(tool);
+  }
+  if (withheld.length === 0) return { runtime, withheld };
+  const toolset = makeToolset(kept, runtime.toolset.withheldTools);
+  const progressive = Boolean(toolset.resolve(LOAD_SKILL_TOOL_NAME));
+  return {
+    runtime: {
+      ...runtime,
+      mode: kept.length === 0 ? "off" : "native",
+      toolset,
+      skillMode: progressive ? "progressive" : "inline",
+    },
+    withheld,
+  };
 }

@@ -353,6 +353,15 @@ function frames(sse: string, event: string): Array<Record<string, unknown>> {
     );
 }
 
+/** #1139 — the text of one recorded reply row (its `text` parts, joined). */
+function replyText(row: { content?: unknown }): string {
+  const parts = JSON.parse(String(row.content)) as Array<{ type: string; text?: string }>;
+  return parts
+    .filter((p) => p.type === "text")
+    .map((p) => p.text ?? "")
+    .join("");
+}
+
 /** The tool parts of the reply the transcript recorded. */
 function recordedToolParts(): Array<Record<string, unknown>> {
   const reply = aiMessageRows.filter((r) => r.role === "assistant").at(-1)!;
@@ -653,6 +662,88 @@ describe("#142 the approval gate through the routes", () => {
     expect(frames(res.text, "tool_call")).toEqual([
       { type: "tool_call", name: "count_rows", arguments: { table: "t" } },
     ]);
+  });
+
+  it("#1139 /stream: a stream that terminates on turn 3 is retried once from the last tool result", async () => {
+    const model = stubModel([
+      {
+        content: "Counting t1.",
+        toolCalls: [{ id: "c1", name: "count_rows", args: { table: "t1" } }],
+      },
+      { toolCalls: [{ id: "c2", name: "count_rows", args: { table: "t2" } }] },
+      { content: "Both tables have 7 rows." },
+    ]);
+    // Turn 3's FIRST stream drops after part of its answer, as the live run's did.
+    const original = model.stream.bind(model);
+    let streams = 0;
+    model.stream = async function* (m, o) {
+      streams++;
+      if (streams === 3) {
+        yield { type: "delta", content: "Both tab" };
+        throw Object.assign(new Error("anthropic stream failed (Error): terminated"), {
+          status: 502,
+        });
+      }
+      yield* original(m, o);
+    };
+    const app = makeApp();
+    const sid = await newSession(app, { policy: { high: "auto" } });
+    const res = await stream(app, sid);
+    expect(res.status).toBe(200);
+    expect(streams).toBe(4);
+    // Each tool ran once: the retry resumed after them, it did not redo them.
+    expect(dangerExec).toHaveBeenCalledTimes(2);
+    // The client is told to take back what the dropped attempt streamed.
+    const deltas = frames(res.text, "delta").map((d) => d.content as string);
+    const retry = frames(res.text, "retry");
+    expect(retry).toEqual([
+      expect.objectContaining({ type: "retry", keepChars: "Counting t1.".length }),
+    ]);
+    expect(frames(res.text, "error")).toEqual([]);
+    expect(frames(res.text, "done")).toHaveLength(1);
+    // Applying the frames in order leaves exactly the answer.
+    let shown = "";
+    for (const f of res.text.split("\n\n")) {
+      if (f.startsWith("event: delta\n")) shown += String(frames(`${f}\n\n`, "delta")[0]!.content);
+      if (f.startsWith("event: retry\n")) {
+        shown = shown.slice(0, Number(frames(`${f}\n\n`, "retry")[0]!.keepChars));
+      }
+    }
+    expect(deltas.join("")).toContain("Both tab");
+    expect(shown).toBe("Counting t1.\n\nBoth tables have 7 rows.");
+    const reply = aiMessageRows.filter((r) => r.role === "assistant").at(-1)!;
+    expect(replyText(reply)).toBe("Counting t1.\n\nBoth tables have 7 rows.");
+  });
+
+  it("#1139 /stream: a second drop fails the turn, keeping the partial answer up to it", async () => {
+    const model = stubModel([
+      { content: "Counting.", toolCalls: [{ id: "c1", name: "count_rows", args: { table: "t" } }] },
+      { content: "never reached" },
+    ]);
+    const original = model.stream.bind(model);
+    let streams = 0;
+    model.stream = async function* (m, o) {
+      streams++;
+      if (streams >= 2) {
+        yield { type: "delta", content: "There a" };
+        throw Object.assign(new Error("anthropic stream failed (Error): terminated"), {
+          status: 502,
+        });
+      }
+      yield* original(m, o);
+    };
+    const app = makeApp();
+    const sid = await newSession(app, { policy: { high: "auto" } });
+    const res = await stream(app, sid);
+    expect(streams).toBe(3);
+    expect(frames(res.text, "retry")).toHaveLength(1);
+    expect(frames(res.text, "error")).toEqual([
+      expect.objectContaining({ message: expect.stringMatching(/terminated/) }),
+    ]);
+    const reply = aiMessageRows.filter((r) => r.role === "assistant").at(-1)!;
+    // What the user saw after the retry's take-back: the first turn and the
+    // second attempt's partial text — kept, marked failed.
+    expect(replyText(reply)).toBe("Counting.\n\nThere a");
   });
 
   // #210 — a code-tool turn on /stream is metered into the per-project store
@@ -1259,12 +1350,13 @@ describe("#861 /chat when nobody can answer an approval", () => {
     registerSocketServer(null as unknown as MetisIOServer);
   });
 
-  it("fails a prompt-once medium tool at once, never runs it, and reports it in the response", async () => {
+  it("#1139: does not offer a tool that needs approval; a call to it anyway never runs or waits", async () => {
     // The real 120 s default: nothing here may wait for it.
     delete process.env.AI_TOOL_APPROVAL_TIMEOUT_MS;
+    // The model names the withheld tool anyway (a stale habit, a hallucination).
     const model = stubModel([inspectCall, { content: "Answered without the schema." }]);
     const app = makeApp();
-    // The session default policy: medium = prompt-once.
+    // The session default policy: low = auto, medium = prompt-once, high = always-prompt.
     const sid = await newSession(app);
     const started = Date.now();
     const res = await as(
@@ -1273,23 +1365,45 @@ describe("#861 /chat when nobody can answer an approval", () => {
     );
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(res.status).toBe(200);
+    // Never offered: the medium (prompt-once) and high (always-prompt) tools.
+    const offered = model.requests[0]!.opts.tools!.map((t) => t.name);
+    expect(offered).not.toContain("inspect_schema");
+    expect(offered).not.toContain("count_rows");
+    // An auto (low) tool still is.
+    expect(offered).toContain("flaky_tool");
+    expect(res.body.data.toolsWithheld).toEqual(
+      expect.arrayContaining(["inspect_schema", "count_rows"]),
+    );
+    expect(res.body.data.toolsWithheld).not.toContain("flaky_tool");
     expect(inspectExec).not.toHaveBeenCalled();
     expect(getToolApprovalBroker().size).toBe(0);
     expect(res.body.data.response.content).toBe("Answered without the schema.");
-    expect(res.body.data.toolApprovals).toEqual([
-      {
-        callId: "c1",
-        tool: "inspect_schema",
-        decision: "deny",
-        reason: "no_interactive_approver",
-        code: "TOOL_DENIED",
-      },
-    ]);
-    expect(approvalRows.map((r) => [r.decision, r.reason])).toEqual([
-      ["deny", "no_interactive_approver"],
-    ]);
+    // Nobody was asked, so there is no approval outcome to report or record.
+    expect(res.body.data.toolApprovals).toBeUndefined();
+    expect(approvalRows).toEqual([]);
     const toolMsg = model.requests[1]!.messages.find((m) => m.role === "tool")!;
-    expect(String(toolMsg.content)).toMatch(/no one is available to approve/);
+    expect(String(toolMsg.content)).toMatch(/Unknown tool "inspect_schema"/);
+  });
+
+  it("#1139: a prompt-once tool already approved in this session is still offered and runs", async () => {
+    stubModel([inspectCall, { content: "Feeds and entries." }]);
+    const app = makeApp();
+    const sid = await newSession(app);
+    // On record: the owner approved inspect_schema once, earlier in this session.
+    approvalRows.push({
+      sessionId: sid,
+      toolName: "inspect_schema",
+      risk: "medium",
+      decision: "approve",
+      reason: "prompt-once",
+    });
+    const res = await as(
+      alice,
+      request(app).post("/api/ai/chat").send({ sessionId: sid, message: "which tables?" }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.data.toolsWithheld).not.toContain("inspect_schema");
+    expect(inspectExec).toHaveBeenCalledTimes(1);
   });
 
   it("still asks when a client is subscribed to the session's socket room", async () => {
@@ -1309,9 +1423,9 @@ describe("#861 /chat when nobody can answer an approval", () => {
     expect(res.body.data.toolApprovals).toBeUndefined();
   });
 
-  it("an empty session room is nobody: fails at once", async () => {
+  it("an empty session room is nobody: the gated tool is not offered", async () => {
     registerSocketServer(socketServer(0));
-    stubModel([inspectCall, { content: "done" }]);
+    const model = stubModel([inspectCall, { content: "done" }]);
     const app = makeApp();
     const sid = await newSession(app);
     const res = await as(
@@ -1320,7 +1434,22 @@ describe("#861 /chat when nobody can answer an approval", () => {
     );
     expect(res.status).toBe(200);
     expect(inspectExec).not.toHaveBeenCalled();
-    expect(res.body.data.toolApprovals[0]).toMatchObject({ reason: "no_interactive_approver" });
+    expect(model.requests[0]!.opts.tools!.map((t) => t.name)).not.toContain("inspect_schema");
+    expect(res.body.data.toolsWithheld).toContain("inspect_schema");
+  });
+
+  it("a client in the room on a later turn gets the gated tool offered again", async () => {
+    registerSocketServer(socketServer(1));
+    const model = stubModel([{ content: "hello" }]);
+    const app = makeApp();
+    const sid = await newSession(app);
+    const res = await as(
+      alice,
+      request(app).post("/api/ai/chat").send({ sessionId: sid, message: "hi" }),
+    );
+    expect(res.status).toBe(200);
+    expect(model.requests[0]!.opts.tools!.map((t) => t.name)).toContain("inspect_schema");
+    expect(res.body.data.toolsWithheld).toBeUndefined();
   });
 
   it("an auto-approved tool is unaffected, and a policy=deny refusal is reported too", async () => {

@@ -218,7 +218,7 @@ import {
 } from "./schema-claim-check.js";
 // #67 — the fixed, user-safe failure vocabulary a section's exception is mapped
 // through before it can reach a persisted, client-visible warning.
-import { generationFailureMessage, isConnectionDropped } from "./generation-failure-message.js";
+import { generationFailureMessage } from "./generation-failure-message.js";
 import { sectionFailureWarning } from "./generation-checkpoint.js";
 import {
   SQL_SCAN_DIR_CAP,
@@ -236,6 +236,7 @@ import {
   describeGroundingErrorClass,
   withTransientRetry,
   type GroundingErrorClass,
+  isMidStreamDrop,
 } from "./grounding/transient-retry.js";
 import {
   FaithfulnessJudge,
@@ -7073,27 +7074,6 @@ Write the markdown for the **${group.label}** section group now, following the i
  * prompt, on every provider — the grounding calls' bound (#246).
  */
 export const MID_STREAM_DROP_ATTEMPTS = DEFAULT_GROUNDING_ATTEMPTS;
-
-/** Classes that are never a dropped stream, whatever the error's text says. */
-const NEVER_A_DROP: ReadonlySet<GroundingErrorClass> = new Set([
-  "cancelled",
-  "config-error",
-  "client-error",
-]);
-
-/**
- * #1174 — true when a section draft failed because its stream dropped
- * part-way through the reply. `isConnectionDropped` reads undici's own error;
- * the grounding classification also reads it once the Anthropic adapter has
- * wrapped it (`anthropic stream failed (TypeError): terminated`, stamped 502 —
- * walkthrough run 9's error, which `isConnectionDropped` does not recognise).
- * A cancel, a configuration error and a 4xx are never a drop; a first-token
- * timeout is excluded by the caller's chunk count (#111).
- */
-function isMidStreamDrop(err: unknown, cls: GroundingErrorClass): boolean {
-  if (NEVER_A_DROP.has(cls)) return false;
-  return cls === "stream-terminated" || isConnectionDropped(err);
-}
 
 async function generateSectionGroup(
   group: SectionGroup,

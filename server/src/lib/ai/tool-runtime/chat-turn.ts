@@ -19,6 +19,11 @@ import type { ApprovalGateService } from "../approval-policy.js";
 import type { RuntimeToolset } from "./toolset.js";
 import { executeToolCall, type ExecutedToolCall } from "./executor.js";
 import type { RuntimeToolContext, ToolEvent, ToolSource } from "./types.js";
+import {
+  isMidStreamDrop,
+  withTransientRetry,
+  type GroundingErrorClass,
+} from "../../docs-gen/grounding/transient-retry.js";
 
 /** Model turns per chat turn: a few rounds of tool calls plus the answer. */
 export const CHAT_TOOL_MAX_TURNS = 6;
@@ -30,6 +35,22 @@ export const CHAT_TOOL_MAX_TURNS = 6;
  * unattended session from waiting out approval timeouts indefinitely.
  */
 export const CHAT_TOOL_MAX_APPROVAL_REFUNDS = 2;
+
+/**
+ * #1139 — tries per model call of a chat turn when its stream drops part-way
+ * through the reply: the original call plus ONE retry with the identical
+ * messages, i.e. from the last complete tool result. A dropped stream used to
+ * end the whole turn (`anthropic stream failed (Error): terminated` on loop
+ * turn 3), losing the tool work before it.
+ */
+export const CHAT_MODEL_CALL_ATTEMPTS = 2;
+
+/** #1139 — what {@link ChatToolTurnOptions.onModelCallRetry} is told. */
+export interface ModelCallRetry {
+  /** The attempt that failed (1-based). */
+  attempt: number;
+  errorClass: GroundingErrorClass;
+}
 
 /**
  * #772 — the last user turn of the ONE tool-free call a chat turn makes when
@@ -136,6 +157,15 @@ export interface ChatToolTurnOptions {
    * the required format, not chat prose.
    */
   outputContract?: string;
+  /**
+   * #1139 — a model call whose stream dropped mid-reply is about to be retried
+   * from the last complete tool result. The /stream route uses it to take back
+   * the text the failed attempt had already streamed. A throwing listener
+   * never stops the retry.
+   */
+  onModelCallRetry?: (info: ModelCallRetry) => void;
+  /** #1139 — test seam: the backoff wait before the retry (must reject on abort). */
+  retrySleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 function capForModel(text: string, maxChars: number | undefined): string {
@@ -174,8 +204,39 @@ export async function runChatToolTurn(
   const records: ChatToolRecord[] = [];
   let finishReason: string | undefined;
   const turnTexts: string[] = [];
-  const callModel =
+  const baseCallModel =
     options.callModel ?? ((m: ChatMessage[], o: ChatOptions) => provider.chat(m, o));
+  // #1139 — retried once, and only on a stream that dropped mid-reply (the
+  // #1174 classifier): never a cancel, a stall the idle guard aborted, a 4xx or
+  // a configuration error. The messages are the loop's, unchanged, so the retry
+  // resumes from the last complete tool result rather than re-running the turn.
+  const callModel = (m: ChatMessage[], o: ChatOptions): Promise<ChatResponse> => {
+    let attempt = 0;
+    return withTransientRetry(
+      () => {
+        attempt++;
+        return baseCallModel(m, o);
+      },
+      {
+        stage: "chat-turn",
+        ...(options.signal ? { signal: options.signal } : {}),
+        logFields: { sessionId: input.ctx.sessionId, provider: provider.key },
+      },
+      {
+        attempts: CHAT_MODEL_CALL_ATTEMPTS,
+        ...(options.retrySleep ? { sleep: options.retrySleep } : {}),
+        isRetryable: (err, cls) => {
+          if (attempt >= CHAT_MODEL_CALL_ATTEMPTS || !isMidStreamDrop(err, cls)) return false;
+          try {
+            options.onModelCallRetry?.({ attempt, errorClass: cls });
+          } catch {
+            /* a listener must never break the loop */
+          }
+          return true;
+        },
+      },
+    );
+  };
   // #736 — the error codes of the reply's calls, read and reset by `refundTurn`.
   let batchCodes: Array<string | undefined> = [];
   let refunds = 0;
