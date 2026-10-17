@@ -15,14 +15,14 @@
  *
  *   2. `getWorkspaceTraceabilitySummary` — per-project coverage counts plus the
  *      cross-project link map, both confined to the projects the caller can see
- *      WITHIN the workspace (`listAccessibleProjectsInWorkspace` asserts
+ *      WITHIN the workspace (`listMemberProjectsInWorkspace` asserts
  *      workspace membership → 404, and intersects with the actor's accessible
  *      project set). Query cost is bounded by the number of accessible projects
  *      — there is no unbounded graph walk.
  *
  * Authorization reuses the SAME seams as the link API (#624): per-project
- * `actorCanAccessProject` (`scheduler/project-access.ts`) and
- * `listAccessibleProjectsInWorkspace` (`cross-project/cross-project-access.ts`).
+ * `actorHasProjectAccess` (`scheduler/project-access.ts`) and
+ * `listMemberProjectsInWorkspace` (`cross-project/cross-project-access.ts`).
  * A rollup therefore never surfaces a requirement or link in a project /
  * workspace the caller cannot access.
  */
@@ -38,8 +38,8 @@ import {
   type WorkspaceTraceabilitySummary,
 } from "@metis/shared";
 import { prisma as defaultPrisma } from "../prisma.js";
-import { actorCanAccessProject, type SchedulerActor } from "../scheduler/project-access.js";
-import { listAccessibleProjectsInWorkspace } from "../cross-project/cross-project-access.js";
+import { actorHasProjectAccess, type SchedulerActor } from "../scheduler/project-access.js";
+import { listMemberProjectsInWorkspace } from "../cross-project/cross-project-access.js";
 import { getRequirementChain } from "./traceability-spine.js";
 import {
   loadTestedByTargets,
@@ -143,7 +143,7 @@ export async function getRequirementChainWithLinks(
   const canAccess = async (pid: string): Promise<boolean> => {
     const cached = accessCache.get(pid);
     if (cached !== undefined) return cached;
-    const allowed = await actorCanAccessProject(actor, pid, {
+    const allowed = await actorHasProjectAccess(actor, pid, {
       resource: "requirement",
       resourceId: requirementId,
       action: "traceability.link.read",
@@ -233,7 +233,7 @@ export async function getWorkspaceTraceabilitySummary(
   const prisma = pickPrisma(deps);
 
   // Asserts workspace membership (404) + intersects with accessible projects.
-  const projectIds = await listAccessibleProjectsInWorkspace(actor, workspaceId, prisma);
+  const projectIds = await listMemberProjectsInWorkspace(actor, workspaceId, prisma);
   if (projectIds.length === 0) {
     return { projects: [], crossProjectLinks: [] };
   }

@@ -35,10 +35,9 @@ import {
   type TaskRecord,
 } from "./types.js";
 import {
-  actorCanAccessProject,
+  actorHasProjectAccess,
   buildProjectAccessWhere,
   isAdminActor,
-  listAccessibleProjectIds,
   type SchedulerActor,
 } from "./project-access.js";
 
@@ -94,7 +93,7 @@ export class SchedulerService {
       throw new SchedulerError(400, "UNKNOWN_TASK_TYPE", `unknown task type: ${opts.taskType}`);
     }
     if (actor) {
-      const ok = await actorCanAccessProject(actor, opts.projectId ?? null, {
+      const ok = await actorHasProjectAccess(actor, opts.projectId ?? null, {
         resource: "scheduled-job",
         resourceId: opts.key,
         action: "scheduled-job.create",
@@ -149,7 +148,7 @@ export class SchedulerService {
     }
     const actorObj = normalizeActor(actor);
     if (actorObj) {
-      const ok = await actorCanAccessProject(actorObj, existing.projectId, {
+      const ok = await actorHasProjectAccess(actorObj, existing.projectId, {
         resource: "scheduled-job",
         resourceId: id,
         action: "scheduled-job.update",
@@ -159,7 +158,7 @@ export class SchedulerService {
       }
       // Disallow re-parenting into a project the actor doesn't control either.
       if (opts.projectId !== undefined && opts.projectId !== existing.projectId) {
-        const okNew = await actorCanAccessProject(actorObj, opts.projectId ?? null, {
+        const okNew = await actorHasProjectAccess(actorObj, opts.projectId ?? null, {
           resource: "scheduled-job",
           resourceId: id,
           action: "scheduled-job.update",
@@ -218,7 +217,7 @@ export class SchedulerService {
     if (!existing) return;
     const actorObj = normalizeActor(actor);
     if (actorObj) {
-      const ok = await actorCanAccessProject(actorObj, existing.projectId, {
+      const ok = await actorHasProjectAccess(actorObj, existing.projectId, {
         resource: "scheduled-job",
         resourceId: id,
         action: "scheduled-job.delete",
@@ -280,8 +279,13 @@ export class SchedulerService {
     if (filter.projectId !== undefined) {
       // Explicit project filter — verify access then narrow to the single id.
       if (actor && !isAdminActor(actor)) {
-        const allowedIds = await listAccessibleProjectIds(actor);
-        const allowed = filter.projectId === null ? false : allowedIds.includes(filter.projectId);
+        const allowed =
+          filter.projectId !== null &&
+          (await actorHasProjectAccess(actor, filter.projectId, {
+            resource: "scheduled-job-list",
+            resourceId: filter.projectId,
+            action: "scheduled-job.read",
+          }));
         if (!allowed) return [];
       }
       where.projectId = filter.projectId;
@@ -299,7 +303,7 @@ export class SchedulerService {
     const row = await prisma.scheduledJob.findUnique({ where: { id } });
     if (!row) return null;
     if (actor) {
-      const ok = await actorCanAccessProject(actor, row.projectId, {
+      const ok = await actorHasProjectAccess(actor, row.projectId, {
         resource: "scheduled-job",
         resourceId: id,
         action: "scheduled-job.read",
@@ -326,7 +330,7 @@ export class SchedulerService {
     }
     const actorObj = normalizeActor(actor);
     if (actorObj) {
-      const ok = await actorCanAccessProject(actorObj, job.projectId, {
+      const ok = await actorHasProjectAccess(actorObj, job.projectId, {
         resource: "scheduled-job",
         resourceId: id,
         action: "scheduled-job.run-now",

@@ -12,7 +12,7 @@
  * This module adds the workspace dimension and INTERSECTS it with the existing
  * project access (defence-in-depth): a project is cross-project-visible only if
  * the actor can access the project AND belongs to its workspace. Denials emit an
- * audit row, mirroring `actorCanAccessProject` (review finding L2).
+ * audit row, mirroring `actorHasProjectAccess` (review finding L2).
  *
  * Authz model (matches custom-agents/authz.ts IDOR hardening):
  *   - system admin (`role === "admin"`): sees every workspace/project.
@@ -27,6 +27,8 @@ import type { RoleKey } from "@metis/shared";
 import { audit } from "../audit/audit-service.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { isAdminActor, type SchedulerActor } from "../scheduler/project-access.js";
+import { asAuthPayload } from "../discussions/access.js";
+import { accessibleProjectWhere } from "../acp/authz.js";
 
 /** Minimal Prisma surface needed for workspace + project access checks. */
 export type AccessPrisma = Pick<PrismaClient, "workspaceMember" | "project">;
@@ -102,11 +104,16 @@ export async function assertWorkspaceAccessible(
   prisma?: AccessPrisma,
 ): Promise<void> {
   if (await actorIsWorkspaceMember(actor, workspaceId, prisma)) return;
+  denyWorkspace(actor, workspaceId, "workspace-membership-missing");
+}
+
+/** Audit a workspace denial and throw the 404 (never 403) every denial shares. */
+function denyWorkspace(actor: SchedulerActor, workspaceId: string, reason: string): never {
   audit({
     actor: { id: actor.id },
     action: "cross-project.workspace.access.denied",
     target: { type: "workspace", id: workspaceId },
-    metadata: { reason: "workspace-membership-missing" },
+    metadata: { reason },
   });
   // 404 (not 403) — do not leak that the workspace exists.
   throw new AppError(404, "NOT_FOUND", "Workspace not found");
@@ -139,6 +146,41 @@ export async function listAccessibleProjectsInWorkspace(
   // caller never sees a sibling project they cannot access even within a shared
   // workspace. When a real per-project membership table lands, swap this filter.
   return projects.filter((p) => p.createdById === actor.id).map((p) => p.id);
+}
+
+/**
+ * #1221 — the project ids inside `workspaceId` the actor may open under the
+ * project-access rule (`assertProjectAccess`). The requirement-link search and
+ * the workspace traceability roll-up use this, so a teammate sees the projects
+ * they can already open by id.
+ *
+ * It is the list form of that rule, not a second one: the actor's workspaces
+ * come from the same adapter (`asAuthPayload`, a live read through
+ * `readLiveWorkspaceIds`) and the projects from `accessibleProjectWhere`. A
+ * `WorkspaceMember` row alone is not enough — a disabled or soft-deleted user
+ * (#612) still holding an unexpired token gets the same audited 404 as a
+ * non-member, matching the per-project read (#1233 review, A01).
+ *
+ * {@link listAccessibleProjectsInWorkspace} is still the creator-only form for
+ * the cross-project impact queries, which #1221 did not move (#1232).
+ */
+export async function listMemberProjectsInWorkspace(
+  actor: SchedulerActor,
+  workspaceId: string,
+  prisma?: AccessPrisma,
+): Promise<string[]> {
+  await assertWorkspaceAccessible(actor, workspaceId, prisma);
+  const admin = isAdminActor(actor);
+  // An admin's workspaces do not enter the rule, so skip the read.
+  const payload = await asAuthPayload(admin ? { ...actor, workspaces: [] } : actor);
+  if (!admin && !payload.workspaces?.includes(workspaceId)) {
+    denyWorkspace(actor, workspaceId, "workspace-membership-not-live");
+  }
+  const projects = await resolvePrisma(prisma).project.findMany({
+    where: { ...accessibleProjectWhere(payload), workspaceId },
+    select: { id: true },
+  });
+  return projects.map((p) => p.id);
 }
 
 export type { SchedulerActor, RoleKey };

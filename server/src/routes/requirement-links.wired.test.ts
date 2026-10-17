@@ -71,6 +71,9 @@ beforeEach(() => {
   currentUser = { userId: "user-1", role: "member" };
   // Non-admin member OF the workspace.
   prismaMock.workspaceMember.findUnique.mockResolvedValue({ id: "wm-1" });
+  // …and a LIVE one (#612): the search reads the actor's workspaces through
+  // `readLiveWorkspaceIds`, the same read the per-project check makes (#1233).
+  prismaMock.workspaceMember.findMany.mockResolvedValue([{ workspaceId: "ws1" }]);
   // One accessible project owned by the caller inside the workspace.
   prismaMock.project.findMany.mockResolvedValue([{ id: "projA", createdById: "user-1" }]);
   prismaMock.requirement.count.mockResolvedValue(1);

@@ -12,19 +12,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getRequirementChain = vi.fn();
-const actorCanAccessProject = vi.fn();
-const listAccessibleProjectsInWorkspace = vi.fn();
+const actorHasProjectAccess = vi.fn();
+const listMemberProjectsInWorkspace = vi.fn();
 
 vi.mock("./traceability-spine.js", () => ({
   getRequirementChain: (...args: unknown[]) => getRequirementChain(...args),
 }));
 vi.mock("../scheduler/project-access.js", () => ({
-  actorCanAccessProject: (...args: unknown[]) => actorCanAccessProject(...args),
+  actorHasProjectAccess: (...args: unknown[]) => actorHasProjectAccess(...args),
   isAdminActor: () => false,
 }));
 vi.mock("../cross-project/cross-project-access.js", () => ({
-  listAccessibleProjectsInWorkspace: (...args: unknown[]) =>
-    listAccessibleProjectsInWorkspace(...args),
+  listMemberProjectsInWorkspace: (...args: unknown[]) => listMemberProjectsInWorkspace(...args),
 }));
 vi.mock("../prisma.js", () => ({ prisma: {} }));
 
@@ -69,7 +68,7 @@ function edgeFindMany(all: ReturnType<typeof edge>[]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  actorCanAccessProject.mockResolvedValue(true);
+  actorHasProjectAccess.mockResolvedValue(true);
   getRequirementChain.mockImplementation(async (projectId: string, requirementId: string) => ({
     requirementId,
     requirementTitle: `req ${requirementId}`,
@@ -134,7 +133,7 @@ describe("getRequirementChainWithLinks", () => {
       directCode: [],
       testedBy: [{ ...testNode, symbol: `${requirementId}::TestA` }],
     }));
-    actorCanAccessProject.mockImplementation(
+    actorHasProjectAccess.mockImplementation(
       async (_a: unknown, projectId: string) => projectId !== "projB",
     );
     const prisma = {
@@ -155,7 +154,7 @@ describe("getRequirementChainWithLinks", () => {
   });
 
   it("flags an inaccessible counterpart as restricted with a null chain and does not expand it", async () => {
-    actorCanAccessProject.mockImplementation(
+    actorHasProjectAccess.mockImplementation(
       async (_a: unknown, projectId: string) => projectId !== "projB",
     );
     const prisma = {
@@ -377,7 +376,7 @@ describe("getWorkspaceTraceabilitySummary", () => {
   }
 
   it("returns empty when the caller has no accessible projects", async () => {
-    listAccessibleProjectsInWorkspace.mockResolvedValue([]);
+    listMemberProjectsInWorkspace.mockResolvedValue([]);
     const result = await getWorkspaceTraceabilitySummary(actor, "ws1", {
       prisma: {} as never,
     });
@@ -385,7 +384,7 @@ describe("getWorkspaceTraceabilitySummary", () => {
   });
 
   it("aggregates per-project coverage and the cross-project link map", async () => {
-    listAccessibleProjectsInWorkspace.mockResolvedValue(["projA", "projB"]);
+    listMemberProjectsInWorkspace.mockResolvedValue(["projA", "projB"]);
     const prisma = summaryPrisma({
       links: [
         edge("L1", "relates_to", "R1", "projA", "R2", "projB"), // cross-project
@@ -439,7 +438,7 @@ describe("getWorkspaceTraceabilitySummary", () => {
   });
 
   it("clamps coverage to 1 and scopes the link query to accessible projects", async () => {
-    listAccessibleProjectsInWorkspace.mockResolvedValue(["projA"]);
+    listMemberProjectsInWorkspace.mockResolvedValue(["projA"]);
     const prisma = summaryPrisma({
       links: [],
       projects: [{ id: "projA", name: "Alpha" }],
@@ -521,7 +520,7 @@ describe("getWorkspaceTraceabilitySummary", () => {
     });
 
     it("reports test coverage over code-mapped requirements, strict excluding naming", async () => {
-      listAccessibleProjectsInWorkspace.mockResolvedValue(["projA"]);
+      listMemberProjectsInWorkspace.mockResolvedValue(["projA"]);
       const prisma = summaryPrisma(fixture());
       const result = await getWorkspaceTraceabilitySummary(actor, "ws1", {
         prisma: prisma as never,
@@ -549,7 +548,7 @@ describe("getWorkspaceTraceabilitySummary", () => {
     });
 
     it("#1034 — an inferred call counts as tested, never as strictly tested", async () => {
-      listAccessibleProjectsInWorkspace.mockResolvedValue(["projA"]);
+      listMemberProjectsInWorkspace.mockResolvedValue(["projA"]);
       const base = fixture(["projA"], ["R7"]);
       const prisma = summaryPrisma({
         ...base,
@@ -581,7 +580,7 @@ describe("getWorkspaceTraceabilitySummary", () => {
     });
 
     it("reports 1, not more, when every code-mapped requirement is tested", async () => {
-      listAccessibleProjectsInWorkspace.mockResolvedValue(["projA"]);
+      listMemberProjectsInWorkspace.mockResolvedValue(["projA"]);
       const result = await getWorkspaceTraceabilitySummary(actor, "ws1", {
         prisma: summaryPrisma({ ...fixture(), reqs: { projA: ["R6"] } }) as never,
       });
@@ -594,7 +593,7 @@ describe("getWorkspaceTraceabilitySummary", () => {
 
     it("issues a constant number of queries per project, whatever the requirement count", async () => {
       const calls = async (projectIds: string[], reqs: string[]) => {
-        listAccessibleProjectsInWorkspace.mockResolvedValue(projectIds);
+        listMemberProjectsInWorkspace.mockResolvedValue(projectIds);
         const prisma = summaryPrisma(fixture(projectIds, reqs));
         await getWorkspaceTraceabilitySummary(actor, "ws1", { prisma: prisma as never });
         return totalCalls(prisma);
@@ -613,7 +612,7 @@ describe("getWorkspaceTraceabilitySummary", () => {
   });
 
   it("propagates a 404 from the workspace membership assertion (non-member)", async () => {
-    listAccessibleProjectsInWorkspace.mockRejectedValue(
+    listMemberProjectsInWorkspace.mockRejectedValue(
       Object.assign(new Error("Workspace not found"), { statusCode: 404 }),
     );
     await expect(

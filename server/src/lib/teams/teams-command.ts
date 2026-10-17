@@ -43,7 +43,7 @@
  *     nobody).
  *   - AUTHZ: approval reuses the SAME role permission the REST path requires
  *     (`hasPermission(role, "issue.draft")`) AND the project-membership check
- *     (`actorCanAccessProject` on the draft's project). Status requires project
+ *     (`actorHasProjectAccess` on the draft's project). Status requires project
  *     access on the resolved project. Identity ≠ authorization.
  *   - All Teams input (command text, draft id in the submit value) is UNTRUSTED:
  *     it flows only into parameterized Prisma lookups / the approval service,
@@ -60,7 +60,7 @@ import { hasPermission, type RoleKey } from "@metis/shared";
 
 import { createChildLogger } from "../logger.js";
 import { prisma as defaultPrisma } from "../prisma.js";
-import { actorCanAccessProject } from "../scheduler/project-access.js";
+import { actorHasProjectAccess } from "../scheduler/project-access.js";
 import { approveDraft } from "../publishing/publishing-service.js";
 import { PublishError } from "../publishing/types.js";
 import {
@@ -320,8 +320,8 @@ export interface CommandDeps {
   tenantPolicy: TeamsTenantPolicy;
   rateLimitConfig: InboundRateLimitConfig;
   rateLimit: typeof checkInboundRateLimit;
-  /** Project-membership guard. Defaults to `actorCanAccessProject`. */
-  authorizeProject: typeof actorCanAccessProject;
+  /** Project-membership guard. Defaults to `actorHasProjectAccess`. */
+  authorizeProject: typeof actorHasProjectAccess;
   /** Approval service. Defaults to `approveDraft`. */
   approve: typeof approveDraft;
   /** Project-health summarizer. Defaults to `summarizeProjectHealth`. */
@@ -336,7 +336,7 @@ export interface CommandOptions {
   tenantPolicy?: TeamsTenantPolicy;
   rateLimitConfig?: InboundRateLimitConfig;
   rateLimit?: typeof checkInboundRateLimit;
-  authorizeProject?: typeof actorCanAccessProject;
+  authorizeProject?: typeof actorHasProjectAccess;
   approve?: typeof approveDraft;
   summarize?: typeof summarizeProjectHealth;
 }
@@ -350,7 +350,7 @@ function resolveDeps(opts: CommandOptions): CommandDeps {
     tenantPolicy: opts.tenantPolicy ?? loadTeamsTenantAllowlist(),
     rateLimitConfig: opts.rateLimitConfig ?? loadInboundRateLimitConfig(),
     rateLimit: opts.rateLimit ?? checkInboundRateLimit,
-    authorizeProject: opts.authorizeProject ?? actorCanAccessProject,
+    authorizeProject: opts.authorizeProject ?? actorHasProjectAccess,
     approve: opts.approve ?? approveDraft,
     summarize: opts.summarize ?? summarizeProjectHealth,
   };
