@@ -271,6 +271,46 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       },
     );
 
+    it("reviewing one approval checkpoint (PUT) asks for the check when it promotes; not otherwise", async () => {
+      const review = async (approvalId: string) =>
+        request(app())
+          .put(`/api/projects/${PROJECT}/analyses/${ANALYSIS}/approvals/${approvalId}`)
+          .set("Authorization", `Bearer ${token()}`)
+          .send({ status: "approved" });
+      const approval = (id: string) =>
+        db.approvalRequest.create({
+          data: { id, analysisId: ANALYSIS, type: "requirement", itemId: `item-${id}` },
+        });
+
+      await approval("appr-1230-none");
+      state.promote.mockResolvedValue({ status: "already-promoted", requirementCount: 3 });
+      expect((await review("appr-1230-none")).status).toBe(200);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(state.check).not.toHaveBeenCalled();
+
+      await approval("appr-1230-promoted");
+      state.promote.mockResolvedValue({ status: "promoted", requirementCount: 3 });
+      const r = await review("appr-1230-promoted");
+      expect(r.status).toBe(200);
+      expect(r.body.data.promotion.status).toBe("promoted");
+      await vi.waitFor(() => expect(state.check).toHaveBeenCalledWith(...CHECKED));
+    });
+
+    it("rejecting the analysis's added approvals (reject-added) asks for the check when it promotes; not otherwise", async () => {
+      const url = `/api/projects/${PROJECT}/analyses/${ANALYSIS}/approvals/reject-added`;
+      state.promote.mockResolvedValue({ status: "already-promoted", requirementCount: 3 });
+      const none = await request(app()).post(url).set("Authorization", `Bearer ${token()}`);
+      expect(none.status).toBe(200);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(state.check).not.toHaveBeenCalled();
+
+      state.promote.mockResolvedValue({ status: "promoted", requirementCount: 3 });
+      const r = await request(app()).post(url).set("Authorization", `Bearer ${token()}`);
+      expect(r.status).toBe(200);
+      expect(r.body.data.promotion.status).toBe("promoted");
+      await vi.waitFor(() => expect(state.check).toHaveBeenCalledWith(...CHECKED));
+    });
+
     it("asks for nothing under the catalogue layout", async () => {
       state.layout.mockReturnValue({ layout: "catalogue" });
       const id = await makeRequirement({ version: 1, reviewStatus: "draft" });
