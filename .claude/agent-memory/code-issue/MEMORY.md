@@ -118,3 +118,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Test-falsifiability traps](project_test-falsifiability-traps.md) — delete the line; links 5 older traps
 - [Docs-gen drop retry + ledger](project_docs-gen-drop-retry-and-ledger.md) — 2 drop checks; wrap test providers
 - [Prisma on SQLite + Postgres](project_prisma-cross-database.md) — LOWER() not mode:insensitive; PG suite step
+- [METIS markers: two matchers](project_metis-marker-matchers-grep-exact-strings.md) — variant fix: grep every exact metis: match
