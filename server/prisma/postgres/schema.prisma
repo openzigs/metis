@@ -274,6 +274,9 @@ model AuditLog {
 
   @@index([actorId, ts])
   @@index([targetType, targetId])
+  /// #1235 — the webhook fire-time trail read filters on `action`, so the
+  /// per-fire rows sharing a job's target range are not scanned.
+  @@index([targetType, targetId, action])
   @@index([ts])
   @@map("audit_logs")
 }
@@ -2876,6 +2879,14 @@ model ScheduledJob {
   nextRunAt   DateTime?
   maxAttempts Int       @default(3)
   createdById String?
+  /// #1235 — who set the job's current binding (task type, URL, project,
+  /// `authHeader` reference), judged on it at write time; the webhook handler
+  /// judges them again at fire time. Written in the same UPDATE as the binding,
+  /// so the pair cannot drift. NULL `webhookBoundAt` = never bound since #1235:
+  /// fire time falls back to the job's audit trail. A NULL binder with a set
+  /// `webhookBoundAt` is a binding nobody was judged for, and is refused.
+  webhookBinderId String?
+  webhookBoundAt  DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   deletedAt   DateTime?

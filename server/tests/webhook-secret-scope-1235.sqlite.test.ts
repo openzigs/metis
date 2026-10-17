@@ -46,6 +46,7 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 
 const { schedulerRouter } = await import("../src/routes/scheduler.js");
+const { tasksRouter } = await import("../src/routes/tasks.js");
 const { bootstrapScheduler, __resetSchedulerBootstrap } =
   await import("../src/lib/scheduler/index.js");
 const { createHttpWebhookHandler } = await import("../src/lib/scheduler/webhook-handler.js");
@@ -122,6 +123,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const a = express();
       a.use(express.json());
       a.use("/api/scheduler", schedulerRouter());
+      a.use("/api/tasks", tasksRouter());
       a.use(notFoundHandler);
       a.use(errorHandler);
       return a;
@@ -167,6 +169,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       jobId: string | null,
       projectId: string | null,
       authHeader: string,
+      url?: string,
     ): TaskRecord => ({
       id: `task-1235-${++seq}`,
       scheduledJobId: jobId,
@@ -175,7 +178,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       trigger: "manual",
       status: "running",
       priority: 5,
-      payload: webhook(authHeader),
+      payload: webhook(authHeader, url),
       result: null,
       errorMessage: null,
       progress: null,
@@ -551,25 +554,111 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(fetchSpy).toHaveBeenCalledOnce();
       });
 
-      it("a binding write after the fix supersedes a pre-fix tamper; a later rename does not", async () => {
+      it("a binding write after the fix supersedes a pre-fix tamper; a later rename does not; a task of the old binding stays refused", async () => {
+        const collects = `http://${HOST}/cora-collects`;
+        const checked = `http://${HOST}/ada-checked`;
         const job = await legacyJob("ada", PA, ref(ADMIN_SECRET));
+        await db.scheduledJob.update({
+          where: { id: job.id },
+          data: { payload: JSON.stringify(webhook(ref(ADMIN_SECRET), collects)) },
+        });
         await legacyEdit(job.id, "cora", ["payload"]);
-        await expect(fire(taskFor(job.id, PA, ref(ADMIN_SECRET)))).rejects.toThrow(
-          WEBHOOK_SECRET_REFUSED_MESSAGE,
-        );
+        const stale = taskFor(job.id, PA, ref(ADMIN_SECRET), collects);
+        await expect(fire(stale)).rejects.toThrow(WEBHOOK_SECRET_REFUSED_MESSAGE);
         // Ada re-points it: she is now the binder, judged on the whole binding.
         const rebound = await patch(`/api/scheduler/${job.id}`, "ada", {
-          payload: webhook(ref(ADMIN_SECRET), `http://${HOST}/ada-checked`),
+          payload: webhook(ref(ADMIN_SECRET), checked),
         });
         expect(rebound.status).toBe(200);
         expect((await patch(`/api/scheduler/${job.id}`, "cora", { name: "renamed" })).status).toBe(
           200,
         );
-        await audits("scheduled-job.update");
-        await expect(fire(taskFor(job.id, PA, ref(ADMIN_SECRET)))).resolves.toMatchObject({
+        // A task carrying the binding Ada replaced is not sent on her standing.
+        await expect(fire(stale)).rejects.toThrow(WEBHOOK_SECRET_REFUSED_MESSAGE);
+        expect(fetchSpy).not.toHaveBeenCalled();
+        // A task of the job as it is now is sent, to the URL Ada chose.
+        await expect(fire(taskFor(job.id, PA, ref(ADMIN_SECRET), checked))).resolves.toMatchObject({
           status: 204,
         });
         expect(fetchSpy).toHaveBeenCalledOnce();
+        expect(fetchSpy.mock.calls[0][0]).toBe(checked);
+        expect(await refusalReasons(job.id)).toEqual(["secret_not_owned", "binding_stale"]);
+      });
+
+      it("a task enqueued before a rebind, retried by a coordinator through the retry route, is refused: no request", async () => {
+        const collects = `http://${HOST}/cora-collects`;
+        const job = await legacyJob("ada", PA, ref(ADMIN_SECRET));
+        // Before the fix Cora retargeted Ada's job at her own endpoint …
+        await db.scheduledJob.update({
+          where: { id: job.id },
+          data: { payload: JSON.stringify(webhook(ref(ADMIN_SECRET), collects)) },
+        });
+        await legacyEdit(job.id, "cora", ["payload"]);
+        // … and a run of it failed, so the task stays retryable for 7 days.
+        const failed = await runToEnd(job.id, "cora");
+        expect(failed.status).toBe("failed");
+        expect(JSON.parse(failed.payload).url).toBe(collects);
+        // Ada repairs the job: the URL back, and she is its binder.
+        const repaired = await patch(`/api/scheduler/${job.id}`, "ada", {
+          payload: webhook(ref(ADMIN_SECRET)),
+        });
+        expect(repaired.status).toBe(200);
+        fetchSpy.mockClear();
+
+        const retry = await post(`/api/tasks/${failed.id}/retry`, "cora");
+        expect(retry.status).toBe(202);
+        const retriedId = retry.body.data.taskId as string;
+        const retried = await vi.waitFor(
+          async () => {
+            const t = await db.task.findUniqueOrThrow({ where: { id: retriedId } });
+            expect(["completed", "failed"]).toContain(t.status);
+            return t;
+          },
+          { timeout: 10_000, interval: 50 },
+        );
+        expect(retried.status).toBe("failed");
+        expect(retried.errorMessage).toBe(WEBHOOK_SECRET_REFUSED_MESSAGE);
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(await refusalReasons(job.id)).toEqual(["secret_not_owned", "binding_stale"]);
+
+        // The repaired job itself still runs, to the URL Ada set.
+        const fresh = await runToEnd(job.id, "cora");
+        expect(fresh.status).toBe("completed");
+        expect(fetchSpy).toHaveBeenCalledOnce();
+        expect(fetchSpy.mock.calls[0][0]).toBe(`http://${HOST}/in`);
+      });
+
+      it("the binder is kept on the job: a lost audit row cannot hand the binding to an earlier binder", async () => {
+        const vault = getVaultService();
+        const own = (
+          await vault.create("cora-n2-token-1235", "fake-cora-n2-value", "global", {
+            createdById: "cora",
+          })
+        ).id;
+        // Ada (admin) binds the job first …
+        const seeded = await post("/api/scheduler", "ada", jobBody(PA, ref(ADMIN_SECRET)));
+        expect(seeded.status).toBe(201);
+        const id = seeded.body.data.id as string;
+        // … then Cora binds her OWN secret at her own URL: allowed, she is the binder.
+        const rebound = await patch(`/api/scheduler/${id}`, "cora", {
+          payload: webhook(ref(own), `http://${HOST}/cora-own`),
+        });
+        expect(rebound.status).toBe(200);
+        // Her audit row is lost (an insert failing after the update committed).
+        await audits("scheduled-job.update");
+        const lost = await db.auditLog.deleteMany({
+          where: { action: "scheduled-job.update", targetId: id, actorId: "cora" },
+        });
+        expect(lost.count).toBe(1);
+        // An admin's "Rotate anyway" moves the secret to Ada (#502).
+        await db.secret.update({ where: { id: own }, data: { createdById: "ada" } });
+
+        // Judged on Cora, who no longer owns it: refused, nothing sent to her URL.
+        const task = await runToEnd(id, "cora");
+        expect(task.status).toBe("failed");
+        expect(task.errorMessage).toBe(WEBHOOK_SECRET_REFUSED_MESSAGE);
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(await refusalReasons(id)).toEqual(["secret_not_owned"]);
       });
 
       it("a coordinator who edits another's job to send their OWN secret is the binder: write and fire agree", async () => {

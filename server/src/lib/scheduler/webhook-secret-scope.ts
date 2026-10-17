@@ -27,20 +27,24 @@
  * name only a secret they created, and the reference must resolve to exactly
  * one live secret, as it must when the job fires. A write that moves nothing
  * (rename, pause, a body edit) judges nothing. Every refusal is the same 403
- * SECRET_BINDING_FORBIDDEN body, audited as `vault.binding_refused`. Each
- * update records `webhookBinding` (did this write bind?) on its
- * `scheduled-job.update` audit row.
+ * SECRET_BINDING_FORBIDDEN body, audited as `vault.binding_refused`. The
+ * judged caller is stored on the job (`webhookBinderId`, `webhookBoundAt`) in
+ * the same UPDATE as the binding, so a lost audit row cannot change who is
+ * judged later.
  *
- * Fire time — `resolveWebhookSecret`, run by the webhook handler. It judges
- * every principal the CURRENT binding rests on (`bindersOf`): the binder of the
- * most recent recorded binding write; or, for a job never bound since #1235,
- * its author plus everyone recorded as editing its payload, project or task
- * type before #1235, when no write was judged. Each of them, at their CURRENT
- * role, must be an active user, reach the job's project, and be allowed the
- * secret under the #344 rule. So a job created or tampered with before this
- * check, or whose binder has since been demoted, deprovisioned or removed from
- * the workspace, sends nothing. The plaintext is decrypted from the same row
- * whose owner was judged, re-read by id, and every failure maps to one fixed
+ * Fire time — `resolveWebhookSecret`, run by the webhook handler. First, the
+ * task must carry the job's CURRENT binding: a task is a snapshot of the job
+ * taken when it was enqueued, and a retry or a later attempt replays it, so a
+ * task enqueued before a rebind is refused (`binding_stale`) rather than sent
+ * to the URL the rebind replaced. Then it judges every principal that binding
+ * rests on: the stored binder; or, for a job never bound since #1235
+ * (`bindersOf`), its author plus everyone its audit trail shows may have
+ * bound it, since no write was judged. Each of them, at their CURRENT role,
+ * must be an active user, reach the job's project, and be allowed the secret
+ * under the #344 rule. So a job created or tampered with before this check, or
+ * whose binder has since been demoted, deprovisioned or removed from the
+ * workspace, sends nothing. The plaintext is decrypted from the same row whose
+ * owner was judged, re-read by id, and every failure maps to one fixed
  * message, so the task row never names a secret.
  */
 import { hasPermission, type AuthPayload } from "@metis/shared";
@@ -207,46 +211,42 @@ function refuse(task: TaskRecord, jobId: string | null, reason: string): never {
   throw new WebhookSecretRefusedError();
 }
 
-function parseMetadata(raw: string | null): Record<string, unknown> {
+function parseJsonObject(raw: string | null): Record<string, unknown> {
   if (!raw) return {};
   const parsed: unknown = JSON.parse(raw);
   return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
 }
 
 /**
- * The principals the job's CURRENT binding rests on, from its
- * `scheduled-job.update` audit trail (oldest first). A row written since
- * #1235 records `webhookBinding`; its binder was judged on the whole binding at
- * write time, so a binding row replaces the set. A row written before #1235
- * was never judged, so if it may have bound anything its actor is ADDED to the
- * set. A null entry is a binder nobody can be judged as, and is refused.
+ * The principals a job NEVER bound since #1235 rests on (its `webhookBoundAt`
+ * is NULL), from its `scheduled-job.update` audit trail: its author plus the
+ * actor of every row that may have bound it. Nobody was judged, so the set only
+ * ever grows: a pre-#1235 row (no `webhookBinding`) counts when it names a
+ * binding field or no field list; a row marking `webhookBinding: true` counts
+ * too (it sits beside a NULL `webhookBoundAt` only when a write from a stale
+ * read carried the old pair back over it). A null entry is a binder nobody can
+ * be judged as, and is refused.
+ *
+ * The read is bounded by the `[targetType, targetId, action]` index: the
+ * per-fire rows sharing the job's target carry other actions.
  *
  * @throws whatever the audit read throws; the caller fails closed on it.
  */
 async function bindersOf(jobId: string, author: string | null): Promise<Array<string | null>> {
   const rows = await prisma.auditLog.findMany({
-    where: { action: JOB_UPDATE_ACTION, targetType: "scheduled-job", targetId: jobId },
-    select: { actorId: true, metadata: true, ts: true },
-    orderBy: [{ ts: "asc" }, { id: "asc" }],
+    where: { targetType: "scheduled-job", targetId: jobId, action: JOB_UPDATE_ACTION },
+    select: { actorId: true, metadata: true },
   });
-  let binders = new Set<string | null>([author]);
-  let boundAt: number | null = null;
+  const binders = new Set<string | null>([author]);
   for (const row of rows) {
-    const meta = parseMetadata(row.metadata);
-    if (typeof meta.webhookBinding === "boolean") {
-      if (!meta.webhookBinding) continue;
-      const at = row.ts.getTime();
-      // Two binding writes stamped in the same millisecond cannot be ordered,
-      // so both binders are judged.
-      if (boundAt !== at) binders = new Set();
-      binders.add(row.actorId);
-      boundAt = at;
-      continue;
-    }
+    const meta = parseJsonObject(row.metadata);
     const changes = meta.changes;
-    const legacyBinding =
-      !Array.isArray(changes) || changes.some((field) => LEGACY_BINDING_FIELDS.has(String(field)));
-    if (legacyBinding) binders.add(row.actorId);
+    const mayHaveBound =
+      typeof meta.webhookBinding === "boolean"
+        ? meta.webhookBinding
+        : !Array.isArray(changes) ||
+          changes.some((field) => LEGACY_BINDING_FIELDS.has(String(field)));
+    if (mayHaveBound) binders.add(row.actorId);
   }
   return [...binders];
 }
@@ -286,15 +286,41 @@ async function authorizeAndRead(ref: string, task: TaskRecord): Promise<string> 
   if (!task.scheduledJobId) refuse(task, null, "no_job");
   const job = await prisma.scheduledJob.findUnique({
     where: { id: task.scheduledJobId },
-    select: { id: true, projectId: true, createdById: true, deletedAt: true },
+    select: {
+      id: true,
+      projectId: true,
+      taskType: true,
+      payload: true,
+      createdById: true,
+      webhookBinderId: true,
+      webhookBoundAt: true,
+      deletedAt: true,
+    },
   });
   if (!job || job.deletedAt) refuse(task, task.scheduledJobId, "no_job");
 
+  // The URL and reference sent are the TASK's: a snapshot of the job taken at
+  // enqueue, which a retry or a later attempt replays. The principals judged
+  // below are those of the JOB's binding, so the two must be one binding, or a
+  // task enqueued before a rebind would carry the new binder's standing to the
+  // URL that rebind replaced.
+  const jobShape = {
+    taskType: job.taskType,
+    payload: parseJsonObject(job.payload),
+    projectId: job.projectId,
+  };
+  const taskShape = { taskType: task.type, payload: task.payload, projectId: task.projectId };
+  if (webhookBindingChanged(jobShape, taskShape)) refuse(task, job.id, "binding_stale");
+
   let binders: Array<string | null>;
-  try {
-    binders = await bindersOf(job.id, job.createdById);
-  } catch {
-    refuse(task, job.id, "audit_unreadable");
+  if (job.webhookBoundAt) {
+    binders = [job.webhookBinderId];
+  } else {
+    try {
+      binders = await bindersOf(job.id, job.createdById);
+    } catch {
+      refuse(task, job.id, "audit_unreadable");
+    }
   }
 
   const reachable = await reachableBy(ref);

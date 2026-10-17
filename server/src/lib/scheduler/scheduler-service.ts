@@ -21,7 +21,8 @@
  *   binding (task type, URL, project or `authHeader` reference) runs the #344
  *   binding rule (`assertWebhookSecretBinding`), so a caller without
  *   `vault.reveal` cannot send a secret they did not create to a URL they
- *   chose. Each update's audit row records whether it was a binding write.
+ *   chose. The judged caller is stored on the job (`webhookBinderId`) in the
+ *   same write as the binding, and is judged again when the job fires.
  */
 import { Cron } from "croner";
 import { audit } from "../audit/audit-service.js";
@@ -138,6 +139,9 @@ export class SchedulerService {
         maxAttempts: opts.maxAttempts ?? 3,
         nextRunAt: validation.nextRun,
         createdById: opts.createdById ?? actor?.id ?? null,
+        // #1235 — the judged binder, stored with the binding it was judged on.
+        // A create with no actor judged nobody: fire time reads the author.
+        ...(actor ? { webhookBinderId: actor.id, webhookBoundAt: new Date() } : {}),
       },
     });
     audit({
@@ -233,6 +237,14 @@ export class SchedulerService {
         enabled: opts.enabled ?? existing.enabled,
         maxAttempts: opts.maxAttempts ?? existing.maxAttempts,
         nextRunAt,
+        // #1235 — the binder is written in the same statement as the binding,
+        // from the same read, so the row never pairs one writer's binding with
+        // another's binder. A binding write records its caller (NULL when there
+        // is none: refused at fire time); any other write carries the pair it
+        // read forward unchanged.
+        ...(binding.bindingChanged
+          ? { webhookBinderId: actorObj?.id ?? null, webhookBoundAt: new Date() }
+          : { webhookBinderId: existing.webhookBinderId, webhookBoundAt: existing.webhookBoundAt }),
       },
     });
     this.unregisterCron(id);
@@ -241,8 +253,9 @@ export class SchedulerService {
       action: JOB_UPDATE_ACTION,
       actor: actorObj?.id ?? null,
       target: { type: "scheduled-job", id: row.id },
-      // #1235 — `webhookBinding` tells the fire-time check whether this actor
-      // set the job's current binding (`webhook-secret-scope.ts`, `bindersOf`).
+      // #1235 — `webhookBinding` records whether this write bound the job. The
+      // binder fire time judges is the job's `webhookBinderId`, not this row;
+      // the trail is read only for a job never bound since #1235.
       metadata: { changes: Object.keys(opts), webhookBinding: binding.bindingChanged },
     });
     this.deps.emitter.schedulerStatus({
