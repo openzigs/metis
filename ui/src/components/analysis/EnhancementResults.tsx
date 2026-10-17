@@ -164,6 +164,16 @@ function notAppliedLabel(reason: string, title: string): string {
   return label ? label(title) : `“${title}” could not be updated`;
 }
 
+/**
+ * #1204 — the saved requirements an answer fitted equally well. With one title
+ * the other contender was a requirement with no saved row of its own.
+ */
+export function describeTie(titles: readonly string[]): string {
+  const quoted = titles.map((t) => `“${t}”`);
+  if (quoted.length === 1) return `fits ${quoted[0]} and another requirement equally well`;
+  return `fits ${quoted.slice(0, -1).join(", ")} and ${quoted.at(-1)} equally well`;
+}
+
 export function ClarificationImpactNote({
   application,
 }: {
@@ -177,6 +187,14 @@ export function ClarificationImpactNote({
   const outcomes = application.answers ?? [];
   const applied = outcomes.filter((a) => a.requirementTitle !== null);
   const unmatched = outcomes.filter((a) => a.requirementTitle === null);
+  // #1204 — answers not applied because their requirement could not be told apart.
+  const tied = unmatched.filter((a) => (a.ambiguousBetween?.length ?? 0) > 0);
+  const tiedSubject =
+    tied.length !== unattributedCount
+      ? `${tied.length} of them`
+      : tied.length === 1
+        ? "It"
+        : "They";
 
   return (
     <div
@@ -220,11 +238,25 @@ export function ClarificationImpactNote({
         </details>
       )}
       {requirementsAvailable && unattributedCount > 0 && (
-        <p className="text-warning" data-testid="clarification-unattributed">
-          {unattributedCount} answer{unattributedCount === 1 ? "" : "s"} could not be matched to a
-          saved requirement, so {unattributedCount === 1 ? "it refines" : "they refine"} the
-          requirement text shown here but will not appear in a published issue.
-        </p>
+        <div className="text-warning" data-testid="clarification-unattributed">
+          <p>
+            {unattributedCount} answer{unattributedCount === 1 ? "" : "s"} could not be matched to a
+            saved requirement, so {unattributedCount === 1 ? "it refines" : "they refine"} the
+            requirement text shown here but will not appear in a published issue.
+            {tied.length > 0
+              ? ` ${tiedSubject} matched more than one saved requirement equally well, so none was chosen:`
+              : null}
+          </p>
+          {tied.length > 0 ? (
+            <ul className="mt-1 list-disc space-y-0.5 pl-4" data-testid="clarification-ambiguous">
+              {tied.map((a) => (
+                <li key={a.questionId}>
+                  {a.question} <span aria-hidden>→</span> {describeTie(a.ambiguousBetween!)}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
       )}
       {requirementsAvailable && blockEditedCount > 0 && (
         <p className="text-warning" data-testid="clarification-block-edited">

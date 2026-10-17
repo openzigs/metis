@@ -34,3 +34,11 @@ refused and takes no weaker match later. Do not write a second matcher.
 - **A synthesis-prompt change moves the generative-e2e fixture key.** Update
   `server/scripts/e2e-build-clarify-fixtures.ts` and
   `server/tests/e2e-clarify-fixture-key-parity.test.ts` in the same PR.
+- **Report refusals from the matcher, never re-derive them (#1204).** It returns
+  `refusedLeftOptions` (refused left → its live options at the refusing level), and
+  the property test checks it against brute force.
+- **`metadata.promotionMatching` has three writers.** `promote-requirements.ts` (replace),
+  `orchestrator.ts` (replace), and `appendNewlyApproved`'s transaction (merge onto
+  `lockedMetadata`, not `persistAnalysisEnhancement`). A sibling field (#1203) needs all
+  three plus `applyEnhancementPatch`. Rows are keyed by `persistRequirements`' returned
+  ids, which are index-aligned with the approved list.

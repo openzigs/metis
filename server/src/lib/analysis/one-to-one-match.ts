@@ -47,6 +47,13 @@ export interface OneToOneResult<L, R> {
   refusedLefts: Set<L>;
   /** Rights that had a candidate but no forced pair; nothing matches them. */
   refusedRights: Set<R>;
+  /**
+   * #1204 — for each refused left, the rights it was refused among: its live
+   * candidates at the level where it was refused. Its keys are exactly
+   * `refusedLefts`. Read-only reporting, so a caller can tell the user which
+   * options were too close to call; it never feeds back into the matching.
+   */
+  refusedLeftOptions: Map<L, Set<R>>;
 }
 
 /**
@@ -81,6 +88,7 @@ export function matchOneToOneRefusingTies<L, R, S>(
   const takenRights = new Set<R>();
   const refusedLefts = new Set<L>();
   const refusedRights = new Set<R>();
+  const refusedLeftOptions = new Map<L, Set<R>>();
 
   for (const level of levels) {
     const edges = new Map<L, Set<R>>();
@@ -95,11 +103,14 @@ export function matchOneToOneRefusingTies<L, R, S>(
       takenRights.add(r);
     }
     for (const [l, rs] of edges) {
-      if (!forced.has(l)) refusedLefts.add(l);
+      if (!forced.has(l)) {
+        refusedLefts.add(l);
+        refusedLeftOptions.set(l, new Set(rs));
+      }
       for (const r of rs) if (!takenRights.has(r)) refusedRights.add(r);
     }
   }
-  return { matches, refusedLefts, refusedRights };
+  return { matches, refusedLefts, refusedRights, refusedLeftOptions };
 }
 
 /** The pairs in EVERY maximum matching of a bipartite graph (left → rights). */

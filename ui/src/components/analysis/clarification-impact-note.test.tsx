@@ -282,3 +282,78 @@ describe("ClarificationImpactNote", () => {
     );
   });
 });
+
+describe("ClarificationImpactNote — #1204 answers refused because the match was ambiguous", () => {
+  const tiedAnswer = (questionId: string, ambiguousBetween: string[]) => ({
+    questionId,
+    question: `Question ${questionId}?`,
+    requirementTitle: null,
+    ambiguousBetween,
+  });
+
+  it("says so in the existing warning and names the requirements each answer fitted", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          unattributedCount: 2,
+          ambiguousCount: 1,
+          answers: [
+            tiedAnswer("q1", ["Mark all as read", "Mark older entries read"]),
+            { questionId: "q2", question: "Other?", requirementTitle: null },
+          ],
+        }}
+      />,
+    );
+    const warning = screen.getByTestId("clarification-unattributed");
+    expect(warning).toHaveTextContent(
+      /1 of them matched more than one saved requirement equally well, so none was chosen/,
+    );
+    const list = screen.getByTestId("clarification-ambiguous");
+    expect(list).toHaveTextContent(
+      "Question q1? → fits “Mark all as read” and “Mark older entries read” equally well",
+    );
+    expect(list).not.toHaveTextContent("Other?");
+  });
+
+  it("says “They” when every unmatched answer was ambiguous, and handles one named row", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          unattributedCount: 2,
+          ambiguousCount: 2,
+          answers: [tiedAnswer("q1", ["A", "B", "C"]), tiedAnswer("q2", ["Export orders"])],
+        }}
+      />,
+    );
+    expect(screen.getByTestId("clarification-unattributed")).toHaveTextContent(
+      /They matched more than one saved requirement/,
+    );
+    const list = screen.getByTestId("clarification-ambiguous");
+    expect(list).toHaveTextContent("fits “A”, “B” and “C” equally well");
+    expect(list).toHaveTextContent("fits “Export orders” and another requirement equally well");
+  });
+
+  it("says “It” for a single ambiguous answer", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          unattributedCount: 1,
+          ambiguousCount: 1,
+          answers: [tiedAnswer("q1", ["A", "B"])],
+        }}
+      />,
+    );
+    expect(screen.getByTestId("clarification-unattributed")).toHaveTextContent(
+      /It matched more than one saved requirement/,
+    );
+  });
+
+  it("adds nothing for unmatched answers that were not ambiguous", () => {
+    render(<ClarificationImpactNote application={base} />);
+    expect(screen.queryByTestId("clarification-ambiguous")).toBeNull();
+    expect(screen.getByTestId("clarification-unattributed")).not.toHaveTextContent(/equally well/);
+  });
+});

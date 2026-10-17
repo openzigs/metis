@@ -883,6 +883,8 @@ describe("#1031 — an answer goes to its own requirement, never the neighbour",
     });
     expect(out.byRequirementId.size).toBe(0);
     expect(out.unattributed).toHaveLength(3);
+    // #1204 — no row to match is not an ambiguous match.
+    expect(out.ambiguousBetween.size).toBe(0);
   });
 
   it("reports R6's answers as unattributed when R6 was left out of the run's structured list", () => {
@@ -907,6 +909,12 @@ describe("#1031 — an answer goes to its own requirement, never the neighbour",
     });
     expect(out.byRequirementId.size).toBe(0);
     expect(out.unattributed).toHaveLength(3);
+    // #1204 — each refused answer names the rows it fitted equally.
+    expect(Object.fromEntries(out.ambiguousBetween)).toEqual({
+      q1: ["row-a", "row-b"],
+      q2: ["row-a", "row-b"],
+      q3: ["row-a", "row-b"],
+    });
   });
 
   it("gives a row to neither of two requirements it fits equally", () => {
@@ -918,6 +926,9 @@ describe("#1031 — an answer goes to its own requirement, never the neighbour",
     });
     expect(out.byRequirementId.size).toBe(0);
     expect(out.unattributed).toHaveLength(4);
+    // #1204 — the promoted path reports the matcher's own refused options.
+    expect(out.ambiguousBetween.get("q1")).toEqual(["row-REQ-6"]);
+    expect(out.ambiguousBetween.get("q9")).toEqual(["row-REQ-6"]);
   });
 
   it("leaves the edited row to R6 once R5 has taken its own row by exact title", () => {
@@ -1159,6 +1170,24 @@ describe("#1031 — an answer goes to its own requirement, never the neighbour",
     const out = await applyClarificationsToRequirements(ANALYSIS_ID);
     expect(store.requirements[0]!.body).not.toContain(CLARIFICATIONS_START);
     expect(out).toMatchObject({ appliedCount: 0, unattributedCount: 3 });
+  });
+
+  it("#1204 — names the requirement an answer was refused on, end to end (promoted rows)", async () => {
+    store.dialogThrows = false;
+    store.hasApprovals = true;
+    const twin = { ...R6, id: "REQ-7" };
+    store.dialogState = dialogFor([
+      olderThan[0]!,
+      answer({ questionId: "q9", requirementId: "REQ-7", answer: "Same." }),
+    ]);
+    store.metadata = JSON.stringify({
+      structuredRequirements: { requirements: [R6, twin], totalAmbiguities: 0 },
+    });
+    store.requirements = [{ ...rowOf(R6), analysisId: ANALYSIS_ID, deletedAt: null }];
+    const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+    expect(store.requirements[0]!.body).not.toContain(CLARIFICATIONS_START);
+    expect(out).toMatchObject({ appliedCount: 0, unattributedCount: 2, ambiguousCount: 2 });
+    expect(out?.answers?.map((a) => a.ambiguousBetween)).toEqual([[R6.title], [R6.title]]);
   });
 
   it("an analysis without approvals writes two requirements' answers onto their shared row", async () => {

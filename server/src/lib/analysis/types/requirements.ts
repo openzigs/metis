@@ -206,6 +206,33 @@ export function addressedAmbiguities(state: {
 }
 
 /**
+ * Issue #1204 — what promotion's join could not decide, persisted to
+ * `Analysis.metadata.promotionMatching` (additive, no migration). The title
+ * join refuses a requirement whose items are too close to call rather than
+ * guess (#1033), and that requirement is promoted with no acceptance criteria;
+ * this record says why, so the requirement card can tell the analyst. Further
+ * per-requirement facts about the join sit beside `ambiguous` as siblings.
+ */
+export interface PromotionMatchingRecord {
+  /** How many promoted requirements were refused a match; mirrors `unattributedCount`. */
+  ambiguousCount: number;
+  /** One entry per refused requirement, keyed by the row it became. */
+  ambiguous: AmbiguousPromotionRecord[];
+  /** ISO timestamp of the promotion that wrote it. */
+  updatedAt: string;
+}
+
+/** Issue #1204 — one promoted requirement the join refused, and what it was level on. */
+export interface AmbiguousPromotionRecord {
+  /** The persisted `Requirement` row id. */
+  requirementId: string;
+  /** The reviewed (structured) requirement id it was promoted from. */
+  structuredId: string;
+  /** The grouped synthesis items it was level on, with their criteria to copy across. */
+  candidates: Array<{ title: string; acceptanceCriteria: string[] }>;
+}
+
+/**
  * Issue #1116 — durable accounting of what the last clarification-enrichment
  * pass did with the user's answers. Persisted to
  * `Analysis.metadata.clarificationApplication` (additive, no migration) so the
@@ -220,6 +247,11 @@ export interface ClarificationApplication {
   appliedCount: number;
   /** Answers with no requirement to attach to (see `requirementsAvailable`). */
   unattributedCount: number;
+  /**
+   * #1204 — of `unattributedCount`, the answers whose requirement matched
+   * several saved requirements equally well, so none was picked. Absent before.
+   */
+  ambiguousCount?: number;
   /**
    * #1162 — answers matched to a requirement whose clarifications block the
    * analyst edited out of shape, so they were not written. Absent before #1162.
@@ -268,6 +300,11 @@ export interface ClarificationAnswerOutcome {
       "clarification-block-edited" | "requirement-changed-during-write" | "requirement-deleted";
     requirementTitle: string;
   };
+  /**
+   * #1204 — set when the answer was not applied because its requirement
+   * matched these saved requirements (titles) equally well and none was picked.
+   */
+  ambiguousBetween?: string[];
 }
 
 /**

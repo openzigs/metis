@@ -152,9 +152,10 @@ import {
   type ApprovalPolicy,
 } from "./approval-checkpoint.js";
 import {
-  buildApprovedRequirementSet,
   latestRequirementApprovals,
+  planApprovedRequirementSet,
 } from "./approved-requirement-set.js";
+import { ambiguousPromotionRecords, promotionMatchingRecord } from "./promotion-matching.js";
 import type { ApprovalType } from "./types/requirements.js";
 import { runSynthesis, type FlatFinding } from "./synthesis.js";
 import { hasAnsweredClarification } from "./clarification-enrichment.js";
@@ -4123,9 +4124,10 @@ export class AnalysisOrchestrator {
       const approvedIds = new Set(
         requirementApprovals.filter((a) => a.status === "approved").map((a) => a.itemId),
       );
-      const toPersist = reviewed
-        ? buildApprovedRequirementSet({ structured, approvedIds, synthesis: result.output })
-        : result.output;
+      const plan = reviewed
+        ? planApprovedRequirementSet({ structured, approvedIds, synthesis: result.output })
+        : null;
+      const toPersist = plan ? plan.output : result.output;
 
       const coverages = computeCoverageForRequirements(toPersist.requirements, findings);
 
@@ -4203,6 +4205,15 @@ export class AnalysisOrchestrator {
                 .filter((r) => approvedIds.has(r.id))
                 .map((r) => r.id),
               promotedStructuredRunId: refined?.runId ?? null,
+            }
+          : {}),
+        // #1204 — which promoted requirements the title join could not decide.
+        // Only on a real replacement, so a withheld one keeps the earlier record.
+        ...(!replacementWithheld
+          ? {
+              promotionMatching: promotionMatchingRecord(
+                ambiguousPromotionRecords(plan?.ambiguous ?? [], requirementIds),
+              ),
             }
           : {}),
       });

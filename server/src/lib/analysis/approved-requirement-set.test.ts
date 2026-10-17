@@ -10,7 +10,11 @@
  */
 import { describe, expect, it } from "vitest";
 import type { SynthesizedRequirement } from "@metis/shared";
-import { buildApprovedRequirementSet, matchSynthesized } from "./approved-requirement-set.js";
+import {
+  buildApprovedRequirementSet,
+  matchSynthesized,
+  planApprovedRequirementSet,
+} from "./approved-requirement-set.js";
 import type { StructuredRequirement } from "./types/requirements.js";
 
 function structured(id: string, title: string, description = title): StructuredRequirement {
@@ -380,6 +384,45 @@ describe("#1033 — the title fallback refuses a tie instead of breaking it by o
       expect(matches.get("REQ-6")).toBe(exact);
       expect(matches.has("REQ-5")).toBe(false);
     }
+  });
+
+  it("#1204 — reports the refused requirement and the items it was level on, in either order", () => {
+    const flush = structured("REQ-1", "Flush sessions");
+    const other = structured("REQ-2", "Export subscriptions as OPML");
+    const a = synth("Flush sessions on logout", { acceptanceCriteria: ["Logout ends sessions."] });
+    const b = synth("Flush sessions on password reset", {
+      acceptanceCriteria: ["Reset ends sessions."],
+    });
+    for (const items of [
+      [a, b],
+      [b, a],
+    ]) {
+      const plan = planApprovedRequirementSet({
+        structured: [other, flush],
+        approvedIds: new Set(["REQ-1", "REQ-2"]),
+        synthesis: { summary: "s", requirements: items },
+      });
+      // Still refused: no criteria are put on it.
+      expect(plan.output.requirements[1]?.acceptanceCriteria).toEqual([]);
+      expect(plan.ambiguous).toHaveLength(1);
+      expect(plan.ambiguous[0]).toMatchObject({ structuredId: "REQ-1", approvedIndex: 1 });
+      expect(
+        [...plan.ambiguous[0]!.candidates].sort((x, y) => x.title.localeCompare(y.title)),
+      ).toEqual([
+        { title: a.title, acceptanceCriteria: a.acceptanceCriteria },
+        { title: b.title, acceptanceCriteria: b.acceptanceCriteria },
+      ]);
+    }
+  });
+
+  it("#1204 — reports nothing for a requirement matched by id or by an unambiguous title", () => {
+    const plan = planApprovedRequirementSet({
+      structured: [markOlder],
+      approvedIds: new Set(["REQ-6"]),
+      synthesis: { summary: "s", requirements: [item] },
+    });
+    expect(plan.ambiguous).toEqual([]);
+    expect(plan.output.requirements[0]?.acceptanceCriteria).toEqual(item.acceptanceCriteria);
   });
 
   it("gives a requirement two items match equally well neither, in either order", () => {

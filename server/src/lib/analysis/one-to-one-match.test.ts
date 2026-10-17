@@ -21,6 +21,8 @@ describe("matchOneToOneRefusingTies — the shared tie table", () => {
         expect(Object.fromEntries(out.matches)).toEqual(tc.matches);
         expect([...out.refusedLefts].sort()).toEqual([...tc.refusedLefts].sort());
         expect([...out.refusedRights].sort()).toEqual([...tc.refusedRights].sort());
+        // #1204 — the reported options are keyed by exactly the refused lefts.
+        expect([...out.refusedLeftOptions.keys()].sort()).toEqual([...tc.refusedLefts].sort());
       }
     });
   }
@@ -85,6 +87,7 @@ describe("matchOneToOneRefusingTies — property: a matched pair is never a gues
       // Replay the levels by brute force and check every decision.
       const matched = new Set<string>();
       const refused = new Set<string>();
+      const refusedAmong = new Map<string, string[]>();
       for (const level of [1, 0.5]) {
         const live: Edge[] = candidates
           .filter((c) => c.score[0] === level)
@@ -107,10 +110,19 @@ describe("matchOneToOneRefusingTies — property: a matched pair is never a gues
           matched.add(r);
         }
         for (const [l, r] of live) {
-          if (!matched.has(l)) refused.add(l);
+          if (!matched.has(l)) {
+            refused.add(l);
+            refusedAmong.set(l, [...(refusedAmong.get(l) ?? []), r]);
+          }
           if (!matched.has(r)) refused.add(r);
         }
       }
+      // #1204 — each refused left reports exactly its live options at the
+      // level that refused it: no fewer, and none from another level.
+      expect(
+        Object.fromEntries([...out.refusedLeftOptions].map(([l, rs]) => [l, [...rs].sort()])),
+        `trial ${trial}: refused options`,
+      ).toEqual(Object.fromEntries([...refusedAmong].map(([l, rs]) => [l, [...rs].sort()])));
       // Nothing refused at a better level is matched at a weaker one.
       for (const v of refused) {
         expect(out.matches.has(v) || [...out.matches.values()].includes(v)).toBe(false);
@@ -171,6 +183,9 @@ describe("matchOneToOneRefusingTies — maxComponentEdges (#1031)", () => {
     expect(over.matches.size).toBe(0);
     expect([...over.refusedLefts].sort()).toEqual(["R1", "R2"]);
     expect([...over.refusedRights].sort()).toEqual(["S1", "S2"]);
+    // #1204 — an unproved component reports each left's options all the same.
+    expect(over.refusedLeftOptions.get("R1")).toEqual(new Set(["S1"]));
+    expect(over.refusedLeftOptions.get("R2")).toEqual(new Set(["S1", "S2"]));
   });
 
   it("refuses only the oversized component; a separate pair at the same level still matches", () => {

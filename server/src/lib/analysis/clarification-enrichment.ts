@@ -245,6 +245,11 @@ export interface AttributionResult {
   byRequirementId: Map<string, AnsweredQuestion[]>;
   /** Answers whose requirement could not be identified among the rows. */
   unattributed: AnsweredQuestion[];
+  /**
+   * #1204 — of `unattributed`, by question id: the rows its requirement matched
+   * equally well, so none was picked. Row ids, in the rows' own order.
+   */
+  ambiguousBetween: Map<string, string[]>;
 }
 
 /** Case- and whitespace-insensitive title, for the exact-title tier. */
@@ -352,16 +357,27 @@ export function resolvePromotedCandidates(
  * into one row, and each of them belongs on it. Each requirement independently
  * takes its own best row when that best is unique; a level best is refused.
  */
-function resolveSynthesizedCandidates(candidates: readonly RowCandidate[]): Map<string, string> {
+function resolveSynthesizedCandidates(candidates: readonly RowCandidate[]): RowMatch {
   const byLeft = new Map<string, RowCandidate[]>();
   for (const c of candidates) byLeft.set(c.left, [...(byLeft.get(c.left) ?? []), c]);
-  const matched = new Map<string, string>();
+  const matches = new Map<string, string>();
+  const refusedAmong = new Map<string, Set<string>>();
   for (const [left, list] of byLeft) {
     const sorted = [...list].sort((a, b) => compareTiersDescending(a.score, b.score));
     const best = sorted.filter((c) => compareTiersDescending(sorted[0]!.score, c.score) === 0);
-    if (best.length === 1) matched.set(left, best[0]!.right);
+    if (best.length === 1) matches.set(left, best[0]!.right);
+    else refusedAmong.set(left, new Set(best.map((c) => c.right)));
   }
-  return matched;
+  return { matches, refusedAmong };
+}
+
+/**
+ * Structured id → row id, and (#1204) each structured id refused a row with
+ * the rows it was refused among, as its resolver decided them.
+ */
+interface RowMatch {
+  matches: Map<string, string>;
+  refusedAmong: Map<string, Set<string>>;
 }
 
 /**
@@ -383,11 +399,11 @@ function matchStructuredToRows(
   structured: readonly StructuredRequirement[],
   rows: ReadonlyArray<{ id: string; title: string; body: string }>,
   origin: RowOrigin,
-): Map<string, string> {
+): RowMatch {
   const candidates = buildCandidates(structured, rows);
-  return origin === "synthesized"
-    ? resolveSynthesizedCandidates(candidates)
-    : resolvePromotedCandidates(candidates).matches;
+  if (origin === "synthesized") return resolveSynthesizedCandidates(candidates);
+  const { matches, refusedLeftOptions } = resolvePromotedCandidates(candidates);
+  return { matches, refusedAmong: refusedLeftOptions };
 }
 
 /**
@@ -408,8 +424,9 @@ export function attributeAnswers(input: {
 }): AttributionResult {
   const byRequirementId = new Map<string, AnsweredQuestion[]>();
   const unattributed: AnsweredQuestion[] = [];
+  const ambiguousBetween = new Map<string, string[]>();
 
-  const rowByStructuredId = matchStructuredToRows(
+  const { matches: rowByStructuredId, refusedAmong } = matchStructuredToRows(
     input.structured ?? [],
     input.requirements,
     input.rowOrigin ?? "promoted",
@@ -430,6 +447,11 @@ export function attributeAnswers(input: {
     const bestId = rowByStructuredId.get(key);
     if (bestId === undefined) {
       unattributed.push(...answers);
+      const among = refusedAmong.get(key);
+      if (among) {
+        const rowIds = input.requirements.map((r) => r.id).filter((id) => among.has(id));
+        for (const a of answers) ambiguousBetween.set(a.questionId, rowIds);
+      }
       continue;
     }
     const existing = byRequirementId.get(bestId);
@@ -437,7 +459,7 @@ export function attributeAnswers(input: {
     else byRequirementId.set(bestId, [...answers]);
   }
 
-  return { byRequirementId, unattributed };
+  return { byRequirementId, unattributed, ambiguousBetween };
 }
 
 // ── Body rendering ──────────────────────────────────────────────────────
@@ -836,13 +858,14 @@ export async function applyClarificationsToRequirements(
       select: { id: true, title: true, body: true, acceptanceCriteria: true, version: true },
     });
 
-    const { byRequirementId, unattributed } = attributeAnswers({
+    const { byRequirementId, unattributed, ambiguousBetween } = attributeAnswers({
       answered,
       structured: structured?.requirements,
       requirements: rows,
       rowOrigin: await readRowOrigin(analysisId),
     });
 
+    const titleById = new Map(rows.map((r) => [r.id, r.title] as const));
     let requirementsUpdated = 0;
     const appliedTo = new Map<string, string>();
     // #1162 — answers attributed to a requirement but not written into it.
@@ -875,6 +898,7 @@ export async function applyClarificationsToRequirements(
       answeredCount: answered.length,
       appliedCount: answered.length - unattributed.length - notAppliedAt.size,
       unattributedCount: unattributed.length,
+      ambiguousCount: ambiguousBetween.size,
       blockEditedCount,
       notWrittenCount: notAppliedAt.size - blockEditedCount,
       requirementsUpdated,
@@ -886,6 +910,14 @@ export async function applyClarificationsToRequirements(
         requirementTitle: appliedTo.get(a.questionId) ?? null,
         provenance: a.provenance,
         ...(notAppliedAt.has(a.questionId) ? { notApplied: notAppliedAt.get(a.questionId) } : {}),
+        // #1204 — named, so the analyst can see which requirements it fitted.
+        ...(ambiguousBetween.has(a.questionId)
+          ? {
+              ambiguousBetween: ambiguousBetween
+                .get(a.questionId)!
+                .map((id) => titleById.get(id) ?? id),
+            }
+          : {}),
       })),
     };
     await persistAnalysisEnhancement(analysisId, { clarificationApplication: application });
