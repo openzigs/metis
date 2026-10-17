@@ -97,8 +97,17 @@ export function findSharedCriteria(
   return readSharedCriteriaRecords(record).find((r) => r.requirementId === requirementId) ?? null;
 }
 
-const normalize = (list: readonly string[]): string[] =>
-  list.map((c) => c.trim()).filter((c) => c.length > 0);
+/**
+ * A criteria list as `Requirement.acceptanceCriteria` reads back
+ * (`parseAcceptanceCriteria`): each trimmed, blanks dropped. Synthesis criteria
+ * are not trimmed (`z.string().min(1)`), so promotion stores the record's lists
+ * through this, and every comparison with a row goes through it too.
+ */
+export function normalizeCriteria(list: readonly string[]): string[] {
+  return list.map((c) => c.trim()).filter((c) => c.length > 0);
+}
+
+const normalize = normalizeCriteria;
 
 /**
  * The criteria are still exactly the ones the row was promoted with. `false`
@@ -126,6 +135,29 @@ export function sharedCriteriaToMark(
   return record && criteriaAsPromoted(record, current) ? record : null;
 }
 
+/**
+ * The criteria in `criteria` to mark "(shared)", by trimmed text. Empty when
+ * every criterion in the list is shared (the note then says "Shared with ..."
+ * instead), and empty for no record. The ONE rule every surface uses both to
+ * mark criteria and to word the note, so a note never says "the criteria
+ * marked (shared)" over a list with none marked.
+ */
+export function sharedCriteriaMarks(
+  record: { readonly sharedCriteria: readonly string[] } | null,
+  criteria: readonly string[],
+): ReadonlySet<string> {
+  if (!record) return new Set();
+  const shared = new Set(normalize(record.sharedCriteria));
+  const list = normalize(criteria);
+  if (list.every((c) => shared.has(c))) return new Set();
+  return new Set(list.filter((c) => shared.has(c)));
+}
+
+/** A title as one line: a newline in it would end the issue note's quote block. */
+function oneLine(title: string): string {
+  return title.replace(/\s+/g, " ").trim();
+}
+
 /** "A", "A and B", "A, B and C". */
 export function joinNames(names: readonly string[]): string {
   if (names.length <= 1) return names[0] ?? "";
@@ -134,7 +166,8 @@ export function joinNames(names: readonly string[]): string {
 
 /** How a sibling is named in a note: its title, quoted, and whether it was approved. */
 export function sharedSiblingLabel(sibling: SharedCriteriaSibling, title = sibling.title): string {
-  return sibling.approved || sibling.requirementId ? `“${title}”` : `“${title}” (not approved)`;
+  const name = oneLine(title) || sibling.structuredId;
+  return sibling.approved || sibling.requirementId ? `“${name}”` : `“${name}” (not approved)`;
 }
 
 /** The analyst's note: what happened, and what to do about it. */
@@ -146,17 +179,20 @@ export const SHARED_CRITERIA_ISSUE_HINT =
   "the analysis wrote these acceptance criteria for the group, so some may belong to those requirements rather than this one.";
 
 /**
- * The note for a published issue, or `null` when nothing is marked. Siblings
- * are named by their current title when `titleOf` knows the row.
+ * The note for a published issue. Siblings are named by their current title
+ * when `titleOf` knows the row. `criteria` is the list the issue publishes: the
+ * note says "the criteria marked" exactly when {@link sharedCriteriaMarks}
+ * marks some of it.
  */
 export function renderSharedCriteriaIssueNote(
   record: SharedCriteriaRecord,
+  criteria: readonly string[],
   titleOf: (requirementId: string) => string | undefined = () => undefined,
 ): string {
   const names = record.sharedWith.map((s) =>
     sharedSiblingLabel(s, (s.requirementId && titleOf(s.requirementId)) || s.title),
   );
-  const partial = record.sharedCriteria.length < normalize(record.promotedCriteria).length;
+  const partial = sharedCriteriaMarks(record, criteria).size > 0;
   const lead = partial ? "The criteria marked _(shared)_ are shared" : "Shared";
   return `> ${lead} with ${joinNames(names)}: ${SHARED_CRITERIA_ISSUE_HINT}`;
 }

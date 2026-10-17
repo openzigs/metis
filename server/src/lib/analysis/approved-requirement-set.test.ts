@@ -9,7 +9,7 @@
  * confirmed requirements were promoted with no criteria and no code link.
  */
 import { describe, expect, it } from "vitest";
-import type { SynthesizedRequirement } from "@metis/shared";
+import { parseAcceptanceCriteria, type SynthesizedRequirement } from "@metis/shared";
 import {
   buildApprovedRequirementSet,
   matchSynthesized,
@@ -617,6 +617,29 @@ describe("#1203 — which approved requirements share criteria, from the id join
       sharedCriteria: GROUP,
       promotedCriteria: [...GROUP, "Own criterion."],
     });
+  });
+
+  // #1203 review — synthesis criteria are untrimmed; the row's are trimmed on
+  // read (`parseAcceptanceCriteria`), so both lists are stored as the row reads.
+  it("stores the criteria trimmed, exactly as the promoted row reads back", () => {
+    const out = plan(
+      ["REQ-1", "REQ-2"],
+      [
+        synth("Flush", {
+          structuredIds: ["REQ-1", "REQ-2"],
+          acceptanceCriteria: ["Logging out ends every session. ", "  A reset ends every session."],
+        }),
+        synth("Logout", { structuredIds: ["REQ-1"], acceptanceCriteria: ["Own criterion.\t"] }),
+      ],
+    );
+    expect(out.shared[0]).toMatchObject({
+      structuredId: "REQ-1",
+      sharedCriteria: GROUP,
+      promotedCriteria: [...GROUP, "Own criterion."],
+    });
+    // Promotion writes the plan's list as JSON; the row reads it back trimmed.
+    const row = JSON.stringify(out.output.requirements[0]!.acceptanceCriteria);
+    expect(parseAcceptanceCriteria(row)).toEqual(out.shared[0]!.promotedCriteria);
   });
 
   it("records nothing for a shared item with no criteria", () => {

@@ -14,6 +14,7 @@
 import Link from "next/link";
 import {
   SHARED_CRITERIA_ANALYST_HINT,
+  sharedCriteriaMarks,
   sharedCriteriaToMark,
   type SharedCriteriaRecord,
   type SharedCriteriaSibling,
@@ -30,15 +31,11 @@ export function requirementCardHref(
   return `/projects/${enc(projectId)}/analysis?analysisId=${enc(analysisId)}&requirementId=${enc(requirementId)}`;
 }
 
-/** The criteria to mark "shared" in a list: only when not all of it is shared. */
-export function sharedCriteriaMarks(
-  record: SharedCriteriaRecord | null,
-  criteria: readonly string[],
-): ReadonlySet<string> {
-  if (!record) return new Set();
-  const shared = new Set(record.sharedCriteria.map((c) => c.trim()));
-  return criteria.some((c) => !shared.has(c.trim())) ? shared : new Set();
-}
+/**
+ * The criteria to mark "shared" in a list: only when not all of it is shared.
+ * The one rule in `@metis/shared` that the published issue uses too.
+ */
+export { sharedCriteriaMarks };
 
 export function SharedCriteriaNote({
   record,
@@ -50,7 +47,11 @@ export function SharedCriteriaNote({
   record: SharedCriteriaRecord | null;
   /** The criteria as shown, to tell "all of these" from "the ones marked". */
   criteria: readonly string[];
-  /** The link to a sibling's card, or `undefined` when there is nowhere to go. */
+  /**
+   * The link to a sibling's card, or `undefined` when there is nowhere to go —
+   * the caller returns `undefined` for a row it does not know to be live, so a
+   * deleted sibling is named but never linked to a card that does not exist.
+   */
   hrefFor: (requirementId: string) => string | undefined;
   /** A sibling's current title, when the caller knows the row. */
   titleOf?: (requirementId: string) => string | undefined;
@@ -119,7 +120,13 @@ export function RequirementCriteria({
   criteria: string[];
   projectId: string;
   analysisId: string;
-  titleOf?: (requirementId: string) => string | undefined;
+  /**
+   * A sibling's current title from the page's own requirement list, or
+   * `undefined` when the page does not list that row (a deleted sibling): it is
+   * then named by its promoted title and not linked, since the page has no
+   * card for the link to open.
+   */
+  titleOf: (requirementId: string) => string | undefined;
 }): React.ReactElement {
   const record = sharedCriteriaToMark(metadata, requirementId, criteria);
   return (
@@ -128,7 +135,9 @@ export function RequirementCriteria({
       <SharedCriteriaNote
         record={record}
         criteria={criteria}
-        hrefFor={(id) => requirementCardHref(projectId, analysisId, id)}
+        hrefFor={(id) =>
+          titleOf(id) !== undefined ? requirementCardHref(projectId, analysisId, id) : undefined
+        }
         titleOf={titleOf}
       />
     </>

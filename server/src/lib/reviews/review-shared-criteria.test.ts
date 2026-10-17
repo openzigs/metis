@@ -5,7 +5,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const db = vi.hoisted(() => ({
-  rows: [] as Array<{ id: string; analysisId: string; projectId: string; title: string }>,
+  rows: [] as Array<{
+    id: string;
+    analysisId: string;
+    projectId: string;
+    title: string;
+    deletedAt?: Date | null;
+  }>,
   analyses: [] as Array<{ id: string; projectId: string; metadata: string | null }>,
   fail: false,
 }));
@@ -13,10 +19,21 @@ const db = vi.hoisted(() => ({
 vi.mock("../prisma.js", () => ({
   prisma: {
     requirement: {
-      findMany: vi.fn(async ({ where }: { where: { id: { in: string[] }; projectId: string } }) => {
-        if (db.fail) throw new Error("db down");
-        return db.rows.filter((r) => where.id.in.includes(r.id) && r.projectId === where.projectId);
-      }),
+      findMany: vi.fn(
+        async ({
+          where,
+        }: {
+          where: { id: { in: string[] }; projectId: string; deletedAt?: null };
+        }) => {
+          if (db.fail) throw new Error("db down");
+          return db.rows.filter(
+            (r) =>
+              where.id.in.includes(r.id) &&
+              r.projectId === where.projectId &&
+              (where.deletedAt !== null || !r.deletedAt),
+          );
+        },
+      ),
     },
     analysis: {
       findMany: vi.fn(async ({ where }: { where: { id: { in: string[] }; projectId: string } }) =>
@@ -101,6 +118,20 @@ describe("attachSharedCriteria", () => {
     ]);
     // No sibling row to look up: only the one query for the items' rows.
     expect(vi.mocked(prisma.requirement.findMany)).toHaveBeenCalledTimes(1);
+  });
+
+  // #1203 review — a soft-deleted sibling has no card: it keeps its promoted
+  // title and loses its row id, so the review card names it without a link.
+  it("drops the row id of a sibling whose row is deleted, keeping its promoted title", async () => {
+    db.rows[1]!.deletedAt = new Date();
+    const out = (await attachSharedCriteria({
+      projectId: "p1",
+      items: [{ requirementId: "rq_1" }],
+    })) as { items: Array<{ sharedCriteria?: { record: { sharedWith: unknown[] } } }> };
+
+    expect(out.items[0]?.sharedCriteria?.record.sharedWith).toEqual([
+      { structuredId: "S-x", title: "Flush on reset", requirementId: null, approved: true },
+    ]);
   });
 
   it("issues no query for a review of documents only", async () => {

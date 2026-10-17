@@ -46,6 +46,9 @@ const METADATA = {
   },
 };
 
+/** The rows the page knows as live (its requirement list); a deleted one is absent. */
+let LIVE: Record<string, string | undefined> = { ...TITLES };
+
 function renderCard(id: string, criteria: string[], metadata: unknown = METADATA) {
   return render(
     <div data-testid={`card-${id}`}>
@@ -55,7 +58,7 @@ function renderCard(id: string, criteria: string[], metadata: unknown = METADATA
         criteria={criteria}
         projectId="p 1"
         analysisId="an_1"
-        titleOf={(rid) => (rid === "rq_3" ? "Revoke every token" : undefined)}
+        titleOf={(rid) => (rid === "rq_3" ? "Revoke every token" : LIVE[rid])}
       />
     </div>,
   );
@@ -83,6 +86,22 @@ describe("RequirementCriteria (#1203)", () => {
     expect(screen.getByTestId("shared-criteria-rq_1")).toHaveTextContent(
       "Shared with Flush on reset and Revoke every token —",
     );
+  });
+
+  // #1203 review — a soft-deleted sibling has no card: named, never linked.
+  it("names a deleted sibling by its promoted title without a link", () => {
+    LIVE = { rq_1: TITLES.rq_1 };
+    try {
+      renderCard("rq_1", GROUP);
+    } finally {
+      LIVE = { ...TITLES };
+    }
+    const note = screen.getByTestId("shared-criteria-rq_1");
+    expect(note).toHaveTextContent("Shared with Flush on reset and Revoke every token —");
+    // rq_3 is renamed by `titleOf` (still live); rq_2 is gone and unlinked.
+    const links = within(note).getAllByRole("link");
+    expect(links.map((l) => l.textContent)).toEqual(["Revoke every token"]);
+    expect(note).not.toHaveTextContent("not approved");
   });
 
   it("a single-requirement item gets no note and no marks", () => {

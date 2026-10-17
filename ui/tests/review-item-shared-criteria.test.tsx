@@ -88,6 +88,33 @@ describe("ReviewItemCard — shared criteria (#1203)", () => {
     ]);
   });
 
+  // #1203 review — the server drops a deleted sibling's row id; the card names
+  // it by its promoted title and links only the live one.
+  it("names a sibling whose row is deleted without linking it", async () => {
+    pinCriteria(GROUP);
+    renderCard(
+      item({
+        sharedCriteria: {
+          projectId: "proj-1",
+          analysisId: "an-1",
+          record: {
+            ...RECORD,
+            sharedWith: [{ ...RECORD.sharedWith[0]!, requirementId: null }, RECORD.sharedWith[1]!],
+          },
+        },
+      }),
+    );
+
+    const note = await screen.findByTestId("shared-criteria-req-1");
+    expect(note).toHaveTextContent("Shared with Flush on reset and Flush on revoke —");
+    expect(note).not.toHaveTextContent("not approved");
+    expect(
+      within(note)
+        .getAllByRole("link")
+        .map((l) => l.getAttribute("href")),
+    ).toEqual(["/projects/proj-1/analysis?analysisId=an-1&requirementId=req-3"]);
+  });
+
   it("says nothing when the pinned criteria were edited", async () => {
     pinCriteria([GROUP[0]!, "Edited by the analyst."]);
     renderCard(item());

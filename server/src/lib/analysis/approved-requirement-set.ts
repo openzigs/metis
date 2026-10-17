@@ -17,6 +17,7 @@
  * containment match #1116 uses to place clarification answers.
  */
 import type { SynthesisOutput, SynthesizedRequirement } from "@metis/shared";
+import { normalizeCriteria } from "@metis/shared";
 import {
   ATTRIBUTION_THRESHOLD,
   containmentScore,
@@ -295,11 +296,14 @@ function sharedByIdJoin(
       const others = s.structuredIds.filter((id) => id !== req.id && listIds.has(id));
       if (others.length === 0) continue;
       for (const id of others) siblings.add(id);
-      for (const c of s.acceptanceCriteria ?? []) fromShared.add(c);
+      // Synthesis criteria are untrimmed (`z.string().min(1)`); the row's read trimmed.
+      for (const c of normalizeCriteria(s.acceptanceCriteria ?? [])) fromShared.add(c);
     }
     if (siblings.size === 0) return;
-    const promotedCriteria = promoted[i]?.acceptanceCriteria ?? [];
-    // As persisted: the join caps the list, so a criterion past the cap is not on the row.
+    // As the row reads back (`parseAcceptanceCriteria`: trimmed, blanks dropped),
+    // so the record compares and marks against exactly the criteria on the row.
+    // The join caps the list, so a criterion past the cap is not on the row.
+    const promotedCriteria = normalizeCriteria(promoted[i]?.acceptanceCriteria ?? []);
     const sharedCriteria = promotedCriteria.filter((c) => fromShared.has(c));
     if (sharedCriteria.length === 0) return;
     out.push({

@@ -187,6 +187,11 @@ import {
   assertCodeLinksMatchTarget,
   bodyWithCodeAsText,
 } from "../src/lib/publishing/draft-code-links.js";
+import { planApprovedRequirementSet } from "../src/lib/analysis/approved-requirement-set.js";
+import {
+  promotionMatchingRecord,
+  sharedCriteriaRecords,
+} from "../src/lib/analysis/promotion-matching.js";
 
 beforeEach(() => {
   drafts.clear();
@@ -1790,6 +1795,94 @@ describe("#1203 — a published issue notes criteria shared with other requireme
     expect(body).toContain("> The criteria marked _(shared)_ are shared with “Logout button”:");
     expect(body).toContain(`- [ ] ${GROUP[0]} _(shared)_`);
     expect(body).toContain("- [ ] Own criterion.\n");
+  });
+
+  // #1203 review — synthesis criteria are untrimmed (`z.string().min(1)`), the
+  // row's are trimmed on read. The record is built by the real plan and record
+  // writers and the rows hold exactly what promotion writes, so a trailing space
+  // that survives into the record drops the marks from the published issue.
+  it("marks a synthesis criterion with a trailing space, from promotion to the issue body", async () => {
+    const st = (id: string, title: string) => ({
+      id,
+      title,
+      description: title,
+      type: "functional" as const,
+      stakeholders: [],
+      priority: "must-have" as const,
+      ambiguities: [],
+      evidenceNeeds: [],
+      rawSource: "",
+    });
+    const item = (title: string, structuredIds: string[], acceptanceCriteria: string[]) => ({
+      type: "feature" as const,
+      title,
+      body: title,
+      priority: "medium" as const,
+      labels: [],
+      evidenceFindingIndexes: [],
+      acceptanceCriteria,
+      structuredIds,
+    });
+    const plan = planApprovedRequirementSet({
+      structured: [st("REQ-1", "Login form"), st("REQ-2", "Logout button")],
+      approvedIds: new Set(["REQ-1", "REQ-2"]),
+      synthesis: {
+        summary: "s",
+        requirements: [
+          item(
+            "Flush",
+            ["REQ-1", "REQ-2"],
+            ["Logging out ends every session.  ", " A reset ends every session."],
+          ),
+          item("Login", ["REQ-1"], ["Own criterion. "]),
+        ],
+      },
+    });
+    // What promotion persists on each row (promote-requirements.ts).
+    withCriteria[0]!.acceptanceCriteria = JSON.stringify(
+      plan.output.requirements[0]!.acceptanceCriteria,
+    );
+    withCriteria[1]!.acceptanceCriteria = JSON.stringify(
+      plan.output.requirements[1]!.acceptanceCriteria,
+    );
+    fakeAnalysis.metadata = JSON.stringify({
+      promotionMatching: promotionMatchingRecord(
+        [],
+        sharedCriteriaRecords(plan.shared, ["req_1", "req_2"]),
+      ),
+    });
+
+    await generate();
+
+    const body = featureBody("req_1");
+    expect(body).toContain("> The criteria marked _(shared)_ are shared with “Logout button”:");
+    expect(body).toContain("- [ ] Logging out ends every session. _(shared)_\n");
+    expect(body).toContain("- [ ] A reset ends every session. _(shared)_\n");
+    expect(body).toContain("- [ ] Own criterion.\n");
+    expect(featureBody("req_2")).toContain("> Shared with “Login form”:");
+  });
+
+  // #1203 review — a record stored before that fix holds the untrimmed text;
+  // the issue marks it as the cards do, trimming both sides.
+  it("marks the criteria of a record stored untrimmed before the fix", async () => {
+    const own = [...GROUP, "Own criterion."];
+    withCriteria[0]!.acceptanceCriteria = JSON.stringify(own);
+    seed([
+      {
+        ...record("req_1", [
+          { structuredId: "S-req_2", title: "Logout", requirementId: "req_2", approved: true },
+        ]),
+        sharedCriteria: GROUP.map((c) => `${c} `),
+        promotedCriteria: [...GROUP.map((c) => `${c} `), "Own criterion."],
+      },
+    ]);
+
+    await generate();
+
+    const body = featureBody("req_1");
+    expect(body).toContain("> The criteria marked _(shared)_ are shared with");
+    expect(body).toContain(`- [ ] ${GROUP[0]} _(shared)_`);
+    expect(body).toContain(`- [ ] ${GROUP[1]} _(shared)_`);
   });
 
   it("adds nothing for a requirement with no record, or a malformed one", async () => {

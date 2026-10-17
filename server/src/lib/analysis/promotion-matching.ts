@@ -62,6 +62,11 @@ export function withoutGivenItems(
  * an entry whose requirement is not written here is left out. A sibling that is
  * not written here either is looked up in `rowByStructuredId` (the rows an
  * earlier promotion of the same set recorded), else it has no row.
+ *
+ * An append onto a set promoted before #1203 has no earlier `shared` record, so
+ * a sibling from that promotion is named (by its reviewed title) without a row
+ * or link. That is deliberate: do not "fix" it with a lookup of the rows by
+ * title — titles are not unique, and guessing a row is what #1204 removed.
  */
 export function sharedCriteriaRecords(
   shared: readonly SharedPromotionMatch[],

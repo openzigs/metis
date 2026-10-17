@@ -78,7 +78,8 @@ export async function attachSharedCriteria<
       const record = findSharedCriteria(metadataOf.get(analysisId), id);
       if (record) records.set(id, { analysisId, record });
     }
-    // The siblings' current titles, so a renamed sibling is named as it reads now.
+    // The siblings' current titles, so a renamed sibling is named as it reads now;
+    // only live rows of this project, so a deleted sibling is known by its absence.
     const siblingIds = [
       ...new Set(
         [...records.values()].flatMap(({ record }) =>
@@ -102,10 +103,13 @@ export async function attachSharedCriteria<
         if (!found) return { ...item, sharedCriteria: null };
         const record: SharedCriteriaRecord = {
           ...found.record,
-          sharedWith: found.record.sharedWith.map((s) => ({
-            ...s,
-            title: (s.requirementId && titleOf.get(s.requirementId)) || s.title,
-          })),
+          // A sibling whose row is no longer live has no card to link to: it
+          // keeps its promoted title and loses its row id, so the card names it
+          // without a link (`approved` still says it was approved).
+          sharedWith: found.record.sharedWith.map((s) => {
+            const live = s.requirementId ? titleOf.get(s.requirementId) : undefined;
+            return live !== undefined ? { ...s, title: live } : { ...s, requirementId: null };
+          }),
         };
         return {
           ...item,

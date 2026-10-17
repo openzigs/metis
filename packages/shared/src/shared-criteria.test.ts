@@ -8,8 +8,10 @@ import {
   findSharedCriteria,
   joinNames,
   readSharedCriteriaRecord,
+  normalizeCriteria,
   readSharedCriteriaRecords,
   renderSharedCriteriaIssueNote,
+  sharedCriteriaMarks,
   sharedCriteriaToMark,
   sharedSiblingLabel,
   type SharedCriteriaRecord,
@@ -112,17 +114,72 @@ describe("wording", () => {
 
   it("names siblings by their current title in the issue note", () => {
     expect(
-      renderSharedCriteriaIssueNote(RECORD, (id) => (id === "rq_2" ? "Renamed" : undefined)),
+      renderSharedCriteriaIssueNote(RECORD, GROUP, (id) => (id === "rq_2" ? "Renamed" : undefined)),
     ).toBe(
       "> Shared with “Renamed” and “Flush on revoke” (not approved): the analysis wrote these acceptance criteria for the group, so some may belong to those requirements rather than this one.",
     );
-    expect(renderSharedCriteriaIssueNote(RECORD)).toContain("“Flush on reset”");
+    expect(renderSharedCriteriaIssueNote(RECORD, GROUP)).toContain("“Flush on reset”");
   });
 
   it("points at the marked criteria when only some are shared", () => {
     const partial = { ...RECORD, promotedCriteria: [...GROUP, "Own."] };
-    expect(renderSharedCriteriaIssueNote(partial)).toMatch(
+    expect(renderSharedCriteriaIssueNote(partial, [...GROUP, "Own."])).toMatch(
       /^> The criteria marked _\(shared\)_ are shared with /,
     );
+  });
+
+  // #1203 review — a title with a newline would end the quote block and put
+  // the rest of the title on the issue as unquoted markdown.
+  it("keeps a sibling title with a line break inside the quote block", () => {
+    const record = {
+      ...RECORD,
+      sharedWith: [
+        { ...RECORD.sharedWith[0]!, title: "Flush\n\n# Injected heading\r\n  on reset" },
+      ],
+    };
+    const note = renderSharedCriteriaIssueNote(record, GROUP);
+    expect(note.split("\n")).toHaveLength(1);
+    expect(note).toContain("“Flush # Injected heading on reset”");
+    // The current title from the row is collapsed the same way.
+    expect(renderSharedCriteriaIssueNote(RECORD, GROUP, () => "Re\nnamed")).toContain("“Re named”");
+    // A title that is only whitespace falls back to the reviewed id.
+    expect(sharedSiblingLabel({ ...RECORD.sharedWith[0]!, title: " \n " })).toBe("“REQ-2”");
+  });
+});
+
+describe("sharedCriteriaMarks — one rule for the marks and the note (#1203 review)", () => {
+  it("marks nothing for no record, or when every criterion is shared", () => {
+    expect(sharedCriteriaMarks(null, GROUP).size).toBe(0);
+    expect(sharedCriteriaMarks(RECORD, GROUP).size).toBe(0);
+  });
+
+  it("marks the shared criteria by trimmed text when some are not shared", () => {
+    const record = { sharedCriteria: ["  A reset ends every session. "] };
+    expect([...sharedCriteriaMarks(record, ["A reset ends every session.", "Own."])]).toEqual([
+      "A reset ends every session.",
+    ]);
+  });
+
+  it("never says 'marked' over a list with none marked: a repeated shared criterion", () => {
+    // Lengths say partial (1 shared of 2 promoted); the text says all shared.
+    const record = { ...RECORD, sharedCriteria: ["Same."], promotedCriteria: ["Same.", "Same."] };
+    expect(sharedCriteriaMarks(record, ["Same.", "Same."]).size).toBe(0);
+    expect(renderSharedCriteriaIssueNote(record, ["Same.", "Same."])).toMatch(/^> Shared with /);
+  });
+
+  it("never says 'marked' over a list with none marked: an untrimmed stored record", () => {
+    // A record written before the trim fix: the stored text has a trailing space.
+    const record = {
+      ...RECORD,
+      sharedCriteria: ["Shared. "],
+      promotedCriteria: ["Shared. ", "Own."],
+    };
+    const criteria = ["Shared.", "Own."];
+    expect([...sharedCriteriaMarks(record, criteria)]).toEqual(["Shared."]);
+    expect(renderSharedCriteriaIssueNote(record, criteria)).toMatch(/^> The criteria marked /);
+  });
+
+  it("normalizes a list as the row reads back", () => {
+    expect(normalizeCriteria([" a ", "", "  ", "b"])).toEqual(["a", "b"]);
   });
 });

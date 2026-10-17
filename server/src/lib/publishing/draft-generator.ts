@@ -29,6 +29,7 @@ import {
   extractBodyAcceptanceCriteria as extractCriteriaFromBody,
   renderPublishedConfidenceNote,
   renderSharedCriteriaIssueNote,
+  sharedCriteriaMarks,
   sharedCriteriaToMark,
   summarizeSupportPanels,
   type SharedCriteriaRecord,
@@ -963,13 +964,17 @@ function renderFeatureBody(input: {
 }): string {
   const { requirement, parentTitle } = input;
   const shared = input.sharedCriteria ?? null;
+  const persistedCriteria = parseAcceptanceCriteria(requirement.acceptanceCriteria);
   const acceptance = renderAcceptanceCriteria({
     body: requirement.body,
-    acceptanceCriteria: parseAcceptanceCriteria(requirement.acceptanceCriteria),
+    acceptanceCriteria: persistedCriteria,
     cleared: isAcceptanceCriteriaCleared(requirement.acceptanceCriteria),
     sharedCriteria: shared?.record.sharedCriteria,
   });
-  const sharedNote = shared ? renderSharedCriteriaIssueNote(shared.record, shared.titleOf) : null;
+  // The note's "marked" wording and the marks come from one rule (`sharedCriteriaMarks`).
+  const sharedNote = shared
+    ? renderSharedCriteriaIssueNote(shared.record, persistedCriteria, shared.titleOf)
+    : null;
   // #1110 — placed directly under the description and ABOVE the acceptance
   // criteria: a caution a developer reads after the criteria they already
   // started working from is a caution that arrived too late.
@@ -1048,11 +1053,10 @@ function renderAcceptanceCriteria(req: {
   const criteria =
     persisted.length > 0 ? persisted : req.cleared ? [] : deriveBodyAcceptanceCriteria(req.body);
   if (criteria.length > 0) {
-    const shared = new Set(req.sharedCriteria ?? []);
-    const mark = shared.size > 0 && criteria.some((c) => !shared.has(c));
-    return criteria
-      .map((c) => `- [ ] ${c}${mark && shared.has(c) ? " _(shared)_" : ""}`)
-      .join("\n");
+    // Trimmed on both sides, as the cards mark them: a record stored before the
+    // #1203 review fix may hold untrimmed synthesis text.
+    const marks = sharedCriteriaMarks({ sharedCriteria: req.sharedCriteria ?? [] }, criteria);
+    return criteria.map((c) => `- [ ] ${c}${marks.has(c.trim()) ? " _(shared)_" : ""}`).join("\n");
   }
   return NO_ACCEPTANCE_CRITERIA_NOTE;
 }
