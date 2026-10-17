@@ -152,6 +152,18 @@ const NOT_APPLIED_REASONS: Record<
   "requirement-deleted": (t) => `“${t}” was deleted`,
 };
 
+/**
+ * #1225 — the label for a "not applied" reason. Metadata is stored, so a reason
+ * this build does not know (written by a newer server, then rolled back) gets a
+ * generic label instead of crashing the note.
+ */
+function notAppliedLabel(reason: string, title: string): string {
+  const label = Object.prototype.hasOwnProperty.call(NOT_APPLIED_REASONS, reason)
+    ? NOT_APPLIED_REASONS[reason as keyof typeof NOT_APPLIED_REASONS]
+    : undefined;
+  return label ? label(title) : `“${title}” could not be updated`;
+}
+
 export function ClarificationImpactNote({
   application,
 }: {
@@ -160,6 +172,7 @@ export function ClarificationImpactNote({
   if (!application || application.answeredCount === 0) return null;
   const { answeredCount, appliedCount, unattributedCount, requirementsAvailable } = application;
   const blockEditedCount = application.blockEditedCount ?? 0;
+  const notWrittenCount = application.notWrittenCount ?? 0;
   // Issue #979 — absent on analyses clarified before the per-answer record.
   const outcomes = application.answers ?? [];
   const applied = outcomes.filter((a) => a.requirementTitle !== null);
@@ -221,6 +234,13 @@ export function ClarificationImpactNote({
           its start and end markers, or delete the section, then submit the answers again.
         </p>
       )}
+      {requirementsAvailable && notWrittenCount > 0 && (
+        <p className="text-warning" data-testid="clarification-not-written">
+          {notWrittenCount} answer{notWrittenCount === 1 ? " was" : "s were"} not written because{" "}
+          {notWrittenCount === 1 ? "its requirement" : "their requirements"} changed or{" "}
+          {notWrittenCount === 1 ? "was" : "were"} deleted while the answers were being saved.
+        </p>
+      )}
       {requirementsAvailable && unmatched.length > 0 && (
         <details data-testid="clarification-unmatched-list">
           <summary className="cursor-pointer">Show the answers that were not applied</summary>
@@ -231,7 +251,7 @@ export function ClarificationImpactNote({
                 {a.notApplied ? (
                   <span data-testid="clarification-not-applied-reason">
                     {" "}
-                    ({NOT_APPLIED_REASONS[a.notApplied.reason](a.notApplied.requirementTitle)})
+                    ({notAppliedLabel(a.notApplied.reason, a.notApplied.requirementTitle)})
                   </span>
                 ) : null}
               </li>

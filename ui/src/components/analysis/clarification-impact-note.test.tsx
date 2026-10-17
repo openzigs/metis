@@ -168,6 +168,46 @@ describe("ClarificationImpactNote", () => {
     expect(list).toHaveTextContent(/Which locale\?\s*\(“Locales” was deleted\)/);
   });
 
+  it("#1225 — an unknown not-applied reason gets a fallback label instead of crashing", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          answers: [
+            {
+              questionId: "q6",
+              question: "Which region?",
+              requirementTitle: null,
+              notApplied: {
+                // A reason written by a newer server, read after a rollback.
+                reason: "a-reason-from-a-newer-server" as "requirement-deleted",
+                requirementTitle: "Regions",
+              },
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByTestId("clarification-not-applied-reason")).toHaveTextContent(
+      "(“Regions” could not be updated)",
+    );
+  });
+
+  it("#1225 — says how many answers were not written because their requirement changed or was deleted", () => {
+    const { rerender } = render(
+      <ClarificationImpactNote application={{ ...base, notWrittenCount: 2 }} />,
+    );
+    expect(screen.getByTestId("clarification-not-written")).toHaveTextContent(
+      "2 answers were not written because their requirements changed or were deleted while the answers were being saved.",
+    );
+    rerender(<ClarificationImpactNote application={{ ...base, notWrittenCount: 1 }} />);
+    expect(screen.getByTestId("clarification-not-written")).toHaveTextContent(
+      "1 answer was not written because its requirement changed or was deleted while the answers were being saved.",
+    );
+    rerender(<ClarificationImpactNote application={{ ...base, notWrittenCount: 0 }} />);
+    expect(screen.queryByTestId("clarification-not-written")).toBeNull();
+  });
+
   it("#1162 — no block-edited warning when every matched answer was written", () => {
     render(<ClarificationImpactNote application={{ ...base, blockEditedCount: 0 }} />);
     expect(screen.queryByTestId("clarification-block-edited")).toBeNull();

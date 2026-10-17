@@ -611,6 +611,55 @@ describe("applying the block to a body", () => {
       });
     });
 
+    describe("#1225 — no answers left: only whole blank lines go", () => {
+      it.each([
+        ["LF", (s: string) => s],
+        ["CRLF", crlf],
+      ])(
+        "keeps an indented code block after the block and a hard break before it (%s)",
+        (_n, eolOf) => {
+          const body = eolOf(
+            `Before with a hard break.  \n\n${old()}\n\n    code();\n    more();\n`,
+          );
+          expect(planClarificationBlock(body, [])).toEqual({
+            body: eolOf("Before with a hard break.  \n\n    code();\n    more();\n"),
+            malformed: false,
+          });
+        },
+      );
+
+      it.each([
+        ["LF", (s: string) => s],
+        ["CRLF", crlf],
+      ])("drops whitespace-only lines around the block (%s)", (_n, eolOf) => {
+        const body = eolOf(`Before.\n  \n\n${old()}\n\t\n\n  After.`);
+        expect(planClarificationBlock(body, [])).toEqual({
+          body: eolOf("Before.\n\n  After."),
+          malformed: false,
+        });
+      });
+
+      it("a body that was only the block becomes empty", () => {
+        expect(planClarificationBlock(`\n\n${old()}\n\n`, [])).toEqual({
+          body: "",
+          malformed: false,
+        });
+      });
+    });
+
+    describe("#1225 — whitespace-variant markers with the same answers: byte-for-byte", () => {
+      const variant = (block: string) =>
+        block
+          .replace(CLARIFICATIONS_START, "<!--metis:clarifications:start-->")
+          .replace(CLARIFICATIONS_END, "<!--  metis:clarifications:end  -->");
+      it.each([
+        ["LF", `Before.\n\n${variant(old())}\n\nAfter.`],
+        ["CRLF", crlf(`Before.\n\n${variant(old())}\n\nAfter.`)],
+      ])("%s", (_n, body) => {
+        expect(planClarificationBlock(body, [answer()])).toEqual({ body, malformed: false });
+      });
+    });
+
     it("whitespace-variant markers: recognised, replaced once", () => {
       const body = `Body.\n\n${old()
         .replace(CLARIFICATIONS_START, "<!--metis:clarifications:start-->")
@@ -1421,6 +1470,23 @@ describe("applyClarificationsToRequirements", () => {
       await applyClarificationsToRequirements(ANALYSIS_ID);
       const row = store.requirements[0];
       row.body = `${row.body}\n\nAnalyst note after the block.`.replace(/\n/g, "\r\n");
+      const stored = row.body;
+      const versionsBefore = store.versions.length;
+
+      const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+
+      expect(row.body).toBe(stored);
+      expect(store.versions).toHaveLength(versionsBefore);
+      expect(out).toMatchObject({ appliedCount: 1, requirementsUpdated: 0 });
+    });
+
+    it("writes no version on a second pass when the markers are a whitespace variant (#1225)", async () => {
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      const row = store.requirements[0];
+      row.body = row.body
+        .replace(CLARIFICATIONS_START, "<!--metis:clarifications:start-->")
+        .replace(CLARIFICATIONS_END, "<!--metis:clarifications:end-->")
+        .replace(/\n/g, "\r\n");
       const stored = row.body;
       const versionsBefore = store.versions.length;
 
