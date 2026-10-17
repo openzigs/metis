@@ -34,7 +34,7 @@ import { createImporter, sourceUsesToken, type ImporterDeps } from "./registry.j
 import type { JiraSearchClient } from "./jira-importer.js";
 import { runImport, type RequirementStore } from "./base-importer.js";
 import type { ImporterFetchContext, MappedRequirement } from "./types.js";
-import { parseSourcePending, touchesSourceOwnedField } from "./source-sync.js";
+import { editedInMetisFromHistory, parseSourcePending } from "./source-sync.js";
 import { parseRequirementLabels } from "../analysis/requirement-labels.js";
 import { audit } from "../audit/audit-service.js";
 import {
@@ -787,24 +787,23 @@ export class ImportService {
             externalUrl: true,
             importSourceId: true,
             version: true,
-            // #1220 — History's evidence of a person's edit to what the source
-            // owns, for a row synced before the fingerprint: a version row with
-            // an actor that changed a source-owned field, or (the #1162 legacy
-            // rule) a bump with no row for version 1.
-            versions: {
-              where: { OR: [{ actorId: { not: null } }, { version: 1 }] },
-              select: { actorId: true, version: true, changedFields: true },
-            },
           },
         });
         if (!existing) return null;
-        const history = existing.versions ?? [];
-        const editedInMetis =
-          history.some(
-            (v) =>
-              v.actorId !== null && touchesSourceOwnedField(parseChangedFields(v.changedFields)),
-          ) ||
-          (existing.version > 0 && !history.some((v) => v.version === 1));
+        // #1220 — only a row synced before the fingerprint needs History's
+        // evidence of an edit (see `editedInMetisFromHistory`); read it then only.
+        let editedInMetis = false;
+        if (existing.sourceFingerprint == null) {
+          const rows = await prisma.requirementVersion.findMany({
+            where: { requirementId: existing.id },
+            select: { version: true, changedFields: true, reason: true },
+          });
+          editedInMetis = editedInMetisFromHistory(
+            existing.version,
+            rows.map((r) => ({ ...r, changedFields: parseChangedFields(r.changedFields) })),
+            IMPORT_RESYNC_VERSION_REASON,
+          );
+        }
         return {
           id: existing.id,
           local: {

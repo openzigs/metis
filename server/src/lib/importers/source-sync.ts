@@ -52,6 +52,37 @@ export function touchesSourceOwnedField(changedFields: Record<string, unknown>):
   return SOURCE_OWNED_FIELDS.some((f) => Object.prototype.hasOwnProperty.call(changedFields, f));
 }
 
+/**
+ * Whether a row synced before #1220 was edited in METIS, from its History:
+ *
+ *  - its NEWEST version row that changed a source-owned field was written by
+ *    anything but the import's own re-sync (`importReason`) — an analyst's
+ *    edit, or METIS's own clarification answers (actor-less, but content the
+ *    source never had). If the newest such change was a re-sync, the row
+ *    equals what a sync last wrote, even when an analyst had edited it before
+ *    and that sync reverted it; or
+ *  - #1162's legacy rule: `version` was bumped with no row for version 1 — an
+ *    edit made before #770 recorded history.
+ *
+ * @param version   the row's current `version`
+ * @param rows      ALL its version rows, any order
+ */
+export function editedInMetisFromHistory(
+  version: number,
+  rows: ReadonlyArray<{
+    version: number;
+    changedFields: Record<string, unknown>;
+    reason: string | null;
+  }>,
+  importReason: string,
+): boolean {
+  const newestSourceOwned = [...rows]
+    .filter((r) => touchesSourceOwnedField(r.changedFields))
+    .sort((a, b) => b.version - a.version)[0];
+  if (newestSourceOwned && newestSourceOwned.reason !== importReason) return true;
+  return version > 0 && !rows.some((r) => r.version === 1);
+}
+
 /** The source's newer content, held while a row is diverged from it. */
 export interface SourcePending extends SourceContent {
   /** {@link sourceFingerprint} of this content. */

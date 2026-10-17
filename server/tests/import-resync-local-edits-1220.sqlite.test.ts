@@ -45,7 +45,12 @@ vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => ({
   audit: vi.fn(),
 }));
 
-const { ImportService } = await import("../src/lib/importers/import-service.js");
+const { ImportService, IMPORT_RESYNC_VERSION_REASON } =
+  await import("../src/lib/importers/import-service.js");
+const { CLARIFICATION_VERSION_REASON } =
+  await import("../src/lib/analysis/clarification-enrichment.js");
+const { updateRequirementWithHistory } =
+  await import("../src/lib/requirements/requirement-version-service.js");
 const { requirementsCollaborationRouter } = await import("../src/routes/requirements.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
@@ -607,6 +612,59 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         body: "Changed upstream",
         baselineUnknown: true,
       });
+    });
+
+    /** Import #n, then leave it as a pre-#1220 sync would: no fingerprint. */
+    const importThenForget = async (n: number) => {
+      issues = [ghIssue(n)];
+      await sync();
+      return importedId(n);
+    };
+    const forgetFingerprint = (id: string) =>
+      db.requirement.update({ where: { id }, data: { sourceFingerprint: null } });
+
+    it("a pre-fingerprint row carrying METIS's clarification answers is flagged, not overwritten", async () => {
+      const id = await importThenForget(74);
+      // Clarification answers written into the body: actor-less, but content
+      // the source never had (clarification-enrichment.ts).
+      await updateRequirementWithHistory(db as never, {
+        requirementId: id,
+        patch: { body: "As imported\n\n### Clarifications\n- Q: CSV? A: yes" },
+        actorId: null,
+        reason: CLARIFICATION_VERSION_REASON,
+      });
+      await forgetFingerprint(id);
+      issues = [ghIssue(74, { body: "Changed upstream" })];
+
+      const run = await sync();
+
+      expect(run).toMatchObject({ updatedCount: 0, divergedCount: 1 });
+      const flagged = await row(id);
+      expect(flagged.body).toContain("### Clarifications");
+      expect(JSON.parse(flagged.sourcePending!)).toMatchObject({
+        body: "Changed upstream",
+        baselineUnknown: true,
+      });
+    });
+
+    it("a pre-fingerprint row whose newest change was the import's own re-sync takes the source", async () => {
+      const id = await importThenForget(75);
+      // An analyst edit that a pre-upgrade sync then reverted to the source's
+      // text, as "source wins" re-sync used to do.
+      expect((await edit(id, { body: "Analyst edit", version: 0 })).status).toBe(200);
+      await updateRequirementWithHistory(db as never, {
+        requirementId: id,
+        patch: { body: "As imported" },
+        actorId: null,
+        reason: IMPORT_RESYNC_VERSION_REASON,
+      });
+      await forgetFingerprint(id);
+      issues = [ghIssue(75, { body: "Changed upstream" })];
+
+      const run = await sync();
+
+      expect(run).toMatchObject({ updatedCount: 1, divergedCount: 0 });
+      expect(await row(id)).toMatchObject({ body: "Changed upstream", sourcePending: null });
     });
 
     it("after Keep mine, the requirement set is protected from replacement by a re-synthesis (#769)", async () => {

@@ -6,6 +6,7 @@ import {
   decideResync,
   parseSourceDecision,
   parseSourcePending,
+  editedInMetisFromHistory,
   sourceFingerprint,
   toSourceDivergence,
   type SourceContent,
@@ -268,5 +269,44 @@ describe("parseSourcePending / parseSourceDecision", () => {
         JSON.stringify({ ...upstream, labels: [1], fingerprint: "x", detectedAt: "t" }),
       ),
     ).toBeNull();
+  });
+});
+
+describe("editedInMetisFromHistory", () => {
+  const IMPORT = "Import re-sync";
+  const row = (version: number, fields: string[], reason: string | null) => ({
+    version,
+    changedFields: Object.fromEntries(fields.map((f) => [f, { from: "a", to: "b" }])),
+    reason,
+  });
+
+  it("never edited: no rows, no bump", () => {
+    expect(editedInMetisFromHistory(0, [], IMPORT)).toBe(false);
+  });
+
+  it("the newest source-owned change decides, whoever the actor", () => {
+    expect(editedInMetisFromHistory(1, [row(1, ["body"], null)], IMPORT)).toBe(true);
+    expect(editedInMetisFromHistory(1, [row(1, ["body"], "Clarification answers")], IMPORT)).toBe(
+      true,
+    );
+    // An analyst edit a later re-sync reverted: the re-sync is newest.
+    expect(
+      editedInMetisFromHistory(2, [row(2, ["body"], IMPORT), row(1, ["body"], null)], IMPORT),
+    ).toBe(false);
+    // ...and the reverse order: an edit after a re-sync counts.
+    expect(
+      editedInMetisFromHistory(2, [row(1, ["body"], IMPORT), row(2, ["title"], null)], IMPORT),
+    ).toBe(true);
+  });
+
+  it("changes to fields the source does not own are ignored", () => {
+    expect(
+      editedInMetisFromHistory(1, [row(1, ["storyPoints", "acceptanceCriteria"], null)], IMPORT),
+    ).toBe(false);
+  });
+
+  it("keeps #1162's legacy rule: a bump with no row for version 1", () => {
+    expect(editedInMetisFromHistory(2, [], IMPORT)).toBe(true);
+    expect(editedInMetisFromHistory(3, [row(3, ["storyPoints"], null)], IMPORT)).toBe(true);
   });
 });
