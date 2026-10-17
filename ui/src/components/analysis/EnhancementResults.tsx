@@ -165,13 +165,18 @@ function notAppliedLabel(reason: string, title: string): string {
 }
 
 /**
- * #1204 — the saved requirements an answer fitted equally well. With one title
- * the other contender was a requirement with no saved row of its own.
+ * #1204 — why one answer could not be placed. Several titles: the answer's
+ * requirement fits each of those saved requirements equally well. ONE title is
+ * the other way round, and the commoner case: that saved requirement fits this
+ * answer's requirement and another reviewed requirement equally well, so the
+ * answer cannot be said to belong to it.
  */
 export function describeTie(titles: readonly string[]): string {
   const quoted = titles.map((t) => `“${t}”`);
-  if (quoted.length === 1) return `fits ${quoted[0]} and another requirement equally well`;
-  return `fits ${quoted.slice(0, -1).join(", ")} and ${quoted.at(-1)} equally well`;
+  if (quoted.length === 1) {
+    return `${quoted[0]} fits this and another requirement equally well, so the answer was given to neither`;
+  }
+  return `fits ${quoted.slice(0, -1).join(", ")} and ${quoted.at(-1)} equally well, so none was chosen`;
 }
 
 export function ClarificationImpactNote({
@@ -244,7 +249,7 @@ export function ClarificationImpactNote({
             saved requirement, so {unattributedCount === 1 ? "it refines" : "they refine"} the
             requirement text shown here but will not appear in a published issue.
             {tied.length > 0
-              ? ` ${tiedSubject} matched more than one saved requirement equally well, so none was chosen:`
+              ? ` ${tiedSubject} could not be placed because the match was too close to call:`
               : null}
           </p>
           {tied.length > 0 ? (

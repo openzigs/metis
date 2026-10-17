@@ -45,6 +45,29 @@ describe("AmbiguousMatchNotice", () => {
     expect(notice).not.toHaveTextContent("which of 1");
   });
 
+  it("once the requirement has criteria, stops asking to copy them and keeps the items collapsed", () => {
+    render(
+      <AmbiguousMatchNotice
+        metadata={metadataWith([LOGOUT, RESET])}
+        requirementId="rq_1"
+        hasCriteria
+      />,
+    );
+    const notice = screen.getByTestId("ambiguous-match-rq_1");
+    expect(notice).not.toHaveTextContent("Copy across any that apply");
+    expect(notice).toHaveTextContent("Show the 2 grouped items the analysis could not place");
+    expect(notice).toHaveTextContent("This requirement has acceptance criteria now.");
+    expect(notice.querySelector("details")).not.toHaveAttribute("open");
+    expect(within(notice).getByText(LOGOUT.title)).toBeInTheDocument();
+  });
+
+  it("asks to copy the criteria across while the requirement has none", () => {
+    render(<AmbiguousMatchNotice metadata={metadataWith([LOGOUT])} requirementId="rq_1" />);
+    expect(screen.getByTestId("ambiguous-match-rq_1")).toHaveTextContent(
+      "Copy across any that apply.",
+    );
+  });
+
   it("renders nothing on another requirement's card, or without a record", () => {
     for (const [metadata, id] of [
       [metadataWith([LOGOUT]), "rq_2"],

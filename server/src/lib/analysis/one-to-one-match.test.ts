@@ -112,7 +112,12 @@ describe("matchOneToOneRefusingTies — property: a matched pair is never a gues
         for (const [l, r] of live) {
           if (!matched.has(l)) {
             refused.add(l);
-            refusedAmong.set(l, [...(refusedAmong.get(l) ?? []), r]);
+            // A right a forced pair took at this same level is not an option
+            // the refused left was "too close to call" on (#1204 review): it
+            // went to another left. Collecting it here would agree with an
+            // overcounting matcher and prove nothing.
+            const options = refusedAmong.get(l) ?? [];
+            refusedAmong.set(l, matched.has(r) ? options : [...options, r]);
           }
           if (!matched.has(r)) refused.add(r);
         }
@@ -123,11 +128,42 @@ describe("matchOneToOneRefusingTies — property: a matched pair is never a gues
         Object.fromEntries([...out.refusedLeftOptions].map(([l, rs]) => [l, [...rs].sort()])),
         `trial ${trial}: refused options`,
       ).toEqual(Object.fromEntries([...refusedAmong].map(([l, rs]) => [l, [...rs].sort()])));
+      // Every refused left has at least one option, and none of them is a
+      // right that any left was given.
+      const givenRights = new Set(out.matches.values());
+      for (const [l, rs] of out.refusedLeftOptions) {
+        expect(rs.size, `trial ${trial}: ${l} has no options`).toBeGreaterThan(0);
+        for (const r of rs)
+          expect(givenRights.has(r), `trial ${trial}: ${l} lists ${r}`).toBe(false);
+      }
       // Nothing refused at a better level is matched at a weaker one.
       for (const v of refused) {
         expect(out.matches.has(v) || [...out.matches.values()].includes(v)).toBe(false);
       }
       expect([...out.refusedLefts, ...out.refusedRights].sort()).toEqual([...refused].sort());
+    }
+  });
+});
+
+describe("matchOneToOneRefusingTies — refused options (#1204)", () => {
+  it("never lists a right a forced pair took at the same level", () => {
+    // Lb reaches only R, so Lb–R is in every maximum matching and is taken.
+    // La and Lc then tie on X1 and X2. La also had R live at this level, but R
+    // went to Lb: offering it as one of La's options would invite copying
+    // Lb's criteria onto La — the wrong-requirement bug.
+    const candidates: Array<OneToOneCandidate<string, string, number[]>> = [
+      { left: "Lb", right: "R", score: [1] },
+      { left: "La", right: "R", score: [1] },
+      { left: "La", right: "X1", score: [1] },
+      { left: "La", right: "X2", score: [1] },
+      { left: "Lc", right: "X1", score: [1] },
+      { left: "Lc", right: "X2", score: [1] },
+    ];
+    for (const order of permutations(candidates)) {
+      const out = matchOneToOneRefusingTies(order, { compare: compareTiersDescending });
+      expect(Object.fromEntries(out.matches)).toEqual({ Lb: "R" });
+      expect(out.refusedLeftOptions.get("La")).toEqual(new Set(["X1", "X2"]));
+      expect(out.refusedLeftOptions.get("Lc")).toEqual(new Set(["X1", "X2"]));
     }
   });
 });

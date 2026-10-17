@@ -49,8 +49,9 @@ export interface OneToOneResult<L, R> {
   refusedRights: Set<R>;
   /**
    * #1204 — for each refused left, the rights it was refused among: its live
-   * candidates at the level where it was refused. Its keys are exactly
-   * `refusedLefts`. Read-only reporting, so a caller can tell the user which
+   * candidates at the level where it was refused, less any right a forced pair
+   * took at that same level (that right went to another left). Its keys are
+   * exactly `refusedLefts`, and no set is empty. Read-only reporting, so a caller can tell the user which
    * options were too close to call; it never feeds back into the matching.
    */
   refusedLeftOptions: Map<L, Set<R>>;
@@ -105,7 +106,11 @@ export function matchOneToOneRefusingTies<L, R, S>(
     for (const [l, rs] of edges) {
       if (!forced.has(l)) {
         refusedLefts.add(l);
-        refusedLeftOptions.set(l, new Set(rs));
+        // Not `rs` itself: a right a forced pair took at this same level went
+        // to another left and is no option of this one (#1204 review). Never
+        // empty: a neighbour of a non-forced left cannot be forced elsewhere,
+        // or swapping it over would give another maximum matching.
+        refusedLeftOptions.set(l, new Set([...rs].filter((r) => !takenRights.has(r))));
       }
       for (const r of rs) if (!takenRights.has(r)) refusedRights.add(r);
     }

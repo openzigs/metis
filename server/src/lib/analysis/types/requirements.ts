@@ -301,8 +301,10 @@ export interface ClarificationAnswerOutcome {
     requirementTitle: string;
   };
   /**
-   * #1204 — set when the answer was not applied because its requirement
-   * matched these saved requirements (titles) equally well and none was picked.
+   * #1204 — set when the answer was not applied because the match was too
+   * close to call: the saved requirements (titles) its requirement was refused
+   * among. One title means that saved requirement fitted this and another
+   * reviewed requirement equally well, not that the answer fitted several.
    */
   ambiguousBetween?: string[];
 }

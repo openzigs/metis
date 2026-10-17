@@ -29,6 +29,30 @@ export function ambiguousPromotionRecords(
   return records;
 }
 
+/**
+ * Issue #1204 review — drop every option that is a synthesis item in `given`
+ * (one an existing row already carries), and any refusal left with no option.
+ * An append re-plans over the enlarged approved set, so a new row can be
+ * refused among items the first promotion gave an existing row; listing those
+ * would invite copying another requirement's criteria onto it.
+ */
+export function withoutGivenItems(
+  ambiguous: readonly AmbiguousPromotionMatch[],
+  given: ReadonlySet<number>,
+): AmbiguousPromotionMatch[] {
+  const out: AmbiguousPromotionMatch[] = [];
+  for (const a of ambiguous) {
+    const keep = a.synthesizedIndexes.flatMap((idx, k) => (given.has(idx) ? [] : [k]));
+    if (keep.length === 0) continue;
+    out.push({
+      ...a,
+      candidates: keep.map((k) => a.candidates[k]!),
+      synthesizedIndexes: keep.map((k) => a.synthesizedIndexes[k]!),
+    });
+  }
+  return out;
+}
+
 /** The record for a freshly written set; `[]` clears an earlier set's. */
 export function promotionMatchingRecord(
   ambiguous: AmbiguousPromotionRecord[],

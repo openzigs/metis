@@ -249,6 +249,35 @@ export interface AmbiguousPromotionMatch {
   approvedIndex: number;
   /** The grouped items it was level on, with their criteria to copy across. */
   candidates: Array<{ title: string; acceptanceCriteria: string[] }>;
+  /** Each candidate's index in the synthesis output, aligned with `candidates`. */
+  synthesizedIndexes: number[];
+}
+
+/**
+ * Issue #1204 review — the synthesis items (indexes) the title and id joins
+ * give the requirements in `ids`, as {@link planApprovedRequirementSet} would
+ * with exactly those approved. An append re-plans over the enlarged set, so
+ * this replays the set as it was first promoted to tell which items its rows
+ * already carry.
+ */
+export function itemsGivenTo(input: {
+  structured: StructuredRequirement[];
+  ids: ReadonlySet<string>;
+  synthesis: SynthesisOutput | null;
+}): Set<number> {
+  const synthesized = input.synthesis?.requirements ?? [];
+  const approved = input.structured.filter((r) => input.ids.has(r.id));
+  const { matches } = matchSynthesizedReportingRefusals(approved, synthesized, input.structured);
+  // Title matches are the synthesis items themselves. An id join can merge
+  // several items into a new object, found here by none of them; that is fine,
+  // as an item naming a listed id never enters the title fallback, so it is
+  // never a refused requirement's option.
+  const given = new Set<number>();
+  for (const item of matches.values()) {
+    const idx = synthesized.indexOf(item);
+    if (idx >= 0) given.add(idx);
+  }
+  return given;
 }
 
 /**
@@ -276,6 +305,7 @@ export function planApprovedRequirementSet(input: {
       title: synthesized[idx]!.title.slice(0, MAX_TITLE),
       acceptanceCriteria: (synthesized[idx]!.acceptanceCriteria ?? []).slice(0, MAX_CRITERIA),
     })),
+    synthesizedIndexes: r.synthesizedIndexes,
   }));
 
   const requirements: SynthesizedRequirement[] = approved.map((req) => {

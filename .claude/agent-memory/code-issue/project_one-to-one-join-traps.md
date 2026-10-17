@@ -37,6 +37,14 @@ refused and takes no weaker match later. Do not write a second matcher.
 - **Report refusals from the matcher, never re-derive them (#1204).** It returns
   `refusedLeftOptions` (refused left → its live options at the refusing level), and
   the property test checks it against brute force.
+- **Refusal is per level, not per edge (#1204 review).** A refused left's live edges can
+  include a right a forced pair took in the SAME level (Lb:{R}, La:{R,X1,X2}, Lc:{X1,X2}),
+  so any "what it tied on" report must subtract that level's `takenRights`. A brute-force
+  replay that collects options the same way agrees with the overcount: subtract there too.
+- **A one-title `ambiguousBetween` is the other way round.** It means two reviewed
+  requirements tied on one saved row, not one answer fitting several rows; word it so.
+- **An append re-plans over the enlarged set**, so a new row can be refused among items the
+  first promotion gave an existing row; `withoutGivenItems` drops those.
 - **`metadata.promotionMatching` has three writers.** `promote-requirements.ts` (replace),
   `orchestrator.ts` (replace), and `appendNewlyApproved`'s transaction (merge onto
   `lockedMetadata`, not `persistAnalysisEnhancement`). A sibling field (#1203) needs all

@@ -9,6 +9,7 @@ import {
   appendPromotionMatching,
   promotionMatchingRecord,
   readPromotionMatchingRecord,
+  withoutGivenItems,
 } from "./promotion-matching.js";
 
 const NOW = new Date("2026-10-17T12:00:00Z");
@@ -20,6 +21,7 @@ const refused = (structuredId: string, approvedIndex: number): AmbiguousPromotio
   structuredId,
   approvedIndex,
   candidates: CANDIDATES,
+  synthesizedIndexes: [0, 1],
 });
 
 describe("ambiguousPromotionRecords", () => {
@@ -99,5 +101,26 @@ describe("appendPromotionMatching", () => {
       ambiguous: [],
       updatedAt: NOW.toISOString(),
     });
+  });
+});
+
+describe("withoutGivenItems (#1204 review)", () => {
+  it("drops an option an existing row already carries, keeping the rest aligned", () => {
+    expect(withoutGivenItems([refused("REQ-3", 1)], new Set([0]))).toEqual([
+      {
+        structuredId: "REQ-3",
+        approvedIndex: 1,
+        candidates: [CANDIDATES[1]],
+        synthesizedIndexes: [1],
+      },
+    ]);
+  });
+
+  it("drops a refusal left with no option, never recording an empty list", () => {
+    expect(withoutGivenItems([refused("REQ-3", 1)], new Set([0, 1]))).toEqual([]);
+  });
+
+  it("changes nothing when no item was given out", () => {
+    expect(withoutGivenItems([refused("REQ-3", 1)], new Set())).toEqual([refused("REQ-3", 1)]);
   });
 });

@@ -1201,6 +1201,7 @@ export default function AnalysisPage(): React.ReactElement {
                           <AmbiguousMatchNotice
                             metadata={detail.data.metadata}
                             requirementId={req.id}
+                            hasCriteria={(req.acceptanceCriteria ?? []).length > 0}
                           />
                           {req.labels.length > 0 ? (
                             <div className="mt-2 flex flex-wrap gap-1">

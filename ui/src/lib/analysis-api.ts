@@ -1068,8 +1068,10 @@ export interface EnhancementMetadata {
         requirementTitle: string;
       };
       /**
-       * #1204 — not applied because its requirement matched these saved
-       * requirements (titles) equally well, so none was picked.
+       * #1204 — not applied because the match was too close to call: the saved
+       * requirements (titles) its requirement was refused among. One title means
+       * that saved requirement fitted this and another reviewed requirement
+       * equally well, not that the answer fitted several.
        */
       ambiguousBetween?: string[];
     }>;

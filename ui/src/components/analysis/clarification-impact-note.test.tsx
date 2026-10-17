@@ -307,11 +307,11 @@ describe("ClarificationImpactNote — #1204 answers refused because the match wa
     );
     const warning = screen.getByTestId("clarification-unattributed");
     expect(warning).toHaveTextContent(
-      /1 of them matched more than one saved requirement equally well, so none was chosen/,
+      /1 of them could not be placed because the match was too close to call:/,
     );
     const list = screen.getByTestId("clarification-ambiguous");
     expect(list).toHaveTextContent(
-      "Question q1? → fits “Mark all as read” and “Mark older entries read” equally well",
+      "Question q1? → fits “Mark all as read” and “Mark older entries read” equally well, so none was chosen",
     );
     expect(list).not.toHaveTextContent("Other?");
   });
@@ -328,11 +328,13 @@ describe("ClarificationImpactNote — #1204 answers refused because the match wa
       />,
     );
     expect(screen.getByTestId("clarification-unattributed")).toHaveTextContent(
-      /They matched more than one saved requirement/,
+      /They could not be placed because the match was too close to call/,
     );
     const list = screen.getByTestId("clarification-ambiguous");
-    expect(list).toHaveTextContent("fits “A”, “B” and “C” equally well");
-    expect(list).toHaveTextContent("fits “Export orders” and another requirement equally well");
+    expect(list).toHaveTextContent("fits “A”, “B” and “C” equally well, so none was chosen");
+    expect(list).toHaveTextContent(
+      "“Export orders” fits this and another requirement equally well, so the answer was given to neither",
+    );
   });
 
   it("says “It” for a single ambiguous answer", () => {
@@ -347,8 +349,47 @@ describe("ClarificationImpactNote — #1204 answers refused because the match wa
       />,
     );
     expect(screen.getByTestId("clarification-unattributed")).toHaveTextContent(
-      /It matched more than one saved requirement/,
+      /It could not be placed because the match was too close to call/,
     );
+  });
+
+  // #1204 review — one title means two reviewed requirements tied on ONE saved
+  // row (the commonest tie). The old wording claimed the answer fitted several
+  // saved requirements, which was false.
+  it("one saved requirement: says it fits this and another requirement, never that the answer fitted several", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          unattributedCount: 1,
+          ambiguousCount: 1,
+          answers: [tiedAnswer("q1", ["Mark all as read"])],
+        }}
+      />,
+    );
+    const warning = screen.getByTestId("clarification-unattributed");
+    expect(warning).not.toHaveTextContent(/more than one saved requirement/);
+    expect(screen.getByTestId("clarification-ambiguous")).toHaveTextContent(
+      "Question q1? → “Mark all as read” fits this and another requirement equally well, so the answer was given to neither",
+    );
+  });
+
+  it("several saved requirements: names every one the answer fitted", () => {
+    render(
+      <ClarificationImpactNote
+        application={{
+          ...base,
+          unattributedCount: 1,
+          ambiguousCount: 1,
+          answers: [tiedAnswer("q1", ["Export orders", "Export invoices"])],
+        }}
+      />,
+    );
+    const list = screen.getByTestId("clarification-ambiguous");
+    expect(list).toHaveTextContent(
+      "Question q1? → fits “Export orders” and “Export invoices” equally well, so none was chosen",
+    );
+    expect(list).not.toHaveTextContent(/another requirement/);
   });
 
   it("adds nothing for unmatched answers that were not ambiguous", () => {

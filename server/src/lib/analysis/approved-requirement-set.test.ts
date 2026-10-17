@@ -389,6 +389,9 @@ describe("#1033 — the title fallback refuses a tie instead of breaking it by o
   it("#1204 — reports the refused requirement and the items it was level on, in either order", () => {
     const flush = structured("REQ-1", "Flush sessions");
     const other = structured("REQ-2", "Export subscriptions as OPML");
+    // Not approved, and listed first: REQ-1's approved position (1) is not its
+    // position in the reviewed list (2), and the rows follow the approved one.
+    const unapproved = structured("REQ-0", "Rate limit the public API");
     const a = synth("Flush sessions on logout", { acceptanceCriteria: ["Logout ends sessions."] });
     const b = synth("Flush sessions on password reset", {
       acceptanceCriteria: ["Reset ends sessions."],
@@ -398,7 +401,7 @@ describe("#1033 — the title fallback refuses a tie instead of breaking it by o
       [b, a],
     ]) {
       const plan = planApprovedRequirementSet({
-        structured: [other, flush],
+        structured: [unapproved, other, flush],
         approvedIds: new Set(["REQ-1", "REQ-2"]),
         synthesis: { summary: "s", requirements: items },
       });
