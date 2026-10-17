@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import type { PrismaClient } from "@prisma/client";
 import { buildSymbolsFromRepo, type EvalCodeSymbol } from "../codegraph/fixture.js";
 import {
-  ANALYSIS_LINK_MIN_SHARED_TERMS,
+  ANALYSIS_LINK_SEARCH_OPTIONS,
   Bm25CodeSymbolSearcher,
   type Bm25SearcherOptions,
   type CodeSymbolSearcher,
@@ -107,9 +107,11 @@ async function walkFiles(root: string): Promise<string[]> {
  */
 export function buildBm25Searcher(
   symbols: EvalCodeSymbol[],
-  // #1063 — the analysis path's setting, since that is the path this eval
-  // replays. Pass `{ minSharedTerms: 1 }` for the pre-#1063 arm.
-  options: Bm25SearcherOptions = { minSharedTerms: ANALYSIS_LINK_MIN_SHARED_TERMS },
+  // #1063 — the analysis path's settings, since that is the path this eval
+  // replays. Pass `{ minSharedTerms: 1 }` for the pre-#1063 arm, or
+  // `{ minSharedTerms: ANALYSIS_LINK_MIN_SHARED_TERMS }` for the arm before the
+  // run-9 subject rules.
+  options: Bm25SearcherOptions = ANALYSIS_LINK_SEARCH_OPTIONS,
 ): CodeSymbolSearcher {
   const stub = {
     codeSymbol: {

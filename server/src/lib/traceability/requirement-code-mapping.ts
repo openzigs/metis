@@ -30,6 +30,7 @@ import { createChildLogger } from "../logger.js";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { extractFirstJson } from "../docs-gen/grounding/json-extract.js";
 import { isDocumentationFilePath } from "../analysis/traceability-matrix.js";
+import { isTestPath } from "../code-graph/test-conventions.js";
 
 const log = createChildLogger("requirement-code-mapping");
 
@@ -436,6 +437,8 @@ interface Bm25Corpus {
   size: number;
   /** {@link symbolNameTerms} per symbol id, filled on first use (#1063). */
   nameTerms: Map<string, NameTermSets>;
+  /** {@link corpusEntityWords}, computed on first use (#1063). */
+  entityWords: ReadonlySet<string> | null;
 }
 
 /** Load a project's code symbols and build the BM25 index once. */
@@ -468,6 +471,7 @@ async function buildBm25Corpus(
     byId: new Map(rows.map((r) => [r.id, r])),
     size: rows.length,
     nameTerms: new Map(),
+    entityWords: null,
   };
 }
 
@@ -521,6 +525,210 @@ export interface Bm25SearcherOptions {
    * {@link ANALYSIS_LINK_MIN_SHARED_TERMS}.
    */
   minSharedTerms?: number;
+  /**
+   * Drop a candidate that lives in a test file ({@link isTestPath}). Default
+   * false. See {@link ANALYSIS_LINK_SEARCH_OPTIONS}.
+   */
+  excludeTestCode?: boolean;
+  /**
+   * Apply the subject rules ({@link sharesRequirementSubject}). Default false.
+   * See {@link ANALYSIS_LINK_SEARCH_OPTIONS}.
+   */
+  requireSubject?: boolean;
+}
+
+/**
+ * Issue #1063 (reopened after #706 run 9) — what the analysis path asks of a
+ * requirement→code link before it is stored and shown. The code agent's seeds
+ * do not use these options (see {@link ANALYSIS_LINK_MIN_SHARED_TERMS}, SCOPE).
+ *
+ * Run 9 showed that two shared name terms are not enough. For "Last Successful
+ * refresh in feed API" (terms last, successful, refresh, feed, api):
+ *   - `WebSession::LastForceRefresh` shares `last` and `refresh` through its own
+ *     name, and was the best BM25 hit, so it read confidence 1.00. It is the web
+ *     session's manual-refresh throttle; the requirement is about a FEED.
+ *   - `api_keys.last_used_at` shares `last` through its own name and `api`
+ *     through its table, `api_keys`, whose terms count since #1071. The
+ *     requirement's "API" is the feed API, not the API-keys table.
+ *   - `TestRefreshFeedEndpoint` shares `refresh` and `feed`, and is a test.
+ * And for "Mark all as read older than X" (mark, read, older), the user setting
+ * `users.mark_read_on_view` and the type `markReadBehavior` share `mark` and
+ * `read` and are about marking an entry read when it is opened.
+ *
+ * Hence, on top of the two shared terms: no test code, and the subject rules.
+ */
+export const ANALYSIS_LINK_SEARCH_OPTIONS: Readonly<Bm25SearcherOptions> = Object.freeze({
+  minSharedTerms: ANALYSIS_LINK_MIN_SHARED_TERMS,
+  excludeTestCode: true,
+  requireSubject: true,
+});
+
+/**
+ * The forms a word can take as a singular, the word itself first: `feeds` →
+ * feeds, feed; `addresses` → addresses, addresse, address; `movies` → movies,
+ * movie, movi, movy. A word of three letters or fewer, one ending in `ss`, or one
+ * not ending in `s` has only itself.
+ *
+ * Two words are the same word, singular or plural, when their forms share one
+ * ({@link sameWord}); both sides go through this one function. That makes a
+ * plural agree with its singular whichever of `-s`, `-es` or `-ies` it takes
+ * (`statuses`/status, `boxes`/box, `matches`/match, `caches`/cache,
+ * `menus`/menu, `cookies`/cookie, `categories`/category), which a single
+ * "singular" string cannot do: `-ses` is `status`+es in `statuses` but
+ * `response`+s in `responses`. Constant work per word.
+ */
+export function singularForms(term: string): readonly string[] {
+  if (term.length <= 3 || !term.endsWith("s") || term.endsWith("ss")) return [term];
+  const forms = [term, term.slice(0, -1)];
+  if (term.endsWith("es")) forms.push(term.slice(0, -2));
+  if (term.endsWith("ies")) forms.push(`${term.slice(0, -3)}y`);
+  return forms;
+}
+
+/** Whether two words are the same word, singular or plural ({@link singularForms}). */
+export function sameWord(a: string, b: string): boolean {
+  const formsOfB = singularForms(b);
+  return singularForms(a).some((f) => formsOfB.includes(f));
+}
+
+/** Every {@link singularForms} form of every word, for `has` lookups. */
+function wordForms(words: Iterable<string>): Set<string> {
+  const out = new Set<string>();
+  for (const word of words) for (const form of singularForms(word)) out.add(form);
+  return out;
+}
+
+/** Whether `word`, singular or plural, is among `forms` (built by {@link wordForms}). */
+function namesWord(forms: ReadonlySet<string>, word: string): boolean {
+  return word !== "" && singularForms(word).some((f) => forms.has(f));
+}
+
+/**
+ * #1063 — the requirement's words as the subject rules read them
+ * ({@link sharesRequirementSubject}), each with its singular forms.
+ */
+export interface RequirementSubjectWords {
+  /**
+   * Rule 1 reads the DENOISED query (#943), so an actor the denoiser strips
+   * ("Given two users") never names an entity.
+   */
+  denoised: ReadonlySet<string>;
+  /**
+   * Rules 2 and 3 read EVERY word the requirement uses. The #943 stopwords
+   * include `entry`, `user`, `setting`, `record`, `option`, `status` and
+   * `type`; read through the denoiser, a column of `entries` or `users` could
+   * never link, even for a requirement that names the table word for word
+   * (review of PR #1227).
+   */
+  all: ReadonlySet<string>;
+}
+
+/** {@link RequirementSubjectWords} for a requirement query. */
+export function requirementSubjectWords(query: string): RequirementSubjectWords {
+  return {
+    denoised: wordForms(tokenizeCode(denoiseRequirementQuery(query))),
+    all: wordForms(tokenizeCode(query)),
+  };
+}
+
+/** The words of a name, without the joined `a_b` forms {@link tokenizeCode} adds. */
+function nameWords(name: string): string[] {
+  return tokenizeCode(name).filter((t) => !t.includes("_"));
+}
+
+/** Symbol kinds whose name is a NOUN for a thing: a type or a table. */
+const ENTITY_KINDS: ReadonlySet<string> = new Set(["class", "interface", "type", "table"]);
+
+/**
+ * The entities a corpus defines: the name of every table whose name is one
+ * word (`feeds`, `users`, `entries`). A table is a stored thing a requirement
+ * can be about; a multi-word table (`api_keys`, `user_sessions`) is named by
+ * its last word instead (see {@link sharesRequirementSubject}). Types are
+ * deliberately left out: Miniflux alone has single-word types called `result`,
+ * `view`, `handler`, `client` and `message`, words a requirement uses without
+ * meaning a type.
+ */
+function corpusEntityWords(rows: Iterable<Bm25SymbolRow>): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const row of rows) {
+    if (row.kind !== "table") continue;
+    const words = nameWords(row.name);
+    if (words.length === 1) out.add(words[0]);
+  }
+  return out;
+}
+
+/** Whether a #943 stopword is one of the word's singular forms (`users` → user). */
+const isStopwordEntity = (word: string): boolean =>
+  singularForms(word).some((f) => REQUIREMENT_QUERY_STOPWORDS.has(f));
+
+/**
+ * #1063 — whether a symbol is about what the requirement is about, beyond
+ * sharing two words with it. A plural and its singular are the same word
+ * throughout ({@link sameWord}). Three rules, each from a run-9 mislink:
+ *
+ *   1. ENTITY. When the requirement names an entity the corpus stores (a
+ *      one-word table: "feed" for `feeds`), the symbol's name, or its enclosing
+ *      type's, must name one of them too. "Last successful refresh in feed
+ *      API" is about feeds; `WebSession::LastForceRefresh` is not. Read from
+ *      the denoised query, and a table whose name is a #943 stopword (`users`,
+ *      `entries`, `settings`) is never an entity here: "Given two users" names
+ *      the actor, not the table.
+ *   2. TYPE. A type or table is linked only when the requirement uses the last
+ *      word of its name (`markReadBehavior` → "behavior", `api_keys` → "key").
+ *      The last word of a type name is what the type IS; sharing only its
+ *      qualifiers (`mark`, `read`) is a different thing.
+ *   3. COLUMN. A column is linked only when the requirement names its table in
+ *      the same way, by the last word of the table's name
+ *      (`users.mark_read_on_view` needs "user" or "users";
+ *      `api_keys.last_used_at` needs "key"). A column is an attribute of its
+ *      table's entity, and a requirement that never names the entity is not
+ *      about that attribute.
+ *
+ * Rules 2 and 3 read every word of the requirement, stopwords included
+ * ({@link RequirementSubjectWords}). Functions and methods are judged by rule 1
+ * alone: their names are verb phrases (`refreshFeedHandler`), so their last
+ * word says nothing.
+ *
+ * `symbolTerms` is {@link symbolNameTerms} of the row, when the caller already
+ * has it.
+ */
+export function sharesRequirementSubject(
+  row: { name: string; qualifiedName: string; filePath: string; kind: string },
+  words: RequirementSubjectWords,
+  corpusEntities: ReadonlySet<string>,
+  symbolTerms: ReadonlySet<string> = symbolNameTerms(row),
+): boolean {
+  const named = [...corpusEntities].filter(
+    (entity) => namesWord(words.denoised, entity) && !isStopwordEntity(entity),
+  );
+  if (named.length > 0) {
+    const symbolForms = wordForms(symbolTerms);
+    if (!named.some((entity) => namesWord(symbolForms, entity))) return false;
+  }
+  if (ENTITY_KINDS.has(row.kind)) {
+    return namesWord(words.all, lastWord(row.name));
+  }
+  if (row.kind === "column") {
+    const table = columnTable(row.qualifiedName);
+    return table === null || namesWord(words.all, lastWord(table));
+  }
+  return true;
+}
+
+/** The last word of a name (`markReadBehavior` → behavior, `api_keys` → keys). */
+function lastWord(name: string): string {
+  const words = nameWords(name);
+  return words.length === 0 ? "" : words[words.length - 1];
+}
+
+/** The table of a `table.column` qualified name, or null when there is none. */
+function columnTable(qualifiedName: string): string | null {
+  const dot = qualifiedName.lastIndexOf(".");
+  if (dot <= 0) return null;
+  const owner = qualifiedName.slice(0, dot);
+  const lastOwnerDot = owner.lastIndexOf(".");
+  return lastOwnerDot === -1 ? owner : owner.slice(lastOwnerDot + 1);
 }
 
 /**
@@ -632,6 +840,16 @@ function symbolNameTermSets(row: {
   };
 }
 
+/** {@link symbolNameTermSets} of a corpus symbol, computed once per corpus. */
+function cachedNameTermSets(corpus: Bm25Corpus, symbolId: string): NameTermSets {
+  let terms = corpus.nameTerms.get(symbolId);
+  if (!terms) {
+    terms = symbolNameTermSets(corpus.byId.get(symbolId)!);
+    corpus.nameTerms.set(symbolId, terms);
+  }
+  return terms;
+}
+
 /**
  * Whether the symbol's name shares at least `required` of `queryTerms` — and,
  * for a member, at least one of them through its own name rather than its
@@ -643,11 +861,7 @@ function sharesEnoughNameTerms(
   queryTerms: ReadonlySet<string>,
   required: number,
 ): boolean {
-  let terms = corpus.nameTerms.get(symbolId);
-  if (!terms) {
-    terms = symbolNameTermSets(corpus.byId.get(symbolId)!);
-    corpus.nameTerms.set(symbolId, terms);
-  }
+  const terms = cachedNameTermSets(corpus, symbolId);
   let shared = 0;
   let own = terms.own === null;
   for (const term of queryTerms) {
@@ -679,6 +893,23 @@ function scoreBm25Corpus(
     const queryTerms = new Set(tokenizeCode(denoised));
     const required = requiredSharedTerms(denoised, options.minSharedTerms);
     scored = scored.filter((s) => sharesEnoughNameTerms(corpus, s.symbolId, queryTerms, required));
+  }
+  // #1063 (run 9) — only when a caller asks for them; also before the limit.
+  if (options.excludeTestCode) {
+    scored = scored.filter((s) => !isTestPath(corpus.byId.get(s.symbolId)!.filePath));
+  }
+  if (options.requireSubject) {
+    corpus.entityWords ??= corpusEntityWords(corpus.byId.values());
+    const entities = corpus.entityWords;
+    const words = requirementSubjectWords(query);
+    scored = scored.filter((s) =>
+      sharesRequirementSubject(
+        corpus.byId.get(s.symbolId)!,
+        words,
+        entities,
+        cachedNameTermSets(corpus, s.symbolId).all,
+      ),
+    );
   }
   return scored.slice(0, limit).map((s) => {
     const row = corpus.byId.get(s.symbolId)!;

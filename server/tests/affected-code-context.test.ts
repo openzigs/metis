@@ -370,3 +370,74 @@ describe("computeAffectedCodeContext — default mapper (#1063)", () => {
     expect(ctx).toEqual(EMPTY_AFFECTED_CODE_CONTEXT);
   });
 });
+
+/**
+ * Issue #1063, reopened after #706 run 9 — the links a person is shown leave
+ * test code out at EVERY depth. A test that calls a linked handler reaches the
+ * blast radius as its caller, so dropping tests from the mapper's hits alone
+ * brought `TestRefreshFeedEndpoint` back as a "caller" (measured on run 9's
+ * stored graph). The code agent's seeds keep it, as before.
+ */
+describe("computeAffectedCodeContext — test code in the links (#1063, run 9)", () => {
+  const HANDLER = "internal/api/feed_handlers.go";
+  const TEST = "internal/api/api_integration_test.go";
+  const ROUTER = "internal/api/api.go";
+  const symbols = [
+    { id: "h", name: "refreshFeedHandler", filePath: HANDLER, owner: "handler" },
+    { id: "t", name: "TestRefreshFeedEndpoint", filePath: TEST, owner: null },
+    { id: "u", name: "refreshFeed", filePath: "internal/ui/feed_refresh.go", owner: "handler" },
+    { id: "r", name: "serve", filePath: ROUTER, owner: null },
+  ].map((s, i) => ({
+    id: s.id,
+    name: s.name,
+    qualifiedName: s.owner ? `${s.filePath}::${s.owner}::${s.name}` : `${s.filePath}::${s.name}`,
+    kind: "function",
+    filePath: s.filePath,
+    startLine: 10 + i,
+    endLine: 20 + i,
+  }));
+  const graph = new InMemoryCodeGraphDataSource(
+    symbols.map((s) => ({
+      id: s.id,
+      qualifiedName: s.qualifiedName,
+      kind: s.kind,
+      filePath: s.filePath,
+      language: "go",
+      startLine: s.startLine,
+      endLine: s.endLine,
+    })),
+    [
+      // The integration test and the router both call the API handler.
+      { id: "e1", fromSymbolId: "t", toSymbolId: "h", kind: "calls" },
+      { id: "e2", fromSymbolId: "r", toSymbolId: "h", kind: "calls" },
+    ],
+  );
+  const prisma = { codeSymbol: { findMany: async () => symbols } } as never;
+
+  const run = () =>
+    computeAffectedCodeContext({
+      projectId: "proj-miniflux",
+      extraInstructions: "- Last Successful refresh in feed API",
+      enabled: true,
+      tokenBudget: 100000,
+      deps: { prisma, dataSourceFor: () => graph },
+    });
+
+  it("shows no test, neither as a hit nor as a caller, and keeps the non-test caller", async () => {
+    const ctx = await run();
+    const shown = ctx.result.candidates[0]!.symbols;
+    expect(shown.map((s) => s.filePath)).not.toContain(TEST);
+    expect(shown).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ filePath: HANDLER, relation: "direct" }),
+        expect.objectContaining({ filePath: ROUTER, relation: "caller" }),
+      ]),
+    );
+  });
+
+  it("still seeds the code agent with the test", async () => {
+    const ctx = await run();
+    expect(ctx.block).toContain("TestRefreshFeedEndpoint");
+    expect(ctx.filePaths).toContain(TEST);
+  });
+});
