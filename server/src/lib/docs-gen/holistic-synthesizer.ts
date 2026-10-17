@@ -331,6 +331,14 @@ import {
   type CodeIdentifierReport,
 } from "./main-part-language.js";
 import {
+  APPROVED_REQUIREMENTS_HEADING,
+  APPROVED_REQUIREMENTS_MODEL,
+  approvedRequirementsMaxChars,
+  loadApprovedRequirements,
+  renderApprovedRequirementsSection,
+} from "./approved-requirements-section.js";
+import type { ScopedRequirement } from "./requirements-scope.js";
+import {
   buildFactSheet,
   canonicalFactSource,
   FACT_SHEET_VERSION,
@@ -1761,7 +1769,13 @@ async function runHolisticSynthesis(
       // Persist only hashes, never credentials or endpoint/source text.
       effectiveConfigHash: synthesisConfigHash(provenance, repoConnectorId),
     },
-    { schemaInventory: options?.schemaInventory },
+    {
+      schemaInventory: options?.schemaInventory,
+      // #1218 — a reader-layout BRD lists the project's approved requirements.
+      ...(docType === "business-requirements" && readBrdLayoutSetting().layout === "reader"
+        ? { approvedRequirements: await loadApprovedRequirements(projectId) }
+        : {}),
+    },
   );
 
   // #330 — prepend the Phase-1 source-unavailability warning(s) so the document
@@ -3274,6 +3288,12 @@ export interface SectionGroup {
    * schema change, or a change to the check, rewrites the section.
    */
   schemaGrounding?: { inventory: SchemaInventory; version: number };
+  /**
+   * #1218 — set on the reader-layout BRD's requirements section when the
+   * project has approved requirements: the section is these rows, rendered
+   * by METIS (`approved-requirements-section.ts`), and no model is called.
+   */
+  approvedRequirements?: readonly ScopedRequirement[];
 }
 
 /**
@@ -4372,6 +4392,8 @@ export async function synthesizeFinalDocument(
     }
   };
   const regeneratedSections: string[] = [];
+  // #1218 — where the approved-requirements section is in `sectionMarkdowns`, if anywhere.
+  let approvedRequirementsAt = -1;
   // #857 — reported when there was anything stored to reuse.
   const resume: SectionResumeReport = { reused: [], stale: [] };
   let reusedCount = 0;
@@ -4513,6 +4535,33 @@ export async function synthesizeFinalDocument(
       index: gi + 1,
       total: groups.length,
     });
+    // #1218 — the approved requirements, as stored: rendered by METIS, no
+    // model call, nothing to fact-check and nothing to reuse. Rendered here
+    // within the document cap and again at assembly within the body limit
+    // (which the footnotes decide), so it is never cut mid-requirement.
+    if (readerLayout && group.approvedRequirements?.length) {
+      const markdown = renderApprovedRequirementsSection(
+        group.approvedRequirements,
+        approvedRequirementsMaxChars(documentMaxChars),
+        renderedCitationLength,
+      ).markdown;
+      approvedRequirementsAt = sectionMarkdowns.length;
+      sectionMarkdowns.push(markdown);
+      sectionOwners.push(manifestSections.length);
+      sectionParts.push(undefined);
+      manifestSections.push({
+        sectionLabel: group.label,
+        sectionIndex: gi,
+        providerKind: router.primary.kind,
+        model: APPROVED_REQUIREMENTS_MODEL,
+        factsSourceIds: [],
+        groundingSourceIds: [],
+      });
+      contributed.push({ label: group.label, heading: firstH2Heading(markdown) });
+      regeneratedSections.push(group.id);
+      reportSection({ section: group.label, status: "done", index: gi + 1, total: groups.length });
+      continue;
+    }
     try {
       // #333 — select THIS section's Phase-2 provider by tier. Under
       // single-provider routing every section resolves to `router.primary`
@@ -5389,9 +5438,21 @@ export async function synthesizeFinalDocument(
   // METIS rather than the model, saying they are not the approved ones.
   const sectionIdAt = (i: number): string =>
     groups[manifestSections[sectionOwners[i]].sectionIndex]?.id ?? "";
+  // #1218 — the approved requirements carry no such lead-in: they ARE the
+  // approved ones. They are rendered again within their share of the body
+  // limit, now that the footnotes' room is known, and kept as rendered.
   if (readerLayout) {
     sectionMarkdowns.forEach((markdown, i) => {
-      if (sectionIdAt(i) === "requirements") sectionMarkdowns[i] = withRequirementsLeadIn(markdown);
+      if (i === approvedRequirementsAt) {
+        const group = groups[manifestSections[sectionOwners[i]].sectionIndex];
+        sectionMarkdowns[i] = renderApprovedRequirementsSection(
+          group?.approvedRequirements ?? [],
+          approvedRequirementsMaxChars(bodyMaxChars),
+          renderedCitationLength,
+        ).markdown;
+      } else if (sectionIdAt(i) === "requirements") {
+        sectionMarkdowns[i] = withRequirementsLeadIn(markdown);
+      }
     });
   }
   const planInput = planning
@@ -5416,6 +5477,7 @@ export async function synthesizeFinalDocument(
         renderedCitationLength,
         documentMaxChars,
         sectionMarkdowns.map((_, i) => BRD_MAIN_SUMMARY_SECTIONS.has(sectionIdAt(i))),
+        sectionMarkdowns.map((_, i) => i === approvedRequirementsAt),
       )
     : null;
   const planFit =
@@ -6591,6 +6653,17 @@ export function planDocumentTopics(input: {
   const reader = input.readerLayout === true;
   const sheet = buildFactSheet(facts);
   const topicModules = new Map<string, ModuleFacts>();
+  // Room for the footnote definitions, known only after generation: one per
+  // module if every one is cited, and never more than a twentieth of the
+  // document (the run-7 BRD's were 5.9k of 247k). It only shapes what the
+  // sections are ASKED for: the fit at assembly measures the definitions
+  // themselves, so room this over-estimates is used and a shortfall is cut.
+  // Nothing here reads the facts sheet — a section's budget must not move
+  // because a fact it was never given changed (see the reuse inputs).
+  const reservedChars = Math.min(
+    Math.floor(input.documentMaxChars * FOOTNOTE_RESERVE_SHARE),
+    facts.reduce((n, f) => n + f.modulePath.length + FOOTNOTE_DEFINITION_OVERHEAD, 0),
+  );
   const demands: SectionDemand[] = groups.map((group) => {
     const { bundle } = providerForSection(input.router, group);
     const unbounded =
@@ -6612,7 +6685,13 @@ export function planDocumentTopics(input: {
         label: group.label,
         kind: "single",
         topics: [],
-        askChars: BRD_MAIN_SECTION_TARGETS[group.id],
+        // #1218 — the approved requirements ask for what they render to.
+        askChars: group.approvedRequirements?.length
+          ? renderApprovedRequirementsSection(
+              group.approvedRequirements,
+              approvedRequirementsMaxChars(input.documentMaxChars - reservedChars),
+            ).markdown.length
+          : BRD_MAIN_SECTION_TARGETS[group.id],
         ...part,
       };
     }
@@ -6658,24 +6737,22 @@ export function planDocumentTopics(input: {
       }),
     };
   });
-  // Room for the footnote definitions, known only after generation: one per
-  // module if every one is cited, and never more than a twentieth of the
-  // document (the run-7 BRD's were 5.9k of 247k). It only shapes what the
-  // sections are ASKED for: the fit at assembly measures the definitions
-  // themselves, so room this over-estimates is used and a shortfall is cut.
-  // Nothing here reads the facts sheet — a section's budget must not move
-  // because a fact it was never given changed (see the reuse inputs).
-  const reservedChars = Math.min(
-    Math.floor(input.documentMaxChars * FOOTNOTE_RESERVE_SHARE),
-    facts.reduce((n, f) => n + f.modulePath.length + FOOTNOTE_DEFINITION_OVERHEAD, 0),
-  );
   const plan = planDocument({
     sections: demands,
     documentMaxChars: input.documentMaxChars,
     sectionMaxChars: input.sectionMaxChars,
     reservedChars,
     // #1175 — the main part first, within its own budget.
-    ...(reader ? { mainBudgetChars: mainPlanBudget(input.documentMaxChars - reservedChars) } : {}),
+    // #1218 — what the main sections ask, so approved requirements count at
+    // the length they render to rather than the reconstructed section's target.
+    ...(reader
+      ? {
+          mainBudgetChars: mainPlanBudget(
+            input.documentMaxChars - reservedChars,
+            demands.reduce((n, d) => n + (d.part === "main" ? (d.askChars ?? 0) : 0), 0),
+          ),
+        }
+      : {}),
   });
   const budgets = new Map<string, Map<ModuleFacts, number | null>>();
   /** Per section id, the modules the plan left out of it, by repository and path. */
@@ -7544,6 +7621,31 @@ export interface SectionGroupContext {
    * layout, exactly as before.
    */
   brdLayout?: "reader";
+  /**
+   * #1218 — the project's approved requirements. In the reader layout, when
+   * there are any, the requirements section lists them as stored instead of
+   * reconstructing requirements from the code ({@link approvedRequirementsGroup}).
+   */
+  approvedRequirements?: readonly ScopedRequirement[];
+}
+
+/**
+ * #1218 — the reader layout's requirements section when the project has
+ * approved requirements: the same section id (so it is planned and fitted as
+ * a main section), the approved rows, and no model instructions or gating.
+ */
+function approvedRequirementsGroup(
+  requirements: readonly ScopedRequirement[],
+  reconstructed: SectionGroup,
+): SectionGroup {
+  return {
+    id: reconstructed.id,
+    label: APPROVED_REQUIREMENTS_HEADING,
+    instructions: "",
+    factSlices: reconstructed.factSlices,
+    minedRules: false,
+    approvedRequirements: requirements,
+  };
 }
 
 const DATA_ARCHITECTURE_NARRATIVE = `- Describe data stores (databases, caches, message queues) and why each was chosen. Something that is not a database table — an in-memory queue, a cache, a struct, a view, an external store — is described here as what it is, never as a table.
@@ -7913,7 +8015,13 @@ What external systems, databases, message queues, or services this system depend
 Alphabetical list of domain terms, abbreviations, and acronyms with concise definitions. Aim for 15-30 entries. Use a two-column table: | Term | Definition |`,
         },
       ];
-      return context.brdLayout === "reader" ? readerBrdGroups(catalogue) : catalogue;
+      if (context.brdLayout !== "reader") return catalogue;
+      const approved = context.approvedRequirements ?? [];
+      return readerBrdGroups(catalogue).map((group) =>
+        group.id === "requirements" && approved.length > 0
+          ? approvedRequirementsGroup(approved, group)
+          : group,
+      );
     }
 
     case "architecture":

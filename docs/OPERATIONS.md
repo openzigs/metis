@@ -969,7 +969,9 @@ every business-requirements document generated from code (scope full, repository
 prefix; a requirements-scoped BRD is not affected) as a main document for a business reader (about
 48k characters planned, 60k at most) followed by an appendix with the module-by-module
 detail, in the same document. The decision and its reasoning are in
-`docs/decisions/0021-reader-sized-brd-main-plus-appendix.md`.
+`docs/decisions/0021-reader-sized-brd-main-plus-appendix.md`. When the project has approved
+requirements, the main part's requirements section lists them as stored (#1218), with no
+model call for that section; a project with none gets the reconstructed section.
 
 - **The upgrade changes nothing.** Unset or `catalogue`, a BRD is generated exactly as
   before. Any other value is the catalogue layout and is logged.

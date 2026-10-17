@@ -150,11 +150,22 @@ export function isMainSection(sectionId: string): boolean {
   return Object.hasOwn(BRD_MAIN_SECTION_TARGETS, sectionId);
 }
 
-/** What the main part is planned out of a document budget of `budgetChars`. */
-export function mainPlanBudget(budgetChars: number): number {
+/**
+ * What the main part is planned out of a document budget of `budgetChars`,
+ * when its sections ask `targetChars` together (#1218: more or less than the
+ * targets when the requirements section is the approved requirements, at the
+ * length they render to). Never more than {@link BRD_MAIN_MAX_CHARS}.
+ */
+export function mainPlanBudget(
+  budgetChars: number,
+  targetChars: number = BRD_MAIN_TARGET_CHARS,
+): number {
   return Math.max(
     0,
-    Math.min(BRD_MAIN_TARGET_CHARS, Math.floor(Math.max(0, budgetChars) * BRD_MAIN_PLAN_SHARE)),
+    Math.min(
+      Math.min(BRD_MAIN_MAX_CHARS, Math.max(0, targetChars)),
+      Math.floor(Math.max(0, budgetChars) * BRD_MAIN_PLAN_SHARE),
+    ),
   );
 }
 
@@ -209,6 +220,14 @@ export function fitReaderDocument(
   documentMaxChars: number,
   /** Per section, whether it is a summary section ({@link BRD_MAIN_SUMMARY_SECTIONS}). */
   isSummary: readonly boolean[] = [],
+  /**
+   * #1218 — per main section, whether it is kept exactly as written (the
+   * approved requirements, already rendered within their share of the cap,
+   * whole requirements only). Its length is set aside first and the other
+   * main sections are fitted to the rest. A fixed section longer than the
+   * main part's room is fitted like any other.
+   */
+  isFixed: readonly boolean[] = [],
 ): ReaderFitResult {
   const mainAt = sections.flatMap((_, i) => (isMain[i] ? [i] : []));
   const appendixAt = sections.flatMap((_, i) => (isMain[i] ? [] : [i]));
@@ -216,13 +235,17 @@ export function fitReaderDocument(
   // join the main sections count against it too.
   const limit = mainFitCap(bodyMaxChars);
   const joins = 2 * Math.max(0, mainAt.length - 1);
-  const cap = Math.max(0, limit - joins);
+  const lengthOf = (i: number): number => measure(sections[i].markdown);
+  const fixedAt = mainAt.filter(
+    (i) => isFixed[i] === true && isSummary[i] !== true && lengthOf(i) <= limit - joins,
+  );
+  const fixedChars = sum(fixedAt.map(lengthOf));
+  const cap = Math.max(0, limit - joins - fixedChars);
   // The summaries first, each on its own floor: every summary keeps at least
   // MAIN_SUMMARY_FLOOR_CHARS of itself (all of itself when shorter), and the
   // room the other main sections leave above the floors is shared max-min.
   const summaryAt = mainAt.filter((i) => isSummary[i] === true);
-  const ownAt = mainAt.filter((i) => isSummary[i] !== true);
-  const lengthOf = (i: number): number => measure(sections[i].markdown);
+  const ownAt = mainAt.filter((i) => isSummary[i] !== true && !fixedAt.includes(i));
   const floors = summaryAt.map((i) => Math.min(lengthOf(i), MAIN_SUMMARY_FLOOR_CHARS));
   const room = Math.min(cap, Math.max(sum(floors), cap - sum(ownAt.map(lengthOf))));
   const extras = waterFill(
@@ -242,8 +265,13 @@ export function fitReaderDocument(
     limit,
     "BRD_MAIN_PART",
   );
+  // A fixed section fits its own length, so it is kept whole and listed as such.
+  const fixed = fixedAt.map((i) =>
+    fitDocumentToPlan([sections[i]], lengthOf(i), measure, limit, "BRD_MAIN_PART"),
+  );
   const main = mergeFits(mainAt.length, [
     ...summaryAt.map((i, k) => ({ at: [mainAt.indexOf(i)], result: summaries[k] })),
+    ...fixedAt.map((i, k) => ({ at: [mainAt.indexOf(i)], result: fixed[k] })),
     { at: ownAt.map((i) => mainAt.indexOf(i)), result: own },
   ]);
   const mainChars = sum(main.sections.map((section) => measure(section))) + joins;

@@ -372,6 +372,66 @@ export function headingWithCount(title: string, count: number): string {
   return `${title} (${count} ${noun})`;
 }
 
+/** What {@link renderRequirementEntry} shows besides the requirement's own text. */
+export interface RequirementEntryOptions {
+  /** #1218 — the stored requirement id, on the line under the heading. */
+  showId?: boolean;
+  /** The recorded code links (default true). A business reader's main part leaves them out. */
+  codeLinks?: boolean;
+}
+
+/**
+ * One requirement as BRD content, exactly as stored: its `### R<n>.` heading,
+ * type, priority, review status and verdict, its body (markers removed,
+ * headings nested), its acceptance criteria as written, and its code links.
+ * Nothing is reworded. Returned as lines, without a leading blank line.
+ */
+export function renderRequirementEntry(
+  r: ScopedRequirement,
+  n: number,
+  options: RequirementEntryOptions = {},
+): string[] {
+  const out: string[] = [
+    `### R${n}. ${cell(r.title)}`,
+    "",
+    `${options.showId ? `**Requirement id:** ${codePath(r.id)} · ` : ""}**Type:** ${cell(
+      r.type,
+    )} · **Priority:** ${cell(r.priority)} · **Review status:** ${cell(
+      r.reviewStatus ?? "draft",
+    )} · **Verdict:** ${cell(r.verdict ?? "not assessed")}`,
+    "",
+    requirementBodyMarkdown(r.body) || "_No description recorded._",
+    "",
+    "#### Acceptance criteria",
+    "",
+  ];
+  const criteria = parseAcceptanceCriteria(r.acceptanceCriteria);
+  if (criteria.length) criteria.forEach((c) => out.push(`- ${cell(c)}`));
+  else out.push("_No acceptance criteria were derived for this requirement._");
+  if (options.codeLinks === false) return out;
+  out.push("", "#### Code links", "");
+  if (!r.codeMappings.length && !r.implementations.length) {
+    out.push("_No code links recorded for this requirement._");
+    return out;
+  }
+  for (const m of r.codeMappings) {
+    out.push(
+      `- ${codePath(m.filePath + lineRange(m.startLine, m.endLine))} — ${cell(
+        m.source,
+      )} mapping, confidence ${Math.round(m.confidence * 100)}%`,
+    );
+  }
+  for (const impl of r.implementations) {
+    out.push(
+      `- ${codePath(impl.filePath + lineRange(impl.startLine, impl.endLine))} — implemented in ${prLink(
+        impl.prNumber,
+        impl.prUrl,
+      )}`,
+    );
+  }
+  return out;
+}
+
 /** The Markdown document for a set of requirements. */
 export function renderRequirementsDocument(
   title: string,
@@ -401,44 +461,7 @@ export function renderRequirementsDocument(
     );
   });
   out.push("", "## Requirements");
-  requirements.forEach((r, i) => {
-    out.push(
-      "",
-      `### R${i + 1}. ${cell(r.title)}`,
-      "",
-      `**Type:** ${cell(r.type)} · **Priority:** ${cell(r.priority)} · **Review status:** ${cell(
-        r.reviewStatus ?? "draft",
-      )} · **Verdict:** ${cell(r.verdict ?? "not assessed")}`,
-      "",
-      requirementBodyMarkdown(r.body) || "_No description recorded._",
-      "",
-      "#### Acceptance criteria",
-      "",
-    );
-    const criteria = parseAcceptanceCriteria(r.acceptanceCriteria);
-    if (criteria.length) criteria.forEach((c) => out.push(`- ${cell(c)}`));
-    else out.push("_No acceptance criteria were derived for this requirement._");
-    out.push("", "#### Code links", "");
-    if (!r.codeMappings.length && !r.implementations.length) {
-      out.push("_No code links recorded for this requirement._");
-      return;
-    }
-    for (const m of r.codeMappings) {
-      out.push(
-        `- ${codePath(m.filePath + lineRange(m.startLine, m.endLine))} — ${cell(
-          m.source,
-        )} mapping, confidence ${Math.round(m.confidence * 100)}%`,
-      );
-    }
-    for (const impl of r.implementations) {
-      out.push(
-        `- ${codePath(impl.filePath + lineRange(impl.startLine, impl.endLine))} — implemented in ${prLink(
-          impl.prNumber,
-          impl.prUrl,
-        )}`,
-      );
-    }
-  });
+  requirements.forEach((r, i) => out.push("", ...renderRequirementEntry(r, i + 1)));
   return `${out.join("\n")}\n`;
 }
 

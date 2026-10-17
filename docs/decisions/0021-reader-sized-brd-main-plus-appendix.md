@@ -32,7 +32,8 @@ appendix**.
   its heading: inferred from the code, not the approved requirements, which are in METIS
   under Requirements or in a requirements-scoped BRD, and the numbers are local to the
   document. Filling this section from the approved requirements when a project has them is
-  a follow-up.
+  a follow-up. *Done in #1218:* a project with approved requirements gets them, as stored,
+  under **Approved Requirements**; the reconstructed section is the fallback.
 - **The rules a reader signs off get the catalogue's bar.** Key Business Rules states literal
   limits, defaults and periods, so it is gated at the default code-fidelity faithfulness bar
   and reads the same inputs (the rules slice and the mined-rule inventory with `file:line`)
