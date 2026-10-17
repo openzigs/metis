@@ -61,15 +61,26 @@ export async function loadApprovedRequirements(projectId: string): Promise<Scope
 }
 
 /**
- * #1230 — what of each approved requirement the section depends on: every
- * stored field it is rendered from, in order, without the write bookkeeping
- * (`version`, `updatedAt`). A write that only bumps those changes nothing a
- * reader sees, so it neither makes the section `changed` for #857 reuse nor
- * makes the document's input snapshot stale.
+ * #1230 — what of each approved requirement the section depends on: exactly
+ * the stored fields it renders (`renderRequirementEntry` with `showId` and
+ * `codeLinks: false`), in order. Not the write bookkeeping (`version`,
+ * `updatedAt`), and not the code links (`codeMappings`, `implementations`),
+ * which the section does not show: re-scoring a mapping or linking a PR
+ * changes nothing a reader sees, so it neither makes the section `changed` for
+ * #857 reuse nor makes the document's input snapshot stale.
  */
 export function approvedRequirementsFacts(requirements: readonly ScopedRequirement[]): string {
   return JSON.stringify(
-    requirements.map(({ version: _version, updatedAt: _updatedAt, ...rest }) => rest),
+    requirements.map((r) => ({
+      id: r.id,
+      title: r.title,
+      body: r.body,
+      type: r.type,
+      priority: r.priority,
+      reviewStatus: r.reviewStatus,
+      verdict: r.verdict,
+      acceptanceCriteria: r.acceptanceCriteria,
+    })),
   );
 }
 

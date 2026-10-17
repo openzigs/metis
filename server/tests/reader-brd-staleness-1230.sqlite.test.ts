@@ -25,7 +25,7 @@ import {
 const state = vi.hoisted(() => {
   process.env.RATE_LIMIT_MAX = "100000";
   process.env.AI_OFFLINE = "1";
-  return { db: null as unknown, check: vi.fn(), layout: vi.fn() };
+  return { db: null as unknown, check: vi.fn(), layout: vi.fn(), promote: vi.fn() };
 });
 vi.mock("../src/lib/prisma.js", async () => {
   const { Prisma } = await import("@prisma/client");
@@ -48,6 +48,12 @@ vi.mock("../src/lib/reviews/notify.js", () => ({
 vi.mock("../src/lib/docs-gen/incremental.js", () => ({
   checkIncrementalRegeneration: state.check,
 }));
+// Promotion itself (synthesis output, approval checkpoints) is #1104's to test:
+// here only its outcome matters, to the routes that call it.
+vi.mock("../src/lib/analysis/promote-requirements.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/analysis/promote-requirements.js")>()),
+  promoteApprovedRequirements: state.promote,
+}));
 vi.mock("../src/lib/docs-gen/brd-layout.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/docs-gen/brd-layout.js")>()),
   readBrdLayoutSetting: state.layout,
@@ -59,11 +65,14 @@ const { requirementsCollaborationRouter } = await import("../src/routes/requirem
 const { initAnalysisRouter } = await import("../src/routes/analysis.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
+const { updateRequirementWithHistory } =
+  await import("../src/lib/requirements/requirement-version-service.js");
 
 const PROJECT = "proj-1230";
 const ANALYSIS = "ana-1230";
 const REQUESTER = "u-1230-req";
 const REVIEWER = "u-1230-rev";
+const REVIEWER_2 = "u-1230-rev-2";
 const CHECKED = [PROJECT, undefined, { approvedRequirementsOnly: true }];
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
@@ -91,7 +100,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const a = express();
       a.use(express.json());
       a.use("/api/requirements", requirementsCollaborationRouter());
-      a.use("/api/analyses", initAnalysisRouter().topLevel);
+      const analysis = initAnalysisRouter();
+      a.use("/api/analyses", analysis.topLevel);
+      a.use("/api/projects/:projectId/analyses", analysis.projectScoped);
       a.use(notFoundHandler);
       a.use(errorHandler);
       return a;
@@ -109,7 +120,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite = createMigratedSqlite("1230-reader-brd-staleness");
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
-      for (const id of [REQUESTER, REVIEWER]) {
+      for (const id of [REQUESTER, REVIEWER, REVIEWER_2]) {
         await db.user.create({
           data: { id, username: id, displayName: id, email: `${id}@example.test` },
         });
@@ -182,21 +193,83 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("a review reaching its verdict asks for the check; a decision short of one does not", async () => {
       const id = await makeRequirement({ version: 0, reviewStatus: null });
+      // Two reviewers, all must approve: the first decision leaves it pending.
       const created = (await createReviewRequest(REQUESTER, PROJECT, {
         title: "Sign-off",
         policy: "all",
-        reviewerIds: [REVIEWER],
+        reviewerIds: [REVIEWER, REVIEWER_2],
         items: [{ requirementId: id }],
       })) as { id: string };
       await submitReview(REQUESTER, created.id, false);
+      const first = await recordDecision(REVIEWER, created.id, "approved");
+      expect(first.aggregate).toBe("pending");
+      // Let any stray post-commit work run before asserting nothing ran.
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(state.check).not.toHaveBeenCalled();
-      await recordDecision(REVIEWER, created.id, "approved");
+      const second = await recordDecision(REVIEWER_2, created.id, "approved");
+      expect(second.aggregate).not.toBe("pending");
       expect(await db.requirement.findUniqueOrThrow({ where: { id } })).toMatchObject({
         reviewStatus: "approved",
       });
       await vi.waitFor(() => expect(state.check).toHaveBeenCalledWith(...CHECKED));
     });
+
+    it("restoring an approved requirement's earlier version asks for the check", async () => {
+      const id = await makeRequirement({ version: 0, reviewStatus: "approved" });
+      for (const title of ["First edit", "Second edit"]) {
+        await updateRequirementWithHistory(db as never, { requirementId: id, patch: { title } });
+      }
+      await vi.waitFor(() => expect(state.check).toHaveBeenCalled());
+      // Let the edits' coalesced checks finish, so only the restore's can follow.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      state.check.mockClear();
+      const r = await request(app())
+        .post(`/api/requirements/${id}/restore/1`)
+        .set("Authorization", `Bearer ${token()}`)
+        .send({});
+      expect(r.status).toBe(200);
+      expect(await db.requirement.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        title: "First edit",
+      });
+      await vi.waitFor(() => expect(state.check).toHaveBeenCalledWith(...CHECKED));
+    });
+
+    it("every writer through the version-history service asks for the check (import re-sync, clarification, take-source)", async () => {
+      const id = await makeRequirement({ version: 0, reviewStatus: "approved" });
+      await updateRequirementWithHistory(db as never, {
+        requirementId: id,
+        patch: { body: "Re-synced from the source" },
+      });
+      await vi.waitFor(() => expect(state.check).toHaveBeenCalledWith(...CHECKED));
+      state.check.mockClear();
+      // A write that changes nothing does not.
+      await updateRequirementWithHistory(db as never, {
+        requirementId: id,
+        patch: { body: "Re-synced from the source" },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(state.check).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["promote", "/approvals/promote"],
+      ["approve-all", "/approvals/approve-all"],
+    ])(
+      "promoting a run's approvals (%s) asks for the check; promoting nothing does not",
+      async (_name, path) => {
+        state.promote.mockResolvedValue({ status: "already-promoted", requirementCount: 3 });
+        const url = `/api/projects/${PROJECT}/analyses/${ANALYSIS}${path}`;
+        const none = await request(app()).post(url).set("Authorization", `Bearer ${token()}`);
+        expect(none.status).toBe(200);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(state.check).not.toHaveBeenCalled();
+        state.promote.mockResolvedValue({ status: "promoted", requirementCount: 3 });
+        const r = await request(app()).post(url).set("Authorization", `Bearer ${token()}`);
+        expect(r.status).toBe(200);
+        expect(r.body.data.promotion.status).toBe("promoted");
+        await vi.waitFor(() => expect(state.check).toHaveBeenCalledWith(...CHECKED));
+      },
+    );
 
     it("asks for nothing under the catalogue layout", async () => {
       state.layout.mockReturnValue({ layout: "catalogue" });

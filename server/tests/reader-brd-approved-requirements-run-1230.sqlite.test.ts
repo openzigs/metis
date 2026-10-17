@@ -93,7 +93,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.user.create({
         data: { id: USER, username: USER, displayName: USER, email: "u1230@x.test" },
       });
-      for (const id of ["rerun", "imported", "background", "empty"]) {
+      for (const id of ["rerun", "imported", "background", "empty", "tie"]) {
         await db.project.create({ data: { id, name: id, slug: id, createdById: USER } });
       }
 
@@ -128,6 +128,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         metadata: JSON.stringify({ source: "code-graph-ingest" }),
       });
 
+      // Two runs started at the same instant, each with requirements; the
+      // smaller id is written first, so table order alone would pick it.
+      await run("tie-a", "tie", "04");
+      await req("tie-a-approved", "tie", "tie-a", "approved");
+      await run("tie-b", "tie", "04");
+      await req("tie-b-approved", "tie", "tie-b", "approved");
+
       await run("empty-old", "empty", "01");
       await run("empty-ingest", "empty", "02", {
         metadata: JSON.stringify({ source: "docs-gen-domain-research" }),
@@ -140,7 +147,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("chooses the run the Requirements hub opens on, for every project", async () => {
-      for (const projectId of ["rerun", "imported", "background", "empty", "no-such-project"]) {
+      for (const projectId of [
+        "rerun",
+        "imported",
+        "background",
+        "empty",
+        "tie",
+        "no-such-project",
+      ]) {
         expect({ projectId, run: await defaultRequirementsRunIdFor(projectId) }).toEqual({
           projectId,
           run: await hubDefault(projectId),
@@ -150,6 +164,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await defaultRequirementsRunIdFor("imported")).toBe("import-run");
       expect(await defaultRequirementsRunIdFor("background")).toBe("bg-analysis");
       expect(await defaultRequirementsRunIdFor("empty")).toBe("empty-old");
+      // Two runs started at the same instant: the larger id, on both sides (review NB3).
+      expect(await defaultRequirementsRunIdFor("tie")).toBe("tie-b");
       expect(await defaultRequirementsRunIdFor("no-such-project")).toBeNull();
     });
 

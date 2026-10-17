@@ -18,6 +18,7 @@ import {
   mergeHiddenRequirementLabels,
   parseRequirementLabels,
 } from "../analysis/requirement-labels.js";
+import { noteRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 
 /**
  * Tracked requirement fields that participate in version history. Order is
@@ -445,7 +446,16 @@ export async function updateRequirementWithHistory(
   assertWritableKeys(params);
   // A versioned edit that lost the race is the caller's conflict to resolve;
   // an unversioned one asked for last-writer-wins, so retry on the new row.
-  return retryLostRace(params.expectedVersion === undefined, () => updateOnce(client, params));
+  const result = await retryLostRace(params.expectedVersion === undefined, () =>
+    updateOnce(client, params),
+  );
+  // #1230 — every edit of a requirement's content or review status comes
+  // through here (the #1162 guard), committed by now: a reader BRD listing
+  // approved requirements may be stale. Best effort, never throws.
+  if (result.changed || Object.keys(result.untrackedChanges).length > 0) {
+    void noteRequirementsChanged([result.id]);
+  }
+  return result;
 }
 
 /**
@@ -606,7 +616,10 @@ export async function restoreRequirementVersion(
   client: VersionPrismaClient,
   params: RestoreParams,
 ): Promise<RestoreResult> {
-  return retryLostRace(true, () => restoreOnce(client, params));
+  const result = await retryLostRace(true, () => restoreOnce(client, params));
+  // #1230 — as for an edit: a restore rewrites the requirement's content.
+  if (Object.keys(result.changedFields).length > 0) void noteRequirementsChanged([result.id]);
+  return result;
 }
 
 /** One attempt of {@link restoreRequirementVersion}. */

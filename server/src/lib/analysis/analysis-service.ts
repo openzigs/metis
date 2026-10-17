@@ -1289,7 +1289,8 @@ async function requirementCountsByAnalysis(
 export async function listAnalysesForProject(projectId: string) {
   const rows = await prisma.analysis.findMany({
     where: { projectId, deletedAt: null },
-    orderBy: { startedAt: "desc" },
+    // #1230 — `id` breaks a `startedAt` tie, as `defaultRequirementsRunIdFor` does.
+    orderBy: [{ startedAt: "desc" }, { id: "desc" }],
     select: {
       id: true,
       projectId: true,

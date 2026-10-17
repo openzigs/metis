@@ -44,7 +44,11 @@ function checkProject(projectId: string): Promise<void> {
   const check: ProjectCheck = { again: false, done: Promise.resolve() };
   check.done = (async () => {
     try {
-      incremental ??= import("./incremental.js");
+      // A failed import is not cached: the next change tries again.
+      incremental ??= import("./incremental.js").catch((err: unknown) => {
+        incremental = undefined;
+        throw err;
+      });
       const { checkIncrementalRegeneration } = await incremental;
       do {
         check.again = false;
@@ -63,6 +67,25 @@ function checkProject(projectId: string): Promise<void> {
   })();
   running.set(projectId, check);
   return check.done;
+}
+
+/**
+ * Call after a committed write that changed `projectId`'s requirements without
+ * naming them: requirements promoted from an analysis's approvals, a new set
+ * that may also move the run the Requirements hub opens on. Resolves when the
+ * check is done; never rejects.
+ */
+export async function noteProjectRequirementsChanged(projectId: string): Promise<void> {
+  try {
+    // Under the catalogue layout no BRD lists approved requirements.
+    if (readBrdLayoutSetting().layout !== "reader") return;
+    await checkProject(projectId);
+  } catch (err) {
+    log.warn("Could not check reader BRDs after a requirement change", {
+      projectId,
+      error: (err as Error).message,
+    });
+  }
 }
 
 /**

@@ -974,7 +974,9 @@ requirements, the main part's requirements section lists them as stored (#1218),
 model call for that section; a project with none gets the reconstructed section. Those
 requirements are part of the document's input snapshot (#1230): approving or editing one
 queues one regeneration of each auto-update reader BRD of the project (reusing every
-unchanged section), and stops a generation of it that is in progress at its next inputs check.
+unchanged section). A generation in progress is not stopped by it: it publishes, and the next
+check regenerates. A change to a requirement's code links does not count (the section does
+not show them). Writers that do not trigger the check yet are tracked in #1252.
 Upgrading adds that item to every reader BRD's snapshot, so each auto-update reader BRD is
 regenerated once at its next check; its unchanged sections are reused.
 

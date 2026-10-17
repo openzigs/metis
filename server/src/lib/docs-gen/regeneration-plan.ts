@@ -61,6 +61,46 @@ export function fingerprintInputs(
 }
 
 /**
+ * #1230 — the snapshot item of a reader-layout BRD's approved requirements
+ * (`generation-inputs.ts`). It makes the document stale like any input, but a
+ * run in progress does not stop for it: the only section that reads it is
+ * rendered by METIS from the stored rows, with no model call, so an analyst
+ * approving or editing a requirement mid-run (the normal sign-off workflow)
+ * must not throw away the model-written sections. The run publishes with the
+ * item it captured; the next auto-update check (or a manual regenerate) sees
+ * the newer value and regenerates, reusing every model-written section (#857).
+ */
+export const APPROVED_REQUIREMENTS_ITEM = "approvedRequirements";
+
+/** The snapshot items a run in progress does not stop for (see above). */
+const RUN_STABLE_ITEMS: readonly string[] = [APPROVED_REQUIREMENTS_ITEM];
+
+/**
+ * `fresh` as a run that captured `standsFor` compares it mid-run and at the
+ * commit fence: every {@link RUN_STABLE_ITEMS} item taken from `standsFor`, so
+ * a difference in those alone is no difference at all. Returns `fresh` itself
+ * when they already agree.
+ */
+export function withRunStableItemsOf(
+  fresh: GenerationInputSnapshot,
+  standsFor: GenerationInputSnapshot,
+): GenerationInputSnapshot {
+  if (RUN_STABLE_ITEMS.every((key) => fresh.items[key] === standsFor.items[key])) return fresh;
+  const items = { ...fresh.items };
+  for (const key of RUN_STABLE_ITEMS) {
+    const kept = standsFor.items[key];
+    if (kept === undefined) delete items[key];
+    else items[key] = kept;
+  }
+  return fingerprintInputs(items, fresh.graphs);
+}
+
+/** Whether `key` is an item a run in progress does not stop for. */
+export function isRunStableItem(key: string): boolean {
+  return RUN_STABLE_ITEMS.includes(key);
+}
+
+/**
  * Item kinds derived from code-graph ROWS: a symbol's identity carries its
  * qualified name, an edge's its endpoints and how it was bound, a rationale
  * finding's its symbol. An extractor upgrade rewrites these with no change to

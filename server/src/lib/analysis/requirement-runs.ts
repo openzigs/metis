@@ -45,7 +45,8 @@ export function isBackgroundAnalysis(metadata: string | null): boolean {
 export async function defaultRequirementsRunIdFor(projectId: string): Promise<string | null> {
   const rows = await prisma.analysis.findMany({
     where: { projectId, deletedAt: null, status: "completed" },
-    orderBy: { startedAt: "desc" },
+    // #1230 — the same order as `listAnalysesForProject`, tie included.
+    orderBy: [{ startedAt: "desc" }, { id: "desc" }],
     select: {
       id: true,
       status: true,

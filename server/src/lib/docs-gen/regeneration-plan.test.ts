@@ -1,5 +1,37 @@
 import { describe, expect, it } from "vitest";
-import { fingerprintInputs, isGraphRowsOnlyChange, planRegeneration } from "./regeneration-plan.js";
+import {
+  fingerprintInputs,
+  isGraphRowsOnlyChange,
+  isRunStableItem,
+  planRegeneration,
+  withRunStableItemsOf,
+} from "./regeneration-plan.js";
+
+describe("withRunStableItemsOf (#1230)", () => {
+  const graphs = { g: { rows: "r", mark: null } };
+  const captured = fingerprintInputs({ "source:a:0": "s1", approvedRequirements: "old" }, graphs);
+
+  it("compares a run's approved requirements as it captured them", () => {
+    const fresh = fingerprintInputs({ "source:a:0": "s1", approvedRequirements: "new" }, graphs);
+    const compared = withRunStableItemsOf(fresh, captured);
+    expect(compared.fingerprint).toBe(captured.fingerprint);
+    expect(compared.graphs).toEqual(graphs);
+    expect(isRunStableItem("approvedRequirements")).toBe(true);
+    expect(isRunStableItem("source:a:0")).toBe(false);
+  });
+
+  it("keeps every other difference", () => {
+    const fresh = fingerprintInputs({ "source:a:0": "s2", approvedRequirements: "new" }, graphs);
+    expect(withRunStableItemsOf(fresh, captured).fingerprint).not.toBe(captured.fingerprint);
+  });
+
+  it("drops an item the run never captured, and returns an agreeing snapshot as is", () => {
+    const without = fingerprintInputs({ "source:a:0": "s1" });
+    const fresh = fingerprintInputs({ "source:a:0": "s1", approvedRequirements: "new" });
+    expect(withRunStableItemsOf(fresh, without).fingerprint).toBe(without.fingerprint);
+    expect(withRunStableItemsOf(without, without)).toBe(without);
+  });
+});
 
 describe("isGraphRowsOnlyChange (#1071)", () => {
   const base = {

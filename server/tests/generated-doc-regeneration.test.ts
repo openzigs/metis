@@ -43,6 +43,9 @@ const state = vi.hoisted(() => ({
   graphIngest: vi.fn(),
   metadataIngest: vi.fn(),
   webResearch: vi.fn(),
+  /** #1230 — whether the document lists approved requirements, and what they are. */
+  readsApproved: false,
+  approved: [] as Array<Record<string, unknown>>,
 }));
 
 type TaskFilter = {
@@ -299,6 +302,15 @@ vi.mock("../src/lib/docs-gen/generated-doc-publication.js", () => ({
   enqueueGeneratedDocDeletion: vi.fn(),
   generatedDocSyntheticDocumentId: (id: string) => `gendoc-${id}`,
 }));
+// #1230 — the approved-requirements snapshot item, without a reader-layout BRD:
+// only whether the document reads them and what they are is faked.
+vi.mock("../src/lib/docs-gen/approved-requirements-section.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../src/lib/docs-gen/approved-requirements-section.js")
+  >()),
+  readsApprovedRequirements: () => state.readsApproved,
+  loadApprovedRequirements: async () => state.approved.map((r) => ({ ...r })),
+}));
 vi.mock("../src/lib/logger.js", () => ({
   createChildLogger: () => ({ info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
@@ -401,6 +413,8 @@ beforeEach(() => {
   state.failCommit = false;
   state.failTask = false;
   state.mutation = null;
+  state.readsApproved = false;
+  state.approved = [];
   state.doc = {
     id: "d",
     projectId: "p",
@@ -1419,5 +1433,90 @@ describe("successful ingest regeneration (#1356)", () => {
       await resolveEvidencePolicy(document()),
     );
     expect(after).toEqual(before);
+  });
+});
+
+/**
+ * #1230 (PR #1249 review, blocking 2) — approving or editing a requirement
+ * while a reader BRD is being generated is the normal sign-off workflow. The
+ * approved requirements are among the document's inputs (it goes stale), but
+ * the one section that reads them is rendered without a model, so the run in
+ * progress does not stop for them: not between steps, not at the commit fence,
+ * not during opt-in web research. The next check sees the change.
+ */
+describe("an approval during a reader BRD's generation (#1230)", () => {
+  const approved = (title: string) => ({
+    id: "req-1",
+    title,
+    body: "Body",
+    type: "feature",
+    priority: "high",
+    reviewStatus: "approved",
+    verdict: null,
+    acceptanceCriteria: "[]",
+    version: 1,
+    updatedAt: new Date(),
+    codeMappings: [],
+    implementations: [],
+  });
+  const item = (manifest: unknown) =>
+    parseGeneratedDocVersionManifest(manifest as string).inputSnapshot?.items.approvedRequirements;
+  const current = async () =>
+    (await captureGenerationInputs(document(), await resolveEvidencePolicy(document()))).items
+      .approvedRequirements;
+
+  beforeEach(() => {
+    state.readsApproved = true;
+    state.approved = [approved("Original")];
+  });
+
+  it("does not stop the run: it publishes once, standing for the approvals it captured", async () => {
+    const before = await current();
+    expect(before).toBeDefined();
+    // The analyst edits the approved requirement during the first model call.
+    state.mutation = () => {
+      state.approved = [approved("Edited by the analyst")];
+    };
+    await ingest();
+    const after = await current();
+    expect(after).not.toBe(before);
+    expect(state.versions).toHaveLength(1);
+    expect(state.publications).toHaveBeenCalledTimes(1);
+    // Published by the first run (a stopped run's replan would stand for `after`).
+    expect(item(state.versions[0].provenanceManifest)).toBe(before);
+    // Stale all the same: the next check regenerates.
+    await ingest();
+    expect(state.versions).toHaveLength(2);
+    expect(item(state.versions[1].provenanceManifest)).toBe(after);
+  });
+
+  it("control: a source change at the same moment still stops the run", async () => {
+    const before = await current();
+    state.mutation = () => {
+      state.approved = [approved("Edited by the analyst")];
+      state.symbols[25].contentHash = "edited";
+    };
+    await ingest();
+    expect(state.versions).toHaveLength(1);
+    // The replanned run published, standing for the inputs as they are now.
+    expect(item(state.versions[0].provenanceManifest)).not.toBe(before);
+    expect(item(state.versions[0].provenanceManifest)).toBe(await current());
+  });
+
+  it("does not throw away opt-in web research either", async () => {
+    state.doc.evidencePolicy = JSON.stringify({
+      version: 1,
+      principal: { kind: "initiating-user", userId: "u" },
+      sharedDocumentIds: [],
+      allowWebResearch: true,
+    });
+    state.webResearch.mockImplementationOnce(async () => {
+      state.approved = [approved("Approved during research")];
+    });
+    await ingest();
+    // One research pass: the run did not throw and retry.
+    expect(state.webResearch).toHaveBeenCalledTimes(1);
+    expect(state.versions).toHaveLength(1);
+    expect(state.publications).toHaveBeenCalledTimes(1);
   });
 });

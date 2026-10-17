@@ -51,6 +51,7 @@ import {
   promoteApprovedRequirements,
   type PromotionOutcome,
 } from "../analysis/promote-requirements.js";
+import { noteRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import { PublishError } from "./types.js";
 import { findTemplate } from "./template-service.js";
 import { renderToMarkdown, buildTemplatePrompt } from "./template-renderer.js";
@@ -252,7 +253,11 @@ async function loadOrPromoteRequirements(analysisId: string, analysisStatus: str
     }
     if (promotion.status === "promoted" && promotion.requirementCount > 0) {
       const promoted = await findLiveRequirements(analysisId);
-      if (promoted.length > 0) return promoted;
+      if (promoted.length > 0) {
+        // #1230 — a promoted set may be what a reader BRD lists: check it again.
+        void noteRequirementsChanged(promoted.map((r) => r.id));
+        return promoted;
+      }
     }
   }
   throw await noRequirementsError(analysisId, gate, promotion);

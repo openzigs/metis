@@ -19,7 +19,10 @@ vi.mock("./brd-layout.js", async (original) => ({
 }));
 vi.mock("../logger.js", () => ({ createChildLogger: () => ({ warn: mocks.warn }) }));
 
-import { noteRequirementsChanged } from "./approved-requirements-staleness.js";
+import {
+  noteProjectRequirementsChanged,
+  noteRequirementsChanged,
+} from "./approved-requirements-staleness.js";
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -69,6 +72,20 @@ describe("noteRequirementsChanged (#1230)", () => {
     // A later change starts a fresh check.
     await noteRequirementsChanged(["r99"]);
     expect(mocks.check).toHaveBeenCalledTimes(3);
+  });
+
+  it("checks a project named directly (a promotion), and not under the catalogue layout", async () => {
+    await noteProjectRequirementsChanged("p1");
+    expect(mocks.findMany).not.toHaveBeenCalled();
+    expect(mocks.check.mock.calls).toEqual([["p1", undefined, { approvedRequirementsOnly: true }]]);
+    mocks.layout.mockReturnValue({ layout: "catalogue" });
+    await noteProjectRequirementsChanged("p1");
+    expect(mocks.check).toHaveBeenCalledTimes(1);
+    mocks.layout.mockImplementation(() => {
+      throw new Error("config unavailable");
+    });
+    await expect(noteProjectRequirementsChanged("p1")).resolves.toBeUndefined();
+    expect(mocks.warn).toHaveBeenCalledTimes(1);
   });
 
   it("logs and never rejects when the lookup or the check fails", async () => {

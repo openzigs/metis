@@ -84,7 +84,7 @@ describe("loadApprovedRequirements", () => {
     // with its live requirements counted within the project.
     expect(analysisFindMany.mock.calls[0][0]).toEqual({
       where: { projectId: "p1", deletedAt: null, status: "completed" },
-      orderBy: { startedAt: "desc" },
+      orderBy: [{ startedAt: "desc" }, { id: "desc" }],
       select: {
         id: true,
         status: true,
@@ -148,6 +148,45 @@ describe("approvedRequirementsFacts (#1230)", () => {
     expect(approvedRequirementsFacts([req(1, { reviewStatus: "draft" })])).not.toBe(base);
     expect(approvedRequirementsFacts([req(1), req(2)])).not.toBe(base);
     expect(base).not.toContain("updatedAt");
+  });
+
+  it("changes with each field the section renders", () => {
+    const base = approvedRequirementsFacts([req(1)]);
+    const edits: Partial<ScopedRequirement>[] = [
+      { id: "req-other" },
+      { title: "Edited" },
+      { body: "Edited body" },
+      { type: "constraint" },
+      { priority: "low" },
+      { reviewStatus: "draft" },
+      { verdict: "missing" },
+      { acceptanceCriteria: JSON.stringify(["Edited criterion"]) },
+    ];
+    for (const edit of edits) expect(approvedRequirementsFacts([req(1, edit)])).not.toBe(base);
+  });
+
+  it("ignores the code links, which the section does not show (review B1)", () => {
+    const base = approvedRequirementsFacts([req(1)]);
+    const relinked = req(1, {
+      codeMappings: [
+        { filePath: "src/new.ts", startLine: 1, endLine: 9, confidence: 0.4, source: "manual" },
+      ],
+      implementations: [
+        {
+          prNumber: 7,
+          prUrl: "https://example.test/pr/7",
+          filePath: "src/new.ts",
+          startLine: null,
+          endLine: null,
+        },
+      ],
+    });
+    expect(approvedRequirementsFacts([relinked])).toBe(base);
+    expect(base).not.toContain("codeMappings");
+    // The section itself is unchanged by the relink: the facts follow what is shown.
+    expect(renderApprovedRequirementsSection([relinked], 100_000).markdown).toBe(
+      renderApprovedRequirementsSection([req(1)], 100_000).markdown,
+    );
   });
 });
 
