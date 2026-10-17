@@ -44,6 +44,7 @@ import {
 // throwing inside the lock's pre-flight read.
 import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
 import { audit } from "../lib/audit/audit-service.js";
+import { noteRequirementsChanged } from "../lib/docs-gen/approved-requirements-staleness.js";
 import {
   ACCEPTANCE_CRITERIA_CLEARED,
   ACCEPTANCE_CRITERIA_MAX_ITEMS,
@@ -312,6 +313,10 @@ export function requirementsCollaborationRouter(): Router {
           keepHiddenLabels: true,
         });
         auditReviewStatusChange(req.user.userId, requirementId, result.untrackedChanges);
+        // #1230 — a reader BRD listing approved requirements may now be stale.
+        if (result.changed || Object.keys(result.untrackedChanges).length > 0) {
+          void noteRequirementsChanged([requirementId]);
+        }
         res.json({
           success: true,
           data: { id: result.id, version: result.version, updatedAt: result.updatedAt },

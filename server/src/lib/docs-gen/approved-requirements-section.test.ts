@@ -5,16 +5,26 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { findMany, findFirst } = vi.hoisted(() => ({ findMany: vi.fn(), findFirst: vi.fn() }));
+const { findMany, analysisFindMany, layout } = vi.hoisted(() => ({
+  findMany: vi.fn(),
+  analysisFindMany: vi.fn(),
+  layout: vi.fn(),
+}));
 vi.mock("../prisma.js", () => ({
-  prisma: { requirement: { findMany }, analysis: { findFirst } },
+  prisma: { requirement: { findMany }, analysis: { findMany: analysisFindMany } },
+}));
+vi.mock("./brd-layout.js", async (original) => ({
+  ...(await original<typeof import("./brd-layout.js")>()),
+  readBrdLayoutSetting: layout,
 }));
 
 import {
   APPROVED_REQUIREMENTS_HEADING,
+  approvedRequirementsFacts,
   approvedRequirementsMaxChars,
   loadApprovedRequirements,
   overflowPointer,
+  readsApprovedRequirements,
   renderApprovedRequirementsSection,
 } from "./approved-requirements-section.js";
 import {
@@ -54,24 +64,33 @@ function req(n: number, overrides: Partial<ScopedRequirement> = {}): ScopedRequi
 
 beforeEach(() => {
   findMany.mockReset();
-  findFirst.mockReset();
+  analysisFindMany.mockReset();
+  layout.mockReset();
 });
 
 describe("loadApprovedRequirements", () => {
-  it("selects only live, approved requirements of the project's newest run that has any", async () => {
-    findFirst.mockResolvedValue({ id: "run-2" });
+  const run = (id: string, requirements: number, metadata: string | null = null) => ({
+    id,
+    status: "completed",
+    metadata,
+    _count: { requirements },
+  });
+
+  it("reads the live, approved requirements of the Requirements hub's default run (#1230)", async () => {
+    analysisFindMany.mockResolvedValue([run("run-3", 0), run("run-2", 4), run("run-1", 9)]);
     findMany.mockResolvedValue([]);
     await loadApprovedRequirements("p1");
-    // The run is one of this project's: completed, live, with an approved requirement.
-    expect(findFirst.mock.calls[0][0]).toEqual({
-      where: {
-        projectId: "p1",
-        deletedAt: null,
-        status: "completed",
-        requirements: { some: { projectId: "p1", deletedAt: null, reviewStatus: "approved" } },
+    // The runs are this project's completed, live ones, newest first, each
+    // with its live requirements counted within the project.
+    expect(analysisFindMany.mock.calls[0][0]).toEqual({
+      where: { projectId: "p1", deletedAt: null, status: "completed" },
+      orderBy: { startedAt: "desc" },
+      select: {
+        id: true,
+        status: true,
+        metadata: true,
+        _count: { select: { requirements: { where: { projectId: "p1", deletedAt: null } } } },
       },
-      orderBy: [{ startedAt: "desc" }, { id: "desc" }],
-      select: { id: true },
     });
     const where = findMany.mock.calls[0][0].where;
     expect(where).toEqual({
@@ -84,10 +103,76 @@ describe("loadApprovedRequirements", () => {
     expect(findMany.mock.calls[0][0].select.codeMappings.where).toEqual({ projectId: "p1" });
   });
 
-  it("reads no requirements when no run has an approved one", async () => {
-    findFirst.mockResolvedValue(null);
+  it("reads the re-run whose requirements are all draft, not an older run's approvals (#1230)", async () => {
+    // The newest run has requirements (all draft): it is the current set, as
+    // the hub shows it, so it is the run read, and it lists none approved.
+    analysisFindMany.mockResolvedValue([run("rerun", 5), run("older-approved", 7)]);
+    findMany.mockResolvedValue([]);
+    expect(await loadApprovedRequirements("p1")).toEqual([]);
+    expect(findMany.mock.calls[0][0].where.analysisId).toBe("rerun");
+  });
+
+  it("skips background rows, as the hub's list does", async () => {
+    analysisFindMany.mockResolvedValue([
+      run("ingest", 0, '{"source":"code-graph-ingest"}'),
+      run("import", 2, '{"kind":"import","source":"jira"}'),
+    ]);
+    findMany.mockResolvedValue([]);
+    await loadApprovedRequirements("p1");
+    expect(findMany.mock.calls[0][0].where.analysisId).toBe("import");
+    // With no run holding requirements, the newest non-background run.
+    analysisFindMany.mockResolvedValue([
+      run("research", 0, '{"source":"docs-gen-domain-research"}'),
+      run("empty", 0, "not json"),
+    ]);
+    await loadApprovedRequirements("p1");
+    expect(findMany.mock.calls[1][0].where.analysisId).toBe("empty");
+  });
+
+  it("reads no requirements when the project has no completed run", async () => {
+    analysisFindMany.mockResolvedValue([]);
     expect(await loadApprovedRequirements("p1")).toEqual([]);
     expect(findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("approvedRequirementsFacts (#1230)", () => {
+  it("covers every rendered field but not version or updatedAt", () => {
+    const base = approvedRequirementsFacts([req(1)]);
+    expect(
+      approvedRequirementsFacts([
+        req(1, { version: 9, updatedAt: new Date("2026-10-09T00:00:00Z") }),
+      ]),
+    ).toBe(base);
+    expect(approvedRequirementsFacts([req(1, { title: "Edited" })])).not.toBe(base);
+    expect(approvedRequirementsFacts([req(1, { reviewStatus: "draft" })])).not.toBe(base);
+    expect(approvedRequirementsFacts([req(1), req(2)])).not.toBe(base);
+    expect(base).not.toContain("updatedAt");
+  });
+});
+
+describe("readsApprovedRequirements (#1230)", () => {
+  it("is a full or repository BRD under the reader layout", () => {
+    layout.mockReturnValue({ layout: "reader" });
+    expect(readsApprovedRequirements({ scope: "full", scopeFilter: "{}" })).toBe(true);
+    expect(
+      readsApprovedRequirements({
+        scope: "repository",
+        scopeFilter: '{"repoConnectorId":"c","docType":"business-requirements"}',
+      }),
+    ).toBe(true);
+    expect(readsApprovedRequirements({ scope: "full", scopeFilter: "null" })).toBe(true);
+    expect(
+      readsApprovedRequirements({ scope: "full", scopeFilter: '{"docType":"architecture"}' }),
+    ).toBe(false);
+    expect(
+      readsApprovedRequirements({ scope: "full", scopeFilter: '{"docType":"user-guide"}' }),
+    ).toBe(false);
+    expect(readsApprovedRequirements({ scope: "requirements", scopeFilter: "{}" })).toBe(false);
+    expect(readsApprovedRequirements({ scope: "module", scopeFilter: "{}" })).toBe(false);
+    expect(readsApprovedRequirements({ scope: "full", scopeFilter: "{not json" })).toBe(false);
+    layout.mockReturnValue({ layout: "catalogue" });
+    expect(readsApprovedRequirements({ scope: "full", scopeFilter: "{}" })).toBe(false);
   });
 });
 
@@ -269,5 +354,38 @@ describe("the main part with the approved requirements in it", () => {
     );
     expect(fit.cuts[0]).not.toBe("whole");
     expect(fit.mainChars).toBeLessThanOrEqual(BRD_MAIN_MAX_CHARS);
+  });
+});
+
+describe("renderApprovedRequirementsSection — the overflow search (#1230)", () => {
+  it("finds the same longest prefix a scan would, for every budget", () => {
+    // Uneven sizes, so a wrong midpoint shows.
+    const requirements = Array.from({ length: 12 }, (_, i) =>
+      req(i + 1, { body: "Stored text. ".repeat((i * 7) % 11) }),
+    );
+    const total = requirements.length;
+    const full = renderApprovedRequirementsSection(requirements, Infinity).markdown;
+    const [head, ...entries] = full.split(/\n\n(?=### R\d+\. )/);
+    expect(entries).toHaveLength(total);
+    const withPointer = (n: number): string =>
+      [head, ...entries.slice(0, n), overflowPointer(n, total)].join("\n\n");
+    for (let maxChars = 200; maxChars < full.length; maxChars += 97) {
+      const { markdown, listed } = renderApprovedRequirementsSection(requirements, maxChars);
+      let expected = 0;
+      while (expected < total && withPointer(expected + 1).length <= maxChars) expected += 1;
+      expect({ maxChars, listed }).toEqual({ maxChars, listed: expected });
+      expect(markdown).toBe(withPointer(listed));
+    }
+  });
+
+  it("measures O(log N) candidate prefixes, not one per requirement", () => {
+    const requirements = Array.from({ length: 1_000 }, (_, i) => req(i + 1));
+    const measure = vi.fn((markdown: string) => markdown.length);
+    const { listed } = renderApprovedRequirementsSection(requirements, 50_000, measure);
+    expect(listed).toBeGreaterThan(10);
+    expect(listed).toBeLessThan(1_000);
+    // One for the whole list, then about log2(1000) = 10 probes. The scan
+    // this replaced measured listed + 1 more (over 100 here).
+    expect(measure.mock.calls.length).toBeLessThanOrEqual(12);
   });
 });

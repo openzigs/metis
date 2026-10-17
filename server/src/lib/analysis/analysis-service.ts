@@ -100,21 +100,12 @@ import type {
   StructuredRequirements,
   WebResearchResult,
 } from "./types/requirements.js";
+import { isBackgroundAnalysis } from "./requirement-runs.js";
 
 const log = createChildLogger("analysis-service");
 
-/**
- * `Analysis.metadata.source` tags for rows that share the `Analysis` table but
- * are NOT user-facing LLM analysis runs. These background rows (code-graph
- * ingestion, opt-in doc-gen domain web research, etc.) carry zero tokens / no
- * findings, so {@link listAnalysesForProject} excludes them from the
- * analysis-history UI. Add new background tags here so the doc-gen / ingest
- * write sites and this filter stay in sync.
- */
-export const BACKGROUND_ANALYSIS_SOURCES: ReadonlySet<string> = new Set([
-  "code-graph-ingest",
-  "docs-gen-domain-research",
-]);
+// #1230 — moved beside the default-run rule that also reads it; re-exported here.
+export { BACKGROUND_ANALYSIS_SOURCES } from "./requirement-runs.js";
 
 export interface CreateAnalysisInput {
   projectId: string;
@@ -1317,15 +1308,7 @@ export async function listAnalysesForProject(projectId: string) {
   // Exclude background rows (code-graph ingest, opt-in doc-gen domain research,
   // etc.) that share this table but are not LLM analysis runs and would appear
   // as "0 tok / No findings". See BACKGROUND_ANALYSIS_SOURCES.
-  const runs = rows.filter((row) => {
-    if (!row.metadata) return true;
-    try {
-      const meta = JSON.parse(row.metadata) as { source?: string };
-      return meta.source === undefined || !BACKGROUND_ANALYSIS_SOURCES.has(meta.source);
-    } catch {
-      return true;
-    }
-  });
+  const runs = rows.filter((row) => !isBackgroundAnalysis(row.metadata));
   const counts = await requirementCountsByAnalysis(
     projectId,
     runs.map((r) => r.id),

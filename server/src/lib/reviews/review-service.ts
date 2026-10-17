@@ -26,6 +26,7 @@ import { AppError } from "../../middleware/error-handler.js";
 import { buildAuditLogData } from "../audit/audit-service.js";
 import { prisma } from "../prisma.js";
 import { dispatchReviewDecision, dispatchReviewSubmitted } from "./notify.js";
+import { noteRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import {
   REVIEW_STATUSES,
   aggregateDecisions,
@@ -644,6 +645,11 @@ export async function recordDecision(
     outcome: result.aggregate === "pending" ? null : (result.status as "approved" | "rejected"),
     baselineId: result.baselineId,
   });
+  // #1230 — a verdict reached sets the scope's review statuses: a reader BRD
+  // listing approved requirements may now be stale. Post-commit; never throws.
+  if (result.aggregate !== "pending") {
+    void noteRequirementsChanged(requirementIdsInScope(review.items));
+  }
 
   return { reviewId, decision, ...result };
 }

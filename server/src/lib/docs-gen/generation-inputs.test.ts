@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   list: vi.fn(),
   resolve: vi.fn(),
+  approved: vi.fn(),
+  layout: vi.fn(),
 }));
 vi.mock("../prisma.js", () => ({
   prisma: {
@@ -44,6 +46,14 @@ vi.mock("./output-caps.js", () => ({
   resolveSectionMaxOutputTokens: () => 8192,
 }));
 vi.mock("./grounding/grounding-retrieval.js", () => ({ resolveGroundingK: () => 80 }));
+vi.mock("./brd-layout.js", async (original) => ({
+  ...(await original<typeof import("./brd-layout.js")>()),
+  readBrdLayoutSetting: mocks.layout,
+}));
+vi.mock("./approved-requirements-section.js", async (original) => ({
+  ...(await original<typeof import("./approved-requirements-section.js")>()),
+  loadApprovedRequirements: mocks.approved,
+}));
 vi.mock("./evidence-filter.js", () => ({ filterPrimaryEvidence: mocks.filter }));
 vi.mock("../analysis/analysis-service.js", () => ({ getLatestWebResearch: mocks.web }));
 vi.mock("node:fs/promises", async (original) => {
@@ -159,6 +169,8 @@ beforeEach(async () => {
   mocks.phase1.mockReturnValue(bundle());
   mocks.router.mockReturnValue({ primary: bundle(), hybrid: null });
   mocks.web.mockResolvedValue(null);
+  mocks.layout.mockReturnValue({ layout: "catalogue" });
+  mocks.approved.mockResolvedValue([]);
 });
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -786,5 +798,76 @@ describe("captureGenerationInputs", () => {
     const ordered = await capture();
     mocks.config.mockReturnValue({ ordered: [2, 1] });
     expect((await capture()).fingerprint).not.toBe(ordered.fingerprint);
+  });
+});
+
+describe("captureGenerationInputs — a reader BRD's approved requirements (#1230)", () => {
+  const approved = (overrides: Record<string, unknown> = {}) => ({
+    id: "r1",
+    title: "Export a report",
+    body: "The analyst's text.",
+    type: "feature",
+    priority: "high",
+    reviewStatus: "approved",
+    verdict: null,
+    acceptanceCriteria: '["Given a report, then it exports."]',
+    version: 2,
+    updatedAt: new Date(Date.UTC(2026, 9, 1)),
+    codeMappings: [],
+    implementations: [],
+    ...overrides,
+  });
+  const brd = { ...doc, docType: undefined, scope: "full", scopeFilter: "{}" };
+  const unscoped = { ...policy, repoConnectorId: undefined, codeGraphId: undefined };
+  const captureBrd = (overrides: Partial<typeof brd> = {}) =>
+    captureGenerationInputs({ ...brd, ...overrides }, unscoped);
+
+  beforeEach(() => {
+    mocks.repositories.mockResolvedValue(new Map());
+    mocks.layout.mockReturnValue({ layout: "reader" });
+  });
+
+  it("is an input of a reader-layout BRD: an approval or an edit changes the fingerprint", async () => {
+    mocks.approved.mockResolvedValue([]);
+    const none = await captureBrd();
+    expect(mocks.approved).toHaveBeenCalledWith("p");
+    mocks.approved.mockResolvedValue([approved()]);
+    const one = await captureBrd();
+    expect(one.items.approvedRequirements).toBeDefined();
+    expect(one.items.approvedRequirements).not.toBe(none.items.approvedRequirements);
+    expect(one.fingerprint).not.toBe(none.fingerprint);
+    expect(planRegeneration(none, one).changed).toEqual(["approvedRequirements"]);
+    mocks.approved.mockResolvedValue([approved({ title: "Export a monthly report" })]);
+    const edited = await captureBrd();
+    expect(edited.fingerprint).not.toBe(one.fingerprint);
+    // Un-approving it (the row leaves the approved list) is a change too.
+    mocks.approved.mockResolvedValue([]);
+    expect((await captureBrd()).fingerprint).toBe(none.fingerprint);
+  });
+
+  it("does not move for a write that only bumps version or updatedAt", async () => {
+    mocks.approved.mockResolvedValue([approved()]);
+    const before = await captureBrd();
+    mocks.approved.mockResolvedValue([
+      approved({ version: 3, updatedAt: new Date(Date.UTC(2026, 9, 2)) }),
+    ]);
+    expect((await captureBrd()).fingerprint).toBe(before.fingerprint);
+  });
+
+  it("is not an input under the catalogue layout or of another document type", async () => {
+    mocks.approved.mockResolvedValue([approved()]);
+    expect(
+      (await captureBrd({ scopeFilter: '{"docType":"architecture"}' })).items,
+    ).not.toHaveProperty("approvedRequirements");
+    expect(
+      (await captureBrd({ scopeFilter: '{"docType":"user-guide"}' })).items,
+    ).not.toHaveProperty("approvedRequirements");
+    // A BRD named as such, under the reader layout, does read them.
+    expect(
+      (await captureBrd({ scopeFilter: '{"docType":"business-requirements"}' })).items,
+    ).toHaveProperty("approvedRequirements");
+    mocks.layout.mockReturnValue({ layout: "catalogue" });
+    expect((await captureBrd()).items).not.toHaveProperty("approvedRequirements");
+    expect(mocks.approved).toHaveBeenCalledTimes(1);
   });
 });

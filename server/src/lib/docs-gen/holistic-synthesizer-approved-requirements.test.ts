@@ -45,6 +45,7 @@ import {
 } from "./holistic-synthesizer.js";
 import { findCodeIdentifiers, MAIN_PART_LANGUAGE_RULES } from "./main-part-language.js";
 import type { ScopedRequirement } from "./requirements-scope.js";
+import { buildGenerationCheckpoint, type SectionSynthesisRecord } from "./section-reuse.js";
 
 // ── Fixture ───────────────────────────────────────────────────────────────
 
@@ -435,6 +436,85 @@ describe("per-section reuse (#857) with approved requirements", () => {
     // The new record replaces the old: a third identical run is unchanged.
     const third = await run(fakeModel(), edited, second);
     expect(third.regeneration).toEqual({ mode: "unchanged", changed: [] });
+  });
+
+  it("counts a write that bumps only version and updatedAt as unchanged (#1230)", async () => {
+    const first = await run(fakeModel(), [req(1), req(2)]);
+    const bumped = [
+      req(1, { version: 7, updatedAt: new Date("2026-10-15T00:00:00Z") }),
+      req(2, { version: 3 }),
+    ];
+    const second = await run(fakeModel(), bumped, first);
+    expect(second.regeneration).toEqual({ mode: "unchanged", changed: [] });
+    expect(second.resume?.stale).toEqual([]);
+  });
+
+  it("checkpoints the section as it is rendered, and a resumed run reuses it from the checkpoint (#1230)", async () => {
+    const stored: SectionSynthesisRecord[][] = [];
+    const requirements = [req(1), req(2)];
+    const synth = (provider: AIProvider, reuse: Parameters<typeof synthesizeFinalDocument>[10]) =>
+      synthesizeFinalDocument(
+        FACTS,
+        META,
+        "business-requirements",
+        "BRD",
+        routerFor(provider),
+        "p1",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        reuse,
+        { approvedRequirements: requirements },
+      );
+    const first = await synth(fakeModel(), {
+      effectiveConfigHash: "cfg",
+      onCheckpoint: async (records) => {
+        stored.push([...records]);
+      },
+    });
+    // Saved as soon as it was rendered: some checkpoint holds it before the
+    // run's last section is written.
+    const at = stored.findIndex((records) => records.some((r) => r.sectionId === "requirements"));
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(at).toBeLessThan(stored.length - 1);
+    const record = stored[at].find((r) => r.sectionId === "requirements")!;
+    expect(record.markdown).toBe(
+      sectionOf(first.markdown, APPROVED_REQUIREMENTS_HEADING).trimEnd(),
+    );
+    expect(record.metadata.model).toBe(APPROVED_REQUIREMENTS_MODEL);
+
+    // A run that failed after it: resumed from the checkpoint alone, the
+    // section is reused, not re-rendered as changed.
+    const resumed = await synth(fakeModel(), {
+      effectiveConfigHash: "cfg",
+      checkpoint: buildGenerationCheckpoint(stored[at]),
+    });
+    expect(resumed.resume?.reused).toContain(APPROVED_REQUIREMENTS_HEADING);
+    expect(resumed.resume?.stale.map((s) => s.section) ?? []).not.toContain(
+      APPROVED_REQUIREMENTS_HEADING,
+    );
+    // An approval since the checkpoint makes the stored copy stale.
+    const approvedSince = await synthesizeFinalDocument(
+      FACTS,
+      META,
+      "business-requirements",
+      "BRD",
+      routerFor(fakeModel()),
+      "p1",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { effectiveConfigHash: "cfg", checkpoint: buildGenerationCheckpoint(stored[at]) },
+      { approvedRequirements: [...requirements, req(3)] },
+    );
+    expect(approvedSince.resume?.stale.map((s) => s.section)).toContain(
+      APPROVED_REQUIREMENTS_HEADING,
+    );
+    expect(sectionOf(approvedSince.markdown, APPROVED_REQUIREMENTS_HEADING)).toContain(
+      "### R3. Analyst-edited requirement 3",
+    );
   });
 
   it("re-renders the requirements when another is approved", async () => {

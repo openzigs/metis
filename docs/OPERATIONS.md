@@ -971,7 +971,12 @@ prefix; a requirements-scoped BRD is not affected) as a main document for a busi
 detail, in the same document. The decision and its reasoning are in
 `docs/decisions/0021-reader-sized-brd-main-plus-appendix.md`. When the project has approved
 requirements, the main part's requirements section lists them as stored (#1218), with no
-model call for that section; a project with none gets the reconstructed section.
+model call for that section; a project with none gets the reconstructed section. Those
+requirements are part of the document's input snapshot (#1230): approving or editing one
+queues one regeneration of each auto-update reader BRD of the project (reusing every
+unchanged section), and stops a generation of it that is in progress at its next inputs check.
+Upgrading adds that item to every reader BRD's snapshot, so each auto-update reader BRD is
+regenerated once at its next check; its unchanged sections are reused.
 
 - **The upgrade changes nothing.** Unset or `catalogue`, a BRD is generated exactly as
   before. Any other value is the catalogue layout and is logged.

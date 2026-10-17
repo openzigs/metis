@@ -17,6 +17,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
+import { defaultRequirementsRunId } from "@metis/shared";
 import {
   analysisApi,
   type AnalysisListItem,
@@ -45,10 +46,13 @@ function totalRequirements(run: Pick<AnalysisListItem, "requirementCounts">): nu
 /**
  * #999 — the run the hub opens on: the newest completed run that has any
  * requirements, else the newest completed run. `analyses` is newest first.
+ * #1230 — the rule lives in `@metis/shared`, so a reader BRD's Approved
+ * Requirements section reads the same run the hub opens on.
  */
 export function defaultHubRunId(analyses: readonly AnalysisListItem[]): string | null {
-  const completed = analyses.filter((a) => a.status === "completed");
-  return (completed.find((a) => totalRequirements(a) > 0) ?? completed[0])?.id ?? null;
+  return defaultRequirementsRunId(
+    analyses.map((a) => ({ id: a.id, status: a.status, requirementCount: totalRequirements(a) })),
+  );
 }
 
 function plural(n: number, word: string): string {

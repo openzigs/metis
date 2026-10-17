@@ -6,6 +6,7 @@ import { createChildLogger } from "../logger.js";
 import { getSchedulerBootstrap } from "../scheduler/index.js";
 import { resolveEvidencePolicy } from "./evidence-policy.js";
 import { captureGenerationInputs } from "./generation-inputs.js";
+import { readsApprovedRequirements } from "./approved-requirements-section.js";
 import { parseGeneratedDocVersionManifest } from "./generated-doc-provenance.js";
 import { settleExtractorUpgrade } from "./extractor-upgrade.js";
 import { inputHash, type RegenerationTask } from "./regeneration-plan.js";
@@ -17,12 +18,16 @@ const scopeFilterSchema = z.record(z.string(), z.unknown());
 const repositoryFilterSchema = z.object({ repoConnectorId: z.string().trim().min(1) });
 
 /** Only after graph, source knowledge and metadata settle. Enqueue errors
- * propagate: replaying successful ingestion retries scheduling as well. */
+ * propagate: replaying successful ingestion retries scheduling as well.
+ * #1230 — `approvedRequirementsOnly` checks only the documents whose inputs
+ * include the project's approved requirements (`readsApprovedRequirements`):
+ * after a requirement write, no other document's inputs can have changed. */
 export async function checkIncrementalRegeneration(
   projectId: string,
   repoConnectorId?: string,
+  options: { approvedRequirementsOnly?: boolean } = {},
 ): Promise<void> {
-  const docs = await prisma.generatedDocument.findMany({
+  const rows = await prisma.generatedDocument.findMany({
     where: {
       projectId,
       autoUpdate: true,
@@ -45,6 +50,7 @@ export async function checkIncrementalRegeneration(
       evidencePolicy: true,
     },
   });
+  const docs = options.approvedRequirementsOnly ? rows.filter(readsApprovedRequirements) : rows;
   let failure: { error: unknown } | undefined;
   for (const doc of docs) {
     try {

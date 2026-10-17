@@ -17,7 +17,7 @@ const mockPrisma = {
   repoConnection: { findFirst: vi.fn() },
   docsGenFactCache: { findUnique: vi.fn(), upsert: vi.fn(), update: vi.fn() },
   requirement: { findMany: vi.fn() },
-  analysis: { findFirst: vi.fn() },
+  analysis: { findMany: vi.fn() },
 };
 
 vi.mock("../prisma.js", () => ({
@@ -41,7 +41,7 @@ vi.mock("../prisma.js", () => ({
       update: (...a: unknown[]) => mockPrisma.docsGenFactCache.update(...a),
     },
     requirement: { findMany: (...a: unknown[]) => mockPrisma.requirement.findMany(...a) },
-    analysis: { findFirst: (...a: unknown[]) => mockPrisma.analysis.findFirst(...a) },
+    analysis: { findMany: (...a: unknown[]) => mockPrisma.analysis.findMany(...a) },
   },
 }));
 
@@ -129,7 +129,9 @@ function seedPrisma(): void {
     tsFn("s1", "charge", file(1)),
     tsFn("s2", "refund", file(2)),
   ] as never);
-  mockPrisma.analysis.findFirst.mockResolvedValue({ id: "run-1" });
+  mockPrisma.analysis.findMany.mockResolvedValue([
+    { id: "run-1", status: "completed", metadata: null, _count: { requirements: 2 } },
+  ]);
   mockPrisma.requirement.findMany.mockResolvedValue([APPROVED]);
 }
 
@@ -158,7 +160,7 @@ describe("synthesizeHolisticDocument — #1218 approved requirements in a reader
       analysisId: "run-1",
       reviewStatus: "approved",
     });
-    expect(mockPrisma.analysis.findFirst.mock.calls[0][0].where.projectId).toBe("p1");
+    expect(mockPrisma.analysis.findMany.mock.calls[0][0].where.projectId).toBe("p1");
     expect(result.markdown).toContain(`## ${APPROVED_REQUIREMENTS_HEADING}`);
     expect(result.markdown).toContain("### R1. Refunds need a manager's approval");
     expect(result.markdown).toContain("- A 501 refund waits for a manager.");
@@ -168,7 +170,7 @@ describe("synthesizeHolisticDocument — #1218 approved requirements in a reader
 
   it("falls back to reconstructed requirements when the project has none approved", async () => {
     vi.stubEnv("DOCS_GEN_BRD_LAYOUT", "reader");
-    mockPrisma.analysis.findFirst.mockResolvedValue(null);
+    mockPrisma.analysis.findMany.mockResolvedValue([]);
     const result = await synthesizeHolisticDocument("p1", "business-requirements", "BRD");
     expect(sectionGroups).toContain("Requirements Reconstructed from the Code");
     expect(result.markdown).toContain("Reconstructed from the code.");
@@ -180,6 +182,6 @@ describe("synthesizeHolisticDocument — #1218 approved requirements in a reader
     vi.stubEnv("DOCS_GEN_BRD_LAYOUT", "reader");
     await synthesizeHolisticDocument("p1", "architecture", "Architecture");
     expect(mockPrisma.requirement.findMany).not.toHaveBeenCalled();
-    expect(mockPrisma.analysis.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.analysis.findMany).not.toHaveBeenCalled();
   });
 });

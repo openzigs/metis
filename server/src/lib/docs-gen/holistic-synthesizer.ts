@@ -334,6 +334,7 @@ import {
 import {
   APPROVED_REQUIREMENTS_HEADING,
   APPROVED_REQUIREMENTS_MODEL,
+  approvedRequirementsFacts,
   approvedRequirementsMaxChars,
   loadApprovedRequirements,
   renderApprovedRequirementsSection,
@@ -4553,9 +4554,10 @@ export async function synthesizeFinalDocument(
       // nothing); the hashes decide only whether it counts as unchanged. They
       // cover every stored field of every requirement, in order, and the
       // rendered text itself, so an edit, an approval or a renderer change
-      // makes it `changed`, never a stale reuse.
+      // makes it `changed`, never a stale reuse. #1230 — not `version` or
+      // `updatedAt`: a write that bumps only those changes nothing shown.
       const inputHashes = hashSectionInputs({
-        facts: JSON.stringify(group.approvedRequirements),
+        facts: approvedRequirementsFacts(group.approvedRequirements),
         formulas: "",
         flow: "",
         grounding: "",
