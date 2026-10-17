@@ -16,6 +16,11 @@
  *   route layer also guards each handler — the service exists as a second
  *   barrier so future callers (queue handlers, internal jobs, CLI) can never
  *   accidentally bypass authorization.
+ *
+ *   #1235 — after the project check, a create or update of an `http-webhook`
+ *   job whose `authHeader` names a vault secret runs the #344 binding rule
+ *   (`assertWebhookSecretBinding`), so a caller without `vault.reveal` cannot
+ *   send a secret they did not create to a URL they chose.
  */
 import { Cron } from "croner";
 import { audit } from "../audit/audit-service.js";
@@ -26,6 +31,8 @@ import { DURABLE_TASK_TYPES } from "./durable-task-types.js";
 import type { ScheduledJob as PrismaScheduledJob } from "@prisma/client";
 import type { TaskQueue } from "./task-queue.js";
 import { validateCron } from "./cron-validator.js";
+import { assertBindingWriteWindowOpen } from "../vault/binding-write-mark.js";
+import { assertWebhookSecretBinding } from "./webhook-secret-scope.js";
 import {
   type SchedulerConfig,
   type SchedulerEmitter,
@@ -105,6 +112,15 @@ export class SchedulerService {
     const validation = validateCron(opts.cron, {
       minIntervalSec: this.deps.config.minCronIntervalSec,
     });
+    const bindingUntil = actor
+      ? await assertWebhookSecretBinding(
+          { userId: actor.id, role: actor.role },
+          null,
+          { taskType: opts.taskType, payload: opts.payload, projectId: opts.projectId ?? null },
+          { id: opts.key, projectId: opts.projectId ?? null },
+        )
+      : null;
+    assertBindingWriteWindowOpen(bindingUntil);
     const row = await prisma.scheduledJob.create({
       data: {
         key: opts.key,
@@ -180,14 +196,33 @@ export class SchedulerService {
     if (opts.taskType && !this.deps.registry.get(opts.taskType)) {
       throw new SchedulerError(400, "UNKNOWN_TASK_TYPE", `unknown task type: ${opts.taskType}`);
     }
+    const taskType = opts.taskType ?? existing.taskType;
+    const payload = opts.payload ? JSON.stringify(opts.payload) : existing.payload;
+    const projectId = opts.projectId === undefined ? existing.projectId : opts.projectId;
+    // #1235 — judged on exactly the values written below, so a job cannot be
+    // moved (URL, project or task type) while keeping a secret the caller may
+    // not send there, even when the patch leaves `authHeader` untouched.
+    const bindingUntil = actorObj
+      ? await assertWebhookSecretBinding(
+          { userId: actorObj.id, role: actorObj.role },
+          {
+            taskType: existing.taskType,
+            payload: parsePayload(existing.payload),
+            projectId: existing.projectId,
+          },
+          { taskType, payload: parsePayload(payload), projectId },
+          { id, projectId },
+        )
+      : null;
+    assertBindingWriteWindowOpen(bindingUntil);
     const row = await prisma.scheduledJob.update({
       where: { id },
       data: {
         name: opts.name ?? existing.name,
         cron,
-        taskType: opts.taskType ?? existing.taskType,
-        payload: opts.payload ? JSON.stringify(opts.payload) : existing.payload,
-        projectId: opts.projectId === undefined ? existing.projectId : opts.projectId,
+        taskType,
+        payload,
+        projectId,
         enabled: opts.enabled ?? existing.enabled,
         maxAttempts: opts.maxAttempts ?? existing.maxAttempts,
         nextRunAt,

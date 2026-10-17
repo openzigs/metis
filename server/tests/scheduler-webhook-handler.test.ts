@@ -20,16 +20,31 @@ vi.mock("../src/lib/connectors/network-allowlist.js", () => ({
       cb(null, "203.0.113.1", 4),
   ),
 }));
+const vaultRead = vi.hoisted(() =>
+  vi.fn(async (id: string) => ({ summary: { id }, plaintext: "secret-value" })),
+);
 vi.mock("../src/lib/vault/vault-service.js", () => ({
-  getVaultService: () => ({
-    read: vi.fn(async (label: string) => ({ summary: { id: label }, plaintext: "secret-value" })),
-  }),
+  getVaultService: () => ({ read: vaultRead }),
+}));
+// #1235 — the fire-time scope check is unit-tested in
+// webhook-secret-scope-1235.sqlite.test.ts against a real database; here it is
+// a spy so the handler's use of its verdict can be pinned.
+const authorizeRef = vi.hoisted(() =>
+  vi.fn(async (ref: string, _task: unknown) => `approved-${ref}`),
+);
+vi.mock("../src/lib/scheduler/webhook-secret-scope.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/scheduler/webhook-secret-scope.js")>()),
+  authorizeWebhookSecretRef: authorizeRef,
 }));
 
 import {
   createHttpWebhookHandler,
   loadWebhookConfig,
 } from "../src/lib/scheduler/webhook-handler.js";
+import {
+  WEBHOOK_SECRET_REFUSED_MESSAGE,
+  WebhookSecretRefusedError,
+} from "../src/lib/scheduler/webhook-secret-scope.js";
 import type { TaskHandlerContext, TaskRecord } from "../src/lib/scheduler/types.js";
 
 function makeCtx(payload: Record<string, unknown>, signal?: AbortSignal): TaskHandlerContext {
@@ -185,8 +200,75 @@ describe("createHttpWebhookHandler()", () => {
       },
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
-    await handler(makeCtx({ url: "https://ok.example.com", authHeader: "${vault:my-secret}" }));
+    const ctx = makeCtx({ url: "https://ok.example.com", authHeader: "${vault:my-secret}" });
+    await handler(ctx);
     expect(observed!.authorization).toBe("secret-value");
+    // #1235 — the reference is judged against the task's job, and the vault is
+    // read by the id that check approved, never by the label again.
+    expect(authorizeRef).toHaveBeenLastCalledWith("my-secret", ctx.task);
+    expect(vaultRead).toHaveBeenLastCalledWith("approved-my-secret");
+  });
+
+  it("#1235: a refused vault reference fails closed — no request, no vault read, no secret named", async () => {
+    authorizeRef.mockRejectedValueOnce(new WebhookSecretRefusedError());
+    vaultRead.mockClear();
+    const fetchImpl = vi.fn();
+    const handler = createHttpWebhookHandler({
+      config: {
+        allowedHosts: ["ok.example.com"],
+        maxBytes: 1024,
+        timeoutMs: 500,
+        requireHttps: false,
+      },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const err = await handler(
+      makeCtx({ url: "https://ok.example.com", authHeader: "${vault:other-team-token}" }),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(WebhookSecretRefusedError);
+    expect((err as Error).message).toBe(WEBHOOK_SECRET_REFUSED_MESSAGE);
+    expect((err as Error).message).not.toContain("other-team-token");
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(vaultRead).not.toHaveBeenCalled();
+  });
+
+  it("#1235: a literal (non-vault) authHeader is sent as-is without a scope check", async () => {
+    authorizeRef.mockClear();
+    let observed: Record<string, string> | null = null;
+    const fetchImpl = vi.fn(async (_url: unknown, init: { headers: Record<string, string> }) => {
+      observed = init.headers;
+      return { status: 200, headers: new Headers(), body: { cancel: async () => undefined } };
+    });
+    const handler = createHttpWebhookHandler({
+      config: {
+        allowedHosts: ["ok.example.com"],
+        maxBytes: 1024,
+        timeoutMs: 500,
+        requireHttps: false,
+      },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await handler(makeCtx({ url: "https://ok.example.com", authHeader: "Bearer fake-literal" }));
+    expect(observed!.authorization).toBe("Bearer fake-literal");
+    expect(authorizeRef).not.toHaveBeenCalled();
+  });
+
+  it("#1235: a vault read that returns no plaintext fails without naming the secret", async () => {
+    vaultRead.mockResolvedValueOnce({ summary: { id: "x" }, plaintext: undefined as never });
+    const fetchImpl = vi.fn();
+    const handler = createHttpWebhookHandler({
+      config: {
+        allowedHosts: ["ok.example.com"],
+        maxBytes: 1024,
+        timeoutMs: 500,
+        requireHttps: false,
+      },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await expect(
+      handler(makeCtx({ url: "https://ok.example.com", authHeader: "${vault:my-secret}" })),
+    ).rejects.toThrow("webhook authHeader vault secret could not be read");
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("throws on non-2xx response", async () => {

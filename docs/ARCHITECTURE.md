@@ -4348,6 +4348,19 @@ contract as Phase 8's repo connectors:
 - `Authorization` headers passed via `payload.headers` are dropped — auth
   must use `payload.authHeader`, which may be a `${vault:label}` reference
   resolved at fire time so secrets never sit in payload JSON.
+- #1235 — a `${vault:…}` `authHeader` is held to the #344 binding rule
+  (`lib/scheduler/webhook-secret-scope.ts`). `SchedulerService.createJob` /
+  `updateJob` run `assertWebhookSecretBinding` after the project check: without
+  `vault.reveal` the caller may name only a secret they created, and may not
+  change the URL or `projectId` of a job naming anyone else's (403
+  `SECRET_BINDING_FORBIDDEN`, audited `vault.binding_refused`; an unknown
+  reference is refused identically). At fire time the handler runs
+  `authorizeWebhookSecretRef` before any vault read: the job's `createdById`, at
+  their current role, must still reach the job's project and own every secret
+  the reference reaches (or hold `vault.reveal`), and the reference must reach
+  exactly one live secret, which is then read by id. A refusal sends nothing,
+  is audited `scheduler.webhook.secret_refused`, and fails the run with a fixed
+  message naming no secret.
 - Audit logs record only the hostname, status code, and method (never the
   URL, headers, or body).
 
