@@ -401,6 +401,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // ...and nothing is duplicated for the repos the member's run did cover.
         const forC = docs.filter((d) => d.repoId === rc.c).map((d) => d.docType);
         expect(forC.sort()).toEqual(["api-contract", "per-service"]);
+        // ...and the admin's earlier unified doc (repoId null) was replaced, not kept
+        // beside the member's: SQL `NULL NOT IN (…)` keeps null rows unless the
+        // delete has its own `repoId: null` branch.
+        expect(docs.filter((d) => d.docType === "unified-architecture")).toHaveLength(1);
       });
 
       it("hides a legacy unified doc that does not record its repos while a repo is hidden", async () => {
