@@ -155,7 +155,7 @@ describe("products-multi routes", () => {
   describe("GET /products", () => {
     it("lists products", async () => {
       mockListProducts.mockResolvedValue({
-        items: [{ id: "p1", name: "Prod" }],
+        items: [{ id: "p1", name: "Prod", repos: [] }],
         page: 1,
         pageSize: 20,
         total: 1,
@@ -201,7 +201,7 @@ describe("products-multi routes", () => {
 
   describe("PATCH /products/:id", () => {
     it("updates product", async () => {
-      mockUpdateProduct.mockResolvedValue({ id: "p1", name: "Updated" });
+      mockUpdateProduct.mockResolvedValue({ id: "p1", name: "Updated", repos: [] });
 
       const res = await request(app).patch("/products/p1").send({ name: "Updated" });
       expect(res.status).toBe(200);

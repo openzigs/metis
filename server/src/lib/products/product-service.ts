@@ -27,11 +27,24 @@ export interface ProductActor {
 
 /**
  * The refusal for a repo connection the caller may not attach — one that does
- * not exist, or (#1250) one whose project the caller cannot access. One shape
+ * not exist, (#1258) one that is soft-deleted, or (#1250) one whose project the
+ * caller cannot access. One shape
  * for both, so the answer is no existence oracle.
  */
 export function repoConnectionNotFound(repoConnectionId: string): ProductError {
   return new ProductError(404, "REPO_NOT_FOUND", `RepoConnection ${repoConnectionId} not found`);
+}
+
+/**
+ * The refusal for a repo that is not on the product — or (#1258) one that is, but
+ * whose project the caller cannot open. One shape for both.
+ */
+export function repoNotAssociated(productId: string, repoId: string): ProductError {
+  return new ProductError(
+    404,
+    "REPO_NOT_ASSOCIATED",
+    `Repo ${repoId} is not associated with product ${productId}`,
+  );
 }
 
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
@@ -151,7 +164,9 @@ export async function addProductRepo(productId: string, input: AddProductRepoInp
   const repo = await prisma.repoConnection.findUnique({
     where: { id: input.repoConnectionId },
   });
-  if (!repo) {
+  // #1258 — a soft-deleted connection is refused exactly like a missing one (the
+  // picker lists only live connections), for admins too.
+  if (!repo || repo.deletedAt) {
     throw repoConnectionNotFound(input.repoConnectionId);
   }
   const existing = await prisma.productRepo.findUnique({
@@ -189,11 +204,7 @@ export async function removeProductRepo(productId: string, repoId: string) {
     },
   });
   if (!record) {
-    throw new ProductError(
-      404,
-      "REPO_NOT_ASSOCIATED",
-      `Repo ${repoId} is not associated with product ${productId}`,
-    );
+    throw repoNotAssociated(productId, repoId);
   }
   await prisma.productRepo.delete({ where: { id: record.id } });
 }
@@ -212,11 +223,7 @@ export async function updateProductRepo(
     },
   });
   if (!record) {
-    throw new ProductError(
-      404,
-      "REPO_NOT_ASSOCIATED",
-      `Repo ${repoId} is not associated with product ${productId}`,
-    );
+    throw repoNotAssociated(productId, repoId);
   }
   return prisma.productRepo.update({
     where: { id: record.id },

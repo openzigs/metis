@@ -38,7 +38,7 @@ import {
   isAdminActor,
   listMemberAccessibleProjectIds,
 } from "../scheduler/project-access.js";
-import { repoConnectionNotFound } from "./product-service.js";
+import { repoConnectionNotFound, repoNotAssociated } from "./product-service.js";
 
 function actorOf(user: AuthPayload): { id: string; role: AuthPayload["role"] } {
   return { id: user.userId, role: user.role };
@@ -130,6 +130,116 @@ export async function repoConnectionProjectFilter(
   if (isAdminActor(actor)) return null;
   const accessibleIds = await listMemberAccessibleProjectIds(actor);
   return { in: accessibleIds };
+}
+
+/** A `ProductRepo` row carrying its connection's project id. */
+export interface ProductRepoWithProject {
+  repoConnection: { projectId: string };
+}
+
+/**
+ * #1258 — whether the caller may read a product's repo: access to the PRODUCT
+ * does not imply access to every repo on it. Rows attached before #1257 gated
+ * the attach can name another workspace's connection, so every reader of
+ * `ProductRepo` re-checks per repo, against the connection's own project.
+ *
+ * Same rule as {@link assertRepoConnectionAttachable}, in its list form
+ * (`listMemberAccessibleProjectIds`): admins read everything, members read their
+ * live workspaces' projects plus legacy workspace-less ones, soft-deleted
+ * projects are closed. Build it once per request — one query however many
+ * products or repos it is then applied to.
+ */
+export async function productRepoReadAccess(
+  user: AuthPayload,
+): Promise<(repo: ProductRepoWithProject) => boolean> {
+  const actor = actorOf(user);
+  if (isAdminActor(actor)) return () => true;
+  const accessible = new Set(await listMemberAccessibleProjectIds(actor));
+  return (repo) => accessible.has(repo.repoConnection.projectId);
+}
+
+/**
+ * #1258 — a product as the caller may see it: only the repos `canRead` admits,
+ * and `inaccessibleRepoCount` for the rest. A hidden repo contributes nothing
+ * but that count — no id, name, owner or URL — so a member is told the product
+ * spans more than they can see without learning what it is.
+ */
+export function withReadableProductRepos<P extends { repos: ProductRepoWithProject[] }>(
+  product: P,
+  canRead: (repo: ProductRepoWithProject) => boolean,
+): P & { inaccessibleRepoCount: number } {
+  const repos = product.repos.filter(canRead);
+  return { ...product, repos, inaccessibleRepoCount: product.repos.length - repos.length };
+}
+
+/**
+ * #1258 — refuse a per-repo operation on a repo the product carries but whose
+ * project the caller cannot open, exactly as if it were not attached
+ * (`REPO_NOT_ASSOCIATED`). A repo that is not on the product is left to the
+ * service, which answers the same.
+ */
+export async function assertProductRepoReadable(
+  user: AuthPayload,
+  productId: string,
+  repoConnectionId: string,
+): Promise<void> {
+  const actor = actorOf(user);
+  if (isAdminActor(actor)) return;
+  const link = await prisma.productRepo.findUnique({
+    where: { productId_repoConnectionId: { productId, repoConnectionId } },
+    select: { repoConnection: { select: { projectId: true } } },
+  });
+  if (!link) return;
+  const canRead = await productRepoReadAccess(user);
+  if (!canRead(link)) throw repoNotAssociated(productId, repoConnectionId);
+}
+
+/**
+ * The repo connection ids a generated document was built from, as `/analyze`
+ * records them in its metadata (#1258): every repo for the unified doc, the repo
+ * and its edge neighbours for a per-service doc (it names them), the repo alone
+ * for an api-contract doc. `null` for a document written before that field.
+ */
+function documentSourceRepoIds(doc: { metadata: string }): string[] | null {
+  try {
+    const meta: unknown = JSON.parse(doc.metadata);
+    const ids = (meta as { repoConnectionIds?: unknown } | null)?.repoConnectionIds;
+    if (Array.isArray(ids) && ids.every((id) => typeof id === "string")) return ids;
+  } catch {
+    // Unparseable metadata records nothing — treated like a legacy document.
+  }
+  return null;
+}
+
+/**
+ * #1258 — a product's generated documents, minus every one built from a repo the
+ * caller cannot open. Documents are stored per product, not per caller, so an
+ * admin's run (or one written before #1257) can hold another workspace's repo.
+ * A document that does not record its sources is judged against all of the
+ * product's current repos (and its own), since any of them may be named in it.
+ */
+export async function filterReadableProductDocuments<
+  D extends { repoId: string | null; metadata: string },
+>(user: AuthPayload, productId: string, docs: D[]): Promise<D[]> {
+  const actor = actorOf(user);
+  if (isAdminActor(actor) || docs.length === 0) return docs;
+  const current = (
+    await prisma.productRepo.findMany({ where: { productId }, select: { repoConnectionId: true } })
+  ).map((r) => r.repoConnectionId);
+  const sources = docs.map(
+    (d) => documentSourceRepoIds(d) ?? (d.repoId ? [...current, d.repoId] : current),
+  );
+  const referenced = [...new Set(sources.flat())];
+  const canRead = await productRepoReadAccess(user);
+  const connections = await prisma.repoConnection.findMany({
+    where: { id: { in: referenced } },
+    select: { id: true, projectId: true },
+  });
+  const readable = new Set(
+    connections.filter((c) => canRead({ repoConnection: c })).map((c) => c.id),
+  );
+  // A source whose connection no longer exists is not readable: nothing says whose it was.
+  return docs.filter((_, i) => sources[i].every((id) => readable.has(id)));
 }
 
 /**

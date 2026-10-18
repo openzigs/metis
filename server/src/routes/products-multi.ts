@@ -25,10 +25,15 @@ import {
 } from "../lib/products/product-service.js";
 import {
   assertProductAccessible,
+  assertProductRepoReadable,
   assertRepoConnectionAttachable,
   buildProductAccessWhere,
+  filterReadableProductDocuments,
+  productRepoReadAccess,
   repoConnectionProjectFilter,
+  withReadableProductRepos,
 } from "../lib/products/product-access.js";
+import { audit } from "../lib/audit/audit-service.js";
 import { prisma } from "../lib/prisma.js";
 import { generateUnifiedArchitectureDoc } from "../lib/products/unified-doc-generator.js";
 import { generateAllPerServiceDocs } from "../lib/products/per-service-doc-generator.js";
@@ -80,7 +85,10 @@ export function productsRouter(): Router {
     const search = typeof req.query.search === "string" ? req.query.search : undefined;
     const accessWhere = await buildProductAccessWhere(req.user!);
     const result = await listProducts({ page, pageSize, search, accessWhere });
-    res.json({ data: result });
+    // #1258 — each listed product shows only the repos the caller can open.
+    const canRead = await productRepoReadAccess(req.user!);
+    const items = result.items.map((item) => withReadableProductRepos(item, canRead));
+    res.json({ data: { ...result, items } });
   });
 
   // GET /api/products/repo-connections — List all repo connections (for product repo picker)
@@ -127,7 +135,10 @@ export function productsRouter(): Router {
     try {
       await assertProductAccessible(req.user!, param(req.params.id));
       const product = await getProduct(param(req.params.id));
-      res.json({ data: product });
+      // #1258 — a repo attached across workspaces before #1257 is not shown to a
+      // caller who cannot open its project.
+      const canRead = await productRepoReadAccess(req.user!);
+      res.json({ data: withReadableProductRepos(product, canRead) });
     } catch (err) {
       if (isProductError(err)) {
         res.status(err.status).json({ error: { code: err.code, message: err.message } });
@@ -143,7 +154,9 @@ export function productsRouter(): Router {
       await assertProductAccessible(req.user!, param(req.params.id));
       const input = updateProductSchema.parse(req.body);
       const product = await updateProduct(param(req.params.id), input);
-      res.json({ data: product });
+      // #1258 — the response carries the repos, so it is filtered like a read.
+      const canRead = await productRepoReadAccess(req.user!);
+      res.json({ data: withReadableProductRepos(product, canRead) });
     } catch (err) {
       if (isProductError(err)) {
         res.status(err.status).json({ error: { code: err.code, message: err.message } });
@@ -213,6 +226,8 @@ export function productsRouter(): Router {
       try {
         await assertProductAccessible(req.user!, param(req.params.id));
         const input = updateProductRepoSchema.parse(req.body);
+        // #1258 — a repo the caller cannot open is answered as not attached.
+        await assertProductRepoReadable(req.user!, param(req.params.id), param(req.params.repoId));
         const result = await updateProductRepo(
           param(req.params.id),
           param(req.params.repoId),
@@ -244,7 +259,13 @@ export function productsRouter(): Router {
           repos: {
             include: {
               repoConnection: {
-                select: { id: true, ownerOrOrg: true, repoName: true, defaultBranch: true },
+                select: {
+                  id: true,
+                  ownerOrOrg: true,
+                  repoName: true,
+                  defaultBranch: true,
+                  projectId: true,
+                },
               },
             },
           },
@@ -258,6 +279,28 @@ export function productsRouter(): Router {
         return;
       }
 
+      // #1258 — skip every repo whose project the caller cannot open (a row
+      // attached across workspaces before #1257), and every edge touching one,
+      // so another workspace's repository never feeds the generated documents.
+      const canRead = await productRepoReadAccess(req.user!);
+      const readable = product.repos.filter(canRead);
+      const hidden = product.repos.filter((r) => !canRead(r));
+      if (hidden.length > 0) {
+        audit({
+          actor: { id: req.user!.userId },
+          action: "product.analyze.repo.skipped",
+          target: { type: "product", id: productId },
+          metadata: {
+            reason: "project-access-denied",
+            repoConnectionIds: hidden.map((r) => r.repoConnectionId),
+          },
+        });
+      }
+      const readableRepoIds = new Set(readable.map((r) => r.repoConnectionId));
+      const readableEdges = product.edges.filter(
+        (e) => readableRepoIds.has(e.sourceRepoId) && readableRepoIds.has(e.targetRepoId),
+      );
+
       // Create an analysis record
       const analysis = await prisma.productAnalysis.create({
         data: {
@@ -270,14 +313,14 @@ export function productsRouter(): Router {
 
       try {
         // Map repos/edges to generator input types
-        const repoInfos: ProductRepoInfo[] = product.repos.map((r) => ({
+        const repoInfos: ProductRepoInfo[] = readable.map((r) => ({
           repoConnectionId: r.repoConnectionId,
           repoName: r.repoConnection?.repoName ?? r.repoConnectionId,
           ownerOrOrg: r.repoConnection?.ownerOrOrg ?? "",
           role: r.role,
           defaultBranch: r.repoConnection?.defaultBranch ?? "main",
         }));
-        const edgeInfos: ProductEdgeInfo[] = product.edges.map((e) => ({
+        const edgeInfos: ProductEdgeInfo[] = readableEdges.map((e) => ({
           sourceRepoId: e.sourceRepoId,
           targetRepoId: e.targetRepoId,
           edgeType: e.edgeType,
@@ -288,6 +331,20 @@ export function productsRouter(): Router {
           sourceFile: e.sourceFile,
           targetFile: e.targetFile,
         }));
+
+        // #1258 — what each document is built from, recorded in its metadata so
+        // the documents read can drop one built from a repo the reader cannot
+        // open. A per-service doc names its edge neighbours too.
+        const sourcesOf = (repoId: string) => [
+          repoId,
+          ...edgeInfos.flatMap((e) =>
+            e.sourceRepoId === repoId
+              ? [e.targetRepoId]
+              : e.targetRepoId === repoId
+                ? [e.sourceRepoId]
+                : [],
+          ),
+        ];
 
         // Generate unified architecture doc
         const unifiedDoc = generateUnifiedArchitectureDoc({
@@ -328,8 +385,16 @@ export function productsRouter(): Router {
         // Upsert documents into ProductDocument table
         const now = new Date();
 
-        // Delete existing docs for this product then recreate
-        await prisma.productDocument.deleteMany({ where: { productId } });
+        // Delete existing docs for this product then recreate. #1258 — only the
+        // documents this run regenerates: the per-repo documents of a repo it
+        // skipped stay for the readers who can open that repo.
+        const skippedRepoIds = hidden.map((r) => r.repoConnectionId);
+        await prisma.productDocument.deleteMany({
+          where:
+            skippedRepoIds.length === 0
+              ? { productId }
+              : { productId, OR: [{ repoId: null }, { repoId: { notIn: skippedRepoIds } }] },
+        });
 
         const docsToCreate = [
           {
@@ -338,7 +403,10 @@ export function productsRouter(): Router {
             title: unifiedDoc.title,
             content: unifiedDoc.content,
             repoId: null,
-            metadata: JSON.stringify(unifiedDoc.metadata),
+            metadata: JSON.stringify({
+              ...unifiedDoc.metadata,
+              repoConnectionIds: repoInfos.map((r) => r.repoConnectionId),
+            }),
             generatedAt: now,
           },
           ...perServiceDocs.map((doc, i) => ({
@@ -347,7 +415,10 @@ export function productsRouter(): Router {
             title: doc.title,
             content: doc.content,
             repoId: repoInfos[i]?.repoConnectionId ?? null,
-            metadata: JSON.stringify(doc.metadata),
+            metadata: JSON.stringify({
+              ...doc.metadata,
+              repoConnectionIds: repoInfos[i] ? sourcesOf(repoInfos[i].repoConnectionId) : [],
+            }),
             generatedAt: now,
           })),
           ...apiContractDocs.map((doc, i) => {
@@ -362,6 +433,7 @@ export function productsRouter(): Router {
               // UI can render a "diff badge" on the Contracts tab (epic #86 AC).
               metadata: JSON.stringify({
                 ...doc.metadata,
+                repoConnectionIds: repoInfos[i] ? [repoInfos[i].repoConnectionId] : [],
                 contractVersion: result.version,
                 contentHash: result.contentHash,
                 diffSummary: result.diff ? summarizeContractDiff(result.diff) : "Initial version.",
@@ -393,6 +465,7 @@ export function productsRouter(): Router {
             status: "completed",
             documentsGenerated: docsToCreate.length,
             edgesDetected: edgeInfos.length,
+            inaccessibleRepoCount: hidden.length,
             contractDocs: apiContractResults.map((r, i) => ({
               repoId: repoInfos[i]?.repoConnectionId ?? null,
               version: r.version,
@@ -443,7 +516,8 @@ export function productsRouter(): Router {
           version: true,
         },
       });
-      res.json({ data: docs });
+      // #1258 — drop every document built from a repo the caller cannot open.
+      res.json({ data: await filterReadableProductDocuments(req.user!, productId, docs) });
     },
   );
 

@@ -135,16 +135,32 @@ const mockPrisma = {
       where.userId === "u-mine" ? [{ workspaceId: "ws-mine" }] : [],
     ),
   },
+  // #1258 — the documents read resolves the product's repos and their projects.
+  productRepo: {
+    findMany: vi.fn(async ({ where }: { where: { productId: string } }) =>
+      where.productId === "p-mine" ? [{ repoConnectionId: "rc-mine" }] : [],
+    ),
+  },
   repoConnection: {
-    findMany: vi.fn(async ({ where }: { where: { projectId?: { in: string[] } } }) => {
-      if (where.projectId?.in)
-        return REPO_CONNECTIONS.filter((rc) => where.projectId!.in.includes(rc.projectId));
-      return REPO_CONNECTIONS;
-    }),
+    findMany: vi.fn(
+      async ({ where }: { where: { projectId?: { in: string[] }; id?: { in: string[] } } }) => {
+        if (where.id?.in) return REPO_CONNECTIONS.filter((rc) => where.id!.in.includes(rc.id));
+        if (where.projectId?.in)
+          return REPO_CONNECTIONS.filter((rc) => where.projectId!.in.includes(rc.projectId));
+        return REPO_CONNECTIONS;
+      },
+    ),
   },
   productDocument: {
     findMany: vi.fn(async () => [
-      { id: "d1", docType: "unified-architecture", title: "Arch", content: "#", repoId: null },
+      {
+        id: "d1",
+        docType: "unified-architecture",
+        title: "Arch",
+        content: "#",
+        repoId: null,
+        metadata: "{}",
+      },
     ]),
   },
   productAnalysis: {
