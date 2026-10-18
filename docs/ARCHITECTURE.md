@@ -4293,6 +4293,15 @@ project (`assertRepoConnectionAttachable`); `POST /api/impact-analyses` and
 inaccessible id gets the same 404 as a missing one, and the denial is audited
 (`product.repo.attach.denied`, `impact_analysis.document.denied`).
 
+**Readers of a product's repos (#1258).** The attach gate covers new rows only, so the
+readers re-check each repo against its connection's project
+(`productRepoReadAccess`, the list form of the same rule): `GET /api/products` and
+`GET /api/products/:id` return only readable repos plus `inaccessibleRepoCount` (a
+bare count — no id, name or owner), and `POST /:id/analyze` skips the rest and every
+edge touching one, auditing `product.analyze.repo.skipped`. A soft-deleted connection
+is refused on attach like a missing id. `pnpm audit:product-repos` (read-only; `--sql`
+prints the query for Postgres) lists existing attachments that cross a workspace.
+
 ### 13.7.1 Module layout
 
 ```

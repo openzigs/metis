@@ -27,7 +27,8 @@ export interface ProductActor {
 
 /**
  * The refusal for a repo connection the caller may not attach — one that does
- * not exist, or (#1250) one whose project the caller cannot access. One shape
+ * not exist, (#1258) one that is soft-deleted, or (#1250) one whose project the
+ * caller cannot access. One shape
  * for both, so the answer is no existence oracle.
  */
 export function repoConnectionNotFound(repoConnectionId: string): ProductError {
@@ -151,7 +152,9 @@ export async function addProductRepo(productId: string, input: AddProductRepoInp
   const repo = await prisma.repoConnection.findUnique({
     where: { id: input.repoConnectionId },
   });
-  if (!repo) {
+  // #1258 — a soft-deleted connection is refused exactly like a missing one (the
+  // picker lists only live connections), for admins too.
+  if (!repo || repo.deletedAt) {
     throw repoConnectionNotFound(input.repoConnectionId);
   }
   const existing = await prisma.productRepo.findUnique({

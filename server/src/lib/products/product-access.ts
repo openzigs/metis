@@ -132,6 +132,46 @@ export async function repoConnectionProjectFilter(
   return { in: accessibleIds };
 }
 
+/** A `ProductRepo` row carrying its connection's project id. */
+export interface ProductRepoWithProject {
+  repoConnection: { projectId: string };
+}
+
+/**
+ * #1258 — whether the caller may read a product's repo: access to the PRODUCT
+ * does not imply access to every repo on it. Rows attached before #1257 gated
+ * the attach can name another workspace's connection, so every reader of
+ * `ProductRepo` re-checks per repo, against the connection's own project.
+ *
+ * Same rule as {@link assertRepoConnectionAttachable}, in its list form
+ * (`listMemberAccessibleProjectIds`): admins read everything, members read their
+ * live workspaces' projects plus legacy workspace-less ones, soft-deleted
+ * projects are closed. Build it once per request — one query however many
+ * products or repos it is then applied to.
+ */
+export async function productRepoReadAccess(
+  user: AuthPayload,
+): Promise<(repo: ProductRepoWithProject) => boolean> {
+  const actor = actorOf(user);
+  if (isAdminActor(actor)) return () => true;
+  const accessible = new Set(await listMemberAccessibleProjectIds(actor));
+  return (repo) => accessible.has(repo.repoConnection.projectId);
+}
+
+/**
+ * #1258 — a product as the caller may see it: only the repos `canRead` admits,
+ * and `inaccessibleRepoCount` for the rest. A hidden repo contributes nothing
+ * but that count — no id, name, owner or URL — so a member is told the product
+ * spans more than they can see without learning what it is.
+ */
+export function withReadableProductRepos<P extends { repos: ProductRepoWithProject[] }>(
+  product: P,
+  canRead: (repo: ProductRepoWithProject) => boolean,
+): P & { inaccessibleRepoCount: number } {
+  const repos = product.repos.filter(canRead);
+  return { ...product, repos, inaccessibleRepoCount: product.repos.length - repos.length };
+}
+
 /**
  * #1250 — assert the caller may attach repo connection `repoConnectionId` to a
  * product: access to the PRODUCT (checked by the route) is not enough, the

@@ -155,7 +155,7 @@ describe("products-multi routes", () => {
   describe("GET /products", () => {
     it("lists products", async () => {
       mockListProducts.mockResolvedValue({
-        items: [{ id: "p1", name: "Prod" }],
+        items: [{ id: "p1", name: "Prod", repos: [] }],
         page: 1,
         pageSize: 20,
         total: 1,
