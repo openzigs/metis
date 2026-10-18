@@ -37,3 +37,7 @@ Collected from #1214, #1226 (#1223), #1228 (#1218) and the #1074 Sonnet run (202
 - A requirement writer must call `noteRequirementsChanged` after commit. PATCH, PUT and review verdicts do; promote, change-analysis and import do not (yet).
 
 Related: [[docs-gen-drop-retry-and-ledger]], [[redos-fix-ships-beside-new-pattern-fuzz-all]].
+
+**Added 2026-10-18 (#1249):**
+- When a deterministic section's hash doubles as an input-snapshot item, hash only the fields the renderer prints. Anything else turns unrelated writes (code links) into paid regenerations and aborts in-flight runs.
+- A fixture that "proves" regeneration by calling `ingest()` / `checkIncrementalRegeneration` a second time hides the real path: a check during a running generation queues a task that loses the generation claim after 3 quick retries, and nothing re-checks after publish (#1252 N1). Assert what queues the follow-up check.

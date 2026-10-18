@@ -125,3 +125,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Chat withholding + retry](project_chat-tool-withholding-and-stream-retry.md) — first-send session; lookup before gate (#1234)
 - [Mapper subject rule](project_mapper-subject-rule-traps.md) — blast radius re-adds; stopwords; -es plural (#1227)
 - [Check-set read timing](project_check-set-read-timing.md) — CodeQL late/early; e2e-outcome vs shard; CLA skip
+- [Secret binding at fire time](project_secret-binding-fire-time-checks.md) — binder not author; retry replays payload; guard order (#1235)

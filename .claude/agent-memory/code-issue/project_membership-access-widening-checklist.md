@@ -37,3 +37,5 @@ Collected from #1212 / PR #1219 and #1221 / PR #1233 and their reviews (2026-10-
 **Test seam.** `TaskQueue.cancel` (`scheduler/task-queue.ts`) cancels only tasks in the in-memory queue. A `pending` Task row inserted straight into the DB answers 409. Enqueue through `getSchedulerBootstrap().queue.enqueue({..., scheduledFor: <future>})`.
 
 **Tests authenticate as non-admin members.** Admin bypasses the check. Mutation-check by restoring the creator-only rule: on #1233 this failed 18, 3 and 2 tests across the three helpers.
+
+**Foreign ids behind a widened guard (#1248 review, #1250).** Widening a by-id guard to members widens every attach/associate write behind it. A write that takes a caller-supplied foreign id (`addProductRepo`'s `repoConnectionId`) must check that id against its *own* project, not only the product's.

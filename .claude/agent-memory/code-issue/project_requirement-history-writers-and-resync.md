@@ -37,3 +37,7 @@ Collected from #1216 (cycles 2–3), #1220 / PR #1222 and their reviews (2026-10
 - the history CSV header.
 
 Related: [[metis-marker-matchers-grep-exact-strings]], [[requirement-version-history-is-incomplete]].
+
+**Added 2026-10-18 (#1254):**
+- Drafts can be generated before promotion (`loadOrPromoteRequirements` in `draft-generator.ts`). A promotion write that adds metadata must be re-read after the rows load.
+- No app path soft-deletes a `Requirement` row; re-runs hard-delete (`analysis-service.ts:986`). Don't rate a missing `deletedAt` filter on requirement reads above Low without finding a soft-delete writer.
