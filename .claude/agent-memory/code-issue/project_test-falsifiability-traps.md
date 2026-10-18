@@ -53,3 +53,9 @@ Older single-trap entries, folded here (retired from the index 2026-10-16; files
   `skipHtml`; assert on `textContent` (#1086).
 - [[before-fixture-pins-only-its-scenario]] — regenerate the "off" fixture on the base and
   mutate each off-path line.
+
+**Added 2026-10-18 (#1235–#1254):**
+- `vi.clearAllMocks()` does not drain `mockResolvedValueOnce` queues, and CI's retry hides the leak (a test that passes only on retry). `vi.resetAllMocks()` also wipes `vi.mock` factory implementations; call `mockReset()` on the per-test doubles instead. Run new test files with `--retry=0` and grep the server log for "passed only after a retry" (#1242).
+- To find unconsumed once-values, add a temporary `afterEach` that calls each double once and compares with the `beforeEach` default. An early-refusing test whose once-value goes unused should assert `not.toHaveBeenCalled()` instead.
+- Route wiring through a shared helper (`promoteAndNote`) can be reverted per route with no test failing when the `it.each` covers only some routes. Mutate each call site, not the helper. A "note only when X" helper needs two checks: swap it out per route (proves each route test) and drop its condition (proves the negative halves) (#1249).
+- When one fix's end-to-end test is masked by a second fix, mutate each half of the first fix alone at its own layer (#1254).

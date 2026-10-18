@@ -29,3 +29,6 @@ Older entries, folded here (retired from the index 2026-10-16; files unchanged):
   (#1112).
 - [[new-prisma-model-three-postgres-artefacts]] — dated migration, regenerated Postgres
   schema, and a `CREATE TABLE` in the baseline; run `tests/schema-parity.test.ts` (#1059).
+- `server/tests/generated-doc-outbox.test.ts` builds `scheduled_jobs` by hand: a new
+  ScheduledJob column goes there too. `pnpm db:gen-postgres:check` fails from `server/`;
+  run `bash scripts/gen-postgres-schema.sh` from the repo root and check `git diff` (#1235).

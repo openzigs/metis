@@ -16,3 +16,5 @@ checkout; it was restored by hand. The code-review skill's Step 1 now says to us
 worktree (`git worktree add`) and never `git checkout` in the main checkout (#1215).
 
 **Retiring this pointer was wrong once (PR #1178, 2026-10-16).** It was moved to `ARCHIVE.md` as "superseded by CLAUDE.md's worktree-isolation rule". Review found that none of the checks above appear in CLAUDE.md, the skills or the agents, and the pointer was restored. Before retiring any pointer as superseded, `git grep` each of its concrete checks in `CLAUDE.md`, `.github/skills`, `.claude/agents` and `.github/instructions`. A general rule does not supersede a lesson whose own text says the general measure failed (here: "a worktree lock did not prevent it").
+
+**Stacked PR after its base squash-merges (#1254).** `git rebase --onto origin/main <old-base-tip>`, then confirm `diff <(git diff <old-base> <old-tip>) <(git diff origin/main HEAD)` is empty before pushing.
