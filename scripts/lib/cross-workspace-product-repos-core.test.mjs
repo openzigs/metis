@@ -43,17 +43,24 @@ CREATE TABLE "workspace_members" ("id" TEXT PRIMARY KEY, "workspaceId" TEXT NOT 
  *   P-bound   (alice): bound to a ws1 project, one ws2 repo → the ws2 row
  *   P-foreign (alice): a single ws2 repo, alice not in ws2 → listed
  *   P-legacy  (alice): a ws1 repo and a legacy repo       → nothing listed
+ *   P-carol   (carol, in ws1 AND ws2): bound to a ws1 project, one ws2 repo →
+ *             listed, and ONLY through the bound-project branch: the creator is a
+ *             member of the repo's workspace, and the repos alone span one.
  */
 function seed(db) {
   db.exec(SCHEMA);
   const run = (sql, ...params) => db.prepare(sql).run(...params);
-  run(`INSERT INTO "workspace_members" VALUES ('m1','ws1','alice'), ('m2','ws2','mallory')`);
+  run(
+    `INSERT INTO "workspace_members" VALUES ('m1','ws1','alice'), ('m2','ws2','mallory'),
+       ('m3','ws1','carol'), ('m4','ws2','carol')`,
+  );
   for (const [id, ws, productId] of [
     ["pa", "ws1", null],
     ["pa2", "ws1", null],
     ["pb", "ws2", null],
     ["pl", null, null],
     ["pbound", "ws1", "P-bound"],
+    ["pcarol", "ws1", "P-carol"],
   ]) {
     run(`INSERT INTO "projects" VALUES (?, ?, ?)`, id, ws, productId);
   }
@@ -68,6 +75,7 @@ function seed(db) {
   for (const id of ["P-mixed", "P-clean", "P-bound", "P-foreign", "P-legacy"]) {
     run(`INSERT INTO "products" VALUES (?, ?, 'alice')`, id, `${id} name`);
   }
+  run(`INSERT INTO "products" VALUES ('P-carol', 'P-carol name', 'carol')`);
   let n = 0;
   for (const [productId, rc] of [
     ["P-mixed", "rc-a"],
@@ -79,6 +87,7 @@ function seed(db) {
     ["P-foreign", "rc-b"],
     ["P-legacy", "rc-a"],
     ["P-legacy", "rc-l"],
+    ["P-carol", "rc-b"],
   ]) {
     n += 1;
     run(`INSERT INTO "product_repos" VALUES (?, ?, ?)`, `pr-${n}`, productId, rc);
@@ -107,6 +116,7 @@ describe("#1258 — cross-workspace product repo audit", () => {
       const rows = listCrossWorkspaceProductRepos(db);
       expect(rows.map((r) => `${r.productId}:${r.repoConnectionId}`)).toEqual([
         "P-bound:rc-b",
+        "P-carol:rc-b",
         "P-foreign:rc-b",
         "P-mixed:rc-a",
         "P-mixed:rc-b",
@@ -122,6 +132,8 @@ describe("#1258 — cross-workspace product repo audit", () => {
       });
       const mixedA = rows.find((r) => r.productId === "P-mixed" && r.repoConnectionId === "rc-a");
       expect(mixedA.creatorIsMember).toBe(1);
+      const carol = rows.find((r) => r.productId === "P-carol");
+      expect(carol).toMatchObject({ productWorkspaceCount: 2, creatorIsMember: 1 });
       const foreign = rows.find((r) => r.productId === "P-foreign");
       expect(foreign.productWorkspaceCount).toBe(1);
     } finally {
@@ -137,7 +149,7 @@ describe("#1258 — cross-workspace product repo audit", () => {
       db.close();
     }
     const check = new DatabaseSync(dbPath, { readOnly: true });
-    expect(check.prepare(`SELECT COUNT(*) AS n FROM "product_repos"`).get().n).toBe(9);
+    expect(check.prepare(`SELECT COUNT(*) AS n FROM "product_repos"`).get().n).toBe(10);
     check.close();
   });
 
@@ -197,11 +209,11 @@ describe("#1258 — cross-workspace product repo audit", () => {
   it("runs end to end through the runner without writing", () => {
     const before = fs.statSync(dbPath).mtimeMs;
     const text = execFileSync(process.execPath, [RUNNER, "--db", dbPath], { encoding: "utf8" });
-    expect(text).toContain("4 product repo attachments cross a workspace boundary.");
+    expect(text).toContain("5 product repo attachments cross a workspace boundary.");
     const json = JSON.parse(
       execFileSync(process.execPath, [RUNNER, "--db", dbPath, "--json"], { encoding: "utf8" }),
     );
-    expect(json).toHaveLength(4);
+    expect(json).toHaveLength(5);
     expect(fs.statSync(dbPath).mtimeMs).toBe(before);
     const sql = execFileSync(process.execPath, [RUNNER, "--sql"], { encoding: "utf8" });
     expect(sql.trim()).toBe(CROSS_WORKSPACE_PRODUCT_REPOS_SQL.trim());

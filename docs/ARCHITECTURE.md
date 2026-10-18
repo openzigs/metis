@@ -4295,10 +4295,14 @@ inaccessible id gets the same 404 as a missing one, and the denial is audited
 
 **Readers of a product's repos (#1258).** The attach gate covers new rows only, so the
 readers re-check each repo against its connection's project
-(`productRepoReadAccess`, the list form of the same rule): `GET /api/products` and
-`GET /api/products/:id` return only readable repos plus `inaccessibleRepoCount` (a
-bare count — no id, name or owner), and `POST /:id/analyze` skips the rest and every
-edge touching one, auditing `product.analyze.repo.skipped`. A soft-deleted connection
+(`productRepoReadAccess`, the list form of the same rule): `GET /api/products`,
+`GET /api/products/:id` and `PATCH /api/products/:id` return only readable repos plus
+`inaccessibleRepoCount` (a bare count — no id, name or owner); `PATCH /:id/repos/:repoId`
+answers a hidden repo as not attached; `POST /:id/analyze` skips the rest and every edge
+touching one, auditing `product.analyze.repo.skipped`. Generated documents are stored
+per product, so each records its source repos in `metadata.repoConnectionIds` and
+`GET /:id/documents` drops any built from a repo the reader cannot open (one that
+records none is judged against all the product's repos). A soft-deleted connection
 is refused on attach like a missing id. `pnpm audit:product-repos` (read-only; `--sql`
 prints the query for Postgres) lists existing attachments that cross a workspace.
 

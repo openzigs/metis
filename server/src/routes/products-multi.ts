@@ -25,8 +25,10 @@ import {
 } from "../lib/products/product-service.js";
 import {
   assertProductAccessible,
+  assertProductRepoReadable,
   assertRepoConnectionAttachable,
   buildProductAccessWhere,
+  filterReadableProductDocuments,
   productRepoReadAccess,
   repoConnectionProjectFilter,
   withReadableProductRepos,
@@ -152,7 +154,9 @@ export function productsRouter(): Router {
       await assertProductAccessible(req.user!, param(req.params.id));
       const input = updateProductSchema.parse(req.body);
       const product = await updateProduct(param(req.params.id), input);
-      res.json({ data: product });
+      // #1258 — the response carries the repos, so it is filtered like a read.
+      const canRead = await productRepoReadAccess(req.user!);
+      res.json({ data: withReadableProductRepos(product, canRead) });
     } catch (err) {
       if (isProductError(err)) {
         res.status(err.status).json({ error: { code: err.code, message: err.message } });
@@ -222,6 +226,8 @@ export function productsRouter(): Router {
       try {
         await assertProductAccessible(req.user!, param(req.params.id));
         const input = updateProductRepoSchema.parse(req.body);
+        // #1258 — a repo the caller cannot open is answered as not attached.
+        await assertProductRepoReadable(req.user!, param(req.params.id), param(req.params.repoId));
         const result = await updateProductRepo(
           param(req.params.id),
           param(req.params.repoId),
@@ -326,6 +332,20 @@ export function productsRouter(): Router {
           targetFile: e.targetFile,
         }));
 
+        // #1258 — what each document is built from, recorded in its metadata so
+        // the documents read can drop one built from a repo the reader cannot
+        // open. A per-service doc names its edge neighbours too.
+        const sourcesOf = (repoId: string) => [
+          repoId,
+          ...edgeInfos.flatMap((e) =>
+            e.sourceRepoId === repoId
+              ? [e.targetRepoId]
+              : e.targetRepoId === repoId
+                ? [e.sourceRepoId]
+                : [],
+          ),
+        ];
+
         // Generate unified architecture doc
         const unifiedDoc = generateUnifiedArchitectureDoc({
           productName: product.name,
@@ -375,7 +395,10 @@ export function productsRouter(): Router {
             title: unifiedDoc.title,
             content: unifiedDoc.content,
             repoId: null,
-            metadata: JSON.stringify(unifiedDoc.metadata),
+            metadata: JSON.stringify({
+              ...unifiedDoc.metadata,
+              repoConnectionIds: repoInfos.map((r) => r.repoConnectionId),
+            }),
             generatedAt: now,
           },
           ...perServiceDocs.map((doc, i) => ({
@@ -384,7 +407,10 @@ export function productsRouter(): Router {
             title: doc.title,
             content: doc.content,
             repoId: repoInfos[i]?.repoConnectionId ?? null,
-            metadata: JSON.stringify(doc.metadata),
+            metadata: JSON.stringify({
+              ...doc.metadata,
+              repoConnectionIds: repoInfos[i] ? sourcesOf(repoInfos[i].repoConnectionId) : [],
+            }),
             generatedAt: now,
           })),
           ...apiContractDocs.map((doc, i) => {
@@ -399,6 +425,7 @@ export function productsRouter(): Router {
               // UI can render a "diff badge" on the Contracts tab (epic #86 AC).
               metadata: JSON.stringify({
                 ...doc.metadata,
+                repoConnectionIds: repoInfos[i] ? [repoInfos[i].repoConnectionId] : [],
                 contractVersion: result.version,
                 contentHash: result.contentHash,
                 diffSummary: result.diff ? summarizeContractDiff(result.diff) : "Initial version.",
@@ -481,7 +508,8 @@ export function productsRouter(): Router {
           version: true,
         },
       });
-      res.json({ data: docs });
+      // #1258 — drop every document built from a repo the caller cannot open.
+      res.json({ data: await filterReadableProductDocuments(req.user!, productId, docs) });
     },
   );
 

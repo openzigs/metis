@@ -35,6 +35,18 @@ export function repoConnectionNotFound(repoConnectionId: string): ProductError {
   return new ProductError(404, "REPO_NOT_FOUND", `RepoConnection ${repoConnectionId} not found`);
 }
 
+/**
+ * The refusal for a repo that is not on the product — or (#1258) one that is, but
+ * whose project the caller cannot open. One shape for both.
+ */
+export function repoNotAssociated(productId: string, repoId: string): ProductError {
+  return new ProductError(
+    404,
+    "REPO_NOT_ASSOCIATED",
+    `Repo ${repoId} is not associated with product ${productId}`,
+  );
+}
+
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 export async function createProduct(input: CreateProductInput, actor: ProductActor) {
@@ -192,11 +204,7 @@ export async function removeProductRepo(productId: string, repoId: string) {
     },
   });
   if (!record) {
-    throw new ProductError(
-      404,
-      "REPO_NOT_ASSOCIATED",
-      `Repo ${repoId} is not associated with product ${productId}`,
-    );
+    throw repoNotAssociated(productId, repoId);
   }
   await prisma.productRepo.delete({ where: { id: record.id } });
 }
@@ -215,11 +223,7 @@ export async function updateProductRepo(
     },
   });
   if (!record) {
-    throw new ProductError(
-      404,
-      "REPO_NOT_ASSOCIATED",
-      `Repo ${repoId} is not associated with product ${productId}`,
-    );
+    throw repoNotAssociated(productId, repoId);
   }
   return prisma.productRepo.update({
     where: { id: record.id },

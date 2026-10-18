@@ -68,6 +68,7 @@ const PL = "proj-legacy-1258"; // legacy: no workspace
 const FOREIGN_REPO = "foreign-repo-b-1258";
 const FOREIGN_OWNER = "foreign-org-b-1258";
 const FOREIGN_SNIPPET = "FOREIGN-SNIPPET-1258";
+const FOREIGN_SOURCE_SNIPPET = "FOREIGN-SOURCE-SNIPPET-1258";
 
 const USERS: Record<string, { role: RoleKey; ws: string }> = {
   alice: { role: "coordinator", ws: WS1 },
@@ -191,6 +192,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           evidence: JSON.stringify([{ snippet: FOREIGN_SNIPPET, pattern: FOREIGN_SNIPPET }]),
         },
       });
+      // ...and one OUT of the foreign repo, so a check of only one end is caught.
+      await db.productEdge.create({
+        data: {
+          productId: productX,
+          sourceRepoId: rc.b,
+          targetRepoId: rc.a,
+          edgeType: "calls",
+          confidence: 0.7,
+          evidence: JSON.stringify([
+            { snippet: FOREIGN_SOURCE_SNIPPET, pattern: FOREIGN_SOURCE_SNIPPET },
+          ]),
+        },
+      });
       await db.productEdge.create({
         data: {
           productId: productX,
@@ -298,6 +312,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(docs).not.toContain(FOREIGN_REPO);
         expect(docs).not.toContain(FOREIGN_OWNER);
         expect(docs).not.toContain(FOREIGN_SNIPPET);
+        expect(docs).not.toContain(FOREIGN_SOURCE_SNIPPET);
         expect(docs).not.toContain(rc.b);
         expect(docs).toContain("repo-c-1258");
         expect(docs).toContain("repo-legacy-1258");
@@ -324,10 +339,119 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const res = await post(`/api/products/${productX}/analyze`, "ada");
         expect(res.status).toBe(200);
         expect(res.body.data.inaccessibleRepoCount).toBe(0);
-        expect(res.body.data.edgesDetected).toBe(2);
+        expect(res.body.data.edgesDetected).toBe(3);
         const docs = await documentsText();
         expect(docs).toContain(FOREIGN_REPO);
         expect(docs).toContain(FOREIGN_SNIPPET);
+        expect(docs).toContain(FOREIGN_SOURCE_SNIPPET);
+      });
+    });
+
+    // ── GET /api/products/:id/documents ──────────────────────────────────────
+
+    describe("reading a product's generated documents", () => {
+      const docsAs = async (who: Who) => {
+        const res = await get(`/api/products/${productX}/documents`, who);
+        expect(res.status).toBe(200);
+        return res.body.data as Array<{ docType: string; repoId: string | null }>;
+      };
+
+      it("hides from a member every document an admin's run generated from a foreign repo", async () => {
+        expect((await post(`/api/products/${productX}/analyze`, "ada")).status).toBe(200);
+        const docs = await docsAs("bob");
+        const text = JSON.stringify(docs);
+        expect(text).not.toContain(FOREIGN_REPO);
+        expect(text).not.toContain(FOREIGN_SNIPPET);
+        expect(text).not.toContain(rc.b);
+        // The unified doc names the foreign repo, so it goes too; the readable
+        // repos' own documents stay.
+        expect(docs.filter((d) => d.docType === "unified-architecture")).toEqual([]);
+        expect([...new Set(docs.map((d) => d.repoId))].sort()).toEqual([rc.a, rc.c, rc.l].sort());
+        // Repo A's per-service doc names its edge neighbour B, so it goes as well;
+        // its api-contract doc names only A and stays.
+        const perService = docs.filter((d) => d.docType === "per-service").map((d) => d.repoId);
+        expect(perService.sort()).toEqual([rc.c, rc.l].sort());
+        expect(
+          docs
+            .filter((d) => d.docType === "api-contract")
+            .map((d) => d.repoId)
+            .sort(),
+        ).toEqual([rc.a, rc.c, rc.l].sort());
+      });
+
+      it("shows the admin every document", async () => {
+        const docs = await docsAs("ada");
+        expect(JSON.stringify(docs)).toContain(FOREIGN_REPO);
+        expect(docs.filter((d) => d.docType === "unified-architecture")).toHaveLength(1);
+      });
+
+      it("shows a member the unified doc of a run that skipped the foreign repo", async () => {
+        expect((await post(`/api/products/${productX}/analyze`, "bob")).status).toBe(200);
+        const docs = await docsAs("bob");
+        expect(docs.filter((d) => d.docType === "unified-architecture")).toHaveLength(1);
+        expect(JSON.stringify(docs)).not.toContain(FOREIGN_REPO);
+      });
+
+      it("hides a legacy unified doc that does not record its repos while a repo is hidden", async () => {
+        await db.productDocument.create({
+          data: {
+            productId: productX,
+            docType: "unified-architecture",
+            title: "legacy",
+            content: `mentions ${FOREIGN_REPO}`,
+            repoId: null,
+            metadata: "{}",
+          },
+        });
+        expect(JSON.stringify(await docsAs("bob"))).not.toContain(FOREIGN_REPO);
+        expect(JSON.stringify(await docsAs("ada"))).toContain(FOREIGN_REPO);
+      });
+    });
+
+    // ── PATCH /api/products/:id and /:id/repos/:repoId ───────────────────────
+
+    describe("updating a product", () => {
+      const patch = (path: string, who: Who, body: object) =>
+        request(app()).patch(path).set("Authorization", bearer(who)).send(body);
+
+      it("returns only the readable repos from a metadata update", async () => {
+        const res = await patch(`/api/products/${productX}`, "bob", {});
+        expect(res.status).toBe(200);
+        expect(repoIds(res.body.data.repos)).toEqual([rc.a, rc.c, rc.l].sort());
+        expect(res.body.data.inaccessibleRepoCount).toBe(1);
+        const text = JSON.stringify(res.body);
+        expect(text).not.toContain(rc.b);
+        expect(text).not.toContain(FOREIGN_REPO);
+      });
+
+      it("answers a role update on a hidden repo as if it were not attached", async () => {
+        const res = await patch(`/api/products/${productX}/repos/${rc.b}`, "bob", {
+          role: "frontend",
+        });
+        const missing = await patch(`/api/products/${productX}/repos/rc-nope-1258`, "bob", {
+          role: "frontend",
+        });
+        expect(res.status).toBe(404);
+        expect(missing.status).toBe(404);
+        expect(res.body.error.code).toBe("REPO_NOT_ASSOCIATED");
+        expect(res.body.error.code).toBe(missing.body.error.code);
+        expect(JSON.stringify(res.body)).not.toContain(FOREIGN_REPO);
+        const row = await db.productRepo.findUnique({
+          where: { productId_repoConnectionId: { productId: productX, repoConnectionId: rc.b } },
+        });
+        expect(row?.role).toBe("backend-api");
+      });
+
+      it("still lets a member update a readable repo's role, and an admin a hidden one's", async () => {
+        const mine = await patch(`/api/products/${productX}/repos/${rc.c}`, "bob", {
+          role: "frontend",
+        });
+        expect(mine.status).toBe(200);
+        expect(mine.body.data.role).toBe("frontend");
+        const admin = await patch(`/api/products/${productX}/repos/${rc.b}`, "ada", {
+          role: "backend-api",
+        });
+        expect(admin.status).toBe(200);
       });
     });
 
