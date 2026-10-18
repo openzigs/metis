@@ -27,6 +27,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
+  actorHasProjectAccess,
   isAdminActor,
   listMemberAccessibleProjectIds,
   type SchedulerActor,
@@ -437,6 +438,44 @@ async function assertProjectsAccessible(
   throw new AppError(403, "FORBIDDEN", "You do not have access to one or more requested projects");
 }
 
+/**
+ * #1250 — assert `actor` may read document `documentId` as a run's source. The
+ * run reads the document's text, so access to the run's projects is not
+ * enough: the caller must be able to access the DOCUMENT's own project
+ * (`actorHasProjectAccess`: admin bypass, live workspace members, legacy
+ * workspace-less projects open, soft-deleted projects closed).
+ *
+ * An inaccessible document answers the same 404 as a nonexistent one, and the
+ * denial is audited as `impact_analysis.document.denied`.
+ *
+ * - `"new-source"` (POST /): the document must exist and not be soft-deleted.
+ * - `"rerun"` (POST /:id/rerun): the original's stored source is re-read, so
+ *   only the access check applies — a document gone since is the engine's
+ *   existing empty-source case, not a refusal.
+ */
+async function assertDocumentReadable(
+  actor: SchedulerActor,
+  documentId: string,
+  mode: "new-source" | "rerun",
+): Promise<void> {
+  const notFound = () => new AppError(404, "NOT_FOUND", "Document not found");
+  const doc = await prisma.document.findUnique({
+    where: { id: documentId },
+    select: { projectId: true, deletedAt: true },
+  });
+  if (!doc) {
+    if (mode === "rerun") return;
+    throw notFound();
+  }
+  if (mode === "new-source" && doc.deletedAt) throw notFound();
+  const allowed = await actorHasProjectAccess(actor, doc.projectId, {
+    resource: "document",
+    resourceId: documentId,
+    action: "impact_analysis.document",
+  });
+  if (!allowed) throw notFound();
+}
+
 /** #963 — optional body for the Jira publish: an explicit run project to bill the issue to. */
 const publishImpactToJiraSchema = z.object({
   projectId: z.string().min(1).max(200).optional(),
@@ -705,6 +744,7 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
       // Dedupe project ids before authz + persistence.
       const projectIds = [...new Set(body.projectIds)];
       await assertProjectsAccessible(actor, projectIds);
+      if (body.documentId) await assertDocumentReadable(actor, body.documentId, "new-source");
 
       // The flag-gated LLM collaborators (#931 seeder, #936 table filter, #1001
       // additive-DDL proposer, #932 summarizer) + the #958 live-schema
@@ -813,6 +853,9 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
           "RERUN_NO_SOURCE",
           "The original analysis has no stored source text or document to re-run.",
         );
+      }
+      if (original.documentId) {
+        await assertDocumentReadable(actor, original.documentId, "rerun");
       }
 
       const result = await triggerImpactAnalysis(

@@ -48,9 +48,21 @@ let accessibleIds: string[] = ["project-001"];
 vi.mock("../lib/scheduler/project-access.js", () => ({
   isAdminActor: () => adminFlag,
   listMemberAccessibleProjectIds: vi.fn(async () => accessibleIds),
+  // #1250 — a re-run re-reads the original's document: its project must be accessible.
+  actorHasProjectAccess: vi.fn(async (_actor: unknown, projectId: string) =>
+    accessibleIds.includes(projectId),
+  ),
 }));
 
-vi.mock("../lib/prisma.js", () => ({ prisma: {} }));
+const findDocument = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ projectId: string; deletedAt: Date | null } | null> => ({
+    projectId: "project-001",
+    deletedAt: null,
+  })),
+);
+vi.mock("../lib/prisma.js", () => ({
+  prisma: { document: { findUnique: findDocument } },
+}));
 
 const getImpactAnalysisDetail = vi.fn();
 vi.mock("../lib/impact-analysis/impact-analysis-read.js", () => ({
@@ -182,6 +194,25 @@ describe("POST /:id/rerun (#965)", () => {
       expect.objectContaining({ documentId: "doc-9", text: null, rerunOfId: "orig-2" }),
       expect.any(Object),
     );
+  });
+
+  it("#1250 — a document gone since the original ran is not a refusal (empty-source case)", async () => {
+    getImpactAnalysisDetail.mockResolvedValue(
+      detail({ id: "orig-3", sourceText: null, documentId: "doc-gone" }),
+    );
+    findDocument.mockResolvedValueOnce(null);
+    const res = await request(app).post("/impact-analyses/orig-3/rerun").send({});
+    expect(res.status).toBe(202);
+  });
+
+  it("#1250 — 404 when the original's document belongs to a project the caller cannot access", async () => {
+    getImpactAnalysisDetail.mockResolvedValue(
+      detail({ id: "orig-4", sourceText: null, documentId: "doc-foreign" }),
+    );
+    findDocument.mockResolvedValueOnce({ projectId: "project-other", deletedAt: null });
+    const res = await request(app).post("/impact-analyses/orig-4/rerun").send({});
+    expect(res.status).toBe(404);
+    expect(triggerImpactAnalysis).not.toHaveBeenCalled();
   });
 
   it("403 when the caller lacks analysis.run", async () => {

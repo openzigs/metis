@@ -4285,6 +4285,14 @@ queries use `listMemberProjectsInWorkspace`. Writes keep their role permission
 (`project.update`, `analysis.run`). The creator-only `listAccessibleProjectIds`
 (scheduler) and `listAccessibleProjectsInWorkspace` were removed.
 
+**Foreign ids on writes (#1250).** Access to the product or run is not enough when a
+write names another row: the caller must also reach *that* row's project, through
+`actorHasProjectAccess`. `POST /api/products/:id/repos` checks the connection's
+project (`assertRepoConnectionAttachable`); `POST /api/impact-analyses` and
+`/:id/rerun` check the source document's project (`assertDocumentReadable`). An
+inaccessible id gets the same 404 as a missing one, and the denial is audited
+(`product.repo.attach.denied`, `impact_analysis.document.denied`).
+
 ### 13.7.1 Module layout
 
 ```

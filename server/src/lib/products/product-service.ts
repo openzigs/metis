@@ -25,6 +25,15 @@ export interface ProductActor {
   id: string;
 }
 
+/**
+ * The refusal for a repo connection the caller may not attach — one that does
+ * not exist, or (#1250) one whose project the caller cannot access. One shape
+ * for both, so the answer is no existence oracle.
+ */
+export function repoConnectionNotFound(repoConnectionId: string): ProductError {
+  return new ProductError(404, "REPO_NOT_FOUND", `RepoConnection ${repoConnectionId} not found`);
+}
+
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 export async function createProduct(input: CreateProductInput, actor: ProductActor) {
@@ -143,11 +152,7 @@ export async function addProductRepo(productId: string, input: AddProductRepoInp
     where: { id: input.repoConnectionId },
   });
   if (!repo) {
-    throw new ProductError(
-      404,
-      "REPO_NOT_FOUND",
-      `RepoConnection ${input.repoConnectionId} not found`,
-    );
+    throw repoConnectionNotFound(input.repoConnectionId);
   }
   const existing = await prisma.productRepo.findUnique({
     where: {

@@ -33,7 +33,12 @@ import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { audit } from "../audit/audit-service.js";
 import { canAccessProjectDiscussions } from "../discussions/access.js";
-import { isAdminActor, listMemberAccessibleProjectIds } from "../scheduler/project-access.js";
+import {
+  actorHasProjectAccess,
+  isAdminActor,
+  listMemberAccessibleProjectIds,
+} from "../scheduler/project-access.js";
+import { repoConnectionNotFound } from "./product-service.js";
 
 function actorOf(user: AuthPayload): { id: string; role: AuthPayload["role"] } {
   return { id: user.userId, role: user.role };
@@ -125,4 +130,40 @@ export async function repoConnectionProjectFilter(
   if (isAdminActor(actor)) return null;
   const accessibleIds = await listMemberAccessibleProjectIds(actor);
   return { in: accessibleIds };
+}
+
+/**
+ * #1250 — assert the caller may attach repo connection `repoConnectionId` to a
+ * product: access to the PRODUCT (checked by the route) is not enough, the
+ * caller must also be able to access the CONNECTION's own project, or
+ * `POST /:id/analyze` would run over another workspace's repository.
+ *
+ * Same project-access rule as the product itself (`actorHasProjectAccess`:
+ * admin bypass, live workspace members, legacy workspace-less projects open,
+ * soft-deleted projects closed). A connection the caller cannot access is
+ * refused exactly like one that does not exist (`REPO_NOT_FOUND`), and the
+ * denial is audited as `product.repo.attach.denied`. Admins skip the read: the
+ * service's own lookup answers a missing id for them.
+ */
+export async function assertRepoConnectionAttachable(
+  user: AuthPayload,
+  repoConnectionId: string,
+): Promise<void> {
+  const actor = actorOf(user);
+  if (isAdminActor(actor)) return;
+  const row = await prisma.repoConnection.findUnique({
+    where: { id: repoConnectionId },
+    select: { projectId: true },
+  });
+  if (
+    row &&
+    (await actorHasProjectAccess(actor, row.projectId, {
+      resource: "repo_connection",
+      resourceId: repoConnectionId,
+      action: "product.repo.attach",
+    }))
+  ) {
+    return;
+  }
+  throw repoConnectionNotFound(repoConnectionId);
 }
