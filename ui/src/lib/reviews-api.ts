@@ -4,6 +4,7 @@
  * Server surface: `server/src/routes/reviews.ts` (#617). Payload shapes mirror
  * `REVIEW_DETAIL_INCLUDE` in `server/src/lib/reviews/review-service.ts`.
  */
+import type { SharedCriteriaRecord } from "@metis/shared";
 import { apiFetch } from "@/lib/api-client";
 
 // ---- Types ------------------------------------------------------------------
@@ -26,6 +27,17 @@ export interface ReviewItem {
   pinnedVersion: number;
   requirement: { id: string; title: string; version: number } | null;
   generatedDocument: { id: string; title: string } | null;
+  /**
+   * #1203 — the requirement's criteria were written for it and other
+   * requirements together (`null` or absent: they were not, or it is a
+   * document). The card shows the note only while the pinned criteria are
+   * still the promoted ones.
+   */
+  sharedCriteria?: {
+    projectId: string;
+    analysisId: string;
+    record: SharedCriteriaRecord;
+  } | null;
 }
 
 export interface ReviewerAssignment {

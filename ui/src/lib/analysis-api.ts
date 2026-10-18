@@ -30,6 +30,7 @@ import type {
   SpecKitHandoffRecord,
   LedgerTokens,
   RequirementSourceDivergence,
+  SharedCriteriaRecord,
 } from "@metis/shared";
 
 export type {
@@ -1105,6 +1106,12 @@ export interface PromotionMatching {
     /** The grouped items it could not be told apart among. */
     candidates: Array<{ title: string; acceptanceCriteria: string[] }>;
   }>;
+  /**
+   * #1203 — the promoted requirements whose criteria one grouped item wrote for
+   * them and others together. Absent before #1203; read it with
+   * `readSharedCriteriaRecords` from `@metis/shared`.
+   */
+  shared?: SharedCriteriaRecord[];
   updatedAt: string;
 }
 

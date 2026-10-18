@@ -62,6 +62,9 @@ export * from "./zod-patch.js";
 export * from "./metis-markers.js";
 // #1230 — the run the Requirements hub opens on and a reader BRD reads.
 export * from "./requirements-run.js";
+// #1203 — criteria one synthesis item wrote for several requirements: the record
+// promotion keeps and the note the requirement card, review card and issue show.
+export * from "./shared-criteria.js";
 
 export const SHARED_PACKAGE_NAME = "@metis/shared";
 

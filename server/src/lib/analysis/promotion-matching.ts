@@ -5,7 +5,8 @@
  * Pure: the refusals come from {@link planApprovedRequirementSet}, which reads
  * them off the shared one-to-one matcher; nothing is re-matched here.
  */
-import type { AmbiguousPromotionMatch } from "./approved-requirement-set.js";
+import { readSharedCriteriaRecords, type SharedCriteriaRecord } from "@metis/shared";
+import type { AmbiguousPromotionMatch, SharedPromotionMatch } from "./approved-requirement-set.js";
 import type { AmbiguousPromotionRecord, PromotionMatchingRecord } from "./types/requirements.js";
 
 /**
@@ -53,12 +54,72 @@ export function withoutGivenItems(
   return out;
 }
 
+/**
+ * Issue #1203 — key each requirement whose criteria were shared by the row it
+ * became, and each sibling by its row when it has one.
+ *
+ * `rowIdByApprovedIndex` is aligned as for {@link ambiguousPromotionRecords}:
+ * an entry whose requirement is not written here is left out. A sibling that is
+ * not written here either is looked up in `rowByStructuredId` (the rows an
+ * earlier promotion of the same set recorded), else it has no row.
+ *
+ * An append onto a set promoted before #1203 has no earlier `shared` record, so
+ * a sibling from that promotion is named (by its reviewed title) without a row
+ * or link. That is deliberate: do not "fix" it with a lookup of the rows by
+ * title — titles are not unique, and guessing a row is what #1204 removed.
+ */
+export function sharedCriteriaRecords(
+  shared: readonly SharedPromotionMatch[],
+  rowIdByApprovedIndex: ReadonlyArray<string | undefined>,
+  rowByStructuredId: ReadonlyMap<string, string> = new Map(),
+): SharedCriteriaRecord[] {
+  const records: SharedCriteriaRecord[] = [];
+  for (const s of shared) {
+    const requirementId = rowIdByApprovedIndex[s.approvedIndex];
+    if (requirementId === undefined) continue;
+    records.push({
+      requirementId,
+      structuredId: s.structuredId,
+      sharedWith: s.sharedWith.map((sib) => ({
+        structuredId: sib.structuredId,
+        title: sib.title,
+        requirementId:
+          (sib.approvedIndex !== null ? rowIdByApprovedIndex[sib.approvedIndex] : undefined) ??
+          rowByStructuredId.get(sib.structuredId) ??
+          null,
+        approved: sib.approvedIndex !== null,
+      })),
+      sharedCriteria: s.sharedCriteria,
+      promotedCriteria: s.promotedCriteria,
+    });
+  }
+  return records;
+}
+
 /** The record for a freshly written set; `[]` clears an earlier set's. */
 export function promotionMatchingRecord(
   ambiguous: AmbiguousPromotionRecord[],
+  shared: SharedCriteriaRecord[] = [],
   now: Date = new Date(),
 ): PromotionMatchingRecord {
-  return { ambiguousCount: ambiguous.length, ambiguous, updatedAt: now.toISOString() };
+  return { ambiguousCount: ambiguous.length, ambiguous, shared, updatedAt: now.toISOString() };
+}
+
+/**
+ * Issue #1203 — the rows an earlier promotion recorded, by structured id, so an
+ * append can link its rows to siblings promoted before it.
+ */
+export function sharedRowsByStructuredId(
+  existing: PromotionMatchingRecord | null,
+): Map<string, string> {
+  const rows = new Map<string, string>();
+  for (const r of existing?.shared ?? []) {
+    rows.set(r.structuredId, r.requirementId);
+    for (const sib of r.sharedWith) {
+      if (sib.requirementId) rows.set(sib.structuredId, sib.requirementId);
+    }
+  }
+  return rows;
 }
 
 /**
@@ -80,6 +141,7 @@ export function readPromotionMatchingRecord(raw: unknown): PromotionMatchingReco
   return {
     ambiguousCount: valid.length,
     ambiguous: valid,
+    shared: readSharedCriteriaRecords(raw),
     updatedAt: typeof updatedAt === "string" ? updatedAt : new Date(0).toISOString(),
   };
 }
@@ -87,13 +149,38 @@ export function readPromotionMatchingRecord(raw: unknown): PromotionMatchingReco
 /**
  * An append (#723) adds rows to a set already promoted: keep the earlier
  * entries and add the new rows' ones.
+ *
+ * #1203 — an earlier row's note already names a sibling that was not approved
+ * then (its criteria were shared with it all along); when that sibling is the
+ * row appended now, the earlier note gains the link to it.
  */
 export function appendPromotionMatching(
   existing: PromotionMatchingRecord | null,
-  added: AmbiguousPromotionRecord[],
+  added: {
+    ambiguous: AmbiguousPromotionRecord[];
+    shared?: SharedCriteriaRecord[];
+    /** The rows this append wrote, by structured id. */
+    rowsByStructuredId?: ReadonlyMap<string, string>;
+  },
   now: Date = new Date(),
 ): PromotionMatchingRecord {
-  const seen = new Set(added.map((a) => a.requirementId));
+  const seen = new Set(added.ambiguous.map((a) => a.requirementId));
   const kept = (existing?.ambiguous ?? []).filter((a) => !seen.has(a.requirementId));
-  return promotionMatchingRecord([...kept, ...added], now);
+  const addedShared = added.shared ?? [];
+  const newRows = added.rowsByStructuredId ?? new Map<string, string>();
+  const seenShared = new Set(addedShared.map((r) => r.requirementId));
+  const keptShared = (existing?.shared ?? [])
+    .filter((r) => !seenShared.has(r.requirementId))
+    .map((r) => ({
+      ...r,
+      sharedWith: r.sharedWith.map((sib) => {
+        const row = sib.requirementId ?? newRows.get(sib.structuredId) ?? null;
+        return row === sib.requirementId ? sib : { ...sib, requirementId: row, approved: true };
+      }),
+    }));
+  return promotionMatchingRecord(
+    [...kept, ...added.ambiguous],
+    [...keptShared, ...addedShared],
+    now,
+  );
 }

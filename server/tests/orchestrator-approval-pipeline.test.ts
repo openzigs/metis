@@ -791,6 +791,111 @@ describe("#216 — promotion is gated on resolved approvals", () => {
     });
   });
 
+  // #1203 — on a real replacement the orchestrator records which promoted rows
+  // share criteria an item wrote for several, each sibling keyed by its row.
+  it("#1203 — records the rows sharing a three-requirement item's criteria", async () => {
+    const svc = await import("../src/lib/analysis/analysis-service.js");
+    const structuredReq = (id: string, title: string) => ({
+      id,
+      title,
+      description: `${title}.`,
+      type: "functional" as const,
+      stakeholders: [],
+      priority: "should-have" as const,
+      ambiguities: [],
+      evidenceNeeds: [],
+      rawSource: "",
+    });
+    const group = ["Logging out ends every session.", "A reset ends every session."];
+    vi.mocked(svc.getStructuredRequirements).mockResolvedValueOnce({
+      requirements: [
+        structuredReq("r0", "Rate limit the public API"),
+        structuredReq("r1", "Flush on logout"),
+        structuredReq("r2", "Flush on reset"),
+        structuredReq("r3", "Flush on revoke"),
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    runSynthesisMock.mockResolvedValueOnce({
+      output: {
+        summary: "s",
+        requirements: [
+          {
+            type: "feature",
+            title: "Flush sessions",
+            body: "Flush sessions",
+            priority: "medium",
+            labels: [],
+            acceptanceCriteria: group,
+            evidenceFindingIndexes: [],
+            structuredIds: ["r1", "r2", "r3"],
+          },
+        ],
+      },
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    });
+    vi.mocked(svc.persistRequirements).mockImplementationOnce((input) => {
+      persisted.requirements.push(input as unknown as Record<string, unknown>);
+      return Promise.resolve(["row-r1", "row-r2", "row-r3"]);
+    });
+    await approvalSvc.createApprovalRequests("ana-shared", [
+      { type: "requirement", itemId: "r0" },
+      { type: "requirement", itemId: "r1" },
+      { type: "requirement", itemId: "r2" },
+      { type: "requirement", itemId: "r3" },
+    ]);
+    await approvalSvc.reviewApprovalRequest("ana-shared", "ap-1", {
+      status: "rejected",
+      reviewerId: "u1",
+    });
+    for (const ap of ["ap-2", "ap-3", "ap-4"]) {
+      await approvalSvc.reviewApprovalRequest("ana-shared", ap, {
+        status: "approved",
+        reviewerId: "u1",
+      });
+    }
+
+    const { orch } = makeOrchestrator();
+    await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+      analysisId: "ana-shared",
+      ...synthInput,
+    });
+
+    const sib = (structuredId: string, title: string, requirementId: string) => ({
+      structuredId,
+      title,
+      requirementId,
+      approved: true,
+    });
+    const entry = (requirementId: string, structuredId: string, sharedWith: unknown[]) => ({
+      requirementId,
+      structuredId,
+      sharedWith,
+      sharedCriteria: group,
+      promotedCriteria: group,
+    });
+    const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
+    expect(cleared).toMatchObject({
+      promotionMatching: {
+        shared: [
+          entry("row-r1", "r1", [
+            sib("r2", "Flush on reset", "row-r2"),
+            sib("r3", "Flush on revoke", "row-r3"),
+          ]),
+          entry("row-r2", "r2", [
+            sib("r1", "Flush on logout", "row-r1"),
+            sib("r3", "Flush on revoke", "row-r3"),
+          ]),
+          entry("row-r3", "r3", [
+            sib("r1", "Flush on logout", "row-r1"),
+            sib("r2", "Flush on reset", "row-r2"),
+          ]),
+        ],
+      },
+    });
+  });
+
   // Issue #723 — with every requirement rejected the approved set is EMPTY, so
   // a withheld replacement also returns [] and a length comparison (0 === 0)
   // cannot tell the two apart. Only the explicit signal can: nothing is recorded

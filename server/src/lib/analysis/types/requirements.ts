@@ -7,6 +7,7 @@
  */
 
 import type { DocumentSource } from "../../documents/document-source.js";
+import type { SharedCriteriaRecord } from "@metis/shared";
 
 // ── Structured Requirements (#622) ─────────────────────────────────────
 
@@ -218,6 +219,11 @@ export interface PromotionMatchingRecord {
   ambiguousCount: number;
   /** One entry per refused requirement, keyed by the row it became. */
   ambiguous: AmbiguousPromotionRecord[];
+  /**
+   * Issue #1203 — one entry per promoted requirement whose criteria a synthesis
+   * item wrote for it and other requirements together. Absent before #1203.
+   */
+  shared?: SharedCriteriaRecord[];
   /** ISO timestamp of the promotion that wrote it. */
   updatedAt: string;
 }

@@ -17,6 +17,7 @@
  * containment match #1116 uses to place clarification answers.
  */
 import type { SynthesisOutput, SynthesizedRequirement } from "@metis/shared";
+import { normalizeCriteria } from "@metis/shared";
 import {
   ATTRIBUTION_THRESHOLD,
   containmentScore,
@@ -254,6 +255,75 @@ export interface AmbiguousPromotionMatch {
 }
 
 /**
+ * Issue #1203 — an approved requirement that received criteria from a
+ * synthesis item naming other requirements too. Index-aligned with the
+ * persisted set through `approvedIndex`, as {@link AmbiguousPromotionMatch} is.
+ */
+export interface SharedPromotionMatch {
+  structuredId: string;
+  approvedIndex: number;
+  /**
+   * The other listed requirements those items named, in reviewed order.
+   * `approvedIndex` is the sibling's position among the approved, or `null`
+   * when it was not approved (it gets no row, but its criteria are here).
+   */
+  sharedWith: Array<{ structuredId: string; title: string; approvedIndex: number | null }>;
+  /** The criteria that came from an item naming a sibling, as persisted. */
+  sharedCriteria: string[];
+  /** Every criterion the requirement is promoted with. */
+  promotedCriteria: string[];
+}
+
+/**
+ * Issue #1203 — which approved requirements share criteria, read off the id
+ * join alone: an item naming several listed ids gives each approved one its
+ * criteria (#1187). The title fallback is one-to-one and never shares.
+ */
+function sharedByIdJoin(
+  approved: readonly StructuredRequirement[],
+  structured: readonly StructuredRequirement[],
+  synthesized: readonly SynthesizedRequirement[],
+  promoted: readonly SynthesizedRequirement[],
+): SharedPromotionMatch[] {
+  const listIds = new Set(structured.map((r) => r.id));
+  const approvedIndex = new Map(approved.map((r, i) => [r.id, i] as const));
+  const out: SharedPromotionMatch[] = [];
+  approved.forEach((req, i) => {
+    const siblings = new Set<string>();
+    const fromShared = new Set<string>();
+    for (const s of synthesized) {
+      if (!s.structuredIds?.includes(req.id)) continue;
+      const others = s.structuredIds.filter((id) => id !== req.id && listIds.has(id));
+      if (others.length === 0) continue;
+      for (const id of others) siblings.add(id);
+      // Synthesis criteria are untrimmed (`z.string().min(1)`); the row's read trimmed.
+      for (const c of normalizeCriteria(s.acceptanceCriteria ?? [])) fromShared.add(c);
+    }
+    if (siblings.size === 0) return;
+    // As the row reads back (`parseAcceptanceCriteria`: trimmed, blanks dropped),
+    // so the record compares and marks against exactly the criteria on the row.
+    // The join caps the list, so a criterion past the cap is not on the row.
+    const promotedCriteria = normalizeCriteria(promoted[i]?.acceptanceCriteria ?? []);
+    const sharedCriteria = promotedCriteria.filter((c) => fromShared.has(c));
+    if (sharedCriteria.length === 0) return;
+    out.push({
+      structuredId: req.id,
+      approvedIndex: i,
+      sharedWith: structured
+        .filter((r) => siblings.has(r.id))
+        .map((r) => ({
+          structuredId: r.id,
+          title: (r.title.trim() || r.id).slice(0, MAX_TITLE),
+          approvedIndex: approvedIndex.get(r.id) ?? null,
+        })),
+      sharedCriteria,
+      promotedCriteria,
+    });
+  });
+  return out;
+}
+
+/**
  * Issue #1204 review — the synthesis items (indexes) the title and id joins
  * give the requirements in `ids`, as {@link planApprovedRequirementSet} would
  * with exactly those approved. An append re-plans over the enlarged set, so
@@ -289,7 +359,12 @@ export function planApprovedRequirementSet(input: {
   structured: StructuredRequirement[];
   approvedIds: ReadonlySet<string>;
   synthesis: SynthesisOutput | null;
-}): { output: SynthesisOutput; ambiguous: AmbiguousPromotionMatch[] } {
+}): {
+  output: SynthesisOutput;
+  ambiguous: AmbiguousPromotionMatch[];
+  /** #1203 — the approved requirements whose criteria an item wrote for several. */
+  shared: SharedPromotionMatch[];
+} {
   const approved = input.structured.filter((r) => input.approvedIds.has(r.id));
   const synthesized = input.synthesis?.requirements ?? [];
   const { matches, refused } = matchSynthesizedReportingRefusals(
@@ -340,5 +415,6 @@ export function planApprovedRequirementSet(input: {
       requirements,
     },
     ambiguous,
+    shared: sharedByIdJoin(approved, input.structured, synthesized, requirements),
   };
 }
