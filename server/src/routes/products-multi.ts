@@ -25,6 +25,7 @@ import {
 } from "../lib/products/product-service.js";
 import {
   assertProductAccessible,
+  assertRepoConnectionAttachable,
   buildProductAccessWhere,
   repoConnectionProjectFilter,
 } from "../lib/products/product-access.js";
@@ -172,6 +173,8 @@ export function productsRouter(): Router {
     try {
       await assertProductAccessible(req.user!, param(req.params.id));
       const input = addProductRepoSchema.parse(req.body);
+      // #1250 — the connection's own project must be accessible too.
+      await assertRepoConnectionAttachable(req.user!, input.repoConnectionId);
       const result = await addProductRepo(param(req.params.id), input);
       res.status(201).json({ data: result });
     } catch (err) {
