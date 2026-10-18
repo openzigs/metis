@@ -4299,7 +4299,8 @@ readers re-check each repo against its connection's project
 `GET /api/products/:id` and `PATCH /api/products/:id` return only readable repos plus
 `inaccessibleRepoCount` (a bare count — no id, name or owner); `PATCH /:id/repos/:repoId`
 answers a hidden repo as not attached; `POST /:id/analyze` skips the rest and every edge
-touching one, auditing `product.analyze.repo.skipped`. Generated documents are stored
+touching one, auditing `product.analyze.repo.skipped`, and replaces only the documents it
+regenerates (a skipped repo's own documents stay for those who can read them). Generated documents are stored
 per product, so each records its source repos in `metadata.repoConnectionIds` and
 `GET /:id/documents` drops any built from a repo the reader cannot open (one that
 records none is judged against all the product's repos). A soft-deleted connection

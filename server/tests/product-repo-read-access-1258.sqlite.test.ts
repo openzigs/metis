@@ -392,6 +392,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(JSON.stringify(docs)).not.toContain(FOREIGN_REPO);
       });
 
+      it("keeps the skipped repo's own documents from the admin's earlier run", async () => {
+        // The member's run above regenerated only what it could read; it must not
+        // wipe the per-repo documents an earlier run built for the repo it skipped.
+        const docs = await docsAs("ada");
+        const forB = docs.filter((d) => d.repoId === rc.b).map((d) => d.docType);
+        expect(forB.sort()).toEqual(["api-contract", "per-service"]);
+        // ...and nothing is duplicated for the repos the member's run did cover.
+        const forC = docs.filter((d) => d.repoId === rc.c).map((d) => d.docType);
+        expect(forC.sort()).toEqual(["api-contract", "per-service"]);
+      });
+
       it("hides a legacy unified doc that does not record its repos while a repo is hidden", async () => {
         await db.productDocument.create({
           data: {

@@ -385,8 +385,16 @@ export function productsRouter(): Router {
         // Upsert documents into ProductDocument table
         const now = new Date();
 
-        // Delete existing docs for this product then recreate
-        await prisma.productDocument.deleteMany({ where: { productId } });
+        // Delete existing docs for this product then recreate. #1258 — only the
+        // documents this run regenerates: the per-repo documents of a repo it
+        // skipped stay for the readers who can open that repo.
+        const skippedRepoIds = hidden.map((r) => r.repoConnectionId);
+        await prisma.productDocument.deleteMany({
+          where:
+            skippedRepoIds.length === 0
+              ? { productId }
+              : { productId, OR: [{ repoId: null }, { repoId: { notIn: skippedRepoIds } }] },
+        });
 
         const docsToCreate = [
           {
