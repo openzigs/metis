@@ -980,10 +980,10 @@ export class AnalysisOrchestrator {
     },
     maybeAnalysis: Awaited<ReturnType<AnalysisOrchestrator["assertCanRegenerate"]>>["analysis"],
     /**
-     * The controller of the ActiveRun `regenerateAgent` registered. Defaulted
-     * only for tests that drive this method directly, with no ActiveRun.
+     * The controller of the ActiveRun `regenerateAgent` registered. Required
+     * (#1156): a default would be a controller no cancel can reach.
      */
-    controller: AbortController = new AbortController(),
+    controller: AbortController,
   ): Promise<void> {
     const analysis = maybeAnalysis as NonNullable<typeof maybeAnalysis> & {
       project: {
