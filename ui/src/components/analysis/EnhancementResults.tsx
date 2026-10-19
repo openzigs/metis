@@ -263,26 +263,34 @@ export function ClarificationImpactNote({
           ) : null}
         </div>
       )}
+      {/* #1237 — the retry routes as they are. A submit re-runs the pass, but a
+          completed dialog offers none; after that only promotion re-runs it, and
+          only when it writes a newly approved requirement: a rejection reopened
+          and approved on the Approvals panel (a hub card's Approve does not).
+          The block's markers are hidden in every view, so the block-edited
+          notice points to History, as the user guide does. */}
       {requirementsAvailable && blockEditedCount > 0 && (
         <p className="text-warning" data-testid="clarification-block-edited">
           {blockEditedCount} answer{blockEditedCount === 1 ? " was" : "s were"} not written because
           the Clarifications section of{" "}
-          {blockEditedCount === 1 ? "its requirement" : "their requirements"} was edited. Restore
-          its start and end markers, or delete the section, then submit the answers again.
+          {blockEditedCount === 1 ? "its requirement" : "their requirements"} was edited.{" "}
+          {blockEditedCount === 1 ? "Open the requirement" : "Open each requirement"} and delete
+          that section, or restore it from History. The answers are then written again when you
+          submit the next answers while clarifying questions are still open or, after clarification
+          is complete, when you reopen a rejected requirement on the Approvals panel and approve it.
         </p>
       )}
-      {/* #1237 — the retry route as it is: a submit re-runs the pass, but a
-          completed dialog offers none, and promotion re-runs it only when it
-          writes a newly approved requirement. */}
       {requirementsAvailable && notWrittenCount > 0 && (
         <p className="text-warning" data-testid="clarification-not-written">
           {notWrittenCount} answer{notWrittenCount === 1 ? " was" : "s were"} not written because{" "}
           {notWrittenCount === 1 ? "its requirement" : "their requirements"} changed or{" "}
           {notWrittenCount === 1 ? "was" : "were"} deleted while the answers were being saved. While
           clarifying questions are still open, they are written again when you submit the next
-          answers. Once clarification is complete, they are written again only when another
-          requirement is approved and promoted, so to add an answer now, edit its requirement. A
-          deleted requirement is not restored, so nothing is written into it.
+          answers. After clarification is complete, they are written again only when you reopen a
+          rejected requirement on the Approvals panel and approve it. To add an answer yourself,
+          edit the requirement and type it outside the Clarifications section; if the answers are
+          written again later, delete your copy so it does not appear twice. A deleted requirement
+          is not restored, so nothing is written into it.
         </p>
       )}
       {requirementsAvailable && unmatched.length > 0 && (

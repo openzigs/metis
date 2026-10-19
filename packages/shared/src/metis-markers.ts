@@ -48,7 +48,9 @@ export function findMetisMarkers(text: string): MetisMarker[] {
  *
  * #1237 — the markers removed are exactly the ones {@link findMetisMarkers}
  * finds, including one split across lines (the pattern's whitespace spans
- * newlines): its lines collapse into the one it started on.
+ * newlines). Text typed after such a marker's `-->` starts a paragraph of its
+ * own rather than joining the line the marker started on, which may be one of
+ * METIS's quoted lines.
  */
 export function stripMetisMarkers(text: string): string {
   const markers = findMetisMarkers(text);
@@ -64,6 +66,14 @@ export function stripMetisMarkers(text: string): string {
     line += kept.split("\n").length - 1;
     touched.add(line);
     from = m.index + m.length;
+    if (!text.slice(m.index, from).includes("\n")) continue;
+    // A split marker: anything after it on its last line becomes a paragraph.
+    const lineEnd = text.indexOf("\n", from);
+    const rest = text.slice(from, lineEnd === -1 ? text.length : lineEnd);
+    if (rest.trim() === "") continue;
+    out += "\n\n";
+    line += 2;
+    from += rest.length - rest.trimStart().length;
   }
   out += text.slice(from);
   // `trimEnd`, not a `[ \t]+$` regex: that backtracks quadratically on a long
