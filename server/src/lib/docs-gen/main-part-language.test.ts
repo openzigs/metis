@@ -134,6 +134,32 @@ describe("findCodeIdentifiers — what it flags", () => {
       "The `feeds.disabled` flag hides it.",
       { kind: "inline-code", text: "feeds.disabled" },
     ],
+    // #1231: the false-flag fixes keep these.
+    [
+      "a backticked path of one slash with a version (#1231)",
+      "Requests go to `api/v1` first.",
+      { kind: "inline-code", text: "api/v1" },
+    ],
+    [
+      "a backticked root path (#1231)",
+      "Requests go to `/entries` first.",
+      { kind: "inline-code", text: "/entries" },
+    ],
+    [
+      "an endpoint whose path is one character (#1231)",
+      "Readers call GET /x to list articles.",
+      { kind: "endpoint", text: "GET /x" },
+    ],
+    [
+      "a path in a dot directory (#1231)",
+      "The workflow lives in .github/workflows/ci.yml today.",
+      { kind: "file-path", text: ".github/workflows/ci.yml" },
+    ],
+    [
+      "a backticked name: value pair whose value is a time (#1231)",
+      "The schedule says `runAt: 9:00` each day.",
+      { kind: "inline-code", text: "runAt: 9:00" },
+    ],
     [
       "a SQL clause in prose",
       "Rows are taken FOR UPDATE SKIP LOCKED so two workers never share one.",
@@ -246,6 +272,28 @@ describe("findCodeIdentifiers — what it passes", () => {
     ["a constant in a setting's shape", "Set to `ENTRY_STATUS_UNREAD` or ENTRY_STATUS_READ."],
     // Known blind spot (module doc): unquoted, a dotted name reads as a domain.
     ["an unquoted dotted name", "The feeds.disabled flag hides it."],
+    // #1231: false flags the #1226 re-review found.
+    [
+      "two HTTP methods named together (#1231)",
+      "It accepts GET / POST requests and HEAD / OPTIONS.",
+    ],
+    [
+      "brand names of three or more humps (#1231)",
+      "Import meals from MyFitnessPal, show places on OpenStreetMap, search with DuckDuckGo.",
+    ],
+    [
+      "a number label with a slash, in backticks (#1231)",
+      "Support is `24/7`, or `9/5` on weekdays.",
+    ],
+    [
+      "a label with spaces or hyphens and a slash, in backticks (#1231)",
+      "Choose `Opt in/Opt out`, `read-only/read-write` or `Page 1/10`.",
+    ],
+    ["a time of day in backticks (#1231)", "The digest goes out at `9:00` each day."],
+    [
+      "a URL without a scheme (#1231)",
+      "See example.com/docs/setup.html, www.miniflux.app/app.js or docs.github.com/en/start.md.",
+    ],
   ])("%s", (_, markdown) => {
     expect(hits(markdown)).toEqual([]);
   });
@@ -336,21 +384,22 @@ describe("codeIdentifierReport", () => {
 });
 
 describe("findCodeIdentifiers — linear time on hostile input (#1226 review)", () => {
-  // Each of the first four shapes took seconds before the fix (1.9-2.8 s at
-  // 120k characters; the comment shape 0.3 s), growing four-fold per
-  // doubling. Each n is sized so a quadratic pattern takes several seconds
-  // here while the linear scan takes a few milliseconds: the bound leaves two
-  // orders of magnitude for a contended machine (#1379), so it cannot flake,
-  // and a regression cannot pass it.
-  it.each<[string, string]>([
-    ["link-target openers", "](".repeat(80_000)],
-    ["footnote openers", "[^".repeat(80_000)],
-    ["footnote openers with text", "[^a".repeat(55_000)],
-    ["unclosed HTML comments", "<!--".repeat(120_000)],
-    ["unclosed display math", `$$${"$x".repeat(100_000)}`],
-    ["a PascalCase run that fails at its end", `${"Aa".repeat(80_000)}_`],
-    ["an endpoint path that runs on", `GET /${"a/".repeat(80_000)}`],
-  ])("%s", (_, markdown) => {
+  // Each case names the pre-#1226 pattern it guards (PR #1226's first commit,
+  // aea490e5) and is a shape that pattern was quadratic on: 3.5-5.3 s here
+  // against that commit's detector, a few milliseconds now. The bound leaves
+  // two orders of magnitude for a contended machine (#1379), so it cannot
+  // flake, and a return of the old pattern cannot pass it.
+  //
+  // #1231: no case for display math, PascalCase or an endpoint. `$$…$$` was
+  // never quadratic (a later `$$` always closes an earlier one), and the
+  // PascalCase and endpoint patterns did not exist before #1226, so a timing
+  // case for them could not fail against anything that was ever written.
+  it.each<[string, string, string]>([
+    ["link-target openers", String.raw`/(?<=\])\([^)\n]*\)/g`, "](".repeat(80_000)],
+    ["footnote openers", String.raw`/\[\^[^\]\n]+\]/g`, "[^".repeat(80_000)],
+    ["footnote openers with text", String.raw`/\[\^[^\]\n]+\]/g`, "[^a".repeat(55_000)],
+    ["unclosed HTML comments", String.raw`/<!--[\s\S]*?-->/g`, "<!--".repeat(120_000)],
+  ])("%s (guards %s)", (_, _guards, markdown) => {
     const started = performance.now();
     findCodeIdentifiers(markdown);
     expect(performance.now() - started).toBeLessThan(1_000);

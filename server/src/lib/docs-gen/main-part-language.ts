@@ -96,17 +96,25 @@ const SETTING_NAME_RE = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
 /**
  * Inside backticks, code punctuation, a member access, an inner capital or a
  * `name: value` pair marks code. A plain word or phrase in backticks (a status
- * a user sees, a number) does not.
+ * a user sees, a number, a time of day such as `9:00`) does not.
  */
-const CODE_IN_SPAN_RE = /[_(){}[\]=<>;\\]|::|->|[A-Za-z]\.[A-Za-z]|[a-z][A-Z]|\w:\s?\S/;
+const CODE_IN_SPAN_RE = /[_(){}[\]=<>;\\]|::|->|[A-Za-z]\.[A-Za-z]|[a-z][A-Z]|[A-Za-z_]:\s?\S/;
 /**
  * A slash in backticks marks a path or endpoint (`api/v1`, `/entries`), except
- * in a short label of two words a user sees: `read/unread`, `Yes/No`.
+ * in a short label a user sees: `read/unread`, `Yes/No`, `24/7`, `Opt in/Opt
+ * out`, `Page 1/10` (#1231). Each side is up to four words joined by a space
+ * or hyphen, each word all letters or all digits, so a word that mixes them
+ * (`v1`) still reads as a path. Linear: the anchors, the bounded counts and
+ * the required separator between words leave one way to match.
  */
-const SLASH_LABEL_RE = /^[A-Za-z]{1,12}\/[A-Za-z]{1,12}$/;
+const LABEL_WORD = String.raw`(?:[A-Za-z]{1,20}|\d{1,4})`;
+const LABEL_SIDE = String.raw`${LABEL_WORD}(?:[ -]${LABEL_WORD}){0,3}`;
+const SLASH_LABEL_RE = new RegExp(String.raw`^${LABEL_SIDE}\/${LABEL_SIDE}$`);
 /** SQL that business prose never says, in capitals as SQL writes it. */
 const SQL_SOURCE = String.raw`\b(?:FOR UPDATE(?: SKIP LOCKED| NOWAIT)?|SKIP LOCKED|SELECT\b[^.\n]{0,80}?\bFROM|INSERT INTO|DELETE FROM|NOT NULL|PRIMARY KEY|FOREIGN KEY|ORDER BY|GROUP BY|(?:LEFT|RIGHT|INNER|OUTER) JOIN)\b`;
 const SQL_RE = new RegExp(SQL_SOURCE, "g");
+/** The same, for one inline-code span: not global, so `test` keeps no state. */
+const SQL_IN_SPAN_RE = new RegExp(SQL_SOURCE);
 
 const CODE_EXTENSIONS = [
   "ts",
@@ -156,6 +164,12 @@ const CODE_EXTENSIONS = [
  * Extensions flagged on a bare file name (no directory, no line): not `js`,
  * which names products (Node.js, Next.js), nor a one-letter one.
  */
+/**
+ * The first directory of a path that is really a host: a URL written without
+ * its scheme (`example.com/docs/setup.html`, #1231). A dot directory
+ * (`.github`) starts with its dot and is not one.
+ */
+const HOST_DIRECTORY_RE = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\//;
 const BARE_FILE_EXTENSIONS: ReadonlySet<string> = new Set(
   CODE_EXTENSIONS.filter((ext) => ext !== "js" && ext.length > 1),
 );
@@ -174,12 +188,26 @@ const CAMEL_CASE_RE = /(?<![\w$])[a-z][a-z0-9]+([A-Z][A-Za-z0-9]*)(?![\w$])/g;
  * PascalCase of three or more humps, unquoted: `EntryStatusUnread`,
  * `MaxEntryLimit`. Brand and product names are almost all two humps
  * (PowerPoint, SharePoint, JavaScript, GitHub, LinkedIn, PayPal, YouTube) or
- * end in an acronym (PostgreSQL), and pass. A three-hump brand (OpenStreetMap)
- * is flagged: a known false positive, rare in a requirements document.
+ * end in an acronym (PostgreSQL), and pass. The three-hump brands a reader is
+ * likely to meet are in {@link PASCAL_CASE_BRANDS} (#1231); any other one is
+ * flagged, a known false positive, rare in a requirements document.
  */
 const PASCAL_CASE_RE = /(?<![\w$])(?:[A-Z][a-z0-9]+){3,}(?![\w$])/g;
-/** An HTTP method and a path, unquoted: `GET /v1/entries`. */
-const ENDPOINT_RE = /\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\/[^\s`,;)\]]*/g;
+/** Brand and product names of three or more humps, never flagged. */
+export const PASCAL_CASE_BRANDS: ReadonlySet<string> = new Set([
+  "DuckDuckGo",
+  "GoFundMe",
+  "MyFitnessPal",
+  "OpenStreetMap",
+  "PlayStationPlus",
+  "PowerBuilder",
+]);
+/**
+ * An HTTP method and a path, unquoted: `GET /v1/entries`. At least one path
+ * character after the slash, so "GET / POST requests" names two methods, not
+ * an endpoint (#1231).
+ */
+const ENDPOINT_RE = /\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\/[^\s`,;)\]]+/g;
 
 interface Positioned extends CodeIdentifierHit {
   at: number;
@@ -267,9 +295,10 @@ function blankFences(markdown: string, hits: Positioned[]): string {
  *     letters before the first capital.
  *
  * Ordinary capitalised words, two-hump PascalCase brand names (GitHub,
- * PowerPoint, PostgreSQL), acronyms, hyphenated words, `SCREAMING_SNAKE`
- * settings, two-word slash labels (`read/unread`) and plurals such as
- * `user(s)` are never flagged.
+ * PowerPoint, PostgreSQL) and the listed longer ones (MyFitnessPal),
+ * acronyms, hyphenated words, `SCREAMING_SNAKE` settings, short slash labels
+ * (`read/unread`, `24/7`), two methods named together ("GET / POST"), URLs
+ * without a scheme and plurals such as `user(s)` are never flagged.
  *
  * Known blind spot: an unquoted dotted name in lower case (`feeds.disabled`)
  * is not flagged. It has the shape of a domain (miniflux.app, example.com)
@@ -303,7 +332,7 @@ export function findCodeIdentifiers(markdown: string): CodeIdentifierHit[] {
     if (
       CODE_IN_SPAN_RE.test(content) ||
       (content.includes("/") && !SLASH_LABEL_RE.test(content)) ||
-      new RegExp(SQL_SOURCE).test(content)
+      SQL_IN_SPAN_RE.test(content)
     ) {
       hits.push({ kind: "inline-code", text: content, at: m.index });
     }
@@ -313,6 +342,7 @@ export function findCodeIdentifiers(markdown: string): CodeIdentifierHit[] {
   text = blank(text, FILE_PATH_RE, (m) => {
     const [, dir, stem, ext, line] = m;
     if (!dir && !line && !BARE_FILE_EXTENSIONS.has(ext)) return;
+    if (HOST_DIRECTORY_RE.test(dir)) return;
     if (ext === "js" && !line && /^[A-Z]/.test(stem)) return;
     push("file-path")(m);
   });
@@ -320,7 +350,9 @@ export function findCodeIdentifiers(markdown: string): CodeIdentifierHit[] {
     if (/[_.$]|[a-z][A-Z]/.test(m[1]) || m[2].trim() === "") push("function-call")(m);
   });
   text = blank(text, SNAKE_CASE_RE, push("snake-case"));
-  text = blank(text, PASCAL_CASE_RE, push("pascal-case"));
+  text = blank(text, PASCAL_CASE_RE, (m) => {
+    if (!PASCAL_CASE_BRANDS.has(m[0])) push("pascal-case")(m);
+  });
   blank(text, CAMEL_CASE_RE, (m) => {
     if (/[a-z]/.test(m[1])) push("camel-case")(m);
   });
