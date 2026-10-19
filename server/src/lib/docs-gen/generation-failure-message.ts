@@ -87,6 +87,52 @@ export const GENERATION_COST_CEILING_MESSAGE =
 export const GENERATION_INPUTS_CHANGED_MESSAGE =
   "The project's sources changed while this document was being generated, so it was stopped. Regenerate the document to write it from the current sources.";
 
+/**
+ * #1224 — the reasoning values a provider can name when it rejects one. The
+ * message below quotes one of these, never the provider's own text, so the
+ * set of strings a client can see stays closed.
+ */
+const REASONING_SETTINGS = ["off", "on", "low", "medium", "high", "xhigh", "max"] as const;
+type ReasoningSetting = (typeof REASONING_SETTINGS)[number];
+
+/**
+ * #1224 — the model refused the reasoning (thinking) setting METIS sent: for
+ * example `off` on a model that cannot turn its reasoning off. Before #1224 this
+ * read as the generic failure, on all 89 calls of one run.
+ */
+export function generationReasoningRejectedMessage(setting?: ReasoningSetting): string {
+  const named = setting ? `the reasoning setting "${setting}"` : "the reasoning setting";
+  return `The AI model rejected ${named} (400 Bad Request). Set the document reasoning setting (DOCS_GEN_PHASE1_REASONING) to provider-default in Settings, or choose another model, then regenerate the document.`;
+}
+
+const REASONING_REJECTED_MESSAGES: readonly string[] = [
+  generationReasoningRejectedMessage(),
+  ...REASONING_SETTINGS.map((s) => generationReasoningRejectedMessage(s)),
+];
+
+const STATUS_400 =
+  /(?:returned|status(?: code)?|HTTP|code)[:\s]*400\b|\(400\)|^(?:\w*Error:\s*)?400\b|failed \(BadRequestError\): 400\b/i;
+
+// The provider's own wording for a rejected thinking/effort configuration
+// (Anthropic's "Troubleshooting thinking" page; OpenAI-format `reasoning_effort`).
+// Deliberately NOT a bare "thinking": a replayed thinking block whose signature
+// or content fails verification is a different 400 with a different fix.
+const REASONING_REJECTED_TEXT =
+  /thinking\.type\.\w+\\?"? is not supported|turn thinking off on this model|adaptive thinking is not supported|effort '\w+' is not supported|effort cannot change when thinking is disabled|reasoning_effort/i;
+
+function rejectedReasoningSetting(message: string): ReasoningSetting | undefined {
+  if (/thinking\.type\.(?:disabled|between_tools)|turn thinking off on this model/i.test(message)) {
+    return "off";
+  }
+  if (/thinking\.type\.(?:enabled|adaptive)|adaptive thinking is not supported/i.test(message)) {
+    return "on";
+  }
+  const effort = /effort '(\w+)'/i.exec(message)?.[1]?.toLowerCase();
+  return (REASONING_SETTINGS as readonly string[]).includes(effort ?? "")
+    ? (effort as ReasoningSetting)
+    : undefined;
+}
+
 /** The run-stop reasons (`UnpublishableGenerationError`) with a message of their own. */
 const STOP_MESSAGES: Readonly<Record<string, string>> = {
   aborted: GENERATION_CANCELLED_MESSAGE,
@@ -111,6 +157,7 @@ const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   GENERATION_PROVIDER_DROPPED_MESSAGE,
   GENERATION_PROVIDER_CLOSED_MESSAGE,
   GENERATION_PATH_SCOPE_EMPTY_MESSAGE,
+  ...REASONING_REJECTED_MESSAGES,
 ]);
 
 // An HTTP status named as one: "returned 402", "status 429", "HTTP 401",
@@ -374,6 +421,9 @@ export function generationFailureMessage(err: unknown): string {
     /invalid[_\s-]*api[_\s-]*key|incorrect api key|authentication[_\s-]*error/i.test(message)
   ) {
     return GENERATION_PROVIDER_AUTH_MESSAGE;
+  }
+  if ((status === 400 || STATUS_400.test(message)) && REASONING_REJECTED_TEXT.test(message)) {
+    return generationReasoningRejectedMessage(rejectedReasoningSetting(message));
   }
   const transport = classifyTransportFailure(err);
   if (transport) return TRANSPORT_MESSAGES[transport];

@@ -54,7 +54,8 @@ function readMode(config: ConfigService, key: string): DocsGenReasoningMode {
  *     any other model, so Claude on api.anthropic.com is sent the same request
  *     as before.
  *   • `provider-default` — send nothing; the model's own default applies.
- *   • `off` — thinking disabled.
+ *   • `off` — thinking disabled (the `anthropic` provider spells it per model,
+ *     #1224: `between_tools` on Sonnet 5.5, lowest effort on an always-on model).
  *   • `low` / `medium` / `high` — that effort, for any model. On Claude this
  *     turns adaptive thinking ON, so it is an explicit operator choice only.
  *
