@@ -38,6 +38,7 @@ import {
 import type { AIProvider } from "../ai/types.js";
 import { providerHonoursReasoningOptions } from "../docs-gen/docs-gen-reasoning.js";
 import { extractJsonObject, repairAgentJson } from "./agent-runner.js";
+import { citationsDroppedFrom, markCitationLoss } from "./citation-salvage.js";
 import {
   knownDocumentsForRepair,
   repairFinding,
@@ -184,7 +185,8 @@ export function salvageRepairedFindings(
     const repaired = repairFinding(candidate, `findings.${i}`, opts);
     const result = agentFindingPayloadSchema.safeParse(repaired.value);
     if (result.success) {
-      salvaged.push(result.data);
+      // #1155 — read before the parse erased it: what the schema dropped.
+      salvaged.push(markCitationLoss(result.data, citationsDroppedFrom(repaired.value)));
       // Only a salvaged finding's repairs happened to anything that is kept.
       repairs.push(...repaired.repairs);
     }

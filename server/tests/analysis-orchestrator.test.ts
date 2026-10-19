@@ -42,6 +42,8 @@ interface AgentResultRow {
     title: string;
     body: string;
     evidence: string | null;
+    /** #1155 — the verifier's per-finding status, as persisted. */
+    verificationStatus?: string | null;
   }>;
 }
 
@@ -206,6 +208,7 @@ vi.mock("../src/lib/prisma.js", () => ({
             title: String(data.title),
             body: String(data.body),
             evidence: data.evidence === undefined ? null : String(data.evidence),
+            verificationStatus: (data.verificationStatus as string | null | undefined) ?? null,
           };
           if (ar) ar.findings.push(row);
           return row;
@@ -1431,6 +1434,58 @@ describe("AnalysisOrchestrator.start", () => {
     expect(code.findings).toHaveLength(1);
     expect(code.findings[0]!.title).toBe("Password reset token never expires");
     expect(capabilityOf(analysisId)?.reasons).toContain("code-agent-degraded");
+  });
+
+  // #1155 — a citation the shared schema drops never reaches the #734 gate, so
+  // a finding whose only citation it dropped verified as "nothing to verify".
+  it("#1155 a finding whose only citation the schema dropped is unverified, not null", async () => {
+    const { analysisId } = await runAgenticWith(({ messages }) =>
+      askedForFinalJson(messages)
+        ? buildCodeAgentJson([
+            { filePath: "server/src/auth/session.ts", startLine: 0, endLine: 20 },
+          ])
+        : SEARCH_TOOL_CALL,
+    );
+    const code = codeRowOf(analysisId)!;
+    expect(code.status).toBe("completed");
+    expect(code.findings).toHaveLength(1);
+    expect(code.findings[0]!.verificationStatus).toBe("unverified");
+    expect(capabilityOf(analysisId)?.droppedCitations).toEqual([{ agentKey: "code", count: 1 }]);
+  });
+
+  // #1155 — the salvage path runs after the whole answer failed the schema; it
+  // recorded no dropped-citation count, so the run read as a plain completion.
+  it("#1155 the salvage path counts the citations it dropped, and the run says so", async () => {
+    const { analysisId } = await runAgenticWith(({ messages }) =>
+      askedForFinalJson(messages)
+        ? JSON.stringify({
+            agentKey: "code",
+            // `summary` missing: the whole answer fails, so findings are salvaged.
+            findings: [
+              {
+                category: "security",
+                severity: "high",
+                title: "Password reset token never expires",
+                body: "session.ts issues a token with no TTL.",
+                tags: [],
+                citations: [{ filePath: "server/src/auth/session.ts", startLine: 0, endLine: 20 }],
+              },
+            ],
+          })
+        : SEARCH_TOOL_CALL,
+    );
+    const code = codeRowOf(analysisId)!;
+    expect(code.findings).toHaveLength(1);
+    expect(code.findings[0]!.verificationStatus).toBe("unverified");
+    const cap = capabilityOf(analysisId)!;
+    expect(cap.reasons).toContain("code-agent-degraded");
+    expect(cap.droppedCitations).toEqual([{ agentKey: "code", count: 1 }]);
+    expect(cap.reasons).toContain("citations-dropped");
+    const status = analyses.get(analysisId)!.status;
+    const { analysisStatusLabel } = await import("@metis/shared");
+    expect(analysisStatusLabel(status, [], cap.droppedCitations ?? [])).toBe(
+      "completed with warnings",
+    );
   });
 
   it("#770 records `code-agent-failed` when the code agent dies outright", async () => {

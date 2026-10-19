@@ -109,6 +109,11 @@ import { computeCoverageForRequirements } from "./requirement-coverage.js";
 // Issue #1104 (finding B) — shared wording for a gated (withheld) promotion.
 import { describePromotionGate } from "./promotion-gate.js";
 import { verifyFinding } from "./finding-verification.js";
+import {
+  citationsLostToSalvage,
+  markCitationLosses,
+  totalCitationsLost,
+} from "./citation-salvage.js";
 // #1318 (Epic #1316) — the claim-level faithfulness METRIC. A grader like the
 // panel below, one step further: it writes ONE optional numeric field and cannot
 // reach the deterministic gate at all.
@@ -3088,6 +3093,8 @@ export class AnalysisOrchestrator {
               );
               const citationSalvage = collectSalvagedCitations(repaired.value);
               validated = agentOutputSchema.parse(repaired.value);
+              // #1155 — per finding too, so its verification can say what it lost.
+              markCitationLosses(validated.findings, repaired.value);
               fieldRepairs = repaired.repairs;
               // #1143 — only once the answer parsed: a rejected one is salvaged below.
               this.noteCitationSalvage(input.analysisId, agentKey, citationSalvage);
@@ -3178,6 +3185,12 @@ export class AnalysisOrchestrator {
               tokens: loopResult.usage.totalTokens,
             });
             this.markCodeAgentDegraded(input.analysisId);
+            // #1155 — the salvaged findings carry what the schema dropped from
+            // each; count it on the run like the whole-answer path does.
+            this.noteCitationSalvage(input.analysisId, agentKey, {
+              dropped: totalCitationsLost(salvaged),
+              repaired: 0,
+            });
             validated = buildDegradedAgentOutput({
               agentKey,
               reason: reason ?? "non-json-response",
@@ -3332,6 +3345,7 @@ export class AnalysisOrchestrator {
               verificationStatus: verifyFinding({
                 groundedCitations: citations,
                 droppedCitations: dropped,
+                citationsLostToSalvage: citationsLostToSalvage(f),
                 assertsAbsence: claimsAbsence,
                 absenceConfirmable,
                 // #726 — the badge must agree with the verdict.
@@ -3678,6 +3692,8 @@ export class AnalysisOrchestrator {
         }
         const citationSalvage = collectSalvagedCitations(parsed);
         const validated = agentOutputSchema.parse(parsed);
+        // #1155 — per finding too, so its verification can say what it lost.
+        markCitationLosses(validated.findings, parsed);
         // #1143 — the citations the schema dropped are recorded on the run.
         this.noteCitationSalvage(input.analysisId, agentKey, citationSalvage);
 
@@ -3754,6 +3770,7 @@ export class AnalysisOrchestrator {
             verificationStatus: verifyFinding({
               groundedCitations: grounded,
               droppedCitations: dropped,
+              citationsLostToSalvage: citationsLostToSalvage(f),
               assertsAbsence: claimsAbsence,
               absenceConfirmable,
               // #726 — the badge must agree with the verdict.
