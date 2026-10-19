@@ -102,6 +102,7 @@ import type {
   WebResearchResult,
 } from "./types/requirements.js";
 import { isBackgroundAnalysis } from "./requirement-runs.js";
+import { pairingColumns, type PromotedFrom } from "./promotion-pairing.js";
 
 const log = createChildLogger("analysis-service");
 
@@ -774,6 +775,14 @@ export interface PersistRequirementsInput {
    * Omitted: rows start with no status (read as `draft`).
    */
   reviewStatus?: "approved";
+  /**
+   * Issue #1202 — the pairing promotion made, recorded on each row it writes:
+   * `pairings[i]` is the structured requirement `synthesis.requirements[i]` was
+   * written from and the synthesis items it took, and `runId` the extraction
+   * run those ids belong to. Omitted for a set not promoted from the approval
+   * checkpoint; its rows record no pairing and are matched by title.
+   */
+  promotedFrom?: PromotedFrom;
 }
 
 /**
@@ -1022,6 +1031,10 @@ async function replaceRequirementSet(
         // items or synthesis did not say.
         sourceCandidateIds: serializeSourceCandidateIds(r.sourceIds, runSources),
         ...(input.reviewStatus ? { reviewStatus: input.reviewStatus } : {}),
+        // Issue #1202 — which structured requirement this row IS. Written in
+        // the same insert, so the pairing exists exactly as long as the row:
+        // the `deleteMany` above (a re-run's replacement) takes both.
+        ...pairingColumns(input.promotedFrom, idx),
       },
     });
     ids.push(row.id);

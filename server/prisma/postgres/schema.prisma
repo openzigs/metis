@@ -1406,6 +1406,19 @@ model Requirement {
   /// never shown as "added". Deliberately NOT `externalSource`/`externalId`:
   /// those mark a row that IS an imported item and are its re-import dedup key.
   sourceCandidateIds String?
+  /// Issue #1202 — the pairing promotion made: the approved STRUCTURED
+  /// requirement (`REQ-3`) this row was written from, and the extraction run
+  /// that id belongs to (#909: every run numbers its list from `REQ-001`).
+  /// Clarification answers and synthesis items join on it instead of on titles.
+  /// NULL: the row was not promoted from the approval checkpoint, or was
+  /// promoted before #1202 — title matching still applies to those rows. On
+  /// the row itself, so a re-run's hard delete takes the pairing with it.
+  promotedStructuredId    String?
+  promotedStructuredRunId String?
+  /// Issue #1202 — JSON array of the keys (`synthesisItemKey`) of the synthesis
+  /// items this row took its criteria and evidence from; `[]` for none. NULL:
+  /// not recorded (as above).
+  promotedSynthesisKeys   String?
   storyPoints      Int?
   parentId         String?
   /// Epic #192 (A.5) — living-spec sync. Set when a PR linked to the

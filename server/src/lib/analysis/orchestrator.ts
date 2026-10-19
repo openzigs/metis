@@ -4171,6 +4171,11 @@ export class AnalysisOrchestrator {
         onWithheld: () => {
           replacementWithheld = true;
         },
+        // #1202 — each row records the structured requirement it IS, so the
+        // clarification answers and the synthesis join look it up by id.
+        ...(plan
+          ? { promotedFrom: { runId: refined?.runId ?? null, pairings: plan.pairings } }
+          : {}),
       });
 
       // feat/req-code-traceability — auto-seed the requirement→code spine from

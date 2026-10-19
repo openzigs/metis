@@ -54,6 +54,7 @@ import {
   type OneToOneCandidate,
   type OneToOneResult,
 } from "./one-to-one-match.js";
+import { pairedInRun, type RecordedPairing } from "./promotion-pairing.js";
 import type {
   AnswerProvenance,
   ClarificationApplication,
@@ -397,30 +398,74 @@ interface RowMatch {
  */
 function matchStructuredToRows(
   structured: readonly StructuredRequirement[],
-  rows: ReadonlyArray<{ id: string; title: string; body: string }>,
+  rows: readonly AttributionRow[],
   origin: RowOrigin,
+  structuredRunId: string | null | undefined,
 ): RowMatch {
-  const candidates = buildCandidates(structured, rows);
-  if (origin === "synthesized") return resolveSynthesizedCandidates(candidates);
-  const { matches, refusedLeftOptions } = resolvePromotedCandidates(candidates);
-  return { matches, refusedAmong: refusedLeftOptions };
+  // Issue #1202 — a row promotion paired with a structured requirement of this
+  // run IS that requirement: joined by id, and taken out of the title match
+  // altogether, so no neighbour can win it on words. Only the rows and
+  // requirements with no pairing (promoted before #1202) are matched by title.
+  const listIds = new Set(structured.map((r) => r.id));
+  const paired = new Map<string, string>();
+  const pairedRows = new Set<string>();
+  for (const row of rows) {
+    if (!pairedInRun(rowPairing(row), structuredRunId)) continue;
+    pairedRows.add(row.id);
+    const id = row.promotedStructuredId!;
+    if (listIds.has(id) && !paired.has(id)) paired.set(id, row.id);
+  }
+  const candidates = buildCandidates(
+    structured.filter((r) => !paired.has(r.id)),
+    rows.filter((r) => !pairedRows.has(r.id)),
+  );
+  let byTitle: RowMatch;
+  if (origin === "synthesized") {
+    byTitle = resolveSynthesizedCandidates(candidates);
+  } else {
+    const { matches, refusedLeftOptions } = resolvePromotedCandidates(candidates);
+    byTitle = { matches, refusedAmong: refusedLeftOptions };
+  }
+  return { matches: new Map([...paired, ...byTitle.matches]), refusedAmong: byTitle.refusedAmong };
+}
+
+/**
+ * A persisted row as attribution reads it. The pairing columns are optional:
+ * absent or NULL is a row with no recorded pairing (#1202), matched by title.
+ */
+export interface AttributionRow {
+  id: string;
+  title: string;
+  body: string;
+  promotedStructuredId?: string | null;
+  promotedStructuredRunId?: string | null;
+}
+
+function rowPairing(row: AttributionRow): RecordedPairing {
+  return {
+    promotedStructuredId: row.promotedStructuredId ?? null,
+    promotedStructuredRunId: row.promotedStructuredRunId ?? null,
+  };
 }
 
 /**
  * Attribute answers to persisted requirement rows.
  *
- * There is no id spine between the two representations: the clarify question
- * names a `StructuredRequirement` id (`REQ-3`), while the persisted rows carry
- * cuid2 ids. So the question's requirement id picks the structured requirement,
- * and {@link matchStructuredToRows} finds that requirement's row by its TITLE —
- * the one field the clarify resolution pass does not rewrite. `rowOrigin`
- * defaults to the strict `promoted` matching.
+ * The clarify question names a `StructuredRequirement` id (`REQ-3`), while the
+ * persisted rows carry cuid2 ids. So the question's requirement id picks the
+ * structured requirement, and {@link matchStructuredToRows} finds that
+ * requirement's row: by the pairing promotion recorded on it (#1202) when there
+ * is one for `structuredRunId`, otherwise by its TITLE — the one field the
+ * clarify resolution pass does not rewrite. `rowOrigin` defaults to the strict
+ * `promoted` matching.
  */
 export function attributeAnswers(input: {
   answered: AnsweredQuestion[];
   structured: StructuredRequirement[] | undefined;
-  requirements: ReadonlyArray<{ id: string; title: string; body: string }>;
+  requirements: readonly AttributionRow[];
   rowOrigin?: RowOrigin;
+  /** #1202 — the extraction run of `structured`; a row's pairing must be of it. */
+  structuredRunId?: string | null;
 }): AttributionResult {
   const byRequirementId = new Map<string, AnsweredQuestion[]>();
   const unattributed: AnsweredQuestion[] = [];
@@ -430,6 +475,7 @@ export function attributeAnswers(input: {
     input.structured ?? [],
     input.requirements,
     input.rowOrigin ?? "promoted",
+    input.structuredRunId,
   );
 
   // Group first so one match decision covers every answer about the same
@@ -852,10 +898,20 @@ export async function applyClarificationsToRequirements(
     const answered = collectAnsweredQuestions(state);
     if (answered.length === 0) return null;
 
-    const structured: StructuredRequirements | null = await getStructuredRequirements(analysisId);
+    const structured: (StructuredRequirements & { runId?: string }) | null =
+      await getStructuredRequirements(analysisId);
     const rows = await prisma.requirement.findMany({
       where: { analysisId, deletedAt: null },
-      select: { id: true, title: true, body: true, acceptanceCriteria: true, version: true },
+      select: {
+        id: true,
+        title: true,
+        body: true,
+        acceptanceCriteria: true,
+        version: true,
+        // #1202 — the structured requirement promotion paired the row with.
+        promotedStructuredId: true,
+        promotedStructuredRunId: true,
+      },
     });
 
     const { byRequirementId, unattributed, ambiguousBetween } = attributeAnswers({
@@ -863,6 +919,7 @@ export async function applyClarificationsToRequirements(
       structured: structured?.requirements,
       requirements: rows,
       rowOrigin: await readRowOrigin(analysisId),
+      structuredRunId: structured?.runId ?? null,
     });
 
     const titleById = new Map(rows.map((r) => [r.id, r.title] as const));

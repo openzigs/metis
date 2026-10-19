@@ -607,6 +607,11 @@ describe("#216 — promotion is gated on resolved approvals", () => {
       requirements: Array<{ title: string }>;
     };
     expect(synthesis.requirements.map((r) => r.title)).toEqual(["Feed URL must be absolute"]);
+    // #1202 — the orchestrator's promotion records each row's pairing too.
+    expect(persisted.requirements[0]!.promotedFrom).toEqual({
+      runId: "run-7",
+      pairings: [{ structuredId: "r1", synthesisKeys: expect.any(Array) }],
+    });
     const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
     expect(cleared).toMatchObject({
       promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 1 },

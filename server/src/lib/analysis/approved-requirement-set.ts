@@ -13,8 +13,10 @@
  * requirements. Synthesis still contributes what only it has — acceptance
  * criteria, the finding evidence that drives coverage/verdicts, labels and
  * story points — but only by joining onto an approved requirement, never by
- * adding rows nobody reviewed. The join is on the structured TITLE, the same
- * containment match #1116 uses to place clarification answers.
+ * adding rows nobody reviewed. The join is by the ids synthesis names (#1033),
+ * then on the structured TITLE, the same containment match #1116 uses to place
+ * clarification answers. Issue #1202 — a requirement whose promoted row
+ * recorded the items it took is joined to exactly those, before either.
  */
 import type { SynthesisOutput, SynthesizedRequirement } from "@metis/shared";
 import { normalizeCriteria } from "@metis/shared";
@@ -28,6 +30,7 @@ import {
   matchOneToOneRefusingTies,
   type OneToOneCandidate,
 } from "./one-to-one-match.js";
+import { synthesisItemKey, type PairedItems, type PromotionPairing } from "./promotion-pairing.js";
 import type { StructuredRequirement } from "./types/requirements.js";
 
 const PRIORITY_BY_STRUCTURED: Record<string, SynthesizedRequirement["priority"]> = {
@@ -90,8 +93,9 @@ export function matchSynthesized(
   approved: ReadonlyArray<Pick<StructuredRequirement, "id" | "title">>,
   synthesized: readonly SynthesizedRequirement[],
   structured: ReadonlyArray<Pick<StructuredRequirement, "id">> = approved,
+  paired?: PairedItems,
 ): Map<string, SynthesizedRequirement> {
-  return matchSynthesizedReportingRefusals(approved, synthesized, structured).matches;
+  return matchSynthesizedReportingRefusals(approved, synthesized, structured, paired).matches;
 }
 
 /**
@@ -112,23 +116,50 @@ export function matchSynthesizedReportingRefusals(
   approved: ReadonlyArray<Pick<StructuredRequirement, "id" | "title">>,
   synthesized: readonly SynthesizedRequirement[],
   structured: ReadonlyArray<Pick<StructuredRequirement, "id">> = approved,
+  paired?: PairedItems,
 ): {
   matches: Map<string, SynthesizedRequirement>;
   refused: RefusedTitleMatch[];
+  /** #1202 — the item indexes each matched requirement took, for its pairing. */
+  given: Map<string, number[]>;
 } {
   const listIds = new Set(structured.map((r) => r.id));
+  // #1202 — items a promoted row already took are that row's, never a title
+  // candidate for another requirement.
+  const pairedIndexes = new Set<number>();
+  for (const req of approved) for (const i of paired?.get(req.id) ?? []) pairedIndexes.add(i);
   // Absent: the item did not say. `[]`: it says it restates no listed one.
   // Only ids no longer in the list (a re-extraction) count as not saying.
   const titlePool = synthesized.map(
-    (s) =>
-      s.structuredIds === undefined ||
-      (s.structuredIds.length > 0 && !s.structuredIds.some((id) => listIds.has(id))),
+    (s, i) =>
+      !pairedIndexes.has(i) &&
+      (s.structuredIds === undefined ||
+        (s.structuredIds.length > 0 && !s.structuredIds.some((id) => listIds.has(id)))),
   );
 
   const byStructuredId = new Map<string, SynthesizedRequirement>();
+  const given = new Map<string, number[]>();
+  // #1202 — a requirement whose row recorded its items is joined to exactly
+  // those: neither the id join nor the title join is consulted for it.
+  const decided = new Set<string>();
   for (const req of approved) {
-    const named = synthesized.filter((s) => s.structuredIds?.includes(req.id));
-    if (named.length > 0) byStructuredId.set(req.id, joinItems(named));
+    const indexes = paired?.get(req.id);
+    if (!indexes) continue;
+    decided.add(req.id);
+    given.set(req.id, [...indexes]);
+    if (indexes.length > 0) {
+      byStructuredId.set(req.id, joinItems(indexes.map((i) => synthesized[i]!)));
+    }
+  }
+  for (const req of approved) {
+    if (decided.has(req.id)) continue;
+    const named: number[] = [];
+    synthesized.forEach((s, i) => {
+      if (s.structuredIds?.includes(req.id)) named.push(i);
+    });
+    if (named.length === 0) continue;
+    byStructuredId.set(req.id, joinItems(named.map((i) => synthesized[i]!)));
+    given.set(req.id, named);
   }
 
   const synthTokens = synthesized.map((s) => significantTokens(`${s.title} ${s.body}`));
@@ -136,7 +167,7 @@ export function matchSynthesizedReportingRefusals(
   const synthTitleKeys = synthesized.map((s) => titleKey(s.title));
   const candidates: Array<OneToOneCandidate<string, number, number[]>> = [];
   for (const req of approved) {
-    if (byStructuredId.has(req.id)) continue;
+    if (decided.has(req.id) || byStructuredId.has(req.id)) continue;
     const needle = significantTokens(req.title);
     const key = titleKey(req.title);
     synthTokens.forEach((tokens, synthIdx) => {
@@ -161,6 +192,7 @@ export function matchSynthesizedReportingRefusals(
   });
   for (const [structuredId, synthIdx] of matches) {
     byStructuredId.set(structuredId, synthesized[synthIdx]!);
+    given.set(structuredId, [synthIdx]);
   }
   // In the reviewed order, so the record reads like the list.
   const refused = approved
@@ -169,7 +201,7 @@ export function matchSynthesizedReportingRefusals(
       structuredId: r.id,
       synthesizedIndexes: [...refusedLeftOptions.get(r.id)!].sort((a, b) => a - b),
     }));
-  return { matches: byStructuredId, refused };
+  return { matches: byStructuredId, refused, given };
 }
 
 /** Case- and whitespace-insensitive title, for the same-title tier. */
@@ -334,20 +366,18 @@ export function itemsGivenTo(input: {
   structured: StructuredRequirement[];
   ids: ReadonlySet<string>;
   synthesis: SynthesisOutput | null;
+  /** #1202 — the items the promoted rows recorded taking. */
+  paired?: PairedItems;
 }): Set<number> {
   const synthesized = input.synthesis?.requirements ?? [];
   const approved = input.structured.filter((r) => input.ids.has(r.id));
-  const { matches } = matchSynthesizedReportingRefusals(approved, synthesized, input.structured);
-  // Title matches are the synthesis items themselves. An id join can merge
-  // several items into a new object, found here by none of them; that is fine,
-  // as an item naming a listed id never enters the title fallback, so it is
-  // never a refused requirement's option.
-  const given = new Set<number>();
-  for (const item of matches.values()) {
-    const idx = synthesized.indexOf(item);
-    if (idx >= 0) given.add(idx);
-  }
-  return given;
+  const { given } = matchSynthesizedReportingRefusals(
+    approved,
+    synthesized,
+    input.structured,
+    input.paired,
+  );
+  return new Set([...given.values()].flat());
 }
 
 /**
@@ -359,18 +389,27 @@ export function planApprovedRequirementSet(input: {
   structured: StructuredRequirement[];
   approvedIds: ReadonlySet<string>;
   synthesis: SynthesisOutput | null;
+  /** #1202 — the items already-promoted rows recorded taking ({@link pairedItemIndexes}). */
+  paired?: PairedItems;
 }): {
   output: SynthesisOutput;
   ambiguous: AmbiguousPromotionMatch[];
   /** #1203 — the approved requirements whose criteria an item wrote for several. */
   shared: SharedPromotionMatch[];
+  /**
+   * #1202 — per persisted requirement (index-aligned with `output.requirements`):
+   * the structured id it is written from and the keys of the synthesis items it
+   * took, for its row to record.
+   */
+  pairings: Array<PromotionPairing & { synthesisKeys: string[] }>;
 } {
   const approved = input.structured.filter((r) => input.approvedIds.has(r.id));
   const synthesized = input.synthesis?.requirements ?? [];
-  const { matches, refused } = matchSynthesizedReportingRefusals(
+  const { matches, refused, given } = matchSynthesizedReportingRefusals(
     approved,
     synthesized,
     input.structured,
+    input.paired,
   );
   const approvedIndex = new Map(approved.map((r, i) => [r.id, i] as const));
   const ambiguous: AmbiguousPromotionMatch[] = refused.map((r) => ({
@@ -416,5 +455,9 @@ export function planApprovedRequirementSet(input: {
     },
     ambiguous,
     shared: sharedByIdJoin(approved, input.structured, synthesized, requirements),
+    pairings: approved.map((req) => ({
+      structuredId: req.id,
+      synthesisKeys: (given.get(req.id) ?? []).map((i) => synthesisItemKey(synthesized[i]!)),
+    })),
   };
 }

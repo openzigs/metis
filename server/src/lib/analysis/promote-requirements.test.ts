@@ -53,6 +53,12 @@ const db = {
   firstPromotedAt: new Date("2026-01-01T00:00:00Z"),
   /** #909 — make `persistRequirements` withhold the replacement (#769). */
   withhold: false,
+  /** #1202 — the pairing columns of the requirement rows already promoted. */
+  pairingRows: [] as Array<{
+    promotedStructuredId: string | null;
+    promotedStructuredRunId: string | null;
+    promotedSynthesisKeys: string | null;
+  }>,
 };
 
 /**
@@ -67,9 +73,12 @@ const committed = {
   /** Optional fault: the Nth requirement create (1-based) throws. */
   failCreateAt: 0,
   creates: 0,
+  /** #1202 — the data of every requirement create, committed or not. */
+  createdData: [] as Array<Record<string, unknown>>,
 };
-const createRow = async (_args: { data: { title: string } }) => {
+const createRow = async (args: { data: { title: string } }) => {
   committed.creates += 1;
+  committed.createdData.push(args.data);
   if (committed.failCreateAt && committed.creates === committed.failCreateAt) {
     throw new Error("connection reset");
   }
@@ -91,6 +100,7 @@ vi.mock("../prisma.js", () => {
     },
     requirement: {
       count: vi.fn(async () => db.requirementCount),
+      findMany: vi.fn(async () => db.pairingRows),
       create: vi.fn(async (args: { data: { title: string } }) => {
         const row = await createRow(args);
         committed.rows.push(args.data.title);
@@ -182,6 +192,7 @@ vi.mock("./approval-checkpoint.js", async (importOriginal) => {
 });
 
 const { promoteApprovedRequirements } = await import("./promote-requirements.js");
+const { synthesisItemKey } = await import("./promotion-pairing.js");
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -199,6 +210,8 @@ beforeEach(() => {
   committed.rows = [];
   committed.failCreateAt = 0;
   committed.creates = 0;
+  committed.createdData = [];
+  db.pairingRows = [];
   txChain = Promise.resolve();
   lastTx = null;
 });
@@ -1358,5 +1371,152 @@ describe("#1203 — promotion records which requirements share criteria", () => 
     expect(recordOf()?.shared).toEqual([
       shared("rq_new_1", "REQ-2", [sib("REQ-1", null, true), sib("REQ-3", null, false)]),
     ]);
+  });
+});
+
+describe("#1202 — promotion records the pairing, and an append joins on it", () => {
+  const RUN = "run-1202";
+  const structuredReq = (id: string, title: string) => ({
+    id,
+    title,
+    description: `${title}.`,
+    type: "functional",
+    stakeholders: [],
+    priority: "should-have",
+    ambiguities: [],
+    evidenceNeeds: [],
+    rawSource: "",
+  });
+  const item = (title: string, body: string, criterion: string) => ({
+    type: "feature",
+    title,
+    body,
+    priority: "medium",
+    labels: [],
+    acceptanceCriteria: [criterion],
+    evidenceFindingIndexes: [],
+  });
+  // Neighbours whose titles hold the same words. Alone, REQ-1 takes X (X's
+  // title holds all of REQ-1's words, Y's body only). Together REQ-1 and REQ-2
+  // are level on X, so the title join refuses both — and REQ-2 is never offered
+  // Y, its own item, because a requirement refused at one level takes nothing
+  // weaker (#1031).
+  const X = item("Mark entries read", "Mark entries read from the list.", "X: the list is marked.");
+  const Y = item(
+    "Bulk actions",
+    "Mark the selected entries as read.",
+    "Y: the selection is marked.",
+  );
+  const createdFor = (structuredId: string) =>
+    committed.createdData.find((d) => d.promotedStructuredId === structuredId) as
+      | {
+          acceptanceCriteria: string;
+          promotedStructuredRunId: string;
+          promotedSynthesisKeys: string;
+        }
+      | undefined;
+
+  beforeEach(() => {
+    db.structured = {
+      requirements: [
+        structuredReq("REQ-1", "Mark entries as read"),
+        structuredReq("REQ-2", "Mark read entries"),
+      ],
+      runId: RUN,
+    };
+    db.synthesisOutput = JSON.stringify({ summary: "s", requirements: [X, Y] });
+  });
+
+  it("hands persistRequirements each row's structured id, run and synthesis items", async () => {
+    db.approvals = [{ itemId: "REQ-1", status: "approved" }];
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    const input = persistRequirements.mock.calls[0]?.[0] as { promotedFrom?: unknown };
+    expect(input.promotedFrom).toEqual({
+      runId: RUN,
+      pairings: [{ structuredId: "REQ-1", synthesisKeys: [synthesisItemKey(X)] }],
+    });
+  });
+
+  it("records no pairing for a set that never went through the checkpoint", async () => {
+    db.structured = null;
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    const input = persistRequirements.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(input).not.toHaveProperty("promotedFrom");
+  });
+
+  it("an append joins the earlier row on its pairing, so the new neighbour gets its own item", async () => {
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "REQ-2", status: "approved" },
+    ];
+    db.requirementCount = 1;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1"], promotedStructuredRunId: RUN }),
+    };
+    db.pairingRows = [
+      {
+        promotedStructuredId: "REQ-1",
+        promotedStructuredRunId: RUN,
+        promotedSynthesisKeys: JSON.stringify([synthesisItemKey(X)]),
+      },
+    ];
+
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(outcome).toEqual({ status: "promoted", requirementCount: 1 });
+    const row = createdFor("REQ-2");
+    expect(JSON.parse(row!.acceptanceCriteria)).toEqual(["Y: the selection is marked."]);
+    // The appended row records its own pairing in the same insert.
+    expect(row!.promotedStructuredRunId).toBe(RUN);
+    expect(JSON.parse(row!.promotedSynthesisKeys)).toEqual([synthesisItemKey(Y)]);
+  });
+
+  it("an append onto rows promoted before #1202 keeps the title join (REQ-2 refused)", async () => {
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "REQ-2", status: "approved" },
+    ];
+    db.requirementCount = 1;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1"], promotedStructuredRunId: RUN }),
+    };
+    db.pairingRows = [
+      { promotedStructuredId: null, promotedStructuredRunId: null, promotedSynthesisKeys: null },
+    ];
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    const row = createdFor("REQ-2");
+    expect(JSON.parse(row!.acceptanceCriteria)).toEqual([]);
+    expect(JSON.parse(row!.promotedSynthesisKeys)).toEqual([]);
+  });
+
+  it("ignores a pairing whose items are no longer in the synthesis output (synthesis re-ran)", async () => {
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "REQ-2", status: "approved" },
+    ];
+    db.requirementCount = 1;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1"], promotedStructuredRunId: RUN }),
+    };
+    db.pairingRows = [
+      {
+        promotedStructuredId: "REQ-1",
+        promotedStructuredRunId: RUN,
+        promotedSynthesisKeys: JSON.stringify(["an-item-this-output-does-not-have"]),
+      },
+    ];
+
+    await promoteApprovedRequirements(ANALYSIS_ID);
+
+    expect(JSON.parse(createdFor("REQ-2")!.acceptanceCriteria)).toEqual([]);
   });
 });
