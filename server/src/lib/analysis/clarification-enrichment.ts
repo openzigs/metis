@@ -60,7 +60,6 @@ import type {
   ClarificationApplication,
   ClarificationState,
   StructuredRequirement,
-  StructuredRequirements,
 } from "./types/requirements.js";
 
 export type { AnswerProvenance, ClarificationApplication } from "./types/requirements.js";
@@ -898,8 +897,7 @@ export async function applyClarificationsToRequirements(
     const answered = collectAnsweredQuestions(state);
     if (answered.length === 0) return null;
 
-    const structured: (StructuredRequirements & { runId?: string }) | null =
-      await getStructuredRequirements(analysisId);
+    const structured = await getStructuredRequirements(analysisId);
     const rows = await prisma.requirement.findMany({
       where: { analysisId, deletedAt: null },
       select: {

@@ -282,11 +282,27 @@ describe("#909 — warns before approval when the reviewed list is not the synth
 
     const warning = await screen.findByTestId("approved-set-difference");
     expect(warning).toHaveTextContent(
-      "Approving promotes the 3 requirement(s) reviewed below, not the 3 the synthesis produced.",
+      "Approving promotes the 3 requirement(s) reviewed below. " +
+        "1 of them did not match any requirement the analysis wrote up. These will be " +
+        "promoted without acceptance criteria or supporting evidence, so add them yourself " +
+        "after approving. 2 requirement(s) the analysis wrote up match nothing in the " +
+        "reviewed list, so their acceptance criteria and evidence will not be carried over " +
+        "to any requirement.",
     );
-    expect(warning).toHaveTextContent("1 reviewed requirement(s) match none of them");
-    expect(warning).toHaveTextContent(
-      "2 synthesized requirement(s) match no reviewed one and will not be promoted.",
+    // Equal counts are not restated as if they differed.
+    expect(warning).not.toHaveTextContent("not the 3");
+  });
+
+  it("#930 — names only the side that is affected", () => {
+    expect(describeSetDifference(3, 3, { reviewedWithoutItem: 0, itemsWithoutReviewed: 1 })).toBe(
+      "Approving promotes the 3 requirement(s) reviewed below. 1 requirement(s) the analysis " +
+        "wrote up match nothing in the reviewed list, so their acceptance criteria and " +
+        "evidence will not be carried over to any requirement.",
+    );
+    expect(describeSetDifference(4, 3, { reviewedWithoutItem: 2, itemsWithoutReviewed: 0 })).toBe(
+      "Approving promotes the 4 requirement(s) reviewed below. 2 of them did not match any " +
+        "requirement the analysis wrote up. These will be promoted without acceptance " +
+        "criteria or supporting evidence, so add them yourself after approving.",
     );
   });
 

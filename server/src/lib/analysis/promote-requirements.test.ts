@@ -1497,6 +1497,62 @@ describe("#1202 — promotion records the pairing, and an append joins on it", (
     expect(JSON.parse(row!.promotedSynthesisKeys)).toEqual([]);
   });
 
+  // #1202 review — the append's #1204 notice drops the items the EARLIER rows
+  // hold. Those are the items the rows recorded, not the ones a title replay
+  // would give them: REQ-1's row took Z, but by title alone REQ-1 is the exact
+  // title of X. Replayed without the pairing, X would be counted as REQ-1's and
+  // hidden from REQ-2's notice although no row holds it.
+  it("an append's refusal notice lists every item no earlier row recorded taking", async () => {
+    const Z = item("Session cleanup", "Remove stale entries.", "Z criterion");
+    const P = item("Flush sessions", "Flush sessions.", "P criterion");
+    const Q = item("Flush sessions reset", "Flush sessions reset.", "Q criterion");
+    db.structured = {
+      requirements: [
+        structuredReq("REQ-1", "Flush sessions"),
+        structuredReq("REQ-2", "Flush user sessions"),
+      ],
+      runId: RUN,
+    };
+    db.synthesisOutput = JSON.stringify({ summary: "s", requirements: [Z, P, Q] });
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved" },
+      { itemId: "REQ-2", status: "approved" },
+    ];
+    db.requirementCount = 1;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1"], promotedStructuredRunId: RUN }),
+    };
+    db.pairingRows = [
+      {
+        promotedStructuredId: "REQ-1",
+        promotedStructuredRunId: RUN,
+        promotedSynthesisKeys: JSON.stringify([synthesisItemKey(Z)]),
+      },
+    ];
+
+    expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+      status: "promoted",
+      requirementCount: 1,
+    });
+
+    const record = (
+      JSON.parse(db.analysis?.metadata ?? "{}") as {
+        promotionMatching?: { ambiguous?: Array<{ structuredId: string; candidates: unknown }> };
+      }
+    ).promotionMatching;
+    expect(record?.ambiguous).toEqual([
+      {
+        requirementId: "rq_new_1",
+        structuredId: "REQ-2",
+        candidates: [
+          { title: P.title, acceptanceCriteria: P.acceptanceCriteria },
+          { title: Q.title, acceptanceCriteria: Q.acceptanceCriteria },
+        ],
+      },
+    ]);
+  });
+
   it("ignores a pairing whose items are no longer in the synthesis output (synthesis re-ran)", async () => {
     db.approvals = [
       { itemId: "REQ-1", status: "approved" },

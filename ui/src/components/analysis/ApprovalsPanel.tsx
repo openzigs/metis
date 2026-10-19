@@ -173,21 +173,31 @@ export function describeSetDifference(
     ? identity.reviewedWithoutItem > 0 || identity.itemsWithoutReviewed > 0
     : false;
   if (reviewedCount === synthesisCount && !unmatched) return null;
-  const base =
-    `Approving promotes the ${reviewedCount} requirement(s) reviewed below, not the ` +
-    `${synthesisCount} the synthesis produced. Synthesized requirements only contribute ` +
-    `acceptance criteria and evidence to a reviewed requirement they match.`;
-  if (!identity || !unmatched) return base;
-  const parts: string[] = [];
-  if (identity.reviewedWithoutItem > 0) {
-    parts.push(`${identity.reviewedWithoutItem} reviewed requirement(s) match none of them`);
-  }
-  if (identity.itemsWithoutReviewed > 0) {
-    parts.push(
-      `${identity.itemsWithoutReviewed} synthesized requirement(s) match no reviewed one and will not be promoted`,
+  if (!identity || !unmatched) {
+    return (
+      `Approving promotes the ${reviewedCount} requirement(s) reviewed below, not the ` +
+      `${synthesisCount} the synthesis produced. Synthesized requirements only contribute ` +
+      `acceptance criteria and evidence to a reviewed requirement they match.`
     );
   }
-  return `${base} ${parts.join("; ")}.`;
+  // #930 review — say which requirements are affected and what happens to
+  // them, without restating two counts that may well be equal.
+  const sentences = [`Approving promotes the ${reviewedCount} requirement(s) reviewed below.`];
+  if (identity.reviewedWithoutItem > 0) {
+    sentences.push(
+      `${identity.reviewedWithoutItem} of them did not match any requirement the analysis ` +
+        `wrote up. These will be promoted without acceptance criteria or supporting evidence, ` +
+        `so add them yourself after approving.`,
+    );
+  }
+  if (identity.itemsWithoutReviewed > 0) {
+    sentences.push(
+      `${identity.itemsWithoutReviewed} requirement(s) the analysis wrote up match nothing ` +
+        `in the reviewed list, so their acceptance criteria and evidence will not be carried ` +
+        `over to any requirement.`,
+    );
+  }
+  return sentences.join(" ");
 }
 
 function PromotionBanner({
