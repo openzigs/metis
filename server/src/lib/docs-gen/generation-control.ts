@@ -22,7 +22,18 @@
 import { createChildLogger } from "../logger.js";
 import { recordUsage } from "../finops/index.js";
 import { getConfigService, type ConfigService } from "../config/config-service.js";
-import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../ai/types.js";
+import type {
+  AIProvider,
+  ChatChunk,
+  ChatMessage,
+  ChatOptions,
+  RetriedAttempt,
+} from "../ai/types.js";
+import {
+  noteUnmeteredAttempt,
+  reportedUsageOf,
+  withRetriedAttemptListener,
+} from "../ai/retried-attempts.js";
 import {
   DOCS_GEN_AGENT_STEP,
   RunUsage,
@@ -286,7 +297,51 @@ export function scopedToGeneration(provider: AIProvider): AIProvider {
     if (!scope) return provider.chat(messages, opts);
     const stopped = scope.stopError();
     if (stopped) return Promise.reject(stopped);
-    return provider.chat(messages, withSignal(opts, scope.signal)).catch((err: unknown) => {
+    // #1273 — an attempt the adapter retried inside this call is metered to
+    // the run, once: on what the provider reported for it (its own ledger row,
+    // counted toward the run's ceiling), or — when it reported nothing —
+    // recorded as unmetered, with a prompt-size estimate added to the run's
+    // cost ceiling only (never to the ledger).
+    const onRetriedAttempt = (a: RetriedAttempt): void => {
+      const reported = reportedUsageOf(a.error);
+      if (reported) {
+        recordDroppedCall({
+          projectId: scope.projectId,
+          sessionId: opts?.sessionId ?? scope.docId,
+          provider: { key: a.provider, model: a.model },
+          messages,
+          seen: { usage: reported, outputChars: 0 },
+        });
+        return;
+      }
+      noteUnmeteredAttempt(
+        {
+          actorId: null,
+          target: { type: "generated_document", id: scope.docId },
+          projectId: scope.projectId,
+          provider: a.provider,
+          model: a.model,
+        },
+        { attempt: a.attempt, errorClass: a.errorClass, retriedBy: "adapter" },
+      );
+      // PR #1274 review — the run's cost ceiling still counts it: the provider
+      // billed at least the prompt. An estimate from the prompt's size, noted
+      // to the run only — the ledger keeps reported usage alone.
+      try {
+        scope.noteSpend({
+          provider: a.provider,
+          model: a.model,
+          inputTokens: tokensOf(contentChars(messages)),
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        });
+      } catch (err) {
+        log.warn("Could not note a retried docs-gen attempt to the run", { err: String(err) });
+      }
+    };
+    const callOpts = withRetriedAttemptListener(withSignal(opts, scope.signal), onRetriedAttempt);
+    return provider.chat(messages, callOpts).catch((err: unknown) => {
       if (scope.signal.aborted)
         recordAbortedCall(scope, provider, messages, opts, { outputChars: 0 });
       throw err;

@@ -33,6 +33,9 @@ import { createChildLogger } from "../../logger.js";
 import { envMs, MAX_TIMEOUT_MS, TIMER_HEADROOM_MS } from "../../config/env-ms.js";
 import { lastUserText, traceModelChat, traceModelStream } from "../../otel/genai-spans.js";
 import { recordCacheHit } from "../cache-hit-telemetry.js";
+import { reportRetriedAttempt } from "../retried-attempts.js";
+import { isProviderUnreachable } from "../../docs-gen/generation-failure-message.js";
+import { classifyGroundingError } from "../../docs-gen/grounding/transient-retry.js";
 import { ToolTagStreamParser } from "./tool-tag-parser.js";
 import {
   localConcurrencyLimiter,
@@ -266,6 +269,21 @@ export function isRetryableNetworkError(err: unknown): boolean {
   if (codes.some((c) => c != null && RETRYABLE_CODES.has(c))) return true;
   // undici surfaces a reset as a message rather than a code in some versions.
   return /ECONNRESET|other side closed|socket hang up|terminated/i.test(err.message);
+}
+
+/**
+ * #1273 — true when a retryable `chat()` failure may have been billed: a
+ * network failure on a request that reached the provider (a reset, a close, a
+ * body that died while it was being read). A 429/503 is the provider refusing
+ * the request, not a reply; a connection that was never made (refused,
+ * unresolvable, a CONNECT timeout) reached nobody. Which is which is the
+ * transport classifier's call (`isProviderUnreachable`): an `ETIMEDOUT` is
+ * "unreachable" only on the connect, otherwise it may have ended a reply.
+ * Exported for direct unit testing.
+ */
+export function mayHaveBeenBilled(err: unknown): boolean {
+  if (err instanceof RetryableHttpError || !isRetryableNetworkError(err)) return false;
+  return !isProviderUnreachable(err);
 }
 
 /**
@@ -1245,7 +1263,7 @@ export class OpenAICompatibleProvider implements AIProvider {
    */
   private async withRetry<T>(
     attemptFn: () => Promise<T>,
-    context: { method: "chat" | "stream"; model: string },
+    context: { method: "chat" | "stream"; model: string; opts?: ChatOptions },
   ): Promise<T> {
     let lastError: unknown;
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
@@ -1264,6 +1282,19 @@ export class OpenAICompatibleProvider implements AIProvider {
         const triesLeft = this.maxAttempts - attempt;
         if (!retryable || triesLeft <= 0) {
           throw err;
+        }
+        // #1273 — a non-streamed reply that dropped was generated, and billed,
+        // before this retry; the caller sees only the last attempt, so it is
+        // reported here, to be metered once. (A stream retries only before its
+        // first byte, when nothing was generated.)
+        if (context.method === "chat" && mayHaveBeenBilled(err)) {
+          reportRetriedAttempt(context.opts, {
+            attempt,
+            errorClass: classifyGroundingError(err),
+            error: err,
+            provider: this.key,
+            model: context.model,
+          });
         }
         // `attempt` is the index of the try that just failed; the upcoming retry
         // uses the same index for its exponential window (1-based).
@@ -1775,7 +1806,7 @@ export class OpenAICompatibleProvider implements AIProvider {
           release();
         }
       },
-      { method: "chat", model },
+      { method: "chat", model, opts },
     );
 
     const content = json.choices?.[0]?.message?.content ?? "";

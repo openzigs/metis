@@ -180,6 +180,19 @@ const provenanceManifestSchema = z
               .strict(),
           ])
           .optional(),
+        /**
+         * #1209 — this many section drafts used up every retry on a dropped
+         * connection, reaching DOCS_GEN_DROP_RETRY_SECTION_LIMIT, so the run's
+         * later drafts were tried once. Absent = drops were retried throughout.
+         */
+        dropRetries: z
+          .object({
+            reason: z.literal("repeated-connection-drops"),
+            limit: z.number().int().min(1),
+            exhaustedSections: z.number().int().min(1),
+          })
+          .strict()
+          .optional(),
       })
       .strict(),
     graphFingerprint: z
@@ -489,6 +502,8 @@ export function buildGeneratedDocVersionManifest(input: {
   regeneration?: GeneratedDocVersionManifest["regeneration"];
   /** DOCS_GEN_GROUNDING when it was not `on`; omitted for a full check. */
   grounding?: NonNullable<GeneratedDocVersionManifest["generation"]["grounding"]>;
+  /** #1209 — the run stopped retrying dropped connections; omitted when it never did. */
+  dropRetries?: NonNullable<GeneratedDocVersionManifest["generation"]["dropRetries"]>;
   sections: Array<{
     sectionLabel: string;
     sectionIndex: number;
@@ -567,6 +582,7 @@ export function buildGeneratedDocVersionManifest(input: {
         phase2: { mode: input.phase2Router.hybrid ? "hybrid" : "single" },
       },
       ...(input.grounding ? { grounding: input.grounding } : {}),
+      ...(input.dropRetries ? { dropRetries: input.dropRetries } : {}),
     },
     graphFingerprint: {
       algorithm: "sha256",

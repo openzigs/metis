@@ -81,6 +81,7 @@ import {
   TurnUsageMeter,
   billableTurnUsage,
 } from "../lib/ai/conversation/turn-usage.js";
+import { reportedUsageOf, withRetriedAttemptListener } from "../lib/ai/retried-attempts.js";
 import { ledgerRequests } from "../lib/finops/summed-requests.js";
 import { collectGuardedStream } from "../lib/ai/tool-runtime/stream-collect.js";
 import type { ToolEvent } from "../lib/ai/tool-runtime/types.js";
@@ -1664,8 +1665,31 @@ export function aiRouter(): Router {
           ...(loop.finishReason ? { finishReason: loop.finishReason } : {}),
         };
       } else {
-        response = await providerInstance.chat(promptMessages, chatProviderOptions);
+        // #1273 — an attempt the adapter retried inside this one call (a reply
+        // whose body dropped) is metered into the turn as it is reported, so a
+        // call that then fails still counts it; with no usage reported, it is
+        // recorded as unmetered.
+        response = await providerInstance.chat(
+          promptMessages,
+          withRetriedAttemptListener(chatProviderOptions, (a) => {
+            const reported = reportedUsageOf(a.error);
+            if (reported) turnMeter.add(reported);
+            else {
+              turnMeter.noteUnmeteredAttempt({
+                attempt: a.attempt,
+                errorClass: a.errorClass,
+                retriedBy: "adapter",
+              });
+            }
+          }),
+        );
         turnMeter.add(response.usage);
+        if (turnMeter.requests.length > 1 && turnMeter.usage) {
+          // The turn's row holds every attempt the provider reported; the prompt
+          // went out more than once, so it does not calibrate the token ratio.
+          response = { ...response, usage: turnMeter.usage };
+          resentPrompt = true;
+        }
       }
 
       // #137 — what the turn is metered on: the provider's report, or — only

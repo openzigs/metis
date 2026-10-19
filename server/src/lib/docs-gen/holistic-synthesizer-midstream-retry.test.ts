@@ -73,6 +73,7 @@ type Step =
   | "anthropic-400-mid"
   | "config-mid"
   | "client-error-reset-mid"
+  | "body-timeout-mid"
   | "stop-then-drop";
 
 /** One step per SECTION stream call, in order; exhausted → "ok". */
@@ -150,6 +151,16 @@ function makeProvider(key: string): AIProvider {
       if (step === "reset-mid") {
         throw new TypeError("fetch failed", {
           cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+        });
+      }
+      if (step === "body-timeout-mid") {
+        // undici gave up waiting for more of the body: `terminated`, as a drop
+        // reads, but with a BodyTimeoutError under it.
+        throw new TypeError("terminated", {
+          cause: Object.assign(new Error("Body Timeout Error"), {
+            name: "BodyTimeoutError",
+            code: "UND_ERR_BODY_TIMEOUT",
+          }),
         });
       }
       if (step === "boom-mid") throw new Error("model produced garbage");
@@ -262,7 +273,11 @@ describe("local section mid-stream drop is retried with the identical prompt (#1
     const result = await synth("local");
     const f = failed(result);
     expect(f).toHaveLength(1);
-    expect(f[0].message).toContain(GENERATION_PROVIDER_DROPPED_MESSAGE);
+    // #1209 — says the connection dropped, and how many times it was tried.
+    expect(f[0].message).toContain(
+      "the AI provider's connection dropped while it was writing this section (3 attempts)",
+    );
+    expect(f[0].message).not.toContain(GENERATION_PROVIDER_DROPPED_MESSAGE);
     expect(state.sectionCalls).toHaveLength(groups.length + MID_STREAM_DROP_ATTEMPTS - 1);
     // A backoff before each retry, none after the last attempt.
     expect(sleeper.calls).toHaveLength(MID_STREAM_DROP_ATTEMPTS - 1);
@@ -303,15 +318,15 @@ describe("a cloud section whose stream drops mid-reply is retried with backoff (
     expect(state.sectionCalls).toHaveLength(groups.length + 1);
   });
 
-  it("a drop on every attempt still fails the section, with the same message as before", async () => {
+  it("#1209 — a drop on every attempt fails the section, saying the connection dropped and how often it was tried", async () => {
     state.plan = Array<Step>(MID_STREAM_DROP_ATTEMPTS).fill("anthropic-drop-mid");
     const result = await synth("anthropic");
     const f = failed(result);
     expect(f).toHaveLength(1);
-    // The last attempt's error is thrown unchanged, so the warning reads as it
-    // did when the section was never retried.
+    // Not "an unrecognised error (AIProviderError)": the Anthropic adapter's
+    // wrapped drop is read as one, and the attempt count is passed through.
     expect(f[0].message).toBe(
-      `Section "${groups[0].label}" could not be generated: it failed with an unrecognised error (AIProviderError); the full error is in the server log. Regenerate the document to retry it; the finished sections are reused.`,
+      `Section "${groups[0].label}" could not be generated: the AI provider's connection dropped while it was writing this section (3 attempts). Regenerate the document to try this section again; the finished sections are reused.`,
     );
     expect(state.sectionCalls).toHaveLength(groups.length + MID_STREAM_DROP_ATTEMPTS - 1);
   });
@@ -322,6 +337,7 @@ describe("a cloud section whose stream drops mid-reply is retried with backoff (
     ["a 4xx whose cause reads as a connection reset", "client-error-reset-mid"],
     ["an error that is not a drop", "boom-mid"],
     ["a drop before the first chunk", "drop-before"],
+    ["#1209 — a body timeout, which reads as `terminated`", "body-timeout-mid"],
   ])("does NOT retry %s", async (_label, step) => {
     state.plan = [step];
     const result = await synth("anthropic");
@@ -428,5 +444,65 @@ describe("a section retry respects the run's stop switch and ceilings (#855)", (
     // The wrapper records a stopped call to the ledger only (#855), so the run's
     // tally is not given this call's spend a second time by the drop path.
     expect(noteSpend.mock.calls.filter(([e]) => e.inputTokens === 77_777)).toHaveLength(0);
+  });
+});
+
+describe("#1209 — a run stops retrying drops once its sections keep dropping", () => {
+  const exhaust = (): Step[] => Array<Step>(MID_STREAM_DROP_ATTEMPTS).fill("anthropic-drop-mid");
+
+  it("after two sections used up their retries, the third is tried once and says why; provenance records it", async () => {
+    expect(groups.length).toBeGreaterThanOrEqual(3);
+    state.plan = [...exhaust(), ...exhaust(), "anthropic-drop-mid"];
+    const result = await synth("anthropic");
+    const f = failed(result);
+    expect(f.map((w) => w.section)).toEqual([groups[0].label, groups[1].label, groups[2].label]);
+    // Three tries each for the first two sections, ONE for the third.
+    expect(state.sectionCalls).toHaveLength(groups.length + 2 * (MID_STREAM_DROP_ATTEMPTS - 1));
+    expect(f[2].message).toBe(
+      `Section "${groups[2].label}" could not be generated: the AI provider's connection dropped while it was writing this section (1 attempt; METIS stopped retrying after the connection dropped on earlier sections too). Regenerate the document to try this section again; the finished sections are reused.`,
+    );
+    expect(result.dropRetries).toEqual({
+      reason: "repeated-connection-drops",
+      limit: 2,
+      exhaustedSections: 2,
+    });
+  });
+
+  it("one exhausted section does not stop retrying, and records nothing", async () => {
+    state.plan = [...exhaust(), "anthropic-drop-mid"];
+    const result = await synth("anthropic");
+    // The second section's drop was retried and succeeded.
+    expect(failed(result)).toHaveLength(1);
+    expect(state.sectionCalls).toHaveLength(groups.length + MID_STREAM_DROP_ATTEMPTS);
+    expect(result.dropRetries).toBeUndefined();
+  });
+
+  it("the limit is configurable: 1 stops after the first exhausted section", async () => {
+    vi.stubEnv("DOCS_GEN_DROP_RETRY_SECTION_LIMIT", "1");
+    state.plan = [...exhaust(), "anthropic-drop-mid"];
+    const result = await synth("anthropic");
+    expect(failed(result)).toHaveLength(2);
+    expect(state.sectionCalls).toHaveLength(groups.length + MID_STREAM_DROP_ATTEMPTS - 1);
+    expect(result.dropRetries).toMatchObject({ limit: 1, exhaustedSections: 1 });
+  });
+
+  it("0 never stops retrying", async () => {
+    vi.stubEnv("DOCS_GEN_DROP_RETRY_SECTION_LIMIT", "0");
+    state.plan = [...exhaust(), ...exhaust(), "anthropic-drop-mid"];
+    const result = await synth("anthropic");
+    // The third section's drop is retried, and the retry succeeds.
+    expect(failed(result)).toHaveLength(2);
+    expect(state.sectionCalls).toHaveLength(groups.length + 2 * (MID_STREAM_DROP_ATTEMPTS - 1) + 1);
+    expect(result.dropRetries).toBeUndefined();
+  });
+
+  it("each run has its own count: a later run retries again", async () => {
+    state.plan = [...exhaust(), ...exhaust()];
+    await synth("anthropic");
+    state.sectionCalls = [];
+    state.plan = ["anthropic-drop-mid"];
+    const second = await synth("anthropic");
+    expect(failed(second)).toEqual([]);
+    expect(state.sectionCalls).toHaveLength(groups.length + 1);
   });
 });

@@ -284,6 +284,14 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "#855 — the most input + output tokens one documentation generation may use (default 20000000; 0 = no token ceiling). Cache reads are not counted. Run 3 of the #706 walkthrough used 7.1M on its first BRD attempt. Reaching it stops the run exactly as DOCS_GEN_MAX_RUN_COST_CENTS does; it is the ceiling that bounds an unpriced or self-hosted model.",
     sensitive: false,
   },
+  DOCS_GEN_DROP_RETRY_SECTION_LIMIT: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(0),
+    description:
+      "#1209 — how many sections of one documentation generation may use up every retry on a dropped provider connection before the run stops retrying drops (default 2; 0 = always retry). After that, each later section is tried once, its warning says so, and the version's provenance records why. A proxy that cuts every long reply otherwise costs three full-prompt attempts per section.",
+    sensitive: false,
+  },
   DOCS_GEN_SECTION_MAX_CHARS: {
     tier: "tunable",
     valueType: "int",

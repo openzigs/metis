@@ -361,6 +361,21 @@ export function isConnectionDropped(err: unknown): boolean {
 }
 
 /**
+ * #1209 — true when undici gave up waiting for more of the body
+ * (`BodyTimeoutError`, `UND_ERR_BODY_TIMEOUT`). It surfaces as
+ * `TypeError: terminated`, which reads as a dropped connection, but the
+ * provider went quiet rather than cut the reply off — `isConnectionDropped`
+ * deliberately reads it as `slow` — so it is never retried as a drop.
+ */
+export function isBodyTimeout(err: unknown): boolean {
+  return causeChain(err).some(
+    (e) =>
+      readCode(e) === "UND_ERR_BODY_TIMEOUT" ||
+      (e instanceof Error && e.name === "BodyTimeoutError"),
+  );
+}
+
+/**
  * #165 — true when a reset (`ECONNRESET`/`EPIPE`) sits under undici's
  * `fetch failed` wrapper, i.e. the connection died before any response. For
  * generation this stays "dropped" (the section mid-stream retry keys on it); a

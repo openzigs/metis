@@ -5,6 +5,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const recordUsage = vi.hoisted(() => vi.fn());
 vi.mock("../finops/token-tracker.js", () => ({ recordUsage }));
+const audit = vi.hoisted(() => vi.fn());
+vi.mock("../audit/audit-service.js", () => ({ audit }));
+const { attachPartialUsage } = await import("../ai/partial-usage.js");
 
 const {
   meterAnalysisProvider,
@@ -12,7 +15,7 @@ const {
   currentAnalysisUsageScope,
   flushAnalysisUsage,
 } = await import("./analysis-usage.js");
-import type { AIProvider, ChatChunk, ChatResponse } from "../ai/types.js";
+import type { AIProvider, ChatChunk, ChatMessage, ChatOptions, ChatResponse } from "../ai/types.js";
 
 const USAGE = {
   promptTokens: 100,
@@ -297,5 +300,98 @@ describe("stopAnalysisModelCalls (#1142)", () => {
     }
     await runInAnalysisUsageScope(SCOPE, () => metered.chat([]));
     expect(inner.chatCalls).toBe(3);
+  });
+});
+
+describe("meterAnalysisProvider — #1273 attempts the adapter retried inside one chat()", () => {
+  /** An adapter that retried a reported-usage drop and a silent drop before answering. */
+  class RetryingProvider extends FakeProvider {
+    override async chat(_m?: ChatMessage[], opts?: ChatOptions): Promise<ChatResponse> {
+      const base = { errorClass: "stream-terminated", provider: "openai" as const, model: "m" };
+      opts?.onRetriedAttempt?.({
+        ...base,
+        attempt: 1,
+        error: attachPartialUsage(new TypeError("terminated"), {
+          promptTokens: 100,
+          completionTokens: 2,
+          totalTokens: 102,
+        }),
+      });
+      opts?.onRetriedAttempt?.({ ...base, attempt: 2, error: new TypeError("terminated") });
+      return super.chat();
+    }
+  }
+
+  beforeEach(() => audit.mockReset());
+
+  it("meters each to the scope once: reported usage as a row, none as an unmetered audit", async () => {
+    const metered = meterAnalysisProvider(new RetryingProvider());
+    await runInAnalysisUsageScope(SCOPE, () => metered.chat([]));
+
+    expect(recordUsage).toHaveBeenCalledTimes(2);
+    expect(recordUsage.mock.calls[0]![0]).toMatchObject({
+      projectId: "proj-1",
+      sessionId: "ana-1",
+      agentStep: "analysis",
+      provider: "openai",
+      model: "m",
+      inputTokens: 100,
+      outputTokens: 2,
+    });
+    expect(recordUsage.mock.calls[1]![0]).toMatchObject({ inputTokens: 100, outputTokens: 40 });
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit.mock.calls[0]![0]).toMatchObject({
+      action: "ai.usage.unmetered",
+      target: { type: "analysis_session", id: "ana-1" },
+      metadata: { projectId: "proj-1", attempt: 2, retriedBy: "adapter" },
+    });
+  });
+
+  it("outside a scope leaves the caller's own listener in place (the call is not metered here)", async () => {
+    const metered = meterAnalysisProvider(new RetryingProvider());
+    const seen: number[] = [];
+    await metered.chat([], { onRetriedAttempt: (a) => seen.push(a.attempt) });
+    expect(seen).toEqual([1, 2]);
+    expect(recordUsage).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it("PR #1274 review — nested under runChatToolTurn in a scope, the meter closest to the adapter claims each attempt: never counted twice", async () => {
+    const { runChatToolTurn } = await import("../ai/tool-runtime/chat-turn.js");
+    const { makeToolset } = await import("../ai/tool-runtime/toolset.js");
+    const { ApprovalGateService } = await import("../ai/approval-policy.js");
+    const metered = meterAnalysisProvider(new RetryingProvider());
+    const turnUsage: number[] = [];
+    const turnUnmetered = vi.fn();
+
+    await runInAnalysisUsageScope(SCOPE, () =>
+      runChatToolTurn(
+        metered,
+        {
+          messages: [{ role: "user", content: "q" }],
+          toolset: makeToolset([]),
+          native: true,
+          ctx: { sessionId: "chat-1", userId: "u1", projectId: "proj-1" },
+          gate: new ApprovalGateService({
+            sessionId: "chat-1",
+            userId: "u1",
+            policy: { low: "auto", medium: "auto", high: "auto" },
+            persist: false,
+          }),
+        },
+        { onUsage: (u) => turnUsage.push(u.totalTokens), onUnmeteredAttempt: turnUnmetered },
+      ),
+    );
+
+    // The analysis meter recorded the reported attempt and the completed call;
+    // the chat loop saw only the completed call.
+    expect(recordUsage.mock.calls.map(([r]) => r.outputTokens)).toEqual([2, 40]);
+    expect(turnUsage).toEqual([140]);
+    // The silent attempt: one audit, by the analysis meter, none by the loop.
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit.mock.calls[0]![0]).toMatchObject({
+      target: { type: "analysis_session", id: "ana-1" },
+    });
+    expect(turnUnmetered).not.toHaveBeenCalled();
   });
 });

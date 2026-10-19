@@ -2496,6 +2496,20 @@ the provider reported nothing for it, METIS does not guess: the turn records
 only what was reported, and an `ai.usage.unmetered` entry in the audit log
 notes the gap.
 
+With OpenAI, Azure, the Bedrock gateway and local models, METIS may also ask
+again on its own for a reply that dropped while it was arriving. This applies
+in chat, discussions, sub-agents, analysis, impact analysis and document
+generation. These providers report no tokens for a dropped reply, so it is not
+counted toward usage or budgets. Instead, each one is recorded in the audit log
+as uncounted, with its own `ai.usage.unmetered` entry. Document generation also
+adds an estimate for it to the run's own cost limit, so a run that keeps
+retrying still stops at its ceiling.
+
+When you press **Stop**, or METIS stops an answer that has gone quiet for too
+long, the tokens the provider reported for that answer before it stopped still
+count toward your usage and budget. Anthropic reports them as soon as an answer
+starts.
+
 The AI responds in a chat-bubble format — your messages appear on the right in blue, and the AI's responses appear on the left in gray. While the AI is thinking, you'll see three bouncing dots (a typing indicator).
 
 ### 14.2 What the AI Can Help With
@@ -4271,6 +4285,8 @@ Generation and indexing are reported separately. A document can be `ready` or `d
 **Interrupted generation (#50).** Documentation generation runs inside the server process. If the server restarts or stops while a document is generating (a deploy, a crash, a dev reload), the document no longer spins as "Generating" forever: within about five minutes of the server coming back it is marked **Failed** with an "interrupted" explanation and a **Regenerate** button that reruns the same document in place. Modules already analysed before the interruption are reused from the fact cache, so they are not paid for twice.
 
 **Cancelling a generation (#855).** A document that is queued or generating shows **Cancel generation** on its card and in its detail view. Cancelling stops the model calls that are running at that moment rather than waiting for them, and no new section is started. The document becomes **cancelled**. The sections it finished are kept and shown, and the tokens it used are counted in the project's usage. **Regenerate** finishes it and reuses the finished sections whose inputs have not changed, where it can. Cancelling a regenerate or an automatic update of a published document stops it and leaves the published version as it was, still exportable. A document you cancel before it ever published is not restarted by later source refreshes; regenerate it when you want it. Deleting a generating document also stops its spend. An operator can cap what one generation may spend with `DOCS_GEN_MAX_RUN_COST_CENTS` (default $25) and `DOCS_GEN_MAX_RUN_TOKENS` (default 20 million). A run that reaches either stops in the same way and is marked **needs review**, with a warning that names the ceiling.
+
+**When the connection to the AI provider keeps dropping (#1209).** If the provider's connection drops while METIS is writing a section, METIS asks again, up to three times in all. If it drops every time, the section's warning says so, for example "the AI provider's connection dropped while it was writing this section (3 attempts)". Regenerate the document to try that section again. If this happens to two sections in one run, METIS stops asking again for the rest of that run, because something between METIS and the provider (often a proxy that cuts off long replies) is likely cutting every reply. Each later section is then tried once, and its warning says METIS stopped retrying. An operator can change the number of sections with `DOCS_GEN_DROP_RETRY_SECTION_LIMIT` (`0` always retries).
 
 **A section that failed in a published document (#942).** When one section of a document fails while the others finish, METIS still publishes the document as **Degraded output**, without that section. The document view shows a red banner naming each failed section and why, with a **Regenerate failed section** button. It writes the failed section again and reuses the finished ones where their inputs have not changed (database-schema documents, and runs with shared escalation on, are rewritten in full). If you cancel that regenerate, the degraded version you had stays as it was.
 

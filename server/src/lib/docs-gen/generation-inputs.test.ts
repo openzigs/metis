@@ -767,7 +767,11 @@ describe("captureGenerationInputs", () => {
 
   it("#855 — a run ceiling bounds spend, not output, so it is not an input", async () => {
     const baseline = await capture();
-    for (const name of ["DOCS_GEN_MAX_RUN_COST_CENTS", "DOCS_GEN_MAX_RUN_TOKENS"]) {
+    for (const name of [
+      "DOCS_GEN_MAX_RUN_COST_CENTS",
+      "DOCS_GEN_MAX_RUN_TOKENS",
+      "DOCS_GEN_DROP_RETRY_SECTION_LIMIT",
+    ]) {
       vi.stubEnv(name, "1");
       expect((await capture()).fingerprint).toBe(baseline.fingerprint);
       vi.unstubAllEnvs();

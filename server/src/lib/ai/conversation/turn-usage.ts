@@ -23,7 +23,7 @@
  * Sub-agent calls and compaction summaries meter themselves per call
  * (`bindSubAgents`, `providerSummarizer`) and are deliberately not counted here.
  */
-import { audit } from "../../audit/audit-service.js";
+import { noteUnmeteredAttempt, UNMETERED_ATTEMPT_AUDIT_ACTION } from "../retried-attempts.js";
 import { createChildLogger } from "../../logger.js";
 import { recordUsage as recordProjectUsage } from "../../finops/token-tracker.js";
 import { ledgerRequests } from "../../finops/summed-requests.js";
@@ -60,8 +60,10 @@ export const COMPACTION_AGENT_STEP = "compaction";
 /**
  * #1238 — audit action recording that a chat model call attempt dropped
  * mid-stream with no usage reported for it, so its cost is NOT in the ledger.
+ * #1273 — shared with every other caller of an adapter that retries inside
+ * `chat()` (`retried-attempts.ts`).
  */
-export const UNMETERED_ATTEMPT_AUDIT_ACTION = "ai.usage.unmetered";
+export { UNMETERED_ATTEMPT_AUDIT_ACTION };
 
 /** True when a provider reported any usage at all for a call or turn. */
 export function isReportedUsage(u: TokenUsage | null | undefined): u is TokenUsage {
@@ -171,31 +173,23 @@ export class TurnUsageMeter {
    * estimated in its place; the gap is recorded instead — in the audit log,
    * which outlives the turn whether it then succeeds or fails. Never throws.
    */
-  noteUnmeteredAttempt(info: { attempt: number; errorClass: string }): void {
+  noteUnmeteredAttempt(info: {
+    attempt: number;
+    errorClass: string;
+    /** #1273 — set when the adapter retried the attempt inside one `chat()` call. */
+    retriedBy?: "adapter";
+  }): void {
     const { sessionId, userId, projectId, provider, model } = this.scope;
-    log.warn("A chat model call dropped with no usage reported; its tokens are not metered", {
-      sessionId,
-      provider,
-      model,
-      attempt: info.attempt,
-      errorClass: info.errorClass,
-    });
-    try {
-      audit({
-        actor: { id: userId },
-        action: UNMETERED_ATTEMPT_AUDIT_ACTION,
+    noteUnmeteredAttempt(
+      {
+        actorId: userId,
         target: { type: "ai_session", id: sessionId },
-        metadata: {
-          projectId,
-          provider,
-          model,
-          attempt: info.attempt,
-          errorClass: info.errorClass,
-        },
-      });
-    } catch {
-      /* audit is best-effort by contract */
-    }
+        projectId,
+        provider,
+        model,
+      },
+      info,
+    );
   }
 
   /** The success path wrote the per-user `AITokenUsage` row. */

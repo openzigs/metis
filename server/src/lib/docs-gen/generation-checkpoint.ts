@@ -19,6 +19,7 @@ import {
   GENERATION_FAILED_MESSAGE,
   generationFailureMessage,
 } from "./generation-failure-message.js";
+import { classifyGroundingError } from "./grounding/transient-retry.js";
 import type { SectionSynthesisRecord } from "./section-reuse.js";
 
 /** Where in a generation a failure happened. */
@@ -117,12 +118,62 @@ export function generationFailureWarning(input: {
  * the exception's own text (#67).
  */
 export function sectionFailureWarning(section: string, err: unknown): DocWarning {
+  const drop = droppedAttemptsOf(err);
+  if (drop) return sectionFailedWarning(section, droppedConnectionDetail(drop));
   const message = generationFailureMessage(err);
-  const detail =
-    message === GENERATION_FAILED_MESSAGE
-      ? `it failed with an unrecognised error (${errorClassOf(err)}); the full error is in the server log. Regenerate the document to retry it; the finished sections are reused.`
-      : message;
-  return sectionFailedWarning(section, detail);
+  if (message !== GENERATION_FAILED_MESSAGE) return sectionFailedWarning(section, message);
+  // #1209 — the transport classifier does not recognise the Anthropic
+  // adapter's wrapped drop (`anthropic stream failed (TypeError): terminated`);
+  // the grounding classifier does. PR #1274 review — but it also reads a host
+  // that was never reached ("Connection error.", `fetch failed`) as
+  // `stream-terminated`, so only a mid-reply drop's wording says "dropped".
+  if (
+    classifyGroundingError(err) === "stream-terminated" &&
+    MID_REPLY_DROP_TEXT.test(err instanceof Error ? err.message : String(err))
+  ) {
+    return sectionFailedWarning(section, droppedConnectionDetail(undefined));
+  }
+  return sectionFailedWarning(
+    section,
+    `it failed with an unrecognised error (${errorClassOf(err)}); the full error is in the server log. Regenerate the document to retry it; the finished sections are reused.`,
+  );
+}
+
+/** PR #1274 review — the wording of a reply cut off part-way, never of a connect that failed. */
+const MID_REPLY_DROP_TEXT =
+  /\bterminated\b|\bECONNRESET\b|\bEPIPE\b|\bsocket hang up\b|\bother side closed\b|\bpremature close\b/i;
+
+/** #1209 — how many tries a section draft made before its connection dropped for the last time. */
+export interface DroppedAttempts {
+  attempts: number;
+  /** The run had stopped retrying drops (`drop-retry-breaker.ts`), so this draft was tried once. */
+  retriesStopped: boolean;
+}
+
+// Kept beside the error rather than on it, so no serialiser can leak it.
+const DROPPED_ATTEMPTS = new WeakMap<object, DroppedAttempts>();
+
+/** #1209 — record that `err` ended a section draft whose connection dropped on every one of its tries. */
+export function markDroppedAttempts<E>(err: E, drop: DroppedAttempts): E {
+  if (err !== null && typeof err === "object") DROPPED_ATTEMPTS.set(err, { ...drop });
+  return err;
+}
+
+/** #1209 — see {@link markDroppedAttempts}. */
+export function droppedAttemptsOf(err: unknown): DroppedAttempts | undefined {
+  return err !== null && typeof err === "object" ? DROPPED_ATTEMPTS.get(err) : undefined;
+}
+
+/** #1209 — the reason a business reader sees for a section whose connection kept dropping. */
+function droppedConnectionDetail(drop: DroppedAttempts | undefined): string {
+  const tries = drop
+    ? ` (${drop.attempts} ${drop.attempts === 1 ? "attempt" : "attempts"}${
+        drop.retriesStopped
+          ? "; METIS stopped retrying after the connection dropped on earlier sections too"
+          : ""
+      })`
+    : "";
+  return `the AI provider's connection dropped while it was writing this section${tries}. Regenerate the document to try this section again; the finished sections are reused.`;
 }
 
 /**
