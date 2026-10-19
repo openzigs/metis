@@ -45,15 +45,41 @@ export function findMetisMarkers(text: string): MetisMarker[] {
  * block's last list item from a paragraph typed after it, and dropping the line
  * would join the two. One written inline leaves the text around it as it was,
  * less trailing spaces.
+ *
+ * #1237 — the markers removed are exactly the ones {@link findMetisMarkers}
+ * finds, including one split across lines (the pattern's whitespace spans
+ * newlines). Text typed after such a marker's `-->` starts a paragraph of its
+ * own rather than joining the line the marker started on, which may be one of
+ * METIS's quoted lines.
  */
 export function stripMetisMarkers(text: string): string {
-  return text
+  const markers = findMetisMarkers(text);
+  if (markers.length === 0) return text;
+  let out = "";
+  let from = 0;
+  let line = 0;
+  // Output lines a marker was removed from: only those are trimmed.
+  const touched = new Set<number>();
+  for (const m of markers) {
+    const kept = text.slice(from, m.index);
+    out += kept;
+    line += kept.split("\n").length - 1;
+    touched.add(line);
+    from = m.index + m.length;
+    if (!text.slice(m.index, from).includes("\n")) continue;
+    // A split marker: anything after it on its last line becomes a paragraph.
+    const lineEnd = text.indexOf("\n", from);
+    const rest = text.slice(from, lineEnd === -1 ? text.length : lineEnd);
+    if (rest.trim() === "") continue;
+    out += "\n\n";
+    line += 2;
+    from += rest.length - rest.trimStart().length;
+  }
+  out += text.slice(from);
+  // `trimEnd`, not a `[ \t]+$` regex: that backtracks quadratically on a long
+  // run of tabs in stored text (CodeQL js/polynomial-redos).
+  return out
     .split("\n")
-    .map((line) => {
-      const stripped = line.replace(internalMarkerPattern(), "");
-      // `trimEnd`, not a `[ \t]+$` regex: that backtracks quadratically on a long
-      // run of tabs in stored text (CodeQL js/polynomial-redos).
-      return stripped === line ? line : stripped.trimEnd();
-    })
+    .map((l, i) => (touched.has(i) ? l.trimEnd() : l))
     .join("\n");
 }

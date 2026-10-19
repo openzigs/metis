@@ -50,14 +50,53 @@ export function canonicalizeCriteriaFlag(text: string): string {
   return out + text.slice(from);
 }
 
+/** METIS's own flag sentence: the flag line without its marker. */
+const CRITERIA_FLAG_PROSE = CRITERIA_FLAG_LINE.slice(0, -CRITERIA_FLAG_MARKER.length).trim();
+
 /**
- * The body without the flag line (and the blank line that follows it). A body
- * with no flag is returned unchanged.
+ * The body without the flag: its marker, METIS's flag sentence before it, and
+ * the line they leave empty (with the blank line that follows it). A body with
+ * no flag is returned unchanged.
+ *
+ * #1237 — the flags removed are the ones {@link hasCriteriaFlag} detects, so a
+ * body it flags never comes back still flagged, a marker split across lines
+ * included. A blank line is blank with its `\r` too, so a CRLF body loses the
+ * one after the flag as well. Anything else on the marker's lines (an
+ * analyst's text before `<!--` or after `-->`) is kept: a criteria edit never
+ * deletes what someone typed.
  */
 export function clearCriteriaFlag(body: string): string {
+  const flags = findMetisMarkers(body).filter((m) => m.name === CRITERIA_FLAG_NAME);
+  if (flags.length === 0) return body;
   const lines = body.split("\n");
-  const at = lines.findIndex((line) => hasCriteriaFlag(line));
-  if (at === -1) return body;
-  lines.splice(at, lines[at + 1] === "" ? 2 : 1);
+  const lineStarts: number[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    lineStarts.push(offset);
+    offset += line.length + 1;
+  }
+  const lineOf = (at: number) => {
+    let i = 0;
+    while (i + 1 < lineStarts.length && lineStarts[i + 1]! <= at) i++;
+    return i;
+  };
+  // Last first, so the line numbers of the ones before stay valid.
+  for (const m of [...flags].reverse()) {
+    const end = m.index + m.length;
+    const first = lineOf(m.index);
+    const last = lineOf(end);
+    const before = lines[first]!.slice(0, m.index - lineStarts[first]!);
+    let after = lines[last]!.slice(end - lineStarts[last]!);
+    const eol = after.endsWith("\r") ? "\r" : "";
+    if (eol) after = after.slice(0, -1);
+    const keptBefore = before.trim() === CRITERIA_FLAG_PROSE ? "" : before.trimEnd();
+    const kept = [keptBefore, after.trim()].filter((s) => s.length > 0).join(" ");
+    if (kept) {
+      lines.splice(first, last - first + 1, kept + eol);
+    } else {
+      const blankAfter = lines[last + 1]?.trim() === "" ? 1 : 0;
+      lines.splice(first, last - first + 1 + blankAfter);
+    }
+  }
   return lines.join("\n");
 }

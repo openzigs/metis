@@ -27,6 +27,7 @@ import {
   isAcceptanceCriteriaCleared,
   deriveBodyAcceptanceCriteria,
   extractBodyAcceptanceCriteria as extractCriteriaFromBody,
+  oneLineTitle,
   renderPublishedConfidenceNote,
   renderSharedCriteriaIssueNote,
   sharedCriteriaMarks,
@@ -980,7 +981,8 @@ function renderFeatureBody(input: {
   // started working from is a caution that arrived too late.
   const confidenceNote = renderPublishedConfidenceNote(input.supportConfidence);
   const lines = [
-    `> Parent epic: **${parentTitle}**`,
+    // #1255 — on one line: a newline in the title would escape the quote.
+    `> Parent epic: **${oneLineTitle(parentTitle)}**`,
     ``,
     `## Description`,
     ``,

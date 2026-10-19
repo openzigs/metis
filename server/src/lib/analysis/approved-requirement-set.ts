@@ -381,11 +381,22 @@ export function compareReviewedWithSynthesis(
 }
 
 /**
- * Issue #1204 review — the synthesis items (indexes) the title and id joins
- * give the requirements in `ids`, as {@link planApprovedRequirementSet} would
- * with exactly those approved. An append re-plans over the enlarged set, so
- * this replays the set as it was first promoted to tell which items its rows
- * already carry.
+ * Issue #1204 review — the synthesis items (indexes) the rows already promoted
+ * for `ids` carry, so an append, which re-plans over the enlarged set, never
+ * offers one of them to a new row.
+ *
+ * A row that recorded its items (#1202, in `paired`) carries exactly those,
+ * however many appends ago it was written. The rest are replayed together, as
+ * {@link planApprovedRequirementSet} would join them with only `ids` approved.
+ * That replay is faithful for one promotion, but the set may have been built
+ * in several (#1253): replayed as one, requirements that each took an item in
+ * their own step can tie on it and take nothing. So when two or more rows have
+ * no recorded items, an item that two or more of them tie on also counts as
+ * carried. An item only one of them is level on is not: that requirement tied
+ * on it alone, in its own step as well. Rows promoted together that tied there
+ * too will hide an item none of them took; that only drops an option from a
+ * notice, while listing an item another row carries invites copying its
+ * criteria across.
  */
 export function itemsGivenTo(input: {
   structured: StructuredRequirement[];
@@ -396,13 +407,25 @@ export function itemsGivenTo(input: {
 }): Set<number> {
   const synthesized = input.synthesis?.requirements ?? [];
   const approved = input.structured.filter((r) => input.ids.has(r.id));
-  const { given } = matchSynthesizedReportingRefusals(
+  const { given, refused } = matchSynthesizedReportingRefusals(
     approved,
     synthesized,
     input.structured,
     input.paired,
   );
-  return new Set([...given.values()].flat());
+  const carried = new Set([...given.values()].flat());
+  // Only a tie BETWEEN requirements can be an artefact of replaying separate
+  // steps together. One requirement level on two items took neither in its own
+  // step too, and those items stay offered (#1253 review, F1).
+  const tiedBy = new Map<number, number>();
+  for (const r of refused) {
+    for (const i of r.synthesizedIndexes) tiedBy.set(i, (tiedBy.get(i) ?? 0) + 1);
+  }
+  const unrecorded = approved.filter((r) => !input.paired?.has(r.id)).length;
+  if (unrecorded > 1) {
+    for (const [i, count] of tiedBy) if (count > 1) carried.add(i);
+  }
+  return carried;
 }
 
 /**

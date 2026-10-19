@@ -60,6 +60,35 @@ describe("stripMetisMarkers — #1170", () => {
     expect(stripMetisMarkers("a <!--metis:x--> b <!--  metis:y:z  -->")).toBe("a  b");
   });
 
+  // #1237 — `findMetisMarkers` finds a marker split across lines, so the
+  // stripper must remove it too: what one finds, the other hides.
+  it("removes a marker split across lines, as findMetisMarkers finds it", () => {
+    const inline = "> Check them. <!--\nmetis:criteria-predate-answers\n-->\nAfter.";
+    expect(findMetisMarkers(inline)).toHaveLength(1);
+    expect(stripMetisMarkers(inline)).toBe("> Check them.\nAfter.");
+
+    // Alone on its lines: one blank line, as a one-line marker leaves.
+    const alone = "- **A:** a\n<!--\n  metis:clarifications:end\n-->\nTyped.";
+    expect(stripMetisMarkers(alone)).toBe("- **A:** a\n\nTyped.");
+
+    for (const text of [inline, alone]) {
+      expect(findMetisMarkers(stripMetisMarkers(text))).toEqual([]);
+    }
+  });
+
+  // #1237 review (F7) — text typed after a split marker's `-->` was folded onto
+  // the line the marker started on; next to METIS's flag quote it rendered as
+  // part of that quote. It now starts a paragraph of its own.
+  it("keeps text after a split marker out of the line the marker started on", () => {
+    expect(
+      stripMetisMarkers(
+        "> Check them. <!--\nmetis:criteria-predate-answers\n--> Analyst text.\nAfter.",
+      ),
+    ).toBe("> Check them.\n\nAnalyst text.\nAfter.");
+    // A one-line marker is unchanged: the text around it stays on its line.
+    expect(stripMetisMarkers("a <!-- metis:x --> b")).toBe("a  b");
+  });
+
   it("leaves other comments and marker-free text alone, and is stable across calls", () => {
     const text = "<!-- not metis -->\n  indented  \n<!-- metis: generated from plan.md v2 -->";
     expect(stripMetisMarkers(text)).toBe(text);

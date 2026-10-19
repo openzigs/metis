@@ -179,6 +179,16 @@ describe("sharedCriteriaMarks — one rule for the marks and the note (#1203 rev
     expect(renderSharedCriteriaIssueNote(record, criteria)).toMatch(/^> The criteria marked /);
   });
 
+  // #1255 — the record can hold a criterion the list no longer has. Marks are
+  // drawn from the list, never the record: returning the record's whole shared
+  // set would mark a criterion that is not on the row.
+  it("marks only listed criteria when the record holds one the list does not", () => {
+    const record = { sharedCriteria: ["Shared.", "Not on the row."] };
+    expect([...sharedCriteriaMarks(record, ["Shared.", "Own."])]).toEqual(["Shared."]);
+    // Every listed criterion shared: nothing is marked, the extra one included.
+    expect(sharedCriteriaMarks(record, ["Shared."]).size).toBe(0);
+  });
+
   it("normalizes a list as the row reads back", () => {
     expect(normalizeCriteria([" a ", "", "  ", "b"])).toEqual(["a", "b"]);
   });

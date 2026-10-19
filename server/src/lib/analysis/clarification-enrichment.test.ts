@@ -788,6 +788,65 @@ describe("#1000 — flagging acceptance criteria the answers may have changed", 
     expect(clearCriteriaFlag(variant)).toBe(applyClarificationBlock("Body.", [answer()]));
   });
 
+  // #1237 — a body saved with Windows line endings: the blank line after the
+  // flag is "\r", not "", and was left behind.
+  it("#1237 — clears the flag from a CRLF body without leaving an extra blank line", () => {
+    const flagged = applyClarificationBlock("Body.", [answer()], withCriteria);
+    const crlf = flagged.replace(/\n/g, "\r\n");
+    expect(hasCriteriaFlag(crlf)).toBe(true);
+    expect(clearCriteriaFlag(crlf)).toBe(
+      applyClarificationBlock("Body.", [answer()]).replace(/\n/g, "\r\n"),
+    );
+  });
+
+  // #1237 — the marker pattern's whitespace spans lines, so a marker split
+  // across lines is detected. Removal now covers every line it spans, so a
+  // criteria edit clears it instead of writing the body back unchanged.
+  it("#1237 — clears a flag whose marker is split across lines, so detection and removal agree", () => {
+    const flagged = applyClarificationBlock("Body.", [answer()], withCriteria);
+    const split = flagged.replace(
+      CRITERIA_FLAG_MARKER,
+      "<!--\nmetis:criteria-predate-answers\n-->",
+    );
+    expect(hasCriteriaFlag(split)).toBe(true);
+    const cleared = clearCriteriaFlag(split);
+    expect(hasCriteriaFlag(cleared)).toBe(false);
+    expect(cleared).toBe(applyClarificationBlock("Body.", [answer()]));
+  });
+
+  // #1237 review (F2) — only the marker and METIS's own flag sentence go. An
+  // analyst's text before `<!--` or after `-->` is kept: a criteria edit must
+  // never delete what someone typed.
+  it("#1237 — keeps analyst text around a split flag marker", () => {
+    expect(
+      clearCriteriaFlag(
+        "Refunds over 30 days <!--\nmetis:criteria-predate-answers\n--> need a manager.\nMore.",
+      ),
+    ).toBe("Refunds over 30 days need a manager.\nMore.");
+
+    const flagged = applyClarificationBlock("Body.", [answer()], withCriteria);
+    const typed = flagged.replace(
+      CRITERIA_FLAG_MARKER,
+      "<!--\nmetis:criteria-predate-answers\n--> Analyst: refunds need a manager.",
+    );
+    const cleared = clearCriteriaFlag(typed);
+    expect(hasCriteriaFlag(cleared)).toBe(false);
+    // The flag sentence is METIS's and goes; the analyst's sentence takes its
+    // line, so it is not left inside the flag's quote.
+    expect(cleared).toBe(
+      applyClarificationBlock("Body.", [answer()], withCriteria).replace(
+        CRITERIA_FLAG_LINE,
+        "Analyst: refunds need a manager.",
+      ),
+    );
+  });
+
+  it("#1237 — keeps analyst text that shares a line with a one-line flag marker", () => {
+    expect(
+      clearCriteriaFlag("Refunds need a manager. <!-- metis:criteria-predate-answers -->"),
+    ).toBe("Refunds need a manager.");
+  });
+
   it("clearCriteriaFlag leaves a body without the flag untouched", () => {
     expect(clearCriteriaFlag("Body.\n\n\n\nMore.")).toBe("Body.\n\n\n\nMore.");
     expect(hasCriteriaFlag("Body.")).toBe(false);

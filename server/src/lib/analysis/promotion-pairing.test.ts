@@ -184,6 +184,58 @@ describe("the synthesis join on a recorded pairing", () => {
     ).toEqual([0, 1]);
   });
 
+  // #1253 — rows with no recorded items are replayed as one set. That is what
+  // one promotion did, so a single such requirement keeps its replay exactly:
+  // level on two items, it took neither, and neither counts as carried.
+  it("itemsGivenTo replays one unrecorded requirement exactly, ties included", () => {
+    const X2 = item("Mark entries read", "Another body entirely.", "X2 criterion");
+    expect(
+      itemsGivenTo({
+        structured: [A],
+        ids: new Set(["REQ-1"]),
+        synthesis: { summary: "s", requirements: [X, X2] },
+      }),
+    ).toEqual(new Set());
+  });
+
+  // #1253 — two or more may have been promoted in separate steps, each taking
+  // the item they now tie on, so the item counts as carried.
+  it("itemsGivenTo counts an item two unrecorded requirements tie on as carried", () => {
+    expect(
+      itemsGivenTo({
+        structured: [A, B],
+        ids: new Set(["REQ-1", "REQ-2"]),
+        synthesis: { summary: "s", requirements: [X] },
+      }),
+    ).toEqual(new Set([0]));
+    // A recorded row is not replayed, so the other replays alone and takes X.
+    expect(
+      itemsGivenTo({
+        structured: [A, B],
+        ids: new Set(["REQ-1", "REQ-2"]),
+        synthesis: { summary: "s", requirements: [X] },
+        paired: new Map([["REQ-2", []]]),
+      }),
+    ).toEqual(new Set([0]));
+  });
+
+  // #1253 review (F1/F6) — with two unrecorded requirements, an item only ONE
+  // of them is level on stays offered: that tie happened in its own step too.
+  it("itemsGivenTo does not count an item only one unrecorded requirement is level on", () => {
+    const flush = structured("REQ-1", "Flush sessions");
+    const exportOrders = structured("REQ-2", "Export orders");
+    const X1 = item("Flush sessions", "On logout.", "X1 criterion");
+    const X2 = item("Flush sessions", "On password reset.", "X2 criterion");
+    const O = item("Export orders", "Export orders as CSV.", "O criterion");
+    expect(
+      itemsGivenTo({
+        structured: [flush, exportOrders],
+        ids: new Set(["REQ-1", "REQ-2"]),
+        synthesis: { summary: "s", requirements: [X1, X2, O] },
+      }),
+    ).toEqual(new Set([2]));
+  });
+
   it("an id-joined requirement's pairing records every item that named it", () => {
     const first = { ...X, structuredIds: ["REQ-1"] };
     const second = { ...Y, structuredIds: ["REQ-1"] };

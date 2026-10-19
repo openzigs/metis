@@ -87,6 +87,11 @@ export function sharedCriteriaRecords(
           (sib.approvedIndex !== null ? rowIdByApprovedIndex[sib.approvedIndex] : undefined) ??
           rowByStructuredId.get(sib.structuredId) ??
           null,
+        // #1255 — a sibling found only in `rowByStructuredId` would read false
+        // here, but none can be: its row was promoted from an approval, an
+        // approval is final once `approved` (only `pending` is decided, only
+        // `rejected` reopens), and an append runs within the same extraction
+        // run, so that sibling is in the approved set and has an index.
         approved: sib.approvedIndex !== null,
       })),
       sharedCriteria: s.sharedCriteria,

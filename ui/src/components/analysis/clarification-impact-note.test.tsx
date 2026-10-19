@@ -126,9 +126,17 @@ describe("ClarificationImpactNote", () => {
         }}
       />,
     );
-    expect(screen.getByTestId("clarification-block-edited")).toHaveTextContent(
-      /1 answer was not written because the Clarifications section of its requirement was edited\. Restore its start and end markers, or delete the section/,
+    // #1237 review (F4) — the markers are hidden in every view and a completed
+    // dialog cannot be resubmitted, so the notice names what an analyst can do.
+    const blockEdited = screen.getByTestId("clarification-block-edited").textContent;
+    expect(blockEdited).toBe(
+      "1 answer was not written because the Clarifications section of its requirement was " +
+        "edited. Open the requirement and delete that section, or restore it from History. The " +
+        "answers are then written again when you submit the next answers while clarifying " +
+        "questions are still open or, after clarification is complete, when you reopen a " +
+        "rejected requirement on the Approvals panel and approve it.",
     );
+    expect(blockEdited).not.toMatch(/markers|submit the answers again/);
     expect(screen.getByTestId("clarification-unmatched-list")).toHaveTextContent(
       /Which rate\?\s*\(Clarifications section of “Show prices” was edited\)/,
     );
@@ -195,9 +203,18 @@ describe("ClarificationImpactNote", () => {
   });
 
   it("#1225 — says how many answers were not written, why, and what to do next", () => {
+    // #1237 — the retry route as it is: the next submit re-runs the pass while
+    // questions are open; once clarification is complete nothing can be
+    // resubmitted, and only approving a reopened rejection on the Approvals
+    // panel re-runs it (a hub card's Approve does not). A hand-typed answer
+    // would then be written twice, so the note says so.
     const next =
-      "Submit the answers again to retry; a deleted requirement is not restored, so nothing is " +
-      "written into it.";
+      "While clarifying questions are still open, they are written again when you submit the " +
+      "next answers. After clarification is complete, they are written again only when you " +
+      "reopen a rejected requirement on the Approvals panel and approve it. To add an answer " +
+      "yourself, edit the requirement and type it outside the Clarifications section; if the " +
+      "answers are written again later, delete your copy so it does not appear twice. A deleted " +
+      "requirement is not restored, so nothing is written into it.";
     const { rerender } = render(
       <ClarificationImpactNote application={{ ...base, notWrittenCount: 2 }} />,
     );
@@ -333,7 +350,7 @@ describe("ClarificationImpactNote — #1204 answers refused because the match wa
     const list = screen.getByTestId("clarification-ambiguous");
     expect(list).toHaveTextContent("fits “A”, “B” and “C” equally well, so none was chosen");
     expect(list).toHaveTextContent(
-      "“Export orders” fits this and another requirement equally well, so the answer was given to neither",
+      "“Export orders” fits this answer’s requirement and another one equally well, so the answer was not added to it",
     );
   });
 
@@ -369,9 +386,12 @@ describe("ClarificationImpactNote — #1204 answers refused because the match wa
     );
     const warning = screen.getByTestId("clarification-unattributed");
     expect(warning).not.toHaveTextContent(/more than one saved requirement/);
-    expect(screen.getByTestId("clarification-ambiguous")).toHaveTextContent(
-      "Question q1? → “Mark all as read” fits this and another requirement equally well, so the answer was given to neither",
+    const tie = screen.getByTestId("clarification-ambiguous");
+    expect(tie).toHaveTextContent(
+      "Question q1? → “Mark all as read” fits this answer’s requirement and another one equally well, so the answer was not added to it",
     );
+    // #1253 — "neither" had no pair to refer to.
+    expect(tie).not.toHaveTextContent(/neither/);
   });
 
   it("several saved requirements: names every one the answer fitted", () => {

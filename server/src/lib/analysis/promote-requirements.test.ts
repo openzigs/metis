@@ -1198,6 +1198,183 @@ describe("#1204 — promotion records each requirement the title join refused", 
       updatedAt: expect.any(String),
     });
   });
+
+  // #1253 — three requirements titled alike and one item, X, promoted in three
+  // steps. Replaying the two earlier steps as ONE set ties all three on X, so
+  // before the rows recorded their items REQ-3's notice listed X although X's
+  // criteria are on REQ-1's row.
+  describe("#1253 — two successive appends", () => {
+    const X = item("Flush sessions", "Logging out ends every session.");
+    const twins = () => {
+      db.structured = {
+        requirements: [
+          structuredReq("REQ-1", "Flush sessions"),
+          structuredReq("REQ-2", "Flush sessions"),
+          structuredReq("REQ-3", "Flush sessions"),
+        ],
+      };
+      db.synthesisOutput = JSON.stringify({ summary: "s", requirements: [X] });
+    };
+    const noNotice = {
+      ambiguousCount: 0,
+      ambiguous: [],
+      shared: [],
+      updatedAt: expect.any(String),
+    };
+
+    it("the third requirement's notice does not list X when the rows recorded their items (#1202)", async () => {
+      twins();
+      // Step 1 promoted REQ-1, and its row recorded taking X.
+      db.requirementCount = 1;
+      db.analysis = {
+        projectId: PROJECT_ID,
+        metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1"] }),
+      };
+      db.pairingRows = [
+        {
+          promotedStructuredId: "REQ-1",
+          promotedStructuredRunId: null,
+          promotedSynthesisKeys: JSON.stringify([synthesisItemKey(X)]),
+        },
+      ];
+      // Step 2: append REQ-2.
+      db.approvals = [
+        { itemId: "REQ-1", status: "approved" },
+        { itemId: "REQ-2", status: "approved" },
+      ];
+      expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+        status: "promoted",
+        requirementCount: 1,
+      });
+      expect(recordOf()).toEqual(noNotice);
+      const second = committed.createdData.at(-1) as {
+        promotedStructuredId: string;
+        promotedStructuredRunId: string | null;
+        promotedSynthesisKeys: string;
+      };
+      expect(second.promotedStructuredId).toBe("REQ-2");
+      expect(JSON.parse(second.promotedSynthesisKeys)).toEqual([]);
+
+      // Step 3: append REQ-3, with REQ-2's row now holding its recorded pairing.
+      db.requirementCount = 2;
+      db.pairingRows = [...db.pairingRows, second];
+      db.approvals = [...db.approvals, { itemId: "REQ-3", status: "approved" }];
+      expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+        status: "promoted",
+        requirementCount: 1,
+      });
+      expect(recordOf()).toEqual(noNotice);
+    });
+
+    it("the third requirement's notice does not list X when the earlier rows predate #1202", async () => {
+      twins();
+      // REQ-1 then REQ-2 were promoted in two steps before rows recorded items.
+      db.requirementCount = 2;
+      db.analysis = {
+        projectId: PROJECT_ID,
+        metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1", "REQ-2"] }),
+      };
+      db.pairingRows = [
+        { promotedStructuredId: null, promotedStructuredRunId: null, promotedSynthesisKeys: null },
+        { promotedStructuredId: null, promotedStructuredRunId: null, promotedSynthesisKeys: null },
+      ];
+      db.approvals = [
+        { itemId: "REQ-1", status: "approved" },
+        { itemId: "REQ-2", status: "approved" },
+        { itemId: "REQ-3", status: "approved" },
+      ];
+
+      expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+        status: "promoted",
+        requirementCount: 1,
+      });
+      expect(recordOf()).toEqual(noNotice);
+    });
+
+    // #1253 review (F1/F6) — the reviewer's probe. All rows predate #1202.
+    // REQ-1 is level on X1 and X2 on its own, so it took neither; REQ-2 took O.
+    // Every one of REQ-3's options is an item REQ-1 alone is level on, and no
+    // row holds either: the refusal must survive with both listed, or REQ-3 is
+    // written with no criteria and no word of why.
+    it("keeps the notice when the earlier tie was one requirement's own", async () => {
+      const X1 = item("Flush sessions", "Logging out ends every session.");
+      const X2 = { ...item("Flush sessions", "A reset ends every session."), body: "On reset." };
+      const O = item("Export orders", "Orders export as CSV.");
+      db.structured = {
+        requirements: [
+          structuredReq("REQ-1", "Flush sessions"),
+          structuredReq("REQ-2", "Export orders"),
+          structuredReq("REQ-3", "Flush sessions"),
+        ],
+      };
+      db.synthesisOutput = JSON.stringify({ summary: "s", requirements: [X1, X2, O] });
+      db.requirementCount = 2;
+      db.analysis = {
+        projectId: PROJECT_ID,
+        metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1", "REQ-2"] }),
+      };
+      db.pairingRows = [
+        { promotedStructuredId: null, promotedStructuredRunId: null, promotedSynthesisKeys: null },
+        { promotedStructuredId: null, promotedStructuredRunId: null, promotedSynthesisKeys: null },
+      ];
+      db.approvals = [
+        { itemId: "REQ-1", status: "approved" },
+        { itemId: "REQ-2", status: "approved" },
+        { itemId: "REQ-3", status: "approved" },
+      ];
+
+      expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+        status: "promoted",
+        requirementCount: 1,
+      });
+      expect(recordOf()).toEqual({
+        ambiguousCount: 1,
+        ambiguous: [
+          {
+            requirementId: "rq_new_1",
+            structuredId: "REQ-3",
+            candidates: [
+              { title: X1.title, acceptanceCriteria: X1.acceptanceCriteria },
+              { title: X2.title, acceptanceCriteria: X2.acceptanceCriteria },
+            ],
+          },
+        ],
+        shared: [],
+        updatedAt: expect.any(String),
+      });
+    });
+  });
+
+  // #1253 — a set promoted before #723 recorded its ids: the earlier set is the
+  // requirements approved before it was first promoted, never nobody.
+  it("an append onto a set with no recorded ids drops the items its earlier rows carry", async () => {
+    const X = item("Flush sessions", "Logging out ends every session.");
+    db.structured = {
+      requirements: [
+        structuredReq("REQ-1", "Flush sessions"),
+        structuredReq("REQ-3", "Flush sessions"),
+      ],
+    };
+    db.synthesisOutput = JSON.stringify({ summary: "s", requirements: [X] });
+    db.requirementCount = 1;
+    db.analysis = { projectId: PROJECT_ID };
+    db.approvals = [
+      { itemId: "REQ-1", status: "approved", reviewedAt: new Date("2025-12-31T00:00:00Z") },
+      { itemId: "REQ-3", status: "approved", reviewedAt: new Date("2026-01-02T00:00:00Z") },
+    ];
+
+    expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+      status: "promoted",
+      requirementCount: 1,
+    });
+    expect(committed.rows).toEqual(["Flush sessions"]);
+    expect(recordOf()).toEqual({
+      ambiguousCount: 0,
+      ambiguous: [],
+      shared: [],
+      updatedAt: expect.any(String),
+    });
+  });
 });
 describe("#1203 — promotion records which requirements share criteria", () => {
   const structuredReq = (id: string, title: string) => ({
