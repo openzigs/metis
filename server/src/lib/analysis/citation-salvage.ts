@@ -45,6 +45,9 @@ export interface CitationLoss {
 
 const NO_LOSS: CitationLoss = { dropped: 0, codeDropped: 0 };
 
+// Deliberately the schema's own field names only: aliases such as `file`, `path`
+// or `line` are never repaired into a code citation (findings-repair.ts has no
+// alias), so their loss counts on the run but does not demote the finding.
 const CODE_CITATION_FIELDS = ["filePath", "startLine", "endLine", "symbolId"] as const;
 
 /** A raw citation that says it is a code citation, and not a document one. */
