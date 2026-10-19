@@ -1225,9 +1225,12 @@ describe("AnalysisOrchestrator.start", () => {
     expect(systemMessagesOf(provider).some((s) => s.includes("MODE: REQUIREMENT-GROUNDED"))).toBe(
       true,
     );
-    return [...agentResults.values()].find(
+    const row = [...agentResults.values()].find(
       (a) => a.analysisId === analysisId && a.agentKey === "code",
-    )!.findings[0]!;
+    )!;
+    // #1264 review — the server's loss markers are read, not stored.
+    expect(row.output).not.toMatch(/citationsLostToSalvage/i);
+    return row.findings[0]!;
   };
 
   it("#1155 a grounded finding whose only code citation the schema dropped is unverified", async () => {
@@ -1501,6 +1504,8 @@ describe("AnalysisOrchestrator.start", () => {
     expect(code.findings).toHaveLength(1);
     expect(code.findings[0]!.verificationStatus).toBe("unverified");
     expect(capabilityOf(analysisId)?.droppedCitations).toEqual([{ agentKey: "code", count: 1 }]);
+    // #1264 review — the server's loss markers are read, not stored.
+    expect(code.output).not.toMatch(/citationsLostToSalvage/i);
   });
 
   // #1155 — the salvage path runs after the whole answer failed the schema; it
@@ -1530,6 +1535,7 @@ describe("AnalysisOrchestrator.start", () => {
     const cap = capabilityOf(analysisId)!;
     expect(cap.reasons).toContain("code-agent-degraded");
     expect(cap.droppedCitations).toEqual([{ agentKey: "code", count: 1 }]);
+    expect(code.output).not.toMatch(/citationsLostToSalvage/i);
     expect(cap.reasons).toContain("citations-dropped");
     const status = analyses.get(analysisId)!.status;
     const { analysisStatusLabel } = await import("@metis/shared");

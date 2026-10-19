@@ -113,6 +113,7 @@ import {
   codeCitationsLostToSalvage,
   markCitationLosses,
   totalCitationsLost,
+  withoutCitationLossMarker,
 } from "./citation-salvage.js";
 // #1318 (Epic #1316) — the claim-level faithfulness METRIC. A grader like the
 // panel below, one step further: it writes ONE optional numeric field and cannot
@@ -3253,7 +3254,6 @@ export class AnalysisOrchestrator {
             // each; count it on the run like the whole-answer path does.
             this.noteCitationSalvage(input.analysisId, agentKey, {
               dropped: totalCitationsLost(salvaged),
-              repaired: 0,
             });
             validated = buildDegradedAgentOutput({
               agentKey,
@@ -3401,7 +3401,8 @@ export class AnalysisOrchestrator {
             // out-rank a confirmed gap in any severity-ordered surface.
             const unverifiable = verdict === "could-not-verify";
             return {
-              ...f,
+              // #1155 — the loss markers are read below, not stored.
+              ...withoutCitationLossMarker(f),
               citations,
               title: unverifiable ? retitleUnverifiableFinding(f.title) : f.title,
               severity: unverifiable ? ("info" as const) : f.severity,
@@ -3824,7 +3825,8 @@ export class AnalysisOrchestrator {
           });
           const unverifiable = verdict === "could-not-verify";
           return {
-            ...f,
+            // #1155 — the loss markers are read below, not stored.
+            ...withoutCitationLossMarker(f),
             requirementId:
               f.requirementId && knownReqIds.has(f.requirementId) ? f.requirementId : null,
             citations: enrichCitations(grounded, allChunks),
@@ -4701,14 +4703,15 @@ export class AnalysisOrchestrator {
   private noteCitationSalvage(
     analysisId: string | undefined,
     agentKey: string,
-    salvage: { dropped: number; repaired: number } | undefined,
+    // `repaired` is absent where it was not counted (the per-finding salvage path).
+    salvage: { dropped: number; repaired?: number } | undefined,
   ): void {
-    if (!salvage || (salvage.dropped === 0 && salvage.repaired === 0)) return;
+    if (!salvage || (salvage.dropped === 0 && (salvage.repaired ?? 0) === 0)) return;
     log.warn("Agent citations salvaged: malformed citations dropped or repaired", {
       analysisId,
       agentKey,
       dropped: salvage.dropped,
-      repaired: salvage.repaired,
+      ...(salvage.repaired !== undefined ? { repaired: salvage.repaired } : {}),
     });
     if (!analysisId) return;
     const tracker = this.capabilities.get(analysisId);
