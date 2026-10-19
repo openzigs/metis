@@ -15,6 +15,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { publishingApi } from "@/lib/publishing-api";
 import { analysisApi, type AnalysisListItem } from "@/lib/analysis-api";
+import { runStatusText } from "@/components/analysis/analysis-status-badge";
 import { formatChangeRunLabels, type ChangeRunLabel } from "@/lib/format-change-run-label";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -85,10 +86,11 @@ function statusClass(status: string): string {
 /**
  * Human-readable label for an analysis option in the source picker. #364 — it
  * is the same "Run #N — <date>" the Analysis page shows, so a run reads the
- * same on both pages; the short id stays last, for telling runs apart.
+ * same on both pages; the short id stays last, for telling runs apart. #1155 —
+ * so is its status: a run that completed with errors or warnings says so.
  */
 function analysisLabel(a: AnalysisListItem, label: ChangeRunLabel): string {
-  return `${label.primary} · ${a.status} · ${label.shortId}`;
+  return `${label.primary} · ${runStatusText(a)} · ${label.shortId}`;
 }
 
 /**
