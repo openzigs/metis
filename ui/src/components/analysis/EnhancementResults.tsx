@@ -271,13 +271,18 @@ export function ClarificationImpactNote({
           its start and end markers, or delete the section, then submit the answers again.
         </p>
       )}
+      {/* #1237 — the retry route as it is: a submit re-runs the pass, but a
+          completed dialog offers none, and promotion re-runs it only when it
+          writes a newly approved requirement. */}
       {requirementsAvailable && notWrittenCount > 0 && (
         <p className="text-warning" data-testid="clarification-not-written">
           {notWrittenCount} answer{notWrittenCount === 1 ? " was" : "s were"} not written because{" "}
           {notWrittenCount === 1 ? "its requirement" : "their requirements"} changed or{" "}
-          {notWrittenCount === 1 ? "was" : "were"} deleted while the answers were being saved.
-          Submit the answers again to retry; a deleted requirement is not restored, so nothing is
-          written into it.
+          {notWrittenCount === 1 ? "was" : "were"} deleted while the answers were being saved. While
+          clarifying questions are still open, they are written again when you submit the next
+          answers. Once clarification is complete, they are written again only when another
+          requirement is approved and promoted, so to add an answer now, edit its requirement. A
+          deleted requirement is not restored, so nothing is written into it.
         </p>
       )}
       {requirementsAvailable && unmatched.length > 0 && (

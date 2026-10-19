@@ -53,11 +53,22 @@ export function canonicalizeCriteriaFlag(text: string): string {
 /**
  * The body without the flag line (and the blank line that follows it). A body
  * with no flag is returned unchanged.
+ *
+ * #1237 — the flags removed are the ones {@link hasCriteriaFlag} detects, so
+ * a body it flags never comes back still flagged: a marker split across lines
+ * removes every line it spans. A blank line is blank with its `\r` too, so a
+ * CRLF body loses the one after the flag as well.
  */
 export function clearCriteriaFlag(body: string): string {
+  const flags = findMetisMarkers(body).filter((m) => m.name === CRITERIA_FLAG_NAME);
+  if (flags.length === 0) return body;
   const lines = body.split("\n");
-  const at = lines.findIndex((line) => hasCriteriaFlag(line));
-  if (at === -1) return body;
-  lines.splice(at, lines[at + 1] === "" ? 2 : 1);
-  return lines.join("\n");
+  const lineOf = (offset: number) => body.slice(0, offset).split("\n").length - 1;
+  const drop = new Set<number>();
+  for (const m of flags) {
+    const last = lineOf(m.index + m.length);
+    for (let i = lineOf(m.index); i <= last; i++) drop.add(i);
+    if (lines[last + 1]?.trim() === "") drop.add(last + 1);
+  }
+  return lines.filter((_, i) => !drop.has(i)).join("\n");
 }

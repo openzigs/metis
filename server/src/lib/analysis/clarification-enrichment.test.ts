@@ -788,6 +788,32 @@ describe("#1000 — flagging acceptance criteria the answers may have changed", 
     expect(clearCriteriaFlag(variant)).toBe(applyClarificationBlock("Body.", [answer()]));
   });
 
+  // #1237 — a body saved with Windows line endings: the blank line after the
+  // flag is "\r", not "", and was left behind.
+  it("#1237 — clears the flag from a CRLF body without leaving an extra blank line", () => {
+    const flagged = applyClarificationBlock("Body.", [answer()], withCriteria);
+    const crlf = flagged.replace(/\n/g, "\r\n");
+    expect(hasCriteriaFlag(crlf)).toBe(true);
+    expect(clearCriteriaFlag(crlf)).toBe(
+      applyClarificationBlock("Body.", [answer()]).replace(/\n/g, "\r\n"),
+    );
+  });
+
+  // #1237 — the marker pattern's whitespace spans lines, so a marker split
+  // across lines is detected. Removal now covers every line it spans, so a
+  // criteria edit clears it instead of writing the body back unchanged.
+  it("#1237 — clears a flag whose marker is split across lines, so detection and removal agree", () => {
+    const flagged = applyClarificationBlock("Body.", [answer()], withCriteria);
+    const split = flagged.replace(
+      CRITERIA_FLAG_MARKER,
+      "<!--\nmetis:criteria-predate-answers\n-->",
+    );
+    expect(hasCriteriaFlag(split)).toBe(true);
+    const cleared = clearCriteriaFlag(split);
+    expect(hasCriteriaFlag(cleared)).toBe(false);
+    expect(cleared).toBe(applyClarificationBlock("Body.", [answer()]));
+  });
+
   it("clearCriteriaFlag leaves a body without the flag untouched", () => {
     expect(clearCriteriaFlag("Body.\n\n\n\nMore.")).toBe("Body.\n\n\n\nMore.");
     expect(hasCriteriaFlag("Body.")).toBe(false);

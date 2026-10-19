@@ -195,9 +195,14 @@ describe("ClarificationImpactNote", () => {
   });
 
   it("#1225 — says how many answers were not written, why, and what to do next", () => {
+    // #1237 — the retry route as it is: the next submit re-runs the pass while
+    // questions are open; once clarification is complete nothing can be
+    // resubmitted, and only promoting another approved requirement re-runs it.
     const next =
-      "Submit the answers again to retry; a deleted requirement is not restored, so nothing is " +
-      "written into it.";
+      "While clarifying questions are still open, they are written again when you submit the " +
+      "next answers. Once clarification is complete, they are written again only when another " +
+      "requirement is approved and promoted, so to add an answer now, edit its requirement. A " +
+      "deleted requirement is not restored, so nothing is written into it.";
     const { rerender } = render(
       <ClarificationImpactNote application={{ ...base, notWrittenCount: 2 }} />,
     );
