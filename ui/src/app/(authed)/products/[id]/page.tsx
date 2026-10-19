@@ -29,6 +29,7 @@ import {
 import { MarkdownPreviewer } from "@/components/markdown-previewer";
 import { ArrowLeft, Plus, Trash2, RefreshCw, FileText, Network, Server, Code2 } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
+import { HiddenReposNotice, PartialDocNotice } from "@/components/products/product-access-notices";
 
 const REPO_ROLES = [
   "frontend",
@@ -245,6 +246,8 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
           </Dialog>
         </div>
 
+        <HiddenReposNotice count={p.inaccessibleRepoCount} />
+
         {(!p.repos || p.repos.length === 0) && (
           <Card className="p-6 text-center">
             <p className="text-muted-foreground">
@@ -441,6 +444,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
                       v{activeDoc.version} &bull; {new Date(activeDoc.generatedAt).toLocaleString()}
                     </span>
                   </div>
+                  <PartialDocNotice doc={activeDoc} />
                   <MarkdownPreviewer content={activeDoc.content} showToc={false} />
                 </Card>
               ) : (

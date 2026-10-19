@@ -2871,6 +2871,18 @@ then, impact analysis and "Tested by" may miss some Go call paths in that reposi
 
 **Rebuild AST cache** (Issue #122): each repository row on the **Connections** tab has a **Rebuild AST cache** button. Clicking it pulls (or clones) the repository and re-indexes its source files into the AST summary cache, showing an explicit status — *Rebuilding…* → completed (with indexed-file / symbol / skipped counts) or a failed status with a parsed error message. Use it after large refactors when you want the code-overview and analysis tooling to reflect the latest structure immediately rather than waiting for the next scheduled ingest.
 
+### 15.5 Products that span repositories you can't access
+
+A product (**Projects › Products**) can include repositories from projects you don't
+have access to. You won't see those repositories; instead the product page says
+**"N repos hidden"**. **Generate Documentation** still works, but it builds the documents
+from the repositories you *can* access, and every document affected says so: *"Built
+without N repos the person who ran it couldn't access."* Repository names are never shown.
+The next run by someone who can access every repository (an administrator, for example)
+replaces those documents with complete ones and the notice disappears. A repository
+connection that has been deleted no longer appears on the product and is left out of
+its documents. [#1261]
+
 ---
 
 ## 16. Database Connections

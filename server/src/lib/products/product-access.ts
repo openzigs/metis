@@ -183,15 +183,29 @@ export async function assertProductRepoReadable(
   productId: string,
   repoConnectionId: string,
 ): Promise<void> {
-  const actor = actorOf(user);
-  if (isAdminActor(actor)) return;
+  if (await isProductRepoHiddenFrom(user, productId, repoConnectionId)) {
+    throw repoNotAssociated(productId, repoConnectionId);
+  }
+}
+
+/**
+ * #1261 — whether `repoConnectionId` is attached to the product but its project
+ * is one the caller cannot open. Always `false` for an admin, and for an id that
+ * is not attached (the service answers that one).
+ */
+export async function isProductRepoHiddenFrom(
+  user: AuthPayload,
+  productId: string,
+  repoConnectionId: string,
+): Promise<boolean> {
+  if (isAdminActor(actorOf(user))) return false;
   const link = await prisma.productRepo.findUnique({
     where: { productId_repoConnectionId: { productId, repoConnectionId } },
     select: { repoConnection: { select: { projectId: true } } },
   });
-  if (!link) return;
+  if (!link) return false;
   const canRead = await productRepoReadAccess(user);
-  if (!canRead(link)) throw repoNotAssociated(productId, repoConnectionId);
+  return !canRead(link);
 }
 
 /**
