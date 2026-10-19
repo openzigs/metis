@@ -76,14 +76,15 @@ export function fingerprintInputs(
  *
  * #1270 — the other sections' budgets do not move with the list: a section's
  * inputs include the budget the plan gives it, and the Approved Requirements
- * section asks the plan for `approvedRequirementsPlanChars`, which depends on
- * the document budget alone, so what the main part's other sections and the
- * appendix are given is the same however long the list renders. A change to
- * the approved list therefore rewrites no model-written section whose own
- * inputs are unchanged. The exception is the swap between this section and
- * the reconstructed requirements (the first approval, or un-approving the
- * last): the reconstructed section asks for its own target, so the plan
- * moves and the batched catalogue sections are written again, at model cost.
+ * section asks the plan for the requirements section's target
+ * (`BRD_MAIN_SECTION_TARGETS.requirements`), exactly what the reconstructed
+ * section asks. So what the main part's other sections and the appendix are
+ * given is the same however long the list renders, and with or without it. A
+ * change to the approved list, the first approval included, rewrites no
+ * model-written section whose own inputs are unchanged. Un-approving the last
+ * writes the reconstructed section again (its own section, at model cost).
+ * A document published before #1270 planned the section at its rendered
+ * length, so its first regenerate may rewrite batched catalogue sections once.
  */
 export const APPROVED_REQUIREMENTS_ITEM = "approvedRequirements";
 

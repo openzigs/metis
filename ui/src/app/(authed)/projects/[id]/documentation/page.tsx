@@ -1857,9 +1857,10 @@ export function ApprovedRequirementsOutOfDateBanner({
         Approved Requirements section no longer matches them. Regenerate to write a new version that
         lists them as they are now. The other sections are kept as they are, so this normally uses
         no AI model credits. METIS rewrites a section, which does use credits, only if the code or
-        other material it is written from has also changed. Approving the first requirement, or
-        un-approving the last one, changes how the document is laid out, so then it may rewrite
-        parts of the appendix too.
+        other material it is written from has also changed. If you un-approve the last requirement,
+        METIS writes the requirements it reconstructs from the code again, which uses credits. The
+        first regenerate of a document written before this version of METIS may also rewrite parts
+        of the appendix, once.
       </p>
       <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
         {regenerating ? "Regenerating…" : "Regenerate"}

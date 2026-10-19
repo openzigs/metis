@@ -25,7 +25,6 @@ import {
   APPROVED_REQUIREMENTS_HEADING,
   APPROVED_REQUIREMENTS_MODEL,
   approvedRequirementsMaxChars,
-  approvedRequirementsPlanChars,
   renderApprovedRequirementsSection,
 } from "./approved-requirements-section.js";
 import {
@@ -262,21 +261,27 @@ describe("planDocumentTopics with approved requirements", () => {
 
   // #1270 — room for the most the section may render to, not its current
   // length, so the plan does not move when the list does.
-  it("plans the section, and the main part, at the most the requirements may render to", () => {
-    const requirements = [req(1), req(2), req(3)];
-    const p = plan(requirements);
-    const rendered = renderApprovedRequirementsSection(
-      requirements,
-      approvedRequirementsMaxChars(p.budgetChars),
-    ).markdown.length;
-    const section = p.sections.find((s) => s.sectionId === "requirements")!;
-    expect(section.budgetChars).toBe(approvedRequirementsMaxChars(p.budgetChars));
-    expect(section.budgetChars).toBe(approvedRequirementsPlanChars(p.budgetChars));
-    expect(section.budgetChars).toBeGreaterThanOrEqual(rendered);
-    expect(p.mainBudgetChars).toBe(
-      BRD_MAIN_TARGET_CHARS - BRD_MAIN_SECTION_TARGETS.requirements + section.budgetChars,
-    );
-    expect(p.mainBudgetChars).toBeLessThanOrEqual(BRD_MAIN_MAX_CHARS);
+  // #1270 — at the reconstructed section's target, however long the list
+  // renders, so the plan does not move when the list does.
+  it("plans the section, and the main part, at the reconstructed section's target", () => {
+    const short = plan([req(1)]);
+    const long = plan(Array.from({ length: 60 }, (_, i) => req(i + 1)));
+    const reconstructed = plan([]);
+    expect(
+      renderApprovedRequirementsSection(
+        Array.from({ length: 60 }, (_, i) => req(i + 1)),
+        approvedRequirementsMaxChars(long.budgetChars),
+      ).markdown.length,
+    ).toBeGreaterThan(BRD_MAIN_SECTION_TARGETS.requirements);
+    for (const p of [short, long]) {
+      const section = p.sections.find((s) => s.sectionId === "requirements")!;
+      expect(section.budgetChars).toBe(BRD_MAIN_SECTION_TARGETS.requirements);
+      expect(p.mainBudgetChars).toBe(BRD_MAIN_TARGET_CHARS);
+      expect(p.sections.map((s) => s.budgetChars)).toEqual(
+        reconstructed.sections.map((s) => s.budgetChars),
+      );
+    }
+    const p = short;
     // The other main sections get their targets, as without approved requirements.
     for (const id of ["overview", "capabilities", "key-rules"]) {
       expect(p.sections.find((s) => s.sectionId === id)!.budgetChars).toBe(
@@ -628,15 +633,45 @@ describe("per-section reuse (#857) with approved requirements", () => {
       expect(provider.calls).toEqual([]);
     });
 
-    // What the banner and the user guide still warn of: the first approval
-    // swaps the model-written reconstructed section for the approved list,
-    // which asks the plan for a different budget.
-    it("re-plans the document when the first requirement is approved", () => {
+    // #1271 review — the approved list asks the plan exactly what the
+    // reconstructed section asks, so swapping one for the other (the first
+    // approval, or un-approving the last) re-plans nothing either.
+    it("plans every other section the same with the reconstructed section or the approved list", () => {
+      const others = (p: ReturnType<typeof planAt>) =>
+        p.sections.filter((s) => s.sectionId !== "requirements");
       const reconstructed = planAt([]);
       const approved = planAt([req(1)]);
-      const others = (p: typeof approved) =>
-        p.sections.filter((s) => s.sectionId !== "requirements").map((s) => s.budgetChars);
-      expect(others(approved)).not.toEqual(others(reconstructed));
+      expect(approved.mainBudgetChars).toBe(reconstructed.mainBudgetChars);
+      expect(others(approved)).toEqual(others(reconstructed));
+    });
+
+    it("rewrites no model-written section when the first requirement is approved", async () => {
+      vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", CAP);
+      const first = await run(fakeModel(), [], undefined, MANY);
+      expect(first.sectionSynthesis?.complete).toBe(true);
+      const provider = fakeModel();
+      const second = await run(provider, [req(1)], first, MANY);
+      expect(second.regeneration).toEqual({
+        mode: "sections",
+        changed: ["requirements"],
+        sections: ["requirements"],
+      });
+      expect(provider.calls).toEqual([]);
+    });
+
+    it("rewrites only the reconstructed section when the last requirement is un-approved", async () => {
+      vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", CAP);
+      const first = await run(fakeModel(), [req(1)], undefined, MANY);
+      expect(first.sectionSynthesis?.complete).toBe(true);
+      const provider = fakeModel();
+      const second = await run(provider, [], first, MANY);
+      expect(second.regeneration).toEqual({
+        mode: "sections",
+        changed: ["requirements"],
+        sections: ["requirements"],
+      });
+      expect(provider.calls).toHaveLength(1);
+      expect(new Set(provider.calls.map((c) => c.group))).toEqual(new Set([RECONSTRUCTED]));
     });
   });
 

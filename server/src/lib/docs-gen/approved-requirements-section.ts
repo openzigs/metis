@@ -25,7 +25,6 @@ import {
   BRD_MAIN_SECTION_TARGETS,
   BRD_MAIN_TARGET_CHARS,
   mainFitCap,
-  mainPlanBudget,
   readBrdLayoutSetting,
 } from "./brd-layout.js";
 import { defaultRequirementsRunIdFor } from "../analysis/requirement-runs.js";
@@ -123,28 +122,6 @@ export function approvedRequirementsMaxChars(bodyMaxChars: number): number {
         BRD_MAIN_MAX_CHARS,
     ),
   );
-}
-
-/**
- * #1270 — what the section asks of the document plan out of a planning budget
- * of `budgetChars`: the most it may render to ({@link approvedRequirementsMaxChars}),
- * but never more than the main part's plan budget leaves once the other main
- * sections have their targets (so it never squeezes them), and at least 1.
- *
- * It depends on the budget alone, never on the requirements. While the
- * section asked for its rendered length, every approval or edit moved the main
- * part's plan, so the budget the appendix is left, so every catalogue
- * section's budget, which is part of its reuse hash: each was written again at
- * model cost although nothing it reads had changed. The section is rendered
- * within its own cap whatever the plan gives it, and at assembly it is kept
- * whole as rendered, so asking for its most costs it nothing; what it does not
- * use is room the appendix was not planned to fill.
- */
-export function approvedRequirementsPlanChars(budgetChars: number): number {
-  const most = approvedRequirementsMaxChars(budgetChars);
-  const left =
-    mainPlanBudget(budgetChars, OTHER_MAIN_TARGET_CHARS + most) - OTHER_MAIN_TARGET_CHARS;
-  return Math.max(1, Math.min(most, left));
 }
 
 function leadIn(total: number): string {
