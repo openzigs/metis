@@ -22,6 +22,7 @@ import {
   APPROVED_REQUIREMENTS_HEADING,
   approvedRequirementsFacts,
   approvedRequirementsMaxChars,
+  approvedRequirementsPlanChars,
   loadApprovedRequirements,
   overflowPointer,
   readsApprovedRequirements,
@@ -241,6 +242,42 @@ describe("approvedRequirementsMaxChars", () => {
       expect(
         approvedRequirementsMaxChars(body) + otherChars * (mainFitCap(body) / BRD_MAIN_MAX_CHARS),
       ).toBeLessThanOrEqual(mainFitCap(body) + 1);
+    }
+  });
+});
+
+describe("approvedRequirementsPlanChars (#1270)", () => {
+  const OTHERS = BRD_MAIN_TARGET_CHARS - BRD_MAIN_SECTION_TARGETS.requirements;
+
+  it("is the most the section may render to when the main part's plan has room for it", () => {
+    expect(approvedRequirementsPlanChars(250_000)).toBe(approvedRequirementsMaxChars(250_000));
+    expect(approvedRequirementsPlanChars(250_000)).toBe(28_000);
+  });
+
+  it("is what the main plan leaves the other sections' targets when that is less", () => {
+    // 0.4 × 90k = 36k of main plan: 4k after the other three sections' 32k.
+    expect(approvedRequirementsPlanChars(90_000)).toBe(
+      mainPlanBudget(90_000, OTHERS + approvedRequirementsMaxChars(90_000)) - OTHERS,
+    );
+    expect(approvedRequirementsPlanChars(90_000)).toBe(4_000);
+    expect(approvedRequirementsPlanChars(90_000)).toBeLessThan(
+      approvedRequirementsMaxChars(90_000),
+    );
+  });
+
+  it("is at least 1, so the section is never planned out, however small the cap", () => {
+    expect(approvedRequirementsPlanChars(40_000)).toBe(1);
+    expect(approvedRequirementsPlanChars(0)).toBe(1);
+  });
+
+  it("never asks the main part for more than its plan budget, with the other targets", () => {
+    for (const budget of [250_000, 180_000, 150_000, 120_000, 90_000]) {
+      const plan = approvedRequirementsPlanChars(budget);
+      expect(plan).toBeLessThanOrEqual(approvedRequirementsMaxChars(budget));
+      expect(OTHERS + plan).toBeLessThanOrEqual(
+        Math.max(OTHERS + 1, Math.floor(budget * BRD_MAIN_PLAN_SHARE)),
+      );
+      expect(OTHERS + plan).toBeLessThanOrEqual(BRD_MAIN_MAX_CHARS);
     }
   });
 });

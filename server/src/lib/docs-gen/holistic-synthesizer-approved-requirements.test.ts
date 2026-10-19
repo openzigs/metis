@@ -25,6 +25,7 @@ import {
   APPROVED_REQUIREMENTS_HEADING,
   APPROVED_REQUIREMENTS_MODEL,
   approvedRequirementsMaxChars,
+  approvedRequirementsPlanChars,
   renderApprovedRequirementsSection,
 } from "./approved-requirements-section.js";
 import {
@@ -153,9 +154,10 @@ function run(
   provider: AIProvider,
   approvedRequirements?: readonly ScopedRequirement[],
   previousManifest?: { sectionSynthesis?: unknown },
+  facts: ModuleFacts[] = FACTS,
 ) {
   return synthesizeFinalDocument(
-    FACTS,
+    facts,
     META,
     "business-requirements",
     "BRD",
@@ -258,18 +260,29 @@ describe("planDocumentTopics with approved requirements", () => {
       readerLayout: true,
     }).plan;
 
-  it("plans the section, and the main part, at the length the requirements render to", () => {
+  // #1270 — room for the most the section may render to, not its current
+  // length, so the plan does not move when the list does.
+  it("plans the section, and the main part, at the most the requirements may render to", () => {
     const requirements = [req(1), req(2), req(3)];
     const p = plan(requirements);
     const rendered = renderApprovedRequirementsSection(
       requirements,
-      approvedRequirementsMaxChars(250_000 - (250_000 - p.budgetChars)),
+      approvedRequirementsMaxChars(p.budgetChars),
     ).markdown.length;
     const section = p.sections.find((s) => s.sectionId === "requirements")!;
-    expect(section.budgetChars).toBe(rendered);
+    expect(section.budgetChars).toBe(approvedRequirementsMaxChars(p.budgetChars));
+    expect(section.budgetChars).toBe(approvedRequirementsPlanChars(p.budgetChars));
+    expect(section.budgetChars).toBeGreaterThanOrEqual(rendered);
     expect(p.mainBudgetChars).toBe(
-      BRD_MAIN_TARGET_CHARS - BRD_MAIN_SECTION_TARGETS.requirements + rendered,
+      BRD_MAIN_TARGET_CHARS - BRD_MAIN_SECTION_TARGETS.requirements + section.budgetChars,
     );
+    expect(p.mainBudgetChars).toBeLessThanOrEqual(BRD_MAIN_MAX_CHARS);
+    // The other main sections get their targets, as without approved requirements.
+    for (const id of ["overview", "capabilities", "key-rules"]) {
+      expect(p.sections.find((s) => s.sectionId === id)!.budgetChars).toBe(
+        BRD_MAIN_SECTION_TARGETS[id],
+      );
+    }
   });
 
   it("plans an over-budget set at its share of the main part, never past 60k", () => {
@@ -515,6 +528,116 @@ describe("per-section reuse (#857) with approved requirements", () => {
     expect(sectionOf(approvedSince.markdown, APPROVED_REQUIREMENTS_HEADING)).toContain(
       "### R3. Analyst-edited requirement 3",
     );
+  });
+
+  // #1270 — on a budget-limited plan the appendix gets what the main part
+  // leaves. While the approved section asked for its rendered length, every
+  // approval moved every catalogue section's budget, which is in its reuse
+  // hash, so each was written again at model cost.
+  // Two caps: at the default 250k the main part gets all it asks and the
+  // appendix is at its limit (the case #1270 measured); at 60k the main part
+  // is at its limit too, so its own sections share what the approved one
+  // leaves. Each with enough modules that the appendix's catalogue outgrows
+  // what it is left.
+  describe.each([
+    ["the appendix", "250000", false, 200],
+    ["both parts", "60000", true, 40],
+  ])("#1270 — on a budget-limited plan, at the limit of %s", (_part, CAP, mainLimited, modules) => {
+    const lines = (kind: string, name: string) =>
+      Array.from({ length: 12 }, (_, k) => `- ${kind} ${k} of ${name}: applies to each request.`);
+    const MANY: ModuleFacts[] = Array.from({ length: modules }, (_, i) => ({
+      ...mod(`m${i}`),
+      facts: [
+        "PURPOSE",
+        `m${i} handles one business capability.`,
+        "RULES",
+        ...lines("rule", `m${i}`),
+        "WORKFLOWS",
+        ...lines("step", `m${i}`),
+        "FORMULAS",
+        ...lines("formula", `m${i}`),
+        "ENTITIES",
+        ...lines("entity", `m${i}`),
+        "INTEGRATIONS",
+        `- integration of m${i}: a webhook.`,
+      ].join("\n"),
+    }));
+    const planAt = (approvedRequirements: readonly ScopedRequirement[]) =>
+      planDocumentTopics({
+        facts: MANY,
+        groups: sectionGroupsFor("business-requirements", {
+          brdLayout: "reader",
+          approvedRequirements,
+        }),
+        router: routerFor(fakeModel()),
+        sectionMaxChars: 60_000,
+        documentMaxChars: Number(CAP),
+        readerLayout: true,
+      }).plan;
+    const lists: Array<[string, ScopedRequirement[], ScopedRequirement[]]> = [
+      ["another is approved", [req(1), req(2)], [req(1), req(2), req(3)]],
+      ["one is un-approved", [req(1), req(2), req(3)], [req(1), req(3)]],
+      [
+        "one is edited to ten times its length",
+        [req(1), req(2)],
+        [req(1), req(2, { body: Array.from({ length: 10 }, () => req(2).body).join(" ") })],
+      ],
+    ];
+
+    it.each(lists)(
+      "plans every section but the approved one the same when %s",
+      (_, before, after) => {
+        const a = planAt(before);
+        const b = planAt(after);
+        // The fixture is at the limit: an appendix catalogue section is given
+        // less than it asked for, so a moved budget would move its hash.
+        const appendix = a.sections.filter(
+          (s) => s.kind === "enumerative" && !Object.hasOwn(BRD_MAIN_SECTION_TARGETS, s.sectionId),
+        );
+        expect(appendix.length).toBeGreaterThan(0);
+        expect(appendix.some((s) => s.budgetChars < s.demandChars)).toBe(true);
+        const otherMain = a.sections.filter(
+          (s) =>
+            Object.hasOwn(BRD_MAIN_SECTION_TARGETS, s.sectionId) && s.sectionId !== "requirements",
+        );
+        expect(otherMain.some((s) => s.budgetChars < s.demandChars)).toBe(mainLimited);
+        // The lists do render to different lengths.
+        expect(
+          renderApprovedRequirementsSection(after, approvedRequirementsMaxChars(a.budgetChars))
+            .markdown.length,
+        ).not.toBe(
+          renderApprovedRequirementsSection(before, approvedRequirementsMaxChars(a.budgetChars))
+            .markdown.length,
+        );
+        expect(b.mainBudgetChars).toBe(a.mainBudgetChars);
+        expect(b.sections).toEqual(a.sections);
+      },
+    );
+
+    it.each(lists)("rewrites no model-written section when %s", async (_, before, after) => {
+      vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", CAP);
+      const first = await run(fakeModel(), before, undefined, MANY);
+      expect(first.sectionSynthesis?.complete).toBe(true);
+      const provider = fakeModel();
+      const second = await run(provider, after, first, MANY);
+      expect(second.regeneration).toEqual({
+        mode: "sections",
+        changed: ["requirements"],
+        sections: ["requirements"],
+      });
+      expect(provider.calls).toEqual([]);
+    });
+
+    // What the banner and the user guide still warn of: the first approval
+    // swaps the model-written reconstructed section for the approved list,
+    // which asks the plan for a different budget.
+    it("re-plans the document when the first requirement is approved", () => {
+      const reconstructed = planAt([]);
+      const approved = planAt([req(1)]);
+      const others = (p: typeof approved) =>
+        p.sections.filter((s) => s.sectionId !== "requirements").map((s) => s.budgetChars);
+      expect(others(approved)).not.toEqual(others(reconstructed));
+    });
   });
 
   it("re-renders the requirements when another is approved", async () => {

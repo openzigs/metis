@@ -336,6 +336,7 @@ import {
   APPROVED_REQUIREMENTS_MODEL,
   approvedRequirementsFacts,
   approvedRequirementsMaxChars,
+  approvedRequirementsPlanChars,
   loadApprovedRequirements,
   renderApprovedRequirementsSection,
 } from "./approved-requirements-section.js";
@@ -6761,12 +6762,12 @@ export function planDocumentTopics(input: {
         label: group.label,
         kind: "single",
         topics: [],
-        // #1218 — the approved requirements ask for what they render to.
+        // #1218 — the approved requirements are planned room for what they
+        // may render to. #1270 — the most, not their current length: that
+        // depends on the budget alone, so an approval or an edit moves no
+        // other section's budget and every other section can be reused.
         askChars: group.approvedRequirements?.length
-          ? renderApprovedRequirementsSection(
-              group.approvedRequirements,
-              approvedRequirementsMaxChars(input.documentMaxChars - reservedChars),
-            ).markdown.length
+          ? approvedRequirementsPlanChars(input.documentMaxChars - reservedChars)
           : BRD_MAIN_SECTION_TARGETS[group.id],
         ...part,
       };
@@ -6820,7 +6821,8 @@ export function planDocumentTopics(input: {
     reservedChars,
     // #1175 — the main part first, within its own budget.
     // #1218 — what the main sections ask, so approved requirements count at
-    // the length they render to rather than the reconstructed section's target.
+    // what they ask rather than the reconstructed section's target (#1270: the
+    // room they may render to, which depends on the budget alone).
     ...(reader
       ? {
           mainBudgetChars: mainPlanBudget(
