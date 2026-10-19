@@ -39,6 +39,10 @@ const PROJECT = "p-1143";
 const ERRORS = "an-errors";
 const WARNINGS = "an-warnings";
 const CLEAN = "an-clean";
+/** #1155 — a stored `droppedCitations` that is not an array at all. */
+const NOT_A_LIST = "an-not-a-list";
+/** #1155 — a list with entries of the wrong shape among a good one. */
+const MIXED = "an-mixed";
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#1143 run status fields on the run list and snapshot (real SQLite)",
@@ -56,7 +60,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.project.create({
         data: { id: PROJECT, name: PROJECT, slug: PROJECT, createdById: USER },
       });
-      const capability = (droppedCitations?: Array<{ agentKey: string; count: number }>) =>
+      const capability = (droppedCitations?: unknown) =>
         JSON.stringify({
           capability: {
             codeAnalysisRequested: false,
@@ -106,6 +110,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             ["document", "completed"],
             ["code", "completed"],
           ],
+        },
+        {
+          id: NOT_A_LIST,
+          minute: 5,
+          metadata: capability("lots"),
+          agents: [["document", "completed"]],
+        },
+        {
+          id: MIXED,
+          minute: 4,
+          metadata: capability([
+            { agentKey: "code", count: 3 },
+            null,
+            "document",
+            { agentKey: 5, count: 1 },
+            { agentKey: "business", count: "2" },
+            { agentKey: "database", count: -1 },
+          ]),
+          agents: [["code", "completed"]],
         },
       ];
       for (const r of runs) {
@@ -161,6 +184,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(snap.droppedCitations).toEqual(row.droppedCitations);
       }
       expect((await getAnalysisSnapshot(ERRORS))!.failedAgents).toEqual(["code"]);
+    });
+
+    // #1155 — the stored value was passed through unchecked, and a non-array
+    // would throw in the UI's `.filter`/`.some`.
+    it("a malformed stored droppedCitations is shape-checked on read", async () => {
+      const list = await listAnalysesForProject(PROJECT);
+      const byId = new Map(list.map((r) => [r.id, r]));
+      expect(byId.get(NOT_A_LIST)!.droppedCitations).toEqual([]);
+      expect(byId.get(MIXED)!.droppedCitations).toEqual([{ agentKey: "code", count: 3 }]);
+      const notAList = (await getAnalysisSnapshot(NOT_A_LIST))!;
+      expect(notAList.droppedCitations).toEqual([]);
+      expect(notAList.capability?.droppedCitations).toBeUndefined();
+      const mixed = (await getAnalysisSnapshot(MIXED))!;
+      expect(mixed.droppedCitations).toEqual([{ agentKey: "code", count: 3 }]);
+      expect(mixed.capability?.droppedCitations).toEqual([{ agentKey: "code", count: 3 }]);
     });
   },
 );

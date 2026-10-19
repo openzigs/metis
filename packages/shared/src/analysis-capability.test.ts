@@ -7,7 +7,31 @@ import {
   type CapabilityReasonInput,
   deriveCapabilityReasons,
   isAnalysisDegraded,
+  readDroppedCitations,
 } from "./analysis.js";
+
+describe("readDroppedCitations (#1155)", () => {
+  it("keeps only well-formed entries with a positive whole count", () => {
+    expect(
+      readDroppedCitations([
+        { agentKey: "code", count: 3 },
+        null,
+        "document",
+        { agentKey: 5, count: 1 },
+        { agentKey: "business", count: "2" },
+        { agentKey: "database", count: -1 },
+        { agentKey: "document", count: 1.5 },
+        { agentKey: "", count: 1 },
+      ]),
+    ).toEqual([{ agentKey: "code", count: 3 }]);
+  });
+
+  it("reads anything that is not a list as no drops", () => {
+    for (const v of [undefined, null, "lots", 4, { agentKey: "code", count: 1 }]) {
+      expect(readDroppedCitations(v)).toEqual([]);
+    }
+  });
+});
 
 const fullyCapable: CapabilityReasonInput = {
   codeAnalysisRequested: true,

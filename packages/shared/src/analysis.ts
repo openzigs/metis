@@ -2719,6 +2719,26 @@ export interface AnalysisDroppedCitations {
 }
 
 /**
+ * Issue #1155 — a stored `droppedCitations` value, shape-checked on read. The
+ * capability record is a JSON blob, so a value that is not a list (or an entry
+ * that is not `{ agentKey, count }`) would otherwise reach the UI's `.filter` /
+ * `.some` and throw. Keeps only entries with a non-empty `agentKey` and a
+ * positive whole `count`; anything else reads as no drops.
+ */
+export function readDroppedCitations(value: unknown): AnalysisDroppedCitations[] {
+  if (!Array.isArray(value)) return [];
+  const out: AnalysisDroppedCitations[] = [];
+  for (const entry of value) {
+    if (entry === null || typeof entry !== "object") continue;
+    const { agentKey, count } = entry as Record<string, unknown>;
+    if (typeof agentKey !== "string" || agentKey.length === 0) continue;
+    if (typeof count !== "number" || !Number.isInteger(count) || count <= 0) continue;
+    out.push({ agentKey, count });
+  }
+  return out;
+}
+
+/**
  * PURE derivation of the enumerated degradation reasons from the capability
  * booleans/mode. Shared by the server (persisting the run's reasons) and the UI
  * (pre-run form hint), so the two never drift. Code-analysis reasons are gated

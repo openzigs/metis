@@ -12,6 +12,7 @@
 import { mergeHiddenRequirementLabels, parseRequirementLabels } from "./requirement-labels.js";
 import {
   analysisFailedAgents,
+  readDroppedCitations,
   isAgentPhaseResultKey,
   type AnalysisAgentSource,
   type AnalysisResultAgentKey,
@@ -2050,7 +2051,12 @@ function extractAffectedCode(
 function extractCapability(metadata: Record<string, unknown> | null): AnalysisCapability | null {
   const value = metadata?.capability;
   if (value && typeof value === "object" && Array.isArray((value as AnalysisCapability).reasons)) {
-    return value as AnalysisCapability;
+    const capability = value as AnalysisCapability;
+    if (!("droppedCitations" in capability)) return capability;
+    // #1155 — the stored list reaches the UI's `.filter`/`.some`: shape-check it.
+    const { droppedCitations, ...rest } = capability;
+    const checked = readDroppedCitations(droppedCitations);
+    return checked.length > 0 ? { ...rest, droppedCitations: checked } : rest;
   }
   return null;
 }
