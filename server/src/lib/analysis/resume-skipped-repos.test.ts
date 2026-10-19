@@ -70,6 +70,15 @@ vi.mock("../prisma.js", () => ({
         if (typeof data.status === "string") state.status = data.status as string;
         return { id: ANALYSIS_ID };
       }),
+      // #1156 — the conditional settle: applies only while `status` matches.
+      updateMany: vi.fn(
+        async ({ where, data }: { where: { status?: string }; data: Record<string, unknown> }) => {
+          if (where.status !== undefined && state.status !== where.status) return { count: 0 };
+          state.updates.push(data);
+          if (typeof data.status === "string") state.status = data.status as string;
+          return { count: 1 };
+        },
+      ),
     },
     repoConnection: {
       findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) => {
@@ -474,6 +483,108 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     expect(result.noop).toBe(false);
     expect(result.resumed).toEqual([]);
     expect(readCapability()?.skippedRepos).toEqual([]);
+  });
+
+  // #1156 — the finally awaited the database writes before releasing the claim,
+  // so one failing write refused every later resume or regenerate until a restart.
+  it("#1156 — a failing finalize write still releases the resume's claim", async () => {
+    state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
+    state.connectors = [{ id: "c2", label: "worker" }];
+    const { prisma } = await import("../prisma.js");
+    const update = prisma.analysis.update as unknown as ReturnType<typeof vi.fn>;
+    const original = update.getMockImplementation() as unknown as (
+      args: unknown,
+    ) => Promise<unknown>;
+    update.mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      if (args.data.totalTokens && typeof args.data.totalTokens === "object") {
+        throw new Error("database unavailable");
+      }
+      return original(args);
+    });
+    const { orch } = makeOrch();
+    try {
+      await expect(
+        orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" }),
+      ).rejects.toThrow("database unavailable");
+      expect(orch.isActive(ANALYSIS_ID)).toBe(false);
+    } finally {
+      update.mockImplementation(original);
+    }
+  });
+
+  // #1156 adversarial review — the row read `running` after a failed finalize,
+  // so the status check refused every later resume; nothing resets it on boot.
+  it("#1156 — after one failing finalize write the analysis reads failed and can be resumed", async () => {
+    state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
+    state.connectors = [{ id: "c2", label: "worker" }];
+    const { prisma } = await import("../prisma.js");
+    const update = prisma.analysis.update as unknown as ReturnType<typeof vi.fn>;
+    const original = update.getMockImplementation() as unknown as (
+      args: unknown,
+    ) => Promise<unknown>;
+    let failures = 0;
+    update.mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      if (failures === 0 && args.data.totalTokens && typeof args.data.totalTokens === "object") {
+        failures += 1;
+        throw new Error("database unavailable");
+      }
+      return original(args);
+    });
+    const { orch } = makeOrch();
+    try {
+      await expect(
+        orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" }),
+      ).rejects.toThrow("database unavailable");
+    } finally {
+      update.mockImplementation(original);
+    }
+    expect(state.status).toBe("failed");
+    // #1264 review — the settling write carries an accurate message and, since
+    // the first write never committed, the resume's real tokens (cycle 2: the
+    // cost cap sums `totalTokens`). The spied code pass reports 15.
+    const settle = state.updates.at(-1)!;
+    expect(settle.errorMessage).toMatch(/results were saved/);
+    expect(settle.totalTokens).toEqual({ increment: 15 });
+    const { audit } = await import("../audit/audit-service.js");
+    const row = vi
+      .mocked(audit)
+      .mock.calls.map((c) => c[0] as { action?: string; metadata?: Record<string, unknown> })
+      .find((c) => c.action === "analysis.repos.resume");
+    expect(row?.metadata).toMatchObject({ statusWriteFailed: "database unavailable" });
+    await expect(orch.assertCanResumeRepos(ANALYSIS_ID)).resolves.toBeDefined();
+  });
+
+  // #1264 cycle 2 — a write that committed and still threw: the conditional
+  // settle finds the row no longer running and leaves it alone.
+  it("#1156 — a resume's finalize write that committed before it threw is left alone", async () => {
+    state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
+    state.connectors = [{ id: "c2", label: "worker" }];
+    const { prisma } = await import("../prisma.js");
+    const update = prisma.analysis.update as unknown as ReturnType<typeof vi.fn>;
+    const original = update.getMockImplementation() as unknown as (
+      args: unknown,
+    ) => Promise<unknown>;
+    let failures = 0;
+    update.mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      if (failures === 0 && args.data.totalTokens && typeof args.data.totalTokens === "object") {
+        failures += 1;
+        await original(args);
+        throw new Error("connection lost after commit");
+      }
+      return original(args);
+    });
+    const { orch } = makeOrch();
+    try {
+      await expect(
+        orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" }),
+      ).rejects.toThrow("connection lost after commit");
+    } finally {
+      update.mockImplementation(original);
+    }
+    expect(state.status).toBe("completed");
+    const tokenWrites = state.updates.filter((u) => typeof u.totalTokens === "object");
+    expect(tokenWrites).toEqual([expect.objectContaining({ totalTokens: { increment: 15 } })]);
+    expect(orch.isActive(ANALYSIS_ID)).toBe(false);
   });
 
   describe("assertCanResumeRepos guards", () => {

@@ -34,6 +34,19 @@ export function StatusBadge({ status }: { status: string }): React.ReactElement 
 }
 
 /**
+ * #1155 — the status text a run picker shows for one run of the run list: the
+ * same label the run header shows ({@link analysisStatusLabel}), so a run that
+ * completed with errors or warnings never reads as a plain `completed` there.
+ */
+export function runStatusText(run: {
+  status: string;
+  failedAgents?: readonly string[] | null;
+  droppedCitations?: readonly AnalysisDroppedCitations[] | null;
+}): string {
+  return analysisStatusLabel(run.status, run.failedAgents ?? [], run.droppedCitations ?? []);
+}
+
+/**
  * A run's status. `failedAgents` turns a completed run into one completed with
  * errors; failing that, `droppedCitations` into one completed with warnings.
  */

@@ -133,6 +133,43 @@ describe("#773 — absence claims the run's retrieval cannot back", () => {
   });
 });
 
+describe("#1155 — citations the schema's salvage dropped", () => {
+  // A citation the shared schema drops as malformed never reaches the #734 gate,
+  // so the finding arrived here with nothing cited and nothing dropped, and read
+  // as "nothing to verify". It did cite evidence; the evidence was lost.
+  it("marks unverified a finding whose only citation the salvage dropped", () => {
+    expect(
+      verifyFinding({ groundedCitations: [], droppedCitations: [], codeCitationsLostToSalvage: 1 }),
+    ).toBe("unverified");
+  });
+
+  it("marks unverified when only a document citation survived the salvage", () => {
+    expect(
+      verifyFinding({
+        groundedCitations: [doc] as Citation[],
+        droppedCitations: [],
+        codeCitationsLostToSalvage: 2,
+      }),
+    ).toBe("unverified");
+  });
+
+  it("still confirms a finding that kept a grounded code citation", () => {
+    expect(
+      verifyFinding({
+        groundedCitations: [code] as Citation[],
+        droppedCitations: [],
+        codeCitationsLostToSalvage: 1,
+      }),
+    ).toBe("confirmed");
+  });
+
+  it("stays null when nothing was lost", () => {
+    expect(
+      verifyFinding({ groundedCitations: [], droppedCitations: [], codeCitationsLostToSalvage: 0 }),
+    ).toBeNull();
+  });
+});
+
 describe("#726 — a could-not-verify VERDICT is never a Confirmed badge", () => {
   // The agent itself said "Could not verify: duplicate feed URL rejection" and
   // cited the test it found (api_integration_test.go:1474). The citation

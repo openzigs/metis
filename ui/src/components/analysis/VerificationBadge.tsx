@@ -6,7 +6,7 @@
  * Renders the deterministic verifier verdict set BEFORE synthesis (`confirmed` |
  * `unverified` | `could-not-verify` | `ungrounded`) as a compact, colour-coded badge with a plain-language tooltip.
  * The two states are visually distinct (colour + label) and legible for a
- * non-technical BA: an `unverified` badge signals "the analysis could NOT confirm
+ * non-technical BA: an `unverified` badge signals "the analysis could not confirm
  * this finding against the code" so the BA knows to treat it with caution.
  *
  * A `null` / unknown status (a doc-only or generic finding that made no code
@@ -35,7 +35,7 @@ export const VERIFICATION_COPY: Record<FindingVerificationStatus, VerificationCo
   unverified: {
     label: "Unverified",
     tooltip:
-      "The analysis could NOT confirm this finding against the code: every code location it cited was missing from the retrieved source. Review it manually before acting — it is still shown, but its evidence is unproven.",
+      "The analysis could not check this finding against the code. Either the code it refers to was not among the code the analysis read, or the analysis recorded its reference to that code incorrectly, so it was never looked up. Review it manually before acting. The finding is still shown, but its evidence is unproven.",
     className: "border-warning/40 bg-warning-muted text-warning",
   },
   // Issue #773 — the finding claims something is NOT in the codebase, but the

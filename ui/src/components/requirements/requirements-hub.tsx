@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { RequestReviewCard } from "@/components/reviews/request-review-card";
+import { runStatusText } from "@/components/analysis/analysis-status-badge";
 import { useAuth } from "@/lib/auth-context";
 
 const REVIEW_ORDER: ReadonlyArray<[RequirementReviewStatus, string]> = [
@@ -193,7 +194,7 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
           {analyses.map((a) => (
             <li key={a.id} className="flex items-center justify-between gap-3 py-2 text-sm">
               <span>
-                {new Date(a.startedAt).toLocaleString()} · {a.status} ·{" "}
+                {new Date(a.startedAt).toLocaleString()} · {runStatusText(a)} ·{" "}
                 {plural(totalRequirements(a), "requirement")}
               </span>
               <Link href={runHref(projectId, a.id)} className="underline">

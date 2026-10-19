@@ -118,6 +118,32 @@ describe("PublishingPage — analysis picker", () => {
     );
   });
 
+  // #1155 — the picker showed the raw status, so a run that completed with
+  // errors or warnings read as a clean `completed` here.
+  it("labels each run as the run header does", async () => {
+    listForProjectMock.mockResolvedValue({
+      items: [
+        makeAnalysis({ id: "analysis_errors00001", failedAgents: ["code"] }),
+        makeAnalysis({
+          id: "analysis_warnings0001",
+          failedAgents: [],
+          droppedCitations: [{ agentKey: "code", count: 1 }],
+        }),
+      ],
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <PublishingPage />
+      </Wrapper>,
+    );
+    await screen.findByTestId("publish-analysis-select");
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /· completed with errors ·/ })).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("option", { name: /· completed with warnings ·/ })).toBeInTheDocument();
+  });
+
   it("#1064 — Generate sends the host the batch form will publish to", async () => {
     // The base URL field is prefilled from the primary connector (GitHub
     // Enterprise here). Generate must name that host, or the server cannot

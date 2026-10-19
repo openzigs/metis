@@ -42,6 +42,8 @@ interface AgentResultRow {
     title: string;
     body: string;
     evidence: string | null;
+    /** #1155 — the verifier's per-finding status, as persisted. */
+    verificationStatus?: string | null;
   }>;
 }
 
@@ -140,6 +142,30 @@ vi.mock("../src/lib/prisma.js", () => ({
           return row;
         },
       ),
+      // #1156 — the conditional settle: applies only while `status` matches.
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string; status?: string };
+          data: Record<string, unknown>;
+        }) => {
+          const row = analyses.get(where.id) as unknown as Record<string, unknown> | undefined;
+          if (!row || (where.status !== undefined && row.status !== where.status)) {
+            return { count: 0 };
+          }
+          for (const [k, v] of Object.entries(data)) {
+            if (v && typeof v === "object" && "increment" in (v as Record<string, unknown>)) {
+              const cur = typeof row[k] === "number" ? (row[k] as number) : 0;
+              row[k] = cur + (v as { increment: number }).increment;
+            } else {
+              row[k] = v;
+            }
+          }
+          return { count: 1 };
+        },
+      ),
       findFirst: vi.fn(async ({ where }: { where: { id?: string } }) => {
         if (!where.id) return null;
         return analyses.get(where.id) ?? null;
@@ -206,6 +232,7 @@ vi.mock("../src/lib/prisma.js", () => ({
             title: String(data.title),
             body: String(data.body),
             evidence: data.evidence === undefined ? null : String(data.evidence),
+            verificationStatus: (data.verificationStatus as string | null | undefined) ?? null,
           };
           if (ar) ar.findings.push(row);
           return row;
@@ -343,6 +370,7 @@ import { persistAgentResult } from "../src/lib/analysis/analysis-service.js";
 import {
   AnalysisOrchestrator,
   defaultAnalysisDocumentIds,
+  followUpStatusWriteFailedMessage,
   selectWebAgentEvidence,
 } from "../src/lib/analysis/orchestrator.js";
 import { prisma } from "../src/lib/prisma.js";
@@ -1189,6 +1217,59 @@ describe("AnalysisOrchestrator.start", () => {
     __resetConfigSingleton();
   });
 
+  // #1155 adversarial review — the requirement-grounded path marks findings too,
+  // and only a lost CODE citation demotes one; a lost document citation does not.
+  const runGroundedWith = async (citations: unknown[]) => {
+    process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "true";
+    __resetConfigSingleton();
+    codeGraphExists = false; // requirements + no code graph ⇒ REQUIREMENT-GROUNDED
+    uploadedDocs = ["doc-1"];
+    const provider = makeProvider({
+      docRequirements: [{ id: "REQ-001", text: "Users can reset their password" }],
+      codeFindingCitations: citations,
+    });
+    const orch = new AnalysisOrchestrator({
+      provider,
+      knowledge: { search: async () => ({ hits: [] }) } as unknown as KnowledgeService,
+      fusedCode: fusedCodeDepsFixture(),
+      io: makeIO() as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [
+        { documentId: "doc-1", chunkIndex: 0, filename: "s.md", text: "c", score: 0.5 },
+      ],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["document", "code"],
+    });
+    for (let i = 0; i < 400 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    delete process.env.ANALYSIS_FUSED_CODE_RETRIEVAL;
+    __resetConfigSingleton();
+    expect(systemMessagesOf(provider).some((s) => s.includes("MODE: REQUIREMENT-GROUNDED"))).toBe(
+      true,
+    );
+    const row = [...agentResults.values()].find(
+      (a) => a.analysisId === analysisId && a.agentKey === "code",
+    )!;
+    // #1264 review — the server's loss markers are read, not stored.
+    expect(row.output).not.toMatch(/citationsLostToSalvage/i);
+    return row.findings[0]!;
+  };
+
+  it("#1155 a grounded finding whose only code citation the schema dropped is unverified", async () => {
+    const finding = await runGroundedWith([
+      { filePath: "server/src/auth/session.ts", startLine: 0, endLine: 20 },
+    ]);
+    expect(finding.verificationStatus).toBe("unverified");
+  });
+
+  it("#1155 a grounded finding that lost only a document citation is not unverified", async () => {
+    const finding = await runGroundedWith([{ documentId: "doc-1", chunkIndex: -1 }]);
+    expect(finding.verificationStatus).toBeNull();
+  });
+
   it("keeps a code citation to a file surfaced ONLY by search_code_symbols (never read)", async () => {
     // Passive fused seed OFF so the ONLY provenance is the tool RESULT locator —
     // proving results (not just read_file_slice args) ground a citation. Fails
@@ -1431,6 +1512,61 @@ describe("AnalysisOrchestrator.start", () => {
     expect(code.findings).toHaveLength(1);
     expect(code.findings[0]!.title).toBe("Password reset token never expires");
     expect(capabilityOf(analysisId)?.reasons).toContain("code-agent-degraded");
+  });
+
+  // #1155 — a citation the shared schema drops never reaches the #734 gate, so
+  // a finding whose only citation it dropped verified as "nothing to verify".
+  it("#1155 a finding whose only citation the schema dropped is unverified, not null", async () => {
+    const { analysisId } = await runAgenticWith(({ messages }) =>
+      askedForFinalJson(messages)
+        ? buildCodeAgentJson([
+            { filePath: "server/src/auth/session.ts", startLine: 0, endLine: 20 },
+          ])
+        : SEARCH_TOOL_CALL,
+    );
+    const code = codeRowOf(analysisId)!;
+    expect(code.status).toBe("completed");
+    expect(code.findings).toHaveLength(1);
+    expect(code.findings[0]!.verificationStatus).toBe("unverified");
+    expect(capabilityOf(analysisId)?.droppedCitations).toEqual([{ agentKey: "code", count: 1 }]);
+    // #1264 review — the server's loss markers are read, not stored.
+    expect(code.output).not.toMatch(/citationsLostToSalvage/i);
+  });
+
+  // #1155 — the salvage path runs after the whole answer failed the schema; it
+  // recorded no dropped-citation count, so the run read as a plain completion.
+  it("#1155 the salvage path counts the citations it dropped, and the run says so", async () => {
+    const { analysisId } = await runAgenticWith(({ messages }) =>
+      askedForFinalJson(messages)
+        ? JSON.stringify({
+            agentKey: "code",
+            // `summary` missing: the whole answer fails, so findings are salvaged.
+            findings: [
+              {
+                category: "security",
+                severity: "high",
+                title: "Password reset token never expires",
+                body: "session.ts issues a token with no TTL.",
+                tags: [],
+                citations: [{ filePath: "server/src/auth/session.ts", startLine: 0, endLine: 20 }],
+              },
+            ],
+          })
+        : SEARCH_TOOL_CALL,
+    );
+    const code = codeRowOf(analysisId)!;
+    expect(code.findings).toHaveLength(1);
+    expect(code.findings[0]!.verificationStatus).toBe("unverified");
+    const cap = capabilityOf(analysisId)!;
+    expect(cap.reasons).toContain("code-agent-degraded");
+    expect(cap.droppedCitations).toEqual([{ agentKey: "code", count: 1 }]);
+    expect(code.output).not.toMatch(/citationsLostToSalvage/i);
+    expect(cap.reasons).toContain("citations-dropped");
+    const status = analyses.get(analysisId)!.status;
+    const { analysisStatusLabel } = await import("@metis/shared");
+    expect(analysisStatusLabel(status, [], cap.droppedCitations ?? [])).toBe(
+      "completed with warnings",
+    );
   });
 
   it("#770 records `code-agent-failed` when the code agent dies outright", async () => {
@@ -1913,6 +2049,199 @@ describe("AnalysisOrchestrator.regenerateAgent guards", () => {
     ).rejects.toThrow("limit reached");
     expect(orch.isActive(analysisId)).toBe(false);
     spy.mockRestore();
+  });
+
+  // #1156 — the claim exists before the continue check is awaited, so a cancel
+  // in that gap stops the analysis's model calls. The refusal then released the
+  // claim but left the stop in place, so the NEXT regenerate made no model call
+  // and ended cancelled/failed.
+  it("#1156 — a cancel during the continue check does not block the next regenerate", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const analysisId = await runToCompletion(orch);
+    const spy = vi
+      .spyOn(orch, "assertCanContinueInvestigation")
+      .mockImplementationOnce(async (id: string) => {
+        expect(await orch.cancel(id, "user-1234567890")).toBe(true);
+        throw new Error("limit reached");
+      });
+    await expect(
+      orch.regenerateAgent({
+        analysisId,
+        agentKey: "code",
+        actorId: "user-1234567890",
+        extendBudget: true,
+      }),
+    ).rejects.toThrow("limit reached");
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(orch.isActive(analysisId)).toBe(false);
+    spy.mockRestore();
+
+    await orch.regenerateAgent({
+      analysisId,
+      agentKey: "document",
+      actorId: "user-1234567890",
+    });
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+  });
+
+  // #1156 adversarial review — releasing the claim is not enough on its own:
+  // the row still read `running`, which the status check refuses, and nothing
+  // resets it on boot. A second write settles it as failed.
+  it("#1156 — after one failing finalize write the analysis reads failed and can be re-run", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const analysisId = await runToCompletion(orch);
+    const tokensBefore = analyses.get(analysisId)!.totalTokens;
+    const { audit } = await import("../src/lib/audit/audit-service.js");
+    (audit as unknown as { mockClear: () => void }).mockClear();
+    const { prisma } = await import("../src/lib/prisma.js");
+    const update = prisma.analysis.update as unknown as ReturnType<typeof vi.fn>;
+    const original = update.getMockImplementation() as unknown as (
+      args: unknown,
+    ) => Promise<unknown>;
+    let failures = 0;
+    update.mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      if (failures === 0 && args.data.totalTokens && typeof args.data.totalTokens === "object") {
+        failures += 1;
+        throw new Error("database unavailable");
+      }
+      return original(args);
+    });
+    try {
+      await expect(
+        orch.regenerateAgent({
+          analysisId,
+          agentKey: "document",
+          actorId: "user-1234567890",
+        }),
+      ).rejects.toThrow("database unavailable");
+    } finally {
+      update.mockImplementation(original);
+    }
+    expect(orch.isActive(analysisId)).toBe(false);
+    expect(analyses.get(analysisId)!.status).toBe("failed");
+    // #1264 review — the re-run's results WERE saved; only its status was lost.
+    expect(analyses.get(analysisId)!.errorMessage).toBe(
+      followUpStatusWriteFailedMessage("completed", null),
+    );
+    // The route swallows the rejection, so the audit row must say what happened.
+    const rows = (audit as unknown as { mock: { calls: Array<unknown[]> } }).mock.calls
+      .map((c) => c[0] as { action?: string; metadata?: Record<string, unknown> })
+      .filter((c) => c.action === "analysis.regenerate");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.metadata).toMatchObject({
+      decision: "completed",
+      statusWriteFailed: "database unavailable",
+    });
+    // #1264 cycle 2 — the first write did not commit, so the settle carries the
+    // re-run's tokens: `cost-cap.ts` sums `totalTokens` for the monthly cap.
+    const consumed = rows[0]!.metadata!.tokensConsumed as number;
+    expect(consumed).toBeGreaterThan(0);
+    expect(analyses.get(analysisId)!.totalTokens).toBe(tokensBefore + consumed);
+    await orch.regenerateAgent({
+      analysisId,
+      agentKey: "document",
+      actorId: "user-1234567890",
+    });
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+  });
+
+  // #1264 cycle 2 — a write can commit and still throw (a connection lost after
+  // the commit). The settle must then do nothing: no second count of the tokens,
+  // and a completed re-run is not relabelled failed.
+  it("#1156 — a finalize write that committed before it threw is left alone", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const analysisId = await runToCompletion(orch);
+    const tokensBefore = analyses.get(analysisId)!.totalTokens;
+    const { audit } = await import("../src/lib/audit/audit-service.js");
+    (audit as unknown as { mockClear: () => void }).mockClear();
+    const { prisma } = await import("../src/lib/prisma.js");
+    const update = prisma.analysis.update as unknown as ReturnType<typeof vi.fn>;
+    const original = update.getMockImplementation() as unknown as (
+      args: unknown,
+    ) => Promise<unknown>;
+    let failures = 0;
+    update.mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      if (failures === 0 && args.data.totalTokens && typeof args.data.totalTokens === "object") {
+        failures += 1;
+        await original(args); // committed…
+        throw new Error("connection lost after commit"); // …and still threw
+      }
+      return original(args);
+    });
+    try {
+      await expect(
+        orch.regenerateAgent({
+          analysisId,
+          agentKey: "document",
+          actorId: "user-1234567890",
+        }),
+      ).rejects.toThrow("connection lost after commit");
+    } finally {
+      update.mockImplementation(original);
+    }
+    const row = analyses.get(analysisId)!;
+    expect(row.status).toBe("completed");
+    expect(row.errorMessage).toBeNull();
+    const audited = (audit as unknown as { mock: { calls: Array<unknown[]> } }).mock.calls
+      .map((c) => c[0] as { action?: string; metadata?: Record<string, unknown> })
+      .find((c) => c.action === "analysis.regenerate")!;
+    const consumed = audited.metadata!.tokensConsumed as number;
+    expect(consumed).toBeGreaterThan(0);
+    expect(row.totalTokens).toBe(tokensBefore + consumed);
+    expect(orch.isActive(analysisId)).toBe(false);
+  });
+
+  // #1264 cycle 2 — the branch that decides whether a genuinely FAILED re-run
+  // is mislabelled as one that finished.
+  it("#1156 — the status-write message keeps a failed re-run's own error", () => {
+    expect(followUpStatusWriteFailedMessage("failed", "boom")).toBe("boom");
+    const fallback = "The re-run failed, and its final status could not be recorded.";
+    expect(followUpStatusWriteFailedMessage("failed", undefined)).toBe(fallback);
+    expect(followUpStatusWriteFailedMessage("failed", null)).toBe(fallback);
+    // An empty message would be stored as no explanation at all.
+    expect(followUpStatusWriteFailedMessage("failed", "")).toBe(fallback);
+    expect(followUpStatusWriteFailedMessage("failed", "boom")).not.toMatch(/results were saved/);
+    const completed = followUpStatusWriteFailedMessage("completed", "ignored");
+    expect(completed).toMatch(/results were saved/);
+    expect(completed).toMatch(/still there/);
+    expect(completed).not.toMatch(/refresh the status/);
+  });
+
+  // #1156 — the finally awaited the database writes before releasing the claim,
+  // so one failing write left the analysis claimed until a restart.
+  it("#1156 — a failing finalize write still releases the regenerate's claim", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const analysisId = await runToCompletion(orch);
+    const { prisma } = await import("../src/lib/prisma.js");
+    const update = prisma.analysis.update as unknown as ReturnType<typeof vi.fn>;
+    const original = update.getMockImplementation() as unknown as (
+      args: unknown,
+    ) => Promise<unknown>;
+    update.mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      if (args.data.totalTokens && typeof args.data.totalTokens === "object") {
+        throw new Error("database unavailable");
+      }
+      return original(args);
+    });
+    try {
+      await expect(
+        orch.regenerateAgent({
+          analysisId,
+          agentKey: "document",
+          actorId: "user-1234567890",
+        }),
+      ).rejects.toThrow("database unavailable");
+      expect(orch.isActive(analysisId)).toBe(false);
+    } finally {
+      update.mockImplementation(original);
+    }
+    analyses.get(analysisId)!.status = "completed";
+    await orch.regenerateAgent({
+      analysisId,
+      agentKey: "document",
+      actorId: "user-1234567890",
+    });
+    expect(analyses.get(analysisId)!.status).toBe("completed");
   });
 
   it("refuses regenerate when the analysis status is still running (M1)", async () => {

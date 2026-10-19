@@ -46,7 +46,8 @@
  *   1. it ASSERTS AN ABSENCE and the run's retrieval cannot back an
  *      absence claim (#773)                                   → `could-not-verify`
  *   2. else retained ≥1 CODE citation (survived provenance)   → `confirmed`
- *   3. else the gate DROPPED ≥1 of its code citations         → `unverified`
+ *   3. else the gate DROPPED ≥1 of its code citations, or the
+ *      schema's salvage dropped ≥1 malformed code citation (#1155) → `unverified`
  *      (it claimed code evidence; none of it survived grounding)
  *   4. else (no code citation emitted, nothing dropped)       → `null`
  *      (a doc-only / generic finding makes no code claim to verify — the #734
@@ -103,6 +104,14 @@ export interface FindingVerificationInput {
    * is still an unverified claim. Omitted ⇒ rule (0) is inert.
    */
   verdict?: RequirementVerdict | null;
+  /**
+   * #1155 — malformed non-document citations the shared schema's salvage
+   * dropped from this finding (`citation-salvage.ts`). They never reached the
+   * #734 gate, so they are not in {@link droppedCitations}; they are still code
+   * evidence the finding cited and lost. A lost document citation, or one past
+   * the per-finding cap, is not counted here. Omitted ⇒ 0.
+   */
+  codeCitationsLostToSalvage?: number;
 }
 
 /**
@@ -128,7 +137,8 @@ export function verifyFinding(input: FindingVerificationInput): FindingVerificat
   // (2) A surviving code citation is the strongest signal a POSITIVE claim is grounded.
   if (grounded.some(isCodeCitation)) return "confirmed";
   // (3) It claimed code evidence, but the gate dropped all of it → unsupported.
-  if (dropped.length > 0) return "unverified";
+  // #1155 — so did a finding whose citations the schema's salvage dropped.
+  if (dropped.length > 0 || (input.codeCitationsLostToSalvage ?? 0) > 0) return "unverified";
   // (4) No code-evidence claim at all → nothing to verify (neutral / null).
   return null;
 }

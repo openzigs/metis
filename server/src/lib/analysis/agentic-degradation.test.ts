@@ -342,6 +342,24 @@ describe("#769 salvage helpers", () => {
     expect(salvaged[0]!.title).toBe("kept");
   });
 
+  it("#1155 marks each salvaged finding with the citations the schema dropped from it", async () => {
+    const { citationsLostToSalvage } = await import("./citation-salvage.js");
+    const good = { filePath: "src/a.ts", startLine: 1, endLine: 2 };
+    const malformed = { filePath: "src/a.ts", startLine: 0, endLine: 2 };
+    const salvaged = salvageFindings(
+      JSON.stringify({
+        agentKey: "code",
+        // `summary` missing: the whole answer fails, so this is the salvage path.
+        findings: [
+          { category: "gap", severity: "low", title: "lost", body: "b", citations: [malformed] },
+          { category: "gap", severity: "low", title: "kept", body: "b", citations: [good] },
+        ],
+      }),
+    );
+    expect(salvaged.map((f) => f.title)).toEqual(["lost", "kept"]);
+    expect(salvaged.map(citationsLostToSalvage)).toEqual([1, 0]);
+  });
+
   it("salvageFindings returns [] for prose and for JSON without findings", () => {
     expect(salvageFindings("no json here")).toEqual([]);
     expect(salvageFindings('{"summary":"x"}')).toEqual([]);

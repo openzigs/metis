@@ -38,6 +38,7 @@ type Stubbed = {
   regenerateLoadedAgent: (
     opts: { analysisId: string; agentKey: string; actorId: string; extendBudget?: boolean },
     analysis: unknown,
+    controller: AbortController,
   ) => Promise<void>;
   runOneAgent: ReturnType<typeof vi.fn>;
   runAgenticCodeAgent: ReturnType<typeof vi.fn>;
@@ -97,7 +98,11 @@ const ANALYSIS = {
 };
 
 async function regenerate(orch: Stubbed, agentKey = "code") {
-  await orch.regenerateLoadedAgent({ analysisId: "an_1", agentKey, actorId: "u1" }, ANALYSIS);
+  await orch.regenerateLoadedAgent(
+    { analysisId: "an_1", agentKey, actorId: "u1" },
+    ANALYSIS,
+    new AbortController(),
+  );
 }
 
 beforeEach(() => {
@@ -178,7 +183,11 @@ describe("regenerate carries the run's plan context (#1027)", () => {
     metadata: JSON.stringify({ model: "deepseek-flash", agentContext: CONTEXT }),
   };
   const run = (orch: Stubbed, analysis: unknown, agentKey = "code") =>
-    orch.regenerateLoadedAgent({ analysisId: "an_1", agentKey, actorId: "u1" }, analysis);
+    orch.regenerateLoadedAgent(
+      { analysisId: "an_1", agentKey, actorId: "u1" },
+      analysis,
+      new AbortController(),
+    );
 
   it("hands it to every agentic pass", async () => {
     prismaMock.repoConnection.findMany.mockResolvedValue([
@@ -217,6 +226,7 @@ describe("regenerate carries the run's plan context (#1027)", () => {
     await orch.regenerateLoadedAgent(
       { analysisId: "an_1", agentKey: "code", actorId: "u1", extendBudget: true },
       WITH_CONTEXT,
+      new AbortController(),
     );
 
     expect(orch.runAgenticCodeAgent).toHaveBeenCalledTimes(1);
@@ -234,6 +244,7 @@ describe("regenerate carries the run's plan context (#1027)", () => {
     await orch.regenerateLoadedAgent(
       { analysisId: "an_1", agentKey: "code", actorId: "u1", extendBudget: true },
       WITH_CONTEXT,
+      new AbortController(),
     );
     expect(orch.runOneAgent.mock.calls[0][0].agentContext).toBe(CONTEXT);
   });
@@ -350,6 +361,7 @@ describe("regenerate on a run started from imported items (#1098)", () => {
           ],
         }),
       },
+      new AbortController(),
     );
 
     expect(

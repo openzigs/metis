@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SkeletonText } from "@/components/ui/skeleton";
 import { analysisApi } from "@/lib/analysis-api";
+import { runStatusText } from "@/components/analysis/analysis-status-badge";
 
 interface Props {
   projectId: string | null;
@@ -57,7 +58,9 @@ export function ArtifactsSection({ projectId }: Props) {
                 <div>
                   <p className="text-sm font-medium">
                     Analysis {a.id.slice(0, 8)}…
-                    <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs">{a.status}</span>
+                    <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs">
+                      {runStatusText(a)}
+                    </span>
                   </p>
                   <p className="text-xs text-muted-foreground">
                     Started {new Date(a.startedAt).toLocaleString()}

@@ -115,6 +115,37 @@ describe("runAgent", () => {
     expect(result.usage.totalTokens).toBe(30);
   });
 
+  // #1155 — the count was read before the 50-finding clamp, so citations on
+  // findings the clamp then discarded were reported as dropped.
+  it("counts dropped citations only on findings that survive the 50-finding clamp", async () => {
+    const finding = (citations: unknown[]) => ({
+      category: "gap",
+      severity: "low",
+      title: "t",
+      body: "b",
+      citations,
+    });
+    const malformed = { filePath: "src/a.ts", startLine: 0, endLine: 1 };
+    const findings = [
+      finding([malformed]),
+      ...Array.from({ length: 49 }, () => finding([])),
+      // 51st and 52nd: cut by the clamp, so their citations were never "dropped".
+      finding([malformed]),
+      finding([malformed, malformed]),
+    ];
+    const provider = makeProvider(async () =>
+      stubResponse(JSON.stringify({ summary: "ok", findings, notes: [] })),
+    );
+    const result = await runAgent(provider, {
+      agentKey: "document",
+      projectName: "Acme",
+      projectDescription: "d",
+      retrieved: [],
+    });
+    expect(result.output.findings).toHaveLength(50);
+    expect(result.citationSalvage).toEqual({ dropped: 1, repaired: 0 });
+  });
+
   it("rejects malformed agent output", async () => {
     const provider = makeProvider(async () =>
       stubResponse(JSON.stringify({ summary: "x" /* findings missing */ })),

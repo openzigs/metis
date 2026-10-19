@@ -3,7 +3,24 @@
  */
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { RunStatusBadge, StatusBadge } from "./analysis-status-badge";
+import { RunStatusBadge, StatusBadge, runStatusText } from "./analysis-status-badge";
+
+describe("runStatusText (#1155)", () => {
+  it("reads a run-list row the way the run header does", () => {
+    expect(runStatusText({ status: "completed" })).toBe("completed");
+    expect(runStatusText({ status: "completed", failedAgents: ["code"] })).toBe(
+      "completed with errors",
+    );
+    expect(
+      runStatusText({
+        status: "completed",
+        failedAgents: [],
+        droppedCitations: [{ agentKey: "code", count: 2 }],
+      }),
+    ).toBe("completed with warnings");
+    expect(runStatusText({ status: "failed", failedAgents: ["code"] })).toBe("failed");
+  });
+});
 
 describe("<RunStatusBadge /> (#1143)", () => {
   it("shows a completed run with failed agents as completed with errors, naming them", () => {

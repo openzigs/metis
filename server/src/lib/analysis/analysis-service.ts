@@ -12,6 +12,7 @@
 import { mergeHiddenRequirementLabels, parseRequirementLabels } from "./requirement-labels.js";
 import {
   analysisFailedAgents,
+  readDroppedCitations,
   isAgentPhaseResultKey,
   type AnalysisAgentSource,
   type AnalysisResultAgentKey,
@@ -572,6 +573,34 @@ export async function finalizeAnalysisDelta(input: {
       errorMessage: input.errorMessage ? input.errorMessage.slice(0, 4096) : null,
     },
   });
+}
+
+/**
+ * #1156 — settle a follow-up whose own final write ({@link finalizeAnalysisDelta})
+ * threw: record it `failed` with its token delta, but ONLY while the row still
+ * reads `running`. A write that threw may still have committed (a connection
+ * lost after the commit); then the row is no longer `running`, this is a no-op,
+ * and the delta is not counted twice nor a completed run relabelled. The delta
+ * matters beyond display: `cost-cap.ts` sums `totalTokens` for the monthly cap
+ * and budget routing. Returns whether the row was settled.
+ */
+export async function settleRunningAnalysisAsFailed(input: {
+  id: string;
+  delta: TokenUsage;
+  errorMessage: string;
+}): Promise<boolean> {
+  const { count } = await prisma.analysis.updateMany({
+    where: { id: input.id, status: "running" },
+    data: {
+      status: "failed",
+      completedAt: new Date(),
+      inputTokens: { increment: input.delta.promptTokens },
+      outputTokens: { increment: input.delta.completionTokens },
+      totalTokens: { increment: input.delta.totalTokens },
+      errorMessage: input.errorMessage.slice(0, 4096),
+    },
+  });
+  return count > 0;
 }
 
 /**
@@ -2050,7 +2079,12 @@ function extractAffectedCode(
 function extractCapability(metadata: Record<string, unknown> | null): AnalysisCapability | null {
   const value = metadata?.capability;
   if (value && typeof value === "object" && Array.isArray((value as AnalysisCapability).reasons)) {
-    return value as AnalysisCapability;
+    const capability = value as AnalysisCapability;
+    if (!("droppedCitations" in capability)) return capability;
+    // #1155 — the stored list reaches the UI's `.filter`/`.some`: shape-check it.
+    const { droppedCitations, ...rest } = capability;
+    const checked = readDroppedCitations(droppedCitations);
+    return checked.length > 0 ? { ...rest, droppedCitations: checked } : rest;
   }
   return null;
 }

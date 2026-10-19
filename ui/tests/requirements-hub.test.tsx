@@ -108,6 +108,29 @@ describe("<RequirementsHub />", () => {
     await waitFor(() => expect(get).toHaveBeenCalledWith("a1"));
   });
 
+  // #1155 — the run list showed the raw status, so a run that completed with
+  // errors or warnings read as a clean `completed` here.
+  it("labels each listed run as the run header does", async () => {
+    list.mockResolvedValue({
+      items: [
+        { ...run("a3", "completed"), failedAgents: ["code"] },
+        {
+          ...run("a2", "completed"),
+          failedAgents: [],
+          droppedCitations: [{ agentKey: "code", count: 1 }],
+        },
+        run("a1", "completed"),
+      ],
+    } as never);
+    get.mockResolvedValue({ requirements: [] } as never);
+    render(<RequirementsHub projectId="p1" />, { wrapper: makeWrapper() });
+    const runs = await screen.findByTestId("requirements-runs");
+    const rows = runs.querySelectorAll("li");
+    expect(rows[0]).toHaveTextContent("completed with errors ·");
+    expect(rows[1]).toHaveTextContent("completed with warnings ·");
+    expect(rows[2]).toHaveTextContent(/· completed · 0 requirements/);
+  });
+
   it("uses the singular and falls back to 'Open' when nothing is waiting", async () => {
     list.mockResolvedValueOnce({ items: [run("a1", "completed", { draft: 1 })] } as never);
     get.mockResolvedValue({ requirements: [] } as never);

@@ -90,6 +90,7 @@ import {
 import {
   createAnalysis,
   finalizeAnalysisDelta,
+  settleRunningAnalysisAsFailed,
   markAnalysisRunning,
   getAnalysisCapability,
   getStructuredRequirements,
@@ -109,6 +110,12 @@ import { computeCoverageForRequirements } from "./requirement-coverage.js";
 // Issue #1104 (finding B) — shared wording for a gated (withheld) promotion.
 import { describePromotionGate } from "./promotion-gate.js";
 import { verifyFinding } from "./finding-verification.js";
+import {
+  codeCitationsLostToSalvage,
+  markCitationLosses,
+  totalCitationsLost,
+  withoutCitationLossMarker,
+} from "./citation-salvage.js";
 // #1318 (Epic #1316) — the claim-level faithfulness METRIC. A grader like the
 // panel below, one step further: it writes ONE optional numeric field and cannot
 // reach the deterministic gate at all.
@@ -323,6 +330,75 @@ async function closeFollowUpRun(
     totalTokens: run.totalTokens + delta.totalTokens,
     costCents,
   }).catch(() => undefined);
+}
+
+/**
+ * #1156 — the message a follow-up's row carries when its own final status write
+ * failed and a second write settled it as `failed`. Plain language, and true:
+ * a re-run that completed had ALREADY saved its results (findings, requirements)
+ * before this write; only its status was lost. A failed re-run keeps its own
+ * error, unless that is empty (`||`, not `??`: an empty message would be stored
+ * as no explanation at all).
+ */
+export function followUpStatusWriteFailedMessage(
+  outcome: "completed" | "failed",
+  errorMessage: string | null | undefined,
+): string {
+  if (outcome === "completed") {
+    return "The re-run finished and its results were saved, but its final status could not be recorded, so it shows as failed. Its results are still there; run it again only if you need the status corrected.";
+  }
+  return errorMessage || "The re-run failed, and its final status could not be recorded.";
+}
+
+/**
+ * #1156 — settle a follow-up's analysis row. {@link reopenForFollowUp} set it
+ * `running`, and the regenerate/resume pre-flights refuse a `running` row, with
+ * nothing to reset it on boot: one failed write here left the analysis
+ * unusable. So a failure gets ONE more, conditional write
+ * ({@link settleRunningAnalysisAsFailed}): it records the run `failed` WITH its
+ * token delta, but only while the row still reads `running`. If the first write
+ * had in fact committed, the row is no longer `running` and the settle is a
+ * no-op, so the delta is never counted twice and a completed run is not
+ * relabelled. The delta has to land: `cost-cap.ts` sums `totalTokens` for the
+ * monthly cap and budget routing. The follow-up's claim is held throughout, so
+ * nothing else moves the status in between.
+ *
+ * Returns the original error, or `null`, instead of throwing, so the caller can
+ * write its audit row before it rethrows: the routes that start a follow-up
+ * swallow the rejection, so the audit row is the only trace it leaves.
+ */
+async function finalizeFollowUp(
+  input: Parameters<typeof finalizeAnalysisDelta>[0] & { status: "completed" | "failed" },
+): Promise<Error | null> {
+  try {
+    await finalizeAnalysisDelta(input);
+    return null;
+  } catch (err) {
+    log.error("Could not record a re-run's final status; settling the analysis", {
+      analysisId: input.id,
+      outcome: input.status,
+      error: (err as Error).message,
+    });
+    await settleRunningAnalysisAsFailed({
+      id: input.id,
+      delta: input.delta,
+      errorMessage: followUpStatusWriteFailedMessage(input.status, input.errorMessage),
+    })
+      .then((settled) => {
+        if (!settled) {
+          log.warn("A re-run's final status write had committed; nothing to settle", {
+            analysisId: input.id,
+          });
+        }
+      })
+      .catch((retryErr: unknown) =>
+        log.error("Could not settle the analysis either; it reads running", {
+          analysisId: input.id,
+          error: (retryErr as Error).message,
+        }),
+      );
+    return err instanceof Error ? err : new Error(String(err));
+  }
 }
 
 /**
@@ -957,7 +1033,8 @@ export class AnalysisOrchestrator {
       // #1062 — the route pre-checks this; a direct caller is held to it too.
       if (opts.extendBudget) await this.assertCanContinueInvestigation(opts.analysisId);
     } catch (err) {
-      this.active.delete(opts.analysisId);
+      // #1156 — a cancel may have stopped model calls while this check ran.
+      this.releaseClaim(opts.analysisId);
       throw err;
     }
     // #724 — bill the regenerated agent and the re-synthesis to the project.
@@ -979,10 +1056,10 @@ export class AnalysisOrchestrator {
     },
     maybeAnalysis: Awaited<ReturnType<AnalysisOrchestrator["assertCanRegenerate"]>>["analysis"],
     /**
-     * The controller of the ActiveRun `regenerateAgent` registered. Defaulted
-     * only for tests that drive this method directly, with no ActiveRun.
+     * The controller of the ActiveRun `regenerateAgent` registered. Required
+     * (#1156): a default would be a controller no cancel can reach.
      */
-    controller: AbortController = new AbortController(),
+    controller: AbortController,
   ): Promise<void> {
     const analysis = maybeAnalysis as NonNullable<typeof maybeAnalysis> & {
       project: {
@@ -1104,32 +1181,39 @@ export class AnalysisOrchestrator {
         ts: Date.now(),
       });
     } finally {
-      // A failed regenerate leaves no tracker to finalize its pass health.
-      this.retrievalHealths.delete(opts.analysisId);
-      await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
-      // Atomic write — increments columns server-side so two concurrent
-      // regenerates can't lose tokens to a read/modify/write race.
-      await finalizeAnalysisDelta({
-        id: opts.analysisId,
-        status: outcome,
-        delta,
-        errorMessage,
-      });
-      audit({
-        actor: { id: opts.actorId },
-        action: "analysis.regenerate",
-        target: { type: "analysis", id: opts.analysisId },
-        metadata: {
-          projectId: analysis.projectId,
-          agentKey: opts.agentKey,
-          extendBudget: opts.extendBudget === true,
-          tokensConsumed: delta.totalTokens,
-          decision: outcome,
+      // #1156 — a failing database write below must not keep the claim: it
+      // would refuse every later regenerate or resume until a restart.
+      try {
+        // A failed regenerate leaves no tracker to finalize its pass health.
+        this.retrievalHealths.delete(opts.analysisId);
+        await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
+        // Atomic write — increments columns server-side so two concurrent
+        // regenerates can't lose tokens to a read/modify/write race.
+        const statusWriteError = await finalizeFollowUp({
+          id: opts.analysisId,
+          status: outcome,
+          delta,
           errorMessage,
-        },
-      });
-      this.active.delete(opts.analysisId);
-      allowAnalysisModelCalls(opts.analysisId);
+        });
+        audit({
+          actor: { id: opts.actorId },
+          action: "analysis.regenerate",
+          target: { type: "analysis", id: opts.analysisId },
+          metadata: {
+            projectId: analysis.projectId,
+            agentKey: opts.agentKey,
+            extendBudget: opts.extendBudget === true,
+            tokensConsumed: delta.totalTokens,
+            decision: outcome,
+            errorMessage,
+            // #1156 — the only trace a swallowed status-write failure leaves.
+            ...(statusWriteError ? { statusWriteFailed: statusWriteError.message } : {}),
+          },
+        });
+        if (statusWriteError) throw statusWriteError;
+      } finally {
+        this.releaseClaim(opts.analysisId);
+      }
     }
   }
 
@@ -1495,28 +1579,34 @@ export class AnalysisOrchestrator {
         ts: Date.now(),
       });
     } finally {
-      await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
-      await finalizeAnalysisDelta({
-        id: opts.analysisId,
-        status: outcome,
-        delta,
-        errorMessage,
-      });
-      audit({
-        actor: { id: opts.actorId },
-        action: "analysis.repos.resume",
-        target: { type: "analysis", id: opts.analysisId },
-        metadata: {
-          projectId: analysis.projectId,
-          resumedCount: resumed.length,
-          remainingCount: remaining.length,
-          tokensConsumed: delta.totalTokens,
-          decision: outcome,
+      // #1156 — release the claim even when a database write below throws.
+      try {
+        await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
+        const statusWriteError = await finalizeFollowUp({
+          id: opts.analysisId,
+          status: outcome,
+          delta,
           errorMessage,
-        },
-      });
-      this.active.delete(opts.analysisId);
-      allowAnalysisModelCalls(opts.analysisId);
+        });
+        audit({
+          actor: { id: opts.actorId },
+          action: "analysis.repos.resume",
+          target: { type: "analysis", id: opts.analysisId },
+          metadata: {
+            projectId: analysis.projectId,
+            resumedCount: resumed.length,
+            remainingCount: remaining.length,
+            tokensConsumed: delta.totalTokens,
+            decision: outcome,
+            errorMessage,
+            // #1156 — the only trace a swallowed status-write failure leaves.
+            ...(statusWriteError ? { statusWriteFailed: statusWriteError.message } : {}),
+          },
+        });
+        if (statusWriteError) throw statusWriteError;
+      } finally {
+        this.releaseClaim(opts.analysisId);
+      }
     }
     return { resumed, remaining, noop: false };
   }
@@ -1643,6 +1733,16 @@ export class AnalysisOrchestrator {
       target: { type: "analysis", id: analysisId },
     });
     return true;
+  }
+
+  /**
+   * #1156 — release a run's {@link ActiveRun} claim together with the stop gate
+   * a cancel may have closed ({@link stopAnalysisModelCalls}). Releasing only
+   * the claim left the next run on the analysis unable to call the model.
+   */
+  private releaseClaim(analysisId: string): void {
+    this.active.delete(analysisId);
+    allowAnalysisModelCalls(analysisId);
   }
 
   /** Whether an analysis is currently in flight (test introspection). */
@@ -2398,8 +2498,7 @@ export class AnalysisOrchestrator {
         }).catch(() => undefined);
       }
     } finally {
-      this.active.delete(analysisId);
-      allowAnalysisModelCalls(analysisId);
+      this.releaseClaim(analysisId);
       this.capabilities.delete(analysisId);
     }
   }
@@ -3071,6 +3170,8 @@ export class AnalysisOrchestrator {
               );
               const citationSalvage = collectSalvagedCitations(repaired.value);
               validated = agentOutputSchema.parse(repaired.value);
+              // #1155 — per finding too, so its verification can say what it lost.
+              markCitationLosses(validated.findings, repaired.value);
               fieldRepairs = repaired.repairs;
               // #1143 — only once the answer parsed: a rejected one is salvaged below.
               this.noteCitationSalvage(input.analysisId, agentKey, citationSalvage);
@@ -3161,6 +3262,11 @@ export class AnalysisOrchestrator {
               tokens: loopResult.usage.totalTokens,
             });
             this.markCodeAgentDegraded(input.analysisId);
+            // #1155 — the salvaged findings carry what the schema dropped from
+            // each; count it on the run like the whole-answer path does.
+            this.noteCitationSalvage(input.analysisId, agentKey, {
+              dropped: totalCitationsLost(salvaged),
+            });
             validated = buildDegradedAgentOutput({
               agentKey,
               reason: reason ?? "non-json-response",
@@ -3307,7 +3413,8 @@ export class AnalysisOrchestrator {
             // out-rank a confirmed gap in any severity-ordered surface.
             const unverifiable = verdict === "could-not-verify";
             return {
-              ...f,
+              // #1155 — the loss markers are read below, not stored.
+              ...withoutCitationLossMarker(f),
               citations,
               title: unverifiable ? retitleUnverifiableFinding(f.title) : f.title,
               severity: unverifiable ? ("info" as const) : f.severity,
@@ -3315,6 +3422,7 @@ export class AnalysisOrchestrator {
               verificationStatus: verifyFinding({
                 groundedCitations: citations,
                 droppedCitations: dropped,
+                codeCitationsLostToSalvage: codeCitationsLostToSalvage(f),
                 assertsAbsence: claimsAbsence,
                 absenceConfirmable,
                 // #726 — the badge must agree with the verdict.
@@ -3661,6 +3769,8 @@ export class AnalysisOrchestrator {
         }
         const citationSalvage = collectSalvagedCitations(parsed);
         const validated = agentOutputSchema.parse(parsed);
+        // #1155 — per finding too, so its verification can say what it lost.
+        markCitationLosses(validated.findings, parsed);
         // #1143 — the citations the schema dropped are recorded on the run.
         this.noteCitationSalvage(input.analysisId, agentKey, citationSalvage);
 
@@ -3727,7 +3837,8 @@ export class AnalysisOrchestrator {
           });
           const unverifiable = verdict === "could-not-verify";
           return {
-            ...f,
+            // #1155 — the loss markers are read below, not stored.
+            ...withoutCitationLossMarker(f),
             requirementId:
               f.requirementId && knownReqIds.has(f.requirementId) ? f.requirementId : null,
             citations: enrichCitations(grounded, allChunks),
@@ -3737,6 +3848,7 @@ export class AnalysisOrchestrator {
             verificationStatus: verifyFinding({
               groundedCitations: grounded,
               droppedCitations: dropped,
+              codeCitationsLostToSalvage: codeCitationsLostToSalvage(f),
               assertsAbsence: claimsAbsence,
               absenceConfirmable,
               // #726 — the badge must agree with the verdict.
@@ -4603,14 +4715,15 @@ export class AnalysisOrchestrator {
   private noteCitationSalvage(
     analysisId: string | undefined,
     agentKey: string,
-    salvage: { dropped: number; repaired: number } | undefined,
+    // `repaired` is absent where it was not counted (the per-finding salvage path).
+    salvage: { dropped: number; repaired?: number } | undefined,
   ): void {
-    if (!salvage || (salvage.dropped === 0 && salvage.repaired === 0)) return;
+    if (!salvage || (salvage.dropped === 0 && (salvage.repaired ?? 0) === 0)) return;
     log.warn("Agent citations salvaged: malformed citations dropped or repaired", {
       analysisId,
       agentKey,
       dropped: salvage.dropped,
-      repaired: salvage.repaired,
+      ...(salvage.repaired !== undefined ? { repaired: salvage.repaired } : {}),
     });
     if (!analysisId) return;
     const tracker = this.capabilities.get(analysisId);

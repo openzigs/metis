@@ -55,6 +55,7 @@ type Stubbed = {
   regenerateLoadedAgent: (
     opts: { analysisId: string; agentKey: string; actorId: string; extendBudget?: boolean },
     analysis: unknown,
+    controller: AbortController,
   ) => Promise<void>;
   recordRetrievalHealth: (analysisId: string, health: AnalysisRetrievalHealth) => void;
   capabilities: Map<string, ReturnType<typeof createCapabilityTracker>>;
@@ -144,6 +145,7 @@ const regenerate = (orch: Stubbed, extra: { agentKey?: string; extendBudget?: bo
       ...(extra.extendBudget ? { extendBudget: true } : {}),
     },
     ANALYSIS,
+    new AbortController(),
   );
 
 let priorBudget: string | undefined;
@@ -289,7 +291,11 @@ describe("#1063 a regenerate hands the run's imported items to synthesis", () =>
     metadata: JSON.stringify({ model: "deepseek-flash", sourceRequirements }),
   };
   const regenerateOn = (orch: Stubbed, analysis: unknown, agentKey = "code") =>
-    orch.regenerateLoadedAgent({ analysisId: "an_1", agentKey, actorId: "u1" }, analysis);
+    orch.regenerateLoadedAgent(
+      { analysisId: "an_1", agentKey, actorId: "u1" },
+      analysis,
+      new AbortController(),
+    );
 
   it.each(["code", "document"])("on a %s regenerate", async (agentKey) => {
     const orch = makeOrchestrator();
