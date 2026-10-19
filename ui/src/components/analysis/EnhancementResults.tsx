@@ -174,7 +174,7 @@ function notAppliedLabel(reason: string, title: string): string {
 export function describeTie(titles: readonly string[]): string {
   const quoted = titles.map((t) => `“${t}”`);
   if (quoted.length === 1) {
-    return `${quoted[0]} fits this and another requirement equally well, so the answer was given to neither`;
+    return `${quoted[0]} fits this answer’s requirement and another one equally well, so the answer was not added to it`;
   }
   return `fits ${quoted.slice(0, -1).join(", ")} and ${quoted.at(-1)} equally well, so none was chosen`;
 }

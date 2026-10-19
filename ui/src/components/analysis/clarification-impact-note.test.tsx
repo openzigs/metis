@@ -333,7 +333,7 @@ describe("ClarificationImpactNote — #1204 answers refused because the match wa
     const list = screen.getByTestId("clarification-ambiguous");
     expect(list).toHaveTextContent("fits “A”, “B” and “C” equally well, so none was chosen");
     expect(list).toHaveTextContent(
-      "“Export orders” fits this and another requirement equally well, so the answer was given to neither",
+      "“Export orders” fits this answer’s requirement and another one equally well, so the answer was not added to it",
     );
   });
 
@@ -369,9 +369,12 @@ describe("ClarificationImpactNote — #1204 answers refused because the match wa
     );
     const warning = screen.getByTestId("clarification-unattributed");
     expect(warning).not.toHaveTextContent(/more than one saved requirement/);
-    expect(screen.getByTestId("clarification-ambiguous")).toHaveTextContent(
-      "Question q1? → “Mark all as read” fits this and another requirement equally well, so the answer was given to neither",
+    const tie = screen.getByTestId("clarification-ambiguous");
+    expect(tie).toHaveTextContent(
+      "Question q1? → “Mark all as read” fits this answer’s requirement and another one equally well, so the answer was not added to it",
     );
+    // #1253 — "neither" had no pair to refer to.
+    expect(tie).not.toHaveTextContent(/neither/);
   });
 
   it("several saved requirements: names every one the answer fitted", () => {
