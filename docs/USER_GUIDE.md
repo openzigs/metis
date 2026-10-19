@@ -2496,6 +2496,18 @@ the provider reported nothing for it, METIS does not guess: the turn records
 only what was reported, and an `ai.usage.unmetered` entry in the audit log
 notes the gap.
 
+With OpenAI, Azure, the Bedrock gateway and local models, METIS may also ask
+again on its own for a reply that dropped while it was arriving. This applies
+in chat, discussions, sub-agents, analysis, impact analysis and document
+generation. These providers report no tokens for a dropped reply, so it is not
+counted toward usage or budgets. Instead, each one is recorded in the audit log
+as uncounted, with its own `ai.usage.unmetered` entry.
+
+When you press **Stop**, or METIS stops an answer that has gone quiet for too
+long, the tokens the provider reported for that answer before it stopped still
+count toward your usage and budget. Anthropic reports them as soon as an answer
+starts.
+
 The AI responds in a chat-bubble format — your messages appear on the right in blue, and the AI's responses appear on the left in gray. While the AI is thinking, you'll see three bouncing dots (a typing indicator).
 
 ### 14.2 What the AI Can Help With

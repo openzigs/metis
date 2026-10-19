@@ -27,6 +27,7 @@ vi.mock("@anthropic-ai/sdk", () => {
 
 import { ApprovalGateService } from "../approval-policy.js";
 import { AnthropicProvider } from "../providers/anthropic-provider.js";
+import { attachPartialUsage } from "../partial-usage.js";
 import type { ChatMessage, ChatOptions, ChatResponse, TokenUsage } from "../types.js";
 import { runChatToolTurn, type UnmeteredAttempt } from "./chat-turn.js";
 import { collectStream } from "./stream-collect.js";
@@ -200,5 +201,136 @@ describe("runChatToolTurn — #1238 the dropped attempt's tokens", () => {
       ),
     ).rejects.toBe(err);
     expect(unmetered).not.toHaveBeenCalled();
+  });
+});
+
+/** An attempt that drops after `message_start` and then a `message_delta` carrying `delta`. */
+function droppingAfterDelta(start: Record<string, unknown>, delta: Record<string, unknown>) {
+  return {
+    controller: { abort: vi.fn() },
+    finalMessage: vi.fn(),
+    async *[Symbol.asyncIterator]() {
+      yield { type: "message_start", message: { usage: start } };
+      yield textDelta("The answer");
+      yield { type: "message_delta", usage: delta };
+      throw new Error("terminated");
+    },
+  };
+}
+
+describe("runChatToolTurn — #1273 the #1238 review's untested guards", () => {
+  it("a message_delta whose usage fields are null keeps message_start's counts", async () => {
+    // The SDK types allow `input_tokens: null` in a message_delta; spread
+    // as-is it would zero the prompt count message_start reported.
+    streamSpy
+      .mockReturnValueOnce(
+        droppingAfterDelta(
+          { input_tokens: 20_633, output_tokens: 1, cache_read_input_tokens: 300 },
+          { input_tokens: null, cache_read_input_tokens: null, output_tokens: 7 },
+        ),
+      )
+      .mockReturnValueOnce(completing());
+    const metered: TokenUsage[] = [];
+    await turn({ onUsage: (u) => metered.push(u) });
+    expect(metered[0]).toMatchObject({
+      promptTokens: 20_633,
+      completionTokens: 7,
+      cacheReadTokens: 300,
+    });
+  });
+
+  it("a dropped attempt that reported only cache tokens is metered, not called unmetered", async () => {
+    // Every prompt token served from the cache: totalTokens is 0, yet the
+    // provider billed the cache read.
+    streamSpy
+      .mockReturnValueOnce(
+        droppingAfterDelta(
+          { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 18_000 },
+          { output_tokens: 0 },
+        ),
+      )
+      .mockReturnValueOnce(completing());
+    const metered: TokenUsage[] = [];
+    const unmetered = vi.fn();
+    const out = await turn({ onUsage: (u) => metered.push(u), onUnmeteredAttempt: unmetered });
+    expect(metered).toHaveLength(2);
+    expect(metered[0]).toMatchObject({ totalTokens: 0, cacheReadTokens: 18_000 });
+    expect(unmetered).not.toHaveBeenCalled();
+    expect(out.droppedUsage).toMatchObject({ cacheReadTokens: 18_000 });
+  });
+});
+
+describe("runChatToolTurn — #1273 attempts the adapter retried inside one chat() call", () => {
+  /** A model call whose adapter retried each of `retried` (dropped attempts) before answering. */
+  function adapterRetrying(retried: unknown[]) {
+    return async (_m: ChatMessage[], o: ChatOptions): Promise<ChatResponse> => {
+      retried.forEach((error, i) =>
+        o.onRetriedAttempt?.({
+          attempt: i + 1,
+          errorClass: "stream-terminated",
+          error,
+          provider: "openai",
+          model: "gpt-4.1",
+        }),
+      );
+      return {
+        content: "The answer is 42.",
+        usage: { promptTokens: 100, completionTokens: 9, totalTokens: 109 },
+        model: "gpt-4.1",
+        provider: "openai",
+      };
+    };
+  }
+
+  function adapterTurn(
+    retried: unknown[],
+    opts: { onUsage: (u: TokenUsage) => void; onUnmeteredAttempt?: (a: UnmeteredAttempt) => void },
+  ) {
+    return runChatToolTurn(
+      streamingCaller().provider,
+      {
+        messages: [{ role: "user", content: "what is the answer?" }],
+        toolset: makeToolset([]),
+        native: true,
+        ctx: CTX,
+        gate: gate(),
+      },
+      { callModel: adapterRetrying(retried), retrySleep: noWait, ...opts },
+    );
+  }
+
+  it("records each retried attempt that reported no usage as unmetered, once", async () => {
+    const metered: TokenUsage[] = [];
+    const unmetered: UnmeteredAttempt[] = [];
+    const out = await adapterTurn([new TypeError("terminated"), new TypeError("terminated")], {
+      onUsage: (u) => metered.push(u),
+      onUnmeteredAttempt: (a) => unmetered.push(a),
+    });
+    expect(unmetered).toEqual([
+      { attempt: 1, errorClass: "stream-terminated", retriedBy: "adapter" },
+      { attempt: 2, errorClass: "stream-terminated", retriedBy: "adapter" },
+    ]);
+    // Nothing estimated: only the completed attempt is metered.
+    expect(metered).toHaveLength(1);
+    expect(out.usage).toMatchObject({ promptTokens: 100, completionTokens: 9 });
+    expect(out.droppedUsage).toBeUndefined();
+  });
+
+  it("meters a retried attempt on the usage its provider reported, once, into the turn's usage", async () => {
+    const dropped = attachPartialUsage(new TypeError("terminated"), {
+      promptTokens: 100,
+      completionTokens: 3,
+      totalTokens: 103,
+    });
+    const metered: TokenUsage[] = [];
+    const unmetered = vi.fn();
+    const out = await adapterTurn([dropped], {
+      onUsage: (u) => metered.push(u),
+      onUnmeteredAttempt: unmetered,
+    });
+    expect(metered.map((u) => u.totalTokens)).toEqual([103, 109]);
+    expect(unmetered).not.toHaveBeenCalled();
+    expect(out.usage).toMatchObject({ promptTokens: 200, completionTokens: 12, totalTokens: 212 });
+    expect(out.droppedUsage).toMatchObject({ totalTokens: 103 });
   });
 });

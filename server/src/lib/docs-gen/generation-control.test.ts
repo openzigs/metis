@@ -9,6 +9,10 @@ vi.mock("../finops/index.js", () => ({ recordUsage }));
 vi.mock("../logger.js", () => ({
   createChildLogger: () => ({ info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
+const audit = vi.hoisted(() => vi.fn());
+vi.mock("../audit/audit-service.js", () => ({ audit }));
+
+import { attachPartialUsage } from "../ai/partial-usage.js";
 
 import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../ai/types.js";
 import type { ConfigService } from "../config/config-service.js";
@@ -314,6 +318,56 @@ describe("scopedToGeneration", () => {
       await expect(wrapped.chat(MESSAGES)).rejects.toThrow("500");
     });
     expect(recordUsage).not.toHaveBeenCalled();
+  });
+
+  it("#1273 — meters each attempt the adapter retried inside a chat() to the run, once", async () => {
+    audit.mockClear();
+    const inner = hangingProvider();
+    const base = { errorClass: "stream-terminated", provider: "openai" as const, model: "m" };
+    inner.chat = vi.fn(async (_m: ChatMessage[], opts?: ChatOptions) => {
+      opts?.onRetriedAttempt?.({
+        ...base,
+        attempt: 1,
+        error: attachPartialUsage(new TypeError("terminated"), {
+          promptTokens: 300,
+          completionTokens: 4,
+          totalTokens: 304,
+        }),
+      });
+      opts?.onRetriedAttempt?.({ ...base, attempt: 2, error: new TypeError("terminated") });
+      return {
+        content: "ok",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "m",
+        provider: "openai" as const,
+      };
+    });
+    const wrapped = scopedToGeneration(inner);
+    const control = new GenerationControl("doc-9", "proj-9");
+    await withGenerationScope(control, async () => {
+      await wrapped.chat(MESSAGES, { sessionId: "docs-synth-x" });
+    });
+    // The reported attempt is its own ledger row, on what the provider said.
+    expect(recordUsage).toHaveBeenCalledTimes(1);
+    expect(recordUsage.mock.calls[0][0]).toMatchObject({
+      projectId: "proj-9",
+      sessionId: "docs-synth-x",
+      agentStep: "docs-gen",
+      provider: "openai",
+      inputTokens: 300,
+      outputTokens: 4,
+    });
+    // ...and counts toward the run's ceiling. PR #1274 review — so does the
+    // silent one, as a prompt-size estimate (700 chars / 3.5 = 200 tokens),
+    // which reaches the run's tally only: still one ledger row above.
+    expect(control.spend().tokens).toBe(304 + 200);
+    // The silent one is recorded as unmetered in the audit log.
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit.mock.calls[0]![0]).toMatchObject({
+      action: "ai.usage.unmetered",
+      target: { type: "generated_document", id: "doc-9" },
+      metadata: { projectId: "proj-9", attempt: 2, retriedBy: "adapter" },
+    });
   });
 
   it("refuses new calls once the run is stopped, without reaching the provider", async () => {

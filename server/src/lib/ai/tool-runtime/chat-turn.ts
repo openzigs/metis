@@ -12,7 +12,14 @@
  * handed to `onToolRecord` as soon as it finishes, so a turn that fails later
  * still records what already ran — nothing is silently dropped.
  */
-import type { AIProvider, ChatMessage, ChatOptions, ChatResponse, TokenUsage } from "../types.js";
+import type {
+  AIProvider,
+  ChatMessage,
+  ChatOptions,
+  ChatResponse,
+  RetriedAttempt,
+  TokenUsage,
+} from "../types.js";
 import { isToolCallReply, runAgentLoop, type AgentLoopResult } from "../../analysis/agent-loop.js";
 import { withInvokeAgentSpan } from "../../otel/genai-spans.js";
 import type { ApprovalGateService } from "../approval-policy.js";
@@ -25,7 +32,11 @@ import {
   withTransientRetry,
   type GroundingErrorClass,
 } from "../../docs-gen/grounding/transient-retry.js";
-import { partialUsageOf } from "../partial-usage.js";
+import {
+  noteUnmeteredAttempt,
+  reportedUsageOf,
+  withRetriedAttemptListener,
+} from "../retried-attempts.js";
 
 /** Model turns per chat turn: a few rounds of tool calls plus the answer. */
 export const CHAT_TOOL_MAX_TURNS = 6;
@@ -63,6 +74,12 @@ export interface UnmeteredAttempt {
   /** The attempt that dropped (1-based). */
   attempt: number;
   errorClass: GroundingErrorClass;
+  /**
+   * #1273 — set when the provider's adapter retried this attempt inside one
+   * `chat()` call (`attempt` is then the adapter's try, within the turn's
+   * model-call attempt), rather than this loop retrying it.
+   */
+  retriedBy?: "adapter";
 }
 
 /**
@@ -259,25 +276,53 @@ export async function runChatToolTurn(
   // #1238 — an attempt that failed is metered here, exactly once: on what its
   // provider reported, or — for a dropped stream that reported nothing — as
   // unmetered. Nothing is estimated.
-  const meterFailedAttempt = (err: unknown, attempt: number): void => {
-    const reported = partialUsageOf(err);
-    if (
-      reported &&
-      (reported.totalTokens > 0 ||
-        (reported.cacheReadTokens ?? 0) > 0 ||
-        (reported.cacheWriteTokens ?? 0) > 0)
-    ) {
-      droppedUsage = addUsage(droppedUsage, reported);
-      meter(reported);
+  const meterReported = (err: unknown): boolean => {
+    const reported = reportedUsageOf(err);
+    if (!reported) return false;
+    droppedUsage = addUsage(droppedUsage, reported);
+    meter(reported);
+    return true;
+  };
+  // PR #1274 review — a caller that passes no `onUnmeteredAttempt` (a
+  // discussion reply, a sub-agent's `runAgent`) still gets the gap recorded:
+  // this loop claimed the adapter's attempts from its fallback, so it must
+  // record them itself, against the session it runs in.
+  const noteUnmetered = (info: UnmeteredAttempt, model: string): void => {
+    if (!options.onUnmeteredAttempt) {
+      noteUnmeteredAttempt(
+        {
+          actorId: input.ctx.userId,
+          target: { type: "ai_session", id: input.ctx.sessionId },
+          projectId: input.ctx.projectId,
+          provider: provider.key,
+          model,
+        },
+        info,
+      );
       return;
     }
-    const errorClass = classifyGroundingError(err, options.signal);
-    if (!isMidStreamDrop(err, errorClass)) return;
     try {
-      options.onUnmeteredAttempt?.({ attempt, errorClass });
+      options.onUnmeteredAttempt(info);
     } catch {
       /* a listener must never break the loop */
     }
+  };
+  const meterFailedAttempt = (err: unknown, attempt: number, model: string): void => {
+    if (meterReported(err)) return;
+    const errorClass = classifyGroundingError(err, options.signal);
+    if (!isMidStreamDrop(err, errorClass)) return;
+    noteUnmetered({ attempt, errorClass }, model);
+  };
+  // #1273 — an attempt the ADAPTER retried inside one `chat()` call (the
+  // OpenAI-compatible client re-reads a dropped non-streamed reply): metered
+  // here the same way, once. The adapter reports only an attempt the provider
+  // may have billed, so one with no usage is always noted as unmetered.
+  const meterAdapterRetry = (a: RetriedAttempt): void => {
+    if (meterReported(a.error)) return;
+    noteUnmetered(
+      { attempt: a.attempt, errorClass: a.errorClass as GroundingErrorClass, retriedBy: "adapter" },
+      a.model,
+    );
   };
   const callModel = (m: ChatMessage[], o: ChatOptions): Promise<ChatResponse> => {
     let attempt = 0;
@@ -296,9 +341,9 @@ export async function runChatToolTurn(
           /* a listener must never break the loop */
         }
         try {
-          return await baseCallModel(m, o);
+          return await baseCallModel(m, withRetriedAttemptListener(o, meterAdapterRetry));
         } catch (err) {
-          meterFailedAttempt(err, attempt);
+          meterFailedAttempt(err, attempt, o.model ?? provider.model);
           throw err;
         }
       },

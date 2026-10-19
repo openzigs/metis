@@ -59,6 +59,9 @@ const { __resetModelCatalogForTests } = await import("../src/lib/ai/model-catalo
 const { CHAT_TURN_AGENT_STEP, ESTIMATED_TURN_AGENT_STEP, UNMETERED_ATTEMPT_AUDIT_ACTION } =
   await import("../src/lib/ai/conversation/turn-usage.js");
 const { nativeToolChars } = await import("../src/lib/ai/conversation/turn.js");
+const { OpenAICompatibleProvider } =
+  await import("../src/lib/ai/providers/openai-compatible-provider.js");
+const { attachPartialUsage } = await import("../src/lib/ai/partial-usage.js");
 
 type Body = Record<string, unknown>;
 const ALICE = "u-alice";
@@ -73,6 +76,11 @@ let usageMode: "reported" | "none" = "reported";
  * part-way: headers, the first bytes, then the socket is destroyed.
  */
 let dropStreams = 0;
+/**
+ * #1273 — how many of the next NON-streamed OpenAI replies drop while their
+ * body is read: 200, part of the JSON, then the socket is destroyed.
+ */
+let dropBodies = 0;
 const OPENAI_USAGE = {
   prompt_tokens: 120,
   prompt_tokens_details: { cached_tokens: 100 },
@@ -92,6 +100,12 @@ function openAiReply(res: ServerResponse, body: Body): void {
   const usage = usageMode === "reported" ? { usage: OPENAI_USAGE } : {};
   if (body.stream !== true) {
     res.writeHead(200, { "content-type": "application/json" });
+    if (dropBodies > 0) {
+      dropBodies--;
+      res.write('{"id":"c1","object":"chat.completion","choices":[');
+      setTimeout(() => res.socket?.destroy(), 20);
+      return;
+    }
 
     res.end(
       JSON.stringify({
@@ -233,6 +247,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       "ANTHROPIC_API_KEY",
       "ANTHROPIC_BASE_URL",
       "CHAT_TOOLS",
+      "AI_RETRY_BASE_DELAY_MS",
     ];
     const savedEnv: Record<string, string | undefined> = {};
 
@@ -335,6 +350,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       delete process.env.CHAT_TOOLS;
       usageMode = "reported";
       dropStreams = 0;
+      dropBodies = 0;
+      process.env.AI_RETRY_BASE_DELAY_MS = "1";
       auditSpy.mockClear();
       openaiSeen.length = 0;
       __resetModelCatalogForTests();
@@ -503,6 +520,81 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(unmetered).toHaveLength(1);
       expect(unmetered[0]!.target.id).toBe(session);
       expect(unmetered[0]!.metadata).toMatchObject({ projectId: ANTH, attempt: 1 });
+    });
+
+    for (const tools of ["native tools", "no tools"] as const) {
+      it(`#1273 /chat (${tools}): a reply the OpenAI-compatible adapter re-read after its body dropped is recorded as unmetered, and the retry is metered once`, async () => {
+        if (tools === "no tools") process.env.CHAT_TOOLS = "false";
+        const session = await newSession(PLAIN);
+        dropBodies = 2;
+        const c = await post("/api/ai/chat", { sessionId: session, message: "first question" });
+        expect(c.status, c.text).toBe(200);
+        // The adapter re-sent the request after each drop, inside one chat() call.
+        expect(dropBodies).toBe(0);
+        expect(openaiSeen).toHaveLength(3);
+        const { replies, perUser, project } = await records(session);
+
+        // Only what the provider reported (the completed attempt), once per store.
+        expect(project).toHaveLength(1);
+        expect(project[0]).toMatchObject({ inputTokens: 120, outputTokens: 7, totalTokens: 127 });
+        expect(perUser).toHaveLength(1);
+        expect(perUser[0]).toMatchObject({ promptTokens: 120, completionTokens: 7 });
+        expect(replies[0]).toMatchObject({ inputTokens: 120, outputTokens: 7 });
+        // Each dropped attempt is on record against the session, once.
+        const unmetered = auditSpy.mock.calls
+          .map(([e]) => e as { action: string; target: { id: string }; metadata: Body })
+          .filter((e) => e.action === UNMETERED_ATTEMPT_AUDIT_ACTION);
+        expect(unmetered.map((e) => e.metadata.attempt)).toEqual([1, 2]);
+        for (const e of unmetered) {
+          expect(e.target.id).toBe(session);
+          expect(e.metadata).toMatchObject({ projectId: PLAIN, retriedBy: "adapter" });
+        }
+      });
+    }
+
+    it("#1273 /chat (no tools): a retried attempt whose provider reported usage is in the turn's row, once per store, and both stores agree", async () => {
+      process.env.CHAT_TOOLS = "false";
+      // No adapter reports usage for a dropped non-streamed body today, so the
+      // real OpenAI-compatible client is wrapped to report one retried attempt
+      // carrying the usage a provider could have sent, then answer for real.
+      const real = new OpenAICompatibleProvider({
+        baseUrl: `${openaiBase}/v1`,
+        apiKey: "k-openai",
+        model: "gpt-4.1",
+        providerKey: "openai",
+      });
+      const answer = real.chat.bind(real);
+      real.chat = async (m, o) => {
+        o?.onRetriedAttempt?.({
+          attempt: 1,
+          errorClass: "stream-terminated",
+          error: attachPartialUsage(new TypeError("terminated"), {
+            promptTokens: 120,
+            completionTokens: 2,
+            totalTokens: 122,
+          }),
+          provider: "openai",
+          model: "gpt-4.1",
+        });
+        return answer(m, o);
+      };
+      setAIProviderForTests(real);
+      const session = await newSession(PLAIN);
+      const c = await post("/api/ai/chat", { sessionId: session, message: "first question" });
+      expect(c.status, c.text).toBe(200);
+      const { replies, perUser, project } = await records(session);
+
+      // One row per store, holding both attempts: 120 + 120 in, 2 + 7 out.
+      expect(project).toHaveLength(1);
+      expect(project[0]).toMatchObject({ inputTokens: 240, outputTokens: 9 });
+      expect(perUser).toHaveLength(1);
+      expect(perUser[0]).toMatchObject({ promptTokens: 240, completionTokens: 9 });
+      expect(replies[0]).toMatchObject({ inputTokens: 240, outputTokens: 9 });
+      // The prompt went out twice, so the turn does not calibrate the ratio.
+      expect(replies[0]!.promptChars).toBeNull();
+      expect(auditSpy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: UNMETERED_ATTEMPT_AUDIT_ACTION }),
+      );
     });
 
     for (const tools of ["native tools", "no tools"] as const) {
