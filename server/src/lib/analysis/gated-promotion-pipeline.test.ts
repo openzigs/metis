@@ -192,7 +192,8 @@ describe("#1104 B — a gated run never reports unqualified success", () => {
     await runPipeline();
 
     const blocked = promotionPatch()?.promotionBlocked as
-      { blocked: boolean; pendingCount: number; awaitingRequirementCount?: number } | undefined;
+      | { blocked: boolean; pendingCount: number; awaitingRequirementCount?: number }
+      | undefined;
     expect(blocked?.blocked).toBe(true);
     expect(blocked?.pendingCount).toBe(2);
     // The two synthesized requirements exist — they are held back, not absent.
