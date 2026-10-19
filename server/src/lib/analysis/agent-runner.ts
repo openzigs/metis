@@ -723,9 +723,11 @@ export async function runAgent(
   }
 
   // #1143 — like the categories above: the schema salvages citations, and the
-  // counts are read here, before the parse erases what it dropped.
-  const citationSalvage = collectSalvagedCitations(parsed);
-  const validated = schema.parse(clampAgentOutputStrings(parsed));
+  // counts are read here, before the parse erases what it dropped. #1155 —
+  // read after the clamp, so findings it cut past the 50th are not counted.
+  const clamped = clampAgentOutputStrings(parsed);
+  const citationSalvage = collectSalvagedCitations(clamped);
+  const validated = schema.parse(clamped);
 
   // Enrich citations with retrieval metadata when possible.
   validated.findings = validated.findings.map((f) => ({
