@@ -55,6 +55,8 @@ describe("ApprovedRequirementsOutOfDateBanner (#1252)", () => {
     expect(banner).toHaveTextContent(/out of date/i);
     expect(banner).toHaveTextContent(/approved or changed/i);
     expect(banner).toHaveTextContent(/since this version/i);
+    // #1252 review — it says a regenerate keeps the other sections, not rewrites the document.
+    expect(banner).toHaveTextContent(/other sections are kept as they are/i);
     // No implementation words a business analyst does not use.
     expect(banner).not.toHaveTextContent(/snapshot|hash|fingerprint|input|auto-update check/i);
     fireEvent.click(screen.getByRole("button", { name: /^regenerate$/i }));

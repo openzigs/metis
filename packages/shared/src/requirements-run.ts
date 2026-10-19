@@ -15,15 +15,36 @@ export interface RequirementsRunCandidate {
   status: string;
   /** The run's live requirements, whatever their review status. */
   requirementCount: number;
+  /**
+   * #1252 — when the run last finished. A run `running` with this set is a
+   * re-opened one (a regenerate or a repo resume), which counts as completed.
+   */
+  completedAt?: string | Date | null;
+}
+
+/**
+ * #1252 — whether a run counts as completed for the choice: completed, or
+ * re-opened by a regenerate or a repo resume (`running` again, with the
+ * `completedAt` of its earlier finish). A re-run rewrites its requirements and
+ * settles again within minutes; leaving it out for that window moved the
+ * default to an older run, so every reader saw that run's requirements
+ * meanwhile. A first run still running has no `completedAt`, and is not
+ * counted until it completes.
+ */
+export function countsAsCompletedRun(
+  run: Pick<RequirementsRunCandidate, "status" | "completedAt">,
+) {
+  return run.status === "completed" || (run.status === "running" && run.completedAt != null);
 }
 
 /**
  * The newest completed run that has any requirements, else the newest
  * completed run; `null` when no run has completed. `runs` is newest first.
  * A run whose requirements are all still draft counts: it is the current set,
- * and its approvals are the ones that count.
+ * and its approvals are the ones that count. A re-opened run counts as
+ * completed ({@link countsAsCompletedRun}).
  */
 export function defaultRequirementsRunId(runs: readonly RequirementsRunCandidate[]): string | null {
-  const completed = runs.filter((r) => r.status === "completed");
+  const completed = runs.filter(countsAsCompletedRun);
   return (completed.find((r) => r.requirementCount > 0) ?? completed[0])?.id ?? null;
 }

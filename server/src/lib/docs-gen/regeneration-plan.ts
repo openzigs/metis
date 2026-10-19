@@ -67,8 +67,12 @@ export function fingerprintInputs(
  * rendered by METIS from the stored rows, with no model call, so an analyst
  * approving or editing a requirement mid-run (the normal sign-off workflow)
  * must not throw away the model-written sections. The run publishes with the
- * item it captured; the next auto-update check (or a manual regenerate) sees
- * the newer value and regenerates, reusing every model-written section (#857).
+ * item it captured and, having seen it move, asks for the check (#1252). The
+ * auto-update check then regenerates the document, reusing every section whose
+ * own inputs are unchanged (#857). A document without auto-update is marked
+ * out of date instead, and its Regenerate (`POST /regenerate`,
+ * `reusePublished`) reuses them the same way. Any other manual regenerate (of a
+ * failed or cancelled document) does not reuse the published version.
  */
 export const APPROVED_REQUIREMENTS_ITEM = "approvedRequirements";
 

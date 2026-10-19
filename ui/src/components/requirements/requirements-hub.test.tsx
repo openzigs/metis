@@ -40,4 +40,12 @@ describe("defaultHubRunId (#999, #1230)", () => {
     expect(defaultHubRunId([run("a", "running")])).toBeNull();
     expect(defaultHubRunId([])).toBeNull();
   });
+
+  it("stays on a run being re-run (running again, completed before), as the BRD does (#1252)", () => {
+    const reopened = {
+      ...run("rerun", "running", { approved: 2 }),
+      completedAt: "2026-10-01T00:00:00.000Z",
+    };
+    expect(defaultHubRunId([reopened, run("older", "completed", { approved: 9 })])).toBe("rerun");
+  });
 });

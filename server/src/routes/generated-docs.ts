@@ -1008,7 +1008,12 @@ export function generatedDocsRouter(): Router {
             })
           ).count > 0;
         if (resumable || outdated) {
-          void generateDocumentAsync(docId, projectId).catch((err) => {
+          // #1252 — an out-of-date reader BRD is regenerated the way an
+          // automatic update is: every section whose own inputs are unchanged
+          // is reused from the latest version, so only Approved Requirements
+          // (rendered from the stored rows, no model) is rebuilt.
+          const options = outdated ? { reusePublished: true } : undefined;
+          void generateDocumentAsync(docId, projectId, undefined, options).catch((err) => {
             log.error("Background doc regeneration failed", { err, docId });
           });
           res.status(202).json({ data: { id: docId, status: "pending" } });
@@ -1190,6 +1195,17 @@ function resumeSummary(resume: SectionResumeReport): string {
   ].join("; ");
 }
 
+/** How a manual run treats the document's latest published version. */
+export interface GenerateDocumentOptions {
+  /**
+   * #1252 — reuse every section whose own inputs are unchanged since the
+   * latest version (#857), as an automatic update does, instead of writing the
+   * whole document again. For a document whose approved requirements alone
+   * moved, that rebuilds only the Approved Requirements section.
+   */
+  reusePublished?: boolean;
+}
+
 /**
  * Background document generation. Updates the doc row with status transitions.
  */
@@ -1197,7 +1213,10 @@ export async function generateDocumentAsync(
   docId: string,
   projectId: string,
   automatic?: RegenerationTask & { signal: AbortSignal },
+  options?: GenerateDocumentOptions,
 ): Promise<void> {
+  // What an automatic update always does, and a manual run only when asked.
+  const reusePublished = automatic != null || options?.reusePublished === true;
   const claim = `regenerating:${randomUUID()}`;
   let claimed = false;
   let originalHash: string | null = null;
@@ -1690,7 +1709,7 @@ export async function generateDocumentAsync(
           docType,
           doc?.title ?? "Generated Documentation",
           {
-            ...(automatic ? { previousManifest } : {}),
+            ...(reusePublished ? { previousManifest } : {}),
             ...(beforeStep ? { beforeStep } : {}),
             // #782 — resume: an earlier unfinished run's sections are reused
             // where their inputs are unchanged, and this run's are saved as each
@@ -1867,7 +1886,7 @@ export async function generateDocumentAsync(
     // Only the actual synthesizer can prove complete section dependencies. A
     // source inventory delta or a citation list alone cannot justify reuse.
     const regeneration =
-      automatic && plan
+      reusePublished && plan
         ? synthesizedManifest.regeneration?.mode === "sections" ||
           synthesizedManifest.regeneration?.mode === "unchanged"
           ? { ...synthesizedManifest.regeneration, changed: plan.changed }
@@ -1966,7 +1985,7 @@ export async function generateDocumentAsync(
               ? `Affected sections regenerated: ${regeneration.sections.join(", ")}`
               : regeneration?.mode === "unchanged"
                 ? "Source inventory updated; all section dependencies unchanged"
-                : automatic && plan?.mode === "full"
+                : reusePublished && plan?.mode === "full"
                   ? `Conservative full regeneration: ${plan.reason}`
                   : // #857 — a resumed manual run says what it reused and why it rewrote the rest.
                     resume

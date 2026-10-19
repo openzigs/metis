@@ -55,9 +55,11 @@ vi.mock("../src/lib/docs-gen/brd-layout.js", async (importOriginal) => ({
 const {
   finalizeAnalysisDelta,
   markAnalysisCompleted,
+  markAnalysisRunning,
   persistRequirements,
   settleRunningAnalysisAsFailed,
 } = await import("../src/lib/analysis/analysis-service.js");
+const { defaultRequirementsRunIdFor } = await import("../src/lib/analysis/requirement-runs.js");
 const { ImportService } = await import("../src/lib/importers/import-service.js");
 const { promoteMessageToRequirement } = await import("../src/lib/discussions/promote.js");
 const { createReviewRequest, submitReview, withdrawReview, closeReview } =
@@ -211,6 +213,91 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(onWithheld).toHaveBeenCalledTimes(1);
         await settle();
         expect(state.check).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("a re-run (regenerate or repo resume) of the run Requirements opens on (PR #1267 review)", () => {
+      /**
+       * Two completed runs, each with an approved requirement, and the newer
+       * one (the default) re-opened as a follow-up does it: `running` again,
+       * its earlier `completedAt` kept.
+       */
+      const reopenedDefault = async (newerReviewStatus: string | null = "approved") => {
+        const project = await makeProject();
+        const older = await makeAnalysis(project);
+        await makeRequirement(project, older, { reviewStatus: "approved", title: "Older run" });
+        const newer = await makeAnalysis(project);
+        await db.analysis.update({ where: { id: newer }, data: { completedAt: new Date() } });
+        await makeRequirement(project, newer, {
+          reviewStatus: newerReviewStatus,
+          title: "Newer run",
+        });
+        expect(await defaultRequirementsRunIdFor(project)).toBe(newer);
+        await markAnalysisRunning(newer);
+        return { project, older, newer };
+      };
+
+      it("keeps the re-opened run as the one Requirements opens on, so a reader BRD lists it meanwhile", async () => {
+        const { project, newer } = await reopenedDefault();
+        expect(await defaultRequirementsRunIdFor(project)).toBe(newer);
+        expect(
+          JSON.parse(approvedRequirementsFacts(await loadApprovedRequirements(project))),
+        ).toEqual([expect.objectContaining({ title: "Newer run" })]);
+      });
+
+      it("saving the re-run's set asks for nothing while it runs; its settle asks once", async () => {
+        // Draft rows only: no review work, so the re-run's set really is replaced (#769).
+        const { project, newer } = await reopenedDefault(null);
+        await persistRequirements({
+          analysisId: newer,
+          projectId: project,
+          synthesis: synthesized("Re-run requirement"),
+          findingIdsByIndex: [],
+        });
+        expect(
+          (await db.requirement.findMany({ where: { analysisId: newer } })).map((r) => r.title),
+        ).toEqual(["Re-run requirement"]);
+        await settle();
+        expect(state.check).not.toHaveBeenCalled();
+        await finalizeAnalysisDelta({ id: newer, status: "completed", delta: NO_TOKENS });
+        await vi.waitFor(() => expect(state.check).toHaveBeenCalledWith(...checked(project)));
+        await settle();
+        expect(state.check).toHaveBeenCalledTimes(1);
+      });
+
+      it("does not mark an unchanged reader BRD out of date while the run is re-run", async () => {
+        const project = await makeProject();
+        const older = await makeAnalysis(project);
+        await makeRequirement(project, older, { reviewStatus: "approved", title: "Older run" });
+        const newer = await makeAnalysis(project);
+        await db.analysis.update({ where: { id: newer }, data: { completedAt: new Date() } });
+        await makeRequirement(project, newer, { reviewStatus: "approved", title: "Newer run" });
+        const doc = await db.generatedDocument.create({
+          data: { projectId: project, title: "BRD", scope: "full", status: "ready" },
+        });
+        await db.generatedDocumentVersion.create({
+          data: {
+            documentId: doc.id,
+            version: 1,
+            content: "# BRD",
+            provenanceManifest: JSON.stringify({
+              ...legacyGeneratedDocVersionManifest({
+                projectId: project,
+                generatedDocumentId: doc.id,
+                version: 1,
+              }),
+              inputSnapshot: fingerprintInputs({
+                [APPROVED_REQUIREMENTS_ITEM]: await approvedRequirementsItem(project),
+              }),
+            }),
+          },
+        });
+        await markAnalysisRunning(newer);
+        expect(
+          await approvedRequirementsOutOfDate(
+            await db.generatedDocument.findUniqueOrThrow({ where: { id: doc.id } }),
+          ),
+        ).toBe(false);
       });
     });
 

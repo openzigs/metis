@@ -51,6 +51,8 @@ const state = vi.hoisted(() => ({
    * check runs behind it, so what it queues is what the test sees.
    */
   noteProject: vi.fn(),
+  /** #1252 — who calls the regenerate route; unset: an admin. */
+  caller: null as null | Record<string, unknown>,
 }));
 
 type TaskFilter = {
@@ -75,7 +77,20 @@ vi.mock("../src/lib/prisma.js", () => {
   const prisma = {
     project: {
       findFirst: vi.fn(async () => ({ id: "p", name: "Project", description: "System" })),
-      findUnique: vi.fn(async () => ({ name: "Project" })),
+      // #1252 — in workspace `ws-p`, whose only member is `u` (the route's access check).
+      findUnique: vi.fn(
+        async (args?: {
+          select?: { workspace?: { select?: { members?: { where?: { userId?: string } } } } };
+        }) => ({
+          name: "Project",
+          workspaceId: "ws-p",
+          workspace: {
+            deletedAt: null,
+            members:
+              args?.select?.workspace?.select?.members?.where?.userId === "u" ? [{ id: "m" }] : [],
+          },
+        }),
+      ),
     },
     user: {
       findFirst: vi.fn(async () =>
@@ -150,7 +165,23 @@ vi.mock("../src/lib/prisma.js", () => {
           (where.updatedAt &&
             new Date(state.doc.updatedAt as Date).getTime() !== where.updatedAt.getTime()) ||
           (where.autoUpdate && !state.doc.autoUpdate) ||
-          (where.OR && state.doc.status === "generating") ||
+          // #1252 — each `OR` clause as the route writes them: a status, a
+          // status not in a list, an older `updatedAt`, or no version at all.
+          (where.OR &&
+            !where.OR.some(
+              (clause: {
+                status?: string | { notIn: string[] };
+                updatedAt?: { lt: Date };
+                versions?: { none: object };
+              }) =>
+                (clause.status === undefined ||
+                  (typeof clause.status === "string"
+                    ? state.doc.status === clause.status
+                    : !clause.status.notIn.includes(state.doc.status as string))) &&
+                (!clause.updatedAt ||
+                  new Date(state.doc.updatedAt as Date) < clause.updatedAt.lt) &&
+                (!clause.versions || state.versions.length === 0),
+            )) ||
           (where.versions &&
             state.versions.some(
               (v) =>
@@ -316,6 +347,24 @@ vi.mock("../src/lib/docs-gen/approved-requirements-section.js", async (importOri
   readsApprovedRequirements: () => state.readsApproved,
   loadApprovedRequirements: async () => state.approved.map((r) => ({ ...r })),
 }));
+// #1252 — the regenerate route, reached through its real handler: who may call
+// it is the route tests' (`generated-doc-interrupted-generation`), not this file's.
+// The project-access check is the real one: project `p` is in workspace
+// `ws-p`, whose only member is `u`.
+vi.mock("../src/middleware/auth.js", () => ({
+  requireAuth: (req: { user?: unknown }, _res: unknown, next: () => void) => {
+    req.user = state.caller ?? { userId: "u", username: "user", role: "admin", permissions: [] };
+    next();
+  },
+  refreshAuthenticatedUser: (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
+vi.mock("../src/middleware/require-permission.js", () => ({
+  requirePermission: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
+vi.mock("express-rate-limit", () => ({
+  default: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  ipKeyGenerator: (ip: string) => ip,
+}));
 // #1252 — the reader-layout gate is the module's own; what matters here is
 // when a run asks for the check and what the check then does.
 vi.mock("../src/lib/docs-gen/approved-requirements-staleness.js", () => ({
@@ -341,7 +390,9 @@ import { buildSchedulerHandlerOverrides } from "../src/lib/scheduler/handler-ove
 import { SCHEDULER_DEFAULTS } from "../src/lib/scheduler/config.js";
 import { createPrismaTaskStore } from "../src/lib/scheduler/task-store.js";
 import { runRegenerationTask } from "../src/lib/docs-gen/incremental.js";
-import { generateDocumentAsync } from "../src/routes/generated-docs.js";
+import { generateDocumentAsync, generatedDocsRouter } from "../src/routes/generated-docs.js";
+import express from "express";
+import request from "supertest";
 import { prisma } from "../src/lib/prisma.js";
 import { jobEvents } from "../src/lib/socket/job-events.js";
 import { captureGenerationInputs } from "../src/lib/docs-gen/generation-inputs.js";
@@ -1553,5 +1604,101 @@ describe("an approval during a reader BRD's generation (#1230)", () => {
     expect(state.webResearch).toHaveBeenCalledTimes(1);
     expect(state.versions).toHaveLength(1);
     expect(state.publications).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * #1252 (PR #1267 review, blocking 1) — an out-of-date reader BRD without
+ * auto-update is regenerated from the banner through POST /regenerate. Its
+ * approved requirements alone moved, and the Approved Requirements section is
+ * rendered from the stored rows with no model, so the run must reuse every
+ * model-written section from the latest version rather than pay to write the
+ * whole document again.
+ */
+describe("regenerating an out-of-date reader BRD reuses its model-written sections (#1252)", () => {
+  const approved = (title: string) => ({
+    id: "req-1",
+    title,
+    body: "Body",
+    type: "feature",
+    priority: "high",
+    reviewStatus: "approved",
+    verdict: null,
+    acceptanceCriteria: "[]",
+    version: 1,
+    updatedAt: new Date(),
+    codeMappings: [],
+    implementations: [],
+  });
+  const app = () => {
+    const a = express();
+    a.use(express.json());
+    a.use("/projects/:projectId/docs", generatedDocsRouter());
+    return a;
+  };
+  const sectionCalls = () =>
+    state.stream.mock.calls.filter(([messages]) =>
+      /Section group: \*\*/.test(messages.at(-1).content as string),
+    ).length;
+
+  beforeEach(() => {
+    vi.stubEnv("DOCS_GEN_BRD_LAYOUT", "reader");
+    state.caller = null;
+    state.readsApproved = true;
+    state.approved = [approved("Original")];
+    state.doc.title = "Business requirements";
+    state.doc.scopeFilter = JSON.stringify({
+      repoConnectorId: "r",
+      docType: "business-requirements",
+    });
+  });
+
+  it("rebuilds only Approved Requirements: no model-written section is synthesized again", async () => {
+    await ingest();
+    expect(state.versions).toHaveLength(1);
+    expect(sectionCalls()).toBeGreaterThan(0);
+    const first = parseGeneratedDocVersionManifest(state.versions[0].provenanceManifest);
+
+    // A document the analyst regenerates by hand, whose approvals then moved.
+    state.doc.autoUpdate = false;
+    state.approved = [approved("Edited by the analyst")];
+    state.stream.mockClear();
+
+    const res = await request(app()).post("/projects/p/docs/d/regenerate").send({});
+    expect(res.status).toBe(202);
+    await vi.waitFor(() => expect(state.versions).toHaveLength(2), { timeout: 10000 });
+
+    expect(sectionCalls()).toBe(0);
+    const second = parseGeneratedDocVersionManifest(state.versions[1].provenanceManifest);
+    expect(second.regeneration).toMatchObject({ mode: "sections" });
+    const rebuilt = (second.regeneration as { sections: string[] }).sections;
+    expect(rebuilt).toHaveLength(1);
+    // Every other section's record is the first version's, as written then.
+    const before = sectionSynthesisSchema.parse(first.sectionSynthesis).records;
+    const after = sectionSynthesisSchema.parse(second.sectionSynthesis).records;
+    const unchanged = (records: typeof before) =>
+      records.filter((r) => !rebuilt.includes(r.sectionId));
+    expect(unchanged(after).length).toBeGreaterThan(0);
+    expect(unchanged(after)).toEqual(unchanged(before));
+    expect(String(state.versions[1].content)).toContain("Edited by the analyst");
+  });
+
+  it("is refused (404) to a caller outside the project's workspace, and starts nothing", async () => {
+    await ingest();
+    state.doc.autoUpdate = false;
+    state.approved = [approved("Edited by the analyst")];
+    state.stream.mockClear();
+    state.caller = {
+      userId: "outsider",
+      role: "reader",
+      workspaces: ["ws-other"],
+      permissions: [],
+    };
+
+    const res = await request(app()).post("/projects/p/docs/d/regenerate").send({});
+    expect(res.status).toBe(404);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(state.versions).toHaveLength(1);
+    expect(state.stream).not.toHaveBeenCalled();
   });
 });

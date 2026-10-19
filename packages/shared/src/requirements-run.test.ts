@@ -24,6 +24,15 @@ describe("defaultRequirementsRunId (#999, #1230)", () => {
     ).toBe("a2");
   });
 
+  it("keeps a re-opened run (a regenerate or resume: running again, completed before) as the default (#1252)", () => {
+    const reopened = { ...run("a2", "running", 16), completedAt: "2026-10-01T00:00:00.000Z" };
+    const runs = [run("a3", "completed"), reopened, run("a1", "completed", 2)];
+    expect(defaultRequirementsRunId(runs)).toBe("a2");
+    // A first run still running has never completed: it is not the default yet.
+    const first = { ...run("a4", "running", 9), completedAt: null };
+    expect(defaultRequirementsRunId([first, ...runs])).toBe("a2");
+  });
+
   it("falls back to the newest completed run when none has requirements", () => {
     expect(
       defaultRequirementsRunId([

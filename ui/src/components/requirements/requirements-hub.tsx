@@ -52,7 +52,13 @@ function totalRequirements(run: Pick<AnalysisListItem, "requirementCounts">): nu
  */
 export function defaultHubRunId(analyses: readonly AnalysisListItem[]): string | null {
   return defaultRequirementsRunId(
-    analyses.map((a) => ({ id: a.id, status: a.status, requirementCount: totalRequirements(a) })),
+    // #1252 — `completedAt` too: a re-opened run stays the one the hub opens on.
+    analyses.map((a) => ({
+      id: a.id,
+      status: a.status,
+      completedAt: a.completedAt,
+      requirementCount: totalRequirements(a),
+    })),
   );
 }
 

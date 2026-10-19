@@ -44,12 +44,19 @@ export function isBackgroundAnalysis(metadata: string | null): boolean {
  */
 export async function defaultRequirementsRunIdFor(projectId: string): Promise<string | null> {
   const rows = await prisma.analysis.findMany({
-    where: { projectId, deletedAt: null, status: "completed" },
+    // #1252 — and a re-opened run (`countsAsCompletedRun`): a regenerate or a
+    // repo resume sets a completed run `running` again until it settles.
+    where: {
+      projectId,
+      deletedAt: null,
+      OR: [{ status: "completed" }, { status: "running", completedAt: { not: null } }],
+    },
     // #1230 — the same order as `listAnalysesForProject`, tie included.
     orderBy: [{ startedAt: "desc" }, { id: "desc" }],
     select: {
       id: true,
       status: true,
+      completedAt: true,
       metadata: true,
       _count: { select: { requirements: { where: { projectId, deletedAt: null } } } },
     },
@@ -57,6 +64,11 @@ export async function defaultRequirementsRunIdFor(projectId: string): Promise<st
   return defaultRequirementsRunId(
     rows
       .filter((r) => !isBackgroundAnalysis(r.metadata))
-      .map((r) => ({ id: r.id, status: r.status, requirementCount: r._count.requirements })),
+      .map((r) => ({
+        id: r.id,
+        status: r.status,
+        completedAt: r.completedAt,
+        requirementCount: r._count.requirements,
+      })),
   );
 }

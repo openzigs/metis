@@ -505,13 +505,8 @@ export async function getLatestWebResearch(projectId: string): Promise<WebResear
 }
 
 /**
- * #943 — a regenerate or a repo resume works on a finished analysis: it calls
- * the model and rewrites the findings and requirements, so the analysis is
- * `running` again until {@link finalizeAnalysisDelta} settles it.
- */
-/**
  * #1252 — a run whose status settles can move the run the Requirements hub
- * opens on (`defaultRequirementsRunIdFor`: the newest COMPLETED run with any
+ * opens on (`defaultRequirementsRunIdFor`: the newest completed run with any
  * requirements), and with it the approved requirements a reader BRD lists.
  * So, after the write commits, the auto-update check looks again. A
  * background row (code-graph ingest, domain research) is never that run.
@@ -521,6 +516,13 @@ function noteRunSettled(row: { projectId: string; metadata: string | null } | nu
     void noteProjectRequirementsChanged(row.projectId);
 }
 
+/**
+ * #943 — a regenerate or a repo resume works on a finished analysis: it calls
+ * the model and rewrites the findings and requirements, so the analysis is
+ * `running` again until {@link finalizeAnalysisDelta} settles it. #1252 — it
+ * keeps its `completedAt`, so it stays the run Requirements opens on
+ * (`countsAsCompletedRun`) and asks for no check of its own.
+ */
 export async function markAnalysisRunning(id: string): Promise<void> {
   await prisma.analysis.update({ where: { id }, data: { status: "running" } });
 }
@@ -627,12 +629,26 @@ export async function settleRunningAnalysisAsFailed(input: {
   if (count === 0) return false;
   // The settle has committed: a failed read for the check must not turn it
   // into a rejection (the caller would log a settle that happened as failed).
-  noteRunSettled(
-    await prisma.analysis
-      .findUnique({ where: { id: input.id }, select: { projectId: true, metadata: true } })
-      .catch(() => null),
-  );
+  noteRunSettled(await readRunForNote(input.id));
   return true;
+}
+
+/**
+ * #1252 — the run a check is asked for after a committed write. Never throws
+ * (a client without the read, or a failed one, reads as no row): the write it
+ * follows has committed, and the check is best effort.
+ */
+async function readRunForNote(
+  id: string,
+): Promise<{ projectId: string; metadata: string | null; status: string } | null> {
+  try {
+    return await prisma.analysis.findUnique({
+      where: { id },
+      select: { projectId: true, metadata: true, status: true },
+    });
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1015,8 +1031,14 @@ export async function persistRequirements(input: PersistRequirementsInput): Prom
   );
   // #1252 — a new or replaced set changes what a reader BRD lists when this
   // is (or becomes) the run the Requirements hub opens on. Committed by now;
-  // a withheld replacement changed nothing.
-  if (!withheld) void noteProjectRequirementsChanged(input.projectId);
+  // a withheld replacement changed nothing. Not while the run is `running` (a
+  // first run, or a re-run re-opened by `markAnalysisRunning`): it settles in
+  // moments, and its settle asks for the check (`noteRunSettled`), so a check
+  // now would only regenerate against a set the run is still writing.
+  if (!withheld) {
+    const run = await readRunForNote(input.analysisId);
+    if (run?.status !== "running") void noteProjectRequirementsChanged(input.projectId);
+  }
   return ids;
 }
 
