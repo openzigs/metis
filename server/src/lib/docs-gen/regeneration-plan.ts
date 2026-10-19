@@ -73,6 +73,12 @@ export function fingerprintInputs(
  * out of date instead, and its Regenerate (`POST /regenerate`,
  * `reusePublished`) reuses them the same way. Any other manual regenerate (of a
  * failed or cancelled document) does not reuse the published version.
+ *
+ * Reuse is NOT guaranteed for the other sections: a section's inputs include
+ * the budget the plan gives it, and the Approved Requirements section's length
+ * moves what the appendix is left (`planInParts`, `document-plan.ts`).
+ * A batched catalogue section planned on a tight budget then hashes
+ * differently and is written again, at model cost.
  */
 export const APPROVED_REQUIREMENTS_ITEM = "approvedRequirements";
 

@@ -265,6 +265,63 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(state.check).toHaveBeenCalledTimes(1);
       });
 
+      it.each(["failed", "cancelled"])(
+        "a %s run being regenerated never becomes the default: it never completed (PR #1267 review 2)",
+        async (status) => {
+          const project = await makeProject();
+          const older = await makeAnalysis(project);
+          await makeRequirement(project, older, { reviewStatus: "approved", title: "Older run" });
+          // The newer run wrote requirements, then failed or was cancelled:
+          // markAnalysisFailed / markAnalysisCancelled set `completedAt`.
+          const newer = await makeAnalysis(project, status);
+          await db.analysis.update({ where: { id: newer }, data: { completedAt: new Date() } });
+          await makeRequirement(project, newer, { title: "Draft of the failed run" });
+          const doc = await db.generatedDocument.create({
+            data: { projectId: project, title: "BRD", scope: "full", status: "ready" },
+          });
+          await db.generatedDocumentVersion.create({
+            data: {
+              documentId: doc.id,
+              version: 1,
+              content: "# BRD",
+              provenanceManifest: JSON.stringify({
+                ...legacyGeneratedDocVersionManifest({
+                  projectId: project,
+                  generatedDocumentId: doc.id,
+                  version: 1,
+                }),
+                inputSnapshot: fingerprintInputs({
+                  [APPROVED_REQUIREMENTS_ITEM]: await approvedRequirementsItem(project),
+                }),
+              }),
+            },
+          });
+
+          await markAnalysisRunning(newer);
+
+          expect(await db.analysis.findUniqueOrThrow({ where: { id: newer } })).toMatchObject({
+            status: "running",
+            completedAt: null,
+          });
+          expect(await defaultRequirementsRunIdFor(project)).toBe(older);
+          expect(
+            JSON.parse(approvedRequirementsFacts(await loadApprovedRequirements(project))),
+          ).toEqual([expect.objectContaining({ title: "Older run" })]);
+          expect(
+            await approvedRequirementsOutOfDate(
+              await db.generatedDocument.findUniqueOrThrow({ where: { id: doc.id } }),
+            ),
+          ).toBe(false);
+        },
+      );
+
+      it("a completed run being regenerated keeps its completedAt", async () => {
+        const { newer } = await reopenedDefault();
+        const row = await db.analysis.findUniqueOrThrow({ where: { id: newer } });
+        expect(row.status).toBe("running");
+        expect(row.completedAt).not.toBeNull();
+      });
+
       it("does not mark an unchanged reader BRD out of date while the run is re-run", async () => {
         const project = await makeProject();
         const older = await makeAnalysis(project);

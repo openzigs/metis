@@ -1653,7 +1653,10 @@ describe("regenerating an out-of-date reader BRD reuses its model-written sectio
     });
   });
 
-  it("rebuilds only Approved Requirements: no model-written section is synthesized again", async () => {
+  // A small document, so no section's planned budget moves with the list: the
+  // case reuse covers. (A budget-limited plan can rewrite catalogue sections;
+  // see `regeneration-plan.ts`.)
+  it("reuses the model-written sections: none is synthesized again", async () => {
     await ingest();
     expect(state.versions).toHaveLength(1);
     expect(sectionCalls()).toBeGreaterThan(0);

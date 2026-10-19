@@ -29,7 +29,12 @@ export interface RequirementsRunCandidate {
  * settles again within minutes; leaving it out for that window moved the
  * default to an older run, so every reader saw that run's requirements
  * meanwhile. A first run still running has no `completedAt`, and is not
- * counted until it completes.
+ * counted until it completes; nor is a failed or cancelled run being re-run,
+ * whose `completedAt` the server clears when it re-opens it
+ * (`markAnalysisRunning`), since it never completed.
+ *
+ * Known gap: a re-run whose process dies before it settles stays `running`
+ * with its `completedAt`, and so stays the default, until it is settled.
  */
 export function countsAsCompletedRun(
   run: Pick<RequirementsRunCandidate, "status" | "completedAt">,

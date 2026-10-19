@@ -1855,8 +1855,8 @@ export function ApprovedRequirementsOutOfDateBanner({
       <p className="mt-1 text-sm text-muted-foreground">
         Requirements were approved or changed in METIS since this version was written, so the
         Approved Requirements section no longer matches them. Regenerate to write a new version that
-        lists them as they are now. The other sections are kept as they are, unless what they were
-        written from has changed too.
+        lists them as they are now. METIS keeps the other sections where it can, but it may rewrite
+        some of them, and that uses AI model credits.
       </p>
       <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
         {regenerating ? "Regenerating…" : "Regenerate"}

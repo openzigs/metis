@@ -1010,8 +1010,9 @@ export function generatedDocsRouter(): Router {
         if (resumable || outdated) {
           // #1252 — an out-of-date reader BRD is regenerated the way an
           // automatic update is: every section whose own inputs are unchanged
-          // is reused from the latest version, so only Approved Requirements
-          // (rendered from the stored rows, no model) is rebuilt.
+          // is reused from the latest version. Approved Requirements is rendered
+          // from the stored rows (no model); a section whose planned budget the
+          // new list moved is written again (`regeneration-plan.ts`).
           const options = outdated ? { reusePublished: true } : undefined;
           void generateDocumentAsync(docId, projectId, undefined, options).catch((err) => {
             log.error("Background doc regeneration failed", { err, docId });

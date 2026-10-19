@@ -519,12 +519,24 @@ function noteRunSettled(row: { projectId: string; metadata: string | null } | nu
 /**
  * #943 — a regenerate or a repo resume works on a finished analysis: it calls
  * the model and rewrites the findings and requirements, so the analysis is
- * `running` again until {@link finalizeAnalysisDelta} settles it. #1252 — it
- * keeps its `completedAt`, so it stays the run Requirements opens on
- * (`countsAsCompletedRun`) and asks for no check of its own.
+ * `running` again until {@link finalizeAnalysisDelta} settles it.
+ *
+ * #1252 — a run `running` with a `completedAt` counts as completed for the
+ * run Requirements opens on (`countsAsCompletedRun`). So a run that had
+ * COMPLETED keeps its `completedAt` and stays that run while it is re-run; a
+ * failed or cancelled one (whose `completedAt` its own settle wrote) has it
+ * cleared, since it never completed. The completed case is decided and
+ * written in one conditional statement, so a completed run can never lose its
+ * `completedAt` here; only a row that was not completed at that statement
+ * reaches the second write.
  */
 export async function markAnalysisRunning(id: string): Promise<void> {
-  await prisma.analysis.update({ where: { id }, data: { status: "running" } });
+  const reopened = await prisma.analysis.updateMany({
+    where: { id, status: "completed" },
+    data: { status: "running" },
+  });
+  if (reopened.count > 0) return;
+  await prisma.analysis.update({ where: { id }, data: { status: "running", completedAt: null } });
 }
 
 export async function markAnalysisCompleted(id: string, totals: TokenUsage): Promise<void> {
