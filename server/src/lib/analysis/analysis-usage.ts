@@ -38,7 +38,19 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { recordUsage } from "../finops/token-tracker.js";
 import { createChildLogger } from "../logger.js";
 import { decorateProvider } from "../ai/provider-decorator.js";
-import type { AIProvider, ChatChunk, ChatMessage, ChatOptions, TokenUsage } from "../ai/types.js";
+import {
+  noteUnmeteredAttempt,
+  reportedUsageOf,
+  withRetriedAttemptListener,
+} from "../ai/retried-attempts.js";
+import type {
+  AIProvider,
+  ChatChunk,
+  ChatMessage,
+  ChatOptions,
+  RetriedAttempt,
+  TokenUsage,
+} from "../ai/types.js";
 
 const log = createChildLogger("analysis-usage");
 
@@ -160,6 +172,20 @@ function record(provider: string, model: string, usage: TokenUsage | undefined):
   }
 }
 
+/** #1273 — a retried attempt of an analysis-family call whose provider reported no usage. */
+function noteUnmeteredAnalysisAttempt(scope: AnalysisUsageScope, a: RetriedAttempt): void {
+  noteUnmeteredAttempt(
+    {
+      actorId: null,
+      target: { type: "analysis_session", id: scope.sessionId },
+      projectId: scope.projectId,
+      provider: a.provider,
+      model: a.model,
+    },
+    { attempt: a.attempt, errorClass: a.errorClass, retriedBy: "adapter" },
+  );
+}
+
 /**
  * Decorate `provider` so its model calls are recorded against the active
  * {@link runInAnalysisUsageScope} scope. Idempotent: an already-metered
@@ -175,7 +201,19 @@ export function meterAnalysisProvider(provider: AIProvider): AIProvider {
 
   const chat = async (messages: ChatMessage[], opts?: ChatOptions) => {
     assertCallAllowed();
-    const res = await provider.chat(messages, opts);
+    const scope = storage.getStore();
+    // #1273 — an attempt the adapter retried inside this call is metered to
+    // the same scope, once: on what the provider reported for it, or — when it
+    // reported nothing — recorded as unmetered. Outside a scope the call is
+    // not metered here, so neither is the attempt (the adapter records it).
+    const callOpts = scope
+      ? withRetriedAttemptListener(opts, (a) => {
+          const reported = reportedUsageOf(a.error);
+          if (reported) record(a.provider, a.model, reported);
+          else noteUnmeteredAnalysisAttempt(scope, a);
+        })
+      : opts;
+    const res = await provider.chat(messages, callOpts);
     record(res.provider ?? provider.key, res.model ?? opts?.model ?? provider.model, res.usage);
     return res;
   };

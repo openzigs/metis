@@ -16,6 +16,10 @@ import { OfflineStubProvider } from "../ai/providers/offline-stub-provider.js";
 import { makeToolset } from "../ai/tool-runtime/toolset.js";
 import type { RuntimeTool } from "../ai/tool-runtime/types.js";
 import type { ApprovalGateService } from "../ai/approval-policy.js";
+import { reportRetriedAttempt, UNMETERED_ATTEMPT_AUDIT_ACTION } from "../ai/retried-attempts.js";
+
+const { auditSpy } = vi.hoisted(() => ({ auditSpy: vi.fn() }));
+vi.mock("../audit/audit-service.js", () => ({ audit: auditSpy }));
 
 const def: AgentDefinitionDto = {
   ref: "custom:a1",
@@ -243,5 +247,87 @@ describe("PR #783 review — a tool run's final synthesis keeps the output contr
     expect(last.role).toBe("user");
     expect(String(last.content)).toContain("Keep the required output format");
     expect(String(last.content).endsWith("ANSWER FORMAT: findings JSON")).toBe(true);
+  });
+});
+
+describe("PR #1274 review — a sub-agent's adapter-retried attempt is recorded", () => {
+  /** A provider whose adapter re-read a dropped body twice (no usage) before answering. */
+  const retryingProvider = () =>
+    ({
+      key: "openai",
+      model: "gpt-x",
+      offline: false,
+      chat: vi.fn(async (_m: ChatMessage[], o: ChatOptions) => {
+        for (const attempt of [1, 2]) {
+          reportRetriedAttempt(o, {
+            attempt,
+            errorClass: "stream-terminated",
+            error: new TypeError("terminated"),
+            provider: "openai",
+            model: "gpt-x",
+          });
+        }
+        return {
+          content: "done",
+          usage: { promptTokens: 5, completionTokens: 1, totalTokens: 6 },
+          model: "gpt-x",
+          provider: "openai",
+        };
+      }),
+    }) as unknown as AIProvider;
+  const unmeteredAudits = () =>
+    auditSpy.mock.calls
+      .map(([e]) => e as { action: string; target: unknown; metadata: { attempt: number } })
+      .filter((e) => e.action === UNMETERED_ATTEMPT_AUDIT_ACTION);
+
+  it("text only: each attempt is audited once (by the adapter, against the provider)", async () => {
+    auditSpy.mockClear();
+    await runAgent({
+      provider: retryingProvider(),
+      definition: def,
+      input: "x",
+      frame: "delegated-task",
+    });
+    expect(unmeteredAudits().map((e) => e.metadata.attempt)).toEqual([1, 2]);
+    expect(unmeteredAudits()[0]!.target).toEqual({ type: "ai_provider", id: "openai" });
+  });
+
+  it("with tools: each attempt is audited once, against the sub-agent's session", async () => {
+    auditSpy.mockClear();
+    const gate = {
+      evaluate: vi.fn(async () => ({ allowed: true, decision: "allow" })),
+      recordRefusal: vi.fn(async () => ({ allowed: false, decision: "deny" })),
+    } as unknown as ApprovalGateService;
+    const read: RuntimeTool = {
+      name: "read_file_slice",
+      wireName: "read_file_slice",
+      description: "read",
+      parameters: { type: "object" },
+      risk: "low",
+      source: "metis",
+      validate: (args) => ({ ok: true, args }),
+      execute: async () => ({ text: "evidence" }),
+    };
+    await runAgent({
+      provider: retryingProvider(),
+      definition: def,
+      input: "x",
+      frame: "delegated-task",
+      tools: {
+        toolset: makeToolset([read]),
+        gate,
+        ctx: { sessionId: "s-sub", userId: "u1", projectId: "p1" },
+        toolNote: "TOOLS",
+        maxTurns: 1,
+      },
+    });
+
+    const unmetered = unmeteredAudits();
+    expect(unmetered.map((e) => e.metadata.attempt)).toEqual([1, 2]);
+    expect(unmetered[0]).toMatchObject({
+      actor: { id: "u1" },
+      target: { type: "ai_session", id: "s-sub" },
+      metadata: { projectId: "p1", retriedBy: "adapter" },
+    });
   });
 });

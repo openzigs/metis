@@ -27,10 +27,15 @@ import {
   readsApprovedRequirements,
 } from "./approved-requirements-section.js";
 
-/** #855 — registry keys that bound a run's spend without changing its output. */
+/**
+ * #855 — registry keys that bound a run's spend without changing its output.
+ * #1209 — the drop-retry limit too: it decides how often a dropped section is
+ * asked again, never what a completed section says.
+ */
 const RUN_CEILING_KEYS: ReadonlySet<string> = new Set([
   "DOCS_GEN_MAX_RUN_COST_CENTS",
   "DOCS_GEN_MAX_RUN_TOKENS",
+  "DOCS_GEN_DROP_RETRY_SECTION_LIMIT",
 ]);
 
 /** Canonicalize objects, not arrays: prompt/selection order can be meaningful. */

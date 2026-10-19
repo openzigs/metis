@@ -29,7 +29,8 @@ vi.mock("../prisma.js", () => ({
     },
   },
 }));
-vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
+const { auditSpy } = vi.hoisted(() => ({ auditSpy: vi.fn() }));
+vi.mock("../audit/audit-service.js", () => ({ audit: auditSpy }));
 
 // ── Project usage ledger double (#739 / #775) ────────────────────────────────
 const recordProjectUsage = vi.fn();
@@ -510,6 +511,48 @@ describe("streamAIReply — #739 grounding", () => {
     expect(chunks).toContainEqual({ type: "delta", content: result.message.body });
     expect(chunks.at(-1)).toEqual({ type: "done" });
     expect(result.usage).toMatchObject({ promptTokens: 400, completionTokens: 50 });
+  });
+
+  it("PR #1274 review — an attempt the adapter retried inside the reply's chat() is audited as unmetered, exactly once", async () => {
+    const { reportRetriedAttempt, UNMETERED_ATTEMPT_AUDIT_ACTION } =
+      await import("../ai/retried-attempts.js");
+    const { provider } = chatProvider([]);
+    (provider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_m: ChatMessage[], opts: ChatOptions) => {
+        // What the OpenAI-compatible adapter does on a dropped body: no usage.
+        reportRetriedAttempt(opts, {
+          attempt: 1,
+          errorClass: "stream-terminated",
+          error: new TypeError("terminated"),
+          provider: "openai",
+          model: "deepseek-flash",
+        });
+        return {
+          content: "Answer.",
+          usage: USAGE(10, 1),
+          model: "deepseek-flash",
+          provider: "openai",
+        };
+      },
+    );
+
+    await streamAIReply({
+      thread,
+      triggerMessage,
+      actor,
+      provider,
+      resolveTools: async () => toolRuntime(readTool("x")),
+    });
+
+    const unmetered = auditSpy.mock.calls
+      .map(([e]) => e as { action: string; target: unknown; metadata: unknown })
+      .filter((e) => e.action === UNMETERED_ATTEMPT_AUDIT_ACTION);
+    expect(unmetered).toHaveLength(1);
+    expect(unmetered[0]).toMatchObject({
+      actor: { id: "u1" },
+      target: { type: "ai_session", id: "sess-1" },
+      metadata: { projectId: "p1", attempt: 1, retriedBy: "adapter" },
+    });
   });
 
   it("keeps the tool loop to a bounded budget, then answers in one tool-free call", async () => {

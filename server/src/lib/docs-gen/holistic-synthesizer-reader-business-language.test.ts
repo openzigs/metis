@@ -369,6 +369,21 @@ describe("the provenance manifest", () => {
     expect(parsed.sections[0].codeIdentifiers).toEqual(report);
   });
 
+  it("#1209 — keeps why a run stopped retrying dropped connections through a write and a read", () => {
+    const dropRetries = {
+      reason: "repeated-connection-drops" as const,
+      limit: 2,
+      exhaustedSections: 2,
+    };
+    const parsed = parseGeneratedDocVersionManifest(
+      buildGeneratedDocVersionManifest({ ...input(), dropRetries }),
+    );
+    expect(parsed.generation.dropRetries).toEqual(dropRetries);
+    // A run that never stopped retrying records nothing.
+    const plain = parseGeneratedDocVersionManifest(buildGeneratedDocVersionManifest(input()));
+    expect(plain.generation).not.toHaveProperty("dropRetries");
+  });
+
   it("still reads a manifest written before the check, and writes none without one", () => {
     const parsed = parseGeneratedDocVersionManifest(buildGeneratedDocVersionManifest(input()));
     expect(parsed.sections[0]).not.toHaveProperty("codeIdentifiers");

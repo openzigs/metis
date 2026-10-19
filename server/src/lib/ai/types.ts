@@ -441,6 +441,29 @@ export interface ChatOptions {
    * generation ceiling, bound the wait, and tell the user it is waiting.
    */
   onSlotQueued?: (position: number) => void;
+  /**
+   * #1273 — called by an adapter that retries a `chat()` attempt INSIDE the
+   * call, for each retried attempt the provider may already have billed (a
+   * reply whose body dropped while it was being read), before the retry. The
+   * caller never sees that attempt otherwise: `chat()` returns, or throws, only
+   * the last one. The usage the provider reported for it, if any, is
+   * `partialUsageOf(attempt.error)`. Handled by whoever meters the
+   * call — see `retried-attempts.ts`; with no listener the adapter records the
+   * attempt as unmetered itself, so it is never silently lost.
+   */
+  onRetriedAttempt?: (attempt: RetriedAttempt) => void;
+}
+
+/** #1273 — one attempt an adapter retried inside a single `chat()` call. */
+export interface RetriedAttempt {
+  /** The adapter's 1-based try that failed. */
+  attempt: number;
+  /** How it failed: its `classifyGroundingError` class (`stream-terminated`, `timeout`…). */
+  errorClass: string;
+  /** What it failed with; may carry the provider's reported usage (`partialUsageOf`). */
+  error: unknown;
+  provider: ProviderKey;
+  model: string;
 }
 
 export interface EmbedResult {

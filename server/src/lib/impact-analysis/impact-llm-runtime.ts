@@ -45,7 +45,18 @@ import { createChildLogger } from "../logger.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { getTokenTracker } from "../ai/token-tracker.js";
 import { recordUsage, type RecordUsageInput } from "../finops/token-tracker.js";
-import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../ai/types.js";
+import type {
+  AIProvider,
+  ChatMessage,
+  ChatOptions,
+  ChatResponse,
+  RetriedAttempt,
+} from "../ai/types.js";
+import {
+  noteUnmeteredAttempt,
+  reportedUsageOf,
+  withRetriedAttemptListener,
+} from "../ai/retried-attempts.js";
 import { decorateProvider } from "../ai/provider-decorator.js";
 import { currentImpactProjectId } from "./impact-llm-scope.js";
 
@@ -356,8 +367,36 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
   const instrument = (provider: AIProvider, stage: ImpactLlmStage): AIProvider =>
     decorateProvider(provider, {
       async chat(messages: ChatMessage[], chatOpts?: ChatOptions): Promise<ChatResponse> {
+        // #1273 — an attempt the adapter retried inside this call is metered
+        // here like the call itself, once: on its reported usage, or — when
+        // the provider reported none — recorded as unmetered.
+        const onRetriedAttempt = (a: RetriedAttempt): void => {
+          const reported = reportedUsageOf(a.error);
+          if (reported) {
+            meter(stage, provider, {
+              content: "",
+              usage: reported,
+              model: a.model,
+              provider: a.provider,
+            });
+            return;
+          }
+          noteUnmeteredAttempt(
+            {
+              actorId: opts.actorId,
+              target: { type: "impact_llm_stage", id: stage },
+              projectId: currentImpactProjectId() ?? fallbackProjectId,
+              provider: a.provider,
+              model: a.model,
+            },
+            { attempt: a.attempt, errorClass: a.errorClass, retriedBy: "adapter" },
+          );
+        };
         const res = await withDeadline(stage, chatOpts?.signal, (signal) =>
-          provider.chat(messages, { ...chatOpts, signal }),
+          provider.chat(
+            messages,
+            withRetriedAttemptListener({ ...chatOpts, signal }, onRetriedAttempt),
+          ),
         );
         statsFor(stage).calls += 1;
         meter(stage, provider, res);

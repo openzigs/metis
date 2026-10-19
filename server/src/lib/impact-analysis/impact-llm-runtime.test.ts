@@ -8,6 +8,11 @@
  *     degrades without hanging the run, and the run can say so out loud (#1024).
  */
 import { describe, expect, it, vi } from "vitest";
+
+const { auditSpy } = vi.hoisted(() => ({ auditSpy: vi.fn() }));
+vi.mock("../audit/audit-service.js", () => ({ audit: auditSpy }));
+
+import { attachPartialUsage } from "../ai/partial-usage.js";
 import {
   createImpactLlmRuntime,
   impactLlmTimeoutMs,
@@ -475,5 +480,51 @@ describe("createImpactLlmRuntime — degradation (#1024)", () => {
     runtime.markUnavailable("summary-item", "provider-offline");
     runtime.markUnavailable("seeding", "provider-offline");
     expect(runtime.snapshot().map((s) => s.stage)).toEqual(["seeding", "summary-item"]);
+  });
+});
+
+describe("createImpactLlmRuntime — #1273 attempts the adapter retried inside one chat()", () => {
+  it("meters each once: reported usage like a call, none as an unmetered audit", async () => {
+    auditSpy.mockClear();
+    const { runtime, record, recordProjectUsage } = runtimeWith();
+    const base = { errorClass: "stream-terminated", provider: "openai" as const, model: "m" };
+    const provider = runtime.instrument(
+      fakeProvider({
+        chat: async (_m, opts) => {
+          opts?.onRetriedAttempt?.({
+            ...base,
+            attempt: 1,
+            error: attachPartialUsage(new TypeError("terminated"), {
+              promptTokens: 900,
+              completionTokens: 4,
+              totalTokens: 904,
+            }),
+          });
+          opts?.onRetriedAttempt?.({ ...base, attempt: 2, error: new TypeError("terminated") });
+          return { content: "{}", usage: USAGE, model: "claude-sonnet-5", provider: "anthropic" };
+        },
+      }),
+      "table-filter",
+    );
+
+    await runInImpactProjectScope("proj-42", () => provider.chat([]));
+    await runtime.flush();
+
+    // The reported attempt and the completed call, each once per store.
+    expect(record.mock.calls.map(([e]) => e.usage.totalTokens)).toEqual([904, 1020]);
+    expect(recordProjectUsage.mock.calls.map(([e]) => e.inputTokens)).toEqual([900, 900]);
+    expect(recordProjectUsage.mock.calls[0]![0]).toMatchObject({
+      projectId: "proj-42",
+      provider: "openai",
+      model: "m",
+      agentStep: IMPACT_LLM_AGENT_STEP["table-filter"],
+    });
+    expect(auditSpy).toHaveBeenCalledTimes(1);
+    expect(auditSpy.mock.calls[0]![0]).toMatchObject({
+      actor: { id: "user-1" },
+      action: "ai.usage.unmetered",
+      target: { type: "impact_llm_stage", id: "table-filter" },
+      metadata: { projectId: "proj-42", attempt: 2, retriedBy: "adapter" },
+    });
   });
 });

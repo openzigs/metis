@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { AIProviderError } from "../ai/errors.js";
 import {
   errorClassOf,
   generationFailureWarning,
   hasFailedSections,
+  markDroppedAttempts,
   partialDocumentMarkdown,
   sectionFailureWarning,
   UnpublishableGenerationError,
@@ -10,7 +12,9 @@ import {
 import {
   GENERATION_FAILED_MESSAGE,
   GENERATION_PROVIDER_BALANCE_MESSAGE,
+  GENERATION_PROVIDER_DROPPED_MESSAGE,
   GENERATION_PROVIDER_SLOW_MESSAGE,
+  isBodyTimeout,
 } from "./generation-failure-message.js";
 import { hashSectionInputs, recordSectionSynthesis } from "./section-reuse.js";
 
@@ -166,6 +170,80 @@ describe("#942 — sectionFailureWarning", () => {
     const w = sectionFailureWarning("Overview", new Error("402 Insufficient Balance"));
     expect(w.message).toContain(GENERATION_PROVIDER_BALANCE_MESSAGE);
     expect(w.message).not.toContain("(Error)");
+  });
+});
+
+describe("#1209 — sectionFailureWarning for a connection that dropped", () => {
+  /** The Anthropic adapter's wrapped drop: the transport classifier does not recognise it. */
+  const anthropicDrop = () =>
+    new AIProviderError("anthropic stream failed (TypeError): terminated", 502, {
+      provider: "anthropic",
+      operation: "stream",
+      errorName: "TypeError",
+    });
+
+  it("says the provider's connection dropped, with the attempts the draft made", () => {
+    const err = markDroppedAttempts(anthropicDrop(), { attempts: 3, retriesStopped: false });
+    expect(sectionFailureWarning("Overview", err).message).toBe(
+      'Section "Overview" could not be generated: the AI provider\'s connection dropped while it was writing this section (3 attempts). Regenerate the document to try this section again; the finished sections are reused.',
+    );
+  });
+
+  it("says when METIS had stopped retrying, in the singular", () => {
+    const err = markDroppedAttempts(anthropicDrop(), { attempts: 1, retriesStopped: true });
+    expect(sectionFailureWarning("Overview", err).message).toContain(
+      "(1 attempt; METIS stopped retrying after the connection dropped on earlier sections too)",
+    );
+  });
+
+  it("falls back to the grounding classifier when the transport classifier does not recognise the drop", () => {
+    const w = sectionFailureWarning("Overview", anthropicDrop());
+    expect(w.message).toContain(
+      "the AI provider's connection dropped while it was writing this section. Regenerate",
+    );
+    expect(w.message).not.toContain("unrecognised error");
+  });
+
+  it("PR #1274 review — an unreachable host wrapped by the Anthropic adapter is not called a dropped reply", () => {
+    const err = new AIProviderError(
+      "anthropic stream failed (APIConnectionError): Connection error.",
+      502,
+      {
+        provider: "anthropic",
+        operation: "stream",
+        errorName: "APIConnectionError",
+      },
+    );
+    const w = sectionFailureWarning("Overview", err);
+    expect(w.message).not.toContain("dropped");
+    expect(w.message).toContain("unrecognised error (AIProviderError)");
+  });
+
+  it("leaves a drop the transport classifier recognises with its own message when no count is known", () => {
+    const w = sectionFailureWarning("Overview", new TypeError("terminated"));
+    expect(w.message).toContain(GENERATION_PROVIDER_DROPPED_MESSAGE);
+  });
+});
+
+describe("#1209 — isBodyTimeout", () => {
+  it("reads undici's body timeout under `terminated`, by code or by name", () => {
+    const byCode = new TypeError("terminated", {
+      cause: Object.assign(new Error("Body Timeout Error"), { code: "UND_ERR_BODY_TIMEOUT" }),
+    });
+    const byName = new TypeError("terminated", {
+      cause: Object.assign(new Error("Body Timeout Error"), { name: "BodyTimeoutError" }),
+    });
+    expect(isBodyTimeout(byCode)).toBe(true);
+    expect(isBodyTimeout(byName)).toBe(true);
+  });
+
+  it("is false for a real drop", () => {
+    const reset = new TypeError("terminated", {
+      cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+    });
+    expect(isBodyTimeout(reset)).toBe(false);
+    expect(isBodyTimeout(new TypeError("terminated"))).toBe(false);
+    expect(isBodyTimeout("terminated")).toBe(false);
   });
 });
 
