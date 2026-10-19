@@ -59,6 +59,28 @@ describe("<ArtifactsSection />", () => {
     expect(screen.getByTestId(`artifact-download-${baseAnalysis.id}`)).toBeEnabled();
   });
 
+  // #1155 review — the artifact list showed the raw status, so a run that
+  // completed with errors or warnings read as a plain `completed`. The
+  // download stays enabled: the run did complete.
+  it("labels each artifact as the run header does, and still allows the download", async () => {
+    listMock.mockResolvedValue({
+      items: [
+        { ...baseAnalysis, id: "an-err", failedAgents: ["code"] },
+        {
+          ...baseAnalysis,
+          id: "an-warn",
+          failedAgents: [],
+          droppedCitations: [{ agentKey: "code", count: 1 }],
+        },
+      ],
+    });
+    renderWith("p-1");
+    await waitFor(() => expect(screen.getByText("completed with errors")).toBeInTheDocument());
+    expect(screen.getByText("completed with warnings")).toBeInTheDocument();
+    expect(screen.getByTestId("artifact-download-an-err")).toBeEnabled();
+    expect(screen.getByTestId("artifact-download-an-warn")).toBeEnabled();
+  });
+
   it("disables the download button for non-completed analyses", async () => {
     listMock.mockResolvedValue({
       items: [{ ...baseAnalysis, id: "an-2", status: "running" as const, completedAt: null }],

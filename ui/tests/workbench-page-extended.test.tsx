@@ -213,6 +213,33 @@ describe("WorkbenchPage — recent analyses and tasks", () => {
     await waitFor(() => expect(screen.getByTestId("workbench-analyses")).toBeInTheDocument());
   });
 
+  // #1155 review — the recent-analyses list showed the raw status, so a run
+  // that completed with errors or warnings read as a plain `completed`.
+  it("labels each recent analysis as the run header does", async () => {
+    projectsListMock.mockResolvedValueOnce({ items: [{ id: "p1", name: "Alpha" }] });
+    const at = new Date("2026-01-01T10:00:00Z").toISOString();
+    analysisListMock.mockResolvedValueOnce({
+      items: [
+        { id: "a1", projectId: "p1", status: "completed", startedAt: at, failedAgents: ["code"] },
+        {
+          id: "a2",
+          projectId: "p1",
+          status: "completed",
+          startedAt: at,
+          failedAgents: [],
+          droppedCitations: [{ agentKey: "code", count: 1 }],
+        },
+        { id: "a3", projectId: "p1", status: "completed", startedAt: at },
+      ],
+    });
+    renderPage();
+    const list = await screen.findByTestId("workbench-analyses");
+    const rows = list.querySelectorAll("li");
+    expect(rows[0]).toHaveTextContent("completed with errors");
+    expect(rows[1]).toHaveTextContent("completed with warnings");
+    expect(rows[2]!.querySelector("span")).toHaveTextContent(/^completed$/);
+  });
+
   it("renders task items in the right panel", async () => {
     tasksListMock.mockResolvedValueOnce({
       items: [{ id: "t1", type: "analysis.run", status: "completed" }],

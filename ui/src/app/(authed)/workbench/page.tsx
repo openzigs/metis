@@ -33,6 +33,7 @@ import {
   streamChat,
 } from "@/lib/ai-client";
 import { analysisApi } from "@/lib/analysis-api";
+import { runStatusText } from "@/components/analysis/analysis-status-badge";
 import { tasksApi } from "@/lib/scheduler-api";
 import {
   loadLayout,
@@ -642,7 +643,7 @@ export default function WorkbenchPage() {
                     >
                       {new Date(a.startedAt).toLocaleString()}
                     </a>
-                    <span className="rounded bg-muted px-1.5 py-0.5">{a.status}</span>
+                    <span className="rounded bg-muted px-1.5 py-0.5">{runStatusText(a)}</span>
                   </li>
                 ))}
               </ul>
