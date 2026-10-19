@@ -476,6 +476,31 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     expect(readCapability()?.skippedRepos).toEqual([]);
   });
 
+  // #1156 — the finally awaited the database writes before releasing the claim,
+  // so one failing write refused every later resume or regenerate until a restart.
+  it("#1156 — a failing finalize write still releases the resume's claim", async () => {
+    state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
+    state.connectors = [{ id: "c2", label: "worker" }];
+    const { prisma } = await import("../prisma.js");
+    const update = prisma.analysis.update as unknown as ReturnType<typeof vi.fn>;
+    const original = update.getMockImplementation()!;
+    update.mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      if (args.data.totalTokens && typeof args.data.totalTokens === "object") {
+        throw new Error("database unavailable");
+      }
+      return original(args);
+    });
+    const { orch } = makeOrch();
+    try {
+      await expect(
+        orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" }),
+      ).rejects.toThrow("database unavailable");
+      expect(orch.isActive(ANALYSIS_ID)).toBe(false);
+    } finally {
+      update.mockImplementation(original);
+    }
+  });
+
   describe("assertCanResumeRepos guards", () => {
     it("rejects a resume while the analysis is already being mutated (double-resume guard)", async () => {
       state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);

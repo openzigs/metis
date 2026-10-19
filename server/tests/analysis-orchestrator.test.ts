@@ -1915,6 +1915,74 @@ describe("AnalysisOrchestrator.regenerateAgent guards", () => {
     spy.mockRestore();
   });
 
+  // #1156 — the claim exists before the continue check is awaited, so a cancel
+  // in that gap stops the analysis's model calls. The refusal then released the
+  // claim but left the stop in place, so the NEXT regenerate made no model call
+  // and ended cancelled/failed.
+  it("#1156 — a cancel during the continue check does not block the next regenerate", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const analysisId = await runToCompletion(orch);
+    const spy = vi
+      .spyOn(orch, "assertCanContinueInvestigation")
+      .mockImplementationOnce(async (id: string) => {
+        expect(await orch.cancel(id, "user-1234567890")).toBe(true);
+        throw new Error("limit reached");
+      });
+    await expect(
+      orch.regenerateAgent({
+        analysisId,
+        agentKey: "code",
+        actorId: "user-1234567890",
+        extendBudget: true,
+      }),
+    ).rejects.toThrow("limit reached");
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(orch.isActive(analysisId)).toBe(false);
+    spy.mockRestore();
+
+    await orch.regenerateAgent({
+      analysisId,
+      agentKey: "document",
+      actorId: "user-1234567890",
+    });
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+  });
+
+  // #1156 — the finally awaited the database writes before releasing the claim,
+  // so one failing write left the analysis claimed until a restart.
+  it("#1156 — a failing finalize write still releases the regenerate's claim", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const analysisId = await runToCompletion(orch);
+    const { prisma } = await import("../src/lib/prisma.js");
+    const update = prisma.analysis.update as unknown as ReturnType<typeof vi.fn>;
+    const original = update.getMockImplementation()!;
+    update.mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      if (args.data.totalTokens && typeof args.data.totalTokens === "object") {
+        throw new Error("database unavailable");
+      }
+      return original(args);
+    });
+    try {
+      await expect(
+        orch.regenerateAgent({
+          analysisId,
+          agentKey: "document",
+          actorId: "user-1234567890",
+        }),
+      ).rejects.toThrow("database unavailable");
+      expect(orch.isActive(analysisId)).toBe(false);
+    } finally {
+      update.mockImplementation(original);
+    }
+    analyses.get(analysisId)!.status = "completed";
+    await orch.regenerateAgent({
+      analysisId,
+      agentKey: "document",
+      actorId: "user-1234567890",
+    });
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+  });
+
   it("refuses regenerate when the analysis status is still running (M1)", async () => {
     const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
     const analysisId = await runToCompletion(orch);

@@ -957,7 +957,8 @@ export class AnalysisOrchestrator {
       // #1062 — the route pre-checks this; a direct caller is held to it too.
       if (opts.extendBudget) await this.assertCanContinueInvestigation(opts.analysisId);
     } catch (err) {
-      this.active.delete(opts.analysisId);
+      // #1156 — a cancel may have stopped model calls while this check ran.
+      this.releaseClaim(opts.analysisId);
       throw err;
     }
     // #724 — bill the regenerated agent and the re-synthesis to the project.
@@ -1104,32 +1105,36 @@ export class AnalysisOrchestrator {
         ts: Date.now(),
       });
     } finally {
-      // A failed regenerate leaves no tracker to finalize its pass health.
-      this.retrievalHealths.delete(opts.analysisId);
-      await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
-      // Atomic write — increments columns server-side so two concurrent
-      // regenerates can't lose tokens to a read/modify/write race.
-      await finalizeAnalysisDelta({
-        id: opts.analysisId,
-        status: outcome,
-        delta,
-        errorMessage,
-      });
-      audit({
-        actor: { id: opts.actorId },
-        action: "analysis.regenerate",
-        target: { type: "analysis", id: opts.analysisId },
-        metadata: {
-          projectId: analysis.projectId,
-          agentKey: opts.agentKey,
-          extendBudget: opts.extendBudget === true,
-          tokensConsumed: delta.totalTokens,
-          decision: outcome,
+      // #1156 — a failing database write below must not keep the claim: it
+      // would refuse every later regenerate or resume until a restart.
+      try {
+        // A failed regenerate leaves no tracker to finalize its pass health.
+        this.retrievalHealths.delete(opts.analysisId);
+        await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
+        // Atomic write — increments columns server-side so two concurrent
+        // regenerates can't lose tokens to a read/modify/write race.
+        await finalizeAnalysisDelta({
+          id: opts.analysisId,
+          status: outcome,
+          delta,
           errorMessage,
-        },
-      });
-      this.active.delete(opts.analysisId);
-      allowAnalysisModelCalls(opts.analysisId);
+        });
+        audit({
+          actor: { id: opts.actorId },
+          action: "analysis.regenerate",
+          target: { type: "analysis", id: opts.analysisId },
+          metadata: {
+            projectId: analysis.projectId,
+            agentKey: opts.agentKey,
+            extendBudget: opts.extendBudget === true,
+            tokensConsumed: delta.totalTokens,
+            decision: outcome,
+            errorMessage,
+          },
+        });
+      } finally {
+        this.releaseClaim(opts.analysisId);
+      }
     }
   }
 
@@ -1495,28 +1500,31 @@ export class AnalysisOrchestrator {
         ts: Date.now(),
       });
     } finally {
-      await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
-      await finalizeAnalysisDelta({
-        id: opts.analysisId,
-        status: outcome,
-        delta,
-        errorMessage,
-      });
-      audit({
-        actor: { id: opts.actorId },
-        action: "analysis.repos.resume",
-        target: { type: "analysis", id: opts.analysisId },
-        metadata: {
-          projectId: analysis.projectId,
-          resumedCount: resumed.length,
-          remainingCount: remaining.length,
-          tokensConsumed: delta.totalTokens,
-          decision: outcome,
+      // #1156 — release the claim even when a database write below throws.
+      try {
+        await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
+        await finalizeAnalysisDelta({
+          id: opts.analysisId,
+          status: outcome,
+          delta,
           errorMessage,
-        },
-      });
-      this.active.delete(opts.analysisId);
-      allowAnalysisModelCalls(opts.analysisId);
+        });
+        audit({
+          actor: { id: opts.actorId },
+          action: "analysis.repos.resume",
+          target: { type: "analysis", id: opts.analysisId },
+          metadata: {
+            projectId: analysis.projectId,
+            resumedCount: resumed.length,
+            remainingCount: remaining.length,
+            tokensConsumed: delta.totalTokens,
+            decision: outcome,
+            errorMessage,
+          },
+        });
+      } finally {
+        this.releaseClaim(opts.analysisId);
+      }
     }
     return { resumed, remaining, noop: false };
   }
@@ -1643,6 +1651,16 @@ export class AnalysisOrchestrator {
       target: { type: "analysis", id: analysisId },
     });
     return true;
+  }
+
+  /**
+   * #1156 — release a run's {@link ActiveRun} claim together with the stop gate
+   * a cancel may have closed ({@link stopAnalysisModelCalls}). Releasing only
+   * the claim left the next run on the analysis unable to call the model.
+   */
+  private releaseClaim(analysisId: string): void {
+    this.active.delete(analysisId);
+    allowAnalysisModelCalls(analysisId);
   }
 
   /** Whether an analysis is currently in flight (test introspection). */
@@ -2398,8 +2416,7 @@ export class AnalysisOrchestrator {
         }).catch(() => undefined);
       }
     } finally {
-      this.active.delete(analysisId);
-      allowAnalysisModelCalls(analysisId);
+      this.releaseClaim(analysisId);
       this.capabilities.delete(analysisId);
     }
   }
