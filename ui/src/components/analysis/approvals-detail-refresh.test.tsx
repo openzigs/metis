@@ -43,7 +43,7 @@ vi.mock("@/lib/analysis-api", async (importOriginal) => {
   };
 });
 
-const { ApprovalsPanel, summarisePendingByType } =
+const { ApprovalsPanel, describeSetDifference, summarisePendingByType } =
   await import("@/components/analysis/ApprovalsPanel");
 
 const ANALYSIS_ID = "an_1135";
@@ -266,5 +266,74 @@ describe("#909 — warns before approval when the reviewed list is not the synth
     });
     expect(await screen.findByTestId("promotion-banner")).toBeInTheDocument();
     expect(screen.queryByTestId("approved-set-difference")).toBeNull();
+  });
+
+  it("#930 — warns on equal counts when the two name different requirements", async () => {
+    renderPanel({
+      promotionBlocked: {
+        blocked: true,
+        pendingCount: 1,
+        rejectedCount: 0,
+        awaitingRequirementCount: 3,
+        synthesisRequirementCount: 3,
+        setDifference: { reviewedWithoutItem: 1, itemsWithoutReviewed: 2 },
+      },
+    });
+
+    const warning = await screen.findByTestId("approved-set-difference");
+    expect(warning).toHaveTextContent(
+      "Approving promotes the 3 requirement(s) reviewed below. " +
+        "1 of them did not match any requirement the analysis wrote up. These will be " +
+        "promoted without acceptance criteria or supporting evidence; you can add acceptance " +
+        "criteria by editing each one after approving. 2 requirement(s) the analysis wrote up match nothing in the " +
+        "reviewed list, so their acceptance criteria and evidence will not be carried over " +
+        "to any requirement.",
+    );
+    // Equal counts are not restated as if they differed.
+    expect(warning).not.toHaveTextContent("not the 3");
+  });
+
+  it("#930 — names only the side that is affected", () => {
+    expect(describeSetDifference(3, 3, { reviewedWithoutItem: 0, itemsWithoutReviewed: 1 })).toBe(
+      "Approving promotes the 3 requirement(s) reviewed below. 1 requirement(s) the analysis " +
+        "wrote up match nothing in the reviewed list, so their acceptance criteria and " +
+        "evidence will not be carried over to any requirement.",
+    );
+    expect(describeSetDifference(4, 3, { reviewedWithoutItem: 2, itemsWithoutReviewed: 0 })).toBe(
+      "Approving promotes the 4 requirement(s) reviewed below. 2 of them did not match any " +
+        "requirement the analysis wrote up. These will be promoted without acceptance " +
+        "criteria or supporting evidence; you can add acceptance criteria by editing each one " +
+        "after approving.",
+    );
+  });
+
+  it("#930 — says nothing when the same requirements are on both sides", async () => {
+    renderPanel({
+      promotionBlocked: {
+        blocked: true,
+        pendingCount: 1,
+        rejectedCount: 0,
+        awaitingRequirementCount: 3,
+        synthesisRequirementCount: 3,
+        setDifference: { reviewedWithoutItem: 0, itemsWithoutReviewed: 0 },
+      },
+    });
+    expect(await screen.findByTestId("promotion-banner")).toBeInTheDocument();
+    expect(screen.queryByTestId("approved-set-difference")).toBeNull();
+  });
+});
+
+describe("#930 — describeSetDifference", () => {
+  it("keeps the count message alone when the counts differ but every item is matched", () => {
+    expect(describeSetDifference(2, 1, { reviewedWithoutItem: 0, itemsWithoutReviewed: 0 })).toBe(
+      "Approving promotes the 2 requirement(s) reviewed below, not the 1 the synthesis produced. " +
+        "Synthesized requirements only contribute acceptance criteria and evidence to a reviewed " +
+        "requirement they match.",
+    );
+  });
+
+  it("compares counts only for a run recorded before #930", () => {
+    expect(describeSetDifference(3, 3)).toBeNull();
+    expect(describeSetDifference(3, 4)).not.toBeNull();
   });
 });

@@ -157,19 +157,47 @@ export function describeRejections(rejected: ReadonlyArray<{ type: string }>): s
 /**
  * Issue #909 — approving promotes the REVIEWED list (#730), which is a different
  * set from the synthesis output. Say so before the reviewer approves, whenever
- * the two counts differ; otherwise the rows that appear look like a bug.
+ * the two differ; otherwise the rows that appear look like a bug.
+ *
+ * Issue #930 — "differ" is by identity when the server recorded it
+ * (`identity`): equal counts naming different requirements used to show no
+ * warning. A run recorded before #930 has no identity and compares counts.
  */
 export function describeSetDifference(
   reviewedCount: number | undefined,
   synthesisCount: number | undefined,
+  identity?: { reviewedWithoutItem: number; itemsWithoutReviewed: number },
 ): string | null {
   if (reviewedCount === undefined || synthesisCount === undefined) return null;
-  if (reviewedCount === synthesisCount) return null;
-  return (
-    `Approving promotes the ${reviewedCount} requirement(s) reviewed below, not the ` +
-    `${synthesisCount} the synthesis produced. Synthesized requirements only contribute ` +
-    `acceptance criteria and evidence to a reviewed requirement they match.`
-  );
+  const unmatched = identity
+    ? identity.reviewedWithoutItem > 0 || identity.itemsWithoutReviewed > 0
+    : false;
+  if (reviewedCount === synthesisCount && !unmatched) return null;
+  if (!identity || !unmatched) {
+    return (
+      `Approving promotes the ${reviewedCount} requirement(s) reviewed below, not the ` +
+      `${synthesisCount} the synthesis produced. Synthesized requirements only contribute ` +
+      `acceptance criteria and evidence to a reviewed requirement they match.`
+    );
+  }
+  // #930 review — say which requirements are affected and what happens to
+  // them, without restating two counts that may well be equal.
+  const sentences = [`Approving promotes the ${reviewedCount} requirement(s) reviewed below.`];
+  if (identity.reviewedWithoutItem > 0) {
+    sentences.push(
+      `${identity.reviewedWithoutItem} of them did not match any requirement the analysis ` +
+        `wrote up. These will be promoted without acceptance criteria or supporting evidence; ` +
+        `you can add acceptance criteria by editing each one after approving.`,
+    );
+  }
+  if (identity.itemsWithoutReviewed > 0) {
+    sentences.push(
+      `${identity.itemsWithoutReviewed} requirement(s) the analysis wrote up match nothing ` +
+        `in the reviewed list, so their acceptance criteria and evidence will not be carried ` +
+        `over to any requirement.`,
+    );
+  }
+  return sentences.join(" ");
 }
 
 function PromotionBanner({
@@ -760,6 +788,7 @@ export function ApprovalsPanel({
             setDifference={describeSetDifference(
               readEnhancementMetadata(metadata).promotionBlocked?.awaitingRequirementCount,
               readEnhancementMetadata(metadata).promotionBlocked?.synthesisRequirementCount,
+              readEnhancementMetadata(metadata).promotionBlocked?.setDifference,
             )}
             pendingByType={summarisePendingByType(pending)}
             rejectionSummary={describeRejections(resolved.filter((a) => a.status === "rejected"))}

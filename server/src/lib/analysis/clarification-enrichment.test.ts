@@ -19,6 +19,9 @@ interface ReqRow {
   deletedAt: Date | null;
   acceptanceCriteria?: string;
   version?: number;
+  // #1202 — the pairing promotion recorded on the row.
+  promotedStructuredId?: string | null;
+  promotedStructuredRunId?: string | null;
 }
 
 interface VersionRowFake {
@@ -1618,5 +1621,168 @@ describe("applyClarificationsToRequirements", () => {
     const q = out!.answers![0].question;
     expect(q.length).toBe(MAX_OUTCOME_QUESTION);
     expect(q.endsWith("…")).toBe(true);
+  });
+});
+
+describe("#1202 — an answer joins its row on the pairing promotion recorded", () => {
+  const RUN = "run-1202";
+  const withBody = (r: StructuredRequirement, description: string): StructuredRequirement => ({
+    ...r,
+    description,
+  });
+  // The #1031 neighbours: R5's description holds every word of R6's title.
+  const R5 = withBody(
+    structured("REQ-5", "Mark all items up to here as read"),
+    "Mark every entry older than the selected one as read in a single action.",
+  );
+  const R6 = withBody(
+    structured("REQ-6", "Mark all as read older than X"),
+    "Mark as read all entries older than a chosen age.",
+  );
+  const paired = (r: StructuredRequirement, over: Partial<ReqRow> = {}): ReqRow => ({
+    id: `row-${r.id}`,
+    analysisId: ANALYSIS_ID,
+    title: r.title,
+    body: r.description,
+    deletedAt: null,
+    promotedStructuredId: r.id,
+    promotedStructuredRunId: RUN,
+    ...over,
+  });
+  const olderThan = [
+    answer({ questionId: "q1", requirementId: "REQ-6", answer: "7 days by default." }),
+    answer({ questionId: "q2", requirementId: "REQ-6", answer: "Measured from publish date." }),
+  ];
+
+  it("files R6's answers under R6's row even after an analyst gave R5's row R6's exact title", () => {
+    // By title, R6's exact title on R5's row wins the strongest tier, so the
+    // answers went to the neighbour. The pairing names R6's row outright.
+    const rows = [
+      paired(R5, { title: R6.title }),
+      paired(R6, { title: "Age-based bulk read", body: "Entries past an age are read." }),
+    ];
+    const out = attributeAnswers({
+      answered: olderThan,
+      structured: [R5, R6],
+      requirements: rows,
+      structuredRunId: RUN,
+    });
+    expect([...out.byRequirementId.keys()]).toEqual(["row-REQ-6"]);
+    expect(out.unattributed).toEqual([]);
+  });
+
+  it("tells identically titled and described twins apart, which the title match refuses", () => {
+    const twin = { ...R6, id: "REQ-7" };
+    const answered = [
+      answer({ questionId: "q6", requirementId: "REQ-6", answer: "Six." }),
+      answer({ questionId: "q7", requirementId: "REQ-7", answer: "Seven." }),
+    ];
+    const out = attributeAnswers({
+      answered,
+      structured: [R6, twin],
+      requirements: [paired(twin), paired(R6)],
+      structuredRunId: RUN,
+    });
+    expect(out.byRequirementId.get("row-REQ-6")?.map((a) => a.questionId)).toEqual(["q6"]);
+    expect(out.byRequirementId.get("row-REQ-7")?.map((a) => a.questionId)).toEqual(["q7"]);
+    expect(out.ambiguousBetween.size).toBe(0);
+  });
+
+  it("never gives a paired row to another requirement, even when R6 has no row of its own", () => {
+    // R6 was rejected: only R5's row exists. By title R6 would still reach for
+    // it; paired to R5, it is not a candidate at all.
+    const out = attributeAnswers({
+      answered: olderThan,
+      structured: [R5, R6],
+      requirements: [paired(R5, { title: R6.title })],
+      structuredRunId: RUN,
+    });
+    expect(out.byRequirementId.size).toBe(0);
+    expect(out.unattributed).toHaveLength(2);
+    expect(out.ambiguousBetween.size).toBe(0);
+  });
+
+  it("ignores a pairing recorded for another extraction run (ids restart at REQ-001, #909)", () => {
+    // Row paired to REQ-6 of an EARLIER run: that REQ-6 was a different
+    // requirement, so the row is matched by title like any unpaired row.
+    const out = attributeAnswers({
+      answered: olderThan,
+      structured: [R5, R6],
+      requirements: [
+        paired(R5, { promotedStructuredId: "REQ-6", promotedStructuredRunId: "older-run" }),
+        paired(R6),
+      ],
+      structuredRunId: RUN,
+    });
+    expect([...out.byRequirementId.keys()]).toEqual(["row-REQ-6"]);
+  });
+
+  it("rows promoted before #1202 (no pairing) still match by title, beside paired ones", () => {
+    const legacy = (r: StructuredRequirement): ReqRow =>
+      paired(r, { promotedStructuredId: null, promotedStructuredRunId: null });
+    const toR5 = answer({ questionId: "q5", requirementId: "REQ-5", answer: "Visible list." });
+    // All legacy: the #1031 title rule decides, as before.
+    const allLegacy = attributeAnswers({
+      answered: [toR5, ...olderThan],
+      structured: [R5, R6],
+      requirements: [legacy(R5), legacy(R6)],
+      structuredRunId: RUN,
+    });
+    expect(allLegacy.byRequirementId.get("row-REQ-5")?.map((a) => a.questionId)).toEqual(["q5"]);
+    expect(allLegacy.byRequirementId.get("row-REQ-6")?.map((a) => a.questionId)).toEqual([
+      "q1",
+      "q2",
+    ]);
+    // Mixed (a requirement appended after #1202 beside a legacy set): the
+    // legacy row is title-matched among the unpaired rows only.
+    const mixed = attributeAnswers({
+      answered: [toR5, ...olderThan],
+      structured: [R5, R6],
+      requirements: [legacy(R5), paired(R6)],
+      structuredRunId: RUN,
+    });
+    expect(mixed.byRequirementId.get("row-REQ-5")?.map((a) => a.questionId)).toEqual(["q5"]);
+    expect(mixed.byRequirementId.get("row-REQ-6")?.map((a) => a.questionId)).toEqual(["q1", "q2"]);
+  });
+
+  it("end to end: reads the pairing and the list's run id, and writes R6's row only", async () => {
+    store.dialogThrows = false;
+    store.hasApprovals = true;
+    store.versions = [];
+    store.beforeWrite = null;
+    store.dialogState = JSON.stringify({
+      analysisId: ANALYSIS_ID,
+      currentRound: 1,
+      maxRounds: 3,
+      rounds: [
+        {
+          round: 1,
+          questions: olderThan.map((a) => ({
+            id: a.questionId,
+            requirementId: a.requirementId,
+            ambiguityField: "age",
+            question: a.question,
+            context: "",
+            answer: a.answer,
+          })),
+          answers: [],
+        },
+      ],
+      resolvedAmbiguities: [],
+      escalatedToSonnet: false,
+      completed: false,
+    } satisfies ClarificationState);
+    store.metadata = JSON.stringify({
+      structuredRequirements: { requirements: [R5, R6], totalAmbiguities: 0 },
+      structuredRunId: RUN,
+    });
+    store.requirements = [
+      paired(R5, { title: R6.title }),
+      paired(R6, { title: "Age-based bulk read", body: "Entries past an age are read." }),
+    ];
+    const out = await applyClarificationsToRequirements(ANALYSIS_ID);
+    expect(store.requirements[0]!.body).not.toContain(CLARIFICATIONS_START);
+    expect(store.requirements[1]!.body).toContain("7 days by default.");
+    expect(out).toMatchObject({ appliedCount: 2, unattributedCount: 0 });
   });
 });

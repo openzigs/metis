@@ -126,3 +126,5 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Mapper subject rule](project_mapper-subject-rule-traps.md) — blast radius re-adds; stopwords; -es plural (#1227)
 - [Check-set read timing](project_check-set-read-timing.md) — CodeQL late/early; e2e-outcome vs shard; CLA skip
 - [Secret binding at fire time](project_secret-binding-fire-time-checks.md) — binder not author; retry replays payload; guard order (#1235)
+- [Product repo access traps](project_product-repo-access-traps.md) — new-writes-only fixes; echoing PATCH; per-product docs (#1258)
+- [Run claims + citation salvage](project_analysis-run-claims-and-citation-salvage.md) — releaseClaim; failed finalize; per-finding marks

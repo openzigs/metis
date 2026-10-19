@@ -35,6 +35,7 @@ import {
 } from "./approved-requirement-set.js";
 import { applyClarificationsToRequirements } from "./clarification-enrichment.js";
 import { describePromotionGate } from "./promotion-gate.js";
+import { pairedItemIndexes, pairingColumns, type PromotionPairing } from "./promotion-pairing.js";
 import {
   ambiguousPromotionRecords,
   appendPromotionMatching,
@@ -178,16 +179,36 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
           .filter((a) => a.status === "approved")
           .map((a) => [a.itemId, a.reviewedAt ?? null] as const),
       );
+      // #1202 — the rows already promoted recorded which synthesis items they
+      // took. Joined on that, a newly approved requirement is matched among
+      // the items no row holds, and an earlier one is never re-guessed by title.
+      const paired = pairedItemIndexes(
+        await prisma.requirement.findMany({
+          where: { analysisId },
+          select: {
+            promotedStructuredId: true,
+            promotedStructuredRunId: true,
+            promotedSynthesisKeys: true,
+          },
+        }),
+        structuredRunId,
+        synthesis?.requirements ?? [],
+      );
+      const appendPlan =
+        paired.size > 0
+          ? planApprovedRequirementSet({ structured, approvedIds, synthesis, paired })
+          : plan!;
       const appended = await appendNewlyApproved({
         analysisId,
         projectId: analysis.projectId,
-        toPromote,
+        toPromote: appendPlan.output,
         promotedStructuredIds,
         structuredRunId,
         approvedAt,
-        ambiguous,
-        shared,
-        itemsGivenTo: (ids) => itemsGivenTo({ structured, ids, synthesis }),
+        ambiguous: appendPlan.ambiguous,
+        shared: appendPlan.shared,
+        pairings: appendPlan.pairings,
+        itemsGivenTo: (ids) => itemsGivenTo({ structured, ids, synthesis, paired }),
       });
       if (appended === "superseded") return { status: "unavailable", reason: SUPERSEDED_REASON };
       if (appended > 0) return { status: "promoted", requirementCount: appended };
@@ -225,6 +246,8 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
     // Issue #939 — the user approved each of these in the checkpoint; asking
     // for a second Approve per requirement on the hub was the bug.
     ...(reviewed ? { reviewStatus: "approved" as const } : {}),
+    // #1202 — each row records the structured requirement it IS.
+    ...(plan ? { promotedFrom: { runId: structuredRunId, pairings: plan.pairings } } : {}),
   });
   // #769 — the replacement was refused to protect review work on the existing
   // set; nothing was written, so nothing is recorded as promoted.
@@ -331,6 +354,8 @@ async function appendNewlyApproved(input: {
   ambiguous: readonly AmbiguousPromotionMatch[];
   /** #1203 — the approved requirements whose criteria an item wrote for several. */
   shared: readonly SharedPromotionMatch[];
+  /** #1202 — per `toPromote` requirement, the pairing its row records. */
+  pairings: readonly PromotionPairing[];
   /** #1204 — the synthesis items the set promoted with `ids` gave its rows. */
   itemsGivenTo: (ids: ReadonlySet<string>) => ReadonlySet<number>;
 }): Promise<number | "superseded"> {
@@ -415,6 +440,8 @@ async function appendNewlyApproved(input: {
           ),
           // Issue #939 — approved in the checkpoint, as on the first promotion.
           reviewStatus: "approved",
+          // Issue #1202 — the same pairing `persistRequirements` records.
+          ...pairingColumns({ runId: input.structuredRunId, pairings: input.pairings }, newIdx[k]!),
         },
         select: { id: true },
       });

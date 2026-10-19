@@ -4870,6 +4870,8 @@ On the **Analysis** page for a project, you'll see an **Enhancement Options** se
 - **Enable Web Research** — When checked, METIS searches the web for supporting evidence (standards, regulations, best practices) related to your requirements. Results include domain trust badges (🟢 High / 🟡 Medium / 🔴 Low) so you can quickly assess source quality.
 - **Enable Clarification** — When checked, METIS identifies ambiguities in the extracted requirements and asks clarifying questions before generating tickets. You can answer up to 3 rounds of questions.
 
+Web research starts **off** and clarifying questions start **on** (#95): questions grounded in your documents appear without you asking for them, and you can untick the toggle to skip them for a run.
+
 A **pipeline status indicator** shows progress through the enhancement steps: Extraction → Web Research → Clarification → Approval → Complete.
 
 ### 35.2 Web Research Evidence

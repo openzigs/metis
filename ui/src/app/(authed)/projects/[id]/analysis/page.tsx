@@ -630,7 +630,8 @@ export default function AnalysisPage(): React.ReactElement {
   // Epic #597 — enhancement toggles
   const [enableWebResearch, setEnableWebResearch] = useState(false);
   // Default ON so doc-grounded clarifying questions surface by default; the
-  // toggle below still lets users opt out.
+  // toggle below still lets users opt out. Deliberate: decided in #95, which
+  // retired the original "both enhancement toggles default off" AC.
   const [enableClarification, setEnableClarification] = useState(true);
   // Issue #907 — free-text new requirements (requirements→code gap evaluation).
   const [extraInstructions, setExtraInstructions] = useState("");

@@ -61,15 +61,26 @@ vi.mock("../src/lib/prisma.js", () => ({
           store.find((r) => r.id === where.id && r.analysisId === where.analysisId) ?? null,
         ),
       ),
-      update: vi.fn(({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
-        const row = store.find((r) => r.id === where.id);
-        if (!row) return Promise.resolve(null);
-        if (data.status !== undefined) row.status = data.status as string;
-        if (data.reviewerId !== undefined) row.reviewerId = data.reviewerId as string;
-        if (data.reviewNote !== undefined) row.reviewNote = data.reviewNote as string | null;
-        if (data.reviewedAt !== undefined) row.reviewedAt = data.reviewedAt as Date;
-        return Promise.resolve({ ...row });
-      }),
+      // #930 — a review is a conditional write: the status predicate rides it.
+      updateMany: vi.fn(
+        ({
+          where,
+          data,
+        }: {
+          where: { id: string; analysisId: string; status?: string };
+          data: Record<string, unknown>;
+        }) => {
+          const row = store.find(
+            (r) =>
+              r.id === where.id &&
+              r.analysisId === where.analysisId &&
+              (where.status === undefined || r.status === where.status),
+          );
+          if (!row) return Promise.resolve({ count: 0 });
+          Object.assign(row, data);
+          return Promise.resolve({ count: 1 });
+        },
+      ),
       count: vi.fn(({ where }: { where: Record<string, unknown> }) => {
         let filtered = store.filter((r) => r.analysisId === where.analysisId);
         if (where.status) filtered = filtered.filter((r) => r.status === where.status);

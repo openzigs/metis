@@ -60,15 +60,26 @@ vi.mock("../src/lib/prisma.js", () => ({
           approvals.find((r) => r.id === where.id && r.analysisId === where.analysisId) ?? null,
         ),
       ),
-      update: vi.fn(({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
-        const row = approvals.find((r) => r.id === where.id);
-        if (!row) return Promise.resolve(null);
-        if (data.status !== undefined) row.status = data.status as string;
-        if (data.reviewerId !== undefined) row.reviewerId = data.reviewerId as string;
-        if (data.reviewNote !== undefined) row.reviewNote = data.reviewNote as string | null;
-        if (data.reviewedAt !== undefined) row.reviewedAt = data.reviewedAt as Date;
-        return Promise.resolve({ ...row });
-      }),
+      // #930 — a review is a conditional write: the status predicate rides it.
+      updateMany: vi.fn(
+        ({
+          where,
+          data,
+        }: {
+          where: { id: string; analysisId: string; status?: string };
+          data: Record<string, unknown>;
+        }) => {
+          const row = approvals.find(
+            (r) =>
+              r.id === where.id &&
+              r.analysisId === where.analysisId &&
+              (where.status === undefined || r.status === where.status),
+          );
+          if (!row) return Promise.resolve({ count: 0 });
+          Object.assign(row, data);
+          return Promise.resolve({ count: 1 });
+        },
+      ),
       count: vi.fn(({ where }: { where: Record<string, unknown> }) => {
         let f = approvals.filter((r) => r.analysisId === where.analysisId);
         if (where.status) f = f.filter((r) => r.status === where.status);
@@ -536,6 +547,8 @@ describe("#216 — promotion is gated on resolved approvals", () => {
     expect((blocked!.promotionBlocked as { blocked: boolean }).blocked).toBe(true);
     // #909 — the synthesis count rides along, so the Approvals tab can compare it.
     expect(blocked!.promotionBlocked).toMatchObject({ synthesisRequirementCount: 1 });
+    // #930 — no reviewed (structured) list: nothing to compare by identity.
+    expect(blocked!.promotionBlocked).not.toHaveProperty("setDifference");
     // #258 — the marker and the coarse status are written in ONE metadata
     // patch (a single persistAnalysisEnhancement call for the blocked path).
     expect(blocked!.promotionStatus).toBe("blocked");
@@ -557,6 +570,60 @@ describe("#216 — promotion is gated on resolved approvals", () => {
       rejectedCount: 0,
     });
     expect(blockedEvents[0].reason).toMatch(/Promotion blocked/i);
+  });
+
+  it("#930 — records how the reviewed list and the synthesis differ by identity, not count", async () => {
+    const svc = await import("../src/lib/analysis/analysis-service.js");
+    const structuredReq = (id: string, title: string) => ({
+      id,
+      title,
+      description: `${title}.`,
+      type: "functional" as const,
+      stakeholders: [],
+      priority: "should-have" as const,
+      ambiguities: [],
+      evidenceNeeds: [],
+      rawSource: "",
+    });
+    vi.mocked(svc.getStructuredRequirements).mockResolvedValueOnce({
+      requirements: [
+        structuredReq("r1", "Feed URL must be absolute"),
+        structuredReq("r2", "Reading speed validation"),
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    // Two items for two reviewed requirements — equal counts — but the second
+    // item is about something nobody reviewed, and r2 has no item at all.
+    runSynthesisMock.mockResolvedValueOnce({
+      output: {
+        requirements: [
+          {
+            title: "Absolute feed URLs",
+            body: "Feed URL must be absolute.",
+            structuredIds: ["r1"],
+          },
+          { title: "Export subscriptions as OPML", body: "OPML export.", structuredIds: [] },
+        ],
+      },
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    });
+    await approvalSvc.createApprovalRequests("ana-identity", [
+      { type: "requirement", itemId: "r1" },
+    ]);
+
+    const { orch } = makeOrchestrator();
+    await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+      analysisId: "ana-identity",
+      ...synthInput,
+    });
+
+    const blocked = persisted.enhancement.find((e) => "promotionBlocked" in e);
+    expect(blocked!.promotionBlocked).toMatchObject({
+      awaitingRequirementCount: 2,
+      synthesisRequirementCount: 2,
+      setDifference: { reviewedWithoutItem: 1, itemsWithoutReviewed: 1 },
+    });
   });
 
   // Issue #723 — a rejection is a resolution: it no longer blocks promotion.
@@ -607,6 +674,11 @@ describe("#216 — promotion is gated on resolved approvals", () => {
       requirements: Array<{ title: string }>;
     };
     expect(synthesis.requirements.map((r) => r.title)).toEqual(["Feed URL must be absolute"]);
+    // #1202 — the orchestrator's promotion records each row's pairing too.
+    expect(persisted.requirements[0]!.promotedFrom).toEqual({
+      runId: "run-7",
+      pairings: [{ structuredId: "r1", synthesisKeys: expect.any(Array) }],
+    });
     const cleared = persisted.enhancement.find((e) => "promotionBlocked" in e);
     expect(cleared).toMatchObject({
       promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 1 },
