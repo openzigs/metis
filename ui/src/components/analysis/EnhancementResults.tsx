@@ -268,16 +268,23 @@ export function ClarificationImpactNote({
           only when it writes a newly approved requirement: a rejection reopened
           and approved on the Approvals panel (a hub card's Approve does not).
           The block's markers are hidden in every view, so the block-edited
-          notice points to History, as the user guide does. */}
+          notice points to History, as the user guide does. #1269 — a History
+          restore brings back the whole body at that version, so it says what
+          that costs, and it offers the manual route the not-written notice does,
+          because once clarification is complete the automatic route needs a
+          rejected requirement to exist. Short sentences, for an analyst. */}
       {requirementsAvailable && blockEditedCount > 0 && (
         <p className="text-warning" data-testid="clarification-block-edited">
           {blockEditedCount} answer{blockEditedCount === 1 ? " was" : "s were"} not written because
           the Clarifications section of{" "}
-          {blockEditedCount === 1 ? "its requirement" : "their requirements"} was edited.{" "}
-          {blockEditedCount === 1 ? "Open the requirement" : "Open each requirement"} and delete
-          that section, or restore it from History. The answers are then written again when you
-          submit the next answers while clarifying questions are still open or, after clarification
-          is complete, when you reopen a rejected requirement on the Approvals panel and approve it.
+          {blockEditedCount === 1 ? "its requirement" : "their requirements"} was edited. To fix
+          this, {blockEditedCount === 1 ? "open the requirement" : "open each requirement"} and
+          delete that section. You can instead restore an earlier version from History, but that
+          also undoes any later edits to the requirement. The answers are written again when you
+          submit more answers. After clarification is complete, that happens only when you reopen a
+          rejected requirement on the Approvals panel and approve it. You can also type an answer
+          into the requirement yourself, outside the Clarifications section. If METIS writes the
+          answers later, delete your copy.
         </p>
       )}
       {requirementsAvailable && notWrittenCount > 0 && (

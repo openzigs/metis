@@ -54,6 +54,51 @@ export function canonicalizeCriteriaFlag(text: string): string {
 const CRITERIA_FLAG_PROSE = CRITERIA_FLAG_LINE.slice(0, -CRITERIA_FLAG_MARKER.length).trim();
 
 /**
+ * The flag sentence's words, its `> ` quote prefix aside: the form it is
+ * compared in, so a different prefix, spacing or wrapping still matches.
+ */
+const CRITERIA_FLAG_WORDS = CRITERIA_FLAG_PROSE.replace(/^>/, "").trim().split(/\s+/);
+
+/** One whitespace-separated word of a body, with its offset. */
+interface Word {
+  text: string;
+  index: number;
+}
+
+/**
+ * #1269 — where METIS's flag sentence starts when it is what ends the text
+ * before the marker at `markerAt`, otherwise `null`. Compared word for word
+ * with each line's leading `>` stripped, so the sentence matches unprefixed,
+ * written with `>  `, or hard-wrapped over several lines, quoted or not. A
+ * blank line ends the search: a wrapped sentence is one paragraph. The whole
+ * sentence must match from its first word, so prose that only resembles it,
+ * or is only its end, is never taken for it.
+ */
+function flagProseStart(
+  body: string,
+  lineStarts: number[],
+  first: number,
+  markerAt: number,
+): number | null {
+  const words: Word[] = [];
+  for (let i = first; i >= 0 && words.length < CRITERIA_FLAG_WORDS.length; i--) {
+    const end = i === first ? markerAt : lineStarts[i + 1]! - 1;
+    const line = body.slice(lineStarts[i]!, end);
+    if (i !== first && line.trim() === "") break;
+    const quote = /^\s*>/.exec(line);
+    const from = quote ? quote[0].length : 0;
+    const lineWords: Word[] = [];
+    for (const w of line.slice(from).matchAll(/\S+/g)) {
+      lineWords.push({ text: w[0], index: lineStarts[i]! + from + (w.index ?? 0) });
+    }
+    words.unshift(...lineWords);
+  }
+  if (words.length < CRITERIA_FLAG_WORDS.length) return null;
+  const tail = words.slice(-CRITERIA_FLAG_WORDS.length);
+  return tail.every((w, k) => w.text === CRITERIA_FLAG_WORDS[k]) ? tail[0]!.index : null;
+}
+
+/**
  * The body without the flag: its marker, METIS's flag sentence before it, and
  * the line they leave empty (with the blank line that follows it). A body with
  * no flag is returned unchanged.
@@ -64,6 +109,10 @@ const CRITERIA_FLAG_PROSE = CRITERIA_FLAG_LINE.slice(0, -CRITERIA_FLAG_MARKER.le
  * one after the flag as well. Anything else on the marker's lines (an
  * analyst's text before `<!--` or after `-->`) is kept: a criteria edit never
  * deletes what someone typed.
+ *
+ * #1269 — the flag sentence is found by {@link flagProseStart}, so it goes
+ * whatever its quote prefix and however it was wrapped. The lines it spans go
+ * with it; analyst text before it on its first line is kept.
  */
 export function clearCriteriaFlag(body: string): string {
   const flags = findMetisMarkers(body).filter((m) => m.name === CRITERIA_FLAG_NAME);
@@ -83,13 +132,15 @@ export function clearCriteriaFlag(body: string): string {
   // Last first, so the line numbers of the ones before stay valid.
   for (const m of [...flags].reverse()) {
     const end = m.index + m.length;
-    const first = lineOf(m.index);
+    const proseAt = flagProseStart(body, lineStarts, lineOf(m.index), m.index);
+    const first = lineOf(proseAt ?? m.index);
     const last = lineOf(end);
-    const before = lines[first]!.slice(0, m.index - lineStarts[first]!);
+    const before = lines[first]!.slice(0, (proseAt ?? m.index) - lineStarts[first]!);
     let after = lines[last]!.slice(end - lineStarts[last]!);
     const eol = after.endsWith("\r") ? "\r" : "";
     if (eol) after = after.slice(0, -1);
-    const keptBefore = before.trim() === CRITERIA_FLAG_PROSE ? "" : before.trimEnd();
+    // A quote prefix left on its own once the sentence is gone was the sentence's.
+    const keptBefore = proseAt !== null && /^\s*>?\s*$/.test(before) ? "" : before.trimEnd();
     const kept = [keptBefore, after.trim()].filter((s) => s.length > 0).join(" ");
     if (kept) {
       lines.splice(first, last - first + 1, kept + eol);
