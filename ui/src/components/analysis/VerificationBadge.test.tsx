@@ -34,8 +34,12 @@ describe("VerificationBadge (#740)", () => {
   it("#1155 — the unverified tooltip covers both a missing and an unreadable code reference", () => {
     const tooltip = VERIFICATION_COPY.unverified.tooltip;
     expect(tooltip).not.toMatch(/every code location it cited was missing/i);
-    expect(tooltip).toMatch(/not found in the code/i);
-    expect(tooltip).toMatch(/could not be read/i);
+    expect(tooltip).toMatch(/not among the code the analysis read/i);
+    // It is the analysis's REFERENCE that was malformed, not the code.
+    expect(tooltip).toMatch(/recorded its reference to that code incorrectly/i);
+    expect(tooltip).not.toMatch(/could not be read/i);
+    // Sentence case: capitals read as shouting in a tooltip.
+    expect(tooltip).not.toMatch(/\bNOT\b/);
     expect(tooltip).toMatch(/review it manually/i);
   });
 
