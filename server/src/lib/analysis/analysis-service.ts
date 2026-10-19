@@ -576,6 +576,34 @@ export async function finalizeAnalysisDelta(input: {
 }
 
 /**
+ * #1156 — settle a follow-up whose own final write ({@link finalizeAnalysisDelta})
+ * threw: record it `failed` with its token delta, but ONLY while the row still
+ * reads `running`. A write that threw may still have committed (a connection
+ * lost after the commit); then the row is no longer `running`, this is a no-op,
+ * and the delta is not counted twice nor a completed run relabelled. The delta
+ * matters beyond display: `cost-cap.ts` sums `totalTokens` for the monthly cap
+ * and budget routing. Returns whether the row was settled.
+ */
+export async function settleRunningAnalysisAsFailed(input: {
+  id: string;
+  delta: TokenUsage;
+  errorMessage: string;
+}): Promise<boolean> {
+  const { count } = await prisma.analysis.updateMany({
+    where: { id: input.id, status: "running" },
+    data: {
+      status: "failed",
+      completedAt: new Date(),
+      inputTokens: { increment: input.delta.promptTokens },
+      outputTokens: { increment: input.delta.completionTokens },
+      totalTokens: { increment: input.delta.totalTokens },
+      errorMessage: input.errorMessage.slice(0, 4096),
+    },
+  });
+  return count > 0;
+}
+
+/**
  * Issue #1234 — resolve the provenance pair persisted on every agent finding.
  *
  * Epic #298 / #309 gave every `Finding` row a `derivation` + `confidence` pair,

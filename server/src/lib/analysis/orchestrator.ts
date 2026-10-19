@@ -90,6 +90,7 @@ import {
 import {
   createAnalysis,
   finalizeAnalysisDelta,
+  settleRunningAnalysisAsFailed,
   markAnalysisRunning,
   getAnalysisCapability,
   getStructuredRequirements,
@@ -335,28 +336,32 @@ async function closeFollowUpRun(
  * #1156 — the message a follow-up's row carries when its own final status write
  * failed and a second write settled it as `failed`. Plain language, and true:
  * a re-run that completed had ALREADY saved its results (findings, requirements)
- * before this write; only its status was lost.
+ * before this write; only its status was lost. A failed re-run keeps its own
+ * error, unless that is empty (`||`, not `??`: an empty message would be stored
+ * as no explanation at all).
  */
 export function followUpStatusWriteFailedMessage(
   outcome: "completed" | "failed",
   errorMessage: string | null | undefined,
 ): string {
   if (outcome === "completed") {
-    return "The re-run finished and its results were saved, but its final status could not be recorded. Run it again to refresh the status.";
+    return "The re-run finished and its results were saved, but its final status could not be recorded, so it shows as failed. Its results are still there; run it again only if you need the status corrected.";
   }
-  return errorMessage ?? "The re-run failed, and its final status could not be recorded.";
+  return errorMessage || "The re-run failed, and its final status could not be recorded.";
 }
 
 /**
  * #1156 — settle a follow-up's analysis row. {@link reopenForFollowUp} set it
  * `running`, and the regenerate/resume pre-flights refuse a `running` row, with
  * nothing to reset it on boot: one failed write here left the analysis
- * unusable. So a failure gets ONE more write that records the run as failed.
- *
- * The second write applies NO token delta: a write that threw may still have
- * committed (a connection lost after the commit), and applying the delta twice
- * would overstate the stored total. The stored total may then miss this
- * re-run's tokens; the usage ledger, which the run pages read, still has them.
+ * unusable. So a failure gets ONE more, conditional write
+ * ({@link settleRunningAnalysisAsFailed}): it records the run `failed` WITH its
+ * token delta, but only while the row still reads `running`. If the first write
+ * had in fact committed, the row is no longer `running` and the settle is a
+ * no-op, so the delta is never counted twice and a completed run is not
+ * relabelled. The delta has to land: `cost-cap.ts` sums `totalTokens` for the
+ * monthly cap and budget routing. The follow-up's claim is held throughout, so
+ * nothing else moves the status in between.
  *
  * Returns the original error, or `null`, instead of throwing, so the caller can
  * write its audit row before it rethrows: the routes that start a follow-up
@@ -369,22 +374,29 @@ async function finalizeFollowUp(
     await finalizeAnalysisDelta(input);
     return null;
   } catch (err) {
-    log.error("Could not record a re-run's final status; marking the analysis failed", {
+    log.error("Could not record a re-run's final status; settling the analysis", {
       analysisId: input.id,
       outcome: input.status,
       error: (err as Error).message,
     });
-    await finalizeAnalysisDelta({
+    await settleRunningAnalysisAsFailed({
       id: input.id,
-      status: "failed",
-      delta: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      delta: input.delta,
       errorMessage: followUpStatusWriteFailedMessage(input.status, input.errorMessage),
-    }).catch((retryErr: unknown) =>
-      log.error("Could not mark the analysis failed either; it reads running", {
-        analysisId: input.id,
-        error: (retryErr as Error).message,
-      }),
-    );
+    })
+      .then((settled) => {
+        if (!settled) {
+          log.warn("A re-run's final status write had committed; nothing to settle", {
+            analysisId: input.id,
+          });
+        }
+      })
+      .catch((retryErr: unknown) =>
+        log.error("Could not settle the analysis either; it reads running", {
+          analysisId: input.id,
+          error: (retryErr as Error).message,
+        }),
+      );
     return err instanceof Error ? err : new Error(String(err));
   }
 }

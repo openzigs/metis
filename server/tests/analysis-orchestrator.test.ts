@@ -142,6 +142,30 @@ vi.mock("../src/lib/prisma.js", () => ({
           return row;
         },
       ),
+      // #1156 — the conditional settle: applies only while `status` matches.
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string; status?: string };
+          data: Record<string, unknown>;
+        }) => {
+          const row = analyses.get(where.id) as unknown as Record<string, unknown> | undefined;
+          if (!row || (where.status !== undefined && row.status !== where.status)) {
+            return { count: 0 };
+          }
+          for (const [k, v] of Object.entries(data)) {
+            if (v && typeof v === "object" && "increment" in (v as Record<string, unknown>)) {
+              const cur = typeof row[k] === "number" ? (row[k] as number) : 0;
+              row[k] = cur + (v as { increment: number }).increment;
+            } else {
+              row[k] = v;
+            }
+          }
+          return { count: 1 };
+        },
+      ),
       findFirst: vi.fn(async ({ where }: { where: { id?: string } }) => {
         if (!where.id) return null;
         return analyses.get(where.id) ?? null;
@@ -346,6 +370,7 @@ import { persistAgentResult } from "../src/lib/analysis/analysis-service.js";
 import {
   AnalysisOrchestrator,
   defaultAnalysisDocumentIds,
+  followUpStatusWriteFailedMessage,
   selectWebAgentEvidence,
 } from "../src/lib/analysis/orchestrator.js";
 import { prisma } from "../src/lib/prisma.js";
@@ -2096,11 +2121,8 @@ describe("AnalysisOrchestrator.regenerateAgent guards", () => {
     expect(analyses.get(analysisId)!.status).toBe("failed");
     // #1264 review — the re-run's results WERE saved; only its status was lost.
     expect(analyses.get(analysisId)!.errorMessage).toBe(
-      "The re-run finished and its results were saved, but its final status could not be recorded. Run it again to refresh the status.",
+      followUpStatusWriteFailedMessage("completed", null),
     );
-    // The settling write applies no token delta, so a write that did commit
-    // before it threw can never be counted twice.
-    expect(analyses.get(analysisId)!.totalTokens).toBe(tokensBefore);
     // The route swallows the rejection, so the audit row must say what happened.
     const rows = (audit as unknown as { mock: { calls: Array<unknown[]> } }).mock.calls
       .map((c) => c[0] as { action?: string; metadata?: Record<string, unknown> })
@@ -2110,12 +2132,79 @@ describe("AnalysisOrchestrator.regenerateAgent guards", () => {
       decision: "completed",
       statusWriteFailed: "database unavailable",
     });
+    // #1264 cycle 2 — the first write did not commit, so the settle carries the
+    // re-run's tokens: `cost-cap.ts` sums `totalTokens` for the monthly cap.
+    const consumed = rows[0]!.metadata!.tokensConsumed as number;
+    expect(consumed).toBeGreaterThan(0);
+    expect(analyses.get(analysisId)!.totalTokens).toBe(tokensBefore + consumed);
     await orch.regenerateAgent({
       analysisId,
       agentKey: "document",
       actorId: "user-1234567890",
     });
     expect(analyses.get(analysisId)!.status).toBe("completed");
+  });
+
+  // #1264 cycle 2 — a write can commit and still throw (a connection lost after
+  // the commit). The settle must then do nothing: no second count of the tokens,
+  // and a completed re-run is not relabelled failed.
+  it("#1156 — a finalize write that committed before it threw is left alone", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const analysisId = await runToCompletion(orch);
+    const tokensBefore = analyses.get(analysisId)!.totalTokens;
+    const { audit } = await import("../src/lib/audit/audit-service.js");
+    (audit as unknown as { mockClear: () => void }).mockClear();
+    const { prisma } = await import("../src/lib/prisma.js");
+    const update = prisma.analysis.update as unknown as ReturnType<typeof vi.fn>;
+    const original = update.getMockImplementation() as unknown as (
+      args: unknown,
+    ) => Promise<unknown>;
+    let failures = 0;
+    update.mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      if (failures === 0 && args.data.totalTokens && typeof args.data.totalTokens === "object") {
+        failures += 1;
+        await original(args); // committed…
+        throw new Error("connection lost after commit"); // …and still threw
+      }
+      return original(args);
+    });
+    try {
+      await expect(
+        orch.regenerateAgent({
+          analysisId,
+          agentKey: "document",
+          actorId: "user-1234567890",
+        }),
+      ).rejects.toThrow("connection lost after commit");
+    } finally {
+      update.mockImplementation(original);
+    }
+    const row = analyses.get(analysisId)!;
+    expect(row.status).toBe("completed");
+    expect(row.errorMessage).toBeNull();
+    const audited = (audit as unknown as { mock: { calls: Array<unknown[]> } }).mock.calls
+      .map((c) => c[0] as { action?: string; metadata?: Record<string, unknown> })
+      .find((c) => c.action === "analysis.regenerate")!;
+    const consumed = audited.metadata!.tokensConsumed as number;
+    expect(consumed).toBeGreaterThan(0);
+    expect(row.totalTokens).toBe(tokensBefore + consumed);
+    expect(orch.isActive(analysisId)).toBe(false);
+  });
+
+  // #1264 cycle 2 — the branch that decides whether a genuinely FAILED re-run
+  // is mislabelled as one that finished.
+  it("#1156 — the status-write message keeps a failed re-run's own error", () => {
+    expect(followUpStatusWriteFailedMessage("failed", "boom")).toBe("boom");
+    const fallback = "The re-run failed, and its final status could not be recorded.";
+    expect(followUpStatusWriteFailedMessage("failed", undefined)).toBe(fallback);
+    expect(followUpStatusWriteFailedMessage("failed", null)).toBe(fallback);
+    // An empty message would be stored as no explanation at all.
+    expect(followUpStatusWriteFailedMessage("failed", "")).toBe(fallback);
+    expect(followUpStatusWriteFailedMessage("failed", "boom")).not.toMatch(/results were saved/);
+    const completed = followUpStatusWriteFailedMessage("completed", "ignored");
+    expect(completed).toMatch(/results were saved/);
+    expect(completed).toMatch(/still there/);
+    expect(completed).not.toMatch(/refresh the status/);
   });
 
   // #1156 — the finally awaited the database writes before releasing the claim,
