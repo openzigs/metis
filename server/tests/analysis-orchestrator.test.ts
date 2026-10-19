@@ -1192,6 +1192,56 @@ describe("AnalysisOrchestrator.start", () => {
     __resetConfigSingleton();
   });
 
+  // #1155 adversarial review — the requirement-grounded path marks findings too,
+  // and only a lost CODE citation demotes one; a lost document citation does not.
+  const runGroundedWith = async (citations: unknown[]) => {
+    process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "true";
+    __resetConfigSingleton();
+    codeGraphExists = false; // requirements + no code graph ⇒ REQUIREMENT-GROUNDED
+    uploadedDocs = ["doc-1"];
+    const provider = makeProvider({
+      docRequirements: [{ id: "REQ-001", text: "Users can reset their password" }],
+      codeFindingCitations: citations,
+    });
+    const orch = new AnalysisOrchestrator({
+      provider,
+      knowledge: { search: async () => ({ hits: [] }) } as unknown as KnowledgeService,
+      fusedCode: fusedCodeDepsFixture(),
+      io: makeIO() as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [
+        { documentId: "doc-1", chunkIndex: 0, filename: "s.md", text: "c", score: 0.5 },
+      ],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["document", "code"],
+    });
+    for (let i = 0; i < 400 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    delete process.env.ANALYSIS_FUSED_CODE_RETRIEVAL;
+    __resetConfigSingleton();
+    expect(systemMessagesOf(provider).some((s) => s.includes("MODE: REQUIREMENT-GROUNDED"))).toBe(
+      true,
+    );
+    return [...agentResults.values()].find(
+      (a) => a.analysisId === analysisId && a.agentKey === "code",
+    )!.findings[0]!;
+  };
+
+  it("#1155 a grounded finding whose only code citation the schema dropped is unverified", async () => {
+    const finding = await runGroundedWith([
+      { filePath: "server/src/auth/session.ts", startLine: 0, endLine: 20 },
+    ]);
+    expect(finding.verificationStatus).toBe("unverified");
+  });
+
+  it("#1155 a grounded finding that lost only a document citation is not unverified", async () => {
+    const finding = await runGroundedWith([{ documentId: "doc-1", chunkIndex: -1 }]);
+    expect(finding.verificationStatus).toBeNull();
+  });
+
   it("keeps a code citation to a file surfaced ONLY by search_code_symbols (never read)", async () => {
     // Passive fused seed OFF so the ONLY provenance is the tool RESULT locator —
     // proving results (not just read_file_slice args) ground a citation. Fails
