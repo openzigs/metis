@@ -110,7 +110,7 @@ import { computeCoverageForRequirements } from "./requirement-coverage.js";
 import { describePromotionGate } from "./promotion-gate.js";
 import { verifyFinding } from "./finding-verification.js";
 import {
-  citationsLostToSalvage,
+  codeCitationsLostToSalvage,
   markCitationLosses,
   totalCitationsLost,
 } from "./citation-salvage.js";
@@ -3375,7 +3375,7 @@ export class AnalysisOrchestrator {
               verificationStatus: verifyFinding({
                 groundedCitations: citations,
                 droppedCitations: dropped,
-                citationsLostToSalvage: citationsLostToSalvage(f),
+                codeCitationsLostToSalvage: codeCitationsLostToSalvage(f),
                 assertsAbsence: claimsAbsence,
                 absenceConfirmable,
                 // #726 — the badge must agree with the verdict.
@@ -3800,7 +3800,7 @@ export class AnalysisOrchestrator {
             verificationStatus: verifyFinding({
               groundedCitations: grounded,
               droppedCitations: dropped,
-              citationsLostToSalvage: citationsLostToSalvage(f),
+              codeCitationsLostToSalvage: codeCitationsLostToSalvage(f),
               assertsAbsence: claimsAbsence,
               absenceConfirmable,
               // #726 — the badge must agree with the verdict.

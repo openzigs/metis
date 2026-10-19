@@ -139,7 +139,7 @@ describe("#1155 — citations the schema's salvage dropped", () => {
   // as "nothing to verify". It did cite evidence; the evidence was lost.
   it("marks unverified a finding whose only citation the salvage dropped", () => {
     expect(
-      verifyFinding({ groundedCitations: [], droppedCitations: [], citationsLostToSalvage: 1 }),
+      verifyFinding({ groundedCitations: [], droppedCitations: [], codeCitationsLostToSalvage: 1 }),
     ).toBe("unverified");
   });
 
@@ -148,7 +148,7 @@ describe("#1155 — citations the schema's salvage dropped", () => {
       verifyFinding({
         groundedCitations: [doc] as Citation[],
         droppedCitations: [],
-        citationsLostToSalvage: 2,
+        codeCitationsLostToSalvage: 2,
       }),
     ).toBe("unverified");
   });
@@ -158,14 +158,14 @@ describe("#1155 — citations the schema's salvage dropped", () => {
       verifyFinding({
         groundedCitations: [code] as Citation[],
         droppedCitations: [],
-        citationsLostToSalvage: 1,
+        codeCitationsLostToSalvage: 1,
       }),
     ).toBe("confirmed");
   });
 
   it("stays null when nothing was lost", () => {
     expect(
-      verifyFinding({ groundedCitations: [], droppedCitations: [], citationsLostToSalvage: 0 }),
+      verifyFinding({ groundedCitations: [], droppedCitations: [], codeCitationsLostToSalvage: 0 }),
     ).toBeNull();
   });
 });
