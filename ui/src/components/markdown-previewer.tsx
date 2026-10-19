@@ -24,6 +24,7 @@
  * section, numbered as a whole-document render numbers them.
  */
 import { useMemo, useEffect, useRef, useState, useCallback, memo, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -164,6 +165,32 @@ export function MarkdownPreviewer({
     );
     pending.forEach((el) => observer.observe(el));
     return () => observer.disconnect();
+  }, [rendered, sectionCount, renderSections]);
+
+  // #1182 — a print request renders every section first, so the printed copy
+  // (or a "Save as PDF") never shows a pending section's raw Markdown.
+  // `flushSync` because the browser lays out the print copy as soon as the
+  // `beforeprint` listeners return; a batched update would land too late.
+  // `matchMedia('print')` covers browsers that do not fire `beforeprint`.
+  // Until then sections stay lazy, so opening a long document stays cheap.
+  useEffect(() => {
+    if (rendered.size >= sectionCount) return;
+    const renderAll = () => {
+      flushSync(() => renderSections(Array.from({ length: sectionCount }, (_, i) => i)));
+    };
+    const onPrintMedia = (e: MediaQueryListEvent) => {
+      if (e.matches) renderAll();
+    };
+    window.addEventListener("beforeprint", renderAll);
+    const printQuery =
+      typeof window.matchMedia === "function" ? window.matchMedia("print") : undefined;
+    if (printQuery?.addEventListener) printQuery.addEventListener("change", onPrintMedia);
+    else printQuery?.addListener?.(onPrintMedia);
+    return () => {
+      window.removeEventListener("beforeprint", renderAll);
+      if (printQuery?.removeEventListener) printQuery.removeEventListener("change", onPrintMedia);
+      else printQuery?.removeListener?.(onPrintMedia);
+    };
   }, [rendered, sectionCount, renderSections]);
 
   // #272 — mermaid loads (and is configured) only when a diagram needs
