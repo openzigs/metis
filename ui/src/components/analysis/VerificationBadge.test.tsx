@@ -28,6 +28,17 @@ describe("VerificationBadge (#740)", () => {
     expect(badge.getAttribute("title")).toMatch(/could not|review it manually/i);
   });
 
+  // #1155 review — a finding is also unverified when the code reference it gave
+  // was unreadable and so never looked up; "every location was missing" is
+  // false for that case. The copy must cover both causes.
+  it("#1155 — the unverified tooltip covers both a missing and an unreadable code reference", () => {
+    const tooltip = VERIFICATION_COPY.unverified.tooltip;
+    expect(tooltip).not.toMatch(/every code location it cited was missing/i);
+    expect(tooltip).toMatch(/not found in the code/i);
+    expect(tooltip).toMatch(/could not be read/i);
+    expect(tooltip).toMatch(/review it manually/i);
+  });
+
   it("gives each state a distinct colour class (visually distinguishable)", () => {
     const classes = new Set(Object.values(VERIFICATION_COPY).map((c) => c.className));
     // Issue #773 added a THIRD state: an absence claim the run's retrieval could

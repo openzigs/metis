@@ -35,7 +35,7 @@ export const VERIFICATION_COPY: Record<FindingVerificationStatus, VerificationCo
   unverified: {
     label: "Unverified",
     tooltip:
-      "The analysis could NOT confirm this finding against the code: every code location it cited was missing from the retrieved source. Review it manually before acting — it is still shown, but its evidence is unproven.",
+      "The analysis could NOT confirm this finding against the code. The code it pointed to was either not found in the code the analysis read, or written in a form that could not be read, so it was never checked. Review it manually before acting — it is still shown, but its evidence is unproven.",
     className: "border-warning/40 bg-warning-muted text-warning",
   },
   // Issue #773 — the finding claims something is NOT in the codebase, but the
