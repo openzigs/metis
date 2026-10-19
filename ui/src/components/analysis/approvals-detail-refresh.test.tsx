@@ -284,8 +284,8 @@ describe("#909 — warns before approval when the reviewed list is not the synth
     expect(warning).toHaveTextContent(
       "Approving promotes the 3 requirement(s) reviewed below. " +
         "1 of them did not match any requirement the analysis wrote up. These will be " +
-        "promoted without acceptance criteria or supporting evidence, so add them yourself " +
-        "after approving. 2 requirement(s) the analysis wrote up match nothing in the " +
+        "promoted without acceptance criteria or supporting evidence; you can add acceptance " +
+        "criteria by editing each one after approving. 2 requirement(s) the analysis wrote up match nothing in the " +
         "reviewed list, so their acceptance criteria and evidence will not be carried over " +
         "to any requirement.",
     );
@@ -302,7 +302,8 @@ describe("#909 — warns before approval when the reviewed list is not the synth
     expect(describeSetDifference(4, 3, { reviewedWithoutItem: 2, itemsWithoutReviewed: 0 })).toBe(
       "Approving promotes the 4 requirement(s) reviewed below. 2 of them did not match any " +
         "requirement the analysis wrote up. These will be promoted without acceptance " +
-        "criteria or supporting evidence, so add them yourself after approving.",
+        "criteria or supporting evidence; you can add acceptance criteria by editing each one " +
+        "after approving.",
     );
   });
 

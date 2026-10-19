@@ -186,8 +186,8 @@ export function describeSetDifference(
   if (identity.reviewedWithoutItem > 0) {
     sentences.push(
       `${identity.reviewedWithoutItem} of them did not match any requirement the analysis ` +
-        `wrote up. These will be promoted without acceptance criteria or supporting evidence, ` +
-        `so add them yourself after approving.`,
+        `wrote up. These will be promoted without acceptance criteria or supporting evidence; ` +
+        `you can add acceptance criteria by editing each one after approving.`,
     );
   }
   if (identity.itemsWithoutReviewed > 0) {
