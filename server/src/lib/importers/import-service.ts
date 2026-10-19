@@ -37,6 +37,7 @@ import type { ImporterFetchContext, MappedRequirement } from "./types.js";
 import { editedInMetisFromHistory, parseSourcePending } from "./source-sync.js";
 import { parseRequirementLabels } from "../analysis/requirement-labels.js";
 import { audit } from "../audit/audit-service.js";
+import { noteProjectRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import {
   RequirementVersionError,
   parseChangedFields,
@@ -612,6 +613,8 @@ export class ImportService {
     // progress immediately (keyed by the run id = the jobId).
     this.jobEvents.started("import-sync", run.id, row.projectId, `Importing from ${row.label}…`);
 
+    // #1252 — whether this run created a requirement: see the `finally` below.
+    let createdAny = false;
     try {
       const filter = parseImportFilter(row.source as ImportSourceKind, JSON.parse(row.filter));
       const token = await this.readBoundToken(row.secretId);
@@ -638,7 +641,15 @@ export class ImportService {
         total = undefined;
       }
 
-      const store = this.buildRequirementStore();
+      const rows = this.buildRequirementStore();
+      const store: RequirementStore = {
+        ...rows,
+        async create(input) {
+          const created = await rows.create(input);
+          createdAny = true;
+          return created;
+        },
+      };
       const ctx: ImporterFetchContext = {
         signal: opts.signal,
         onProgress: (info) => {
@@ -764,6 +775,13 @@ export class ImportService {
 
       log.error("Import run failed", { importSourceId, failures, shouldDisable, err: message });
       return toRunView(failed);
+    } finally {
+      // #1252 — an import run is a run like any other: new requirements can
+      // make it the run the Requirements hub opens on, and so change what a
+      // reader BRD lists. One check per run, after its rows committed (each
+      // is its own write), whether the run then completed or failed. A
+      // re-synced row asks through the version history (#1230).
+      if (createdAny) void noteProjectRequirementsChanged(row.projectId);
     }
   }
 

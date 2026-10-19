@@ -50,6 +50,17 @@ function hash(value: unknown): string {
   return inputHash(canonical(value));
 }
 
+/**
+ * #1230 — the {@link APPROVED_REQUIREMENTS_ITEM} of a reader-layout BRD of
+ * `projectId`: a hash of the fields its Approved Requirements section shows
+ * (`approvedRequirementsFacts`), never the write bookkeeping or code links.
+ * #1252 — exported so the out-of-date mark compares exactly what a version's
+ * snapshot recorded.
+ */
+export async function approvedRequirementsItem(projectId: string): Promise<string> {
+  return hash(approvedRequirementsFacts(await loadApprovedRequirements(projectId)));
+}
+
 function json(value: string | null): unknown {
   try {
     return JSON.parse(value ?? "null") as unknown;
@@ -349,9 +360,7 @@ export async function captureGenerationInputs(
   // version row records (#1162), counts like any edit, and a code-link change,
   // which the section does not show, does not count.
   if (readsApprovedRequirements(doc)) {
-    items[APPROVED_REQUIREMENTS_ITEM] = hash(
-      approvedRequirementsFacts(await loadApprovedRequirements(doc.projectId)),
-    );
+    items[APPROVED_REQUIREMENTS_ITEM] = await approvedRequirementsItem(doc.projectId);
   }
   for (const [key, values] of entries) {
     values.sort().forEach((value, index) => {

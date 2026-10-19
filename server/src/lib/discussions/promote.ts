@@ -25,6 +25,7 @@
  */
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
+import { noteProjectRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import type { RoleKey } from "@metis/shared";
 
 export class PromoteError extends Error {
@@ -149,6 +150,10 @@ export async function promoteMessageToRequirement(input: PromoteInput): Promise<
 
     return requirement.id;
   });
+  // #1252 — the new row can make its run (often a synthetic one, just created
+  // above) the run the Requirements hub opens on, which changes what a reader
+  // BRD lists. Committed by now.
+  void noteProjectRequirementsChanged(thread.projectId);
 
   // Provenance — keep the AI/human origin and the source ids.
   audit({

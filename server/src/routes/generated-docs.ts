@@ -101,9 +101,12 @@ import {
   isGraphRowsOnlyChange,
   isRunStableItem,
   withRunStableItemsOf,
+  runStableItemsDiffer,
   planRegeneration,
   type GenerationInputSnapshot,
 } from "../lib/docs-gen/regeneration-plan.js";
+import { noteProjectRequirementsChanged } from "../lib/docs-gen/approved-requirements-staleness.js";
+import { approvedRequirementsOutOfDate } from "../lib/docs-gen/approved-requirements-currency.js";
 import {
   acknowledgeExtractorUpgrade,
   isAttributableToUpgrade,
@@ -679,6 +682,9 @@ export function generatedDocsRouter(): Router {
         interrupted: doc.status === "failed" && doc.errorMessage === GENERATION_INTERRUPTED_MESSAGE,
         // #98 / #489 — same projection as the list handler.
         indexing: syntheticDocument ? syntheticIndex(syntheticDocument) : unpublishedIndex(outbox),
+        // #1252 — a reader BRD without auto-update whose approved requirements
+        // changed since its latest version: the UI says so and offers a regenerate.
+        approvedRequirementsOutOfDate: await approvedRequirementsOutOfDate(doc),
         versions: await Promise.all(
           versions.map(async (version) => ({
             id: version.id,
@@ -948,7 +954,16 @@ export function generatedDocsRouter(): Router {
       if (!reset.count) {
         const existing = await prisma.generatedDocument.findFirst({
           where: { id: docId, projectId, deletedAt: null },
-          select: { status: true, warnings: true, updatedAt: true },
+          select: {
+            id: true,
+            projectId: true,
+            scope: true,
+            scopeFilter: true,
+            autoUpdate: true,
+            status: true,
+            warnings: true,
+            updatedAt: true,
+          },
         });
         if (!existing) throw new AppError(404, "DOC_NOT_FOUND", "Generated document not found");
         // #942 — a published `degraded` document with a section that failed
@@ -971,7 +986,28 @@ export function generatedDocsRouter(): Router {
               data: { status: "pending", errorMessage: null },
             })
           ).count > 0;
-        if (resumable) {
+        // #1252 — a published reader BRD without auto-update whose approved
+        // requirements changed since its latest version (the mark the detail
+        // route reports). Nothing else regenerates it. Compare-and-set on the
+        // row read, so a run that publishes meanwhile wins and this 409s.
+        // Only ever a settled row: never one a run holds.
+        const outdated =
+          !resumable &&
+          (existing.status === "ready" || existing.status === "degraded") &&
+          (await approvedRequirementsOutOfDate(existing)) &&
+          (
+            await prisma.generatedDocument.updateMany({
+              where: {
+                id: docId,
+                projectId,
+                deletedAt: null,
+                status: existing.status,
+                updatedAt: existing.updatedAt,
+              },
+              data: { status: "pending", errorMessage: null },
+            })
+          ).count > 0;
+        if (resumable || outdated) {
           void generateDocumentAsync(docId, projectId).catch((err) => {
             log.error("Background doc regeneration failed", { err, docId });
           });
@@ -981,7 +1017,7 @@ export function generatedDocsRouter(): Router {
         throw new AppError(
           409,
           "DOC_NOT_REGENERATABLE",
-          `Only a failed, cancelled, partially generated or section-failed document can be regenerated (status: ${existing.status})`,
+          `Only a failed, cancelled, partially generated or section-failed document, or one whose approved requirements changed since it was generated, can be regenerated (status: ${existing.status})`,
         );
       }
       void generateDocumentAsync(docId, projectId).catch((err) => {
@@ -1289,6 +1325,11 @@ export async function generateDocumentAsync(
     // graphs and no others, so another repository's upgrade is never evidence
     // here; what the run then stands for is recorded when it publishes.
     const upgrade: { acknowledged: AcknowledgedUpgrade | null } = { acknowledged: null };
+    // #1252 (PR #1249 review, N1) — whether the approved requirements moved
+    // while this run went on. It does not stop for them, and a check made
+    // meanwhile queued a task that lost the claim to this run, so once this run
+    // publishes it asks for the check itself.
+    let approvedRequirementsMoved = false;
     const inputsStand = async (
       row: Parameters<typeof captureGenerationInputs>[0],
       rowPolicy: Parameters<typeof captureGenerationInputs>[1],
@@ -1297,7 +1338,9 @@ export async function generateDocumentAsync(
       const standsFor = upgrade.acknowledged?.snapshot ?? inputSnapshot;
       // #1230 — approving or editing a requirement mid-run does not stop the
       // run: the approved-requirements item is compared as the run captured it.
-      const fresh = withRunStableItemsOf(await captureGenerationInputs(row, rowPolicy), standsFor);
+      const captured = await captureGenerationInputs(row, rowPolicy);
+      if (runStableItemsDiffer(captured, standsFor)) approvedRequirementsMoved = true;
+      const fresh = withRunStableItemsOf(captured, standsFor);
       if (fresh.fingerprint === standsFor.fingerprint) return true;
       if (!isGraphRowsOnlyChange(standsFor, fresh)) return false;
       // A run's own capture always records its graphs: no "older record" here.
@@ -1949,6 +1992,8 @@ export async function generateDocumentAsync(
     claimed = false;
     // Published: the claim is gone, so a later beat must not read as superseded.
     stopHeartbeat?.();
+    // #1252 — published standing for approvals that have since moved: check now.
+    if (approvedRequirementsMoved) void noteProjectRequirementsChanged(projectId);
 
     await dispatchGeneratedDocTask(publicationTaskId);
 

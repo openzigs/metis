@@ -95,6 +95,19 @@ export function withRunStableItemsOf(
   return fingerprintInputs(items, fresh.graphs);
 }
 
+/**
+ * #1252 — whether `fresh` and `standsFor` differ in a {@link RUN_STABLE_ITEMS}
+ * item: a run that publishes standing for `standsFor` is then out of date the
+ * moment it publishes, and must ask for the check again (a check made while it
+ * ran lost the generation claim to it).
+ */
+export function runStableItemsDiffer(
+  fresh: GenerationInputSnapshot,
+  standsFor: GenerationInputSnapshot,
+): boolean {
+  return RUN_STABLE_ITEMS.some((key) => fresh.items[key] !== standsFor.items[key]);
+}
+
 /** Whether `key` is an item a run in progress does not stop for. */
 export function isRunStableItem(key: string): boolean {
   return RUN_STABLE_ITEMS.includes(key);

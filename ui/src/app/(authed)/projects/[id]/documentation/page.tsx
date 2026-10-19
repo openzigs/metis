@@ -126,6 +126,12 @@ interface GeneratedDoc {
    */
   interrupted?: boolean;
   /**
+   * #1252 — set by the detail endpoint: a reader BRD without auto-update
+   * whose approved requirements were approved or edited since its latest
+   * version. The view says so and offers a regenerate.
+   */
+  approvedRequirementsOutOfDate?: boolean;
+  /**
    * Epic #204 follow-up (#252) — dedicated structured warnings column. A
    * `DocWarning[]` for `degraded` docs; null/undefined otherwise.
    */
@@ -576,6 +582,14 @@ export default function DocumentationPage(): React.ReactElement {
           {failedSectionList.length > 0 && (
             <FailedSectionsBanner
               failed={failedSectionList}
+              regenerating={regenerateMutation.isPending}
+              onRegenerate={() => regenerateMutation.mutate(docDetail.data.id)}
+            />
+          )}
+
+          {/* #1252 — the approved requirements it lists changed since this version. */}
+          {docDetail.data.approvedRequirementsOutOfDate === true && (
+            <ApprovedRequirementsOutOfDateBanner
               regenerating={regenerateMutation.isPending}
               onRegenerate={() => regenerateMutation.mutate(docDetail.data.id)}
             />
@@ -1817,6 +1831,36 @@ export function CancelGenerationButton({
     >
       {stopping || pending ? "Cancelling…" : "Cancel generation"}
     </Button>
+  );
+}
+
+/**
+ * #1252 — a business requirements document that does not update itself, whose
+ * approved requirements changed in METIS since this version was written.
+ */
+export function ApprovedRequirementsOutOfDateBanner({
+  regenerating,
+  onRegenerate,
+}: {
+  regenerating: boolean;
+  onRegenerate: () => void;
+}): React.ReactElement {
+  return (
+    <Card
+      className="border-warning/40 bg-warning-muted p-4"
+      role="status"
+      data-testid="approved-requirements-out-of-date"
+    >
+      <p className="font-medium">Out of date</p>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Requirements were approved or changed in METIS since this version was written, so the
+        Approved Requirements section no longer matches them. Regenerate to write a new version that
+        lists them as they are now.
+      </p>
+      <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
+        {regenerating ? "Regenerating…" : "Regenerate"}
+      </Button>
+    </Card>
   );
 }
 

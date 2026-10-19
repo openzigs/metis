@@ -103,6 +103,7 @@ import type {
   WebResearchResult,
 } from "./types/requirements.js";
 import { isBackgroundAnalysis } from "./requirement-runs.js";
+import { noteProjectRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import { pairingColumns, type PromotedFrom } from "./promotion-pairing.js";
 
 const log = createChildLogger("analysis-service");
@@ -508,12 +509,24 @@ export async function getLatestWebResearch(projectId: string): Promise<WebResear
  * the model and rewrites the findings and requirements, so the analysis is
  * `running` again until {@link finalizeAnalysisDelta} settles it.
  */
+/**
+ * #1252 — a run whose status settles can move the run the Requirements hub
+ * opens on (`defaultRequirementsRunIdFor`: the newest COMPLETED run with any
+ * requirements), and with it the approved requirements a reader BRD lists.
+ * So, after the write commits, the auto-update check looks again. A
+ * background row (code-graph ingest, domain research) is never that run.
+ */
+function noteRunSettled(row: { projectId: string; metadata: string | null } | null | undefined) {
+  if (row && !isBackgroundAnalysis(row.metadata))
+    void noteProjectRequirementsChanged(row.projectId);
+}
+
 export async function markAnalysisRunning(id: string): Promise<void> {
   await prisma.analysis.update({ where: { id }, data: { status: "running" } });
 }
 
 export async function markAnalysisCompleted(id: string, totals: TokenUsage): Promise<void> {
-  await prisma.analysis.update({
+  const row = await prisma.analysis.update({
     where: { id },
     data: {
       status: "completed",
@@ -523,6 +536,7 @@ export async function markAnalysisCompleted(id: string, totals: TokenUsage): Pro
       totalTokens: totals.totalTokens,
     },
   });
+  noteRunSettled(row);
 }
 
 export async function markAnalysisFailed(
@@ -569,7 +583,9 @@ export async function finalizeAnalysisDelta(input: {
   delta: TokenUsage;
   errorMessage?: string | null;
 }): Promise<void> {
-  await prisma.analysis.update({
+  // #1252 — a re-run was `running` (`markAnalysisRunning`), so either outcome
+  // can move the default run back, or away from this one.
+  const row = await prisma.analysis.update({
     where: { id: input.id },
     data: {
       status: input.status,
@@ -580,6 +596,7 @@ export async function finalizeAnalysisDelta(input: {
       errorMessage: input.errorMessage ? input.errorMessage.slice(0, 4096) : null,
     },
   });
+  noteRunSettled(row);
 }
 
 /**
@@ -607,7 +624,15 @@ export async function settleRunningAnalysisAsFailed(input: {
       errorMessage: input.errorMessage.slice(0, 4096),
     },
   });
-  return count > 0;
+  if (count === 0) return false;
+  // The settle has committed: a failed read for the check must not turn it
+  // into a rejection (the caller would log a settle that happened as failed).
+  noteRunSettled(
+    await prisma.analysis
+      .findUnique({ where: { id: input.id }, select: { projectId: true, metadata: true } })
+      .catch(() => null),
+  );
+  return true;
 }
 
 /**
@@ -976,9 +1001,23 @@ const REPLACE_REQUIREMENTS_TIMEOUT_MS = 60_000;
  * set is locked before it is checked (see {@link lockRequirementSet}).
  */
 export async function persistRequirements(input: PersistRequirementsInput): Promise<string[]> {
-  return prisma.$transaction((tx) => replaceRequirementSet(tx, input), {
-    timeout: REPLACE_REQUIREMENTS_TIMEOUT_MS,
-  });
+  let withheld = false;
+  const ids = await prisma.$transaction(
+    (tx) =>
+      replaceRequirementSet(tx, {
+        ...input,
+        onWithheld: (record) => {
+          withheld = true;
+          input.onWithheld?.(record);
+        },
+      }),
+    { timeout: REPLACE_REQUIREMENTS_TIMEOUT_MS },
+  );
+  // #1252 — a new or replaced set changes what a reader BRD lists when this
+  // is (or becomes) the run the Requirements hub opens on. Committed by now;
+  // a withheld replacement changed nothing.
+  if (!withheld) void noteProjectRequirementsChanged(input.projectId);
+  return ids;
 }
 
 async function replaceRequirementSet(

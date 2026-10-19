@@ -234,7 +234,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await vi.waitFor(() => expect(state.check).toHaveBeenCalledWith(...CHECKED));
     });
 
-    it("every writer through the version-history service asks for the check (import re-sync, clarification, take-source)", async () => {
+    // Import re-sync, clarification enrichment and "Take the source version"
+    // all write through this one function (#1162,
+    // `requirement-writers-history-1162.sqlite.test.ts`); this calls it directly.
+    it("a write through the version-history service (updateRequirementWithHistory) asks for the check; one that changes nothing does not", async () => {
       const id = await makeRequirement({ version: 0, reviewStatus: "approved" });
       await updateRequirementWithHistory(db as never, {
         requirementId: id,

@@ -46,6 +46,11 @@ const state = vi.hoisted(() => ({
   /** #1230 — whether the document lists approved requirements, and what they are. */
   readsApproved: false,
   approved: [] as Array<Record<string, unknown>>,
+  /**
+   * #1252 — the follow-up check a run asks for after it publishes. The real
+   * check runs behind it, so what it queues is what the test sees.
+   */
+  noteProject: vi.fn(),
 }));
 
 type TaskFilter = {
@@ -311,6 +316,12 @@ vi.mock("../src/lib/docs-gen/approved-requirements-section.js", async (importOri
   readsApprovedRequirements: () => state.readsApproved,
   loadApprovedRequirements: async () => state.approved.map((r) => ({ ...r })),
 }));
+// #1252 — the reader-layout gate is the module's own; what matters here is
+// when a run asks for the check and what the check then does.
+vi.mock("../src/lib/docs-gen/approved-requirements-staleness.js", () => ({
+  noteProjectRequirementsChanged: state.noteProject,
+  noteRequirementsChanged: vi.fn(),
+}));
 vi.mock("../src/lib/logger.js", () => ({
   createChildLogger: () => ({ info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
@@ -415,6 +426,10 @@ beforeEach(() => {
   state.mutation = null;
   state.readsApproved = false;
   state.approved = [];
+  state.noteProject.mockImplementation(async (projectId: string) => {
+    const { checkIncrementalRegeneration } = await import("../src/lib/docs-gen/incremental.js");
+    await checkIncrementalRegeneration(projectId, undefined, { approvedRequirementsOnly: true });
+  });
   state.doc = {
     id: "d",
     projectId: "p",
@@ -1465,12 +1480,20 @@ describe("an approval during a reader BRD's generation (#1230)", () => {
     (await captureGenerationInputs(document(), await resolveEvidencePolicy(document()))).items
       .approvedRequirements;
 
+  /** How many versions were published each time the run asked for the check. */
+  let publishedWhenNoted: number[] = [];
   beforeEach(() => {
     state.readsApproved = true;
     state.approved = [approved("Original")];
+    publishedWhenNoted = [];
+    const check = state.noteProject.getMockImplementation()!;
+    state.noteProject.mockImplementation(async (projectId: string) => {
+      publishedWhenNoted.push(state.versions.length);
+      await check(projectId);
+    });
   });
 
-  it("does not stop the run: it publishes once, standing for the approvals it captured", async () => {
+  it("does not stop the run: it publishes once, standing for the approvals it captured, then asks for the check", async () => {
     const before = await current();
     expect(before).toBeDefined();
     // The analyst edits the approved requirement during the first model call.
@@ -1480,14 +1503,26 @@ describe("an approval during a reader BRD's generation (#1230)", () => {
     await ingest();
     const after = await current();
     expect(after).not.toBe(before);
-    expect(state.versions).toHaveLength(1);
-    expect(state.publications).toHaveBeenCalledTimes(1);
-    // Published by the first run (a stopped run's replan would stand for `after`).
+    // Published once by the first run (a stopped run's replan would stand for
+    // `after`), and only then did it ask for the check.
     expect(item(state.versions[0].provenanceManifest)).toBe(before);
-    // Stale all the same: the next check regenerates.
-    await ingest();
+    expect(state.noteProject).toHaveBeenCalledWith("p");
+    expect(publishedWhenNoted).toEqual([1]);
+    // #1252 (PR #1249 review, N1) — what that check queued brought the document
+    // up to date: one more version, standing for the edit, with no second
+    // `ingest()` in this test. That run saw no change of its own, so it asked
+    // for nothing more.
+    await vi.waitFor(() => expect(state.versions).toHaveLength(2), { timeout: 10000 });
+    await settle();
     expect(state.versions).toHaveLength(2);
     expect(item(state.versions[1].provenanceManifest)).toBe(after);
+    expect(state.noteProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks for no follow-up check when the approvals did not change during the run", async () => {
+    await ingest();
+    expect(state.versions).toHaveLength(1);
+    expect(state.noteProject).not.toHaveBeenCalled();
   });
 
   it("control: a source change at the same moment still stops the run", async () => {
