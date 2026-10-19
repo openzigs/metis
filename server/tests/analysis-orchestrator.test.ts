@@ -2010,7 +2010,9 @@ describe("AnalysisOrchestrator.regenerateAgent guards", () => {
     const analysisId = await runToCompletion(orch);
     const { prisma } = await import("../src/lib/prisma.js");
     const update = prisma.analysis.update as unknown as ReturnType<typeof vi.fn>;
-    const original = update.getMockImplementation()!;
+    const original = update.getMockImplementation() as unknown as (
+      args: unknown,
+    ) => Promise<unknown>;
     update.mockImplementation(async (args: { data: Record<string, unknown> }) => {
       if (args.data.totalTokens && typeof args.data.totalTokens === "object") {
         throw new Error("database unavailable");
