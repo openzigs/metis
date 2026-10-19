@@ -481,7 +481,9 @@ export function productsRouter(): Router {
                 contentHash: result.contentHash,
                 diffSummary: result.diff ? summarizeContractDiff(result.diff) : "Initial version.",
                 hasContractChanges: result.diff?.hasChanges ?? false,
-                ...perRepoCoverage(repoInfos[i]?.repoConnectionId),
+                // A contract doc is built from its own repo's specs alone — no
+                // edges — so a skipped neighbour leaves nothing out of it (#1262).
+                ...coverage(0),
               }),
               version: result.version,
               generatedAt: now,

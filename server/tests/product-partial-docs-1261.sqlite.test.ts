@@ -5,8 +5,8 @@
  *
  * - every shared document a run writes while a repo is hidden from the actor
  *   records `partial: true` and `inaccessibleRepoCount` in its metadata — the
- *   unified doc, and the per-service and api-contract docs of every repo with an
- *   edge to a skipped repo — and a later full run clears it (AC1: mark, don't
+ *   unified doc, and the per-service doc of every repo with an edge to a skipped
+ *   repo (a contract doc is built from its own repo's specs alone, so never) — and a later full run clears it (AC1: mark, don't
  *   refuse);
  * - detaching a repo the caller cannot read is audited (AC2);
  * - a connection soft-deleted AFTER it was attached is left out of the product
@@ -242,13 +242,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           partial: true,
           inaccessibleRepoCount: 1,
         });
-        // A has edges to and from the skipped repo B.
-        for (const docType of ["per-service", "api-contract"]) {
-          expect(meta(only(docs, docType, rc.a))).toMatchObject({
-            partial: true,
-            inaccessibleRepoCount: 1,
-          });
-        }
+        // A has edges to and from the skipped repo B, so its per-service doc is partial.
+        expect(meta(only(docs, "per-service", rc.a))).toMatchObject({
+          partial: true,
+          inaccessibleRepoCount: 1,
+        });
+        // A's contract doc is built from A's own specs alone, so nothing was left out.
+        expect(meta(only(docs, "api-contract", rc.a))).toMatchObject({
+          partial: false,
+          inaccessibleRepoCount: 0,
+        });
         // C and L have no edge to B: their docs are complete.
         for (const repoId of [rc.c, rc.l]) {
           for (const docType of ["per-service", "api-contract"]) {

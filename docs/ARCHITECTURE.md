@@ -4310,8 +4310,8 @@ prints the query for Postgres) lists existing attachments that cross a workspace
 **Partial documents, detach audit, soft-deleted repos (#1261).** A member's `/analyze`
 with hidden repos is *marked, not refused*: every document it writes records
 `metadata.partial` and `metadata.inaccessibleRepoCount` — the unified doc counts every
-skipped repo, a per-service or api-contract doc counts the skipped repos it has an edge
-with — and a run that hides nothing writes `partial: false` over all of them. The product
+skipped repo, a per-service doc counts the skipped repos it has an edge with, and an
+api-contract doc, built from its own repo's specs alone, is never partial — and a run that hides nothing writes `partial: false` over all of them. The product
 page shows "N repos hidden" from `inaccessibleRepoCount` and a plain-language notice on a
 partial document (counts only, no names). `DELETE /:id/repos/:repoId` on a repo the caller
 cannot read still detaches it, and audits `product.repo.detach.unreadable`. A connection
