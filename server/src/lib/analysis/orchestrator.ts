@@ -331,6 +331,36 @@ async function closeFollowUpRun(
 }
 
 /**
+ * #1156 — settle a follow-up's analysis row. {@link reopenForFollowUp} set it
+ * `running`, and the regenerate/resume pre-flights refuse a `running` row, with
+ * nothing to reset it on boot: one failed write here left the analysis
+ * unusable. So a failure gets ONE more write that records the run as failed,
+ * then the original error is rethrown. If that write fails too, the database
+ * is down and the row cannot be settled from here.
+ */
+async function finalizeFollowUp(input: Parameters<typeof finalizeAnalysisDelta>[0]): Promise<void> {
+  try {
+    await finalizeAnalysisDelta(input);
+  } catch (err) {
+    log.warn("Could not record a re-run's result; marking the analysis failed", {
+      analysisId: input.id,
+      error: (err as Error).message,
+    });
+    await finalizeAnalysisDelta({
+      ...input,
+      status: "failed",
+      errorMessage: input.errorMessage ?? "The result of this re-run could not be saved.",
+    }).catch((retryErr: unknown) =>
+      log.warn("Could not mark the analysis failed either; it reads running", {
+        analysisId: input.id,
+        error: (retryErr as Error).message,
+      }),
+    );
+    throw err;
+  }
+}
+
+/**
  * #734 — build the `onDrop` sink for {@link groundCodeCitations}. A dropped code
  * citation means the model cited a `file:line` (or synthetic `code-graph:` id)
  * that was NOT in the retrieved provenance — an anti-hallucination drop that must
@@ -1118,7 +1148,7 @@ export class AnalysisOrchestrator {
         await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
         // Atomic write — increments columns server-side so two concurrent
         // regenerates can't lose tokens to a read/modify/write race.
-        await finalizeAnalysisDelta({
+        await finalizeFollowUp({
           id: opts.analysisId,
           status: outcome,
           delta,
@@ -1508,7 +1538,7 @@ export class AnalysisOrchestrator {
       // #1156 — release the claim even when a database write below throws.
       try {
         await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
-        await finalizeAnalysisDelta({
+        await finalizeFollowUp({
           id: opts.analysisId,
           status: outcome,
           delta,

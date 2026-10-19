@@ -503,6 +503,36 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     }
   });
 
+  // #1156 adversarial review — the row read `running` after a failed finalize,
+  // so the status check refused every later resume; nothing resets it on boot.
+  it("#1156 — after one failing finalize write the analysis reads failed and can be resumed", async () => {
+    state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
+    state.connectors = [{ id: "c2", label: "worker" }];
+    const { prisma } = await import("../prisma.js");
+    const update = prisma.analysis.update as unknown as ReturnType<typeof vi.fn>;
+    const original = update.getMockImplementation() as unknown as (
+      args: unknown,
+    ) => Promise<unknown>;
+    let failures = 0;
+    update.mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      if (failures === 0 && args.data.totalTokens && typeof args.data.totalTokens === "object") {
+        failures += 1;
+        throw new Error("database unavailable");
+      }
+      return original(args);
+    });
+    const { orch } = makeOrch();
+    try {
+      await expect(
+        orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" }),
+      ).rejects.toThrow("database unavailable");
+    } finally {
+      update.mockImplementation(original);
+    }
+    expect(state.status).toBe("failed");
+    await expect(orch.assertCanResumeRepos(ANALYSIS_ID)).resolves.toBeDefined();
+  });
+
   describe("assertCanResumeRepos guards", () => {
     it("rejects a resume while the analysis is already being mutated (double-resume guard)", async () => {
       state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);

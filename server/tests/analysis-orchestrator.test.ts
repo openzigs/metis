@@ -2003,6 +2003,46 @@ describe("AnalysisOrchestrator.regenerateAgent guards", () => {
     expect(analyses.get(analysisId)!.status).toBe("completed");
   });
 
+  // #1156 adversarial review — releasing the claim is not enough on its own:
+  // the row still read `running`, which the status check refuses, and nothing
+  // resets it on boot. A second write settles it as failed.
+  it("#1156 — after one failing finalize write the analysis reads failed and can be re-run", async () => {
+    const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
+    const analysisId = await runToCompletion(orch);
+    const { prisma } = await import("../src/lib/prisma.js");
+    const update = prisma.analysis.update as unknown as ReturnType<typeof vi.fn>;
+    const original = update.getMockImplementation() as unknown as (
+      args: unknown,
+    ) => Promise<unknown>;
+    let failures = 0;
+    update.mockImplementation(async (args: { data: Record<string, unknown> }) => {
+      if (failures === 0 && args.data.totalTokens && typeof args.data.totalTokens === "object") {
+        failures += 1;
+        throw new Error("database unavailable");
+      }
+      return original(args);
+    });
+    try {
+      await expect(
+        orch.regenerateAgent({
+          analysisId,
+          agentKey: "document",
+          actorId: "user-1234567890",
+        }),
+      ).rejects.toThrow("database unavailable");
+    } finally {
+      update.mockImplementation(original);
+    }
+    expect(orch.isActive(analysisId)).toBe(false);
+    expect(analyses.get(analysisId)!.status).toBe("failed");
+    await orch.regenerateAgent({
+      analysisId,
+      agentKey: "document",
+      actorId: "user-1234567890",
+    });
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+  });
+
   // #1156 — the finally awaited the database writes before releasing the claim,
   // so one failing write left the analysis claimed until a restart.
   it("#1156 — a failing finalize write still releases the regenerate's claim", async () => {
