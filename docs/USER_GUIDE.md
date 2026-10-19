@@ -2501,7 +2501,9 @@ again on its own for a reply that dropped while it was arriving. This applies
 in chat, discussions, sub-agents, analysis, impact analysis and document
 generation. These providers report no tokens for a dropped reply, so it is not
 counted toward usage or budgets. Instead, each one is recorded in the audit log
-as uncounted, with its own `ai.usage.unmetered` entry.
+as uncounted, with its own `ai.usage.unmetered` entry. Document generation also
+adds an estimate for it to the run's own cost limit, so a run that keeps
+retrying still stops at its ceiling.
 
 When you press **Stop**, or METIS stops an answer that has gone quiet for too
 long, the tokens the provider reported for that answer before it stopped still

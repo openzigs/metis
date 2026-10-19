@@ -300,7 +300,8 @@ export function scopedToGeneration(provider: AIProvider): AIProvider {
     // #1273 — an attempt the adapter retried inside this call is metered to
     // the run, once: on what the provider reported for it (its own ledger row,
     // counted toward the run's ceiling), or — when it reported nothing —
-    // recorded as unmetered. Nothing is estimated for it.
+    // recorded as unmetered, with a prompt-size estimate added to the run's
+    // cost ceiling only (never to the ledger).
     const onRetriedAttempt = (a: RetriedAttempt): void => {
       const reported = reportedUsageOf(a.error);
       if (reported) {
