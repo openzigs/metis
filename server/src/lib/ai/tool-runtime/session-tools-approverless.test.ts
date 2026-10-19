@@ -7,9 +7,17 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../../prisma.js", () => ({
   prisma: { aIToolApproval: { findFirst: vi.fn(async () => null) } },
 }));
+const { auditCalls } = vi.hoisted(() => ({
+  auditCalls: [] as Array<{ metadata: Record<string, unknown> }>,
+}));
+vi.mock("../../audit/audit-service.js", () => ({
+  audit: (input: { metadata: Record<string, unknown> }) => auditCalls.push(input),
+}));
 
 import { LOAD_SKILL_TOOL_NAME } from "@metis/shared";
+import { ApprovalGateService } from "../approval-policy.js";
 import type { RiskLevel } from "../types.js";
+import { executeToolCall } from "./executor.js";
 import { withoutApprovalGatedTools, type SessionToolRuntime } from "./session-tools.js";
 import { makeToolset } from "./toolset.js";
 import type { RuntimeTool } from "./types.js";
@@ -70,6 +78,65 @@ describe("withoutApprovalGatedTools", () => {
     expect(out.runtime.toolset.needsApprover?.("inspect-schema")).toBe("inspect_schema");
     expect(out.runtime.toolset.needsApprover?.("search")).toBeUndefined();
     expect(out.runtime.toolset.needsApprover?.("no_such_tool")).toBeUndefined();
+  });
+
+  it("#1240 a withheld tool's other spelling never resolves to a kept tool", async () => {
+    const out = await withoutApprovalGatedTools(
+      runtime([tool("run-check", "high"), tool("run_check", "low")]),
+      SESSION,
+      never,
+    );
+    expect(out.withheld).toEqual(["run-check"]);
+    const ts = out.runtime.toolset;
+    // The kept tool, by its own name, still runs.
+    expect(ts.resolve("run_check")?.name).toBe("run_check");
+    // The withheld tool's own spelling is refused as needing an approver — it
+    // must not be respelt into the kept `run_check`.
+    expect(ts.resolve("run-check")).toBeUndefined();
+    expect(ts.needsApprover?.("run-check")).toBe("run-check");
+  });
+
+  it("#1240 every spelling shared with a withheld tool is blocked, multi-separator names too", async () => {
+    const out = await withoutApprovalGatedTools(
+      runtime([tool("a-b_c", "high"), tool("a_b-c", "low"), tool("search-knowledge", "low")]),
+      SESSION,
+      never,
+    );
+    const ts = out.runtime.toolset;
+    expect(ts.resolve("a_b-c")?.name).toBe("a_b-c");
+    for (const spelling of ["a-b_c", "a_b_c", "a-b-c"]) {
+      expect(ts.resolve(spelling)).toBeUndefined();
+      expect(ts.needsApprover?.(spelling)).toBe("a-b_c");
+    }
+    // A kept tool's other spelling that no withheld tool shares still resolves.
+    expect(ts.resolve("search_knowledge")?.name).toBe("search-knowledge");
+    expect(ts.needsApprover?.("search_knowledge")).toBeUndefined();
+  });
+
+  it("#1240 a call by the withheld tool's spelling is refused and never runs the kept tool", async () => {
+    const kept = tool("run_check", "low");
+    const out = await withoutApprovalGatedTools(
+      runtime([tool("run-check", "high"), kept]),
+      SESSION,
+      never,
+    );
+    auditCalls.length = 0;
+    const result = await executeToolCall(
+      { id: "c1", name: "run-check", args: {} },
+      {
+        toolset: out.runtime.toolset,
+        gate: new ApprovalGateService({
+          sessionId: "s1",
+          userId: "u1",
+          policy: { low: "auto", medium: "auto", high: "auto" },
+        }),
+        ctx: { sessionId: "s1", userId: "u1", projectId: "p1" },
+      },
+    );
+    expect(kept.execute).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ executed: false, errorCode: "TOOL_DENIED" });
+    expect(result.reason).toBe("no_interactive_approver");
+    expect(auditCalls.map((a) => a.metadata.tool)).toEqual(["run-check"]);
   });
 
   it("keeps a prompt-once tool this session already approved", async () => {

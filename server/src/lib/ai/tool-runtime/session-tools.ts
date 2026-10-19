@@ -505,7 +505,9 @@ export async function withoutApprovalGatedTools(
     } else kept.push(tool);
   }
   if (withheld.length === 0) return { runtime, withheld };
-  const base = makeToolset(kept, runtime.toolset.withheldTools);
+  // #1240 — a withheld tool's other spelling must not be respelt into a kept
+  // tool that differs from it only by `-`/`_`: block every withheld spelling.
+  const base = makeToolset(kept, runtime.toolset.withheldTools, [...gatedBySpelling.keys()]);
   const toolset: RuntimeToolset = {
     ...base,
     needsApprover: (name) =>

@@ -123,10 +123,23 @@ export async function executeToolCall(
   };
   const refuse = (
     code: ToolErrorCode,
-    extra: { decision?: ApprovalDecision; reason?: string; modelText?: string } = {},
+    extra: {
+      decision?: ApprovalDecision;
+      reason?: string;
+      modelText?: string;
+      /** #1240 — the canonical name of a tool the model named by another spelling. */
+      canonical?: string;
+    } = {},
   ): ExecutedToolCall => {
     emit({ phase: "error", code, message: TOOL_ERROR_MESSAGES[code], isError: true });
-    recordAudit(deps, call, tool?.name ?? call.name, code, extra.decision, false);
+    recordAudit(
+      deps,
+      call,
+      tool?.name ?? extra.canonical ?? call.name,
+      code,
+      extra.decision,
+      false,
+    );
     return {
       callId: call.id,
       tool: tool?.name ?? call.name,
@@ -164,7 +177,11 @@ export async function executeToolCall(
         },
         "not_in_agent_allowlist",
       );
-      return refuse("TOOL_NOT_ALLOWED", { decision: decision.decision, reason: decision.reason });
+      return refuse("TOOL_NOT_ALLOWED", {
+        decision: decision.decision,
+        reason: decision.reason,
+        canonical: withheld.name,
+      });
     }
     // #1139 — a tool left out of the offer because nobody can approve it on
     // this request: say so (#861's wording), rather than calling it unknown.
@@ -172,6 +189,7 @@ export async function executeToolCall(
     if (gated) {
       return refuse("TOOL_DENIED", {
         reason: NO_INTERACTIVE_APPROVER,
+        canonical: gated,
         modelText: `Error: the tool "${gated}" needs the user's approval and no one is available to approve it on this request, so it was not offered and did not run. Answer as well as you can without this tool, and say what it would have checked. Do not call it again in this reply.`,
       });
     }
