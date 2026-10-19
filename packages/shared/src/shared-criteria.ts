@@ -153,8 +153,13 @@ export function sharedCriteriaMarks(
   return new Set(list.filter((c) => shared.has(c)));
 }
 
-/** A title as one line: a newline in it would end the issue note's quote block. */
-function oneLine(title: string): string {
+/**
+ * A title as one line: runs of whitespace (newlines included) collapse to one
+ * space and the ends are trimmed. A newline in a title written into a published
+ * issue's markdown would end its quote block and let the rest render as free
+ * markdown (#1254's shared-criteria note, #1255's "Parent epic" line).
+ */
+export function oneLineTitle(title: string): string {
   return title.replace(/\s+/g, " ").trim();
 }
 
@@ -166,7 +171,7 @@ export function joinNames(names: readonly string[]): string {
 
 /** How a sibling is named in a note: its title, quoted, and whether it was approved. */
 export function sharedSiblingLabel(sibling: SharedCriteriaSibling, title = sibling.title): string {
-  const name = oneLine(title) || sibling.structuredId;
+  const name = oneLineTitle(title) || sibling.structuredId;
   return sibling.approved || sibling.requirementId ? `“${name}”` : `“${name}” (not approved)`;
 }
 
