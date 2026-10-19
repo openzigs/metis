@@ -1607,6 +1607,8 @@ export function aiRouter(): Router {
       // runs; prompts reach the owner over the session's socket room. Otherwise,
       // the single non-loop provider call as before.
       let response: ChatResponse;
+      // #1238 — a dropped attempt's usage is in the turn's (see calibrationPromptChars).
+      let resentPrompt = false;
       // #146 — an unscoped session may run the loop too: its only tool is
       // `load_skill` (resolveSessionTools never offers it anything else).
       if (tools.mode !== "off") {
@@ -1646,8 +1648,11 @@ export function aiRouter(): Router {
             },
             // #243 — each model call's usage as it returns.
             onUsage: (u) => turnMeter.add(u),
+            // #1238 — a dropped attempt whose cost no provider reported.
+            onUnmeteredAttempt: (a) => turnMeter.noteUnmeteredAttempt(a),
           },
         );
+        resentPrompt = loop.droppedUsage !== undefined;
         // #439 — a reply that read the project through its tools is grounded.
         grounding = withToolReads(grounding, countProjectToolReads(loop.toolResults));
         response = {
@@ -1710,7 +1715,7 @@ export function aiRouter(): Router {
         // later turns on it. The served model, when different, is kept in meta.
         model,
         finishReason: response.finishReason ?? null,
-        promptChars: calibrationPromptChars(turn, toolCalls),
+        promptChars: calibrationPromptChars(turn, toolCalls, resentPrompt),
         ratio: turn.ratio,
         meta: {
           grounding,
@@ -2103,6 +2108,8 @@ export function aiRouter(): Router {
     // #137 — `null` until the provider reports usage: an unreported turn is
     // recorded as unreported, never as zero tokens.
     let reportedUsage: TokenUsage | null = null;
+    // #1238 — a dropped attempt's usage is in the turn's (see calibrationPromptChars).
+    let resentPrompt = false;
     let finishReason: string | null = null;
 
     // Issue #1321 — online eval observer. `/api/ai/stream` is the route the
@@ -2270,6 +2277,8 @@ export function aiRouter(): Router {
             },
             // #243 — each model call's usage as it returns.
             onUsage: (u) => meter.add(u),
+            // #1238 — a dropped attempt whose cost no provider reported.
+            onUnmeteredAttempt: (a) => meter.noteUnmeteredAttempt(a),
             // PR #1234 review — marked for every model call in either protocol,
             // not only in the native `callModel` below.
             onModelCallStart: () => {
@@ -2343,6 +2352,7 @@ export function aiRouter(): Router {
         }
         if (observeOnline) observedAnswer = loop.finalResponse;
         reportedUsage = loop.usage;
+        resentPrompt = loop.droppedUsage !== undefined;
         finishReason = loop.finishReason ?? null;
         send("usage", { type: "usage", usage: loop.usage });
         send("done", {
@@ -2393,7 +2403,7 @@ export function aiRouter(): Router {
           provider: streamProvider.key,
           model,
           finishReason,
-          promptChars: calibrationPromptChars(turn, toolCalls),
+          promptChars: calibrationPromptChars(turn, toolCalls, resentPrompt),
           ratio: turn.ratio,
           meta: { grounding },
         });

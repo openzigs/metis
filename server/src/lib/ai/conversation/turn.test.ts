@@ -16,6 +16,10 @@ describe("calibrationPromptChars", () => {
       null,
     );
   });
+
+  it("#1238 drops a turn whose dropped attempt's usage is in its own (the prompt went out twice)", () => {
+    expect(calibrationPromptChars({ promptChars: 1_234 }, [], true)).toBe(null);
+  });
 });
 
 describe("nativeToolChars (#137)", () => {

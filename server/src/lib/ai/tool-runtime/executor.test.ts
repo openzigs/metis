@@ -181,6 +181,50 @@ describe("executeToolCall — the gate runs before execute, on every path", () =
     expect(approvalRows[0]).toMatchObject({ decision: "deny", reason: "not_in_agent_allowlist" });
   });
 
+  it("#1240 an allowlist-withheld tool called by another spelling is audited under its canonical name", async () => {
+    const out = await executeToolCall(
+      { id: "call_1", name: "query-database", args: {} },
+      {
+        toolset: makeToolset([], [{ name: "query_database", risk: "high" }]),
+        gate: gate(ALL_AUTO),
+        ctx: CTX,
+      },
+    );
+    expect(out.errorCode).toBe("TOOL_NOT_ALLOWED");
+    expect(auditCalls).toHaveLength(1);
+    expect(auditCalls[0]).toMatchObject({
+      metadata: { tool: "query_database", outcome: "TOOL_NOT_ALLOWED", executed: false },
+    });
+  });
+
+  it("#1240 a tool withheld for want of an approver is audited under its canonical name", async () => {
+    const toolset = {
+      ...makeToolset([]),
+      needsApprover: (name: string) =>
+        name.replace(/-/g, "_") === "query_database" ? "query_database" : undefined,
+    };
+    const out = await executeToolCall(
+      { id: "call_1", name: "query-database", args: {} },
+      { toolset, gate: gate(ALL_AUTO), ctx: CTX },
+    );
+    expect(out).toMatchObject({ errorCode: "TOOL_DENIED", executed: false });
+    expect(out.text).toContain('"query_database"');
+    expect(auditCalls).toHaveLength(1);
+    expect(auditCalls[0]).toMatchObject({
+      metadata: { tool: "query_database", outcome: "TOOL_DENIED", executed: false },
+    });
+  });
+
+  it("#1240 an unknown tool is still audited under the name the model used", async () => {
+    await executeToolCall(
+      { id: "call_1", name: "no-such-tool", args: {} },
+      { toolset: makeToolset([]), gate: gate(ALL_AUTO), ctx: CTX },
+    );
+    expect(auditCalls[0]).toMatchObject({
+      metadata: { tool: "no-such-tool", outcome: "TOOL_UNKNOWN" },
+    });
+  });
+
   it("agent allowlist wildcard admits its namespace", async () => {
     const t = tool({ name: "mcp:github:list_issues", wireName: "mcp_github_list_issues_x" });
     const { out } = await run(t, gate(ALL_AUTO, undefined, { agentAllowlist: ["mcp:github:*"] }));

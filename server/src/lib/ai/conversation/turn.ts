@@ -180,8 +180,10 @@ export function calibrationSamples(
 export function calibrationPromptChars(
   turn: Pick<PreparedTurn, "promptChars">,
   toolCalls: readonly unknown[],
+  /** #1238 — a failed attempt's usage is in the turn's: the prompt was sent twice. */
+  resent = false,
 ): number | null {
-  return toolCalls.length > 0 ? null : turn.promptChars;
+  return toolCalls.length > 0 || resent ? null : turn.promptChars;
 }
 
 // #980 — the auto-title rule, shared with the UI's Recent list (#1139).

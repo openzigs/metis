@@ -90,9 +90,15 @@ export interface RuntimeToolset {
   needsApprover?(name: string): string | undefined;
 }
 
+/**
+ * `blocked` — #1240: names of tools taken out of this toolset for another
+ * reason (chat's approval withholding). No spelling of one is respelt into a
+ * kept tool; a kept tool's EXACT name or wire name still resolves to it.
+ */
 export function makeToolset(
   tools: RuntimeTool[],
   withheld: readonly WithheldTool[] = [],
+  blocked: readonly string[] = [],
 ): RuntimeToolset {
   const byWire = new Map(tools.map((t) => [t.wireName, t]));
   const byName = new Map(tools.map((t) => [t.name, t]));
@@ -124,11 +130,15 @@ export function makeToolset(
       withheldBySpelling.set(n, seen === undefined || seen === w ? w : null);
     }
   }
-  // A name the agent's allowlist withheld is never respelt into an offered tool.
+  const blockedSpellings = new Set(blocked.map(separatorFree));
+  // A name the agent's allowlist withheld, or a blocked tool's, is never
+  // respelt into an offered tool.
   const resolve = (name: string): RuntimeTool | undefined =>
     byWire.get(name) ??
     byName.get(name) ??
-    (withheldByName.has(name) || withheldBySpelling.has(separatorFree(name))
+    (withheldByName.has(name) ||
+    withheldBySpelling.has(separatorFree(name)) ||
+    blockedSpellings.has(separatorFree(name))
       ? undefined
       : (bySpelling.get(separatorFree(name)) ?? undefined));
   return {
