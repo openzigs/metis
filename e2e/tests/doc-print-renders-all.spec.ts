@@ -73,7 +73,9 @@ test.describe("Printing a long document (#1182)", () => {
     await docPage.openDocumentFromList(TITLE);
 
     const content = docPage.markdownContent;
-    await expect(content.getByRole("heading", { name: "R1 — Requirement 1" })).toBeVisible();
+    await expect(
+      content.getByRole("heading", { name: "R1 — Requirement 1", exact: true }),
+    ).toBeVisible();
 
     await test.step("on screen, later sections are still pending raw text", async () => {
       await expect(content.locator("[data-section-pending]").first()).toBeAttached();
