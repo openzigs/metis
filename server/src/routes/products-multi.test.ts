@@ -35,6 +35,7 @@ vi.mock("../lib/products/product-service.js", () => ({
   addProductRepo: (...args: unknown[]) => mockAddProductRepo(...args),
   removeProductRepo: (...args: unknown[]) => mockRemoveProductRepo(...args),
   updateProductRepo: (...args: unknown[]) => mockUpdateProductRepo(...args),
+  LIVE_PRODUCT_REPOS: { repoConnection: { deletedAt: null } },
   ProductError: MockProductError,
 }));
 

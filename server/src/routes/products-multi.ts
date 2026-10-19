@@ -21,6 +21,7 @@ import {
   addProductRepo,
   removeProductRepo,
   updateProductRepo,
+  LIVE_PRODUCT_REPOS,
   ProductError,
 } from "../lib/products/product-service.js";
 import {
@@ -29,6 +30,7 @@ import {
   assertRepoConnectionAttachable,
   buildProductAccessWhere,
   filterReadableProductDocuments,
+  isProductRepoHiddenFrom,
   productRepoReadAccess,
   repoConnectionProjectFilter,
   withReadableProductRepos,
@@ -205,8 +207,22 @@ export function productsRouter(): Router {
     requirePermission("project.update"),
     async (req: Request, res: Response) => {
       try {
-        await assertProductAccessible(req.user!, param(req.params.id));
-        await removeProductRepo(param(req.params.id), param(req.params.repoId));
+        const productId = param(req.params.id);
+        const repoId = param(req.params.repoId);
+        await assertProductAccessible(req.user!, productId);
+        // #1261 — detaching a repo the caller cannot read stays allowed (it is how
+        // a cross-workspace row is cleaned up), but it is audited: read before the
+        // row goes, recorded once it has.
+        const hidden = await isProductRepoHiddenFrom(req.user!, productId, repoId);
+        await removeProductRepo(productId, repoId);
+        if (hidden) {
+          audit({
+            actor: { id: req.user!.userId },
+            action: "product.repo.detach.unreadable",
+            target: { type: "product", id: productId },
+            metadata: { reason: "project-access-denied", repoConnectionId: repoId },
+          });
+        }
         res.status(204).send();
       } catch (err) {
         if (isProductError(err)) {
@@ -257,6 +273,8 @@ export function productsRouter(): Router {
         where: { id: productId },
         include: {
           repos: {
+            // #1261 — a connection soft-deleted after it was attached is not analysed.
+            where: LIVE_PRODUCT_REPOS,
             include: {
               repoConnection: {
                 select: {
@@ -346,6 +364,29 @@ export function productsRouter(): Router {
           ),
         ];
 
+        // #1261 — mark, don't refuse. A document this run writes without a repo
+        // it would otherwise have covered is shared with every reader, so it says
+        // so: `partial` and how many repos it lacks (a count, never which). The
+        // unified doc lacks every skipped repo; a per-repo doc lacks the skipped
+        // repos it has an edge with. A full run writes `partial: false` over all.
+        const skippedIds = new Set(hidden.map((r) => r.repoConnectionId));
+        const coverage = (missing: number) => ({
+          partial: missing > 0,
+          inaccessibleRepoCount: missing,
+        });
+        const skippedNeighbours = (repoId: string) =>
+          new Set(
+            product.edges.flatMap((e) =>
+              e.sourceRepoId === repoId && skippedIds.has(e.targetRepoId)
+                ? [e.targetRepoId]
+                : e.targetRepoId === repoId && skippedIds.has(e.sourceRepoId)
+                  ? [e.sourceRepoId]
+                  : [],
+            ),
+          ).size;
+        const perRepoCoverage = (repoId: string | undefined) =>
+          coverage(repoId ? skippedNeighbours(repoId) : 0);
+
         // Generate unified architecture doc
         const unifiedDoc = generateUnifiedArchitectureDoc({
           productName: product.name,
@@ -406,6 +447,7 @@ export function productsRouter(): Router {
             metadata: JSON.stringify({
               ...unifiedDoc.metadata,
               repoConnectionIds: repoInfos.map((r) => r.repoConnectionId),
+              ...coverage(skippedIds.size),
             }),
             generatedAt: now,
           },
@@ -418,6 +460,7 @@ export function productsRouter(): Router {
             metadata: JSON.stringify({
               ...doc.metadata,
               repoConnectionIds: repoInfos[i] ? sourcesOf(repoInfos[i].repoConnectionId) : [],
+              ...perRepoCoverage(repoInfos[i]?.repoConnectionId),
             }),
             generatedAt: now,
           })),
@@ -438,6 +481,7 @@ export function productsRouter(): Router {
                 contentHash: result.contentHash,
                 diffSummary: result.diff ? summarizeContractDiff(result.diff) : "Initial version.",
                 hasContractChanges: result.diff?.hasChanges ?? false,
+                ...perRepoCoverage(repoInfos[i]?.repoConnectionId),
               }),
               version: result.version,
               generatedAt: now,

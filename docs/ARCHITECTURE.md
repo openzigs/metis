@@ -4307,6 +4307,17 @@ records none is judged against all the product's repos). A soft-deleted connecti
 is refused on attach like a missing id. `pnpm audit:product-repos` (read-only; `--sql`
 prints the query for Postgres) lists existing attachments that cross a workspace.
 
+**Partial documents, detach audit, soft-deleted repos (#1261).** A member's `/analyze`
+with hidden repos is *marked, not refused*: every document it writes records
+`metadata.partial` and `metadata.inaccessibleRepoCount` — the unified doc counts every
+skipped repo, a per-service or api-contract doc counts the skipped repos it has an edge
+with — and a run that hides nothing writes `partial: false` over all of them. The product
+page shows "N repos hidden" from `inaccessibleRepoCount` and a plain-language notice on a
+partial document (counts only, no names). `DELETE /:id/repos/:repoId` on a repo the caller
+cannot read still detaches it, and audits `product.repo.detach.unreadable`. A connection
+soft-deleted after it was attached keeps its `ProductRepo` row but is left out of every
+product read and of `/analyze` (`LIVE_PRODUCT_REPOS`).
+
 ### 13.7.1 Module layout
 
 ```

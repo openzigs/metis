@@ -30,6 +30,11 @@ export interface ProductRepo {
 
 export interface ProductWithRepos extends Product {
   repos?: ProductRepo[];
+  /**
+   * #1258 — how many attached repos the caller cannot open. They are left out of
+   * `repos`; only this count says they exist.
+   */
+  inaccessibleRepoCount?: number;
 }
 
 export interface CreateProductInput {
@@ -98,6 +103,26 @@ export function parseContractDocMeta(
     diffSummary: typeof m.diffSummary === "string" ? m.diffSummary : "",
     hasContractChanges: m.hasContractChanges === true,
   };
+}
+
+/**
+ * #1261 — how many repos a generated document was built without, because the
+ * person whose run wrote it could not open them. `0` for a complete document,
+ * and for one written before the field existed.
+ */
+export function partialDocRepoCount(doc: Pick<ProductDocument, "metadata">): number {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(doc.metadata);
+  } catch {
+    return 0;
+  }
+  if (typeof parsed !== "object" || parsed === null) return 0;
+  const m = parsed as Record<string, unknown>;
+  if (m.partial !== true) return 0;
+  const n = m.inaccessibleRepoCount;
+  // A partial doc always lacks at least one repo, even if the count is malformed.
+  return typeof n === "number" && Number.isInteger(n) && n > 0 ? n : 1;
 }
 
 export interface ProductAnalysis {

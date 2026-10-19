@@ -49,6 +49,17 @@ export function repoNotAssociated(productId: string, repoId: string): ProductErr
 
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
+/**
+ * #1261 — the `ProductRepo` rows a product read returns: only those whose
+ * connection is live. #1258 refuses to ATTACH a soft-deleted connection; one
+ * soft-deleted after it was attached keeps its row, so every reader of a
+ * product's repos (and `/analyze`) applies this filter. The row itself stays,
+ * so it can still be detached by id.
+ */
+export const LIVE_PRODUCT_REPOS = {
+  repoConnection: { deletedAt: null },
+} satisfies Prisma.ProductRepoWhereInput;
+
 export async function createProduct(input: CreateProductInput, actor: ProductActor) {
   const slug = input.slug.toLowerCase();
   if (!SLUG_PATTERN.test(slug)) {
@@ -95,7 +106,7 @@ export async function listProducts(opts: {
       take: pageSize,
       orderBy: { createdAt: "desc" },
       include: {
-        repos: { include: { repoConnection: true } },
+        repos: { where: LIVE_PRODUCT_REPOS, include: { repoConnection: true } },
         _count: { select: { edges: true, analyses: true } },
       },
     }),
@@ -109,6 +120,7 @@ export async function getProduct(id: string) {
     where: { id },
     include: {
       repos: {
+        where: LIVE_PRODUCT_REPOS,
         include: {
           repoConnection: {
             select: {
@@ -144,7 +156,7 @@ export async function updateProduct(id: string, input: UpdateProductInput) {
       ...(input.name !== undefined && { name: input.name }),
       ...(input.description !== undefined && { description: input.description }),
     },
-    include: { repos: { include: { repoConnection: true } } },
+    include: { repos: { where: LIVE_PRODUCT_REPOS, include: { repoConnection: true } } },
   });
 }
 
