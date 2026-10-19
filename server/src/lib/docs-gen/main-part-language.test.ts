@@ -134,6 +134,47 @@ describe("findCodeIdentifiers — what it flags", () => {
       "The `feeds.disabled` flag hides it.",
       { kind: "inline-code", text: "feeds.disabled" },
     ],
+    // #1231 (PR #1267 review): source code under a host-like directory is code.
+    [
+      "a .NET project path (#1231 review)",
+      "The rule is in Contoso.Web/Controllers/UserController.cs today.",
+      { kind: "file-path", text: "Contoso.Web/Controllers/UserController.cs" },
+    ],
+    [
+      "a path in a package named like a product (#1231 review)",
+      "It is drawn by chart.js/src/core.ts on load.",
+      { kind: "file-path", text: "chart.js/src/core.ts" },
+    ],
+    [
+      "a Go import path to a source file (#1231 review)",
+      "Feeds are parsed in github.com/miniflux/v2/internal/reader.go first.",
+      { kind: "file-path", text: "github.com/miniflux/v2/internal/reader.go" },
+    ],
+    [
+      "a backticked resource and id (#1231 review)",
+      "Each user lives at `users/42` in the store.",
+      { kind: "inline-code", text: "users/42" },
+    ],
+    [
+      "a backticked longer resource id (#1231 review)",
+      "Open `orders/1234` to see it.",
+      { kind: "inline-code", text: "orders/1234" },
+    ],
+    [
+      "a backticked flag set to a value (#1231 review)",
+      "Set `v2: true` to opt in.",
+      { kind: "inline-code", text: "v2: true" },
+    ],
+    [
+      "a backticked typed value (#1231 review)",
+      "The field is `int32: 5` by default.",
+      { kind: "inline-code", text: "int32: 5" },
+    ],
+    [
+      "a backticked host and port (#1231 review)",
+      "It listens on `127.0.0.1:8080` locally.",
+      { kind: "inline-code", text: "127.0.0.1:8080" },
+    ],
     // #1231: the false-flag fixes keep these.
     [
       "a backticked path of one slash with a version (#1231)",
@@ -289,7 +330,10 @@ describe("findCodeIdentifiers — what it passes", () => {
       "a label with spaces or hyphens and a slash, in backticks (#1231)",
       "Choose `Opt in/Opt out`, `read-only/read-write` or `Page 1/10`.",
     ],
-    ["a time of day in backticks (#1231)", "The digest goes out at `9:00` each day."],
+    [
+      "a time of day in backticks (#1231)",
+      "The digest goes out at `9:00`, `17:30` or `9:00 am` each day.",
+    ],
     [
       "a URL without a scheme (#1231)",
       "See example.com/docs/setup.html, www.miniflux.app/app.js or docs.github.com/en/start.md.",

@@ -95,10 +95,13 @@ const INLINE_CODE_RE = /``(.+?)``|`([^`\n]+)`/g;
 const SETTING_NAME_RE = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
 /**
  * Inside backticks, code punctuation, a member access, an inner capital or a
- * `name: value` pair marks code. A plain word or phrase in backticks (a status
- * a user sees, a number, a time of day such as `9:00`) does not.
+ * `name: value` pair (`v2: true`, `int32: 5`, `127.0.0.1:8080`) marks code. A
+ * plain word or phrase in backticks (a status a user sees, a number) does not,
+ * nor a time of day ({@link TIME_OF_DAY_RE}).
  */
-const CODE_IN_SPAN_RE = /[_(){}[\]=<>;\\]|::|->|[A-Za-z]\.[A-Za-z]|[a-z][A-Z]|[A-Za-z_]:\s?\S/;
+const CODE_IN_SPAN_RE = /[_(){}[\]=<>;\\]|::|->|[A-Za-z]\.[A-Za-z]|[a-z][A-Z]|\w:\s?\S/;
+/** #1231 — a whole span that is a time of day a user sees: `9:00`, `17:30:00`, `9:00 am`. */
+const TIME_OF_DAY_RE = /^\d{1,2}:\d{2}(?::\d{2})?(?: ?[AaPp]\.?[Mm]\.?)?$/;
 /**
  * A slash in backticks marks a path or endpoint (`api/v1`, `/entries`), except
  * in a short label a user sees: `read/unread`, `Yes/No`, `24/7`, `Opt in/Opt
@@ -110,6 +113,8 @@ const CODE_IN_SPAN_RE = /[_(){}[\]=<>;\\]|::|->|[A-Za-z]\.[A-Za-z]|[a-z][A-Z]|[A
 const LABEL_WORD = String.raw`(?:[A-Za-z]{1,20}|\d{1,4})`;
 const LABEL_SIDE = String.raw`${LABEL_WORD}(?:[ -]${LABEL_WORD}){0,3}`;
 const SLASH_LABEL_RE = new RegExp(String.raw`^${LABEL_SIDE}\/${LABEL_SIDE}$`);
+/** A resource and its id, which is a path, not a label: `users/42`, `orders/1234`. */
+const RESOURCE_ID_RE = /^[A-Za-z]+\/\d+$/;
 /** SQL that business prose never says, in capitals as SQL writes it. */
 const SQL_SOURCE = String.raw`\b(?:FOR UPDATE(?: SKIP LOCKED| NOWAIT)?|SKIP LOCKED|SELECT\b[^.\n]{0,80}?\bFROM|INSERT INTO|DELETE FROM|NOT NULL|PRIMARY KEY|FOREIGN KEY|ORDER BY|GROUP BY|(?:LEFT|RIGHT|INNER|OUTER) JOIN)\b`;
 const SQL_RE = new RegExp(SQL_SOURCE, "g");
@@ -164,15 +169,20 @@ const CODE_EXTENSIONS = [
  * Extensions flagged on a bare file name (no directory, no line): not `js`,
  * which names products (Node.js, Next.js), nor a one-letter one.
  */
-/**
- * The first directory of a path that is really a host: a URL written without
- * its scheme (`example.com/docs/setup.html`, #1231). A dot directory
- * (`.github`) starts with its dot and is not one.
- */
-const HOST_DIRECTORY_RE = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\//;
 const BARE_FILE_EXTENSIONS: ReadonlySet<string> = new Set(
   CODE_EXTENSIONS.filter((ext) => ext !== "js" && ext.length > 1),
 );
+/**
+ * A URL written without its scheme (`example.com/docs/setup.html`, #1231):
+ * its first directory is a host in lower case, and it names a page or an
+ * asset a site serves. Source code under a host-like directory is still code:
+ * a Go import path (`github.com/o/r/reader.go`), a .NET project directory
+ * (`Contoso.Web/…/UserController.cs`), a package named like a product
+ * (`chart.js/src/core.ts`). A dot directory (`.github`) starts with its dot
+ * and is not a host. Linear: anchored, and each label ends at a required dot.
+ */
+const HOST_DIRECTORY_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\//;
+const WEB_PAGE_EXTENSIONS: ReadonlySet<string> = new Set(["html", "css", "js", "json", "xml"]);
 const FILE_PATH_RE = new RegExp(
   String.raw`(?<![\w/.-])((?:[\w.-]+/)*)([\w-]+(?:\.[\w-]+)*)\.(${CODE_EXTENSIONS.join("|")})(:\d+(?:-\d+)?)?(?![\w/-])`,
   "g",
@@ -328,10 +338,10 @@ export function findCodeIdentifiers(markdown: string): CodeIdentifierHit[] {
   }
   text = blank(text, INLINE_CODE_RE, (m) => {
     const content = (m[1] ?? m[2] ?? "").trim();
-    if (!content || SETTING_NAME_RE.test(content)) return;
+    if (!content || SETTING_NAME_RE.test(content) || TIME_OF_DAY_RE.test(content)) return;
     if (
       CODE_IN_SPAN_RE.test(content) ||
-      (content.includes("/") && !SLASH_LABEL_RE.test(content)) ||
+      (content.includes("/") && (!SLASH_LABEL_RE.test(content) || RESOURCE_ID_RE.test(content))) ||
       SQL_IN_SPAN_RE.test(content)
     ) {
       hits.push({ kind: "inline-code", text: content, at: m.index });
@@ -342,7 +352,7 @@ export function findCodeIdentifiers(markdown: string): CodeIdentifierHit[] {
   text = blank(text, FILE_PATH_RE, (m) => {
     const [, dir, stem, ext, line] = m;
     if (!dir && !line && !BARE_FILE_EXTENSIONS.has(ext)) return;
-    if (HOST_DIRECTORY_RE.test(dir)) return;
+    if (WEB_PAGE_EXTENSIONS.has(ext) && HOST_DIRECTORY_RE.test(dir)) return;
     if (ext === "js" && !line && /^[A-Z]/.test(stem)) return;
     push("file-path")(m);
   });
