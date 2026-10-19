@@ -847,6 +847,120 @@ describe("#1000 — flagging acceptance criteria the answers may have changed", 
     ).toBe("Refunds need a manager.");
   });
 
+  // #1269 N2 — CRLF with kept text: the `\r` that ended the marker's last line
+  // ends the kept line, so the body's line endings stay uniform.
+  it("#1269 — keeps analyst text around a split flag marker in a CRLF body, CRLF kept", () => {
+    expect(clearCriteriaFlag("x <!--\r\nmetis:criteria-predate-answers\r\n--> y\r\nMore.")).toBe(
+      "x y\r\nMore.",
+    );
+  });
+
+  // #1269 N1 — METIS's flag sentence goes whatever its quote prefix and
+  // wrapping, so it is never left behind once its marker is gone.
+  describe("#1269 — the flag sentence goes when it is unprefixed, double-spaced or wrapped", () => {
+    const flagged = () => applyClarificationBlock("Body.", [answer()], withCriteria);
+    const unflagged = () => applyClarificationBlock("Body.", [answer()]);
+    const prose = CRITERIA_FLAG_LINE.slice(0, -CRITERIA_FLAG_MARKER.length).trim();
+    const words = prose.slice(2).split(" ");
+    /** The sentence hard-wrapped at `width` columns, each line quoted with `quote`. */
+    const wrapped = (quote: string, width: number) => {
+      const out: string[] = [];
+      let line = "";
+      for (const w of words) {
+        if (line && quote.length + line.length + 1 + w.length > width) {
+          out.push(quote + line);
+          line = w;
+        } else line = line ? `${line} ${w}` : w;
+      }
+      out.push(quote + line);
+      return out.join("\n");
+    };
+
+    it("unprefixed", () => {
+      const body = flagged().replace(
+        CRITERIA_FLAG_LINE,
+        `${prose.slice(2)} ${CRITERIA_FLAG_MARKER}`,
+      );
+      expect(body).not.toBe(flagged());
+      const cleared = clearCriteriaFlag(body);
+      expect(cleared).not.toContain("Check the acceptance criteria");
+      expect(cleared).toBe(unflagged());
+    });
+
+    it("written with '>  ' (two spaces)", () => {
+      const body = flagged().replace(
+        CRITERIA_FLAG_LINE,
+        `>  ${prose.slice(2)} ${CRITERIA_FLAG_MARKER}`,
+      );
+      expect(clearCriteriaFlag(body)).toBe(unflagged());
+    });
+
+    it("hard-wrapped over several quoted lines before a split marker", () => {
+      const body = flagged().replace(
+        CRITERIA_FLAG_LINE,
+        `${wrapped("> ", 80)} <!--\nmetis:criteria-predate-answers -->`,
+      );
+      expect(body.split("\n").length).toBeGreaterThan(flagged().split("\n").length + 1);
+      expect(hasCriteriaFlag(body)).toBe(true);
+      expect(clearCriteriaFlag(body)).toBe(unflagged());
+    });
+
+    it("hard-wrapped with only the first line quoted, in a CRLF body", () => {
+      const lines = wrapped("", 70).split("\n");
+      const body = flagged()
+        .replace(
+          CRITERIA_FLAG_LINE,
+          `> ${lines.join("\n")}\n<!--\nmetis:criteria-predate-answers\n-->`,
+        )
+        .replace(/\n/g, "\r\n");
+      expect(clearCriteriaFlag(body)).toBe(unflagged().replace(/\n/g, "\r\n"));
+    });
+
+    it("keeps analyst text before the sentence and after the marker", () => {
+      expect(
+        clearCriteriaFlag(
+          `Refunds need a manager.\n${wrapped("> ", 60)} <!--\nmetis:criteria-predate-answers\n--> And a receipt.\nMore.`,
+        ),
+      ).toBe("Refunds need a manager.\nAnd a receipt.\nMore.");
+      expect(
+        clearCriteriaFlag(`Refunds need a manager. ${prose.slice(2)} ${CRITERIA_FLAG_MARKER}`),
+      ).toBe("Refunds need a manager.");
+    });
+
+    // #1271 review — the sentence's own prefix goes with it: a nested quote,
+    // a list marker, or a `>` typed mid-line before it.
+    it("takes the sentence's own prefix with it, and nothing typed before that", () => {
+      const s = prose.slice(2);
+      expect(clearCriteriaFlag(`Body.\n> > ${s} ${CRITERIA_FLAG_MARKER}\n\nMore.`)).toBe(
+        "Body.\nMore.",
+      );
+      expect(clearCriteriaFlag(`Body.\n- ${s} ${CRITERIA_FLAG_MARKER}\n\nMore.`)).toBe(
+        "Body.\nMore.",
+      );
+      expect(clearCriteriaFlag(`Body.\n2. > ${s} ${CRITERIA_FLAG_MARKER}\nMore.`)).toBe(
+        "Body.\nMore.",
+      );
+      expect(clearCriteriaFlag(`x > ${s} ${CRITERIA_FLAG_MARKER} y`)).toBe("x y");
+      // A `>` with no space before it is part of the analyst's word.
+      expect(clearCriteriaFlag(`a->b ${s} ${CRITERIA_FLAG_MARKER}`)).toBe("a->b");
+      // A list marker after analyst text is the analyst's.
+      expect(clearCriteriaFlag(`Notes - ${s} ${CRITERIA_FLAG_MARKER}`)).toBe("Notes -");
+    });
+
+    it("never deletes prose that only resembles the sentence", () => {
+      // One word changed: the analyst's sentence, not METIS's.
+      const edited = prose.replace("Edit them", "Review them");
+      expect(clearCriteriaFlag(`${edited} ${CRITERIA_FLAG_MARKER}`)).toBe(edited);
+      // Only the end of the sentence before the marker: not the whole sentence.
+      const tail = "Edit them if an answer changes what this requirement must do.";
+      expect(clearCriteriaFlag(`${tail} ${CRITERIA_FLAG_MARKER}`)).toBe(tail);
+      // The sentence split by a blank line is two paragraphs, not a wrapped one.
+      const half = Math.floor(words.length / 2);
+      const split = `> ${words.slice(0, half).join(" ")}\n\n> ${words.slice(half).join(" ")}`;
+      expect(clearCriteriaFlag(`${split} ${CRITERIA_FLAG_MARKER}`)).toBe(split);
+    });
+  });
+
   it("clearCriteriaFlag leaves a body without the flag untouched", () => {
     expect(clearCriteriaFlag("Body.\n\n\n\nMore.")).toBe("Body.\n\n\n\nMore.");
     expect(hasCriteriaFlag("Body.")).toBe(false);

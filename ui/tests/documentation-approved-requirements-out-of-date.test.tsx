@@ -55,11 +55,16 @@ describe("ApprovedRequirementsOutOfDateBanner (#1252)", () => {
     expect(banner).toHaveTextContent(/out of date/i);
     expect(banner).toHaveTextContent(/approved or changed/i);
     expect(banner).toHaveTextContent(/since this version/i);
-    // #1252 review 2 — it promises nothing it cannot keep: other sections may be
-    // rewritten, at a cost.
-    expect(banner).toHaveTextContent(/may rewrite some of them/i);
-    expect(banner).toHaveTextContent(/model credits/i);
-    expect(banner).not.toHaveTextContent(/kept as they are/i);
+    // #1252 review 2 — it promises nothing it cannot keep. #1270 — an approval
+    // or an edit no longer moves any other section's budget, so the other
+    // sections are kept; it names the cases that still rewrite, at a cost.
+    expect(banner).toHaveTextContent(/other sections are kept as they are/i);
+    expect(banner).toHaveTextContent(/normally uses no AI model credits/i);
+    expect(banner).toHaveTextContent(/only if the code or other material it is written from/i);
+    expect(banner).toHaveTextContent(/un-approve the last requirement.*uses credits/i);
+    expect(banner).toHaveTextContent(/written before this version of METIS.*once/i);
+    expect(banner).not.toHaveTextContent(/approving the first/i);
+    expect(banner).not.toHaveTextContent(/may rewrite some of them/i);
     // No implementation words a business analyst does not use.
     expect(banner).not.toHaveTextContent(/snapshot|hash|fingerprint|input|auto-update check/i);
     fireEvent.click(screen.getByRole("button", { name: /^regenerate$/i }));

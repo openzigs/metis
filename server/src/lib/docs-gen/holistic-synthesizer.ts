@@ -6761,13 +6761,17 @@ export function planDocumentTopics(input: {
         label: group.label,
         kind: "single",
         topics: [],
-        // #1218 — the approved requirements ask for what they render to.
-        askChars: group.approvedRequirements?.length
-          ? renderApprovedRequirementsSection(
-              group.approvedRequirements,
-              approvedRequirementsMaxChars(input.documentMaxChars - reservedChars),
-            ).markdown.length
-          : BRD_MAIN_SECTION_TARGETS[group.id],
+        // #1270 — every main section asks for its target, the approved
+        // requirements (#1218) included: exactly what the reconstructed
+        // section asks. Asking for their rendered length moved the main
+        // part's plan, and so what the appendix is left, on every approval or
+        // edit, and every batched catalogue section's budget (part of its
+        // reuse hash) with it. The ask does not depend on the list, so a
+        // change to it, or the swap between the two sections, moves no other
+        // section's budget. The approved section is rendered within its own
+        // cap whatever the plan gives it and kept whole at assembly, where a
+        // longer list is fitted for (`fitReaderDocument`).
+        askChars: BRD_MAIN_SECTION_TARGETS[group.id],
         ...part,
       };
     }
@@ -6819,8 +6823,8 @@ export function planDocumentTopics(input: {
     sectionMaxChars: input.sectionMaxChars,
     reservedChars,
     // #1175 — the main part first, within its own budget.
-    // #1218 — what the main sections ask, so approved requirements count at
-    // the length they render to rather than the reconstructed section's target.
+    // #1218 — what the main sections ask. #1270 — their targets, with the
+    // approved requirements or without: the same at every budget.
     ...(reader
       ? {
           mainBudgetChars: mainPlanBudget(

@@ -41,3 +41,5 @@ Related: [[metis-marker-matchers-grep-exact-strings]], [[requirement-version-his
 **Added 2026-10-18 (#1254):**
 - Drafts can be generated before promotion (`loadOrPromoteRequirements` in `draft-generator.ts`). A promotion write that adds metadata must be re-read after the rows load.
 - No app path soft-deletes a `Requirement` row; re-runs hard-delete (`analysis-service.ts:986`). Don't rate a missing `deletedAt` filter on requirement reads above Low without finding a soft-delete writer.
+- `promoteApprovedRequirements` writes clarification answers only when it creates rows. On a set that is already promoted it returns before `applyClarificationsToRequirements`, so Promote is not a way to retry answers (#1266).
+- In analyst copy, "approved" is ambiguous. Approve on the Approvals panel promotes the requirement and runs the clarification pass. Approve on a hub card (a `reviewStatus` PUT) does neither. Say which one you mean.

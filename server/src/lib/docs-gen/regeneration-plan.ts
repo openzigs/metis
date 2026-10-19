@@ -74,11 +74,17 @@ export function fingerprintInputs(
  * `reusePublished`) reuses them the same way. Any other manual regenerate (of a
  * failed or cancelled document) does not reuse the published version.
  *
- * Reuse is NOT guaranteed for the other sections: a section's inputs include
- * the budget the plan gives it, and the Approved Requirements section's length
- * moves what the appendix is left (`planInParts`, `document-plan.ts`).
- * A batched catalogue section planned on a tight budget then hashes
- * differently and is written again, at model cost.
+ * #1270 — the other sections' budgets do not move with the list: a section's
+ * inputs include the budget the plan gives it, and the Approved Requirements
+ * section asks the plan for the requirements section's target
+ * (`BRD_MAIN_SECTION_TARGETS.requirements`), exactly what the reconstructed
+ * section asks. So what the main part's other sections and the appendix are
+ * given is the same however long the list renders, and with or without it. A
+ * change to the approved list, the first approval included, rewrites no
+ * model-written section whose own inputs are unchanged. Un-approving the last
+ * writes the reconstructed section again (its own section, at model cost).
+ * A document published before #1270 planned the section at its rendered
+ * length, so its first regenerate may rewrite batched catalogue sections once.
  */
 export const APPROVED_REQUIREMENTS_ITEM = "approvedRequirements";
 

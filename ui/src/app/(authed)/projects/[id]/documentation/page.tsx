@@ -1855,8 +1855,12 @@ export function ApprovedRequirementsOutOfDateBanner({
       <p className="mt-1 text-sm text-muted-foreground">
         Requirements were approved or changed in METIS since this version was written, so the
         Approved Requirements section no longer matches them. Regenerate to write a new version that
-        lists them as they are now. METIS keeps the other sections where it can, but it may rewrite
-        some of them, and that uses AI model credits.
+        lists them as they are now. The other sections are kept as they are, so this normally uses
+        no AI model credits. METIS rewrites a section, which does use credits, only if the code or
+        other material it is written from has also changed. If you un-approve the last requirement,
+        METIS writes the requirements it reconstructs from the code again, which uses credits. The
+        first regenerate of a document written before this version of METIS may also rewrite some of
+        its other sections, once.
       </p>
       <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
         {regenerating ? "Regenerating…" : "Regenerate"}

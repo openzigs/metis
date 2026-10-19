@@ -129,14 +129,20 @@ describe("ClarificationImpactNote", () => {
     // #1237 review (F4) — the markers are hidden in every view and a completed
     // dialog cannot be resubmitted, so the notice names what an analyst can do.
     const blockEdited = screen.getByTestId("clarification-block-edited").textContent;
+    // #1269 — a manual fallback, the cost of a History restore, short sentences.
     expect(blockEdited).toBe(
       "1 answer was not written because the Clarifications section of its requirement was " +
-        "edited. Open the requirement and delete that section, or restore it from History. The " +
-        "answers are then written again when you submit the next answers while clarifying " +
-        "questions are still open or, after clarification is complete, when you reopen a " +
-        "rejected requirement on the Approvals panel and approve it.",
+        "edited. To fix this, open the requirement and delete that section. You can instead " +
+        "restore an earlier version from History, but that also undoes any later edits to the " +
+        "requirement. The answers are written again when you submit more answers. After " +
+        "clarification is complete, that happens only when you reopen a rejected requirement " +
+        "on the Approvals panel and approve it. You can also type an answer into the " +
+        "requirement yourself, outside the Clarifications section. If METIS writes the answers " +
+        "later, delete your copy.",
     );
     expect(blockEdited).not.toMatch(/markers|submit the answers again/);
+    const sentences = (blockEdited ?? "").split(/(?<=\.)\s+/);
+    expect(Math.max(...sentences.map((s) => s.split(/\s+/).length))).toBeLessThanOrEqual(25);
     expect(screen.getByTestId("clarification-unmatched-list")).toHaveTextContent(
       /Which rate\?\s*\(Clarifications section of “Show prices” was edited\)/,
     );
