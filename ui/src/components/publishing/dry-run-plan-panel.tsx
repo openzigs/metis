@@ -17,7 +17,9 @@
  * Lives in `components/` deliberately: the publish page is excluded from UI
  * coverage, so logic parked there would be untested by construction.
  */
+import { useState } from "react";
 import type { DryRunAction, DryRunPlan } from "@metis/shared";
+import { Button } from "@/components/ui/button";
 
 /**
  * Parse the JSON string persisted on `PublishBatch.dryRunPlan`.
@@ -142,16 +144,55 @@ export function orderDryRunRows(actions: readonly DryRunAction[]): DryRunPlanRow
   return [0, 1, 2].flatMap((g) => rows.filter((r) => group(r.action.kind) === g));
 }
 
-/** What the rows left out are, by kind: `6 label.upsert, 2 issue.create`. */
+/** #1136 — the plain-language name of a collapsed step, singular and plural. */
+const STEP_NAMES: Readonly<Record<string, [string, string]>> = {
+  "label.upsert": ["label update", "label updates"],
+  "subIssue.attach": ["link to the epic", "links to the epic"],
+};
+
+/**
+ * What the rows left out are, by kind, in words an analyst reads:
+ * `33 links to the epic, 51 label updates`.
+ */
 export function describeHiddenRows(hidden: readonly DryRunPlanRow[]): string {
   const counts = new Map<string, number>();
   for (const row of hidden) counts.set(row.action.kind, (counts.get(row.action.kind) ?? 0) + 1);
-  return [...counts.entries()].map(([kind, count]) => `${count} ${kind}`).join(", ");
+  return [...counts.entries()]
+    .map(([kind, count]) => {
+      const [one, many] = STEP_NAMES[kind] ?? ["other step", "other steps"];
+      return `${count} ${count === 1 ? one : many}`;
+    })
+    .join(", ");
+}
+
+/** #1136 — a row that names an issue: create, update or skip-as-duplicate. */
+function carriesTitle(row: DryRunPlanRow): boolean {
+  return row.action.kind !== "label.upsert" && row.action.kind !== "subIssue.attach";
+}
+
+/**
+ * #1136 — which rows to list. Every row that names an issue is listed, however
+ * many there are: they are what a reviewer reads before publishing, and a
+ * 34-issue plan used to hide 9 of them behind the 25-row cut. Only the rows
+ * with no title (label updates, links to the epic) fill the remaining room and
+ * collapse past it.
+ */
+export function splitDryRunRows(
+  rows: readonly DryRunPlanRow[],
+  maxRows: number,
+): { shown: DryRunPlanRow[]; hidden: DryRunPlanRow[] } {
+  const titled = rows.filter(carriesTitle);
+  const untitled = rows.filter((r) => !carriesTitle(r));
+  const room = Math.max(0, maxRows - titled.length);
+  return { shown: [...titled, ...untitled.slice(0, room)], hidden: untitled.slice(room) };
 }
 
 export interface DryRunPlanPanelProps {
   plan: DryRunPlan;
-  /** Cap on rendered rows; the remainder is summarised as a count. */
+  /**
+   * Rows listed before the rest collapse behind "Show all steps". Rows that
+   * name an issue are never collapsed (#1136), so the list can exceed this.
+   */
   maxRows?: number;
 }
 
@@ -160,8 +201,11 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
   const warning = credentialWarning(plan);
   const gateWarning = approvalGateWarning(plan);
   const rows = orderDryRunRows(plan.actions);
-  const shown = rows.slice(0, maxRows);
-  const hidden = rows.slice(maxRows);
+  const [expanded, setExpanded] = useState(false);
+  const split = splitDryRunRows(rows, maxRows);
+  const shown = expanded ? rows : split.shown;
+  const hidden = expanded ? [] : split.hidden;
+  const collapsible = split.hidden.length > 0;
   const reordered = shown.some((row, i) => row.step !== i + 1);
 
   return (
@@ -208,7 +252,7 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
           it creates issues; the number on each row is its place in the run.
         </p>
       )}
-      <ol className="mt-3 max-h-64 overflow-y-auto text-xs">
+      <ol className="mt-3 max-h-96 overflow-y-auto text-xs" aria-label="Dry-run steps">
         {shown.map(({ action, step }) => (
           // `value` makes the list item's own number the run step, so a screen
           // reader announces the number that is printed; the printed copy is
@@ -218,7 +262,9 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
               {step}
             </span>
             <span className="w-40 shrink-0 font-mono text-foreground">{action.kind}</span>
-            <span className="truncate text-muted-foreground">{actionDetail(action)}</span>
+            <span className="min-w-0 break-words text-muted-foreground">
+              {actionDetail(action)}
+            </span>
             {action.blockedByApprovalGate && (
               <span className="shrink-0 rounded bg-warning-muted px-1 text-warning">
                 needs approval
@@ -229,8 +275,22 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
       </ol>
       {hidden.length > 0 && (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="dry-run-hidden">
-          …and {hidden.length} more action(s) not shown ({describeHiddenRows(hidden)}).
+          {hidden.length} more {hidden.length === 1 ? "step is" : "steps are"} not listed:{" "}
+          {describeHiddenRows(hidden)}.
         </p>
+      )}
+      {collapsible && (
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          className="h-auto px-0 text-xs"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((e) => !e)}
+          data-testid="dry-run-toggle"
+        >
+          {expanded ? "Show fewer steps" : `Show all ${rows.length} steps`}
+        </Button>
       )}
     </section>
   );

@@ -58,7 +58,14 @@ import { ArchiveBatchDialog } from "@/components/publishing/archive-batch-dialog
 import { DraftRequirementPicker } from "@/components/publishing/draft-requirement-picker";
 import { isPublishableDraft, publishableSelection } from "@/components/publishing/draft-selection";
 import { ResponsiveTable, type ResponsiveColumn } from "@/components/tables/responsive-table";
-import type { PublishBatch } from "@metis/shared";
+import {
+  BatchPublishedIssues,
+  DraftPublishedIssue,
+  FinishedBatchSummary,
+  isBatchFinished,
+  publishedIssuesByDraft,
+  type BatchWithIssues,
+} from "@/components/publishing/published-issues";
 import { PageHeader } from "@/components/ui/page-header";
 
 const keys = {
@@ -448,8 +455,11 @@ export default function PublishingPage() {
   // ── Live progress feed ─────────────────────────────────────────────────
   const [liveBatchId, setLiveBatchId] = useState<string | null>(null);
   const [liveLog, setLiveLog] = useState<string[]>([]);
+  // #1136 — the batch being watched, and the issue each draft was published as.
+  const liveBatch = batches.data?.find((b) => b.id === liveBatchId);
+  const issueByDraft = useMemo(() => publishedIssuesByDraft(batches.data), [batches.data]);
 
-  const batchColumns: ResponsiveColumn<PublishBatch>[] = useMemo(
+  const batchColumns: ResponsiveColumn<BatchWithIssues>[] = useMemo(
     () => [
       {
         key: "id",
@@ -474,7 +484,16 @@ export default function PublishingPage() {
           <span className={`rounded px-2 py-0.5 text-xs ${statusClass(b.status)}`}>{b.status}</span>
         ),
       },
-      { key: "published", header: "Published", cell: (b) => b.publishedCount },
+      {
+        key: "published",
+        header: "Published",
+        cell: (b) => (
+          <>
+            {b.publishedCount}
+            <BatchPublishedIssues batch={b} />
+          </>
+        ),
+      },
       { key: "failed", header: "Failed", cell: (b) => b.failedCount },
       { key: "dedup", header: "Dedup", cell: (b) => b.dedupSkipped },
       {
@@ -772,6 +791,7 @@ export default function PublishingPage() {
                       <div className="text-xs text-muted-foreground">
                         {d.draftType} · sp={d.storyPoints}
                       </div>
+                      <DraftPublishedIssue published={issueByDraft.get(d.id)} />
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
@@ -1038,9 +1058,16 @@ export default function PublishingPage() {
                 {liveLog.map((l, i) => (
                   <li key={i}>{l}</li>
                 ))}
-                {liveLog.length === 0 && (
-                  <li className="text-muted-foreground">Waiting for events…</li>
-                )}
+                {/* #1136 — a finished batch sends no more events: say what it
+                    did instead of waiting for them. */}
+                {liveLog.length === 0 &&
+                  (liveBatch && isBatchFinished(liveBatch.status) ? (
+                    <li className="font-sans">
+                      <FinishedBatchSummary batch={liveBatch} />
+                    </li>
+                  ) : (
+                    <li className="text-muted-foreground">Waiting for events…</li>
+                  ))}
               </ol>
             </PausableLiveRegion>
           </div>

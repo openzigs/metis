@@ -39,15 +39,26 @@ export interface ListBatchesOptions {
   includeArchived?: boolean;
 }
 
-export async function listBatches(opts: ListBatchesOptions): Promise<SharedPublishBatch[]> {
+/**
+ * #1136 — each batch carries the issues it published, so the publish page can
+ * show every created issue's number and link on the batch and on its draft.
+ * The same rows `getBatch` already returns, under the same permission.
+ */
+export async function listBatches(
+  opts: ListBatchesOptions,
+): Promise<Array<SharedPublishBatch & { publishedIssues: SharedPublishedIssue[] }>> {
   const rows = await prisma.publishBatch.findMany({
     where: {
       projectId: opts.projectId,
       ...(opts.includeArchived ? {} : { archived: false }),
     },
     orderBy: { startedAt: "desc" },
+    include: { publishedIssues: { orderBy: { issueNumber: "asc" } } },
   });
-  return rows.map(toBatchApi);
+  return rows.map((row) => ({
+    ...toBatchApi(row),
+    publishedIssues: row.publishedIssues.map(toPublishedIssueApi),
+  }));
 }
 
 /**

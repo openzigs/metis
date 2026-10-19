@@ -1912,7 +1912,7 @@ Click **Preview** next to any draft to open the diff dialog:
 
 This is your last sanity check before approving — review every change before pushing it back to GitHub.
 
-**Dry-run plan order (#1064).** The plan under a dry run lists the issue actions first (create, update, skip), then the sub-issue links, then the label upserts, so the issue titles are not cut off behind the labels or the links when the list stops at 25 rows (an epic with up to 24 features shows every title). The number on each row is still its place in the run, which upserts labels first. The closing line says how many actions are not shown and what kind they are.
+**Dry-run plan order (#1064).** The plan under a dry run lists the issue actions first (create, update, skip), then the sub-issue links, then the label upserts, so the issue titles are not cut off behind the labels or the links when the list stops at 25 rows (an epic with up to 24 features shows every title). The number on each row is still its place in the run, which upserts labels first. **Every issue title is listed, however many there are (#1136)**; only label updates and links to the epic collapse past 25 rows, the closing line says how many and what kind, and **Show all N steps** expands them.
 
 #### 13.7.4 Bulk Approve
 
@@ -1946,7 +1946,7 @@ Once the dry-run looks correct:
 1. Untick **Dry run**.
 2. Make sure your **Vault secret ref** is filled in.
 3. Click **Publish now**.
-4. Watch live progress in the Recent Batches table — click **Watch** on the new batch to stream `publish:status` / `publish:progress` / `publish:completed` events over the WebSocket.
+4. Watch live progress in the Recent Batches table — click **Watch** on the new batch to stream `publish:status` / `publish:progress` / `publish:completed` events over the WebSocket. Watch on a batch that has already finished says so, with its counts and the issues it created, instead of waiting for events. Once a batch has published, its **Published** cell and each published draft show the created issue's number as a link (for example `owner/repo#12`) (#1136).
 
 Permission required: `issue.publish` (admin / coordinator only). Developers can dry-run but cannot live-publish.
 
