@@ -13,15 +13,20 @@
  *
  *   - `citationsLostToSalvage` — every citation dropped, as the run-level count
  *     reports it (malformed ones and any past the per-finding cap);
- *   - `codeCitationsLostToSalvage` — only the malformed ones that were not
- *     document citations, i.e. a lost CODE claim. This is the one verification
- *     reads: the #734 rule it extends is about code evidence, so a lost document
- *     citation, or a valid citation merely past the cap, must not demote a
- *     finding to `unverified`.
+ *   - `codeCitationsLostToSalvage` — only the malformed ones that claimed to be
+ *     CODE citations: an object carrying a code-citation field (`filePath`,
+ *     `startLine`, `endLine`, `symbolId`) and no `documentId`. This is the one
+ *     verification reads: the #734 rule it extends is about code evidence, so a
+ *     lost document citation, a valid citation merely past the cap, or a lost
+ *     value that does not say what it was (a bare string such as "spec.md" or
+ *     "src/a.ts:12", an object with no citation field) must not demote a
+ *     finding to `unverified`. Those still count on the run.
  *
  * Both keys are absent from the schema, so zod strips any value a model writes
  * there: only the server can set them. They are ordinary enumerable properties
- * so they survive the spreads the orchestrator applies before the verifier.
+ * so they survive the spreads the orchestrator applies before the verifier,
+ * which then removes them ({@link withoutCitationLossMarker}) so they are not
+ * stored in the agent result's output JSON.
  */
 import { salvageCitationList } from "@metis/shared";
 
@@ -40,8 +45,13 @@ export interface CitationLoss {
 
 const NO_LOSS: CitationLoss = { dropped: 0, codeDropped: 0 };
 
-function isDocumentClaim(raw: unknown): boolean {
-  return raw !== null && typeof raw === "object" && "documentId" in raw;
+const CODE_CITATION_FIELDS = ["filePath", "startLine", "endLine", "symbolId"] as const;
+
+/** A raw citation that says it is a code citation, and not a document one. */
+function isCodeClaim(raw: unknown): boolean {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
+  if ("documentId" in raw) return false;
+  return CODE_CITATION_FIELDS.some((k) => k in raw);
 }
 
 /** What the schema's salvage drops from ONE raw, model-authored finding. Total. */
@@ -57,10 +67,22 @@ export function citationLossFrom(rawFinding: unknown): CitationLoss {
   const list = Array.isArray(citations) ? citations : citations == null ? [] : [citations];
   let codeDropped = 0;
   for (const c of list) {
-    if (isDocumentClaim(c)) continue;
-    if (salvageCitationList([c]).dropped > 0) codeDropped += 1;
+    if (isCodeClaim(c) && salvageCitationList([c]).dropped > 0) codeDropped += 1;
   }
   return { dropped, codeDropped };
+}
+
+/**
+ * The finding without its loss markers: verification has read them, and they
+ * are not part of the agent output that is stored.
+ */
+export function withoutCitationLossMarker<T extends object>(finding: T): T {
+  const {
+    citationsLostToSalvage: _all,
+    codeCitationsLostToSalvage: _code,
+    ...rest
+  } = finding as T & CitationLossMarker;
+  return rest as T;
 }
 
 /** Mark one parsed finding with what its raw counterpart lost. */

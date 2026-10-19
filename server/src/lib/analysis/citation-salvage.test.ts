@@ -36,11 +36,21 @@ describe("citationLossFrom", () => {
     expect(citationLossFrom(finding(malformed))).toEqual({ dropped: 1, codeDropped: 1 });
   });
 
-  it("counts a malformed citation of no recognisable kind as a lost code claim", () => {
-    expect(citationLossFrom(finding([{ startLine: 0 }, "src/a.ts:12"]))).toEqual({
-      dropped: 2,
-      codeDropped: 2,
+  it("counts a malformed object carrying any code-citation field as a lost code claim", () => {
+    expect(
+      citationLossFrom(finding([{ startLine: 0 }, { symbolId: "" }, { filePath: "" }])),
+    ).toEqual({ dropped: 3, codeDropped: 3 });
+  });
+
+  // #1264 review — a bare string ("src/a.ts:12", "spec.md") or an object with no
+  // code-citation field says nothing about whether the model meant code, so its
+  // loss is counted on the run but never demotes the finding to `unverified`.
+  it("does not count a bare string or a fieldless object as lost code evidence", () => {
+    expect(citationLossFrom(finding(["src/a.ts:12", "spec.md", { note: "x" }, 7]))).toEqual({
+      dropped: 4,
+      codeDropped: 0,
     });
+    expect(citationLossFrom(finding("src/a.ts:12"))).toEqual({ dropped: 1, codeDropped: 0 });
   });
 
   // Adversarial review (over-blocking) — a lost DOCUMENT citation, or a valid
