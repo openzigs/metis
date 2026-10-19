@@ -984,6 +984,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration requirement-set-replace-toctou-779-postgres
 
+      # Issue #930 — every metadata merge and the promotion append open with the
+      # analysis row `FOR NO KEY UPDATE`. Prove a merge waits for an append and keeps
+      # what it committed, two appends serialise, and a referencing insert never waits.
+      - name: Prove the analysis-row metadata lock on real Postgres
+        working-directory: server
+        run: pnpm test:integration analysis-metadata-lock-930-postgres
+
       # Issue #1059 — the Spec Kit job table's rules are conditional UPDATEs, and
       # staleness is judged with the DATABASE's clock in SQL that differs per
       # engine (`clock_timestamp()` here, `strftime` on SQLite). Prove the same

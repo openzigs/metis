@@ -356,6 +356,31 @@ function sharedByIdJoin(
 }
 
 /**
+ * Issue #930 — how the reviewed list and the synthesis output differ by
+ * IDENTITY, not by count: the reviewed requirements no synthesis item joins
+ * onto, and the synthesis items no reviewed requirement takes. Equal counts
+ * used to read as "the same set" even when the two named different
+ * requirements. Read off the join promotion itself uses (ids, then titles), so
+ * the warning and the promoted rows cannot disagree about what matched.
+ */
+export interface ReviewedSynthesisDifference {
+  reviewedWithoutItem: number;
+  itemsWithoutReviewed: number;
+}
+
+export function compareReviewedWithSynthesis(
+  structured: ReadonlyArray<Pick<StructuredRequirement, "id" | "title">>,
+  synthesized: readonly SynthesizedRequirement[],
+): ReviewedSynthesisDifference {
+  const { given } = matchSynthesizedReportingRefusals(structured, synthesized, structured);
+  const taken = new Set([...given.values()].flat());
+  return {
+    reviewedWithoutItem: structured.filter((r) => !given.has(r.id)).length,
+    itemsWithoutReviewed: synthesized.filter((_, i) => !taken.has(i)).length,
+  };
+}
+
+/**
  * Issue #1204 review — the synthesis items (indexes) the title and id joins
  * give the requirements in `ids`, as {@link planApprovedRequirementSet} would
  * with exactly those approved. An append re-plans over the enlarged set, so

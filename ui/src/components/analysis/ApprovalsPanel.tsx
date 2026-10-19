@@ -157,19 +157,37 @@ export function describeRejections(rejected: ReadonlyArray<{ type: string }>): s
 /**
  * Issue #909 — approving promotes the REVIEWED list (#730), which is a different
  * set from the synthesis output. Say so before the reviewer approves, whenever
- * the two counts differ; otherwise the rows that appear look like a bug.
+ * the two differ; otherwise the rows that appear look like a bug.
+ *
+ * Issue #930 — "differ" is by identity when the server recorded it
+ * (`identity`): equal counts naming different requirements used to show no
+ * warning. A run recorded before #930 has no identity and compares counts.
  */
 export function describeSetDifference(
   reviewedCount: number | undefined,
   synthesisCount: number | undefined,
+  identity?: { reviewedWithoutItem: number; itemsWithoutReviewed: number },
 ): string | null {
   if (reviewedCount === undefined || synthesisCount === undefined) return null;
-  if (reviewedCount === synthesisCount) return null;
-  return (
+  const unmatched = identity
+    ? identity.reviewedWithoutItem > 0 || identity.itemsWithoutReviewed > 0
+    : false;
+  if (reviewedCount === synthesisCount && !unmatched) return null;
+  const base =
     `Approving promotes the ${reviewedCount} requirement(s) reviewed below, not the ` +
     `${synthesisCount} the synthesis produced. Synthesized requirements only contribute ` +
-    `acceptance criteria and evidence to a reviewed requirement they match.`
-  );
+    `acceptance criteria and evidence to a reviewed requirement they match.`;
+  if (!identity || !unmatched) return base;
+  const parts: string[] = [];
+  if (identity.reviewedWithoutItem > 0) {
+    parts.push(`${identity.reviewedWithoutItem} reviewed requirement(s) match none of them`);
+  }
+  if (identity.itemsWithoutReviewed > 0) {
+    parts.push(
+      `${identity.itemsWithoutReviewed} synthesized requirement(s) match no reviewed one and will not be promoted`,
+    );
+  }
+  return `${base} ${parts.join("; ")}.`;
 }
 
 function PromotionBanner({
@@ -760,6 +778,7 @@ export function ApprovalsPanel({
             setDifference={describeSetDifference(
               readEnhancementMetadata(metadata).promotionBlocked?.awaitingRequirementCount,
               readEnhancementMetadata(metadata).promotionBlocked?.synthesisRequirementCount,
+              readEnhancementMetadata(metadata).promotionBlocked?.setDifference,
             )}
             pendingByType={summarisePendingByType(pending)}
             rejectionSummary={describeRejections(resolved.filter((a) => a.status === "rejected"))}

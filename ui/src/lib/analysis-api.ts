@@ -1021,6 +1021,12 @@ export interface EnhancementMetadata {
      * reviewed list, and the Approvals tab says so before anyone approves.
      */
     synthesisRequirementCount?: number;
+    /**
+     * Issue #930 — the same comparison by identity: reviewed requirements no
+     * synthesized one joins onto, and synthesized ones no reviewed requirement
+     * takes. Absent on runs recorded before #930, which compare counts only.
+     */
+    setDifference?: { reviewedWithoutItem: number; itemsWithoutReviewed: number };
     reason?: string;
   };
   promotionStatus?: "allowed" | "blocked";

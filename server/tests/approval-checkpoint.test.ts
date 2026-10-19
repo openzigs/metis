@@ -257,6 +257,46 @@ describe("ApprovalCheckpoint", () => {
         }),
       ).rejects.toMatchObject({ statusCode: 409, code: "APPROVAL_ALREADY_REVIEWED" });
     });
+
+    it("#930 — two concurrent reviews: exactly one wins, the other is told it lost (409)", async () => {
+      // Both calls used to read `pending` before either wrote, so both passed
+      // the check and the last write silently won. The status predicate now
+      // rides the write, as #909 did for reopen.
+      await createApprovalRequests("analysis-1", [{ type: "requirement" as const, itemId: "r-1" }]);
+
+      const results = await Promise.allSettled([
+        reviewApprovalRequest("analysis-1", "approval-1", {
+          status: "approved",
+          reviewerId: "user-1",
+          reviewNote: "Approve",
+        }),
+        reviewApprovalRequest("analysis-1", "approval-1", {
+          status: "rejected",
+          reviewerId: "user-2",
+          reviewNote: "Reject",
+        }),
+      ]);
+
+      const won = results.filter(
+        (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof reviewApprovalRequest>>> =>
+          r.status === "fulfilled",
+      );
+      expect(won).toHaveLength(1);
+      const lost = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+      expect(lost.reason).toMatchObject({ statusCode: 409, code: "APPROVAL_ALREADY_REVIEWED" });
+      // The stored decision is the winner's, whole: never one reviewer's status
+      // with the other's note.
+      const stored = rows.find((r) => r.id === "approval-1")!;
+      expect({
+        status: stored.status,
+        reviewerId: stored.reviewerId,
+        reviewNote: stored.reviewNote,
+      }).toEqual({
+        status: won[0]!.value.status,
+        reviewerId: won[0]!.value.reviewerId,
+        reviewNote: won[0]!.value.reviewNote,
+      });
+    });
   });
 
   describe("areAllApprovalsResolved", () => {

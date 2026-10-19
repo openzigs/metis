@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { parseAcceptanceCriteria, type SynthesizedRequirement } from "@metis/shared";
 import {
   buildApprovedRequirementSet,
+  compareReviewedWithSynthesis,
   matchSynthesized,
   planApprovedRequirementSet,
 } from "./approved-requirement-set.js";
@@ -654,5 +655,35 @@ describe("#1203 — which approved requirements share criteria, from the id join
     );
     expect(out.output.requirements[0]?.acceptanceCriteria).toEqual(GROUP);
     expect(out.shared).toEqual([]);
+  });
+});
+
+describe("#930 — the reviewed list and the synthesis compared by identity", () => {
+  const reviewed = [
+    structured("REQ-1", "Export subscriptions as OPML"),
+    structured("REQ-2", "Rate limit the public API"),
+  ];
+
+  it("equal counts naming different requirements still differ", () => {
+    const out = compareReviewedWithSynthesis(reviewed, [
+      synth("OPML export", { structuredIds: ["REQ-1"] }),
+      synth("Dark mode for the reader", { structuredIds: [] }),
+    ]);
+    expect(out).toEqual({ reviewedWithoutItem: 1, itemsWithoutReviewed: 1 });
+  });
+
+  it("the same requirements, joined by id or by title, do not differ", () => {
+    const out = compareReviewedWithSynthesis(reviewed, [
+      synth("OPML export", { structuredIds: ["REQ-1"] }),
+      synth("Rate limit the public API"),
+    ]);
+    expect(out).toEqual({ reviewedWithoutItem: 0, itemsWithoutReviewed: 0 });
+  });
+
+  it("one item consolidating both reviewed requirements: nothing unmatched on either side", () => {
+    const out = compareReviewedWithSynthesis(reviewed, [
+      synth("Hardening", { structuredIds: ["REQ-1", "REQ-2"] }),
+    ]);
+    expect(out).toEqual({ reviewedWithoutItem: 0, itemsWithoutReviewed: 0 });
   });
 });

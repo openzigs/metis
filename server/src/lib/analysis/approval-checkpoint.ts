@@ -95,6 +95,12 @@ export async function listApprovalRequests(
 /**
  * Review (approve/reject) an approval request.
  *
+ * Issue #930 — the `pending` predicate rides the WRITE, as #909 did for
+ * {@link reopenApprovalRequest}. Reading the status first and then updating by
+ * id let two concurrent reviews both pass the check, and the last write won
+ * silently. Now exactly one review lands; the other is told the request is
+ * already reviewed (409).
+ *
  * @param analysisId - The analysis session that owns the approval. Used to
  *   scope the lookup and prevent cross-analysis access (IDOR mitigation).
  */
@@ -103,33 +109,8 @@ export async function reviewApprovalRequest(
   requestId: string,
   review: ApprovalReview,
 ): Promise<ApprovalRequestRow> {
-  const existing = await prisma.approvalRequest.findFirst({
-    where: { id: requestId, analysisId },
-  });
-
-  // Typed errors: a bare `Error` here reached the client as a 500 for a plain
-  // unknown-id request, which is both the wrong status and an internal-error
-  // signal for ordinary caller input.
-  if (!existing) {
-    throw new AppError(404, "APPROVAL_NOT_FOUND", `Approval request ${requestId} not found`);
-  }
-
-  if (existing.status !== "pending") {
-    throw new AppError(
-      409,
-      "APPROVAL_ALREADY_REVIEWED",
-      `Approval request ${requestId} is already ${existing.status}`,
-    );
-  }
-
-  log.info("Reviewing approval request", {
-    requestId,
-    status: review.status,
-    reviewerId: review.reviewerId,
-  });
-
-  const updated = await prisma.approvalRequest.update({
-    where: { id: requestId },
+  const { count } = await prisma.approvalRequest.updateMany({
+    where: { id: requestId, analysisId, status: "pending" },
     data: {
       status: review.status,
       reviewerId: review.reviewerId,
@@ -137,8 +118,32 @@ export async function reviewApprovalRequest(
       reviewedAt: new Date(),
     },
   });
+  const current = await prisma.approvalRequest.findFirst({
+    where: { id: requestId, analysisId },
+  });
 
-  return updated as ApprovalRequestRow;
+  // Typed errors: a bare `Error` here reached the client as a 500 for a plain
+  // unknown-id request, which is both the wrong status and an internal-error
+  // signal for ordinary caller input.
+  if (!current) {
+    throw new AppError(404, "APPROVAL_NOT_FOUND", `Approval request ${requestId} not found`);
+  }
+
+  if (count === 0) {
+    throw new AppError(
+      409,
+      "APPROVAL_ALREADY_REVIEWED",
+      `Approval request ${requestId} is already ${current.status}`,
+    );
+  }
+
+  log.info("Reviewed approval request", {
+    requestId,
+    status: review.status,
+    reviewerId: review.reviewerId,
+  });
+
+  return current as ApprovalRequestRow;
 }
 
 /**

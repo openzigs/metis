@@ -152,6 +152,7 @@ import {
   type ApprovalPolicy,
 } from "./approval-checkpoint.js";
 import {
+  compareReviewedWithSynthesis,
   latestRequirementApprovals,
   planApprovedRequirementSet,
 } from "./approved-requirement-set.js";
@@ -4052,6 +4053,16 @@ export class AnalysisOrchestrator {
             // #909 — lets the Approvals tab say, before anyone approves, that the
             // reviewed list (not this many synthesized rows) is what is promoted.
             synthesisRequirementCount: result.output.requirements.length,
+            // #930 — and say so when the two name different requirements, not
+            // only when their counts differ.
+            ...(refinedRequirements.length > 0
+              ? {
+                  setDifference: compareReviewedWithSynthesis(
+                    refinedRequirements,
+                    result.output.requirements,
+                  ),
+                }
+              : {}),
             reason: blockedReason,
           },
           // #258 — record the coarse outcome in the SAME metadata patch as the

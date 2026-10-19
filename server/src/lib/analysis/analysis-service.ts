@@ -239,6 +239,12 @@ export interface PromotionBlockedState {
    * reviewed list, and the Approvals tab says so before anyone approves.
    */
   synthesisRequirementCount?: number;
+  /**
+   * Issue #930 — the same comparison by identity: reviewed requirements no
+   * synthesis item joins onto, and synthesis items no reviewed requirement
+   * takes. Absent on a run recorded before #930 (the UI compares counts then).
+   */
+  setDifference?: { reviewedWithoutItem: number; itemsWithoutReviewed: number };
   /** Issue #1104 — UI-ready one-line explanation of the gate. */
   reason?: string;
 }
