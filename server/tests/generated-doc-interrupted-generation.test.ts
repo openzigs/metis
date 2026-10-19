@@ -30,6 +30,8 @@ const state = vi.hoisted(() => ({
   docs: new Map<string, Record<string, unknown>>(),
   release: null as null | ((err: Error) => void),
   user: null as null | Record<string, unknown>,
+  /** #1252 — what the approved-requirements out-of-date check answers. */
+  outOfDate: vi.fn(async (_doc: Record<string, unknown>) => false),
 }));
 
 const ADMIN = { userId: "user_admin", username: "admin", role: "admin", permissions: [] };
@@ -155,6 +157,12 @@ vi.mock("../src/lib/docs-gen/db-schema-synthesizer.js", () => ({
         state.release = reject;
       }),
   ),
+}));
+
+// #1252 — whether the check is right is `reader-brd-staleness-1252`'s; here,
+// what the routes do with its answer.
+vi.mock("../src/lib/docs-gen/approved-requirements-currency.js", () => ({
+  approvedRequirementsOutOfDate: state.outOfDate,
 }));
 
 vi.mock("../src/lib/socket/job-events.js", () => ({
@@ -508,6 +516,90 @@ describe("#50 — POST /:docId/regenerate (one-click regenerate)", () => {
     seed({ id: "gone", status: "failed", deletedAt: new Date() });
     expect((await request(app).post("/projects/proj-1/docs/gone/regenerate")).status).toBe(404);
     expect(doc().status).toBe("failed");
+    expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
+  });
+});
+
+describe("#1252 — a reader BRD whose approved requirements changed since its latest version", () => {
+  const app = buildApp();
+  const regenerate = () => request(app).post("/projects/proj-1/docs/doc-1/regenerate").send({});
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.docs.clear();
+    state.release = null;
+    state.user = ADMIN;
+    state.outOfDate.mockReset();
+    state.outOfDate.mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    state.release?.(new Error("test teardown"));
+    state.user = null;
+  });
+
+  it("GET /:docId says whether it is out of date, asking about this document", async () => {
+    seed({ status: "ready", versionCount: 1 });
+    state.outOfDate.mockResolvedValueOnce(true);
+    const res = await request(app).get("/projects/proj-1/docs/doc-1");
+    expect(res.status).toBe(200);
+    expect(res.body.data.approvedRequirementsOutOfDate).toBe(true);
+    expect(state.outOfDate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "doc-1",
+        projectId: "proj-1",
+        scope: "database",
+        scopeFilter: JSON.stringify({ dbConnectorId: "db-1" }),
+        autoUpdate: false,
+        status: "ready",
+      }),
+    );
+    expect((await request(app).get("/projects/proj-1/docs/doc-1")).body.data).toMatchObject({
+      approvedRequirementsOutOfDate: false,
+    });
+  });
+
+  it.each(["ready", "degraded"])(
+    "POST /regenerate regenerates a published %s document that is out of date",
+    async (status) => {
+      seed({ status, versionCount: 1 });
+      state.outOfDate.mockResolvedValue(true);
+      const res = await regenerate();
+      expect(res.status).toBe(202);
+      expect(res.body.data).toMatchObject({ id: "doc-1", status: "pending" });
+      await vi.waitFor(() => expect(doc().status).toBe("generating"));
+      // The claim lands before the synthesizer's module loads: wait for the call too.
+      await vi.waitFor(() => expect(synthesizeDbSchemaDocument).toHaveBeenCalledTimes(1));
+    },
+  );
+
+  it("POST /regenerate still 409s a published ready document that is up to date", async () => {
+    seed({ status: "ready", versionCount: 1 });
+    const res = await regenerate();
+    expect(res.status).toBe(409);
+    expect(doc().status).toBe("ready");
+    expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
+  });
+
+  it("POST /regenerate never starts a document that is generating", async () => {
+    seed({ status: "generating", versionCount: 1 });
+    state.outOfDate.mockResolvedValue(true);
+    const res = await regenerate();
+    expect(res.status).toBe(409);
+    expect(doc().status).toBe("generating");
+    expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
+  });
+
+  it("POST /regenerate 409s, and starts nothing, when a publish lands between the read and the write", async () => {
+    seed({ status: "ready", versionCount: 1 });
+    state.outOfDate.mockImplementation(async () => {
+      // A run publishes while the route is checking: a newer updatedAt.
+      doc().updatedAt = new Date(Date.now() + 5000);
+      return true;
+    });
+    const res = await regenerate();
+    expect(res.status).toBe(409);
+    expect(doc().status).toBe("ready");
     expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
   });
 });

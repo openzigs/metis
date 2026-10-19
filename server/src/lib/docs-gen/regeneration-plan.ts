@@ -67,8 +67,18 @@ export function fingerprintInputs(
  * rendered by METIS from the stored rows, with no model call, so an analyst
  * approving or editing a requirement mid-run (the normal sign-off workflow)
  * must not throw away the model-written sections. The run publishes with the
- * item it captured; the next auto-update check (or a manual regenerate) sees
- * the newer value and regenerates, reusing every model-written section (#857).
+ * item it captured and, having seen it move, asks for the check (#1252). The
+ * auto-update check then regenerates the document, reusing every section whose
+ * own inputs are unchanged (#857). A document without auto-update is marked
+ * out of date instead, and its Regenerate (`POST /regenerate`,
+ * `reusePublished`) reuses them the same way. Any other manual regenerate (of a
+ * failed or cancelled document) does not reuse the published version.
+ *
+ * Reuse is NOT guaranteed for the other sections: a section's inputs include
+ * the budget the plan gives it, and the Approved Requirements section's length
+ * moves what the appendix is left (`planInParts`, `document-plan.ts`).
+ * A batched catalogue section planned on a tight budget then hashes
+ * differently and is written again, at model cost.
  */
 export const APPROVED_REQUIREMENTS_ITEM = "approvedRequirements";
 
@@ -93,6 +103,19 @@ export function withRunStableItemsOf(
     else items[key] = kept;
   }
   return fingerprintInputs(items, fresh.graphs);
+}
+
+/**
+ * #1252 — whether `fresh` and `standsFor` differ in a {@link RUN_STABLE_ITEMS}
+ * item: a run that publishes standing for `standsFor` is then out of date the
+ * moment it publishes, and must ask for the check again (a check made while it
+ * ran lost the generation claim to it).
+ */
+export function runStableItemsDiffer(
+  fresh: GenerationInputSnapshot,
+  standsFor: GenerationInputSnapshot,
+): boolean {
+  return RUN_STABLE_ITEMS.some((key) => fresh.items[key] !== standsFor.items[key]);
 }
 
 /** Whether `key` is an item a run in progress does not stop for. */

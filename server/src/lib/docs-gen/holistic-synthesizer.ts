@@ -4552,10 +4552,11 @@ export async function synthesizeFinalDocument(
       // `sectionSynthesis` is never complete and every model-written section
       // is rewritten on the next run. Always rendered afresh (it costs
       // nothing); the hashes decide only whether it counts as unchanged. They
-      // cover every stored field of every requirement, in order, and the
-      // rendered text itself, so an edit, an approval or a renderer change
-      // makes it `changed`, never a stale reuse. #1230 — not `version` or
-      // `updatedAt`: a write that bumps only those changes nothing shown.
+      // cover the stored fields the section shows of every requirement
+      // (`approvedRequirementsFacts`), in order, and the rendered text itself,
+      // so an edit, an approval or a renderer change makes it `changed`, never
+      // a stale reuse. #1230 — not `version`, `updatedAt` or the code links: a
+      // write that changes only those changes nothing shown.
       const inputHashes = hashSectionInputs({
         facts: approvedRequirementsFacts(group.approvedRequirements),
         formulas: "",

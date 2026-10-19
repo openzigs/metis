@@ -17,7 +17,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { defaultRequirementsRunId } from "@metis/shared";
+import { countsAsCompletedRun, defaultRequirementsRunId } from "@metis/shared";
 import {
   analysisApi,
   type AnalysisListItem,
@@ -52,7 +52,13 @@ function totalRequirements(run: Pick<AnalysisListItem, "requirementCounts">): nu
  */
 export function defaultHubRunId(analyses: readonly AnalysisListItem[]): string | null {
   return defaultRequirementsRunId(
-    analyses.map((a) => ({ id: a.id, status: a.status, requirementCount: totalRequirements(a) })),
+    // #1252 — `completedAt` too: a re-opened run stays the one the hub opens on.
+    analyses.map((a) => ({
+      id: a.id,
+      status: a.status,
+      completedAt: a.completedAt,
+      requirementCount: totalRequirements(a),
+    })),
   );
 }
 
@@ -78,7 +84,9 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
     enabled: Boolean(projectId),
   });
   const analyses = list.data?.items ?? [];
-  const completed = analyses.filter((a) => a.status === "completed");
+  // #1252 — the runs the default is chosen from, by the same rule: a run being
+  // re-run (running again, completed before) is one of them.
+  const completed = analyses.filter(countsAsCompletedRun);
   const [chosenId, setChosenId] = useState<string | null>(null);
   const selected =
     completed.find((a) => a.id === chosenId) ??

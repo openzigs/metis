@@ -108,6 +108,26 @@ describe("<RequirementsHub />", () => {
     await waitFor(() => expect(get).toHaveBeenCalledWith("a1"));
   });
 
+  // #1252 (PR #1267 review 2) — a run being re-run (regenerate or repo resume)
+  // is `running` again with its earlier `completedAt`. It stays the default run,
+  // so the hub shows it, not "No requirements yet".
+  it("shows a run being re-run, the default run, instead of an empty hub", async () => {
+    list.mockResolvedValue({
+      items: [
+        { ...run("rerun", "running", { approved: 2 }), completedAt: "2026-09-02T10:00:00Z" },
+        run("older", "completed", { approved: 9 }),
+      ],
+    } as never);
+    get.mockResolvedValue({ requirements: [] } as never);
+    render(<RequirementsHub projectId="p1" />, { wrapper: makeWrapper() });
+    await waitFor(() =>
+      expect(screen.getByTestId("requirements-count-approved")).toHaveTextContent("2"),
+    );
+    expect(screen.queryByTestId("requirements-empty")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Latest analysis" })).toBeInTheDocument();
+    await waitFor(() => expect(get).toHaveBeenCalledWith("rerun"));
+  });
+
   // #1155 — the run list showed the raw status, so a run that completed with
   // errors or warnings read as a clean `completed` here.
   it("labels each listed run as the run header does", async () => {

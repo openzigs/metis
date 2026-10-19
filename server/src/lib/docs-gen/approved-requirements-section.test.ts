@@ -80,14 +80,19 @@ describe("loadApprovedRequirements", () => {
     analysisFindMany.mockResolvedValue([run("run-3", 0), run("run-2", 4), run("run-1", 9)]);
     findMany.mockResolvedValue([]);
     await loadApprovedRequirements("p1");
-    // The runs are this project's completed, live ones, newest first, each
-    // with its live requirements counted within the project.
+    // The runs are this project's completed (or re-opened, #1252) live ones,
+    // newest first, each with its live requirements counted within the project.
     expect(analysisFindMany.mock.calls[0][0]).toEqual({
-      where: { projectId: "p1", deletedAt: null, status: "completed" },
+      where: {
+        projectId: "p1",
+        deletedAt: null,
+        OR: [{ status: "completed" }, { status: "running", completedAt: { not: null } }],
+      },
       orderBy: [{ startedAt: "desc" }, { id: "desc" }],
       select: {
         id: true,
         status: true,
+        completedAt: true,
         metadata: true,
         _count: { select: { requirements: { where: { projectId: "p1", deletedAt: null } } } },
       },
