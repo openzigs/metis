@@ -418,16 +418,11 @@ test.describe("UI: Enhancement Options (#625)", () => {
     });
   });
 
-  // AC: web research is opt-IN; clarifying questions are opt-OUT (the analysis
-  // page defaults `enableClarification` to true so doc-grounded questions
-  // surface without being asked for).
-  //
-  // This asserts the SHIPPED product, which diverges from the original
-  // enhancement-toggles AC ("both default off"). The divergence looks
-  // deliberate — the ON default carries its own rationale comment in
-  // `ui/src/app/(authed)/projects/[id]/analysis/page.tsx` — but it is not this
-  // spec's call to adjudicate, so it is tracked in
-  // https://github.com/openzigs/metis/issues/95 rather than silently encoded here.
+  // AC (#95): web research is opt-IN; clarifying questions are opt-OUT. The
+  // analysis page defaults `enableClarification` to true so doc-grounded
+  // questions surface without being asked for, and the toggle still opts out.
+  // #95 records that decision and retires the original enhancement-toggles AC
+  // ("both default off", Epic #597 / #625), which no longer applies.
   test("should default web research off and clarifying questions on", async ({ page }) => {
     const enhancementPage = new AnalysisEnhancementPage(page);
     await enhancementPage.goto(projectId);
