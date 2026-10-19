@@ -23,6 +23,7 @@
  * Sub-agent calls and compaction summaries meter themselves per call
  * (`bindSubAgents`, `providerSummarizer`) and are deliberately not counted here.
  */
+import { audit } from "../../audit/audit-service.js";
 import { createChildLogger } from "../../logger.js";
 import { recordUsage as recordProjectUsage } from "../../finops/token-tracker.js";
 import { ledgerRequests } from "../../finops/summed-requests.js";
@@ -55,6 +56,12 @@ export const SUBAGENT_AGENT_STEP = "subagent";
  * bills the chat's session but is NOT in any turn's row.
  */
 export const COMPACTION_AGENT_STEP = "compaction";
+
+/**
+ * #1238 — audit action recording that a chat model call attempt dropped
+ * mid-stream with no usage reported for it, so its cost is NOT in the ledger.
+ */
+export const UNMETERED_ATTEMPT_AUDIT_ACTION = "ai.usage.unmetered";
 
 /** True when a provider reported any usage at all for a call or turn. */
 export function isReportedUsage(u: TokenUsage | null | undefined): u is TokenUsage {
@@ -155,6 +162,40 @@ export class TurnUsageMeter {
   set(u: TokenUsage): void {
     this.spent = { ...u };
     this.calls = [{ ...u }];
+  }
+
+  /**
+   * #1238 — one of this turn's model call attempts dropped mid-stream and its
+   * provider reported no usage for it (only Anthropic reports any before a
+   * stream ends), so what it cost is in neither usage store. Nothing is
+   * estimated in its place; the gap is recorded instead — in the audit log,
+   * which outlives the turn whether it then succeeds or fails. Never throws.
+   */
+  noteUnmeteredAttempt(info: { attempt: number; errorClass: string }): void {
+    const { sessionId, userId, projectId, provider, model } = this.scope;
+    log.warn("A chat model call dropped with no usage reported; its tokens are not metered", {
+      sessionId,
+      provider,
+      model,
+      attempt: info.attempt,
+      errorClass: info.errorClass,
+    });
+    try {
+      audit({
+        actor: { id: userId },
+        action: UNMETERED_ATTEMPT_AUDIT_ACTION,
+        target: { type: "ai_session", id: sessionId },
+        metadata: {
+          projectId,
+          provider,
+          model,
+          attempt: info.attempt,
+          errorClass: info.errorClass,
+        },
+      });
+    } catch {
+      /* audit is best-effort by contract */
+    }
   }
 
   /** The success path wrote the per-user `AITokenUsage` row. */

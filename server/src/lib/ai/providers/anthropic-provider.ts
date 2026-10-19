@@ -32,6 +32,7 @@ import { baseUrlBillsAsAnthropic } from "../../finops/provider-rates.js";
 import type { ConfigService } from "../../config/config-service.js";
 
 export { isDeepSeekEndpoint };
+import { attachPartialUsage } from "../partial-usage.js";
 import { ToolTagStreamParser } from "./tool-tag-parser.js";
 import { boundNonStreamingOutputTokens } from "../nonstreaming-output-bound.js";
 import {
@@ -504,11 +505,25 @@ export class AnthropicProvider implements AIProvider {
     // #718 — strip inline <tool_call>/<tool_response> XML that some models
     // hallucinate into the text stream, converting it to structured events.
     const toolTagParser = new ToolTagStreamParser();
+    // #1238 — what the API has reported so far: `message_start` carries the
+    // prompt's counts before any text, and each `message_delta` the output so
+    // far (cumulative). Used only if the stream fails before its final usage.
+    let reported: AnthropicUsage | undefined;
+    let usageYielded = false;
     try {
       for await (const event of handle as AsyncIterable<unknown>) {
-        const ev = event as { type?: string; delta?: { type?: string; text?: string } };
+        const ev = event as {
+          type?: string;
+          delta?: { type?: string; text?: string };
+          message?: { usage?: AnthropicUsage };
+          usage?: AnthropicUsage;
+        };
         if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta" && ev.delta.text) {
           for (const chunk of toolTagParser.push(ev.delta.text)) yield chunk;
+        } else if (ev.type === "message_start" && ev.message?.usage) {
+          reported = { ...ev.message.usage };
+        } else if (ev.type === "message_delta" && ev.usage) {
+          reported = { ...reported, ...definedOnly(ev.usage) };
         }
       }
       for (const chunk of toolTagParser.flush()) yield chunk;
@@ -532,6 +547,7 @@ export class AnthropicProvider implements AIProvider {
       // it spends thinking from the same budget, so the accounting is the same.
       logOutputBudget("stream", params.max_tokens, usage, final.stop_reason);
       // #724 — the served model, so a metered stream is priced as `chat()` is.
+      usageYielded = true;
       yield final.model ? { type: "usage", usage, model: final.model } : { type: "usage", usage };
       // #1226 — forward the stop reason so callers can tell a cap-truncated
       // answer (`"max_tokens"`) from a cleanly-completed one. #198 — and the
@@ -543,7 +559,11 @@ export class AnthropicProvider implements AIProvider {
         ...(nativeContent ? { nativeContent } : {}),
       };
     } catch (err) {
-      throw this.mapError(err, "stream");
+      const mapped = this.mapError(err, "stream");
+      // #1238 — the call was billed for what the API reported before it failed;
+      // never once its final usage was yielded (that would count it twice).
+      if (reported && !usageYielded) attachPartialUsage(mapped, mapUsage(reported));
+      throw mapped;
     } finally {
       if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
     }
@@ -915,6 +935,13 @@ function extractText(content: AnthropicMessage["content"]): string {
     .filter((b) => b.type === "text" && typeof b.text === "string")
     .map((b) => b.text ?? "")
     .join("");
+}
+
+/** #1238 — `u` without its `null`/`undefined` fields (a delta omits what did not change). */
+function definedOnly(u: AnthropicUsage): AnthropicUsage {
+  return Object.fromEntries(
+    Object.entries(u).filter(([, v]) => v !== null && v !== undefined),
+  ) as AnthropicUsage;
 }
 
 /** Map Anthropic usage fields → METIS {@link TokenUsage}. */

@@ -2490,6 +2490,12 @@ retrying, and the dropped text is replaced. If the answer still fails, the
 partial answer stays on screen, marked incomplete, with a **Retry** button that
 asks the same question again.
 
+The dropped attempt still counts toward your project's token usage and budget
+when the provider reported its tokens before the drop (Anthropic does). When
+the provider reported nothing for it, METIS does not guess: the turn records
+only what was reported, and an `ai.usage.unmetered` entry in the audit log
+notes the gap.
+
 The AI responds in a chat-bubble format — your messages appear on the right in blue, and the AI's responses appear on the left in gray. While the AI is thinking, you'll see three bouncing dots (a typing indicator).
 
 ### 14.2 What the AI Can Help With

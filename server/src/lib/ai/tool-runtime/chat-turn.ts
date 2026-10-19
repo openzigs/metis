@@ -20,10 +20,12 @@ import type { RuntimeToolset } from "./toolset.js";
 import { executeToolCall, type ExecutedToolCall } from "./executor.js";
 import type { RuntimeToolContext, ToolEvent, ToolSource } from "./types.js";
 import {
+  classifyGroundingError,
   isMidStreamDrop,
   withTransientRetry,
   type GroundingErrorClass,
 } from "../../docs-gen/grounding/transient-retry.js";
+import { partialUsageOf } from "../partial-usage.js";
 
 /** Model turns per chat turn: a few rounds of tool calls plus the answer. */
 export const CHAT_TOOL_MAX_TURNS = 6;
@@ -48,6 +50,17 @@ export const CHAT_MODEL_CALL_ATTEMPTS = 2;
 /** #1139 — what {@link ChatToolTurnOptions.onModelCallRetry} is told. */
 export interface ModelCallRetry {
   /** The attempt that failed (1-based). */
+  attempt: number;
+  errorClass: GroundingErrorClass;
+}
+
+/**
+ * #1238 — a model call attempt whose stream dropped mid-reply with NO usage
+ * reported for it (every provider but Anthropic reports usage only at the end
+ * of a stream), so what it cost cannot be metered.
+ */
+export interface UnmeteredAttempt {
+  /** The attempt that dropped (1-based). */
   attempt: number;
   errorClass: GroundingErrorClass;
 }
@@ -118,7 +131,17 @@ export interface ChatToolTurnResult {
    * tool-call JSON, not prose).
    */
   replyText: string;
+  /**
+   * What the turn's model calls reported, summed — #1238: including what a
+   * failed attempt reported before it dropped ({@link droppedUsage}).
+   */
   usage: TokenUsage;
+  /**
+   * #1238 — the part of {@link usage} reported by attempts that then failed
+   * and were retried; absent when there was none. Such a turn's prompt was
+   * sent more than once, so its usage must not calibrate a token ratio.
+   */
+  droppedUsage?: TokenUsage;
   finishReason?: string;
   toolResults: ChatToolRecord[];
   turnsUsed: number;
@@ -148,9 +171,16 @@ export interface ChatToolTurnOptions {
   /**
    * #243 — called with each model call's reported usage as soon as that call
    * returns, so a turn that fails on a LATER call can still meter what the
-   * earlier ones cost. The loop's `usage` (on success) is the sum of these.
+   * earlier ones cost. The result's `usage` (on success) is the sum of these.
+   * #1238 — also called, once, for an attempt that failed after its provider
+   * reported usage (an Anthropic stream that dropped after `message_start`).
    */
   onUsage?: (usage: TokenUsage) => void;
+  /**
+   * #1238 — an attempt's stream dropped mid-reply and its provider reported
+   * no usage for it: the tokens it cost are not in any `onUsage` call.
+   */
+  onUnmeteredAttempt?: (info: UnmeteredAttempt) => void;
   /**
    * PR #783 review — the run's server-authored output contract, if any. The
    * #772 final-synthesis call restates it so a spent step budget still ends in
@@ -217,11 +247,43 @@ export async function runChatToolTurn(
   // #1174 classifier): never a cancel, a stall the idle guard aborted, a 4xx or
   // a configuration error. The messages are the loop's, unchanged, so the retry
   // resumes from the last complete tool result rather than re-running the turn.
+  // #1238 — what failed attempts reported before they dropped, summed.
+  let droppedUsage: TokenUsage | undefined;
+  const meter = (u: TokenUsage): void => {
+    try {
+      options.onUsage?.(u);
+    } catch {
+      /* a listener must never break the loop */
+    }
+  };
+  // #1238 — an attempt that failed is metered here, exactly once: on what its
+  // provider reported, or — for a dropped stream that reported nothing — as
+  // unmetered. Nothing is estimated.
+  const meterFailedAttempt = (err: unknown, attempt: number): void => {
+    const reported = partialUsageOf(err);
+    if (
+      reported &&
+      (reported.totalTokens > 0 ||
+        (reported.cacheReadTokens ?? 0) > 0 ||
+        (reported.cacheWriteTokens ?? 0) > 0)
+    ) {
+      droppedUsage = addUsage(droppedUsage, reported);
+      meter(reported);
+      return;
+    }
+    const errorClass = classifyGroundingError(err, options.signal);
+    if (!isMidStreamDrop(err, errorClass)) return;
+    try {
+      options.onUnmeteredAttempt?.({ attempt, errorClass });
+    } catch {
+      /* a listener must never break the loop */
+    }
+  };
   const callModel = (m: ChatMessage[], o: ChatOptions): Promise<ChatResponse> => {
     let attempt = 0;
     let droppedClass: GroundingErrorClass = "stream-terminated";
     return withTransientRetry(
-      () => {
+      async () => {
         attempt++;
         // PR #1234 review — both listeners fire here, in either protocol: the
         // start before a model call's first attempt, and the retry only once
@@ -233,7 +295,12 @@ export async function runChatToolTurn(
         } catch {
           /* a listener must never break the loop */
         }
-        return baseCallModel(m, o);
+        try {
+          return await baseCallModel(m, o);
+        } catch (err) {
+          meterFailedAttempt(err, attempt);
+          throw err;
+        }
       },
       {
         stage: "chat-turn",
@@ -300,13 +367,7 @@ export async function runChatToolTurn(
         ...(input.native ? { native: { tools: input.toolset.specs() } } : {}),
         callModel: async (m, o) => {
           const r = await callModel(m, o);
-          if (r.usage) {
-            try {
-              options.onUsage?.(r.usage);
-            } catch {
-              /* a listener must never break the loop */
-            }
-          }
+          if (r.usage) meter(r.usage);
           finishReason = r.finishReason;
           turnTexts.push(r.content);
           return r;
@@ -364,11 +425,29 @@ export async function runChatToolTurn(
     replyText: input.native
       ? composeReplyText(turnTexts, result.finalResponse)
       : result.finalResponse,
-    usage: result.usage,
+    usage: droppedUsage ? addUsage(result.usage, droppedUsage) : result.usage,
+    ...(droppedUsage ? { droppedUsage } : {}),
     ...(finishReason ? { finishReason } : {}),
     toolResults: records,
     turnsUsed: result.turnsUsed,
     native: input.native,
     loop: { turnsExhausted: result.turnsExhausted, hasFinalAnswer: result.hasFinalAnswer },
+  };
+}
+
+/** #1238 — two usages summed field by field (`thinkingTokens` only when either has it). */
+function addUsage(a: TokenUsage | undefined, b: TokenUsage): TokenUsage {
+  if (!a) return { ...b };
+  const thinking =
+    a.thinkingTokens === undefined && b.thinkingTokens === undefined
+      ? undefined
+      : (a.thinkingTokens ?? 0) + (b.thinkingTokens ?? 0);
+  return {
+    promptTokens: a.promptTokens + b.promptTokens,
+    completionTokens: a.completionTokens + b.completionTokens,
+    totalTokens: a.totalTokens + b.totalTokens,
+    cacheReadTokens: (a.cacheReadTokens ?? 0) + (b.cacheReadTokens ?? 0),
+    cacheWriteTokens: (a.cacheWriteTokens ?? 0) + (b.cacheWriteTokens ?? 0),
+    ...(thinking === undefined ? {} : { thinkingTokens: thinking }),
   };
 }

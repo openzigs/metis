@@ -37,7 +37,8 @@ vi.mock("../src/lib/prisma.js", async () => {
     Prisma,
   };
 });
-vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+const { auditSpy } = vi.hoisted(() => ({ auditSpy: vi.fn() }));
+vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: auditSpy }));
 vi.mock("../src/lib/rag/knowledge-service.js", async (original) => ({
   ...(await original<typeof import("../src/lib/rag/knowledge-service.js")>()),
   getKnowledgeService: () => ({ search: async () => ({ hits: [] }) }),
@@ -55,7 +56,7 @@ const { __resetToolApprovalBroker } = await import("../src/lib/ai/tool-runtime/a
 const { resetLocalConcurrencyLimitersForTests } =
   await import("../src/lib/ai/providers/local-concurrency-limiter.js");
 const { __resetModelCatalogForTests } = await import("../src/lib/ai/model-catalog.js");
-const { CHAT_TURN_AGENT_STEP, ESTIMATED_TURN_AGENT_STEP } =
+const { CHAT_TURN_AGENT_STEP, ESTIMATED_TURN_AGENT_STEP, UNMETERED_ATTEMPT_AUDIT_ACTION } =
   await import("../src/lib/ai/conversation/turn-usage.js");
 const { nativeToolChars } = await import("../src/lib/ai/conversation/turn.js");
 
@@ -67,6 +68,11 @@ const REPLY = "openai says hi";
 
 /** What the OpenAI-shaped server reports as usage. */
 let usageMode: "reported" | "none" = "reported";
+/**
+ * #1238 — how many of the next replies (either server, streamed or not) drop
+ * part-way: headers, the first bytes, then the socket is destroyed.
+ */
+let dropStreams = 0;
 const OPENAI_USAGE = {
   prompt_tokens: 120,
   prompt_tokens_details: { cached_tokens: 100 },
@@ -86,6 +92,7 @@ function openAiReply(res: ServerResponse, body: Body): void {
   const usage = usageMode === "reported" ? { usage: OPENAI_USAGE } : {};
   if (body.stream !== true) {
     res.writeHead(200, { "content-type": "application/json" });
+
     res.end(
       JSON.stringify({
         id: "c1",
@@ -101,6 +108,14 @@ function openAiReply(res: ServerResponse, body: Body): void {
   }
   const chunk = (d: Body) => `data: ${JSON.stringify(d)}\n\n`;
   res.writeHead(200, { "content-type": "text/event-stream" });
+  if (dropStreams > 0) {
+    dropStreams--;
+    res.write(
+      chunk({ id: "c1", choices: [{ index: 0, delta: { content: "open" }, finish_reason: null }] }),
+    );
+    setTimeout(() => res.socket?.destroy(), 20);
+    return;
+  }
   res.end(
     chunk({ id: "c1", choices: [{ index: 0, delta: { content: REPLY }, finish_reason: null }] }) +
       chunk({ id: "c1", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }) +
@@ -121,6 +136,13 @@ function anthropicReply(res: ServerResponse, streaming: boolean): void {
   const text = "anthropic says hi";
   if (!streaming) {
     res.writeHead(200, { "content-type": "application/json" });
+    if (dropStreams > 0) {
+      // #1238 — the body drops part-way; a non-streamed reply reports no usage.
+      dropStreams--;
+      res.write('{"id":"msg_1","type":"message","content":[');
+      setTimeout(() => res.socket?.destroy(), 20);
+      return;
+    }
     res.end(
       JSON.stringify({
         id: "msg_1",
@@ -138,6 +160,29 @@ function anthropicReply(res: ServerResponse, streaming: boolean): void {
   res.writeHead(200, { "content-type": "text/event-stream" });
   const ev = (type: string, data: Body) =>
     `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+  const start = ev("message_start", {
+    message: {
+      id: "msg_1",
+      type: "message",
+      role: "assistant",
+      model: "claude-sonnet-4-6",
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { ...ANTHROPIC_USAGE, output_tokens: 1 },
+    },
+  });
+  if (dropStreams > 0) {
+    // #1238 — billed for the prompt (message_start), then the stream drops.
+    dropStreams--;
+    res.write(
+      start +
+        ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } }) +
+        ev("content_block_delta", { index: 0, delta: { type: "text_delta", text: "anth" } }),
+    );
+    setTimeout(() => res.socket?.destroy(), 20);
+    return;
+  }
   res.end(
     ev("message_start", {
       message: {
@@ -289,6 +334,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       process.env.ANTHROPIC_BASE_URL = anthropicBase;
       delete process.env.CHAT_TOOLS;
       usageMode = "reported";
+      dropStreams = 0;
+      auditSpy.mockClear();
       openaiSeen.length = 0;
       __resetModelCatalogForTests();
       __resetToolRegistrySingleton();
@@ -374,6 +421,88 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           }).totalTokens,
         ).toBe(84);
       }
+    });
+
+    it("#1238 Anthropic: a /stream reply retried after a drop meters the dropped attempt too, once per store", async () => {
+      const session = await newSession(ANTH);
+      dropStreams = 1;
+      const s = await post("/api/ai/stream", { sessionId: session, message: "first question" });
+      expect(s.text).toContain("event: retry");
+      expect(s.text).toContain("event: done");
+      expect(dropStreams).toBe(0);
+      const { replies, perUser, project } = await records(session);
+
+      // One row per store for the turn, holding BOTH attempts: the dropped one
+      // as message_start reported it (output 1), then the completed retry.
+      expect(perUser).toHaveLength(1);
+      expect(project).toHaveLength(1);
+      expect(project[0]).toMatchObject({
+        agentStep: CHAT_TURN_AGENT_STEP,
+        inputTokens: 22,
+        cacheReadTokens: 100,
+        cacheWriteTokens: 40,
+        outputTokens: 4,
+        // Canonical: 11 + 50 + 20 + 1 for the dropped attempt, 11 + 50 + 20 + 3 for the retry.
+        totalTokens: 166,
+      });
+      expect(perUser[0]).toMatchObject({
+        agentStep: null,
+        promptTokens: 22,
+        completionTokens: 4,
+        cacheReadTokens: 100,
+        cacheWriteTokens: 40,
+      });
+      // The transcript agrees, but the prompt went out twice, so the turn must
+      // not calibrate the token ratio.
+      expect(replies).toHaveLength(1);
+      expect(replies[0]).toMatchObject({ outputTokens: 4, promptChars: null });
+      expect(auditSpy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: UNMETERED_ATTEMPT_AUDIT_ACTION }),
+      );
+    });
+
+    it("#1238 OpenAI-compatible: a dropped attempt with no usage reported is recorded as unmetered, not estimated", async () => {
+      const session = await newSession(PLAIN);
+      dropStreams = 1;
+      const s = await post("/api/ai/stream", { sessionId: session, message: "first question" });
+      expect(s.text).toContain("event: retry");
+      expect(s.text).toContain("event: done");
+      const { replies, perUser, project } = await records(session);
+
+      // Only what the provider reported (the retry) is metered; nothing invented.
+      expect(project).toHaveLength(1);
+      expect(project[0]).toMatchObject({ inputTokens: 120, outputTokens: 7, totalTokens: 127 });
+      expect(perUser).toHaveLength(1);
+      expect(perUser[0]).toMatchObject({ promptTokens: 120, completionTokens: 7 });
+      expect(replies[0]!.promptChars).not.toBeNull();
+      // The gap is on record.
+      const unmetered = auditSpy.mock.calls
+        .map(([e]) => e as { action: string; target: { id: string }; metadata: Body })
+        .filter((e) => e.action === UNMETERED_ATTEMPT_AUDIT_ACTION);
+      expect(unmetered).toHaveLength(1);
+      expect(unmetered[0]!.target.id).toBe(session);
+      expect(unmetered[0]!.metadata).toMatchObject({ projectId: PLAIN, attempt: 1 });
+    });
+
+    it("#1238 /chat: a dropped attempt with no usage reported is recorded as unmetered, and the retry is metered once", async () => {
+      // Anthropic: the OpenAI-compatible adapter retries a dropped non-streamed
+      // reply itself, so the chat turn never sees that attempt.
+      const session = await newSession(ANTH);
+      dropStreams = 1;
+      const c = await post("/api/ai/chat", { sessionId: session, message: "first question" });
+      expect(c.status, c.text).toBe(200);
+      expect(dropStreams).toBe(0);
+      const { perUser, project } = await records(session);
+
+      expect(project).toHaveLength(1);
+      expect(project[0]).toMatchObject({ inputTokens: 11, outputTokens: 3, totalTokens: 84 });
+      expect(perUser).toHaveLength(1);
+      const unmetered = auditSpy.mock.calls
+        .map(([e]) => e as { action: string; target: { id: string }; metadata: Body })
+        .filter((e) => e.action === UNMETERED_ATTEMPT_AUDIT_ACTION);
+      expect(unmetered).toHaveLength(1);
+      expect(unmetered[0]!.target.id).toBe(session);
+      expect(unmetered[0]!.metadata).toMatchObject({ projectId: ANTH, attempt: 1 });
     });
 
     for (const tools of ["native tools", "no tools"] as const) {
