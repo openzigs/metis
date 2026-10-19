@@ -59,3 +59,9 @@ Older single-trap entries, folded here (retired from the index 2026-10-16; files
 - To find unconsumed once-values, add a temporary `afterEach` that calls each double once and compares with the `beforeEach` default. An early-refusing test whose once-value goes unused should assert `not.toHaveBeenCalled()` instead.
 - Route wiring through a shared helper (`promoteAndNote`) can be reverted per route with no test failing when the `it.each` covers only some routes. Mutate each call site, not the helper. A "note only when X" helper needs two checks: swap it out per route (proves each route test) and drop its condition (proves the negative halves) (#1249).
 - When one fix's end-to-end test is masked by a second fix, mutate each half of the first fix alone at its own layer (#1254).
+
+**Added 2026-10-19 (#1257–#1264):**
+- An `adversarial-reviewer` voter can return a well-formed SOUND verdict with fabricated citations after a few tool calls; the tally checks only the citation format. Before tallying, confirm each cited identifier exists at the tip, and re-dispatch the lens if one does not (#1257).
+- On a scoped `deleteMany` with `notIn` over a nullable column, mutation-test dropping the `{col: null}` OR-branch. SQL `NULL NOT IN` keeps the null rows, and a test that checks only the kept rows passes either way (#1260: survived 19/19).
+- In reader-filtered tests, a "no stale duplicate" assertion made as the restricted user cannot fail, because the filter hides exactly the stale row. Assert cardinality as the admin.
+- "Not counted as hidden" is vacuous when run by an admin, or when the fixture sits in a project the member can read. Put the fixture where the member cannot read it, and assert the hidden *count*; the id-list check cannot fail there (#1262).
