@@ -2059,6 +2059,9 @@ describe("AnalysisOrchestrator.regenerateAgent guards", () => {
   it("#1156 — after one failing finalize write the analysis reads failed and can be re-run", async () => {
     const orch = new AnalysisOrchestrator({ provider: makeProvider({}), retrieve: async () => [] });
     const analysisId = await runToCompletion(orch);
+    const tokensBefore = analyses.get(analysisId)!.totalTokens;
+    const { audit } = await import("../src/lib/audit/audit-service.js");
+    (audit as unknown as { mockClear: () => void }).mockClear();
     const { prisma } = await import("../src/lib/prisma.js");
     const update = prisma.analysis.update as unknown as ReturnType<typeof vi.fn>;
     const original = update.getMockImplementation() as unknown as (
@@ -2085,6 +2088,22 @@ describe("AnalysisOrchestrator.regenerateAgent guards", () => {
     }
     expect(orch.isActive(analysisId)).toBe(false);
     expect(analyses.get(analysisId)!.status).toBe("failed");
+    // #1264 review — the re-run's results WERE saved; only its status was lost.
+    expect(analyses.get(analysisId)!.errorMessage).toBe(
+      "The re-run finished and its results were saved, but its final status could not be recorded. Run it again to refresh the status.",
+    );
+    // The settling write applies no token delta, so a write that did commit
+    // before it threw can never be counted twice.
+    expect(analyses.get(analysisId)!.totalTokens).toBe(tokensBefore);
+    // The route swallows the rejection, so the audit row must say what happened.
+    const rows = (audit as unknown as { mock: { calls: Array<unknown[]> } }).mock.calls
+      .map((c) => c[0] as { action?: string; metadata?: Record<string, unknown> })
+      .filter((c) => c.action === "analysis.regenerate");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.metadata).toMatchObject({
+      decision: "completed",
+      statusWriteFailed: "database unavailable",
+    });
     await orch.regenerateAgent({
       analysisId,
       agentKey: "document",

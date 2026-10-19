@@ -530,6 +530,18 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
       update.mockImplementation(original);
     }
     expect(state.status).toBe("failed");
+    // #1264 review — the settling write carries an accurate message and no delta.
+    const settle = state.updates.at(-1)!;
+    expect(settle.errorMessage).toBe(
+      "The re-run finished and its results were saved, but its final status could not be recorded. Run it again to refresh the status.",
+    );
+    expect(settle.totalTokens).toEqual({ increment: 0 });
+    const { audit } = await import("../audit/audit-service.js");
+    const row = vi
+      .mocked(audit)
+      .mock.calls.map((c) => c[0] as { action?: string; metadata?: Record<string, unknown> })
+      .find((c) => c.action === "analysis.repos.resume");
+    expect(row?.metadata).toMatchObject({ statusWriteFailed: "database unavailable" });
     await expect(orch.assertCanResumeRepos(ANALYSIS_ID)).resolves.toBeDefined();
   });
 

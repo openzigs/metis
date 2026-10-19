@@ -331,32 +331,60 @@ async function closeFollowUpRun(
 }
 
 /**
+ * #1156 — the message a follow-up's row carries when its own final status write
+ * failed and a second write settled it as `failed`. Plain language, and true:
+ * a re-run that completed had ALREADY saved its results (findings, requirements)
+ * before this write; only its status was lost.
+ */
+export function followUpStatusWriteFailedMessage(
+  outcome: "completed" | "failed",
+  errorMessage: string | null | undefined,
+): string {
+  if (outcome === "completed") {
+    return "The re-run finished and its results were saved, but its final status could not be recorded. Run it again to refresh the status.";
+  }
+  return errorMessage ?? "The re-run failed, and its final status could not be recorded.";
+}
+
+/**
  * #1156 — settle a follow-up's analysis row. {@link reopenForFollowUp} set it
  * `running`, and the regenerate/resume pre-flights refuse a `running` row, with
  * nothing to reset it on boot: one failed write here left the analysis
- * unusable. So a failure gets ONE more write that records the run as failed,
- * then the original error is rethrown. If that write fails too, the database
- * is down and the row cannot be settled from here.
+ * unusable. So a failure gets ONE more write that records the run as failed.
+ *
+ * The second write applies NO token delta: a write that threw may still have
+ * committed (a connection lost after the commit), and applying the delta twice
+ * would overstate the stored total. The stored total may then miss this
+ * re-run's tokens; the usage ledger, which the run pages read, still has them.
+ *
+ * Returns the original error, or `null`, instead of throwing, so the caller can
+ * write its audit row before it rethrows: the routes that start a follow-up
+ * swallow the rejection, so the audit row is the only trace it leaves.
  */
-async function finalizeFollowUp(input: Parameters<typeof finalizeAnalysisDelta>[0]): Promise<void> {
+async function finalizeFollowUp(
+  input: Parameters<typeof finalizeAnalysisDelta>[0] & { status: "completed" | "failed" },
+): Promise<Error | null> {
   try {
     await finalizeAnalysisDelta(input);
+    return null;
   } catch (err) {
-    log.warn("Could not record a re-run's result; marking the analysis failed", {
+    log.error("Could not record a re-run's final status; marking the analysis failed", {
       analysisId: input.id,
+      outcome: input.status,
       error: (err as Error).message,
     });
     await finalizeAnalysisDelta({
-      ...input,
+      id: input.id,
       status: "failed",
-      errorMessage: input.errorMessage ?? "The result of this re-run could not be saved.",
+      delta: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      errorMessage: followUpStatusWriteFailedMessage(input.status, input.errorMessage),
     }).catch((retryErr: unknown) =>
-      log.warn("Could not mark the analysis failed either; it reads running", {
+      log.error("Could not mark the analysis failed either; it reads running", {
         analysisId: input.id,
         error: (retryErr as Error).message,
       }),
     );
-    throw err;
+    return err instanceof Error ? err : new Error(String(err));
   }
 }
 
@@ -1148,7 +1176,7 @@ export class AnalysisOrchestrator {
         await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
         // Atomic write — increments columns server-side so two concurrent
         // regenerates can't lose tokens to a read/modify/write race.
-        await finalizeFollowUp({
+        const statusWriteError = await finalizeFollowUp({
           id: opts.analysisId,
           status: outcome,
           delta,
@@ -1165,8 +1193,11 @@ export class AnalysisOrchestrator {
             tokensConsumed: delta.totalTokens,
             decision: outcome,
             errorMessage,
+            // #1156 — the only trace a swallowed status-write failure leaves.
+            ...(statusWriteError ? { statusWriteFailed: statusWriteError.message } : {}),
           },
         });
+        if (statusWriteError) throw statusWriteError;
       } finally {
         this.releaseClaim(opts.analysisId);
       }
@@ -1538,7 +1569,7 @@ export class AnalysisOrchestrator {
       // #1156 — release the claim even when a database write below throws.
       try {
         await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
-        await finalizeFollowUp({
+        const statusWriteError = await finalizeFollowUp({
           id: opts.analysisId,
           status: outcome,
           delta,
@@ -1555,8 +1586,11 @@ export class AnalysisOrchestrator {
             tokensConsumed: delta.totalTokens,
             decision: outcome,
             errorMessage,
+            // #1156 — the only trace a swallowed status-write failure leaves.
+            ...(statusWriteError ? { statusWriteFailed: statusWriteError.message } : {}),
           },
         });
+        if (statusWriteError) throw statusWriteError;
       } finally {
         this.releaseClaim(opts.analysisId);
       }
