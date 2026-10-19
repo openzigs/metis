@@ -842,12 +842,34 @@ export class AnthropicProvider implements AIProvider {
     log.error("Anthropic provider error", { op, name, status });
     // `details` names the operation and the error class WITHOUT the upstream
     // text, for callers that store or forward a bounded message (#1059).
-    return new AIProviderError(`anthropic ${op} failed (${name}): ${message}`, status ?? 502, {
-      provider: "anthropic",
-      operation: op,
-      errorName: name,
-    });
+    const mapped = new AIProviderError(
+      `anthropic ${op} failed (${name}): ${message}`,
+      status ?? 502,
+      { provider: "anthropic", operation: op, errorName: name },
+    );
+    // #1209 — undici's body timeout surfaces as `TypeError: terminated`, which
+    // reads as a dropped connection. Keep the timeout itself (only it, never
+    // the rest of the chain) as the cause, so docs-gen does not retry a
+    // provider that went quiet as if its connection had dropped.
+    const bodyTimeout = bodyTimeoutIn(err);
+    if (bodyTimeout) Object.defineProperty(mapped, "cause", { value: bodyTimeout });
+    return mapped;
   }
+}
+
+/** #1209 — undici's `BodyTimeoutError` in `err`'s cause chain, if any. */
+function bodyTimeoutIn(err: unknown): Error | undefined {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 4 && cur instanceof Error; depth++) {
+    if (
+      cur.name === "BodyTimeoutError" ||
+      (cur as { code?: unknown }).code === "UND_ERR_BODY_TIMEOUT"
+    ) {
+      return cur;
+    }
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return undefined;
 }
 
 /** Read a numeric `status` off an SDK error, if present. */

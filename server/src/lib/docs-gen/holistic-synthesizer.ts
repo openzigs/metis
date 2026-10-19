@@ -218,8 +218,15 @@ import {
 } from "./schema-claim-check.js";
 // #67 — the fixed, user-safe failure vocabulary a section's exception is mapped
 // through before it can reach a persisted, client-visible warning.
-import { generationFailureMessage } from "./generation-failure-message.js";
-import { sectionFailureWarning } from "./generation-checkpoint.js";
+import { generationFailureMessage, isBodyTimeout } from "./generation-failure-message.js";
+import { markDroppedAttempts, sectionFailureWarning } from "./generation-checkpoint.js";
+import {
+  currentDropRetryBreaker,
+  DropRetryBreaker,
+  type DropRetriesRecord,
+  resolveDropRetrySectionLimit,
+  withDropRetryBreaker,
+} from "./drop-retry-breaker.js";
 import {
   SQL_SCAN_DIR_CAP,
   excludeTestFiles,
@@ -1749,6 +1756,7 @@ async function runHolisticSynthesis(
     sectionSynthesis,
     regeneration,
     grounding: groundingRecord,
+    dropRetries,
     resume,
   } = await synthesizeFinalDocument(
     facts,
@@ -1825,6 +1833,7 @@ async function runHolisticSynthesis(
     sectionSynthesis,
     regeneration,
     ...(groundingRecord ? { grounding: groundingRecord } : {}),
+    ...(dropRetries ? { dropRetries } : {}),
   });
   return {
     markdown: pathPrefixes ? withPathScopeBanner(markdown, pathPrefixes) : markdown,
@@ -4162,7 +4171,20 @@ function batchTopicWords(
 // judge-gated escalation lives, and it is the smallest unit that exercises the
 // generate → judge → escalate → keep-better flow deterministically (with fake
 // providers + a mocked faithfulness scorer). Not part of the public API surface.
-export async function synthesizeFinalDocument(
+/**
+ * Phase 2 of one document run. #1209 — the run's section drafts share one
+ * {@link DropRetryBreaker}: once enough of them used up their retries on a
+ * dropped connection, later drafts are tried once, and the result records why.
+ */
+export function synthesizeFinalDocument(
+  ...args: Parameters<typeof synthesizeFinalDocumentInRun>
+): ReturnType<typeof synthesizeFinalDocumentInRun> {
+  return withDropRetryBreaker(new DropRetryBreaker(resolveDropRetrySectionLimit()), () =>
+    synthesizeFinalDocumentInRun(...args),
+  );
+}
+
+async function synthesizeFinalDocumentInRun(
   facts: ModuleFacts[],
   meta: ProjectMeta,
   docType: DocType,
@@ -4218,6 +4240,8 @@ export async function synthesizeFinalDocument(
     regeneration?: GeneratedDocVersionManifest["regeneration"];
     /** DOCS_GEN_GROUNDING when it was not `on` (absent = every claim checked). */
     grounding?: ReturnType<typeof groundingPolicyRecord>;
+    /** #1209 — present when the run stopped retrying dropped connections. */
+    dropRetries?: DropRetriesRecord;
   }
 > {
   // #243 — best-effort per-section progress reporting; never breaks synthesis.
@@ -5695,12 +5719,15 @@ export async function synthesizeFinalDocument(
   const readableBody = stripLeakedSourceIds(
     renderCitationFootnotes(body, selectedEvidenceById.values()),
   );
+  // #1209 — why later sections were tried only once, for the run's provenance.
+  const dropRetries = currentDropRetryBreaker()?.record();
   return {
     markdown: `${header}\n${readableBody}${footer}`,
     warnings,
     sections: finalManifestSections,
     selectedEvidence: [...selectedEvidenceById.values()],
     ...(groundingRecord ? { grounding: groundingRecord } : {}),
+    ...(dropRetries ? { dropRetries } : {}),
     ...(resume.reused.length + resume.stale.length > 0 ? { resume } : {}),
     ...(synthesisRecords.length === groups.length
       ? {
@@ -7143,6 +7170,13 @@ async function generateSectionGroup(
     : undefined;
   let attempt = 0;
   let progress = { chunks: 0 };
+  // #1209 — once this run's earlier sections kept dropping, a draft is tried once.
+  const breaker = currentDropRetryBreaker();
+  const retriesStopped = breaker?.tripped ?? false;
+  const maxAttempts = retriesStopped ? 1 : MID_STREAM_DROP_ATTEMPTS;
+  const signal = currentGenerationScope()?.signal;
+  const isDrop = (err: unknown, cls: GroundingErrorClass): boolean =>
+    !isGenerationStop(err) && !isBodyTimeout(err) && isMidStreamDrop(err, cls);
   const draft = await withTransientRetry(
     () => {
       throwIfGenerationStopped();
@@ -7160,7 +7194,7 @@ async function generateSectionGroup(
     },
     {
       stage: "section-draft",
-      signal: currentGenerationScope()?.signal,
+      signal,
       logFields: () => ({
         projectId,
         docType,
@@ -7170,12 +7204,21 @@ async function generateSectionGroup(
       }),
     },
     {
-      attempts: MID_STREAM_DROP_ATTEMPTS,
+      attempts: maxAttempts,
       sleep: abortableSleep,
-      isRetryable: (err, cls) =>
-        progress.chunks > 0 && !isGenerationStop(err) && isMidStreamDrop(err, cls),
+      isRetryable: (err, cls) => progress.chunks > 0 && isDrop(err, cls),
     },
-  );
+  ).catch((err: unknown) => {
+    // #1209 — a draft whose reply had started and then dropped on its last try
+    // says so (never one that reached nothing: an unreachable host), with
+    // how many tries it made; one that used up every retry counts toward the
+    // run's breaker.
+    if (progress.chunks > 0 && isDrop(err, classifyGroundingError(err, signal))) {
+      markDroppedAttempts(err, { attempts: attempt, retriesStopped });
+      if (!retriesStopped && attempt >= maxAttempts) breaker?.noteExhausted(group.id);
+    }
+    throw err;
+  });
   // #1226 — the DRAFT's truncation verdict is the baseline: the refine pass
   // below is opt-in, local-only, and can only ever be accepted when it
   // preserved the draft's content, so it cannot clear a truncated draft. When
