@@ -44,7 +44,10 @@ import type { ConfigService } from "../../config/config-service.js";
 import {
   generationFailureMessage,
   GENERATION_FAILED_MESSAGE,
+  publicDocWarnings,
+  reasoningRejectedCause,
 } from "../../docs-gen/generation-failure-message.js";
+import { phase1ChunksFailedWarning } from "../../docs-gen/grounding/degraded-warnings.js";
 
 /** The recorded 400 bodies (verbatim message text from the troubleshooting page). */
 const RECORDED_400 = {
@@ -253,5 +256,33 @@ describe("a rejected reasoning setting reads in plain words (#1224)", () => {
     const err = new Error('"thinking.type.disabled" is not supported for this model.');
     (err as Error & { status: number }).status = 500;
     expect(generationFailureMessage(err)).toBe(GENERATION_FAILED_MESSAGE);
+  });
+});
+
+describe("a Phase-1 reasoning rejection reaches the document warning (#1224)", () => {
+  // Adversarial panel, `instruction-correctness`: Phase 1 is where
+  // DOCS_GEN_PHASE1_REASONING applies, and its failures surface through
+  // phase1ChunksFailedWarning, not generationFailureMessage.
+  it("recognises the cause only for a rejected reasoning setting", () => {
+    expect(reasoningRejectedCause(badRequest(RECORDED_400.disabledSonnet55))).toContain(
+      'rejected the reasoning setting "off"',
+    );
+    expect(reasoningRejectedCause(new Error("400 bad request"))).toBeUndefined();
+  });
+
+  it("names the cause in the Phase-1 warning, and the read path keeps it", () => {
+    const cause = reasoningRejectedCause(badRequest(RECORDED_400.disabledSonnet55))!;
+    const warning = phase1ChunksFailedWarning(["billing", "ledger"], cause);
+    expect(warning.message).toContain("Fact extraction failed for all or part of 2 module(s)");
+    expect(warning.message).toContain(cause);
+    const [read] = publicDocWarnings([warning]) as Array<{ message: string }>;
+    expect(read.message).toContain('rejected the reasoning setting "off"');
+    expect(read.message).toContain("DOCS_GEN_PHASE1_REASONING");
+  });
+
+  it("leaves the Phase-1 warning unchanged when no cause is known", () => {
+    const warning = phase1ChunksFailedWarning(["billing"]);
+    expect(warning.message).toContain("regenerate to retry only the failed parts");
+    expect(warning).not.toHaveProperty("detailSafe");
   });
 });

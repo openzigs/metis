@@ -855,8 +855,18 @@ export function phase1FactsTruncatedWarning(moduleNames: readonly string[]): Doc
  * calls fail — or the module's extraction throws — its facts are incomplete or
  * missing; any parts that succeeded are cached, so a regeneration retries only
  * the failed ones. Names the modules.
+ *
+ * #1224 — `cause` is a fixed-vocabulary sentence from
+ * `generation-failure-message.ts` (`reasoningRejectedCause`) when METIS
+ * recognised why the calls failed, so the warning says what to change. The
+ * text is METIS-authored throughout, so it is `detailSafe`: without that flag
+ * the read path re-derives every `section-failed` warning and the cause would
+ * collapse to the generic "details are in the server log".
  */
-export function phase1ChunksFailedWarning(moduleNames: readonly string[]): DocWarning {
+export function phase1ChunksFailedWarning(
+  moduleNames: readonly string[],
+  cause?: string,
+): DocWarning {
   const listed = moduleNames.slice(0, TRUNCATED_MODULES_LISTED).join(", ");
   const more =
     moduleNames.length > TRUNCATED_MODULES_LISTED
@@ -867,8 +877,11 @@ export function phase1ChunksFailedWarning(moduleNames: readonly string[]): DocWa
     section: PHASE1_FACTS_SECTION,
     message:
       `Fact extraction failed for all or part of ${moduleNames.length} module(s), so their facts are incomplete or missing: ${listed}${more}. ` +
-      `Any parts that succeeded are cached; regenerate to retry only the failed parts.`,
+      (cause
+        ? `${cause} Any parts that succeeded are cached.`
+        : `Any parts that succeeded are cached; regenerate to retry only the failed parts.`),
     severity: "warning",
+    ...(cause ? { detailSafe: true } : {}),
   };
 }
 

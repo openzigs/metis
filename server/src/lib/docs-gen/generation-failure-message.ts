@@ -102,7 +102,19 @@ type ReasoningSetting = (typeof REASONING_SETTINGS)[number];
  */
 export function generationReasoningRejectedMessage(setting?: ReasoningSetting): string {
   const named = setting ? `the reasoning setting "${setting}"` : "the reasoning setting";
-  return `The AI model rejected ${named} (400 Bad Request). Set the document reasoning setting (DOCS_GEN_PHASE1_REASONING) to provider-default in Settings, or choose another model, then regenerate the document.`;
+  return `The AI model rejected ${named} (400 Bad Request). Set the reasoning setting for document fact extraction (DOCS_GEN_PHASE1_REASONING) to provider-default in Settings, or choose another model, then regenerate the document.`;
+}
+
+/**
+ * #1224 (adversarial panel, `instruction-correctness`) — the plain-words
+ * message when `err` is a provider rejecting the reasoning setting, else
+ * `undefined`. Phase 1 is where `DOCS_GEN_PHASE1_REASONING` applies, and a
+ * failed Phase-1 call is not routed through {@link generationFailureMessage},
+ * so the Phase-1 warning asks for this cause directly.
+ */
+export function reasoningRejectedCause(err: unknown): string | undefined {
+  const message = generationFailureMessage(err);
+  return REASONING_REJECTED_MESSAGES.includes(message) ? message : undefined;
 }
 
 const REASONING_REJECTED_MESSAGES: readonly string[] = [
