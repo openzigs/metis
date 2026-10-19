@@ -99,6 +99,20 @@ function flagProseStart(
 }
 
 /**
+ * #1271 review — what is kept of the text before the flag sentence on its
+ * first line. The sentence's own prefix goes with it: a `>` typed as its own
+ * word just before it, and a line that is then only quote markers and at most
+ * one list marker (`> >`, `-`, `2. >`). Anything else is the analyst's.
+ */
+function withoutFlagPrefix(before: string): string {
+  let kept = before.trimEnd();
+  if (kept.endsWith(">") && (kept.length === 1 || /\s/.test(kept[kept.length - 2]!))) {
+    kept = kept.slice(0, -1).trimEnd();
+  }
+  return /^(?:\s*>)*\s*(?:(?:[-*+]|\d+[.)])(?:\s*>)*\s*)?$/.test(kept) ? "" : kept;
+}
+
+/**
  * The body without the flag: its marker, METIS's flag sentence before it, and
  * the line they leave empty (with the blank line that follows it). A body with
  * no flag is returned unchanged.
@@ -139,8 +153,7 @@ export function clearCriteriaFlag(body: string): string {
     let after = lines[last]!.slice(end - lineStarts[last]!);
     const eol = after.endsWith("\r") ? "\r" : "";
     if (eol) after = after.slice(0, -1);
-    // A quote prefix left on its own once the sentence is gone was the sentence's.
-    const keptBefore = proseAt !== null && /^\s*>?\s*$/.test(before) ? "" : before.trimEnd();
+    const keptBefore = proseAt === null ? before.trimEnd() : withoutFlagPrefix(before);
     const kept = [keptBefore, after.trim()].filter((s) => s.length > 0).join(" ");
     if (kept) {
       lines.splice(first, last - first + 1, kept + eol);

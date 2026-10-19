@@ -927,6 +927,26 @@ describe("#1000 — flagging acceptance criteria the answers may have changed", 
       ).toBe("Refunds need a manager.");
     });
 
+    // #1271 review — the sentence's own prefix goes with it: a nested quote,
+    // a list marker, or a `>` typed mid-line before it.
+    it("takes the sentence's own prefix with it, and nothing typed before that", () => {
+      const s = prose.slice(2);
+      expect(clearCriteriaFlag(`Body.\n> > ${s} ${CRITERIA_FLAG_MARKER}\n\nMore.`)).toBe(
+        "Body.\nMore.",
+      );
+      expect(clearCriteriaFlag(`Body.\n- ${s} ${CRITERIA_FLAG_MARKER}\n\nMore.`)).toBe(
+        "Body.\nMore.",
+      );
+      expect(clearCriteriaFlag(`Body.\n2. > ${s} ${CRITERIA_FLAG_MARKER}\nMore.`)).toBe(
+        "Body.\nMore.",
+      );
+      expect(clearCriteriaFlag(`x > ${s} ${CRITERIA_FLAG_MARKER} y`)).toBe("x y");
+      // A `>` with no space before it is part of the analyst's word.
+      expect(clearCriteriaFlag(`a->b ${s} ${CRITERIA_FLAG_MARKER}`)).toBe("a->b");
+      // A list marker after analyst text is the analyst's.
+      expect(clearCriteriaFlag(`Notes - ${s} ${CRITERIA_FLAG_MARKER}`)).toBe("Notes -");
+    });
+
     it("never deletes prose that only resembles the sentence", () => {
       // One word changed: the analyst's sentence, not METIS's.
       const edited = prose.replace("Edit them", "Review them");
