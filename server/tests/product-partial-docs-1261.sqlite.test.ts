@@ -365,7 +365,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     describe("a connection soft-deleted after it was attached", () => {
       const seedWithGone = async () => {
         const seeded = await seedProduct();
-        const gone = await connection(PA, `${GONE_REPO}-${seq}`);
+        // In PB, which Bob cannot open: if a deleted repo were counted as hidden,
+        // his counts would read 2, not 1.
+        const gone = await connection(PB, `${GONE_REPO}-${seq}`);
         await db.productRepo.create({
           data: { productId: seeded.productId, repoConnectionId: gone, role: "backend-api" },
         });
@@ -424,6 +426,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(JSON.stringify(docs)).not.toContain(gone);
         for (const doc of docs) expect(meta(doc).partial).toBe(false);
         expect(await db.productContractDoc.count({ where: { repoId: gone } })).toBe(0);
+      });
+
+      it("is not counted as hidden in a member's run", async () => {
+        const { productId, rc } = await seedWithGone();
+        const res = await analyze(productId, "bob");
+        // Only the cross-workspace repo B is hidden; the deleted one is not counted.
+        expect(res.body.data.inaccessibleRepoCount).toBe(1);
+        const docs = await docsAs(productId, "ada");
+        expect(meta(only(docs, "unified-architecture", null))).toMatchObject({
+          partial: true,
+          inaccessibleRepoCount: 1,
+        });
+        // A has edges to B and to the deleted repo; only B counts.
+        expect(meta(only(docs, "per-service", rc.a))).toMatchObject({
+          partial: true,
+          inaccessibleRepoCount: 1,
+        });
       });
     });
   },
