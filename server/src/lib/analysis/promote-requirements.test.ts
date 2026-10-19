@@ -1290,6 +1290,59 @@ describe("#1204 — promotion records each requirement the title join refused", 
       });
       expect(recordOf()).toEqual(noNotice);
     });
+
+    // #1253 review (F1/F6) — the reviewer's probe. All rows predate #1202.
+    // REQ-1 is level on X1 and X2 on its own, so it took neither; REQ-2 took O.
+    // Every one of REQ-3's options is an item REQ-1 alone is level on, and no
+    // row holds either: the refusal must survive with both listed, or REQ-3 is
+    // written with no criteria and no word of why.
+    it("keeps the notice when the earlier tie was one requirement's own", async () => {
+      const X1 = item("Flush sessions", "Logging out ends every session.");
+      const X2 = { ...item("Flush sessions", "A reset ends every session."), body: "On reset." };
+      const O = item("Export orders", "Orders export as CSV.");
+      db.structured = {
+        requirements: [
+          structuredReq("REQ-1", "Flush sessions"),
+          structuredReq("REQ-2", "Export orders"),
+          structuredReq("REQ-3", "Flush sessions"),
+        ],
+      };
+      db.synthesisOutput = JSON.stringify({ summary: "s", requirements: [X1, X2, O] });
+      db.requirementCount = 2;
+      db.analysis = {
+        projectId: PROJECT_ID,
+        metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1", "REQ-2"] }),
+      };
+      db.pairingRows = [
+        { promotedStructuredId: null, promotedStructuredRunId: null, promotedSynthesisKeys: null },
+        { promotedStructuredId: null, promotedStructuredRunId: null, promotedSynthesisKeys: null },
+      ];
+      db.approvals = [
+        { itemId: "REQ-1", status: "approved" },
+        { itemId: "REQ-2", status: "approved" },
+        { itemId: "REQ-3", status: "approved" },
+      ];
+
+      expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+        status: "promoted",
+        requirementCount: 1,
+      });
+      expect(recordOf()).toEqual({
+        ambiguousCount: 1,
+        ambiguous: [
+          {
+            requirementId: "rq_new_1",
+            structuredId: "REQ-3",
+            candidates: [
+              { title: X1.title, acceptanceCriteria: X1.acceptanceCriteria },
+              { title: X2.title, acceptanceCriteria: X2.acceptanceCriteria },
+            ],
+          },
+        ],
+        shared: [],
+        updatedAt: expect.any(String),
+      });
+    });
   });
 
   // #1253 — a set promoted before #723 recorded its ids: the earlier set is the

@@ -391,9 +391,12 @@ export function compareReviewedWithSynthesis(
  * That replay is faithful for one promotion, but the set may have been built
  * in several (#1253): replayed as one, requirements that each took an item in
  * their own step can tie on it and take nothing. So when two or more rows have
- * no recorded items, an item they tie on also counts as carried. That can hide
- * an item none of them took, which only drops an option from a notice; listing
- * an item another row carries invites copying its criteria across.
+ * no recorded items, an item that two or more of them tie on also counts as
+ * carried. An item only one of them is level on is not: that requirement tied
+ * on it alone, in its own step as well. Rows promoted together that tied there
+ * too will hide an item none of them took; that only drops an option from a
+ * notice, while listing an item another row carries invites copying its
+ * criteria across.
  */
 export function itemsGivenTo(input: {
   structured: StructuredRequirement[];
@@ -411,9 +414,16 @@ export function itemsGivenTo(input: {
     input.paired,
   );
   const carried = new Set([...given.values()].flat());
+  // Only a tie BETWEEN requirements can be an artefact of replaying separate
+  // steps together. One requirement level on two items took neither in its own
+  // step too, and those items stay offered (#1253 review, F1).
+  const tiedBy = new Map<number, number>();
+  for (const r of refused) {
+    for (const i of r.synthesizedIndexes) tiedBy.set(i, (tiedBy.get(i) ?? 0) + 1);
+  }
   const unrecorded = approved.filter((r) => !input.paired?.has(r.id)).length;
   if (unrecorded > 1) {
-    for (const r of refused) for (const i of r.synthesizedIndexes) carried.add(i);
+    for (const [i, count] of tiedBy) if (count > 1) carried.add(i);
   }
   return carried;
 }

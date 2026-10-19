@@ -219,6 +219,23 @@ describe("the synthesis join on a recorded pairing", () => {
     ).toEqual(new Set([0]));
   });
 
+  // #1253 review (F1/F6) — with two unrecorded requirements, an item only ONE
+  // of them is level on stays offered: that tie happened in its own step too.
+  it("itemsGivenTo does not count an item only one unrecorded requirement is level on", () => {
+    const flush = structured("REQ-1", "Flush sessions");
+    const exportOrders = structured("REQ-2", "Export orders");
+    const X1 = item("Flush sessions", "On logout.", "X1 criterion");
+    const X2 = item("Flush sessions", "On password reset.", "X2 criterion");
+    const O = item("Export orders", "Export orders as CSV.", "O criterion");
+    expect(
+      itemsGivenTo({
+        structured: [flush, exportOrders],
+        ids: new Set(["REQ-1", "REQ-2"]),
+        synthesis: { summary: "s", requirements: [X1, X2, O] },
+      }),
+    ).toEqual(new Set([2]));
+  });
+
   it("an id-joined requirement's pairing records every item that named it", () => {
     const first = { ...X, structuredIds: ["REQ-1"] };
     const second = { ...Y, structuredIds: ["REQ-1"] };
