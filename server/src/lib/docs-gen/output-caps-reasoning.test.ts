@@ -22,7 +22,9 @@ import {
   resolveDbSchemaProseMaxOutputTokens,
   resolveFactsMaxOutputTokens,
   resolveSectionMaxOutputTokens,
+  servedModelThinksByDefault,
 } from "./output-caps.js";
+import { resolveReasoningSetting } from "./docs-gen-reasoning.js";
 
 function stubConfig(values: Record<string, number> = {}): ConfigService {
   return {
@@ -145,5 +147,80 @@ describe("reasoning allowance keyed on the SERVED model (PR #41 review)", () => 
     vi.stubEnv("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic");
     // Bedrock spells Claude ids `us.anthropic.claude-…`; the base URL is not in its path.
     expect(reasoningAllowanceTokens("us.anthropic.claude-haiku-4-5-v1:0", stubConfig())).toBe(0);
+  });
+});
+
+/**
+ * #1278 — Claude models that ALWAYS reason. Anthropic's per-model thinking
+ * table ("Troubleshooting thinking", read 2026-10-20) marks Opus 5.5, Fable 5 /
+ * 5.1 and Mythos 5 / 5.1 / Preview "Always on": they reject
+ * `thinking: {type: "disabled"}`, so reasoning `off` sends effort `low` and the
+ * model still reasons, from the same `max_tokens` as the answer ("a hard limit
+ * on total output (thinking plus response text)", effort page). They get the
+ * headroom; `auto` and the grounding calls are unchanged for every Claude
+ * model, because only the allowance consults this list.
+ */
+describe("reasoning allowance on Claude models that always reason (#1278)", () => {
+  const always = [
+    "claude-opus-5-5",
+    "claude-fable-5",
+    "claude-fable-5-1",
+    "claude-mythos-5",
+    "claude-mythos-5-1",
+    "claude-mythos-preview",
+    "us.anthropic.claude-opus-5-5",
+    "anthropic.claude-fable-5-1",
+    "global.anthropic.claude-mythos-5-1",
+  ];
+  it.each(always)("%s gets the reasoning allowance", (model) => {
+    expect(reasoningAllowanceTokens(model, stubConfig(), {})).toBe(
+      DEFAULT_REASONING_ALLOWANCE_TOKENS,
+    );
+  });
+
+  // Default "On" (thinking can be switched off) or "Off": `off` really is off.
+  it.each([
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-opus-4-8",
+    "claude-sonnet-4-6",
+    "claude-opus-5-50",
+  ])("%s gets none", (model) => {
+    expect(reasoningAllowanceTokens(model, stubConfig(), {})).toBe(0);
+  });
+
+  it("an Opus 5.5 section at reasoning off has room for reasoning AND the answer", () => {
+    // Ceiling 64,000 (conservative; Anthropic documents 128K): 32,768 + 32,768 clamps to it.
+    expect(resolveSectionMaxOutputTokens("claude-opus-5-5", stubConfig())).toBe(64_000);
+    expect(resolveFactsMaxOutputTokens("claude-opus-5-5", stubConfig())).toBe(
+      DEFAULT_FACTS_MAX_OUTPUT_TOKENS + DEFAULT_REASONING_ALLOWANCE_TOKENS,
+    );
+  });
+
+  it("Fable and Mythos 5.x know their documented 128K output ceiling", () => {
+    for (const model of ["claude-fable-5", "claude-fable-5-1", "claude-mythos-5-1"]) {
+      expect(modelOutputCeiling(model)).toBe(128_000);
+      expect(resolveSectionMaxOutputTokens(model, stubConfig())).toBe(
+        DEFAULT_SECTION_MAX_OUTPUT_TOKENS + DEFAULT_REASONING_ALLOWANCE_TOKENS,
+      );
+    }
+  });
+
+  it("does not put these models on the thinking-by-default list (auto, grounding)", () => {
+    const autoConfig = { get: () => undefined } as unknown as ConfigService;
+    for (const model of always) {
+      expect(modelThinksByDefault(model)).toBe(false);
+      expect(servedModelThinksByDefault(model, {})).toBe(false);
+      expect(resolveReasoningSetting("DOCS_GEN_PHASE1_REASONING", model, autoConfig, {})).toEqual(
+        {},
+      );
+    }
+  });
+
+  it("honours an operator's 0 allowance on these models too", () => {
+    const config = stubConfig({ DOCS_GEN_REASONING_ALLOWANCE_TOKENS: 0 });
+    expect(reasoningAllowanceTokens("claude-opus-5-5", config, {})).toBe(0);
   });
 });

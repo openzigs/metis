@@ -16,6 +16,7 @@
  * uses none of it.
  */
 import { getConfigService, type ConfigService } from "../config/config-service.js";
+import { claudeModelAlwaysThinks } from "../ai/providers/anthropic-thinking-off.js";
 
 /**
  * #1226 — default OUTPUT cap for ONE Phase-2 section synthesis call. Was
@@ -90,6 +91,10 @@ const MODEL_OUTPUT_CEILINGS: ReadonlyArray<readonly [RegExp, number]> = [
   // Claude 3.7 and the 4.x/5.x families (`claude-sonnet-4-6`, `claude-opus-5`…).
   [/claude-3[.-]7-sonnet/i, 64_000],
   [/claude-(sonnet|opus|haiku)-\d/i, 64_000],
+  // #1278 — Fable 5 / 5.1 and Mythos 5 / 5.1: "Max output: 128K tokens"
+  // (platform.claude.com model pages, read 2026-10-20). Mythos Preview has no
+  // Anthropic-published figure, so it stays unknown.
+  [/claude-(fable|mythos)-\d/i, 128_000],
   // #25 — DeepSeek V4 (reached through ANTHROPIC_BASE_URL). `max_tokens` "must
   // be between 1 and 384K (393216)" — https://api-docs.deepseek.com/api/create-chat-completion
   // — and the Models & Pricing page lists MAX OUTPUT "MAXIMUM: 384K" for both
@@ -166,8 +171,28 @@ export function servedModelThinksByDefault(
 }
 
 /**
- * #25 — the extra OUTPUT tokens to grant a thinking-by-default model on top of
- * the answer budget: `DOCS_GEN_REASONING_ALLOWANCE_TOKENS` (db → env) or
+ * #1278 — whether `model` spends reasoning from its `max_tokens` on a docs-gen
+ * call whatever METIS sends: a model SERVED as thinking by default (above), or
+ * a Claude model that ALWAYS reasons (Opus 5.5, Fable, Mythos), where
+ * reasoning `off` can only lower the effort to `low` (#1224).
+ *
+ * Deliberately separate from {@link servedModelThinksByDefault}, which also
+ * decides what `auto` sends and whether grounding disables thinking. Putting a
+ * Claude model on that list would change the request `auto` sends it (#1275);
+ * this only changes how much output room the request asks for.
+ */
+export function modelNeedsReasoningHeadroom(
+  model: string | undefined,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): boolean {
+  if (!model) return false;
+  return servedModelThinksByDefault(model, env) || claudeModelAlwaysThinks(model);
+}
+
+/**
+ * #25 — the extra OUTPUT tokens to grant a model that reasons from its answer
+ * budget ({@link modelNeedsReasoningHeadroom}) on top of that budget:
+ * `DOCS_GEN_REASONING_ALLOWANCE_TOKENS` (db → env) or
  * {@link DEFAULT_REASONING_ALLOWANCE_TOKENS}; `0` for every other model. The
  * model is the one SERVED: a `claude-*` name on DeepSeek's endpoint counts
  * (PR #41 review). A
@@ -179,7 +204,7 @@ export function reasoningAllowanceTokens(
   config: ConfigService = getConfigService(),
   env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
 ): number {
-  if (!servedModelThinksByDefault(model, env)) return 0;
+  if (!modelNeedsReasoningHeadroom(model, env)) return 0;
   const raw = config.getNumber(
     "DOCS_GEN_REASONING_ALLOWANCE_TOKENS",
     DEFAULT_REASONING_ALLOWANCE_TOKENS,
