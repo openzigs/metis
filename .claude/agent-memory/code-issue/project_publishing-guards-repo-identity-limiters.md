@@ -36,3 +36,7 @@ retired from the index 2026-10-16, file unchanged: three of those five fail only
 ## PR-URL parsers and repo identity (#1287 c2)
 
 Parsers like `repositoryOfPrUrl` that use `indexOf('pull')` mis-parse an owner or repo named `pull`. Repo identity by owner/name also breaks silently on a GitHub rename, because `RepoConnection.ownerOrOrg`/`repoName` change only when a user edits them.
+
+## Two "same repository" checks (#1294 review)
+
+Two checks read `PublishBatch.targetOwner`/`targetRepo`: `namesRepository` (case-insensitive) and `pr-reviewer/ac-traceability.ts` (exact case; tracked as #1296). On any repo-matching change, grep `targetOwner` and route every match through `namesRepository`.
