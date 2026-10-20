@@ -31,3 +31,4 @@ retired from the index 2026-10-16, file unchanged: three of those five fail only
   (test determinism with `trust proxy`, refactors that re-surface CodeQL alerts, a second-IP
   fallback test) stay in [[codeql-rate-limit-must-precede-requireauth]] and
   [[new-route-needs-its-own-limiter-keyed-on-user]].
+- Jira publishes save issue records with `destination: "jira"` and `issueNumber: 0`. When a batch publishes to both, the Jira record is written after the GitHub one. Any UI that shows published issues must branch on `destination` (#1275).
