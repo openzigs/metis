@@ -89,6 +89,16 @@ import {
   type CreatedIssueLink,
 } from "@/lib/spec-kit-export";
 import { IssueLinks } from "@/components/spec-kit/issue-links";
+import {
+  CrossProjectConfirmDialog,
+  CrossProjectDryRunNotice,
+  extractCrossProjectRefusal,
+  type CrossProjectRefusal,
+} from "@/components/publishing/cross-project-confirm-dialog";
+
+/** #1211 — what lands in the other project's repository on a confirmed export. */
+const EXPORT_CROSS_PROJECT_CONSEQUENCE =
+  "Issues exported from this feature's tasks will appear in that repository alongside its work.";
 
 /** #1059 — a job the page reports without acting on it: it ended elsewhere, or earlier. */
 interface JobNotice {
@@ -228,6 +238,15 @@ export default function SpecKitPage() {
     /** #993 — every task in tasks.md, and the subset this dry run covered (null ⇒ all). */
     available: Array<{ taskId: string; title: string }>;
     taskIds: string[] | null;
+    /** #1211 — the target is connected to another project: Publish will ask. */
+    crossProject: CrossProjectRefusal | null;
+  } | null>(null);
+  // #1211 — a live export the server refused with `REPO_CROSS_PROJECT`, and the
+  // options to send again with the confirm. Kept, so the dialog keeps naming
+  // the project while the retry runs.
+  const [exportCrossProject, setExportCrossProject] = useState<{
+    refusal: CrossProjectRefusal;
+    options: SpecKitRunOptions;
   } | null>(null);
   // #993 — the tasks the next dry run covers, per feature and tasks.md version;
   // null ⇒ every task.
@@ -591,6 +610,7 @@ export default function SpecKitPage() {
                     : null,
                 secretRef: input.options.secretRef ?? "",
                 credentialCheck: result.credentialCheck ?? "missing",
+                crossProject: result.crossProject ?? null,
               }
             : null,
         );
@@ -601,6 +621,17 @@ export default function SpecKitPage() {
       // is picked up again when the page is next opened.
       if (err instanceof SpecKitJobAbandonedError) return;
       const here = isHere(input);
+      // #1211 — a live export into a repository another project connects is a
+      // question, not a failure: the Publish page's confirm, then the same run
+      // again with `confirmCrossProject`.
+      const crossProject =
+        input.command === "speckit.taskstoissues" && input.options.dryRun !== true
+          ? extractCrossProjectRefusal(err)
+          : null;
+      if (crossProject && here) {
+        setExportCrossProject({ refusal: crossProject, options: input.options });
+        return;
+      }
       // #1059 — a cancelled command is not a failure: said once, without a code.
       if (err instanceof SpecKitJobCancelledError) {
         toast.warning(err.message);
@@ -1463,6 +1494,27 @@ export default function SpecKitPage() {
                 </ul>
               </div>
             ) : null}
+            {exportPreview?.crossProject ? (
+              <CrossProjectDryRunNotice notice={exportPreview.crossProject} />
+            ) : null}
+            <CrossProjectConfirmDialog
+              open={exportCrossProject !== null}
+              onOpenChange={(next) => {
+                if (!next) setExportCrossProject(null);
+              }}
+              refusal={exportCrossProject?.refusal ?? null}
+              fallbackRepo={exportPreview?.repo ?? ""}
+              pending={sending > 0}
+              consequence={EXPORT_CROSS_PROJECT_CONSEQUENCE}
+              onConfirm={() => {
+                if (!exportCrossProject) return;
+                run("speckit.taskstoissues", {
+                  ...exportCrossProject.options,
+                  confirmCrossProject: true,
+                });
+                setExportCrossProject(null);
+              }}
+            />
             {exportPreview && exportPreview.claims.length > 0 ? (
               <div className="space-y-1 text-xs" data-testid="spec-kit-export-claims">
                 <p className="text-muted-foreground">Claimed by an earlier export (not new):</p>

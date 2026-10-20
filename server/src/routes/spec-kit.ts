@@ -76,6 +76,11 @@ import {
   tasksExportBodySchema,
 } from "../lib/spec-kit/commands/taskstoissues-github.js";
 import { PublishError } from "../lib/publishing/types.js";
+import {
+  CrossProjectRepoError,
+  crossProjectDryRunNotice,
+  describeCrossProjectRefusal,
+} from "../lib/publishing/cross-project-guard.js";
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import {
   createFeature,
@@ -1372,6 +1377,7 @@ async function dispatchNamespaced(
         ...(extra.data.secretRef !== undefined ? { secretRef: extra.data.secretRef } : {}),
         ...(extra.data.expectedPlan !== undefined ? { expectedPlan: extra.data.expectedPlan } : {}),
         ...(extra.data.taskIds !== undefined ? { taskIds: extra.data.taskIds } : {}),
+        confirmCrossProject: extra.data.confirmCrossProject === true,
       };
       // #962 — "Clear stuck export" writes (deletes or records claims) after
       // reading GitHub, so it is never a dry run and counts as a live export
@@ -1386,9 +1392,34 @@ async function dispatchNamespaced(
         }
         return clearStuckTasksExport(exportInput);
       }
-      return body.dryRun === true
-        ? previewTasksExport(exportInput)
-        : exportTasksToGitHub(exportInput);
+      if (body.dryRun === true) {
+        const preview = await previewTasksExport(exportInput);
+        // #1211 — the dry run is not refused; like a batch dry run (#1171) it
+        // says the live export will ask. Only for the configured target, the
+        // one a live export uses, and never persisted: this command answers on
+        // the request, so the names reach this caller alone.
+        const notice =
+          exportInput.repo || exportInput.confirmCrossProject
+            ? null
+            : await crossProjectDryRunNotice(
+                {
+                  projectId,
+                  targetOwner: preview.repo.owner,
+                  targetRepo: preview.repo.name,
+                },
+                ctx.user,
+              );
+        return notice ? { ...preview, crossProject: notice } : preview;
+      }
+      try {
+        return await exportTasksToGitHub(exportInput);
+      } catch (err) {
+        // #1211 — name the other project only if this caller may open it.
+        if (err instanceof CrossProjectRepoError) {
+          throw await describeCrossProjectRefusal(err, ctx.user);
+        }
+        throw err;
+      }
     }
     // #786 — with a `featureSlug` these read and write that feature's
     // `specs/<slug>/` artifacts behind the feature's phase gate; without one

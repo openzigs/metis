@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   CrossProjectConfirmDialog,
+  CrossProjectDryRunNotice,
   extractCrossProjectRefusal,
   type CrossProjectRefusal,
 } from "@/components/publishing/cross-project-confirm-dialog";
@@ -150,6 +151,10 @@ export function DraftPullRequestDialog({
                 <p className="mt-1 text-muted-foreground" data-testid="draft-pr-upstream-check">
                   {plan.upstreamCheck.note}
                 </p>
+              )}
+              {/* #1211 — said at plan time, so the confirm is no surprise. */}
+              {!opened && plan.crossProject && (
+                <CrossProjectDryRunNotice notice={plan.crossProject} />
               )}
               {opened && (
                 <p className="mt-2">

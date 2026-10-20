@@ -75,6 +75,11 @@ export interface SpecKitRunOptions {
   clearStuckClaims?: true;
   /** `speckit.taskstoissues` (#993): export only these task ids; omitted ⇒ every task. */
   taskIds?: string[];
+  /**
+   * `speckit.taskstoissues` (#1211): set only by the cross-project confirm,
+   * after a live export was refused with `REPO_CROSS_PROJECT`.
+   */
+  confirmCrossProject?: true;
 }
 
 /**
@@ -131,6 +136,12 @@ export interface SpecKitCommandResult {
   planDigest?: string;
   /** `speckit.taskstoissues` dry run (#953): whether the vault secret binds. */
   credentialCheck?: "resolved" | "missing" | "unresolved";
+  /**
+   * `speckit.taskstoissues` dry run (#1211): the target is connected to another
+   * project, so the live export will ask to confirm. `projects` names only
+   * those the user may open.
+   */
+  crossProject?: { repo: string; projects: string[] };
   tokensUsed?: number;
 }
 

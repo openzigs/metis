@@ -532,6 +532,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const err = (await exportTasksToGitHub({
         ...base(PF),
         expectedPlan: { tasksVersion: plan.tasksVersion, digest: plan.planDigest },
+        // #1211 — `miniflux/v2` is project P's repository, so the export asks
+        // to confirm first; confirming does not get past the upstream rule.
+        confirmCrossProject: true,
       }).catch((e: unknown) => e)) as Err;
       expect(err).toMatchObject({ status: 409, code: "PUBLISH_TARGET_IS_ANALYSED_REPO" });
       expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual(["GET /repos/me/v2"]);

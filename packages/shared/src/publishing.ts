@@ -465,4 +465,10 @@ export interface DraftPullRequestResult {
    * connections only; the target's fork parent/source is checked on a live run.
    */
   upstreamCheck: { forkNetworkChecked: boolean; note: string };
+  /**
+   * #1211 — on a dry run whose target another project has connected: the live
+   * run will ask to confirm. `projects` names only those the caller may open.
+   * Computed per response, never stored.
+   */
+  crossProject?: { repo: string; projects: string[] };
 }

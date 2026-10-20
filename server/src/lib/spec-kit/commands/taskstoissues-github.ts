@@ -18,6 +18,10 @@
  *    version and `planDigest`; the runner refuses 409 before creating anything
  *    when either no longer matches, so the live run files exactly the titles
  *    that were previewed. A live run without them is refused 409.
+ *  - **Another project's repository (#1211).** A live export into a target
+ *    another project has connected is refused `REPO_CROSS_PROJECT` unless the
+ *    caller confirms (`assertNotCrossProject`, as batch publish and the draft
+ *    PR do). The dry run is not refused.
  *  - **Size.** One export creates at most `SPECKIT_EXPORT_MAX_ISSUES` issues.
  *  - **Audit.** A completed export, a failed one (with how many issues it had
  *    created) and a refused one each write an audit entry — a refusal at the
@@ -48,6 +52,7 @@ import {
   statusOf,
   upstreamsOfAnalysed,
 } from "../../publishing/analysed-repo-guard.js";
+import { assertNotCrossProject } from "../../publishing/cross-project-guard.js";
 import { PublishError, type PublishOctokitLike } from "../../publishing/types.js";
 import { resolveFeatureBySlug } from "../features.js";
 import { SpecKitArtifactError } from "../artifacts.js";
@@ -94,6 +99,11 @@ export const tasksExportBodySchema = z.object({
     .min(1)
     .max(500)
     .optional(),
+  /**
+   * #1211 — confirms a live export into a repository another project has
+   * connected. Only a literal boolean `true` confirms.
+   */
+  confirmCrossProject: z.boolean().optional(),
 });
 
 export interface TasksExportInput {
@@ -109,6 +119,8 @@ export interface TasksExportInput {
   expectedPlan?: { tasksVersion: number; digest: string };
   /** #993 — the chosen subset of task ids. */
   taskIds?: string[];
+  /** #1211 — the caller confirmed a target another project has connected. */
+  confirmCrossProject?: boolean;
 }
 
 export type TasksExportPreview = TasksToIssuesResult & {
@@ -147,7 +159,7 @@ export async function exportTasksToGitHub(input: TasksExportInput): Promise<Task
   const seen: { featureId: string | null } = { featureId: null };
   let target: { client: IssueClient; repo: { owner: string; name: string } };
   try {
-    target = await openGuardedTarget(input, seen, { requirePlan: true });
+    target = await openGuardedTarget(input, seen, { requirePlan: true, creates: true });
   } catch (err) {
     auditRefused(input, seen.featureId, err);
     throw err;
@@ -181,7 +193,7 @@ export async function clearStuckTasksExport(
   const seen: { featureId: string | null } = { featureId: null };
   let target: { client: IssueClient; repo: { owner: string; name: string } };
   try {
-    target = await openGuardedTarget(input, seen, { requirePlan: false });
+    target = await openGuardedTarget(input, seen, { requirePlan: false, creates: false });
   } catch (err) {
     auditRefused(input, seen.featureId, err, "clear");
     throw err;
@@ -198,13 +210,18 @@ export async function clearStuckTasksExport(
 /**
  * Every guard a write to GitHub passes, in order: no request-chosen target, a
  * vault secret, a dry run (a live export), the feature, the configured target
- * refused when analysed, the credential bound, and an analysed fork's upstream
- * refused — all before any write.
+ * refused when analysed, a target another project connects refused unless
+ * confirmed (an export only), the credential bound, and an analysed fork's
+ * upstream refused — all before any write.
+ *
+ * #1211 — `creates` is the export, which files issues. "Clear stuck export"
+ * only reads the target to settle its own claims, so it is not asked to
+ * confirm: it creates nothing there.
  */
 async function openGuardedTarget(
   input: TasksExportInput,
   seen: { featureId: string | null },
-  opts: { requirePlan: boolean },
+  opts: { requirePlan: boolean; creates: boolean },
 ): Promise<{ client: IssueClient; repo: { owner: string; name: string } }> {
   if (input.repo) {
     throw new SpecKitArtifactError(
@@ -245,6 +262,16 @@ async function openGuardedTarget(
     repo: resolved.name,
     baseUrl: null,
   });
+  // #1211 — the rule batch publish, finding publish and the draft PR apply
+  // (#1171, #1180): before the credential is bound or anything is sent.
+  if (opts.creates) {
+    await assertNotCrossProject({
+      projectId: input.projectId,
+      targetOwner: target.owner,
+      targetRepo: target.repo,
+      confirmed: input.confirmCrossProject,
+    });
+  }
   const { secretId, until } = await bindPublishCredential({
     actorId: input.actorId,
     actorRole: input.actorRole,
