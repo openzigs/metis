@@ -152,6 +152,7 @@ interface Concurrency {
 function fakeModel(
   options: FakeOptions = {},
   key = "anthropic",
+  model = "fake-section-model",
 ): AIProvider & { calls: Call[] } & Concurrency {
   const calls: Call[] = [];
   let inFlight = 0;
@@ -196,7 +197,7 @@ function fakeModel(
   }
   const p = {
     key,
-    model: "fake-section-model",
+    model,
     offline: false,
     calls,
     finished: [] as Call[],
@@ -1653,10 +1654,14 @@ describe("#178 — a batched section's batches run through a bounded pool", () =
     // begins" — four batches sent at once would each WRITE the section's cached
     // system prompt. The first batch runs alone until its reply starts.
     vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "4");
-    const provider = fakeModel({
-      delayMs: (c) => (c.group === RULES.label ? 20 : 0),
-      tailMs: (c) => (c.group === RULES.label ? 40 : 0),
-    });
+    const provider = fakeModel(
+      {
+        delayMs: (c) => (c.group === RULES.label ? 20 : 0),
+        tailMs: (c) => (c.group === RULES.label ? 40 : 0),
+      },
+      "anthropic",
+      "claude-sonnet-5-5",
+    );
     await synthesizeFinalDocument(
       onyourleftSized(),
       META,
@@ -1696,7 +1701,7 @@ describe("#178 — a batched section's batches run through a bounded pool", () =
     "with prompt caching, the other batches still run when the first batch %s (#208)",
     async (_label, how) => {
       vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "4");
-      const provider = fakeModel({ [how]: firstRulesCall() });
+      const provider = fakeModel({ [how]: firstRulesCall() }, "anthropic", "claude-sonnet-5-5");
       const result = await synthesizeFinalDocument(
         onyourleftSized(),
         META,
@@ -1721,6 +1726,50 @@ describe("#178 — a batched section's batches run through a bounded pool", () =
     },
     5_000,
   );
+
+  // #1277 — the warm-up waits only where it buys a cache read.
+  it.each([
+    ["DeepSeek, which caches every prefix automatically", "deepseek-flash"],
+    ["a section system prompt under the model's minimum (Haiku 4.5: 4,096)", "claude-haiku-4-5"],
+  ])("with prompt caching on %s, fans out at once (#1277)", async (_label, model) => {
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "4");
+    const provider = fakeModel(
+      { delayMs: (c) => (c.group === RULES.label ? 20 : 0) },
+      "anthropic",
+      model,
+    );
+    await synthesizeFinalDocument(
+      onyourleftSized(),
+      META,
+      "business-requirements",
+      "BRD",
+      routerFor(provider, true),
+      "p1",
+    );
+    const rules = provider.events.filter((e) => e.includes(`:${RULES.label}:`));
+    expect(rules.slice(0, 4).every((e) => e.startsWith("start:"))).toBe(true);
+  });
+
+  it("with prompt caching on the Bedrock gateway, warms the cache before fanning out (#1277)", async () => {
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "4");
+    const provider = fakeModel(
+      { delayMs: (c) => (c.group === RULES.label ? 20 : 0) },
+      "bedrock-gateway",
+      "us.anthropic.claude-sonnet-5-5",
+    );
+    await synthesizeFinalDocument(
+      onyourleftSized(),
+      META,
+      "business-requirements",
+      "BRD",
+      routerFor(provider, true),
+      "p1",
+    );
+    const rules = provider.events.filter((e) => e.includes(`:${RULES.label}:`));
+    const lead = rules[0]!.split(":").pop();
+    const secondStart = rules.findIndex((e, i) => i > 0 && e.startsWith("start:"));
+    expect(secondStart).toBeGreaterThan(rules.indexOf(`first:${RULES.label}:${lead}`));
+  });
 
   it("without prompt caching, fans out at once", async () => {
     vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "4");

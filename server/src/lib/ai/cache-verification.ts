@@ -238,9 +238,16 @@ export type CachePlatform = "bedrock" | "anthropic";
  *   • Sonnet 4.6 — 1,024 on Bedrock, 2,048 on the direct Anthropic API.
  *   • Haiku 4.5  — 4,096 on both platforms.
  * Sources: AWS Bedrock prompt-caching doc; Anthropic prompt-caching doc.
+ *
+ * #1277 — Anthropic's prompt-caching page (read 2026-10-19) lists 512 tokens
+ * for the 5.5 generation (Sonnet, Opus, Haiku), Opus 5, Fable 5 / 5.1 and
+ * Mythos, and 1,024 for Sonnet 5, "on every platform where each model is
+ * available". Those rules come first; the older ones are unchanged.
  */
 export function cacheFloorTokens(model: string, platform: CachePlatform): number {
   const id = model.toLowerCase();
+  if (/(sonnet|opus|haiku)-5[.-]5(?!\d)|opus-5(?![.-]?\d)|fable|mythos/.test(id)) return 512;
+  if (/sonnet-5(?![.-]?\d)/.test(id)) return 1024;
   if (id.includes("haiku")) return 4096;
   // Legacy Sonnet 4.5 / Opus 4.5 carry the 4,096 floor on both platforms.
   if (id.includes("sonnet-4-5") || id.includes("sonnet-4.5") || id.includes("opus")) return 4096;

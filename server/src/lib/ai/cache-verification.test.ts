@@ -251,6 +251,28 @@ describe("cacheFloorTokens", () => {
     expect(cacheFloorTokens("claude-opus-4-6", "anthropic")).toBe(4096);
   });
 
+  // #1277 — Anthropic's prompt-caching page (read 2026-10-19): 512 tokens for
+  // the 5.5 generation, Opus 5, Fable and Mythos; 1,024 for Sonnet 5; on every
+  // platform.
+  it("the 5.5 generation, Opus 5, Fable and Mythos are 512 on both platforms", () => {
+    for (const id of [
+      "claude-sonnet-5-5",
+      "us.anthropic.claude-opus-5-5-v1:0",
+      "claude-haiku-5-5-20261007",
+      "claude-opus-5",
+      "global.anthropic.claude-fable-5-1",
+      "claude-mythos-5",
+    ]) {
+      expect(cacheFloorTokens(id, "anthropic")).toBe(512);
+      expect(cacheFloorTokens(id, "bedrock")).toBe(512);
+    }
+  });
+
+  it("Sonnet 5 is 1,024 on both platforms", () => {
+    expect(cacheFloorTokens("claude-sonnet-5", "anthropic")).toBe(1024);
+    expect(cacheFloorTokens("us.anthropic.claude-sonnet-5", "bedrock")).toBe(1024);
+  });
+
   it("unknown Sonnet-family ids fall back to the platform-split floor", () => {
     expect(cacheFloorTokens("some-sonnet-model", "bedrock")).toBe(1024);
     expect(cacheFloorTokens("some-sonnet-model", "anthropic")).toBe(2048);

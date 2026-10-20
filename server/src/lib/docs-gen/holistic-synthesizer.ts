@@ -61,6 +61,7 @@ import {
   OpenAICompatibleProvider,
 } from "../ai/providers/bedrock-direct-provider.js";
 import type { AIProvider, ChatChunk, ChatMessage } from "../ai/types.js";
+import { needsPromptCacheWarmUp } from "../ai/prompt-cache-warmup.js";
 import { resolveClaimModelOverride } from "../ai/claim-model-config.js";
 import {
   detectRepetitionLoop,
@@ -3887,9 +3888,20 @@ async function synthesizeBatchedSection(input: {
   // sent together would each pay to WRITE the section's system prompt instead
   // of one write and the rest reads. The wait is the first call's time to first
   // token, not the whole call; a first call that fails releases the rest too.
+  // #1277 — only where the wait buys a read: an explicit Claude prompt cache
+  // (not DeepSeek, which caches automatically) and a cached prefix — the
+  // section's system prompt, the same for every batch — at or over the model's
+  // minimum. Below it nothing is cached, and the wait would only slow the run.
   let releaseRest = (): void => {};
   const warmUp =
-    bundle.supportsCaching && concurrency > 1 && plan.batches.length > 1
+    bundle.supportsCaching &&
+    concurrency > 1 &&
+    plan.batches.length > 1 &&
+    needsPromptCacheWarmUp(
+      bundle.provider,
+      buildSectionPrompts(group, input.meta, input.title, input.docType, "", "", bundle.tuning)
+        .systemMessage,
+    )
       ? new Promise<void>((resolve) => {
           releaseRest = resolve;
         })

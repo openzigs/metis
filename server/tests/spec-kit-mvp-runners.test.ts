@@ -685,6 +685,44 @@ describe("runPlanExpanded", () => {
     expect(new Set(opts.map((o) => o.systemMessage)).size).toBe(5);
   });
 
+  it("#1277 — the plan.md call writes the shared prefix before any other plan call is sent", async () => {
+    // A cache entry exists only once the first reply begins, so calls sent
+    // together would each write the prefix. The plan's calls go one at a time,
+    // plan.md first: it is the warm-up, and the four after it read its write.
+    const fid = seedFeature("p1", "004-order");
+    seedFeatureArtifact(fid, "spec.md", "# Spec\nbody");
+    const events: string[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    class OrderRecorder extends FakeProvider {
+      async chat(m: ChatMessage[], o: unknown): Promise<ChatResponse> {
+        const system = (o as { systemMessage: string }).systemMessage;
+        // plan.md's base prompt is the only one with the compliance-check section.
+        const kind = system.includes("## Constitution Compliance Check") ? "plan" : "other";
+        events.push(`start:${kind}`);
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight -= 1;
+        events.push(`end:${kind}`);
+        return super.chat(m, o);
+      }
+    }
+    await runPlanExpanded({
+      projectId: "p1",
+      featureSlug: "004-order",
+      deps: {
+        provider: new OrderRecorder(
+          "openapi: 3.1.0\ninfo:\n  title: x\n  version: 1.0.0\npaths: {}",
+        ),
+      },
+    });
+    expect(events).toHaveLength(10);
+    expect(events.filter((e) => e === "start:plan")).toHaveLength(1);
+    expect(events.slice(0, 2)).toEqual(["start:plan", "end:plan"]);
+    expect(peak).toBe(1);
+  });
+
   it("does not append 'Resolved Unknowns: none' when spec has [NEEDS CLARIFICATION] markers", async () => {
     const fid = seedFeature("p1", "002-foo");
     seedFeatureArtifact(fid, "spec.md", "# Spec\nfoo [NEEDS CLARIFICATION] bar");
