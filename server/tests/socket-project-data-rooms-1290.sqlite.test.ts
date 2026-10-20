@@ -77,6 +77,7 @@ const { _resetRoomProjects } = await import("../src/lib/socket/room-scope.js");
 const { setJoinRateLimiter, JoinRateLimiter } =
   await import("../src/lib/socket/join-rate-limit.js");
 const { registerSocketServer } = await import("../src/lib/socket/registry.js");
+const { bumpEpoch } = await import("../src/lib/socket/revocation-relay.js");
 const { revalidateLocalSockets } = await import("../src/lib/socket/server.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
@@ -225,7 +226,25 @@ interface Kind {
   name: string;
   room(who: Who, p: string): string;
   join(c: Client, p: string): Promise<void>;
+  /** Send the join through the real handler, asserting nothing (handler kinds only). */
+  send?(c: Client, p: string): Promise<void>;
 }
+/** A kind joined through a handler wired onto the fake socket. */
+const viaHandler = (
+  name: string,
+  room: (p: string) => string,
+  event: string,
+  body: (p: string) => unknown,
+): Kind => ({
+  name,
+  room: (_w, p) => room(p),
+  send: (c, p) => c.call(event, body(p)),
+  join: async (c, p) => {
+    await c.call(event, body(p));
+    expect(c.in(room(p)), `${c.who} joined ${room(p)}`).toBe(true);
+  },
+});
+
 const KINDS: Kind[] = [
   {
     name: "analysis:{id}",
@@ -256,41 +275,30 @@ const KINDS: Kind[] = [
     room: (_w, p) => bgRunRoom(fx[p].run),
     join: (c, p) => c.viaRule(bgRunRoom(fx[p].run), canJoinBgRunRoom(payload(c.who), fx[p].run)),
   },
-  {
-    name: "thread:{id} (subscribe:thread)",
-    room: (_w, p) => threadRoom(fx[p].thread),
-    join: async (c, p) => {
-      await c.call("subscribe:thread", { threadId: fx[p].thread });
-      expect(c.in(threadRoom(fx[p].thread))).toBe(true);
-    },
-  },
-  {
-    name: "thread:{id} (presence:thread:join)",
-    room: (_w, p) => threadRoom(fx[p].thread),
-    join: async (c, p) => {
-      await c.call("presence:thread:join", { threadId: fx[p].thread });
-      expect(c.in(threadRoom(fx[p].thread))).toBe(true);
-    },
-  },
-  {
-    name: "presence:discussion:{id}",
-    room: (_w, p) => presenceRoom("discussion", fx[p].thread),
-    join: async (c, p) => {
-      await c.call("presence:join", { artifactType: "discussion", artifactId: fx[p].thread });
-      expect(c.in(presenceRoom("discussion", fx[p].thread))).toBe(true);
-    },
-  },
-  {
-    name: "presence:spec-kit-artifact:{project}:{name}",
-    room: (_w, p) => presenceRoom("spec-kit-artifact", `${p}:spec.md`),
-    join: async (c, p) => {
-      await c.call("presence:join", {
-        artifactType: "spec-kit-artifact",
-        artifactId: `${p}:spec.md`,
-      });
-      expect(c.in(presenceRoom("spec-kit-artifact", `${p}:spec.md`))).toBe(true);
-    },
-  },
+  viaHandler(
+    "thread:{id} (subscribe:thread)",
+    (p) => threadRoom(fx[p].thread),
+    "subscribe:thread",
+    (p) => ({ threadId: fx[p].thread }),
+  ),
+  viaHandler(
+    "thread:{id} (presence:thread:join)",
+    (p) => threadRoom(fx[p].thread),
+    "presence:thread:join",
+    (p) => ({ threadId: fx[p].thread }),
+  ),
+  viaHandler(
+    "presence:discussion:{id}",
+    (p) => presenceRoom("discussion", fx[p].thread),
+    "presence:join",
+    (p) => ({ artifactType: "discussion", artifactId: fx[p].thread }),
+  ),
+  viaHandler(
+    "presence:spec-kit-artifact:{project}:{name}",
+    (p) => presenceRoom("spec-kit-artifact", `${p}:spec.md`),
+    "presence:join",
+    (p) => ({ artifactType: "spec-kit-artifact", artifactId: `${p}:spec.md` }),
+  ),
 ];
 
 const PROBE = "probe:1290";
@@ -478,6 +486,41 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await revalidateLocalSockets(io, "sweep");
         expect(mallory.in(kind.room("mallory", PL))).toBe(true);
         expect(mallory.closed()).toBe(0);
+      });
+    });
+
+    // The handlers wired onto the fake socket (thread, thread presence, artifact
+    // presence) read the eviction epoch before their check. An eviction that
+    // runs while the check is in flight cannot see the socket — it is not in
+    // the room yet — so the handler judges the join again once it is.
+    describe.each(KINDS.filter((k) => k.send))("join race: $name", (kind) => {
+      it("a member removed while the join's check is in flight is judged again once in the room", async () => {
+        const rob = connect("rob");
+        // The check's last read is the project row (`assertProjectAccess`):
+        // once it has answered, Rob is removed and an eviction runs, which
+        // cannot see his socket because it is not in the room yet.
+        const real = db.project.findUnique.bind(db.project);
+        let raced = false;
+        const spy = vi.spyOn(db.project, "findUnique").mockImplementation((async (
+          args: Parameters<typeof real>[0],
+        ) => {
+          const row = await real(args);
+          if (!raced) {
+            raced = true;
+            await db.workspaceMember.delete({ where: { id: memberRow.rob } });
+            bumpEpoch(io, "eviction");
+          }
+          return row;
+        }) as never);
+        try {
+          await kind.send!(rob, PA);
+        } finally {
+          spy.mockRestore();
+        }
+        expect(raced).toBe(true);
+        expect(rob.in(kind.room("rob", PA))).toBe(false);
+        probe(kind.room("rob", PA));
+        expect(rob.received(PROBE)).toBe(0);
       });
     });
 

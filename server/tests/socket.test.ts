@@ -188,12 +188,16 @@ vi.mock("../src/lib/prisma.js", () => ({
     },
     // #142 — `subscribe:session` authorises like every session read: `u1`
     // owns the unscoped session `s1`; nobody else owns anything.
+    // #1290 — `s-p1` is `u1`'s session in `p1`; `s-gone` is `u1`'s session in
+    // `p-gone`, a soft-deleted project of `u1`'s workspace.
     aISession: {
-      findFirst: vi.fn(async (args?: { where?: { id?: string; userId?: string } }) =>
-        args?.where?.id === "s1" && args.where.userId === "u1"
-          ? { id: "s1", userId: "u1", projectId: null, deletedAt: null }
-          : null,
-      ),
+      findFirst: vi.fn(async (args?: { where?: { id?: string; userId?: string } }) => {
+        if (args?.where?.userId !== "u1") return null;
+        const projectId = { s1: null, "s-p1": "p1", "s-gone": "p-gone" }[args.where.id ?? ""];
+        return projectId === undefined
+          ? null
+          : { id: args.where.id, userId: "u1", projectId, deletedAt: null };
+      }),
     },
     project: {
       // #1232 — `listMemberAccessibleProjectIds` (`accessibleProjectWhere`): a
@@ -218,7 +222,9 @@ vi.mock("../src/lib/prisma.js", () => ({
           select?: { workspace?: { select?: { members?: { where?: { userId?: string } } } } };
         }) => {
           if (args.where.id === "p-boom") throw new Error("db down");
-          if (args.where.id !== "p1") return null;
+          // #1290 — `p-gone` is soft-deleted (`findFirst` above does not see
+          // it); this lookup, like `assertProjectAccess`, ignores `deletedAt`.
+          if (args.where.id !== "p1" && args.where.id !== "p-gone") return null;
           const memberId = args.select?.workspace?.select?.members?.where?.userId;
           return {
             workspaceId: "w1",
@@ -1122,6 +1128,66 @@ describe("Socket.IO server", () => {
         memberDb.gate = null;
         registerSocketServer(null as unknown as MetisIOServer);
         member.close();
+      }
+    });
+
+    // #1290 — the same race for every project-data room a `server.ts` handler
+    // joins: an eviction that runs while the check is in flight cannot see the
+    // socket, so the handler judges the join again once it is in the room.
+    it.each([
+      ["subscribe:analysis", { analysisId: "a1" }, "analysis:a1"],
+      ["subscribe:session", { sessionId: "s-p1" }, "session:s-p1"],
+      ["subscribe:connector", { connectorId: "c-repo" }, "connector:c-repo"],
+      ["subscribe:bg-run", { runId: "r1" }, "run:r1"],
+    ] as const)(
+      "#1290 — %s: a member removed while the join's check is in flight is judged again once in the room",
+      async (event, payload, room) => {
+        registerSocketServer(io);
+        const member = await connectAs("u1", "u1");
+        try {
+          let reached!: () => void;
+          const atGate = new Promise<void>((r) => (reached = r));
+          let open!: () => void;
+          memberDb.gate = { opened: new Promise<void>((r) => (open = r)), reached };
+          memberDb.u1Reads = 0;
+
+          (member.emit as (ev: string, ...args: unknown[]) => void)(event, payload);
+          await atGate; // the check read u1 as a member and is now held open
+          memberDb.u1Removed = true;
+          await evictMemberProjectRooms("u1", "w1"); // not in the room yet: sees nothing
+          open();
+
+          // The handler's re-check after the join is the second membership read.
+          await vi.waitFor(() => expect(memberDb.u1Reads).toBeGreaterThanOrEqual(2));
+          await vi.waitFor(() =>
+            expect(io.sockets.adapter.rooms.get(room)?.has(member.id!) ?? false).toBe(false),
+          );
+        } finally {
+          memberDb.u1Removed = false;
+          memberDb.gate = null;
+          registerSocketServer(null as unknown as MetisIOServer);
+          member.close();
+        }
+      },
+    );
+
+    it("#1290 — subscribe:session refuses the owner's session on a soft-deleted project, and admits one on a live project", async () => {
+      const socket = await connectAs("u1", "u1");
+      try {
+        const errors: SocketAuthErrorEvent[] = [];
+        socket.on("auth:error", (e: SocketAuthErrorEvent) => errors.push(e));
+        socket.emit("subscribe:session", { sessionId: "s-gone" });
+        await vi.waitFor(() => expect(errors).toHaveLength(1));
+        expect(errors[0].message).toBe("FORBIDDEN: no access to session");
+        expect(io.sockets.adapter.rooms.get("session:s-gone")?.has(socket.id!) ?? false).toBe(
+          false,
+        );
+        socket.emit("subscribe:session", { sessionId: "s-p1" });
+        await vi.waitFor(() =>
+          expect(io.sockets.adapter.rooms.get("session:s-p1")?.has(socket.id!) ?? false).toBe(true),
+        );
+      } finally {
+        socket.close();
       }
     });
 
