@@ -14,6 +14,7 @@
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { readsApprovedRequirements } from "./approved-requirements-section.js";
+import { approvedRequirementsScopeOf } from "./approved-requirements-scope.js";
 import { approvedRequirementsItem } from "./generation-inputs.js";
 import { parseGeneratedDocVersionManifest } from "./generated-doc-provenance.js";
 import { APPROVED_REQUIREMENTS_ITEM } from "./regeneration-plan.js";
@@ -59,7 +60,10 @@ export async function approvedRequirementsOutOfDate(
     const recorded = parseGeneratedDocVersionManifest(latest.provenanceManifest).inputSnapshot
       ?.items[APPROVED_REQUIREMENTS_ITEM];
     if (recorded === undefined) return false;
-    return recorded !== (await approvedRequirementsItem(doc.projectId));
+    // #1246 — the document's own scope, as its snapshot was taken.
+    return (
+      recorded !== (await approvedRequirementsItem(doc.projectId, approvedRequirementsScopeOf(doc)))
+    );
   } catch (err) {
     log.warn("Could not tell whether a reader BRD's approved requirements changed", {
       docId: doc.id,

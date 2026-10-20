@@ -1,8 +1,16 @@
 /**
  * Epic #192 (A.5) — living-spec sync tests.
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const noteRequirementCodeLinksChanged = vi.hoisted(() => vi.fn());
+vi.mock("../docs-gen/approved-requirements-staleness.js", () => ({
+  noteRequirementCodeLinksChanged,
+}));
+
 import { syncMergedPR } from "./requirement-sync.js";
+
+beforeEach(() => noteRequirementCodeLinksChanged.mockReset());
 
 interface PrismaStub {
   publishedIssue: { findMany: ReturnType<typeof vi.fn> };
@@ -11,6 +19,7 @@ interface PrismaStub {
     findFirst: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
   };
+  repoConnection: { findMany: ReturnType<typeof vi.fn> };
 }
 
 function mkPrisma(overrides: Partial<PrismaStub> = {}): PrismaStub {
@@ -22,12 +31,124 @@ function mkPrisma(overrides: Partial<PrismaStub> = {}): PrismaStub {
       create: vi.fn(async () => ({})),
       ...overrides.requirementImplementation,
     },
+    // #1246 — proj1 connects acme/proj, the repository the PRs below are in.
+    repoConnection: {
+      findMany: vi.fn(async () => [
+        { id: "conn1", projectId: "proj1", ownerOrOrg: "acme", repoName: "proj" },
+      ]),
+      ...overrides.repoConnection,
+    },
   };
 }
 
 const repo = { full_name: "acme/proj", html_url: "https://github.com/acme/proj" };
 
 describe("syncMergedPR", () => {
+  it("checks only the projects that connect the PR's repository, for requirements that gained a row (#1246)", async () => {
+    const prisma = mkPrisma({
+      publishedIssue: {
+        // Matched by issue number alone: #5 is also an issue of another
+        // workspace's project, whose repository is not this PR's.
+        findMany: vi.fn(async () => [
+          { issueNumber: 5, draft: { requirementId: "req-mine", projectId: "proj1" } },
+          { issueNumber: 5, draft: { requirementId: "req-theirs", projectId: "proj-other" } },
+          { issueNumber: 6, draft: { requirementId: "req-done", projectId: "proj1" } },
+        ]),
+      },
+      requirementImplementation: {
+        // req-done already has this PR's row: it gains nothing.
+        findFirst: vi.fn(async ({ where }: { where: { requirementId: string } }) =>
+          where.requirementId === "req-done" ? { id: "existing" } : null,
+        ),
+        create: vi.fn(async () => ({})),
+      },
+      repoConnection: {
+        findMany: vi.fn(async () => [
+          { id: "conn1", projectId: "proj1", ownerOrOrg: "acme", repoName: "proj" },
+          { id: "conn2", projectId: "proj-other", ownerOrOrg: "else", repoName: "where" },
+        ]),
+      },
+    });
+    const out = await syncMergedPR(
+      {
+        pr: {
+          number: 42,
+          merged: true,
+          body: "Closes #5\nCloses #6",
+          merge_commit_sha: "abc",
+          html_url: "https://github.com/acme/proj/pull/42",
+        },
+        repo,
+        diff: `--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n+x\n`,
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { prisma: prisma as any },
+    );
+    expect(out.implementationsCreated).toBe(2);
+    expect(prisma.repoConnection.findMany).toHaveBeenCalledWith({
+      where: { projectId: { in: ["proj1", "proj-other"] }, deletedAt: null },
+      select: { id: true, projectId: true, ownerOrOrg: true, repoName: true },
+    });
+    expect(noteRequirementCodeLinksChanged).toHaveBeenCalledTimes(1);
+    expect(noteRequirementCodeLinksChanged).toHaveBeenCalledWith(["req-mine"]);
+  });
+
+  it("still syncs the PR when the connection lookup for the check fails (PR #1287 review)", async () => {
+    const prisma = mkPrisma({
+      publishedIssue: {
+        findMany: vi.fn(async () => [
+          { issueNumber: 5, draft: { requirementId: "req-mine", projectId: "proj1" } },
+        ]),
+      },
+      repoConnection: { findMany: vi.fn(async () => Promise.reject(new Error("db down"))) },
+    });
+    const out = await syncMergedPR(
+      {
+        pr: {
+          number: 42,
+          merged: true,
+          body: "Closes #5",
+          merge_commit_sha: "abc",
+          html_url: "https://github.com/acme/proj/pull/42",
+        },
+        repo,
+        diff: `--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n+x\n`,
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { prisma: prisma as any },
+    );
+    expect(out.implementationsCreated).toBe(1);
+    expect(noteRequirementCodeLinksChanged).not.toHaveBeenCalled();
+  });
+
+  it("checks nothing when no project connects the PR's repository (#1246)", async () => {
+    const prisma = mkPrisma({
+      publishedIssue: {
+        findMany: vi.fn(async () => [
+          { issueNumber: 5, draft: { requirementId: "req-theirs", projectId: "proj-other" } },
+        ]),
+      },
+      repoConnection: { findMany: vi.fn(async () => []) },
+    });
+    const out = await syncMergedPR(
+      {
+        pr: {
+          number: 42,
+          merged: true,
+          body: "Closes #5",
+          merge_commit_sha: "abc",
+          html_url: "https://github.com/acme/proj/pull/42",
+        },
+        repo,
+        diff: `--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n+x\n`,
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { prisma: prisma as any },
+    );
+    expect(out.implementationsCreated).toBe(1);
+    expect(noteRequirementCodeLinksChanged).not.toHaveBeenCalled();
+  });
+
   it("no-ops when PR is not merged", async () => {
     const prisma = mkPrisma();
     const out = await syncMergedPR(
@@ -129,6 +250,9 @@ describe("syncMergedPR", () => {
     // 2 requirements * 2 hunks = 4 implementation rows
     expect(out.implementationsCreated).toBe(4);
     expect(out.driftedFiles).toEqual(["random.txt"]);
+    // #1246 — new code links can move a scoped reader BRD's approved list.
+    expect(noteRequirementCodeLinksChanged).toHaveBeenCalledTimes(1);
+    expect(noteRequirementCodeLinksChanged).toHaveBeenCalledWith(["req1", "req2"]);
   });
 
   it("is idempotent — skips existing implementation rows on re-merge", async () => {
@@ -159,6 +283,8 @@ describe("syncMergedPR", () => {
     );
     expect(out.implementationsCreated).toBe(0);
     expect(prisma.requirementImplementation.create).not.toHaveBeenCalled();
+    // #1246 — no new code link: nothing to check.
+    expect(noteRequirementCodeLinksChanged).not.toHaveBeenCalled();
   });
 
   it("falls back to head.sha when merge_commit_sha is missing", async () => {

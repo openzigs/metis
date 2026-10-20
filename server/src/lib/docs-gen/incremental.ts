@@ -7,6 +7,11 @@ import { getSchedulerBootstrap } from "../scheduler/index.js";
 import { resolveEvidencePolicy } from "./evidence-policy.js";
 import { captureGenerationInputs } from "./generation-inputs.js";
 import { readsApprovedRequirements } from "./approved-requirements-section.js";
+import {
+  approvedRequirementsScopeOf,
+  isScopedApprovedRequirements,
+} from "./approved-requirements-scope.js";
+import { InvalidStoredPathScopeError, readStoredPathScope } from "./path-scope.js";
 import { parseGeneratedDocVersionManifest } from "./generated-doc-provenance.js";
 import { settleExtractorUpgrade } from "./extractor-upgrade.js";
 import { inputHash, type RegenerationTask } from "./regeneration-plan.js";
@@ -21,11 +26,14 @@ const repositoryFilterSchema = z.object({ repoConnectorId: z.string().trim().min
  * propagate: replaying successful ingestion retries scheduling as well.
  * #1230 — `approvedRequirementsOnly` checks only the documents whose inputs
  * include the project's approved requirements (`readsApprovedRequirements`):
- * after a requirement write, no other document's inputs can have changed. */
+ * after a requirement write, no other document's inputs can have changed.
+ * #1246 — `scopedApprovedRequirementsOnly` narrows that to the repository- or
+ * path-scoped ones: a code-link write changes only a scoped document's list
+ * (an unscoped one hashes no code link), so the others skip the capture. */
 export async function checkIncrementalRegeneration(
   projectId: string,
   repoConnectorId?: string,
-  options: { approvedRequirementsOnly?: boolean } = {},
+  options: { approvedRequirementsOnly?: boolean; scopedApprovedRequirementsOnly?: boolean } = {},
 ): Promise<void> {
   const rows = await prisma.generatedDocument.findMany({
     where: {
@@ -50,7 +58,11 @@ export async function checkIncrementalRegeneration(
       evidencePolicy: true,
     },
   });
-  const docs = options.approvedRequirementsOnly ? rows.filter(readsApprovedRequirements) : rows;
+  const docs = options.scopedApprovedRequirementsOnly
+    ? rows.filter((doc) => readsApprovedRequirements(doc) && hasScopedApprovedRequirements(doc))
+    : options.approvedRequirementsOnly
+      ? rows.filter(readsApprovedRequirements)
+      : rows;
   let failure: { error: unknown } | undefined;
   for (const doc of docs) {
     try {
@@ -62,8 +74,16 @@ export async function checkIncrementalRegeneration(
           const repository = repositoryFilterSchema.parse(filter);
           if (repoConnectorId && repository.repoConnectorId !== repoConnectorId) continue;
         }
+        // #1246 — the capture below reads the stored path scope too (a
+        // reader BRD's approved requirements); a corrupt one is permanent.
+        readStoredPathScope(filter);
       } catch (err) {
-        if (!(err instanceof SyntaxError || err instanceof z.ZodError)) throw err;
+        if (!(
+          err instanceof SyntaxError ||
+          err instanceof z.ZodError ||
+          err instanceof InvalidStoredPathScopeError
+        ))
+          throw err;
         log.warn("Skipping automatic regeneration: invalid stored scope");
         continue;
       }
@@ -161,6 +181,19 @@ export async function checkIncrementalRegeneration(
     }
   }
   if (failure) throw failure.error;
+}
+
+/**
+ * #1246 — whether a document's approved requirements are limited to a
+ * repository or paths. A corrupt stored scope counts as scoped, so the check
+ * reaches it and skips it as permanently invalid, with its log line.
+ */
+function hasScopedApprovedRequirements(doc: { scope: string; scopeFilter: string }): boolean {
+  try {
+    return isScopedApprovedRequirements(approvedRequirementsScopeOf(doc));
+  } catch {
+    return true;
+  }
 }
 
 export async function runRegenerationTask(

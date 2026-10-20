@@ -9,7 +9,13 @@
  * within a run and against existing rows, never invents a path, and the
  * conservative source/confidence values.
  */
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const noteRequirementCodeLinksChanged = vi.hoisted(() => vi.fn());
+vi.mock("../docs-gen/approved-requirements-staleness.js", () => ({
+  noteRequirementCodeLinksChanged,
+}));
+
 import {
   ANALYSIS_GROUNDING_SOURCE,
   DEFAULT_SEED_CONFIDENCE,
@@ -523,6 +529,7 @@ describe("seedRequirementCodeLinksFromFindings — only code is a code link (#76
 
 describe("seedRequirementCodeLinksFromFindings", () => {
   const projectId = "proj-1";
+  beforeEach(() => noteRequirementCodeLinksChanged.mockReset());
 
   it("creates a RequirementCodeMapping from a finding whose citation has a filename", async () => {
     const { prisma, created } = makeFakePrisma({
@@ -615,6 +622,8 @@ describe("seedRequirementCodeLinksFromFindings", () => {
     );
     expect(created).toHaveLength(0);
     expect(summary).toEqual({ requirementsSeeded: 0, linksCreated: 0, linksSkipped: 0 });
+    // #1246 — no new code link: nothing to check.
+    expect(noteRequirementCodeLinksChanged).not.toHaveBeenCalled();
   });
 
   it("creates nothing for a requirement with no evidence findings", async () => {
@@ -673,6 +682,10 @@ describe("seedRequirementCodeLinksFromFindings", () => {
     expect(created).toHaveLength(1);
     expect(created[0]!.filePath).toBe("src/c.ts");
     expect(summary).toEqual({ requirementsSeeded: 1, linksCreated: 1, linksSkipped: 1 });
+    // #1246 — a new code link can move a scoped reader BRD's approved list:
+    // once, for the requirements that got one.
+    expect(noteRequirementCodeLinksChanged).toHaveBeenCalledTimes(1);
+    expect(noteRequirementCodeLinksChanged).toHaveBeenCalledWith(["req-1"]);
   });
 
   it("does not collide with a pre-existing symbol-bound row for the same path", async () => {

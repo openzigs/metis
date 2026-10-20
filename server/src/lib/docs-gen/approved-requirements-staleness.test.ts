@@ -21,6 +21,7 @@ vi.mock("../logger.js", () => ({ createChildLogger: () => ({ warn: mocks.warn })
 
 import {
   noteProjectRequirementsChanged,
+  noteRequirementCodeLinksChanged,
   noteRequirementsChanged,
 } from "./approved-requirements-staleness.js";
 
@@ -101,5 +102,62 @@ describe("noteRequirementsChanged (#1230)", () => {
     // The failed check does not wedge the project.
     await noteRequirementsChanged(["r1"]);
     expect(mocks.check).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("noteRequirementCodeLinksChanged (#1246)", () => {
+  const SCOPED = { approvedRequirementsOnly: true, scopedApprovedRequirementsOnly: true };
+  const ALL = { approvedRequirementsOnly: true };
+
+  it("checks only the repository- or path-scoped reader BRDs of each project", async () => {
+    mocks.findMany.mockResolvedValue([{ projectId: "p1" }, { projectId: "p2" }]);
+    await noteRequirementCodeLinksChanged(["r1", "r2"]);
+    expect(mocks.check.mock.calls).toEqual([
+      ["p1", undefined, SCOPED],
+      ["p2", undefined, SCOPED],
+    ]);
+  });
+
+  it("widens the coalesced check when a requirement change waits beside code-link changes", async () => {
+    mocks.findMany.mockResolvedValue([{ projectId: "p1" }]);
+    let release!: () => void;
+    mocks.check.mockImplementationOnce(() => new Promise<void>((resolve) => (release = resolve)));
+    const first = noteRequirementCodeLinksChanged(["r1"]);
+    await vi.waitFor(() => expect(mocks.check).toHaveBeenCalledTimes(1));
+    const links = noteRequirementCodeLinksChanged(["r2"]);
+    const approval = noteRequirementsChanged(["r3"]);
+    const moreLinks = noteRequirementCodeLinksChanged(["r4"]);
+    await vi.waitFor(() => expect(mocks.findMany).toHaveBeenCalledTimes(4));
+    release();
+    await Promise.all([first, links, approval, moreLinks]);
+    expect(mocks.check.mock.calls).toEqual([
+      ["p1", undefined, SCOPED],
+      ["p1", undefined, ALL],
+    ]);
+  });
+
+  it("keeps a full check when a code-link change arrives in the same tick, before it starts (PR #1287 review)", async () => {
+    mocks.findMany.mockResolvedValue([{ projectId: "p1" }]);
+    const full = noteRequirementsChanged(["r1"]);
+    const links = noteRequirementCodeLinksChanged(["r2"]);
+    await Promise.all([full, links]);
+    // One check, widened to every reader BRD: the approval is never dropped.
+    expect(mocks.check.mock.calls).toEqual([["p1", undefined, ALL]]);
+  });
+
+  it("stays scoped when only code-link changes wait", async () => {
+    mocks.findMany.mockResolvedValue([{ projectId: "p1" }]);
+    let release!: () => void;
+    mocks.check.mockImplementationOnce(() => new Promise<void>((resolve) => (release = resolve)));
+    const first = noteRequirementsChanged(["r1"]);
+    await vi.waitFor(() => expect(mocks.check).toHaveBeenCalledTimes(1));
+    const links = noteRequirementCodeLinksChanged(["r2"]);
+    await vi.waitFor(() => expect(mocks.findMany).toHaveBeenCalledTimes(2));
+    release();
+    await Promise.all([first, links]);
+    expect(mocks.check.mock.calls).toEqual([
+      ["p1", undefined, ALL],
+      ["p1", undefined, SCOPED],
+    ]);
   });
 });

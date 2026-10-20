@@ -26,6 +26,10 @@ import {
   loadApprovedRequirements,
   readsApprovedRequirements,
 } from "./approved-requirements-section.js";
+import {
+  approvedRequirementsScopeOf,
+  type ApprovedRequirementsScope,
+} from "./approved-requirements-scope.js";
 
 /**
  * #855 — registry keys that bound a run's spend without changing its output.
@@ -61,9 +65,16 @@ function hash(value: unknown): string {
  * (`approvedRequirementsFacts`), never the write bookkeeping or code links.
  * #1252 — exported so the out-of-date mark compares exactly what a version's
  * snapshot recorded.
+ * #1246 — of the requirements in the document's `scope`
+ * (`approvedRequirementsScopeOf`), the same list the section renders: an
+ * approval or edit of a requirement outside a repository- or path-scoped
+ * document's scope does not make it stale.
  */
-export async function approvedRequirementsItem(projectId: string): Promise<string> {
-  return hash(approvedRequirementsFacts(await loadApprovedRequirements(projectId)));
+export async function approvedRequirementsItem(
+  projectId: string,
+  scope: ApprovedRequirementsScope = {},
+): Promise<string> {
+  return hash(approvedRequirementsFacts(await loadApprovedRequirements(projectId, scope)));
 }
 
 function json(value: string | null): unknown {
@@ -365,7 +376,10 @@ export async function captureGenerationInputs(
   // version row records (#1162), counts like any edit, and a code-link change,
   // which the section does not show, does not count.
   if (readsApprovedRequirements(doc)) {
-    items[APPROVED_REQUIREMENTS_ITEM] = await approvedRequirementsItem(doc.projectId);
+    items[APPROVED_REQUIREMENTS_ITEM] = await approvedRequirementsItem(
+      doc.projectId,
+      approvedRequirementsScopeOf(doc),
+    );
   }
   for (const [key, values] of entries) {
     values.sort().forEach((value, index) => {

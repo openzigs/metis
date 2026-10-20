@@ -351,6 +351,10 @@ import {
   loadApprovedRequirements,
   renderApprovedRequirementsSection,
 } from "./approved-requirements-section.js";
+import {
+  isScopedApprovedRequirements,
+  type ApprovedRequirementsScope,
+} from "./approved-requirements-scope.js";
 import type { ScopedRequirement } from "./requirements-scope.js";
 import {
   buildFactSheet,
@@ -1802,8 +1806,13 @@ async function runHolisticSynthesis(
     {
       schemaInventory: options?.schemaInventory,
       // #1218 — a reader-layout BRD lists the project's approved requirements.
+      // #1246 — of a repository- or path-scoped document, only those with a
+      // code link in its scope (`approved-requirements-scope.ts`).
       ...(docType === "business-requirements" && readBrdLayoutSetting().layout === "reader"
-        ? { approvedRequirements: await loadApprovedRequirements(projectId) }
+        ? await approvedRequirementsContext(projectId, {
+            ...(repoConnectorId ? { repoConnectorId } : {}),
+            ...(pathPrefixes ? { pathPrefixes } : {}),
+          })
         : {}),
     },
   );
@@ -3331,6 +3340,12 @@ export interface SectionGroup {
    * by METIS (`approved-requirements-section.ts`), and no model is called.
    */
   approvedRequirements?: readonly ScopedRequirement[];
+  /**
+   * #1246 — the document is limited to a repository or paths, so its
+   * approved requirements are those linked to code there, and the section's
+   * lead-in says so.
+   */
+  approvedRequirementsScoped?: boolean;
 }
 
 /**
@@ -4608,6 +4623,7 @@ async function synthesizeFinalDocumentInRun(
         group.approvedRequirements,
         maxChars,
         renderedCitationLength,
+        { scoped: group.approvedRequirementsScoped === true },
       ).markdown;
       // #857 — recorded for reuse like any written section, or the document's
       // `sectionSynthesis` is never complete and every model-written section
@@ -5581,6 +5597,7 @@ async function synthesizeFinalDocumentInRun(
           group?.approvedRequirements ?? [],
           approvedRequirementsMaxChars(bodyMaxChars),
           renderedCitationLength,
+          { scoped: group?.approvedRequirementsScoped === true },
         ).markdown;
       } else if (sectionIdAt(i) === "requirements") {
         sectionMarkdowns[i] = withRequirementsLeadIn(markdown);
@@ -7778,6 +7795,22 @@ export interface SectionGroupContext {
    * reconstructing requirements from the code ({@link approvedRequirementsGroup}).
    */
   approvedRequirements?: readonly ScopedRequirement[];
+  /** #1246 — {@link approvedRequirements} are those of a repository or path scope. */
+  approvedRequirementsScoped?: boolean;
+}
+
+/**
+ * #1246 — the {@link SectionGroupContext} fields of a reader-layout BRD: its
+ * approved requirements within `scope`, and whether `scope` limits them.
+ */
+async function approvedRequirementsContext(
+  projectId: string,
+  scope: ApprovedRequirementsScope,
+): Promise<Pick<SectionGroupContext, "approvedRequirements" | "approvedRequirementsScoped">> {
+  const approvedRequirements = await loadApprovedRequirements(projectId, scope);
+  return isScopedApprovedRequirements(scope)
+    ? { approvedRequirements, approvedRequirementsScoped: true }
+    : { approvedRequirements };
 }
 
 /**
@@ -7788,6 +7821,7 @@ export interface SectionGroupContext {
 function approvedRequirementsGroup(
   requirements: readonly ScopedRequirement[],
   reconstructed: SectionGroup,
+  scoped: boolean,
 ): SectionGroup {
   return {
     id: reconstructed.id,
@@ -7796,6 +7830,7 @@ function approvedRequirementsGroup(
     factSlices: reconstructed.factSlices,
     minedRules: false,
     approvedRequirements: requirements,
+    ...(scoped ? { approvedRequirementsScoped: true } : {}),
   };
 }
 
@@ -8170,7 +8205,7 @@ Alphabetical list of domain terms, abbreviations, and acronyms with concise defi
       const approved = context.approvedRequirements ?? [];
       return readerBrdGroups(catalogue).map((group) =>
         group.id === "requirements" && approved.length > 0
-          ? approvedRequirementsGroup(approved, group)
+          ? approvedRequirementsGroup(approved, group, context.approvedRequirementsScoped === true)
           : group,
       );
     }

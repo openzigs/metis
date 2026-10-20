@@ -1191,6 +1191,20 @@ function GenerateForm({
         </div>
       )}
 
+      {/* #1246 — which approved requirements a repository- or path-limited BRD lists. */}
+      {docType === "business-requirements" &&
+        (scope === "repository" || (scope === "full" && pathScope.trim() !== "")) && (
+          <p
+            className="text-xs text-muted-foreground"
+            data-testid="scoped-approved-requirements-note"
+          >
+            If this document lists approved requirements, only those linked to code in this
+            repository or these paths are included. An approved requirement with no code link is
+            left out; it is still under <strong>Requirements</strong>, and in a document for the
+            whole project.
+          </p>
+        )}
+
       <div className="space-y-2">
         <label htmlFor="doc-title-input" className="text-sm font-medium">
           Title

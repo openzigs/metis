@@ -129,6 +129,33 @@ describe("DocumentationPage — GenerateForm scope selection", () => {
     expect(screen.queryByTestId("db-connector-select")).not.toBeInTheDocument();
   });
 
+  it("says a repository- or path-limited BRD lists only approved requirements linked to its code (#1246)", async () => {
+    mockApiFetch.mockImplementation(async (path: string) => {
+      if (typeof path === "string" && path.includes("/connectors/repos")) return sampleRepos;
+      return sampleDocs;
+    });
+    renderPage();
+    fireEvent.click(await screen.findByTestId("generate-docs-btn"));
+    // The whole project: every approved requirement, so no note.
+    await screen.findByTestId("doc-path-scope-input");
+    expect(screen.queryByTestId("scoped-approved-requirements-note")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("doc-path-scope-input"), {
+      target: { value: "src/billing/" },
+    });
+    expect(await screen.findByTestId("scoped-approved-requirements-note")).toHaveTextContent(
+      "An approved requirement with no code link is left out",
+    );
+    // Not for another document type.
+    fireEvent.change(screen.getByTestId("doc-type-select"), { target: { value: "architecture" } });
+    expect(screen.queryByTestId("scoped-approved-requirements-note")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("doc-type-select"), {
+      target: { value: "business-requirements" },
+    });
+    fireEvent.change(screen.getByTestId("doc-path-scope-input"), { target: { value: "" } });
+    fireEvent.change(screen.getByTestId("doc-scope-select"), { target: { value: "repository" } });
+    expect(await screen.findByTestId("scoped-approved-requirements-note")).toBeInTheDocument();
+  });
+
   it("populates repo dropdown with fetched connectors", async () => {
     mockApiFetch.mockImplementation(async (path: string) => {
       if (typeof path === "string" && path.includes("/connectors/repos")) return sampleRepos;
