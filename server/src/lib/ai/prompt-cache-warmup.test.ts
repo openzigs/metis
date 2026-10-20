@@ -4,9 +4,10 @@
  */
 import { describe, expect, it } from "vitest";
 import { needsPromptCacheWarmUp, estimatePromptTokens } from "./prompt-cache-warmup.js";
+import type { ProviderKey } from "./types.js";
 
 const prefixOf = (tokens: number) => "x".repeat(tokens * 4);
-const provider = (key: string, model: string, serves?: boolean) => ({
+const provider = (key: ProviderKey, model: string, serves?: boolean) => ({
   key,
   model,
   ...(serves === undefined ? {} : { servesRouterModel: () => serves }),
@@ -49,7 +50,7 @@ describe("needsPromptCacheWarmUp", () => {
   });
 
   it("skips providers with no explicit prompt cache", () => {
-    for (const key of ["local-gemma", "openai", "azure", "offline-stub"]) {
+    for (const key of ["local-gemma", "openai", "azure", "offline-stub"] as const) {
       expect(needsPromptCacheWarmUp(provider(key, "claude-sonnet-5-5"), prefixOf(9_000))).toBe(
         false,
       );
