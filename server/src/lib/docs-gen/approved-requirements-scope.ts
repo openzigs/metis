@@ -19,9 +19,10 @@
  *   - a mapping that names a code symbol: the symbol is in that repository's
  *     code graph (so a file path two repositories share is decided by the
  *     symbol, not by the path);
+ *   - a merged pull request: its URL names the repository (the connection's
+ *     owner and name), or its file is one METIS indexed for that repository;
  *   - a mapping whose symbol is gone (`codeSymbolId` is set null when a
- *     re-ingest deletes it), or a merged pull request's file: the file is one
- *     METIS indexed for that repository.
+ *     re-ingest deletes it): the file is one METIS indexed for that repository.
  * A link is in a PATH scope when its repository-relative file path is under
  * one of the prefixes, matched segment by segment (`isInPathScope`). A
  * repository document with a path scope needs both.
@@ -77,6 +78,33 @@ export function approvedRequirementsScopeOf(doc: {
     ...(repoConnectorId ? { repoConnectorId } : {}),
     ...(pathPrefixes ? { pathPrefixes } : {}),
   };
+}
+
+/**
+ * Whether a pull request URL (`https://<host>/<owner>/<repo>/pull/<n>`) is one
+ * of `repository`'s: owner and name compared case-insensitively, as the hosts
+ * treat them. False when the connection records no owner or name, or the URL
+ * does not parse.
+ */
+export function prNamesRepository(
+  prUrl: string,
+  repository: { ownerOrOrg: string | null; repoName: string | null },
+): boolean {
+  const owner = repository.ownerOrOrg?.trim().toLowerCase();
+  const name = repository.repoName?.trim().toLowerCase();
+  if (!owner || !name) return false;
+  let segments: string[];
+  try {
+    segments = new URL(prUrl).pathname.split("/").filter(Boolean);
+  } catch {
+    return false;
+  }
+  const at = segments.indexOf("pull");
+  return (
+    at >= 2 &&
+    segments[at - 2].toLowerCase() === owner &&
+    segments[at - 1].toLowerCase() === name.replace(/\.git$/, "")
+  );
 }
 
 /** Rows per `IN (...)` list, well under every supported database's bound-parameter limit. */
@@ -149,8 +177,23 @@ export async function requirementsInScope(
       placeByPath(m.requirementId, m.filePath);
     }
   }
+  // A merged pull request names its repository in its URL: one of this
+  // repository's is in it whether or not the file has been indexed yet (a file
+  // the pull request added after the last ingest, or one no parser reads).
+  const prRepository = requirements.some((r) => r.implementations.length > 0)
+    ? await prisma.repoConnection.findFirst({
+        where: { id: repoConnectorId, projectId, deletedAt: null },
+        select: { ownerOrOrg: true, repoName: true },
+      })
+    : null;
   for (const r of requirements) {
-    for (const link of r.implementations) placeByPath(r.id, link.filePath);
+    for (const link of r.implementations) {
+      if (prRepository && inPaths(link.filePath) && prNamesRepository(link.prUrl, prRepository)) {
+        inScope.add(r.id);
+      } else {
+        placeByPath(r.id, link.filePath);
+      }
+    }
   }
   const paths = [...byPath.keys()];
   if (paths.length > 0) {
