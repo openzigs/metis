@@ -35,6 +35,8 @@ const codeMappings: Array<{
   codeSymbol: { name: string; kind: string } | null;
 }> = [];
 const repoConnections: Array<Record<string, string | null>> = [];
+/** #1276 — `published_issues` rows per draft id: a draft with any has been published. */
+const publishedIssueCount = new Map<string, number>();
 
 const fakeProject = { id: "proj_1", name: "Apollo", deletedAt: null as Date | null };
 const fakeAnalysis = {
@@ -101,6 +103,12 @@ vi.mock("../src/lib/prisma.js", () => ({
       ),
     },
     repoConnection: { findMany: vi.fn(async () => repoConnections) },
+    publishedIssue: {
+      count: vi.fn(
+        async ({ where }: { where: { draftId: string } }) =>
+          publishedIssueCount.get(where.draftId) ?? 0,
+      ),
+    },
     approvalRequest: {
       // Honours `type`: a query without one (the gate) counts every type; a
       // `type: "requirement"` query counts only the requirement approvals.
@@ -204,6 +212,7 @@ import {
 
 beforeEach(() => {
   drafts.clear();
+  publishedIssueCount.clear();
   codeMappings.length = 0;
   repoConnections.length = 0;
   nextId = 0;
@@ -1591,6 +1600,83 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
           NEW_TITLE,
           "[Epic] Apollo — 3 requirements (analysis of 2026-09-29 14:05:00 UTC)",
         ]);
+      });
+
+      it("never takes another analysis's recorded epic title", async () => {
+        const THEIRS = "[Epic] Apollo — Their batch";
+        drafts.set("their_epic", {
+          id: "their_epic",
+          projectId: "proj_1",
+          requirementId: null,
+          parentDraftId: null,
+          draftType: "epic",
+          title: THEIRS,
+          body: "theirs",
+          labels: "[]",
+          assignees: "[]",
+          storyPoints: 3,
+          status: "published",
+          dedupHash: computeDedupHash("acme", "metis", THEIRS),
+          metadata: JSON.stringify({
+            analysisId: "analysis_other",
+            epicBaseTitle: THEIRS,
+            targetOwner: "acme",
+            targetRepo: "metis",
+          }),
+          deletedAt: null,
+        });
+        await generateDrafts(opts);
+        const mine = epics().filter((d) => d.id !== "their_epic");
+        expect(mine.map((d) => d.title)).toEqual([NEW_TITLE]);
+        expect(drafts.get("their_epic")).toMatchObject({ title: THEIRS, body: "theirs" });
+      });
+
+      describe("an epic first drafted for a subset of the requirements", () => {
+        const SUBSET_TITLE = "[Epic] Apollo — 1 requirement (analysis of 2026-09-29 14:05:00 UTC)";
+
+        it("is re-titled to the full scope while it has never been published", async () => {
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          const [first] = epics();
+          expect(first!.title).toBe(SUBSET_TITLE);
+          await generateDrafts(opts);
+          expect(epics()).toHaveLength(1);
+          expect(epics()[0]).toMatchObject({
+            id: first!.id,
+            title: NEW_TITLE,
+            dedupHash: computeDedupHash("acme", "metis", NEW_TITLE),
+          });
+          expect(JSON.parse(epics()[0]!.metadata!).epicBaseTitle).toBe(NEW_TITLE);
+          expect(feature("req_2").parentDraftId).toBe(first!.id);
+          expect(feature("req_1").body).toContain(`> Parent epic: **${NEW_TITLE}**`);
+        });
+
+        it("keeps its title once published, even if the draft is back in draft status", async () => {
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          const [first] = epics();
+          publishedIssueCount.set(first!.id, 1);
+          await generateDrafts(opts);
+          expect(epics()).toHaveLength(1);
+          expect(epics()[0]).toMatchObject({ id: first!.id, title: SUBSET_TITLE });
+        });
+
+        it("keeps its title while its status is published", async () => {
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          const [first] = epics();
+          first!.status = "published";
+          await generateDrafts(opts);
+          expect(epics()).toHaveLength(1);
+          expect(epics()[0]).toMatchObject({ id: first!.id, title: SUBSET_TITLE });
+        });
+
+        it("keeps a title a reviewer edited", async () => {
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          const [first] = epics();
+          first!.title = "[Epic] Apollo — Sign-in";
+          first!.metadata = JSON.stringify({ ...JSON.parse(first!.metadata!), userEdited: true });
+          await generateDrafts(opts);
+          expect(epics()).toHaveLength(1);
+          expect(epics()[0]).toMatchObject({ id: first!.id, title: "[Epic] Apollo — Sign-in" });
+        });
       });
     });
   });

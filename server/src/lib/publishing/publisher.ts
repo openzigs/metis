@@ -176,6 +176,7 @@ export async function previewBatchPlan(input: PreviewBatchPlanInput): Promise<Dr
     input.projectId,
     { owner: input.targetOwner, repo: input.targetRepo, baseUrl: input.targetBaseUrl },
     drafts,
+    existingByHash,
   );
   return buildDryRunPlan({
     batchId: PREVIEW_PLAN_BATCH_ID,
@@ -320,6 +321,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
       batch.projectId,
       { owner: batch.targetOwner, repo: batch.targetRepo, baseUrl: batch.targetBaseUrl },
       drafts,
+      existingByHash,
     );
     const plan = buildDryRunPlan({
       batchId: batch.id,
@@ -438,11 +440,13 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
   });
 
   // #1276 — what each draft is published as: its body, plus the number of a
-  // parent epic an earlier batch published, plus the `unverified` sentence.
+  // parent epic that already has an issue, plus the `unverified` sentence.
+  // After the remote sweep, so an epic it recovered counts as existing.
   const bodies = await publishedBodies(
     batch.projectId,
     { owner: batch.targetOwner, repo: batch.targetRepo, baseUrl: batch.targetBaseUrl },
     drafts,
+    existingByHash,
   );
 
   // Order: epics first.
@@ -1260,29 +1264,47 @@ async function loadExistingByHash(
 
 /**
  * #1276 — the body each draft is published with (`publishedDraftBody`): the
- * parent line of a sub-issue whose epic is NOT in this batch names the issue an
- * earlier batch published it as, and a draft labelled `unverified` carries the
- * sentence that stands in for the label. One query, and only when some draft's
- * epic is outside the batch; a sub-issue whose epic is in the batch is attached
- * to it as before and its body is not touched.
+ * parent line of a sub-issue whose epic ALREADY has an issue names it, and a
+ * draft labelled `unverified` carries the sentence that stands in for the label.
+ *
+ * "Already has an issue" is decided the same way whatever the batch holds, so a
+ * sub-issue's body (and its body hash) does not change with the batch's shape:
+ *  - an epic in this batch that the run will update or dedup-skip
+ *    (`existingByHash` holds its title's hash) — that issue;
+ *  - an epic not in this batch — the issue an earlier batch published it as
+ *    (`loadEarlierEpicIssues`; one query, only when some epic is outside).
+ * An epic this run creates has no number yet: its sub-issues keep the plain
+ * parent line and are attached to it through the sub-issues API, as before.
  */
 async function publishedBodies(
   projectId: string,
   target: { owner: string; repo: string; baseUrl: string | null },
-  drafts: ReadonlyArray<{ id: string; body: string; labels: string; parentDraftId: string | null }>,
+  drafts: ReadonlyArray<{
+    id: string;
+    title: string;
+    body: string;
+    labels: string;
+    parentDraftId: string | null;
+  }>,
+  existingByHash: ReadonlyMap<string, { issueNumber: number; htmlUrl: string }>,
 ): Promise<Map<string, string>> {
-  const inBatch = new Set(drafts.map((d) => d.id));
-  const outside = [
-    ...new Set(
-      drafts
-        .map((d) => d.parentDraftId)
-        .filter((id): id is string => id !== null && !inBatch.has(id)),
-    ),
+  const byId = new Map(drafts.map((d) => [d.id, d]));
+  const parents = [
+    ...new Set(drafts.map((d) => d.parentDraftId).filter((id): id is string => id !== null)),
   ];
+  const outside = parents.filter((id) => !byId.has(id));
   const epics =
     outside.length > 0
       ? await loadEarlierEpicIssues(projectId, target, outside)
       : new Map<string, ParentEpicIssue>();
+  for (const id of parents) {
+    const epic = byId.get(id);
+    if (!epic) continue;
+    const existing = existingByHash.get(computeDedupHash(target.owner, target.repo, epic.title));
+    if (existing && existing.issueNumber > 0) {
+      epics.set(id, { issueNumber: existing.issueNumber, htmlUrl: existing.htmlUrl });
+    }
+  }
   return new Map(
     drafts.map((d) => [
       d.id,

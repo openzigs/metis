@@ -424,10 +424,13 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
     ...(opts.defaultLabels ?? []),
   ]);
   // #1276 — counted by the scope the epic covers; an epic this analysis already
-  // has keeps the title it was given, whatever rule or count produced it.
-  const epicBaseTitle =
-    (await existingEpicTitle(opts, project.name, analysis, requirements.length)) ??
-    buildEpicTitle(project.name, analysis, requirements.length);
+  // has keeps the title it was given once it has been published (or edited),
+  // whatever rule or count produced it, and is re-titled while it never was.
+  const currentEpicTitle = buildEpicTitle(project.name, analysis, requirements.length);
+  const existingEpicDraft = await existingEpic(opts, project.name, analysis, currentEpicTitle);
+  const epicBaseTitle = existingEpicDraft
+    ? await keepOrRetitleEpic(opts, existingEpicDraft, currentEpicTitle)
+    : currentEpicTitle;
   const epic = await claimAndUpsertDraft(opts, epicBaseTitle, {
     projectId: opts.projectId,
     requirementId: null,
@@ -621,17 +624,19 @@ async function claimTitle(
  *     of its `(n)` suffixes. The match is on the dedup hash, which an edit of
  *     the draft's title does not change (#776), so an edited epic is found too.
  *
+ * The kept title is then re-titled to `current` only while the epic has never
+ * been published (`keepOrRetitleEpic`).
+ *
  * To rename a kept epic, edit its title on the Publish page.
  */
-async function existingEpicTitle(
+async function existingEpic(
   opts: GenerateDraftsOptions,
   projectName: string,
   analysis: Parameters<typeof buildEpicTitle>[1],
-  scopeCount: number,
-): Promise<string | null> {
-  const recorded = await recordedEpicTitle(opts);
+  current: string,
+): Promise<ExistingEpic | null> {
+  const recorded = await recordedEpic(opts);
   if (recorded) return recorded;
-  const current = buildEpicTitle(projectName, analysis, scopeCount);
   const earlier = new Set([
     buildLegacyEpicTitle(projectName, analysis),
     buildStatedCountEpicTitle(projectName, analysis),
@@ -644,8 +649,64 @@ async function existingEpicTitle(
   return null;
 }
 
-/** #1276 — the base title recorded on this analysis's epic draft for this repository. */
-async function recordedEpicTitle(opts: GenerateDraftsOptions): Promise<string | null> {
+/** An epic draft this analysis already holds, and the base title it is identified by. */
+interface ExistingEpic {
+  title: string;
+  draft: { id: string; status: string; dedupHash: string | null; metadata: string | null };
+}
+
+/**
+ * #1276 — the base title to generate the epic under. An epic that already has
+ * a title keeps it once it has EVER been published, because renaming it would
+ * file a second issue — and also when a reviewer edited it (#776). One that was
+ * never published (no `PublishedIssue` row that created or names an issue, on
+ * any destination, and not `published`/`publishing`) is re-titled to `current`
+ * in place: its row's title and dedup hash move together, so the next upsert
+ * refreshes the same draft. This is what corrects an epic first generated for a
+ * subset of the requirements, whose count would otherwise stay the subset's.
+ */
+async function keepOrRetitleEpic(
+  opts: GenerateDraftsOptions,
+  existing: ExistingEpic,
+  current: string,
+): Promise<string> {
+  if (existing.title === current || !(await mayRetitleEpic(existing.draft))) {
+    return existing.title;
+  }
+  const claimed = await claimTitle(opts, current, null, {});
+  if (claimed.hash === existing.draft.dedupHash) return current;
+  try {
+    await prisma.issueDraft.update({
+      where: { id: existing.draft.id },
+      data: { title: claimed.title, dedupHash: claimed.hash },
+    });
+  } catch (err) {
+    // Another draft took the title in between: keep the one this epic has.
+    if (!isUniqueViolation(err)) throw err;
+    return existing.title;
+  }
+  log.info("re-titled an unpublished epic draft to its current scope", {
+    draftId: existing.draft.id,
+    from: existing.title,
+    to: claimed.title,
+  });
+  return current;
+}
+
+async function mayRetitleEpic(draft: ExistingEpic["draft"]): Promise<boolean> {
+  if (draft.status === "published" || draft.status === "publishing") return false;
+  if (parseMetadata(draft.metadata).userEdited === true) return false;
+  const published = await prisma.publishedIssue.count({
+    where: {
+      draftId: draft.id,
+      OR: [{ status: { in: ["created", "updated"] } }, { issueNumber: { gt: 0 } }],
+    },
+  });
+  return published === 0;
+}
+
+/** #1276 — this analysis's epic draft for this repository, by its recorded base title. */
+async function recordedEpic(opts: GenerateDraftsOptions): Promise<ExistingEpic | null> {
   const rows = await prisma.issueDraft.findMany({
     where: {
       projectId: opts.projectId,
@@ -655,7 +716,7 @@ async function recordedEpicTitle(opts: GenerateDraftsOptions): Promise<string | 
       metadata: { contains: opts.analysisId },
     },
     orderBy: { createdAt: "asc" },
-    select: { metadata: true },
+    select: { id: true, status: true, dedupHash: true, metadata: true },
   });
   const repository = {
     owner: opts.targetOwner.trim().toLowerCase(),
@@ -671,13 +732,16 @@ async function recordedEpicTitle(opts: GenerateDraftsOptions): Promise<string | 
     if (!title) continue;
     const owner = typeof meta.targetOwner === "string" ? meta.targetOwner : null;
     const repo = typeof meta.targetRepo === "string" ? meta.targetRepo : null;
-    if (namesRepository(repository, owner, repo)) return title;
+    if (namesRepository(repository, owner, repo)) return { title, draft: row };
   }
   return null;
 }
 
 /** `base`, or the `(n)` suffix of it, under which this analysis holds its epic draft. */
-async function epicHeldUnder(opts: GenerateDraftsOptions, base: string): Promise<string | null> {
+async function epicHeldUnder(
+  opts: GenerateDraftsOptions,
+  base: string,
+): Promise<ExistingEpic | null> {
   for (let n = 1; ; n++) {
     const title = n === 1 ? base : `${base} (${n})`;
     const holder = await prisma.issueDraft.findFirst({
@@ -689,7 +753,7 @@ async function epicHeldUnder(opts: GenerateDraftsOptions, base: string): Promise
     });
     if (!holder) return null;
     if (draftAnalysisId(holder.metadata) === opts.analysisId && holder.requirementId === null) {
-      return title;
+      return { title, draft: holder };
     }
   }
 }

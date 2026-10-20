@@ -571,19 +571,31 @@ describe("#1276 — what a sub-issue body and labels carry onto GitHub", () => {
   const EPIC_URL = "https://github.com/acme/metis/issues/7";
 
   /** The epic, published as #7 by an earlier batch `batch_0` into `owner/repo`. */
-  function seedEarlierEpic(over: { owner?: string; repo?: string; archived?: boolean } = {}) {
+  const EPIC_BODY = "## Goal\n\nTrack the requirements.";
+
+  function seedEarlierEpic(
+    over: {
+      owner?: string;
+      repo?: string;
+      archived?: boolean;
+      baseUrl?: string | null;
+      epicStatus?: string;
+    } = {},
+  ) {
     seedDraft({
       id: "epic_1",
       title: "[Epic] Apollo — 2 requirements",
       draftType: "epic",
       labels: '["epic"]',
-      status: "published",
+      body: EPIC_BODY,
+      status: over.epicStatus ?? "published",
     });
     seedBatch({
       id: "batch_0",
       status: "completed",
       targetOwner: over.owner ?? "acme",
       targetRepo: over.repo ?? "metis",
+      targetBaseUrl: over.baseUrl ?? null,
       archived: over.archived ?? false,
     });
     issues.set(pubIssueKey("batch_0", "epic_1"), {
@@ -596,7 +608,8 @@ describe("#1276 — what a sub-issue body and labels carry onto GitHub", () => {
       status: "created",
       parentIssueNumber: null,
       dedupHash: computeDedupHash("acme", "metis", "[Epic] Apollo — 2 requirements"),
-      bodyHash: "x",
+      // The epic's body as published, so a batch that holds it dedup-skips it.
+      bodyHash: computeBodyHash(EPIC_BODY),
       errorMessage: null,
       publishedAt: new Date("2026-10-01T00:00:00Z"),
     });
@@ -767,6 +780,104 @@ describe("#1276 — what a sub-issue body and labels carry onto GitHub", () => {
     });
     const create = plan.actions.find((a) => a.kind === "issue.create")!;
     expect(create.body!.split("\n")[0]).toBe(`${PARENT_LINE} ([#7](${EPIC_URL}))`);
+  });
+
+  it("names an already-published epic whether or not it is in the batch, so a re-publish patches nothing", async () => {
+    // The epic was published (#7) and regenerated since, so a batch can select it again.
+    seedEarlierEpic({ epicStatus: "approved" });
+    seedDraft({
+      id: "feat_1",
+      title: "[Feature] Login",
+      parentDraftId: "epic_1",
+      body: FEATURE_BODY,
+    });
+    // Batch 1: the sub-issue alone.
+    seedBatch({ metadata: JSON.stringify({ draftIds: ["feat_1"], additionalLabels: [] }) });
+    const first = await publish();
+    const alone = created(first, "[Feature] Login")!.body;
+    expect(alone.split("\n")[0]).toBe(`${PARENT_LINE} ([#7](${EPIC_URL}))`);
+
+    // Batch 2: the same sub-issue (regenerated, unchanged) with its already-published epic.
+    drafts.get("feat_1")!.status = "approved";
+    drafts.get("epic_1")!.status = "approved";
+    seedBatch({
+      id: "batch_2",
+      metadata: JSON.stringify({ draftIds: ["epic_1", "feat_1"], additionalLabels: [] }),
+    });
+    const calls: OctokitRequestArgs[] = [];
+    const base = makeFakeOctokit();
+    __setPublishOctokitFactory(async () =>
+      fakeOctokit({
+        request: async (args) => {
+          calls.push(args);
+          return base.request(args);
+        },
+      }),
+    );
+    await runBatch({
+      batchId: "batch_2",
+      dryRun: false,
+      secretRef: "${vault:gh}",
+      sleep: noopSleep,
+    });
+    const writes = calls.filter(
+      (c) => (c.method === "PATCH" || c.method === "POST") && /\/issues(\/\d+)?$/.test(c.url ?? ""),
+    );
+    expect(writes).toEqual([]);
+    expect(batches.get("batch_2")!.dedupSkipped).toBe(2);
+  });
+
+  it("the dry run plans the same body for the sub-issue with or without its published epic", async () => {
+    seedEarlierEpic({ epicStatus: "approved" });
+    seedDraft({
+      id: "feat_1",
+      title: "[Feature] Login",
+      parentDraftId: "epic_1",
+      body: FEATURE_BODY,
+    });
+    const bodyFor = async (draftIds: string[]) => {
+      const plan = await previewBatchPlan({
+        projectId: "proj_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+        targetBaseUrl: null,
+        provider: "github",
+        draftIds,
+        additionalLabels: [],
+        secretRef: null,
+      });
+      return plan.actions.find((a) => a.kind === "issue.create" && a.draftId === "feat_1")!.body;
+    };
+    expect(await bodyFor(["epic_1", "feat_1"])).toBe(await bodyFor(["feat_1"]));
+  });
+
+  it("does not link an epic whose earlier issue is on another API host (GHES vs github.com)", async () => {
+    seedEarlierEpic({ baseUrl: "https://ghe.example.com/api/v3" });
+    seedDraft({
+      id: "feat_1",
+      title: "[Feature] Login",
+      parentDraftId: "epic_1",
+      body: FEATURE_BODY,
+    });
+    const firstLine = async (targetBaseUrl: string | null) => {
+      const plan = await previewBatchPlan({
+        projectId: "proj_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+        targetBaseUrl,
+        provider: targetBaseUrl ? "github_enterprise" : "github",
+        draftIds: ["feat_1"],
+        additionalLabels: [],
+        secretRef: null,
+      });
+      return plan.actions.find((a) => a.kind === "issue.create")!.body!.split("\n")[0];
+    };
+    // Same owner/repo name on github.com is another repository.
+    expect(await firstLine(null)).toBe(PARENT_LINE);
+    // The same GHES host (any case, trailing slash) is the same repository.
+    expect(await firstLine("https://GHE.example.com/api/v3/")).toBe(
+      `${PARENT_LINE} ([#7](${EPIC_URL}))`,
+    );
   });
 });
 
