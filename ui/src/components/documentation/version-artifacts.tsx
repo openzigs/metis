@@ -35,6 +35,12 @@ interface ProvenanceSummary {
   historicalCitations: { status: string; mode: string };
   /** #995 — per section, the topics a length cap left out. */
   omittedTopics?: Array<{ section: string; topics: string[] }>;
+  /** #1223 — a reader BRD's main sections, as checked for code names; absent or empty = not checked. */
+  codeIdentifiers?: Array<{
+    section: string;
+    count: number;
+    examples: Array<{ kind: string; text: string }>;
+  }>;
 }
 
 /** Save the full manifest as a JSON file. Fetched only on this explicit request. */
@@ -81,6 +87,51 @@ function OmittedTopics({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * #1223 — the code names METIS found in a reader BRD's main document, which is
+ * signed off by people who do not read code (sign-off rubric SO3). Only the
+ * sections that have any are listed; nothing is shown for a document whose
+ * main part was not checked.
+ */
+function CodeIdentifiers({
+  checked,
+  testId,
+}: {
+  checked: NonNullable<ProvenanceSummary["codeIdentifiers"]>;
+  testId: string;
+}): React.ReactElement | null {
+  if (checked.length === 0) return null;
+  const flagged = checked.filter((entry) => entry.count > 0);
+  const total = flagged.reduce((n, entry) => n + entry.count, 0);
+  return (
+    <div className="mt-1" data-testid={testId}>
+      <p className="font-medium">
+        {total === 0
+          ? "No code names in the main document"
+          : `${total.toLocaleString()} code name${total === 1 ? "" : "s"} in the main document`}
+      </p>
+      {flagged.length > 0 && (
+        <ul className="max-h-48 overflow-y-auto">
+          {flagged.map((entry, i) => (
+            <li key={`${i}:${entry.section}`}>
+              <span className="text-muted-foreground">
+                {entry.section} ({entry.count.toLocaleString()})
+              </span>
+              <ul className="list-disc pl-4">
+                {entry.examples.map((example, j) => (
+                  <li key={`${j}:${example.text}`}>
+                    <code className="break-all">{example.text}</code>
+                  </li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -212,6 +263,10 @@ export function VersionArtifacts({
               <OmittedTopics
                 omitted={provenance.data.omittedTopics ?? []}
                 testId={`version-omitted-topics-${versionId}`}
+              />
+              <CodeIdentifiers
+                checked={provenance.data.codeIdentifiers ?? []}
+                testId={`version-code-identifiers-${versionId}`}
               />
               <button
                 type="button"

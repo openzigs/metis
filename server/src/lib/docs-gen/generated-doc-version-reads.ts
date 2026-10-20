@@ -16,6 +16,7 @@ import {
   parseGeneratedDocVersionManifest,
   type GeneratedDocVersionManifest,
 } from "./generated-doc-provenance.js";
+import type { CodeIdentifierHit } from "./main-part-language.js";
 
 /** The summary the viewer's Provenance panel shows, without the manifest. */
 export interface GeneratedDocProvenanceSummary {
@@ -31,6 +32,13 @@ export interface GeneratedDocProvenanceSummary {
   legacy: GeneratedDocVersionManifest["legacy"];
   /** #995 — per section, the topics a length cap left out; only sections that lost any. */
   omittedTopics: Array<{ section: string; topics: string[] }>;
+  /**
+   * #1223 — per main section of a reader-layout BRD that was checked, the code
+   * identifiers found in it (count and first examples), clean sections
+   * included, so a reviewer sees SO3's pre-check without the full manifest.
+   * Empty for any other document.
+   */
+  codeIdentifiers: Array<{ section: string; count: number; examples: CodeIdentifierHit[] }>;
 }
 
 export function summarizeGeneratedDocVersionManifest(
@@ -53,6 +61,17 @@ export function summarizeGeneratedDocVersionManifest(
     omittedTopics: manifest.sections.flatMap((section) =>
       section.omittedTopics?.length
         ? [{ section: section.sectionLabel, topics: [...section.omittedTopics] }]
+        : [],
+    ),
+    codeIdentifiers: manifest.sections.flatMap((section) =>
+      section.codeIdentifiers
+        ? [
+            {
+              section: section.sectionLabel,
+              count: section.codeIdentifiers.count,
+              examples: section.codeIdentifiers.examples.map((e) => ({ ...e })),
+            },
+          ]
         : [],
     ),
   };

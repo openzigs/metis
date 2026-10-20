@@ -415,6 +415,13 @@ grep -c 'Reconstructed from the code.' brd.md
 grep -nE '\[(facts|rag|web):|<!--|\{\{|metis-source' brd.md
 ```
 
+**SO3 pre-check (#1223).** METIS counts the code names in each main section it wrote. The
+version's **Provenance** panel shows the total and the flagged sections with examples
+(`GET /api/projects/:projectId/docs/:docId/versions/:versionId/provenance/summary`,
+`data.codeIdentifiers`). Start the SO3 list from it, then read the main part for what the
+check misses (an unquoted dotted name such as `feeds.disabled` is a known blind spot). The
+check is a heuristic and the score is still yours: confirm each flagged name before counting it.
+
 | Id | Check | Pass | Weak | Fail |
 |---|---|---|---|---|
 | SO1 | Every requirement is present, with acceptance criteria | Scope `full`, project **with approved requirements** (#1218; Phase 8 approved some): the main part has the **Approved Requirements** section and no `RC-n`. Its `R<n>.` entries match, one for one, the approved requirements of the run the Requirements hub opens on (#1230: the newest completed run with any requirements, approved or not; its label shows its approved count): the same ids (`**Requirement id:**`), titles, descriptions and acceptance criteria as stored, the analyst's edits included, nothing reworded; when the note "`k of N` approved requirements are listed here" is present, `N` is that run's approved count and the `k` listed are whole. Report `matching/listed` and `N`. Project **with none approved**: the main part has the **Requirements Reconstructed from the Code** section, opening with METIS's fixed "Reconstructed from the code" lead-in. Every `RC-n` in it has at least two acceptance criteria a tester could check (a concrete value or an observable outcome), and is traceable to the Miniflux source at `v2.3.3`, read as the answer key reads a fact. Report `with criteria / RC-n listed` and, as coverage, how many of the answer key's BRD-1 to BRD-15 appear as an `RC-n` or a Key Business Rule (`k/15`). J1.7: exactly J1.2's five requirements, each with the criteria J1.4 left it with (`n/5`) | Every `RC-n` traceable, but some have one criterion, or criteria nobody could test ("works correctly") | With approved requirements: an `RC-n` section instead of them, an entry whose text differs from the stored requirement, or one cut short. Without: the lead-in is missing, a requirement has no criteria, there is no requirements section, or an `RC-n` is not traceable to the source (also count it as a hallucination) |
