@@ -1750,6 +1750,32 @@ describe("#178 — a batched section's batches run through a bounded pool", () =
     expect(rules.slice(0, 4).every((e) => e.startsWith("start:"))).toBe(true);
   });
 
+  // #1277 review — the default model. Its floor is 1,024 tokens on every
+  // platform; it was modelled as 2,048 on the direct API, which put every
+  // section system prompt (~1,300–2,000 tokens) "below the floor", so the
+  // warm-up was skipped while the prompt was in fact cached and each parallel
+  // batch paid its own write.
+  it("with prompt caching on claude-sonnet-4-6 over Anthropic, warms the cache before fanning out (#1277)", async () => {
+    vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "4");
+    const provider = fakeModel(
+      { delayMs: (c) => (c.group === RULES.label ? 20 : 0) },
+      "anthropic",
+      "claude-sonnet-4-6",
+    );
+    await synthesizeFinalDocument(
+      onyourleftSized(),
+      META,
+      "business-requirements",
+      "BRD",
+      routerFor(provider, true),
+      "p1",
+    );
+    const rules = provider.events.filter((e) => e.includes(`:${RULES.label}:`));
+    const lead = rules[0]!.split(":").pop();
+    const secondStart = rules.findIndex((e, i) => i > 0 && e.startsWith("start:"));
+    expect(secondStart).toBeGreaterThan(rules.indexOf(`first:${RULES.label}:${lead}`));
+  });
+
   it("with prompt caching on the Bedrock gateway, warms the cache before fanning out (#1277)", async () => {
     vi.stubEnv("DOCS_GEN_PHASE2_CONCURRENCY", "4");
     const provider = fakeModel(
