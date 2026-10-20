@@ -2326,14 +2326,23 @@ export class OpenAICompatibleProvider implements AIProvider {
     // past its shared prefix sends `system: false` — omitting it would still
     // write the whole system on every call. An unset key stays unset, so a
     // caller that says nothing keeps the gateway's default exactly as before.
+    // Only the gateway reads `prompt_caching`: every other key (openai, azure,
+    // local runtimes, DeepSeek's OpenAI endpoint) gets a `true` forwarded as
+    // before #1277 and never a `false`, so a caller saying "no write" sends
+    // nothing new to a backend that does not know the field.
     const pc = opts.promptCaching;
-    const system =
-      pc?.system === true
+    const gateway = this.key === "bedrock-gateway";
+    const forward = (v: boolean | undefined): boolean | undefined =>
+      gateway ? v : v === true ? true : undefined;
+    const system = forward(
+      pc?.system === true && gateway
         ? !systemGoesPastSharedPrefix(messages, opts.systemMessage, pc.systemPrefix)
-        : pc?.system;
+        : pc?.system,
+    );
+    const messagesCache = forward(pc?.messages);
     const caching = {
       ...(system !== undefined ? { system } : {}),
-      ...(pc?.messages !== undefined ? { messages: pc.messages } : {}),
+      ...(messagesCache !== undefined ? { messages: messagesCache } : {}),
     };
     if (Object.keys(caching).length > 0) body.extra_body = { prompt_caching: caching };
     return body;

@@ -360,7 +360,8 @@ export interface ChatOptions {
    *     strict prefix there sends `system: false`: a whole-system write would
    *     hold the per-call tail and never be read back. The gateway reads an
    *     ABSENT key as its ENABLE_PROMPT_CACHING default, so an explicit `false`
-   *     from any caller is forwarded as `false`.
+   *     from any caller is forwarded to the gateway as `false` (and to no other
+   *     OpenAI-compatible backend, which does not read the field).
    */
   promptCaching?: { system?: boolean; messages?: boolean; systemPrefix?: string };
   /**

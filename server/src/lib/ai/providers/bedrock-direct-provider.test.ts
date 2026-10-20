@@ -1419,6 +1419,30 @@ describe("prompt caching with a shared systemPrefix on the gateway (#1277)", () 
     expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: false, messages: false } });
   });
 
+  it.each(["local-gemma", "openai", "azure"] as const)(
+    "on %s, an explicit false sends nothing: only the gateway reads prompt_caching",
+    async (providerKey) => {
+      const bodies = capture();
+      const other = new OpenAICompatibleProvider({
+        baseUrl: "http://127.0.0.1:11434/v1",
+        apiKey: "k",
+        model: "some-model",
+        providerKey,
+      });
+      await other.chat(USER, {
+        systemMessage: "constitution\n\n---\n\nspecify base prompt",
+        promptCaching: { system: false, messages: false },
+      });
+      await other.chat(USER, {
+        systemMessage: "shared\n\ntail",
+        promptCaching: { system: true, messages: false, systemPrefix: "shared" },
+      });
+      expect(bodies[0]).not.toHaveProperty("extra_body");
+      // A `true` is forwarded as before #1277, whatever the prefix.
+      expect(bodies[1].extra_body).toEqual({ prompt_caching: { system: true } });
+    },
+  );
+
   it("forwards a caller's explicit messages:false instead of dropping it", async () => {
     const bodies = capture();
     await gateway().chat(USER, {
