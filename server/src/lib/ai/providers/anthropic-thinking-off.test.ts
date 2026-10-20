@@ -39,10 +39,12 @@ vi.mock("@anthropic-ai/sdk", () => {
 });
 
 import { AnthropicProvider } from "./anthropic-provider.js";
+import { anthropicThinkingOff } from "./anthropic-thinking-off.js";
 import { resolveReasoningSetting } from "../../docs-gen/docs-gen-reasoning.js";
 import type { ConfigService } from "../../config/config-service.js";
 import {
   generationFailureMessage,
+  generationReasoningRejectedMessage,
   GENERATION_FAILED_MESSAGE,
   publicDocWarnings,
   reasoningRejectedCause,
@@ -210,6 +212,56 @@ describe("reasoning setting x model fixtures (#1224)", () => {
   });
 });
 
+describe("anthropicThinkingOff — each branch pinned (PR #1275 review)", () => {
+  it("DeepSeek's endpoint keeps `disabled` even for a Claude id it maps", async () => {
+    // DeepSeek serves claude-* names as its own models, which accept only
+    // enabled/disabled: between_tools or an omitted field would be wrong there.
+    expect(anthropicThinkingOff("claude-sonnet-5-5", true)).toEqual({ kind: "disabled" });
+    expect(anthropicThinkingOff("claude-opus-5-5", true)).toEqual({ kind: "disabled" });
+    // And through the provider, against the recorded DeepSeek behaviour.
+    const p = providerFor("deepseek", "claude-sonnet-5-5");
+    await p.chat(messages, { disableThinking: true });
+    expect(lastBody().thinking).toEqual({ type: "disabled" });
+  });
+
+  it("Mythos is always-on, like Fable", () => {
+    for (const model of ["claude-mythos-5", "claude-mythos-5-1"]) {
+      expect(anthropicThinkingOff(model, false), model).toEqual({
+        kind: "always-on",
+        effort: "low",
+      });
+    }
+  });
+
+  it("recognises the Bedrock `-v1:0` spelling without the provider's normaliser", () => {
+    // The provider strips `-v1:0` before this module sees the id; this module
+    // must not depend on that, because it is exported on its own.
+    expect(anthropicThinkingOff("us.anthropic.claude-sonnet-5-5-v1:0", false)).toEqual({
+      kind: "between-tools",
+    });
+    expect(anthropicThinkingOff("anthropic.claude-opus-5-5-v1:0", false)).toEqual({
+      kind: "always-on",
+      effort: "low",
+    });
+  });
+
+  it("recognises the Vertex `@` version spelling", () => {
+    expect(anthropicThinkingOff("claude-sonnet-5-5@20261001", false)).toEqual({
+      kind: "between-tools",
+    });
+    expect(anthropicThinkingOff("claude-opus-5-5@20261001", false)).toEqual({
+      kind: "always-on",
+      effort: "low",
+    });
+  });
+
+  it("a longer version or another family is not mistaken for 5.5", () => {
+    expect(anthropicThinkingOff("claude-sonnet-5-50", false)).toEqual({ kind: "disabled" });
+    expect(anthropicThinkingOff("claude-sonnet-5", false)).toEqual({ kind: "disabled" });
+    expect(anthropicThinkingOff("claude-haiku-5-5", false)).toEqual({ kind: "disabled" });
+  });
+});
+
 describe("a rejected reasoning setting reads in plain words (#1224)", () => {
   it("names the setting `off` for the recorded Sonnet 5.5 400", async () => {
     // Before the fix this is exactly what every call threw; the classifier
@@ -221,7 +273,10 @@ describe("a rejected reasoning setting reads in plain words (#1224)", () => {
     const message = generationFailureMessage(err);
     expect(message).not.toBe(GENERATION_FAILED_MESSAGE);
     expect(message).toContain('rejected the reasoning setting "off"');
+    expect(message).toContain("while writing the document");
     expect(message).toContain("provider-default");
+    // PR #1275 review — analyst-facing: no configuration key.
+    expect(message).not.toMatch(/[A-Z][A-Z0-9]*_[A-Z0-9_]+/);
   });
 
   it("names the setting `off` for the always-on 400", () => {
@@ -229,13 +284,31 @@ describe("a rejected reasoning setting reads in plain words (#1224)", () => {
     expect(message).toContain('rejected the reasoning setting "off"');
   });
 
-  it("names the effort for an effort-level 400", () => {
+  it("names an effort METIS can send, e.g. `high`", () => {
+    const message = generationFailureMessage(
+      badRequest(
+        "messages.3: output_config.effort 'high' differs from the 'low' in effect before it; effort cannot change when thinking is disabled on this model.",
+      ),
+    );
+    expect(message).toContain('rejected the reasoning setting "high"');
+  });
+
+  it("never quotes a value no METIS setting takes (`xhigh`)", () => {
     const message = generationFailureMessage(
       badRequest(
         "output_config.effort 'xhigh' is not supported when thinking is disabled on this model. Use effort 'high' or below, or enable thinking.",
       ),
     );
-    expect(message).toContain('rejected the reasoning setting "xhigh"');
+    expect(message).toContain("rejected a reasoning setting");
+    expect(message).not.toContain("xhigh");
+  });
+
+  it("does not call a rejected adaptive/enabled config a setting the analyst chose", () => {
+    const message = generationFailureMessage(
+      badRequest("adaptive thinking is not supported on this model"),
+    );
+    expect(message).toContain("rejected a reasoning setting");
+    expect(message).not.toContain('"on"');
   });
 
   it("is a fixed sentence: re-classifying it returns it unchanged", () => {
@@ -277,7 +350,18 @@ describe("a Phase-1 reasoning rejection reaches the document warning (#1224)", (
     expect(warning.message).toContain(cause);
     const [read] = publicDocWarnings([warning]) as Array<{ message: string }>;
     expect(read.message).toContain('rejected the reasoning setting "off"');
-    expect(read.message).toContain("DOCS_GEN_PHASE1_REASONING");
+    // PR #1275 review — it names the step that failed, in plain words.
+    expect(read.message).toContain("while reading the code to collect facts");
+    expect(read.message).not.toContain("DOCS_GEN_PHASE1_REASONING");
+  });
+
+  it("every variant is a safe, fixed sentence the read path returns unchanged", () => {
+    for (const step of ["facts", "document"] as const) {
+      for (const setting of [undefined, "off", "low", "medium", "high"] as const) {
+        const message = generationReasoningRejectedMessage(setting, step);
+        expect(generationFailureMessage(message)).toBe(message);
+      }
+    }
   });
 
   it("leaves the Phase-1 warning unchanged when no cause is known", () => {

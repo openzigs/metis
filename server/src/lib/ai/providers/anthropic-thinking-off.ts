@@ -28,9 +28,11 @@ export type ThinkingOff =
 
 /**
  * Strip the spellings that do not change which model it is: a regional or
- * `global.` inference prefix, the `anthropic.` vendor segment, a Bedrock
- * `-v1:0` suffix, a `[1m]` context tag. A dated suffix is left in place and
- * matched as a continuation below.
+ * `global.` inference prefix, the `anthropic.` vendor segment, a `[1m]`
+ * context tag. A dated suffix and Bedrock's `-v1:0` suffix are left in place
+ * and matched as a continuation by {@link isModel} (PR #1275 review: a
+ * separate `-v1:0` strip was unreachable, so it was removed rather than
+ * kept as untestable code).
  */
 function bareClaudeId(model: string): string {
   return model
@@ -38,11 +40,13 @@ function bareClaudeId(model: string): string {
     .toLowerCase()
     .replace(/^(?:us|eu|apac|global)\./, "")
     .replace(/^anthropic\./, "")
-    .replace(/-v\d+:\d+$/, "")
     .replace(/\[[^\]]*\]$/, "");
 }
 
-/** `id` or `id-<date>` / `id@<version>` — never a longer version (`5-5` ≠ `5`). */
+/**
+ * `id`, `id-<date>`, `id-v1:0` (Bedrock) or `id@<version>` (Vertex) — never a
+ * longer version (`5-5` ≠ `5`, `5-5` ≠ `5-50`).
+ */
 function isModel(bare: string, id: string): boolean {
   return bare === id || bare.startsWith(`${id}-`) || bare.startsWith(`${id}@`);
 }

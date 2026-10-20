@@ -92,35 +92,61 @@ export const GENERATION_INPUTS_CHANGED_MESSAGE =
  * message below quotes one of these, never the provider's own text, so the
  * set of strings a client can see stays closed.
  */
-const REASONING_SETTINGS = ["off", "on", "low", "medium", "high", "xhigh", "max"] as const;
+// PR #1275 review — only the values a METIS reasoning setting can take. A
+// provider naming anything else (`xhigh`, `max`, an "on" METIS never sends as
+// such) gets the message without a quoted value rather than a value the
+// analyst never chose.
+const REASONING_SETTINGS = ["off", "low", "medium", "high"] as const;
 type ReasoningSetting = (typeof REASONING_SETTINGS)[number];
+
+/**
+ * The step whose call was refused, in the words an analyst reads: `facts` is
+ * Phase 1 (reading the code), `document` is everything after it.
+ */
+export type ReasoningRejectedStep = "facts" | "document";
+const REASONING_STEPS: readonly ReasoningRejectedStep[] = ["facts", "document"];
+
+const STEP_TEXT: Readonly<Record<ReasoningRejectedStep, string>> = {
+  facts: "while reading the code to collect facts",
+  document: "while writing the document",
+};
 
 /**
  * #1224 — the model refused the reasoning (thinking) setting METIS sent: for
  * example `off` on a model that cannot turn its reasoning off. Before #1224 this
- * read as the generic failure, on all 89 calls of one run.
+ * read as the generic failure, on all 89 calls of one run. Names the step that
+ * failed and no configuration key: the reader is an analyst, and the setting
+ * is an administrator's to change (PR #1275 review).
  */
-export function generationReasoningRejectedMessage(setting?: ReasoningSetting): string {
-  const named = setting ? `the reasoning setting "${setting}"` : "the reasoning setting";
-  return `The AI model rejected ${named} (400 Bad Request). Set the reasoning setting for document fact extraction (DOCS_GEN_PHASE1_REASONING) to provider-default in Settings, or choose another model, then regenerate the document.`;
+export function generationReasoningRejectedMessage(
+  setting?: ReasoningSetting,
+  step: ReasoningRejectedStep = "document",
+): string {
+  const named = setting ? `the reasoning setting "${setting}"` : "a reasoning setting";
+  return `The AI model rejected ${named} ${STEP_TEXT[step]} (400 Bad Request). Ask an administrator to set reasoning for this step to "provider-default", or choose another model, then regenerate the document.`;
 }
+
+const REASONING_REJECTED_MESSAGES: readonly string[] = REASONING_STEPS.flatMap((step) => [
+  generationReasoningRejectedMessage(undefined, step),
+  ...REASONING_SETTINGS.map((s) => generationReasoningRejectedMessage(s, step)),
+]);
 
 /**
  * #1224 (adversarial panel, `instruction-correctness`) — the plain-words
- * message when `err` is a provider rejecting the reasoning setting, else
- * `undefined`. Phase 1 is where `DOCS_GEN_PHASE1_REASONING` applies, and a
- * failed Phase-1 call is not routed through {@link generationFailureMessage},
- * so the Phase-1 warning asks for this cause directly.
+ * message for the fact-reading step when `err` is a provider rejecting the
+ * reasoning setting, else `undefined`. A failed Phase-1 call is not routed
+ * through {@link generationFailureMessage}, so the Phase-1 warning asks for
+ * this cause directly.
  */
 export function reasoningRejectedCause(err: unknown): string | undefined {
-  const message = generationFailureMessage(err);
-  return REASONING_REJECTED_MESSAGES.includes(message) ? message : undefined;
+  const message = readMessage(err);
+  if (!isReasoningRejection(readStatus(err), message)) return undefined;
+  return generationReasoningRejectedMessage(rejectedReasoningSetting(message), "facts");
 }
 
-const REASONING_REJECTED_MESSAGES: readonly string[] = [
-  generationReasoningRejectedMessage(),
-  ...REASONING_SETTINGS.map((s) => generationReasoningRejectedMessage(s)),
-];
+function isReasoningRejection(status: number | undefined, message: string): boolean {
+  return (status === 400 || STATUS_400.test(message)) && REASONING_REJECTED_TEXT.test(message);
+}
 
 const STATUS_400 =
   /(?:returned|status(?: code)?|HTTP|code)[:\s]*400\b|\(400\)|^(?:\w*Error:\s*)?400\b|failed \(BadRequestError\): 400\b/i;
@@ -135,9 +161,6 @@ const REASONING_REJECTED_TEXT =
 function rejectedReasoningSetting(message: string): ReasoningSetting | undefined {
   if (/thinking\.type\.(?:disabled|between_tools)|turn thinking off on this model/i.test(message)) {
     return "off";
-  }
-  if (/thinking\.type\.(?:enabled|adaptive)|adaptive thinking is not supported/i.test(message)) {
-    return "on";
   }
   const effort = /effort '(\w+)'/i.exec(message)?.[1]?.toLowerCase();
   return (REASONING_SETTINGS as readonly string[]).includes(effort ?? "")
@@ -449,8 +472,8 @@ export function generationFailureMessage(err: unknown): string {
   ) {
     return GENERATION_PROVIDER_AUTH_MESSAGE;
   }
-  if ((status === 400 || STATUS_400.test(message)) && REASONING_REJECTED_TEXT.test(message)) {
-    return generationReasoningRejectedMessage(rejectedReasoningSetting(message));
+  if (isReasoningRejection(status, message)) {
+    return generationReasoningRejectedMessage(rejectedReasoningSetting(message), "document");
   }
   const transport = classifyTransportFailure(err);
   if (transport) return TRANSPORT_MESSAGES[transport];
