@@ -428,6 +428,95 @@ describe("reconcileIssueChange", () => {
     const result = await reconcileIssueChange(event);
     expect(result.reason).toBe("NO_DIFF");
   });
+
+  describe("#1276 — what the publisher adds or drops is not drift", () => {
+    const DRAFT_BODY =
+      "> Parent epic: **[Epic] Apollo — 2 requirements**\n\n## Description\n\nLogin.\n\n## Acceptance criteria\n\n- [ ] ok";
+    const PUBLISHED_BODY =
+      "> Parent epic: **[Epic] Apollo — 2 requirements** ([#7](https://github.com/acme/metis/issues/7))\n\n" +
+      "## Description\n\nLogin.\n\n" +
+      "METIS could not confirm the code references behind this item; check them before relying on them.\n\n" +
+      "## Acceptance criteria\n\n- [ ] ok";
+
+    function seedPublished(labels: string[]) {
+      vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue({
+        id: "pub-1",
+        batchId: "batch-1",
+        draftId: "draft-1",
+        issueNumber: 42,
+        issueId: "node-id-abc",
+        htmlUrl: "",
+        status: "created",
+        destination: "github",
+        parentIssueNumber: null,
+        dedupHash: null,
+        bodyHash: null,
+        errorMessage: null,
+        publishedAt: new Date(),
+        batch: { id: "batch-1", projectId: "proj-1", project: { id: "proj-1" } },
+        draft: {
+          id: "draft-1",
+          title: "[Feature] Login",
+          body: DRAFT_BODY,
+          labels: JSON.stringify(labels),
+          requirementId: null,
+        },
+      } as never);
+    }
+
+    it("an issue published from an `unverified` draft, with its epic's number, has not drifted", async () => {
+      seedPublished(["feature", "unverified"]);
+      const event = makeEvent({
+        current: {
+          title: "[Feature] Login",
+          body: PUBLISHED_BODY,
+          state: "open",
+          labels: ["feature"],
+          assignees: [],
+        },
+      });
+      expect((await reconcileIssueChange(event)).reason).toBe("NO_DIFF");
+    });
+
+    it("an issue published before #1276 still carries `unverified` on GitHub; that is not drift", async () => {
+      seedPublished(["feature", "unverified"]);
+      const event = makeEvent({
+        current: {
+          title: "[Feature] Login",
+          body: DRAFT_BODY,
+          state: "open",
+          labels: ["feature", "unverified"],
+          assignees: [],
+        },
+      });
+      expect((await reconcileIssueChange(event)).reason).toBe("NO_DIFF");
+    });
+
+    it("a real edit is still reported, without the publisher's additions in the snapshot", async () => {
+      seedPublished(["feature", "unverified"]);
+      vi.mocked(prisma.driftEvent.create).mockImplementation((async ({
+        data,
+      }: {
+        data: Record<string, unknown>;
+      }) => ({ id: "drift-x", createdAt: new Date(), ...data })) as never);
+      const event = makeEvent({
+        current: {
+          title: "[Feature] Login",
+          body: PUBLISHED_BODY.replace("Login.", "Login, now with SSO."),
+          state: "open",
+          labels: ["feature"],
+          assignees: [],
+        },
+      });
+      const result = await reconcileIssueChange(event);
+      expect(result.handled).toBe(true);
+      const data = vi.mocked(prisma.driftEvent.create).mock.calls.at(-1)![0].data as {
+        externalSnapshot: string;
+      };
+      const external = JSON.parse(data.externalSnapshot) as { body: string };
+      expect(external.body).toBe(DRAFT_BODY.replace("Login.", "Login, now with SSO."));
+    });
+  });
 });
 
 describe("getDriftEventProjectId (#102)", () => {
@@ -523,6 +612,56 @@ describe("resolveDriftEvent", () => {
     expect(prisma.issueDraft.update).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: "draft-1" } }),
     );
+  });
+
+  it("#1276 — adopting the tracker's labels keeps the draft's internal labels", async () => {
+    const existing = {
+      id: "drift-1",
+      publishedIssueId: "pub-1",
+      projectId: "proj-1",
+      requirementId: null,
+      source: "github",
+      deliveryId: "del-1",
+      action: "edited",
+      fieldDiffs: JSON.stringify([{ field: "labels", local: ["feature"], external: ["bug"] }]),
+      externalSnapshot: JSON.stringify({
+        title: "T",
+        body: "Body",
+        state: "open",
+        labels: ["bug", "Unverified"],
+        assignees: [],
+      }),
+      localSnapshot: null,
+      status: "pending",
+      resolution: null,
+      resolvedById: null,
+      resolvedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    vi.mocked(prisma.driftEvent.findUnique).mockResolvedValue(existing as never);
+    vi.mocked(prisma.driftEvent.update).mockResolvedValue({
+      ...existing,
+      status: "resolved",
+      resolution: "adopt",
+      resolvedById: "user-1",
+      resolvedAt: new Date(),
+    } as never);
+    vi.mocked(prisma.publishedIssue.findUnique).mockResolvedValue({
+      id: "pub-1",
+      draftId: "draft-1",
+      draft: {
+        requirementId: null,
+        labels: JSON.stringify(["feature", "unverified", "finding:abc"]),
+      },
+    } as never);
+    vi.mocked(prisma.issueDraft.update).mockResolvedValue({} as never);
+
+    await resolveDriftEvent("drift-1", "adopt", "user-1");
+    const data = vi.mocked(prisma.issueDraft.update).mock.calls.at(-1)![0].data as {
+      labels: string;
+    };
+    expect(JSON.parse(data.labels)).toEqual(["bug", "unverified", "finding:abc"]);
   });
 
   it("#1064 — adopting never copies a marker into the draft", async () => {

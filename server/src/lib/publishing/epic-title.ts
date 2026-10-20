@@ -17,7 +17,8 @@
  *   3. when the text opens with a list of two or more requirements and no
  *      heading, no single line names the batch: the label of an imported
  *      requirement set (`metadata.label`) if there is one, else
- *      `<N> stated requirements (analysis of <start time>)`;
+ *      `<N> requirements (analysis of <start time>)`, N being the requirements
+ *      the epic covers (#1276; #1064 counted the list, `<N> stated requirements`);
  *   4. with no requirement text: the import label, else `Analysis of <start
  *      time>`, which still keeps separate runs apart.
  *
@@ -29,7 +30,8 @@
  *
  * The title is also the draft's dedup key (`computeDedupHash`), so the same
  * analysis must always produce the same title — every input here is fixed once
- * the run has started. It is not unique across analyses — two runs can share a
+ * the run has started, except the scope count, which is why the generator keeps
+ * the title it recorded on the epic's first draft (#1276). It is not unique across analyses — two runs can share a
  * first line — so `draft-generator.ts` (`claimTitle`) adds an `(n)` suffix
  * when another analysis already holds the title. An epic draft generated under
  * an earlier rule keeps the title it has (`draft-generator.ts`), because a
@@ -143,7 +145,15 @@ function leadingListCount(text: string): number {
   return count >= 2 ? count : 0;
 }
 
-function subjectFor(analysis: EpicTitleAnalysis): string {
+/**
+ * The subject, with `listSubject` naming a batch whose text is a list of two or
+ * more requirements and has no heading or import label (rule 3); `null` from
+ * it falls through to rule 4.
+ */
+function subjectFor(
+  analysis: EpicTitleAnalysis,
+  listSubject: (stated: number, when: string) => string | null,
+): string {
   const meta = parseMetadata(analysis.metadata);
   const text = typeof meta.extraInstructions === "string" ? meta.extraInstructions : "";
   const stated = leadingListCount(text);
@@ -153,17 +163,52 @@ function subjectFor(analysis: EpicTitleAnalysis): string {
   }
   const label = typeof meta.label === "string" ? firstMeaningfulLine(meta.label) : "";
   if (label) return truncate(label);
-  const when = formatStartedAt(analysis.startedAt);
-  if (stated > 0) {
-    return when
-      ? `${stated} stated requirements (analysis of ${when})`
-      : `${stated} stated requirements`;
-  }
+  const when = formatStartedAt(analysis.startedAt) ?? "";
+  const listed = stated > 0 ? listSubject(stated, when) : null;
+  if (listed) return listed;
   return when ? `Analysis of ${when}` : "Requirements analysis";
 }
 
-export function buildEpicTitle(projectName: string, analysis: EpicTitleAnalysis): string {
-  return `[Epic] ${projectName} — ${subjectFor(analysis)}`;
+function counted(count: number, noun: string, when: string): string {
+  const subject = `${count} ${noun}`;
+  return when ? `${subject} (analysis of ${when})` : subject;
+}
+
+/**
+ * The epic's title. #1276 — a batch named by a count is named by the number of
+ * requirements the epic covers (`scopeCount`, the Scope section's "Total
+ * requirements"), not by how many the run's text listed: run 8's epic said
+ * "5 stated requirements" over a 33-requirement scope. With no `scopeCount`
+ * the title states no count. A count can change between two Generates of one
+ * analysis, so the draft generator records the title it first gave an epic and
+ * keeps it (`existingEpicTitle`): renaming a published epic files a second one.
+ */
+export function buildEpicTitle(
+  projectName: string,
+  analysis: EpicTitleAnalysis,
+  scopeCount?: number,
+): string {
+  const subject = subjectFor(analysis, (_stated, when) =>
+    scopeCount !== undefined && Number.isSafeInteger(scopeCount) && scopeCount > 0
+      ? counted(scopeCount, scopeCount === 1 ? "requirement" : "requirements", when)
+      : null,
+  );
+  return `[Epic] ${projectName} — ${subject}`;
+}
+
+/**
+ * The title an epic was given under the #1064 rule, which counted the list in
+ * the run's text (`<N> stated requirements`). Only used to find an epic draft
+ * that already holds it — never to title a new one — so it must not change.
+ */
+export function buildStatedCountEpicTitle(
+  projectName: string,
+  analysis: EpicTitleAnalysis,
+): string {
+  const subject = subjectFor(analysis, (stated, when) =>
+    counted(stated, "stated requirements", when),
+  );
+  return `[Epic] ${projectName} — ${subject}`;
 }
 
 /**
@@ -178,5 +223,5 @@ export function buildLegacyEpicTitle(projectName: string, analysis: EpicTitleAna
     const line = firstMeaningfulLine(candidate);
     if (line) return `[Epic] ${projectName} — ${truncate(line)}`;
   }
-  return buildEpicTitle(projectName, analysis);
+  return buildStatedCountEpicTitle(projectName, analysis);
 }

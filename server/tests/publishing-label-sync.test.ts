@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   combineLabels,
   DEFAULT_PUBLISH_LABELS,
+  isInternalPublishLabel,
   labelsToSync,
   publishableLabels,
   syncLabels,
@@ -137,5 +138,27 @@ describe("labelsToSync (#744)", () => {
 
   it("upserts nothing for a batch with no labels at all", () => {
     expect(labelsToSync([[], []], [])).toEqual([]);
+  });
+});
+
+describe("#1276 — `unverified` is an internal label", () => {
+  it("is never a publishable label, in any case or spacing", () => {
+    expect(
+      publishableLabels(["feature", "unverified", " Unverified ", "UNVERIFIED", "security"]),
+    ).toEqual(["feature", "security"]);
+  });
+
+  it("is never upserted into the target repository, even when a batch asks for it", () => {
+    const names = labelsToSync([["feature", "unverified"]], ["Unverified", "team-a"]).map(
+      (l) => l.name,
+    );
+    expect(names).toEqual(["feature", "team-a"]);
+  });
+
+  it("is matched as a whole label: one that merely contains the word is kept", () => {
+    expect(isInternalPublishLabel("unverified")).toBe(true);
+    expect(isInternalPublishLabel("finding:abc")).toBe(true);
+    expect(isInternalPublishLabel("unverified-claims")).toBe(false);
+    expect(isInternalPublishLabel("verified")).toBe(false);
   });
 });

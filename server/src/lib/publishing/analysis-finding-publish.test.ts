@@ -199,6 +199,26 @@ describe("publishAnalysisFinding", () => {
     expect(labels).toContain("bug");
   });
 
+  it("#1276 — a suggested `unverified` label is not sent; the body says it in a sentence", async () => {
+    upstreamConnector();
+    const { acquirePublishOctokit } = await import("./octokit-factory.js");
+    const request = vi.fn().mockResolvedValue({
+      data: { number: 8, html_url: "https://github.com/o/r/issues/8" },
+    });
+    vi.mocked(acquirePublishOctokit).mockResolvedValueOnce({ request } as never);
+    await publishAnalysisFinding({
+      ...analysisInput,
+      draft: { ...ANALYSIS_DRAFT, suggestedLabels: ["Unverified", "bug"] },
+      extraLabels: ["unverified"],
+    });
+    const data = (request.mock.calls[0][0] as { data: { labels: string[]; body: string } }).data;
+    expect(data.labels.map((l) => l.toLowerCase())).not.toContain("unverified");
+    expect(data.labels).toContain("bug");
+    expect(data.body).toContain(
+      "METIS could not confirm the code references behind this item; check them before relying on them.",
+    );
+  });
+
   describe("#1180 — the cross-project guard", () => {
     it("refuses a GitHub target another project connects, before any GitHub call", async () => {
       upstreamConnector();

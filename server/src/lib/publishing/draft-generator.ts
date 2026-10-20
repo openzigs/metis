@@ -41,8 +41,14 @@ import { prisma } from "../prisma.js";
 import { isUniqueViolation } from "../db/prisma-errors.js";
 import { createChildLogger } from "../logger.js";
 import { computeDedupHash, neutraliseMarkerText } from "./dedup.js";
-import { publishableLabels } from "./label-sync.js";
-import { buildEpicTitle, buildLegacyEpicTitle, formatStartedAt } from "./epic-title.js";
+import { draftableLabels } from "./label-sync.js";
+import {
+  buildEpicTitle,
+  buildLegacyEpicTitle,
+  buildStatedCountEpicTitle,
+  formatStartedAt,
+} from "./epic-title.js";
+import { namesRepository } from "../docs-gen/approved-requirements-scope.js";
 import {
   codeLinkBase,
   codeLinkSectionRecord,
@@ -417,9 +423,11 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
     `priority:${highestPriority(requirements)}`,
     ...(opts.defaultLabels ?? []),
   ]);
+  // #1276 — counted by the scope the epic covers; an epic this analysis already
+  // has keeps the title it was given, whatever rule or count produced it.
   const epicBaseTitle =
-    (await existingLegacyEpicTitle(opts, project.name, analysis)) ??
-    buildEpicTitle(project.name, analysis);
+    (await existingEpicTitle(opts, project.name, analysis, requirements.length)) ??
+    buildEpicTitle(project.name, analysis, requirements.length);
   const epic = await claimAndUpsertDraft(opts, epicBaseTitle, {
     projectId: opts.projectId,
     requirementId: null,
@@ -433,6 +441,8 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
       requirementIds: requirements.map((r) => r.id),
       generator: "draft-generator/v1",
       ...draftTarget(opts),
+      // #1276 — the title this epic is identified by, kept on every later Generate.
+      epicBaseTitle,
     },
   });
   const epicTitle = epic.title;
@@ -473,7 +483,9 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
       `priority:${req.priority}`,
       // #744 — never the hidden `finding:<id>` / `review:*` labels: they name
       // internal rows and would become labels in the target repository.
-      ...publishableLabels(parseLabels(req.labels)),
+      // #1276 — `unverified` IS kept: it is shown in METIS as before, and the
+      // publisher drops it at the boundary (`publishableLabels`).
+      ...draftableLabels(parseLabels(req.labels)),
       ...(opts.defaultLabels ?? []),
     ]);
     const body = renderFeatureBody({
@@ -597,24 +609,77 @@ async function claimTitle(
 }
 
 /**
- * #1064 — the epic's title rule changed, and the title is the dedup key. An
- * analysis whose epic draft was generated under the old rule would otherwise get
- * a SECOND epic draft on the next Generate, and a published epic a second issue.
- * So when the two rules disagree and this analysis already holds an epic draft
- * under the old title (or one of its `(n)` suffixes), that title is kept. The
- * match is on the dedup hash, which an edit of the draft's title does not
- * change (#776), so an edited epic is found too. To rename a kept epic, edit
- * its title on the Publish page.
+ * #1064 / #1276 — the title is the dedup key, so an epic this analysis already
+ * has keeps the title it was given. Otherwise a changed title rule, or a scope
+ * whose count changed between two Generates, would give the analysis a SECOND
+ * epic draft, and a published epic a second issue. Found, in order:
+ *
+ *  1. the title recorded on the epic's draft (`epicBaseTitle`, written since
+ *     #1276) for this repository, compared case-insensitively;
+ *  2. a title an earlier rule gave it — the pre-#1064 first line, then the
+ *     #1064 list count — held by this analysis's epic under that title or one
+ *     of its `(n)` suffixes. The match is on the dedup hash, which an edit of
+ *     the draft's title does not change (#776), so an edited epic is found too.
+ *
+ * To rename a kept epic, edit its title on the Publish page.
  */
-async function existingLegacyEpicTitle(
+async function existingEpicTitle(
   opts: GenerateDraftsOptions,
   projectName: string,
   analysis: Parameters<typeof buildEpicTitle>[1],
+  scopeCount: number,
 ): Promise<string | null> {
-  const legacy = buildLegacyEpicTitle(projectName, analysis);
-  if (legacy === buildEpicTitle(projectName, analysis)) return null;
+  const recorded = await recordedEpicTitle(opts);
+  if (recorded) return recorded;
+  const current = buildEpicTitle(projectName, analysis, scopeCount);
+  const earlier = new Set([
+    buildLegacyEpicTitle(projectName, analysis),
+    buildStatedCountEpicTitle(projectName, analysis),
+  ]);
+  for (const title of earlier) {
+    if (title === current) continue;
+    const held = await epicHeldUnder(opts, title);
+    if (held) return held;
+  }
+  return null;
+}
+
+/** #1276 — the base title recorded on this analysis's epic draft for this repository. */
+async function recordedEpicTitle(opts: GenerateDraftsOptions): Promise<string | null> {
+  const rows = await prisma.issueDraft.findMany({
+    where: {
+      projectId: opts.projectId,
+      draftType: "epic",
+      requirementId: null,
+      deletedAt: null,
+      metadata: { contains: opts.analysisId },
+    },
+    orderBy: { createdAt: "asc" },
+    select: { metadata: true },
+  });
+  const repository = {
+    owner: opts.targetOwner.trim().toLowerCase(),
+    name: opts.targetRepo
+      .trim()
+      .toLowerCase()
+      .replace(/\.git$/, ""),
+  };
+  for (const row of rows) {
+    const meta = parseMetadata(row.metadata);
+    if (meta.analysisId !== opts.analysisId) continue;
+    const title = typeof meta.epicBaseTitle === "string" ? meta.epicBaseTitle.trim() : "";
+    if (!title) continue;
+    const owner = typeof meta.targetOwner === "string" ? meta.targetOwner : null;
+    const repo = typeof meta.targetRepo === "string" ? meta.targetRepo : null;
+    if (namesRepository(repository, owner, repo)) return title;
+  }
+  return null;
+}
+
+/** `base`, or the `(n)` suffix of it, under which this analysis holds its epic draft. */
+async function epicHeldUnder(opts: GenerateDraftsOptions, base: string): Promise<string | null> {
   for (let n = 1; ; n++) {
-    const title = n === 1 ? legacy : `${legacy} (${n})`;
+    const title = n === 1 ? base : `${base} (${n})`;
     const holder = await prisma.issueDraft.findFirst({
       where: {
         projectId: opts.projectId,

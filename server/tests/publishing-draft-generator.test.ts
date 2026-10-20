@@ -115,6 +115,15 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     issueDraft: {
+      // #1276 — the epic drafts of a project, to find this analysis's recorded epic title.
+      findMany: vi.fn(async ({ where }: { where: { projectId?: string; draftType?: string } }) =>
+        [...drafts.values()].filter(
+          (d) =>
+            !d.deletedAt &&
+            (where.projectId === undefined || d.projectId === where.projectId) &&
+            (where.draftType === undefined || d.draftType === where.draftType),
+        ),
+      ),
       findFirst: vi.fn(async ({ where }: { where: { dedupHash?: string } }) => {
         if (!where.dedupHash) return null;
         for (const d of drafts.values()) {
@@ -1416,7 +1425,11 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
   describe("an epic drafted under the old title rule", () => {
     const LIST = "- Login form\n- Logout button\n- Password reset";
     const OLD_TITLE = "[Epic] Apollo — Login form";
-    const NEW_TITLE = "[Epic] Apollo — 3 stated requirements (analysis of 2026-09-29 14:05:00 UTC)";
+    // #1276 — the list states 3, but the epic covers the 2 requirements the analysis produced.
+    const NEW_TITLE = "[Epic] Apollo — 2 requirements (analysis of 2026-09-29 14:05:00 UTC)";
+    /** The #1064 rule's title: the count of the list in the run's text. */
+    const STATED_TITLE =
+      "[Epic] Apollo — 3 stated requirements (analysis of 2026-09-29 14:05:00 UTC)";
     let savedMeta: string | null;
     beforeEach(() => {
       savedMeta = fakeAnalysis.metadata;
@@ -1496,6 +1509,89 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
       const mine = epics().find((d) => d.id !== "theirs")!;
       expect(mine.title).toBe(NEW_TITLE);
       expect(drafts.get("theirs")).toMatchObject({ title: OLD_TITLE, body: "old body" });
+    });
+
+    describe("#1276 — the count is the scope the epic covers, and a drafted epic keeps its title", () => {
+      const THIRD = {
+        id: "req_3",
+        analysisId: "analysis_1",
+        title: "Password reset",
+        body: "Email a reset link",
+        type: "feature",
+        priority: "medium",
+        labels: "[]",
+        storyPoints: null,
+        deletedAt: null as Date | null,
+      };
+      afterEach(() => {
+        const at = requirements.findIndex((r) => r.id === THIRD.id);
+        if (at >= 0) requirements.splice(at, 1);
+      });
+
+      it("counts the requirements the epic covers, as its Scope section does", async () => {
+        await generateDrafts(opts);
+        const [epic] = epics();
+        expect(epic!.title).toBe(NEW_TITLE);
+        expect(epic!.body).toContain("**Total requirements**: 2");
+        expect(epic!.title).not.toContain("stated");
+      });
+
+      it("keeps a published epic titled under the #1064 rule: not renamed, not duplicated", async () => {
+        seedEpic({
+          id: "stated_epic",
+          title: STATED_TITLE,
+          dedupHash: computeDedupHash("acme", "metis", STATED_TITLE),
+        });
+        const summary = await generateDrafts(opts);
+        expect(summary.epics).toBe(1);
+        expect(epics()).toHaveLength(1);
+        expect(epics()[0]).toMatchObject({
+          id: "stated_epic",
+          title: STATED_TITLE,
+          status: "published",
+        });
+        expect(feature("req_1").parentDraftId).toBe("stated_epic");
+        expect(feature("req_1").body).toContain(`> Parent epic: **${STATED_TITLE}**`);
+      });
+
+      it("keeps its title when the scope later grows, so the published epic is not filed twice", async () => {
+        await generateDrafts(opts);
+        const first = epics()[0]!;
+        const { id, title, dedupHash } = first;
+        first.status = "published";
+        requirements.push(THIRD);
+        const summary = await generateDrafts(opts);
+        expect(summary.epics).toBe(1);
+        expect(epics()).toHaveLength(1);
+        expect(epics()[0]).toMatchObject({ id, title, dedupHash, status: "published" });
+        expect(title).toBe(NEW_TITLE);
+        // The body's Scope section is refreshed to the current scope.
+        expect(epics()[0]!.body).toContain("**Total requirements**: 3");
+        expect(feature("req_3").parentDraftId).toBe(id);
+      });
+
+      it("matches the recorded title's repository case-insensitively", async () => {
+        await generateDrafts(opts);
+        const { id } = epics()[0]!;
+        requirements.push(THIRD);
+        await generateDrafts({ ...opts, targetOwner: "ACME", targetRepo: "Metis" });
+        expect(epics()).toHaveLength(1);
+        expect(epics()[0]!.id).toBe(id);
+      });
+
+      it("titles an epic for another repository by that generation's own scope", async () => {
+        await generateDrafts(opts);
+        requirements.push(THIRD);
+        await generateDrafts({ ...opts, targetRepo: "other" });
+        expect(
+          epics()
+            .map((d) => d.title)
+            .sort(),
+        ).toEqual([
+          NEW_TITLE,
+          "[Epic] Apollo — 3 requirements (analysis of 2026-09-29 14:05:00 UTC)",
+        ]);
+      });
     });
   });
 });
@@ -1895,5 +1991,27 @@ describe("#1203 — a published issue notes criteria shared with other requireme
 
     expect(featureBody("req_1")).not.toContain("Shared with");
     expect(featureBody("req_2")).not.toContain("Shared with");
+  });
+});
+
+describe("#1276 — `unverified` stays visible inside METIS", () => {
+  it("keeps the requirement's `unverified` label on its draft; only the publisher drops it", async () => {
+    const req = requirements.find((r) => r.id === "req_1")!;
+    const saved = req.labels;
+    req.labels = JSON.stringify(["auth", "unverified", "review:approved"]);
+    try {
+      await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      });
+    } finally {
+      req.labels = saved;
+    }
+    const draft = [...drafts.values()].find((d) => d.requirementId === "req_1")!;
+    const labels = JSON.parse(draft.labels) as string[];
+    expect(labels).toContain("unverified");
+    expect(labels).not.toContain("review:approved");
   });
 });

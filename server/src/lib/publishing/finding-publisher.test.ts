@@ -195,6 +195,24 @@ describe("publishFinding", () => {
     expect(labels.slice(0, 2)).toEqual(["metis", "metis-impact-analysis"]);
   });
 
+  it("#1276 — drops the internal `unverified` label from extras, in any case", async () => {
+    const p = ports();
+    await publishFinding(p, {
+      finding: payload(),
+      provider: "github",
+      sourceLabel: "metis-analysis",
+      extraLabels: ["unverified", " UNVERIFIED ", "finding:abc", "bug"],
+    });
+    const labels = (p.createGitHubIssue as ReturnType<typeof vi.fn>).mock.calls[0][0].labels;
+    expect(labels).toEqual([
+      "metis",
+      "metis-analysis",
+      "severity:high",
+      "category:security",
+      "bug",
+    ]);
+  });
+
   it("#802 — drops reserved source labels from extras: only the caller's own survives", async () => {
     const p = ports();
     await publishFinding(p, {

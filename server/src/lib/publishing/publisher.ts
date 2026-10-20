@@ -70,6 +70,8 @@ import {
   stripMarker,
 } from "./dedup.js";
 import { labelsToSync, publishableLabels, syncLabels } from "./label-sync.js";
+import { publishedDraftBody, type ParentEpicIssue } from "./published-body.js";
+import { namesRepository, type NamedRepository } from "../docs-gen/approved-requirements-scope.js";
 import { assertCodeLinksMatchTarget } from "./draft-code-links.js";
 import { buildDryRunPlan, dryRunWarning } from "./dry-run.js";
 import { notifyPublishRolledBack } from "../teams/notification-hooks.js";
@@ -170,6 +172,11 @@ export async function previewBatchPlan(input: PreviewBatchPlanInput): Promise<Dr
   // published Jira batch is gated on its raw draftIds at run time, so it can
   // preview `passed` and still be refused.
   const approvalGate = await previewDraftsGate(input.projectId, drafts);
+  const bodies = await publishedBodies(
+    input.projectId,
+    { owner: input.targetOwner, repo: input.targetRepo, baseUrl: input.targetBaseUrl },
+    drafts,
+  );
   return buildDryRunPlan({
     batchId: PREVIEW_PLAN_BATCH_ID,
     targetOwner: input.targetOwner,
@@ -179,7 +186,7 @@ export async function previewBatchPlan(input: PreviewBatchPlanInput): Promise<Dr
     drafts: drafts.map((d) => ({
       id: d.id,
       title: d.title,
-      body: d.body,
+      body: bodies.get(d.id) ?? d.body,
       labels: parseLabels(d.labels),
       parentDraftId: d.parentDraftId,
       draftType: d.draftType,
@@ -308,6 +315,12 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     // plan does not list creates a live run would refuse with 409. DB-only:
     // M1 still holds.
     const approvalGate = await previewDraftsGate(batch.projectId, drafts);
+    // #1276 — DB-only, so M1 holds: the bodies the live run would send.
+    const bodies = await publishedBodies(
+      batch.projectId,
+      { owner: batch.targetOwner, repo: batch.targetRepo, baseUrl: batch.targetBaseUrl },
+      drafts,
+    );
     const plan = buildDryRunPlan({
       batchId: batch.id,
       targetOwner: dryTarget.owner,
@@ -317,7 +330,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
       drafts: drafts.map((d) => ({
         id: d.id,
         title: d.title,
-        body: d.body,
+        body: bodies.get(d.id) ?? d.body,
         labels: parseLabels(d.labels),
         parentDraftId: d.parentDraftId,
         draftType: d.draftType,
@@ -424,6 +437,14 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     projectId: batch.projectId,
   });
 
+  // #1276 — what each draft is published as: its body, plus the number of a
+  // parent epic an earlier batch published, plus the `unverified` sentence.
+  const bodies = await publishedBodies(
+    batch.projectId,
+    { owner: batch.targetOwner, repo: batch.targetRepo, baseUrl: batch.targetBaseUrl },
+    drafts,
+  );
+
   // Order: epics first.
   const epics = drafts.filter((d) => d.draftType === "epic");
   const features = drafts.filter((d) => d.draftType !== "epic");
@@ -450,15 +471,18 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     const existing = existingByHash.get(hash);
     // #1064 — the project, analysis and requirement ids ride a hidden source
     // marker beside the publish marker, not the visible body.
+    const body = bodies.get(draft.id) ?? draft.body;
     const stampedBody = injectMarker(
-      draft.body,
+      body,
       { batchId: batch.id, draftId: draft.id, hash },
       sourceMarkerForDraft(draft),
     );
-    // Hash the user-supplied body (without the per-batch marker) so that
+    // Hash the published body (without the per-batch marker) so that
     // re-running an identical draft in a fresh batch dedup-skips instead of
-    // appearing to "change" because the marker batchId differs.
-    const bodyHash = computeDraftBodyHash(draft.body);
+    // appearing to "change" because the marker batchId differs. #1276 — the
+    // body as published: an issue sent before its epic's number was known, or
+    // with the `unverified` label, is updated once to carry the new text.
+    const bodyHash = computeDraftBodyHash(body);
     // #1091 — set as soon as the remote issue provably exists, so the catch
     // block can record the divergence and the rollback can actually close it
     // even when the local write is what failed.
@@ -1232,6 +1256,92 @@ async function loadExistingByHash(
     });
   }
   return out;
+}
+
+/**
+ * #1276 — the body each draft is published with (`publishedDraftBody`): the
+ * parent line of a sub-issue whose epic is NOT in this batch names the issue an
+ * earlier batch published it as, and a draft labelled `unverified` carries the
+ * sentence that stands in for the label. One query, and only when some draft's
+ * epic is outside the batch; a sub-issue whose epic is in the batch is attached
+ * to it as before and its body is not touched.
+ */
+async function publishedBodies(
+  projectId: string,
+  target: { owner: string; repo: string; baseUrl: string | null },
+  drafts: ReadonlyArray<{ id: string; body: string; labels: string; parentDraftId: string | null }>,
+): Promise<Map<string, string>> {
+  const inBatch = new Set(drafts.map((d) => d.id));
+  const outside = [
+    ...new Set(
+      drafts
+        .map((d) => d.parentDraftId)
+        .filter((id): id is string => id !== null && !inBatch.has(id)),
+    ),
+  ];
+  const epics =
+    outside.length > 0
+      ? await loadEarlierEpicIssues(projectId, target, outside)
+      : new Map<string, ParentEpicIssue>();
+  return new Map(
+    drafts.map((d) => [
+      d.id,
+      publishedDraftBody(
+        { body: d.body, labels: parseLabels(d.labels) },
+        d.parentDraftId ? epics.get(d.parentDraftId) : null,
+      ),
+    ]),
+  );
+}
+
+/** The API base a batch targets, compared as a host identity (public GitHub when unset). */
+function apiBaseKey(baseUrl: string | null | undefined): string {
+  return (baseUrl ?? "").trim().toLowerCase().replace(/\/+$/, "") || "https://api.github.com";
+}
+
+/**
+ * #1276 — for each epic draft id, the GitHub issue an earlier, unarchived batch
+ * of this project published it as in THIS repository: owner and name compared
+ * case-insensitively (`namesRepository`, as GitHub does), on the same API host.
+ * The most recent publish wins; an exact tie is settled on the row id.
+ */
+async function loadEarlierEpicIssues(
+  projectId: string,
+  target: { owner: string; repo: string; baseUrl: string | null },
+  epicDraftIds: readonly string[],
+): Promise<Map<string, ParentEpicIssue>> {
+  const rows = await prisma.publishedIssue.findMany({
+    where: {
+      draftId: { in: [...epicDraftIds] },
+      destination: "github",
+      status: { in: ["created", "updated"] },
+      issueNumber: { gt: 0 },
+      batch: { projectId, archived: false },
+    },
+    include: { batch: { select: { targetOwner: true, targetRepo: true, targetBaseUrl: true } } },
+  });
+  const repository: NamedRepository = {
+    owner: target.owner.trim().toLowerCase(),
+    name: target.repo
+      .trim()
+      .toLowerCase()
+      .replace(/\.git$/, ""),
+  };
+  const host = apiBaseKey(target.baseUrl);
+  const best = new Map<string, (typeof rows)[number]>();
+  for (const row of rows) {
+    const b = row.batch;
+    if (!b || !namesRepository(repository, b.targetOwner, b.targetRepo)) continue;
+    if (apiBaseKey(b.targetBaseUrl) !== host) continue;
+    const current = best.get(row.draftId);
+    if (!current || outranks(row, current, new Set())) best.set(row.draftId, row);
+  }
+  return new Map(
+    [...best].map(([draftId, row]) => [
+      draftId,
+      { issueNumber: row.issueNumber, htmlUrl: row.htmlUrl },
+    ]),
+  );
 }
 
 /** #528 — a total order over rows sharing a hash; see `loadExistingByHash`. */
