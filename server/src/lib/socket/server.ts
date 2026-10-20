@@ -19,6 +19,9 @@
  *     member removed from the workspace is evicted (`project-room-eviction.ts`).
  *   - `analysis:{id}` — analysis run progress.
  *   - `session:{id}` — chat / agent session events.
+ *   - #1290 — those two, `connector:{id}`, `run:{id}`, `thread:{id}` and
+ *     `presence:{type}:{id}` are re-judged with their join rule when access
+ *     can be lost (`project-data-rooms.ts`), as `project:{id}` and `job:{id}`.
  *
  * Cluster adapter (#622):
  *   - `opts.adapter` (from `resolveSocketClusterAdapter`, Postgres datasources
@@ -65,9 +68,18 @@ import {
   type ServerToClientEvents,
 } from "@metis/shared";
 import { verifyAccessToken } from "../auth/jwt.js";
-import { loadAuthorizedSession } from "../ai/conversation/session-access.js";
 import { canJoinAnalysisRoom } from "./analysis-room-access.js";
-import { canJoinBgRunRoom, canJoinConnectorRoom, resolveJobRoomScope } from "./room-access.js";
+import {
+  canJoinBgRunRoom,
+  canJoinConnectorRoom,
+  canJoinSessionRoom,
+  resolveJobRoomScope,
+} from "./room-access.js";
+import {
+  evictionEpochOf,
+  recheckJoinAfterEviction,
+  rejudgeProjectDataRooms,
+} from "./project-data-rooms.js";
 import { rejudgeProjectRooms, wireProjectRoomHandlers } from "./project-rooms.js";
 import { recheckJobJoinAfterEviction, rejudgeJobRooms } from "./job-rooms.js";
 import { getLastDocSections, getLastJobLifecycle, type JobScope } from "./job-events.js";
@@ -280,7 +292,10 @@ const revalidations = new WeakMap<MetisIOServer, RevalidationState>();
  *   - a socket in a `project:{id}` room the live user may no longer join
  *     leaves it (#1212, `rejudgeProjectRooms`);
  *   - a socket in a `job:{id}` room the live user may no longer join leaves
- *     it (#1251, `rejudgeJobRooms`).
+ *     it (#1251, `rejudgeJobRooms`);
+ *   - a socket in an `analysis:`, `session:`, `connector:`, `run:`, `thread:`
+ *     or `presence:` room the live user may no longer join leaves it (#1290,
+ *     `rejudgeProjectDataRooms`).
  * What a failed lookup (either one) does depends on the trigger. A pass that
  * serves a `LISTEN` (re)connect fails closed: a publish may really have been
  * missed, so the transport closes and the client re-handshakes and
@@ -396,11 +411,13 @@ async function revalidateUserSockets(
   // was lost is applied here. A `listen` pass fails closed, a sweep keeps the
   // room on a lookup error (as below).
   // #1251 — and every job room, with the `subscribe:job` rule.
+  // #1290 — and every project-data room, each with its own join rule.
   if (live) {
     await Promise.all(
       kept.map(async (socket) => {
         await rejudgeProjectRooms(socket, live, { failClosed });
         await rejudgeJobRooms(socket, live, { failClosed });
+        await rejudgeProjectDataRooms(socket, live, { failClosed });
       }),
     );
   }
@@ -628,9 +645,13 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
     const attempt = bumpAnalysisSubscription(analysisId);
     return (async () => {
       try {
+        // #1290 — a removal that runs while the check is in flight cannot see
+        // this socket, so the join is judged again once it is in the room.
+        const evictionEpoch = evictionEpochOf(socket);
         if (await canJoinAnalysisRoom(user, analysisId)) {
           if (analysisSubscription.get(analysisId) !== attempt) return;
           await socket.join(analysisRoom(analysisId));
+          await recheckJoinAfterEviction(socket, user, analysisRoom(analysisId), evictionEpoch);
           return;
         }
       } catch (err) {
@@ -652,17 +673,27 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   // #142 — the session room now carries tool-approval prompts (with the tool's
   // arguments), so only the session's owner, who can still reach its project,
   // may join it — the same rule as every other read of the session. It used to
-  // join any id a client named.
+  // join any id a client named. #1290 — `canJoinSessionRoom` also closes a
+  // soft-deleted project, and re-judges a socket already in the room.
   onRoomJoin(socket, "subscribe:session", sessionRoomOf, (payload) => {
     const sessionId: unknown = payload?.sessionId;
     if (!sessionId || typeof sessionId !== "string") return;
     return (async () => {
       try {
-        await loadAuthorizedSession(user, sessionId);
-        await socket.join(sessionRoom(sessionId));
-      } catch {
-        socket.emit("auth:error", { message: "FORBIDDEN: no access to session" });
+        const evictionEpoch = evictionEpochOf(socket);
+        if (await canJoinSessionRoom(user, sessionId)) {
+          await socket.join(sessionRoom(sessionId));
+          await recheckJoinAfterEviction(socket, user, sessionRoom(sessionId), evictionEpoch);
+          return;
+        }
+      } catch (err) {
+        log.warn("Socket subscribe:session failed", {
+          socketId: socket.id,
+          sessionId,
+          error: (err as Error).message,
+        });
       }
+      socket.emit("auth:error", { message: "FORBIDDEN: no access to session" });
     })();
   });
   onClientEvent(socket, "unsubscribe:session", (payload) => {
@@ -793,10 +824,16 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   onRoomJoin(socket, "subscribe:connector", connectorRoomOf, (payload) => {
     const connectorId: unknown = payload?.connectorId;
     if (!connectorId || typeof connectorId !== "string") return;
+    // #1290 — re-judged after the join if an eviction ran during the check.
+    let evictionEpoch = 0;
     return joinIfAuthorized(
       connectorRoom(connectorId),
-      () => canJoinConnectorRoom(user, connectorId),
+      () => {
+        evictionEpoch = evictionEpochOf(socket);
+        return canJoinConnectorRoom(user, connectorId);
+      },
       "FORBIDDEN: no access to connector",
+      () => recheckJoinAfterEviction(socket, user, connectorRoom(connectorId), evictionEpoch),
     );
   });
   onClientEvent(socket, "unsubscribe:connector", (payload) => {
@@ -903,10 +940,15 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   onRoomJoin(socket, "subscribe:bg-run", bgRunRoomOf, (payload) => {
     const runId: unknown = payload?.runId;
     if (!runId || typeof runId !== "string") return;
+    let evictionEpoch = 0;
     return joinIfAuthorized(
       bgRunRoom(runId),
-      () => canJoinBgRunRoom(user, runId),
+      () => {
+        evictionEpoch = evictionEpochOf(socket);
+        return canJoinBgRunRoom(user, runId);
+      },
       "FORBIDDEN: no access to background run",
+      () => recheckJoinAfterEviction(socket, user, bgRunRoom(runId), evictionEpoch),
     );
   });
   onClientEvent(socket, "unsubscribe:bg-run", (payload) => {

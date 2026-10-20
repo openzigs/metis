@@ -39,3 +39,7 @@ Collected from #1212 / PR #1219 and #1221 / PR #1233 and their reviews (2026-10-
 **Tests authenticate as non-admin members.** Admin bypasses the check. Mutation-check by restoring the creator-only rule: on #1233 this failed 18, 3 and 2 tests across the three helpers.
 
 **Foreign ids behind a widened guard (#1248 review, #1250).** Widening a by-id guard to members widens every attach/associate write behind it. A write that takes a caller-supplied foreign id (`addProductRepo`'s `repoConnectionId`) must check that id against its *own* project, not only the product's.
+
+## `assertProjectAccess` ignores `project.deletedAt` (#1288, fixed for socket rooms in #1290)
+
+`assertProjectAccess` reads live membership and the workspace's `deletedAt`, but not the project's `deletedAt`. Any rule built only on it still admits members to a soft-deleted project. The socket rooms used it through `canReachProject` until #1290. They now use `canReadProject` (`room-access.ts`, which is `canAccessProjectDiscussions`). Use that rule whenever deleting a project must close access.

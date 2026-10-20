@@ -20,3 +20,7 @@ worktree (`git worktree add`) and never `git checkout` in the main checkout (#12
 **Stacked PR after its base squash-merges (#1254).** `git rebase --onto origin/main <old-base-tip>`, then confirm `diff <(git diff <old-base> <old-tip>) <(git diff origin/main HEAD)` is empty before pushing.
 
 **`git checkout -- <file>` after a mutation test discards your own uncommitted edits too** (#1262 main session, #1265 implementer, 2026-10-19). Commit the fix before mutating, or reverse the sed in place.
+
+## A fresh agent worktree has no `node_modules` (#1288)
+
+Run `pnpm install --frozen-lockfile --prod=false`, then `pnpm --filter @metis/shared build`, before any vitest run. Otherwise every suite fails on imports.

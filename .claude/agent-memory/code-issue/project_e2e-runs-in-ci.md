@@ -12,3 +12,7 @@ Related: removal PRs prove "the URL now 404s" with a static route-table test (`u
 **Why:** a false CI claim makes an acceptance criterion ("e2e green in CI") look unverified, and a route test that misses dynamic siblings can stay green while the URL still resolves.
 
 **How to apply:** before writing CI claims in a PR body, read `gh pr checks <pr>` and the `e2e` job log. In removal route tests, assert both the catch-all and the dynamic-sibling cases.
+
+## The route-hygiene scanner rejects `unroute` (#1285)
+
+The e2e-route-hygiene scanner fails `pnpm test` on any `page.unroute`/`unrouteAll` in an e2e spec. To hold and then release requests, keep the route registered and switch it off with a flag plus `route.fallback()`.

@@ -38,6 +38,8 @@ import { onClientEvent, runDetached } from "./client-event-handler.js";
 import { createClusterPresence, type PresenceMember } from "./cluster-presence.js";
 import type { MetisIOServer } from "./server.js";
 import { onRoomJoin, roomFromField } from "./join-rate-limit.js";
+import { evictionEpochOf, recheckJoinAfterEviction } from "./project-data-rooms.js";
+import { onRoomEvicted, rememberRoomProject } from "./room-scope.js";
 
 const log = createChildLogger("socket:thread-presence");
 
@@ -100,13 +102,13 @@ const defaultPresence: ThreadPresence = {
 /** The minimal socket surface the presence/typing handlers depend on. */
 export type PresenceSocket = Pick<
   Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, { user: AuthPayload }>,
-  "id" | "on" | "join" | "leave" | "emit" | "to" | "data"
->;
+  "id" | "on" | "join" | "leave" | "emit" | "to" | "data" | "rooms"
+> & { nsp: { server: MetisIOServer }; conn: { close(): void } };
 
 type AccessChecker = (
   actor: { id: string; role: RoleKey },
   threadId: string,
-) => Promise<{ ok: boolean; reason?: string }>;
+) => Promise<{ ok: boolean; reason?: string; projectId?: string }>;
 
 /** Snapshot the current members of a thread room. */
 function membersOf(members: PresenceMap, room: string): PresenceMember[] {
@@ -151,6 +153,8 @@ export function wireDiscussionPresenceHandlers(
     if (!threadId || typeof threadId !== "string") return;
     return (async () => {
       try {
+        // #1290 — read before the check (see `recheckJoinAfterEviction` below).
+        const evictionEpoch = evictionEpochOf(socket);
         const result = await access({ id: user.userId, role: user.role as RoleKey }, threadId);
         if (!result.ok) {
           log.warn("Socket presence:thread:join rejected", {
@@ -163,6 +167,7 @@ export function wireDiscussionPresenceHandlers(
           return;
         }
         const room = threadRoom(threadId);
+        if (result.projectId) rememberRoomProject(room, result.projectId);
         await socket.join(room);
         joined.add(room);
         if (!threadPresence.has(room)) threadPresence.set(room, new Map());
@@ -172,6 +177,7 @@ export function wireDiscussionPresenceHandlers(
           displayName: user.username,
         });
         presence.changed(room, socket);
+        await recheckJoinAfterEviction(socket, user, room, evictionEpoch);
       } catch (err) {
         log.warn("presence:thread:join failed", {
           socketId: socket.id,
@@ -181,6 +187,15 @@ export function wireDiscussionPresenceHandlers(
         socket.emit("auth:error", { message: THREAD_DENIAL, room: threadRoom(threadId) });
       }
     })();
+  });
+
+  // #1290 — a socket the re-judgement takes out of a thread room
+  // (`rejudgeProjectDataRooms`) leaves its presence list too, and stops being
+  // allowed to type into the room.
+  onRoomEvicted(socket, (room) => {
+    if (!joined.delete(room)) return;
+    removeFromRoom(threadPresence, room, socket.id);
+    presence.changed(room, socket);
   });
 
   onClientEvent(socket, "presence:thread:leave", (payload) => {

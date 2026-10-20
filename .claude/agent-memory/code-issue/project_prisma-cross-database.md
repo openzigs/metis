@@ -32,3 +32,7 @@ Older entries, folded here (retired from the index 2026-10-16; files unchanged):
 - `server/tests/generated-doc-outbox.test.ts` builds `scheduled_jobs` by hand: a new
   ScheduledJob column goes there too. `pnpm db:gen-postgres:check` fails from `server/`;
   run `bash scripts/gen-postgres-schema.sh` from the repo root and check `git diff` (#1235).
+
+## Date guards in front of SQLite `julianday(?)` (#1281)
+
+A CLI date guard using JS `Date.parse` lets `October 15, 2026` through to SQLite `julianday(?)`, which yields NULL: the comparison matches zero rows with no error. Normalise with `new Date(x).toISOString()` before binding.

@@ -223,6 +223,10 @@ function connect(who: Who) {
   const socket = {
     id,
     data: { user: authOf(who) },
+    // #1290 — a join reads the eviction epoch and may re-judge the room.
+    nsp: { server: {} },
+    rooms: new Set<string>(),
+    conn: { close: () => undefined },
     on: (event: string, h: (payload: unknown) => void) => {
       handlers.set(event, h);
       return socket;

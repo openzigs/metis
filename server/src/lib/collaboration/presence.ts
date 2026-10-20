@@ -21,6 +21,10 @@
  *
  *   disconnect
  *     → leaves all presence rooms for that socket, broadcasts updates
+ *
+ * #1290 — a socket already in a room is re-judged with the join's rule when
+ * access can be lost (a member removed, the project or workspace deleted):
+ * `rejudgeProjectDataRooms` takes it out of the room and off the list.
  */
 import { isPresenceArtifactType, presenceRoom } from "@metis/shared";
 import type { MetisIOServer } from "../socket/server.js";
@@ -28,6 +32,8 @@ import { onClientEvent, onConnection } from "../socket/client-event-handler.js";
 import { canJoinPresenceRoom } from "../socket/room-access.js";
 import { createClusterPresence, type PresenceMember } from "../socket/cluster-presence.js";
 import { onRoomJoin } from "../socket/join-rate-limit.js";
+import { evictionEpochOf, recheckJoinAfterEviction } from "../socket/project-data-rooms.js";
+import { onRoomEvicted } from "../socket/room-scope.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("socket:presence");
@@ -78,14 +84,25 @@ export function wirePresenceHandlers(io: MetisIOServer, opts: WirePresenceOption
     const pendingJoins = new Map<string, number>();
     let joinSeq = 0;
 
-    /** Leaves `key` and broadcasts the shorter list to the viewers who remain. */
-    async function leaveRoom(key: string): Promise<void> {
-      await socket.leave(key);
+    /** Takes this socket off `key`'s list and re-lists it to the viewers who remain. */
+    function dropFromList(key: string): void {
       joinedRooms.delete(key);
       roomPresence.get(key)?.delete(socket.id);
       presence.changed(key);
       if ((roomPresence.get(key)?.size ?? 0) === 0) roomPresence.delete(key);
     }
+
+    /** Leaves `key` and broadcasts the shorter list to the viewers who remain. */
+    async function leaveRoom(key: string): Promise<void> {
+      await socket.leave(key);
+      dropFromList(key);
+    }
+
+    // #1290 — a socket the re-judgement takes out of a presence room
+    // (`rejudgeProjectDataRooms`) is taken off its list too.
+    onRoomEvicted(socket, (key) => {
+      if (joinedRooms.has(key)) dropFromList(key);
+    });
 
     // #654 — the payload is read with `?.`, never destructured: a null or
     // missing payload rejected the handler's promise and crashed the process.
@@ -109,6 +126,8 @@ export function wirePresenceHandlers(io: MetisIOServer, opts: WirePresenceOption
         const key = roomKey(artifactType, artifactId);
         const attempt = ++joinSeq;
         pendingJoins.set(key, attempt);
+        // #1290 — read before the check (see `recheckJoinAfterEviction` below).
+        const evictionEpoch = evictionEpochOf(socket);
         let allowed = false;
         try {
           allowed = await canJoinPresenceRoom(user, artifactType, artifactId);
@@ -138,6 +157,7 @@ export function wirePresenceHandlers(io: MetisIOServer, opts: WirePresenceOption
           displayName: user.username,
         });
         presence.changed(key);
+        await recheckJoinAfterEviction(socket, user, key, evictionEpoch);
       },
     );
 

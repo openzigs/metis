@@ -30,14 +30,17 @@ import { canAccessThread } from "../discussions/access.js";
 import { createChildLogger } from "../logger.js";
 import { onClientEvent } from "./client-event-handler.js";
 import { onRoomJoin, roomFromField } from "./join-rate-limit.js";
+import { evictionEpochOf, recheckJoinAfterEviction } from "./project-data-rooms.js";
+import { rememberRoomProject } from "./room-scope.js";
+import type { MetisIOServer } from "./server.js";
 
 const log = createChildLogger("socket:discussion");
 
 /** The minimal socket surface the thread-room handlers depend on. */
 export type ThreadRoomSocket = Pick<
   Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, { user: AuthPayload }>,
-  "id" | "on" | "join" | "leave" | "emit" | "data"
->;
+  "id" | "on" | "join" | "leave" | "emit" | "data" | "rooms"
+> & { nsp: { server: MetisIOServer }; conn: { close(): void } };
 
 /**
  * The room name for a discussion thread's realtime fan-out. Defined in
@@ -63,6 +66,9 @@ export { THREAD_DENIAL };
  *   and no join.
  * - `unsubscribe:thread { threadId }` leaves the room (no authz needed — you
  *   can always stop listening).
+ * - #1290 — a socket already in the room is re-judged with the same rule when
+ *   access can be lost (`rejudgeProjectDataRooms`): a member removed, or the
+ *   project or workspace deleted.
  */
 export function wireThreadRoomHandlers(socket: ThreadRoomSocket): void {
   const user = socket.data.user;
@@ -72,6 +78,9 @@ export function wireThreadRoomHandlers(socket: ThreadRoomSocket): void {
     if (!threadId || typeof threadId !== "string") return;
     return (async () => {
       try {
+        // #1290 — read before the check: an eviction that runs while it is in
+        // flight cannot see this socket, so the join is judged again below.
+        const evictionEpoch = evictionEpochOf(socket);
         const access = await canAccessThread(
           { id: user.userId, role: user.role as RoleKey },
           threadId,
@@ -86,7 +95,9 @@ export function wireThreadRoomHandlers(socket: ThreadRoomSocket): void {
           socket.emit("auth:error", { message: THREAD_DENIAL, room: threadRoom(threadId) });
           return;
         }
+        rememberRoomProject(threadRoom(threadId), access.projectId);
         await socket.join(threadRoom(threadId));
+        await recheckJoinAfterEviction(socket, user, threadRoom(threadId), evictionEpoch);
         log.debug("Socket joined thread room", {
           socketId: socket.id,
           userId: user.userId,

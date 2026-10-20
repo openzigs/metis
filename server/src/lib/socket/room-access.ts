@@ -1,6 +1,7 @@
 /**
  * #655 — who may join a `connector:{id}`, `run:{id}` or `job:{id}` room,
- * (#679) a `presence:{type}:{id}` room, and (#1212) a `project:{id}` room.
+ * (#679) a `presence:{type}:{id}` room, (#1212) a `project:{id}` room and
+ * (#1290) a `session:{id}` room.
  *
  * Each room carries reads of the resource it is named after, so joining it
  * takes the same rule as the REST read of that resource: the resource exists,
@@ -10,20 +11,37 @@
  * `connector.read` and `analysis.read`, so the object-level rule is the whole
  * REST rule.
  *
+ * #1290 — the project half is `canReadProject` (`canAccessProjectDiscussions`,
+ * the `project:{id}` rule): `assertProjectAccess` plus "the project is not
+ * soft-deleted" for a non-admin, with the caller's workspaces read live. It
+ * used to be `assertProjectAccess` alone, which ignores `project.deletedAt`, so
+ * a member could still join these rooms on a soft-deleted project. The same
+ * rules re-judge a socket already in the room (`project-data-rooms.ts`), and
+ * each records the room's project (`rememberRoomProject`) so that a project
+ * delete re-judges only that project's rooms.
+ *
  * Every denial — unknown id, deleted resource, another project — answers
  * `false` (or `null`), so a socket cannot be used as an existence oracle.
  * Anything that is not an `AppError` (a database failure) is rethrown, so the
  * caller logs it and still refuses the socket, as `canJoinAnalysisRoom` does.
  */
-import { isSpecKitArtifactName, type AuthPayload, type PresenceArtifactType } from "@metis/shared";
+import {
+  bgRunRoom,
+  connectorRoom,
+  isSpecKitArtifactName,
+  presenceRoom,
+  sessionRoom,
+  type AuthPayload,
+  type PresenceArtifactType,
+} from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { canAccessProjectDiscussions, canAccessThread } from "../discussions/access.js";
-import { assertProjectAccess } from "../custom-agents/authz.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { loadAccessibleImpactDetail } from "../impact-analysis/impact-detail-access.js";
 import { getJobScope, type JobScope } from "./job-events.js";
 import { readJobScope } from "./job-scope-store.js";
 import { createChildLogger } from "../logger.js";
+import { rememberRoomProject } from "./room-scope.js";
 
 const log = createChildLogger("socket:room-access");
 
@@ -37,8 +55,14 @@ async function passes(check: () => Promise<unknown>): Promise<boolean> {
   }
 }
 
-function canReachProject(user: AuthPayload, projectId: string): Promise<boolean> {
-  return passes(() => assertProjectAccess(user, projectId));
+/**
+ * #1290 — may `user` read `projectId`'s data? The rule of `project:{id}`
+ * (`canAccessProjectDiscussions`): project access, the caller's workspaces read
+ * live, and a soft-deleted project closed to non-admins. Returns `false` on a
+ * denial and rethrows a database failure.
+ */
+export function canReadProject(user: AuthPayload, projectId: string): Promise<boolean> {
+  return canAccessProjectDiscussions({ id: user.userId, role: user.role }, projectId);
 }
 
 /**
@@ -83,7 +107,9 @@ export async function canJoinConnectorRoom(
     prisma.databaseConnection.findFirst(query),
   ]);
   const owner = repo ?? db;
-  return owner ? canReachProject(user, owner.projectId) : false;
+  if (!owner) return false;
+  rememberRoomProject(connectorRoom(connectorId), owner.projectId);
+  return canReadProject(user, owner.projectId);
 }
 
 /**
@@ -95,7 +121,26 @@ export async function canJoinBgRunRoom(user: AuthPayload, runId: string): Promis
     where: { id: runId },
     select: { projectId: true },
   });
-  return run ? canReachProject(user, run.projectId) : false;
+  if (!run) return false;
+  rememberRoomProject(bgRunRoom(runId), run.projectId);
+  return canReadProject(user, run.projectId);
+}
+
+/**
+ * #1290 — `session:{id}` carries a chat session's tool events and approval
+ * prompts (with the tool's arguments): the rule of every session read
+ * (`loadAuthorizedSession`) — the caller owns the live session and, when it is
+ * bound to a project, can still read that project — with the project half
+ * taken from {@link canReadProject}, so a soft-deleted project closes it too.
+ */
+export async function canJoinSessionRoom(user: AuthPayload, sessionId: string): Promise<boolean> {
+  const session = await prisma.aISession.findFirst({
+    where: { id: sessionId, userId: user.userId, deletedAt: null },
+    select: { projectId: true },
+  });
+  if (!session) return false;
+  rememberRoomProject(sessionRoom(sessionId), session.projectId);
+  return session.projectId === null || canReadProject(user, session.projectId);
 }
 
 /**
@@ -194,6 +239,7 @@ export async function canJoinPresenceRoom(
   switch (artifactType) {
     case "discussion": {
       const access = await canAccessThread({ id: user.userId, role: user.role }, artifactId);
+      if (access.ok) rememberRoomProject(presenceRoom(artifactType, artifactId), access.projectId);
       return access.ok;
     }
     case "spec-kit-artifact": {
@@ -201,7 +247,8 @@ export async function canJoinPresenceRoom(
       const projectId = artifactId.slice(0, sep);
       const name = artifactId.slice(sep + 1);
       if (sep <= 0 || !isSpecKitArtifactName(name)) return false;
-      return canReachProject(user, projectId);
+      rememberRoomProject(presenceRoom(artifactType, artifactId), projectId);
+      return canReadProject(user, projectId);
     }
   }
 }

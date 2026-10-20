@@ -36,6 +36,10 @@ function makeFakeSocket(user: AuthPayload = USER) {
   const socket = {
     id: "socket-1",
     data: { user },
+    // #1290 — a join reads the eviction epoch and may re-judge the room.
+    nsp: { server: {} },
+    rooms: new Set<string>(),
+    conn: { close: vi.fn() },
     on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
       handlers.set(event, handler);
       return socket;

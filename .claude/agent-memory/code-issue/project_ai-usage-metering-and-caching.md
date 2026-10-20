@@ -22,3 +22,7 @@ metadata:
 - The docs-gen section prompt is a section-reuse input (`prompts` in `hashSectionInputs`). Any reorder rewrites stored sections once, and the `brd-before-1070*.json` replays must be regenerated (`WRITE_BEFORE_1070_FIXTURE=1`).
 
 Related: [[test-falsifiability-traps]], [[reader-brd-traps]].
+
+## Unknown-model fallbacks: judge by what a wrong guess costs (#1281)
+
+Judge an unknown-model-id fallback by what a wrong guess costs (money vs latency), not by "too high is safe". A prompt-cache floor guessed too high silently skips the docs-gen warm-up and pays for parallel cache writes that are never read back.

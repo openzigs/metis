@@ -32,3 +32,7 @@ retired from the index 2026-10-16, file unchanged: three of those five fail only
   fallback test) stay in [[codeql-rate-limit-must-precede-requireauth]] and
   [[new-route-needs-its-own-limiter-keyed-on-user]].
 - Jira publishes save issue records with `destination: "jira"` and `issueNumber: 0`. When a batch publishes to both, the Jira record is written after the GitHub one. Any UI that shows published issues must branch on `destination` (#1275).
+
+## PR-URL parsers and repo identity (#1287 c2)
+
+Parsers like `repositoryOfPrUrl` that use `indexOf('pull')` mis-parse an owner or repo named `pull`. Repo identity by owner/name also breaks silently on a GitHub rename, because `RepoConnection.ownerOrOrg`/`repoName` change only when a user edits them.
