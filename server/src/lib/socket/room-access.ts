@@ -107,9 +107,14 @@ export async function canJoinBgRunRoom(user: AuthPayload, runId: string): Promis
  *
  * `job_scopes` is read only once every row lookup has missed, so a job with a
  * row never depends on it. A failure to read it is logged and treated as a
- * miss: the id is then unknown, and the join is refused.
+ * miss: the id is then unknown, and the join is refused. With `onStoreError:
+ * "throw"` it is rethrown instead (#1251): a re-judgement of a socket already
+ * in the room must not read a database error as a revocation.
  */
-async function lookupJobScope(jobId: string): Promise<JobScope | null> {
+async function lookupJobScope(
+  jobId: string,
+  onStoreError: "deny" | "throw",
+): Promise<JobScope | null> {
   const select = { projectId: true };
   const [analysis, doc, importRun, impact] = await Promise.all([
     prisma.analysis.findFirst({ where: { id: jobId, deletedAt: null }, select }),
@@ -124,6 +129,7 @@ async function lookupJobScope(jobId: string): Promise<JobScope | null> {
   try {
     return await readJobScope(jobId);
   } catch (err) {
+    if (onStoreError === "throw") throw err;
     log.warn("could not read a recorded job scope; treating the job as unknown", {
       jobId,
       error: (err as Error).message,
@@ -134,20 +140,31 @@ async function lookupJobScope(jobId: string): Promise<JobScope | null> {
 
 /**
  * `job:{id}` carries a job's lifecycle and doc-section events. A job scoped to
- * a project takes that project's read rule — its events are broadcast to
- * `project:{id}` as well. An impact analysis spans projects and takes the rule
+ * a project takes the rule of that project's room (`project:{id}`, where its
+ * events are broadcast as well): project access plus "not soft-deleted". An impact analysis spans projects and takes the rule
  * of `GET /api/impact-analyses/:id`; any other job without a project is
  * admin-only. Returns the scope the caller was authorized against, or `null`.
+ *
+ * #1251 — the same rule re-judges a socket already in the room
+ * (`rejudgeJobRooms`), which passes `onStoreError: "throw"` so that a failed
+ * `job_scopes` read reaches its fail-open / fail-closed handling.
  */
 export async function resolveJobRoomScope(
   user: AuthPayload,
   jobId: string,
+  opts: { onStoreError?: "deny" | "throw" } = {},
 ): Promise<JobScope | null> {
-  const scope = getJobScope(jobId) ?? (await lookupJobScope(jobId));
+  const scope = getJobScope(jobId) ?? (await lookupJobScope(jobId, opts.onStoreError ?? "deny"));
   if (!scope) return null;
   let allowed: boolean;
   if (scope.projectId !== null) {
-    allowed = await canReachProject(user, scope.projectId);
+    // #1251 — the rule of `project:{id}`, which carries the same events: a
+    // soft-deleted project is closed to non-admins and the caller's workspaces
+    // are read live, so a project delete re-judges its job rooms too.
+    allowed = await canAccessProjectDiscussions(
+      { id: user.userId, role: user.role },
+      scope.projectId,
+    );
   } else if (scope.kind === "impact-analysis") {
     allowed = await passes(() =>
       loadAccessibleImpactDetail({ id: user.userId, role: user.role }, jobId),

@@ -69,6 +69,7 @@ import { loadAuthorizedSession } from "../ai/conversation/session-access.js";
 import { canJoinAnalysisRoom } from "./analysis-room-access.js";
 import { canJoinBgRunRoom, canJoinConnectorRoom, resolveJobRoomScope } from "./room-access.js";
 import { rejudgeProjectRooms, wireProjectRoomHandlers } from "./project-rooms.js";
+import { recheckJobJoinAfterEviction, rejudgeJobRooms } from "./job-rooms.js";
 import { getLastDocSections, getLastJobLifecycle, type JobScope } from "./job-events.js";
 import { wireThreadRoomHandlers } from "./discussion-rooms.js";
 import {
@@ -88,7 +89,7 @@ import { createChildLogger } from "../logger.js";
 import { mcpStatusEvictionEpoch, wireMcpStatusEvictionRelay } from "./mcp-status-eviction.js";
 import { userSocketRevocationEpoch, wireUserRevocationRelay } from "./user-disconnect.js";
 import { wireProjectRoomEvictionRelay } from "./project-room-eviction.js";
-import { bumpEpoch } from "./revocation-relay.js";
+import { bumpEpoch, readEpoch } from "./revocation-relay.js";
 import { MAX_TIMEOUT_MS, envMs } from "../config/env-ms.js";
 import { onClientEvent, onConnection, runDetached } from "./client-event-handler.js";
 import { onRoomJoin, roomFromField } from "./join-rate-limit.js";
@@ -277,7 +278,9 @@ const revalidations = new WeakMap<MetisIOServer, RevalidationState>();
  *   - a socket still in an `mcp:status` workspace room it no longer has a live
  *     membership of leaves it (#588);
  *   - a socket in a `project:{id}` room the live user may no longer join
- *     leaves it (#1212, `rejudgeProjectRooms`).
+ *     leaves it (#1212, `rejudgeProjectRooms`);
+ *   - a socket in a `job:{id}` room the live user may no longer join leaves
+ *     it (#1251, `rejudgeJobRooms`).
  * What a failed lookup (either one) does depends on the trigger. A pass that
  * serves a `LISTEN` (re)connect fails closed: a publish may really have been
  * missed, so the transport closes and the client re-handshakes and
@@ -392,8 +395,14 @@ async function revalidateUserSockets(
   // live user with the join's own rule, so a removal whose eviction or relay
   // was lost is applied here. A `listen` pass fails closed, a sweep keeps the
   // room on a lookup error (as below).
+  // #1251 — and every job room, with the `subscribe:job` rule.
   if (live) {
-    await Promise.all(kept.map((socket) => rejudgeProjectRooms(socket, live, { failClosed })));
+    await Promise.all(
+      kept.map(async (socket) => {
+        await rejudgeProjectRooms(socket, live, { failClosed });
+        await rejudgeJobRooms(socket, live, { failClosed });
+      }),
+    );
   }
   // Each socket's workspace rooms BEFORE the membership read. A `subscribe:mcp`
   // that finishes during the read can join a workspace granted after the read's
@@ -751,7 +760,7 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
     room: string,
     authorize: () => Promise<boolean>,
     denial: string,
-    onJoined?: () => void,
+    onJoined?: () => void | Promise<void>,
   ): Promise<void> => {
     const attempt = ++roomCheckSeq;
     pendingRoomChecks.set(room, attempt);
@@ -773,7 +782,7 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
         return;
       }
       await socket.join(room);
-      onJoined?.();
+      await onJoined?.();
     })();
   };
   const leaveRoom = (room: string): Promise<void> | void => {
@@ -860,17 +869,28 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
     // rooms) reaches the Documentation page without waiting for a refetch.
     // Only events of the scope the join was authorized against replay.
     const replay = (): void => {
+      if (!socket.rooms.has(jobRoom(jobId))) return;
       const last = getLastJobLifecycle(jobId);
       if (last && last.projectId === scope?.projectId) socket.emit("job:lifecycle", last);
       for (const section of getLastDocSections(jobId)) {
         if (section.projectId === scope?.projectId) socket.emit("job:doc-section", section);
       }
     };
+    // #1251 — the eviction epoch is read before the check, so a member removed
+    // while it was in flight is judged again once in the room (fail closed),
+    // and only a socket still in the room is replayed to.
+    let evictionEpoch = 0;
     return joinIfAuthorized(
       jobRoom(jobId),
-      async () => (scope = await resolveJobRoomScope(user, jobId)) !== null,
+      async () => {
+        evictionEpoch = readEpoch(socket.nsp.server, "eviction");
+        return (scope = await resolveJobRoomScope(user, jobId)) !== null;
+      },
       "FORBIDDEN: no access to job",
-      replay,
+      async () => {
+        await recheckJobJoinAfterEviction(socket, user, jobId, evictionEpoch);
+        replay();
+      },
     );
   });
   onClientEvent(socket, "unsubscribe:job", (payload) => {

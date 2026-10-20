@@ -3,7 +3,8 @@
  * (#307/#309).
  *
  * Phases 1–3 gated impact reads purely by PROJECT access (then `createdById`;
- * since #1221/#1232 the project-access rule, `scheduler/project-access.ts`). Phase 4 introduces a NEW tenancy dimension:
+ * since #1221/#1232 the project-access rule, `scheduler/project-access.ts`).
+ * Phase 4 introduces a NEW tenancy dimension:
  * `DatabaseResource` and `SchemaObjectIdentity` are WORKSPACE-scoped, and a
  * cross-project query can surface OTHER projects that share a resource. A user
  * must therefore only ever see resources / canonical objects / other-projects

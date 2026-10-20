@@ -100,6 +100,11 @@ export function prismaModuleMock() {
       ),
     },
     project: {
+      // #1251 — a project job's room takes `canAccessProjectDiscussions`, whose
+      // first read is "is the project live": every seeded project is.
+      findFirst: vi.fn(async ({ where }: { where: { id: string } }) =>
+        db.projects.has(where.id) ? { id: where.id } : null,
+      ),
       findUnique: vi.fn(
         async ({
           where,

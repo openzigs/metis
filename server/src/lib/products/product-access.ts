@@ -7,22 +7,23 @@
  * and (b) its associated repo-connections' `projectId`. The union of those is a
  * product's tenant footprint.
  *
- * One rule, two forms — the project-access rule (`assertProjectAccess`), with
- * the caller's workspaces read live from the database rather than from the
- * token's claim (#1232):
- *   - by-id reads/mutations → resolve the product's bound projects and pass any
- *     one through `canAccessProjectDiscussions` (discussions/access.ts, the
- *     function `actorHasProjectAccess` wraps): admin
- *     bypass, non-member → 404 (no existence oracle), null-workspace projects
- *     open to authed users, soft-deleted projects closed.
- *   - list endpoints → intersect rows against `listMemberAccessibleProjectIds`
- *     (the list form of the same rule). Admin sees all; a product/repo-connection
- *     bound to an inaccessible project is simply omitted (no error).
+ * One rule — the project-access rule (`assertProjectAccess`), with the
+ * caller's workspaces read live from the database rather than from the token's
+ * claim (#1232) — in its list form, `listMemberAccessibleProjectIds`:
+ *   - by-id reads/mutations → the product's bound projects intersected with
+ *     the caller's accessible set (one query, #1251; it used to judge each
+ *     bound project in turn, about three queries apiece): admin bypass,
+ *     non-member → 404 (no existence oracle), null-workspace projects open to
+ *     authed users, soft-deleted projects closed.
+ *   - list endpoints → intersect rows against the same set. Admin sees all; a
+ *     product/repo-connection bound to an inaccessible project is simply
+ *     omitted (no error).
  *
  * #1232 — the list form used to be the projects the caller CREATED, so a
  * workspace teammate could open a product by id that the list never showed
- * them. Writes keep their role permission (`project.update` / `analysis.run`
- * on the routes), so a reader-role member reads only.
+ * them. Writes keep their role permission (`project.update`, and
+ * `project.delete` for a delete, on the routes), so a reader-role member reads
+ * only.
  *
  * A product bound to NO project (pre-migration/global) is treated as open to any
  * authenticated user, matching `assertProjectAccess`'s null-workspace convention.
@@ -32,7 +33,6 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { audit } from "../audit/audit-service.js";
-import { canAccessProjectDiscussions } from "../discussions/access.js";
 import {
   actorHasProjectAccess,
   isAdminActor,
@@ -71,6 +71,9 @@ export async function resolveProductProjectIds(productId: string): Promise<strin
  * least one of the product's bound projects. Unknown OR out-of-tenant both →
  * `AppError(404, "NOT_FOUND")` (mirroring `assertProjectAccess`) so route probing
  * cannot distinguish the two.
+ *
+ * #1251 — one `listMemberAccessibleProjectIds` read and a set lookup, however
+ * many projects the product is bound to.
  */
 export async function assertProductAccessible(user: AuthPayload, productId: string): Promise<void> {
   if (user.role === "admin") return;
@@ -82,11 +85,11 @@ export async function assertProductAccessible(user: AuthPayload, productId: stri
   // mirroring assertProjectAccess's null-workspace convention.
   if (projectIds.length === 0) return;
   const actor = actorOf(user);
-  for (const projectId of projectIds) {
-    // No audit context per project: a product reachable through its second
-    // bound project is not a probe of its first. The one denial is audited below.
-    if (await canAccessProjectDiscussions(actor, projectId)) return;
-  }
+  // Bounded to the product's own projects: one query, a handful of rows.
+  const accessible = new Set(await listMemberAccessibleProjectIds(actor, projectIds));
+  // A product reachable through its second bound project is not a probe of its
+  // first, so nothing is audited per project. The one denial is audited below.
+  if (projectIds.some((projectId) => accessible.has(projectId))) return;
   audit({
     actor: { id: actor.id },
     action: "product.access.denied",

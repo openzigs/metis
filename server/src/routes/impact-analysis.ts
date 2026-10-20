@@ -105,6 +105,7 @@ import {
   upsertManualOverride,
 } from "../lib/impact-analysis/schema-usage-override.js";
 import { prisma } from "../lib/prisma.js";
+import { audit } from "../lib/audit/audit-service.js";
 import { listDbConnectors, inspectDbConnector } from "../lib/connectors/db/db-service.js";
 import { loadLiveSchema, type LiveSchemaIndex } from "../lib/impact-analysis/live-schema-ingest.js";
 import {
@@ -655,6 +656,19 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
   );
 
   // DELETE /projects/:projectId/usage-overrides/:overrideId — remove an override.
+  //
+  // #1251 — deliberately NOT limited to the override's author, unlike a table
+  // feedback DELETE (below). An override is the PROJECT's one assertion about a
+  // usage edge (unique per project + table + column + access, and every member
+  // reads it through `applyOverrides`), and any `analysis.run` member can
+  // already replace a teammate's override through the POST above, which
+  // re-stamps `createdBy`. An author-only delete would guard nothing that
+  // upsert leaves open. Table feedback is each user's own mark (one row per
+  // user per item, harvested into the eval corpus), so its delete is the
+  // author's. The gate is the same as the write's: `analysis.run` plus access
+  // to the project, so a reader-role member cannot delete. Every delete is
+  // audited (`impact_analysis.usage_override.delete`) with the override's
+  // author, so removing a teammate's assertion leaves a trail.
   r.delete(
     "/projects/:projectId/usage-overrides/:overrideId",
     requirePermission("analysis.run"),
@@ -663,14 +677,29 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
         const actor = actorOf(req);
         const projectId = String(req.params.projectId);
         await assertProjectsAccessible(actor, [projectId]);
-        const removed = await deleteManualOverride(
-          prisma,
-          projectId,
-          String(req.params.overrideId),
-        );
-        if (!removed) {
+        const overrideId = String(req.params.overrideId);
+        const existing = await prisma.schemaUsageOverride.findFirst({
+          where: { id: overrideId, projectId },
+          select: { createdBy: true, tableName: true, columnName: true, access: true },
+        });
+        const removed =
+          existing !== null && (await deleteManualOverride(prisma, projectId, overrideId));
+        if (!existing || !removed) {
           throw new AppError(404, "NOT_FOUND", "Override not found");
         }
+        audit({
+          actor: { id: actor.id },
+          action: "impact_analysis.usage_override.delete",
+          target: { type: "schema_usage_override", id: overrideId },
+          metadata: {
+            projectId,
+            createdBy: existing.createdBy,
+            ownOverride: existing.createdBy === actor.id,
+            tableName: existing.tableName,
+            columnName: existing.columnName,
+            access: existing.access,
+          },
+        });
         res.status(204).end();
       } catch (err) {
         next(asAppError(err));
