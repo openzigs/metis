@@ -18,3 +18,4 @@ Learned on #1235 (PR #1242), which scoped a scheduled webhook's `${vault:…}` a
 - **`shouldRunAdversarialPass` fired on #1242 only via the label and the changelog filename**; scheduler secret paths match no signal (#1244). Run the panel by hand on secret work until that lands.
 
 Related: [[object-acl-side-channels]], [[membership-access-widening-checklist]], [[test-falsifiability-traps]].
+- (#1282) Cron firings write `lastRunAt`/`nextRunAt`, which bumps `ScheduledJob.updatedAt`, so the optimistic-concurrency token is `ScheduledJob.version`. In a conflict test, a stale write by a non-binder is refused first by the binding guard (403), so make the stale writer the binder to isolate the 409. A new Rotate-anyway binding type also needs the `confirmedBindings` enum in `routes/vault.ts`.

@@ -298,11 +298,13 @@ export interface ClaimExtractorDeps {
   provider: AIProvider;
   model?: string;
   /**
-   * When true, request prompt caching on each `chat` call: the shared system
-   * prompt (reused across every section's decomposition) and the large stable
-   * passage/source-id prefix in the user turn. Providers that support it (e.g.
-   * the native Anthropic provider) cache those prefixes; others ignore it.
-   * Defaults to false (back-compat — un-flagged requests are unchanged).
+   * When true, request prompt caching of the shared system prompt (reused
+   * across every section's decomposition) on each `chat` call. #1277 — never
+   * the user turn: each passage is decomposed once, so a `messages`
+   * breakpoint paid the write surcharge on the whole prompt and was never
+   * read back. Providers that support it (e.g. the native Anthropic provider)
+   * cache the prefix; others ignore it. Defaults to false (back-compat —
+   * un-flagged requests are unchanged).
    */
   promptCaching?: boolean;
   /**
@@ -569,7 +571,9 @@ export class ClaimExtractor {
           // "grounding") so its input:output ratio + hit rate surface distinctly in
           // the #699 admin telemetry endpoint, validating the Sonnet-vs-Haiku call.
           callType: "claim-extraction",
-          ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
+          // #1277 — `messages: false`, not an absent key: the Bedrock gateway reads an
+          // absent key as its ENABLE_PROMPT_CACHING default.
+          ...(this.promptCaching ? { promptCaching: { system: true, messages: false } } : {}),
           // #336 — structured output on the local/vLLM path when enabled.
           ...(format ? { responseFormat: format } : {}),
           // #247 — structured, extractive: no reasoning spend on the output cap.

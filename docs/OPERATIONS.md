@@ -1540,6 +1540,66 @@ PROMPT_CACHE_TTL=1h          # optional — extends the gateway path from 5min t
                              # See the TTL-availability matrix below.
 ```
 
+#### Measuring what caching saves (#1277)
+
+`pnpm cache:report -- --db <sqlite file>` reads the `token_usages` ledger and
+prints, per `agentStep` × provider × model, the fresh input, cache-read and
+cache-write tokens and the **net saving**: what the same input tokens would
+have cost uncached, minus what they cost. A cache write is priced at the
+model's write price (1.25× input for a 5-minute write; `--ttl 1h` prices it at
+2×), a read at its read price (0.1×, or 0.05× on Sonnet 5.5 and Opus 5.5). A
+model priced without a write price (DeepSeek through `MODEL_PRICES`) bills a
+write at the input price, so it is no surcharge. A negative saving means the
+flow paid the write surcharge and read too little back. Prices come from
+`provider-rates.ts` and `MODEL_PRICES` (the database's `runtime_config` row,
+else the environment). The script opens SQLite with `readOnly: true` and writes
+nothing; `--since` / `--until` take ISO timestamps, `--json` prints the lines,
+and `--sql` (or a `postgres://` `DATABASE_URL` with no `--db`) prints the
+aggregate query to run on Postgres instead.
+
+What #1277 changed, from that report on the dev ledger:
+
+- **docs-gen grounding** (claim extraction and the faithfulness judge) caches
+  its system prompt only. A `messages` breakpoint cached each call's whole user
+  turn, which never repeats.
+- **Spec Kit `/speckit.plan` on the Bedrock gateway** sends
+  `prompt_caching: { system: false, messages: false }`, and every single-call
+  Spec Kit command sends both as `false` on every provider (#1144's "no write",
+  now explicit). The gateway places one cachePoint after
+  the WHOLE system prompt, so it cannot end the cached prefix at `systemPrefix`
+  the way native Anthropic does (#1144); each of the five calls would write its
+  own entry.
+- **"No write" is an explicit `false` on the gateway.** bedrock-access-gateway
+  reads an ABSENT `system` / `messages` key as its `ENABLE_PROMPT_CACHING`
+  default (set to `true` above), so the gateway client forwards a caller's
+  `false` instead of dropping it, and the single-shot docs-gen calls and the
+  grounding calls send `messages: false`. A caller that sets no key keeps the
+  gateway default exactly as before.
+- **docs-gen batched sections** keep the #208 warm-up (the first batch runs
+  alone until its reply begins) only for an explicit Claude cache, on native
+  Anthropic or the gateway, whose section system prompt clears the model's
+  floor. DeepSeek, which caches automatically, and a prefix under the floor fan
+  out at once. `/speckit.plan` sends its calls one at a time, plan.md first, so
+  its first call is already the warm-up.
+- **docs-gen section prompts** are reordered for DeepSeek, which matches a
+  prefix from token 0. The grounding discipline now precedes a code-derived
+  section's instructions, so code-derived sections share it; and the
+  document's flow graph precedes the batch's facts, so the batches of one
+  section share it. The system prompt still ends in the section's own
+  instructions, so ACROSS sections the shared prefix stops there: the larger
+  cross-section gain would need the per-section facts and instructions moved
+  behind shared content, which changes the prompt and is not done here. Only
+  the order changed, but the prompt is a section reuse input, so a section
+  written before the change is written again once on the next regeneration.
+
+**The gateway's cache writes stay invisible** (re-checked 2026-10-19 against
+aws-samples/bedrock-access-gateway `main`: it reads Bedrock's
+`cacheWriteInputTokens` and returns no field for it). On `bedrock-gateway` rows
+the report's cache-write column is therefore 0 and the written tokens sit in
+fresh input, so the net saving it shows for a gateway flow is an **upper
+bound**: the 0.25× write premium is real and not in it. To see a flow's write
+waste, measure it on the native Anthropic provider, which reports both halves.
+
 #### Platform-split cache floors, TTL availability & cross-region caveat (Issue #703, epic #696)
 
 This subsection is the **single source of truth** for cache floors, TTL
@@ -1547,13 +1607,27 @@ availability, and the cross-region caveat; the deeper subsections below referenc
 it. All figures were verified 2026-07 against the AWS and Anthropic docs during
 the epic's P0 spike (#697).
 
-**Cache floors are platform-specific.** Below the floor the platform caches
-nothing and reports `cached_tokens = 0` with **no error** (a silent miss):
+**Cache floors.** Below the floor the platform caches nothing and reports
+`cached_tokens = 0` with **no error** (a silent miss) and no write charge.
 
-| Model (METIS route) | Bedrock floor | Direct Anthropic floor |
+| Model | Bedrock floor | Direct Anthropic floor |
 |---|---:|---:|
-| Sonnet 4.6 — default / general route | **1,024** | **2,048** |
+| Sonnet 5.5, Opus 5.5, Haiku 5.5, Opus 5, Fable 5 / 5.1, Mythos 5 / 5.1 | **512** | **512** |
+| Mythos Preview | **2,048** | **2,048** |
+| Opus 4.7 | **4,096** | **2,048** |
+| Opus 4.6, Opus 4.5 | **4,096** | **4,096** |
+| Opus 4.8, Sonnet 5, **Sonnet 4.6 (default route)**, Sonnet 4.5, Opus 4.1, Opus 4, Sonnet 4, Claude 3.7 / 3.5 Sonnet | **1,024** | **1,024** |
 | Haiku 4.5 — faster / cheaper route | **4,096** | **4,096** |
+| Claude 3.5 Haiku | — | **2,048** |
+
+#1277 re-read every row from both pages on 2026-10-19. Anthropic's page gives
+one minimum per model "on every platform where each model is available" and
+defers Bedrock to AWS's table, which agrees except for Opus 4.7. The #696-era
+figures this replaced (Sonnet 4.6 at **2,048** direct, Sonnet 4.5 and every
+Opus at **4,096**) no longer match either page; the stale 2,048 made the docs-gen
+warm-up skip every section on the default model. `cacheFloorTokens`
+(`server/src/lib/ai/cache-verification.ts`) carries the table, dated snapshot
+ids (`claude-sonnet-5-20260301`) and Bedrock spellings included.
 
 Sources: [AWS Bedrock prompt caching](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html),
 [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
@@ -1636,11 +1710,12 @@ The verified mapping for the Metis routes is:
 |---|---|---|---|---|
 | **General / default** | Claude **Sonnet 4.6** | `us.anthropic.claude-sonnet-4-6` | **1,024** | no |
 | **Faster / cheaper** | Claude **Haiku 4.5** | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | **4,096** | yes |
-| Legacy (informational) | Claude **Sonnet 4.5** | _no code path_ — operator-optional override only | **4,096** | yes |
+| Legacy (informational) | Claude **Sonnet 4.5** | _no code path_ — operator-optional override only | **1,024** (4,096 before the 2026-10-19 re-read, #1277) | yes |
 
 > The floor and 1h-TTL columns above are **Bedrock** values (METIS's default
-> platform). The **direct Anthropic** Sonnet 4.6 floor is **2,048** (Haiku 4.5 is
-> 4,096 on both), and direct Anthropic offers 1h on all current models — see the
+> platform). The **direct Anthropic** Sonnet 4.6 floor is also **1,024** (#1277;
+> Haiku 4.5 is 4,096 on both, and Sonnet 4.5 is 1,024 on both today), and direct
+> Anthropic offers 1h on all current models — see the
 > platform-split floor and TTL-availability tables in the #703 subsection above.
 
 `server/src/lib/ai/model-router.ts` is the source of truth and already encodes
@@ -1660,9 +1735,8 @@ route.
 > `aws bedrock get-inference-profile --inference-profile-identifier <profile>`.
 
 **Requirements**: the cacheable prefix must be **≥ the routed model's floor** —
-on Bedrock, **1,024 tokens** on the Sonnet 4.6 default route and **4,096 tokens**
-on the Haiku 4.5 (and legacy Sonnet 4.5) routes; on direct Anthropic the Sonnet
-4.6 floor is **2,048** (see the #703 platform-split table above). Cache TTL resets
+**1,024 tokens** on the Sonnet 4.6 default route (both platforms) and **4,096
+tokens** on the Haiku 4.5 route (see the floors table above, re-read for #1277). Cache TTL resets
 on each hit. Cache hits are reported via the existing `cacheReadTokens` /
 `cacheWriteTokens` fields in METIS finops telemetry.
 
@@ -1717,8 +1791,8 @@ asserted in `server/src/lib/analysis/agent-loop-caching.test.ts`):
 >   low-cost route; the absolute miss cost is small.
 > - **Revisit the gateway 1h TTL** on Haiku so the few cache writes that *do*
 >   land (if a future, larger stable tool set crosses 4,096) survive longer.
-> - **Pin the legacy Sonnet 4.5 profile** only if its 4,096 floor is acceptable
->   — note that *raises* the floor, it does not help.
+> - **Pin the legacy Sonnet 4.5 profile** only if its floor is acceptable. #1277:
+>   both pages now list it at 1,024, not the 4,096 this note was written against.
 >
 > The live `cached_tokens > 0` confirmation under sustained load — on **both**
 > the Sonnet route (expected to register) and the Haiku route (expected to stay
@@ -1989,8 +2063,7 @@ read-based hit ratio. `verify:cache` alone runs a no-network self-check; add
 
 **Platform-split cache floors** are the canonical table in the "Platform-split
 cache floors, TTL availability & cross-region caveat" subsection above (Sonnet
-4.6 = **1,024** on Bedrock / **2,048** on direct Anthropic; Haiku 4.5 = **4,096**
-on both; below the floor the platform caches nothing, silently). The largest
+4.6 = **1,024** on both platforms; Haiku 4.5 = **4,096** on both; below the floor the platform caches nothing, silently). The largest
 legitimate analysis prefix (**~2,225 tok**, see §7.5 sizing above) clears Sonnet
 on both platforms but never Haiku, so the Haiku route is **expected to stay at
 zero** by construction — a pass, not a regression.
@@ -2002,7 +2075,7 @@ zero** by construction — a pass, not a regression.
 | 1 | Bedrock gateway | Sonnet 4.6 | yes (`BEDROCK_SONNET_PROFILE`) | ~2,225 | hit (≥1,024 floor) | **pending deployed-gateway run (#704)** |
 | 2 | Bedrock gateway | Sonnet 4.6 | no (raw model ID) | ~2,225 | hit (isolates ARN var) | **pending deployed-gateway run (#704)** |
 | 3 | Bedrock gateway | Haiku 4.5 | either | ~2,225 | **zero** (< 4,096 floor) | **pending deployed-gateway run (#704)** |
-| 4 | Native Anthropic | Sonnet 4.6 | n/a | ~2,225 | hit (≥2,048 floor) | pending — machine reaches this path but no live LLM calls made in this spike |
+| 4 | Native Anthropic | Sonnet 4.6 | n/a | ~2,225 | hit (≥1,024 floor) | pending — machine reaches this path but no live LLM calls made in this spike |
 
 > **Status:** the harness, the normalization contract, and the floor-expectation
 > logic are **verified now** (unit tests, 100% coverage; `verify:cache`

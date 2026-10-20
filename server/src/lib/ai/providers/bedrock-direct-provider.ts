@@ -2318,14 +2318,33 @@ export class OpenAICompatibleProvider implements AIProvider {
       // Required for accurate usage accounting when streaming.
       body.stream_options = { include_usage: true };
     }
-    if (opts.promptCaching && (opts.promptCaching.system || opts.promptCaching.messages)) {
-      body.extra_body = {
-        prompt_caching: {
-          ...(opts.promptCaching.system ? { system: true } : {}),
-          ...(opts.promptCaching.messages ? { messages: true } : {}),
-        },
-      };
-    }
+    // #1277 — an ABSENT key is not "off" on bedrock-access-gateway: it falls
+    // back to the container's ENABLE_PROMPT_CACHING (bedrock.py: `cache_enabled
+    // = ENABLE_PROMPT_CACHING`, overridden only `if "system" in prompt_caching`),
+    // which docs/OPERATIONS.md §7.5 tells operators to set. So a caller's
+    // explicit `false` is forwarded as `false`, and a system prompt that goes on
+    // past its shared prefix sends `system: false` — omitting it would still
+    // write the whole system on every call. An unset key stays unset, so a
+    // caller that says nothing keeps the gateway's default exactly as before.
+    // Only the gateway reads `prompt_caching`: every other key (openai, azure,
+    // local runtimes, DeepSeek's OpenAI endpoint) gets a `true` forwarded as
+    // before #1277 and never a `false`, so a caller saying "no write" sends
+    // nothing new to a backend that does not know the field.
+    const pc = opts.promptCaching;
+    const gateway = this.key === "bedrock-gateway";
+    const forward = (v: boolean | undefined): boolean | undefined =>
+      gateway ? v : v === true ? true : undefined;
+    const system = forward(
+      pc?.system === true && gateway
+        ? !systemGoesPastSharedPrefix(messages, opts.systemMessage, pc.systemPrefix)
+        : pc?.system,
+    );
+    const messagesCache = forward(pc?.messages);
+    const caching = {
+      ...(system !== undefined ? { system } : {}),
+      ...(messagesCache !== undefined ? { messages: messagesCache } : {}),
+    };
+    if (Object.keys(caching).length > 0) body.extra_body = { prompt_caching: caching };
     return body;
   }
 
@@ -2526,6 +2545,29 @@ export class ToolCallDeltaAssembler {
       };
     }
   }
+}
+
+/**
+ * #1277 — whether the system prompt goes on past the caller's shared
+ * `systemPrefix` (#1144). bedrock-access-gateway places its one system
+ * cachePoint after the WHOLE system prompt and cannot end it at the prefix, so
+ * a cache write there would hold the per-call tail too: every call writes its
+ * own entry and none reads another's. The caller then gets no system cache
+ * write on this path. The test mirrors the native Anthropic provider's split
+ * (system parts joined with a blank line, prefix strictly shorter).
+ */
+function systemGoesPastSharedPrefix(
+  messages: ChatMessage[],
+  systemMessage: string | undefined,
+  prefix: string | undefined,
+): boolean {
+  if (!prefix) return false;
+  const parts = [
+    ...(systemMessage ? [systemMessage] : []),
+    ...messages.filter((m) => m.role === "system").map(messageText),
+  ];
+  const system = parts.join("\n\n");
+  return prefix.length < system.length && system.startsWith(prefix);
 }
 
 /**

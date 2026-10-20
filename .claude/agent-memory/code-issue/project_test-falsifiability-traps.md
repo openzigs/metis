@@ -69,3 +69,6 @@ Older single-trap entries, folded here (retired from the index 2026-10-16; files
 - A test of a pure default-selection helper (`defaultHubRunId`) doesn't prove the component agrees with it. The hub filtered its own list first and rendered empty with every unit test green (#1267). Require a component render test.
 - A "conservative" over-approximation fed into `withoutGivenItems` can remove every option, and then the refusal disappears silently. Probe the case where everything is removed (#1266).
 - When removing METIS-generated text from an analyst-editable body, probe whitespace variants, a dropped or doubled `> ` and hard-wrapped text. Run the same inputs through the base, the previous head and the current head (#1266, #1269).
+- To test a check keyed on the endpoint (such as DeepSeek), use a model id that another branch would otherwise catch (`claude-sonnet-5-5` on the DeepSeek endpoint) (#1275).
+- SQLite route tests that mount a sub-router directly (`requirementLinksRouter`) skip the parent guard (`requireRequirementAccess`), so 404-body and existence-oracle assertions prove nothing about production. Mount the parent guard (#1282).
+- To prove a prompt reorder changed no wording, import the base and head modules side by side with tsx. The replay fixtures store only sha256 hashes (#1281).

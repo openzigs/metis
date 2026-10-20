@@ -13,9 +13,12 @@
  *     generation) request `system` caching ONLY — never `messages`. Both call
  *     sites now route their directive through `singleShotPromptCaching`, so
  *     asserting that helper's output IS asserting the wire shape.
- *   • MULTI-CALL pipelines (the grounding claim-extractor + faithfulness-judge,
- *     which replay a shared source-evidence prefix across per-claim batches)
- *     RETAIN `{ system: true, messages: true }`.
+ *   • The grounding claim-extractor + faithfulness-judge (#1277) request
+ *     `system` caching ONLY as well. Each call's user turn is unique — the
+ *     claim extractor's passage, and since #171 the judge's per-batch
+ *     evidence — so a `messages` breakpoint cached the whole prompt and was
+ *     never read back: the dev ledger had 553k Haiku and 321k Sonnet
+ *     grounding cache-write tokens against 0 and 8k read.
  *
  * The agentic analysis loop (also multi-call) is covered separately by
  * `../analysis/agent-loop-caching.test.ts`.
@@ -55,9 +58,9 @@ function lastChatOptions(provider: AIProvider): ChatOptions | undefined {
 describe("singleShotPromptCaching (#389)", () => {
   it("requests system caching ONLY — no message-level cache write — when supported", () => {
     const directive = singleShotPromptCaching(true);
-    expect(directive).toEqual({ system: true });
-    // The whole point of #389: a single-shot call must NOT emit `messages`.
-    expect(directive).not.toHaveProperty("messages");
+    // #1277 — `messages: false` explicitly: the Bedrock gateway reads an absent
+    // key as its ENABLE_PROMPT_CACHING default, which would write the turn.
+    expect(directive).toEqual({ system: true, messages: false });
     // System caching is preserved everywhere it exists today.
     expect(directive?.system).toBe(true);
   });
@@ -73,12 +76,12 @@ describe("singleShotPromptCaching (#389)", () => {
       // Widened on purpose: the runtime check guards a field the type already excludes.
       const directive: { system?: true; messages?: unknown } | undefined =
         singleShotPromptCaching(supported);
-      expect(directive?.messages).toBeUndefined();
+      expect(directive?.messages).not.toBe(true);
     }
   });
 });
 
-describe("grounding pipeline RETAINS messages:true (MULTI-CALL, #389)", () => {
+describe("grounding pipeline caches the system prompt only (#1277)", () => {
   const ctx = buildGroundingContext({
     factsSources: [
       {
@@ -90,19 +93,18 @@ describe("grounding pipeline RETAINS messages:true (MULTI-CALL, #389)", () => {
     ],
   });
 
-  it("ClaimExtractor caches system + messages when caching is enabled", async () => {
-    // The grounding pipeline replays the same source-evidence prefix across
-    // generation -> claim-extraction -> faithfulness-judge, so the message-level
-    // cache write is amortised by later reads. #389 must leave it ON.
+  it("ClaimExtractor never asks for a message-level cache write", async () => {
+    // Every passage is decomposed once, so the user turn never repeats: a
+    // `messages` breakpoint paid the write surcharge on all of it, unread.
     const provider = mockProvider(JSON.stringify({ claims: [] }));
     const extractor = new ClaimExtractor({ provider, promptCaching: true });
 
     await extractor.decompose("Invoices over 1000 require approval.", ctx);
 
-    expect(lastChatOptions(provider)?.promptCaching).toEqual({ system: true, messages: true });
+    expect(lastChatOptions(provider)?.promptCaching).toEqual({ system: true, messages: false });
   });
 
-  it("FaithfulnessJudge caches system + messages when caching is enabled", async () => {
+  it("FaithfulnessJudge never asks for a message-level cache write", async () => {
     const provider = mockProvider(
       JSON.stringify({ verdicts: [{ claim: "c", supported: true, sourceIds: [] }] }),
     );
@@ -110,6 +112,6 @@ describe("grounding pipeline RETAINS messages:true (MULTI-CALL, #389)", () => {
 
     await judge.judge(["Invoices over 1000 require approval."], ctx);
 
-    expect(lastChatOptions(provider)?.promptCaching).toEqual({ system: true, messages: true });
+    expect(lastChatOptions(provider)?.promptCaching).toEqual({ system: true, messages: false });
   });
 });

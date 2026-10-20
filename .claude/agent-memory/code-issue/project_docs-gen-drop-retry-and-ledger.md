@@ -27,3 +27,6 @@ Older ledger entries, folded here (retired from the index 2026-10-16; files unch
   pass `requests` so it is priced per call (#1092).
 - [[side-column-readers-apply-writer-invariant]] — readers re-pricing from a side column use
   `ledgerRowSummedRequests`, not a shape check (#1092).
+- A `section-failed` warning without `detailSafe: true` is rewritten by `publicDocWarnings` into the generic "details are in the server log" text. Text added by a builder never reaches the user unless it sets `detailSafe` (#1275).
+- A new `DOCS_GEN_*` key in `config/key-registry.ts` also needs its `key-registry-parse-semantics` snapshot regenerated (`vitest -u` on that file). If the key does not affect output, add it to `RUN_CEILING_KEYS` in `generation-inputs.ts`, or every document's input fingerprint changes (#1274).
+- Failure-message remedies must name a setting that exists. Phase 1 has an admin setting that takes `provider-default`, but grounding and local thinking are boolean env vars outside the registry (#1275).

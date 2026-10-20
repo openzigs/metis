@@ -236,27 +236,61 @@ describe("summarizeCacheVerification", () => {
 });
 
 describe("cacheFloorTokens", () => {
-  it("Sonnet 4.6 is 1024 on Bedrock and 2048 on direct Anthropic", () => {
+  // #1277 review — every row of the two official tables, re-read 2026-10-19:
+  //   Anthropic: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+  //     ("These minimums apply on every platform where each model is available",
+  //     with Bedrock deferred to AWS's page).
+  //   Bedrock:   https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html
+  //     (same numbers, except Opus 4.7: 4,096 there, 2,048 on Anthropic's page).
+  const rows: Array<[model: string, anthropic: number, bedrock: number]> = [
+    ["claude-fable-5-1", 512, 512],
+    ["claude-mythos-5-1", 512, 512],
+    ["claude-opus-5-5", 512, 512],
+    ["claude-opus-5", 512, 512],
+    ["claude-opus-5-20260301", 512, 512],
+    ["claude-sonnet-5-5", 512, 512],
+    ["claude-fable-5", 512, 512],
+    ["claude-mythos-5", 512, 512],
+    ["claude-haiku-5-5", 512, 512],
+    ["claude-haiku-5-5-20261007", 512, 512],
+    ["claude-mythos-preview", 2048, 2048],
+    ["claude-opus-4-7", 2048, 4096],
+    ["claude-opus-4-6", 4096, 4096],
+    ["claude-opus-4-5-20251101", 4096, 4096],
+    ["claude-opus-4-8", 1024, 1024],
+    ["claude-sonnet-5", 1024, 1024],
+    ["claude-sonnet-5-20260301", 1024, 1024],
+    ["claude-sonnet-4-6", 1024, 1024],
+    ["claude-sonnet-4-5-20250929", 1024, 1024],
+    ["claude-opus-4-1", 1024, 1024],
+    ["claude-opus-4-20250514", 1024, 1024],
+    ["claude-sonnet-4-20250514", 1024, 1024],
+    ["claude-haiku-4-5", 4096, 4096],
+    ["claude-3-5-haiku-20241022", 2048, 2048],
+    ["claude-3-7-sonnet-20250219", 1024, 1024],
+    ["claude-3-5-sonnet-20241022", 1024, 1024],
+  ];
+  it.each(rows)("%s: %i direct, %i on Bedrock", (model, anthropic, bedrock) => {
+    expect(cacheFloorTokens(model, "anthropic")).toBe(anthropic);
+    expect(cacheFloorTokens(model, "bedrock")).toBe(bedrock);
+  });
+
+  it("reads Bedrock spellings: region profile, anthropic. namespace, -v1:0 suffix", () => {
     expect(cacheFloorTokens("us.anthropic.claude-sonnet-4-6", "bedrock")).toBe(1024);
-    expect(cacheFloorTokens("claude-sonnet-4-6", "anthropic")).toBe(2048);
-  });
-
-  it("Haiku 4.5 is 4096 on both platforms", () => {
+    expect(cacheFloorTokens("anthropic.claude-opus-4-6-v1", "bedrock")).toBe(4096);
     expect(cacheFloorTokens("us.anthropic.claude-haiku-4-5-20251001-v1:0", "bedrock")).toBe(4096);
-    expect(cacheFloorTokens("claude-haiku-4-5", "anthropic")).toBe(4096);
+    expect(cacheFloorTokens("global.anthropic.claude-sonnet-5-5", "bedrock")).toBe(512);
+    expect(cacheFloorTokens("anthropic.claude-opus-4-5-20251101-v1:0", "bedrock")).toBe(4096);
   });
 
-  it("legacy Sonnet 4.5 / Opus carry the 4096 floor on both platforms", () => {
-    expect(cacheFloorTokens("us.anthropic.claude-sonnet-4-5", "bedrock")).toBe(4096);
-    expect(cacheFloorTokens("claude-opus-4-6", "anthropic")).toBe(4096);
-  });
-
-  it("unknown Sonnet-family ids fall back to the platform-split floor", () => {
-    expect(cacheFloorTokens("some-sonnet-model", "bedrock")).toBe(1024);
-    expect(cacheFloorTokens("some-sonnet-model", "anthropic")).toBe(2048);
+  it("an id no row names falls back to its family's highest listed floor", () => {
+    // A floor set too HIGH only skips a warm-up; too low would wait for nothing.
+    expect(cacheFloorTokens("some-sonnet-model", "anthropic")).toBe(1024);
+    expect(cacheFloorTokens("some-haiku-model", "bedrock")).toBe(4096);
+    expect(cacheFloorTokens("some-opus-model", "anthropic")).toBe(4096);
+    expect(cacheFloorTokens("deepseek-flash", "anthropic")).toBe(4096);
   });
 });
-
 describe("expectedCacheOutcome", () => {
   it("the ~2225-tok analysis prefix clears the Sonnet Bedrock floor", () => {
     expect(expectedCacheOutcome(2225, "us.anthropic.claude-sonnet-4-6", "bedrock")).toBe(
@@ -270,11 +304,12 @@ describe("expectedCacheOutcome", () => {
     ).toBe("below-floor-expected-zero");
   });
 
-  it("the same Sonnet prefix is below the higher 2048 direct-Anthropic floor at the low end", () => {
-    expect(expectedCacheOutcome(1800, "claude-sonnet-4-6", "anthropic")).toBe(
+  // #1277 review — Sonnet 4.6 is 1,024 direct too (it was modelled as 2,048).
+  it("a Sonnet 4.6 prefix between 1,024 and 2,048 tokens is cacheable on the direct API", () => {
+    expect(expectedCacheOutcome(1800, "claude-sonnet-4-6", "anthropic")).toBe("expected-hit");
+    expect(expectedCacheOutcome(1000, "claude-sonnet-4-6", "anthropic")).toBe(
       "below-floor-expected-zero",
     );
-    expect(expectedCacheOutcome(2225, "claude-sonnet-4-6", "anthropic")).toBe("expected-hit");
   });
 
   it("coerces a NaN prefix to zero (below any floor)", () => {

@@ -233,19 +233,85 @@ export function summarizeCacheVerification(input: {
 export type CachePlatform = "bedrock" | "anthropic";
 
 /**
- * Minimum cacheable prefix (tokens) below which the backend silently skips
- * caching (`cached_tokens = 0`, no error). Platform-split per the #696 research:
- *   • Sonnet 4.6 — 1,024 on Bedrock, 2,048 on the direct Anthropic API.
- *   • Haiku 4.5  — 4,096 on both platforms.
- * Sources: AWS Bedrock prompt-caching doc; Anthropic prompt-caching doc.
+ * Minimum cacheable prefix per Claude `family-version`, in tokens. Below it
+ * the backend silently skips caching (`cached_tokens = 0`, no error, no write
+ * charge).
+ *
+ * #1277 review — every row re-read 2026-10-19 from the two official tables:
+ *   - Anthropic: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+ *     ("These minimums apply on every platform where each model is available";
+ *     for Bedrock it defers to AWS's page).
+ *   - Bedrock: https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html
+ * The two agree except Opus 4.7: 2,048 on Anthropic's page, 4,096 on Bedrock's.
+ * The #696-era rules this replaced (Sonnet 4.6 at 2,048 direct; Sonnet 4.5 and
+ * every Opus at 4,096) no longer match either page.
  */
-export function cacheFloorTokens(model: string, platform: CachePlatform): number {
+const CACHE_FLOORS: Readonly<Record<string, number>> = {
+  "fable-5": 512,
+  "fable-5.1": 512,
+  "mythos-5": 512,
+  "mythos-5.1": 512,
+  "mythos-preview": 2048,
+  "opus-5.5": 512,
+  "opus-5": 512,
+  "opus-4.8": 1024,
+  "opus-4.7": 2048,
+  "opus-4.6": 4096,
+  "opus-4.5": 4096,
+  "opus-4.1": 1024,
+  "opus-4": 1024,
+  "sonnet-5.5": 512,
+  "sonnet-5": 1024,
+  "sonnet-4.6": 1024,
+  "sonnet-4.5": 1024,
+  "sonnet-4": 1024,
+  "sonnet-3.7": 1024,
+  "sonnet-3.5": 1024,
+  "haiku-5.5": 512,
+  "haiku-4.5": 4096,
+  "haiku-3.5": 2048,
+};
+/** Where Bedrock's table differs from Anthropic's. */
+const BEDROCK_CACHE_FLOORS: Readonly<Record<string, number>> = { "opus-4.7": 4096 };
+/**
+ * An id no row names: its family's HIGHEST listed floor. Too high only skips a
+ * warm-up (`prompt-cache-warmup.ts`); too low would make a fan-out wait for a
+ * cache entry that is never written.
+ */
+const FAMILY_FALLBACK_FLOORS: Readonly<Record<string, number>> = {
+  fable: 512,
+  mythos: 2048,
+  opus: 4096,
+  sonnet: 1024,
+  haiku: 4096,
+};
+
+/** `family-major[.minor]` of a Claude id, in any spelling; `null` for none. */
+function claudeFloorKey(model: string): { key: string | null; family: string | null } {
   const id = model.toLowerCase();
-  if (id.includes("haiku")) return 4096;
-  // Legacy Sonnet 4.5 / Opus 4.5 carry the 4,096 floor on both platforms.
-  if (id.includes("sonnet-4-5") || id.includes("sonnet-4.5") || id.includes("opus")) return 4096;
-  // Sonnet 4.6 (and unknown Sonnet ids) — platform-split floor.
-  return platform === "bedrock" ? 1024 : 2048;
+  if (/mythos-preview/.test(id)) return { key: "mythos-preview", family: "mythos" };
+  // Legacy spelling: claude-3-5-sonnet, claude-3-7-sonnet, claude-3-5-haiku.
+  const legacy = /claude-(\d)-(\d)-(sonnet|haiku|opus)/.exec(id);
+  if (legacy) return { key: `${legacy[3]}-${legacy[1]}.${legacy[2]}`, family: legacy[3]! };
+  // Current spelling: family-major, then an optional ONE-or-two-digit minor —
+  // a dated snapshot suffix (`-20260301`) is not a minor version.
+  const current = /(opus|sonnet|haiku|fable|mythos)-(\d+)(?:[-.](\d{1,2})(?!\d))?/.exec(id);
+  if (!current) {
+    const family = /(opus|sonnet|haiku|fable|mythos)/.exec(id)?.[1] ?? null;
+    return { key: null, family };
+  }
+  const [, family, major, minor] = current;
+  return { key: minor ? `${family}-${major}.${minor}` : `${family}-${major}`, family: family! };
+}
+
+export function cacheFloorTokens(model: string, platform: CachePlatform): number {
+  const { key, family } = claudeFloorKey(model);
+  if (key !== null) {
+    const bedrock = platform === "bedrock" ? BEDROCK_CACHE_FLOORS[key] : undefined;
+    const floor = bedrock ?? CACHE_FLOORS[key];
+    if (floor !== undefined) return floor;
+  }
+  return (family && FAMILY_FALLBACK_FLOORS[family]) || 4096;
 }
 
 /** Whether a prefix clears its model+platform floor. */

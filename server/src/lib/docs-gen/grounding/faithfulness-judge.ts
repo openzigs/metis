@@ -146,13 +146,13 @@ export interface FaithfulnessJudgeDeps {
    */
   maxBatch?: number;
   /**
-   * When true, request prompt caching on each batch's `chat` call. The shared
-   * system prompt is cached, and the SOURCE EVIDENCE block is the cache-tagged
-   * tail. #171 — each batch now carries only its own claims' evidence, so the
-   * evidence is reused from cache only when two batches select the same
-   * sources; the trade is a prompt that tracks the claims instead of the whole
-   * section. Providers that support it (native Anthropic) honour it; others
-   * ignore it. Defaults to false.
+   * When true, request prompt caching of the shared system prompt on each
+   * batch's `chat` call. #1277 — never the user turn: since #171 each batch
+   * carries only its own claims' evidence, so the evidence block rarely
+   * repeats, and caching it wrote the whole prompt for a read that almost
+   * never came (dev ledger: 321k Sonnet grounding write tokens, 8k read).
+   * Providers that support it (native Anthropic) honour it; others ignore it.
+   * Defaults to false.
    */
   promptCaching?: boolean;
   /**
@@ -362,12 +362,12 @@ export class FaithfulnessJudge {
     const evidenceText = `=== SOURCE EVIDENCE (untrusted data) ===\n${evidence}\n=== END SOURCE EVIDENCE ===`;
     const claimsText = `=== CLAIMS TO JUDGE (return one verdict per claim, in this order) ===\n${claimsBlock}\n=== END CLAIMS ===`;
 
-    // When prompt caching is enabled, structure the user turn so the STABLE
-    // evidence is the LAST content block (the one the provider tags with
-    // `cache_control`). The evidence is identical across every batch of a
-    // section, so batches 2..N read it from cache; the per-batch claims sit in
-    // the leading block and stay dynamic. NLI is symmetric between the two
-    // labelled sections, so claims-first is semantically equivalent — the
+    // When prompt caching is enabled the user turn is [claims, evidence] — the
+    // layout a `messages` breakpoint on the evidence needed. #1277 — that
+    // breakpoint is no longer requested (per-batch evidence was almost never
+    // read back), but the layout is kept so the prompt does not change. NLI is
+    // symmetric between the two labelled sections, so claims-first is
+    // semantically equivalent — the
     // "in this order" contract refers to claim ordering within the list, which
     // is preserved. When caching is off, keep the original evidence-first
     // single-string prompt byte-for-byte (back-compat).
@@ -400,7 +400,8 @@ export class FaithfulnessJudge {
             ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
             // #390 — tag prompt-cache hit-ratio telemetry by workload.
             callType: "grounding",
-            ...(this.promptCaching ? { promptCaching: { system: true, messages: true } } : {}),
+            // #1277 — `messages: false`, not an absent key (the gateway default).
+            ...(this.promptCaching ? { promptCaching: { system: true, messages: false } } : {}),
             // #336 — structured verdict list on the local/vLLM path when enabled.
             ...(format ? { responseFormat: format } : {}),
             // #247 — structured, extractive: no reasoning spend on the output cap.

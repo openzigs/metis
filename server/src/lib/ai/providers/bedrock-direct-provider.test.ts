@@ -1353,3 +1353,126 @@ describe("stream() finish_reason forwarding (#1226)", () => {
     expect(chunks.find((c) => c.type === "done")).toEqual({ type: "done" });
   });
 });
+
+/**
+ * #1277 — bedrock-access-gateway puts ONE cachePoint after the whole system
+ * prompt; it cannot end the cached prefix at `systemPrefix` the way the native
+ * Anthropic provider does (#1144). A caller whose calls share only that prefix
+ * (Spec Kit's five plan artifacts) would then write a cache entry per call that
+ * no other call reads, so the gateway asks for no system cache write there.
+ */
+describe("prompt caching with a shared systemPrefix on the gateway (#1277)", () => {
+  const capture = () => {
+    const bodies: Record<string, unknown>[] = [];
+    globalThis.fetch = vi.fn(async (_url: string, init: CapturedInit) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return jsonResponse("ok");
+    }) as unknown as typeof fetch;
+    return bodies;
+  };
+  const gateway = () =>
+    new OpenAICompatibleProvider({
+      baseUrl: "http://gateway.internal:8080/api/v1",
+      apiKey: "k",
+      model: "us.anthropic.claude-sonnet-5-5",
+      providerKey: "bedrock-gateway",
+    });
+  const USER = [{ role: "user" as const, content: "hi" }];
+
+  // An ABSENT key falls back to the gateway's ENABLE_PROMPT_CACHING, which
+  // docs/OPERATIONS.md tells operators to set: "no write" must be `false`.
+  it("sends system:false when the system goes on past the shared prefix", async () => {
+    const bodies = capture();
+    await gateway().chat(USER, {
+      systemMessage: "constitution + RAG\n\n---\n\nplan.md base prompt",
+      promptCaching: { system: true, systemPrefix: "constitution + RAG" },
+    });
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: false } });
+  });
+
+  it("keeps a messages cache write when one is asked for alongside", async () => {
+    const bodies = capture();
+    await gateway().chat(USER, {
+      systemMessage: "shared\n\ntail",
+      promptCaching: { system: true, messages: true, systemPrefix: "shared" },
+    });
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: false, messages: true } });
+  });
+
+  it("sends Spec Kit plan's request as no system and no messages cache write", async () => {
+    // The exact options runSpecKitAgent sends for a plan artifact (#1277).
+    const bodies = capture();
+    await gateway().chat(USER, {
+      systemMessage: "constitution + RAG\n\n---\n\nresearch.md base prompt",
+      promptCaching: { system: true, messages: false, systemPrefix: "constitution + RAG" },
+    });
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: false, messages: false } });
+  });
+
+  it("sends a single-call Spec Kit request as explicit system:false, messages:false", async () => {
+    // Dropping either key would fall back to the gateway's ENABLE_PROMPT_CACHING.
+    const bodies = capture();
+    await gateway().chat(USER, {
+      systemMessage: "constitution\n\n---\n\nspecify base prompt",
+      promptCaching: { system: false, messages: false },
+    });
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: false, messages: false } });
+  });
+
+  it.each(["local-gemma", "openai", "azure"] as const)(
+    "on %s, an explicit false sends nothing: only the gateway reads prompt_caching",
+    async (providerKey) => {
+      const bodies = capture();
+      const other = new OpenAICompatibleProvider({
+        baseUrl: "http://127.0.0.1:11434/v1",
+        apiKey: "k",
+        model: "some-model",
+        providerKey,
+      });
+      await other.chat(USER, {
+        systemMessage: "constitution\n\n---\n\nspecify base prompt",
+        promptCaching: { system: false, messages: false },
+      });
+      await other.chat(USER, {
+        systemMessage: "shared\n\ntail",
+        promptCaching: { system: true, messages: false, systemPrefix: "shared" },
+      });
+      expect(bodies[0]).not.toHaveProperty("extra_body");
+      // A `true` is forwarded as before #1277, whatever the prefix.
+      expect(bodies[1].extra_body).toEqual({ prompt_caching: { system: true } });
+    },
+  );
+
+  it("forwards a caller's explicit messages:false instead of dropping it", async () => {
+    const bodies = capture();
+    await gateway().chat(USER, {
+      systemMessage: "a system prompt",
+      promptCaching: { system: true, messages: false },
+    });
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: true, messages: false } });
+  });
+
+  it("sends no prompt_caching at all when the caller asks nothing", async () => {
+    const bodies = capture();
+    await gateway().chat(USER, { systemMessage: "a system prompt" });
+    expect(bodies[0]).not.toHaveProperty("extra_body");
+  });
+
+  it("caches the system when the shared prefix IS the whole system", async () => {
+    const bodies = capture();
+    await gateway().chat(USER, {
+      systemMessage: "shared",
+      promptCaching: { system: true, systemPrefix: "shared" },
+    });
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: true } });
+  });
+
+  it("caches the system as before when no systemPrefix is given", async () => {
+    const bodies = capture();
+    await gateway().chat(USER, {
+      systemMessage: "a system prompt",
+      promptCaching: { system: true },
+    });
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: true } });
+  });
+});

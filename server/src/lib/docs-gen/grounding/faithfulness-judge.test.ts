@@ -607,7 +607,8 @@ describe("FaithfulnessJudge prompt caching (#anthropic-prompt-caching)", () => {
     const judge = new FaithfulnessJudge({ provider, promptCaching: true });
     await judge.judge(["c"], ctx);
     const [messages, options] = (provider.chat as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(options.promptCaching).toEqual({ system: true, messages: true });
+    // #1277 — system only: the per-batch user turn is never read back.
+    expect(options.promptCaching).toEqual({ system: true, messages: false });
     // User content is a [claims, evidence] block array so the provider can cache
     // the trailing (stable) evidence block.
     const parts = messages[1].content as Part[];
