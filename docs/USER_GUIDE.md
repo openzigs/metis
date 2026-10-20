@@ -4402,6 +4402,8 @@ Above the document preview, you'll find export buttons:
 | **PDF** | Full-fidelity export with diagrams, formulas, and syntax highlighting. Requires Chrome on the server (included in Docker images) |
 | **Word (.docx)** | Professional Word document with Table of Contents, styled headings, and code blocks. Best for sharing with stakeholders who prefer Office formats |
 
+**Printing from the browser (Ctrl+P, #1279).** A long document draws its diagrams as you scroll to them, so opening it stays fast. Printing prints every section, but a diagram you have not scrolled to may not be drawn yet when the print preview is made. In that case the page says so in place of the diagram: *Diagram not included: it was still being drawn when printing started.* Close the print preview and print again, and the diagram is included.
+
 > **Note:** If you're running locally without Chrome installed, PDF export returns a styled HTML file instead. Run `npx puppeteer browsers install chrome` to enable full PDF support.
 
 ### 30.7 Living Documents (Auto-Update)

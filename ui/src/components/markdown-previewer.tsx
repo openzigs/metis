@@ -48,6 +48,14 @@ import {
 
 /** Sections rendered on mount, before any scrolling. */
 export const INITIAL_RENDERED_SECTIONS = 3;
+/**
+ * #1279 — printed in place of a diagram Mermaid had not drawn when printing
+ * started. Printing renders every section, which starts the drawing, so a
+ * second print a moment later includes it.
+ */
+export const DIAGRAM_NOT_DRAWN_PRINT_NOTE =
+  "Diagram not included: it was still being drawn when printing started. " +
+  "Close the print preview and print again to include it.";
 /** How far outside the viewport a section starts rendering. */
 const RENDER_AHEAD_MARGIN = "1500px 0px";
 
@@ -435,12 +443,22 @@ const MemoizedSection = memo(function Section({
               if (svg === undefined) {
                 // Not rendered yet — keep the real code element in the DOM (hidden)
                 // so renderMermaid() can find it, plus show a loading message.
+                // #1279 — on paper the spinner would claim a diagram is coming. Mermaid
+                // draws asynchronously and the browser lays out the print copy as soon
+                // as the `beforeprint` listeners return, so a print can catch it
+                // undrawn; print CSS swaps the spinner for a note saying so.
                 return (
-                  <div className="py-4 text-center text-sm text-muted-foreground">
+                  <div
+                    className="py-4 text-center text-sm text-muted-foreground"
+                    data-diagram-pending=""
+                  >
                     <pre className="hidden" {...props}>
                       {children}
                     </pre>
-                    <div className="inline-flex items-center gap-2">
+                    <p className="hidden print:block" data-diagram-print-note="">
+                      {DIAGRAM_NOT_DRAWN_PRINT_NOTE}
+                    </p>
+                    <div className="inline-flex items-center gap-2 print:hidden">
                       <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
                         <circle
                           className="opacity-25"
