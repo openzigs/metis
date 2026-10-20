@@ -7117,10 +7117,12 @@ RULES:
     ? `${brief}${CODE_DERIVED_GROUNDING_GUIDANCE}\n\n${sectionTail}`
     : `${brief}${sectionTail}`;
 
-  // #1277 — the user turn leads with the document-level context every section
-  // and batch shares (the project, the title, the flow graph) and ends with
-  // what this section or batch alone sends (its label, facts, formulas,
-  // grounding and batch note), for the same prefix cache.
+  // #1277 — the user turn leads with the document-level context (the project,
+  // the title, the flow graph) and ends with what one batch alone sends (its
+  // facts, formulas, grounding and batch note). The system prompt still ends in
+  // this section's instructions, so across sections the shared prefix stops
+  // there; the gain is for the batches of one section, whose system prompt and
+  // user lead (through the label) are byte-identical.
   const flowSection = flowBlob
     ? `\n=== END-TO-END FLOW (cross-module dependencies + SAS dataset lineage, from the code graph) ===\n\n${flowBlob}\n\nUse this to describe TRUE end-to-end workflows: which module hands off to which, and how datasets flow input→output across modules. Do NOT invent flows not supported by this graph.\n\n=== END FLOW ===\n`
     : "";

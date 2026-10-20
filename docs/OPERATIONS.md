@@ -1581,12 +1581,16 @@ What #1277 changed, from that report on the dev ledger:
   floor. DeepSeek, which caches automatically, and a prefix under the floor fan
   out at once. `/speckit.plan` sends its calls one at a time, plan.md first, so
   its first call is already the warm-up.
-- **docs-gen section prompts** send what every section shares first: the
-  grounding discipline now precedes a code-derived section's instructions, and
-  the document's flow graph precedes the section label. DeepSeek matches a
-  prefix from token 0. Only the order changed, but the prompt is a section
-  reuse input, so a section written before the change is written again once on
-  the next regeneration.
+- **docs-gen section prompts** are reordered for DeepSeek, which matches a
+  prefix from token 0. The grounding discipline now precedes a code-derived
+  section's instructions, so code-derived sections share it; and the
+  document's flow graph precedes the batch's facts, so the batches of one
+  section share it. The system prompt still ends in the section's own
+  instructions, so ACROSS sections the shared prefix stops there: the larger
+  cross-section gain would need the per-section facts and instructions moved
+  behind shared content, which changes the prompt and is not done here. Only
+  the order changed, but the prompt is a section reuse input, so a section
+  written before the change is written again once on the next regeneration.
 
 **The gateway's cache writes stay invisible** (re-checked 2026-10-19 against
 aws-samples/bedrock-access-gateway `main`: it reads Bedrock's

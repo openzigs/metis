@@ -1409,6 +1409,16 @@ describe("prompt caching with a shared systemPrefix on the gateway (#1277)", () 
     expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: false, messages: false } });
   });
 
+  it("sends a single-call Spec Kit request as explicit system:false, messages:false", async () => {
+    // Dropping either key would fall back to the gateway's ENABLE_PROMPT_CACHING.
+    const bodies = capture();
+    await gateway().chat(USER, {
+      systemMessage: "constitution\n\n---\n\nspecify base prompt",
+      promptCaching: { system: false, messages: false },
+    });
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: false, messages: false } });
+  });
+
   it("forwards a caller's explicit messages:false instead of dropping it", async () => {
     const bodies = capture();
     await gateway().chat(USER, {

@@ -106,14 +106,16 @@ describe("docs-gen section prompts lead with the byte-stable shared context (#12
     }
   });
 
-  it("the user turn of two different sections is byte-identical up to the section label", () => {
-    const user = (id: string) =>
-      promptFor(byId(id), { facts: `${id} facts`, formulas: "x" }).userMessage;
-    const overview = user("overview");
-    const rules = user("rules");
-    const lead = overview.slice(0, overview.indexOf("Section group: **"));
-    expect(rules.startsWith(lead)).toBe(true);
-    expect(lead).toContain(FLOW);
+  it("across sections the shared prefix ends at the section's own instructions", () => {
+    // The system prompt carries the per-section instructions, so two sections'
+    // token streams diverge there, before the user turn: the cross-section
+    // gain is the writer brief (plus the grounding discipline between
+    // code-derived sections), not the user-turn order.
+    const overview = stream(promptFor(byId("overview"), { facts: "f", formulas: "x" }));
+    const rules = stream(promptFor(byId("rules"), { facts: "f", formulas: "x" }));
+    const shared = overview.slice(0, commonPrefixLength(overview, rules));
+    expect(shared).toContain("CRITICAL MANDATE");
+    expect(shared).not.toContain(FLOW);
   });
 
   it("keeps every block of the prompt exactly once — only the order changed", () => {
