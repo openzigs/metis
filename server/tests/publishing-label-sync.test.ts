@@ -3,7 +3,9 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  batchAdditionalLabels,
   combineLabels,
+  issueLabels,
   DEFAULT_PUBLISH_LABELS,
   isInternalPublishLabel,
   labelsToSync,
@@ -161,4 +163,26 @@ describe("#1276 — `unverified` is an internal label", () => {
     expect(isInternalPublishLabel("unverified-claims")).toBe(false);
     expect(isInternalPublishLabel("verified")).toBe(false);
   });
+});
+
+describe("#1049 — issueLabels / batchAdditionalLabels", () => {
+  it("the draft's labels, then the batch's, once each, without internal ones", () => {
+    expect(
+      issueLabels(["feature", "unverified"], ["Feature", "sprint-42", "review:x", "", "sprint-42"]),
+    ).toEqual(["feature", "sprint-42"]);
+  });
+
+  it("reads the batch's additional labels from its metadata", () => {
+    expect(batchAdditionalLabels(JSON.stringify({ additionalLabels: ["a", 3, "b"] }))).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+
+  it.each([null, undefined, "", "{not json", JSON.stringify({ additionalLabels: "a" })])(
+    "reads %j as no labels",
+    (meta) => {
+      expect(batchAdditionalLabels(meta)).toEqual([]);
+    },
+  );
 });

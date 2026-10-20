@@ -40,7 +40,11 @@ vi.mock("../src/lib/prisma.js", () => ({
             projectId: "proj_dual",
             status: "pending",
             dryRun: false,
-            metadata: JSON.stringify({ draftIds: ["draft_1", "draft_2"], secretRef: null }),
+            metadata: JSON.stringify({
+              draftIds: ["draft_1", "draft_2"],
+              additionalLabels: ["sprint-42"],
+              secretRef: null,
+            }),
             startedById: "user_1",
           };
         }
@@ -126,6 +130,7 @@ vi.mock("../src/lib/logger.js", () => ({
 }));
 
 import { executeBatch } from "../src/lib/publishing/publishing-service.js";
+import { publishBatchToJira } from "../src/lib/publishing/jira-publisher.js";
 
 beforeEach(() => {
   publishedIssues.length = 0;
@@ -135,6 +140,13 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks());
 
 describe("executeBatch — destination=both", () => {
+  it("#1049 — hands the batch's Additional labels to the Jira leg", async () => {
+    await executeBatch({ batchId: "batch_dual", actorId: "user_1" });
+    expect(publishBatchToJira).toHaveBeenCalledWith(
+      expect.objectContaining({ additionalLabels: ["sprint-42"] }),
+    );
+  });
+
   it("creates separate GitHub and Jira PublishedIssue rows for the same batch+draft", async () => {
     const result = await executeBatch({ batchId: "batch_dual", actorId: "user_1" });
 

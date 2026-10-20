@@ -9,7 +9,7 @@
 import { type DryRunAction, type DryRunPlan } from "./internal-shared.js";
 import type { ApprovalGateCheckResult, CredentialCheckResult } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
-import { labelsToSync, publishableLabels } from "./label-sync.js";
+import { issueLabels, labelsToSync } from "./label-sync.js";
 import {
   computeDraftBodyHash,
   computeDedupHash,
@@ -57,13 +57,18 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
   // 1. label upserts — one per label some draft carries, plus the batch's
   // requested labels (#744: never a hidden `finding:<id>` label, never an
   // unused base label). Mirrors the live run's `syncLabels` call.
-  const drafts = input.drafts.map((d) => ({ ...d, labels: publishableLabels(d.labels) }));
   for (const l of labelsToSync(
-    drafts.map((d) => d.labels),
+    input.drafts.map((d) => d.labels),
     input.additionalLabels,
   )) {
     actions.push({ kind: "label.upsert", labels: [l.name] });
   }
+  // #1049 — each issue lists the labels the live run sends it: the draft's,
+  // then the batch's requested ones.
+  const drafts = input.drafts.map((d) => ({
+    ...d,
+    labels: issueLabels(d.labels, input.additionalLabels),
+  }));
   const blocked = new Set(input.approvalGate?.blockedDraftIds ?? []);
   const gateMark = (draftId: string) =>
     blocked.has(draftId) ? { blockedByApprovalGate: true } : {};

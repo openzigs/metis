@@ -69,7 +69,7 @@ import {
   sourceMarkerForDraft,
   stripMarker,
 } from "./dedup.js";
-import { labelsToSync, publishableLabels, syncLabels } from "./label-sync.js";
+import { batchAdditionalLabels, issueLabels, labelsToSync, syncLabels } from "./label-sync.js";
 import { publishedDraftBody, type ParentEpicIssue } from "./published-body.js";
 import { namesRepository, type NamedRepository } from "../docs-gen/approved-requirements-scope.js";
 import { assertCodeLinksMatchTarget } from "./draft-code-links.js";
@@ -338,7 +338,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
         draftType: d.draftType,
         source: sourceMarkerForDraft(d),
       })),
-      additionalLabels: extractAdditionalLabels(batch.metadata),
+      additionalLabels: batchAdditionalLabels(batch.metadata),
       existingByHash,
       perCallMs: rateLimit.delayMs,
       credential,
@@ -410,10 +410,12 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     step: "starting",
   });
   // #744 — only labels some draft carries (plus the batch's requested ones);
-  // the dry-run plan lists exactly these.
+  // the dry-run plan lists exactly these. #1049 — the batch's requested ones
+  // are then applied to every issue this run creates or updates.
+  const additionalLabels = batchAdditionalLabels(batch.metadata);
   const labels = labelsToSync(
     drafts.map((d) => parseLabels(d.labels)),
-    extractAdditionalLabels(batch.metadata),
+    additionalLabels,
   );
   await syncLabels(client, { owner: target.owner, repo: target.repo }, labels);
 
@@ -551,7 +553,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
           data: {
             title: draft.title,
             body: stampedBody,
-            labels: publishableLabels(parseLabels(draft.labels)),
+            labels: issueLabels(parseLabels(draft.labels), additionalLabels),
           },
         });
         const identity = readIssueIdentity(updated.data);
@@ -575,7 +577,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
           data: {
             title: draft.title,
             body: stampedBody,
-            labels: publishableLabels(parseLabels(draft.labels)),
+            labels: issueLabels(parseLabels(draft.labels), additionalLabels),
             assignees: parseLabels(draft.assignees),
           },
         });
@@ -1562,19 +1564,6 @@ function safeWhereFromMetadata(meta: string): Record<string, unknown> {
   return {};
 }
 
-function extractAdditionalLabels(meta: string | null): string[] {
-  if (!meta) return [];
-  try {
-    const parsed = JSON.parse(meta) as { additionalLabels?: string[] };
-    if (Array.isArray(parsed.additionalLabels)) {
-      return parsed.additionalLabels.filter((s): s is string => typeof s === "string");
-    }
-  } catch {
-    /* ignore */
-  }
-  return [];
-}
-
 function parseLabels(json: string): string[] {
   try {
     const arr = JSON.parse(json) as unknown;
@@ -1595,7 +1584,7 @@ function defaultSleep(ms: number): Promise<void> {
 
 export const __testing = {
   parseLabels,
-  extractAdditionalLabels,
+  extractAdditionalLabels: batchAdditionalLabels,
   buildMarkerComment,
   loadExistingByHash,
   reconcileFromRemote,

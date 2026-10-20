@@ -1853,7 +1853,7 @@ When your approved drafts are ready:
 
 1. Click **"Publish Issues"** on the project detail page
 2. METIS will:
-   - **Sync labels** — ensure all required labels exist in the GitHub repository
+   - **Sync labels** — ensure all required labels exist in the GitHub repository. The labels typed into **Additional labels (csv)** are put on every issue the batch creates or updates, after the draft's own, on GitHub and on Jira; the dry-run plan lists them on each issue. Internal labels (`unverified`, `finding:`, `review:`) are dropped there too. They are not drift: removing one on the tracker is reported, and **Adopt** does not copy them into the draft. An issue the batch skips as unchanged keeps the labels it has. [#1049]
    - **Publish Epics first** — larger work items are created before smaller features
    - **Cross-reference** — feature issues link to their parent epic
    - **Rate limit** — respects GitHub's API rate limits

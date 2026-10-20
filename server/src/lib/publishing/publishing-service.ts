@@ -30,6 +30,7 @@ import { bindSecretRef } from "../vault/bound-secret.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { refBodyOf } from "../vault/secret-binding.js";
 import { publishBatchToJira } from "./jira-publisher.js";
+import { batchAdditionalLabels } from "./label-sync.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("publishing-service");
@@ -532,6 +533,7 @@ async function executeBatchInner(opts: {
           connectionId: project.jiraConnectionId,
           projectKey: project.jiraProjectKey,
           actorId: opts.actorId,
+          additionalLabels: batchAdditionalLabels(batch.metadata),
         });
 
         // Record Jira published issues

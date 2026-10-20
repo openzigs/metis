@@ -29,7 +29,11 @@ import {
   type OwnMarkers,
 } from "../publishing/dedup.js";
 import { bodyWithCodeAsText } from "../publishing/draft-code-links.js";
-import { isInternalPublishLabel } from "../publishing/label-sync.js";
+import {
+  batchAdditionalLabels,
+  isInternalPublishLabel,
+  issueLabels,
+} from "../publishing/label-sync.js";
 import { withoutParentEpicLink, withoutUnverifiedNote } from "../publishing/published-body.js";
 
 const log = createChildLogger("sync-reconcile");
@@ -39,11 +43,25 @@ const log = createChildLogger("sync-reconcile");
  * label it may still carry from an older publish, plus the draft's own
  * internal labels, which were never sent and so cannot have been changed there.
  */
-function adoptedLabels(external: readonly string[], draftLabels: string | null): string[] {
-  const internal = safeJsonArray(draftLabels).filter(
-    (l): l is string => typeof l === "string" && isInternalPublishLabel(l),
+function adoptedLabels(
+  external: readonly string[],
+  draftLabels: string | null,
+  batchMetadata: string | null,
+): string[] {
+  const own = safeJsonArray(draftLabels).filter((l): l is string => typeof l === "string");
+  const internal = own.filter(isInternalPublishLabel);
+  // #1049 — a label the batch added belongs to the batch, not the draft: it
+  // stays out unless the draft already carried it.
+  const ownKeys = new Set(own.map((l) => l.trim().toLowerCase()));
+  const batchOnly = new Set(
+    batchAdditionalLabels(batchMetadata)
+      .map((l) => l.trim().toLowerCase())
+      .filter((k) => !ownKeys.has(k)),
   );
-  const visible = external.filter((l) => typeof l === "string" && !isInternalPublishLabel(l));
+  const visible = external.filter(
+    (l) =>
+      typeof l === "string" && !isInternalPublishLabel(l) && !batchOnly.has(l.trim().toLowerCase()),
+  );
   return [...new Set([...visible, ...internal])];
 }
 
@@ -119,8 +137,12 @@ export async function reconcileIssueChange(
     state: publishedIssue.status === "created" ? "open" : "open",
     // #744 — the publisher never sends hidden `finding:<id>` labels, so they
     // must not read as drift on drafts generated before they were dropped.
-    // #1276 — nor `unverified`.
-    labels: safeJsonArray(publishedIssue.draft.labels).filter((l) => !isInternalPublishLabel(l)),
+    // #1276 — nor `unverified`. #1049 — the batch's Additional labels were
+    // published with the draft's, so they are part of what METIS wrote.
+    labels: issueLabels(
+      safeJsonArray(publishedIssue.draft.labels),
+      batchAdditionalLabels(publishedIssue.batch.metadata),
+    ),
     assignees: [],
   };
 
@@ -268,7 +290,10 @@ export async function resolveDriftEvent(
     const externalSnapshot: IssueChangeFields = JSON.parse(existing.externalSnapshot);
     const publishedIssue = await prisma.publishedIssue.findUnique({
       where: { id: existing.publishedIssueId },
-      include: { draft: { select: { requirementId: true, labels: true } } },
+      include: {
+        draft: { select: { requirementId: true, labels: true } },
+        batch: { select: { metadata: true } },
+      },
     });
     if (publishedIssue) {
       await prisma.issueDraft.update({
@@ -290,7 +315,11 @@ export async function resolveDriftEvent(
           // (`finding:`, `review:`, `unverified`), so adopting its labels
           // keeps them rather than dropping them from METIS.
           labels: JSON.stringify(
-            adoptedLabels(externalSnapshot.labels, publishedIssue.draft?.labels ?? null),
+            adoptedLabels(
+              externalSnapshot.labels,
+              publishedIssue.draft?.labels ?? null,
+              publishedIssue.batch?.metadata ?? null,
+            ),
           ),
         },
       });

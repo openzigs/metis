@@ -11,7 +11,7 @@ import { getVaultService } from "../vault/vault-service.js";
 import { createJiraClient, JiraApiError, type JiraClient } from "../connectors/jira/jira-client.js";
 import { assertConnectorHostAllowed } from "../connectors/network-allowlist.js";
 import type { JiraCreateIssueFields } from "../connectors/jira/types.js";
-import { publishableLabels } from "./label-sync.js";
+import { issueLabels } from "./label-sync.js";
 import { bodyWithCodeAsText } from "./draft-code-links.js";
 import { withUnverifiedNote } from "./published-body.js";
 
@@ -112,6 +112,7 @@ function mapDraftToJiraFields(
   },
   projectKey: string,
   mapping: JiraFieldMapping,
+  additionalLabels: readonly string[] = [],
 ): JiraCreateIssueFields {
   const issueType = draft.draftType === "epic" ? "Epic" : mapping.issueType || "Story";
   const draftLabels = safeParseLabelArray(draft.labels);
@@ -129,8 +130,8 @@ function mapDraftToJiraFields(
   };
 
   // Map labels — never a hidden `finding:<id>` traceability label (#744), nor
-  // the internal `unverified` (#1276).
-  const labels = publishableLabels(draftLabels);
+  // the internal `unverified` (#1276). #1049 — plus the batch's requested ones.
+  const labels = issueLabels(draftLabels, additionalLabels);
   if (labels.length > 0) {
     fields.labels = labels;
   }
@@ -164,6 +165,8 @@ export async function publishDraftToJira(opts: {
   projectKey: string;
   fieldMapping?: JiraFieldMapping;
   actorId: string;
+  /** #1049 — the batch's "Additional labels", applied after the draft's own. */
+  additionalLabels?: readonly string[];
 }): Promise<JiraPublishResult> {
   const draft = await prisma.issueDraft.findFirst({
     where: { id: opts.draftId, deletedAt: null },
@@ -176,7 +179,12 @@ export async function publishDraftToJira(opts: {
 
   try {
     const { client, baseUrl } = await resolveJiraClient(opts.connectionId);
-    const fields = mapDraftToJiraFields(draft, opts.projectKey, mapping);
+    const fields = mapDraftToJiraFields(
+      draft,
+      opts.projectKey,
+      mapping,
+      opts.additionalLabels ?? [],
+    );
     const created = await client.createIssue(fields);
 
     const htmlUrl = `${baseUrl.replace(/\/+$/, "")}/browse/${created.key}`;
@@ -224,6 +232,8 @@ export async function publishBatchToJira(opts: {
   projectKey: string;
   fieldMapping?: JiraFieldMapping;
   actorId: string;
+  /** #1049 — the batch's "Additional labels", applied to every issue. */
+  additionalLabels?: readonly string[];
   /** Inter-call delay (ms) to respect Jira rate limits. Default 500ms. */
   delayMs?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -248,6 +258,7 @@ export async function publishBatchToJira(opts: {
       projectKey: opts.projectKey,
       fieldMapping: opts.fieldMapping,
       actorId: opts.actorId,
+      additionalLabels: opts.additionalLabels,
     });
 
     results.push(result);

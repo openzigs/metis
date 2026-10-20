@@ -341,6 +341,26 @@ describe("publishBatchToJira", () => {
     expect(result.results).toHaveLength(2);
   });
 
+  it("#1049 — applies the batch's Additional labels to each issue, never an internal one", async () => {
+    seedConnection();
+    seedDraft("d1", { title: "First", labels: '["enhancement"]' });
+    mockCreateIssue.mockResolvedValueOnce({ id: "10001", key: "PROJ-1", self: "" });
+
+    await publishBatchToJira({
+      batchId: "batch_1",
+      draftIds: ["d1"],
+      connectionId: "conn_1",
+      projectKey: "PROJ",
+      actorId: "user_1",
+      additionalLabels: ["sprint-42", "ENHANCEMENT", "unverified", "finding:abc"],
+      delayMs: 0,
+      sleep: async () => {},
+    });
+
+    const fields = mockCreateIssue.mock.calls.at(-1)![0] as { labels: string[] };
+    expect(fields.labels).toEqual(["enhancement", "sprint-42"]);
+  });
+
   it("continues on individual failures", async () => {
     seedConnection();
     seedDraft("d1");

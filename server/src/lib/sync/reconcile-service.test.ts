@@ -519,6 +519,116 @@ describe("reconcileIssueChange", () => {
   });
 });
 
+describe("#1049 — the batch's Additional labels are what was published, not drift", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function seedPublished(additionalLabels: unknown) {
+    vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue({
+      id: "pub-1",
+      batchId: "batch-1",
+      draftId: "draft-1",
+      issueNumber: 42,
+      issueId: "node-id-abc",
+      htmlUrl: "",
+      status: "created",
+      destination: "github",
+      parentIssueNumber: null,
+      dedupHash: null,
+      bodyHash: null,
+      errorMessage: null,
+      publishedAt: new Date(),
+      batch: {
+        id: "batch-1",
+        projectId: "proj-1",
+        metadata: JSON.stringify({ draftIds: ["draft-1"], additionalLabels }),
+        project: { id: "proj-1" },
+      },
+      draft: {
+        id: "draft-1",
+        title: "T",
+        body: "Body",
+        labels: JSON.stringify(["feature", "unverified"]),
+        requirementId: null,
+      },
+    } as never);
+  }
+
+  const eventWithLabels = (labels: string[]) =>
+    makeEvent({ current: { title: "T", body: "Body", state: "open", labels, assignees: [] } });
+
+  it("an issue carrying the batch's labels as published has not drifted", async () => {
+    seedPublished(["sprint-42", "unverified"]);
+    const result = await reconcileIssueChange(eventWithLabels(["feature", "sprint-42"]));
+    expect(result.reason).toBe("NO_DIFF");
+  });
+
+  it("removing a batch label on the tracker is still drift", async () => {
+    seedPublished(["sprint-42"]);
+    vi.mocked(prisma.driftEvent.create).mockImplementation((async ({
+      data,
+    }: {
+      data: Record<string, unknown>;
+    }) => ({ id: "drift-x", createdAt: new Date(), ...data })) as never);
+    const result = await reconcileIssueChange(eventWithLabels(["feature"]));
+    expect(result.handled).toBe(true);
+    const data = vi.mocked(prisma.driftEvent.create).mock.calls.at(-1)![0].data as {
+      fieldDiffs: string;
+    };
+    expect(JSON.parse(data.fieldDiffs)).toEqual([
+      { field: "labels", local: ["feature", "sprint-42"], external: ["feature"] },
+    ]);
+  });
+
+  it("adopting the tracker's labels does not copy the batch's labels into the draft", async () => {
+    const existing = {
+      id: "drift-1",
+      publishedIssueId: "pub-1",
+      projectId: "proj-1",
+      requirementId: null,
+      source: "github",
+      deliveryId: "del-1",
+      action: "edited",
+      fieldDiffs: JSON.stringify([{ field: "labels", local: [], external: [] }]),
+      externalSnapshot: JSON.stringify({
+        title: "T",
+        body: "Body",
+        state: "open",
+        labels: ["bug", "Sprint-42", "docs"],
+        assignees: [],
+      }),
+      localSnapshot: null,
+      status: "pending",
+      resolution: null,
+      resolvedById: null,
+      resolvedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    vi.mocked(prisma.driftEvent.findUnique).mockResolvedValue(existing as never);
+    vi.mocked(prisma.driftEvent.update).mockResolvedValue({
+      ...existing,
+      status: "resolved",
+      resolution: "adopt",
+      resolvedById: "user-1",
+      resolvedAt: new Date(),
+    } as never);
+    vi.mocked(prisma.publishedIssue.findUnique).mockResolvedValue({
+      id: "pub-1",
+      draftId: "draft-1",
+      batch: { metadata: JSON.stringify({ additionalLabels: ["sprint-42", "docs"] }) },
+      // The draft already carried `docs` itself, so it keeps it.
+      draft: { requirementId: null, labels: JSON.stringify(["feature", "docs"]) },
+    } as never);
+    vi.mocked(prisma.issueDraft.update).mockResolvedValue({} as never);
+
+    await resolveDriftEvent("drift-1", "adopt", "user-1");
+    const data = vi.mocked(prisma.issueDraft.update).mock.calls.at(-1)![0].data as {
+      labels: string;
+    };
+    expect(JSON.parse(data.labels)).toEqual(["bug", "docs"]);
+  });
+});
+
 describe("getDriftEventProjectId (#102)", () => {
   beforeEach(() => {
     vi.clearAllMocks();

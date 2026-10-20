@@ -565,6 +565,95 @@ describe("runBatch — labels (#744)", () => {
   });
 });
 
+describe("#1049 — the batch's Additional labels reach every issue it writes", () => {
+  const ADDITIONAL = ["sprint-42", "Feature", "unverified", "finding:abc", "  "];
+
+  async function publishRecording(): Promise<OctokitRequestArgs[]> {
+    const calls: OctokitRequestArgs[] = [];
+    const base = makeFakeOctokit();
+    __setPublishOctokitFactory(async () =>
+      fakeOctokit({
+        request: async (args) => {
+          calls.push(args);
+          return base.request(args);
+        },
+      }),
+    );
+    await runBatch({
+      batchId: "batch_1",
+      dryRun: false,
+      secretRef: "${vault:gh}",
+      sleep: noopSleep,
+    });
+    return calls;
+  }
+
+  it("a created issue carries them, once each, never an internal one", async () => {
+    seedDraft({ id: "feat_1", title: "[Feature] Login", labels: '["feature"]' });
+    seedBatch({
+      metadata: JSON.stringify({ draftIds: ["feat_1"], additionalLabels: ADDITIONAL }),
+    });
+    const calls = await publishRecording();
+    const create = calls.find((c) => c.method === "POST" && /\/issues$/.test(c.url ?? ""));
+    expect((create?.data as { labels: string[] }).labels).toEqual(["feature", "sprint-42"]);
+  });
+
+  it("an updated issue carries them too", async () => {
+    seedDraft({ id: "feat_1", title: "[Feature] Login", body: "new body", labels: '["feature"]' });
+    seedBatch({ id: "batch_0", status: "completed" });
+    issues.set(pubIssueKey("batch_0", "feat_1"), {
+      id: "pi_old",
+      batchId: "batch_0",
+      draftId: "feat_1",
+      issueNumber: 55,
+      issueId: "I_kwDOold55",
+      htmlUrl: "https://github.com/acme/metis/issues/55",
+      status: "created",
+      parentIssueNumber: null,
+      dedupHash: computeDedupHash("acme", "metis", "[Feature] Login"),
+      bodyHash: computeBodyHash("old body"),
+      errorMessage: null,
+      publishedAt: new Date(),
+    });
+    seedBatch({
+      metadata: JSON.stringify({ draftIds: ["feat_1"], additionalLabels: ["sprint-42"] }),
+    });
+    const calls = await publishRecording();
+    const patch = calls.find((c) => c.method === "PATCH" && /\/issues\/55$/.test(c.url ?? ""));
+    expect((patch?.data as { labels: string[] }).labels).toEqual(["feature", "sprint-42"]);
+  });
+
+  it("the dry run and the preview list them on each issue the live run writes", async () => {
+    seedDraft({ id: "feat_1", title: "[Feature] Login", labels: '["feature"]' });
+    seedBatch({
+      dryRun: true,
+      metadata: JSON.stringify({ draftIds: ["feat_1"], additionalLabels: ADDITIONAL }),
+    });
+    await runBatch({ batchId: "batch_1", dryRun: true, secretRef: null, sleep: noopSleep });
+    const plan = JSON.parse(batches.get("batch_1")!.dryRunPlan!) as {
+      actions: Array<{ kind: string; labels?: string[] }>;
+    };
+    expect(plan.actions.find((a) => a.kind === "issue.create")!.labels).toEqual([
+      "feature",
+      "sprint-42",
+    ]);
+    const preview = await previewBatchPlan({
+      projectId: "proj_1",
+      targetOwner: "acme",
+      targetRepo: "metis",
+      targetBaseUrl: null,
+      provider: "github",
+      draftIds: ["feat_1"],
+      additionalLabels: ADDITIONAL,
+      secretRef: null,
+    });
+    expect(preview.actions.find((a) => a.kind === "issue.create")!.labels).toEqual([
+      "feature",
+      "sprint-42",
+    ]);
+  });
+});
+
 describe("#1276 — what a sub-issue body and labels carry onto GitHub", () => {
   const PARENT_LINE = "> Parent epic: **[Epic] Apollo — 2 requirements**";
   const FEATURE_BODY = `${PARENT_LINE}\n\n## Description\n\nLogin.\n\n## Acceptance criteria\n\n- [ ] ok`;

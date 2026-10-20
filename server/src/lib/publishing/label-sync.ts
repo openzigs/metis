@@ -126,6 +126,36 @@ export function publishableLabels(labels: readonly string[]): string[] {
 }
 
 /**
+ * #1049 — the labels a published issue carries: its draft's, then the batch's
+ * "Additional labels", each once (first spelling wins), with every internal
+ * label dropped from both ({@link publishableLabels}). One function for the
+ * live run, the dry run, Jira and drift detection, so they cannot disagree.
+ */
+export function issueLabels(
+  draftLabels: readonly string[],
+  additionalLabels: readonly string[],
+): string[] {
+  return publishableLabels([...draftLabels, ...additionalLabels]);
+}
+
+/**
+ * #1049 — the "Additional labels" a batch was created with, read from its
+ * `metadata` JSON. Anything that is not an array of strings reads as none.
+ */
+export function batchAdditionalLabels(metadata: string | null | undefined): string[] {
+  if (!metadata) return [];
+  try {
+    const parsed = JSON.parse(metadata) as { additionalLabels?: unknown };
+    if (Array.isArray(parsed.additionalLabels)) {
+      return parsed.additionalLabels.filter((s): s is string => typeof s === "string");
+    }
+  } catch {
+    /* malformed metadata — no labels */
+  }
+  return [];
+}
+
+/**
  * #1276 — the labels a requirement passes to its draft: every one but the
  * hidden `finding:` / `review:` labels. `unverified` stays, so METIS shows it
  * on the draft as before; {@link publishableLabels} drops it on the way out.
