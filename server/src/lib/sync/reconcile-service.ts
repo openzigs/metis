@@ -22,7 +22,6 @@ import type {
   DriftResolutionAction,
 } from "@metis/shared";
 import { isUniqueViolation } from "../db/prisma-errors.js";
-import { isHiddenRequirementLabel } from "../analysis/requirement-labels.js";
 import {
   publishableBody,
   stripMarker,
@@ -30,8 +29,23 @@ import {
   type OwnMarkers,
 } from "../publishing/dedup.js";
 import { bodyWithCodeAsText } from "../publishing/draft-code-links.js";
+import { isInternalPublishLabel } from "../publishing/label-sync.js";
+import { withoutParentEpicLink, withoutUnverifiedNote } from "../publishing/published-body.js";
 
 const log = createChildLogger("sync-reconcile");
+
+/**
+ * #1276 — the labels a draft takes on Adopt: the tracker's, less any internal
+ * label it may still carry from an older publish, plus the draft's own
+ * internal labels, which were never sent and so cannot have been changed there.
+ */
+function adoptedLabels(external: readonly string[], draftLabels: string | null): string[] {
+  const internal = safeJsonArray(draftLabels).filter(
+    (l): l is string => typeof l === "string" && isInternalPublishLabel(l),
+  );
+  const visible = external.filter((l) => typeof l === "string" && !isInternalPublishLabel(l));
+  return [...new Set([...visible, ...internal])];
+}
 
 /**
  * An issue body read back from the tracker, as draft text: without the marker
@@ -105,7 +119,8 @@ export async function reconcileIssueChange(
     state: publishedIssue.status === "created" ? "open" : "open",
     // #744 — the publisher never sends hidden `finding:<id>` labels, so they
     // must not read as drift on drafts generated before they were dropped.
-    labels: safeJsonArray(publishedIssue.draft.labels).filter((l) => !isHiddenRequirementLabel(l)),
+    // #1276 — nor `unverified`.
+    labels: safeJsonArray(publishedIssue.draft.labels).filter((l) => !isInternalPublishLabel(l)),
     assignees: [],
   };
 
@@ -116,19 +131,27 @@ export async function reconcileIssueChange(
   // issue's own marker lines wherever they now sit: someone who adds a note on
   // the tracker adds it BELOW the block, which leaves the block mid-body
   // (`remoteDraftText`).
+  // #1276 — the publisher also fills in an earlier-published parent epic's
+  // number and puts a sentence in place of `unverified`; neither is the draft's
+  // text, so both are taken out again here (`published-body.ts`).
   const current: IssueChangeFields = {
     ...event.current,
-    body: remoteDraftText(event.current.body ?? "", {
-      draftId: publishedIssue.draftId,
-      dedupHash: publishedIssue.dedupHash ?? null,
-      projectId,
-      requirementId,
-    }),
+    body: withoutUnverifiedNote(
+      withoutParentEpicLink(
+        remoteDraftText(event.current.body ?? "", {
+          draftId: publishedIssue.draftId,
+          dedupHash: publishedIssue.dedupHash ?? null,
+          projectId,
+          requirementId,
+        }),
+      ),
+    ),
   };
   const fieldDiffs = computeFieldDiffs(localSnapshot, {
     ...current,
-    // Issues published before #744 still carry `finding:<id>` on GitHub.
-    labels: event.current.labels.filter((l) => !isHiddenRequirementLabel(l)),
+    // Issues published before #744 still carry `finding:<id>` on GitHub, and
+    // ones published before #1276 `unverified`.
+    labels: event.current.labels.filter((l) => !isInternalPublishLabel(l)),
   });
 
   if (fieldDiffs.length === 0) {
@@ -245,7 +268,7 @@ export async function resolveDriftEvent(
     const externalSnapshot: IssueChangeFields = JSON.parse(existing.externalSnapshot);
     const publishedIssue = await prisma.publishedIssue.findUnique({
       where: { id: existing.publishedIssueId },
-      include: { draft: { select: { requirementId: true } } },
+      include: { draft: { select: { requirementId: true, labels: true } } },
     });
     if (publishedIssue) {
       await prisma.issueDraft.update({
@@ -263,7 +286,12 @@ export async function resolveDriftEvent(
               requirementId: publishedIssue.draft?.requirementId ?? null,
             }),
           ),
-          labels: JSON.stringify(externalSnapshot.labels),
+          // #1276 — the tracker never sees the draft's internal labels
+          // (`finding:`, `review:`, `unverified`), so adopting its labels
+          // keeps them rather than dropping them from METIS.
+          labels: JSON.stringify(
+            adoptedLabels(externalSnapshot.labels, publishedIssue.draft?.labels ?? null),
+          ),
         },
       });
     }

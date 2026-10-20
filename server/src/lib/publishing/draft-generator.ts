@@ -41,8 +41,14 @@ import { prisma } from "../prisma.js";
 import { isUniqueViolation } from "../db/prisma-errors.js";
 import { createChildLogger } from "../logger.js";
 import { computeDedupHash, neutraliseMarkerText } from "./dedup.js";
-import { publishableLabels } from "./label-sync.js";
-import { buildEpicTitle, buildLegacyEpicTitle, formatStartedAt } from "./epic-title.js";
+import { draftableLabels } from "./label-sync.js";
+import {
+  buildEpicTitle,
+  buildLegacyEpicTitle,
+  buildStatedCountEpicTitle,
+  formatStartedAt,
+} from "./epic-title.js";
+import { namesRepository } from "../docs-gen/approved-requirements-scope.js";
 import {
   codeLinkBase,
   codeLinkSectionRecord,
@@ -417,9 +423,19 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
     `priority:${highestPriority(requirements)}`,
     ...(opts.defaultLabels ?? []),
   ]);
-  const epicBaseTitle =
-    (await existingLegacyEpicTitle(opts, project.name, analysis)) ??
-    buildEpicTitle(project.name, analysis);
+  // #1276 — counted by the scope the epic covers; an epic this analysis already
+  // has keeps the title it was given once it has been published (or edited),
+  // whatever rule or count produced it, and is re-titled while it never was.
+  const currentEpicTitle = buildEpicTitle(project.name, analysis, requirements.length);
+  const existingEpicDraft = await existingEpic(opts, project.name, analysis, currentEpicTitle);
+  const epicBaseTitle = existingEpicDraft
+    ? await keepOrRetitleEpic(
+        opts,
+        existingEpicDraft,
+        currentEpicTitle,
+        requirements.map((r) => r.id),
+      )
+    : currentEpicTitle;
   const epic = await claimAndUpsertDraft(opts, epicBaseTitle, {
     projectId: opts.projectId,
     requirementId: null,
@@ -433,6 +449,8 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
       requirementIds: requirements.map((r) => r.id),
       generator: "draft-generator/v1",
       ...draftTarget(opts),
+      // #1276 — the title this epic is identified by, kept on every later Generate.
+      epicBaseTitle,
     },
   });
   const epicTitle = epic.title;
@@ -473,7 +491,9 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
       `priority:${req.priority}`,
       // #744 — never the hidden `finding:<id>` / `review:*` labels: they name
       // internal rows and would become labels in the target repository.
-      ...publishableLabels(parseLabels(req.labels)),
+      // #1276 — `unverified` IS kept: it is shown in METIS as before, and the
+      // publisher drops it at the boundary (`publishableLabels`).
+      ...draftableLabels(parseLabels(req.labels)),
       ...(opts.defaultLabels ?? []),
     ]);
     const body = renderFeatureBody({
@@ -597,24 +617,185 @@ async function claimTitle(
 }
 
 /**
- * #1064 — the epic's title rule changed, and the title is the dedup key. An
- * analysis whose epic draft was generated under the old rule would otherwise get
- * a SECOND epic draft on the next Generate, and a published epic a second issue.
- * So when the two rules disagree and this analysis already holds an epic draft
- * under the old title (or one of its `(n)` suffixes), that title is kept. The
- * match is on the dedup hash, which an edit of the draft's title does not
- * change (#776), so an edited epic is found too. To rename a kept epic, edit
- * its title on the Publish page.
+ * #1064 / #1276 — the title is the dedup key, so an epic this analysis already
+ * has keeps the title it was given. Otherwise a changed title rule, or a scope
+ * whose count changed between two Generates, would give the analysis a SECOND
+ * epic draft, and a published epic a second issue. Found, in order:
+ *
+ *  1. the title recorded on the epic's draft (`epicBaseTitle`, written since
+ *     #1276) for this repository, compared case-insensitively;
+ *  2. a title an earlier rule gave it — the pre-#1064 first line, then the
+ *     #1064 list count — held by this analysis's epic under that title or one
+ *     of its `(n)` suffixes. The match is on the dedup hash, which an edit of
+ *     the draft's title does not change (#776), so an edited epic is found too.
+ *
+ * The kept title is then re-titled to `current` only while the epic has never
+ * been published (`keepOrRetitleEpic`).
+ *
+ * To rename a kept epic, edit its title on the Publish page.
  */
-async function existingLegacyEpicTitle(
+async function existingEpic(
   opts: GenerateDraftsOptions,
   projectName: string,
   analysis: Parameters<typeof buildEpicTitle>[1],
-): Promise<string | null> {
-  const legacy = buildLegacyEpicTitle(projectName, analysis);
-  if (legacy === buildEpicTitle(projectName, analysis)) return null;
+  current: string,
+): Promise<ExistingEpic | null> {
+  const recorded = await recordedEpic(opts);
+  if (recorded) return recorded;
+  const earlier = new Set([
+    buildLegacyEpicTitle(projectName, analysis),
+    buildStatedCountEpicTitle(projectName, analysis),
+  ]);
+  for (const title of earlier) {
+    if (title === current) continue;
+    const held = await epicHeldUnder(opts, title);
+    if (held) return held;
+  }
+  return null;
+}
+
+/** An epic draft this analysis already holds, and the base title it is identified by. */
+interface ExistingEpic {
+  title: string;
+  draft: { id: string; status: string; dedupHash: string | null; metadata: string | null };
+}
+
+/**
+ * #1276 — the base title to generate the epic under. An epic that already has
+ * a title keeps it once it has EVER been published, because renaming it would
+ * file a second issue — and also when a reviewer edited it (#776). One that was
+ * never published (no `PublishedIssue` row that created or names an issue, on
+ * any destination, and not `published`/`publishing`) is re-titled to `current`
+ * in place: its row's title and dedup hash move together, so the next upsert
+ * refreshes the same draft. This is what corrects an epic first generated for a
+ * subset of the requirements, whose count would otherwise stay the subset's.
+ *
+ * Returns `current` (the BASE title) on a re-title even when the row was given a
+ * `(n)` suffix of it: `claimAndUpsertDraft` re-claims from the base and lands on
+ * that same row.
+ */
+async function keepOrRetitleEpic(
+  opts: GenerateDraftsOptions,
+  existing: ExistingEpic,
+  current: string,
+  generatedRequirementIds: readonly string[],
+): Promise<string> {
+  if (
+    existing.title === current ||
+    !(await mayRetitleEpic(opts, existing.draft, generatedRequirementIds))
+  ) {
+    return existing.title;
+  }
+  const claimed = await claimTitle(opts, current, null, {});
+  if (claimed.hash === existing.draft.dedupHash) return current;
+  try {
+    await prisma.issueDraft.update({
+      where: { id: existing.draft.id },
+      data: { title: claimed.title, dedupHash: claimed.hash },
+    });
+  } catch (err) {
+    // Another draft took the title in between: keep the one this epic has.
+    if (!isUniqueViolation(err)) throw err;
+    return existing.title;
+  }
+  log.info("re-titled an unpublished epic draft to its current scope", {
+    draftId: existing.draft.id,
+    from: existing.title,
+    to: claimed.title,
+  });
+  return current;
+}
+
+/**
+ * Whether the epic may be re-titled. Refused when any of these holds:
+ *  - it is `published`/`publishing`, or a reviewer edited it (#776);
+ *  - it has EVER been published: a `PublishedIssue` row that created or updated
+ *    an issue, or that recorded an issue number (a run that created it and then
+ *    failed, #1091), on any destination;
+ *  - a live (pending or running, unarchived, not dry-run) batch of the project
+ *    holds it — no code sets `publishing`, so a run that loaded the drafts may
+ *    be about to publish the epic under its current title;
+ *  - a live child sub-issue draft is outside this generation: only the drafts
+ *    generated now are refreshed, so that child's stored `> Parent epic:` line
+ *    would keep naming the old title (Generate all, then Generate a subset).
+ */
+async function mayRetitleEpic(
+  opts: GenerateDraftsOptions,
+  draft: ExistingEpic["draft"],
+  generatedRequirementIds: readonly string[],
+): Promise<boolean> {
+  if (draft.status === "published" || draft.status === "publishing") return false;
+  if (parseMetadata(draft.metadata).userEdited === true) return false;
+  const published = await prisma.publishedIssue.count({
+    where: {
+      draftId: draft.id,
+      OR: [{ status: { in: ["created", "updated"] } }, { issueNumber: { gt: 0 } }],
+    },
+  });
+  if (published > 0) return false;
+  if (await heldByLiveBatch(opts.projectId, draft.id)) return false;
+  const outsideChildren = await prisma.issueDraft.count({
+    where: {
+      parentDraftId: draft.id,
+      deletedAt: null,
+      OR: [{ requirementId: null }, { requirementId: { notIn: [...generatedRequirementIds] } }],
+    },
+  });
+  return outsideChildren === 0;
+}
+
+/** Whether a pending or running live batch of the project would publish `draftId`. */
+async function heldByLiveBatch(projectId: string, draftId: string): Promise<boolean> {
+  const batches = await prisma.publishBatch.findMany({
+    where: { projectId, archived: false, dryRun: false, status: { in: ["pending", "running"] } },
+    select: { metadata: true },
+  });
+  return batches.some((b) => {
+    const ids = parseMetadata(b.metadata).draftIds;
+    // No draft list: the batch publishes every publishable draft (`safeWhereFromMetadata`).
+    return !Array.isArray(ids) || ids.length === 0 || ids.includes(draftId);
+  });
+}
+
+/** #1276 — this analysis's epic draft for this repository, by its recorded base title. */
+async function recordedEpic(opts: GenerateDraftsOptions): Promise<ExistingEpic | null> {
+  const rows = await prisma.issueDraft.findMany({
+    where: {
+      projectId: opts.projectId,
+      draftType: "epic",
+      requirementId: null,
+      deletedAt: null,
+      metadata: { contains: opts.analysisId },
+    },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, status: true, dedupHash: true, metadata: true },
+  });
+  const repository = {
+    owner: opts.targetOwner.trim().toLowerCase(),
+    name: opts.targetRepo
+      .trim()
+      .toLowerCase()
+      .replace(/\.git$/, ""),
+  };
+  for (const row of rows) {
+    const meta = parseMetadata(row.metadata);
+    if (meta.analysisId !== opts.analysisId) continue;
+    const title = typeof meta.epicBaseTitle === "string" ? meta.epicBaseTitle.trim() : "";
+    if (!title) continue;
+    const owner = typeof meta.targetOwner === "string" ? meta.targetOwner : null;
+    const repo = typeof meta.targetRepo === "string" ? meta.targetRepo : null;
+    if (namesRepository(repository, owner, repo)) return { title, draft: row };
+  }
+  return null;
+}
+
+/** `base`, or the `(n)` suffix of it, under which this analysis holds its epic draft. */
+async function epicHeldUnder(
+  opts: GenerateDraftsOptions,
+  base: string,
+): Promise<ExistingEpic | null> {
   for (let n = 1; ; n++) {
-    const title = n === 1 ? legacy : `${legacy} (${n})`;
+    const title = n === 1 ? base : `${base} (${n})`;
     const holder = await prisma.issueDraft.findFirst({
       where: {
         projectId: opts.projectId,
@@ -624,7 +805,7 @@ async function existingLegacyEpicTitle(
     });
     if (!holder) return null;
     if (draftAnalysisId(holder.metadata) === opts.analysisId && holder.requirementId === null) {
-      return title;
+      return { title, draft: holder };
     }
   }
 }

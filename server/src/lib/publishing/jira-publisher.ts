@@ -13,6 +13,7 @@ import { assertConnectorHostAllowed } from "../connectors/network-allowlist.js";
 import type { JiraCreateIssueFields } from "../connectors/jira/types.js";
 import { publishableLabels } from "./label-sync.js";
 import { bodyWithCodeAsText } from "./draft-code-links.js";
+import { withUnverifiedNote } from "./published-body.js";
 
 const log = createChildLogger("jira-publisher");
 
@@ -113,6 +114,7 @@ function mapDraftToJiraFields(
   mapping: JiraFieldMapping,
 ): JiraCreateIssueFields {
   const issueType = draft.draftType === "epic" ? "Epic" : mapping.issueType || "Story";
+  const draftLabels = safeParseLabelArray(draft.labels);
 
   const fields: JiraCreateIssueFields = {
     project: { key: projectKey },
@@ -121,12 +123,14 @@ function mapDraftToJiraFields(
     // #1064 — a Jira project is never the repository the code was analysed
     // from, so the Related code section goes out in its plain form: paths and
     // symbols as code, with no owner, commit SHA or URL of that repository.
-    description: bodyWithCodeAsText(draft),
+    // #1276 — a draft labelled `unverified` says so in a sentence instead.
+    description: withUnverifiedNote(bodyWithCodeAsText(draft), draftLabels),
     ...mapping.additionalFields,
   };
 
-  // Map labels — never a hidden `finding:<id>` traceability label (#744).
-  const labels = publishableLabels(safeParseLabelArray(draft.labels));
+  // Map labels — never a hidden `finding:<id>` traceability label (#744), nor
+  // the internal `unverified` (#1276).
+  const labels = publishableLabels(draftLabels);
   if (labels.length > 0) {
     fields.labels = labels;
   }

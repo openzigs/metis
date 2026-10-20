@@ -17,6 +17,7 @@ import type {
   PublisherPorts,
 } from "./finding-publisher.js";
 import type { Publisher, Severity } from "./finding-publish-types.js";
+import { withUnverifiedNote } from "./published-body.js";
 import {
   buildSharedFindingPublisherPorts,
   PUBLISH_AUDIT_SUBJECTS,
@@ -201,12 +202,18 @@ export async function publishAnalysisFinding(
     repoConnectionId = conn.id;
   }
 
-  const body = buildAnalysisFindingBody({
-    analysisId: input.analysisId,
-    agentKey: input.agentKey,
-    agentSource: input.agentSource,
-    draft: input.draft,
-  });
+  const extraLabels = [...input.draft.suggestedLabels, ...(input.extraLabels ?? [])];
+  // #1276 — `unverified` is never sent as a label (`publishFinding` drops it);
+  // the issue body says what it meant instead.
+  const body = withUnverifiedNote(
+    buildAnalysisFindingBody({
+      analysisId: input.analysisId,
+      agentKey: input.agentKey,
+      agentSource: input.agentSource,
+      draft: input.draft,
+    }),
+    extraLabels,
+  );
 
   const payload: FindingPayload = {
     fingerprint: analysisFindingFingerprint(input.findingId),
@@ -221,7 +228,6 @@ export async function publishAnalysisFinding(
     ...(target && { target }),
   };
 
-  const extraLabels = [...input.draft.suggestedLabels, ...(input.extraLabels ?? [])];
   const ports = buildAnalysisPublisherPorts(input.confirmCrossProject);
   const outcome = await publishFinding(ports, {
     finding: payload,

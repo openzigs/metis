@@ -16,3 +16,5 @@ socket.io 4.x runs listeners in `process.nextTick` with no try/catch, so a throw
 **Why:** each rule closed a crash or an authorization gap found during the 2026-10-01 socket wave.
 
 **How to apply:** when you add a socket event, follow all of these. The lint guards catch the registration and room-name rules but not the payload rule.
+
+- (#1290) Fake sockets passed to `wireThreadRoomHandlers`/`wireDiscussionPresenceHandlers`/`wirePresenceHandlers` need `nsp: { server }`, `rooms` and `conn`, because joins read the eviction epoch (`discussions.multi-member.test.ts` missed it).

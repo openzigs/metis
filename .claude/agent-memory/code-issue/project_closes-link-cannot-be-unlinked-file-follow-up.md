@@ -10,3 +10,5 @@ A PR with "Closes #N" that defers one of #N's acceptance criteria will close #N 
 **Why:** on PR #1157 (#1129) a review item was deferred to a follow-up while the PR still closed #1129; the deferred work would have vanished with the closed issue had #1160 not been filed. Same shape as [[squash-title-closes-issues]].
 
 **How to apply:** when a PR defers any criterion, file the tracking follow-up issue (naming the criterion and the PR) BEFORE merge and link it from the PR body; check `gh pr view <n> --json closingIssuesReferences` rather than trusting the body text.
+
+- (#1294) Quoting a closing keyword as an example in a PR body (writing "Closes" before an example issue number) linked that issue, and editing it out did not unlink it. Write example issue numbers with no closing keyword in front, and pass an explicit squash `--body` on merge.

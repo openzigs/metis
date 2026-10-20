@@ -35,6 +35,36 @@ const codeMappings: Array<{
   codeSymbol: { name: string; kind: string } | null;
 }> = [];
 const repoConnections: Array<Record<string, string | null>> = [];
+/** #1276 — `published_issues` rows, as the re-title guard counts them. */
+const publishedIssueRows: Array<{ draftId: string; status: string; issueNumber: number }> = [];
+/** #1276 — `publish_batches` rows, as the re-title guard reads them. */
+const publishBatches: Array<{
+  projectId: string;
+  status: string;
+  archived: boolean;
+  dryRun: boolean;
+  metadata: string | null;
+}> = [];
+
+type CountWhere = {
+  draftId?: string;
+  status?: string | { in: string[] };
+  issueNumber?: { gt: number };
+  OR?: CountWhere[];
+};
+
+/** Evaluates the `where` shapes the generator sends: equality, `in`, `gt`, and `OR`. */
+function matchesPublishedIssue(
+  row: { draftId: string; status: string; issueNumber: number },
+  where: CountWhere,
+): boolean {
+  if (where.draftId !== undefined && row.draftId !== where.draftId) return false;
+  if (typeof where.status === "string" && row.status !== where.status) return false;
+  if (typeof where.status === "object" && !where.status.in.includes(row.status)) return false;
+  if (where.issueNumber && !(row.issueNumber > where.issueNumber.gt)) return false;
+  if (where.OR && !where.OR.some((w) => matchesPublishedIssue(row, w))) return false;
+  return true;
+}
 
 const fakeProject = { id: "proj_1", name: "Apollo", deletedAt: null as Date | null };
 const fakeAnalysis = {
@@ -101,6 +131,33 @@ vi.mock("../src/lib/prisma.js", () => ({
       ),
     },
     repoConnection: { findMany: vi.fn(async () => repoConnections) },
+    publishedIssue: {
+      count: vi.fn(
+        async ({ where }: { where: CountWhere }) =>
+          publishedIssueRows.filter((r) => matchesPublishedIssue(r, where)).length,
+      ),
+    },
+    publishBatch: {
+      findMany: vi.fn(
+        async ({
+          where,
+        }: {
+          where: {
+            projectId: string;
+            archived: boolean;
+            dryRun: boolean;
+            status: { in: string[] };
+          };
+        }) =>
+          publishBatches.filter(
+            (b) =>
+              b.projectId === where.projectId &&
+              b.archived === where.archived &&
+              b.dryRun === where.dryRun &&
+              where.status.in.includes(b.status),
+          ),
+      ),
+    },
     approvalRequest: {
       // Honours `type`: a query without one (the gate) counts every type; a
       // `type: "requirement"` query counts only the requirement approvals.
@@ -115,6 +172,35 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     issueDraft: {
+      // #1276 — an epic's live children outside the generation (the re-title guard).
+      count: vi.fn(
+        async ({
+          where,
+        }: {
+          where: {
+            parentDraftId: string;
+            OR: [{ requirementId: string | null }, { requirementId: { notIn: string[] } }];
+          };
+        }) =>
+          [...drafts.values()].filter(
+            (d) =>
+              !d.deletedAt &&
+              d.parentDraftId === where.parentDraftId &&
+              // As SQL reads it: `= NULL`-style equality, and `NOT IN` never matches NULL.
+              (d.requirementId === where.OR[0].requirementId ||
+                (d.requirementId !== null &&
+                  !where.OR[1].requirementId.notIn.includes(d.requirementId))),
+          ).length,
+      ),
+      // #1276 — the epic drafts of a project, to find this analysis's recorded epic title.
+      findMany: vi.fn(async ({ where }: { where: { projectId?: string; draftType?: string } }) =>
+        [...drafts.values()].filter(
+          (d) =>
+            !d.deletedAt &&
+            (where.projectId === undefined || d.projectId === where.projectId) &&
+            (where.draftType === undefined || d.draftType === where.draftType),
+        ),
+      ),
       findFirst: vi.fn(async ({ where }: { where: { dedupHash?: string } }) => {
         if (!where.dedupHash) return null;
         for (const d of drafts.values()) {
@@ -195,6 +281,8 @@ import {
 
 beforeEach(() => {
   drafts.clear();
+  publishedIssueRows.length = 0;
+  publishBatches.length = 0;
   codeMappings.length = 0;
   repoConnections.length = 0;
   nextId = 0;
@@ -1416,7 +1504,11 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
   describe("an epic drafted under the old title rule", () => {
     const LIST = "- Login form\n- Logout button\n- Password reset";
     const OLD_TITLE = "[Epic] Apollo — Login form";
-    const NEW_TITLE = "[Epic] Apollo — 3 stated requirements (analysis of 2026-09-29 14:05:00 UTC)";
+    // #1276 — the list states 3, but the epic covers the 2 requirements the analysis produced.
+    const NEW_TITLE = "[Epic] Apollo — 2 requirements (analysis of 2026-09-29 14:05:00 UTC)";
+    /** The #1064 rule's title: the count of the list in the run's text. */
+    const STATED_TITLE =
+      "[Epic] Apollo — 3 stated requirements (analysis of 2026-09-29 14:05:00 UTC)";
     let savedMeta: string | null;
     beforeEach(() => {
       savedMeta = fakeAnalysis.metadata;
@@ -1496,6 +1588,261 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
       const mine = epics().find((d) => d.id !== "theirs")!;
       expect(mine.title).toBe(NEW_TITLE);
       expect(drafts.get("theirs")).toMatchObject({ title: OLD_TITLE, body: "old body" });
+    });
+
+    describe("#1276 — the count is the scope the epic covers, and a drafted epic keeps its title", () => {
+      const THIRD = {
+        id: "req_3",
+        analysisId: "analysis_1",
+        title: "Password reset",
+        body: "Email a reset link",
+        type: "feature",
+        priority: "medium",
+        labels: "[]",
+        storyPoints: null,
+        deletedAt: null as Date | null,
+      };
+      afterEach(() => {
+        const at = requirements.findIndex((r) => r.id === THIRD.id);
+        if (at >= 0) requirements.splice(at, 1);
+      });
+
+      it("counts the requirements the epic covers, as its Scope section does", async () => {
+        await generateDrafts(opts);
+        const [epic] = epics();
+        expect(epic!.title).toBe(NEW_TITLE);
+        expect(epic!.body).toContain("**Total requirements**: 2");
+        expect(epic!.title).not.toContain("stated");
+      });
+
+      it("keeps a published epic titled under the #1064 rule: not renamed, not duplicated", async () => {
+        seedEpic({
+          id: "stated_epic",
+          title: STATED_TITLE,
+          dedupHash: computeDedupHash("acme", "metis", STATED_TITLE),
+        });
+        const summary = await generateDrafts(opts);
+        expect(summary.epics).toBe(1);
+        expect(epics()).toHaveLength(1);
+        expect(epics()[0]).toMatchObject({
+          id: "stated_epic",
+          title: STATED_TITLE,
+          status: "published",
+        });
+        expect(feature("req_1").parentDraftId).toBe("stated_epic");
+        expect(feature("req_1").body).toContain(`> Parent epic: **${STATED_TITLE}**`);
+      });
+
+      it("keeps its title when the scope later grows, so the published epic is not filed twice", async () => {
+        await generateDrafts(opts);
+        const first = epics()[0]!;
+        const { id, title, dedupHash } = first;
+        first.status = "published";
+        requirements.push(THIRD);
+        const summary = await generateDrafts(opts);
+        expect(summary.epics).toBe(1);
+        expect(epics()).toHaveLength(1);
+        expect(epics()[0]).toMatchObject({ id, title, dedupHash, status: "published" });
+        expect(title).toBe(NEW_TITLE);
+        // The body's Scope section is refreshed to the current scope.
+        expect(epics()[0]!.body).toContain("**Total requirements**: 3");
+        expect(feature("req_3").parentDraftId).toBe(id);
+      });
+
+      it("matches the recorded title's repository case-insensitively", async () => {
+        await generateDrafts(opts);
+        const { id } = epics()[0]!;
+        requirements.push(THIRD);
+        await generateDrafts({ ...opts, targetOwner: "ACME", targetRepo: "Metis" });
+        expect(epics()).toHaveLength(1);
+        expect(epics()[0]!.id).toBe(id);
+      });
+
+      it("titles an epic for another repository by that generation's own scope", async () => {
+        await generateDrafts(opts);
+        requirements.push(THIRD);
+        await generateDrafts({ ...opts, targetRepo: "other" });
+        expect(
+          epics()
+            .map((d) => d.title)
+            .sort(),
+        ).toEqual([
+          NEW_TITLE,
+          "[Epic] Apollo — 3 requirements (analysis of 2026-09-29 14:05:00 UTC)",
+        ]);
+      });
+
+      it("never takes another analysis's recorded epic title", async () => {
+        const THEIRS = "[Epic] Apollo — Their batch";
+        drafts.set("their_epic", {
+          id: "their_epic",
+          projectId: "proj_1",
+          requirementId: null,
+          parentDraftId: null,
+          draftType: "epic",
+          title: THEIRS,
+          body: "theirs",
+          labels: "[]",
+          assignees: "[]",
+          storyPoints: 3,
+          status: "published",
+          dedupHash: computeDedupHash("acme", "metis", THEIRS),
+          metadata: JSON.stringify({
+            analysisId: "analysis_other",
+            epicBaseTitle: THEIRS,
+            targetOwner: "acme",
+            targetRepo: "metis",
+          }),
+          deletedAt: null,
+        });
+        await generateDrafts(opts);
+        const mine = epics().filter((d) => d.id !== "their_epic");
+        expect(mine.map((d) => d.title)).toEqual([NEW_TITLE]);
+        expect(drafts.get("their_epic")).toMatchObject({ title: THEIRS, body: "theirs" });
+      });
+
+      describe("an epic first drafted for a subset of the requirements", () => {
+        const SUBSET_TITLE = "[Epic] Apollo — 1 requirement (analysis of 2026-09-29 14:05:00 UTC)";
+
+        it("is re-titled to the full scope while it has never been published", async () => {
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          const [first] = epics();
+          expect(first!.title).toBe(SUBSET_TITLE);
+          await generateDrafts(opts);
+          expect(epics()).toHaveLength(1);
+          expect(epics()[0]).toMatchObject({
+            id: first!.id,
+            title: NEW_TITLE,
+            dedupHash: computeDedupHash("acme", "metis", NEW_TITLE),
+          });
+          expect(JSON.parse(epics()[0]!.metadata!).epicBaseTitle).toBe(NEW_TITLE);
+          expect(feature("req_2").parentDraftId).toBe(first!.id);
+          expect(feature("req_1").body).toContain(`> Parent epic: **${NEW_TITLE}**`);
+        });
+
+        it.each([
+          ["created", 7, SUBSET_TITLE],
+          ["updated", 7, SUBSET_TITLE],
+          // A run that created the issue and then failed recorded its number (#1091).
+          ["failed", 7, SUBSET_TITLE],
+          // Rows that never named an issue: the epic was never published.
+          ["failed", 0, NEW_TITLE],
+          ["pending", 0, NEW_TITLE],
+        ])(
+          "with a %s PublishedIssue row for issue %i (draft back in draft status) → %s",
+          async (status, issueNumber, expected) => {
+            await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+            const [first] = epics();
+            publishedIssueRows.push({ draftId: first!.id, status, issueNumber });
+            await generateDrafts(opts);
+            expect(epics()).toHaveLength(1);
+            expect(epics()[0]).toMatchObject({ id: first!.id, title: expected });
+          },
+        );
+
+        it("is not re-titled when shrinking would leave a sibling naming the old title", async () => {
+          await generateDrafts(opts);
+          const [first] = epics();
+          expect(first!.title).toBe(NEW_TITLE);
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          expect(epics()).toHaveLength(1);
+          expect(epics()[0]).toMatchObject({ id: first!.id, title: NEW_TITLE });
+          // Every sub-issue, refreshed or not, names the epic's actual title.
+          for (const id of ["req_1", "req_2"]) {
+            expect(feature(id).body).toContain(`> Parent epic: **${epics()[0]!.title}**`);
+          }
+        });
+
+        it("counts a sibling a re-run unlinked from its requirement as outside the generation", async () => {
+          await generateDrafts(opts);
+          const [first] = epics();
+          // A re-run re-created the requirement rows; ON DELETE SET NULL unlinked the draft.
+          feature("req_2").requirementId = null;
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          expect(epics()[0]).toMatchObject({ id: first!.id, title: NEW_TITLE });
+        });
+
+        it("is not re-titled while a live publish batch holds it", async () => {
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          const [first] = epics();
+          for (const status of ["pending", "running"]) {
+            publishBatches.length = 0;
+            publishBatches.push({
+              projectId: "proj_1",
+              status,
+              archived: false,
+              dryRun: false,
+              metadata: JSON.stringify({ draftIds: [first!.id] }),
+            });
+            await generateDrafts(opts);
+            expect(epics()[0]).toMatchObject({ id: first!.id, title: SUBSET_TITLE });
+          }
+          // A batch with no draft list publishes every draft, this one included.
+          publishBatches.length = 0;
+          publishBatches.push({
+            projectId: "proj_1",
+            status: "running",
+            archived: false,
+            dryRun: false,
+            metadata: JSON.stringify({ additionalLabels: [] }),
+          });
+          await generateDrafts(opts);
+          expect(epics()[0]!.title).toBe(SUBSET_TITLE);
+        });
+
+        it("is re-titled when the live batches hold other drafts, or are dry runs", async () => {
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          const [first] = epics();
+          publishBatches.push(
+            {
+              projectId: "proj_1",
+              status: "running",
+              archived: false,
+              dryRun: false,
+              metadata: JSON.stringify({ draftIds: ["someone_else"] }),
+            },
+            {
+              projectId: "proj_1",
+              status: "running",
+              archived: false,
+              dryRun: true,
+              metadata: JSON.stringify({ draftIds: [first!.id] }),
+            },
+          );
+          await generateDrafts(opts);
+          expect(epics()[0]).toMatchObject({ id: first!.id, title: NEW_TITLE });
+        });
+
+        it("keeps its title when another draft takes the new one first (unique violation)", async () => {
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          const [first] = epics();
+          vi.mocked(prisma.issueDraft.update).mockImplementationOnce((async () => {
+            throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+          }) as never);
+          await generateDrafts(opts);
+          expect(epics()).toHaveLength(1);
+          expect(epics()[0]).toMatchObject({ id: first!.id, title: SUBSET_TITLE });
+        });
+
+        it("keeps its title while its status is published", async () => {
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          const [first] = epics();
+          first!.status = "published";
+          await generateDrafts(opts);
+          expect(epics()).toHaveLength(1);
+          expect(epics()[0]).toMatchObject({ id: first!.id, title: SUBSET_TITLE });
+        });
+
+        it("keeps a title a reviewer edited", async () => {
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          const [first] = epics();
+          first!.title = "[Epic] Apollo — Sign-in";
+          first!.metadata = JSON.stringify({ ...JSON.parse(first!.metadata!), userEdited: true });
+          await generateDrafts(opts);
+          expect(epics()).toHaveLength(1);
+          expect(epics()[0]).toMatchObject({ id: first!.id, title: "[Epic] Apollo — Sign-in" });
+        });
+      });
     });
   });
 });
@@ -1895,5 +2242,27 @@ describe("#1203 — a published issue notes criteria shared with other requireme
 
     expect(featureBody("req_1")).not.toContain("Shared with");
     expect(featureBody("req_2")).not.toContain("Shared with");
+  });
+});
+
+describe("#1276 — `unverified` stays visible inside METIS", () => {
+  it("keeps the requirement's `unverified` label on its draft; only the publisher drops it", async () => {
+    const req = requirements.find((r) => r.id === "req_1")!;
+    const saved = req.labels;
+    req.labels = JSON.stringify(["auth", "unverified", "review:approved"]);
+    try {
+      await generateDrafts({
+        projectId: "proj_1",
+        analysisId: "analysis_1",
+        targetOwner: "acme",
+        targetRepo: "metis",
+      });
+    } finally {
+      req.labels = saved;
+    }
+    const draft = [...drafts.values()].find((d) => d.requirementId === "req_1")!;
+    const labels = JSON.parse(draft.labels) as string[];
+    expect(labels).toContain("unverified");
+    expect(labels).not.toContain("review:approved");
   });
 });

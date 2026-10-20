@@ -3,7 +3,12 @@
  * (`[Epic] METIS — Analysis cmubq3ls`). It is now titled from what was analysed.
  */
 import { describe, expect, it } from "vitest";
-import { buildEpicTitle, buildLegacyEpicTitle, EPIC_TITLE_SUBJECT_MAX } from "./epic-title.js";
+import {
+  buildEpicTitle,
+  buildLegacyEpicTitle,
+  buildStatedCountEpicTitle,
+  EPIC_TITLE_SUBJECT_MAX,
+} from "./epic-title.js";
 
 const STARTED = new Date("2026-09-29T14:05:33.000Z");
 
@@ -91,16 +96,51 @@ describe("buildEpicTitle", () => {
     ].join("\n");
 
     it("does not title a list of requirements after its first item", () => {
-      const title = buildEpicTitle("Miniflux", analysis({ extraInstructions: FIVE }));
-      expect(title).toBe(
-        "[Epic] Miniflux — 5 stated requirements (analysis of 2026-09-29 14:05:33 UTC)",
-      );
+      const title = buildEpicTitle("Miniflux", analysis({ extraInstructions: FIVE }), 5);
+      expect(title).toBe("[Epic] Miniflux — 5 requirements (analysis of 2026-09-29 14:05:33 UTC)");
       expect(title).not.toContain("Mark all as read");
+    });
+
+    describe("#1276 — the count is the scope the epic covers, not the list in the text", () => {
+      it("says 33 requirements for the run-8 epic: five stated, 33 in scope", () => {
+        expect(buildEpicTitle("Miniflux", analysis({ extraInstructions: FIVE }), 33)).toBe(
+          "[Epic] Miniflux — 33 requirements (analysis of 2026-09-29 14:05:33 UTC)",
+        );
+      });
+
+      it("says `1 requirement` for a scope of one", () => {
+        expect(buildEpicTitle("P", analysis({ extraInstructions: FIVE }), 1)).toBe(
+          "[Epic] P — 1 requirement (analysis of 2026-09-29 14:05:33 UTC)",
+        );
+      });
+
+      it("states no count when the scope is not known", () => {
+        expect(buildEpicTitle("P", analysis({ extraInstructions: FIVE }))).toBe(
+          "[Epic] P — Analysis of 2026-09-29 14:05:33 UTC",
+        );
+      });
+
+      it("keeps the #1064 rule's title byte for byte, so an epic drafted under it is found", () => {
+        expect(buildStatedCountEpicTitle("Miniflux", analysis({ extraInstructions: FIVE }))).toBe(
+          "[Epic] Miniflux — 5 stated requirements (analysis of 2026-09-29 14:05:33 UTC)",
+        );
+      });
+
+      it("changes nothing for a text that is not a list", () => {
+        for (const meta of [
+          { extraInstructions: "Export results to CSV" },
+          { extraInstructions: `## Batch name\n${FIVE}` },
+          { extraInstructions: FIVE, label: "Q3 backlog" },
+        ]) {
+          const a = analysis(meta);
+          expect(buildEpicTitle("P", a, 33)).toBe(buildStatedCountEpicTitle("P", a));
+        }
+      });
     });
 
     it("counts only the opening list, and numbered items too", () => {
       const text = "1. First\n2) Second\n\nSome free text the user also typed.\n- detail";
-      expect(buildEpicTitle("P", analysis({ extraInstructions: text }))).toBe(
+      expect(buildStatedCountEpicTitle("P", analysis({ extraInstructions: text }))).toBe(
         "[Epic] P — 2 stated requirements (analysis of 2026-09-29 14:05:33 UTC)",
       );
     });
@@ -130,7 +170,9 @@ describe("buildEpicTitle", () => {
 
     describe("the list shapes people actually write", () => {
       const WHEN = "(analysis of 2026-09-29 14:05:33 UTC)";
-      const title = (text: string) => buildEpicTitle("P", analysis({ extraInstructions: text }));
+      // The list reading decides the #1064 title, which must keep finding its epic.
+      const title = (text: string) =>
+        buildStatedCountEpicTitle("P", analysis({ extraInstructions: text }));
 
       it("a loose list — a blank line between the items", () => {
         expect(title("- Mark all as read\n\n- Terminate sessions\n\n- Dedupe entries")).toBe(
@@ -194,14 +236,17 @@ describe("buildEpicTitle", () => {
     });
 
     it("drops the time when the run has no start time", () => {
-      expect(buildEpicTitle("P", analysis({ extraInstructions: FIVE }, null))).toBe(
+      expect(buildEpicTitle("P", analysis({ extraInstructions: FIVE }, null), 7)).toBe(
+        "[Epic] P — 7 requirements",
+      );
+      expect(buildStatedCountEpicTitle("P", analysis({ extraInstructions: FIVE }, null))).toBe(
         "[Epic] P — 5 stated requirements",
       );
     });
 
-    it("is the same title every time for the same run (it is the dedup key)", () => {
+    it("is the same title every time for the same run and scope (it is the dedup key)", () => {
       const a = analysis({ extraInstructions: FIVE });
-      expect(buildEpicTitle("P", a)).toBe(buildEpicTitle("P", a));
+      expect(buildEpicTitle("P", a, 5)).toBe(buildEpicTitle("P", a, 5));
     });
   });
 

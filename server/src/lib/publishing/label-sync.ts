@@ -95,18 +95,53 @@ export function combineLabels(base: GhLabel[], extras: string[]): GhLabel[] {
 }
 
 /**
+ * #1276 — the label a requirement carries when METIS could not confirm the
+ * code its evidence cites. The synthesis model writes it (rule 4 asks it to
+ * note the uncertainty), and a finding draft can suggest it too.
+ */
+export const UNVERIFIED_LABEL = "unverified";
+
+/**
+ * #1276 — a label that stays inside METIS: the hidden `finding:` / `review:`
+ * labels (#744), and `unverified` (owner decision on #1276, option A). Each
+ * is shown in METIS as before and never reaches a published issue or the
+ * target repository's label set; the published body says in words what
+ * `unverified` meant (`withUnverifiedNote`). Matched as a whole label, in any
+ * case.
+ */
+export function isInternalPublishLabel(label: string): boolean {
+  const name = label.trim();
+  return isHiddenRequirementLabel(name) || name.toLowerCase() === UNVERIFIED_LABEL;
+}
+
+/**
  * #744 — the labels a draft may carry onto a published issue. A requirement's
  * hidden `finding:<id>` traceability labels (and legacy `review:*` ones) name
  * internal database rows; drafts generated before #744 copied them, so they
- * are stripped here, at the boundary, rather than trusted to be absent.
+ * are stripped here, at the boundary, rather than trusted to be absent. #1276 —
+ * so is `unverified` ({@link isInternalPublishLabel}).
  */
 export function publishableLabels(labels: readonly string[]): string[] {
+  return uniqueLabelsExcept(labels, isInternalPublishLabel);
+}
+
+/**
+ * #1276 — the labels a requirement passes to its draft: every one but the
+ * hidden `finding:` / `review:` labels. `unverified` stays, so METIS shows it
+ * on the draft as before; {@link publishableLabels} drops it on the way out.
+ */
+export function draftableLabels(labels: readonly string[]): string[] {
+  return uniqueLabelsExcept(labels, isHiddenRequirementLabel);
+}
+
+/** Trimmed, non-blank, first of each case-insensitive name, without those `drop` names. */
+function uniqueLabelsExcept(labels: readonly string[], drop: (name: string) => boolean): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const raw of labels) {
     const name = raw.trim();
     const key = name.toLowerCase();
-    if (!name || isHiddenRequirementLabel(name) || seen.has(key)) continue;
+    if (!name || drop(name) || seen.has(key)) continue;
     seen.add(key);
     out.push(name);
   }

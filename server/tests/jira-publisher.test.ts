@@ -218,6 +218,34 @@ describe("publishDraftToJira", () => {
     );
   });
 
+  it("#1276 — sends no `unverified` label to Jira, and says it in a sentence instead", async () => {
+    seedConnection();
+    seedDraft("draft_u", {
+      body: "## Description\n\nLogin.\n\n## Acceptance criteria\n\n- [ ] ok",
+      labels: JSON.stringify(["enhancement", "Unverified"]),
+    });
+    mockCreateIssue.mockResolvedValueOnce({
+      id: "10004",
+      key: "PROJ-4",
+      self: "https://test.atlassian.net/rest/api/3/issue/10004",
+    });
+    await publishDraftToJira({
+      draftId: "draft_u",
+      batchId: "batch_1",
+      connectionId: "conn_1",
+      projectKey: "PROJ",
+      actorId: "user_1",
+    });
+    const fields = mockCreateIssue.mock.calls.at(-1)![0] as {
+      labels: string[];
+      description: string;
+    };
+    expect(fields.labels).toEqual(["enhancement"]);
+    expect(fields.description).toContain(
+      "METIS could not confirm the code references behind this item; check them before relying on them.\n\n## Acceptance criteria",
+    );
+  });
+
   it("returns failed status on Jira API error", async () => {
     seedConnection();
     seedDraft();

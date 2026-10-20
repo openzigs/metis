@@ -22,6 +22,7 @@ import {
   type Severity,
   type SourceLabel,
 } from "./finding-publish-types.js";
+import { isInternalPublishLabel } from "./label-sync.js";
 
 const MARKER_PREFIX = `<!-- ${FINDING_MARKER_PREFIX}:`;
 
@@ -192,6 +193,8 @@ function defaultLabels(
   for (const l of extras) {
     const t = l.trim();
     if (RESERVED_LABELS.has(t.toLowerCase())) continue;
+    // #1276 — an internal label (a model-suggested `unverified`) stays in METIS.
+    if (isInternalPublishLabel(t)) continue;
     if (t.length > 0 && t.length <= 64) labels.add(t);
   }
   return [...labels];
