@@ -48,6 +48,15 @@
  * (`jobTouchesProjects`). The relays and the re-validation pass carry the job
  * rooms with the project rooms.
  *
+ * #1290 — and the join-only rooms that carry project data: `analysis:{id}`,
+ * `session:{id}`, `connector:{id}`, `run:{id}`, `thread:{id}` and
+ * `presence:{type}:{id}` (`rejudgeProjectDataRooms` in `project-data-rooms.ts`,
+ * each with its own join rule). A removed member's sockets re-judge every one
+ * they are in; a project (or a deleted workspace's projects) re-judges the
+ * rooms recorded as that project's, and any room this process holds no record
+ * for (`roomTouchesProjects`). The relays and the re-validation pass carry them
+ * with the project rooms.
+ *
  * Best-effort: these run after the database write committed, so nothing here
  * throws into the route.
  */
@@ -57,6 +66,8 @@ import { createChildLogger } from "../logger.js";
 import { runDetached } from "./client-event-handler.js";
 import { jobIdsOf, jobTouchesProjects, rejudgeJobRooms } from "./job-rooms.js";
 import { rejudgeProjectRooms } from "./project-rooms.js";
+import { projectDataRoomsOf, rejudgeProjectDataRooms } from "./project-data-rooms.js";
+import { roomTouchesProjects } from "./room-scope.js";
 import { getSocketServer } from "./registry.js";
 import {
   REVALIDATE_CONCURRENCY,
@@ -114,18 +125,29 @@ const rejudgeProjectJobRoomsLocally = (io: MetisIOServer, projectIds: ReadonlySe
   );
 };
 
+/** #1290 — re-judge every project-data room that may involve `projectIds`, fail closed. */
+const rejudgeProjectDataRoomsLocally = (io: MetisIOServer, projectIds: ReadonlySet<string>) => {
+  const only = (room: string) => roomTouchesProjects(room, projectIds);
+  return rejudge(
+    localSockets(io, (s) => projectDataRoomsOf(s).some(only)),
+    (socket) => rejudgeProjectDataRooms(socket, socket.data.user, { failClosed: true, only }),
+  );
+};
+
 const rejudgeRoomLocally = async (io: MetisIOServer, projectId: string) => {
   await rejudgeProjectRoomLocally(io, projectId);
   await rejudgeProjectJobRoomsLocally(io, new Set([projectId]));
+  await rejudgeProjectDataRoomsLocally(io, new Set([projectId]));
 };
 
-/** A removed member: every project and job room their sockets are in. */
+/** A removed member: every project, job and project-data room their sockets are in. */
 const rejudgeUserLocally = (io: MetisIOServer, userId: string) =>
   rejudge(
     localSockets(io, (s) => s.data.user.userId === userId),
     async (socket) => {
       await rejudgeProjectRooms(socket, socket.data.user, { failClosed: true });
       await rejudgeJobRooms(socket, socket.data.user, { failClosed: true });
+      await rejudgeProjectDataRooms(socket, socket.data.user, { failClosed: true });
     },
   );
 
@@ -162,12 +184,13 @@ export async function evictWorkspaceProjectRooms(workspaceId: string): Promise<v
   // One pass over the job rooms for every project, so an impact analysis's
   // room is judged once rather than once per project.
   await rejudgeProjectJobRoomsLocally(io, new Set(projectIds));
+  await rejudgeProjectDataRoomsLocally(io, new Set(projectIds));
 }
 
 /**
  * `userId` was removed from `workspaceId`: every one of their sockets re-judges
- * the project rooms and (#1251) the job rooms it is in, and leaves those the
- * rule now refuses.
+ * the project rooms, (#1251) the job rooms and (#1290) the project-data rooms
+ * it is in, and leaves those the rule now refuses.
  */
 export async function evictMemberProjectRooms(userId: string, workspaceId: string): Promise<void> {
   const io = getSocketServer();
@@ -180,9 +203,9 @@ export async function evictMemberProjectRooms(userId: string, workspaceId: strin
 
 /**
  * `projectId`'s access rule changed — a legacy project assigned to a
- * workspace, or the project soft-deleted: the sockets in its room, and (#1251)
- * in the job rooms that may involve it, are re-judged in place, so whoever the
- * rule now refuses leaves and everyone else stays.
+ * workspace, or the project soft-deleted: the sockets in its room, and (#1251,
+ * #1290) in the job and project-data rooms that may involve it, are re-judged
+ * in place, so whoever the rule now refuses leaves and everyone else stays.
  */
 export async function evictProjectRoom(projectId: string): Promise<void> {
   const io = getSocketServer();

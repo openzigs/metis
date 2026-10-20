@@ -655,6 +655,9 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
     },
   );
 
+  /** #1290 — how many times a delete re-reads an override an upsert re-stamped. */
+  const OVERRIDE_DELETE_ATTEMPTS = 3;
+
   // DELETE /projects/:projectId/usage-overrides/:overrideId — remove an override.
   //
   // #1251 — deliberately NOT limited to the override's author, unlike a table
@@ -678,14 +681,39 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
         const projectId = String(req.params.projectId);
         await assertProjectsAccessible(actor, [projectId]);
         const overrideId = String(req.params.overrideId);
-        const existing = await prisma.schemaUsageOverride.findFirst({
-          where: { id: overrideId, projectId },
-          select: { createdBy: true, tableName: true, columnName: true, access: true },
-        });
-        const removed =
-          existing !== null && (await deleteManualOverride(prisma, projectId, overrideId));
-        if (!existing || !removed) {
+        // #1290 — read the author, then delete only a row that still carries
+        // it (`deleteManualOverride`'s compare-and-delete). A POST upsert that
+        // lands in between re-stamps `createdBy`; the delete then removes
+        // nothing and the row is read again, so the audit names the author of
+        // the row actually deleted. A plain read-then-delete — even inside a
+        // transaction at the default READ COMMITTED — could delete the
+        // re-stamped row under the author read before it.
+        let existing: {
+          createdBy: string | null;
+          tableName: string;
+          columnName: string | null;
+          access: string;
+        } | null = null;
+        let removed = false;
+        for (let attempt = 0; attempt < OVERRIDE_DELETE_ATTEMPTS && !removed; attempt++) {
+          existing = await prisma.schemaUsageOverride.findFirst({
+            where: { id: overrideId, projectId },
+            select: { createdBy: true, tableName: true, columnName: true, access: true },
+          });
+          if (!existing) break;
+          removed = await deleteManualOverride(prisma, projectId, overrideId, {
+            createdBy: existing.createdBy,
+          });
+        }
+        if (!existing) {
           throw new AppError(404, "NOT_FOUND", "Override not found");
+        }
+        if (!removed) {
+          throw new AppError(
+            409,
+            "CONFLICT",
+            "The override kept changing while it was being deleted; try again",
+          );
         }
         audit({
           actor: { id: actor.id },

@@ -37,6 +37,10 @@ function createMockIo() {
         permissions: [] as string[],
       },
     },
+    // #1290 — a join reads the eviction epoch and may re-judge the room.
+    nsp: { server: {} },
+    rooms,
+    conn: { close: vi.fn() },
     join: vi.fn(async (room: string) => rooms.add(room)),
     leave: vi.fn(async (room: string) => rooms.delete(room)),
     on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
@@ -344,6 +348,9 @@ describe("presence:join access (#679)", () => {
       const socket = {
         id,
         data: { user: { userId, username, role: "developer", permissions: [] as string[] } },
+        nsp: { server: io },
+        rooms,
+        conn: { close: vi.fn() },
         join: vi.fn(async (room: string) => void rooms.add(room)),
         leave: vi.fn(async (room: string) => void rooms.delete(room)),
         on: vi.fn((event: string, handler: (...args: unknown[]) => unknown) => {

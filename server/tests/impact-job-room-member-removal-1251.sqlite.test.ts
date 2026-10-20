@@ -418,6 +418,58 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         );
       });
 
+      it("#1290 — an upsert landing between the read and the delete does not misattribute the audit", async () => {
+        const id = await createOverride("public.raced_1290");
+        // Sam's POST upsert re-stamps the row right after the route reads it.
+        const real = db.schemaUsageOverride.findFirst.bind(db.schemaUsageOverride);
+        const spy = vi.spyOn(db.schemaUsageOverride, "findFirst").mockImplementationOnce((async (
+          args: Parameters<typeof real>[0],
+        ) => {
+          const row = await real(args);
+          await db.schemaUsageOverride.update({ where: { id }, data: { createdBy: "sam" } });
+          return row;
+        }) as never);
+        auditSpy.mockClear();
+        try {
+          expect((await del("tess", id)).status).toBe(204);
+        } finally {
+          spy.mockRestore();
+        }
+        expect(await db.schemaUsageOverride.findUnique({ where: { id } })).toBeNull();
+        expect(auditSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: "impact_analysis.usage_override.delete",
+            metadata: expect.objectContaining({ createdBy: "sam", ownOverride: false }),
+          }),
+        );
+      });
+
+      it("#1290 — answers 409 and keeps the override when every read is overtaken by an upsert", async () => {
+        const id = await createOverride("public.churned_1290");
+        const real = db.schemaUsageOverride.findFirst.bind(db.schemaUsageOverride);
+        let n = 0;
+        const spy = vi.spyOn(db.schemaUsageOverride, "findFirst").mockImplementation((async (
+          args: Parameters<typeof real>[0],
+        ) => {
+          const row = await real(args);
+          await db.schemaUsageOverride.update({
+            where: { id },
+            data: { createdBy: ++n % 2 ? "sam" : "olga" },
+          });
+          return row;
+        }) as never);
+        auditSpy.mockClear();
+        try {
+          expect((await del("tess", id)).status).toBe(409);
+        } finally {
+          spy.mockRestore();
+        }
+        expect(await db.schemaUsageOverride.findUnique({ where: { id } })).not.toBeNull();
+        expect(auditSpy).not.toHaveBeenCalledWith(
+          expect.objectContaining({ action: "impact_analysis.usage_override.delete" }),
+        );
+      });
+
       it("a reader-role member and a non-member are refused, and the override survives", async () => {
         const id = await createOverride("public.kept_1251");
         auditSpy.mockClear();

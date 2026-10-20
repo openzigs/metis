@@ -147,13 +147,22 @@ export async function listManualOverrides(
  * Delete a manual override by id, scoped to the project (so a caller cannot
  * delete another tenant's row by guessing an id). Returns true when a row was
  * removed.
+ *
+ * #1290 — `expect.createdBy` makes it a compare-and-delete: the row goes only
+ * if it still carries that author, in one statement. A caller that read the
+ * row first (to audit its author) passes the author it read, so an upsert
+ * that re-stamped `createdBy` in between deletes nothing rather than a row
+ * the audit would misattribute.
  */
 export async function deleteManualOverride(
   prisma: OverridePrisma,
   projectId: string,
   id: string,
+  expect?: { createdBy: string | null },
 ): Promise<boolean> {
-  const res = await prisma.schemaUsageOverride.deleteMany({ where: { id, projectId } });
+  const res = await prisma.schemaUsageOverride.deleteMany({
+    where: { id, projectId, ...(expect ? { createdBy: expect.createdBy } : {}) },
+  });
   return res.count > 0;
 }
 
