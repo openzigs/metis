@@ -4322,6 +4322,27 @@ cannot read still detaches it, and audits `product.repo.detach.unreadable`. A co
 soft-deleted after it was attached keeps its `ProductRepo` row but is left out of every
 product read and of `/analyze` (`LIVE_PRODUCT_REPOS`).
 
+**Concurrent job edits (#1245).** `PATCH /api/scheduler/:id` (and pause / resume,
+which go through the same `updateJob`) writes every field from the server's read of
+the job, so the write is conditional on the job's `version` from that read and bumps
+it; a write whose read went stale answers **409 `JOB_VERSION_CONFLICT`** and writes
+nothing, so an edit cannot write a concurrent webhook rebind's old URL or
+`authHeader` back. A client may send the `version` it loaded as `expectedVersion`
+(a non-negative integer); a mismatch is the same 409, judged after the project-access
+check so only a caller who may see the job learns it moved. **A request without
+`expectedVersion` is accepted** and judged against the server's read alone — this
+keeps existing API clients and the pause/resume buttons working; a client that edits
+from a form should send it. The scheduler UI does, and on a 409 tells the user to
+reopen the job. `version` is a dedicated column, not `updatedAt`, because every cron
+firing writes `lastRunAt` / `nextRunAt` and so bumps `updatedAt`.
+
+**Job responses.** Job rows are returned whole, including `createdById`, `version`
+and the #1235 binding fields `webhookBinderId` (the user judged for the job's current
+webhook binding; `null` with a set `webhookBoundAt` is a binding nobody was judged
+for) and `webhookBoundAt` (when; `null` = never judged since #1235). They are user
+ids and timestamps of the same kind as `createdById`, and are returned only to
+callers who pass the project-access check above.
+
 ### 13.7.1 Module layout
 
 ```

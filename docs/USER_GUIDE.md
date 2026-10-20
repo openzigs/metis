@@ -3216,6 +3216,9 @@ Per-row actions:
 - **History** — opens a drawer with the last 50 runs (status, trigger,
   start / completed timestamps).
 - **Edit** — change the cron expression, payload, task type, or `maxAttempts`.
+  If someone else saved the job after you opened the form, your save is
+  refused and nothing is written: close the form, open the job again to see
+  their change, and make yours again.
 - **Delete** — soft-delete the job (history is preserved for audit).
 
 Click **New job** to create one. Pick a task type from the catalogue (the

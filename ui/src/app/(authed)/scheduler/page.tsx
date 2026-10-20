@@ -9,9 +9,9 @@
  */
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ApiError } from "@/lib/api-client";
 import { SkeletonText } from "@/components/ui/skeleton";
 import {
+  jobSaveErrorMessage,
   schedulerApi,
   type CreateScheduledJobInput,
   type ScheduledJobRow,
@@ -384,6 +384,9 @@ function JobForm({ initial, handlers, onCancel, onSaved }: JobFormProps) {
           payload,
           enabled,
           maxAttempts,
+          // #1245 — a form left open across someone else's edit is refused
+          // (409), never saved over their change.
+          expectedVersion: initial.version,
         };
         return schedulerApi.update(initial.id, update);
       }
@@ -402,11 +405,7 @@ function JobForm({ initial, handlers, onCancel, onSaved }: JobFormProps) {
       setError(null);
       onSaved();
     },
-    onError: (err: unknown) => {
-      if (err instanceof ApiError) setError(err.message);
-      else if (err instanceof Error) setError(err.message);
-      else setError("Failed to save");
-    },
+    onError: (err: unknown) => setError(jobSaveErrorMessage(err)),
   });
 
   return (

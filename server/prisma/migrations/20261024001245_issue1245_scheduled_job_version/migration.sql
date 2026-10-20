@@ -1,0 +1,19 @@
+-- Issue #1245 — a scheduled-job edit cannot silently undo a concurrent one.
+--
+-- `SchedulerService.updateJob` read the row, judged it, then wrote every field
+-- from that read, so an edit racing a webhook rebind (#1235) wrote the old URL
+-- and `authHeader` back. `version` is the optimistic-concurrency token: each
+-- update is conditional on the version it read and bumps it, and a miss answers
+-- 409 JOB_VERSION_CONFLICT. A client may send the version it loaded as
+-- `expectedVersion`; a request without it is judged against the server's read.
+--
+-- A dedicated column rather than `updatedAt`, because every cron firing
+-- updates `lastRunAt` / `nextRunAt` and so bumps `updatedAt`.
+--
+-- Existing rows start at 0. NOT NULL with a constant default: SQLite adds it
+-- without a table rewrite.
+--
+-- Rollback (documentation):
+--   ALTER TABLE "scheduled_jobs" DROP COLUMN "version";
+-- After it updates are last-write-wins again.
+ALTER TABLE "scheduled_jobs" ADD COLUMN "version" INTEGER NOT NULL DEFAULT 0;
