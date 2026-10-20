@@ -7,6 +7,8 @@ import { describe, expect, it } from "vitest";
 import {
   citationDefinitionsLength,
   renderCitationFootnotes,
+  renderCitationFootnotesWithLocations,
+  sourceLineLocators,
   readableSourceReference,
   renderedCitationLength,
 } from "./citation-footnotes.js";
@@ -232,5 +234,161 @@ describe("rendered length (#995)", () => {
     expect(rendered.slice(rendered.length - definitions)).toMatch(/^\n\n\[\^src-1\]: /);
     expect(rendered.slice(0, rendered.length - definitions)).not.toContain("]: ");
     expect(citationDefinitionsLength("No citations here.", sources)).toBe(0);
+  });
+});
+
+describe("a module-facts citation pinned to the file:line it describes (#737)", () => {
+  // The module facts as the section read them: the LLM bullets and the mined
+  // rules, each mined rule ending in the `file:line` it was mined from.
+  const storageFacts: GroundingSource = {
+    sourceId: storage0,
+    kind: "facts",
+    label: "storage",
+    text: [
+      "### MODULE: storage",
+      "(12 classes, 80 methods)",
+      "- Feeds are stored per user; a user cannot subscribe to the same feed URL twice.",
+      "MINED_RULES (deterministically mined from source — 3 rule(s); each cites file:line)",
+      "- [go limit] `if limit > 1000 { limit = 1000 }` — at most 1000 entries per request (internal/storage/entry_query_builder.go:42)",
+      "- [go retention] `cleanupRemovedEntriesDays = 60` — removed entries are purged after 60 days (internal/storage/entry.go:310)",
+      "- [go uniqueness] `feeds_user_id_feed_url_key` — one subscription per feed URL per user (internal/storage/feed.go:88-97)",
+    ].join("\n"),
+  };
+  const pinSources: GroundingSource[] = [storageFacts, facts(ui0, "ui")];
+
+  it("reads every file:line and file:start-end locator in a source's text", () => {
+    expect(sourceLineLocators(storageFacts.text).map((l) => l.locator)).toEqual([
+      "internal/storage/entry_query_builder.go:42",
+      "internal/storage/entry.go:310",
+      "internal/storage/feed.go:88-97",
+    ]);
+  });
+
+  it("pins a citation to the mined line its sentence restates", () => {
+    const out = renderCitationFootnotes(
+      `A request returns at most 1,000 entries [${storage0}].`,
+      pinSources,
+    );
+    expect(out).toBe(
+      "A request returns at most 1,000 entries[^src-1].\n\n" +
+        "[^src-1]: `internal/storage/entry_query_builder.go:42` — `internal/storage` (module facts)",
+    );
+  });
+
+  it("gives two statements citing one module the lines each one describes", () => {
+    const md = [
+      `A request returns at most 1,000 entries [${storage0}].`,
+      `Removed entries are purged after 60 days [${storage0}].`,
+      `Each user subscribes to a feed URL once [${storage0}].`,
+    ].join("\n");
+    const out = renderCitationFootnotes(md, pinSources);
+    expect(out).toContain(
+      "[^src-1]: `internal/storage/entry_query_builder.go:42` — `internal/storage` (module facts)",
+    );
+    expect(out).toContain(
+      "[^src-2]: `internal/storage/entry.go:310` — `internal/storage` (module facts)",
+    );
+    expect(out).toContain(
+      "[^src-3]: `internal/storage/feed.go:88-97` — `internal/storage` (module facts)",
+    );
+  });
+
+  it("reuses one footnote for two statements pinned to the same line", () => {
+    const md = [
+      `Removed entries are purged after 60 days [${storage0}].`,
+      `After 60 days a removed entry is purged for good [${storage0}].`,
+    ].join("\n");
+    const out = renderCitationFootnotes(md, pinSources);
+    expect(out.match(/^\[\^src-\d+\]:/gm)).toEqual(["[^src-1]:"]);
+    expect(out).toContain("for good[^src-1].");
+  });
+
+  it("keeps the module footnote when the sentence matches no line well enough", () => {
+    const out = renderCitationFootnotes(`Storage is a layer of its own [${storage0}].`, pinSources);
+    expect(out).toContain("[^src-1]: `internal/storage` (module facts)");
+  });
+
+  it("reads only the sentence the marker ends, not the one before it", () => {
+    const out = renderCitationFootnotes(
+      `Removed entries are purged after 60 days. Storage is a layer of its own [${storage0}].`,
+      pinSources,
+    );
+    expect(out).toContain("[^src-1]: `internal/storage` (module facts)");
+  });
+
+  it("reads the sentence a marker FOLLOWS when it stands after the full stop", () => {
+    const out = renderCitationFootnotes(
+      `Removed entries are purged after 60 days. [${storage0}]`,
+      pinSources,
+    );
+    expect(out).toContain("[^src-1]: `internal/storage/entry.go:310`");
+  });
+
+  it("reads one table cell, not the whole row", () => {
+    const md = [
+      "| Rule | Detail |",
+      "|---|---|",
+      `| Retention | Removed entries are purged after 60 days [${storage0}] |`,
+      `| Removed entries purged after 60 days | Storage is a layer of its own [${storage0}] |`,
+    ].join("\n");
+    const out = renderCitationFootnotes(md, pinSources);
+    expect(out).toContain("[^src-1]: `internal/storage/entry.go:310`");
+    // The second row's first cell restates line 310; its citing cell does not.
+    expect(out).toContain("its own[^src-2] |");
+    expect(out).toContain("[^src-2]: `internal/storage` (module facts)");
+  });
+
+  it("does not read the ids of earlier markers as words of the sentence", () => {
+    // An id is the model's to write: read as prose, this one restates line 310.
+    const out = renderCitationFootnotes(
+      `Layers [rag:purged-after-60-days:c1] then storage [${storage0}].`,
+      pinSources,
+    );
+    expect(out).toContain("`internal/storage` (module facts)");
+    expect(out).not.toContain(".go:");
+  });
+
+  it("returns the cited lines per source for the provenance manifest", () => {
+    const { markdown, citedLines } = renderCitationFootnotesWithLocations(
+      [
+        `A request returns at most 1,000 entries [${storage0}].`,
+        `Each user subscribes to a feed URL once [${storage0}].`,
+        `The UI renders it [${ui0}].`,
+        `Validated [${symbolId}].`,
+      ].join("\n"),
+      [...pinSources, sources[3]],
+    );
+    expect(markdown).toContain("[^src-1]");
+    expect(citedLines.get(storage0)).toEqual([
+      { filePath: "internal/storage/entry_query_builder.go", startLine: 42, endLine: 42 },
+      { filePath: "internal/storage/feed.go", startLine: 88, endLine: 97 },
+    ]);
+    expect(citedLines.get(symbolId)).toEqual([
+      { filePath: "internal/model/feed.go", startLine: 123, endLine: 150 },
+    ]);
+    // A module footnote with no line carries nothing to record.
+    expect(citedLines.has(ui0)).toBe(false);
+  });
+
+  it("never pins a canonical fact, a typed symbol or a retrieved excerpt", () => {
+    const rag: GroundingSource = {
+      ...sources[4],
+      text: "purged after 60 days (internal/storage/entry.go:310)",
+    };
+    const out = renderCitationFootnotes(
+      `Removed entries are purged after 60 days [rag:doc1:chunk2].`,
+      [rag],
+    );
+    expect(out).toContain("[^src-1]: `README.md` (retrieved excerpt)");
+  });
+
+  it("stays linear on a long word-character run in the facts text (no ReDoS)", () => {
+    const hostile: GroundingSource = {
+      ...storageFacts,
+      text: `${"a".repeat(100_000)} ${"a.".repeat(50_000)}x ${"/a".repeat(50_000)}.go`,
+    };
+    const started = performance.now();
+    renderCitationFootnotes(`Some words here and there [${storage0}].`, [hostile]);
+    expect(performance.now() - started).toBeLessThan(1_000);
   });
 });

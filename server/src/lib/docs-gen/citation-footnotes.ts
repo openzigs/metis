@@ -17,6 +17,11 @@
  *     per-section rank-suffixed id differs (`facts:…:0` vs `facts:…:3`);
  *   - each definition names the source a reader can open: the module path, or
  *     `file:start-end` for a typed-symbol source;
+ *   - a module-facts citation is pinned to the `file:line` in that module's
+ *     facts (a mined rule's locator, #155) whose line its sentence restates,
+ *     when one matches well enough ({@link pinnedLocator}); otherwise it stays
+ *     the module path. Modules are cited far more than symbols, so without this
+ *     a whole architecture document carried no `file:line` at all;
  *   - a parenthesised run of markers collapses to the references alone;
  *   - an id that matches no admitted source is dropped, as before;
  *   - a bare id the model copied into its own prose or key table is replaced by
@@ -89,6 +94,179 @@ const code = (s: string): string => `\`${s.replace(/`/g, "")}\``;
  */
 const CANONICAL_FACT_ID = /^facts:canon:cf-[0-9a-f]{10}$/;
 
+/** One `file:line` or `file:start-end` locator found in a source's text. */
+export interface SourceLineLocator {
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  /** `file:line` or `file:start-end`, as a reader sees it. */
+  locator: string;
+  /** The words of the text line the locator stands on, for matching a sentence to it. */
+  words: ReadonlySet<string>;
+}
+
+/** A line the provenance manifest records for a cited source (#737). */
+export interface CitedLine {
+  filePath: string;
+  startLine: number;
+  endLine: number;
+}
+
+/**
+ * One whitespace-delimited token that is a whole locator. Anchored, and run on
+ * one token at a time of at most {@link MAX_LOCATOR_TOKEN} characters that
+ * holds a colon, so it stays linear: the facts text is model output that
+ * repository content can steer.
+ */
+const LOCATOR_TOKEN_RE = /^([\w./-]+\.[A-Za-z0-9]+):(\d{1,7})(?:-(\d{1,7}))?$/;
+const MAX_LOCATOR_TOKEN = 512;
+/** Punctuation a locator is wrapped in: `(x.go:42)`, `` `x.go:42` ``, `x.go:42,`. */
+const LOCATOR_LEAD_RE = /^[([{<`'"]+/;
+const LOCATOR_TAIL_RE = /[)\]}>`'",;.:]+$/;
+
+const STOP_WORDS = new Set(
+  (
+    "the and for are was were with that this from into its has have had not but all any can " +
+    "each per one own than then when which who whom what where while will would may must " +
+    "only also more most such via upon over under after before about there their them they " +
+    "you your our out use used uses using get set new see"
+  ).split(" "),
+);
+
+/** A light stem, so `entries`/`entry` and `purged`/`purge` meet. */
+function stem(word: string): string {
+  let w = word;
+  if (w.length > 4 && w.endsWith("ies")) w = `${w.slice(0, -3)}y`;
+  else if (w.length > 5 && w.endsWith("ing")) w = w.slice(0, -3);
+  else if (w.length > 4 && w.endsWith("ed")) w = w.slice(0, -2);
+  if (w.length > 3 && w.endsWith("s") && !w.endsWith("ss")) w = w.slice(0, -1);
+  if (w.length > 3 && w.endsWith("e")) w = w.slice(0, -1);
+  return w;
+}
+
+/** Marks a number among the words: it counts double, as a limit or a period names one rule. */
+const NUMBER_PREFIX = "#";
+
+/**
+ * The words of `text`, identifiers split (`cleanupRemovedEntriesDays`,
+ * `feed_url`) and stemmed, plus its numbers of two or more digits with any
+ * thousands separators removed (`1,000` → `1000`). Linear.
+ */
+function wordsOf(text: string): Set<string> {
+  const out = new Set<string>();
+  const spaced = text.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+  for (const m of spaced.matchAll(/[A-Za-z]+|\d[\d,]*/g)) {
+    const token = m[0];
+    if (/^\d/.test(token)) {
+      const n = token.replace(/,/g, "");
+      if (n.length >= 2) out.add(`${NUMBER_PREFIX}${n}`);
+      continue;
+    }
+    const w = token.toLowerCase();
+    if (w.length < 3 || STOP_WORDS.has(w)) continue;
+    out.add(stem(w));
+  }
+  return out;
+}
+
+/**
+ * Every `path.ext:line` / `path.ext:start-end` locator in `text`, in order,
+ * each with the words of the line it stands on. Only a whole
+ * whitespace-delimited token (less any wrapping punctuation) counts.
+ */
+export function sourceLineLocators(text: string): SourceLineLocator[] {
+  const out: SourceLineLocator[] = [];
+  for (const line of text.split("\n")) {
+    let words: Set<string> | undefined;
+    for (const raw of line.split(/\s+/)) {
+      if (raw.length > MAX_LOCATOR_TOKEN || !raw.includes(":")) continue;
+      const m = LOCATOR_TOKEN_RE.exec(
+        raw.replace(LOCATOR_LEAD_RE, "").replace(LOCATOR_TAIL_RE, ""),
+      );
+      if (!m) continue;
+      const startLine = Number(m[2]);
+      const endLine = m[3] ? Number(m[3]) : startLine;
+      if (startLine < 1 || endLine < startLine) continue;
+      words ??= wordsOf(line);
+      out.push({
+        filePath: m[1],
+        startLine,
+        endLine,
+        locator: endLine === startLine ? `${m[1]}:${startLine}` : `${m[1]}:${startLine}-${endLine}`,
+        words,
+      });
+    }
+  }
+  return out;
+}
+
+/** The least overlap that pins a citation to a line: a number and a word, or three words. */
+const PIN_MIN_SCORE = 3;
+
+/**
+ * The locator whose line `sentence` restates best, or null when none shares
+ * enough of its words ({@link PIN_MIN_SCORE}; a number counts two). Ties go to
+ * the first in the text. Deterministic and pure.
+ */
+export function pinnedLocator(
+  sentence: string,
+  locators: readonly SourceLineLocator[],
+): SourceLineLocator | null {
+  if (locators.length === 0) return null;
+  const words = wordsOf(sentence);
+  let best: SourceLineLocator | null = null;
+  let bestScore = PIN_MIN_SCORE - 1;
+  for (const locator of locators) {
+    let score = 0;
+    for (const w of words) if (locator.words.has(w)) score += w.startsWith(NUMBER_PREFIX) ? 2 : 1;
+    if (score > bestScore) {
+      best = locator;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+/** A module-facts source: not a canonical fact and not a typed symbol. */
+function isModuleFacts(source: GroundingSource): boolean {
+  return (
+    source.kind === "facts" &&
+    !CANONICAL_FACT_ID.test(source.sourceId) &&
+    decodeSymbolLocation(source.sourceId) === null
+  );
+}
+
+/** A module-facts reference pinned to one of its lines. */
+function pinnedReference(source: GroundingSource, locator: SourceLineLocator): string {
+  const module = decodeModulePath(source.sourceId) ?? source.label;
+  return `${code(locator.locator)} — ${code(module)} (module facts)`;
+}
+
+/** The line range a typed-symbol id names, for the manifest. */
+function symbolLines(sourceId: string): CitedLine | null {
+  const location = decodeSymbolLocation(sourceId);
+  const m = location ? /^(.+):(\d+)(?:-(\d+))?$/.exec(location) : null;
+  if (!m) return null;
+  const startLine = Number(m[2]);
+  return { filePath: m[1], startLine, endLine: m[3] ? Number(m[3]) : startLine };
+}
+
+/**
+ * The sentence a marker at `offset` of `line` cites: the text before it, other
+ * markers removed, from the last sentence end or table-cell border. A marker
+ * that stands after its sentence's full stop cites that sentence.
+ */
+function sentenceBefore(line: string, offset: number): string {
+  const pieces = line
+    .slice(0, offset)
+    .replace(MARKER_RE, " ")
+    .split(/(?<=[.!?])\s+|\|/);
+  for (let i = pieces.length - 1; i >= 0; i--) {
+    if (pieces[i].trim()) return pieces[i];
+  }
+  return "";
+}
+
 /** The reference a reader can follow for one admitted grounding source. */
 export function readableSourceReference(source: GroundingSource): string {
   if (source.kind === "facts") {
@@ -120,7 +298,7 @@ function readableBareId(id: string, byId: ReadonlyMap<string, GroundingSource>):
 function rewriteMarkers(
   markdown: string,
   byId: ReadonlyMap<string, GroundingSource>,
-  referenceFor: (id: string) => string | null,
+  referenceFor: (id: string, sentence: () => string) => string | null,
 ): string {
   const renderCluster = (
     _match: string,
@@ -128,13 +306,17 @@ function rewriteMarkers(
     open: string | undefined,
     inner: string,
     close: string | undefined,
+    offset: number,
+    line: string,
   ): string => {
     const references: string[] = [];
+    let cited: string | undefined;
+    const sentence = (): string => (cited ??= sentenceBefore(line, offset));
     for (const marker of inner.match(MARKER_RE) ?? []) {
       const body = marker.replace(/^\[\s*/, "").replace(/\]$/, "");
       for (const token of body.split(/[,;\s]+/)) {
         if (!/^(?:facts|rag|web):/.test(token)) continue;
-        const reference = referenceFor(token);
+        const reference = referenceFor(token, sentence);
         if (reference !== null && !references.includes(reference)) references.push(reference);
       }
     }
@@ -166,17 +348,46 @@ function rewriteMarkers(
 function renderParts(
   markdown: string,
   sources: Iterable<GroundingSource>,
-): { body: string; definitions: string[] } {
+): { body: string; definitions: string[]; citedLines: Map<string, CitedLine[]> } {
   const byId = new Map<string, GroundingSource>();
   for (const s of sources) if (!byId.has(s.sourceId)) byId.set(s.sourceId, s);
+  // A module's locators, read once per source however often it is cited.
+  const locatorsOf = new Map<string, SourceLineLocator[]>();
+  const citedLines = new Map<string, CitedLine[]>();
+  const recordLine = (sourceId: string, line: CitedLine): void => {
+    const lines = citedLines.get(sourceId) ?? [];
+    const seen = lines.some(
+      (l) =>
+        l.filePath === line.filePath &&
+        l.startLine === line.startLine &&
+        l.endLine === line.endLine,
+    );
+    if (!seen) lines.push(line);
+    citedLines.set(sourceId, lines);
+  };
 
   // One number per distinct READABLE reference, in order of first citation.
   const numberOf = new Map<string, number>();
   const definitions: string[] = [];
-  const body = rewriteMarkers(markdown, byId, (id) => {
+  const body = rewriteMarkers(markdown, byId, (id, sentence) => {
     const source = byId.get(id);
     if (!source) return null;
-    const reference = readableSourceReference(source);
+    let reference = readableSourceReference(source);
+    if (isModuleFacts(source)) {
+      let locators = locatorsOf.get(id);
+      if (!locators) {
+        locators = sourceLineLocators(source.text);
+        locatorsOf.set(id, locators);
+      }
+      const pin = pinnedLocator(sentence(), locators);
+      if (pin) {
+        reference = pinnedReference(source, pin);
+        recordLine(id, { filePath: pin.filePath, startLine: pin.startLine, endLine: pin.endLine });
+      }
+    } else {
+      const lines = symbolLines(id);
+      if (lines) recordLine(id, lines);
+    }
     let n = numberOf.get(reference);
     if (n === undefined) {
       n = numberOf.size + 1;
@@ -185,7 +396,7 @@ function renderParts(
     }
     return `[^${LABEL_PREFIX}${n}]`;
   });
-  return { body, definitions };
+  return { body, definitions, citedLines };
 }
 
 /**
@@ -197,8 +408,24 @@ export function renderCitationFootnotes(
   markdown: string,
   sources: Iterable<GroundingSource>,
 ): string {
-  const { body, definitions } = renderParts(markdown, sources);
-  return definitions.length > 0 ? `${body}\n\n${definitions.join("\n")}` : body;
+  return renderCitationFootnotesWithLocations(markdown, sources).markdown;
+}
+
+/**
+ * {@link renderCitationFootnotes}, plus the source lines its footnotes name,
+ * per cited source id, in order of first citation: a typed symbol's range and
+ * each line a module-facts citation was pinned to. A source cited only at
+ * module level has no entry. The provenance manifest records these (#737).
+ */
+export function renderCitationFootnotesWithLocations(
+  markdown: string,
+  sources: Iterable<GroundingSource>,
+): { markdown: string; citedLines: Map<string, CitedLine[]> } {
+  const { body, definitions, citedLines } = renderParts(markdown, sources);
+  return {
+    markdown: definitions.length > 0 ? `${body}\n\n${definitions.join("\n")}` : body,
+    citedLines,
+  };
 }
 
 /** Digits a footnote number is counted at by {@link renderedCitationLength}. */

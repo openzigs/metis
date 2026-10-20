@@ -5063,6 +5063,23 @@ typed-symbol source. A bare id the model copied into prose is replaced by the
 same readable reference. Ids that match no admitted source are still stripped
 (#1360).
 
+A module-facts citation is **pinned to a line** where it can be (#737): the
+module's facts text carries `path.ext:line` locators (each mined rule ends in
+one, #155), and `pinnedLocator` picks the one whose facts line shares the most
+words with the sentence the marker ends (the text before it on its line, from
+the last sentence end or table-cell border, other markers removed; identifiers
+split and lightly stemmed; a number of two or more digits counts twice). A score
+of at least 3 pins the footnote to `` `path:line` — `module` (module facts) ``;
+anything less keeps the module footnote, so a pin is never a guess from one
+shared word. Ties go to the first locator in the text. Pure and linear: a
+locator is matched one whitespace-delimited token at a time, anchored, at most
+512 characters. `renderCitationFootnotesWithLocations` also returns the lines
+each source's footnotes named (pinned lines, a typed symbol's range), and the
+provenance manifest records them on that source's `selectedEvidence.primary`
+row as `citedLines`. A citation from a section that read no locators (or a
+cancelled run's kept sections, whose stored evidence holds no source text)
+stays at module level.
+
 #### Batched enumerative sections (#157)
 
 Business Rules, Key Workflows, Calculations and Data Model are catalogs whose

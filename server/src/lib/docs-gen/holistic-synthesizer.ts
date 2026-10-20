@@ -77,8 +77,9 @@ import {
 } from "./grounding/mined-line-sources.js";
 import {
   citationDefinitionsLength,
-  renderCitationFootnotes,
+  renderCitationFootnotesWithLocations,
   renderedCitationLength,
+  type CitedLine,
 } from "./citation-footnotes.js";
 import { recordDroppedCall, scopedToGeneration } from "./generation-control.js";
 import {
@@ -1777,6 +1778,7 @@ async function runHolisticSynthesis(
     warnings: synthWarnings,
     sections,
     selectedEvidence,
+    citedLines,
     sectionSynthesis,
     regeneration,
     grounding: groundingRecord,
@@ -1850,6 +1852,7 @@ async function runHolisticSynthesis(
     phase2Router,
     phase1PromptVersion: PHASE1_PROMPT_VERSION,
     selectedEvidence,
+    citedLines,
     graphFingerprint: scopedGraphFingerprint,
     sourceRepositories: facts.map((f) => {
       if (!f.repository) return undefined;
@@ -4288,6 +4291,8 @@ async function synthesizeFinalDocumentInRun(
       codeIdentifiers?: CodeIdentifierReport;
     }>;
     selectedEvidence: GroundingSource[];
+    /** #737 — per cited source id, the source lines its footnotes name (`citation-footnotes.ts`). */
+    citedLines: Map<string, CitedLine[]>;
     sectionSynthesis?: SectionSynthesis;
     regeneration?: GeneratedDocVersionManifest["regeneration"];
     /** DOCS_GEN_GROUNDING when it was not `on` (absent = every claim checked). */
@@ -4328,6 +4333,7 @@ async function synthesizeFinalDocumentInRun(
       warnings: [],
       sections: [],
       selectedEvidence: [],
+      citedLines: new Map(),
     };
   }
 
@@ -5770,9 +5776,10 @@ async function synthesizeFinalDocumentInRun(
   // #1360 — last, so heading matching above sees exactly what each group produced.
   // #737 — cited ids of admitted sources become document-scoped footnotes with
   // readable definitions; anything left (an id no section admitted) is stripped.
-  const readableBody = stripLeakedSourceIds(
-    renderCitationFootnotes(body, selectedEvidenceById.values()),
-  );
+  // A module-facts citation is pinned to the `file:line` its sentence restates,
+  // and the lines every footnote names go to the provenance manifest.
+  const footnoted = renderCitationFootnotesWithLocations(body, selectedEvidenceById.values());
+  const readableBody = stripLeakedSourceIds(footnoted.markdown);
   // #1209 — why later sections were tried only once, for the run's provenance.
   const dropRetries = currentDropRetryBreaker()?.record();
   return {
@@ -5780,6 +5787,7 @@ async function synthesizeFinalDocumentInRun(
     warnings,
     sections: finalManifestSections,
     selectedEvidence: [...selectedEvidenceById.values()],
+    citedLines: footnoted.citedLines,
     ...(groundingRecord ? { grounding: groundingRecord } : {}),
     ...(dropRetries ? { dropRetries } : {}),
     ...(resume.reused.length + resume.stale.length > 0 ? { resume } : {}),
