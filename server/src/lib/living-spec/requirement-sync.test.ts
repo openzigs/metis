@@ -1,8 +1,14 @@
 /**
  * Epic #192 (A.5) — living-spec sync tests.
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const noteRequirementsChanged = vi.hoisted(() => vi.fn());
+vi.mock("../docs-gen/approved-requirements-staleness.js", () => ({ noteRequirementsChanged }));
+
 import { syncMergedPR } from "./requirement-sync.js";
+
+beforeEach(() => noteRequirementsChanged.mockReset());
 
 interface PrismaStub {
   publishedIssue: { findMany: ReturnType<typeof vi.fn> };
@@ -129,6 +135,9 @@ describe("syncMergedPR", () => {
     // 2 requirements * 2 hunks = 4 implementation rows
     expect(out.implementationsCreated).toBe(4);
     expect(out.driftedFiles).toEqual(["random.txt"]);
+    // #1246 — new code links can move a scoped reader BRD's approved list.
+    expect(noteRequirementsChanged).toHaveBeenCalledTimes(1);
+    expect(noteRequirementsChanged).toHaveBeenCalledWith(["req1", "req2"]);
   });
 
   it("is idempotent — skips existing implementation rows on re-merge", async () => {
@@ -159,6 +168,8 @@ describe("syncMergedPR", () => {
     );
     expect(out.implementationsCreated).toBe(0);
     expect(prisma.requirementImplementation.create).not.toHaveBeenCalled();
+    // #1246 — no new code link: nothing to check.
+    expect(noteRequirementsChanged).not.toHaveBeenCalled();
   });
 
   it("falls back to head.sha when merge_commit_sha is missing", async () => {
