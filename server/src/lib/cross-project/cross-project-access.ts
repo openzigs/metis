@@ -28,6 +28,7 @@ import { audit } from "../audit/audit-service.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { isAdminActor, type SchedulerActor } from "../scheduler/project-access.js";
 import { asAuthPayload } from "../discussions/access.js";
+import { readLiveWorkspaceIds } from "../auth/live-workspace-ids.js";
 import { accessibleProjectWhere } from "../acp/authz.js";
 
 /** Minimal Prisma surface needed for workspace + project access checks. */
@@ -142,8 +143,10 @@ export async function listMemberProjectsInWorkspace(
 ): Promise<string[]> {
   await assertWorkspaceAccessible(actor, workspaceId, prisma);
   const admin = isAdminActor(actor);
-  // An admin's workspaces do not enter the rule, so skip the read.
-  const payload = await asAuthPayload(admin ? { ...actor, workspaces: [] } : actor);
+  // An admin's workspaces do not enter the rule, so skip the read. #1239 — the
+  // live membership read goes through the injected client like every other.
+  const workspaces = admin ? [] : await readLiveWorkspaceIds(actor.id, resolvePrisma(prisma));
+  const payload = await asAuthPayload({ ...actor, workspaces });
   if (!admin && !payload.workspaces?.includes(workspaceId)) {
     denyWorkspace(actor, workspaceId, "workspace-membership-not-live");
   }

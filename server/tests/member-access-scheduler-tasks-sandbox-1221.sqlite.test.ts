@@ -357,15 +357,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await post(`/api/tasks/${task.id}/cancel`, "mallory")).status).toBe(409);
         expect((await taskRow(task.id)).status).toBe("pending");
 
+        auditSpy.mockClear();
         expect((await post(`/api/tasks/${task.id}/cancel`, "bob")).status).toBe(202);
         expect((await taskRow(task.id)).status).toBe("cancelled");
-        expect(auditSpy).toHaveBeenCalledWith(
-          expect.objectContaining({
+        // #1239 — one cancel, one row per event: the queue's state change
+        // (`task.cancel`, no actor) and the member's request (`.requested`).
+        const rowsFor = (action: string) =>
+          auditSpy.mock.calls
+            .map(([entry]) => entry as { action: string; target?: { id: string } })
+            .filter((e) => e.action === action && e.target?.id === task.id);
+        expect(rowsFor("task.cancel")).toHaveLength(1);
+        expect(rowsFor("task.cancel")[0]).not.toHaveProperty("actor.id", "bob");
+        expect(rowsFor("task.cancel.requested")).toEqual([
+          {
             actor: { id: "bob" },
-            action: "task.cancel",
+            action: "task.cancel.requested",
             target: { type: "task", id: task.id },
-          }),
-        );
+            metadata: { projectId: PA },
+          },
+        ]);
       });
 
       it("a retry by a second member is audited under that member, not the task's creator", async () => {
@@ -384,9 +394,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         auditSpy.mockClear();
         const res = await post(`/api/tasks/${task.id}/retry`, "bob");
         expect(res.status).toBe(202);
+        // #1239 — `task.retry` is the queue's automatic in-place retry; a
+        // member's re-enqueue is its own event.
+        expect(auditSpy).not.toHaveBeenCalledWith(
+          expect.objectContaining({ action: "task.retry", actor: { id: "bob" } }),
+        );
         expect(auditSpy).toHaveBeenCalledWith({
           actor: { id: "bob" },
-          action: "task.retry",
+          action: "task.retry.requested",
           target: { type: "task", id: task.id },
           metadata: {
             retryTaskId: res.body.data.taskId,

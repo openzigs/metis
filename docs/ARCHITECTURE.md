@@ -4377,7 +4377,14 @@ pending ──────► pending ─────────────►
 
 Status transitions are persisted on `Task` via the `TaskStore` interface and
 each transition fires an audit event (`task.enqueue`, `task.start`,
-`task.complete`, `task.fail`, `task.cancel`, `task.retry`). The dispatcher
+`task.complete`, `task.fail`, `task.cancel`, `task.retry`); those rows carry no
+actor, and `task.retry` is the queue's automatic in-place retry. The REST routes
+add one row each naming the member who acted (#1233), under names of their own
+so each action name is one event (#1239): `POST /api/tasks/:id/cancel` writes
+`task.cancel.requested` (one cancel = one `task.cancel` + one `.requested`), and
+`POST /api/tasks/:id/retry`, a manual re-enqueue, writes `task.retry.requested`
+with the new task id and the original creator. Refusals stay `task.cancel.denied`
+/ `task.retry.denied`. The dispatcher
 reserves a concurrency slot synchronously before kicking off the async
 `execute()` chain, so `enqueue()` calls racing each other can never
 over-dispatch past `SCHEDULER_CONCURRENCY`.
