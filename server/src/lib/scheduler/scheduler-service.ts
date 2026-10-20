@@ -23,6 +23,15 @@
  *   `vault.reveal` cannot send a secret they did not create to a URL they
  *   chose. The judged caller is stored on the job (`webhookBinderId`) in the
  *   same write as the binding, and is judged again when the job fires.
+ *
+ * Optimistic concurrency (#1245):
+ *   `updateJob` writes every field from its own read, so it is conditional on
+ *   the job's `version` from that read (`UPDATE ... WHERE id AND version AND
+ *   deletedAt IS NULL`) and bumps it. A write whose read went stale answers 409
+ *   JOB_VERSION_CONFLICT and writes nothing, so an edit cannot write a
+ *   concurrent rebind's old URL or `authHeader` back. A caller may also pass the
+ *   version it loaded (`expectedVersion`); without one the server's read is the
+ *   precondition, which keeps existing API clients working.
  */
 import { Cron } from "croner";
 import { audit } from "../audit/audit-service.js";
@@ -76,6 +85,26 @@ export interface UpdateScheduledJobOpts {
   projectId?: string | null;
   enabled?: boolean;
   maxAttempts?: number;
+  /**
+   * #1245 — the job `version` the caller loaded. A mismatch answers 409
+   * JOB_VERSION_CONFLICT. Omitted: the write is conditional on the server's own
+   * read of the job only.
+   */
+  expectedVersion?: number;
+}
+
+/** #1245 — the refusal of an update made from a stale read of the job. */
+function versionConflict(id: string): SchedulerError {
+  return new SchedulerError(
+    409,
+    "JOB_VERSION_CONFLICT",
+    `scheduled job ${id} was changed by someone else since you loaded it; reload it and make your change again`,
+  );
+}
+
+/** Prisma's "record to update not found" (`P2025`): the conditional write matched no row. */
+function isRecordNotFound(err: unknown): boolean {
+  return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2025";
 }
 
 export interface SchedulerServiceDeps {
@@ -193,6 +222,11 @@ export class SchedulerService {
         }
       }
     }
+    // #1245 — after the access check, so only a caller who may see the job
+    // learns that it moved on.
+    if (opts.expectedVersion !== undefined && opts.expectedVersion !== existing.version) {
+      throw versionConflict(id);
+    }
     let nextRunAt = existing.nextRunAt;
     let cron = existing.cron;
     if (opts.cron && opts.cron !== existing.cron) {
@@ -226,27 +260,44 @@ export class SchedulerService {
         )
       : { until: null, bindingChanged: webhookBindingChanged(beforeShape, afterShape) };
     assertBindingWriteWindowOpen(binding.until);
-    const row = await prisma.scheduledJob.update({
-      where: { id },
-      data: {
-        name: opts.name ?? existing.name,
-        cron,
-        taskType,
-        payload,
-        projectId,
-        enabled: opts.enabled ?? existing.enabled,
-        maxAttempts: opts.maxAttempts ?? existing.maxAttempts,
-        nextRunAt,
-        // #1235 — the binder is written in the same statement as the binding,
-        // from the same read, so the row never pairs one writer's binding with
-        // another's binder. A binding write records its caller (NULL when there
-        // is none: refused at fire time); any other write carries the pair it
-        // read forward unchanged.
-        ...(binding.bindingChanged
-          ? { webhookBinderId: actorObj?.id ?? null, webhookBoundAt: new Date() }
-          : { webhookBinderId: existing.webhookBinderId, webhookBoundAt: existing.webhookBoundAt }),
-      },
-    });
+    let row: PrismaScheduledJob;
+    try {
+      // #1245 — conditional on the version this write was built from, and only
+      // while the job is live; it bumps the version for the next writer.
+      row = await prisma.scheduledJob.update({
+        where: { id, version: existing.version, deletedAt: null },
+        data: {
+          name: opts.name ?? existing.name,
+          cron,
+          taskType,
+          payload,
+          projectId,
+          enabled: opts.enabled ?? existing.enabled,
+          maxAttempts: opts.maxAttempts ?? existing.maxAttempts,
+          nextRunAt,
+          // #1235 — the binder is written in the same statement as the binding,
+          // from the same read, so the row never pairs one writer's binding with
+          // another's binder. A binding write records its caller (NULL when there
+          // is none: refused at fire time); any other write carries the pair it
+          // read forward unchanged.
+          ...(binding.bindingChanged
+            ? { webhookBinderId: actorObj?.id ?? null, webhookBoundAt: new Date() }
+            : {
+                webhookBinderId: existing.webhookBinderId,
+                webhookBoundAt: existing.webhookBoundAt,
+              }),
+          version: existing.version + 1,
+        },
+      });
+    } catch (err) {
+      if (!isRecordNotFound(err)) throw err;
+      // The row moved on, or was deleted, between the read and this write.
+      const now = await prisma.scheduledJob.findUnique({ where: { id } });
+      if (!now || now.deletedAt) {
+        throw new SchedulerError(404, "JOB_NOT_FOUND", `scheduled job ${id} not found`);
+      }
+      throw versionConflict(id);
+    }
     this.unregisterCron(id);
     if (row.enabled && this.startedAt) this.registerCron(row);
     audit({
@@ -256,7 +307,10 @@ export class SchedulerService {
       // #1235 — `webhookBinding` records whether this write bound the job. The
       // binder fire time judges is the job's `webhookBinderId`, not this row;
       // the trail is read only for a job never bound since #1235.
-      metadata: { changes: Object.keys(opts), webhookBinding: binding.bindingChanged },
+      metadata: {
+        changes: Object.keys(opts).filter((k) => k !== "expectedVersion"),
+        webhookBinding: binding.bindingChanged,
+      },
     });
     this.deps.emitter.schedulerStatus({
       jobId: row.id,

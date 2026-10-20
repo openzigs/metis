@@ -1,7 +1,7 @@
 /**
  * Phase 11 — typed wrappers around `/api/scheduler` and `/api/tasks`.
  */
-import { apiFetch } from "@/lib/api-client";
+import { ApiError, apiFetch } from "@/lib/api-client";
 
 export interface ScheduledJobRow {
   id: string;
@@ -16,6 +16,11 @@ export interface ScheduledJobRow {
   nextRunAt: string | null;
   maxAttempts: number;
   createdById: string | null;
+  /** #1235 — who set the job's current webhook binding, and when (null: never judged). */
+  webhookBinderId: string | null;
+  webhookBoundAt: string | null;
+  /** #1245 — bumped by every update; send it back as `expectedVersion`. */
+  version: number;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -67,6 +72,32 @@ export interface UpdateScheduledJobInput {
   projectId?: string | null;
   enabled?: boolean;
   maxAttempts?: number;
+  /** #1245 — the `version` the form was loaded from; a stale one answers 409. */
+  expectedVersion?: number;
+}
+
+/** #1245 — the server's refusal of an edit made from a stale copy of the job. */
+export const JOB_VERSION_CONFLICT = "JOB_VERSION_CONFLICT";
+
+/**
+ * #1245 — the PATCH body for an edit made in the job form: the form's fields
+ * plus the `version` of the row the form was opened with, so a save over
+ * someone else's later change is refused (409) rather than written over it.
+ */
+export function jobEditInput(
+  opened: Pick<ScheduledJobRow, "version">,
+  fields: Omit<UpdateScheduledJobInput, "expectedVersion">,
+): UpdateScheduledJobInput {
+  return { ...fields, expectedVersion: opened.version };
+}
+
+/** #1245 — what the job form says when its save fails. */
+export function jobSaveErrorMessage(err: unknown): string {
+  if (err instanceof ApiError && err.code === JOB_VERSION_CONFLICT) {
+    return "Someone else changed this job after you opened it, so your changes were not saved. Close this form, open the job again to see the latest version, and make your change again.";
+  }
+  if (err instanceof Error) return err.message;
+  return "Failed to save";
 }
 
 export const schedulerApi = {

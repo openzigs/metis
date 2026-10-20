@@ -383,7 +383,12 @@ export type CreateScheduledJobInput = z.infer<typeof createScheduledJobSchema>;
 
 // #346 — `patchSchemaOf`, not `.partial()`: zod 4 would fill taskType, payload,
 // enabled and maxAttempts, so renaming a disabled job re-enabled it.
-export const updateScheduledJobSchema = patchSchemaOf(createScheduledJobSchema).omit({ key: true });
+// #1245 — `expectedVersion` is the job `version` the client loaded; a stale one
+// answers 409 JOB_VERSION_CONFLICT. Optional so existing clients keep working:
+// without it the write is conditional on the server's own read of the job.
+export const updateScheduledJobSchema = patchSchemaOf(createScheduledJobSchema)
+  .omit({ key: true })
+  .extend({ expectedVersion: z.number().int().min(0).optional() });
 export type UpdateScheduledJobInput = z.infer<typeof updateScheduledJobSchema>;
 
 // ---- Task ------------------------------------------------------------------

@@ -1244,7 +1244,11 @@ guards in order: self-link rejection, link-type validation, existence of both
 requirements, dual-project access, the same-workspace boundary
 (`CROSS_WORKSPACE_LINK`), a bounded `depends_on` cycle check, and uniqueness
 (the DB constraint is the real guard; a racing `P2002` maps to the same
-`DUPLICATE_LINK` 409). `listRequirementLinks` additionally omits any link whose
+`DUPLICATE_LINK` 409). On every by-id path — create (#1236), delete and list
+(#649) — an access denial answers with the same 404 status and body as a
+missing id, so a link request cannot probe whether a requirement exists in a
+project the caller cannot reach; the denial is still audited by the access
+check. `listRequirementLinks` additionally omits any link whose
 *counterpart* project the caller can't access — defence in depth beyond
 create-time authz. Workspace-scoped search
 (`searchWorkspaceRequirements`) reuses `listMemberProjectsInWorkspace`
@@ -4318,6 +4322,27 @@ cannot read still detaches it, and audits `product.repo.detach.unreadable`. A co
 soft-deleted after it was attached keeps its `ProductRepo` row but is left out of every
 product read and of `/analyze` (`LIVE_PRODUCT_REPOS`).
 
+**Concurrent job edits (#1245).** `PATCH /api/scheduler/:id` (and pause / resume,
+which go through the same `updateJob`) writes every field from the server's read of
+the job, so the write is conditional on the job's `version` from that read and bumps
+it; a write whose read went stale answers **409 `JOB_VERSION_CONFLICT`** and writes
+nothing, so an edit cannot write a concurrent webhook rebind's old URL or
+`authHeader` back. A client may send the `version` it loaded as `expectedVersion`
+(a non-negative integer); a mismatch is the same 409, judged after the project-access
+check so only a caller who may see the job learns it moved. **A request without
+`expectedVersion` is accepted** and judged against the server's read alone — this
+keeps existing API clients and the pause/resume buttons working; a client that edits
+from a form should send it. The scheduler UI does, and on a 409 tells the user to
+reopen the job. `version` is a dedicated column, not `updatedAt`, because every cron
+firing writes `lastRunAt` / `nextRunAt` and so bumps `updatedAt`.
+
+**Job responses.** Job rows are returned whole, including `createdById`, `version`
+and the #1235 binding fields `webhookBinderId` (the user judged for the job's current
+webhook binding; `null` with a set `webhookBoundAt` is a binding nobody was judged
+for) and `webhookBoundAt` (when; `null` = never judged since #1235). They are user
+ids and timestamps of the same kind as `createdById`, and are returned only to
+callers who pass the project-access check above.
+
 ### 13.7.1 Module layout
 
 ```
@@ -4352,7 +4377,14 @@ pending ──────► pending ─────────────►
 
 Status transitions are persisted on `Task` via the `TaskStore` interface and
 each transition fires an audit event (`task.enqueue`, `task.start`,
-`task.complete`, `task.fail`, `task.cancel`, `task.retry`). The dispatcher
+`task.complete`, `task.fail`, `task.cancel`, `task.retry`); those rows carry no
+actor, and `task.retry` is the queue's automatic in-place retry. The REST routes
+add one row each naming the member who acted (#1233), under names of their own
+so each action name is one event (#1239): `POST /api/tasks/:id/cancel` writes
+`task.cancel.requested` (one cancel = one `task.cancel` + one `.requested`), and
+`POST /api/tasks/:id/retry`, a manual re-enqueue, writes `task.retry.requested`
+with the new task id and the original creator. Refusals stay `task.cancel.denied`
+/ `task.retry.denied`. The dispatcher
 reserves a concurrency slot synchronously before kicking off the async
 `execute()` chain, so `enqueue()` calls racing each other can never
 over-dispatch past `SCHEDULER_CONCURRENCY`.
@@ -4428,6 +4460,13 @@ contract as Phase 8's repo connectors:
   fails the run with one fixed message naming no secret. A `${vault:<label>}`
   reference resolves by label (before #1235 the default resolver read by id
   only, so label references failed every run).
+- #1243 — such a job is a binding in the vault's "Rotate anyway" list
+  (`lib/vault/rotate-foreign-owner.ts`, type `scheduled_webhook_job`): named by
+  job and project, with only the URL's origin as its destination, because a
+  webhook URL's path, query or userinfo is often itself a credential. Its
+  `routing` digest covers task type, project, full URL, method and the
+  `authHeader` reference, so re-pointing the job after the list was shown
+  refuses the confirm.
 - Audit logs record only the hostname, status code, and method (never the
   URL, headers, or body).
 

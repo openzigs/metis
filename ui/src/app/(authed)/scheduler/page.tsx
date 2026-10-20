@@ -9,15 +9,15 @@
  */
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ApiError } from "@/lib/api-client";
 import { SkeletonText } from "@/components/ui/skeleton";
 import {
+  jobEditInput,
+  jobSaveErrorMessage,
   schedulerApi,
   type CreateScheduledJobInput,
   type ScheduledJobRow,
   type TaskHandlerInfo,
   type TaskRow,
-  type UpdateScheduledJobInput,
 } from "@/lib/scheduler-api";
 import { queryKeys } from "@/lib/query-keys";
 import { computeSchedulerStats } from "@/lib/scheduler-stats";
@@ -377,14 +377,16 @@ function JobForm({ initial, handlers, onCancel, onSaved }: JobFormProps) {
         throw new Error("payload is not valid JSON");
       }
       if (isEdit && initial) {
-        const update: UpdateScheduledJobInput = {
+        // #1245 — carries the version the form was opened with, so a form left
+        // open across someone else's edit is refused (409), never saved over it.
+        const update = jobEditInput(initial, {
           name,
           cron,
           taskType,
           payload,
           enabled,
           maxAttempts,
-        };
+        });
         return schedulerApi.update(initial.id, update);
       }
       const create: CreateScheduledJobInput = {
@@ -402,11 +404,7 @@ function JobForm({ initial, handlers, onCancel, onSaved }: JobFormProps) {
       setError(null);
       onSaved();
     },
-    onError: (err: unknown) => {
-      if (err instanceof ApiError) setError(err.message);
-      else if (err instanceof Error) setError(err.message);
-      else setError("Failed to save");
-    },
+    onError: (err: unknown) => setError(jobSaveErrorMessage(err)),
   });
 
   return (

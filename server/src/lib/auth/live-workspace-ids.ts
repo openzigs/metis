@@ -11,6 +11,7 @@
  * through this module (login and SSO via the fragment, because their callers
  * tolerate a mocked client without `workspaceMember`).
  */
+import type { PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma.js";
 
 /** Membership `where` fragment that drops soft-deleted workspaces. */
@@ -27,8 +28,12 @@ const LIVE_MEMBER_USER = { user: { deletedAt: null, status: "active" } } as cons
  * Workspace ids the user is a member of, excluding soft-deleted workspaces —
  * and none at all for a soft-deleted or disabled user (#612).
  */
-export async function readLiveWorkspaceIds(userId: string): Promise<string[]> {
-  const memberships = await prisma.workspaceMember.findMany({
+export async function readLiveWorkspaceIds(
+  userId: string,
+  // #1239 — a caller holding an injected client reads through it.
+  db: Pick<PrismaClient, "workspaceMember"> = prisma,
+): Promise<string[]> {
+  const memberships = await db.workspaceMember.findMany({
     where: { userId, ...LIVE_WORKSPACE_MEMBERSHIP, ...LIVE_MEMBER_USER },
     select: { workspaceId: true },
   });

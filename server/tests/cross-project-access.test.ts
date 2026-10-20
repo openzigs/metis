@@ -156,7 +156,8 @@ describe("listMemberProjectsInWorkspace — #1221 project-access rule inside a w
     liveWorkspacesMock.mockResolvedValue(["wsA"]);
     const ids = await listMemberProjectsInWorkspace(MEMBER, "wsA", db);
     expect(new Set(ids)).toEqual(new Set(["p1", "p2"]));
-    expect(liveWorkspacesMock).toHaveBeenCalledWith("user-1");
+    // #1239 — the live membership read goes through the injected client too.
+    expect(liveWorkspacesMock).toHaveBeenCalledWith("user-1", db);
   });
 
   it("DENIES (404, audited) a member whose membership is not live — disabled or soft-deleted user (#612)", async () => {

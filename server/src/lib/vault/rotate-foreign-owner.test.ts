@@ -13,6 +13,8 @@ const db = vi.hoisted(() => ({
   mCPServer: { findMany: vi.fn() },
   jiraConnection: { findMany: vi.fn() },
   testManagementConnection: { findMany: vi.fn() },
+  scheduledJob: { findMany: vi.fn() },
+  project: { findMany: vi.fn() },
 }));
 vi.mock("../prisma.js", () => ({ prisma: db }));
 // #557 — a pass-through spy, so a test can count the HKDF derivations.
@@ -61,6 +63,8 @@ beforeEach(() => {
     db.mCPServer,
     db.jiraConnection,
     db.testManagementConnection,
+    db.scheduledJob,
+    db.project,
   ]) {
     m.findMany.mockResolvedValue([]);
   }
@@ -270,6 +274,158 @@ describe("#609 — describeForeignOwner lists test-management connections", () =
   it("an empty-binding message no longer claims test-management auth went unchecked", () => {
     expect(UNBOUND_NOTE).toContain("test-management connection");
     expect(UNBOUND_NOTE).not.toContain("test-management auth");
+  });
+});
+
+function job(over: Record<string, unknown> & { payload?: Record<string, unknown> | string }) {
+  const { payload, ...rest } = over;
+  return {
+    name: "Nightly ping",
+    projectId: "p",
+    taskType: "http-webhook",
+    ...rest,
+    payload:
+      typeof payload === "string"
+        ? payload
+        : JSON.stringify({
+            url: "https://hooks.example/in",
+            authHeader: "${vault:sec-1}",
+            ...payload,
+          }),
+  };
+}
+
+describe("#1243 — describeForeignOwner lists scheduled webhook jobs", () => {
+  it("queries live webhook jobs that hold any vault ref", async () => {
+    await describeForeignOwner(SECRET);
+    expect(db.scheduledJob.findMany.mock.calls[0]![0].where).toEqual({
+      deletedAt: null,
+      taskType: "http-webhook",
+      payload: { contains: "${vault:" },
+    });
+  });
+
+  it("keeps jobs whose authHeader reaches the secret by id or label, with the job name and project", async () => {
+    db.scheduledJob.findMany.mockResolvedValue([
+      job({ id: "jId", name: "By id" }),
+      job({ id: "jLabel", name: "By label", payload: { authHeader: "${vault:global:gh-token}" } }),
+      job({ id: "jGlobal", name: "No project", projectId: null }),
+      job({ id: "jOther", name: "Other", payload: { authHeader: "${vault:other}" } }),
+      // A vault ref outside authHeader is never resolved by the handler.
+      job({
+        id: "jBody",
+        name: "Body",
+        payload: { authHeader: "Bearer static", body: { note: "${vault:sec-1}" } },
+      }),
+      job({ id: "jBad", name: "Bad", payload: "{not json ${vault:sec-1}" }),
+      job({ id: "jArr", name: "Array", payload: '["${vault:sec-1}"]' }),
+    ]);
+    db.project.findMany.mockResolvedValue([{ id: "p", name: "Ledger" }]);
+    const out = await describeForeignOwner(SECRET);
+    expect(out.bindings.map((b) => [b.type, b.id, b.label, b.projectId, b.destination])).toEqual([
+      ["scheduled_webhook_job", "jId", "By id (project Ledger)", "p", "https://hooks.example"],
+      [
+        "scheduled_webhook_job",
+        "jLabel",
+        "By label (project Ledger)",
+        "p",
+        "https://hooks.example",
+      ],
+      [
+        "scheduled_webhook_job",
+        "jGlobal",
+        "No project (no project)",
+        null,
+        "https://hooks.example",
+      ],
+    ]);
+    expect(db.project.findMany.mock.calls[0]![0]).toMatchObject({
+      where: { id: { in: ["p"] } },
+      select: { id: true, name: true },
+    });
+    for (const b of out.bindings) expect(b.routing).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("names a job's project by id when the project row is gone, and skips the lookup when no job binds", async () => {
+    await describeForeignOwner(SECRET);
+    expect(db.project.findMany).not.toHaveBeenCalled();
+    db.scheduledJob.findMany.mockResolvedValue([job({ id: "j", projectId: "p-gone" })]);
+    const out = await describeForeignOwner(SECRET);
+    expect(out.bindings[0]!.label).toBe("Nightly ping (project p-gone)");
+  });
+
+  it("shows only the URL's origin: a webhook URL's path, query and credentials can be the secret", async () => {
+    db.scheduledJob.findMany.mockResolvedValue([
+      job({
+        id: "j",
+        payload: {
+          url: "https://user:pw@hooks.slack.example:8443/services/T0/B0/XYZSECRET?token=abc",
+          body: { text: "private body" },
+          headers: { "x-api": "private header" },
+        },
+      }),
+      job({ id: "jBadUrl", payload: { url: "not a url" } }),
+      job({ id: "jNoUrl", payload: { url: 42 } }),
+    ]);
+    const out = await describeForeignOwner(SECRET);
+    expect(out.bindings.map((b) => b.destination)).toEqual([
+      "https://hooks.slack.example:8443",
+      null,
+      null,
+    ]);
+    const wire = JSON.stringify(foreignOwnerView(out)) + foreignOwnerMessage(out);
+    for (const leak of [
+      "XYZSECRET",
+      "token=abc",
+      "pw@",
+      "private body",
+      "private header",
+      "services",
+    ]) {
+      expect(wire).not.toContain(leak);
+    }
+  });
+
+  it("re-pointing the job under the same origin changes its routing, not its destination", async () => {
+    const row = job({ id: "j" });
+    db.scheduledJob.findMany.mockResolvedValueOnce([row]);
+    const before = (await describeForeignOwner(SECRET)).bindings[0]!;
+    for (const change of [
+      {
+        payload: JSON.stringify({
+          url: "https://hooks.example/other",
+          authHeader: "${vault:sec-1}",
+        }),
+      },
+      {
+        payload: JSON.stringify({
+          url: "https://hooks.example/in",
+          authHeader: "${vault:sec-1}",
+          method: "PUT",
+        }),
+      },
+      {
+        payload: JSON.stringify({
+          url: "https://hooks.example/in",
+          authHeader: "${vault:global:gh-token}",
+        }),
+      },
+      { projectId: "p2" },
+    ]) {
+      db.scheduledJob.findMany.mockResolvedValueOnce([{ ...row, ...change }]);
+      const after = (await describeForeignOwner(SECRET)).bindings[0]!;
+      expect(after.destination).toBe(before.destination);
+      expect(after.routing, JSON.stringify(change)).not.toBe(before.routing);
+    }
+    // A body-only edit routes nothing new.
+    db.scheduledJob.findMany.mockResolvedValueOnce([
+      { ...row, payload: JSON.stringify({ ...JSON.parse(row.payload), body: { a: 1 } }) },
+    ]);
+    expect((await describeForeignOwner(SECRET)).bindings[0]!.routing).toBe(before.routing);
+  });
+
+  it("an empty-binding message says scheduled webhook jobs were checked", () => {
+    expect(UNBOUND_NOTE).toContain("scheduled webhook job");
   });
 });
 
@@ -486,6 +642,16 @@ describe("#557 — routing digest over the full routing fields", () => {
           baseUrl: "https://tm",
           proxyConfigJson: JSON.stringify({ url: "http://p" }),
           tlsConfigJson: JSON.stringify({ rejectUnauthorized: true, caCertRef: null }),
+        },
+      ],
+      [
+        "scheduled_webhook_job",
+        {
+          taskType: "http-webhook",
+          projectId: "p",
+          url: "https://hooks.example/in",
+          method: "POST",
+          authHeader: "${vault:sec-1}",
         },
       ],
     ];

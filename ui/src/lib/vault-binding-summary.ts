@@ -11,6 +11,7 @@ const TYPE_LABELS: Record<string, string> = {
   mcp_server: "MCP server",
   jira_connection: "Jira connection",
   test_management_connection: "Test-management connection",
+  scheduled_webhook_job: "Scheduled webhook job",
 };
 
 /** A binding type's display name; an unknown type shows as itself. */

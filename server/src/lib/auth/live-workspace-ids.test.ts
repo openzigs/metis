@@ -28,4 +28,21 @@ describe("readLiveWorkspaceIds", () => {
       select: { workspaceId: true },
     });
   });
+
+  it("reads through an injected client, never the global one (#1239)", async () => {
+    const injected = vi.fn(async () => [{ workspaceId: "ws-injected" }]);
+    const db = { workspaceMember: { findMany: injected } } as unknown as Parameters<
+      typeof readLiveWorkspaceIds
+    >[1];
+    await expect(readLiveWorkspaceIds("u-1", db)).resolves.toEqual(["ws-injected"]);
+    expect(injected).toHaveBeenCalledWith({
+      where: {
+        userId: "u-1",
+        workspace: { deletedAt: null },
+        user: { deletedAt: null, status: "active" },
+      },
+      select: { workspaceId: true },
+    });
+    expect(findMany).not.toHaveBeenCalled();
+  });
 });

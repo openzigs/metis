@@ -2900,6 +2900,12 @@ model ScheduledJob {
   /// `webhookBoundAt` is a binding nobody was judged for, and is refused.
   webhookBinderId String?
   webhookBoundAt  DateTime?
+  /// #1245 — optimistic-concurrency token. Every `updateJob` write is
+  /// conditional on the version it read and bumps it, so an edit made from a
+  /// stale read answers 409 instead of writing the old fields back. Not
+  /// `updatedAt`: each cron firing bumps that, which would refuse every form
+  /// left open across a run.
+  version         Int       @default(0)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   deletedAt   DateTime?
