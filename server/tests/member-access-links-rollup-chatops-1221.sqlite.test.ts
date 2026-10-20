@@ -216,9 +216,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
 
       it("a second member links two requirements across the workspace's projects; reader and non-member cannot", async () => {
+        // Rita lacks `project.update` — refused by the coarse permission before
+        // any lookup, so her 403 says nothing about the requirement.
         expect((await linkTo(req.a2, req.c, "rita")).status).toBe(403);
+        // Mallory holds `project.update` but cannot reach ws1: she is answered
+        // exactly as for a requirement that does not exist (#1236).
         const outsider = await linkTo(req.a2, req.c, "mallory");
-        expect(outsider.status).toBe(403);
+        expect(outsider.status).toBe(404);
         expect(await linkCount(req.a2, req.c)).toBe(0);
 
         const res = await linkTo(req.a2, req.c, "bob");
@@ -229,11 +233,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(row.createdById).toBe("bob");
       });
 
-      it("a link to or from a project the actor cannot reach is refused, in either direction", async () => {
+      it("a link to or from a project the actor cannot reach is answered as a missing requirement, in either direction (#1236)", async () => {
+        // The reference: the same caller naming an id that does not exist.
+        const missingTarget = await linkTo(req.a2, "req-does-not-exist-1236", "bob");
+        const missingSource = await linkTo("req-does-not-exist-1236", req.b, "mallory");
+        expect(missingTarget.status).toBe(404);
+        expect(missingSource.status).toBe(404);
+
+        auditSpy.mockClear();
         const out = await linkTo(req.a2, req.b, "bob");
-        expect(out.status).toBe(403);
+        expect(out.status).toBe(404);
+        expect(out.body.error).toEqual(missingTarget.body.error);
+        expect(out.body.success).toBe(false);
+        // Still audited as a denial, though the caller is told "not found".
+        expect(auditSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            actor: { id: "bob" },
+            metadata: expect.objectContaining({ projectId: PB }),
+          }),
+        );
+
         const into = await linkTo(req.b, req.a2, "mallory");
-        expect(into.status).toBe(403);
+        expect(into.status).toBe(404);
+        expect(into.body.error).toEqual(missingSource.body.error);
         expect(await linkCount(req.a2, req.b)).toBe(0);
         expect(await linkCount(req.b, req.a2)).toBe(0);
         expect(auditSpy).toHaveBeenCalledWith(

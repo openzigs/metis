@@ -186,6 +186,15 @@ async function dependsOnReaches(db: LinkPrisma, startId: string, goalId: string)
   return false;
 }
 
+/**
+ * The one answer create gives for an endpoint the caller may not name: a
+ * missing requirement and one in a project they cannot reach get the same
+ * status and body (#1236).
+ */
+function linkEndpointNotFound(): AppError {
+  return new AppError(404, "REQUIREMENT_NOT_FOUND", "Source or target requirement not found");
+}
+
 async function loadRequirementPair(
   db: LinkPrisma,
   sourceRequirementId: string,
@@ -198,7 +207,7 @@ async function loadRequirementPair(
   const source = rows.find((r) => r.id === sourceRequirementId);
   const target = rows.find((r) => r.id === targetRequirementId);
   if (!source || !target) {
-    throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Source or target requirement not found");
+    throw linkEndpointNotFound();
   }
   return { source, target };
 }
@@ -212,7 +221,8 @@ export interface CreateLinkInput {
 /**
  * Create a typed link `source → target`. Enforces, in order: self-link
  * rejection, link-type validation, existence of both requirements, DUAL-PROJECT
- * access (both endpoints), workspace boundary, dependency-cycle guard (for
+ * access (both endpoints; a denial is the same 404 as a missing id, #1236),
+ * workspace boundary, dependency-cycle guard (for
  * `depends_on`), and uniqueness. Writes a `requirement.link.create` audit row.
  */
 export async function createRequirementLink(
@@ -235,16 +245,20 @@ export async function createRequirementLink(
     targetRequirementId,
   );
 
-  // DUAL-PROJECT authz: BOTH endpoints' projects must be accessible.
-  await assertProjectAccessible(actor, source.projectId, {
-    resource: "requirement_link",
-    resourceId: sourceRequirementId,
-    action: "requirement.link.create",
-  });
-  await assertProjectAccessible(actor, target.projectId, {
-    resource: "requirement_link",
-    resourceId: targetRequirementId,
-    action: "requirement.link.create",
+  // DUAL-PROJECT authz: BOTH endpoints' projects must be accessible. A denial
+  // answers exactly as a missing requirement does — the old 403 told the caller
+  // the id exists (#1236). The access check still audits the denial first.
+  await assertAccessibleOrNotFound(linkEndpointNotFound(), async () => {
+    await assertProjectAccessible(actor, source.projectId, {
+      resource: "requirement_link",
+      resourceId: sourceRequirementId,
+      action: "requirement.link.create",
+    });
+    await assertProjectAccessible(actor, target.projectId, {
+      resource: "requirement_link",
+      resourceId: targetRequirementId,
+      action: "requirement.link.create",
+    });
   });
 
   assertSameWorkspace(source, target);

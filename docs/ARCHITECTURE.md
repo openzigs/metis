@@ -1244,7 +1244,11 @@ guards in order: self-link rejection, link-type validation, existence of both
 requirements, dual-project access, the same-workspace boundary
 (`CROSS_WORKSPACE_LINK`), a bounded `depends_on` cycle check, and uniqueness
 (the DB constraint is the real guard; a racing `P2002` maps to the same
-`DUPLICATE_LINK` 409). `listRequirementLinks` additionally omits any link whose
+`DUPLICATE_LINK` 409). On every by-id path — create (#1236), delete and list
+(#649) — an access denial answers with the same 404 status and body as a
+missing id, so a link request cannot probe whether a requirement exists in a
+project the caller cannot reach; the denial is still audited by the access
+check. `listRequirementLinks` additionally omits any link whose
 *counterpart* project the caller can't access — defence in depth beyond
 create-time authz. Workspace-scoped search
 (`searchWorkspaceRequirements`) reuses `listMemberProjectsInWorkspace`

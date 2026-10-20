@@ -139,7 +139,7 @@ describe("createRequirementLink", () => {
     ).rejects.toMatchObject({ statusCode: 404, code: "REQUIREMENT_NOT_FOUND" });
   });
 
-  it("denies (403) when the SOURCE project is inaccessible", async () => {
+  it("answers 404 REQUIREMENT_NOT_FOUND (not 403) when the SOURCE project is inaccessible (#1236)", async () => {
     actorHasProjectAccess.mockImplementation(
       async (_a, projectId: string) => projectId !== "projA",
     );
@@ -149,11 +149,15 @@ describe("createRequirementLink", () => {
         targetRequirementId: "tgt",
         type: "relates_to",
       }),
-    ).rejects.toMatchObject({ statusCode: 403, code: "FORBIDDEN" });
+    ).rejects.toMatchObject({
+      statusCode: 404,
+      code: "REQUIREMENT_NOT_FOUND",
+      message: "Source or target requirement not found",
+    });
     expect(db.requirementLink.create).not.toHaveBeenCalled();
   });
 
-  it("denies (403) when the TARGET project is inaccessible", async () => {
+  it("answers 404 REQUIREMENT_NOT_FOUND (not 403) when the TARGET project is inaccessible (#1236)", async () => {
     actorHasProjectAccess.mockImplementation(
       async (_a, projectId: string) => projectId !== "projB",
     );
@@ -163,7 +167,11 @@ describe("createRequirementLink", () => {
         targetRequirementId: "tgt",
         type: "relates_to",
       }),
-    ).rejects.toMatchObject({ statusCode: 403, code: "FORBIDDEN" });
+    ).rejects.toMatchObject({
+      statusCode: 404,
+      code: "REQUIREMENT_NOT_FOUND",
+      message: "Source or target requirement not found",
+    });
     expect(db.requirementLink.create).not.toHaveBeenCalled();
   });
 
