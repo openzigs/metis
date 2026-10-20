@@ -53,12 +53,21 @@ function isModel(bare: string, id: string): boolean {
 
 const ALWAYS_ON_FAMILIES = /^claude-(?:fable|mythos)-/;
 
+/**
+ * #1278 — whether real Claude `model` reasons on every request ("Always on"
+ * in Anthropic's table): Opus 5.5, Fable and Mythos. The one list, read by
+ * {@link anthropicThinkingOff} and by the docs-gen reasoning allowance
+ * (`output-caps.ts`), which must reserve output room for reasoning these
+ * models cannot switch off.
+ */
+export function claudeModelAlwaysThinks(model: string): boolean {
+  const bare = bareClaudeId(model);
+  return isModel(bare, "claude-opus-5-5") || ALWAYS_ON_FAMILIES.test(bare);
+}
+
 export function anthropicThinkingOff(model: string, deepSeekEndpoint: boolean): ThinkingOff {
   if (deepSeekEndpoint) return { kind: "disabled" };
-  const bare = bareClaudeId(model);
-  if (isModel(bare, "claude-sonnet-5-5")) return { kind: "between-tools" };
-  if (isModel(bare, "claude-opus-5-5") || ALWAYS_ON_FAMILIES.test(bare)) {
-    return { kind: "always-on", effort: "low" };
-  }
+  if (isModel(bareClaudeId(model), "claude-sonnet-5-5")) return { kind: "between-tools" };
+  if (claudeModelAlwaysThinks(model)) return { kind: "always-on", effort: "low" };
   return { kind: "disabled" };
 }

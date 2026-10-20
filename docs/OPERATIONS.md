@@ -1553,7 +1553,8 @@ write at the input price, so it is no surcharge. A negative saving means the
 flow paid the write surcharge and read too little back. Prices come from
 `provider-rates.ts` and `MODEL_PRICES` (the database's `runtime_config` row,
 else the environment). The script opens SQLite with `readOnly: true` and writes
-nothing; `--since` / `--until` take ISO timestamps, `--json` prints the lines,
+nothing; `--since` / `--until` take a date or timestamp (ISO is safest; one with
+no offset is read in the machine's local time, #1284), `--json` prints the lines,
 and `--sql` (or a `postgres://` `DATABASE_URL` with no `--db`) prints the
 aggregate query to run on Postgres instead.
 
@@ -1618,7 +1619,7 @@ the epic's P0 spike (#697).
 | Opus 4.6, Opus 4.5 | **4,096** | **4,096** |
 | Opus 4.8, Sonnet 5, **Sonnet 4.6 (default route)**, Sonnet 4.5, Opus 4.1, Opus 4, Sonnet 4, Claude 3.7 / 3.5 Sonnet | **1,024** | **1,024** |
 | Haiku 4.5 — faster / cheaper route | **4,096** | **4,096** |
-| Claude 3.5 Haiku | — | **2,048** |
+| Claude 3.5 Haiku | **2,048**† | **2,048** |
 
 #1277 re-read every row from both pages on 2026-10-19. Anthropic's page gives
 one minimum per model "on every platform where each model is available" and
@@ -1628,6 +1629,13 @@ Opus at **4,096**) no longer match either page; the stale 2,048 made the docs-ge
 warm-up skip every section on the default model. `cacheFloorTokens`
 (`server/src/lib/ai/cache-verification.ts`) carries the table, dated snapshot
 ids (`claude-sonnet-5-20260301`) and Bedrock spellings included.
+
+† AWS's table does not list Claude 3.5 Haiku (re-read 2026-10-20), so the code
+applies Anthropic's 2,048 on Bedrock too. **An id no row names** (a model newer
+than the table) gets its family's **lowest** floor, 512 in every family today
+(#1284): guessing too low only makes a docs-gen fan-out wait for its first reply,
+while guessing too high skips that warm-up and every parallel batch pays its own
+cache write.
 
 Sources: [AWS Bedrock prompt caching](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html),
 [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).

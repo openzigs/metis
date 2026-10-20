@@ -39,6 +39,21 @@ describe("needsPromptCacheWarmUp", () => {
     );
   });
 
+  // #1284 — a model id newer than the floor table must still warm up: the
+  // fallback floor is the family's lowest, so a wrong guess costs a wait,
+  // never a parallel cache write per batch.
+  it("warms a made-up new Opus id with a typical section prefix", () => {
+    expect(
+      needsPromptCacheWarmUp(provider("anthropic", "claude-opus-6", true), prefixOf(1_500)),
+    ).toBe(true);
+    expect(
+      needsPromptCacheWarmUp(
+        provider("bedrock-gateway", "us.anthropic.claude-opus-6-1-v1:0", true),
+        prefixOf(1_500),
+      ),
+    ).toBe(true);
+  });
+
   it("skips DeepSeek, which caches automatically: by model id, and by endpoint", () => {
     expect(needsPromptCacheWarmUp(provider("anthropic", "deepseek-flash"), prefixOf(9_000))).toBe(
       false,

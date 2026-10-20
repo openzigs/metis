@@ -132,6 +132,30 @@ describe("MarkdownPreviewer — printing renders every section (#1182)", () => {
     removeSpy.mockRestore();
   });
 
+  // #1279 — Mermaid draws after a timer and an async load; the print copy is
+  // laid out as soon as `beforeprint` returns. jsdom applies no print CSS, so
+  // this pins the markup the `print:` variants act on; the Playwright spec
+  // `doc-print-diagram.spec.ts` checks what print media actually shows.
+  it("an undrawn diagram prints a plain note, never the 'Rendering diagram…' spinner", () => {
+    const withDiagram = `${doc}\n### R99 — Flow\n\n\`\`\`mermaid\ngraph TD\n  A-->B\n\`\`\`\n`;
+    const { container } = render(<MarkdownPreviewer content={withDiagram} />);
+    expect(container.querySelector("code.language-mermaid")).toBeNull();
+
+    window.dispatchEvent(new Event("beforeprint"));
+
+    const placeholder = container.querySelector("code.language-mermaid")?.closest("div");
+    expect(placeholder).toBeTruthy();
+    const spinner = Array.from(placeholder!.querySelectorAll("div")).find(
+      (el) => el.textContent === "Rendering diagram…",
+    );
+    expect(spinner?.className.split(/\s+/)).toContain("print:hidden");
+    const note = Array.from(placeholder!.querySelectorAll("p")).find((el) =>
+      /still being drawn when printing started/.test(el.textContent ?? ""),
+    );
+    expect(note?.className.split(/\s+/)).toEqual(expect.arrayContaining(["hidden", "print:block"]));
+    expect(note!.textContent).toMatch(/print again/);
+  });
+
   it("is a no-op when every section is already rendered", () => {
     const short = "# Title\n\nOnly one section.";
     const { container } = render(<MarkdownPreviewer content={short} />);

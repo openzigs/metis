@@ -283,12 +283,31 @@ describe("cacheFloorTokens", () => {
     expect(cacheFloorTokens("anthropic.claude-opus-4-5-20251101-v1:0", "bedrock")).toBe(4096);
   });
 
-  it("an id no row names falls back to its family's highest listed floor", () => {
-    // A floor set too HIGH only skips a warm-up; too low would wait for nothing.
-    expect(cacheFloorTokens("some-sonnet-model", "anthropic")).toBe(1024);
-    expect(cacheFloorTokens("some-haiku-model", "bedrock")).toBe(4096);
-    expect(cacheFloorTokens("some-opus-model", "anthropic")).toBe(4096);
-    expect(cacheFloorTokens("deepseek-flash", "anthropic")).toBe(4096);
+  // #1284 — an id no row names gets its family's LOWEST listed floor. A floor
+  // guessed too low costs latency (a warm-up that waits for a cache entry never
+  // written); too high costs money (the warm-up is skipped and every parallel
+  // batch pays its own cache write).
+  it.each([
+    ["claude-fable-9", 512],
+    ["claude-mythos-9", 512],
+    ["claude-opus-9", 512],
+    ["claude-sonnet-9", 512],
+    ["claude-haiku-9", 512],
+    ["some-opus-model", 512],
+  ])("unknown id %s falls back to its family's lowest floor, %i", (model, floor) => {
+    expect(cacheFloorTokens(model, "anthropic")).toBe(floor);
+    expect(cacheFloorTokens(model, "bedrock")).toBe(floor);
+  });
+
+  it("an id with no Claude family falls back to the lowest floor of any row", () => {
+    expect(cacheFloorTokens("deepseek-flash", "anthropic")).toBe(512);
+    expect(cacheFloorTokens("claude-next", "bedrock")).toBe(512);
+  });
+
+  it("the mythos fallback is the family's lowest row, not Mythos Preview's 2,048", () => {
+    expect(cacheFloorTokens("claude-mythos-preview", "anthropic")).toBe(2048);
+    expect(cacheFloorTokens("claude-mythos-6", "anthropic")).toBe(512);
+    expect(cacheFloorTokens("claude-mythos-6", "bedrock")).toBe(512);
   });
 });
 describe("expectedCacheOutcome", () => {
