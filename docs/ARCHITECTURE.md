@@ -5076,9 +5076,15 @@ locator is matched one whitespace-delimited token at a time, anchored, at most
 512 characters. `renderCitationFootnotesWithLocations` also returns the lines
 each source's footnotes named (pinned lines, a typed symbol's range), and the
 provenance manifest records them on that source's `selectedEvidence.primary`
-row as `citedLines`. A citation from a section that read no locators (or a
-cancelled run's kept sections, whose stored evidence holds no source text)
-stays at module level.
+row as `citedLines`. A citation from a section that read no locators stays at
+module level.
+
+A run stopped before assembly (cancelled, over its ceiling, failed) keeps its
+finished sections as an incomplete document (`partialDocumentMarkdown`,
+`generation-checkpoint.ts`). Those are stored drafts, markers and all, so they
+are rendered there the same way (#996), from the sources each kept section's
+reuse record admitted (`evidence`). The records hold no source text, so their
+module citations are not pinned to a line.
 
 #### Batched enumerative sections (#157)
 
