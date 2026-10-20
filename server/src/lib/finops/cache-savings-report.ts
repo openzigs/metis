@@ -240,7 +240,9 @@ ORDER BY SUM("cacheWriteTokens") DESC, SUM("inputTokens") DESC;`;
  * timestamps (`since` inclusive, `until` exclusive). SQLite only. The ledger
  * stores `createdAt` as ISO text with a `+00:00` offset, so a TEXT comparison
  * with a `Z` bound drops rows in the bound's own second; both sides go through
- * `julianday`, which parses either spelling as an instant.
+ * `julianday`, which parses either spelling as an instant. A bound is bound as
+ * the instant `Date.parse` reads (#1284), so any date JavaScript accepts works,
+ * and one with no offset (`2026-10-15T13:44`) is in the machine's local time.
  */
 export function ledgerRowsQuery(opts: { since?: string; until?: string }): {
   sql: string;
@@ -253,9 +255,12 @@ export function ledgerRowsQuery(opts: { since?: string; until?: string }): {
     [opts.until, "<"],
   ] as const) {
     if (bound === undefined) continue;
-    if (Number.isNaN(Date.parse(bound))) throw new Error(`"${bound}" is not a date`);
+    const at = Date.parse(bound);
+    if (Number.isNaN(at)) throw new Error(`"${bound}" is not a date`);
     where.push(`julianday("createdAt") ${op} julianday(?)`);
-    params.push(bound);
+    // #1284 — bind the instant JavaScript parsed, not the text: Date.parse
+    // accepts "October 15, 2026", which julianday() reads as NULL (zero rows).
+    params.push(new Date(at).toISOString());
   }
   return {
     sql: `SELECT "agentStep", provider, model, "inputTokens", "outputTokens", "cacheReadTokens",

@@ -237,6 +237,18 @@ describe("ledgerRowsQuery", () => {
     expect(count({})).toBe(2);
   });
 
+  // #1284 — JavaScript's Date.parse accepts "October 15, 2026"; SQLite's
+  // julianday() does not and returned NULL, so the report printed zero rows.
+  it("normalises a non-ISO date the guard accepts before binding it", () => {
+    // Local midnight on Oct 15 is before 13:43Z that day in every time zone.
+    expect(count({ since: "October 15, 2026" })).toBe(2);
+    expect(count({ until: "October 17, 2026" })).toBe(2);
+    expect(count({ since: "October 17, 2026" })).toBe(0);
+    expect(ledgerRowsQuery({ since: "2026-10-15T13:44:00Z" }).params).toEqual([
+      "2026-10-15T13:44:00.000Z",
+    ]);
+  });
+
   it("rejects a bound that is not a date", () => {
     expect(() => ledgerRowsQuery({ since: "yesterday" })).toThrow(/not a date/);
   });

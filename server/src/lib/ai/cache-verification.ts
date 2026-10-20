@@ -274,17 +274,24 @@ const CACHE_FLOORS: Readonly<Record<string, number>> = {
 /** Where Bedrock's table differs from Anthropic's. */
 const BEDROCK_CACHE_FLOORS: Readonly<Record<string, number>> = { "opus-4.7": 4096 };
 /**
- * An id no row names: its family's HIGHEST listed floor. Too high only skips a
- * warm-up (`prompt-cache-warmup.ts`); too low would make a fan-out wait for a
- * cache entry that is never written.
+ * #1284 — an id no row names gets its family's LOWEST listed floor (and an id
+ * with no family, the lowest of any row). The floor gates the docs-gen
+ * warm-up (`prompt-cache-warmup.ts`), so the two ways to guess wrong cost
+ * different things:
+ *   - too LOW: a prefix under the real minimum is not cached, and the fan-out
+ *     waits for the first reply to begin for nothing. That costs latency.
+ *   - too HIGH: the warm-up is skipped, every parallel batch writes the shared
+ *     prefix itself, and each write is billed at the cache-write premium. That
+ *     costs money, and it is the #1277 race back again.
+ * The likeliest unknown id is a newer model, and every family's newest
+ * generation sits at its lowest floor, so the lowest is also the likeliest right.
  */
-const FAMILY_FALLBACK_FLOORS: Readonly<Record<string, number>> = {
-  fable: 512,
-  mythos: 2048,
-  opus: 4096,
-  sonnet: 1024,
-  haiku: 4096,
-};
+function lowestFloor(family: string | null): number {
+  const floors = Object.entries(CACHE_FLOORS)
+    .filter(([key]) => family === null || key.startsWith(`${family}-`))
+    .map(([, floor]) => floor);
+  return Math.min(...floors);
+}
 
 /** `family-major[.minor]` of a Claude id, in any spelling; `null` for none. */
 function claudeFloorKey(model: string): { key: string | null; family: string | null } {
@@ -311,7 +318,7 @@ export function cacheFloorTokens(model: string, platform: CachePlatform): number
     const floor = bedrock ?? CACHE_FLOORS[key];
     if (floor !== undefined) return floor;
   }
-  return (family && FAMILY_FALLBACK_FLOORS[family]) || 4096;
+  return lowestFloor(family);
 }
 
 /** Whether a prefix clears its model+platform floor. */
