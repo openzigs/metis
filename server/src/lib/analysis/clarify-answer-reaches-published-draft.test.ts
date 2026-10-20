@@ -175,6 +175,14 @@ vi.mock("../prisma.js", () => ({
       findFirst: vi.fn(async () => ({ id: PROJECT_ID, name: "JPetStore" })),
     },
     issueDraft: {
+      // #1276 — the generator reads the project's epic drafts for a recorded title.
+      findMany: vi.fn(async ({ where }: { where: { draftType?: string } }) =>
+        store.drafts.filter(
+          (d) =>
+            d.deletedAt === null &&
+            (where.draftType === undefined || d.draftType === where.draftType),
+        ),
+      ),
       findFirst: vi.fn(async ({ where }: { where: { dedupHash: string } }) =>
         store.drafts.find((d) => d.dedupHash === where.dedupHash && d.deletedAt === null),
       ),
