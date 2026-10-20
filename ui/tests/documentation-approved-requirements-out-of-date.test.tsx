@@ -63,6 +63,13 @@ describe("ApprovedRequirementsOutOfDateBanner (#1252)", () => {
     expect(banner).toHaveTextContent(/only if the code or other material it is written from/i);
     expect(banner).toHaveTextContent(/un-approve the last requirement.*uses credits/i);
     expect(banner).toHaveTextContent(/written before this version of METIS.*once/i);
+    // #1277 — the first regenerate after this version rewrites the sections the
+    // model writes, once, at model cost (their prompts were reordered); it is
+    // not "some of them" and it is not free.
+    expect(banner).toHaveTextContent(
+      /first regenerate after this version of METIS rewrites the sections the AI model writes, once, which uses credits/i,
+    );
+    expect(banner).not.toHaveTextContent(/may also rewrite some of its other sections/i);
     expect(banner).not.toHaveTextContent(/approving the first/i);
     expect(banner).not.toHaveTextContent(/may rewrite some of them/i);
     // No implementation words a business analyst does not use.
