@@ -46,6 +46,7 @@
     "dr:check": "pnpm --filter @metis/server dr:check",
     "embeddings:migrate": "pnpm --filter @metis/server embeddings:migrate",
     "review:adversarial-tally": "node scripts/adversarial-tally.mjs",
+    "cache:report": "pnpm --filter @metis/server cache:report",
     "audit:product-repos": "node scripts/audit-cross-workspace-product-repos.mjs",
     "verify:image-size": "node scripts/lib/verify-image-size.mjs",
     "skills:verify": "node scripts/verify-skill-links.mjs",
