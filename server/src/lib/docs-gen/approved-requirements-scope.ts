@@ -15,20 +15,29 @@
  * list. The section's lead-in says so in plain words, and every approved
  * requirement stays listed in an unscoped BRD and under **Requirements**.
  *
- * A link is in a REPOSITORY when:
- *   - a mapping that names a code symbol: the symbol is in that repository's
- *     code graph (so a file path two repositories share is decided by the
- *     symbol, not by the path);
- *   - a merged pull request: its URL names the repository (the connection's
- *     owner and name), or its file is one METIS indexed for that repository;
- *   - a mapping whose symbol is gone (`codeSymbolId` is set null when a
- *     re-ingest deletes it): the file is one METIS indexed for that repository.
+ * A MAPPING is in a repository when the code symbol it names is in that
+ * repository's code graph (so a file path two repositories share is decided by
+ * the symbol, not by the path); a mapping whose symbol is gone (`codeSymbolId`
+ * is set null when a re-ingest deletes it) when its file is one METIS indexed
+ * for that repository.
+ *
+ * A MERGED PULL REQUEST counts only when its URL names one of THIS project's
+ * live repository connections (owner and name), and it is in a repository
+ * when its URL names that repository. Never by its file path alone:
+ *   - two repositories of a project often share a path (`src/index.ts`), and a
+ *     pull request of one must not place a requirement in the other's BRD;
+ *   - `RequirementImplementation` rows carry no project, and the webhook that
+ *     writes them matches a pull request to a requirement by issue number
+ *     alone, so a row can come from another project's repository entirely.
+ *     Such a row never decides this project's list.
+ *
  * A link is in a PATH scope when its repository-relative file path is under
  * one of the prefixes, matched segment by segment (`isInPathScope`). A
  * repository document with a path scope needs both.
  *
  * Every read is filtered on `projectId`: a mapping recorded under another
- * project, or a graph of another project's repository, is never counted.
+ * project, a graph or symbol of another project, or a deleted connection, is
+ * never counted.
  */
 import { prisma } from "../prisma.js";
 import { isInPathScope, readStoredPathScope } from "./path-scope.js";
@@ -51,8 +60,8 @@ export function isScopedApprovedRequirements(scope: ApprovedRequirementsScope): 
  * The scope of a stored document, read the way generation reads it: the
  * repository of a `repository` document (`resolveEvidencePolicy`) and the
  * stored path prefixes (`readStoredPathScope`). A stored path scope that is
- * invalid throws, as it does for generation: a corrupted scope must never
- * silently widen to the whole project.
+ * invalid throws `InvalidStoredPathScopeError`, as it does for generation: a
+ * corrupted scope must never silently widen to the whole project.
  */
 export function approvedRequirementsScopeOf(doc: {
   scope: string;
@@ -80,31 +89,57 @@ export function approvedRequirementsScopeOf(doc: {
   };
 }
 
+/** A repository named by owner and name, lower-cased, without a `.git` suffix. */
+export interface NamedRepository {
+  owner: string;
+  name: string;
+}
+
+function repositoryKey(owner: string, name: string): string | null {
+  const o = owner.trim().toLowerCase();
+  const n = name
+    .trim()
+    .toLowerCase()
+    .replace(/\.git$/, "");
+  return o && n ? `${o}/${n}` : null;
+}
+
 /**
- * Whether a pull request URL (`https://<host>/<owner>/<repo>/pull/<n>`) is one
- * of `repository`'s: owner and name compared case-insensitively, as the hosts
- * treat them. False when the connection records no owner or name, or the URL
- * does not parse.
+ * The repository a pull request URL (`https://<host>/<owner>/<repo>/pull/<n>`)
+ * names, or null when it names none (it does not parse, or has no
+ * `<owner>/<repo>/pull` shape).
  */
-export function prNamesRepository(
-  prUrl: string,
-  repository: { ownerOrOrg: string | null; repoName: string | null },
-): boolean {
-  const owner = repository.ownerOrOrg?.trim().toLowerCase();
-  const name = repository.repoName?.trim().toLowerCase();
-  if (!owner || !name) return false;
+export function repositoryOfPrUrl(prUrl: string): NamedRepository | null {
   let segments: string[];
   try {
     segments = new URL(prUrl).pathname.split("/").filter(Boolean);
   } catch {
-    return false;
+    return null;
   }
   const at = segments.indexOf("pull");
-  return (
-    at >= 2 &&
-    segments[at - 2].toLowerCase() === owner &&
-    segments[at - 1].toLowerCase() === name.replace(/\.git$/, "")
-  );
+  if (at < 2) return null;
+  const key = repositoryKey(segments[at - 2], segments[at - 1]);
+  if (!key) return null;
+  const [owner, name] = key.split("/");
+  return { owner, name };
+}
+
+/**
+ * The ids of the `connections` a pull request URL names: owner and name
+ * compared case-insensitively, as the hosts treat them, a `.git` suffix on
+ * either side ignored. A connection that records no owner or name is never
+ * named.
+ */
+export function connectionsNamedByPrUrl(
+  prUrl: string,
+  connections: ReadonlyArray<{ id: string; ownerOrOrg: string | null; repoName: string | null }>,
+): string[] {
+  const named = repositoryOfPrUrl(prUrl);
+  if (!named) return [];
+  const key = `${named.owner}/${named.name}`;
+  return connections
+    .filter((c) => c.ownerOrOrg && c.repoName && repositoryKey(c.ownerOrOrg, c.repoName) === key)
+    .map((c) => c.id);
 }
 
 /** Rows per `IN (...)` list, well under every supported database's bound-parameter limit. */
@@ -129,16 +164,36 @@ export async function requirementsInScope(
   const prefixes = scope.pathPrefixes?.length ? scope.pathPrefixes : undefined;
   const inPaths = (filePath: string): boolean => !prefixes || isInPathScope(filePath, prefixes);
   const repoConnectorId = scope.repoConnectorId;
+  const inScope = new Set<string>();
 
-  // A path scope over the whole project: the link's path decides.
-  if (!repoConnectorId) {
-    return requirements.filter((r) =>
-      [...r.codeMappings, ...r.implementations].some((link) => inPaths(link.filePath)),
-    );
+  // Merged pull requests: by the repository their URL names, among this
+  // project's live connections only.
+  if (requirements.some((r) => r.implementations.length > 0)) {
+    const connections = await prisma.repoConnection.findMany({
+      where: { projectId, deletedAt: null },
+      select: { id: true, ownerOrOrg: true, repoName: true },
+    });
+    for (const r of requirements) {
+      for (const link of r.implementations) {
+        if (!inPaths(link.filePath)) continue;
+        const named = connectionsNamedByPrUrl(link.prUrl, connections);
+        if (repoConnectorId ? named.includes(repoConnectorId) : named.length > 0) {
+          inScope.add(r.id);
+        }
+      }
+    }
   }
 
-  // A repository: each mapping's symbol decides where it is; a mapping without
-  // one, and a merged pull request's file, are placed by the repository's files.
+  // A path scope over the whole project: a mapping's path decides.
+  if (!repoConnectorId) {
+    for (const r of requirements) {
+      if (r.codeMappings.some((link) => inPaths(link.filePath))) inScope.add(r.id);
+    }
+    return requirements.filter((r) => inScope.has(r.id));
+  }
+
+  // A repository: each mapping's symbol decides where it is; a mapping whose
+  // symbol is gone is placed by the repository's indexed files.
   const ids = requirements.map((r) => r.id);
   const mappings = (
     await Promise.all(
@@ -156,43 +211,20 @@ export async function requirementsInScope(
       ),
     )
   ).flat();
-  const inScope = new Set<string>();
   const byPath = new Map<string, Set<string>>();
-  const placeByPath = (requirementId: string, filePath: string): void => {
-    if (!inPaths(filePath)) return;
-    const owners = byPath.get(filePath) ?? new Set<string>();
-    owners.add(requirementId);
-    byPath.set(filePath, owners);
-  };
   for (const m of mappings) {
+    if (!inPaths(m.filePath)) continue;
     if (m.codeSymbol) {
       if (
         m.codeSymbol.projectId === projectId &&
-        m.codeSymbol.graph.repoConnectionId === repoConnectorId &&
-        inPaths(m.filePath)
+        m.codeSymbol.graph.repoConnectionId === repoConnectorId
       ) {
         inScope.add(m.requirementId);
       }
     } else {
-      placeByPath(m.requirementId, m.filePath);
-    }
-  }
-  // A merged pull request names its repository in its URL: one of this
-  // repository's is in it whether or not the file has been indexed yet (a file
-  // the pull request added after the last ingest, or one no parser reads).
-  const prRepository = requirements.some((r) => r.implementations.length > 0)
-    ? await prisma.repoConnection.findFirst({
-        where: { id: repoConnectorId, projectId, deletedAt: null },
-        select: { ownerOrOrg: true, repoName: true },
-      })
-    : null;
-  for (const r of requirements) {
-    for (const link of r.implementations) {
-      if (prRepository && inPaths(link.filePath) && prNamesRepository(link.prUrl, prRepository)) {
-        inScope.add(r.id);
-      } else {
-        placeByPath(r.id, link.filePath);
-      }
+      const owners = byPath.get(m.filePath) ?? new Set<string>();
+      owners.add(m.requirementId);
+      byPath.set(m.filePath, owners);
     }
   }
   const paths = [...byPath.keys()];

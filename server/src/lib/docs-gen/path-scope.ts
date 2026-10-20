@@ -100,8 +100,20 @@ export const pathPrefixesSchema = z
 export function readStoredPathScope(filter: Record<string, unknown>): string[] | null {
   if (filter.pathPrefixes === undefined) return null;
   const parsed = pathPrefixesSchema.safeParse(filter.pathPrefixes);
-  if (!parsed.success) throw new Error("Stored path scope is invalid");
+  if (!parsed.success) throw new InvalidStoredPathScopeError();
   return parsed.data;
+}
+
+/**
+ * #1246 — a stored path scope that does not validate. Permanent: the stored
+ * row is wrong, and reading it again gives the same answer, so a caller that
+ * retries transient failures (the auto-update check) must not retry this.
+ */
+export class InvalidStoredPathScopeError extends Error {
+  constructor() {
+    super("Stored path scope is invalid");
+    this.name = "InvalidStoredPathScopeError";
+  }
 }
 
 /** Normalise a stored repository-relative file path for matching. */

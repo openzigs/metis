@@ -1198,10 +1198,10 @@ function GenerateForm({
             className="text-xs text-muted-foreground"
             data-testid="scoped-approved-requirements-note"
           >
-            Approved requirements in this document: when it lists your project&rsquo;s approved
-            requirements, it lists only those METIS has linked to code in this repository or these
-            paths. An approved requirement with no code link is left out; it is still under
-            Requirements, and in a document for the whole project.
+            If this document lists approved requirements, only those linked to code in this
+            repository or these paths are included. An approved requirement with no code link is
+            left out; it is still under <strong>Requirements</strong>, and in a document for the
+            whole project.
           </p>
         )}
 

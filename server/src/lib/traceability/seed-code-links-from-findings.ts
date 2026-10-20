@@ -38,7 +38,7 @@
  */
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
-import { noteRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
+import { noteRequirementCodeLinksChanged } from "../docs-gen/approved-requirements-staleness.js";
 import { createChildLogger } from "../logger.js";
 import { extractRepoRelPath } from "../rag/fused-code-context.js";
 
@@ -352,7 +352,7 @@ export async function seedRequirementCodeLinksFromFindings(
   }
   // #1246 — a new code link can bring an approved requirement into a
   // repository- or path-scoped reader BRD's list: ask the check to look again.
-  if (seededIds.length > 0) void noteRequirementsChanged(seededIds);
+  if (seededIds.length > 0) void noteRequirementCodeLinksChanged(seededIds);
 
   const summary: SeedSummary = { requirementsSeeded, linksCreated, linksSkipped };
   log.info("seeded requirement→code links from analysis grounding", {

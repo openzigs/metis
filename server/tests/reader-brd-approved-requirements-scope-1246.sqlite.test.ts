@@ -34,7 +34,7 @@ vi.mock("../src/lib/docs-gen/brd-layout.js", async (importOriginal) => ({
 
 const { approvedRequirementsFacts, loadApprovedRequirements } =
   await import("../src/lib/docs-gen/approved-requirements-section.js");
-const { approvedRequirementsScopeOf, prNamesRepository } =
+const { approvedRequirementsScopeOf, connectionsNamedByPrUrl, repositoryOfPrUrl } =
   await import("../src/lib/docs-gen/approved-requirements-scope.js");
 const { approvedRequirementsItem } = await import("../src/lib/docs-gen/generation-inputs.js");
 const { approvedRequirementsOutOfDate } =
@@ -138,13 +138,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // Its symbol is in repository b, at a path repository a also has.
       await requirement("shared-in-b", "medium");
       await mapping("shared-in-b", "src/shared/util.ts", "s-util-b");
-      // Only a merged pull request's file links it to code.
+      // Only a merged pull request of repository a links it to code.
       await requirement("pr-only", "medium");
       await db.requirementImplementation.create({
         data: {
           requirementId: "pr-only",
           prNumber: 7,
-          prUrl: "https://example.test/pull/7",
+          prUrl: "https://github.com/acme/billing/pull/7",
           commitSha: "abc",
           filePath: "src/billing/tax.ts",
           mergedAt: new Date("2026-10-01T00:00:00Z"),
@@ -252,20 +252,125 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
-    it("matches a pull request URL to a repository by owner and name only", () => {
-      const repo = { ownerOrOrg: "Acme", repoName: "billing" };
-      expect(prNamesRepository("https://github.com/acme/billing/pull/1", repo)).toBe(true);
-      expect(prNamesRepository("https://ghe.example/acme/billing/pull/1", repo)).toBe(true);
-      expect(prNamesRepository("https://github.com/acme/billing-old/pull/1", repo)).toBe(false);
-      expect(prNamesRepository("https://github.com/other/billing/pull/1", repo)).toBe(false);
-      expect(prNamesRepository("https://example.test/pull/7", repo)).toBe(false);
-      expect(prNamesRepository("not a url", repo)).toBe(false);
+    /** A requirement whose only code link is one merged pull request; deleted again after. */
+    const withPr = async (
+      id: string,
+      prUrl: string,
+      filePath: string,
+      body: () => Promise<void>,
+    ): Promise<void> => {
+      await requirement(id, "high");
+      await db.requirementImplementation.create({
+        data: {
+          requirementId: id,
+          prNumber: 11,
+          prUrl,
+          commitSha: "fed",
+          filePath,
+          mergedAt: new Date("2026-10-03T00:00:00Z"),
+        },
+      });
+      try {
+        await body();
+      } finally {
+        await db.requirement.update({ where: { id }, data: { deletedAt: new Date() } });
+      }
+    };
+
+    it("never places a merged pull request of one repository in another by a path both share (PR #1287 review)", async () => {
+      // `src/shared/util.ts` is indexed in both repositories; the PR is repository b's.
+      await withPr(
+        "pr-in-web",
+        "https://github.com/acme/web/pull/11",
+        "src/shared/util.ts",
+        async () => {
+          expect(await ids({ repoConnectorId: "repo-a" })).not.toContain("pr-in-web");
+          expect(await ids({ repoConnectorId: "repo-b" })).toContain("pr-in-web");
+        },
+      );
+    });
+
+    it("never lets a pull request outside this project's repositories place a requirement (PR #1287 review)", async () => {
+      // Another workspace's repository: the webhook matched it by issue number
+      // alone. Another project connects it, which makes it no repository of this one.
+      await db.repoConnection.create({
+        data: {
+          id: "repo-evil",
+          projectId: OTHER,
+          label: "evil",
+          ownerOrOrg: "evil",
+          repoName: "elsewhere",
+        },
+      });
+      await withPr(
+        "pr-foreign",
+        "https://github.com/evil/elsewhere/pull/5",
+        "src/billing/tax.ts",
+        async () => {
+          expect(await ids({ repoConnectorId: "repo-a" })).not.toContain("pr-foreign");
+          expect(await ids({ pathPrefixes: ["src/billing"] })).not.toContain("pr-foreign");
+        },
+      );
+      // A URL that names no repository at all.
+      await withPr("pr-nameless", "https://example.test/pull/7", "src/billing/tax.ts", async () => {
+        expect(await ids({ repoConnectorId: "repo-a" })).not.toContain("pr-nameless");
+        expect(await ids({ pathPrefixes: ["src/billing"] })).not.toContain("pr-nameless");
+      });
+    });
+
+    it("never counts a deleted repository connection, its graph's files or its pull requests", async () => {
+      await db.repoConnection.create({
+        data: {
+          id: "repo-gone",
+          projectId: PROJECT,
+          label: "gone",
+          ownerOrOrg: "acme",
+          repoName: "gone",
+          deletedAt: new Date(),
+        },
+      });
+      await db.codeGraph.create({
+        data: { id: "graph-gone", projectId: PROJECT, repoConnectionId: "repo-gone" },
+      });
+      await symbol("s-gone", "graph-gone", "lib/gone.ts");
+      await requirement("orphan-gone", "high");
+      await mapping("orphan-gone", "lib/gone.ts", null);
+      try {
+        expect(await ids({ repoConnectorId: "repo-gone" })).toEqual([]);
+        await withPr("pr-gone", "https://github.com/acme/gone/pull/2", "lib/gone.ts", async () => {
+          expect(await ids({ repoConnectorId: "repo-gone" })).toEqual([]);
+          expect(await ids({ pathPrefixes: ["lib"] })).not.toContain("pr-gone");
+        });
+      } finally {
+        await db.requirement.update({
+          where: { id: "orphan-gone" },
+          data: { deletedAt: new Date() },
+        });
+      }
+    });
+
+    it("reads the repository a pull request URL names, by owner and name only", () => {
+      expect(repositoryOfPrUrl("https://github.com/Acme/Billing/pull/1")).toEqual({
+        owner: "acme",
+        name: "billing",
+      });
+      expect(repositoryOfPrUrl("https://example.test/pull/7")).toBeNull();
+      expect(repositoryOfPrUrl("not a url")).toBeNull();
+      const connections = [
+        { id: "a", ownerOrOrg: "Acme", repoName: "billing.git" },
+        { id: "b", ownerOrOrg: "acme", repoName: "billing-old" },
+        { id: "c", ownerOrOrg: null, repoName: "billing" },
+      ];
+      // A `.git` suffix on the connection's name is ignored.
       expect(
-        prNamesRepository("https://github.com/acme/billing/pull/1", {
-          ownerOrOrg: null,
-          repoName: "billing",
-        }),
-      ).toBe(false);
+        connectionsNamedByPrUrl("https://github.com/acme/billing/pull/1", connections),
+      ).toEqual(["a"]);
+      expect(
+        connectionsNamedByPrUrl("https://ghe.example/acme/billing/pull/1", connections),
+      ).toEqual(["a"]);
+      expect(
+        connectionsNamedByPrUrl("https://github.com/other/billing/pull/1", connections),
+      ).toEqual([]);
     });
 
     it("lists only the requirements linked under a path scope, matched segment by segment", async () => {

@@ -26,6 +26,12 @@ const log = createChildLogger("docs-gen-approved-requirements-staleness");
 interface ProjectCheck {
   /** Another change arrived while this check ran: check once more after it. */
   again: boolean;
+  /**
+   * #1246 — the next check may be limited to repository- or path-scoped
+   * documents: every change waiting for it was a code-link write. One
+   * requirement change among them widens it to every reader BRD.
+   */
+  nextScopedOnly: boolean;
   done: Promise<void>;
 }
 
@@ -35,13 +41,14 @@ const running = new Map<string, ProjectCheck>();
 // the routes and services calling this should not load at startup.
 let incremental: Promise<typeof import("./incremental.js")> | undefined;
 
-function checkProject(projectId: string): Promise<void> {
+function checkProject(projectId: string, scopedOnly = false): Promise<void> {
   const current = running.get(projectId);
   if (current) {
+    current.nextScopedOnly = current.again ? current.nextScopedOnly && scopedOnly : scopedOnly;
     current.again = true;
     return current.done;
   }
-  const check: ProjectCheck = { again: false, done: Promise.resolve() };
+  const check: ProjectCheck = { again: false, nextScopedOnly: scopedOnly, done: Promise.resolve() };
   check.done = (async () => {
     try {
       // A failed import is not cached: the next change tries again.
@@ -51,9 +58,12 @@ function checkProject(projectId: string): Promise<void> {
       });
       const { checkIncrementalRegeneration } = await incremental;
       do {
+        const scoped = check.nextScopedOnly;
         check.again = false;
+        check.nextScopedOnly = true;
         await checkIncrementalRegeneration(projectId, undefined, {
           approvedRequirementsOnly: true,
+          ...(scoped ? { scopedApprovedRequirementsOnly: true } : {}),
         });
       } while (check.again);
     } catch (err) {
@@ -94,6 +104,23 @@ export async function noteProjectRequirementsChanged(projectId: string): Promise
  * may leave it unawaited (`void noteRequirementsChanged(...)`).
  */
 export async function noteRequirementsChanged(requirementIds: readonly string[]): Promise<void> {
+  await noteChanged(requirementIds, false);
+}
+
+/**
+ * #1246 — call after a committed write that added code links (a mapping, or a
+ * merged pull request's files) to `requirementIds`. A code link changes only
+ * which approved requirements a repository- or path-scoped reader BRD lists,
+ * never what an unscoped one hashes, so only the scoped documents are checked.
+ * Resolves when the check is done; never rejects.
+ */
+export async function noteRequirementCodeLinksChanged(
+  requirementIds: readonly string[],
+): Promise<void> {
+  await noteChanged(requirementIds, true);
+}
+
+async function noteChanged(requirementIds: readonly string[], scopedOnly: boolean): Promise<void> {
   try {
     if (requirementIds.length === 0) return;
     // Under the catalogue layout no BRD lists approved requirements.
@@ -102,7 +129,11 @@ export async function noteRequirementsChanged(requirementIds: readonly string[])
       where: { id: { in: [...new Set(requirementIds)] } },
       select: { projectId: true },
     });
-    await Promise.all([...new Set(rows.map((r) => r.projectId))].map(checkProject));
+    await Promise.all(
+      [...new Set(rows.map((r) => r.projectId))].map((projectId) =>
+        checkProject(projectId, scopedOnly),
+      ),
+    );
   } catch (err) {
     log.warn("Could not check reader BRDs after a requirement change", {
       error: (err as Error).message,

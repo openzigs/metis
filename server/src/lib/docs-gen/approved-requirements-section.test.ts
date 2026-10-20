@@ -335,7 +335,7 @@ describe("renderApprovedRequirementsSection", () => {
       scoped: true,
     }).markdown;
     expect(scoped).toContain(
-      "that METIS has linked to code in this document's repository or paths",
+      "approved requirement linked to code in this document's repository or paths.",
     );
     expect(scoped).toContain("**Only requirements linked to this part of the code are listed.**");
     expect(scoped).toContain(

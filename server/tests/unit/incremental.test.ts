@@ -217,6 +217,39 @@ describe("a requirement change checks only the documents that list approved requ
     expect(state.snapshot.mock.calls.map(([doc]) => doc.id)).toEqual(["arch", "brd"]);
   });
 
+  it("captures only repository- or path-scoped reader BRDs after a code-link write (#1246)", async () => {
+    makeQueue(0);
+    const repositoryBrd = { ...document, id: "repo-brd" };
+    const pathBrd = { ...brd, id: "path-brd", scopeFilter: '{"pathPrefixes":["src/billing"]}' };
+    state.findDocs.mockResolvedValue([architecture, brd, repositoryBrd, pathBrd]);
+    await checkIncrementalRegeneration("p", undefined, {
+      approvedRequirementsOnly: true,
+      scopedApprovedRequirementsOnly: true,
+    });
+    expect(state.snapshot.mock.calls.map(([doc]) => doc.id)).toEqual(["repo-brd", "path-brd"]);
+  });
+
+  it("skips a corrupt stored path scope as permanent, never rescheduling it (PR #1287 review)", async () => {
+    makeQueue(0);
+    const corrupt = { ...brd, id: "corrupt", scopeFilter: '{"pathPrefixes":["../etc"]}' };
+    state.findDocs.mockResolvedValue([corrupt, brd]);
+    // Resolves: a permanent skip is not a failure the ingest would retry.
+    await expect(checkIncrementalRegeneration("p")).resolves.toBeUndefined();
+    expect(state.snapshot.mock.calls.map(([doc]) => doc.id)).toEqual(["brd"]);
+    expect(state.warn).toHaveBeenCalledWith(
+      "Skipping automatic regeneration: invalid stored scope",
+    );
+    // Also reached, and skipped, by a code-link check: a corrupt scope counts as scoped.
+    state.snapshot.mockClear();
+    await expect(
+      checkIncrementalRegeneration("p", undefined, {
+        approvedRequirementsOnly: true,
+        scopedApprovedRequirementsOnly: true,
+      }),
+    ).resolves.toBeUndefined();
+    expect(state.snapshot).not.toHaveBeenCalled();
+  });
+
   it("captures nothing under the catalogue layout", async () => {
     makeQueue(0);
     state.layout.mockReturnValue({ layout: "catalogue" });

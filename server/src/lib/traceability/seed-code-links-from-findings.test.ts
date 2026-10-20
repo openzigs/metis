@@ -11,8 +11,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const noteRequirementsChanged = vi.hoisted(() => vi.fn());
-vi.mock("../docs-gen/approved-requirements-staleness.js", () => ({ noteRequirementsChanged }));
+const noteRequirementCodeLinksChanged = vi.hoisted(() => vi.fn());
+vi.mock("../docs-gen/approved-requirements-staleness.js", () => ({
+  noteRequirementCodeLinksChanged,
+}));
 
 import {
   ANALYSIS_GROUNDING_SOURCE,
@@ -527,7 +529,7 @@ describe("seedRequirementCodeLinksFromFindings — only code is a code link (#76
 
 describe("seedRequirementCodeLinksFromFindings", () => {
   const projectId = "proj-1";
-  beforeEach(() => noteRequirementsChanged.mockReset());
+  beforeEach(() => noteRequirementCodeLinksChanged.mockReset());
 
   it("creates a RequirementCodeMapping from a finding whose citation has a filename", async () => {
     const { prisma, created } = makeFakePrisma({
@@ -621,7 +623,7 @@ describe("seedRequirementCodeLinksFromFindings", () => {
     expect(created).toHaveLength(0);
     expect(summary).toEqual({ requirementsSeeded: 0, linksCreated: 0, linksSkipped: 0 });
     // #1246 — no new code link: nothing to check.
-    expect(noteRequirementsChanged).not.toHaveBeenCalled();
+    expect(noteRequirementCodeLinksChanged).not.toHaveBeenCalled();
   });
 
   it("creates nothing for a requirement with no evidence findings", async () => {
@@ -682,8 +684,8 @@ describe("seedRequirementCodeLinksFromFindings", () => {
     expect(summary).toEqual({ requirementsSeeded: 1, linksCreated: 1, linksSkipped: 1 });
     // #1246 — a new code link can move a scoped reader BRD's approved list:
     // once, for the requirements that got one.
-    expect(noteRequirementsChanged).toHaveBeenCalledTimes(1);
-    expect(noteRequirementsChanged).toHaveBeenCalledWith(["req-1"]);
+    expect(noteRequirementCodeLinksChanged).toHaveBeenCalledTimes(1);
+    expect(noteRequirementCodeLinksChanged).toHaveBeenCalledWith(["req-1"]);
   });
 
   it("does not collide with a pre-existing symbol-bound row for the same path", async () => {
