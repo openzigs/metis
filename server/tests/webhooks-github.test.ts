@@ -97,7 +97,11 @@ describe("POST /api/webhooks/github/pr", () => {
 
   it("triggers living-spec sync on closed+merged", async () => {
     findMany.mockResolvedValueOnce([
-      { issueNumber: 5, draft: { requirementId: "req1", projectId: "proj1" } },
+      {
+        issueNumber: 5,
+        draft: { requirementId: "req1", projectId: "proj1" },
+        batch: { targetOwner: "acme", targetRepo: "proj" },
+      },
     ]);
     const app = makeApp();
     const body = JSON.stringify({

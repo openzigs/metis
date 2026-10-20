@@ -42,17 +42,24 @@ function mkPrisma(overrides: Partial<PrismaStub> = {}): PrismaStub {
 }
 
 const repo = { full_name: "acme/proj", html_url: "https://github.com/acme/proj" };
+/** #1289 — the publish batch target of an issue published to acme/proj, the PRs' repository. */
+const ACME = { targetOwner: "acme", targetRepo: "proj" };
+const DIFF = `--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n+x\n`;
 
 describe("syncMergedPR", () => {
   it("checks only the projects that connect the PR's repository, for requirements that gained a row (#1246)", async () => {
     const prisma = mkPrisma({
       publishedIssue: {
-        // Matched by issue number alone: #5 is also an issue of another
-        // workspace's project, whose repository is not this PR's.
+        // #5 of acme/proj is also published by another project, one that
+        // does not connect acme/proj.
         findMany: vi.fn(async () => [
-          { issueNumber: 5, draft: { requirementId: "req-mine", projectId: "proj1" } },
-          { issueNumber: 5, draft: { requirementId: "req-theirs", projectId: "proj-other" } },
-          { issueNumber: 6, draft: { requirementId: "req-done", projectId: "proj1" } },
+          { issueNumber: 5, draft: { requirementId: "req-mine", projectId: "proj1" }, batch: ACME },
+          {
+            issueNumber: 5,
+            draft: { requirementId: "req-theirs", projectId: "proj-other" },
+            batch: ACME,
+          },
+          { issueNumber: 6, draft: { requirementId: "req-done", projectId: "proj1" }, batch: ACME },
         ]),
       },
       requirementImplementation: {
@@ -97,7 +104,7 @@ describe("syncMergedPR", () => {
     const prisma = mkPrisma({
       publishedIssue: {
         findMany: vi.fn(async () => [
-          { issueNumber: 5, draft: { requirementId: "req-mine", projectId: "proj1" } },
+          { issueNumber: 5, draft: { requirementId: "req-mine", projectId: "proj1" }, batch: ACME },
         ]),
       },
       repoConnection: { findMany: vi.fn(async () => Promise.reject(new Error("db down"))) },
@@ -125,7 +132,11 @@ describe("syncMergedPR", () => {
     const prisma = mkPrisma({
       publishedIssue: {
         findMany: vi.fn(async () => [
-          { issueNumber: 5, draft: { requirementId: "req-theirs", projectId: "proj-other" } },
+          {
+            issueNumber: 5,
+            draft: { requirementId: "req-theirs", projectId: "proj-other" },
+            batch: ACME,
+          },
         ]),
       },
       repoConnection: { findMany: vi.fn(async () => []) },
@@ -195,21 +206,131 @@ describe("syncMergedPR", () => {
     );
     expect(out.requirementsUpdated).toBe(0);
     expect(prisma.publishedIssue.findMany).toHaveBeenCalledWith({
-      where: { issueNumber: { in: [5] } },
-      include: { draft: true },
+      where: { issueNumber: { in: [5] }, destination: "github" },
+      include: { draft: true, batch: { select: { targetOwner: true, targetRepo: true } } },
     });
+  });
+
+  it("links only issues published to the PR's repository, owner and name case-insensitive (#1289)", async () => {
+    const prisma = mkPrisma({
+      publishedIssue: {
+        findMany: vi.fn(async () => [
+          {
+            issueNumber: 5,
+            draft: { requirementId: "req-mine", projectId: "proj1" },
+            batch: { targetOwner: "ACME", targetRepo: "Proj.git" },
+          },
+          {
+            issueNumber: 5,
+            draft: { requirementId: "req-other-repo", projectId: "proj2" },
+            batch: { targetOwner: "acme", targetRepo: "proj-fork" },
+          },
+          {
+            issueNumber: 5,
+            draft: { requirementId: "req-other-owner", projectId: "proj3" },
+            batch: { targetOwner: "evil", targetRepo: "proj" },
+          },
+        ]),
+      },
+    });
+    const out = await syncMergedPR(
+      {
+        pr: {
+          number: 42,
+          merged: true,
+          body: "Closes #5",
+          merge_commit_sha: "abc",
+          html_url: "https://github.com/Acme/PROJ/pull/42",
+        },
+        repo,
+        diff: DIFF,
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { prisma: prisma as any },
+    );
+    expect(out.requirementsUpdated).toBe(1);
+    expect(prisma.requirement.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: { in: ["req-mine"] }, implementedAt: null } }),
+    );
+    expect(prisma.requirementImplementation.create).toHaveBeenCalledTimes(1);
+    expect(prisma.requirementImplementation.create.mock.calls[0][0].data.requirementId).toBe(
+      "req-mine",
+    );
+  });
+
+  it("links nothing, and reads no published issue, when the PR's repository is unknown (#1289)", async () => {
+    const prisma = mkPrisma({
+      publishedIssue: {
+        findMany: vi.fn(async () => [
+          { issueNumber: 5, draft: { requirementId: "req1", projectId: "proj1" }, batch: ACME },
+        ]),
+      },
+    });
+    const out = await syncMergedPR(
+      // No PR URL and no repository URL: nothing names the repository.
+      { pr: { number: 1, merged: true, body: "Closes #5" }, repo: {}, diff: DIFF },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { prisma: prisma as any },
+    );
+    expect(out).toEqual({ requirementsUpdated: 0, implementationsCreated: 0, driftedFiles: [] });
+    expect(prisma.publishedIssue.findMany).not.toHaveBeenCalled();
+    expect(prisma.requirement.updateMany).not.toHaveBeenCalled();
+  });
+
+  it.each([["acme"], ["acme/proj/extra"], ["acme/ "], [""]])(
+    "links nothing when the payload's full_name %j names no repository (#1289)",
+    async (fullName) => {
+      const prisma = mkPrisma({
+        publishedIssue: {
+          findMany: vi.fn(async () => [
+            { issueNumber: 5, draft: { requirementId: "req1", projectId: "proj1" }, batch: ACME },
+          ]),
+        },
+      });
+      const out = await syncMergedPR(
+        { pr: { number: 1, merged: true, body: "Closes #5" }, repo: { full_name: fullName } },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { prisma: prisma as any },
+      );
+      expect(out.requirementsUpdated).toBe(0);
+      expect(prisma.publishedIssue.findMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reads the repository from full_name when the payload carries no URL (#1289)", async () => {
+    const prisma = mkPrisma({
+      publishedIssue: {
+        findMany: vi.fn(async () => [
+          { issueNumber: 5, draft: { requirementId: "req1", projectId: "proj1" }, batch: ACME },
+          {
+            issueNumber: 5,
+            draft: { requirementId: "req-elsewhere", projectId: "proj2" },
+            batch: { targetOwner: "else", targetRepo: "where" },
+          },
+        ]),
+      },
+    });
+    const out = await syncMergedPR(
+      { pr: { number: 1, merged: true, body: "Closes #5" }, repo: { full_name: "Acme/Proj" } },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { prisma: prisma as any },
+    );
+    expect(out.requirementsUpdated).toBe(1);
+    expect(prisma.requirement.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: { in: ["req1"] }, implementedAt: null } }),
+    );
   });
 
   it("updates linked requirements and creates implementation rows from the diff", async () => {
     const prisma = mkPrisma({
       publishedIssue: {
         findMany: vi.fn(async () => [
-          { issueNumber: 5, draft: { requirementId: "req1", projectId: "proj1" } },
-          { issueNumber: 7, draft: { requirementId: "req2", projectId: "proj1" } },
+          { issueNumber: 5, draft: { requirementId: "req1", projectId: "proj1" }, batch: ACME },
+          { issueNumber: 7, draft: { requirementId: "req2", projectId: "proj1" }, batch: ACME },
           // duplicate requirement id should be deduped
-          { issueNumber: 7, draft: { requirementId: "req2", projectId: "proj1" } },
+          { issueNumber: 7, draft: { requirementId: "req2", projectId: "proj1" }, batch: ACME },
           // null requirementId should be skipped
-          { issueNumber: 9, draft: { requirementId: null, projectId: "proj1" } },
+          { issueNumber: 9, draft: { requirementId: null, projectId: "proj1" }, batch: ACME },
         ]),
       },
     });
@@ -259,7 +380,7 @@ describe("syncMergedPR", () => {
     const prisma = mkPrisma({
       publishedIssue: {
         findMany: vi.fn(async () => [
-          { issueNumber: 5, draft: { requirementId: "req1", projectId: "proj1" } },
+          { issueNumber: 5, draft: { requirementId: "req1", projectId: "proj1" }, batch: ACME },
         ]),
       },
       requirementImplementation: {
@@ -291,7 +412,7 @@ describe("syncMergedPR", () => {
     const prisma = mkPrisma({
       publishedIssue: {
         findMany: vi.fn(async () => [
-          { issueNumber: 5, draft: { requirementId: "req1", projectId: "proj1" } },
+          { issueNumber: 5, draft: { requirementId: "req1", projectId: "proj1" }, batch: ACME },
         ]),
       },
     });

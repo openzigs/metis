@@ -26,10 +26,12 @@
  * when its URL names that repository. Never by its file path alone:
  *   - two repositories of a project often share a path (`src/index.ts`), and a
  *     pull request of one must not place a requirement in the other's BRD;
- *   - `RequirementImplementation` rows carry no project, and the webhook that
- *     writes them matches a pull request to a requirement by issue number
- *     alone, so a row can come from another project's repository entirely.
- *     Such a row never decides this project's list.
+ *   - `RequirementImplementation` rows carry no project. Since #1289 the
+ *     webhook that writes them links a pull request only to requirements
+ *     published to its own repository, but a project can publish to a
+ *     repository it does not connect, and rows written before #1289 may come
+ *     from another project's repository entirely. Such a row never decides
+ *     this project's list.
  *
  * A link is in a PATH scope when its repository-relative file path is under
  * one of the prefixes, matched segment by segment (`isInPathScope`). A
@@ -138,10 +140,23 @@ export function connectionsNamedByPrUrl(
 ): string[] {
   const named = repositoryOfPrUrl(prUrl);
   if (!named) return [];
-  const key = `${named.owner}/${named.name}`;
   return connections
-    .filter((c) => c.ownerOrOrg && c.repoName && repositoryKey(c.ownerOrOrg, c.repoName) === key)
+    .filter((c) => namesRepository(named, c.ownerOrOrg, c.repoName))
     .map((c) => c.id);
+}
+
+/**
+ * Whether `owner` and `name` name `repository`: compared case-insensitively,
+ * as the hosts treat them, a `.git` suffix ignored. A missing or blank owner
+ * or name never names a repository.
+ */
+export function namesRepository(
+  repository: NamedRepository,
+  owner: string | null | undefined,
+  name: string | null | undefined,
+): boolean {
+  if (!owner || !name) return false;
+  return repositoryKey(owner, name) === `${repository.owner}/${repository.name}`;
 }
 
 /** Rows per `IN (...)` list, well under every supported database's bound-parameter limit. */
