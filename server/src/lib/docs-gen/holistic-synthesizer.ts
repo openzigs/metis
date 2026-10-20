@@ -434,8 +434,13 @@ export interface HolisticProvenanceContext {
  * Returns `undefined` when the provider does not support caching at all
  * (e.g. local Gemma), matching the previous `... : undefined` call shape.
  */
-export function singleShotPromptCaching(supportsCaching: boolean): { system: true } | undefined {
-  return supportsCaching ? { system: true } : undefined;
+export function singleShotPromptCaching(
+  supportsCaching: boolean,
+): { system: true; messages: false } | undefined {
+  // #1277 — `messages: false` is spelled out: bedrock-access-gateway reads an
+  // ABSENT key as its ENABLE_PROMPT_CACHING default and would write the unique
+  // user turn anyway.
+  return supportsCaching ? { system: true, messages: false } : undefined;
 }
 
 /**

@@ -400,7 +400,8 @@ export class FaithfulnessJudge {
             ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
             // #390 — tag prompt-cache hit-ratio telemetry by workload.
             callType: "grounding",
-            ...(this.promptCaching ? { promptCaching: { system: true } } : {}),
+            // #1277 — `messages: false`, not an absent key (the gateway default).
+            ...(this.promptCaching ? { promptCaching: { system: true, messages: false } } : {}),
             // #336 — structured verdict list on the local/vLLM path when enabled.
             ...(format ? { responseFormat: format } : {}),
             // #247 — structured, extractive: no reasoning spend on the output cap.

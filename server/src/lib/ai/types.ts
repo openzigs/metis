@@ -357,8 +357,10 @@ export interface ChatOptions {
    *     that share the prefix but differ after it then read each other's cache
    *     write. Ignored unless it is a strict, non-empty prefix of the system.
    *     #1277 — the Bedrock gateway can only cache the WHOLE system, so a
-   *     strict prefix there turns the `system` cache write OFF: a whole-system
-   *     write would hold the per-call tail and never be read back.
+   *     strict prefix there sends `system: false`: a whole-system write would
+   *     hold the per-call tail and never be read back. The gateway reads an
+   *     ABSENT key as its ENABLE_PROMPT_CACHING default, so an explicit `false`
+   *     from any caller is forwarded as `false`.
    */
   promptCaching?: { system?: boolean; messages?: boolean; systemPrefix?: string };
   /**

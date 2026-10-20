@@ -1379,13 +1379,15 @@ describe("prompt caching with a shared systemPrefix on the gateway (#1277)", () 
     });
   const USER = [{ role: "user" as const, content: "hi" }];
 
-  it("asks for no system cache write when the system goes on past the shared prefix", async () => {
+  // An ABSENT key falls back to the gateway's ENABLE_PROMPT_CACHING, which
+  // docs/OPERATIONS.md tells operators to set: "no write" must be `false`.
+  it("sends system:false when the system goes on past the shared prefix", async () => {
     const bodies = capture();
     await gateway().chat(USER, {
       systemMessage: "constitution + RAG\n\n---\n\nplan.md base prompt",
       promptCaching: { system: true, systemPrefix: "constitution + RAG" },
     });
-    expect(bodies[0]).not.toHaveProperty("extra_body");
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: false } });
   });
 
   it("keeps a messages cache write when one is asked for alongside", async () => {
@@ -1394,7 +1396,22 @@ describe("prompt caching with a shared systemPrefix on the gateway (#1277)", () 
       systemMessage: "shared\n\ntail",
       promptCaching: { system: true, messages: true, systemPrefix: "shared" },
     });
-    expect(bodies[0].extra_body).toEqual({ prompt_caching: { messages: true } });
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: false, messages: true } });
+  });
+
+  it("forwards a caller's explicit messages:false instead of dropping it", async () => {
+    const bodies = capture();
+    await gateway().chat(USER, {
+      systemMessage: "a system prompt",
+      promptCaching: { system: true, messages: false },
+    });
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: true, messages: false } });
+  });
+
+  it("sends no prompt_caching at all when the caller asks nothing", async () => {
+    const bodies = capture();
+    await gateway().chat(USER, { systemMessage: "a system prompt" });
+    expect(bodies[0]).not.toHaveProperty("extra_body");
   });
 
   it("caches the system when the shared prefix IS the whole system", async () => {

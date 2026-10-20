@@ -58,9 +58,9 @@ function lastChatOptions(provider: AIProvider): ChatOptions | undefined {
 describe("singleShotPromptCaching (#389)", () => {
   it("requests system caching ONLY — no message-level cache write — when supported", () => {
     const directive = singleShotPromptCaching(true);
-    expect(directive).toEqual({ system: true });
-    // The whole point of #389: a single-shot call must NOT emit `messages`.
-    expect(directive).not.toHaveProperty("messages");
+    // #1277 — `messages: false` explicitly: the Bedrock gateway reads an absent
+    // key as its ENABLE_PROMPT_CACHING default, which would write the turn.
+    expect(directive).toEqual({ system: true, messages: false });
     // System caching is preserved everywhere it exists today.
     expect(directive?.system).toBe(true);
   });
@@ -76,7 +76,7 @@ describe("singleShotPromptCaching (#389)", () => {
       // Widened on purpose: the runtime check guards a field the type already excludes.
       const directive: { system?: true; messages?: unknown } | undefined =
         singleShotPromptCaching(supported);
-      expect(directive?.messages).toBeUndefined();
+      expect(directive?.messages).not.toBe(true);
     }
   });
 });
@@ -101,7 +101,7 @@ describe("grounding pipeline caches the system prompt only (#1277)", () => {
 
     await extractor.decompose("Invoices over 1000 require approval.", ctx);
 
-    expect(lastChatOptions(provider)?.promptCaching).toEqual({ system: true });
+    expect(lastChatOptions(provider)?.promptCaching).toEqual({ system: true, messages: false });
   });
 
   it("FaithfulnessJudge never asks for a message-level cache write", async () => {
@@ -112,6 +112,6 @@ describe("grounding pipeline caches the system prompt only (#1277)", () => {
 
     await judge.judge(["Invoices over 1000 require approval."], ctx);
 
-    expect(lastChatOptions(provider)?.promptCaching).toEqual({ system: true });
+    expect(lastChatOptions(provider)?.promptCaching).toEqual({ system: true, messages: false });
   });
 });

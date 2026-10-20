@@ -146,7 +146,7 @@ describe("ClaimExtractor.decompose", () => {
     const extractor = new ClaimExtractor({ provider, promptCaching: true });
     await extractor.decompose("Some claim.", ctx);
     const [, options] = (provider.chat as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(options.promptCaching).toEqual({ system: true });
+    expect(options.promptCaching).toEqual({ system: true, messages: false });
   });
 
   it('tags the telemetry callType as "claim-extraction" (#701)', async () => {

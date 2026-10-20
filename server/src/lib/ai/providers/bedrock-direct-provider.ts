@@ -2318,18 +2318,24 @@ export class OpenAICompatibleProvider implements AIProvider {
       // Required for accurate usage accounting when streaming.
       body.stream_options = { include_usage: true };
     }
-    const cacheSystem =
-      opts.promptCaching?.system === true &&
-      !systemGoesPastSharedPrefix(messages, opts.systemMessage, opts.promptCaching.systemPrefix);
-    const cacheMessages = opts.promptCaching?.messages === true;
-    if (cacheSystem || cacheMessages) {
-      body.extra_body = {
-        prompt_caching: {
-          ...(cacheSystem ? { system: true } : {}),
-          ...(cacheMessages ? { messages: true } : {}),
-        },
-      };
-    }
+    // #1277 — an ABSENT key is not "off" on bedrock-access-gateway: it falls
+    // back to the container's ENABLE_PROMPT_CACHING (bedrock.py: `cache_enabled
+    // = ENABLE_PROMPT_CACHING`, overridden only `if "system" in prompt_caching`),
+    // which docs/OPERATIONS.md §7.5 tells operators to set. So a caller's
+    // explicit `false` is forwarded as `false`, and a system prompt that goes on
+    // past its shared prefix sends `system: false` — omitting it would still
+    // write the whole system on every call. An unset key stays unset, so a
+    // caller that says nothing keeps the gateway's default exactly as before.
+    const pc = opts.promptCaching;
+    const system =
+      pc?.system === true
+        ? !systemGoesPastSharedPrefix(messages, opts.systemMessage, pc.systemPrefix)
+        : pc?.system;
+    const caching = {
+      ...(system !== undefined ? { system } : {}),
+      ...(pc?.messages !== undefined ? { messages: pc.messages } : {}),
+    };
+    if (Object.keys(caching).length > 0) body.extra_body = { prompt_caching: caching };
     return body;
   }
 

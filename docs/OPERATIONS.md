@@ -1562,10 +1562,17 @@ What #1277 changed, from that report on the dev ledger:
 - **docs-gen grounding** (claim extraction and the faithfulness judge) caches
   its system prompt only. A `messages` breakpoint cached each call's whole user
   turn, which never repeats.
-- **Spec Kit `/speckit.plan` on the Bedrock gateway** requests no system cache
-  write. The gateway places one cachePoint after the WHOLE system prompt, so it
-  cannot end the cached prefix at `systemPrefix` the way native Anthropic does
-  (#1144); each of the five calls would write its own entry.
+- **Spec Kit `/speckit.plan` on the Bedrock gateway** sends
+  `prompt_caching: { system: false }`. The gateway places one cachePoint after
+  the WHOLE system prompt, so it cannot end the cached prefix at `systemPrefix`
+  the way native Anthropic does (#1144); each of the five calls would write its
+  own entry.
+- **"No write" is an explicit `false` on the gateway.** bedrock-access-gateway
+  reads an ABSENT `system` / `messages` key as its `ENABLE_PROMPT_CACHING`
+  default (set to `true` above), so the gateway client forwards a caller's
+  `false` instead of dropping it, and the single-shot docs-gen calls and the
+  grounding calls send `messages: false`. A caller that sets no key keeps the
+  gateway default exactly as before.
 - **docs-gen batched sections** keep the #208 warm-up (the first batch runs
   alone until its reply begins) only for an explicit Claude cache, on native
   Anthropic or the gateway, whose section system prompt clears the model's
