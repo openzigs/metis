@@ -218,6 +218,39 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(other.body).not.toContain(NOTE);
     });
 
+    it("re-titles a never-published epic as its scope grows, but not down past an unselected sibling", async () => {
+      const analysisId = await seed("p3");
+      const epicTitles = async () =>
+        (await live("p3")).filter((d) => d.draftType === "epic").map((d) => d.title);
+      await generateDrafts({ projectId: "p3", analysisId, ...target, requirementIds: ["r1_p3"] });
+      expect(await epicTitles()).toEqual([
+        "[Epic] Miniflux — 1 requirement (analysis of 2026-09-29 14:05:00 UTC)",
+      ]);
+      await generateDrafts({ projectId: "p3", analysisId, ...target });
+      const FOUR = "[Epic] Miniflux — 4 requirements (analysis of 2026-09-29 14:05:00 UTC)";
+      expect(await epicTitles()).toEqual([FOUR]);
+      // Shrinking again would leave three sub-issues naming the old title: kept.
+      await generateDrafts({ projectId: "p3", analysisId, ...target, requirementIds: ["r1_p3"] });
+      expect(await epicTitles()).toEqual([FOUR]);
+      for (const d of (await live("p3")).filter((x) => x.draftType !== "epic")) {
+        expect(d.body.split("\n")[0]).toBe(`> Parent epic: **${FOUR}**`);
+      }
+      // A live batch holding the epic blocks a re-title too.
+      const epic = (await live("p3")).find((d) => d.draftType === "epic")!;
+      await db.publishBatch.create({
+        data: {
+          projectId: "p3",
+          ...target,
+          status: "running",
+          startedById: "u1",
+          metadata: JSON.stringify({ draftIds: [epic.id] }),
+        },
+      });
+      await db.requirement.update({ where: { id: "r4_p3" }, data: { reviewStatus: "rejected" } });
+      await generateDrafts({ projectId: "p3", analysisId, ...target });
+      expect(await epicTitles()).toEqual([FOUR]);
+    });
+
     it("leaves the body of a sub-issue whose epic is in the same batch as generated", async () => {
       const analysisId = await seed("p2");
       await generateDrafts({ projectId: "p2", analysisId, ...target });

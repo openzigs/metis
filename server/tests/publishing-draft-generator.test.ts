@@ -35,8 +35,36 @@ const codeMappings: Array<{
   codeSymbol: { name: string; kind: string } | null;
 }> = [];
 const repoConnections: Array<Record<string, string | null>> = [];
-/** #1276 — `published_issues` rows per draft id: a draft with any has been published. */
-const publishedIssueCount = new Map<string, number>();
+/** #1276 — `published_issues` rows, as the re-title guard counts them. */
+const publishedIssueRows: Array<{ draftId: string; status: string; issueNumber: number }> = [];
+/** #1276 — `publish_batches` rows, as the re-title guard reads them. */
+const publishBatches: Array<{
+  projectId: string;
+  status: string;
+  archived: boolean;
+  dryRun: boolean;
+  metadata: string | null;
+}> = [];
+
+type CountWhere = {
+  draftId?: string;
+  status?: string | { in: string[] };
+  issueNumber?: { gt: number };
+  OR?: CountWhere[];
+};
+
+/** Evaluates the `where` shapes the generator sends: equality, `in`, `gt`, and `OR`. */
+function matchesPublishedIssue(
+  row: { draftId: string; status: string; issueNumber: number },
+  where: CountWhere,
+): boolean {
+  if (where.draftId !== undefined && row.draftId !== where.draftId) return false;
+  if (typeof where.status === "string" && row.status !== where.status) return false;
+  if (typeof where.status === "object" && !where.status.in.includes(row.status)) return false;
+  if (where.issueNumber && !(row.issueNumber > where.issueNumber.gt)) return false;
+  if (where.OR && !where.OR.some((w) => matchesPublishedIssue(row, w))) return false;
+  return true;
+}
 
 const fakeProject = { id: "proj_1", name: "Apollo", deletedAt: null as Date | null };
 const fakeAnalysis = {
@@ -105,8 +133,29 @@ vi.mock("../src/lib/prisma.js", () => ({
     repoConnection: { findMany: vi.fn(async () => repoConnections) },
     publishedIssue: {
       count: vi.fn(
-        async ({ where }: { where: { draftId: string } }) =>
-          publishedIssueCount.get(where.draftId) ?? 0,
+        async ({ where }: { where: CountWhere }) =>
+          publishedIssueRows.filter((r) => matchesPublishedIssue(r, where)).length,
+      ),
+    },
+    publishBatch: {
+      findMany: vi.fn(
+        async ({
+          where,
+        }: {
+          where: {
+            projectId: string;
+            archived: boolean;
+            dryRun: boolean;
+            status: { in: string[] };
+          };
+        }) =>
+          publishBatches.filter(
+            (b) =>
+              b.projectId === where.projectId &&
+              b.archived === where.archived &&
+              b.dryRun === where.dryRun &&
+              where.status.in.includes(b.status),
+          ),
       ),
     },
     approvalRequest: {
@@ -123,6 +172,26 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     issueDraft: {
+      // #1276 — an epic's live children outside the generation (the re-title guard).
+      count: vi.fn(
+        async ({
+          where,
+        }: {
+          where: {
+            parentDraftId: string;
+            OR: [{ requirementId: string | null }, { requirementId: { notIn: string[] } }];
+          };
+        }) =>
+          [...drafts.values()].filter(
+            (d) =>
+              !d.deletedAt &&
+              d.parentDraftId === where.parentDraftId &&
+              // As SQL reads it: `= NULL`-style equality, and `NOT IN` never matches NULL.
+              (d.requirementId === where.OR[0].requirementId ||
+                (d.requirementId !== null &&
+                  !where.OR[1].requirementId.notIn.includes(d.requirementId))),
+          ).length,
+      ),
       // #1276 — the epic drafts of a project, to find this analysis's recorded epic title.
       findMany: vi.fn(async ({ where }: { where: { projectId?: string; draftType?: string } }) =>
         [...drafts.values()].filter(
@@ -212,7 +281,8 @@ import {
 
 beforeEach(() => {
   drafts.clear();
-  publishedIssueCount.clear();
+  publishedIssueRows.length = 0;
+  publishBatches.length = 0;
   codeMappings.length = 0;
   repoConnections.length = 0;
   nextId = 0;
@@ -1650,10 +1720,105 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
           expect(feature("req_1").body).toContain(`> Parent epic: **${NEW_TITLE}**`);
         });
 
-        it("keeps its title once published, even if the draft is back in draft status", async () => {
+        it.each([
+          ["created", 7, SUBSET_TITLE],
+          ["updated", 7, SUBSET_TITLE],
+          // A run that created the issue and then failed recorded its number (#1091).
+          ["failed", 7, SUBSET_TITLE],
+          // Rows that never named an issue: the epic was never published.
+          ["failed", 0, NEW_TITLE],
+          ["pending", 0, NEW_TITLE],
+        ])(
+          "with a %s PublishedIssue row for issue %i (draft back in draft status) → %s",
+          async (status, issueNumber, expected) => {
+            await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+            const [first] = epics();
+            publishedIssueRows.push({ draftId: first!.id, status, issueNumber });
+            await generateDrafts(opts);
+            expect(epics()).toHaveLength(1);
+            expect(epics()[0]).toMatchObject({ id: first!.id, title: expected });
+          },
+        );
+
+        it("is not re-titled when shrinking would leave a sibling naming the old title", async () => {
+          await generateDrafts(opts);
+          const [first] = epics();
+          expect(first!.title).toBe(NEW_TITLE);
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          expect(epics()).toHaveLength(1);
+          expect(epics()[0]).toMatchObject({ id: first!.id, title: NEW_TITLE });
+          // Every sub-issue, refreshed or not, names the epic's actual title.
+          for (const id of ["req_1", "req_2"]) {
+            expect(feature(id).body).toContain(`> Parent epic: **${epics()[0]!.title}**`);
+          }
+        });
+
+        it("counts a sibling a re-run unlinked from its requirement as outside the generation", async () => {
+          await generateDrafts(opts);
+          const [first] = epics();
+          // A re-run re-created the requirement rows; ON DELETE SET NULL unlinked the draft.
+          feature("req_2").requirementId = null;
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          expect(epics()[0]).toMatchObject({ id: first!.id, title: NEW_TITLE });
+        });
+
+        it("is not re-titled while a live publish batch holds it", async () => {
           await generateDrafts({ ...opts, requirementIds: ["req_1"] });
           const [first] = epics();
-          publishedIssueCount.set(first!.id, 1);
+          for (const status of ["pending", "running"]) {
+            publishBatches.length = 0;
+            publishBatches.push({
+              projectId: "proj_1",
+              status,
+              archived: false,
+              dryRun: false,
+              metadata: JSON.stringify({ draftIds: [first!.id] }),
+            });
+            await generateDrafts(opts);
+            expect(epics()[0]).toMatchObject({ id: first!.id, title: SUBSET_TITLE });
+          }
+          // A batch with no draft list publishes every draft, this one included.
+          publishBatches.length = 0;
+          publishBatches.push({
+            projectId: "proj_1",
+            status: "running",
+            archived: false,
+            dryRun: false,
+            metadata: JSON.stringify({ additionalLabels: [] }),
+          });
+          await generateDrafts(opts);
+          expect(epics()[0]!.title).toBe(SUBSET_TITLE);
+        });
+
+        it("is re-titled when the live batches hold other drafts, or are dry runs", async () => {
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          const [first] = epics();
+          publishBatches.push(
+            {
+              projectId: "proj_1",
+              status: "running",
+              archived: false,
+              dryRun: false,
+              metadata: JSON.stringify({ draftIds: ["someone_else"] }),
+            },
+            {
+              projectId: "proj_1",
+              status: "running",
+              archived: false,
+              dryRun: true,
+              metadata: JSON.stringify({ draftIds: [first!.id] }),
+            },
+          );
+          await generateDrafts(opts);
+          expect(epics()[0]).toMatchObject({ id: first!.id, title: NEW_TITLE });
+        });
+
+        it("keeps its title when another draft takes the new one first (unique violation)", async () => {
+          await generateDrafts({ ...opts, requirementIds: ["req_1"] });
+          const [first] = epics();
+          vi.mocked(prisma.issueDraft.update).mockImplementationOnce((async () => {
+            throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+          }) as never);
           await generateDrafts(opts);
           expect(epics()).toHaveLength(1);
           expect(epics()[0]).toMatchObject({ id: first!.id, title: SUBSET_TITLE });

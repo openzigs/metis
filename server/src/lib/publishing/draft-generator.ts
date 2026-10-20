@@ -429,7 +429,12 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   const currentEpicTitle = buildEpicTitle(project.name, analysis, requirements.length);
   const existingEpicDraft = await existingEpic(opts, project.name, analysis, currentEpicTitle);
   const epicBaseTitle = existingEpicDraft
-    ? await keepOrRetitleEpic(opts, existingEpicDraft, currentEpicTitle)
+    ? await keepOrRetitleEpic(
+        opts,
+        existingEpicDraft,
+        currentEpicTitle,
+        requirements.map((r) => r.id),
+      )
     : currentEpicTitle;
   const epic = await claimAndUpsertDraft(opts, epicBaseTitle, {
     projectId: opts.projectId,
@@ -664,13 +669,21 @@ interface ExistingEpic {
  * in place: its row's title and dedup hash move together, so the next upsert
  * refreshes the same draft. This is what corrects an epic first generated for a
  * subset of the requirements, whose count would otherwise stay the subset's.
+ *
+ * Returns `current` (the BASE title) on a re-title even when the row was given a
+ * `(n)` suffix of it: `claimAndUpsertDraft` re-claims from the base and lands on
+ * that same row.
  */
 async function keepOrRetitleEpic(
   opts: GenerateDraftsOptions,
   existing: ExistingEpic,
   current: string,
+  generatedRequirementIds: readonly string[],
 ): Promise<string> {
-  if (existing.title === current || !(await mayRetitleEpic(existing.draft))) {
+  if (
+    existing.title === current ||
+    !(await mayRetitleEpic(opts, existing.draft, generatedRequirementIds))
+  ) {
     return existing.title;
   }
   const claimed = await claimTitle(opts, current, null, {});
@@ -693,7 +706,24 @@ async function keepOrRetitleEpic(
   return current;
 }
 
-async function mayRetitleEpic(draft: ExistingEpic["draft"]): Promise<boolean> {
+/**
+ * Whether the epic may be re-titled. Refused when any of these holds:
+ *  - it is `published`/`publishing`, or a reviewer edited it (#776);
+ *  - it has EVER been published: a `PublishedIssue` row that created or updated
+ *    an issue, or that recorded an issue number (a run that created it and then
+ *    failed, #1091), on any destination;
+ *  - a live (pending or running, unarchived, not dry-run) batch of the project
+ *    holds it — no code sets `publishing`, so a run that loaded the drafts may
+ *    be about to publish the epic under its current title;
+ *  - a live child sub-issue draft is outside this generation: only the drafts
+ *    generated now are refreshed, so that child's stored `> Parent epic:` line
+ *    would keep naming the old title (Generate all, then Generate a subset).
+ */
+async function mayRetitleEpic(
+  opts: GenerateDraftsOptions,
+  draft: ExistingEpic["draft"],
+  generatedRequirementIds: readonly string[],
+): Promise<boolean> {
   if (draft.status === "published" || draft.status === "publishing") return false;
   if (parseMetadata(draft.metadata).userEdited === true) return false;
   const published = await prisma.publishedIssue.count({
@@ -702,7 +732,29 @@ async function mayRetitleEpic(draft: ExistingEpic["draft"]): Promise<boolean> {
       OR: [{ status: { in: ["created", "updated"] } }, { issueNumber: { gt: 0 } }],
     },
   });
-  return published === 0;
+  if (published > 0) return false;
+  if (await heldByLiveBatch(opts.projectId, draft.id)) return false;
+  const outsideChildren = await prisma.issueDraft.count({
+    where: {
+      parentDraftId: draft.id,
+      deletedAt: null,
+      OR: [{ requirementId: null }, { requirementId: { notIn: [...generatedRequirementIds] } }],
+    },
+  });
+  return outsideChildren === 0;
+}
+
+/** Whether a pending or running live batch of the project would publish `draftId`. */
+async function heldByLiveBatch(projectId: string, draftId: string): Promise<boolean> {
+  const batches = await prisma.publishBatch.findMany({
+    where: { projectId, archived: false, dryRun: false, status: { in: ["pending", "running"] } },
+    select: { metadata: true },
+  });
+  return batches.some((b) => {
+    const ids = parseMetadata(b.metadata).draftIds;
+    // No draft list: the batch publishes every publishable draft (`safeWhereFromMetadata`).
+    return !Array.isArray(ids) || ids.length === 0 || ids.includes(draftId);
+  });
 }
 
 /** #1276 — this analysis's epic draft for this repository, by its recorded base title. */
