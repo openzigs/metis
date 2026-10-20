@@ -139,8 +139,35 @@ describe("publishedIssuesByDraft (#1136)", () => {
       ],
     });
     const map = publishedIssuesByDraft([newer, older]);
-    expect(map.get("d1")).toMatchObject({ issueNumber: 9, repo: "openzigs/other" });
+    expect(map.get("d1")).toEqual([
+      {
+        destination: "github",
+        label: "openzigs/other#9",
+        htmlUrl: "https://github.com/openzigs/flux-v2/issues/12",
+      },
+    ]);
     expect(map.has("d2")).toBe(false);
+  });
+
+  it("keeps the latest issue per destination when one draft went to both", () => {
+    const b = batch({
+      publishedIssues: [
+        issue({ id: "gh", draftId: "d1", issueNumber: 12 }),
+        issue({
+          id: "jira",
+          draftId: "d1",
+          destination: "jira",
+          issueNumber: 0,
+          issueId: "10042",
+          htmlUrl: "https://acme.atlassian.net/browse/FLUX-7",
+        }),
+      ],
+    });
+    expect(
+      publishedIssuesByDraft([b])
+        .get("d1")!
+        .map((r) => r.label),
+    ).toEqual(["openzigs/flux-v2#12", "FLUX-7"]);
   });
 
   it("ignores dry runs and tolerates batches listed without their issues", () => {
@@ -162,6 +189,84 @@ describe("DraftPublishedIssue (#1136)", () => {
   it("renders nothing for a draft that was never published", () => {
     const { container } = render(<DraftPublishedIssue published={undefined} />);
     expect(container.textContent).toBe("");
+  });
+});
+
+describe("Jira and both destinations (PR #1275 review)", () => {
+  const JIRA_URL = "https://acme.atlassian.net/browse/FLUX-7";
+  const jira = (over: Partial<PublishedIssue> = {}) =>
+    issue({
+      id: "pi_jira",
+      destination: "jira",
+      issueNumber: 0,
+      issueId: "10042",
+      htmlUrl: JIRA_URL,
+      ...over,
+    });
+
+  it("GitHub only: owner/repo#N, never a Jira key", () => {
+    const map = publishedIssuesByDraft([batch()]);
+    render(<DraftPublishedIssue published={map.get("draft_1")} />);
+    expect(screen.getByTestId("draft-published-issue").textContent).toBe(
+      "Published as openzigs/flux-v2#12",
+    );
+  });
+
+  it("Jira only: the issue key and its browse URL, never owner/repo#0", () => {
+    const b = batch({ publishedIssues: [jira()] });
+    render(<BatchPublishedIssues batch={b} />);
+    const link = screen.getByRole("link", { name: "FLUX-7" });
+    expect(link.getAttribute("href")).toBe(JIRA_URL);
+    expect(screen.queryByText(/#0/)).toBeNull();
+    const map = publishedIssuesByDraft([b]);
+    render(<DraftPublishedIssue published={map.get("draft_1")} />);
+    expect(screen.getByTestId("draft-published-issue").textContent).toBe("Published as FLUX-7");
+  });
+
+  it("both: the draft names its GitHub issue and its Jira issue", () => {
+    // The Jira record is written last, so a latest-wins rule would show only it.
+    const b = batch({
+      publishedIssues: [issue({ publishedAt: new Date(1) }), jira({ publishedAt: new Date(2) })],
+    });
+    render(<DraftPublishedIssue published={publishedIssuesByDraft([b]).get("draft_1")} />);
+    expect(screen.getByTestId("draft-published-issue").textContent).toBe(
+      "Published as openzigs/flux-v2#12 and FLUX-7",
+    );
+    expect(screen.getByRole("link", { name: "openzigs/flux-v2#12" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "FLUX-7" })).toBeTruthy();
+  });
+
+  it("both: the batch row lists GitHub first, then Jira", () => {
+    render(<BatchPublishedIssues batch={batch({ publishedIssues: [jira(), issue()] })} />);
+    expect(screen.getAllByRole("link").map((l) => l.textContent)).toEqual([
+      "openzigs/flux-v2#12",
+      "FLUX-7",
+    ]);
+  });
+
+  it("a Jira URL with no key still never reads #0", () => {
+    render(
+      <BatchPublishedIssues
+        batch={batch({ publishedIssues: [jira({ htmlUrl: "https://acme.example/x" })] })}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "Jira issue" })).toBeTruthy();
+  });
+
+  it("counts failed rows once instead of repeating a line per row", () => {
+    render(
+      <BatchPublishedIssues
+        batch={batch({
+          publishedIssues: [
+            issue(),
+            issue({ id: "f1", status: "failed", issueNumber: 0 }),
+            issue({ id: "f2", status: "failed", issueNumber: 0 }),
+          ],
+        })}
+      />,
+    );
+    expect(screen.getAllByText(/not created/)).toHaveLength(1);
+    expect(screen.getByText("2 issues not created")).toBeTruthy();
   });
 });
 

@@ -183,7 +183,7 @@ describe("DryRunPlanPanel", () => {
     expect(screen.getByText(/4 actions/)).toBeTruthy();
     expect(screen.getByText(/openzigs\/example-requirements/)).toBeTruthy();
     expect(screen.getByText("[Epic] Apollo")).toBeTruthy();
-    expect(screen.getByText(/issue.create × 2/)).toBeTruthy();
+    expect(screen.getByText("Create issue × 2")).toBeTruthy();
   });
 
   it("shows the credential warning prominently when it did not resolve", () => {
@@ -231,6 +231,17 @@ describe("DryRunPlanPanel", () => {
     expect(screen.getByText(/#12 · Changed thing/)).toBeTruthy();
     expect(screen.getByText(/#13 · body unchanged/)).toBeTruthy();
     expect(screen.getByText(/→ epic #1/)).toBeTruthy();
+    // PR #1275 review — each step reads in plain words; the raw kind is the title.
+    const labels = screen.getAllByTestId("dry-run-row").map((r) => r.children[1]!);
+    expect(labels.map((l) => l.textContent)).toEqual([
+      "Create issue",
+      "Update issue",
+      "Skip (already exists)",
+      "issue.close",
+      "Link to epic",
+      "Add labels",
+    ]);
+    expect(labels[0]!.getAttribute("title")).toBe("issue.create");
   });
 
   it("tolerates actions missing their optional fields", () => {
@@ -359,7 +370,7 @@ describe("dry-run plan lists issues before labels (#1064)", () => {
     expect(actions).toHaveLength(118);
     render(<DryRunPlanPanel plan={makePlan({ actions, totalActions: actions.length })} />);
     const rows = screen.getAllByTestId("dry-run-row");
-    const titled = rows.filter((r) => r.textContent?.includes("issue.create"));
+    const titled = rows.filter((r) => r.textContent?.includes("Create issue"));
     expect(titled).toHaveLength(34);
     expect(screen.getByText("[Epic] Batch")).toBeTruthy();
     for (let i = 0; i < 33; i += 1) expect(screen.getByText(`[Feature] R${i} title`)).toBeTruthy();
@@ -427,9 +438,9 @@ describe("dry-run plan lists issues before labels (#1064)", () => {
       "6 more steps are not listed: 6 label updates.",
     );
     // 19 label rows are shown + 6 hidden = the 25 the summary chip reports.
-    expect(screen.getByText("label.upsert × 25")).toBeTruthy();
+    expect(screen.getByText("Add labels × 25")).toBeTruthy();
     expect(
-      screen.getAllByTestId("dry-run-row").filter((r) => /label\.upsert/.test(r.textContent ?? "")),
+      screen.getAllByTestId("dry-run-row").filter((r) => /Add labels/.test(r.textContent ?? "")),
     ).toHaveLength(19);
   });
 

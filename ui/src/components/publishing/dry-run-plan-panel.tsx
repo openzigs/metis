@@ -165,6 +165,22 @@ export function describeHiddenRows(hidden: readonly DryRunPlanRow[]): string {
     .join(", ");
 }
 
+/**
+ * PR #1275 review — the step a row or chip names, in plain words for an
+ * analyst. The raw kind stays on the element's `title` for whoever needs it.
+ */
+const KIND_LABELS: Readonly<Record<string, string>> = {
+  "issue.create": "Create issue",
+  "issue.update": "Update issue",
+  "issue.skipDuplicate": "Skip (already exists)",
+  "subIssue.attach": "Link to epic",
+  "label.upsert": "Add labels",
+};
+
+export function kindLabel(kind: string): string {
+  return KIND_LABELS[kind] ?? kind;
+}
+
 /** #1136 — a row that names an issue: create, update or skip-as-duplicate. */
 function carriesTitle(row: DryRunPlanRow): boolean {
   return row.action.kind !== "label.upsert" && row.action.kind !== "subIssue.attach";
@@ -240,8 +256,12 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
 
       <ul className="mt-2 flex flex-wrap gap-2">
         {summary.map((s) => (
-          <li key={s.kind} className="rounded bg-muted px-2 py-0.5 text-xs text-foreground">
-            {s.kind} × {s.count}
+          <li
+            key={s.kind}
+            title={s.kind}
+            className="rounded bg-muted px-2 py-0.5 text-xs text-foreground"
+          >
+            {kindLabel(s.kind)} × {s.count}
           </li>
         ))}
       </ul>
@@ -261,7 +281,9 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
             <span aria-hidden="true" className="w-6 shrink-0 text-right text-muted-foreground">
               {step}
             </span>
-            <span className="w-40 shrink-0 font-mono text-foreground">{action.kind}</span>
+            <span className="w-40 shrink-0 text-foreground" title={action.kind}>
+              {kindLabel(action.kind)}
+            </span>
             <span className="min-w-0 break-words text-muted-foreground">
               {actionDetail(action)}
             </span>
