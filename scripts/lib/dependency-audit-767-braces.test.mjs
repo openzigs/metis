@@ -11,8 +11,11 @@ import { describe, expect, it } from "vitest";
  * The advisory (published 2026-09-18) is a stack-exhaustion DoS through deeply nested
  * brace patterns. OSV records `introduced 0, last_affected 3.0.3`, and 3.0.3 is the
  * latest braces on npm. No release fixes it. An override has nothing to point at, so the
- * dated `WAIVERS` entry in `.github/workflows/sast.yml` is the only lawful remedy. Checked
- * 2026-10-02 against api.osv.dev and registry.npmjs.org.
+ * remedies are the dated `WAIVERS` entry in `.github/workflows/sast.yml` or removing the
+ * consumer. #777 found ui's `eslint-config-next` is loaded by no ESLint config, so dropping
+ * it would delete braces outright; that is tracked as a follow-up, not done here. Checked
+ * 2026-10-02 against api.osv.dev and registry.npmjs.org, and again 2026-10-20 (#777), when
+ * the waiver was re-dated to 2027-01-15 because nothing in the chain had shipped a fix.
  *
  * The waiver says the advisory is not exploitable here: braces reaches the tree only as
  * ui's dev-time ESLint tooling (`eslint-config-next` -> `@next/eslint-plugin-next` ->
@@ -117,6 +120,33 @@ describe(`braces ${ADVISORY} is waived only while it stays dev-only (#767)`, () 
       ),
     );
     expect(entries).toEqual(["ui devDependencies eslint-config-next"]);
+  });
+
+  // #777 re-dated the waiver on a narrower claim: the plugin is installed but never
+  // LOADED. Next 16 removed `next lint` and build-time linting, so only an ESLint config
+  // importing eslint-config-next or the plugin could load it — and the plugin's one glob
+  // call (`globSync(settings.next.rootDir)`) is what reaches braces. A config that starts
+  // loading it must re-triage the waiver, so this arm goes red the moment one does.
+  it("is loaded by no tracked ESLint config (#777)", () => {
+    const listed = spawnSync("git", ["ls-files"], { cwd: repoRoot, encoding: "utf8" });
+    expect(listed.status, listed.stderr).toBe(0);
+    const configs = listed.stdout
+      .split("\n")
+      .filter((f) => /(^|\/)(eslint\.config\.[cm]?[jt]s|\.eslintrc(\.[a-z]+)?)$/.test(f));
+    // An empty list would pass the loop below vacuously.
+    expect(configs, "found no ESLint config at all — the scan is broken").toContain(
+      "ui/eslint.config.mjs",
+    );
+    const loaders = configs.filter((f) =>
+      /eslint-config-next|@next\/eslint-plugin-next|settings[\s\S]*rootDir/.test(
+        readFileSync(resolve(repoRoot, f), "utf8"),
+      ),
+    );
+    expect(
+      loaders,
+      "an ESLint config now loads the Next plugin (or sets next.rootDir). The braces " +
+        `waiver for ${ADVISORY} says it is never loaded: re-triage before the waiver stands.`,
+    ).toEqual([]);
   });
 
   // Executes the real dict, as sast-waiver-expiry.test.mjs does. Skips without python3.
