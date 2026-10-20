@@ -3126,8 +3126,10 @@ The `/vault` page is split into two panels:
      If another user created the secret, the page first shows who owns it
      and which DB and repo connectors, import sources, Jira connections and
      MCP servers use it (an MCP server counts when a `${vault:...}` reference
-     in its environment or headers resolves to the secret by id or label;
-     notification-channel references are not checked); it rotates only after **Rotate anyway**, because the owner's
+     in its environment or headers resolves to the secret by id or label),
+     and which scheduled webhook jobs send it as their auth header, by job
+     name and project, showing only the webhook's scheme and host
+     (notification-channel references are not checked); it rotates only after **Rotate anyway**, because the owner's
      resources will send your value to the hosts they chose. (Test-management
      connections from the removed Test Coverage feature still appear in that
      list, as binding type `test_management_connection`, until their stored

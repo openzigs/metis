@@ -21,7 +21,9 @@
  * or the `envSecretId` column — and (#609) test-management connections,
  * through the `${vault:x}` refs in their `authConfigJson` / `tlsConfigJson`
  * (the same columns `secret-retirement.ts` counts as a use), matched the same
- * way. Other embedded references (notification-channel refs, BYOK) are not
+ * way — and (#1243) scheduled `http-webhook` jobs, through the `${vault:x}`
+ * reference in their payload's `authHeader` (#1235), listed by job name and
+ * project with only the URL's origin as the destination. Other embedded references (notification-channel refs, BYOK) are not
  * enumerated, and the refusal says so rather than claiming the secret is
  * unbound (PR #494 review).
  *
@@ -63,7 +65,8 @@ import { createHmac, hkdfSync } from "node:crypto";
 import { prisma } from "../prisma.js";
 import { resolveJwtSecret } from "../auth/jwt.js";
 import { dbDestinationOptions } from "../connectors/destination.js";
-import { reaches, refBodiesIn } from "./secret-binding.js";
+import { VAULT_REFERENCING_TASK_TYPE } from "../scheduler/task-retry-window.js";
+import { reaches, refBodiesIn, refBodyOf } from "./secret-binding.js";
 
 export const VAULT_ROTATE_FOREIGN_OWNER = "VAULT_ROTATE_FOREIGN_OWNER";
 export const VAULT_ROTATE_BINDINGS_CHANGED = "VAULT_ROTATE_BINDINGS_CHANGED";
@@ -88,7 +91,8 @@ export interface SecretBindingView {
     | "import_source"
     | "mcp_server"
     | "jira_connection"
-    | "test_management_connection";
+    | "test_management_connection"
+    | "scheduled_webhook_job";
   id: string;
   label: string;
   projectId: string | null;
@@ -159,6 +163,16 @@ export const routingFields = {
     proxyConfigJson: string | null;
     tlsConfigJson: string | null;
   }): unknown[] => [t.kind, t.baseUrl, t.proxyConfigJson, t.tlsConfigJson],
+  // #1243 — what the webhook handler reads to decide where `authHeader` goes:
+  // the full URL (the listing shows only its origin), the method, the header
+  // reference itself, and the project whose allow-list and access it runs under.
+  scheduled_webhook_job: (j: {
+    taskType: string;
+    projectId: string | null;
+    url: string;
+    method: string;
+    authHeader: string | null;
+  }): unknown[] => [j.taskType, j.projectId, j.url, j.method, j.authHeader],
 } satisfies Record<BindingType, (row: never) => unknown[]>;
 
 /**
@@ -254,13 +268,59 @@ function refBodiesInJson(json: string | null): string[] {
   }
 }
 
+/** #1243 — a webhook job's payload as an object; anything else holds no binding. */
+function payloadObject(json: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #1243 — the routing fields of a webhook job, read as the handler reads them
+ * (`scheduler/webhook-handler.ts`): URL trimmed, method defaulting to POST.
+ */
+function webhookRouting(job: {
+  taskType: string;
+  projectId: string | null;
+  payload: Record<string, unknown>;
+}) {
+  const { url, method, authHeader } = job.payload;
+  return {
+    taskType: job.taskType,
+    projectId: job.projectId,
+    url: typeof url === "string" ? url.trim() : "",
+    method: String(method ?? "POST").toUpperCase(),
+    authHeader: typeof authHeader === "string" ? authHeader : null,
+  };
+}
+
+/**
+ * #1243 — the origin a webhook sends to, and nothing more. A webhook URL's path
+ * or query is often itself a credential (a Slack incoming-webhook path, a
+ * `?token=`), and userinfo always is, so the listing never carries them; the
+ * routing digest still covers the full URL.
+ */
+function webhookOrigin(url: string): string | null {
+  try {
+    const origin = new URL(url).origin;
+    return origin === "null" ? null : origin;
+  } catch {
+    return null;
+  }
+}
+
 /** The owner and live bindings of a secret, for the 409 body and the UI. */
 export async function describeForeignOwner(secret: {
   id: string;
   name: string;
   createdById: string;
 }): Promise<ForeignOwnerDetails> {
-  const [user, dbs, repos, imports, mcps, jiras, testMgmts] = await Promise.all([
+  const [user, dbs, repos, imports, mcps, jiras, testMgmts, jobs] = await Promise.all([
     prisma.user.findUnique({
       where: { id: secret.createdById },
       select: { username: true, displayName: true },
@@ -356,7 +416,36 @@ export async function describeForeignOwner(secret: {
         tlsConfigJson: true,
       },
     }),
+    // #1243 — candidates only: live webhook jobs holding any vault ref; the
+    // `authHeader` reference then decides, as the webhook handler resolves it.
+    prisma.scheduledJob.findMany({
+      where: {
+        deletedAt: null,
+        taskType: VAULT_REFERENCING_TASK_TYPE,
+        payload: { contains: VAULT_REF_MARKER },
+      },
+      select: { id: true, name: true, projectId: true, taskType: true, payload: true },
+    }),
   ]);
+
+  const boundJobs = jobs.flatMap((j) => {
+    const payload = payloadObject(j.payload);
+    const header = payload?.authHeader;
+    const ref = typeof header === "string" ? refBodyOf(header) : null;
+    return payload && ref && reaches(ref, secret) ? [{ ...j, payload }] : [];
+  });
+  // The job's project by name, as the admin would recognise it; read only when a job binds.
+  const jobProjectIds = [...new Set(boundJobs.flatMap((j) => (j.projectId ? [j.projectId] : [])))];
+  const projectNames = new Map(
+    jobProjectIds.length > 0
+      ? (
+          await prisma.project.findMany({
+            where: { id: { in: jobProjectIds } },
+            select: { id: true, name: true },
+          })
+        ).map((p) => [p.id, p.name] as const)
+      : [],
+  );
 
   const key = routingKey();
   const bindings: SecretBindingView[] = [
@@ -431,6 +520,24 @@ export async function describeForeignOwner(secret: {
           key,
         ),
       })),
+    ...boundJobs.map((j) => {
+      const routing = webhookRouting(j);
+      return {
+        type: "scheduled_webhook_job" as const,
+        id: j.id,
+        label: j.projectId
+          ? `${j.name} (project ${projectNames.get(j.projectId) ?? j.projectId})`
+          : `${j.name} (no project)`,
+        projectId: j.projectId,
+        destination: webhookOrigin(routing.url),
+        routing: routingDigest(
+          "scheduled_webhook_job",
+          j.id,
+          routingFields.scheduled_webhook_job(routing),
+          key,
+        ),
+      };
+    }),
   ];
 
   return {
@@ -451,8 +558,9 @@ export async function describeForeignOwner(secret: {
  * checked, so it must not claim the secret is bound nowhere (PR #494 review).
  */
 export const UNBOUND_NOTE =
-  "No DB or repo connector, import source, MCP server, Jira or test-management connection " +
-  "uses it; other references (e.g. notification channels, BYOK) were not checked.";
+  "No DB or repo connector, import source, MCP server, Jira or test-management connection, " +
+  "or scheduled webhook job uses it; other references (e.g. notification channels, BYOK) " +
+  "were not checked.";
 
 function whoOwns(details: ForeignOwnerDetails): string {
   return details.owner.displayName ?? details.owner.username ?? `user ${details.owner.id}`;

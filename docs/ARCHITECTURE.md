@@ -4432,6 +4432,13 @@ contract as Phase 8's repo connectors:
   fails the run with one fixed message naming no secret. A `${vault:<label>}`
   reference resolves by label (before #1235 the default resolver read by id
   only, so label references failed every run).
+- #1243 — such a job is a binding in the vault's "Rotate anyway" list
+  (`lib/vault/rotate-foreign-owner.ts`, type `scheduled_webhook_job`): named by
+  job and project, with only the URL's origin as its destination, because a
+  webhook URL's path, query or userinfo is often itself a credential. Its
+  `routing` digest covers task type, project, full URL, method and the
+  `authHeader` reference, so re-pointing the job after the list was shown
+  refuses the confirm.
 - Audit logs record only the hostname, status code, and method (never the
   URL, headers, or body).
 
