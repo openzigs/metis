@@ -2,11 +2,13 @@
  * #1277 — the prompt-cache savings report: what each `agentStep` × model pair
  * would have paid for the same input tokens uncached, minus what it paid.
  */
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { ConfigService } from "../config/config-service.js";
 import {
   CACHE_SAVINGS_SQL,
   formatCacheSavingsTable,
+  ledgerRowsQuery,
   summarizeCacheSavings,
   type LedgerCacheRow,
 } from "./cache-savings-report.js";
@@ -81,6 +83,19 @@ describe("summarizeCacheSavings", () => {
       { config },
     );
     expect(writes!.netSavingUsd).toBeCloseTo(0, 9);
+  });
+
+  it("`--ttl 1h` charges 2x only to a model that prices writes, never to a free-write one", () => {
+    const config = configWith({
+      MODEL_PRICES: JSON.stringify({
+        "deepseek-flash": { inputPerMTok: 0.3, outputPerMTok: 1.2, cacheReadPerMTok: 0.006 },
+      }),
+    });
+    const [line] = summarizeCacheSavings(
+      [row({ model: "deepseek-flash", cacheWriteTokens: 1_000_000 })],
+      { config, ttl: "1h" },
+    );
+    expect(line!.netSavingUsd).toBeCloseTo(0, 9);
   });
 
   it("an unpriced model keeps its token counts and reports no dollar figures", () => {
@@ -183,5 +198,46 @@ describe("CACHE_SAVINGS_SQL", () => {
     expect(CACHE_SAVINGS_SQL).toContain("token_usages");
     expect(CACHE_SAVINGS_SQL).toMatch(/GROUP BY/i);
     expect(CACHE_SAVINGS_SQL).not.toMatch(/\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)\b/i);
+  });
+
+  it("names each row's token convention, since input_tokens means two things", () => {
+    // On `anthropic` the stored input EXCLUDES cache reads; on every
+    // OpenAI-compatible provider it INCLUDES them.
+    const db = new DatabaseSync(":memory:");
+    db.exec(`CREATE TABLE token_usages ("agentStep" TEXT, provider TEXT, model TEXT,
+      "inputTokens" INT, "cacheReadTokens" INT, "cacheWriteTokens" INT)`);
+    db.exec(`INSERT INTO token_usages VALUES
+      ('chat','anthropic','m',10,5,0), ('chat','bedrock-gateway','m',15,5,0)`);
+    const rows = db.prepare(CACHE_SAVINGS_SQL).all() as Array<Record<string, unknown>>;
+    expect(rows.map((r) => [r.provider, r.convention]).sort()).toEqual([
+      ["anthropic", "anthropic-native: input excludes cache reads"],
+      ["bedrock-gateway", "openai-compatible: input includes cache reads"],
+    ]);
+  });
+});
+
+describe("ledgerRowsQuery", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`CREATE TABLE token_usages ("agentStep" TEXT, provider TEXT, model TEXT,
+    "inputTokens" INT, "outputTokens" INT, "cacheReadTokens" INT, "cacheWriteTokens" INT,
+    "requestTokens" TEXT, "createdAt" TEXT)`);
+  // The ledger stores ISO text with a `+00:00` offset.
+  for (const at of ["2026-10-15T13:44:00.500+00:00", "2026-10-15T13:43:59.999+00:00"]) {
+    db.prepare(`INSERT INTO token_usages VALUES ('s','anthropic','m',1,0,0,0,NULL,?)`).run(at);
+  }
+  const count = (opts: { since?: string; until?: string }) => {
+    const { sql, params } = ledgerRowsQuery(opts);
+    return db.prepare(sql).all(...params).length;
+  };
+
+  it("compares instants, not text: a `Z` bound keeps a `+00:00` row in the same second", () => {
+    expect(count({ since: "2026-10-15T13:44:00Z" })).toBe(1);
+    expect(count({ since: "2026-10-15T13:44:00.000+00:00" })).toBe(1);
+    expect(count({ until: "2026-10-15T13:44:00Z" })).toBe(1);
+    expect(count({})).toBe(2);
+  });
+
+  it("rejects a bound that is not a date", () => {
+    expect(() => ledgerRowsQuery({ since: "yesterday" })).toThrow(/not a date/);
   });
 });

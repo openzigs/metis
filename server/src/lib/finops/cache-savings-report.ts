@@ -84,7 +84,10 @@ function priceRequest(
   );
   const input = flat.inputPer1k;
   const read = flat.cacheReadPer1k ?? input;
-  const write = ttl === "1h" ? input * 2 : (flat.cacheWritePer1k ?? input);
+  // A model with no write price (DeepSeek) writes for free whatever the TTL:
+  // the 1-hour 2x applies only to a model that prices writes at all.
+  const write =
+    flat.cacheWritePer1k === undefined ? input : ttl === "1h" ? input * 2 : flat.cacheWritePer1k;
   return {
     uncached: ((counts.fresh + counts.read + counts.write) * input) / 1000,
     actual: (counts.fresh * input + counts.read * read + counts.write * write) / 1000,
@@ -211,8 +214,19 @@ export function formatCacheSavingsTable(lines: readonly CacheSavingsLine[]): str
  * script cannot open itself (Postgres). It does not price: pricing needs each
  * row's tier, so run the script against SQLite, or price these sums by hand.
  * Quoted identifiers, so the same text runs on SQLite and Postgres.
+ *
+ * `input_tokens` is stored as each provider reported it (#248), which means
+ * two different things: on `anthropic` it EXCLUDES cache reads, on every
+ * OpenAI-compatible provider (the Bedrock gateway, openai, azure, local) it
+ * INCLUDES them. Rows are one provider each, and the `convention` column says
+ * which: subtract `cache_read_tokens` from an openai-compatible row's
+ * `input_tokens` to get its fresh input, and never add the two conventions'
+ * `input_tokens` together.
  */
 export const CACHE_SAVINGS_SQL = `SELECT "agentStep", provider, model,
+       CASE WHEN provider = 'anthropic'
+            THEN 'anthropic-native: input excludes cache reads'
+            ELSE 'openai-compatible: input includes cache reads' END AS convention,
        COUNT(*) AS calls,
        SUM("inputTokens") AS input_tokens,
        SUM("cacheReadTokens") AS cache_read_tokens,
@@ -220,3 +234,33 @@ export const CACHE_SAVINGS_SQL = `SELECT "agentStep", provider, model,
 FROM token_usages
 GROUP BY "agentStep", provider, model
 ORDER BY SUM("cacheWriteTokens") DESC, SUM("inputTokens") DESC;`;
+
+/**
+ * The rows {@link summarizeCacheSavings} reads, optionally bounded by ISO
+ * timestamps (`since` inclusive, `until` exclusive). SQLite only. The ledger
+ * stores `createdAt` as ISO text with a `+00:00` offset, so a TEXT comparison
+ * with a `Z` bound drops rows in the bound's own second; both sides go through
+ * `julianday`, which parses either spelling as an instant.
+ */
+export function ledgerRowsQuery(opts: { since?: string; until?: string }): {
+  sql: string;
+  params: string[];
+} {
+  const where: string[] = [];
+  const params: string[] = [];
+  for (const [bound, op] of [
+    [opts.since, ">="],
+    [opts.until, "<"],
+  ] as const) {
+    if (bound === undefined) continue;
+    if (Number.isNaN(Date.parse(bound))) throw new Error(`"${bound}" is not a date`);
+    where.push(`julianday("createdAt") ${op} julianday(?)`);
+    params.push(bound);
+  }
+  return {
+    sql: `SELECT "agentStep", provider, model, "inputTokens", "outputTokens", "cacheReadTokens",
+                "cacheWriteTokens", "requestTokens"
+         FROM token_usages${where.length ? ` WHERE ${where.join(" AND ")}` : ""}`,
+    params,
+  };
+}

@@ -21,6 +21,7 @@ import { ConfigService } from "../src/lib/config/config-service.js";
 import {
   CACHE_SAVINGS_SQL,
   formatCacheSavingsTable,
+  ledgerRowsQuery,
   summarizeCacheSavings,
   type LedgerCacheRow,
 } from "../src/lib/finops/cache-savings-report.js";
@@ -46,23 +47,11 @@ function main(): void {
 
   const db = new DatabaseSync(resolve(values.db), { readOnly: true });
   try {
-    const where: string[] = [];
-    const params: string[] = [];
-    if (values.since) {
-      where.push(`"createdAt" >= ?`);
-      params.push(values.since);
-    }
-    if (values.until) {
-      where.push(`"createdAt" < ?`);
-      params.push(values.until);
-    }
-    const rows = db
-      .prepare(
-        `SELECT "agentStep", provider, model, "inputTokens", "outputTokens", "cacheReadTokens",
-                "cacheWriteTokens", "requestTokens"
-         FROM token_usages ${where.length ? `WHERE ${where.join(" AND ")}` : ""}`,
-      )
-      .all(...params) as unknown as LedgerCacheRow[];
+    const { sql, params } = ledgerRowsQuery({
+      ...(values.since ? { since: values.since } : {}),
+      ...(values.until ? { until: values.until } : {}),
+    });
+    const rows = db.prepare(sql).all(...params) as unknown as LedgerCacheRow[];
     const stored = db
       .prepare(`SELECT value FROM runtime_config WHERE key = 'MODEL_PRICES'`)
       .get() as { value?: string } | undefined;
