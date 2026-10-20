@@ -239,8 +239,10 @@ describe("a requirement change checks only the documents that list approved requ
     expect(state.warn).toHaveBeenCalledWith(
       "Skipping automatic regeneration: invalid stored scope",
     );
-    // Also reached, and skipped, by a code-link check: a corrupt scope counts as scoped.
+    // Also reached, and skipped, by a code-link check: a corrupt scope counts as
+    // scoped, so it is logged there too rather than silently filtered out.
     state.snapshot.mockClear();
+    state.warn.mockClear();
     await expect(
       checkIncrementalRegeneration("p", undefined, {
         approvedRequirementsOnly: true,
@@ -248,6 +250,9 @@ describe("a requirement change checks only the documents that list approved requ
       }),
     ).resolves.toBeUndefined();
     expect(state.snapshot).not.toHaveBeenCalled();
+    expect(state.warn).toHaveBeenCalledWith(
+      "Skipping automatic regeneration: invalid stored scope",
+    );
   });
 
   it("captures nothing under the catalogue layout", async () => {

@@ -93,6 +93,34 @@ describe("syncMergedPR", () => {
     expect(noteRequirementCodeLinksChanged).toHaveBeenCalledWith(["req-mine"]);
   });
 
+  it("still syncs the PR when the connection lookup for the check fails (PR #1287 review)", async () => {
+    const prisma = mkPrisma({
+      publishedIssue: {
+        findMany: vi.fn(async () => [
+          { issueNumber: 5, draft: { requirementId: "req-mine", projectId: "proj1" } },
+        ]),
+      },
+      repoConnection: { findMany: vi.fn(async () => Promise.reject(new Error("db down"))) },
+    });
+    const out = await syncMergedPR(
+      {
+        pr: {
+          number: 42,
+          merged: true,
+          body: "Closes #5",
+          merge_commit_sha: "abc",
+          html_url: "https://github.com/acme/proj/pull/42",
+        },
+        repo,
+        diff: `--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1,2 @@\n+x\n`,
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { prisma: prisma as any },
+    );
+    expect(out.implementationsCreated).toBe(1);
+    expect(noteRequirementCodeLinksChanged).not.toHaveBeenCalled();
+  });
+
   it("checks nothing when no project connects the PR's repository (#1246)", async () => {
     const prisma = mkPrisma({
       publishedIssue: {

@@ -18,8 +18,11 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { noteRequirementCodeLinksChanged } from "../docs-gen/approved-requirements-staleness.js";
 import { connectionsNamedByPrUrl } from "../docs-gen/approved-requirements-scope.js";
+import { createChildLogger } from "../logger.js";
 import { parseDiffHunks, parseLinkedIssues, type DiffHunk } from "./diff-parser.js";
 import type { PullRequestPayload, RepositoryPayload } from "./webhook.js";
+
+const log = createChildLogger("living-spec-requirement-sync");
 
 export interface SyncMergedPRInput {
   pr: PullRequestPayload;
@@ -133,16 +136,25 @@ export async function syncMergedPR(
     // request is matched to requirements by issue number alone, so the rows
     // can land on another project's requirement; that project's list never
     // counts them (`approved-requirements-scope.ts`), so it is not checked.
+    // Best effort: the rows are written; a failed lookup here must not fail
+    // the webhook (the next ingest's check reads the same links).
     if (linked.size > 0) {
-      const inRepository = await projectsConnecting(
-        prisma,
-        prUrl,
-        requirements.filter((r) => linked.has(r.id)).map((r) => r.projectId),
-      );
-      const ids = requirements
-        .filter((r) => linked.has(r.id) && inRepository.has(r.projectId))
-        .map((r) => r.id);
-      if (ids.length > 0) void noteRequirementCodeLinksChanged(ids);
+      try {
+        const inRepository = await projectsConnecting(
+          prisma,
+          prUrl,
+          requirements.filter((r) => linked.has(r.id)).map((r) => r.projectId),
+        );
+        const ids = requirements
+          .filter((r) => linked.has(r.id) && inRepository.has(r.projectId))
+          .map((r) => r.id);
+        if (ids.length > 0) void noteRequirementCodeLinksChanged(ids);
+      } catch (err) {
+        log.warn("Could not check reader BRDs after a merged pull request", {
+          prNumber: pr.number,
+          error: (err as Error).message,
+        });
+      }
     }
   }
 

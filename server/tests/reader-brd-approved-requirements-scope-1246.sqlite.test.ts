@@ -355,6 +355,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         name: "billing",
       });
       expect(repositoryOfPrUrl("https://example.test/pull/7")).toBeNull();
+      // Read by position, so an owner or repository named `pull` is read right.
+      expect(repositoryOfPrUrl("https://github.com/pull/tools/pull/3")).toEqual({
+        owner: "pull",
+        name: "tools",
+      });
+      expect(repositoryOfPrUrl("https://github.com/acme/pull/pull/4")).toEqual({
+        owner: "acme",
+        name: "pull",
+      });
+      expect(repositoryOfPrUrl("https://github.com/acme/billing/pull/x")).toBeNull();
       expect(repositoryOfPrUrl("not a url")).toBeNull();
       const connections = [
         { id: "a", ownerOrOrg: "Acme", repoName: "billing.git" },

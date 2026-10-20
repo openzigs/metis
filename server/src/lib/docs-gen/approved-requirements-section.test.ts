@@ -339,6 +339,9 @@ describe("renderApprovedRequirementsSection", () => {
     );
     expect(scoped).toContain("**Only requirements linked to this part of the code are listed.**");
     expect(scoped).toContain(
+      "a pull request counts only if it is in a repository connected to this project under the same owner and name",
+    );
+    expect(scoped).toContain(
       "Approved requirements with no code link, or linked only to other code, are not listed here",
     );
     expect(findCodeIdentifiers(scoped)).toEqual([]);

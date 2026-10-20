@@ -48,7 +48,9 @@ function checkProject(projectId: string, scopedOnly = false): Promise<void> {
     current.again = true;
     return current.done;
   }
-  const check: ProjectCheck = { again: false, nextScopedOnly: scopedOnly, done: Promise.resolve() };
+  // Pending from the start: a change that arrives before the first check
+  // begins (while the pipeline loads) is merged into it, never overwrites it.
+  const check: ProjectCheck = { again: true, nextScopedOnly: scopedOnly, done: Promise.resolve() };
   check.done = (async () => {
     try {
       // A failed import is not cached: the next change tries again.
@@ -57,7 +59,7 @@ function checkProject(projectId: string, scopedOnly = false): Promise<void> {
         throw err;
       });
       const { checkIncrementalRegeneration } = await incremental;
-      do {
+      while (check.again) {
         const scoped = check.nextScopedOnly;
         check.again = false;
         check.nextScopedOnly = true;
@@ -65,7 +67,7 @@ function checkProject(projectId: string, scopedOnly = false): Promise<void> {
           approvedRequirementsOnly: true,
           ...(scoped ? { scopedApprovedRequirementsOnly: true } : {}),
         });
-      } while (check.again);
+      }
     } catch (err) {
       log.warn("Could not check reader BRDs after a requirement change", {
         projectId,

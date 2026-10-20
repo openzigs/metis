@@ -136,6 +136,15 @@ describe("noteRequirementCodeLinksChanged (#1246)", () => {
     ]);
   });
 
+  it("keeps a full check when a code-link change arrives in the same tick, before it starts (PR #1287 review)", async () => {
+    mocks.findMany.mockResolvedValue([{ projectId: "p1" }]);
+    const full = noteRequirementsChanged(["r1"]);
+    const links = noteRequirementCodeLinksChanged(["r2"]);
+    await Promise.all([full, links]);
+    // One check, widened to every reader BRD: the approval is never dropped.
+    expect(mocks.check.mock.calls).toEqual([["p1", undefined, ALL]]);
+  });
+
   it("stays scoped when only code-link changes wait", async () => {
     mocks.findMany.mockResolvedValue([{ projectId: "p1" }]);
     let release!: () => void;

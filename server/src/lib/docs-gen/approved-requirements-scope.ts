@@ -116,9 +116,11 @@ export function repositoryOfPrUrl(prUrl: string): NamedRepository | null {
   } catch {
     return null;
   }
-  const at = segments.indexOf("pull");
-  if (at < 2) return null;
-  const key = repositoryKey(segments[at - 2], segments[at - 1]);
+  // Read from the end, by position: `<owner>/<repo>/pull/<number>`. An owner or
+  // repository named `pull` is then still read correctly.
+  const n = segments.length;
+  if (n < 4 || segments[n - 2] !== "pull" || !/^\d+$/.test(segments[n - 1])) return null;
+  const key = repositoryKey(segments[n - 4], segments[n - 3]);
   if (!key) return null;
   const [owner, name] = key.split("/");
   return { owner, name };
