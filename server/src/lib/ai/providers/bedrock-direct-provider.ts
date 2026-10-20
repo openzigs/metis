@@ -2318,11 +2318,15 @@ export class OpenAICompatibleProvider implements AIProvider {
       // Required for accurate usage accounting when streaming.
       body.stream_options = { include_usage: true };
     }
-    if (opts.promptCaching && (opts.promptCaching.system || opts.promptCaching.messages)) {
+    const cacheSystem =
+      opts.promptCaching?.system === true &&
+      !systemGoesPastSharedPrefix(messages, opts.systemMessage, opts.promptCaching.systemPrefix);
+    const cacheMessages = opts.promptCaching?.messages === true;
+    if (cacheSystem || cacheMessages) {
       body.extra_body = {
         prompt_caching: {
-          ...(opts.promptCaching.system ? { system: true } : {}),
-          ...(opts.promptCaching.messages ? { messages: true } : {}),
+          ...(cacheSystem ? { system: true } : {}),
+          ...(cacheMessages ? { messages: true } : {}),
         },
       };
     }
@@ -2526,6 +2530,29 @@ export class ToolCallDeltaAssembler {
       };
     }
   }
+}
+
+/**
+ * #1277 — whether the system prompt goes on past the caller's shared
+ * `systemPrefix` (#1144). bedrock-access-gateway places its one system
+ * cachePoint after the WHOLE system prompt and cannot end it at the prefix, so
+ * a cache write there would hold the per-call tail too: every call writes its
+ * own entry and none reads another's. The caller then gets no system cache
+ * write on this path. The test mirrors the native Anthropic provider's split
+ * (system parts joined with a blank line, prefix strictly shorter).
+ */
+function systemGoesPastSharedPrefix(
+  messages: ChatMessage[],
+  systemMessage: string | undefined,
+  prefix: string | undefined,
+): boolean {
+  if (!prefix) return false;
+  const parts = [
+    ...(systemMessage ? [systemMessage] : []),
+    ...messages.filter((m) => m.role === "system").map(messageText),
+  ];
+  const system = parts.join("\n\n");
+  return prefix.length < system.length && system.startsWith(prefix);
 }
 
 /**

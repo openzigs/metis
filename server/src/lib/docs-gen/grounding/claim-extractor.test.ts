@@ -141,12 +141,12 @@ describe("ClaimExtractor.decompose", () => {
     expect(userMsg).toContain("Invoices over 1000 require approval.");
   });
 
-  it("requests prompt caching (system + messages) when promptCaching is enabled", async () => {
+  it("requests system prompt caching only when promptCaching is enabled (#1277)", async () => {
     const provider = mockProvider(JSON.stringify({ claims: [] }));
     const extractor = new ClaimExtractor({ provider, promptCaching: true });
     await extractor.decompose("Some claim.", ctx);
     const [, options] = (provider.chat as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(options.promptCaching).toEqual({ system: true, messages: true });
+    expect(options.promptCaching).toEqual({ system: true });
   });
 
   it('tags the telemetry callType as "claim-extraction" (#701)', async () => {

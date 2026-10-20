@@ -426,9 +426,9 @@ export interface HolisticProvenanceContext {
  * scope caching to `system` only (the system prefix IS shared across the many
  * modules / ~6 sections and pays for itself on the second call onward).
  *
- * Multi-call sites — the agentic analysis loop and the grounding pipeline
- * (claim-extraction + faithfulness-judge reuse the same source-evidence
- * prefix across batches) — keep `messages: true` and are unaffected by this.
+ * The agentic analysis loop, a multi-call site, keeps `messages: true` and is
+ * unaffected by this. #1277 — the grounding pipeline (claim-extraction +
+ * faithfulness-judge) caches `system` only too: its user turns did not repeat.
  *
  * Returns `undefined` when the provider does not support caching at all
  * (e.g. local Gemma), matching the previous `... : undefined` call shape.
@@ -4541,8 +4541,8 @@ async function synthesizeFinalDocumentInRun(
         })
       : null;
     // #anthropic-prompt-caching — when the provider supports caching, the judge
-    // caches the SOURCE EVIDENCE prefix identical across every per-claim batch
-    // of a section (the single biggest doc-gen cache win).
+    // caches its system prompt. #1277 — not its per-batch evidence, which since
+    // #171 rarely repeats, so writing it was paid for and not read back.
     const faithfulnessJudge = claimExtractor
       ? new FaithfulnessJudge({
           provider: bundle.provider,

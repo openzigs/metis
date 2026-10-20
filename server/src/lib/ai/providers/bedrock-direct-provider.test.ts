@@ -1353,3 +1353,65 @@ describe("stream() finish_reason forwarding (#1226)", () => {
     expect(chunks.find((c) => c.type === "done")).toEqual({ type: "done" });
   });
 });
+
+/**
+ * #1277 — bedrock-access-gateway puts ONE cachePoint after the whole system
+ * prompt; it cannot end the cached prefix at `systemPrefix` the way the native
+ * Anthropic provider does (#1144). A caller whose calls share only that prefix
+ * (Spec Kit's five plan artifacts) would then write a cache entry per call that
+ * no other call reads, so the gateway asks for no system cache write there.
+ */
+describe("prompt caching with a shared systemPrefix on the gateway (#1277)", () => {
+  const capture = () => {
+    const bodies: Record<string, unknown>[] = [];
+    globalThis.fetch = vi.fn(async (_url: string, init: CapturedInit) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return jsonResponse("ok");
+    }) as unknown as typeof fetch;
+    return bodies;
+  };
+  const gateway = () =>
+    new OpenAICompatibleProvider({
+      baseUrl: "http://gateway.internal:8080/api/v1",
+      apiKey: "k",
+      model: "us.anthropic.claude-sonnet-5-5",
+      providerKey: "bedrock-gateway",
+    });
+  const USER = [{ role: "user" as const, content: "hi" }];
+
+  it("asks for no system cache write when the system goes on past the shared prefix", async () => {
+    const bodies = capture();
+    await gateway().chat(USER, {
+      systemMessage: "constitution + RAG\n\n---\n\nplan.md base prompt",
+      promptCaching: { system: true, systemPrefix: "constitution + RAG" },
+    });
+    expect(bodies[0]).not.toHaveProperty("extra_body");
+  });
+
+  it("keeps a messages cache write when one is asked for alongside", async () => {
+    const bodies = capture();
+    await gateway().chat(USER, {
+      systemMessage: "shared\n\ntail",
+      promptCaching: { system: true, messages: true, systemPrefix: "shared" },
+    });
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { messages: true } });
+  });
+
+  it("caches the system when the shared prefix IS the whole system", async () => {
+    const bodies = capture();
+    await gateway().chat(USER, {
+      systemMessage: "shared",
+      promptCaching: { system: true, systemPrefix: "shared" },
+    });
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: true } });
+  });
+
+  it("caches the system as before when no systemPrefix is given", async () => {
+    const bodies = capture();
+    await gateway().chat(USER, {
+      systemMessage: "a system prompt",
+      promptCaching: { system: true },
+    });
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: true } });
+  });
+});
