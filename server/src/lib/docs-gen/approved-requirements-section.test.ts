@@ -330,6 +330,30 @@ describe("renderApprovedRequirementsSection", () => {
     expect(markdown).not.toContain("### R1.");
   });
 
+  it("says, in a scoped document, that only requirements linked to its code are listed (#1246)", () => {
+    const scoped = renderApprovedRequirementsSection([req(1)], 28_000, undefined, {
+      scoped: true,
+    }).markdown;
+    expect(scoped).toContain(
+      "that METIS has linked to code in this document's repository or paths",
+    );
+    expect(scoped).toContain("**Only requirements linked to this part of the code are listed.**");
+    expect(scoped).toContain(
+      "Approved requirements with no code link, or linked only to other code, are not listed here",
+    );
+    expect(findCodeIdentifiers(scoped)).toEqual([]);
+    const unscoped = renderApprovedRequirementsSection([req(1)], 28_000).markdown;
+    expect(unscoped).not.toContain("linked to");
+    // Its overflow pointer counts the linked requirements, not every approved one.
+    const cut = renderApprovedRequirementsSection([req(1), req(2)], 1_000, undefined, {
+      scoped: true,
+    }).markdown;
+    expect(cut).toContain(
+      "approved requirements linked to this document's code are listed here.**",
+    );
+    expect(findCodeIdentifiers(cut)).toEqual([]);
+  });
+
   it("measures with the measure it is given", () => {
     const doubled = (markdown: string): number => markdown.length * 2;
     const plain = renderApprovedRequirementsSection([req(1), req(2), req(3)], 2_000);

@@ -34,6 +34,11 @@ import {
   type ScopedRequirement,
 } from "./requirements-scope.js";
 import type { Measure } from "./section-size.js";
+import {
+  isScopedApprovedRequirements,
+  requirementsInScope,
+  type ApprovedRequirementsScope,
+} from "./approved-requirements-scope.js";
 
 /** The section's H2 heading and its section-group label. */
 export const APPROVED_REQUIREMENTS_HEADING = "Approved Requirements";
@@ -53,11 +58,25 @@ export const APPROVED_REQUIREMENTS_MODEL = "none (stored approved requirements)"
  * `projectId`: the run is one of THIS project's, and its rows are read through
  * `requirementsScopeWhere` (live rows of the project whose review status is
  * `approved`), so another project's rows are never selected. No run: none.
+ *
+ * #1246 — a repository- or path-scoped document passes its `scope`
+ * (`approvedRequirementsScopeOf`): only the approved requirements with a code
+ * link in it are listed, and one with no code link is left out
+ * (`approved-requirements-scope.ts`).
  */
-export async function loadApprovedRequirements(projectId: string): Promise<ScopedRequirement[]> {
+export async function loadApprovedRequirements(
+  projectId: string,
+  scope: ApprovedRequirementsScope = {},
+): Promise<ScopedRequirement[]> {
   const runId = await defaultRequirementsRunIdFor(projectId);
   if (!runId) return [];
-  return loadScopedRequirements(projectId, { analysisId: runId, approvedOnly: true });
+  const approved = await loadScopedRequirements(projectId, {
+    analysisId: runId,
+    approvedOnly: true,
+  });
+  return isScopedApprovedRequirements(scope)
+    ? requirementsInScope(projectId, approved, scope)
+    : approved;
 }
 
 /**
@@ -124,8 +143,16 @@ export function approvedRequirementsMaxChars(bodyMaxChars: number): number {
   );
 }
 
-function leadIn(total: number): string {
+/** How the section is rendered: `scoped` for a repository- or path-scoped document (#1246). */
+export interface ApprovedRequirementsRenderOptions {
+  scoped?: boolean;
+}
+
+function leadIn(total: number, scoped: boolean): string {
   const noun = total === 1 ? "requirement" : "requirements";
+  if (scoped) {
+    return `> **Approved in METIS.** The ${total} approved ${noun} of the analysis run METIS opens under **Requirements** that METIS has linked to code in this document's repository or paths, as the analysts left them in METIS: each one's id, title, description and acceptance criteria are copied from the stored requirement, and no model wrote or reworded them. Highest priority first.\n>\n> **Only requirements linked to this part of the code are listed.** A requirement is listed when it has a code link or a merged pull request in this document's repository or paths. Approved requirements with no code link, or linked only to other code, are not listed here; every approved requirement is in METIS under **Requirements**.`;
+  }
   return `> **Approved in METIS.** The ${total} approved ${noun} of the analysis run METIS opens under **Requirements**, as the analysts left them in METIS: each one's id, title, description and acceptance criteria are copied from the stored requirement, and no model wrote or reworded them. Highest priority first.`;
 }
 
@@ -134,9 +161,12 @@ function leadIn(total: number): string {
  * what is listed, and where the full list is. The full list is never cut
  * short: a requirement is listed whole or not at all.
  */
-export function overflowPointer(listed: number, total: number): string {
+export function overflowPointer(listed: number, total: number, scoped = false): string {
   const rest = total - listed;
-  return `> **${listed} of ${total} approved requirements are listed here.** The other ${rest} did not fit in the main part of this document, so they are left out whole rather than cut short. The full list, each with its acceptance criteria, is in METIS under **Requirements**, and in a Business Requirements document generated with the scope **Requirements (analysis run)**, the run METIS opens under **Requirements** chosen, and **Approved requirements only**.`;
+  const noun = scoped
+    ? "approved requirements linked to this document's code"
+    : "approved requirements";
+  return `> **${listed} of ${total} ${noun} are listed here.** The other ${rest} did not fit in the main part of this document, so they are left out whole rather than cut short. The full list, each with its acceptance criteria, is in METIS under **Requirements**, and in a Business Requirements document generated with the scope **Requirements (analysis run)**, the run METIS opens under **Requirements** chosen, and **Approved requirements only**.`;
 }
 
 /** What {@link renderApprovedRequirementsSection} returns. */
@@ -158,16 +188,20 @@ export function renderApprovedRequirementsSection(
   requirements: readonly ScopedRequirement[],
   maxChars: number,
   measure: Measure = (markdown) => markdown.length,
+  options: ApprovedRequirementsRenderOptions = {},
 ): ApprovedRequirementsSection {
   const total = requirements.length;
-  const head = `## ${APPROVED_REQUIREMENTS_HEADING}\n\n${leadIn(total)}`;
+  const scoped = options.scoped === true;
+  const head = `## ${APPROVED_REQUIREMENTS_HEADING}\n\n${leadIn(total, scoped)}`;
   const entries = requirements.map((r, i) =>
     renderRequirementEntry(r, i + 1, { showId: true, codeLinks: false }).join("\n"),
   );
   const assemble = (listed: number, pointer: boolean): string =>
-    [head, ...entries.slice(0, listed), ...(pointer ? [overflowPointer(listed, total)] : [])].join(
-      "\n\n",
-    );
+    [
+      head,
+      ...entries.slice(0, listed),
+      ...(pointer ? [overflowPointer(listed, total, scoped)] : []),
+    ].join("\n\n");
   const all = assemble(total, false);
   if (measure(all) <= maxChars) return { markdown: all, listed: total, total };
   // The longest prefix of whole requirements that fits with the pointer, by

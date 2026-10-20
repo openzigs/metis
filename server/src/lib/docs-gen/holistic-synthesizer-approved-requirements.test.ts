@@ -44,6 +44,8 @@ import {
   type Phase2Router,
 } from "./holistic-synthesizer.js";
 import { findCodeIdentifiers, MAIN_PART_LANGUAGE_RULES } from "./main-part-language.js";
+import { renderedCitationLength } from "./citation-footnotes.js";
+import type { GroundingContext } from "./grounding/grounding-context.js";
 import type { ScopedRequirement } from "./requirements-scope.js";
 import { buildGenerationCheckpoint, type SectionSynthesisRecord } from "./section-reuse.js";
 
@@ -682,5 +684,86 @@ describe("per-section reuse (#857) with approved requirements", () => {
     expect(sectionOf(second.markdown, APPROVED_REQUIREMENTS_HEADING)).toContain(
       "### R2. Analyst-edited requirement 2",
     );
+  });
+});
+
+describe("the assembly-time render within the body limit (#1246)", () => {
+  /** Cited sources with long labels, so their footnote definitions take room. */
+  const SOURCES = Array.from({ length: 40 }, (_, i) => ({
+    sourceId: `rag:doc:${i}`,
+    kind: "rag",
+    label: `Sponsor interview notes, part ${i}: ${"what the business asked for and why. ".repeat(6)}`,
+    text: "evidence",
+  }));
+  const grounding = {
+    sources: SOURCES,
+    sourceIds: new Set(SOURCES.map((s) => s.sourceId)),
+    isEmpty: false,
+  } as unknown as GroundingContext;
+  const markers = SOURCES.map((s) => `[${s.sourceId}]`).join(" ");
+
+  /** The fake model, each section citing every source once. */
+  function citingModel(): AIProvider & { calls: Call[] } {
+    const base = fakeModel();
+    const stream = base.stream.bind(base);
+    return Object.assign(base, {
+      async *stream(messages: ChatMessage[]): AsyncGenerator<ChatChunk> {
+        for await (const chunk of stream(messages)) {
+          yield chunk.type === "delta"
+            ? { ...chunk, content: `${chunk.content}\n\nAs the sponsor said ${markers}.` }
+            : chunk;
+        }
+      },
+    });
+  }
+
+  it("lists the requirements that fit the body limit the footnotes leave, not the document cap", async () => {
+    // Under 120k the main part is a share of the body limit (`mainFitCap`), so
+    // every character the footnotes take is a little less room for the list.
+    const CAP = 90_000;
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", String(CAP));
+    scoreFaithfulnessMock.mockResolvedValue({
+      section: "s",
+      totalClaims: 1,
+      supportedClaims: 1,
+      faithfulness: 1,
+      verified: true,
+      unsupportedClaims: [],
+      supportedAttributions: [],
+    });
+    const requirements = Array.from({ length: 200 }, (_, i) => req(i + 1));
+    const result = await synthesizeFinalDocument(
+      FACTS,
+      META,
+      "business-requirements",
+      "BRD",
+      routerFor(citingModel()),
+      "p1",
+      grounding,
+      undefined,
+      undefined,
+      undefined,
+      { effectiveConfigHash: "cfg" },
+      { approvedRequirements: requirements },
+    );
+    // The footnotes are there and take room from the body.
+    const definitions = result.markdown.split("\n").filter((line) => /^\[\^src-\d+\]: /.test(line));
+    expect(definitions.length).toBeGreaterThan(0);
+    const footnoteChars = 2 + definitions.join("\n").length;
+    const bodyMaxChars = CAP - footnoteChars;
+
+    const listedAt = (maxChars: number) =>
+      renderApprovedRequirementsSection(requirements, maxChars, renderedCitationLength).listed;
+    const atCap = listedAt(approvedRequirementsMaxChars(CAP));
+    const atBody = listedAt(approvedRequirementsMaxChars(bodyMaxChars));
+    // The fixture is sized so the smaller limit lists fewer requirements.
+    expect(atBody).toBeLessThan(atCap);
+
+    const section = sectionOf(result.markdown, APPROVED_REQUIREMENTS_HEADING);
+    const listed = [...section.matchAll(/^### R(\d+)\. /gm)].length;
+    expect(section).toContain(`**${listed} of 200 approved requirements are listed here.**`);
+    // Rendered at assembly within the body limit: removing that render leaves
+    // the section as first rendered within the document cap, `atCap` long.
+    expect(listed).toBe(atBody);
   });
 });

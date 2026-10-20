@@ -18,6 +18,7 @@ const mockPrisma = {
   docsGenFactCache: { findUnique: vi.fn(), upsert: vi.fn(), update: vi.fn() },
   requirement: { findMany: vi.fn() },
   analysis: { findMany: vi.fn() },
+  requirementCodeMapping: { findMany: vi.fn() },
 };
 
 vi.mock("../prisma.js", () => ({
@@ -42,6 +43,9 @@ vi.mock("../prisma.js", () => ({
     },
     requirement: { findMany: (...a: unknown[]) => mockPrisma.requirement.findMany(...a) },
     analysis: { findMany: (...a: unknown[]) => mockPrisma.analysis.findMany(...a) },
+    requirementCodeMapping: {
+      findMany: (...a: unknown[]) => mockPrisma.requirementCodeMapping.findMany(...a),
+    },
   },
 }));
 
@@ -84,6 +88,8 @@ import { synthesizeHolisticDocument } from "./holistic-synthesizer.js";
 import { APPROVED_REQUIREMENTS_HEADING } from "./approved-requirements-section.js";
 
 const file = (n: number) => `src/billing/file${n}.ts`;
+/** #1246 — the lead-in's note that a scoped document lists linked requirements only. */
+const SCOPED_NOTE = "**Only requirements linked to this part of the code are listed.**";
 const tsFn = (id: string, name: string, filePath: string) => ({
   id,
   codeGraphId: "graph-a",
@@ -175,6 +181,72 @@ describe("synthesizeHolisticDocument — #1218 approved requirements in a reader
     expect(sectionGroups).toContain("Requirements Reconstructed from the Code");
     expect(result.markdown).toContain("Reconstructed from the code.");
     expect(result.markdown).not.toContain(`## ${APPROVED_REQUIREMENTS_HEADING}`);
+  });
+
+  it("lists only the approved requirements linked to a path-scoped document's paths (#1246)", async () => {
+    vi.stubEnv("DOCS_GEN_BRD_LAYOUT", "reader");
+    const link = (filePath: string) => ({
+      filePath,
+      startLine: 1,
+      endLine: 2,
+      confidence: 0.9,
+      source: "semantic",
+    });
+    mockPrisma.requirement.findMany.mockResolvedValue([
+      { ...APPROVED, codeMappings: [link(file(1))] },
+      {
+        ...APPROVED,
+        id: "req-elsewhere",
+        title: "Shipping labels print",
+        codeMappings: [link("src/shipping/label.ts")],
+      },
+      { ...APPROVED, id: "req-unmapped", title: "Invoices go out monthly" },
+    ]);
+    const result = await synthesizeHolisticDocument("p1", "business-requirements", "BRD", {
+      pathPrefixes: ["src/billing"],
+    });
+    expect(result.markdown).toContain("### R1. Refunds need a manager's approval");
+    expect(result.markdown).not.toContain("Shipping labels print");
+    expect(result.markdown).not.toContain("Invoices go out monthly");
+    expect(result.markdown).toContain(SCOPED_NOTE);
+  });
+
+  it("lists only the approved requirements linked to a repository-scoped document's repository (#1246)", async () => {
+    vi.stubEnv("DOCS_GEN_BRD_LAYOUT", "reader");
+    mockPrisma.codeGraph.findFirst.mockResolvedValue({ id: "graph-a" });
+    mockPrisma.requirement.findMany.mockResolvedValue([
+      APPROVED,
+      { ...APPROVED, id: "req-other-repo", title: "Shipping labels print" },
+      { ...APPROVED, id: "req-unmapped", title: "Invoices go out monthly" },
+    ]);
+    // Each mapping's symbol says which repository it is in.
+    const inRepo = (id: string) => ({ projectId: "p1", graph: { repoConnectionId: id } });
+    mockPrisma.requirementCodeMapping.findMany.mockResolvedValue([
+      { requirementId: "req-approved", filePath: file(1), codeSymbol: inRepo("a") },
+      { requirementId: "req-other-repo", filePath: "src/x.ts", codeSymbol: inRepo("b") },
+    ]);
+    const result = await synthesizeHolisticDocument("p1", "business-requirements", "BRD", {
+      repoConnectorId: "a",
+    });
+    expect(mockPrisma.requirementCodeMapping.findMany.mock.calls[0][0].where).toEqual({
+      projectId: "p1",
+      requirementId: { in: ["req-approved", "req-other-repo", "req-unmapped"] },
+    });
+    expect(result.markdown).toContain("### R1. Refunds need a manager's approval");
+    expect(result.markdown).not.toContain("Shipping labels print");
+    expect(result.markdown).not.toContain("Invoices go out monthly");
+    expect(result.markdown).toContain(SCOPED_NOTE);
+  });
+
+  it("lists every approved requirement, linked or not, in an unscoped document (#1246)", async () => {
+    vi.stubEnv("DOCS_GEN_BRD_LAYOUT", "reader");
+    mockPrisma.requirement.findMany.mockResolvedValue([
+      APPROVED,
+      { ...APPROVED, id: "req-unmapped", title: "Invoices go out monthly" },
+    ]);
+    const result = await synthesizeHolisticDocument("p1", "business-requirements", "BRD");
+    expect(result.markdown).toContain("Invoices go out monthly");
+    expect(result.markdown).not.toContain(SCOPED_NOTE);
   });
 
   it("never reads requirements for the catalogue layout or another document type", async () => {

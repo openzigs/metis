@@ -834,7 +834,7 @@ describe("captureGenerationInputs — a reader BRD's approved requirements (#123
   it("is an input of a reader-layout BRD: an approval or an edit changes the fingerprint", async () => {
     mocks.approved.mockResolvedValue([]);
     const none = await captureBrd();
-    expect(mocks.approved).toHaveBeenCalledWith("p");
+    expect(mocks.approved).toHaveBeenCalledWith("p", {});
     mocks.approved.mockResolvedValue([approved()]);
     const one = await captureBrd();
     expect(one.items.approvedRequirements).toBeDefined();
@@ -847,6 +847,24 @@ describe("captureGenerationInputs — a reader BRD's approved requirements (#123
     // Un-approving it (the row leaves the approved list) is a change too.
     mocks.approved.mockResolvedValue([]);
     expect((await captureBrd()).fingerprint).toBe(none.fingerprint);
+  });
+
+  it("reads a repository- or path-scoped BRD's approved requirements within its scope (#1246)", async () => {
+    mocks.approved.mockResolvedValue([approved()]);
+    await captureGenerationInputs(
+      {
+        ...brd,
+        scope: "repository",
+        scopeFilter: '{"repoConnectorId":"a","pathPrefixes":["src/billing/"]}',
+      },
+      policy,
+    );
+    expect(mocks.approved).toHaveBeenLastCalledWith("p", {
+      repoConnectorId: "a",
+      pathPrefixes: ["src/billing"],
+    });
+    await captureBrd({ scopeFilter: '{"pathPrefixes":["web"]}' });
+    expect(mocks.approved).toHaveBeenLastCalledWith("p", { pathPrefixes: ["web"] });
   });
 
   it("does not move for a write that only bumps version or updatedAt", async () => {

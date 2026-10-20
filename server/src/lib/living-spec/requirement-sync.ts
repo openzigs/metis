@@ -16,6 +16,7 @@
  */
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
+import { noteRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import { parseDiffHunks, parseLinkedIssues, type DiffHunk } from "./diff-parser.js";
 import type { PullRequestPayload, RepositoryPayload } from "./webhook.js";
 
@@ -122,6 +123,10 @@ export async function syncMergedPR(
         implementationsCreated += 1;
       }
     }
+    // #1246 — a merged pull request's files can bring an approved requirement
+    // into a repository- or path-scoped reader BRD's list: ask the check to
+    // look again.
+    if (implementationsCreated > 0) void noteRequirementsChanged(reqIds);
   }
 
   // Drift detection: any file in the diff that doesn't match a known
