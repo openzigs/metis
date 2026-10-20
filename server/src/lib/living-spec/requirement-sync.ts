@@ -10,14 +10,25 @@
  * The mapping from `issueNumber → Requirement` goes through the existing
  * `PublishedIssue → IssueDraft → Requirement` chain (the same path the
  * publishing pipeline uses to track which AI-generated draft became which
- * GitHub issue). The handler is **idempotent**: replaying the same merge
+ * GitHub issue). An issue number means something only within one repository,
+ * so a published issue counts only when it went to GitHub, to the repository
+ * the pull request is in (#1289): the webhook is global, and matching by issue
+ * number alone let a pull request in one workspace's repository mark another
+ * project's requirement as implemented.
+ *
+ * The handler is **idempotent**: replaying the same merge
  * event does not duplicate `RequirementImplementation` rows (deduped by the
  * `(requirementId, prNumber, filePath)` triple).
  */
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { noteRequirementCodeLinksChanged } from "../docs-gen/approved-requirements-staleness.js";
-import { connectionsNamedByPrUrl } from "../docs-gen/approved-requirements-scope.js";
+import {
+  connectionsNamedByPrUrl,
+  namesRepository,
+  repositoryOfPrUrl,
+  type NamedRepository,
+} from "../docs-gen/approved-requirements-scope.js";
 import { createChildLogger } from "../logger.js";
 import { parseDiffHunks, parseLinkedIssues, type DiffHunk } from "./diff-parser.js";
 import type { PullRequestPayload, RepositoryPayload } from "./webhook.js";
@@ -42,21 +53,42 @@ export interface SyncDeps {
 }
 
 /**
+ * #1289 — the repository a webhook's `repository.full_name` (`<owner>/<name>`)
+ * names, lower-cased; null unless it is exactly two non-blank segments. Read
+ * when the payload carries no pull request or repository URL.
+ */
+function repositoryOfFullName(fullName: string | undefined): NamedRepository | null {
+  const parts = (fullName ?? "").split("/").map((p) => p.trim().toLowerCase());
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  return { owner: parts[0], name: parts[1].replace(/\.git$/, "") };
+}
+
+/**
  * Resolve every Requirement linked to the PR via `Closes #N` keywords.
- * Walks `PublishedIssue` rows to find the issue number → requirement chain.
+ * Walks `PublishedIssue` rows to find the issue number → requirement chain,
+ * counting only issues published to GitHub in `repository`, the pull
+ * request's own (#1289): owner and name compared case-insensitively. A pull
+ * request whose repository is unknown links nothing.
+ *
+ * The repository is the one the publish batch targeted. A repository renamed
+ * or transferred on GitHub after publishing no longer matches, so a pull
+ * request merged under the new name links none of the issues published under
+ * the old one.
  */
 async function resolveLinkedRequirements(
   prisma: PrismaClient,
   closedIssueNumbers: number[],
+  repository: NamedRepository | null,
 ): Promise<Array<{ id: string; projectId: string }>> {
-  if (closedIssueNumbers.length === 0) return [];
+  if (closedIssueNumbers.length === 0 || !repository) return [];
   const published = await prisma.publishedIssue.findMany({
-    where: { issueNumber: { in: closedIssueNumbers } },
-    include: { draft: true },
+    where: { issueNumber: { in: closedIssueNumbers }, destination: "github" },
+    include: { draft: true, batch: { select: { targetOwner: true, targetRepo: true } } },
   });
   const requirementIds = new Set<string>();
   const out: Array<{ id: string; projectId: string }> = [];
   for (const row of published) {
+    if (!namesRepository(repository, row.batch.targetOwner, row.batch.targetRepo)) continue;
     const reqId = row.draft?.requirementId;
     if (!reqId || requirementIds.has(reqId)) continue;
     requirementIds.add(reqId);
@@ -75,13 +107,17 @@ export async function syncMergedPR(
     return { requirementsUpdated: 0, implementationsCreated: 0, driftedFiles: [] };
   }
   const links = parseLinkedIssues(pr.body);
-  const requirements = await resolveLinkedRequirements(prisma, links.closes);
+  const prUrl = pr.html_url ?? (repo.html_url ? `${repo.html_url}/pull/${pr.number}` : "");
+  const requirements = await resolveLinkedRequirements(
+    prisma,
+    links.closes,
+    repositoryOfPrUrl(prUrl) ?? repositoryOfFullName(repo.full_name),
+  );
   if (requirements.length === 0) {
     return { requirementsUpdated: 0, implementationsCreated: 0, driftedFiles: [] };
   }
   const mergedAt = pr.merged_at ? new Date(pr.merged_at) : new Date();
   const sha = pr.merge_commit_sha ?? pr.head?.sha ?? "";
-  const prUrl = pr.html_url ?? (repo.html_url ? `${repo.html_url}/pull/${pr.number}` : "");
 
   // Update implementedAt/By idempotently. We use updateMany with a "first
   // implementation wins" semantic — once `implementedAt` is set, subsequent
@@ -132,10 +168,10 @@ export async function syncMergedPR(
     // #1246 — a merged pull request's files can bring an approved requirement
     // into a repository- or path-scoped reader BRD's list: ask the check to
     // look again, for the requirements that gained a row, and only in a
-    // project that connects the repository the pull request is in. A pull
-    // request is matched to requirements by issue number alone, so the rows
-    // can land on another project's requirement; that project's list never
-    // counts them (`approved-requirements-scope.ts`), so it is not checked.
+    // project that connects the repository the pull request is in. The rows
+    // land only on requirements published to that repository (#1289), but a
+    // project can publish to a repository it does not connect; its list never
+    // counts such a row (`approved-requirements-scope.ts`), so it is not checked.
     // Best effort: the rows are written; a failed lookup here must not fail
     // the webhook (the next ingest's check reads the same links).
     if (linked.size > 0) {

@@ -3771,7 +3771,7 @@ When the **Closed Loop** is enabled, METIS treats your GitHub pull requests as t
 
 ### What you'll see
 
-- When a PR is **merged**, every requirement linked via `Closes #N` (and friends — `Fixes`, `Resolves`) is stamped with `implementedAt`, the merge commit SHA, and the PR number. Each touched file/line range is recorded in the requirement's "Implemented by" trail.
+- When a PR is **merged**, every requirement linked via `Closes #N` (and friends — `Fixes`, `Resolves`) is stamped with `implementedAt`, the merge commit SHA, and the PR number. Only requirements whose issue was published to GitHub **in the same repository as the PR** count (owner and name, case-insensitive): issue #5 of another repository, or a Jira issue numbered 5, is never touched (#1289). If you rename or transfer the repository on GitHub, PRs merged under the new name no longer link issues published under the old one. Each touched file/line range is recorded in the requirement's "Implemented by" trail.
 - When a PR is **opened or updated**, the PR-reviewer agent posts a GitHub review:
   - **Approve** when every AC is satisfied and no risk-severity comments are emitted.
   - **Request changes** when any AC is unsatisfied OR any sandbox test fails OR a risk-severity comment is emitted.
