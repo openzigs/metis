@@ -7014,7 +7014,8 @@ export interface SectionGroupResult {
   maxTokens: number;
 }
 
-function buildSectionPrompts(
+/** @internal Exported for the prompt-prefix tests (#1277). */
+export function buildSectionPrompts(
   group: SectionGroup,
   meta: ProjectMeta,
   title: string,
@@ -7080,8 +7081,7 @@ ABSOLUTE RULES:
 9. DEPTH REQUIREMENTS: Each section group should be THOROUGH — aim for 1500-3000 words. Include EVERY rule, EVERY validation, EVERY workflow step found in the facts. Do not summarize or omit details to save space. The document should be complete enough that someone can understand the full system behavior without reading source code.
 10. Use H4 headings liberally to organize dense content into scannable sub-topics.
 
-SECTION GROUP TO PRODUCE:
-${group.instructions}`;
+`;
 
   const conciseSystemMessage = `You are a senior technical writer. Write ONLY the "${group.label}" section of a ${docTypeLabel(docType)} for "${title}", as GitHub-Flavored Markdown.
 
@@ -7093,25 +7093,39 @@ RULES:
 - Math: use \`$inline$\` / \`$$display$$\`; put the closing \`$$\` on its own line.
 - Synthesize ACROSS modules — group related concepts, don't list module-by-module. Avoid wall-of-text.
 
-SECTION TO PRODUCE:
-${group.instructions}`;
+`;
 
-  const baseSystemMessage = tuning.concisePrompt ? conciseSystemMessage : verboseSystemMessage;
+  // #1277 — the system prompt is [the writer brief][grounding discipline, if
+  // any][this section's instructions]: what every section sends byte for byte
+  // first, so DeepSeek's automatic prefix cache (matched from token 0) reads it
+  // back for every section, and the one part a section alone sends last.
+  const brief = tuning.concisePrompt ? conciseSystemMessage : verboseSystemMessage;
+  const sectionTail = tuning.concisePrompt
+    ? `SECTION TO PRODUCE:\n${group.instructions}`
+    : `SECTION GROUP TO PRODUCE:\n${group.instructions}`;
   // #grounding — code-derived sections (Business Rules, Workflows, Calculations,
-  // Data Model, Integrations) get the cite-or-omit + no-file-metadata discipline
-  // appended; narrative sections (Overview, Capabilities) deliberately do not, as
-  // they are mandated to supply domain context the code does not contain.
+  // Data Model, Integrations) get the cite-or-omit + no-file-metadata discipline;
+  // narrative sections (Overview, Capabilities) deliberately do not, as they are
+  // mandated to supply domain context the code does not contain. #1277 — it
+  // sits ahead of the instructions, so the code-derived sections share it too.
   const systemMessage = CODE_DERIVED_SECTION_IDS.has(group.id)
-    ? `${baseSystemMessage}\n\n${CODE_DERIVED_GROUNDING_GUIDANCE}`
-    : baseSystemMessage;
+    ? `${brief}${CODE_DERIVED_GROUNDING_GUIDANCE}\n\n${sectionTail}`
+    : `${brief}${sectionTail}`;
 
+  // #1277 — the user turn leads with the document-level context every section
+  // and batch shares (the project, the title, the flow graph) and ends with
+  // what this section or batch alone sends (its label, facts, formulas,
+  // grounding and batch note), for the same prefix cache.
+  const flowSection = flowBlob
+    ? `\n=== END-TO-END FLOW (cross-module dependencies + SAS dataset lineage, from the code graph) ===\n\n${flowBlob}\n\nUse this to describe TRUE end-to-end workflows: which module hands off to which, and how datasets flow input→output across modules. Do NOT invent flows not supported by this graph.\n\n=== END FLOW ===\n`
+    : "";
   const userMessage = `Project: **${meta.name}**
 Primary language: ${meta.language}
 Source files analyzed: ${meta.totalFiles}
 Code symbols: ${meta.totalSymbols}
 Document title (already rendered as H1, do NOT repeat): "${title}"
 Document type: ${docTypeLabel(docType)}
-Section group: **${group.label}**
+${flowSection}Section group: **${group.label}**
 
 === EXTRACTED MODULE FACTS ===
 
@@ -7124,11 +7138,7 @@ ${factsBlob}
 ${formulasBlob}
 
 === END FORMULAS ===
-${
-  flowBlob
-    ? `\n=== END-TO-END FLOW (cross-module dependencies + SAS dataset lineage, from the code graph) ===\n\n${flowBlob}\n\nUse this to describe TRUE end-to-end workflows: which module hands off to which, and how datasets flow input→output across modules. Do NOT invent flows not supported by this graph.\n\n=== END FLOW ===\n`
-    : ""
-}${groundingBlock ? `\n${groundingBlock}\n` : ""}${batchNote ? `\n${batchNote}\n` : ""}
+${groundingBlock ? `\n${groundingBlock}\n` : ""}${batchNote ? `\n${batchNote}\n` : ""}
 Write the markdown for the **${group.label}** section group now, following the instructions in your system prompt. Begin with the first H2 heading.`;
 
   return { systemMessage, userMessage };

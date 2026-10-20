@@ -22,6 +22,14 @@
  * are untouched). It imports nothing #1070 added, so it runs unchanged on
  * both sides.
  *
+ * #1277 re-wrote both files with `WRITE_BEFORE_1070_FIXTURE=1` after REORDERING
+ * the section prompts for prefix caching (the grounding discipline now precedes
+ * a code-derived section's instructions; the flow block precedes the section
+ * label). A leaf-by-leaf diff against the earlier files changed only the
+ * `systemSha256` of the code-derived sections' calls and the `prompts` reuse
+ * hash of those five sections: every `systemChars` / `userChars`, every user
+ * prompt, judge request, document and evidence hash is unchanged.
+ *
  * Two scenarios, each one the plan WOULD change if it were on:
  *
  *   1. `brd-before-1070.json` — module facts that carry shared constants and a
