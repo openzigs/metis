@@ -1399,6 +1399,16 @@ describe("prompt caching with a shared systemPrefix on the gateway (#1277)", () 
     expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: false, messages: true } });
   });
 
+  it("sends Spec Kit plan's request as no system and no messages cache write", async () => {
+    // The exact options runSpecKitAgent sends for a plan artifact (#1277).
+    const bodies = capture();
+    await gateway().chat(USER, {
+      systemMessage: "constitution + RAG\n\n---\n\nresearch.md base prompt",
+      promptCaching: { system: true, messages: false, systemPrefix: "constitution + RAG" },
+    });
+    expect(bodies[0].extra_body).toEqual({ prompt_caching: { system: false, messages: false } });
+  });
+
   it("forwards a caller's explicit messages:false instead of dropping it", async () => {
     const bodies = capture();
     await gateway().chat(USER, {

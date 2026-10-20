@@ -1563,7 +1563,9 @@ What #1277 changed, from that report on the dev ledger:
   its system prompt only. A `messages` breakpoint cached each call's whole user
   turn, which never repeats.
 - **Spec Kit `/speckit.plan` on the Bedrock gateway** sends
-  `prompt_caching: { system: false }`. The gateway places one cachePoint after
+  `prompt_caching: { system: false, messages: false }`, and every single-call
+  Spec Kit command sends both as `false` on every provider (#1144's "no write",
+  now explicit). The gateway places one cachePoint after
   the WHOLE system prompt, so it cannot end the cached prefix at `systemPrefix`
   the way native Anthropic does (#1144); each of the five calls would write its
   own entry.

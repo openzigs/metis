@@ -529,7 +529,7 @@ describe("runSpecifyFeature", () => {
       prompt: "Build the billing dashboard.",
       deps: { provider: new OptsRecorder("# Spec\n\nbody") },
     });
-    expect(seen).toEqual([undefined]);
+    expect(seen).toEqual([{ system: false, messages: false }]);
   });
 
   it("re-uses existing feature when featureSlugOverride matches", async () => {
@@ -677,7 +677,7 @@ describe("runPlanExpanded", () => {
     const prefix = opts[0]!.promptCaching?.systemPrefix;
     expect(prefix).toBeTruthy();
     for (const o of opts) {
-      expect(o.promptCaching).toEqual({ system: true, systemPrefix: prefix });
+      expect(o.promptCaching).toEqual({ system: true, messages: false, systemPrefix: prefix });
       expect(o.systemMessage.startsWith(prefix!)).toBe(true);
       // The base prompt after the breakpoint is what differs per artifact.
       expect(o.systemMessage.length).toBeGreaterThan(prefix!.length);

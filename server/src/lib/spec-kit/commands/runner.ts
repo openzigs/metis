@@ -358,9 +358,13 @@ export async function runSpecKitAgent(input: RunCommandInput): Promise<RunComman
     // (the five plan artifacts) asks for caching, with the breakpoint at the end
     // of that prefix; a single-call command asks for none. `messages` is never
     // cached (the single-shot user turn is unique).
-    ...(input.cacheSharedPrefix && sharedPrefix.length > 0
-      ? { promptCaching: { system: true, systemPrefix: sharedPrefix } }
-      : {}),
+    // #1277 — "no write" is spelled `false`, never left out: the Bedrock
+    // gateway reads an absent key as its ENABLE_PROMPT_CACHING default and
+    // would cache the unique user turn (and, for a single call, the system).
+    promptCaching:
+      input.cacheSharedPrefix && sharedPrefix.length > 0
+        ? { system: true, messages: false, systemPrefix: sharedPrefix }
+        : { system: false, messages: false },
     // #1057 — an explicit output cap and reasoning effort (config-driven), so
     // a thinking-by-default model cannot spend the provider default reasoning.
     ...resolveSpecKitOutputOptions(provider.model),

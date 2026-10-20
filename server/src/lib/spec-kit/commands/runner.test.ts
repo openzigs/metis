@@ -89,7 +89,9 @@ describe("runSpecKitAgent cache wiring (#700)", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].opts.callType).toBe("spec-kit");
     // #1144 — a single-call command cannot reuse a write, so it requests none.
-    expect(calls[0].opts.promptCaching).toBeUndefined();
+    // #1277 — as explicit falses: the Bedrock gateway reads an absent key as
+    // its ENABLE_PROMPT_CACHING default and would write anyway.
+    expect(calls[0].opts.promptCaching).toEqual({ system: false, messages: false });
     // The constitution leads the system prompt (constitution -> RAG -> base).
     expect(String(calls[0].opts.systemMessage)).toMatch(/^## Constitution v1\.0/);
   });
@@ -133,7 +135,11 @@ describe("runSpecKitAgent cache wiring (#700)", () => {
     const prefix = "## Constitution v1.0\nBe truthful.\n\n---\n\nRAG-BLOCK";
     for (const call of calls) {
       // The single-shot user turn is unique, so it is never messages-cached.
-      expect(call.opts.promptCaching).toEqual({ system: true, systemPrefix: prefix });
+      expect(call.opts.promptCaching).toEqual({
+        system: true,
+        messages: false,
+        systemPrefix: prefix,
+      });
       expect(String(call.opts.systemMessage).startsWith(`${prefix}\n\n---\n\n`)).toBe(true);
     }
     // Both calls carry the same cacheable prefix, so the second reads the first's write.
@@ -156,7 +162,7 @@ describe("runSpecKitAgent cache wiring (#700)", () => {
     });
 
     expect(calls[0].opts.systemMessage).toBe("Base.");
-    expect(calls[0].opts.promptCaching).toBeUndefined();
+    expect(calls[0].opts.promptCaching).toEqual({ system: false, messages: false });
   });
 
   it("keeps the constitution -> RAG -> base order", async () => {
