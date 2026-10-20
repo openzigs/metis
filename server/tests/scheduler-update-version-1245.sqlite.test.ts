@@ -237,6 +237,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await urlOf(job.id)).toBe(`http://${HOST}/new`);
     });
 
+    it("the binder's own stale tab is refused by the version check alone", async () => {
+      const job = await createJob();
+      const rebind = await patch(job.id, "cora", { payload: hook("/new"), expectedVersion: 0 });
+      expect(rebind.status).toBe(200);
+      // Cora's second tab, opened before her rebind. The binding guard admits
+      // her (it is her secret), so only the version check stands between that
+      // stale form and the rebind it would undo.
+      const ownStaleTab = await patch(job.id, "cora", {
+        name: "Renamed in an old tab",
+        payload: hook("/old"),
+        expectedVersion: 0,
+      });
+      expect(ownStaleTab.status).toBe(409);
+      expect(ownStaleTab.body.error.code).toBe("JOB_VERSION_CONFLICT");
+      expect(await urlOf(job.id)).toBe(`http://${HOST}/new`);
+      const row = await jobRow(job.id);
+      expect(row.name).toBe("Ledger hook");
+      expect(row.version).toBe(1);
+    });
+
     it("a request without expectedVersion is still accepted (existing API clients)", async () => {
       const job = await createJob();
       await patch(job.id, "cora", { name: "One" });

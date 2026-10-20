@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "@/lib/api-client";
-import { JOB_VERSION_CONFLICT, jobSaveErrorMessage } from "./scheduler-api";
+import { JOB_VERSION_CONFLICT, jobEditInput, jobSaveErrorMessage } from "./scheduler-api";
+
+describe("jobEditInput (#1245)", () => {
+  it("sends the version the form was opened with as expectedVersion, with every form field", () => {
+    const fields = {
+      name: "Renamed",
+      cron: "0 3 * * *",
+      taskType: "http-webhook",
+      payload: { url: "https://hooks.example/in" },
+      enabled: false,
+      maxAttempts: 2,
+    };
+    expect(jobEditInput({ version: 7 }, fields)).toEqual({ ...fields, expectedVersion: 7 });
+  });
+
+  it("sends version 0 too: a job never edited still carries its precondition", () => {
+    expect(jobEditInput({ version: 0 }, { name: "x" })).toEqual({
+      name: "x",
+      expectedVersion: 0,
+    });
+  });
+});
 
 describe("jobSaveErrorMessage (#1245)", () => {
   it("tells the user plainly that someone else changed the job and what to do", () => {

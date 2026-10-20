@@ -79,6 +79,18 @@ export interface UpdateScheduledJobInput {
 /** #1245 — the server's refusal of an edit made from a stale copy of the job. */
 export const JOB_VERSION_CONFLICT = "JOB_VERSION_CONFLICT";
 
+/**
+ * #1245 — the PATCH body for an edit made in the job form: the form's fields
+ * plus the `version` of the row the form was opened with, so a save over
+ * someone else's later change is refused (409) rather than written over it.
+ */
+export function jobEditInput(
+  opened: Pick<ScheduledJobRow, "version">,
+  fields: Omit<UpdateScheduledJobInput, "expectedVersion">,
+): UpdateScheduledJobInput {
+  return { ...fields, expectedVersion: opened.version };
+}
+
 /** #1245 — what the job form says when its save fails. */
 export function jobSaveErrorMessage(err: unknown): string {
   if (err instanceof ApiError && err.code === JOB_VERSION_CONFLICT) {
