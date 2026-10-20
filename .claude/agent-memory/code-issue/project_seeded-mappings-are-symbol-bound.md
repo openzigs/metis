@@ -12,3 +12,7 @@ metadata:
 **How to apply:** in traceability fixes, build fixtures with the module symbol and with `codeSymbolId` mappings exactly as the seeder writes them before trusting a shape-keyed rule.
 
 Also (cycle 3 of #897): hub/fan-in fixtures invented a package layout ("five packages") Miniflux doesn't have; real `NewConfigOptions` fan-in is 3 test dirs, so a ≥5-dir threshold never fired. Validate traceability heuristics against `.playwright-mcp/walkthrough-706-run*/wave-e/tested-by.json` and a miniflux/v2 2.3.3 clone (`grep -rl <Symbol> --include=*_test.go | xargs -n1 dirname | sort -u`) before trusting a fixture-only pass.
+
+## A mapping's projectId may not match its requirement's (#1287)
+
+A `RequirementCodeMapping` can carry a different `projectId` from its requirement, and its symbol can belong to another project's graph. Filter on `projectId` and on `codeSymbol.projectId` before trusting a mapping's repository.

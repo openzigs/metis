@@ -15,3 +15,7 @@ Seen 2026-09-30:
 **Why:** each produced a green signal for a broken or unverified state.
 
 **How to apply:** check gate exit codes directly; add one route-level test per extracted helper; use `userEvent.upload` for file inputs; re-run merge-tree before merging a PR whose sibling just landed. Links: [[vitest-once-mocks-and-retries-hide-leaks]], [[parallel-prs-semantic-conflicts]].
+
+## SQLite fixtures can share a `createdAt` millisecond (#1287)
+
+Rows created in one SQLite test `beforeAll` can share a `createdAt` millisecond, so an `orderBy: createdAt` assertion is flaky. Give fixtures distinct priorities, or compare as sets.
