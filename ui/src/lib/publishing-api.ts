@@ -79,8 +79,9 @@ export const publishingApi = {
       method: "POST",
       body,
     }),
+  /** #1136 — each batch carries the issues it published (number + link). */
   listBatches: (projectId: Id, includeArchived = false) =>
-    apiFetch<PublishBatch[]>(
+    apiFetch<Array<PublishBatch & { publishedIssues?: PublishedIssue[] }>>(
       `${base(projectId)}/batches?includeArchived=${includeArchived ? "true" : "false"}`,
     ),
   getBatch: (projectId: Id, id: Id) =>

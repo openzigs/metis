@@ -218,7 +218,11 @@ import {
 } from "./schema-claim-check.js";
 // #67 — the fixed, user-safe failure vocabulary a section's exception is mapped
 // through before it can reach a persisted, client-visible warning.
-import { generationFailureMessage, isBodyTimeout } from "./generation-failure-message.js";
+import {
+  generationFailureMessage,
+  isBodyTimeout,
+  reasoningRejectedCause,
+} from "./generation-failure-message.js";
 import { markDroppedAttempts, sectionFailureWarning } from "./generation-checkpoint.js";
 import {
   currentDropRetryBreaker,
@@ -1282,6 +1286,11 @@ export interface ModuleFacts {
   phase1SkippedDirectories?: string[];
   /** #224 — code files of a partly read module that could not be read (a document warning names them). */
   phase1UnreadSourceFiles?: UnreadSourceFile[];
+  /**
+   * #1224 — why Phase-1 calls failed, when METIS recognises a cause the user
+   * can act on (a model rejecting the reasoning setting). A fixed sentence.
+   */
+  phase1FailureCause?: string;
 }
 
 interface ProjectMeta {
@@ -1733,7 +1742,12 @@ async function runHolisticSynthesis(
       docType,
       modules: failedModules,
     });
-    phase1Warnings.push(phase1ChunksFailedWarning(failedModules));
+    phase1Warnings.push(
+      phase1ChunksFailedWarning(
+        failedModules,
+        facts.find((f) => f.phase1FailureCause)?.phase1FailureCause,
+      ),
+    );
   }
 
   // #855 — a run stopped during Phase 1 saw each remaining extraction fail at
@@ -2563,6 +2577,8 @@ export async function extractModuleFacts(
   const extractedFns = new Set<string>();
   const truncatedFns = new Set<string>();
   const failedFns = new Set<string>();
+  /** #1224 — a recognised, user-actionable cause of a failed Phase-1 call. */
+  let phase1FailureCause: string | undefined;
   const leafSymbols = (chunk: readonly Phase1Unit[]) => chunk.flatMap((u) => u.symbols);
 
   const writeChunkRow = async (
@@ -2684,6 +2700,9 @@ export async function extractModuleFacts(
     if (!reply.ok) {
       counters.failed += 1;
       for (const k of leafSymbols(chunk)) failedFns.add(k);
+      // #1224 — a model that rejects the reasoning setting fails every call
+      // the same way; the warning names that cause in plain words.
+      phase1FailureCause ??= reasoningRejectedCause(reply.error);
       log.warn("Phase 1 LLM call failed", {
         err: String(reply.error),
         modulePath: m.dir,
@@ -2854,6 +2873,7 @@ export async function extractModuleFacts(
       ? { phase1UnreadSourceFiles: unreadSourceFiles }
       : {}),
     ...(factsTruncated ? { factsTruncated } : {}),
+    ...(phase1FailureCause ? { phase1FailureCause } : {}),
   };
 }
 

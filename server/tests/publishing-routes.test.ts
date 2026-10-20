@@ -66,6 +66,8 @@ interface RepoConnRow {
 
 const drafts = new Map<string, DraftRow>();
 const batches = new Map<string, BatchRow>();
+/** #1136 — published_issues rows, by batch id. */
+const publishedByBatch = new Map<string, Array<Record<string, unknown>>>();
 const repoConns = new Map<string, RepoConnRow>();
 let n = 0;
 /** #1171 — a project the logged-in (non-admin) caller cannot open. */
@@ -182,13 +184,27 @@ vi.mock("../src/lib/prisma.js", async () => {
       }),
     },
     publishBatch: {
-      findMany: vi.fn(async ({ where }: { where: { projectId: string; archived?: boolean } }) => {
-        return [...batches.values()].filter(
-          (b) =>
-            b.projectId === where.projectId &&
-            (where.archived === undefined ? true : b.archived === where.archived),
-        );
-      }),
+      findMany: vi.fn(
+        async ({
+          where,
+          include,
+        }: {
+          where: { projectId: string; archived?: boolean };
+          include?: { publishedIssues?: unknown };
+        }) => {
+          return [...batches.values()]
+            .filter(
+              (b) =>
+                b.projectId === where.projectId &&
+                (where.archived === undefined ? true : b.archived === where.archived),
+            )
+            .map((b) =>
+              include?.publishedIssues
+                ? { ...b, publishedIssues: publishedByBatch.get(b.id) ?? [] }
+                : b,
+            );
+        },
+      ),
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
         const row = batches.get(where.id);
         if (!row) return null;
@@ -382,6 +398,7 @@ beforeAll(() => {
 beforeEach(() => {
   drafts.clear();
   batches.clear();
+  publishedByBatch.clear();
   repoConns.clear();
   n = 0;
   requireApprovedReview = false;
@@ -616,6 +633,64 @@ describe("GET /batches", () => {
       .set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(1);
+  });
+
+  it("#1136 — each batch carries the issues it published, with number and link", async () => {
+    batches.set("batch_live_001", {
+      id: "batch_live_001",
+      projectId: "proj_test_001",
+      status: "completed",
+      targetOwner: "acme",
+      targetRepo: "metis",
+      targetBaseUrl: null,
+      provider: "github",
+      dryRun: false,
+      totalDrafts: 1,
+      publishedCount: 1,
+      failedCount: 0,
+      dedupSkipped: 0,
+      archived: false,
+      archivedAt: null,
+      archiveReason: null,
+      archivedById: null,
+      dryRunPlan: null,
+      startedById: "user_admin",
+      startedAt: new Date(),
+      completedAt: new Date(),
+      errorMessage: null,
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    publishedByBatch.set("batch_live_001", [
+      {
+        id: "pi_001",
+        batchId: "batch_live_001",
+        draftId: "draft_test_x01",
+        issueNumber: 12,
+        issueId: "I_kw12",
+        htmlUrl: "https://github.com/acme/metis/issues/12",
+        status: "created",
+        destination: "github",
+        parentIssueNumber: null,
+        dedupHash: null,
+        bodyHash: null,
+        errorMessage: null,
+        publishedAt: new Date(),
+      },
+    ]);
+    const token = await login("admin");
+    const res = await request(app)
+      .get("/api/projects/proj_test_001/publishing/batches")
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    const [batch] = res.body.data as Array<{ publishedIssues: Array<Record<string, unknown>> }>;
+    expect(batch.publishedIssues).toHaveLength(1);
+    expect(batch.publishedIssues[0]).toMatchObject({
+      draftId: "draft_test_x01",
+      issueNumber: 12,
+      htmlUrl: "https://github.com/acme/metis/issues/12",
+    });
   });
 
   it("includeArchived=true honoured", async () => {

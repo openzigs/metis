@@ -28,6 +28,7 @@ import { createChildLogger } from "../../logger.js";
 import { lastUserText, traceModelChat, traceModelStream } from "../../otel/genai-spans.js";
 import { AIProviderError } from "../errors.js";
 import { isAnthropicApiEndpoint, isDeepSeekEndpoint } from "./anthropic-endpoint.js";
+import { anthropicThinkingOff } from "./anthropic-thinking-off.js";
 import { baseUrlBillsAsAnthropic } from "../../finops/provider-rates.js";
 import type { ConfigService } from "../../config/config-service.js";
 
@@ -234,6 +235,8 @@ export class AnthropicProvider implements AIProvider {
   private readonly config?: ConfigService;
   /** #198 — warn once per instance when a forced tool choice is downgraded. */
   private forcedChoiceWarned = false;
+  /** #1224 — models whose "reasoning off" was re-spelled, each logged once. */
+  private readonly thinkingOffWarned = new Set<string>();
 
   constructor(opts: AnthropicProviderOptions) {
     // Normalize the configured default so the bare id is reported consistently
@@ -769,9 +772,20 @@ export class AnthropicProvider implements AIProvider {
     if (cacheMessages) markLastUserBlockForCaching(apiMessages, cacheControl);
 
     if (opts.disableThinking) {
-      // #25 — explicit OFF. Documented on the Anthropic API and on DeepSeek's
-      // Anthropic-compatible endpoint; an effort would contradict it, so none.
-      body.thinking = { type: "disabled" };
+      // #25 — explicit OFF; an effort would contradict it, so none. #1224 —
+      // spelled per model: Sonnet 5.5 400s on `disabled` and takes
+      // `between_tools`; an always-on model cannot turn thinking off, so the
+      // field is omitted and the effort lowered instead.
+      const off = anthropicThinkingOff(model, this.deepSeekEndpoint);
+      if (off.kind === "disabled") {
+        body.thinking = { type: "disabled" };
+      } else if (off.kind === "between-tools") {
+        body.thinking = { type: "between_tools" };
+        this.warnThinkingOffAdjusted(model, "between_tools");
+      } else {
+        body.output_config = { effort: off.effort };
+        this.warnThinkingOffAdjusted(model, "omitted");
+      }
     } else if (opts.reasoningEffort) {
       // #25 — DeepSeek documents only `enabled`/`disabled` for the Anthropic
       // format (https://api-docs.deepseek.com/guides/thinking_mode); Claude's
@@ -784,6 +798,22 @@ export class AnthropicProvider implements AIProvider {
       body.output_config = { ...((body.output_config as object | undefined) ?? {}), format };
     }
     return body;
+  }
+
+  /**
+   * #1224 — log once per model that "reasoning off" was sent in that model's
+   * own spelling, so an operator reading the log knows why the request does
+   * not carry `thinking: {type: "disabled"}`.
+   */
+  private warnThinkingOffAdjusted(model: string, sent: "between_tools" | "omitted"): void {
+    if (this.thinkingOffWarned.has(model)) return;
+    this.thinkingOffWarned.add(model);
+    log.warn(
+      sent === "between_tools"
+        ? "This model rejects reasoning off as thinking disabled; sending thinking between_tools instead"
+        : "This model cannot turn reasoning off; omitting thinking and sending the lowest effort instead",
+      { model, sent },
+    );
   }
 
   /**

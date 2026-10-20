@@ -871,6 +871,34 @@ describe("#156 extractModuleFacts on a truncated reply", () => {
     expect(upsertMock).not.toHaveBeenCalled();
   });
 
+  it("#1224 — records a rejected reasoning setting as the cause of a failed call", async () => {
+    const rejected = Object.assign(
+      new Error(
+        'anthropic stream failed (BadRequestError): 400 {"type":"error","error":{"type":"invalid_request_error","message":"To turn thinking off on this model, send \\"thinking\\": {\\"type\\": \\"between_tools\\"} instead of {\\"type\\": \\"disabled\\"}."}}',
+      ),
+      { status: 400 },
+    );
+    const provider = {
+      ...scriptedProvider([]),
+      async *stream(): AsyncGenerator<ChatChunk> {
+        throw rejected;
+      },
+    } as unknown as AIProvider;
+    const f = await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
+    expect(f!.phase1FailureCause).toContain('rejected the reasoning setting "off"');
+  });
+
+  it("#1224 — records no cause for an unrecognised failure", async () => {
+    const provider = {
+      ...scriptedProvider([]),
+      async *stream(): AsyncGenerator<ChatChunk> {
+        throw new Error("400 bad request");
+      },
+    } as unknown as AIProvider;
+    const f = await extractModuleFacts(tsModule(), provider, false, "p1", "/clone");
+    expect(f!.phase1FailureCause).toBeUndefined();
+  });
+
   it("retries the stream setup once on a gateway 503", async () => {
     vi.useFakeTimers();
     try {

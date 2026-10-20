@@ -87,6 +87,87 @@ export const GENERATION_COST_CEILING_MESSAGE =
 export const GENERATION_INPUTS_CHANGED_MESSAGE =
   "The project's sources changed while this document was being generated, so it was stopped. Regenerate the document to write it from the current sources.";
 
+/**
+ * #1224 — the reasoning values a provider can name when it rejects one. The
+ * message below quotes one of these, never the provider's own text, so the
+ * set of strings a client can see stays closed.
+ */
+// PR #1275 review — only the values a METIS reasoning setting can take. A
+// provider naming anything else (`xhigh`, `max`, an "on" METIS never sends as
+// such) gets the message without a quoted value rather than a value the
+// analyst never chose.
+const REASONING_SETTINGS = ["off", "low", "medium", "high"] as const;
+type ReasoningSetting = (typeof REASONING_SETTINGS)[number];
+
+/**
+ * The step whose call was refused, in the words an analyst reads: `facts` is
+ * Phase 1 (reading the code), `document` is everything after it.
+ */
+export type ReasoningRejectedStep = "facts" | "document";
+const REASONING_STEPS: readonly ReasoningRejectedStep[] = ["facts", "document"];
+
+const STEP_TEXT: Readonly<Record<ReasoningRejectedStep, string>> = {
+  facts: "while reading the code to collect facts",
+  document: "while writing the document",
+};
+
+/**
+ * #1224 — the model refused the reasoning (thinking) setting METIS sent: for
+ * example `off` on a model that cannot turn its reasoning off. Before #1224 this
+ * read as the generic failure, on all 89 calls of one run. Names the step that
+ * failed and no configuration key: the reader is an analyst, and the setting
+ * is an administrator's to change (PR #1275 review).
+ */
+export function generationReasoningRejectedMessage(
+  setting?: ReasoningSetting,
+  step: ReasoningRejectedStep = "document",
+): string {
+  const named = setting ? `the reasoning setting "${setting}"` : "a reasoning setting";
+  return `The AI model rejected ${named} ${STEP_TEXT[step]} (400 Bad Request). Ask an administrator to set reasoning for this step to "provider-default", or choose another model, then regenerate the document.`;
+}
+
+const REASONING_REJECTED_MESSAGES: readonly string[] = REASONING_STEPS.flatMap((step) => [
+  generationReasoningRejectedMessage(undefined, step),
+  ...REASONING_SETTINGS.map((s) => generationReasoningRejectedMessage(s, step)),
+]);
+
+/**
+ * #1224 (adversarial panel, `instruction-correctness`) — the plain-words
+ * message for the fact-reading step when `err` is a provider rejecting the
+ * reasoning setting, else `undefined`. A failed Phase-1 call is not routed
+ * through {@link generationFailureMessage}, so the Phase-1 warning asks for
+ * this cause directly.
+ */
+export function reasoningRejectedCause(err: unknown): string | undefined {
+  const message = readMessage(err);
+  if (!isReasoningRejection(readStatus(err), message)) return undefined;
+  return generationReasoningRejectedMessage(rejectedReasoningSetting(message), "facts");
+}
+
+function isReasoningRejection(status: number | undefined, message: string): boolean {
+  return (status === 400 || STATUS_400.test(message)) && REASONING_REJECTED_TEXT.test(message);
+}
+
+const STATUS_400 =
+  /(?:returned|status(?: code)?|HTTP|code)[:\s]*400\b|\(400\)|^(?:\w*Error:\s*)?400\b|failed \(BadRequestError\): 400\b/i;
+
+// The provider's own wording for a rejected thinking/effort configuration
+// (Anthropic's "Troubleshooting thinking" page; OpenAI-format `reasoning_effort`).
+// Deliberately NOT a bare "thinking": a replayed thinking block whose signature
+// or content fails verification is a different 400 with a different fix.
+const REASONING_REJECTED_TEXT =
+  /thinking\.type\.\w+\\?"? is not supported|turn thinking off on this model|adaptive thinking is not supported|effort '\w+' is not supported|effort cannot change when thinking is disabled|reasoning_effort/i;
+
+function rejectedReasoningSetting(message: string): ReasoningSetting | undefined {
+  if (/thinking\.type\.(?:disabled|between_tools)|turn thinking off on this model/i.test(message)) {
+    return "off";
+  }
+  const effort = /effort '(\w+)'/i.exec(message)?.[1]?.toLowerCase();
+  return (REASONING_SETTINGS as readonly string[]).includes(effort ?? "")
+    ? (effort as ReasoningSetting)
+    : undefined;
+}
+
 /** The run-stop reasons (`UnpublishableGenerationError`) with a message of their own. */
 const STOP_MESSAGES: Readonly<Record<string, string>> = {
   aborted: GENERATION_CANCELLED_MESSAGE,
@@ -111,6 +192,7 @@ const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   GENERATION_PROVIDER_DROPPED_MESSAGE,
   GENERATION_PROVIDER_CLOSED_MESSAGE,
   GENERATION_PATH_SCOPE_EMPTY_MESSAGE,
+  ...REASONING_REJECTED_MESSAGES,
 ]);
 
 // An HTTP status named as one: "returned 402", "status 429", "HTTP 401",
@@ -389,6 +471,9 @@ export function generationFailureMessage(err: unknown): string {
     /invalid[_\s-]*api[_\s-]*key|incorrect api key|authentication[_\s-]*error/i.test(message)
   ) {
     return GENERATION_PROVIDER_AUTH_MESSAGE;
+  }
+  if (isReasoningRejection(status, message)) {
+    return generationReasoningRejectedMessage(rejectedReasoningSetting(message), "document");
   }
   const transport = classifyTransportFailure(err);
   if (transport) return TRANSPORT_MESSAGES[transport];
