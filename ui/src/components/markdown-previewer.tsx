@@ -181,10 +181,19 @@ export function MarkdownPreviewer({
   // `beforeprint` listeners return; a batched update would land too late.
   // `matchMedia('print')` covers browsers that do not fire `beforeprint`.
   // Until then sections stay lazy, so opening a long document stays cheap.
+  //
+  // #1292 — subscribed ONCE per document, not once per lazy render. Each
+  // `matchMedia()` call is a new list whose state starts at the current media,
+  // and `change` fires only on a list whose state then moves. Re-subscribing
+  // on every `rendered` change meant a switch to print landing between a lazy
+  // render and the browser's media evaluation was heard by no list: the old
+  // one had lost its listener and the new one was born matching. For the same
+  // reason a list that is already `matches` renders everything at once.
   useEffect(() => {
-    if (rendered.size >= sectionCount) return;
+    if (sectionCount === 0) return;
+    const all = () => Array.from({ length: sectionCount }, (_, i) => i);
     const renderAll = () => {
-      flushSync(() => renderSections(Array.from({ length: sectionCount }, (_, i) => i)));
+      flushSync(() => renderSections(all()));
     };
     const onPrintMedia = (e: MediaQueryListEvent) => {
       if (e.matches) renderAll();
@@ -194,12 +203,13 @@ export function MarkdownPreviewer({
       typeof window.matchMedia === "function" ? window.matchMedia("print") : undefined;
     if (printQuery?.addEventListener) printQuery.addEventListener("change", onPrintMedia);
     else printQuery?.addListener?.(onPrintMedia);
+    if (printQuery?.matches) renderSections(all());
     return () => {
       window.removeEventListener("beforeprint", renderAll);
       if (printQuery?.removeEventListener) printQuery.removeEventListener("change", onPrintMedia);
       else printQuery?.removeListener?.(onPrintMedia);
     };
-  }, [rendered, sectionCount, renderSections]);
+  }, [sectionCount, renderSections]);
 
   // #272 — mermaid loads (and is configured) only when a diagram needs
   // drawing. #301 — its node colours come from the theme tokens, resolved at

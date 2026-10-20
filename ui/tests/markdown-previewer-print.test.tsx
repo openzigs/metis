@@ -66,6 +66,71 @@ function controllablePrintQuery() {
   };
 }
 
+/**
+ * `matchMedia('print')` with the browser's rule for `change` (CSSOM View): EACH call
+ * returns a new list whose matches-state starts at the CURRENT media, and at the next
+ * media-query evaluation only a list whose state differs fires `change`. So a list
+ * created after the switch never fires, and a listener removed before the evaluation
+ * never hears it.
+ */
+function printMediaEnvironment(fallback: typeof window.matchMedia) {
+  let printing = false;
+  const lists: { last: boolean; listeners: Set<(e: MediaQueryListEvent) => void> }[] = [];
+  const matchMedia = ((query: string) => {
+    if (query !== "print") return fallback(query);
+    const entry = { last: printing, listeners: new Set<(e: MediaQueryListEvent) => void>() };
+    lists.push(entry);
+    return {
+      get matches() {
+        return printing;
+      },
+      media: "print",
+      onchange: null,
+      addEventListener: (_t: string, l: (e: MediaQueryListEvent) => void) => entry.listeners.add(l),
+      removeEventListener: (_t: string, l: (e: MediaQueryListEvent) => void) =>
+        entry.listeners.delete(l),
+      addListener: (l: (e: MediaQueryListEvent) => void) => entry.listeners.add(l),
+      removeListener: (l: (e: MediaQueryListEvent) => void) => entry.listeners.delete(l),
+      dispatchEvent: () => false,
+    };
+  }) as unknown as typeof window.matchMedia;
+  return {
+    matchMedia,
+    created: () => lists.length,
+    switchTo(print: boolean) {
+      printing = print;
+    },
+    /** The browser's media-query evaluation: `change` on every list whose state moved. */
+    evaluate() {
+      for (const entry of lists) {
+        if (entry.last === printing) continue;
+        entry.last = printing;
+        const event = { matches: printing, media: "print" } as MediaQueryListEvent;
+        for (const l of [...entry.listeners]) l(event);
+      }
+    },
+  };
+}
+
+/** An IntersectionObserver the test drives: `enter(el)` reports `el` near the viewport. */
+class CapturingObserver {
+  constructor(private readonly cb: IntersectionObserverCallback) {}
+  readonly watched = new Set<Element>();
+  observe = (el: Element) => {
+    this.watched.add(el);
+  };
+  unobserve = () => {};
+  disconnect = () => {
+    this.watched.clear();
+  };
+  enter(target: HTMLElement) {
+    this.cb(
+      [{ isIntersecting: true, target } as unknown as IntersectionObserverEntry],
+      this as unknown as IntersectionObserver,
+    );
+  }
+}
+
 describe("MarkdownPreviewer — printing renders every section (#1182)", () => {
   const doc = longBrd();
   const originalMatchMedia = window.matchMedia;
@@ -154,6 +219,59 @@ describe("MarkdownPreviewer — printing renders every section (#1182)", () => {
     );
     expect(note?.className.split(/\s+/)).toEqual(expect.arrayContaining(["hidden", "print:block"]));
     expect(note!.textContent).toMatch(/print again/);
+  });
+
+  // #1292 — the e2e spec's first attempt sat at 35 pending sections for 15 s after
+  // `emulateMedia({ media: "print" })`: no render ever started. These two model the
+  // browser rule that caused it — see `printMediaEnvironment`.
+  it("renders every section when print media began before it subscribed", () => {
+    const media = printMediaEnvironment(originalMatchMedia);
+    window.matchMedia = media.matchMedia;
+    media.switchTo(true);
+
+    const { container } = render(<MarkdownPreviewer content={doc} />);
+
+    // No `change` can come: the list was created already matching.
+    expect(pending(container)).toHaveLength(0);
+    expect(rendered(container)).toHaveLength(SECTIONS + 1);
+  });
+
+  it("keeps the print listener it had across lazy renders, so a switch landing between them is not lost", () => {
+    const media = printMediaEnvironment(originalMatchMedia);
+    window.matchMedia = media.matchMedia;
+    const observers: CapturingObserver[] = [];
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class extends CapturingObserver {
+        constructor(cb: IntersectionObserverCallback) {
+          super(cb);
+          observers.push(this);
+        }
+      },
+    );
+    try {
+      const { container } = render(<MarkdownPreviewer content={doc} />);
+      const before = pending(container).length;
+      expect(before).toBeGreaterThan(0);
+
+      // The page switches to print media; the browser reports it at its next
+      // media-query evaluation. Before that, a section scrolls near the viewport
+      // and renders lazily — the ordering CI hit.
+      media.switchTo(true);
+      const next = pending(container)[0] as HTMLElement;
+      const lazy = observers.filter((o) => o.watched.has(next));
+      expect(lazy).toHaveLength(1);
+      act(() => lazy[0].enter(next));
+      expect(pending(container).length).toBe(before - 1);
+      media.evaluate();
+
+      expect(pending(container)).toHaveLength(0);
+      expect(container.textContent).not.toContain("- [ ]");
+      // One subscription for the life of the document, not one per lazy render.
+      expect(media.created()).toBe(1);
+    } finally {
+      vi.stubGlobal("IntersectionObserver", InertObserver);
+    }
   });
 
   it("is a no-op when every section is already rendered", () => {
