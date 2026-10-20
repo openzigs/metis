@@ -20,6 +20,8 @@ const PROJECTS = [
 
 const calls = vi.hoisted(() => [] as string[]);
 const bound = vi.hoisted(() => ({ ids: [] as string[] }));
+/** The `where` of every accessible-ids read. */
+const findManyWhere = vi.hoisted(() => [] as Array<{ id?: { in: string[] } }>);
 const count =
   <A extends unknown[], R>(name: string, fn: (...args: A) => R) =>
   (...args: A): R => {
@@ -40,9 +42,16 @@ vi.mock("../prisma.js", () => ({
     project: {
       findMany: count(
         "project.findMany",
-        async ({ where }: { where: { OR?: Array<{ workspaceId?: { in?: string[] } }> } }) => {
+        async ({
+          where,
+        }: {
+          where: { OR?: Array<{ workspaceId?: { in?: string[] } }>; id?: { in: string[] } };
+        }) => {
+          findManyWhere.push(where);
           const live = (where.OR ?? []).flatMap((c) => c.workspaceId?.in ?? []);
-          return PROJECTS.filter((p) => live.includes(p.workspaceId)).map(({ id }) => ({ id }));
+          return PROJECTS.filter(
+            (p) => live.includes(p.workspaceId) && (!where.id || where.id.in.includes(p.id)),
+          ).map(({ id }) => ({ id }));
         },
       ),
       findFirst: count("project.findFirst", async ({ where }: { where: { id: string } }) => ({
@@ -75,6 +84,7 @@ const bob: AuthPayload = {
 
 beforeEach(() => {
   calls.length = 0;
+  findManyWhere.length = 0;
   audit.mockClear();
 });
 
@@ -83,6 +93,8 @@ describe("assertProductAccessible (#1251)", () => {
     bound.ids = PROJECTS.map((p) => p.id);
     await expect(assertProductAccessible(bob, "prod-1")).resolves.toBeUndefined();
     expect(calls).toEqual(["product.findUnique", "workspaceMember.findMany", "project.findMany"]);
+    // Bounded to the product's own projects, not every project the member can open.
+    expect(findManyWhere).toEqual([expect.objectContaining({ id: { in: bound.ids } })]);
     expect(audit).not.toHaveBeenCalled();
   });
 

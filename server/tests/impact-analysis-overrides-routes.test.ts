@@ -34,13 +34,18 @@ vi.mock("../src/lib/prisma.js", () => ({
     schemaUsageOverride: {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       findFirst: async ({ where }: any) =>
+        // #1251 — the DELETE route reads the override by id first, for its audit.
+        (where.id !== undefined
+          ? store.overrides.find((r) => r.id === where.id && r.projectId === where.projectId)
+          : undefined) ??
         store.overrides.find(
           (r) =>
             r.projectId === where.projectId &&
             r.tableName === where.tableName &&
             r.columnName === (where.columnName ?? null) &&
             r.access === where.access,
-        ) ?? null,
+        ) ??
+        null,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       create: async ({ data }: any) => {
         seq += 1;

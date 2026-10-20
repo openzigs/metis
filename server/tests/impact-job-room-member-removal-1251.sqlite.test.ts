@@ -52,7 +52,8 @@ vi.mock("../src/lib/prisma.js", async () => {
     },
   };
 });
-vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+const auditSpy = vi.hoisted(() => vi.fn());
+vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: auditSpy }));
 
 const { impactAnalysisRouter } = await import("../src/routes/impact-analysis.js");
 const { workspacesRouter } = await import("../src/routes/workspaces.js");
@@ -107,6 +108,7 @@ const WS2 = "ws2-1251";
 const PA = "proj-a-1251";
 const PB = "proj-b-1251";
 const PC = "proj-c-1251";
+const PL = "proj-legacy-1251"; // predates workspaces: open to any authenticated user
 
 /** Olga owns ws1. Rob, Tess and Sam are coordinator members; Rita is a reader. */
 const USERS: Record<string, { role: RoleKey; ws: string; wsRole: string }> = {
@@ -116,6 +118,8 @@ const USERS: Record<string, { role: RoleKey; ws: string; wsRole: string }> = {
   sam: { role: "coordinator", ws: WS1, wsRole: "member" },
   rita: { role: "reader", ws: WS1, wsRole: "member" },
   mallory: { role: "coordinator", ws: WS2, wsRole: "owner" },
+  /** A system admin who is also a plain member of ws1. */
+  ada: { role: "admin", ws: WS1, wsRole: "member" },
 };
 type Who = keyof typeof USERS;
 
@@ -170,9 +174,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let sqlite: MigratedSqlite;
     let db: PrismaClient;
     const memberRow: Partial<Record<Who, string>> = {};
-    const impact: Record<"a" | "b" | "c", string> = { a: "", b: "", c: "" };
+    const impact: Record<"a" | "b" | "c" | "l", string> = { a: "", b: "", c: "", l: "" };
     let analysisA = "";
     let analysisB = "";
+    let analysisL = "";
 
     const app = () => {
       const a = express();
@@ -189,7 +194,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
       registerSocketServer(io);
-      for (const key of ["coordinator", "reader"]) {
+      for (const key of ["coordinator", "reader", "admin"]) {
         await db.role.create({ data: { id: `role-${key}`, key, name: key } });
       }
       for (const [id, u] of Object.entries(USERS)) {
@@ -211,6 +216,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         [PA, WS1],
         [PB, WS1],
         [PC, WS1],
+        [PL, null],
       ] as const) {
         await db.project.create({
           data: { id, name: id, slug: id, createdById: "olga", workspaceId, status: "active" },
@@ -221,6 +227,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ["a", PA],
         ["b", PB],
         ["c", PC],
+        ["l", PL],
       ] as const) {
         const ia = await db.impactAnalysis.create({
           data: { status: "completed", startedById: "olga", sourceText: `change ${key}` },
@@ -231,6 +238,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // A project-scoped job too: an analysis of project A.
       analysisA = (await db.analysis.create({ data: { projectId: PA, startedById: "olga" } })).id;
       analysisB = (await db.analysis.create({ data: { projectId: PB, startedById: "olga" } })).id;
+      analysisL = (await db.analysis.create({ data: { projectId: PL, startedById: "olga" } })).id;
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -310,6 +318,34 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       });
 
+      it("an admin stays in every job room through each re-judgement, even once removed from the workspace", async () => {
+        const ada = connect("ada");
+        const jobs = [impact.a, analysisA, impact.l, analysisL];
+        for (const jobId of jobs) await ada.subscribeJob(jobId);
+        const res = await request(app())
+          .delete(`/api/workspaces/${WS1}/members/${memberRow.ada}`)
+          .set("Authorization", bearer("olga"));
+        expect(res.status).toBe(200);
+        await evictProjectRoom(PA);
+        await evictProjectRoom(PL);
+        await revalidateLocalSockets(io, "sweep");
+        for (const jobId of jobs) expect(ada.inJob(jobId), jobId).toBe(true);
+        expect(ada.closed()).toBe(0);
+      });
+
+      it("a user of another workspace stays in a legacy no-workspace project's job rooms through each re-judgement", async () => {
+        const mallory = connect("mallory");
+        await mallory.subscribeJob(impact.l);
+        await mallory.subscribeJob(analysisL);
+        await evictProjectRoom(PL);
+        await revalidateLocalSockets(io, "sweep");
+        expect(mallory.inJob(impact.l)).toBe(true);
+        expect(mallory.inJob(analysisL)).toBe(true);
+        expect(mallory.closed()).toBe(0);
+        createJobEventEmitter(io).progress("analysis", analysisL, PL, 10, "Analysing");
+        expect(mallory.events(analysisL)).toHaveLength(1);
+      });
+
       it("a deleted workspace's impact run rooms are re-judged", async () => {
         const tess = connect("tess");
         await tess.subscribeJob(impact.c);
@@ -346,15 +382,51 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       it("any analysis.run member of the project deletes a teammate's override, not only its author", async () => {
         const id = await createOverride("public.teammate_1251");
+        auditSpy.mockClear();
         expect((await del("tess", id)).status).toBe(204);
         expect(await db.schemaUsageOverride.findUnique({ where: { id } })).toBeNull();
+        // Removing a teammate's assertion leaves a trail naming its author.
+        expect(auditSpy).toHaveBeenCalledWith({
+          actor: { id: "tess" },
+          action: "impact_analysis.usage_override.delete",
+          target: { type: "schema_usage_override", id },
+          metadata: {
+            projectId: PA,
+            createdBy: "olga",
+            ownOverride: false,
+            tableName: "public.teammate_1251",
+            columnName: null,
+            access: "reads",
+          },
+        });
+      });
+
+      it("audits an author deleting their own override as such, and an unknown id not at all", async () => {
+        const id = await createOverride("public.own_1251");
+        auditSpy.mockClear();
+        expect((await del("olga", id)).status).toBe(204);
+        expect(auditSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: "impact_analysis.usage_override.delete",
+            metadata: expect.objectContaining({ createdBy: "olga", ownOverride: true }),
+          }),
+        );
+        auditSpy.mockClear();
+        expect((await del("olga", id)).status).toBe(404);
+        expect(auditSpy).not.toHaveBeenCalledWith(
+          expect.objectContaining({ action: "impact_analysis.usage_override.delete" }),
+        );
       });
 
       it("a reader-role member and a non-member are refused, and the override survives", async () => {
         const id = await createOverride("public.kept_1251");
+        auditSpy.mockClear();
         expect((await del("rita", id)).status).toBe(403);
         expect((await del("mallory", id)).status).toBe(403);
         expect(await db.schemaUsageOverride.findUnique({ where: { id } })).not.toBeNull();
+        expect(auditSpy).not.toHaveBeenCalledWith(
+          expect.objectContaining({ action: "impact_analysis.usage_override.delete" }),
+        );
       });
     });
 

@@ -85,7 +85,8 @@ export async function assertProductAccessible(user: AuthPayload, productId: stri
   // mirroring assertProjectAccess's null-workspace convention.
   if (projectIds.length === 0) return;
   const actor = actorOf(user);
-  const accessible = new Set(await listMemberAccessibleProjectIds(actor));
+  // Bounded to the product's own projects: one query, a handful of rows.
+  const accessible = new Set(await listMemberAccessibleProjectIds(actor, projectIds));
   // A product reachable through its second bound project is not a probe of its
   // first, so nothing is audited per project. The one denial is audited below.
   if (projectIds.some((projectId) => accessible.has(projectId))) return;

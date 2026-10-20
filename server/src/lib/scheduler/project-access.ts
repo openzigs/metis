@@ -76,12 +76,21 @@ export async function buildProjectAccessWhere(actor: SchedulerActor): Promise<Ac
  * the actor may open, by `accessibleProjectWhere` (`lib/acp/authz.ts`, the
  * list form of `assertProjectAccess`), with the actor's workspaces read live
  * from the database.
+ *
+ * #1251 — `within` bounds the read to those project ids, for a caller that
+ * only needs to know which of a few projects are open (a product's bound
+ * projects), so it does not fetch every legacy and workspace project.
  */
-export async function listMemberAccessibleProjectIds(actor: SchedulerActor): Promise<string[]> {
+export async function listMemberAccessibleProjectIds(
+  actor: SchedulerActor,
+  within?: readonly string[],
+): Promise<string[]> {
   // An admin's workspaces do not enter the rule, so skip the read.
   const payload = await asAuthPayload(isAdminActor(actor) ? { ...actor, workspaces: [] } : actor);
+  // `accessibleProjectWhere` constrains no `id`, so the bound is a plain key.
+  const where = accessibleProjectWhere(payload);
   const rows = await prisma.project.findMany({
-    where: accessibleProjectWhere(payload),
+    where: within ? { ...where, id: { in: [...within] } } : where,
     select: { id: true },
   });
   return rows.map((p) => p.id);
