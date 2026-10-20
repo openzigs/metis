@@ -1540,6 +1540,53 @@ PROMPT_CACHE_TTL=1h          # optional — extends the gateway path from 5min t
                              # See the TTL-availability matrix below.
 ```
 
+#### Measuring what caching saves (#1277)
+
+`pnpm cache:report -- --db <sqlite file>` reads the `token_usages` ledger and
+prints, per `agentStep` × provider × model, the fresh input, cache-read and
+cache-write tokens and the **net saving**: what the same input tokens would
+have cost uncached, minus what they cost. A cache write is priced at the
+model's write price (1.25× input for a 5-minute write; `--ttl 1h` prices it at
+2×), a read at its read price (0.1×, or 0.05× on Sonnet 5.5 and Opus 5.5). A
+model priced without a write price (DeepSeek through `MODEL_PRICES`) bills a
+write at the input price, so it is no surcharge. A negative saving means the
+flow paid the write surcharge and read too little back. Prices come from
+`provider-rates.ts` and `MODEL_PRICES` (the database's `runtime_config` row,
+else the environment). The script opens SQLite with `readOnly: true` and writes
+nothing; `--since` / `--until` take ISO timestamps, `--json` prints the lines,
+and `--sql` (or a `postgres://` `DATABASE_URL` with no `--db`) prints the
+aggregate query to run on Postgres instead.
+
+What #1277 changed, from that report on the dev ledger:
+
+- **docs-gen grounding** (claim extraction and the faithfulness judge) caches
+  its system prompt only. A `messages` breakpoint cached each call's whole user
+  turn, which never repeats.
+- **Spec Kit `/speckit.plan` on the Bedrock gateway** requests no system cache
+  write. The gateway places one cachePoint after the WHOLE system prompt, so it
+  cannot end the cached prefix at `systemPrefix` the way native Anthropic does
+  (#1144); each of the five calls would write its own entry.
+- **docs-gen batched sections** keep the #208 warm-up (the first batch runs
+  alone until its reply begins) only for an explicit Claude cache, on native
+  Anthropic or the gateway, whose section system prompt clears the model's
+  floor. DeepSeek, which caches automatically, and a prefix under the floor fan
+  out at once. `/speckit.plan` sends its calls one at a time, plan.md first, so
+  its first call is already the warm-up.
+- **docs-gen section prompts** send what every section shares first: the
+  grounding discipline now precedes a code-derived section's instructions, and
+  the document's flow graph precedes the section label. DeepSeek matches a
+  prefix from token 0. Only the order changed, but the prompt is a section
+  reuse input, so a section written before the change is written again once on
+  the next regeneration.
+
+**The gateway's cache writes stay invisible** (re-checked 2026-10-19 against
+aws-samples/bedrock-access-gateway `main`: it reads Bedrock's
+`cacheWriteInputTokens` and returns no field for it). On `bedrock-gateway` rows
+the report's cache-write column is therefore 0 and the written tokens sit in
+fresh input, so the net saving it shows for a gateway flow is an **upper
+bound**: the 0.25× write premium is real and not in it. To see a flow's write
+waste, measure it on the native Anthropic provider, which reports both halves.
+
 #### Platform-split cache floors, TTL availability & cross-region caveat (Issue #703, epic #696)
 
 This subsection is the **single source of truth** for cache floors, TTL
@@ -1554,6 +1601,13 @@ nothing and reports `cached_tokens = 0` with **no error** (a silent miss):
 |---|---:|---:|
 | Sonnet 4.6 — default / general route | **1,024** | **2,048** |
 | Haiku 4.5 — faster / cheaper route | **4,096** | **4,096** |
+| Sonnet 5.5, Opus 5.5, Haiku 5.5, Opus 5, Fable, Mythos (#1277) | **512** | **512** |
+| Sonnet 5 (#1277) | **1,024** | **1,024** |
+
+The last two rows were read from Anthropic's prompt-caching page on 2026-10-19,
+which gives one minimum per model "on every platform where each model is
+available"; `cacheFloorTokens` (`server/src/lib/ai/cache-verification.ts`)
+carries them.
 
 Sources: [AWS Bedrock prompt caching](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html),
 [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).

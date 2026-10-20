@@ -27,7 +27,12 @@
  * but has no field for cache CREATION. So the hit ratio computed here is a
  * READ ratio (`cacheReadTokens / promptTokens`). If write-cost visibility is
  * ever needed, the native Anthropic path (`anthropic-provider.ts`) reports BOTH
- * `cache_creation_input_tokens` and `cache_read_input_tokens`.
+ * `cache_creation_input_tokens` and `cache_read_input_tokens`. #1277 —
+ * re-checked 2026-10-19: bedrock-access-gateway `main` still reads Bedrock's
+ * `cacheWriteInputTokens` and returns no field for it, so there is nothing to
+ * map. A gateway flow that writes and never reads therefore looks like a flow
+ * that does not cache, here and in `pnpm cache:report` (docs/OPERATIONS.md
+ * §7.5, "Measuring what caching saves").
  *
  * OWASP (A09 — logging failures): emissions carry ONLY the model ID, the call
  * type, and the integer token counts/ratio. The API key, the `Authorization`
