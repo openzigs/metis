@@ -24,6 +24,17 @@ const authDb = vi.hoisted(() => ({
   lookupError: null as Error | null,
 }));
 
+/**
+ * #1251 — `u1`'s live membership can be revoked, and one read of it can be
+ * held open on a gate (its answer is taken BEFORE it waits), so an eviction
+ * can run while a `subscribe:job` check is in flight.
+ */
+const memberDb = vi.hoisted(() => ({
+  u1Removed: false,
+  u1Reads: 0,
+  gate: null as null | { opened: Promise<void>; reached: () => void },
+}));
+
 /** #674 review — set to make every `job_scopes` read fail. */
 const jobScopeDb = vi.hoisted(() => ({ readError: null as Error | null }));
 
@@ -61,9 +72,18 @@ vi.mock("../src/lib/prisma.js", () => ({
     },
     // #645 — `u1` is a live member of workspace `w1`; nobody else is in one.
     workspaceMember: {
-      findMany: vi.fn(async (args?: { where?: { userId?: string } }) =>
-        args?.where?.userId === "u1" ? [{ workspaceId: "w1" }] : [],
-      ),
+      findMany: vi.fn(async (args?: { where?: { userId?: string } }) => {
+        if (args?.where?.userId !== "u1") return [];
+        memberDb.u1Reads += 1;
+        const rows = memberDb.u1Removed ? [] : [{ workspaceId: "w1" }];
+        const gate = memberDb.gate;
+        if (gate) {
+          memberDb.gate = null;
+          gate.reached();
+          await gate.opened;
+        }
+        return rows;
+      }),
     },
     // #645 — `subscribe:analysis` authorizes like the REST read: `a1` belongs
     // to `p1` in workspace `w1`; `a-deleted` is soft-deleted; nothing else exists.
@@ -214,7 +234,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 // `p1` only, which `u1` can open (`listMemberAccessibleProjectIds`, #1232).
 vi.mock("../src/lib/impact-analysis/impact-analysis-read.js", () => ({
   getImpactAnalysisDetail: vi.fn(async (id: string) =>
-    id === "ia1" ? { id: "ia1", projectIds: ["p1"], startedById: "u1" } : null,
+    id === "ia1" || id === "ia-race" ? { id, projectIds: ["p1"], startedById: "u1" } : null,
   ),
 }));
 
@@ -227,6 +247,8 @@ import {
 import { issueTokens } from "../src/lib/auth/jwt.js";
 import { canJoinAnalysisRoom } from "../src/lib/socket/analysis-room-access.js";
 import { canJoinConnectorRoom, resolveJobRoomScope } from "../src/lib/socket/room-access.js";
+import { evictMemberProjectRooms } from "../src/lib/socket/project-room-eviction.js";
+import { registerSocketServer } from "../src/lib/socket/registry.js";
 import { prisma } from "../src/lib/prisma.js";
 import { wirePresenceHandlers } from "../src/lib/collaboration/presence.js";
 import {
@@ -1062,6 +1084,45 @@ describe("Socket.IO server", () => {
       expect((await replayed).jobId).toBe("prr-system");
       expect(io.sockets.adapter.rooms.get("job:prr-system")?.has(admin.id!)).toBe(true);
       admin.close();
+    });
+
+    it("#1251 — a member removed while their subscribe:job check is in flight is judged again once in the room, and gets no replay", async () => {
+      _resetJobLifecycleMemory();
+      // A remembered transition, so a join that is not re-judged replays it.
+      createJobEventEmitter(io).started("impact-analysis", "ia-race", null);
+      registerSocketServer(io);
+      const member = await connectAs("u1", "u1");
+      try {
+        const replayed: unknown[] = [];
+        member.on("job:lifecycle", (e: unknown) => replayed.push(e));
+        let reached!: () => void;
+        const atGate = new Promise<void>((r) => (reached = r));
+        let open!: () => void;
+        memberDb.gate = { opened: new Promise<void>((r) => (open = r)), reached };
+        memberDb.u1Reads = 0;
+
+        member.emit("subscribe:job", { jobId: "ia-race" });
+        await atGate; // the check read u1 as a member and is now held open
+        memberDb.u1Removed = true;
+        await evictMemberProjectRooms("u1", "w1"); // not in the room yet: sees nothing
+        open();
+
+        // The handler's re-check after the join is the second membership read.
+        await vi.waitFor(() => expect(memberDb.u1Reads).toBeGreaterThanOrEqual(2));
+        await vi.waitFor(() =>
+          expect(io.sockets.adapter.rooms.get("job:ia-race")?.has(member.id!) ?? false).toBe(false),
+        );
+        // A message sent now arrives after any replay the join would have sent.
+        const sentinel = new Promise<void>((r) => member.once("heartbeat", () => r()));
+        io.to(member.id!).emit("heartbeat", { ts: 0 });
+        await sentinel;
+        expect(replayed).toEqual([]);
+      } finally {
+        memberDb.u1Removed = false;
+        memberDb.gate = null;
+        registerSocketServer(null as unknown as MetisIOServer);
+        member.close();
+      }
     });
 
     it("delivers live job events to a member only", async () => {

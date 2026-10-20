@@ -172,6 +172,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     const memberRow: Partial<Record<Who, string>> = {};
     const impact: Record<"a" | "b" | "c", string> = { a: "", b: "", c: "" };
     let analysisA = "";
+    let analysisB = "";
 
     const app = () => {
       const a = express();
@@ -229,6 +230,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
       // A project-scoped job too: an analysis of project A.
       analysisA = (await db.analysis.create({ data: { projectId: PA, startedById: "olga" } })).id;
+      analysisB = (await db.analysis.create({ data: { projectId: PB, startedById: "olga" } })).id;
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -287,16 +289,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(tess.inJob(impact.a)).toBe(true);
       });
 
-      it("a soft-deleted project's impact run room is re-judged; runs over other projects are untouched", async () => {
+      it("a soft-deleted project's impact run and its own analysis rooms are re-judged; other projects' are untouched", async () => {
         const tess = connect("tess");
         await tess.subscribeJob(impact.b);
+        await tess.subscribeJob(analysisB);
         await tess.subscribeJob(impact.a);
+        await tess.subscribeJob(analysisA);
 
         await db.project.update({ where: { id: PB }, data: { deletedAt: new Date() } });
         try {
           await evictProjectRoom(PB);
           expect(tess.inJob(impact.b)).toBe(false);
+          expect(tess.inJob(analysisB)).toBe(false);
           expect(tess.inJob(impact.a)).toBe(true);
+          expect(tess.inJob(analysisA)).toBe(true);
+          // And a new join to the deleted project's job is refused.
+          expect(await resolveJobRoomScope(payload("tess"), analysisB)).toBeNull();
         } finally {
           await db.project.update({ where: { id: PB }, data: { deletedAt: null } });
         }

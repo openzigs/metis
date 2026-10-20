@@ -140,8 +140,8 @@ async function lookupJobScope(
 
 /**
  * `job:{id}` carries a job's lifecycle and doc-section events. A job scoped to
- * a project takes that project's read rule — its events are broadcast to
- * `project:{id}` as well. An impact analysis spans projects and takes the rule
+ * a project takes the rule of that project's room (`project:{id}`, where its
+ * events are broadcast as well): project access plus "not soft-deleted". An impact analysis spans projects and takes the rule
  * of `GET /api/impact-analyses/:id`; any other job without a project is
  * admin-only. Returns the scope the caller was authorized against, or `null`.
  *
@@ -158,7 +158,13 @@ export async function resolveJobRoomScope(
   if (!scope) return null;
   let allowed: boolean;
   if (scope.projectId !== null) {
-    allowed = await canReachProject(user, scope.projectId);
+    // #1251 — the rule of `project:{id}`, which carries the same events: a
+    // soft-deleted project is closed to non-admins and the caller's workspaces
+    // are read live, so a project delete re-judges its job rooms too.
+    allowed = await canAccessProjectDiscussions(
+      { id: user.userId, role: user.role },
+      scope.projectId,
+    );
   } else if (scope.kind === "impact-analysis") {
     allowed = await passes(() =>
       loadAccessibleImpactDetail({ id: user.userId, role: user.role }, jobId),
