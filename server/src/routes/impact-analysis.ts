@@ -655,6 +655,17 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
   );
 
   // DELETE /projects/:projectId/usage-overrides/:overrideId — remove an override.
+  //
+  // #1251 — deliberately NOT limited to the override's author, unlike a table
+  // feedback DELETE (below). An override is the PROJECT's one assertion about a
+  // usage edge (unique per project + table + column + access, and every member
+  // reads it through `applyOverrides`), and any `analysis.run` member can
+  // already replace a teammate's override through the POST above, which
+  // re-stamps `createdBy`. An author-only delete would guard nothing that
+  // upsert leaves open. Table feedback is each user's own mark (one row per
+  // user per item, harvested into the eval corpus), so its delete is the
+  // author's. The gate is the same as the write's: `analysis.run` plus access
+  // to the project, so a reader-role member cannot delete.
   r.delete(
     "/projects/:projectId/usage-overrides/:overrideId",
     requirePermission("analysis.run"),

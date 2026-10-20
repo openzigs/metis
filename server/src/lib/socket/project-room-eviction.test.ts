@@ -13,6 +13,13 @@ const rejudge = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}));
 vi.mock("./project-rooms.js", () => ({ rejudgeProjectRooms: rejudge }));
 const revalidate = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}));
 vi.mock("./server.js", () => ({ REVALIDATE_CONCURRENCY: 2, revalidateLocalSockets: revalidate }));
+// #1251 — the job-room re-judgement is a spy too; which jobs it is limited to
+// (`jobTouchesProjects`) runs for real against the job-scope memory.
+const rejudgeJob = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}));
+vi.mock("./job-rooms.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./job-rooms.js")>()),
+  rejudgeJobRooms: rejudgeJob,
+}));
 
 import {
   REJUDGE_ALL_PROJECT_ROOMS_EVENT,
@@ -24,6 +31,7 @@ import {
   wireProjectRoomEvictionRelay,
 } from "./project-room-eviction.js";
 import { readEpoch } from "./revocation-relay.js";
+import { _resetJobLifecycleMemory, rememberJobScope } from "./job-events.js";
 import { registerSocketServer } from "./registry.js";
 import type { MetisIOServer } from "./server.js";
 
@@ -59,7 +67,9 @@ beforeEach(() => {
   projectFindMany.mockReset();
   projectFindMany.mockResolvedValue([{ id: "p1" }, { id: "p2" }]);
   rejudge.mockClear();
+  rejudgeJob.mockClear();
   revalidate.mockClear();
+  _resetJobLifecycleMemory();
 });
 afterEach(() => registerSocketServer(null as unknown as MetisIOServer));
 
@@ -203,5 +213,75 @@ describe("project-room eviction relay", () => {
     await evictWorkspaceProjectRooms("ws-1");
     expect(f.io.on).not.toHaveBeenCalled();
     expect(f.io.serverSideEmit).not.toHaveBeenCalled();
+  });
+});
+
+describe("#1251 — job-room eviction", () => {
+  /** A server whose `dave` watches three jobs and `erin` one of another project. */
+  function withJobWatchers() {
+    const f = fakeServer();
+    const s = f.io.of().sockets;
+    s.set("s-dave", sock("s-dave", "dave", ["job:j-p1", "job:j-p2", "job:j-impact"]));
+    s.set("s-erin", sock("s-erin", "erin", ["job:j-p2"]));
+    rememberJobScope("j-p1", "analysis", "p1");
+    rememberJobScope("j-p2", "analysis", "p2");
+    rememberJobScope("j-impact", "impact-analysis", null);
+    registerSocketServer(f.server);
+    return f;
+  }
+  /** `[socketId, jobs the call is limited to]` per `rejudgeJobRooms` call. */
+  const jobRejudged = (jobs = ["j-p1", "j-p2", "j-impact", "j-unknown"]) =>
+    rejudgeJob.mock.calls.map((c) => {
+      const [socket, , opts] = c as unknown as [
+        { id: string },
+        unknown,
+        { failClosed: boolean; only?: (jobId: string) => boolean },
+      ];
+      expect(opts.failClosed).toBe(true);
+      return [socket.id, opts.only ? jobs.filter(opts.only) : "*"];
+    });
+
+  it("re-judges every job room of the removed member's sockets", async () => {
+    withJobWatchers();
+    await evictMemberProjectRooms("dave", "ws-1");
+    expect(jobRejudged()).toEqual([["s-dave", "*"]]);
+    expect(rejudgeJob.mock.calls[0]![1]).toEqual({ userId: "dave" });
+  });
+
+  it("re-judges a project's job rooms and every cross-project or unplaced job, not another project's", async () => {
+    withJobWatchers();
+    await evictProjectRoom("p1");
+    expect(jobRejudged()).toEqual([["s-dave", ["j-p1", "j-impact", "j-unknown"]]]);
+  });
+
+  it("re-judges a deleted workspace's job rooms in one pass, not once per project", async () => {
+    withJobWatchers();
+    await evictWorkspaceProjectRooms("ws-1");
+    expect(jobRejudged()).toEqual([
+      ["s-dave", ["j-p1", "j-p2", "j-impact", "j-unknown"]],
+      ["s-erin", ["j-p1", "j-p2", "j-impact", "j-unknown"]],
+    ]);
+  });
+
+  it("leaves job rooms to the re-validation pass when the workspace's projects cannot be listed", async () => {
+    withJobWatchers();
+    projectFindMany.mockRejectedValue(new Error("db down"));
+    await evictWorkspaceProjectRooms("ws-1");
+    expect(rejudgeJob).not.toHaveBeenCalled();
+    expect(revalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies relayed project and member evictions to job rooms too", async () => {
+    const f = withJobWatchers();
+    wireProjectRoomEvictionRelay(f.server, true);
+    f.listeners.get(REJUDGE_PROJECT_ROOM_EVENT)!("p2");
+    await vi.waitFor(() => expect(rejudgeJob).toHaveBeenCalledTimes(2));
+    f.listeners.get(REJUDGE_USER_PROJECT_ROOMS_EVENT)!("erin");
+    await vi.waitFor(() => expect(rejudgeJob).toHaveBeenCalledTimes(3));
+    expect(jobRejudged()).toEqual([
+      ["s-dave", ["j-p2", "j-impact", "j-unknown"]],
+      ["s-erin", ["j-p2", "j-impact", "j-unknown"]],
+      ["s-erin", "*"],
+    ]);
   });
 });
