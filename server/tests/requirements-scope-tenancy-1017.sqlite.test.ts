@@ -94,6 +94,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .send({ title: "Scoped BRD", scope: "requirements", scopeFilter });
     const docsIn = (projectId: string) => db.generatedDocument.count({ where: { projectId } });
 
+    // Explicit, increasing createdAt: rows inserted in one millisecond would
+    // otherwise order by id, and the document numbers them R1, R2, ... by that order.
+    let created = Date.parse("2026-10-01T00:00:00Z");
     const requirement = (id: string, projectId: string, analysisId: string, title: string) =>
       db.requirement.create({
         data: {
@@ -104,6 +107,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           body: `Body of ${title}.`,
           priority: "high",
           acceptanceCriteria: JSON.stringify([`Criterion of ${title}.`]),
+          createdAt: new Date((created += 1_000)),
         },
       });
     const review = async (id: string, projectId: string, by: Who, pins: [string, number][]) => {
