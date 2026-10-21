@@ -119,6 +119,28 @@ export const publishBatchSchema = z
   .merge(timestampsSchema);
 export type PublishBatch = z.infer<typeof publishBatchSchema>;
 
+/**
+ * #1049 review — the longest label name GitHub accepts: a longer one is refused
+ * with 422 (measured in #988). A batch's labels now go on every issue, so one
+ * over-long label would fail the whole batch rather than only its label sync.
+ */
+export const GITHUB_LABEL_NAME_MAX = 50;
+
+/** Control characters, and the bidi controls that can reorder displayed text. */
+const LABEL_CONTROL_RE = /[\p{Cc}‎‏‪-‮⁦-⁩]/u;
+
+/** #1049 review — one "Additional labels" entry: trimmed, 1–50 characters, printable. */
+export const batchLabelSchema = z
+  .string()
+  .trim()
+  .min(1, "A label cannot be blank.")
+  .refine((s) => [...s].length <= GITHUB_LABEL_NAME_MAX, {
+    message: `A label can be at most ${GITHUB_LABEL_NAME_MAX} characters (GitHub's limit).`,
+  })
+  .refine((s) => !LABEL_CONTROL_RE.test(s), {
+    message: "A label cannot contain control or text-direction characters.",
+  });
+
 export const createPublishBatchSchema = z.object({
   projectId: idSchema,
   targetOwner: githubOwnerSchema,
@@ -132,7 +154,7 @@ export const createPublishBatchSchema = z.object({
   provider: z.enum(PUBLISH_PROVIDERS).default("github"),
   draftIds: z.array(idSchema).min(1).max(MAX_BATCH_ISSUES),
   dryRun: z.boolean().default(false),
-  additionalLabels: z.array(z.string().min(1).max(64)).max(32).default([]),
+  additionalLabels: z.array(batchLabelSchema).max(32).default([]),
   milestone: z.number().int().min(1).optional(),
   secretRef: z.string().min(1).max(256).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),

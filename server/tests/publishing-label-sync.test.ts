@@ -9,7 +9,9 @@ import {
   DEFAULT_PUBLISH_LABELS,
   isInternalPublishLabel,
   labelsToSync,
+  jiraLabels,
   publishableLabels,
+  sameLabels,
   syncLabels,
 } from "../src/lib/publishing/label-sync.js";
 import type {
@@ -170,6 +172,21 @@ describe("#1049 — issueLabels / batchAdditionalLabels", () => {
     expect(
       issueLabels(["feature", "unverified"], ["Feature", "sprint-42", "review:x", "", "sprint-42"]),
     ).toEqual(["feature", "sprint-42"]);
+  });
+
+  it("review — a user-typed internal label is dropped in any case", () => {
+    expect(issueLabels(["feature"], ["Finding:abc", "REVIEW:x", "UnVerified", "ok"])).toEqual([
+      "feature",
+      "ok",
+    ]);
+    expect(isInternalPublishLabel("Finding:abc")).toBe(true);
+    expect(jiraLabels([], ["FINDING:abc", "ok label"])).toEqual(["ok-label"]);
+  });
+
+  it("review — sameLabels compares sets, ignoring case and order; null is unknown", () => {
+    expect(sameLabels(["a", "B"], ["b", "A"])).toBe(true);
+    expect(sameLabels(["a"], ["a", "b"])).toBe(false);
+    expect(sameLabels([], null)).toBe(false);
   });
 
   it("reads the batch's additional labels from its metadata", () => {

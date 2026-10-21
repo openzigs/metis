@@ -110,8 +110,11 @@ export const UNVERIFIED_LABEL = "unverified";
  * case.
  */
 export function isInternalPublishLabel(label: string): boolean {
-  const name = label.trim();
-  return isHiddenRequirementLabel(name) || name.toLowerCase() === UNVERIFIED_LABEL;
+  // #1049 review — lower-cased first: a batch's free-text labels reach here,
+  // and `Finding:abc` must stay internal too. `isHiddenRequirementLabel` itself
+  // stays as analysis writes it.
+  const name = label.trim().toLowerCase();
+  return isHiddenRequirementLabel(name) || name === UNVERIFIED_LABEL;
 }
 
 /**
