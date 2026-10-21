@@ -108,17 +108,22 @@ export const TOPIC_PLAN_KEY = "DOCS_GEN_TOPIC_PLAN";
  * Bumped when the allocation rule changes, so a section written under another
  * rule is not reused (the plan is part of each section's reuse inputs).
  */
-export const TOPIC_PLAN_VERSION = 1;
+export const TOPIC_PLAN_VERSION = 2;
 
 /**
- * The least a planned topic is given: about 25 words, one rule stated as a
- * sentence. A topic that cannot have this much is dropped at planning time
- * rather than asked for in a phrase. On the #706 run-7 inputs (102 modules, a
- * 41k section budget) the floors take 15k and the other 26k is shared in
- * proportion to the estimates, so the largest module is planned about twenty
- * times the smallest.
+ * The least a planned topic is given: what a model that keeps to its plan
+ * writes for one module's topic. A topic that cannot have this much is dropped
+ * at planning time, lowest priority first, rather than asked for in a phrase.
+ *
+ * Measured (#1070, run 8 and the #1074 Haiku A/B, replayed offline from their
+ * stored sections): Haiku 5.5 wrote Key Workflows and Data Model at 1.00 and
+ * 1.02 of their planned budgets, 43,003 rendered characters over 100 topics
+ * and 43,933 over 102 — about 430 a topic. Under the old floor of 150 the plan
+ * dropped nothing in run 8 (102 topics in 43k per catalogue section, about 422
+ * each), and every topic it lost was cut at a section's tail instead. On run
+ * 8's inputs this floor drops two topics per catalogue section, by priority.
  */
-export const MIN_TOPIC_CHARS = 150;
+export const MIN_TOPIC_CHARS = 430;
 
 /**
  * What a section written in ONE call asks of the document budget: about 4,000
@@ -265,10 +270,11 @@ export function waterFill(asks: readonly number[], total: number): number[] {
 export function allocateTopicBudgets(
   topics: readonly TopicCandidate[],
   budget: number,
+  minTopicChars: number = MIN_TOPIC_CHARS,
 ): { kept: Array<TopicCandidate & { budgetChars: number }>; dropped: TopicCandidate[] } {
   const ranked = byPriority(topics);
   const need = (t: TopicCandidate): number => Math.max(1, Math.floor(t.estimatedChars));
-  const floorOf = (t: TopicCandidate): number => Math.min(need(t), MIN_TOPIC_CHARS);
+  const floorOf = (t: TopicCandidate): number => Math.min(need(t), Math.max(1, minTopicChars));
   const room = Math.max(0, Math.floor(budget));
   let keptCount = ranked.length;
   let floors = ranked.reduce((n, t) => n + floorOf(t), 0);
@@ -326,6 +332,8 @@ export function planDocument(input: {
    * are planned first, in that budget alone; the others in what is left.
    */
   mainBudgetChars?: number;
+  /** The least a kept topic is planned (default {@link MIN_TOPIC_CHARS}). */
+  minTopicChars?: number;
 }): DocumentPlan {
   const budgetChars = Math.max(
     0,
@@ -357,7 +365,7 @@ export function planDocument(input: {
     budgetChars,
   );
   const planned: PlannedSection[] = demands.map((d, i) => {
-    const { kept, dropped } = allocateTopicBudgets(d.topics, shares[i]);
+    const { kept, dropped } = allocateTopicBudgets(d.topics, shares[i], input.minTopicChars);
     const sectionId = d.section.sectionId;
     return {
       sectionId,
@@ -389,6 +397,7 @@ function planInParts(
     sections: readonly SectionDemand[];
     sectionMaxChars: number;
     mainBudgetChars: number;
+    minTopicChars?: number;
   },
   budgetChars: number,
 ): DocumentPlan {
@@ -398,12 +407,14 @@ function planInParts(
     sections: input.sections.filter((_, i) => isMain[i]),
     documentMaxChars: mainBudget,
     sectionMaxChars: input.sectionMaxChars,
+    minTopicChars: input.minTopicChars,
   });
   const mainGiven = main.sections.reduce((n, s) => n + s.budgetChars, 0);
   const appendix = planDocument({
     sections: input.sections.filter((_, i) => !isMain[i]),
     documentMaxChars: budgetChars - mainGiven,
     sectionMaxChars: input.sectionMaxChars,
+    minTopicChars: input.minTopicChars,
   });
   let m = 0;
   let a = 0;

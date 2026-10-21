@@ -153,6 +153,27 @@ describe("allocateTopicBudgets", () => {
     }
   });
 
+  it("#1070 — drops at planning time on a run-8-sized section, where the old floor dropped nothing", () => {
+    // Run 8: 102 topics per catalogue section, 43,057 characters each. Under a
+    // floor of 150 every topic was planned about 422 characters, the plan
+    // dropped none, and 48 topics were cut at section tails after writing.
+    const run8 = Array.from({ length: 102 }, (_, i) => topic(`m${i}`, 102 - i, 1_500));
+    const old = allocateTopicBudgets(run8, 43_057, 150);
+    expect(old.dropped).toEqual([]);
+    const now = allocateTopicBudgets(run8, 43_057);
+    expect(MIN_TOPIC_CHARS).toBe(430);
+    expect(now.dropped.map((t) => t.id)).toEqual(["m100", "m101"]);
+    for (const t of now.kept) expect(t.budgetChars).toBeGreaterThanOrEqual(MIN_TOPIC_CHARS);
+    // The floor is the plan's to set: planDocument passes it through.
+    const planned = planDocument({
+      sections: [{ sectionId: "rules", label: "Rules", kind: "enumerative", topics: run8 }],
+      documentMaxChars: 43_057,
+      sectionMaxChars: 60_000,
+      minTopicChars: 150,
+    });
+    expect(planned.sections[0].dropped).toEqual([]);
+  });
+
   it("drops by priority, not by size or by input order", () => {
     const big = topic("big", 1, 90_000);
     const small = topic("small", 9, 200);

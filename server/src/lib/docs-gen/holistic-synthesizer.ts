@@ -4757,11 +4757,15 @@ async function synthesizeFinalDocumentInRun(
         (s) => s.sectionId === group.id,
       );
       const moduleBudgets = planning?.budgets.get(group.id);
+      const modulePriorities = planning?.priorities.get(group.id);
       const topicBudgets: SectionTopicBudgets | undefined =
         plannedSection && moduleBudgets
           ? {
               budgetChars: plannedSection.budgetChars,
               budgetOf: (module) => moduleBudgets.get(module) ?? null,
+              ...(modulePriorities
+                ? { priorityOf: (module: ModuleFacts) => modulePriorities.get(module) ?? 0 }
+                : {}),
             }
           : undefined;
       const plannedBatches =
@@ -6653,6 +6657,8 @@ export interface SectionBatchPlan {
 export interface SectionTopicBudgets {
   budgetChars: number;
   budgetOf: (module: ModuleFacts) => number | null;
+  /** The module's topic priority (higher first); absent = relevance order. */
+  priorityOf?: (module: ModuleFacts) => number;
 }
 
 /**
@@ -6688,7 +6694,20 @@ export function planSectionBatches(
   // renders (PR #169 review).
   const readsFormulas = factSlicesFor(group).includes("formulas");
   const outputBudget = batchOutputBudgetChars(maxTokens);
-  for (const f of rankRelevantFacts(facts, group)) {
+  // #1070 — under a plan the modules are written in the plan's priority order,
+  // so the parts are too: what a length cap gives up last-resort at the
+  // section's tail is then the lowest-priority topics, not whichever modules
+  // the relevance score happened to rank last. A stable sort: without a
+  // priority (or with equal ones) the relevance order stands.
+  const ranked = rankRelevantFacts(facts, group);
+  const priorityOf = topicBudgets?.priorityOf;
+  const ordered = priorityOf
+    ? ranked
+        .map((f, i) => ({ f, i, p: priorityOf(f) }))
+        .sort((a, b) => b.p - a.p || a.i - b.i)
+        .map((x) => x.f)
+    : ranked;
+  for (const f of ordered) {
     const parts = factsModuleParts(f, group);
     const formulas = readsFormulas ? distinctFormulas([f]) : [];
     const minedCount = readsMinedRules(group) ? (f.minedRules?.length ?? 0) : 0;
@@ -6755,6 +6774,8 @@ export interface DocumentPlanning {
   sheet: FactSheet;
   /** Per batched section id, each module's planned characters (`null` = left out). */
   budgets: Map<string, Map<ModuleFacts, number | null>>;
+  /** Per batched section id, each module's topic priority (higher is written first). */
+  priorities: Map<string, Map<ModuleFacts, number>>;
   /**
    * The section that owns a fact in this document: the section its kind names,
    * when that section is written and the plan did not leave the fact's module
@@ -6831,6 +6852,8 @@ export function planDocumentTopics(input: {
    * is planned first, within `mainPlanBudget`; the appendix in the rest.
    */
   readerLayout?: boolean;
+  /** The least a kept topic is planned; default `MIN_TOPIC_CHARS` (`document-plan.ts`). */
+  minTopicChars?: number;
 }): DocumentPlanning {
   const { facts, groups } = input;
   const reader = input.readerLayout === true;
@@ -6900,6 +6923,24 @@ export function planDocumentTopics(input: {
       estimates.set(m.item, (estimates.get(m.item) ?? 0) + m.outputChars);
     }
     const ranked = [...estimates];
+    // #1070 (run 8) — a module that holds a canonical fact THIS section owns
+    // (a formula, a constant, an enumeration with a source line) is planned
+    // before every module that holds none, then by relevance. Relevance alone
+    // measures volume: run 8 cut "Feed Polling & Scheduling Rules" while five
+    // sub-sections of swipe arithmetic stayed. Replayed on run 8's inputs,
+    // `internal/model` (the scheduler formula) moves from 8th to 1st of 102 in
+    // Business Rules, 11th to 4th in Calculations, 6th to 1st in Data Model.
+    // Only facts this section owns, which it is given whatever its modules
+    // say, so a fact elsewhere on the sheet never moves this section's plan.
+    const holdsOwnedFact = new Set(
+      sheet.facts
+        .filter((fact) => fact.ownerSectionId === group.id)
+        .map((fact) => repositoryPathIdentity(fact.repository, fact.modulePath)),
+    );
+    const lift = (module: ModuleFacts): number =>
+      holdsOwnedFact.has(repositoryPathIdentity(module.repository, module.modulePath))
+        ? ranked.length
+        : 0;
     return {
       sectionId: group.id,
       label: group.label,
@@ -6918,7 +6959,7 @@ export function planDocumentTopics(input: {
         return {
           id,
           title: `${module.moduleName || module.modulePath || "(root)"} — ${group.label}`,
-          priority: ranked.length - rank,
+          priority: lift(module) + ranked.length - rank,
           estimatedChars,
         };
       }),
@@ -6929,6 +6970,7 @@ export function planDocumentTopics(input: {
     documentMaxChars: input.documentMaxChars,
     sectionMaxChars: input.sectionMaxChars,
     reservedChars,
+    ...(input.minTopicChars !== undefined ? { minTopicChars: input.minTopicChars } : {}),
     // #1175 — the main part first, within its own budget.
     // #1218 — what the main sections ask. #1270 — their targets, with the
     // approved requirements or without: the same at every budget.
@@ -6942,14 +6984,20 @@ export function planDocumentTopics(input: {
       : {}),
   });
   const budgets = new Map<string, Map<ModuleFacts, number | null>>();
+  const priorities = new Map<string, Map<ModuleFacts, number>>();
   /** Per section id, the modules the plan left out of it, by repository and path. */
   const leftOut = new Map<string, Set<string>>();
   for (const section of plan.sections) {
     if (section.kind !== "enumerative") continue;
     const byModule = new Map<ModuleFacts, number | null>();
-    for (const t of section.topics) byModule.set(topicModules.get(t.id)!, t.budgetChars);
+    const priorityOf = new Map<ModuleFacts, number>();
+    for (const t of section.topics) {
+      byModule.set(topicModules.get(t.id)!, t.budgetChars);
+      priorityOf.set(topicModules.get(t.id)!, t.priority);
+    }
     for (const t of section.dropped) byModule.set(topicModules.get(t.id)!, null);
     budgets.set(section.sectionId, byModule);
+    priorities.set(section.sectionId, priorityOf);
     leftOut.set(
       section.sectionId,
       new Set(
@@ -6968,6 +7016,7 @@ export function planDocumentTopics(input: {
     plan,
     sheet,
     budgets,
+    priorities,
     ownerOf: (fact) => {
       const label = labels.get(fact.ownerSectionId);
       if (label === undefined) return null;
