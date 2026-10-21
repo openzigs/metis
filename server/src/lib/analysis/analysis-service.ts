@@ -1008,7 +1008,9 @@ export async function lockRequirementSet(
 ): Promise<void> {
   if (resolveDatabaseProvider() !== "postgresql") return;
   await lockAnalysisRow(tx, analysisId);
-  await tx.$queryRaw`SELECT 1 FROM "requirements" WHERE "analysisId" = ${analysisId} FOR UPDATE`;
+  // #1016 — in id order, as the review service locks a scope's requirements,
+  // so a re-synthesis and a review over the same rows cannot deadlock.
+  await tx.$queryRaw`SELECT 1 FROM "requirements" WHERE "analysisId" = ${analysisId} ORDER BY "id" FOR UPDATE`;
 }
 
 /**

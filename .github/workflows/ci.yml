@@ -1008,6 +1008,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration cross-project-guard-1180-postgres
 
+      # Issue #1016 — two open reviews of one requirement: leaving one restores
+      # the requirement only when no other open review covers it. Prove the
+      # requirement-row lock makes two racing withdraws see each other.
+      - name: Prove two racing review withdraws restore the requirement on real Postgres
+        working-directory: server
+        run: pnpm test:integration review-two-open-1016-postgres
+
       - name: Remove the Postgres container
         if: always()
         run: docker rm -f "metis-ci-postgres-${GITHUB_JOB}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true

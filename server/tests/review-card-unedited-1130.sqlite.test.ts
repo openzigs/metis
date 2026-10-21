@@ -32,6 +32,7 @@ vi.mock("../src/lib/prisma.js", async () => {
     get prisma() {
       return state.db;
     },
+    resolveDatabaseProvider: () => "sqlite" as const,
     Prisma,
   };
 });
