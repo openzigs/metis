@@ -22,3 +22,8 @@ Related: [[requirement-history-writers-and-resync]], [[one-to-one-join-traps]], 
 - `Analysis.totalTokens` is used for more than display: `cost-cap.ts` sums it for the monthly cap and for budget routing, and neither reads the ledger. When a write may or may not have committed, settle it with a conditional `updateMany` keyed on the in-progress status and carrying the real delta (`settleRunningAnalysisAsFailed`). An unconditional retry has to choose between double-counting and dropping tokens.
 - `routes/analysis.ts` fires regenerate and resume as `void …catch(() => {})`, so an error a follow-up rethrows from its `finally` must be audited before the rethrow or it leaves no trace.
 - `markAnalysisFailed` / `markAnalysisCancelled` also set `completedAt`, and failed or cancelled runs can be regenerated. Since #1267, `markAnalysisRunning` keeps `completedAt` only for a run that had completed (`countsAsCompletedRun`). A re-run sets `running` before it persists requirements, so anything that reads "the run Requirements opens on" during that window has to use that rule.
+
+**Folded here (retired from the index 2026-10-21; files unchanged):**
+
+- [[structured-req-ids-repeat]] — structured req ids repeat: REQ-001 ids repeat across re-runs; scope promoted ids to run (#902)
+- [[one-to-one-join-traps]] — One-to-one joins: never guess: reuse one-to-one-match.ts; mutate tiers; sparse chain

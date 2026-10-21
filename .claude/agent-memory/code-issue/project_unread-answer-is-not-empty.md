@@ -28,3 +28,14 @@ that never answered.
   `tests/analysis-routes.test.ts` now do.
 - A provider error is not an unread answer: the impact runtime already counts it as
   a failure; mark only parse/shape failures.
+
+**Added 2026-10-21 (PR #1357 and review):**
+
+- **Validating only the envelope reads an all-malformed list as empty.** A caller that
+  parses `z.array(z.unknown())` and validates items afterwards turns a non-empty list with
+  zero valid items into a valid empty answer. Treat "non-empty raw list, zero valid items"
+  as schema-invalid (unread), and test it.
+- **Never log a malformed reply raw.** A JSON parser's error message can quote the model
+  text it failed on, and replies may contain user documents. Log only through
+  `describeMalformedReply` (`server/src/lib/analysis/structured-verdict.ts`: length, hash,
+  zod paths).

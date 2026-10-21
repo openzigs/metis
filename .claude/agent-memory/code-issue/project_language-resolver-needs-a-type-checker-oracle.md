@@ -21,3 +21,7 @@ On PR #1104 (#1071, Go calls bound by declared types) three implementers counted
 - The first run of the oracle found real bugs no fixture had: a call through `var f = fn` bound to `fn`; test-file methods on embedded types; explicit generic instantiation `F[T](x)` recorded as no call at all (the grammar reads it as a conversion or an index).
 - Run mutation in two stages: the corpus in-process (thousands of mutants in minutes), hand-written suites only for its survivors. Kill a hung mutant's real process, not a wrapper.
 - When the oracle disagrees with the resolver, fix the resolver (when in doubt: undecided), never the snapshot.
+
+**Folded here (retired from the index 2026-10-21; files unchanged):**
+
+- [[fix-the-lookup-rule-not-the-reported-depth]] — Fix the lookup rule, not the depth: move the fixture ±1 level (#1104)

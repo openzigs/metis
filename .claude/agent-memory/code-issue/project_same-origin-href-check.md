@@ -17,3 +17,7 @@ A "same-origin relative link" check must judge the link the way the browser reso
 - Parse with `new URL(href, origin)` and compare `.origin`; then re-check the string you return (must start with `/`, not `//` or `/\`) and parse it again. `safeInAppHref` in `ui/src/lib/notifications.ts` is the reference.
 - Test tab, newline, backslash, `/./`, `%2e` and dot-segment cases, not only `//host` and `javascript:`.
 - Related: [[project_next-catch-all-segments-are-decoded]] (the proxy route's version of "decide on the resolved path").
+
+**Folded here (retired from the index 2026-10-21; files unchanged):**
+
+- [[next-catch-all-segments-are-decoded]] — Next catch-all segments are decoded: decide proxy policy on resolved pathname (#1069)

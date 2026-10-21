@@ -22,3 +22,7 @@ Since #1059 `POST /spec-kit/commands/:cmd` runs a model-backed command through `
 
 **Why not `background_runs`:** its `recoverStaleRuns` sets a stale `running` row back to `queued` and the runner dispatches it again. For work a user triggered and pays for, a restart must fail the run, never repeat it (docs-gen made the same call in #50). `spec_kit_jobs` follows docs-gen: heartbeat, sweep, fail as interrupted.
 - (#1308) A SQLite route test running several live Spec Kit exports passes `SPECKIT_EXPORT_LIVE_LIMIT_MAX` (10 per user) once retries start, and unrelated tests then get 429. Raise the limit in the test's hoisted env.
+
+**Folded here (retired from the index 2026-10-21; files unchanged):**
+
+- [[heartbeat-sweep-tables-db-commit-and-one-clock]] — Job tables: DB commit + one clock: in-memory stop misses replicas (#1059)
