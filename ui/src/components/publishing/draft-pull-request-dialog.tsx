@@ -152,6 +152,12 @@ export function DraftPullRequestDialog({
                   {plan.upstreamCheck.note}
                 </p>
               )}
+              {plan.sourceMarker && (
+                <p className="mt-1 text-muted-foreground" data-testid="draft-pr-source-marker">
+                  The pull request body ends with a hidden comment that links it back to its METIS
+                  requirement: <code className="break-all">{plan.sourceMarker}</code>
+                </p>
+              )}
               {/* #1211 — said at plan time, so the confirm is no surprise. */}
               {!opened && plan.crossProject && (
                 <CrossProjectDryRunNotice notice={plan.crossProject} />

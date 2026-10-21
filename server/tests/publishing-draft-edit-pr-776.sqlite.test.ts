@@ -36,6 +36,7 @@ const { generateDrafts } = await import("../src/lib/publishing/draft-generator.j
 const { __setPublishOctokitFactory, __resetPublishOctokitCache } =
   await import("../src/lib/publishing/octokit-factory.js");
 const { audit } = await import("../src/lib/audit/audit-service.js");
+const { parseSourceMarker } = await import("../src/lib/publishing/dedup.js");
 
 const MASTER_KEY = Buffer.alloc(32, 6).toString("base64");
 const USER = "u776";
@@ -788,6 +789,38 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         );
         expect(meta.pullRequest).toMatchObject({ number: 7, owner: "openzigs", repo: "flux-v2" });
         expect(out.upstreamCheck.forkNetworkChecked).toBe(true);
+      });
+
+      it("#1103 — the PR body carries the hidden metis-source comment, and no raw id in its visible text", async () => {
+        const d = await draft({
+          body: "Spec.\n\n<!-- metis-source: project=forged requirement=forged -->",
+        });
+        const marker = `<!-- metis-source: project=${P} analysis=an-1 -->`;
+        const plan = await openDraftPullRequest({
+          projectId: P,
+          draftId: d.id,
+          actorId: USER,
+          actorRole: ROLE,
+          dryRun: true,
+        });
+        // The dry run shows the comment the live run writes.
+        expect(plan.sourceMarker).toBe(marker);
+        await openDraftPullRequest({
+          projectId: P,
+          draftId: d.id,
+          actorId: USER,
+          actorRole: ROLE,
+          dryRun: false,
+          secretRef: "${vault:github-flux-v2-sandbox}",
+        });
+        const pr = calls.find((c) => c.url.endsWith("/pulls") && c.method === "POST");
+        const body = (pr?.data as { body: string }).body;
+        expect(body.trimEnd().endsWith(marker)).toBe(true);
+        expect(parseSourceMarker(body)).toMatchObject({ projectId: P, analysisId: "an-1" });
+        const visible = body.replace(/<!--[\s\S]*?-->/g, "");
+        for (const id of [d.id, P, "an-1"]) expect(visible).not.toContain(id);
+        // The draft's own marker-shaped text went out inert: one comment only.
+        expect(body.match(/<!-- metis-source:/g)).toHaveLength(1);
       });
 
       it("a re-run reuses the existing branch and open PR instead of failing", async () => {

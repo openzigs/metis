@@ -393,6 +393,36 @@ export const dryRunPlanSchema = z.object({
     })
     .nullable()
     .default(null),
+  /**
+   * #1103 — the Jira leg of a batch whose project publishes to Jira (or to
+   * both): each issue as it would be created, and the hidden `metis.source`
+   * issue property that routes it back to its METIS requirement. Absent when
+   * the batch does not publish to Jira, and on plans stored before #1103.
+   */
+  jira: z
+    .object({
+      projectKey: z.string(),
+      issues: z.array(
+        z.object({
+          draftId: idSchema,
+          title: z.string(),
+          issueType: z.string(),
+          labels: z.array(z.string()),
+          description: z.string(),
+          sourceProperty: z
+            .object({
+              key: z.string(),
+              value: z.object({
+                projectId: z.string(),
+                analysisId: z.string().nullable(),
+                requirementId: z.string().nullable(),
+              }),
+            })
+            .nullable(),
+        }),
+      ),
+    })
+    .optional(),
 });
 export type DryRunPlan = z.infer<typeof dryRunPlanSchema>;
 
@@ -459,6 +489,12 @@ export interface DraftPullRequestResult {
   credentialCheck: CredentialCheckResult;
   /** Set on a live run: the draft PR opened (or the open one found for this branch). */
   pullRequest: { number: number; htmlUrl: string; reused: boolean } | null;
+  /**
+   * #1103 — the hidden `<!-- metis-source: … -->` comment the PR body ends
+   * with, routing it back to its METIS requirement; null when the draft has
+   * no plain project id. Not shown when GitHub renders the body.
+   */
+  sourceMarker: string | null;
   /**
    * What the never-target-the-analysed-repo guard covered. A dry run makes no
    * network call, so it compares the target with the project's repo

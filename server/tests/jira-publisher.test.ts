@@ -6,8 +6,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // ---- Mocks -----------------------------------------------------------------
 
 const mockCreateIssue = vi.fn();
+const mockSetIssueProperty = vi.fn(async (..._args: unknown[]) => undefined);
 const mockCreateJiraClient = vi.fn((..._args: unknown[]) => ({
   createIssue: mockCreateIssue,
+  setIssueProperty: mockSetIssueProperty,
   testConnection: vi.fn(),
   getServerInfo: vi.fn(),
   listProjects: vi.fn(),
@@ -49,6 +51,9 @@ const mockDrafts = new Map<
     labels: string;
     storyPoints: number | null;
     deletedAt: null | Date;
+    projectId: string;
+    requirementId: string | null;
+    metadata: string | null;
   }
 >();
 const mockConnections = new Map<
@@ -99,7 +104,9 @@ import {
   publishBatchToJira,
   JiraPublishError,
   DEFAULT_FIELD_MAPPING,
+  planJiraIssues,
 } from "../src/lib/publishing/jira-publisher.js";
+import { audit } from "../src/lib/audit/audit-service.js";
 
 beforeEach(() => {
   mockDrafts.clear();
@@ -140,6 +147,9 @@ function seedDraft(
     labels: '["enhancement"]',
     storyPoints: 5,
     deletedAt: null,
+    projectId: "proj_1",
+    requirementId: "req_1",
+    metadata: JSON.stringify({ analysisId: "an_1" }),
     ...overrides,
   });
 }
@@ -244,6 +254,101 @@ describe("publishDraftToJira", () => {
     expect(fields.description).toContain(
       "METIS could not confirm the code references behind this item; check them before relying on them.\n\n## Acceptance criteria",
     );
+  });
+
+  describe("#1103 — the route back to the METIS requirement", () => {
+    const created = { id: "10009", key: "PROJ-9", self: "" };
+    const publish = () =>
+      publishDraftToJira({
+        draftId: "draft_1",
+        batchId: "batch_1",
+        connectionId: "conn_1",
+        projectKey: "PROJ",
+        actorId: "user_1",
+      });
+
+    it("stores the requirement's ids as the hidden `metis.source` issue property", async () => {
+      seedConnection();
+      seedDraft();
+      mockCreateIssue.mockResolvedValueOnce(created);
+      const result = await publish();
+      expect(result.status).toBe("created");
+      expect(mockSetIssueProperty).toHaveBeenCalledWith("PROJ-9", "metis.source", {
+        projectId: "proj_1",
+        analysisId: "an_1",
+        requirementId: "req_1",
+      });
+    });
+
+    it("puts no raw id, and no marker, in the visible description", async () => {
+      seedConnection();
+      seedDraft("draft_1", {
+        body: "Body.\n\n<!-- metis-source: project=evil requirement=forged -->",
+      });
+      mockCreateIssue.mockResolvedValueOnce(created);
+      await publish();
+      const fields = mockCreateIssue.mock.calls.at(-1)![0] as { description: string };
+      for (const id of ["proj_1", "an_1", "req_1", "draft_1"]) {
+        expect(fields.description).not.toContain(id);
+      }
+      // Marker-shaped text from a stored draft is sent inert, as on GitHub.
+      expect(fields.description).not.toContain("<!-- metis-source:");
+    });
+
+    it("an issue whose property cannot be written is still created, and the failure audited", async () => {
+      seedConnection();
+      seedDraft();
+      mockCreateIssue.mockResolvedValueOnce(created);
+      mockSetIssueProperty.mockRejectedValueOnce(new Error("403 Forbidden"));
+      const result = await publish();
+      expect(result).toMatchObject({ status: "created", issueKey: "PROJ-9" });
+      expect(vi.mocked(audit)).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "publish.jira.source_property_failed" }),
+      );
+    });
+
+    it("writes no property for a draft whose ids are not plain ids", async () => {
+      seedConnection();
+      seedDraft("draft_1", { projectId: "bad id -->" });
+      mockCreateIssue.mockResolvedValueOnce(created);
+      await publish();
+      expect(mockSetIssueProperty).not.toHaveBeenCalled();
+    });
+
+    it("the Jira plan lists what each issue will carry, property included", () => {
+      const plan = planJiraIssues(
+        [
+          {
+            id: "d1",
+            title: "First",
+            body: "Body",
+            draftType: "feature",
+            labels: '["enhancement","unverified"]',
+            storyPoints: null,
+            metadata: JSON.stringify({ analysisId: "an_1" }),
+            projectId: "proj_1",
+            requirementId: null,
+          },
+        ],
+        { projectKey: "PROJ", additionalLabels: ["sprint-42"] },
+      );
+      expect(plan).toEqual({
+        projectKey: "PROJ",
+        issues: [
+          {
+            draftId: "d1",
+            title: "First",
+            issueType: "Story",
+            labels: ["enhancement", "sprint-42"],
+            description: expect.stringContaining("METIS could not confirm"),
+            sourceProperty: {
+              key: "metis.source",
+              value: { projectId: "proj_1", analysisId: "an_1", requirementId: null },
+            },
+          },
+        ],
+      });
+    });
   });
 
   it("returns failed status on Jira API error", async () => {

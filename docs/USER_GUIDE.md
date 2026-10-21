@@ -1825,6 +1825,19 @@ For each requirement, METIS creates a draft issue (an import of more than 25 req
     issue is published to GitHub, the project, analysis and requirement ids are written as a hidden HTML
     comment (`<!-- metis-source: … -->`) on the last lines of the issue.
     Hidden means not rendered — anyone who can read the issue can still read it in the issue's source
+  - **What each destination carries back to METIS (#1103).** None of them shows an internal id in the
+    visible text.
+    - *GitHub issue* — the hidden `metis-source` comment above.
+    - *Draft pull request* — the same hidden comment, at the end of the pull request body. The visible
+      footer says "Opened as a draft by METIS from an issue draft" and no longer names the draft's id.
+    - *Jira issue* — Jira shows an HTML comment as text, so the ids go into a Jira **issue property**
+      named `metis.source` (`{ projectId, analysisId, requirementId }`). It is not shown in the
+      description; read it through the Jira API (`GET /rest/api/3/issue/<key>/properties/metis.source`).
+      If the token may not set properties, the issue is still created and the failure is audited.
+    - The dry run shows each: the batch plan lists the Jira issues and says which get the property, and
+      the draft pull request's plan shows the comment its body will end with.
+    - Each is a hint, not proof: anyone who can edit the issue or pull request can change it. Nothing in
+      METIS reads them back yet; inside METIS the link is its own record of what it published.
   - Text that looks like one of METIS's own hidden comments (`<!-- metis-publish: …` or
     `<!-- metis-source: …`) cannot be put into a draft: wherever it comes from — a requirement, a file
     path, or your own edit — it is saved as the visible text `<!- - metis-…`, so the draft you preview is

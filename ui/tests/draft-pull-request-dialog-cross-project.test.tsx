@@ -147,6 +147,23 @@ describe("<DraftPullRequestDialog /> — cross-project confirm (#1180)", () => {
     );
   });
 
+  it("#1103 — the plan shows the hidden comment the PR body ends with", async () => {
+    const marker = "<!-- metis-source: project=p1 analysis=a1 requirement=r1 -->";
+    draftPullRequest.mockResolvedValueOnce({ ...PLAN, sourceMarker: marker });
+    render(
+      <DraftPullRequestDialog
+        projectId="proj_1"
+        draft={{ id: "d1", title: "Spec" }}
+        onOpenChange={() => {}}
+      />,
+      { wrapper: makeWrapper({ withAuth: false }) },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Plan (dry run)" }));
+    const line = await screen.findByTestId("draft-pr-source-marker");
+    expect(line).toHaveTextContent("ends with a hidden comment");
+    expect(line).toHaveTextContent(marker);
+  });
+
   it("#1211 — a plan without a notice shows none", async () => {
     draftPullRequest.mockResolvedValueOnce(PLAN);
     render(

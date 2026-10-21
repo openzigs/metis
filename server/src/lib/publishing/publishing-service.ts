@@ -29,7 +29,7 @@ import { isVaultRef } from "../connectors/vault-resolver.js";
 import { bindSecretRef } from "../vault/bound-secret.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { refBodyOf } from "../vault/secret-binding.js";
-import { publishBatchToJira } from "./jira-publisher.js";
+import { planJiraIssues, publishBatchToJira } from "./jira-publisher.js";
 import { batchAdditionalLabels } from "./label-sync.js";
 import { createChildLogger } from "../logger.js";
 
@@ -516,6 +516,18 @@ async function executeBatchInner(opts: {
     });
   }
 
+  // #1103 — a dry run makes no Jira call either, but its plan says what the
+  // Jira leg would create, and the `metis.source` property each issue carries.
+  if (jiraBound && batch.dryRun && Array.isArray(meta.draftIds) && meta.draftIds.length > 0) {
+    await recordJiraDryRun({
+      batchId: opts.batchId,
+      projectId: batch.projectId,
+      draftIds: meta.draftIds,
+      projectKey: project!.jiraProjectKey!,
+      additionalLabels: batchAdditionalLabels(batch.metadata),
+    });
+  }
+
   // Jira publish
   if (
     (destination === "jira" || destination === "both") &&
@@ -575,6 +587,62 @@ async function executeBatchInner(opts: {
   }
 
   return githubResult;
+}
+
+/**
+ * #1103 — add the Jira leg to a dry run's stored plan: the drafts the live Jira
+ * leg would send (the batch's own draft ids, in its order), mapped as
+ * `publishDraftToJira` maps them. DB-only. A Jira-only batch has no GitHub plan,
+ * so it gets one with no GitHub actions.
+ */
+async function recordJiraDryRun(input: {
+  batchId: string;
+  projectId: string;
+  draftIds: string[];
+  projectKey: string;
+  additionalLabels: string[];
+}): Promise<void> {
+  const rows = await prisma.issueDraft.findMany({
+    where: { projectId: input.projectId, deletedAt: null, id: { in: input.draftIds } },
+  });
+  const byId = new Map(rows.map((d) => [d.id, d]));
+  const drafts = input.draftIds.flatMap((id) => {
+    const d = byId.get(id);
+    return d ? [d] : [];
+  });
+  const jira = planJiraIssues(drafts, {
+    projectKey: input.projectKey,
+    additionalLabels: input.additionalLabels,
+  });
+  const row = await prisma.publishBatch.findUnique({ where: { id: input.batchId } });
+  if (!row) return;
+  let github: DryRunPlan | null = null;
+  try {
+    github = row.dryRunPlan ? (JSON.parse(row.dryRunPlan) as DryRunPlan) : null;
+  } catch {
+    github = null;
+  }
+  const plan: DryRunPlan = github
+    ? { ...github, jira }
+    : {
+        batchId: row.id,
+        targetOwner: row.targetOwner,
+        targetRepo: row.targetRepo,
+        targetBaseUrl: row.targetBaseUrl,
+        provider: row.provider as DryRunPlan["provider"],
+        totalActions: 0,
+        estimatedDurationMs: 0,
+        actions: [],
+        credentialResolved: false,
+        credentialCheck: "missing",
+        credentialErrorCode: null,
+        approvalGate: null,
+        jira,
+      };
+  await prisma.publishBatch.update({
+    where: { id: input.batchId },
+    data: { dryRunPlan: JSON.stringify(plan) },
+  });
 }
 
 export async function archiveBatch(opts: {
