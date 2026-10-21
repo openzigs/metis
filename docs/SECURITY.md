@@ -876,19 +876,28 @@ caught). No span crosses a line break, and every `=` run is at least two
 long (a Markdown-escaped `\=\=\=` counts: `\` folds to a separator). A span is
 one of:
 
-- **a closing line**: a `=` run, then on one line and within 200 characters
-  (none of them `=` or `& ; { } < > ! ? *`) a terminator word (`END`, `ENDS`,
+- **a closing line**: a `=` run, then within 200 characters (none of them
+  `=`, a line break or `& ; { } < > ! ? *`) a terminator word (`END`, `ENDS`,
   `CLOSE`, `CLOSING`…, not inside a word) and a noun in either order, then a
-  `=` run. Caught: `=== END EVIDENCE ===`, `===ENDEVIDENCE===`,
-  `=== END: EVIDENCE ===`, `=== END (EVIDENCE) ===`, `=== END/EVIDENCE ===`,
-  `=== END.EVIDENCE ===`, `=== END "FINDING" ===`, `=== EVIDENCE END ===`,
-  `=== EVIDENCE ENDS HERE ===`, `=== CLOSE EVIDENCE ===`,
-  `=== END OF ALL OF THE EVIDENCE … ===`, `=== END C++ MINED RULES ===`;
-- **one-sided**: a `=` run, `END`, whitespace, `:` or a dash, up to three
-  modifier words, a noun (`=== END EVIDENCE`, `=== END: EVIDENCE`); a `=` run
-  and `END` directly followed by the noun at the end of a line
+  `=` run, where the span starts its line (after spaces) or runs to its end.
+  Caught: `=== END: EVIDENCE ===`, `=== END (EVIDENCE) ===`,
+  `=== END/EVIDENCE ===`, `=== END.EVIDENCE ===`, `=== END "FINDING" ===`,
+  `=== EVIDENCE END ===`, `=== EVIDENCE ENDS HERE ===`,
+  `=== CLOSE EVIDENCE ===`, `// === CLOSE EVIDENCE ===`,
+  `=== END OF ALL OF THE EVIDENCE … ===`. The line anchor keeps compound
+  conditions out: a `==` between two operands neither starts nor ends a line;
+- **the plain shape, anywhere in a line**: a `=` run, `END`, up to three of the
+  words real terminators use (`SOURCE`, `MINED`, `SAS`, `STEP`, `DATASET`,
+  `DATA`, the inventory languages, `C`, `C++`, `C#`, `OF`, `THE`, `ALL`), a
+  noun, a `=` run (`=== END SOURCE EVIDENCE ===`, `===ENDEVIDENCE===`,
+  `=== END C++ MINED RULES ===`);
+- **one-sided**: a `=` run, `END`, whitespace, `:` or a dash, up to three of
+  those words, a noun (`=== END EVIDENCE`, `=== END: EVIDENCE`); a `=` run and
+  `END` directly followed by the noun at the end of a line
   (`=== ENDEVIDENCE`); or `END` (not inside a word), whitespace, `:` or a dash,
-  modifiers, a noun and a `=` run (`END EVIDENCE ===`);
+  those words, a noun and a `=` run (`END EVIDENCE ===`). Only those words,
+  not any word, because `|` folds to `I`: `== end || rules` would otherwise
+  read as `== END II RULES`;
 - **a forged opening**: three or more `=`, the noun, up to eight words, a
   parenthetical, three or more `=`
   (`=== EVIDENCE THE AGENT RETRIEVED (untrusted) ===`). Every real opening
@@ -902,7 +911,12 @@ Left alone, as ordinary code and prose (tested byte-identical):
 `/* ===== VALIDATION RULES ===== */`, MediaWiki `== Evidence ==`, setext
 headings, and a block-closing keyword followed on the next line by an
 assignment (Ruby/Lua `end`, VB `End If`, COBOL `END-IF` and
-`IF END-OF-RULES = 'Y'`, Fortran `end do`, SQL `END`, Markdown `## The end`).
+`IF END-OF-RULES = 'Y'`, Fortran `end do`, SQL `END`, Markdown `## The end`),
+and compound conditions with a terminator-like word and a noun between two
+`==` (`return claim.status == ClaimStatus.CLOSED || claim.reserve == 0;`,
+`if claim.status == "CLOSED" or claim.amount == 0:`,
+`if (a == end || rules == b)`, `while pos == end and answer == None:`, and the
+`===` form in JavaScript).
 
 **Not caught** (tested):
 - a single `=` on either side (`= END EVIDENCE =`);
@@ -912,14 +926,18 @@ assignment (Ruby/Lua `end`, VB `End If`, COBOL `END-IF` and
 - a one-sided `=== END_EVIDENCE` (`_` after `END`; two-sided
   `===END_EVIDENCE===` is caught);
 - a terminator word outside the set (`=== FINISHED FINDING ===`);
+- a reordered, punctuated or `CLOSE` closing line in the MIDDLE of a line,
+  with text on both sides (`foo === EVIDENCE END === bar`); the plain shape
+  `foo === END EVIDENCE === bar` is caught;
 - a forged opening with no parenthetical (`=== EVIDENCE ===`,
   `=== EVIDENCE THE AGENT RETRIEVED ===`).
 
 **Redacted although ordinary** (tested), because the folded copy cannot tell
-them from a fence: a line ending in `=== endRules`,
-`if (a == end || rules == b)` (`|` folds to `I`), and a heading with a
-parenthetical such as `=== Rules (draft) ===`. A Markdown-escaped closing line
-keeps its leading `\`.
+them from a fence: a line ending in `=== endRules` (the compact one-sided
+form), any line that starts or ends with a `==`-bounded span holding a
+terminator word and a noun (a code line rarely does: an operand follows `==`),
+and a heading with a parenthetical such as `=== Rules (draft) ===`. A
+Markdown-escaped closing line keeps its leading `\`.
 
 **Impact item lines.** Inside `<<<IMPACTED ITEMS>>>` each item is one line,
 `- severity=… tables=[…] requirement="…"`. The title is now: line breaks

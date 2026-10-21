@@ -222,15 +222,20 @@ const FOLDED_REQUIREMENT_FENCE =
  * a NOUN (one of the labels' head words) must be present, nothing spans a line
  * break, and every `=` run is at least two long. A span is
  *
- *   C.  a closing line: two or more `=`, then — on ONE line, at most 200
- *       characters, none of them `=` or a code operator (`& ; { } < > ! ? *`; `+` is allowed, `C++`)
- *       — a terminator word (`END`, `ENDS`, `CLOSE`…, not inside a word) and a
- *       noun in either order, then two or more `=`. So `=== END EVIDENCE ===`,
- *       `===ENDEVIDENCE===`, `=== END: EVIDENCE ===`, `=== END (EVIDENCE) ===`,
- *       `=== END "FINDING" ===`, `=== EVIDENCE ENDS HERE ===`,
- *       `=== CLOSE EVIDENCE ===` and `=== END OF ALL OF THE EVIDENCE … ===`;
- *   L.  two or more `=`, `END`, whitespace, `:` or a dash, up to three modifier
- *       words, a noun — the one-sided `=== END EVIDENCE`, `=== END: EVIDENCE`;
+ *   C.  a closing LINE: two or more `=`, then — at most 200 characters, none
+ *       of them `=`, a line break or `& ; { } < > ! ? *` — a terminator word
+ *       (`END`, `ENDS`, `CLOSE`, `CLOSING`…, not inside a word) and a noun in
+ *       either order, then two or more `=`; and the span either starts its line
+ *       (after spaces) or runs to its end. So `=== END: EVIDENCE ===`,
+ *       `=== END (EVIDENCE) ===`, `=== END "FINDING" ===`,
+ *       `=== EVIDENCE ENDS HERE ===`, `=== CLOSE EVIDENCE ===`,
+ *       `// === CLOSE EVIDENCE ===` and `=== END OF ALL OF THE EVIDENCE … ===`.
+ *       The line anchor is what keeps `status == CLOSED || claim == 0` out: a
+ *       `==` between two operands neither starts nor ends a line (second panel);
+ *   P.  anywhere: two or more `=`, `END`, up to three LABEL_MODIFIERs, a noun,
+ *       two or more `=` — `=== END SOURCE EVIDENCE ===`, `===ENDCLAIMS===`;
+ *   L.  two or more `=`, `END`, whitespace, `:` or a dash, up to three
+ *       LABEL_MODIFIERs, a noun — the one-sided `=== END EVIDENCE`;
  *   L'. two or more `=`, `END`, the noun with no separator, then only spaces to
  *       the end of the line — the one-sided compact `=== ENDEVIDENCE`;
  *   R.  `END` (not inside a word), whitespace, `:` or a dash, modifiers, a noun,
@@ -250,10 +255,12 @@ const FOLDED_REQUIREMENT_FENCE =
  * parenthetical, MediaWiki `== Evidence ==`, and every block-closing keyword
  * followed on the NEXT line by an assignment (`end` / `End If` / `END-IF` /
  * `end do` / SQL `END` then `rules = …`) — no form crosses a line break or
- * accepts a single `=`. Redacted although ordinary, because the folded copy
- * cannot tell them from a fence: a line ENDING in `=== endRules` (L'),
- * `if (a == end || rules == b)` (C; `|` folds to `I`), and a heading such as
- * `=== Rules (draft) ===` (O).
+ * accepts a single `=`; and compound conditions such as
+ * `return claim.status == ClaimStatus.CLOSED || claim.reserve == 0;` and
+ * `if (a == end || rules == b)` (C is line-anchored; P, L and R take only
+ * LABEL_MODIFIERs). Redacted although ordinary, because the folded copy cannot
+ * tell them from a fence: a line ENDING in `=== endRules` (L'), and a heading
+ * such as `=== Rules (draft) ===` (O).
  *
  * Bounded per start: every match begins at the first `=` of a run or at an
  * `E` not preceded by a letter or digit; C looks at most 200 characters ahead
@@ -282,7 +289,6 @@ const SECTION_NOUN = `(?:${[
   spaced("LINEAGE"),
 ].join("|")})`;
 const MODIFIER = "[A-Z0-9+#]{1,24}";
-const modifiers = (max: number): string => `(?:${MODIFIER}${SEP1}){0,${max}}`;
 const END = spaced("END");
 /** A terminator word, not inside a word: END (ENDS, ENDED…) or CLOS (CLOSE, CLOSED, CLOSING…). */
 const TERMINATOR = `(?<![A-Z0-9])(?:${END}|${spaced("CLOS")})`;
@@ -305,13 +311,51 @@ const OPEN2 = "(?<!=-?)=(?:-?=)+";
 const TAIL2 = "=(?:-?=)+";
 const OPEN3 = "(?<!=-?)=(?:-?=){2,}";
 const TAIL3 = "=(?:-?=){2,}";
+/**
+ * The words that sit between `END` and the noun in a real terminator
+ * (`END SOURCE EVIDENCE`, `END SAS STEP PIPELINE`, `END C++ MINED RULES`, …),
+ * plus `OF` / `THE` / `ALL`. A FIXED list on the one-sided forms, not "any
+ * word": `|` folds to `I`, so `x == end || rules` would otherwise read as
+ * `== END II RULES` (PR #1367 review, second panel).
+ */
+const LABEL_MODIFIER = `(?:${[
+  "SOURCE",
+  "MINED",
+  "SAS",
+  "STEP",
+  "DATASET",
+  "DATA",
+  "PYTHON",
+  "GO",
+  "TYPESCRIPT",
+  "JAVA",
+  "KOTLIN",
+  "COBOL",
+  "SCALA",
+  "RUST",
+  "SQL",
+  "OF",
+  "THE",
+  "ALL",
+]
+  .map(spaced)
+  .join("|")}|C${SEP}(?:\\+${SEP}\\+|#)?)`;
+const labelModifiers = `(?:${LABEL_MODIFIER}${SEP1}){0,3}`;
+/** One closing line: the terminator and a noun in either order between two `=` runs. */
+const CLOSING_LINE =
+  `${OPEN2}(?=${LINE_CHAR}{0,200}?${TERMINATOR})(?=${LINE_CHAR}{0,200}?${SECTION_NOUN})` +
+  `${LINE_CHAR}{0,200}${TAIL2}`;
 const FOLDED_SECTION_FENCE = new RegExp(
   [
-    `${OPEN2}(?=${LINE_CHAR}{0,200}?${TERMINATOR})(?=${LINE_CHAR}{0,200}?${SECTION_NOUN})` +
-      `${LINE_CHAR}{0,200}${TAIL2}`,
-    `${OPEN2}${SEP}${END}${AFTER_END}${modifiers(3)}${SECTION_NOUN}`,
+    // C: only as a whole line — at its start, or running to its end. A `==`
+    // between two operands (`status == CLOSED || claim == 0`) is neither.
+    `(?<![^\\n\\r])[ \\t]*${CLOSING_LINE}`,
+    `${CLOSING_LINE}(?=[ \\t]*(?:[\\n\\r]|$))`,
+    // Anywhere in a line, the plain shape: `=== END SOURCE EVIDENCE ===`, `===ENDCLAIMS===`.
+    `${OPEN2}${SEP}${END}${SEP}${labelModifiers}${SECTION_NOUN}${SEP}${TAIL2}`,
+    `${OPEN2}${SEP}${END}${AFTER_END}${labelModifiers}${SECTION_NOUN}`,
     `${OPEN2}[ \\t]*${END}[A-Z0-9]{0,40}?${SECTION_NOUN}[ \\t]*(?=[\\n\\r]|$)`,
-    `(?<![A-Z0-9])${END}${AFTER_END}${modifiers(3)}${SECTION_NOUN}[ \\t]*${TAIL2}`,
+    `(?<![A-Z0-9])${END}${AFTER_END}${labelModifiers}${SECTION_NOUN}[ \\t]*${TAIL2}`,
     `${OPEN3}${FILLER}${SECTION_NOUN}` +
       `(?:${SEP1}${MODIFIER}){0,8}${SEP}\\([^()=\\n]{0,200}\\)${SEP}${TAIL3}`,
   ].join("|"),
