@@ -10,3 +10,5 @@ Issue #410 asked for copy explaining "Runtime secrets vs the Vault" as two store
 **Why:** issue text is written from the UI's point of view, and the storage layer often disagrees with it.
 
 **How to apply:** before writing explanatory copy, a docs claim or a "no test covers X" issue, grep the write path and the existing tests, and cite the line. When you change shipped copy, grep `.changes/unreleased/`, `docs/` and the tests for the old string too: #437's changelog fragment kept a withdrawn label.
+
+**Folded here (retired from the index 2026-10-21; file unchanged):** [[stale-blocked-on-pr-deferrals]] — a "blocked on open PR #X" deferral is a premise too, and goes stale during parallel waves (#559). Check `gh pr view <X> --json state,mergedAt`; if merged, update the branch and do the work.

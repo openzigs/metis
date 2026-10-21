@@ -14,3 +14,7 @@ PR #556 parsed candidate definitions through the next blank line but cached only
 **Mixed line endings (#569/#564).** The splitter splits on `\n` only, so on a CRLF line every per-line regex sees a trailing `\r`. Replacing `trim()` with `/^[ \t]*$/` broke blank-line detection, and the fix is `/^[ \t]*\r?$/`. A pure-CRLF document never splits, because HEADING never matches, and that hides the bug. Any change to a line-classifying regex (blank, fence, heading, definition) needs a DOCUMENTS row with mixed endings.
 
 **Probe placement (#594, #598).** A divergence from micromark (trim, `\s`, a block-start miss) only shows in a DOCUMENTS row when the divergent definition comes *first*, or when the line follows a footnote definition's paragraph (`[^1]: One`, the line, `After.`). A PR claiming a difference "cannot be pinned" was wrong there.
+
+**Other Markdown splitters and scanners, folded here (retired from the index 2026-10-21; files unchanged):**
+- [[crlf-md-scanners]] — a server-side line scanner that tests `$` must normalise CRLF first or anchor on `\r?$` (`nestBodyHeadings` in `server/src/lib/docs-gen/requirements-scope.ts`, #1170); add a CRLF case per construct.
+- `project_splitter-fixtures-need-real-sections-and-fences.md` — a splitter of LLM input (claim passages, section batches) must be tested on a real `server/dev.db` section and on a large or unclosed code fence (#162).

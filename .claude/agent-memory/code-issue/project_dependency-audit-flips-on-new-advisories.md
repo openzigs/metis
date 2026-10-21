@@ -23,3 +23,6 @@ On 2026-09-30 a next critical and five axios Highs landed within 15 minutes; eve
 
 **From #1306 (2026-10-21).**
 - Dropping `eslint-config-next` also took `browserslist` (via `@babel/core`) out of the tree, so `dependency-audit-1345-advisories.test.mjs`'s "at least one copy" arm went red. A guard that demands presence breaks when a dependency leaves; it now checks the lookup still works instead.
+- So before pushing a dependency removal, diff the lockfile's REMOVED packages against every `scripts/lib/dependency-audit-*.test.mjs` (PR #1321).
+
+**Folded here (retired from the index 2026-10-21; file unchanged):** [[project_dependabot-tilde-and-stale-audit]] — Dependabot groups rewrite `~0.x` ranges across minors (hold one with a `dependabot.yml` `ignore`), and a green audit run before an advisory's publish time is stale.

@@ -13,6 +13,8 @@ Since #1097 `mapRequirementToCode` ranks with `HybridCodeSearch` through `Hybrid
 
 **Hybrid gate holes (review of PR #1325).** A hit only BM25 returned has no `vectorScore`: score it at the lowest returned cosine, never as "no cosine" (the lexical model gives one shared word 0.096, over the 0.08 floor). An uncalibrated embedder must keep the keyword two-term rule.
 
+**Keyword-only hits are corpus-dependent (review of PR #1325, cycle 2).** With `HybridCodeSearch`'s 0.05/0.95 RRF weights (`DEFAULT_WEIGHTS`, `code-graph/hybrid-search.ts`), a hit only BM25 found reaches the mapper's `HYBRID_CANDIDATE_POOL` (60) only when the vector search returns fewer than 60 hits: small or partly embedded projects. Test a keyword-only fix on such a corpus; a Miniflux-size replay cannot show it.
+
 **A weak direct hit brings its callers.** On `eval:reqmap` a 0.07 link pulled two wrong caller files (P 0.87 -> 0.70); that is why the hybrid display floor is 0.08, not 0.05.
 
 **Measuring with no paid model.** Local weights live in `~/.cache/metis-transformers` (`EMBED_BACKEND=xenova`, `HF_HUB_OFFLINE=1`). The #706 run-7 Miniflux projects (`cmv2nx3ad…`, `cmv2x496u…`) and their `__symbols.lance` dirs are in the main checkout's `server/dev.db` / `server/data/lancedb`: copy the code_symbols/code_edges rows into a scratch DB (ATTACH read-only) and the two lance dirs, then `server/scripts/eval-reqmap-replay.ts` against the committed labels (`eval-data/reqmap-replay/`).

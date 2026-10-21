@@ -31,4 +31,12 @@ A business-requirements document CAN be planned before it is written since #1070
 - A run's Phase-2 cost is in `token_usages` by `sessionId` prefix: `docs-facts-` (Phase 1), `docs-synth-` (section calls), `docs-grounding-` (claim extraction and judge). Run 7's BRD: 22 section calls, 1.36M input tokens, $0.67; grounding 88 calls, $0.46.
 - The deterministic extractors already hold source-line facts the model then restates: `ExtractedFormula` (`name`, `expression`, `symbolContext` = `file::function`) and mined rules of kind `const` (`summary` = ``Constant `NAME` = value``). Run 7's scheduler interval is `internal/model/feed.go:131`, name `interval`, in `ScheduleNextCheck`.
 
+## Topic budgets and the consistency check (PR #1316, refs #995/#1070)
+
+- **Replay a past run's PLANNING with `tsx`:** dump `docs_gen_fact_cache` with `sqlite3 -readonly -json` (by `projectId`, `model`), merge rows with `mergePhase1ChunkFacts`, and call `planDocumentTopics` with a fake router (`sectionMaxChars` 60000, `documentMaxChars` 250000). It reproduced run 8's plan exactly.
+- **Compare rendered length with planned budget through `renderedCitationLength(record.markdown)`** (`citation-footnotes.ts`), never raw length: drafts are 26-40% longer from citation tokens. Measured overshoot: DeepSeek 1.30-1.45× its catalogue budgets, Haiku 1.00-1.16×.
+- **`allocateTopicBudgets` floors (`document-plan.ts`).** A per-topic minimum near the average share (section budget / topic count) flattens every kept topic to that minimum. Derive floors from a low percentile of measured output, and test with uneven estimates that the largest kept topic gets several times the smallest.
+- **`FLOOR_SHARE` must apply only when the budget is short,** or the planner drops topics from sections whose demand fits. Budget fixtures need an everything-fits case too: every Miniflux replay is short.
+- **A consistency check limited to facts-sheet names misses the prose contradictions walkthroughs report.** Before shipping any detector, run it over the stored run-8, run-9 and Haiku BRD records for false positives.
+
 Links: [[project_read-live-is-not-read-completely]], [[project_never-dropped-silently-needs-a-fixture-per-cap]], [[project_deterministic-gate-over-llm-output-probes]].

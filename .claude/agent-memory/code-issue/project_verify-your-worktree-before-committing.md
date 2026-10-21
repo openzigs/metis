@@ -24,3 +24,5 @@ worktree (`git worktree add`) and never `git checkout` in the main checkout (#12
 ## A fresh agent worktree has no `node_modules` (#1288)
 
 Run `pnpm install --frozen-lockfile --prod=false`, then `pnpm --filter @metis/shared build`, before any vitest run. Otherwise every suite fails on imports.
+
+Then run server tests with `pnpm exec vitest`, not `./node_modules/.bin/vitest`: the direct form leaves `node_modules/.bin` off `PATH`, and `server/tests/prisma-quickstart-config.test.ts` (which spawns `tsx`) fails with ENOENT (PR #1316).

@@ -23,6 +23,8 @@ metadata:
 
 Related: [[test-falsifiability-traps]], [[reader-brd-traps]].
 
+**Folded here (retired from the index 2026-10-21; file unchanged):** [[run-tokens-two-values-and-chat-row-is-not-the-turn]] — a run's tokens have two right values (with and without cache; name the one shown), stored totals are finish-time snapshots (use `summariseLedgerRows`, `server/src/lib/finops/ledger-usage-summary.ts`), a chat turn's ledger row is not the whole turn, and a page uses one cost definition: the stored ledger cost.
+
 ## Unknown-model fallbacks: judge by what a wrong guess costs (#1281)
 
 Judge an unknown-model-id fallback by what a wrong guess costs (money vs latency), not by "too high is safe". A prompt-cache floor guessed too high silently skips the docs-gen warm-up and pays for parallel cache writes that are never read back.
