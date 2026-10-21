@@ -45,6 +45,7 @@
  * Pure: no I/O and no model calls.
  */
 import { createHash } from "node:crypto";
+import { scrubWriterFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
 import type { ExtractedFormula } from "../code-graph/formula-extractor.js";
 import { FACT_SLICES, sliceModuleFacts, type PersistedMinedRule } from "./fact-slices.js";
 import type { GroundingContext, GroundingSource } from "./grounding/grounding-context.js";
@@ -205,8 +206,14 @@ function printable(text: string): string {
  * delimiter at all, so a fact line always has exactly two.
  */
 export function neutralize(text: string): string {
-  return printable(text)
-    .replace(/={3,}/g, (run) => run.split("").join(" "))
+  // #1370 — after the ASCII spacing, any span that still reads as one of the
+  // writer's fences or a `[SOURCE id=` header through a look-alike
+  // (`END CANONICAL FACTS` between runs of full-width `=`), which the spacing
+  // does not see.
+  return scrubWriterFenceLookalikes(
+    printable(text).replace(/={3,}/g, (run) => run.split("").join(" ")),
+    "[REDACTED-FENCE]",
+  )
     .replace(/\[(\s*facts:)/gi, "($1")
     .replaceAll(FACT_FIELD_DELIMITER, FACT_FIELD_BAR);
 }

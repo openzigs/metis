@@ -25,6 +25,7 @@
  * (`vector-store.ts:28-36`); the digest id is the `EvidenceDigest.id` produced
  * by the `WebResearchAugmenter`.
  */
+import { scrubWriterFenceLookalikes } from "../../ai/tool-runtime/fence-scrub.js";
 import type { VectorMetadata } from "../../rag/vector-store.js";
 import type { EvidenceDigest } from "../../analysis/types/requirements.js";
 import { repositoryPathIdentity, type RepositoryIdentity } from "../repository-identity.js";
@@ -356,14 +357,20 @@ export function renderGroundingBlock(
   if (ctx.isEmpty) return "";
   const blob = opts.factsBlob ?? "";
   let referenced = 0;
+  // #1370 — a source's text is repository, document or web text: it cannot
+  // close this block, forge another of the writer's blocks, or forge a
+  // `[SOURCE id=…]` header that would pass its text off as another source's.
+  // Clean text is returned unchanged, so the prompt (and its cache prefix) is
+  // byte-identical for it.
+  const data = (text: string) => scrubWriterFenceLookalikes(text, "[REDACTED-FENCE]");
   const parts = ctx.sources.map((s) => {
-    const header = `[SOURCE id=${s.sourceId} kind=${s.kind} label=${JSON.stringify(s.label)}]`;
+    const header = `[SOURCE id=${s.sourceId} kind=${s.kind} label=${JSON.stringify(data(s.label))}]`;
     if (s.kind === "facts" && blob && blob.includes(s.text)) {
       referenced++;
-      const entry = s.text.split("\n", 1)[0];
+      const entry = data(s.text.split("\n", 1)[0]);
       return `${header}\n(text: the "${entry}" entry in EXTRACTED MODULE FACTS above)`;
     }
-    return `${header}\n${s.text}`;
+    return `${header}\n${data(s.text)}`;
   });
   return [
     "=== RETRIEVED GROUNDING SOURCES ===",

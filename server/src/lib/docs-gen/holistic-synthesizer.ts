@@ -26,7 +26,10 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
-import { scrubSectionFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
+import {
+  scrubSectionFenceLookalikes,
+  scrubWriterFenceLookalikes,
+} from "../ai/tool-runtime/fence-scrub.js";
 import type { ExtractedFormula } from "../code-graph/formula-extractor.js";
 import { renderMinedRules } from "../code-graph/java-rule-miner.js";
 import {
@@ -7470,8 +7473,14 @@ RULES:
   // this section's instructions, so across sections the shared prefix stops
   // there; the gain is for the batches of one section, whose system prompt and
   // user lead (through the label) are byte-identical.
+  // #1370 — the flow, facts and formulas are repository text (the facts via the
+  // Phase-1 model): none of them can close or forge a block of this message, or
+  // forge a grounding source header. Clean text is returned unchanged, so the
+  // prompt and its cache prefix are byte-identical for it; the section's reuse
+  // hash is taken over the unscrubbed inputs, so it does not move at all.
+  const data = (text: string) => scrubWriterFenceLookalikes(text, "[REDACTED-FENCE]");
   const flowSection = flowBlob
-    ? `\n=== END-TO-END FLOW (cross-module dependencies + SAS dataset lineage, from the code graph) ===\n\n${flowBlob}\n\nUse this to describe TRUE end-to-end workflows: which module hands off to which, and how datasets flow input→output across modules. Do NOT invent flows not supported by this graph.\n\n=== END FLOW ===\n`
+    ? `\n=== END-TO-END FLOW (cross-module dependencies + SAS dataset lineage, from the code graph) ===\n\n${data(flowBlob)}\n\nUse this to describe TRUE end-to-end workflows: which module hands off to which, and how datasets flow input→output across modules. Do NOT invent flows not supported by this graph.\n\n=== END FLOW ===\n`
     : "";
   const userMessage = `Project: **${meta.name}**
 Primary language: ${meta.language}
@@ -7483,13 +7492,13 @@ ${flowSection}Section group: **${group.label}**
 
 === EXTRACTED MODULE FACTS ===
 
-${factsBlob}
+${data(factsBlob)}
 
 === END MODULE FACTS ===
 
 === FORMULAS/CONSTANTS DETECTED IN SOURCE ===
 
-${formulasBlob}
+${data(formulasBlob)}
 
 === END FORMULAS ===
 ${groundingBlock ? `\n${groundingBlock}\n` : ""}${batchNote ? `\n${batchNote}\n` : ""}
