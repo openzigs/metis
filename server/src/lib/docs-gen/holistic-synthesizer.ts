@@ -3837,6 +3837,8 @@ async function synthesizeBatchedSection(input: {
     keptWhole?: "allowance" | "runaway";
     /** #1327 — the topics past this reply's share, moved to its end. */
     overflow?: string[];
+    /** #1327 — the reply's rendered length as written, before any reorder. */
+    renderedChars?: number;
   };
   type BatchFailed = { batch: SectionBatchModule[]; err: unknown };
   type BatchOutcome = { done: BatchDone } | { failed: BatchFailed };
@@ -3950,6 +3952,7 @@ async function synthesizeBatchedSection(input: {
         : undefined;
     // #1327 — held to its share before the section is merged.
     let overflow: string[] = [];
+    const renderedChars = holding ? renderedCitationLength(result.markdown) : undefined;
     if (holding && result.markdown.trim().length > 0) {
       const held = holdBatchReply(result.markdown, batchOutputChars(batch), {
         measure: renderedCitationLength,
@@ -3970,6 +3973,7 @@ async function synthesizeBatchedSection(input: {
           grounding: judged,
           ...(keptWhole ? { keptWhole } : {}),
           ...(overflow.length > 0 ? { overflow } : {}),
+          ...(renderedChars !== undefined ? { renderedChars } : {}),
         },
       },
     ];
@@ -4270,11 +4274,8 @@ ${plannedOmissionNote(plannedOut, {
     ...(holding
       ? {
           lengthOverrun: overrun,
-          renderedReplyChars: done.reduce(
-            (n, d) => n + renderedCitationLength(d.result.markdown),
-            0,
-          ),
-          heldParts: done.filter((d) => d.overflow !== undefined).length,
+          renderedReplyChars: done.reduce((n, d) => n + (d.renderedChars ?? 0), 0),
+          reorderedParts: done.filter((d) => d.overflow !== undefined).length,
           overflowTopics: done.reduce((n, d) => n + (d.overflow?.length ?? 0), 0),
         }
       : {}),
@@ -5119,14 +5120,20 @@ async function synthesizeFinalDocumentInRun(
                 topicPlan: {
                   version: TOPIC_PLAN_VERSION,
                   factSheetVersion: FACT_SHEET_VERSION,
-                  // #1327 — a batched section is also held, and asked for its
+                  // #1327 — a batched section that is GIVEN a length (the
+                  // plan's budget binds it) is also held, and asked for its
                   // words, by a rule and a per-model factor: either changing
-                  // writes it again. A single-call section has neither.
+                  // writes it again. A section told no length is neither held
+                  // nor asked for words, so neither is in its inputs.
                   ...(batchPlan
                     ? {
                         budgetChars: plannedSection.budgetChars,
-                        batchHold: BATCH_HOLD_VERSION,
-                        lengthOverrun: resolveLengthOverrun(provider.model),
+                        ...(batchPlan.sectionBudget
+                          ? {
+                              batchHold: BATCH_HOLD_VERSION,
+                              lengthOverrun: resolveLengthOverrun(provider.model),
+                            }
+                          : {}),
                       }
                     : {}),
                   facts: factSheetFingerprint(sectionFacts, planning.ownerOf),

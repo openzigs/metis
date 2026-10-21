@@ -12,11 +12,13 @@
  *
  * {@link holdBatchReply} decides, as the batch is written, which of its topics
  * fit its share: its opening, then its topics MOST important first while they
- * fit. A topic's importance is that of the highest-priority module it cites
- * (the batch's modules are in plan priority order, and every citation marker
- * names the module facts it came from); a topic that cites nothing comes last.
- * The topics that fit stay where the model wrote them. The rest, its
- * OVERFLOW, move to the end of the reply, most important first.
+ * fit, stopping at the first that does not. A topic's importance is that of
+ * the highest-priority module it cites (the batch's modules are in plan
+ * priority order, and every citation marker names the module facts it came
+ * from). A topic that cites nothing ranked (an overview) is not moved. The
+ * topics kept stay in the order the model wrote them. The rest, its OVERFLOW,
+ * move to the end of the reply, most important first. A reply whose topics
+ * are numbered steps is never reordered.
  *
  * Nothing is removed here. A document that fits its cap keeps every topic, as
  * it always has (#1070: a plan budget is a target, the caps are the only hard
@@ -58,6 +60,8 @@ export interface BatchHold {
 
 const THEMATIC_BREAK = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 const HEADING_TEXT = /^#{1,6}\s+(.+?)\s*#*\s*$/;
+/** A topic heading that numbers its place in a sequence: `1. Fetch`, `2) Parse`, `Step 3: Store`. */
+const NUMBERED = /^(?:step\s+)?\d+[.):]\s/i;
 /**
  * One citation marker's inner text; a cluster may hold several ids. A marker
  * never contains `[` (ids are URL-encoded), and excluding it keeps the scan
@@ -103,12 +107,15 @@ interface Topic {
  * Hold `markdown` (one batch's reply) to `maxChars`, measured by
  * `options.measure`: unchanged when it fits, or when nothing would move.
  * Otherwise its opening (the section heading and anything before the first
- * topic) and then its topics in priority order are counted against the
- * share; a topic that does not fit the room left is overflow, and a smaller,
- * less important one may still fit. The topics that fit keep their places;
- * the overflow follows them, most important first. A thematic break between
- * topics is dropped (the section merge writes its own before each topic).
- * Line endings are the input's.
+ * topic) and its unranked topics (citing nothing the batch reads) are counted
+ * against the share first and stay in place; then its ranked topics, most
+ * important first, while they fit. The first that does not fit, and every
+ * topic after it in priority order, is overflow: a smaller, less important
+ * topic is never kept ahead of a more important one. The topics kept stay in
+ * the order the model wrote them; the overflow follows, most important first.
+ * A reply whose topics are numbered (`1.`, `2)`, `Step 3:`) is a sequence and
+ * is left as written. A thematic break between topics is dropped (the section
+ * merge writes its own before each topic). Line endings are the input's.
  */
 export function holdBatchReply(
   markdown: string,
@@ -146,6 +153,11 @@ export function holdBatchReply(
     }
   }
   while (lead.length > 0 && isBreak(lead[lead.length - 1])) lead.pop();
+  const headingOf = (topic: Topic): string =>
+    HEADING_TEXT.exec(all[topic.units[0]].text)?.[1] ?? all[topic.units[0]].text;
+  // Numbered or step-ordered topics are a sequence the reader follows: such a
+  // reply is never reordered, and only the cap's tail cut applies to it.
+  if (topics.filter((topic) => NUMBERED.test(headingOf(topic))).length >= 2) return unchanged;
   const rankOf = options.rankOf ?? (() => undefined);
   for (const topic of topics) {
     topic.cost = topic.units.reduce((n, i) => n + cost[i], 0);
@@ -157,15 +169,25 @@ export function holdBatchReply(
     }
   }
 
-  let room = maxChars - lead.reduce((n, i) => n + cost[i], 0);
-  const byPriority = [...topics].sort((a, b) => a.rank - b.rank || a.order - b.order);
-  const fits = new Set<Topic>();
-  for (const topic of byPriority) {
-    if (topic.cost > room) continue;
+  // A topic that cites nothing it can rank (an overview, a glossary) stays
+  // where it was written and counts against the share first, like the opening.
+  const pinned = topics.filter((topic) => topic.rank === Infinity);
+  let room =
+    maxChars -
+    lead.reduce((n, i) => n + cost[i], 0) -
+    pinned.reduce((n, topic) => n + topic.cost, 0);
+  const ranked = topics
+    .filter((topic) => topic.rank !== Infinity)
+    .sort((a, b) => a.rank - b.rank || a.order - b.order);
+  // A priority PREFIX: the first ranked topic that does not fit ends it, so a
+  // smaller, less important topic never stays while a more important one moves.
+  const fits = new Set<Topic>(pinned);
+  for (const topic of ranked) {
+    if (topic.cost > room) break;
     fits.add(topic);
     room -= topic.cost;
   }
-  const overflow = byPriority.filter((topic) => !fits.has(topic));
+  const overflow = ranked.filter((topic) => !fits.has(topic));
   const ordered = [...topics.filter((topic) => fits.has(topic)), ...overflow];
   if (ordered.every((topic, k) => topic === topics[k])) return unchanged;
   const text = (i: number): string => all[i].text;
@@ -174,8 +196,6 @@ export function holdBatchReply(
       .join("\n\n")
       .replace(/\n/g, eol),
     reordered: true,
-    overflowTopics: overflow.map(
-      (topic) => HEADING_TEXT.exec(all[topic.units[0]].text)?.[1] ?? all[topic.units[0]].text,
-    ),
+    overflowTopics: overflow.map(headingOf),
   };
 }

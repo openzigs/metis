@@ -324,7 +324,7 @@ describe("#1327 — a planned batch held to its share when it is written", () =>
     expect(section(rulesCalls(calibrated)[0])).toBeLessThan(section(rulesCalls(plain)[0]));
   });
 
-  it("moves nothing when the document has room, however far a batch ran past its share", async () => {
+  it("moves nothing in a batch that is told no length: the plan's budget does not bind it", async () => {
     vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "1000000");
     vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "1000000000");
     // A 1,000,000-character document plans every module what it asks: no
@@ -332,6 +332,8 @@ describe("#1327 — a planned batch held to its share when it is written", () =>
     const provider = regroupingModel(3);
     const result = await run(project(12), provider);
     const rules = sectionOf(result.markdown, RULES);
+    expect(rulesCalls(provider).length).toBeGreaterThan(0);
+    expect(rulesCalls(provider).every((call) => call.words === null)).toBe(true);
     for (const call of rulesCalls(provider)) {
       // As written: the batch's modules in reverse order.
       const at = call.modules.map((m) => rules.indexOf(`### Theme of ${m}\n`));
@@ -339,6 +341,26 @@ describe("#1327 — a planned batch held to its share when it is written", () =>
       expect(at).toEqual([...at].sort((a, b) => b - a));
     }
     expect(rules).not.toContain("Shortened for length");
+  });
+
+  it("removes nothing when the shares bind but the document fits: an overrunning batch is only reordered", async () => {
+    // The plan's budget binds (every batch is told a length), one batch of
+    // Rules writes 1.6 times its share and every other call half of its own,
+    // so the document as a whole is under its cap.
+    const first = (call: Call): boolean => call.group === RULES && call.modules.includes("m00");
+    const provider = regroupingModel((call) => (first(call) ? 1.6 : 0.5));
+    const result = await run(project(12), provider);
+    const calls = rulesCalls(provider);
+    expect(calls.every((call) => call.words !== null)).toBe(true);
+    expect(result.markdown).not.toContain("Shortened for length");
+    const rules = sectionOf(result.markdown, RULES);
+    // Every topic every batch wrote is in the document.
+    expect(lostTopics(rules, calls)).toEqual([]);
+    // The overrunning batch was written least important first; it now leads
+    // with its most important module, its overflow after.
+    const lead = calls.find(first)!;
+    const at = lead.modules.map((m) => rules.indexOf(`### Theme of ${m}\n`));
+    expect(at[0]).toBeLessThan(at[at.length - 1]);
   });
 
   it("logs the overrun factor, the rendered reply length and the topics put past their shares", async () => {
@@ -354,7 +376,7 @@ describe("#1327 — a planned batch held to its share when it is written", () =>
       expect(entry.lengthOverrun).toBe(1.2);
       expect(entry.renderedReplyChars).toBeGreaterThan(0);
       expect(entry.renderedReplyChars).toBeLessThan(entry.replyChars);
-      expect(entry.heldParts).toBeGreaterThan(0);
+      expect(entry.reorderedParts).toBeGreaterThan(0);
       expect(entry.overflowTopics).toBeGreaterThan(0);
     } finally {
       write.mockRestore();
@@ -371,5 +393,17 @@ describe("#1327 — a planned batch held to its share when it is written", () =>
     expect(second.regeneration!.changed.sort()).toEqual(
       ["data-model", "formulas", "rules", "workflows"].sort(),
     );
+  });
+
+  it("rewrites nothing when the factor changes for a document whose sections are told no length", async () => {
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "1000000");
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "1000000000");
+    const facts = project(12);
+    const provider = regroupingModel(1);
+    const first = await run(facts, provider);
+    expect(rulesCalls(provider).every((call) => call.words === null)).toBe(true);
+    vi.stubEnv("DOCS_GEN_LENGTH_OVERRUN", "fake-section=1.4");
+    const second = await run(facts, regroupingModel(1), first);
+    expect(second.regeneration!.changed).toEqual([]);
   });
 });

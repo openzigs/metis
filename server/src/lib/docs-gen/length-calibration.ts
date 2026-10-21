@@ -17,9 +17,13 @@
  * reply is held to are unchanged. A model with no entry is asked for its plan
  * as before (factor 1), so a well-calibrated model is never asked for less.
  *
- * Pure apart from reading the setting.
+ * Pure apart from reading the setting, and logging once each value of it that
+ * has an entry it ignores or clamps.
  */
 import { getConfigService, type ConfigService } from "../config/config-service.js";
+import { createChildLogger } from "../logger.js";
+
+const log = createChildLogger("docs-gen:length-calibration");
 
 /** Registry key: per-model overrides, `pattern=factor` pairs separated by commas. */
 export const LENGTH_OVERRUN_KEY = "DOCS_GEN_LENGTH_OVERRUN";
@@ -39,6 +43,12 @@ export interface LengthOverrunRule {
  * low end of its pre-cap measurement (1.50–1.64): a factor too low costs the
  * lowest-priority topics of a batch to the hold; one too high leaves room
  * unused, which nothing can give back after the batch is written.
+ *
+ * Measured on ONE model id, `deepseek-flash` (walkthrough run B, 2026-10-21),
+ * and extrapolated to every id containing `deepseek` (`deepseek-chat`,
+ * `deepseek-reasoner`, …) on the assumption that they write alike. That is
+ * unmeasured; set `DOCS_GEN_LENGTH_OVERRUN` for an id that is measured to
+ * differ.
  */
 export const DEFAULT_LENGTH_OVERRUN_RULES: readonly LengthOverrunRule[] = [
   { pattern: "deepseek", factor: 1.5 },
@@ -49,15 +59,19 @@ const clamp = (factor: number): number =>
 
 /**
  * Parse `DOCS_GEN_LENGTH_OVERRUN` (`deepseek=1.4, haiku=1.1, *=1`). Entries
- * that do not read as `pattern=number` are returned in `unrecognised` and
- * otherwise ignored, so one typo does not discard the rest.
+ * that do not read as `pattern=number` with a number above 0 are returned in
+ * `unrecognised` and otherwise ignored, so one typo does not discard the
+ * rest; entries outside the honoured range are clamped and returned in
+ * `clamped`.
  */
 export function parseLengthOverrun(raw: string | undefined | null): {
   rules: LengthOverrunRule[];
   unrecognised: string[];
+  clamped: string[];
 } {
   const rules: LengthOverrunRule[] = [];
   const unrecognised: string[] = [];
+  const clamped: string[] = [];
   for (const entry of (raw ?? "").split(",")) {
     const text = entry.trim();
     if (text === "") continue;
@@ -69,10 +83,15 @@ export function parseLengthOverrun(raw: string | undefined | null): {
       unrecognised.push(text);
       continue;
     }
+    if (clamp(factor) !== factor) clamped.push(text);
     rules.push({ pattern, factor: clamp(factor) });
   }
-  return { rules, unrecognised };
+  return { rules, unrecognised, clamped };
 }
+
+/** The setting values already reported, so each is logged once per process. */
+const reported = new Set<string>();
+const REPORTED_MAX = 32;
 
 /**
  * The overrun factor of `model`: the first configured rule that matches, else
@@ -84,7 +103,21 @@ export function resolveLengthOverrun(
   config: ConfigService = getConfigService(),
 ): number {
   const id = (model ?? "").toLowerCase();
-  const { rules } = parseLengthOverrun(config.get(LENGTH_OVERRUN_KEY));
+  const raw = config.get(LENGTH_OVERRUN_KEY);
+  const { rules, unrecognised, clamped } = parseLengthOverrun(raw);
+  if (
+    raw &&
+    (unrecognised.length > 0 || clamped.length > 0) &&
+    !reported.has(raw) &&
+    reported.size < REPORTED_MAX
+  ) {
+    reported.add(raw);
+    log.warn("DOCS_GEN_LENGTH_OVERRUN has entries it ignores or clamps", {
+      ignored: unrecognised.map((entry) => entry.slice(0, 60)),
+      clamped: clamped.map((entry) => entry.slice(0, 60)),
+      range: [MIN_LENGTH_OVERRUN, MAX_LENGTH_OVERRUN],
+    });
+  }
   for (const rule of [...rules, ...DEFAULT_LENGTH_OVERRUN_RULES]) {
     if (rule.pattern === "*" || (id !== "" && id.includes(rule.pattern))) return rule.factor;
   }

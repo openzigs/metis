@@ -72,35 +72,82 @@ describe("holdBatchReply", () => {
     expect(held.overflowTopics).not.toContain("Feed Entities");
   });
 
-  it("puts a topic that cites nothing it can rank after every ranked one", () => {
+  it("leaves a topic that cites nothing it can rank where it was written", () => {
     const withUncited = [
       "## Rules",
-      topic("Uncited", ["rag:doc:0"]),
-      topic("Core", ["facts:mod0:0"]),
+      topic("Overview", ["rag:doc:0"]),
       topic("Minor", ["facts:mod5:5"]),
+      topic("Core", ["facts:mod0:0"]),
     ].join("\n\n");
-    const held = holdBatchReply(withUncited, Math.floor(withUncited.length * 0.5), { rankOf });
-    expect(headings(held.markdown)).toEqual(["Rules", "Core", "Minor", "Uncited"]);
-    expect(held.overflowTopics).toEqual(["Minor", "Uncited"]);
+    const overview = topic("Overview", ["rag:doc:0"]).length;
+    const core = topic("Core", ["facts:mod0:0"]).length;
+    const held = holdBatchReply(withUncited, "## Rules".length + overview + core + 12, { rankOf });
+    // The overview stays first; only the ranked topics are ordered by priority.
+    expect(headings(held.markdown)).toEqual(["Rules", "Overview", "Core", "Minor"]);
+    expect(held.overflowTopics).toEqual(["Minor"]);
   });
 
-  it("keeps the original order when no topic can be ranked and the leading ones fit", () => {
+  it("does not move a reply whose topics carry no rank at all", () => {
     const plain = ["## Rules", topic("A", []), topic("B", []), topic("C", [])].join("\n\n");
-    expect(holdBatchReply(plain, Math.floor(plain.length * 0.6)).reordered).toBe(false);
+    expect(holdBatchReply(plain, 10).reordered).toBe(false);
   });
 
-  it("lets a smaller, less important topic fit where a larger one did not", () => {
-    const uneven = [
+  it("keeps a priority prefix: a large important topic that does not fit stops it", () => {
+    // The #1353 review's probe: the most important topic is the largest and
+    // does not fit; a smaller, less important one would. Keeping that one
+    // would make the cap cut the most important topic first.
+    const para = (n: number, id: string) => `${"x".repeat(n)} [${id}]`;
+    const reply = [
+      "## S",
+      "### Big A",
+      para(500, "facts:mod0:0"),
+      "### Small C",
+      para(50, "facts:mod2:2"),
+      "### Mid B",
+      para(200, "facts:mod1:1"),
+    ].join("\n\n");
+    const held = holdBatchReply(reply, 400, { rankOf });
+    expect(headings(held.markdown)).toEqual(["S", "Big A", "Mid B", "Small C"]);
+    expect(held.overflowTopics).toEqual(["Big A", "Mid B", "Small C"]);
+  });
+
+  it("keeps an unequal-sized prefix in written order and moves the rest in priority order", () => {
+    const reply = [
       "## Rules",
       topic("Small minor", ["facts:mod4:4"], 1),
       topic("Large", ["facts:mod1:1"], 8),
+      topic("Mid", ["facts:mod2:2"], 3),
       topic("Core", ["facts:mod0:0"], 2),
     ].join("\n\n");
     const core = topic("Core", ["facts:mod0:0"], 2).length;
     const small = topic("Small minor", ["facts:mod4:4"], 1).length;
-    const held = holdBatchReply(uneven, "## Rules".length + core + small + 12, { rankOf });
-    expect(held.overflowTopics).toEqual(["Large"]);
-    expect(headings(held.markdown)).toEqual(["Rules", "Small minor", "Core", "Large"]);
+    // Room for Core and for Small minor, not for Large: Large ends the prefix,
+    // so Small minor (less important than Large) is overflow too.
+    const held = holdBatchReply(reply, "## Rules".length + core + small + 12, { rankOf });
+    expect(headings(held.markdown)).toEqual(["Rules", "Core", "Large", "Mid", "Small minor"]);
+    expect(held.overflowTopics).toEqual(["Large", "Mid", "Small minor"]);
+  });
+
+  it("never reorders numbered or step topics: only the cap's tail cut applies", () => {
+    for (const [one, two] of [
+      ["1. Fetch", "2. Parse"],
+      ["1) Fetch", "2) Parse"],
+      ["Step 1: Fetch", "Step 2: Parse"],
+    ]) {
+      const steps = [
+        "## Workflow",
+        topic(one, ["facts:mod3:3"]),
+        topic(two, ["facts:mod0:0"]),
+      ].join("\n\n");
+      expect(holdBatchReply(steps, 50, { rankOf }).reordered).toBe(false);
+    }
+    // Control: the same topics unnumbered are reordered.
+    const plain = [
+      "## Workflow",
+      topic("Fetch", ["facts:mod3:3"]),
+      topic("Parse", ["facts:mod0:0"]),
+    ].join("\n\n");
+    expect(holdBatchReply(plain, 50, { rankOf }).reordered).toBe(true);
   });
 
   it("measures with the given measure: citations count as rendered", () => {
