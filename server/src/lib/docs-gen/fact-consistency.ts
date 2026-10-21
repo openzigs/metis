@@ -473,19 +473,20 @@ const NUMBER_WORDS: Readonly<Record<string, number>> = {
 
 /**
  * Nouns that name a KIND of thing, each mapped to the class it is compared
- * in. Only the nouns for a way of DOING something are read as one:
- * "five authentication mechanisms" and "four authentication paths" count the
- * same thing (run 8). An option, a type, a mode or a category is its own
- * noun: "two payment methods" and "three payment options", or "file paths"
- * and "file types", are different things (PR #1316 review).
+ * in. Only a few nouns for a route to something are read as one —
+ * mechanism, path, way, flow: "five authentication mechanisms" and "four
+ * authentication paths" count the same thing (run 8). A method, a scheme, an
+ * option, a type, a mode or a category is its own noun: "two payment methods"
+ * and "three payment options", or "file paths" and "file types", are
+ * different things (PR #1316 review, both cycles).
  */
 const KIND_NOUNS: Readonly<Record<string, string>> = {
   mechanism: "ways",
-  method: "ways",
+  method: "methods",
   path: "ways",
   way: "ways",
   flow: "ways",
-  scheme: "ways",
+  scheme: "schemes",
   mode: "modes",
   option: "options",
   strategy: "strategies",

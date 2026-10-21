@@ -271,12 +271,14 @@ export function waterFill(asks: readonly number[], total: number): number[] {
 /**
  * Share a section's `budget` among its topics. Every kept topic gets its floor
  * (its estimate when that is smaller); what is left is divided in proportion to
- * what each topic still needs, and no topic gets more than its estimate. When
- * the floors would take more than {@link FLOOR_SHARE} of the budget, the
- * lowest-priority topics are dropped until they do not (the highest-priority
- * topic is kept whenever its floor fits the budget at all). The kept budgets
- * sum to at most `budget`, and to exactly `budget` whenever the kept topics'
- * estimates reach it.
+ * what each topic still needs, and no topic gets more than its estimate.
+ *
+ * Nothing is dropped while the kept topics' whole estimates fit the budget.
+ * Only when they do not, AND their floors would take more than
+ * {@link FLOOR_SHARE} of it, are the lowest-priority topics dropped, one at a
+ * time, until either holds (the highest-priority topic is kept whenever its
+ * floor fits the budget at all). The kept budgets sum to at most `budget`, and
+ * to exactly `budget` whenever the kept topics' estimates reach it.
  */
 export function allocateTopicBudgets(
   topics: readonly TopicCandidate[],
@@ -290,9 +292,18 @@ export function allocateTopicBudgets(
   const floorRoom = Math.floor(room * FLOOR_SHARE);
   let keptCount = ranked.length;
   let floors = ranked.reduce((n, t) => n + floorOf(t), 0);
-  while (keptCount > 0 && floors > floorRoom && !(keptCount === 1 && floors <= room)) {
+  let needs = ranked.reduce((n, t) => n + need(t), 0);
+  // A section with room for every topic's estimate drops nothing, however
+  // much of the budget the floors would take (PR #1316 cycle-2 review).
+  while (
+    keptCount > 0 &&
+    needs > room &&
+    floors > floorRoom &&
+    !(keptCount === 1 && floors <= room)
+  ) {
     keptCount -= 1;
     floors -= floorOf(ranked[keptCount]);
+    needs -= need(ranked[keptCount]);
   }
   const kept = ranked.slice(0, keptCount);
   const dropped = ranked.slice(keptCount);

@@ -156,7 +156,7 @@ export function TopicPlanSummary({
         <>
           <p className="text-muted-foreground">
             {dropped.toLocaleString()} topic{dropped === 1 ? "" : "s"} left out before writing, the
-            least important first; they are listed above as &ldquo;(not planned)&rdquo;.
+            least important ones; they are listed above as &ldquo;(not planned)&rdquo;.
           </p>
           <ul className="list-disc pl-4">
             {plan.sections

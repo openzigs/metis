@@ -115,6 +115,30 @@ describe("waterFill", () => {
 });
 
 describe("allocateTopicBudgets", () => {
+  it("10 × 300 in 3,000 keeps all ten: nothing is dropped while every estimate fits (PR #1316 cycle 2)", () => {
+    const ten = Array.from({ length: 10 }, (_, i) => topic(`t${i}`, 10 - i, 300));
+    const { kept, dropped } = allocateTopicBudgets(ten, 3_000);
+    expect(dropped).toEqual([]);
+    expect(kept.map((t) => t.budgetChars)).toEqual(Array(10).fill(300));
+  });
+
+  it("drops nothing from a section with room when the document has room (PR #1316 cycle 2)", () => {
+    const plan = planDocument({
+      sections: [
+        enumerative(
+          "rules",
+          Array.from({ length: 20 }, (_, i) => topic(`rules/m${i}`, 20 - i, 400)),
+        ),
+      ],
+      documentMaxChars: 237_000,
+      sectionMaxChars: 60_000,
+    });
+    expect(plan.sections[0].dropped).toEqual([]);
+    expect(plan.sections[0].topics).toHaveLength(20);
+    expect(plan.sections[0].budgetChars).toBe(8_000);
+    expect(plan.unallocatedChars).toBe(237_000 - 8_000);
+  });
+
   it("gives every topic its floor and shares the rest by estimate", () => {
     const { kept, dropped } = allocateTopicBudgets(
       [topic("a", 3, 10_000), topic("b", 2, 5_000), topic("c", 1, 1_000)],
