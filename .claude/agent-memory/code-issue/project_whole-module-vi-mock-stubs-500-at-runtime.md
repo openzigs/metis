@@ -59,3 +59,14 @@ doubles that ignored `where` ([[publishing-safety-is-tested-on-the-stamped-body]
   reach a default parameter inside the same module; pass it explicitly (#509).
 - [[vitest-beforeeach-return-is-cleanup]] — `beforeEach(() => m.mockReset())`
   returns the mock, which vitest runs as cleanup; use a block body (#685).
+
+**Folded here (retired from the index 2026-10-21; files unchanged):**
+
+- [[publishing-safety-is-tested-on-the-stamped-body]] — Test the STAMPED body: strip split a code span; double honours status
+
+## A module-level default holding an imported function (PR #1354)
+
+`const defaultDeps = { restore: restoreCloneAtCommit }` reads the export at import time,
+so every test that `vi.mock`s `repo-service.js` without that export fails to import the
+module. Wrap it as `(...args) => restoreCloneAtCommit(...args)`, resolved at call time
+(`server/src/lib/connectors/repo/clone-health.ts`); see [[repo-clone-preflight-and-health]].
