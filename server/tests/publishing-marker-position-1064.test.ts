@@ -28,6 +28,7 @@ const {
   injectMarker,
   neutraliseMarkerText,
   parseMarker,
+  parseMarkers,
   parseSourceMarker,
   publishableBody,
   stripMarker,
@@ -820,6 +821,22 @@ describe("parseMarker — reads a marker only where one can be", () => {
     expect(parseMarker(`\`${PUBLISH_LINE}\``)).toBeNull();
     expect(parseMarker(`    ${PUBLISH_LINE}`)).toBeNull();
     expect(parseSourceMarker(`a ${SOURCE_LINE} b`)).toBeNull();
+  });
+});
+
+describe("parseMarkers (#1106) — every standalone publish marker, last first", () => {
+  it("returns a pasted marker line AND the block it was pasted under", () => {
+    const other = { batchId: "batch_9", draftId: "draft_9", hash: "b".repeat(64) };
+    const body = `Body${BLOCK}\n${buildMarkerComment(other)}\n`;
+    expect(parseMarkers(body)).toEqual([other, PUBLISH]);
+  });
+
+  it("never reads a marker that shares its line, or an indented one", () => {
+    expect(parseMarkers(`a ${PUBLISH_LINE} b\n\`${PUBLISH_LINE}\`\n    ${PUBLISH_LINE}`)).toEqual(
+      [],
+    );
+    expect(parseMarkers("")).toEqual([]);
+    expect(parseMarkers(null)).toEqual([]);
   });
 });
 

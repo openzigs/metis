@@ -346,6 +346,14 @@ export const dryRunActionSchema = z.object({
   parentDraftId: idSchema.optional(),
   parentIssueNumber: z.number().int().optional(),
   existingIssueNumber: z.number().int().optional(),
+  /**
+   * #1106 — on an `issue.create`: METIS's own record names this issue for the
+   * draft, outside the dedup map (an archived batch, a row with no recorded
+   * hash, a failed run that created it). A plan makes no network call, so it
+   * cannot know whether the issue still carries the draft's marker; the live
+   * run reads it and updates or skips it if so, and creates otherwise.
+   */
+  mayMatchIssueNumber: z.number().int().optional(),
   reason: z.string().optional(),
   /**
    * #744 — set on an issue action whose draft the approval gate

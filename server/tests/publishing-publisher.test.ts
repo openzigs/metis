@@ -293,7 +293,12 @@ import {
   __resetPublishOctokitCache,
   __setPublishOctokitFactory,
 } from "../src/lib/publishing/octokit-factory.js";
-import { runBatch, archiveBatch, previewBatchPlan } from "../src/lib/publishing/publisher.js";
+import {
+  runBatch,
+  archiveBatch,
+  configurePublisher,
+  previewBatchPlan,
+} from "../src/lib/publishing/publisher.js";
 import { audit } from "../src/lib/audit/audit-service.js";
 import { prisma } from "../src/lib/prisma.js";
 import { resolveVaultRef } from "../src/lib/connectors/vault-resolver.js";
@@ -338,8 +343,10 @@ function makeRemoteIssue(number: number, body: string): FakeIssue {
     node_id: `I_kwDOfake${number}`,
     number,
     html_url: `https://github.com/acme/metis/issues/${number}`,
+    // #1106 review — the recorded fixture names octocat/Hello-World here.
+    repository_url: "https://api.github.com/repos/acme/metis",
     body,
-  };
+  } as FakeIssue;
 }
 
 const remoteIssues = new Map<number, FakeIssue>();
@@ -371,9 +378,19 @@ function makeFakeOctokit(opts?: {
       if (/\/labels/.test(url)) {
         return { status: 200, headers: {}, data: { name: "ok" } };
       }
-      // Issue list.
+      // Issue list — paged as GitHub pages it (#1106: `per_page`, `page`).
       if (method === "GET" && /\/issues\?/.test(url)) {
-        return { status: 200, headers: {}, data: [...remoteIssues.values()] };
+        const query = new URLSearchParams(url.slice(url.indexOf("?") + 1));
+        const perPage = Number(query.get("per_page") ?? 30);
+        const page = Number(query.get("page") ?? 1);
+        const all = [...remoteIssues.values()];
+        return { status: 200, headers: {}, data: all.slice((page - 1) * perPage, page * perPage) };
+      }
+      // One issue, by number (#1106). An unknown number is GitHub's 404.
+      if (method === "GET" && /\/issues\/\d+$/.test(url)) {
+        const found = remoteIssues.get(Number(url.split("/").pop()));
+        if (!found) throw Object.assign(new Error("Not Found"), { status: 404 });
+        return { status: 200, headers: {}, data: found };
       }
       // Issue create.
       if (method === "POST" && /\/issues$/.test(url)) {
@@ -1663,19 +1680,18 @@ describe("#1091 — issue identifiers (recorded GitHub REST shape)", () => {
       const base = makeFakeOctokit();
       return fakeOctokit({
         request: async (args) => {
-          if ((args.method ?? "GET") === "GET" && /\/issues\?/.test(args.url ?? "")) {
+          // #1106 — the row's issue is read by number.
+          if ((args.method ?? "GET") === "GET" && /\/issues\/42$/.test(args.url ?? "")) {
             return {
               status: 200,
               headers: {},
-              data: [
-                {
-                  // No node_id at all.
-                  id: 4_993_133_999,
-                  number: 42,
-                  html_url: "https://github.com/acme/metis/issues/42",
-                  body: `body\n\n<!-- metis-publish: batch=batch_1 draft=f1 hash=${hash} -->`,
-                },
-              ],
+              data: {
+                // No node_id at all.
+                id: 4_993_133_999,
+                number: 42,
+                html_url: "https://github.com/acme/metis/issues/42",
+                body: `body\n\n<!-- metis-publish: batch=batch_1 draft=f1 hash=${hash} -->`,
+              },
             };
           }
           return base.request(args);
@@ -2550,9 +2566,13 @@ describe("reconcileFromRemote — the marker's hash is checked against what METI
     };
   }
 
+  /** Every issue read the fake tracker was sent (#1106 review). */
+  const trackerReads: string[] = [];
+
   /** The fake tracker, recording every write it is sent. */
   function tracker(): string[] {
     const writes: string[] = [];
+    trackerReads.length = 0;
     __setPublishOctokitFactory(async () => {
       const base = makeFakeOctokit();
       return fakeOctokit({
@@ -2562,6 +2582,9 @@ describe("reconcileFromRemote — the marker's hash is checked against what METI
             /\/issues(\/\d+)?$/.test(args.url ?? "")
           ) {
             writes.push(`${args.method} ${args.url}`);
+          }
+          if ((args.method ?? "GET") === "GET" && /\/issues/.test(args.url ?? "")) {
+            trackerReads.push(`GET ${args.url}`);
           }
           return base.request(args);
         },
@@ -2613,12 +2636,37 @@ describe("reconcileFromRemote — the marker's hash is checked against what METI
     expect(remoteIssues.get(42)!.body).toBe(edited);
     expect(remoteIssues.size).toBe(2);
     expect(issues.get("batch_2::f2")!.issueNumber).not.toBe(42);
-    // The conflict is reported, naming the issue and the draft it was aimed at.
+    // #1106 — "Billing" has no row, so the tracker was never consulted for it:
+    // the edited marker could not even be read, let alone start a match.
+    expect(trackerReads).toEqual([]);
+
+    // When "Login" itself is published again (its row's batch archived, so the
+    // tracker is checked), the edited hash is one METIS cannot vouch for: no
+    // match, a new issue, and the conflict reported against #42.
+    batches.get("batch_1")!.archived = true;
+    drafts.get("f1")!.status = "approved";
+    seedBatch({
+      id: "batch_3",
+      metadata: JSON.stringify({
+        draftIds: ["f1"],
+        additionalLabels: [],
+        secretRef: "${vault:gh}",
+      }),
+    });
+    writes.length = 0;
+    await runBatch({
+      batchId: "batch_3",
+      dryRun: false,
+      secretRef: "${vault:gh}",
+      sleep: noopSleep,
+    });
+    expect(writes).toEqual(["POST /repos/acme/metis/issues"]);
+    expect(remoteIssues.get(42)!.body).toBe(edited);
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "publish.reconcile.marker_hash_mismatch",
         target: { type: "github_issue", id: "acme/metis#42" },
-        metadata: expect.objectContaining({ markerDraftId: "f1", claimedByDraftId: "f2" }),
+        metadata: expect.objectContaining({ draftId: "f1", markerDraftIds: ["f1"] }),
       }),
     );
   });
@@ -2748,16 +2796,16 @@ describe("reconcileFromRemote — the marker's hash is checked against what METI
     ])(
       "…but only for the issue's own draft: a same-titled sibling does not inherit it (row holds %s)",
       async (_label, recorded) => {
-        // The marker names f1, which is not in this batch, and the row's hash
-        // is not the marker's: nothing METIS knows vouches for the hash, so the
-        // sibling is filed as a new issue and the conflict is reported.
+        // #1106 — f9 has no PublishedIssue row of its own, so nothing names an
+        // issue for it: the tracker (and #50's marker naming f1) is never read,
+        // and the sibling is filed as a new issue.
         const writes = seedRetitled(recorded);
         seedDraft({ id: "f9", title: "New title", body: "the body", status: "approved" });
         batch2(["f9"]);
         await run2();
         expect(writes).toEqual(["POST /repos/acme/metis/issues"]);
         expect(remoteIssues.size).toBe(2);
-        expect(audit).toHaveBeenCalledWith(mismatch);
+        expect(audit).not.toHaveBeenCalledWith(mismatch);
       },
     );
 
@@ -2907,8 +2955,596 @@ describe("reconcileFromRemote — the marker's hash is checked against what METI
     });
     expect(writes).toEqual([]);
     expect(remoteIssues.size).toBe(1);
-    expect(vi.mocked(prisma.publishedIssue.findFirst).mock.calls.at(-1)![0]).toMatchObject({
-      where: { draftId: "f1", destination: "github" },
+    // #1106 — the row is looked up among the draft's GitHub rows only.
+    expect(vi.mocked(prisma.publishedIssue.findMany)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ draftId: { in: ["f1"] }, destination: "github" }),
+      }),
+    );
+  });
+});
+
+describe("#1106 — the sweep matches from METIS's own rows; the tracker's marker only confirms", () => {
+  const H_LOGIN = computeDedupHash("acme", "metis", "Login");
+  const H_BILLING = computeDedupHash("acme", "metis", "Billing");
+  const marker = (draftId: string, hash: string, batchId = "batch_1") =>
+    `<!-- metis-publish: batch=${batchId} draft=${draftId} hash=${hash} -->`;
+
+  function row(over: Partial<PublishedIssueRow> = {}): PublishedIssueRow {
+    return {
+      id: "pi_42",
+      batchId: "batch_1",
+      draftId: "f1",
+      issueNumber: 42,
+      issueId: "I_kwDOfake42",
+      htmlUrl: "https://github.com/acme/metis/issues/42",
+      status: "created",
+      parentIssueNumber: null,
+      dedupHash: H_LOGIN,
+      bodyHash: computeBodyHash("login body"),
+      errorMessage: null,
+      publishedAt: new Date("2026-10-01T00:00:00Z"),
+      ...over,
+    };
+  }
+
+  /** The fake tracker, recording every issue call it is sent. */
+  function tracker(
+    override?: (args: OctokitRequestArgs) => Promise<OctokitResponseLike> | null,
+  ): string[] {
+    const calls: string[] = [];
+    __setPublishOctokitFactory(async () => {
+      const base = makeFakeOctokit();
+      return fakeOctokit({
+        request: async (args) => {
+          if (/\/issues/.test(args.url ?? "")) calls.push(`${args.method ?? "GET"} ${args.url}`);
+          return (override && override(args)) ?? base.request(args);
+        },
+      });
+    });
+    return calls;
+  }
+  const writes = (calls: string[]) => calls.filter((c) => !c.startsWith("GET "));
+  const reads = (calls: string[]) => calls.filter((c) => c.startsWith("GET "));
+
+  const batch2 = (draftIds: string[], dryRun = false) =>
+    seedBatch({
+      id: `batch_2${dryRun ? "_dry" : ""}`,
+      dryRun,
+      metadata: JSON.stringify({ draftIds, additionalLabels: [], secretRef: "${vault:gh}" }),
+    });
+  const run2 = () =>
+    runBatch({ batchId: "batch_2", dryRun: false, secretRef: "${vault:gh}", sleep: noopSleep });
+  const dry2 = async () => {
+    await runBatch({ batchId: "batch_2_dry", dryRun: true, secretRef: null, sleep: noopSleep });
+    const plan = JSON.parse(batches.get("batch_2_dry")!.dryRunPlan!) as {
+      actions: Array<{
+        kind: string;
+        draftId?: string;
+        existingIssueNumber?: number;
+        mayMatchIssueNumber?: number;
+        reason?: string;
+      }>;
+    };
+    return plan.actions.filter((a) => a.kind.startsWith("issue."));
+  };
+
+  /** Draft f1 ("Login") was published as #42 by a batch since archived. */
+  function seedArchivedLogin(body = `login body\n\n${marker("f1", H_LOGIN)}\n`): void {
+    seedDraft({ id: "f1", title: "Login", body: "login body", status: "approved" });
+    seedBatch({ id: "batch_1", status: "completed", archived: true });
+    issues.set("batch_1::f1", row());
+    remoteIssues.set(42, makeRemoteIssue(42, body));
+  }
+
+  describe("item 3 — the key is the PublishedIssue row, never the tracker text", () => {
+    it("a draft METIS has no row for never reads the tracker, whatever markers it holds", async () => {
+      // #42 carries a well-formed marker naming f2 with f2's own hash: text
+      // anyone with write access to the tracker can type.
+      seedDraft({ id: "f2", title: "Billing", body: "billing body", status: "approved" });
+      seedBatch({ id: "batch_1", status: "completed" });
+      remoteIssues.set(42, makeRemoteIssue(42, `x\n\n${marker("f2", H_BILLING)}\n`));
+      const calls = tracker();
+      batch2(["f2"]);
+      expect((await run2()).status).toBe("completed");
+      expect(reads(calls)).toEqual([]);
+      expect(writes(calls)).toEqual(["POST /repos/acme/metis/issues"]);
+    });
+
+    it("the row's issue is read by number, so an issue that lost its label is still found", async () => {
+      // Someone removed `metis-generated` from #42 on the tracker, so a label
+      // listing no longer shows it. The row still names it.
+      seedArchivedLogin();
+      const calls = tracker((args) =>
+        /\/issues\?/.test(args.url ?? "")
+          ? Promise.resolve({ status: 200, headers: {}, data: [] })
+          : null,
+      );
+      batch2(["f1"]);
+      await run2();
+      expect(writes(calls)).toEqual([]);
+      expect(remoteIssues.size).toBe(1);
+      expect(batches.get("batch_2")!.dedupSkipped).toBe(1);
+      expect(issues.get("batch_2::f1")).toMatchObject({ issueNumber: 42, status: "updated" });
+    });
+
+    it("an issue whose marker names another draft is not matched (the marker vetoes, never starts)", async () => {
+      seedArchivedLogin(`login body\n\n${marker("f7", H_LOGIN)}\n`);
+      const calls = tracker();
+      batch2(["f1"]);
+      await run2();
+      expect(writes(calls)).toEqual(["POST /repos/acme/metis/issues"]);
+      expect(audit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "publish.reconcile.marker_mismatch",
+          target: { type: "github_issue", id: "acme/metis#42" },
+        }),
+      );
+    });
+  });
+
+  describe("item 1 — the dry run says which drafts the publish checks against the tracker", () => {
+    it("a recoverable draft is planned as a create that may match #42, checked at publish", async () => {
+      seedArchivedLogin();
+      seedDraft({ id: "f2", title: "Billing", body: "billing body", status: "approved" });
+      batch2(["f1", "f2"], true);
+      const actions = await dry2();
+      const f1 = actions.find((a) => a.draftId === "f1")!;
+      expect(f1).toMatchObject({ kind: "issue.create", mayMatchIssueNumber: 42 });
+      expect(f1.reason).toMatch(/may match existing issue #42.*checked at publish/);
+      // A draft with no row is a plain create: nothing is left to the publish.
+      const f2 = actions.find((a) => a.draftId === "f2")!;
+      expect(f2.kind).toBe("issue.create");
+      expect(f2.mayMatchIssueNumber).toBeUndefined();
+    });
+
+    it("the preview confirmation says the same", async () => {
+      seedArchivedLogin();
+      const plan = await previewBatchPlan({
+        projectId: "proj_1",
+        draftIds: ["f1"],
+        targetOwner: "acme",
+        targetRepo: "metis",
+        targetBaseUrl: null,
+        provider: "github",
+        additionalLabels: [],
+        secretRef: null,
+      });
+      expect(plan.actions.find((a) => a.draftId === "f1")).toMatchObject({
+        kind: "issue.create",
+        mayMatchIssueNumber: 42,
+      });
+    });
+
+    it("…and the live run checks exactly the drafts the plan marked", async () => {
+      seedArchivedLogin();
+      seedDraft({ id: "f2", title: "Billing", body: "billing body", status: "approved" });
+      batch2(["f1", "f2"], true);
+      const marked = (await dry2()).filter((a) => a.mayMatchIssueNumber !== undefined);
+      const calls = tracker();
+      batch2(["f1", "f2"]);
+      await run2();
+      expect(marked.map((a) => [a.draftId, a.mayMatchIssueNumber])).toEqual([["f1", 42]]);
+      expect(reads(calls)).toEqual(["GET /repos/acme/metis/issues/42"]);
+      expect(writes(calls)).toEqual(["POST /repos/acme/metis/issues"]);
+    });
+  });
+
+  describe("item 2 — several standalone markers: the one the database confirms", () => {
+    it("a marker line appended below the genuine block does not hide it", async () => {
+      // f2 is published too, as #43: its marker is a real one, pasted under #42's.
+      seedArchivedLogin(`login body\n\n${marker("f1", H_LOGIN)}\n\n${marker("f2", H_BILLING)}\n`);
+      seedDraft({ id: "f2", title: "Billing", body: "billing body", status: "published" });
+      issues.set(
+        "batch_1::f2",
+        row({ id: "pi_43", draftId: "f2", issueNumber: 43, dedupHash: H_BILLING }),
+      );
+      const calls = tracker();
+      batch2(["f1"]);
+      await run2();
+      expect(writes(calls)).toEqual([]);
+      expect(remoteIssues.size).toBe(1);
+      expect(batches.get("batch_2")!.dedupSkipped).toBe(1);
+    });
+
+    it("a marker inside a line of text (not alone on its line) is never read", async () => {
+      seedArchivedLogin(`login body \`${marker("f1", H_LOGIN)}\`\n`);
+      const calls = tracker();
+      batch2(["f1"]);
+      await run2();
+      expect(writes(calls)).toEqual(["POST /repos/acme/metis/issues"]);
+    });
+  });
+
+  describe("item 4 — the row is the one for this target, newest first, fully ordered", () => {
+    it("a row for another repository is not used, even with the same issue number", async () => {
+      // f1 was published as acme/other#42. acme/metis#42 is someone else's
+      // issue, and a copied marker in it now names f1.
+      seedDraft({ id: "f1", title: "Login", body: "login body", status: "approved" });
+      seedBatch({ id: "batch_1", status: "completed", archived: true, targetRepo: "other" });
+      issues.set("batch_1::f1", row());
+      remoteIssues.set(42, makeRemoteIssue(42, `login body\n\n${marker("f1", H_LOGIN)}\n`));
+      const calls = tracker();
+      batch2(["f1"]);
+      await run2();
+      expect(reads(calls)).toEqual([]);
+      expect(writes(calls)).toEqual(["POST /repos/acme/metis/issues"]);
+    });
+
+    it("the same repository named in another case is this target", async () => {
+      seedDraft({ id: "f1", title: "Login", body: "login body", status: "approved" });
+      seedBatch({ id: "batch_1", status: "completed", archived: true, targetOwner: "ACME" });
+      issues.set("batch_1::f1", row());
+      remoteIssues.set(42, makeRemoteIssue(42, `login body\n\n${marker("f1", H_LOGIN)}\n`));
+      const calls = tracker();
+      batch2(["f1"]);
+      await run2();
+      expect(writes(calls)).toEqual([]);
+    });
+
+    it("a row on another API host is not this target", async () => {
+      seedDraft({ id: "f1", title: "Login", body: "login body", status: "approved" });
+      seedBatch({
+        id: "batch_1",
+        status: "completed",
+        archived: true,
+        targetBaseUrl: "https://ghe.example.com/api/v3",
+      });
+      issues.set("batch_1::f1", row());
+      remoteIssues.set(42, makeRemoteIssue(42, `login body\n\n${marker("f1", H_LOGIN)}\n`));
+      const calls = tracker();
+      batch2(["f1"]);
+      await run2();
+      expect(reads(calls)).toEqual([]);
+    });
+
+    it.each([
+      ["older row first", false],
+      ["newer row first", true],
+    ])(
+      "the newest row decides, whatever order the database returns (%s)",
+      async (_l, newerFirst) => {
+        seedDraft({ id: "f1", title: "Login", body: "login body", status: "approved" });
+        seedBatch({ id: "batch_0", status: "completed", archived: true });
+        seedBatch({ id: "batch_1", status: "completed", archived: true });
+        const older = row({ id: "pi_a", batchId: "batch_0", issueNumber: 42 });
+        const newer = row({
+          id: "pi_b",
+          batchId: "batch_1",
+          issueNumber: 43,
+          issueId: "I_kwDOfake43",
+          publishedAt: new Date("2026-10-05T00:00:00Z"),
+        });
+        for (const r of newerFirst ? [newer, older] : [older, newer]) {
+          issues.set(`${r.batchId}::f1`, r);
+        }
+        remoteIssues.set(
+          42,
+          makeRemoteIssue(42, `login body\n\n${marker("f1", H_LOGIN, "batch_0")}\n`),
+        );
+        remoteIssues.set(43, makeRemoteIssue(43, `login body\n\n${marker("f1", H_LOGIN)}\n`));
+        const calls = tracker();
+        batch2(["f1"]);
+        await run2();
+        expect(reads(calls)).toEqual(["GET /repos/acme/metis/issues/43"]);
+        expect(writes(calls)).toEqual([]);
+        expect(issues.get("batch_2::f1")!.issueNumber).toBe(43);
+      },
+    );
+
+    it("an exact timestamp tie is settled on the row id", async () => {
+      seedDraft({ id: "f1", title: "Login", body: "login body", status: "approved" });
+      seedBatch({ id: "batch_0", status: "completed", archived: true });
+      seedBatch({ id: "batch_1", status: "completed", archived: true });
+      issues.set("batch_1::f1", row({ id: "pi_b", batchId: "batch_1", issueNumber: 43 }));
+      issues.set("batch_0::f1", row({ id: "pi_a", batchId: "batch_0", issueNumber: 42 }));
+      remoteIssues.set(42, makeRemoteIssue(42, `login body\n\n${marker("f1", H_LOGIN)}\n`));
+      remoteIssues.set(43, makeRemoteIssue(43, `login body\n\n${marker("f1", H_LOGIN)}\n`));
+      const calls = tracker();
+      batch2(["f1"]);
+      await run2();
+      expect(reads(calls)).toEqual(["GET /repos/acme/metis/issues/43"]);
+    });
+
+    it("a newer failed row that recorded no issue does not shadow the one that did", async () => {
+      seedDraft({ id: "f1", title: "Login", body: "login body", status: "failed" });
+      seedBatch({ id: "batch_0", status: "completed", archived: true });
+      seedBatch({ id: "batch_1", status: "failed" });
+      issues.set("batch_0::f1", row({ id: "pi_a", batchId: "batch_0" }));
+      issues.set(
+        "batch_1::f1",
+        row({
+          id: "pi_b",
+          batchId: "batch_1",
+          status: "failed",
+          issueNumber: 0,
+          issueId: "",
+          htmlUrl: "",
+          dedupHash: null,
+          publishedAt: new Date("2026-10-05T00:00:00Z"),
+        }),
+      );
+      remoteIssues.set(42, makeRemoteIssue(42, `login body\n\n${marker("f1", H_LOGIN)}\n`));
+      const calls = tracker();
+      batch2(["f1"]);
+      await run2();
+      expect(writes(calls)).toEqual([]);
+      expect(issues.get("batch_2::f1")!.issueNumber).toBe(42);
+    });
+  });
+
+  describe("two drafts are never filed onto one issue", () => {
+    it("an issue the title match already claims is not offered to a draft through its row", async () => {
+      // g1 "Login" is live as #42 (in the dedup map by title). f1, since
+      // retitled, has an archived row that also names #42.
+      seedDraft({ id: "g1", title: "Login", body: "login body", status: "approved" });
+      seedDraft({ id: "f1", title: "Login v2", body: "v2 body", status: "approved" });
+      seedBatch({ id: "batch_0", status: "completed" });
+      seedBatch({ id: "batch_1", status: "completed", archived: true });
+      issues.set("batch_0::g1", row({ id: "pi_g", batchId: "batch_0", draftId: "g1" }));
+      issues.set("batch_1::f1", row({ id: "pi_f", batchId: "batch_1", draftId: "f1" }));
+      remoteIssues.set(42, makeRemoteIssue(42, `login body\n\n${marker("f1", H_LOGIN)}\n`));
+      batch2(["g1", "f1"], true);
+      expect((await dry2()).filter((a) => a.mayMatchIssueNumber !== undefined)).toEqual([]);
+      const calls = tracker();
+      batch2(["g1", "f1"]);
+      await run2();
+      expect(reads(calls)).toEqual([]);
+      expect(writes(calls)).toEqual(["POST /repos/acme/metis/issues"]);
+      expect(issues.get("batch_2::g1")!.issueNumber).toBe(42);
+      expect(issues.get("batch_2::f1")!.issueNumber).not.toBe(42);
+    });
+
+    it("an issue GitHub answers for under another number (moved) is not matched", async () => {
+      seedArchivedLogin();
+      const calls = tracker((args) =>
+        /\/issues\/42$/.test(args.url ?? "") && (args.method ?? "GET") === "GET"
+          ? Promise.resolve({
+              status: 200,
+              headers: {},
+              data: makeRemoteIssue(77, `login body\n\n${marker("f1", H_LOGIN)}\n`),
+            })
+          : null,
+      );
+      batch2(["f1"]);
+      await run2();
+      expect(writes(calls)).toEqual(["POST /repos/acme/metis/issues"]);
+    });
+  });
+
+  describe("a transferred issue answered through a redirect (#1106 review)", () => {
+    it.each([
+      ["repository_url", { repository_url: "https://api.github.com/repos/acme/elsewhere" }],
+      ["html_url", { html_url: "https://github.com/acme/elsewhere/issues/42" }],
+      ["both missing", { repository_url: undefined, html_url: "not a url" }],
+    ])("same number, but %s names another repository: not matched", async (_label, over) => {
+      seedArchivedLogin();
+      const calls = tracker((args) =>
+        /\/issues\/42$/.test(args.url ?? "") && (args.method ?? "GET") === "GET"
+          ? Promise.resolve({
+              status: 200,
+              headers: {},
+              data: {
+                ...makeRemoteIssue(42, `login body\n\n${marker("f1", H_LOGIN)}\n`),
+                ...over,
+              },
+            })
+          : null,
+      );
+      batch2(["f1"]);
+      await run2();
+      expect(writes(calls)).toEqual(["POST /repos/acme/metis/issues"]);
+    });
+
+    it("the same repository in another letter case is still this one", async () => {
+      seedArchivedLogin();
+      const calls = tracker((args) =>
+        /\/issues\/42$/.test(args.url ?? "") && (args.method ?? "GET") === "GET"
+          ? Promise.resolve({
+              status: 200,
+              headers: {},
+              data: {
+                ...makeRemoteIssue(42, `login body\n\n${marker("f1", H_LOGIN)}\n`),
+                repository_url: "https://api.github.com/repos/Acme/Metis",
+                html_url: "https://github.com/Acme/Metis/issues/42",
+              },
+            })
+          : null,
+      );
+      batch2(["f1"]);
+      await run2();
+      expect(writes(calls)).toEqual([]);
+    });
+  });
+
+  describe("progress and timing for the reads (#1106 review)", () => {
+    it("each read emits a dedup-scan progress event", async () => {
+      const progress: Array<Record<string, unknown>> = [];
+      configurePublisher({
+        emitter: {
+          status: () => undefined,
+          progress: (e) => progress.push(e as unknown as Record<string, unknown>),
+          completed: () => undefined,
+        },
+      });
+      try {
+        seedArchivedLogin();
+        tracker();
+        batch2(["f1"]);
+        await run2();
+      } finally {
+        configurePublisher({ emitter: undefined });
+      }
+      expect(progress).toContainEqual(
+        expect.objectContaining({
+          phase: "dedup-scan",
+          step: "reading-issue",
+          current: 1,
+          total: 1,
+          draftId: "f1",
+          issueNumber: 42,
+        }),
+      );
+    });
+
+    it("the dry-run estimate counts one call per issue read at publish", async () => {
+      seedArchivedLogin();
+      batch2(["f1"], true);
+      await runBatch({
+        batchId: "batch_2_dry",
+        dryRun: true,
+        secretRef: null,
+        sleep: noopSleep,
+        rateLimit: {
+          delayMs: 1000,
+          jitterMs: 0,
+          secondaryBackoffBaseMs: 0,
+          secondaryBackoffMaxMs: 0,
+          maxRetries: 0,
+          backoffBudgetMs: 0,
+        },
+      });
+      const plan = JSON.parse(batches.get("batch_2_dry")!.dryRunPlan!) as {
+        totalActions: number;
+        estimatedDurationMs: number;
+      };
+      expect(plan.estimatedDurationMs).toBe((plan.totalActions + 1) * 1000);
+    });
+  });
+
+  describe("item 5 — no page limit", () => {
+    it("recovers a draft whose issue sits past the first 100 metis-generated issues", async () => {
+      for (let n = 1; n <= 150; n += 1) {
+        remoteIssues.set(1000 + n, makeRemoteIssue(1000 + n, `other ${n}`));
+      }
+      seedArchivedLogin();
+      const calls = tracker();
+      batch2(["f1"]);
+      await run2();
+      expect(writes(calls)).toEqual([]);
+      expect(batches.get("batch_2")!.dedupSkipped).toBe(1);
+    });
+  });
+
+  describe("item 6 — a failed read is logged and reported on the batch", () => {
+    /** Every request the fake tracker is sent, labels included; issue reads fail with 502. */
+    function failingReads(): string[] {
+      const all: string[] = [];
+      __setPublishOctokitFactory(async () => {
+        const base = makeFakeOctokit();
+        return fakeOctokit({
+          request: async (args) => {
+            const method = args.method ?? "GET";
+            all.push(`${method} ${args.url}`);
+            if (method === "GET" && /\/issues\/\d+$/.test(args.url ?? "")) {
+              throw Object.assign(new Error("Bad Gateway"), { status: 502 });
+            }
+            return base.request(args);
+          },
+        });
+      });
+      return all;
+    }
+
+    it("a failed read stops the batch before ANY write: nothing created, nothing rolled back", async () => {
+      // Two drafts whose issues cannot be read, one new draft. Counting the
+      // two as failed drafts would cross the >50% auto-rollback threshold and
+      // close the new draft's issue, which has nothing to do with them.
+      seedArchivedLogin();
+      seedDraft({ id: "f4", title: "Export", body: "export body", status: "approved" });
+      issues.set(
+        "batch_1::f4",
+        row({
+          id: "pi_44",
+          draftId: "f4",
+          issueNumber: 44,
+          dedupHash: computeDedupHash("acme", "metis", "Export"),
+        }),
+      );
+      seedDraft({ id: "f2", title: "Billing", body: "billing body", status: "approved" });
+      const all = failingReads();
+      batch2(["f1", "f4", "f2"]);
+      const rowsBefore = issues.size;
+      expect((await run2()).status).toBe("failed");
+      // Only the auth check and the two reads: no label sync, no POST, no close.
+      expect(all.filter((c) => !c.startsWith("GET "))).toEqual([]);
+      expect(all.filter((c) => /\/issues\/\d+$/.test(c))).toEqual([
+        "GET /repos/acme/metis/issues/42",
+        "GET /repos/acme/metis/issues/44",
+      ]);
+      expect(issues.size).toBe(rowsBefore);
+      expect(remoteIssues.size).toBe(1);
+      for (const id of ["f1", "f4", "f2"]) expect(drafts.get(id)!.status).toBe("approved");
+      const b = batches.get("batch_2")!;
+      expect(b).toMatchObject({ status: "failed", publishedCount: 0, failedCount: 0 });
+      expect(b.errorMessage).toMatch(/could not read issue #42, #44 .*retry the batch/);
+      expect(audit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "publish.reconcile.read_failed",
+          target: { type: "github_issue", id: "acme/metis#42" },
+          metadata: expect.objectContaining({ status: 502 }),
+        }),
+      );
+      expect(audit).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: "publish.issue.closed" }),
+      );
+    });
+
+    it("re-running the same batch after a failed read records the whole row (ids, link, no stale error)", async () => {
+      seedArchivedLogin();
+      batch2(["f1"]);
+      // A row an earlier failed run of this batch left: no issue, an error.
+      issues.set(
+        "batch_2::f1",
+        row({
+          id: "pi_2",
+          batchId: "batch_2",
+          status: "failed",
+          issueNumber: 0,
+          issueId: "",
+          htmlUrl: "",
+          dedupHash: null,
+          bodyHash: null,
+          errorMessage: "simulated earlier failure",
+          publishedAt: new Date("2026-10-10T00:00:00Z"),
+        }),
+      );
+      failingReads();
+      expect((await run2()).status).toBe("failed");
+      expect(issues.get("batch_2::f1")!.errorMessage).toBe("simulated earlier failure");
+
+      // GitHub is back: the same batch is run again.
+      __resetPublishOctokitCache();
+      const calls = tracker();
+      expect((await run2()).status).toBe("completed");
+      expect(writes(calls)).toEqual([]);
+      expect(issues.get("batch_2::f1")).toMatchObject({
+        issueNumber: 42,
+        issueId: "I_kwDOfake42",
+        htmlUrl: "https://github.com/acme/metis/issues/42",
+        status: "updated",
+        dedupHash: H_LOGIN,
+        bodyHash: computeBodyHash("login body"),
+        errorMessage: null,
+      });
+      // Drift detection's lookup (`reconcileIssueChange`): the newest row
+      // whose issueId is the webhook's node id. It must be this batch's row.
+      const byNodeId = [...issues.values()]
+        .filter((r) => r.issueId === "I_kwDOfake42")
+        .sort(
+          (a, b) => b.publishedAt.getTime() - a.publishedAt.getTime() || (b.id > a.id ? 1 : -1),
+        );
+      expect(byNodeId[0]).toMatchObject({ batchId: "batch_2", errorMessage: null });
+    });
+
+    it("an issue deleted on the tracker (404) is not a failure: the draft is created", async () => {
+      seedArchivedLogin();
+      remoteIssues.delete(42);
+      const calls = tracker();
+      batch2(["f1"]);
+      expect((await run2()).status).toBe("completed");
+      expect(writes(calls)).toEqual(["POST /repos/acme/metis/issues"]);
+      expect(batches.get("batch_2")!.errorMessage).toBeNull();
     });
   });
 });

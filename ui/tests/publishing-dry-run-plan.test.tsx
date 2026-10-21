@@ -244,6 +244,29 @@ describe("DryRunPlanPanel", () => {
     expect(labels[0]!.getAttribute("title")).toBe("issue.create");
   });
 
+  it("#1106 — a create that may match an existing issue says so, and that the publish checks", () => {
+    render(
+      <DryRunPlanPanel
+        plan={makePlan({
+          totalActions: 2,
+          actions: [
+            {
+              kind: "issue.create",
+              draftId: "draft_000000001",
+              title: "Login",
+              mayMatchIssueNumber: 42,
+            },
+            { kind: "issue.create", draftId: "draft_000000002", title: "Billing" },
+          ],
+        })}
+      />,
+    );
+    expect(
+      screen.getByText("Login · may match existing issue #42, checked at publish"),
+    ).toBeTruthy();
+    expect(screen.getByText("Billing")).toBeTruthy();
+  });
+
   it("tolerates actions missing their optional fields", () => {
     render(
       <DryRunPlanPanel

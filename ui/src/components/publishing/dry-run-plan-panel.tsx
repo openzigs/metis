@@ -107,7 +107,10 @@ function actionDetail(action: DryRunAction): string {
     case "label.upsert":
       return (action.labels ?? []).join(", ");
     case "issue.create":
-      return action.title ?? "";
+      // #1106 — the preview cannot read the tracker; the publish checks.
+      return action.mayMatchIssueNumber !== undefined
+        ? `${action.title ?? ""} · may match existing issue #${action.mayMatchIssueNumber}, checked at publish`
+        : (action.title ?? "");
     case "issue.update":
       return `#${action.existingIssueNumber} · ${action.title ?? ""}`;
     case "issue.skipDuplicate":
