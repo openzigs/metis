@@ -100,7 +100,9 @@ export class NotificationStore {
         title: s.title,
         message: s.message,
         createdAt: s.createdAt,
-        href: s.href ?? undefined,
+        // #104 review — the same filter as a live item, so a saved row with a
+        // link the drawer would refuse live is refused here too.
+        href: safeInAppHref(s.href),
         source: s.type,
         read: s.read,
       }));
@@ -224,9 +226,20 @@ export function slaEventToNotification(
  * than followed.
  */
 export function safeInAppHref(href: string | null | undefined): string | undefined {
-  if (typeof href !== "string") return undefined;
-  if (!href.startsWith("/") || href.startsWith("//") || href.startsWith("/\\")) return undefined;
-  return href;
+  if (typeof href !== "string" || !href.startsWith("/")) return undefined;
+  // Judge the link the way the browser will resolve it. A prefix check is not
+  // enough: the URL parser drops tab and newline and reads `\` as `/`, so
+  // "/\t/evil.example" and "/\\evil.example" both open https://evil.example/.
+  const origin = typeof window === "undefined" ? "http://localhost" : window.location.origin;
+  let url: URL;
+  try {
+    url = new URL(href, origin);
+  } catch {
+    return undefined;
+  }
+  if (url.origin !== origin) return undefined;
+  // Hand back the parsed form, so the anchor gets exactly what was judged.
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 /** The server-built text and link of a `user:{id}` notification event (#104). */

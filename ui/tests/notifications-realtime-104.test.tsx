@@ -170,15 +170,54 @@ describe("#104 mappers", () => {
 describe("safeInAppHref", () => {
   it.each([
     ["/reviews/1", "/reviews/1"],
+    ["/projects/p%201/discussions/t?x=1#m", "/projects/p%201/discussions/t?x=1#m"],
     ["//evil.example", undefined],
     ["/\\evil.example", undefined],
+    ["\\\\evil.example", undefined],
+    // The URL parser drops tab, CR and LF, so each of these opens evil.example.
+    ["/\t/evil.example", undefined],
+    ["/\n/evil.example", undefined],
+    ["/\r\n/evil.example", undefined],
+    ["/\t\\evil.example", undefined],
     ["javascript:alert(1)", undefined],
     ["https://evil.example", undefined],
     ["", undefined],
     [null, undefined],
     [undefined, undefined],
-  ])("%s -> %s", (input, expected) => {
+  ])("%j -> %j", (input, expected) => {
     expect(safeInAppHref(input)).toBe(expected);
+  });
+
+  it("keeps an encoded slash as a path on this origin, never a host", () => {
+    // `%2F` is not decoded by the URL parser, so this stays a same-origin path.
+    expect(safeInAppHref("/%2F%2Fevil.example")).toBe("/%2F%2Fevil.example");
+    expect(safeInAppHref("/%09/evil.example")).toBe("/%09/evil.example");
+  });
+
+  it("filters a link loaded from history the same way as a live one", () => {
+    const store = getNotificationStore();
+    store.hydrate([
+      {
+        id: "bad",
+        type: "review_requested",
+        title: "t",
+        message: "m",
+        href: "/\t/evil.example",
+        read: false,
+        createdAt: new Date().toISOString(),
+      },
+      {
+        id: "good",
+        type: "review_requested",
+        title: "t",
+        message: "m",
+        href: "/reviews/rev-1",
+        read: false,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    const byId = Object.fromEntries(store.list().map((n) => [n.id, n.href]));
+    expect(byId).toEqual({ bad: undefined, good: "/reviews/rev-1" });
   });
 });
 
