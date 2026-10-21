@@ -378,7 +378,14 @@ describe("createImpactLlmRuntime — degradation (#1024)", () => {
     await expect(provider.chat([])).rejects.toBeInstanceOf(ImpactLlmTimeoutError);
     expect(sawAbort).toBe(true);
     expect(runtime.snapshot()).toEqual([
-      { stage: "table-filter", calls: 0, failures: 0, timeouts: 1, unavailableReason: null },
+      {
+        stage: "table-filter",
+        calls: 0,
+        failures: 0,
+        timeouts: 1,
+        unavailableReason: null,
+        unreadable: 0,
+      },
     ]);
   });
 
@@ -473,6 +480,36 @@ describe("createImpactLlmRuntime — degradation (#1024)", () => {
     await expect(provider.chat([])).rejects.toThrow(/boom/);
 
     expect(runtime.degradationNotice()).toContain("the AI provider was unavailable");
+  });
+
+  // #1081 — a malformed reply is a successful CALL, so before this it was never
+  // named: the analyst read an unfiltered crossing as a filtered one.
+  it("names a stage whose answer could not be read, even though its call returned", async () => {
+    const { runtime } = runtimeWith();
+    const provider = runtime.instrument(fakeProvider(), "table-filter");
+    await provider.chat([]);
+    runtime.markUnreadable("table-filter");
+    runtime.markUnreadable("summary-item");
+    runtime.markUnreadable("summary-run");
+    await runtime.flush();
+
+    const notice = runtime.degradationNotice();
+    expect(notice).toContain("The AI's answer could not be read for");
+    expect(notice).toContain("table relevance filtering");
+    // Item and run summaries share one label; it is named once.
+    expect(notice!.match(/narrative summaries/g)).toHaveLength(1);
+    expect(notice).toContain("deterministic baseline");
+    expect(runtime.snapshot().find((s) => s.stage === "table-filter")?.unreadable).toBe(1);
+  });
+
+  it("states both an unavailable stage and an unreadable one", () => {
+    const { runtime } = runtimeWith();
+    runtime.markUnavailable("additive-ddl", "provider-offline");
+    runtime.markUnreadable("clause-reconcile");
+    const notice = runtime.degradationNotice()!;
+    expect(notice).toContain("AI enrichment did not run");
+    expect(notice).toContain("additive-column proposals");
+    expect(notice).toContain("could not be read for: clause coverage advisories");
   });
 
   it("reports stage counters in pipeline order for operator triage", async () => {

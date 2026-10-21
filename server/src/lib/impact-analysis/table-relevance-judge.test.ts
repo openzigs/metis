@@ -75,7 +75,24 @@ describe("judgeRelevantTables (#1029)", () => {
   it("degrades to empty (applied false) when every sample is malformed", async () => {
     const p = mockProvider(["not json", "also not json", "{bad"]);
     const r = await judgeRelevantTables(REQ, CANDS, p, { enabled: true, samples: 3 });
-    expect(r).toEqual({ selected: [], applied: false });
+    // #1081 — marked unread: "nothing recovered" was never the judge's answer.
+    expect(r).toEqual({ selected: [], applied: false, unreadable: true });
+  });
+
+  it("#1081 — marks the vote unread when too few samples could be read to pass the threshold", async () => {
+    const pick0 = JSON.stringify({ tables: [{ index: 0, rationale: "r" }] });
+    const p = mockProvider([pick0, "not json", "{bad"]);
+    const r = await judgeRelevantTables(REQ, CANDS, p, { enabled: true, samples: 3 });
+    expect(r).toEqual({ selected: [], applied: false, unreadable: true });
+  });
+
+  it("#1081 — a readable majority still votes, unmarked", async () => {
+    const pick0 = JSON.stringify({ tables: [{ index: 0, rationale: "r" }] });
+    const p = mockProvider([pick0, pick0, "not json"]);
+    const r = await judgeRelevantTables(REQ, CANDS, p, { enabled: true, samples: 3 });
+    expect(r.applied).toBe(true);
+    expect(r.unreadable).toBeUndefined();
+    expect(r.selected.map((s) => s.tableName)).toEqual([CANDS[0]!.tableName]);
   });
 
   it("never throws when the provider throws", async () => {

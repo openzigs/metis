@@ -584,7 +584,14 @@ describe("deterministic passthrough", () => {
     const result = await proposeAdditiveColumns("req", ordersCrossing(), malformed, {
       enabled: true,
     });
-    expect(result).toEqual({ rows: [], proposals: [], coveringWriterIds: [], applied: false });
+    // #1081 — the passthrough is marked as an unread answer, not "no proposals".
+    expect(result).toEqual({
+      rows: [],
+      proposals: [],
+      coveringWriterIds: [],
+      applied: false,
+      unreadable: true,
+    });
   });
 
   it("degrades to passthrough when the reply fails schema validation", async () => {
@@ -606,6 +613,7 @@ describe("deterministic passthrough", () => {
     const result = await proposeAdditiveColumns("req", ordersCrossing(), throwing, {
       enabled: true,
     });
+    // A failed CALL is not an unread answer: the runtime counts it as a failure.
     expect(result).toEqual({ rows: [], proposals: [], coveringWriterIds: [], applied: false });
   });
 

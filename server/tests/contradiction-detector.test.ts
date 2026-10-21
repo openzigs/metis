@@ -58,7 +58,7 @@ describe("parseNliResponse", () => {
         { premise: "p2", hypothesis: "h2", label: "entailment", evidenceIds: [] },
       ],
     });
-    const parsed = parseNliResponse(json);
+    const parsed = parseNliResponse(json)!;
     expect(parsed.verdicts).toHaveLength(2);
     expect(parsed.verdicts[0]!.label).toBe("contradiction");
     expect(parsed.verdicts[0]!.evidenceIds).toEqual(["docA"]);
@@ -67,7 +67,7 @@ describe("parseNliResponse", () => {
   it("strips markdown fences before parsing", () => {
     const fenced =
       '```json\n{"verdicts":[{"premise":"a","hypothesis":"b","label":"neutral"}]}\n```';
-    const parsed = parseNliResponse(fenced);
+    const parsed = parseNliResponse(fenced)!;
     expect(parsed.verdicts).toHaveLength(1);
     expect(parsed.verdicts[0]!.evidenceIds).toEqual([]);
   });
@@ -80,17 +80,56 @@ describe("parseNliResponse", () => {
         { premise: "x", hypothesis: "y", label: "not-a-label" }, // bad enum → invalid
       ],
     });
-    const parsed = parseNliResponse(json);
+    const parsed = parseNliResponse(json)!;
     expect(parsed.verdicts).toHaveLength(1);
     expect(parsed.verdicts[0]!.premise).toBe("ok");
   });
 
-  it("returns an empty result for non-JSON", () => {
-    expect(parseNliResponse("totally not json").verdicts).toEqual([]);
+  // #1081 — an unreadable answer is `null`, never "no contradictions".
+  it("returns null for non-JSON", () => {
+    expect(parseNliResponse("totally not json")).toBeNull();
   });
 
-  it("returns an empty result when 'verdicts' is missing", () => {
-    expect(parseNliResponse(JSON.stringify({ foo: 1 })).verdicts).toEqual([]);
+  it("returns null when 'verdicts' is missing", () => {
+    expect(parseNliResponse(JSON.stringify({ foo: 1 }))).toBeNull();
+  });
+
+  it("reads a legitimately empty answer as no verdicts", () => {
+    expect(parseNliResponse(JSON.stringify({ verdicts: [] }))).toEqual({ verdicts: [] });
+  });
+});
+
+describe("ContradictionDetector.detect — #1081 unreadable answers", () => {
+  it("counts each comparison whose answer could not be read, after one re-prompt", async () => {
+    // Self pass on A: malformed twice. Self pass on B: clean. Pairwise: clean.
+    const provider = mockProvider(["nope", "still nope", '{"verdicts":[]}']);
+    const result = await new ContradictionDetector({ provider }).detect([SEG_A, SEG_B]);
+    expect(result.calls).toBe(3);
+    expect(result.unread).toHaveLength(1);
+    expect(result.unread[0]).toMatchObject({ reason: "unparseable" });
+  });
+
+  it("treats verdicts listed but none usable as unread (#1081 review)", async () => {
+    const provider = mockProvider([JSON.stringify({ verdicts: [{ premise: 1 }] })]);
+    const result = await new ContradictionDetector({ provider }).detect([SEG_A]);
+    expect(result.calls).toBe(1);
+    expect(result.unread).toEqual([expect.objectContaining({ reason: "schema-invalid" })]);
+  });
+
+  it("does not mark legitimately empty answers unread", async () => {
+    const provider = mockProvider(['{"verdicts":[]}']);
+    const result = await new ContradictionDetector({ provider }).detect([SEG_A, SEG_B]);
+    expect(result.unread).toEqual([]);
+    expect(result.contradictions).toEqual([]);
+  });
+
+  it("rethrows a provider failure instead of paying for every remaining comparison", async () => {
+    const provider = mockProvider(['{"verdicts":[]}']);
+    (provider.chat as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("upstream 503"));
+    await expect(new ContradictionDetector({ provider }).detect([SEG_A, SEG_B])).rejects.toThrow(
+      "upstream 503",
+    );
+    expect(provider.chat).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -175,7 +214,7 @@ describe("ContradictionDetector.detect", () => {
       label: `d${i}.md`,
       content: `content ${i}`,
     }));
-    const provider = mockProvider(["{}"]);
+    const provider = mockProvider(['{"verdicts":[]}']);
     const detector = new ContradictionDetector({ provider, maxPairwiseComparisons: 3 });
     await detector.detect(segs);
     // 6 self-passes + at most 3 pairwise = 9 calls (not the full 15 pairs).

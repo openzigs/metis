@@ -1408,6 +1408,11 @@ export interface LlmCodeSymbolSearcherOptions {
   model?: string;
   /** Wide BM25 candidate pool size. Default {@link LLM_WIDE_CANDIDATE_K}. */
   wideCandidateK?: number;
+  /**
+   * #1081 — called when the rerank answer could not be read and the
+   * deterministic top-K was returned instead, so the run can report it.
+   */
+  onUnreadable?: () => void;
 }
 
 export class LlmCodeSymbolSearcher implements CodeSymbolSearcher {
@@ -1453,7 +1458,13 @@ export class LlmCodeSymbolSearcher implements CodeSymbolSearcher {
       });
       return deterministicTopK;
     }
-    if (!reply) return deterministicTopK;
+    if (!reply) {
+      // #1081 — the deterministic top-K is a sound fallback, but it is not a
+      // reranked result: say so on the run instead of passing it off as one.
+      log.warn("LLM rerank answer could not be read; deterministic BM25 kept", { projectId });
+      this.opts.onUnreadable?.();
+      return deterministicTopK;
+    }
 
     return this.buildUnion(
       query,

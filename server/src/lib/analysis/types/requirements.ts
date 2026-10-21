@@ -67,6 +67,12 @@ export interface EvidenceDigest {
   sources: WebSource[];
   digest: string;
   needsHumanReview: boolean;
+  /**
+   * Issue #1081 — the model's search queries could not be read (after one
+   * re-prompt), so `query` is the evidence need's own description. Absent when
+   * the model wrote the queries.
+   */
+  queryFallback?: boolean;
 }
 
 export interface WebResearchResult {
@@ -127,6 +133,13 @@ export interface ClarifyingQuestion {
    *   - open:     not answerable from project knowledge — plain blank question.
    */
   groundingStatus?: "grounded" | "partial" | "open";
+  /**
+   * Issue #1081 — set when METIS could not check project knowledge for this
+   * question: the model's grounding answer could not be read, or the check
+   * failed. The question is then asked as an "open" one, but no model judged
+   * it open, and the panel says so. Absent when the check ran.
+   */
+  groundingFailed?: boolean;
   /** Suggested answer text; absent when status is "open". */
   groundedAnswer?: string;
   /** Supporting citations; never empty when an answer is present. */
@@ -150,6 +163,13 @@ export interface ClarificationRound {
   round: number;
   questions: ClarifyingQuestion[];
   answers: ClarificationAnswer[];
+  /**
+   * Issue #1081 — ids of the requirements whose resolution answer could not
+   * be read (or whose call failed) when this round's answers were submitted.
+   * The answers still count; only the rewritten description is missing.
+   * Absent when every resolution was read.
+   */
+  unreadResolutions?: string[];
 }
 
 export interface ClarificationState {

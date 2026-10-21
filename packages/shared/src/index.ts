@@ -12,6 +12,10 @@ export * from "./project.js";
 export * from "./analysis.js";
 export * from "./acceptance-criteria-fallback.js";
 export * from "./cross-doc.js";
+// #1081 — a model step whose answer could not be read, and how it is worded.
+export * from "./model-read.js";
+// #1099 — what synthesis left out of a reply field by field, and how it is worded.
+export * from "./synthesis-field-repairs.js";
 export * from "./publishing.js";
 export * from "./vault.js";
 export * from "./platform.js";

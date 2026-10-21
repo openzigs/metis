@@ -11,11 +11,24 @@
  * JSON-shaped prompt asking for `{ premise, hypothesis, label, evidenceIds }`
  * objects, then a dedicated `parseNliResponse()` validator (strip fences →
  * `JSON.parse` → Zod). Zod is applied AFTER parse, never at the model boundary.
+ *
+ * #1081 — a classification whose answer cannot be read used to contribute
+ * "no contradictions". Each call now goes through `requestStructuredVerdict`
+ * (one re-prompt), and the calls that still fail are returned in `unread` so
+ * the panel can say the list may be incomplete.
  */
+import { z } from "zod";
 import { type NliVerdict, nliResponseSchema, nliVerdictSchema } from "@metis/shared";
 import type { AIProvider, ChatMessage, TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
+import { extractJsonObject } from "./agent-runner.js";
 import type { DocSegment } from "./cross-doc-validator.js";
+import {
+  hasVerdict,
+  jsonObjectWhereDeclared,
+  requestStructuredVerdict,
+} from "./structured-verdict.js";
+import { noUsableItem, type UnreadModelReply } from "./unread-reply.js";
 
 const log = createChildLogger("contradiction-detector");
 
@@ -40,7 +53,24 @@ export interface ContradictionDetectionResult {
   /** Only `label === "contradiction"` verdicts (entailment/neutral discarded). */
   contradictions: NliVerdict[];
   usage: TokenUsage;
+  /** #1081 — classification calls made (self + pairwise). */
+  calls: number;
+  /** #1081 — one entry per call whose answer could not be read. */
+  unread: UnreadModelReply[];
 }
+
+/** #1081 — the envelope only; each verdict is still validated on its own. */
+const envelopeSchema = z.object({ verdicts: z.array(z.unknown()) }).refine(
+  // #1081 review — verdicts listed, but not one usable, is not "no contradictions".
+  (o) => !noUsableItem(o.verdicts, (v) => nliVerdictSchema.safeParse(v).success),
+  { message: "no verdicts entry has the required fields", path: ["verdicts"] },
+);
+
+/** The shape quoted back to the model in the re-prompt. */
+const NLI_SHAPE =
+  '{ "verdicts": [ { "premise": string, "hypothesis": string, ' +
+  '"label": "entailment" | "neutral" | "contradiction", "evidenceIds": string[], ' +
+  '"scope": "self" | "pairwise" } ] }';
 
 /** Default cap on pairwise (cross-doc) comparisons. */
 export const DEFAULT_MAX_PAIRWISE = 20;
@@ -82,36 +112,26 @@ function addUsage(into: TokenUsage, add: TokenUsage | undefined): void {
 }
 
 /**
- * Parse + validate the LLM NLI response. Mirrors `requirements-extractor.ts`:
- * strip markdown fences → `JSON.parse` → per-verdict Zod validation. Invalid
- * verdicts are dropped individually so one malformed entry never voids the
- * whole batch. Returns an empty result on any unrecoverable parse failure.
+ * Parse + validate one LLM NLI response. Invalid verdicts are dropped
+ * individually so one malformed entry never voids the whole batch.
+ *
+ * #1081 — returns `null` when the response cannot be read at all (no JSON
+ * object, or no `verdicts` array), which is NOT the same as `{ verdicts: [] }`.
  * @internal — exposed for testing.
  */
-export function parseNliResponse(content: string): { verdicts: NliVerdict[] } {
+export function parseNliResponse(content: string): { verdicts: NliVerdict[] } | null {
   let json: unknown;
   try {
-    const cleaned = content
-      .replace(/^```(?:json)?\s*\n?/m, "")
-      .replace(/\n?```\s*$/m, "")
-      .trim();
-    json = JSON.parse(cleaned);
+    json = extractJsonObject(content);
   } catch {
-    log.warn("Failed to parse NLI response as JSON");
-    return { verdicts: [] };
+    return null;
   }
+  const envelope = envelopeSchema.safeParse(json);
+  return envelope.success ? validVerdicts(envelope.data.verdicts) : null;
+}
 
-  if (
-    !json ||
-    typeof json !== "object" ||
-    !Array.isArray((json as Record<string, unknown>).verdicts)
-  ) {
-    return { verdicts: [] };
-  }
-
-  // Validate the envelope leniently, then re-validate each verdict so a single
-  // bad entry is dropped rather than rejecting the whole array.
-  const rawVerdicts = (json as { verdicts: unknown[] }).verdicts;
+/** Re-validate each verdict so a single bad entry is dropped, not the array. */
+function validVerdicts(rawVerdicts: unknown[]): { verdicts: NliVerdict[] } {
   const verdicts: NliVerdict[] = [];
   for (const raw of rawVerdicts) {
     const parsed = nliVerdictSchema.safeParse(raw);
@@ -151,17 +171,23 @@ export class ContradictionDetector {
 
     const usable = segments.filter((s) => s.content.trim().length > 0);
     if (usable.length === 0) {
-      return { contradictions: [], usage: zeroUsage() };
+      return { contradictions: [], usage: zeroUsage(), calls: 0, unread: [] };
     }
 
     const usage = zeroUsage();
     const contradictions: NliVerdict[] = [];
+    const unread: UnreadModelReply[] = [];
+    let calls = 0;
+    const collect = (result: ClassifyResult): void => {
+      calls += 1;
+      if (result.unread) unread.push(result.unread);
+      contradictions.push(...result.verdicts);
+    };
 
     // ── Self-contradiction pass: one call per document ──────────────────────
     for (const seg of usable) {
       if (opts.signal?.aborted) throw makeAbortError();
-      const verdicts = await this.classify([seg], "self", opts.signal, usage);
-      contradictions.push(...verdicts);
+      collect(await this.classify([seg], "self", opts.signal, usage));
     }
 
     // ── Pairwise pass: capped fan-out over distinct document pairs ──────────
@@ -170,19 +196,17 @@ export class ContradictionDetector {
       for (let j = i + 1; j < usable.length; j++) {
         if (pairs >= this.maxPairwise) break outer;
         if (opts.signal?.aborted) throw makeAbortError();
-        const verdicts = await this.classify(
-          [usable[i]!, usable[j]!],
-          "pairwise",
-          opts.signal,
-          usage,
-        );
-        contradictions.push(...verdicts);
+        collect(await this.classify([usable[i]!, usable[j]!], "pairwise", opts.signal, usage));
         pairs += 1;
       }
     }
 
-    log.info("Contradiction detection complete", { contradictions: contradictions.length });
-    return { contradictions, usage };
+    log.info("Contradiction detection complete", {
+      contradictions: contradictions.length,
+      calls,
+      unreadCalls: unread.length,
+    });
+    return { contradictions, usage, calls, unread };
   }
 
   /**
@@ -194,7 +218,7 @@ export class ContradictionDetector {
     scope: "self" | "pairwise",
     signal: AbortSignal | undefined,
     usage: TokenUsage,
-  ): Promise<NliVerdict[]> {
+  ): Promise<ClassifyResult> {
     const blocks = segs.map((s) =>
       [`### ${s.label} (id=${s.id})`, "```", truncate(s.content, this.segmentCharCap), "```"].join(
         "\n",
@@ -213,21 +237,47 @@ export class ContradictionDetector {
       { role: "user", content: userPrompt },
     ];
 
-    const response = await this.provider.chat(messages, {
+    const outcome = await requestStructuredVerdict(this.provider, {
+      label: "contradiction-check",
+      schema: envelopeSchema,
+      schemaName: "NLI verdicts",
+      expectedShape: NLI_SHAPE,
+      messages,
       model: this.model,
       signal,
       disableTools: true,
+      responseFormat: jsonObjectWhereDeclared(this.provider, this.model),
     });
-    addUsage(usage, response.usage);
-
-    const parsed = parseNliResponse(response.content);
-    const evidenceFallback = segs.map((s) => s.id);
-    return parsed.verdicts
-      .filter((v) => v.label === "contradiction")
-      .map((v) => ({
-        ...v,
+    addUsage(usage, outcome.usage);
+    if (!hasVerdict(outcome)) {
+      // A provider failure is not an unreadable answer: rethrow it, as before,
+      // rather than paying for every remaining comparison against a dead
+      // provider. The caller records the whole pass as not finished.
+      if (outcome.reason === "provider-error") throw outcome.cause ?? new Error(outcome.detail);
+      log.warn("NLI answer could not be read — recorded as unread, not as no contradictions", {
         scope,
-        evidenceIds: v.evidenceIds.length > 0 ? v.evidenceIds : evidenceFallback,
-      }));
+        reason: outcome.reason,
+        attempts: outcome.attempts,
+      });
+      return { verdicts: [], unread: { reason: outcome.reason, detail: outcome.detail } };
+    }
+
+    const parsed = validVerdicts(outcome.verdict.verdicts);
+    const evidenceFallback = segs.map((s) => s.id);
+    return {
+      verdicts: parsed.verdicts
+        .filter((v) => v.label === "contradiction")
+        .map((v) => ({
+          ...v,
+          scope,
+          evidenceIds: v.evidenceIds.length > 0 ? v.evidenceIds : evidenceFallback,
+        })),
+    };
   }
+}
+
+/** One classification: its contradiction verdicts, or why it could not be read. */
+interface ClassifyResult {
+  verdicts: NliVerdict[];
+  unread?: UnreadModelReply;
 }

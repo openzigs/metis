@@ -126,6 +126,12 @@ export interface ImpactLlmStageSnapshot {
   timeouts: number;
   /** Set when the stage was requested but no usable provider existed. */
   unavailableReason: ImpactStageUnavailableReason | null;
+  /**
+   * #1081 — calls that returned but whose answer the stage could not read, so
+   * the stage fell back to its deterministic result. Counted separately from
+   * `calls`: a returned call is not an answer.
+   */
+  unreadable: number;
 }
 
 export interface ImpactLlmRuntime {
@@ -133,6 +139,13 @@ export interface ImpactLlmRuntime {
   instrument(provider: AIProvider, stage: ImpactLlmStage): AIProvider;
   /** Record that `stage` was enabled but could not be wired to a live provider. */
   markUnavailable(stage: ImpactLlmStage, reason: ImpactStageUnavailableReason): void;
+  /**
+   * #1081 — record that one of `stage`'s answers could not be read (after any
+   * repair attempt the stage makes), so the result shown is its deterministic
+   * fallback. A malformed reply is a successful CALL, so without this the
+   * notice below never named it.
+   */
+  markUnreadable(stage: ImpactLlmStage): void;
   /** Per-stage counters — for logging and tests. */
   snapshot(): ImpactLlmStageSnapshot[];
   /**
@@ -230,7 +243,7 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
   const statsFor = (stage: ImpactLlmStage): ImpactLlmStageSnapshot => {
     let s = stats.get(stage);
     if (!s) {
-      s = { stage, calls: 0, failures: 0, timeouts: 0, unavailableReason: null };
+      s = { stage, calls: 0, failures: 0, timeouts: 0, unavailableReason: null, unreadable: 0 };
       stats.set(stage, s);
     }
     return s;
@@ -434,6 +447,10 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
       statsFor(stage).unavailableReason = reason;
       log.warn("impact LLM stage enabled but no usable provider; skipping", { stage, reason });
     },
+    markUnreadable(stage) {
+      statsFor(stage).unreadable += 1;
+      log.warn("impact LLM stage answer could not be read; deterministic result kept", { stage });
+    },
     snapshot: () => IMPACT_LLM_STAGES.filter((s) => stats.has(s)).map((s) => ({ ...statsFor(s) })),
     degradationNotice: () => buildDegradationNotice(stats),
     async flush() {
@@ -456,6 +473,31 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
  * that is a configured choice, not a degradation.
  */
 function buildDegradationNotice(stats: Map<ImpactLlmStage, ImpactLlmStageSnapshot>): string | null {
+  const notices = [buildUnavailableNotice(stats), buildUnreadableNotice(stats)].filter(
+    (n): n is string => n !== null,
+  );
+  return notices.length > 0 ? notices.join(" ") : null;
+}
+
+/**
+ * #1081 — the stages that got an answer they could not read. Named even when
+ * other calls of the same stage succeeded: a per-item stage (the narrative
+ * summaries) can have read most answers and not one, and that one item is
+ * showing its deterministic result.
+ */
+function buildUnreadableNotice(stats: Map<ImpactLlmStage, ImpactLlmStageSnapshot>): string | null {
+  const unreadable = IMPACT_LLM_STAGES.map((s) => stats.get(s)).filter(
+    (s): s is ImpactLlmStageSnapshot => !!s && s.unreadable > 0,
+  );
+  if (unreadable.length === 0) return null;
+  const labels = [...new Set(unreadable.map((s) => STAGE_LABEL[s.stage]))].join(", ");
+  return (
+    `The AI's answer could not be read for: ${labels}. ` +
+    `Where that happened these results show the deterministic baseline, not an AI-checked result.`
+  );
+}
+
+function buildUnavailableNotice(stats: Map<ImpactLlmStage, ImpactLlmStageSnapshot>): string | null {
   const degraded = IMPACT_LLM_STAGES.map((s) => stats.get(s)).filter(
     (s): s is ImpactLlmStageSnapshot =>
       !!s && s.calls === 0 && (s.unavailableReason !== null || s.failures + s.timeouts > 0),

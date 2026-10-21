@@ -15,6 +15,7 @@ import {
   type RequirementPriority,
   type SynthesisDegradation,
   type SynthesisDegradationReason,
+  type SynthesisFieldRepair,
   type SynthesisOutput,
   synthesisOutputSchema,
   synthesizedRequirementSchema,
@@ -38,6 +39,7 @@ import { extractJsonObject } from "./agent-runner.js";
 import { buildSynthesisPrompt } from "./prompts.js";
 import { cleanSourceIds, type SynthesisSourceItem } from "./source-items.js";
 import { salvageSynthesisPrefix } from "./synthesis-salvage.js";
+import { repairSynthesizedRequirement, repairSynthesisReply } from "./synthesis-reply-repair.js";
 
 const log = createChildLogger("analysis-synthesis");
 
@@ -114,6 +116,13 @@ export interface SynthesisRunResult {
    * held nothing salvageable. Absent on a single clean call.
    */
   recovery?: SynthesisRecovery;
+  /**
+   * Issue #1099 — values in the model's KEPT replies that could not be used,
+   * and what was done with each (left out, defaulted, shortened). Absent when
+   * there were none. One malformed optional field used to discard the whole
+   * reply; now it costs that field, and the analyst is told.
+   */
+  fieldRepairs?: SynthesisFieldRepair[];
 }
 
 /** #751 — how a multi-call synthesis got its answer. */
@@ -682,6 +691,8 @@ export async function runSynthesis(
   };
 
   let summary: string | undefined;
+  /** #1099 — field repairs made to the replies that were kept. */
+  const fieldRepairs: SynthesisFieldRepair[] = [];
   let failure: { reason: SynthesisDegradationReason; detail?: string } | null = null;
   let calls = 0;
   let salvagedResponses = 0;
@@ -760,14 +771,47 @@ export async function runSynthesis(
     }
 
     if (parseError === null) {
-      const validation = synthesisOutputSchema.safeParse(parsed);
+      // #1099 — repair field by field first: a malformed optional value costs
+      // that value (recorded), not every requirement of the reply.
+      const repaired = repairSynthesisReply(parsed);
+      const validation = synthesisOutputSchema.safeParse(repaired.reply);
       if (!validation.success) {
+        // #1099 — measurable: the issue paths and codes only, never model text.
+        log.warn("Synthesis reply failed the schema after field repair", {
+          call: calls,
+          attempt: segment.attempt,
+          issues: validation.error.issues.slice(0, 10).map((i) => ({
+            path: i.path.join("."),
+            code: i.code,
+          })),
+        });
         failure = {
           reason: "schema-invalid",
           detail: JSON.stringify(validation.error.flatten().fieldErrors),
         };
         retryOrGiveUp(segment);
         continue;
+      }
+      // Every requirement was unusable (no title or description): that is not
+      // an empty answer, so it is re-asked like the schema failure it was.
+      if (
+        validation.data.requirements.length === 0 &&
+        repaired.repairs.some((r) => r.action === "requirement-dropped")
+      ) {
+        failure = {
+          reason: "schema-invalid",
+          detail: "every requirement in the reply lacked a usable title or description",
+        };
+        retryOrGiveUp(segment);
+        continue;
+      }
+      if (repaired.repairs.length > 0) {
+        log.warn("Synthesis reply had malformed fields; repaired and kept the rest", {
+          call: calls,
+          repairs: repaired.repairs.map(
+            (r) => `${r.requirementNumber ?? "-"}:${r.field}:${r.action}`,
+          ),
+        });
       }
       // Zero requirements for the WHOLE table means the model produced nothing
       // usable, and re-asking tends to get nothing again.
@@ -789,8 +833,13 @@ export async function runSynthesis(
         unreached.push(...segment.indexes);
         continue;
       }
-      summary ??= validation.data.summary;
+      // A summary the repair generated is not the model's: leave it to the
+      // run-level fallback below rather than let it shadow a later real one.
+      if (!repaired.repairs.some((r) => r.field === "summary" && r.action === "defaulted")) {
+        summary ??= validation.data.summary;
+      }
       keep(validation.data.requirements);
+      fieldRepairs.push(...repaired.repairs);
       continue;
     }
 
@@ -808,9 +857,12 @@ export async function runSynthesis(
     // #751 — keep every requirement the reply completed before it broke off,
     // and ask again only for the findings those requirements do not cover.
     const salvage = salvageSynthesisPrefix(raw);
-    const whole = salvage.requirements.flatMap((r) => {
-      const v = synthesizedRequirementSchema.safeParse(r);
-      return v.success ? [v.data] : [];
+    // #1099 — salvaged requirements are repaired field by field too.
+    const salvageRepairs: SynthesisFieldRepair[] = [];
+    const whole = salvage.requirements.flatMap((r, i) => {
+      const repaired = repairSynthesizedRequirement(r, i + 1, salvageRepairs);
+      const v = repaired ? synthesizedRequirementSchema.safeParse(repaired) : null;
+      return v?.success ? [v.data] : [];
     });
     // #868 review — "covered" is decided by what was actually KEPT after the
     // requirement and evidence caps, not by everything salvaged: a requirement
@@ -820,7 +872,10 @@ export async function runSynthesis(
     const inSegment = new Set(segment.indexes);
     const citesSegment = whole.some((r) => r.evidenceFindingIndexes.some((i) => inSegment.has(i)));
     const coveredBefore = keptCitations(segment.indexes);
-    if (citesSegment) keep(whole);
+    if (citesSegment) {
+      keep(whole);
+      fieldRepairs.push(...salvageRepairs);
+    }
     const coveredNow = keptCitations(segment.indexes);
     if (coveredNow.size > coveredBefore.size) {
       salvagedResponses += 1;
@@ -871,6 +926,8 @@ export async function runSynthesis(
   const recovery: SynthesisRecovery | undefined =
     calls > 1 ? { calls, salvagedResponses, splits } : undefined;
   const withRecovery = recovery ? { recovery } : {};
+  // #1099 — only on a result that kept model-written requirements.
+  const withRepairs = fieldRepairs.length > 0 ? { fieldRepairs } : {};
 
   if (kept.length === 0) {
     // Nothing usable from any call. The fallback keeps the run useful, and
@@ -936,6 +993,7 @@ export async function runSynthesis(
       usage,
       durationMs: Date.now() - start,
       ...withRecovery,
+      ...withRepairs,
     };
   }
 
@@ -998,5 +1056,6 @@ export async function runSynthesis(
     durationMs: Date.now() - start,
     degraded,
     ...withRecovery,
+    ...withRepairs,
   };
 }

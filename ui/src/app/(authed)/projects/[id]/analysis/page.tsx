@@ -67,6 +67,7 @@ import { GenerateIssuesAction } from "@/components/analysis/GenerateIssuesAction
 // Issue #1104 — a gated run's empty requirements list must explain itself.
 import { RequirementsEmptyState } from "@/components/analysis/RequirementsEmptyState";
 import { SynthesisDegradedNotice } from "@/components/analysis/SynthesisDegradedNotice";
+import { SynthesisFieldRepairsNotice } from "@/components/analysis/SynthesisFieldRepairsNotice";
 import { RequirementReplacementWithheldNotice } from "@/components/analysis/RequirementReplacementWithheldNotice";
 import { AmbiguousMatchNotice } from "@/components/analysis/AmbiguousMatchNotice";
 import { RequirementCriteria } from "@/components/analysis/SharedCriteriaNote";
@@ -1084,6 +1085,10 @@ export default function AnalysisPage(): React.ReactElement {
                       acceptance criteria because the fallback cannot classify.
                       Rendered above the list so it is read before them. */}
                       <SynthesisDegradedNotice metadata={detail.data.metadata} />
+                      {/* Issue #1099 — values the model wrote that synthesis
+                      could not use, left out per field rather than costing the
+                      whole reply; named so they are checked before publishing. */}
+                      <SynthesisFieldRepairsNotice metadata={detail.data.metadata} />
                       {/* Issue #769 — a re-synthesis was refused permission to
                       replace this (reviewed or healthy) set; say so. */}
                       <RequirementReplacementWithheldNotice metadata={detail.data.metadata} />
@@ -1446,7 +1451,10 @@ export default function AnalysisPage(): React.ReactElement {
                   </div>
 
                   {/* Epic #203 (#221) — first-class cross-document findings. */}
-                  <CrossDocFindingsPanel crossDocFindings={detail.data.crossDocFindings} />
+                  <CrossDocFindingsPanel
+                    crossDocFindings={detail.data.crossDocFindings}
+                    metadata={detail.data.metadata}
+                  />
                 </TabsContent>
 
                 <TabsContent value="questions" className="space-y-4">

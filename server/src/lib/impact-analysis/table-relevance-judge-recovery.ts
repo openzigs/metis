@@ -59,6 +59,11 @@ export async function recoverAffectedTables(args: {
   catalog: CatalogTable[];
   provider: AIProvider | null | undefined;
   options?: TableJudgeOptions;
+  /**
+   * #1081 — called when the judge's answers could not be read, so an empty
+   * recovery is reported as unread rather than as "nothing to recover".
+   */
+  onUnreadable?: () => void;
 }): Promise<AffectedTableInput[]> {
   const { requirementText, surfacedTableNames, catalog, provider, options } = args;
   try {
@@ -74,6 +79,7 @@ export async function recoverAffectedTables(args: {
       voteThreshold: RECOVERY_VOTE_THRESHOLD,
       ...options,
     });
+    if (result.unreadable) args.onUnreadable?.();
     if (!result.applied || result.selected.length === 0) return [];
 
     return result.selected.map((d) => ({

@@ -172,6 +172,131 @@ describe("ClarificationDialog", () => {
     });
   });
 
+  describe("startOrContinue — #1081 unreadable questions", () => {
+    it("re-prompts once, then fails visibly and persists no empty round", async () => {
+      const provider = mockProvider("Sorry, I have no questions.");
+      const dialog = new ClarificationDialog({ provider });
+
+      await expect(
+        dialog.startOrContinue("test-analysis", makeRequirements()),
+      ).rejects.toMatchObject({ statusCode: 502, code: "MODEL_REPLY_UNREADABLE" });
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(await getDialogState("test-analysis")).toBeUndefined();
+    });
+
+    it("fails visibly when questions are listed but none is usable (#1081 review)", async () => {
+      const provider = mockProvider(
+        JSON.stringify({ questions: [{ question: "", context: "x" }] }),
+      );
+      await expect(
+        new ClarificationDialog({ provider }).startOrContinue("test-analysis", makeRequirements()),
+      ).rejects.toMatchObject({ code: "MODEL_REPLY_UNREADABLE" });
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(await getDialogState("test-analysis")).toBeUndefined();
+    });
+
+    it("keeps a legitimately empty question list as an empty round", async () => {
+      const provider = mockProvider('{"questions":[]}');
+      const dialog = new ClarificationDialog({ provider });
+      const state = await dialog.startOrContinue("test-analysis", makeRequirements());
+      expect(provider.chat).toHaveBeenCalledTimes(1);
+      expect(state.rounds).toHaveLength(1);
+      expect(state.rounds[0]!.questions).toEqual([]);
+    });
+
+    it("rethrows a provider failure unchanged", async () => {
+      const provider = mockProvider("{}");
+      (provider.chat as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("upstream 503"));
+      await expect(
+        new ClarificationDialog({ provider }).startOrContinue("test-analysis", makeRequirements()),
+      ).rejects.toThrow("upstream 503");
+    });
+  });
+
+  describe("submitAnswers — #1081 unreadable resolution", () => {
+    const seedRound = () =>
+      _setDialogState("test-analysis", {
+        analysisId: "test-analysis",
+        currentRound: 1,
+        maxRounds: 3,
+        rounds: [
+          {
+            round: 1,
+            questions: [
+              {
+                id: "q-1",
+                requirementId: "req-1",
+                ambiguityField: "field-0",
+                question: "What is field-0?",
+                context: "Unclear",
+              },
+            ],
+            answers: [],
+          },
+        ],
+        resolvedAmbiguities: [],
+        escalatedToSonnet: false,
+        completed: false,
+      });
+
+    it("records the requirement whose update could not be read, and still credits the answer", async () => {
+      const provider = mockProvider("not json at all");
+      await seedRound();
+      const result = await new ClarificationDialog({ provider }).submitAnswers(
+        "test-analysis",
+        [{ questionId: "q-1", answer: "Field-0 means X" }],
+        makeRequirements(),
+      );
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(result.state.rounds[0]!.unreadResolutions).toEqual(["req-1"]);
+      expect(result.state.answeredAmbiguities).toContain("req-1:field-0");
+      expect(result.updatedRequirements.requirements[0]!.description).toBe("A test requirement");
+    });
+
+    it("applies the description when resolvedFields is null (panel finding)", async () => {
+      const provider = mockProvider(
+        JSON.stringify({ resolvedFields: null, updatedDescription: "Clarified." }),
+      );
+      await seedRound();
+      const result = await new ClarificationDialog({ provider }).submitAnswers(
+        "test-analysis",
+        [{ questionId: "q-1", answer: "Field-0 means X" }],
+        makeRequirements(),
+      );
+      expect(provider.chat).toHaveBeenCalledTimes(1);
+      expect(result.state.rounds[0]!.unreadResolutions).toBeUndefined();
+      expect(result.updatedRequirements.requirements[0]!.description).toBe("Clarified.");
+    });
+
+    it.each([
+      ["an empty object", {}],
+      ["snake_case keys", { resolved_fields: ["field-0"], updated_description: "Clarified." }],
+    ])("records %s as an unread resolution (#1081 review)", async (_label, reply) => {
+      const provider = mockProvider(JSON.stringify(reply));
+      await seedRound();
+      const result = await new ClarificationDialog({ provider }).submitAnswers(
+        "test-analysis",
+        [{ questionId: "q-1", answer: "Field-0 means X" }],
+        makeRequirements(),
+      );
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(result.state.rounds[0]!.unreadResolutions).toEqual(["req-1"]);
+    });
+
+    it("records nothing when the resolution answer is read", async () => {
+      const provider = mockProvider(
+        JSON.stringify({ resolvedFields: [], updatedDescription: null, remainingUncertainty: 1 }),
+      );
+      await seedRound();
+      const result = await new ClarificationDialog({ provider }).submitAnswers(
+        "test-analysis",
+        [{ questionId: "q-1", answer: "Field-0 means X" }],
+        makeRequirements(),
+      );
+      expect(result.state.rounds[0]!.unreadResolutions).toBeUndefined();
+    });
+  });
+
   describe("submitAnswers", () => {
     it("throws when no dialog state exists", async () => {
       const provider = mockProvider("{}");
@@ -352,17 +477,19 @@ describe("ClarificationDialog", () => {
             },
           ],
         }),
-      );
+      )!;
 
       expect(questions).toHaveLength(1);
       expect(questions[0]!.question).toBe("What scope?");
       expect(questions[0]!.requirementId).toBe("req-1");
     });
 
-    it("returns empty array for invalid JSON", () => {
+    // #1081 — an unreadable answer is `null`; only a real empty list is `[]`.
+    it("returns null, not an empty list, for invalid JSON or a missing questions array", () => {
       const dialog = new ClarificationDialog({ provider: mockProvider("") });
-      const questions = dialog.parseQuestions("not json");
-      expect(questions).toEqual([]);
+      expect(dialog.parseQuestions("not json")).toBeNull();
+      expect(dialog.parseQuestions("{}")).toBeNull();
+      expect(dialog.parseQuestions('{"questions":[]}')).toEqual([]);
     });
 
     it("filters out questions without question text or requirementId", () => {
@@ -375,7 +502,7 @@ describe("ClarificationDialog", () => {
             { requirementId: "req-1", question: "Good question?" },
           ],
         }),
-      );
+      )!;
 
       expect(questions).toHaveLength(1);
       expect(questions[0]!.question).toBe("Good question?");
@@ -386,7 +513,7 @@ describe("ClarificationDialog", () => {
       const json = JSON.stringify({
         questions: [{ requirementId: "r1", question: "Q?", ambiguityField: "f", context: "c" }],
       });
-      const questions = dialog.parseQuestions("```json\n" + json + "\n```");
+      const questions = dialog.parseQuestions("```json\n" + json + "\n```")!;
       expect(questions).toHaveLength(1);
     });
   });

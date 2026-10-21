@@ -60,6 +60,7 @@
  * dependency-free, bucketed by a caller-supplied label (one per lens). The A5
  * harness (#1108) prints it via {@link formatStructuredVerdictReport}.
  */
+import { createHash } from "node:crypto";
 import type { ZodType } from "zod";
 import { resolveCapabilities, supportsResponseFormat } from "../ai/capabilities.js";
 import type {
@@ -84,8 +85,23 @@ export const MAX_STRUCTURED_VERDICT_ATTEMPTS = 2;
 
 /** Longest slice of a malformed body echoed back to the model (and never logged whole). */
 const MAX_ECHOED_BODY_CHARS = 2_000;
-/** Longest slice of a malformed body written to the log. */
-const MAX_LOGGED_BODY_CHARS = 500;
+/**
+ * #1081 review — what is logged about a malformed reply: its length, a short
+ * hash (to correlate repeats) and, for a schema failure, the zod paths and
+ * messages. Never the body, and never a JSON parser message, which quotes the
+ * text it choked on: these steps read the user's own documents.
+ */
+export function describeMalformedReply(
+  content: string,
+  failure: { reason: NoVerdictReason; detail: string },
+): Record<string, unknown> {
+  return {
+    reason: failure.reason,
+    contentLength: content.length,
+    contentSha256: createHash("sha256").update(content).digest("hex").slice(0, 16),
+    ...(failure.reason === "schema-invalid" ? { issues: failure.detail } : {}),
+  };
+}
 
 /** Why a verifier call produced no signal. Every value means "we learned nothing". */
 export type NoVerdictReason =
@@ -458,10 +474,7 @@ export async function requestStructuredVerdict<T>(
         label: request.label,
         attempt: attempts,
         provider: provider.key,
-        reason: parsed.failure.reason,
-        error: parsed.failure.detail,
-        contentLength: content.length,
-        contentPreview: clip(content, MAX_LOGGED_BODY_CHARS),
+        ...describeMalformedReply(content, parsed.failure),
       });
       messages = [
         ...request.messages,
@@ -472,9 +485,7 @@ export async function requestStructuredVerdict<T>(
         label: request.label,
         attempts,
         provider: provider.key,
-        reason: parsed.failure.reason,
-        error: parsed.failure.detail,
-        contentPreview: clip(content, MAX_LOGGED_BODY_CHARS),
+        ...describeMalformedReply(content, parsed.failure),
       });
     }
   }

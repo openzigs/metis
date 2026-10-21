@@ -22,6 +22,7 @@ import compression from "compression";
 import cookieParser from "cookie-parser";
 import { MAX_DOCUMENT_BYTES } from "@metis/shared";
 import { requestLogger } from "./middleware/request-logger.js";
+import { csrfProtection } from "./middleware/csrf-protection.js";
 import { errorHandler, notFoundHandler } from "./middleware/error-handler.js";
 import { apiRouter } from "./routes/index.js";
 import { reconciliationJson } from "./routes/admin/auth-reconciliation.js";
@@ -74,6 +75,17 @@ export function parseTrustProxy(raw: string | undefined): number | boolean | str
   return trimmed;
 }
 
+/**
+ * #913 — `CORS_ORIGIN` as the list of origins it names: comma-separated,
+ * trimmed, empty entries dropped. Shared by `cors()` and `csrfProtection`.
+ */
+export function parseCorsOrigins(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((o) => o.trim())
+    .filter((o) => o.length > 0);
+}
+
 export interface CreateAppOptions {
   /** Override CORS origin — defaults to `process.env.CORS_ORIGIN` or localhost:3000. */
   corsOrigin?: string;
@@ -105,12 +117,14 @@ export function createApp(opts: CreateAppOptions = {}): Application {
   app.set("trust proxy", parseTrustProxy(process.env.TRUST_PROXY));
 
   app.use(helmet());
-  app.use(
-    cors({
-      origin: opts.corsOrigin ?? process.env.CORS_ORIGIN ?? "http://localhost:3000",
-      credentials: true,
-    }),
+  // #913 — one parsed list feeds both `cors()` and the CSRF trust list, so an
+  // origin the browser may call with credentials is exactly one the CSRF guard
+  // trusts. A comma list used to reach `cors()` as a single string, which no
+  // browser origin ever equals.
+  const corsOrigins = parseCorsOrigins(
+    opts.corsOrigin ?? process.env.CORS_ORIGIN ?? "http://localhost:3000",
   );
+  app.use(cors({ origin: corsOrigins, credentials: true }));
   // Issue #579 — mount the Slack Bolt receiver BEFORE the global JSON body parser
   // so Bolt can read+verify the RAW request body (Slack signs the raw bytes; a
   // pre-parsed body would break signature verification). Mounted only when
@@ -138,6 +152,9 @@ export function createApp(opts: CreateAppOptions = {}): Application {
   );
   app.use(express.urlencoded({ extended: true, limit: JSON_LIMIT }));
   app.use(cookieParser());
+  // #913 — a state-changing request authenticated by a session cookie (not a
+  // bearer header) must carry X-METIS-CSRF and not come from another origin.
+  app.use(csrfProtection({ trustedOrigins: corsOrigins }));
   app.use(compression());
   app.use(requestLogger);
   app.use(metricsMiddleware);

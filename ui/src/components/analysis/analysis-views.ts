@@ -303,12 +303,17 @@ export function analysisTabCounts(
 ): Partial<Record<AnalysisTab, number>> {
   const enhancement = enhancementOf(snapshot.metadata);
   const clarification = enhancement.enhancement?.enableClarification ?? false;
+  // Issue #1081 (from the #1084 review) — when extraction failed there is no
+  // count of open questions to show: "0" read as "nothing to clarify". The tab
+  // shows no number and its content says the step failed.
+  const extractionFailed = Boolean(enhancement.structuredExtractionFailure);
   return {
     requirements: snapshot.requirements.length,
     findings: collectFindings(snapshot).length,
-    questions: clarification
-      ? (enhancement.structuredRequirements?.totalAmbiguities ?? 0)
-      : undefined,
+    questions:
+      clarification && !extractionFailed
+        ? (enhancement.structuredRequirements?.totalAmbiguities ?? 0)
+        : undefined,
     approvals: ticketStatus?.pendingCount,
     agents: snapshot.agentResults.length,
   };

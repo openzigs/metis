@@ -39,6 +39,7 @@
 import { z } from "zod";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
+import { clipEchoedReply } from "../analysis/unread-reply.js";
 import { extractFirstJson } from "../docs-gen/grounding/json-extract.js";
 import type { AffectedTableInput } from "./schema-impact.js";
 
@@ -80,6 +81,12 @@ export interface TableRelevanceFilterResult {
   secondary: AffectedTableInput[];
   decisions: TableRelevanceDecision[];
   applied: boolean;
+  /**
+   * #1081 — the judge answered but its answer could not be read (after one
+   * repair), so `applied` is false for that reason and not a configured one.
+   * The caller reports it on the run's notice.
+   */
+  unreadable?: boolean;
 }
 
 export interface TableRelevanceFilterOptions {
@@ -236,7 +243,10 @@ export async function filterAffectedTablesByRelevance(
     if (candidates.length === 0) return passthrough(affectedTables);
 
     const reply = await judge(requirementText, candidates, provider, opts);
-    if (!reply) return passthrough(affectedTables);
+    if (reply === "unreadable") {
+      log.warn("table relevance judge reply unreadable after one repair; unfiltered crossing kept");
+      return { ...passthrough(affectedTables), unreadable: true };
+    }
 
     // Map each in-range decision back to its candidate BY INDEX. Any out-of-range
     // index (or invented table name) is silently dropped here — this is the
@@ -303,21 +313,54 @@ export async function filterAffectedTablesByRelevance(
   }
 }
 
-/** Call the LLM and validate its reply; returns null on malformed/unparseable output. */
+/** #1081 — the one repair turn after a reply that could not be read. */
+const RELEVANCE_REPAIR_MESSAGE: ChatMessage = {
+  role: "user",
+  content:
+    "Your previous reply was not the required JSON. Respond with ONLY the JSON object " +
+    '{"decisions":[{"index":<n>,"tier":"likely|possible|unlikely","rationale":"..."}]} — ' +
+    "no prose, no markdown fence.",
+};
+
+/** Parse + validate one reply; null when unparseable/malformed. */
+function parseJudgeReply(content: string): JudgeReply | null {
+  const parsed = extractFirstJson(content);
+  if (parsed === null) return null;
+  const validated = replySchema.safeParse(parsed);
+  return validated.success ? validated.data : null;
+}
+
+/**
+ * Call the LLM and validate its reply. #1081 — a reply that cannot be read gets
+ * ONE repair turn (the #949 pattern the other impact stages use); a second one
+ * returns "unreadable", which the caller reports rather than passing the
+ * unfiltered crossing off as a filtered one.
+ */
 async function judge(
   requirementText: string,
   candidates: AffectedTableInput[],
   provider: AIProvider,
   opts: TableRelevanceFilterOptions,
-): Promise<JudgeReply | null> {
-  const response = await provider.chat(buildRelevanceMessages(requirementText, candidates), {
+): Promise<JudgeReply | "unreadable"> {
+  const messages = buildRelevanceMessages(requirementText, candidates);
+  const chatOpts = {
     model: opts.model,
     signal: opts.signal,
     disableTools: true,
-    callType: "grounding",
-  });
-  const parsed = extractFirstJson(response.content);
-  if (parsed === null) return null;
-  const validated = replySchema.safeParse(parsed);
-  return validated.success ? validated.data : null;
+    callType: "grounding" as const,
+  };
+  const first = await provider.chat(messages, chatOpts);
+  const reply = parseJudgeReply(first.content);
+  if (reply) return reply;
+  const retry = await provider.chat(
+    [
+      ...messages,
+      ...(first.content.trim()
+        ? [{ role: "assistant" as const, content: clipEchoedReply(first.content) }]
+        : []),
+      RELEVANCE_REPAIR_MESSAGE,
+    ],
+    chatOpts,
+  );
+  return parseJudgeReply(retry.content) ?? "unreadable";
 }

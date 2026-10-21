@@ -11,6 +11,7 @@ import {
   UPSTREAM_REFRESH_COOKIE,
   refreshUpstream,
 } from "@/lib/edge-auth";
+import { CSRF_HEADER, rejectCrossOrigin } from "@/lib/csrf-guard";
 
 interface UpstreamData {
   accessToken?: string;
@@ -41,8 +42,15 @@ export async function proxyAuth(
   // every `/api/auth/*` path; the bespoke auth handlers own this namespace.
   endpoint: "login" | "logout" | "refresh" | "me" | "sso/providers",
 ): Promise<NextResponse> {
+  // #913 — login, logout and refresh are writes: refuse a cross-origin one
+  // (login CSRF included) before anything reaches the API.
+  const refused = rejectCrossOrigin(request);
+  if (refused) return refused;
+
   const upstreamUrl = `${UPSTREAM_API_BASE}/auth/${endpoint}`;
-  const headers: Record<string, string> = { Accept: "application/json" };
+  // The API demands CSRF_HEADER on a cookie-authenticated write; this request
+  // passed the same-origin check above.
+  const headers: Record<string, string> = { Accept: "application/json", [CSRF_HEADER]: "1" };
   let body: string | undefined;
 
   if (request.method !== "GET" && request.method !== "HEAD") {

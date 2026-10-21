@@ -412,6 +412,11 @@ export interface ExtractEntitySeedsOptions {
   maxRepairAttempts?: number;
   /** Cap on grounded entities returned. Default {@link MAX_ENTITY_SEEDS}. */
   maxEntities?: number;
+  /**
+   * #1081 — called when the last answer could not be read, so "no extra seeds"
+   * is reported as unread rather than as the model finding none.
+   */
+  onUnreadable?: () => void;
 }
 
 /**
@@ -459,6 +464,7 @@ export async function extractGroundedEntities(
     if (!validated?.success) {
       if (last) {
         log.warn("entity-seed extraction returned malformed output; no extra seeds", { attempt });
+        opts.onUnreadable?.();
         return [];
       }
       messages.push({ role: "assistant", content });

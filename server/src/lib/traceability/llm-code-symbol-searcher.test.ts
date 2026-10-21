@@ -224,12 +224,30 @@ describe("LlmCodeSymbolSearcher", () => {
     const prisma = corpusPrisma();
     const bm25 = new Bm25CodeSymbolSearcher(prisma);
     const { provider } = rawProvider("this is not json at all — sorry!");
-    const llm = new LlmCodeSymbolSearcher(bm25, provider);
+    const onUnreadable = vi.fn();
+    const llm = new LlmCodeSymbolSearcher(bm25, provider, { onUnreadable });
 
     const out = await llm.search(QUERY, "p1", { limit: 10 });
     const expected = await bm25.search(QUERY, "p1", { limit: 10 });
     expect(ids(out)).toEqual(ids(expected));
     expect(out.length).toBeGreaterThan(0);
+    // #1081 — the fallback is reported, not passed off as a reranked result.
+    expect(onUnreadable).toHaveBeenCalledOnce();
+  });
+
+  it("#1081 — a provider error is not reported as an unread answer", async () => {
+    const bm25 = new Bm25CodeSymbolSearcher(corpusPrisma());
+    const chat = vi.fn(async () => {
+      throw new Error("provider exploded");
+    });
+    const onUnreadable = vi.fn();
+    const llm = new LlmCodeSymbolSearcher(
+      bm25,
+      providerShell(false, chat as unknown as AIProvider["chat"]),
+      { onUnreadable },
+    );
+    await llm.search(QUERY, "p1", { limit: 10 });
+    expect(onUnreadable).not.toHaveBeenCalled();
   });
 
   it("returns [] for an empty corpus without calling the LLM", async () => {

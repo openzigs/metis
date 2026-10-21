@@ -20,6 +20,11 @@ A SAML login is a two-leg flow:
    `POST /auth/saml/acs`. The Response wraps an `Assertion` and echoes the
    request id in its `InResponseTo` attribute.
 
+> **The ACS URL is on the API origin** (`<API origin>/api/auth/saml/acs`), not
+> the web app's. The web app's `/api/*` proxy does not forward `/api/auth/*`
+> routes and answers an IdP posting there with 404 `SAML_ACS_WRONG_ORIGIN`
+> (#913). Behind a single host, route `/api/auth/saml/` to the API server.
+
 The relevant threats and the controls that mitigate them:
 
 | Threat (OWASP A07) | Control |

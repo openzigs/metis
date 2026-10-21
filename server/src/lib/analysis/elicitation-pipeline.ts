@@ -13,12 +13,13 @@
  * pattern. The pipeline is best-effort by construction at the call site — a
  * failure degrades to "no elicited artifacts" so completeness still runs.
  */
-import type { AcceptanceCriterion, Assumption, Nfr, Risk } from "@metis/shared";
+import type { AcceptanceCriterion, Assumption, Nfr, Risk, UnreadAnalysisStep } from "@metis/shared";
 import type { AIProvider, TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { AssumptionRiskElicitor } from "./assumption-risk-elicitor.js";
 import type { DocSegment } from "./cross-doc-validator.js";
 import { NfrElicitor } from "./nfr-elicitor.js";
+import { unreadStep } from "./unread-reply.js";
 
 const log = createChildLogger("elicitation-pipeline");
 
@@ -40,6 +41,12 @@ export interface ElicitationArtifacts {
 
 export interface ElicitationResult extends ElicitationArtifacts {
   usage: TokenUsage;
+  /**
+   * #1081 — the elicitors whose answer could not be read. Their artifact lists
+   * are empty because nothing was read, so the caller must say so rather than
+   * let the completeness check run as if they had found nothing.
+   */
+  unreadSteps: UnreadAnalysisStep[];
 }
 
 /** Default per-segment truncation — matches the completeness checker. */
@@ -138,7 +145,7 @@ export async function runElicitation(input: ElicitationPipelineInput): Promise<E
   const usage = zeroUsage();
 
   if (!corpus.trim()) {
-    return { nfrs: [], acceptanceCriteria: [], assumptions: [], risks: [], usage };
+    return { nfrs: [], acceptanceCriteria: [], assumptions: [], risks: [], usage, unreadSteps: [] };
   }
 
   const nfrElicitor = new NfrElicitor({ provider: input.provider, model: input.model });
@@ -162,7 +169,13 @@ export async function runElicitation(input: ElicitationPipelineInput): Promise<E
     acceptanceCriteria: nfrResult.acceptanceCriteria.length,
     assumptions: arResult.assumptions.length,
     risks: arResult.risks.length,
+    unread: [nfrResult.unread, arResult.unread].filter(Boolean).length,
   });
+
+  const unreadSteps = [
+    unreadStep("nfr-elicitation", [nfrResult.unread], 1),
+    unreadStep("assumption-risk-elicitation", [arResult.unread], 1),
+  ].filter((s): s is UnreadAnalysisStep => s !== null);
 
   return {
     nfrs: nfrResult.nfrs,
@@ -170,5 +183,6 @@ export async function runElicitation(input: ElicitationPipelineInput): Promise<E
     assumptions: arResult.assumptions,
     risks: arResult.risks,
     usage,
+    unreadSteps,
   };
 }

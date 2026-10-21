@@ -32,6 +32,15 @@ import { ClarificationDialogPanel } from "@/components/analysis/ClarificationDia
 /** Anchor id the gaps banner links to and the questions panel scrolls into. */
 const QUESTIONS_ANCHOR = "clarifying-questions";
 
+/** #1081 — the server's code for "the model's answer could not be read". */
+function isUnreadableReply(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    (error as { code?: unknown }).code === "MODEL_REPLY_UNREADABLE"
+  );
+}
+
 const TRUST_LABEL: Record<DomainTrust, string> = {
   high: "High Trust",
   medium: "Medium Trust",
@@ -403,6 +412,12 @@ function EvidenceReview({
                   </span>
                 )}
               </div>
+              {digest.queryFallback && (
+                <p className="mb-1 text-xs text-warning" data-testid="query-fallback-note">
+                  METIS could not read the model’s search queries for this evidence need, so it
+                  searched using the need’s own wording instead.
+                </p>
+              )}
               <p className="mb-2 text-sm text-muted-foreground">{digest.digest}</p>
               {digest.sources.length > 0 && (
                 <ul className="space-y-1">
@@ -554,6 +569,7 @@ function ClarificationSection({
         // that is still happening. The reported defect was silent: no error, no
         // POST, and a preview that reads as "any moment now" forever.
         startFailed={startDialog.isError}
+        startUnreadable={isUnreadableReply(startDialog.error)}
         onRetryStart={() => startMutate()}
       />
     );
@@ -582,12 +598,15 @@ function GapsPreviewPanel({
   structured,
   loading,
   startFailed = false,
+  startUnreadable = false,
   onRetryStart,
 }: {
   structured: StructuredRequirementsPayload;
   loading: boolean;
   /** #1135 — the dialog start round-tripped and failed; say so. */
   startFailed?: boolean;
+  /** #1081 — it failed because the model's questions could not be read. */
+  startUnreadable?: boolean;
   onRetryStart?: () => void;
 }): React.ReactElement {
   const requirementsWithGaps = structured.requirements.filter((r) => ambiguitiesOf(r).length > 0);
@@ -607,7 +626,9 @@ function GapsPreviewPanel({
             data-testid="clarify-start-error"
             className="mt-1 text-sm text-destructive"
           >
-            Could not start the interactive session, so these gaps cannot be answered yet.{" "}
+            {startUnreadable
+              ? "METIS could not read the clarifying questions in the model’s answer, so no session was started. This does not mean there is nothing to clarify."
+              : "Could not start the interactive session, so these gaps cannot be answered yet."}{" "}
             <button
               type="button"
               onClick={onRetryStart}

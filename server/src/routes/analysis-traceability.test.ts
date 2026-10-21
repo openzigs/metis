@@ -7,7 +7,7 @@
  * here — they are exhaustively covered in traceability-matrix.test.ts — so this
  * suite isolates the route wiring.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import type { TraceabilityMatrix } from "@metis/shared";
@@ -91,6 +91,7 @@ vi.mock("../lib/publishing/finding-publisher.js", () => ({ PublishError: class e
 
 const { initAnalysisRouter } = await import("./analysis.js");
 const { errorHandler } = await import("../middleware/error-handler.js");
+const { issueTokens } = await import("../lib/auth/jwt.js");
 
 const MATRIX: TraceabilityMatrix = {
   analysisId: "analysis-1",
@@ -187,5 +188,76 @@ describe("GET /api/projects/:projectId/analyses/:id/traceability", () => {
     const res = await request(app).get("/api/projects/proj-1/analyses/analysis-1/traceability");
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("ANALYSIS_NOT_FOUND");
+  });
+});
+
+// #838 — the matrix loads the code graph, so it has a per-user budget. The cap
+// is read per request; each test uses its own user so module-level counters
+// from another test cannot bleed in.
+describe("traceability matrix rate limit (#838)", () => {
+  let app: ReturnType<typeof createApp>;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("ANALYSIS_MATRIX_RATE_LIMIT_MAX", "3");
+    analysisFindFirst.mockResolvedValue({ id: "analysis-1", projectId: "proj-1" });
+    getTraceabilityMatrix.mockResolvedValue(MATRIX);
+    app = createApp();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    analysisFindFirst.mockReset();
+    getTraceabilityMatrix.mockReset();
+  });
+
+  const matrix = () => request(app).get("/api/projects/proj-1/analyses/analysis-1/traceability");
+
+  it("429s past the user's budget, before building the matrix", async () => {
+    currentUser = { userId: "rl-user-a", role: "member" };
+    for (let i = 0; i < 3; i++) expect((await matrix()).status).toBe(200);
+    const res = await matrix();
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe("ANALYSIS_MATRIX_RATE_LIMITED");
+    expect(res.headers["ratelimit-policy"]).toBeDefined();
+    expect(getTraceabilityMatrix).toHaveBeenCalledTimes(3);
+  });
+
+  it("charges the export route to the same budget", async () => {
+    currentUser = { userId: "rl-user-b", role: "member" };
+    for (let i = 0; i < 3; i++) await matrix();
+    const res = await request(app).get("/api/projects/proj-1/analyses/analysis-1/export");
+    expect(res.status).toBe(429);
+  });
+
+  it("keeps one user's budget from refusing another", async () => {
+    currentUser = { userId: "rl-user-c", role: "member" };
+    for (let i = 0; i < 4; i++) await matrix();
+    currentUser = { userId: "rl-user-d", role: "member" };
+    expect((await matrix()).status).toBe(200);
+  });
+
+  // The pre-auth guard runs ahead of the route's `requireAuth`, keyed on the
+  // user inside a token this server signed. Its own cap, the user budget high.
+  it.each([
+    ["traceability", "rl-pre-a"],
+    ["export", "rl-pre-b"],
+  ])("puts the pre-auth guard on /%s", async (route, userId) => {
+    vi.stubEnv("ANALYSIS_MATRIX_RATE_LIMIT_MAX", "100");
+    vi.stubEnv("ANALYSIS_MATRIX_PREAUTH_RATE_LIMIT_MAX", "2");
+    currentUser = { userId: `${userId}-session`, role: "member" };
+    const { accessToken } = issueTokens({
+      userId,
+      username: userId,
+      role: "developer",
+      permissions: [],
+    });
+    const call = () =>
+      request(app)
+        .get(`/api/projects/proj-1/analyses/analysis-1/${route}`)
+        .set("Authorization", `Bearer ${accessToken}`);
+    await call();
+    await call();
+    const res = await call();
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe("ANALYSIS_MATRIX_RATE_LIMITED");
   });
 });

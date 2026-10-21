@@ -8,8 +8,13 @@
  * JSON-shaped prompt, then a dedicated `parseNfrAcceptance()` validator
  * (strip fences → `JSON.parse` → shape guard → per-item Zod, applied AFTER
  * parse, never at the model boundary). Modeled on `requirements-extractor.ts`.
+ *
+ * #1081 — an answer that cannot be read is no longer returned as "no NFRs":
+ * the call goes through `requestStructuredVerdict` (one re-prompt carrying the
+ * parse error), and a second failure comes back marked `unread`.
  */
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import {
   type AcceptanceCriterion,
   type Nfr,
@@ -19,6 +24,13 @@ import {
 } from "@metis/shared";
 import type { AIProvider, ChatMessage, TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
+import { extractJsonObject } from "./agent-runner.js";
+import {
+  hasVerdict,
+  jsonObjectWhereDeclared,
+  requestStructuredVerdict,
+} from "./structured-verdict.js";
+import { noUsableItem, type UnreadModelReply } from "./unread-reply.js";
 
 const log = createChildLogger("nfr-elicitor");
 
@@ -53,7 +65,56 @@ export interface NfrElicitorDeps {
 
 export interface NfrElicitationResult extends NfrAcceptanceResult {
   usage: TokenUsage;
+  /**
+   * #1081 — set when the model's answer could not be read after one re-prompt
+   * (or the call failed). The lists are then empty because nothing was READ,
+   * not because the model found nothing; the caller records it for the UI.
+   */
+  unread?: UnreadModelReply;
 }
+
+/**
+ * #1081 — the envelope only; each item is still read leniently below (an
+ * invalid NFR is dropped on its own). What is NOT lenient is the envelope: an
+ * answer with neither list is not an elicitation, and reading it as "no NFRs"
+ * is the silent empty result #1081 removes.
+ */
+const envelopeSchema = z
+  .object({
+    nfrs: z.array(z.unknown()).nullish(),
+    acceptanceCriteria: z.array(z.unknown()).nullish(),
+  })
+  .refine((o) => o.nfrs != null || o.acceptanceCriteria != null, {
+    message: "expected an nfrs or acceptanceCriteria array",
+  })
+  // #1081 review — entries, but not one usable, is not "none found".
+  .refine((o) => !noUsableItem(o.nfrs, (i) => nfrSchema.safeParse(withId(i)).success), {
+    message: "no nfrs entry has the required fields",
+    path: ["nfrs"],
+  })
+  .refine(
+    (o) =>
+      !noUsableItem(
+        o.acceptanceCriteria,
+        (i) => acceptanceCriterionSchema.safeParse(withId(i)).success,
+      ),
+    {
+      message: "no acceptanceCriteria entry has the required fields",
+      path: ["acceptanceCriteria"],
+    },
+  );
+type NfrEnvelope = z.infer<typeof envelopeSchema>;
+
+/** The item as validated: the model need not invent an id. */
+function withId(raw: unknown): unknown {
+  return raw && typeof raw === "object" ? { id: randomUUID(), ...(raw as object) } : raw;
+}
+
+/** The shape quoted back to the model in the re-prompt. */
+const NFR_SHAPE =
+  '{ "nfrs": [ { "category": string, "title": string, "description": string, ' +
+  '"metric": string, "priority": string } ], "acceptanceCriteria": [ { "statement": string, ' +
+  '"given": string, "when": string, "then": string } ] }';
 
 function zeroUsage(): TokenUsage {
   return { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -63,50 +124,44 @@ function emptyResult(): NfrAcceptanceResult {
   return { nfrs: [], acceptanceCriteria: [] };
 }
 
-/**
- * Parse + validate the LLM response into typed NFRs + acceptance criteria.
- * Strips markdown fences → `JSON.parse` → per-item Zod validation (a missing
- * `id` is synthesised before validation so the model need not invent one).
- * Invalid items are dropped individually; an unrecoverable parse failure
- * yields an empty result. @internal — exposed for testing.
- */
-export function parseNfrAcceptance(content: string): NfrAcceptanceResult {
-  let json: unknown;
-  try {
-    const cleaned = content
-      .replace(/^```(?:json)?\s*\n?/m, "")
-      .replace(/\n?```\s*$/m, "")
-      .trim();
-    json = JSON.parse(cleaned);
-  } catch {
-    log.warn("Failed to parse NFR/AC response as JSON");
-    return emptyResult();
-  }
-
-  if (!json || typeof json !== "object") return emptyResult();
-  const obj = json as Record<string, unknown>;
-
+/** Per-item Zod validation of a read envelope; a missing `id` is synthesised. */
+function normalizeNfrAcceptance(envelope: NfrEnvelope): NfrAcceptanceResult {
   const nfrs: Nfr[] = [];
-  if (Array.isArray(obj.nfrs)) {
-    for (const raw of obj.nfrs) {
-      if (!raw || typeof raw !== "object") continue;
-      const withId = { id: randomUUID(), ...(raw as Record<string, unknown>) };
-      const parsed = nfrSchema.safeParse(withId);
-      if (parsed.success) nfrs.push(parsed.data);
-    }
+  for (const raw of envelope.nfrs ?? []) {
+    if (!raw || typeof raw !== "object") continue;
+    const withId = { id: randomUUID(), ...(raw as Record<string, unknown>) };
+    const parsed = nfrSchema.safeParse(withId);
+    if (parsed.success) nfrs.push(parsed.data);
   }
 
   const acceptanceCriteria: AcceptanceCriterion[] = [];
-  if (Array.isArray(obj.acceptanceCriteria)) {
-    for (const raw of obj.acceptanceCriteria) {
-      if (!raw || typeof raw !== "object") continue;
-      const withId = { id: randomUUID(), ...(raw as Record<string, unknown>) };
-      const parsed = acceptanceCriterionSchema.safeParse(withId);
-      if (parsed.success) acceptanceCriteria.push(parsed.data);
-    }
+  for (const raw of envelope.acceptanceCriteria ?? []) {
+    if (!raw || typeof raw !== "object") continue;
+    const withId = { id: randomUUID(), ...(raw as Record<string, unknown>) };
+    const parsed = acceptanceCriterionSchema.safeParse(withId);
+    if (parsed.success) acceptanceCriteria.push(parsed.data);
   }
 
   return { nfrs, acceptanceCriteria };
+}
+
+/**
+ * Parse + validate one LLM response into typed NFRs + acceptance criteria.
+ * Invalid items are dropped individually.
+ *
+ * #1081 — returns `null` when the response cannot be read at all, which is
+ * NOT the same as an empty answer (`{ nfrs: [], acceptanceCriteria: [] }`).
+ * @internal — exposed for testing.
+ */
+export function parseNfrAcceptance(content: string): NfrAcceptanceResult | null {
+  let json: unknown;
+  try {
+    json = extractJsonObject(content);
+  } catch {
+    return null;
+  }
+  const envelope = envelopeSchema.safeParse(json);
+  return envelope.success ? normalizeNfrAcceptance(envelope.data) : null;
 }
 
 export class NfrElicitor {
@@ -131,18 +186,35 @@ export class NfrElicitor {
 
     log.info("Eliciting NFRs + acceptance criteria from input", { chars: rawInput.length });
 
-    const response = await this.provider.chat(messages, {
+    const outcome = await requestStructuredVerdict(this.provider, {
+      label: "nfr-elicitation",
+      schema: envelopeSchema,
+      schemaName: "NFR and acceptance-criteria",
+      expectedShape: NFR_SHAPE,
+      messages,
       model: this.model,
       signal,
       disableTools: true,
+      responseFormat: jsonObjectWhereDeclared(this.provider, this.model),
     });
+    if (!hasVerdict(outcome)) {
+      log.warn("NFR/AC answer could not be read — recorded as unread, not as empty", {
+        reason: outcome.reason,
+        attempts: outcome.attempts,
+      });
+      return {
+        ...emptyResult(),
+        usage: outcome.usage,
+        unread: { reason: outcome.reason, detail: outcome.detail },
+      };
+    }
 
-    const parsed = parseNfrAcceptance(response.content);
+    const parsed = normalizeNfrAcceptance(outcome.verdict);
     log.info("Elicited NFRs + acceptance criteria", {
       nfrs: parsed.nfrs.length,
       acceptanceCriteria: parsed.acceptanceCriteria.length,
     });
 
-    return { ...parsed, usage: response.usage ?? zeroUsage() };
+    return { ...parsed, usage: outcome.usage };
   }
 }

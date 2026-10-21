@@ -461,7 +461,8 @@ describe("reconcileClauseCoverage", () => {
       { enabled: true },
     );
     expect(provider.chat).toHaveBeenCalledTimes(2);
-    expect(result).toEqual({ gaps: [], applied: false });
+    // #1081 — marked unread, so the run can say "no gaps" was not the answer.
+    expect(result).toEqual({ gaps: [], applied: false, unreadable: true });
   });
 
   it("passes through — never throws — when the provider call fails", async () => {
