@@ -446,6 +446,14 @@ export interface ServerToClientEvents {
   }) => void;
   /** Epic #728 — a user was @mentioned in a comment. */
   "comment:mention": (data: { commentId: string; mentionedUserId: string; ts: number }) => void;
+  /**
+   * #997 — a comment on a requirement or a Spec Kit artifact was posted,
+   * replied to, edited or deleted. Sent to the `project:{id}` room, whose join
+   * rule is the comment routes' own (`canAccessProjectDiscussions`), so every
+   * member with the comment panel open re-reads the thread list. Identifiers
+   * only, no comment body: the panel re-reads it over the REST route.
+   */
+  "comment:changed": (data: CommentChangedEvent) => void;
   /** Epic #475 (#489) — a project member was @mentioned in a discussion message. */
   "discussion:mention": (data: {
     kind: "discussion_mention";
@@ -481,6 +489,17 @@ export interface ServerToClientEvents {
     slaDeadline: string | undefined;
     ts: number;
   }) => void;
+}
+
+/** #997 — payload of `comment:changed` (see {@link ServerToClientEvents}). */
+export interface CommentChangedEvent {
+  projectId: string;
+  threadId: string;
+  /** Set for a requirement's thread, null for a Spec Kit artifact's. */
+  requirementId: string | null;
+  /** Set for a Spec Kit artifact's thread, null for a requirement's. */
+  artifactName: string | null;
+  ts: number;
 }
 
 export interface ConnectorRoomEvent {

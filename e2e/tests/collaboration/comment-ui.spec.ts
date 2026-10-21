@@ -33,9 +33,12 @@ const COORDINATOR = { username: "coordinator", password: "password" };
 
 test.describe("Epic #34 — Comment panel + @mention (AC1, browser)", () => {
   let projectId: string;
+  /** A second, API-only session: the "other writer" of the #997 test. */
+  let otherSessionToken: string;
 
   test.beforeAll(async () => {
     const primed = await primeAdminUser(API_BASE);
+    otherSessionToken = primed.accessToken;
     // Prime the coordinator row too so the @mention search can resolve it.
     const ctx = await request.newContext({ baseURL: API_BASE });
     await ctx.post("/api/auth/login", {
@@ -90,6 +93,47 @@ test.describe("Epic #34 — Comment panel + @mention (AC1, browser)", () => {
 
     // The posted comment carries the resolved @coordinator mention.
     await expect(panel.commentBubble(`@${COORDINATOR.username}`)).toBeVisible({ timeout: 10_000 });
+  });
+
+  // #997 — a reply written elsewhere (another session; the server pushes
+  // `comment:changed` for every writer alike) appears in the open panel
+  // without a reload. Before the fix the thread kept the first list it was
+  // shown, so the reply appeared only after a full page reload.
+  test("#997: a reply posted from another session appears in the open panel live", async ({
+    page,
+  }) => {
+    const login = new LoginPage(page);
+    await login.loginAsAdmin();
+
+    const specKit = new SpecKitPage(page);
+    await specKit.goto(projectId);
+    await specKit.openComments();
+
+    const panel = new CommentPanelPage(page);
+    await panel.waitForOpen();
+
+    const opening = `Thread opened in the browser ${Date.now()}`;
+    const created = page.waitForResponse(
+      (res) => res.request().method() === "POST" && /\/comments$/.test(new URL(res.url()).pathname),
+    );
+    await panel.postComment(opening);
+    const threadId = ((await (await created).json()) as { data: { id: string } }).data.id;
+    await expect(panel.commentBubble(opening)).toBeVisible({ timeout: 10_000 });
+
+    const reply = `Reply from another session ${Date.now()}`;
+    const other = await request.newContext({
+      baseURL: API_BASE,
+      extraHTTPHeaders: { Authorization: `Bearer ${otherSessionToken}` },
+    });
+    try {
+      const res = await other.post(`/api/comments/${threadId}/replies`, { data: { body: reply } });
+      expect(res.status(), await res.text()).toBe(201);
+    } finally {
+      await other.dispose();
+    }
+
+    // No reload: the push re-reads the thread list and the thread adopts it.
+    await expect(panel.commentBubble(reply)).toBeVisible({ timeout: 10_000 });
   });
 
   test("AC1: the comment panel can be opened and closed", async ({ page }) => {

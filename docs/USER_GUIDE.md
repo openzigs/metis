@@ -1009,6 +1009,8 @@ The bell icon in the header opens a side **notifications drawer** with these ale
 
 The badge shows your unread count; opening the drawer marks all items read. Use **Clear all** to dismiss the list. Notifications are **persisted server-side** — they survive page reloads and reconnects, so you never miss an alert even if you were offline. Each notification includes a deep-link to the relevant artifact where one is available.
 
+**Comment threads update live.** When a requirement's or a Spec Kit artifact's **Comments** panel is open, a comment, reply, edit or delete by anyone else on the project appears in it within a moment; you do not need to reload the page. Only people who can open the project see the update, the same people who can read the comments.
+
 You control which notifications you receive at all in **Settings → Notifications** (§20.3): disabling a channel × event combination (for example *Mentions × In-app*) stops those notifications at the source — nothing is created for you to dismiss.
 
 ---
