@@ -385,8 +385,12 @@ describe("planDocumentTopics in the reader layout", () => {
     expect(total).toBeGreaterThanOrEqual(40_000);
     expect(total).toBeLessThanOrEqual(60_000);
     for (const id of MAIN_IDS) expect(lengthLimited.has(id)).toBe(true);
-    // The appendix's single-call section keeps its own instructions, as it did.
-    expect(lengthLimited.has("integrations-and-glossary")).toBe(false);
+    // #1352 — the appendix's single-call section is told its length too when
+    // the document's budget binds, as 102 modules make it: its overrun would
+    // come out of the appendix's levelled catalogue sections.
+    expect(lengthLimited.has("integrations-and-glossary")).toBe(true);
+    // With room for every section it keeps its own instructions, as it did.
+    expect(plan(READER, true, 4).lengthLimited.has("integrations-and-glossary")).toBe(false);
   });
 
   it("plans the appendix's catalogue what the catalogue layout plans it, on a project whose catalogue outgrows the budget", () => {

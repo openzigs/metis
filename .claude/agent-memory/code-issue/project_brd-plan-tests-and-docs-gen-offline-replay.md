@@ -50,3 +50,11 @@ A business-requirements document CAN be planned before it is written since #1070
 - **Plan budgets overflow the body by the footnote definitions:** run B planned 244,231 vs `bodyMaxChars` 234,277 (one definition per section per module cited, not per module), so a perfectly calibrated run is still cut ~10k at assembly.
 
 Links: [[project_read-live-is-not-read-completely]], [[project_never-dropped-silently-needs-a-fixture-per-cap]], [[project_deterministic-gate-over-llm-output-probes]].
+
+## Footnote reserve and single-call length (PR for #1352, 2026-10-21)
+
+- **A footnote definition is one per READABLE reference (`renderParts`), not per citation id.** `facts:<module>:<idx>` from four sections renders as one `` `module` (module facts) `` definition. What grows: line-pinned module refs (`path:line — module`), canonical facts, retrieved excerpts. Run B published: 96 module, 39 pinned, 16 canonical, 13 rag.
+- **Measure definitions from a published version's content:** lines matching `^\[\^src-\d+\]: `. The pre-cut need is `documentMaxChars - bodyMaxChars` from the log.
+- **The reserve must come from the modules alone** (`footnoteReserveChars`): a test holds that the facts sheet never moves a budget (reuse-hash invariant).
+- **The floor cliff:** `FLOOR_SHARE` 0.5 x 100 topics x `MIN_TOPIC_CHARS` 215 = 43,000. Run B's catalogue budget fell 43,058 to 40,508 and planned-out rose 2 to 8 per section (storage out of Rules, worker out of Formulas).
+- **Replaying "a model that writes to its plan"** needs an exact fill (whole units, then the next paragraph to the room), or whole-unit truncation leaves slack that hides the reserve. Script: scratchpad `replay1352/assembly.mts`.

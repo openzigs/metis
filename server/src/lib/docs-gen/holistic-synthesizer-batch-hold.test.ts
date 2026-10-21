@@ -383,15 +383,27 @@ describe("#1327 — a planned batch held to its share when it is written", () =>
     }
   });
 
-  it("rewrites the catalogue sections, and only those, when the overrun factor changes", async () => {
+  it("rewrites every section told a length when the overrun factor changes", async () => {
     const facts = project(12);
     const first = await run(facts, regroupingModel(1));
     const again = await run(facts, regroupingModel(1), first);
     expect(again.regeneration!.changed).toEqual([]);
     vi.stubEnv("DOCS_GEN_LENGTH_OVERRUN", "fake-section=1.4");
     const second = await run(facts, regroupingModel(1), first);
+    // The catalogue sections, held and asked for their words by the factor;
+    // and since #1352 the single-call sections, told their planned length in
+    // words corrected by it whenever the document's budget binds, as it does
+    // here.
     expect(second.regeneration!.changed.sort()).toEqual(
-      ["data-model", "formulas", "rules", "workflows"].sort(),
+      [
+        "capabilities",
+        "data-model",
+        "formulas",
+        "integrations-and-glossary",
+        "overview",
+        "rules",
+        "workflows",
+      ].sort(),
     );
   });
 
