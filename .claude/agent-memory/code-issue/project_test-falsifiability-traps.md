@@ -72,3 +72,15 @@ Older single-trap entries, folded here (retired from the index 2026-10-16; files
 - To test a check keyed on the endpoint (such as DeepSeek), use a model id that another branch would otherwise catch (`claude-sonnet-5-5` on the DeepSeek endpoint) (#1275).
 - SQLite route tests that mount a sub-router directly (`requirementLinksRouter`) skip the parent guard (`requireRequirementAccess`), so 404-body and existence-oracle assertions prove nothing about production. Mount the parent guard (#1282).
 - To prove a prompt reorder changed no wording, import the base and head modules side by side with tsx. The replay fixtures store only sha256 hashes (#1281).
+
+**From #1305 and #1308 and their reviews (2026-10-21).**
+- **One test pinning one fallback can hide a second mutation.** On #1305 a tie test kept the
+  module footnote and so masked another branch. Check that each mutation fails a test on its
+  own, not only that each test failed before its fix.
+- **A boundary fallback can pass for the wrong reason.** A sentence-boundary test went green
+  because the cluster regex consumed the separator itself (`( ?)` in `CLUSTER_RE`). Mutate the
+  fallback itself, not only the input.
+- **"Guard runs before X" tests usually check only "no writes, no claims".** Moving the guard
+  after the side effect stays green (Spec Kit / publish guard moved after
+  `bindPublishCredential`). Mutate the guard's position as well as its presence, and assert the
+  side effect itself did not happen; see [[secret-binding-fire-time-checks]].
