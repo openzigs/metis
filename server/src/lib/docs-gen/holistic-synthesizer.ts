@@ -5067,19 +5067,24 @@ async function synthesizeFinalDocumentInRun(
         ? sectionFacts
         : factsListedFor(sectionFacts, group.id, planning?.ownerOf ?? (() => null));
       if (claimExtractor) sectionGrounding = withCanonicalSources(sectionGrounding, listedFacts);
-      // A single-call section is told a length only when the plan could not
-      // give it what it asks for: with room in the document its own
-      // instructions stand, as they did before there was a plan.
-      const sectionAddendum = planning
-        ? [
-            !batchPlan && plannedSection && planning.lengthLimited.has(group.id)
-              ? lengthLimitNote(plannedSection.budgetChars)
-              : "",
-            renderCanonicalFactsBlock(sectionFacts, group, planning.ownerOf),
-          ]
-            .filter(Boolean)
-            .join("\n\n")
-        : "";
+      // A single-call section is told a length only when the document's budget
+      // binds (`lengthLimited`): with room in the document its own
+      // instructions stand, as they did before there was a plan. #1352 — the
+      // words it is asked for are its planned length divided by the writing
+      // model's measured overrun, as a batch's are (`length-calibration.ts`):
+      // an escalation asks for the escalation model's.
+      const sectionAddendumFor = (model: string | undefined): string =>
+        planning
+          ? [
+              !batchPlan && plannedSection && planning.lengthLimited.has(group.id)
+                ? lengthLimitNote(plannedSection.budgetChars, resolveLengthOverrun(model))
+                : "",
+              renderCanonicalFactsBlock(sectionFacts, group, planning.ownerOf),
+            ]
+              .filter(Boolean)
+              .join("\n\n")
+          : "";
+      const sectionAddendum = sectionAddendumFor(provider.model);
       const prompts = buildSectionPrompts(
         group,
         meta,
@@ -5468,7 +5473,7 @@ async function synthesizeFinalDocumentInRun(
               esc.tuning,
               escBlock,
               flowBlob,
-              sectionAddendum,
+              sectionAddendumFor(esc.provider.model),
             );
             escMd.markdown = fitGeneratedSection(escMd, sectionMaxChars);
             const escValidated = await validateSectionGrounding(
@@ -6955,17 +6960,64 @@ export interface DocumentPlanning {
    */
   ownerOf: FactOwnerLookup;
   /**
-   * The single-call sections whose prompt states a length: those the plan
-   * could not give what they ask for. Never a catalogue section written in one
-   * call because batching is off, which keeps the instructions it had.
+   * The single-call sections whose prompt states a length: every one when the
+   * document's budget binds (some section is planned less than it asks,
+   * #1352), and a reader-layout main section always. Never a catalogue
+   * section written in one call because batching is off, which keeps the
+   * instructions it had.
    */
   lengthLimited: Set<string>;
 }
 
 /** Characters one footnote definition adds beyond the path it names. */
-const FOOTNOTE_DEFINITION_OVERHEAD = 34;
-/** The most of the document budget the plan sets aside for footnote definitions. */
-const FOOTNOTE_RESERVE_SHARE = 0.05;
+export const FOOTNOTE_DEFINITION_OVERHEAD = 34;
+/**
+ * #1352 — the footnote definitions a module brings beyond its own, measured:
+ * the lines a module-facts citation is pinned to (`path:line — module`), the
+ * canonical facts and the retrieved excerpts a document cites, per module.
+ * A definition is one per distinct READABLE reference (`renderParts`), so a
+ * module cited by every catalogue section under four section-scoped ids
+ * (`facts:<module>:<idx>`) is still one module definition; what grows with the
+ * citations is these. Run B of #995 (2026-10-21, 102 modules) needed 15,723
+ * characters of definitions before its cut against the 5,769 the module
+ * definitions alone reserved: 97.6 more per module. Its published document
+ * carried 7,011 (39 pinned lines, 16 canonical facts, 13 excerpts; 71.6 per
+ * module cited), run A's 6,601 (76.8), run 9's 6,263 (68.1). The largest,
+ * rounded up.
+ */
+export const FOOTNOTE_CITED_DETAIL_PER_MODULE = 100;
+/**
+ * The most of the document budget the plan sets aside for footnote
+ * definitions. #1352 — run B needed 6.3% of its 250,000; a twentieth capped
+ * the reserve below that whatever it estimated.
+ */
+export const FOOTNOTE_RESERVE_SHARE = 0.08;
+
+/**
+ * #1070 / #1352 — the room a plan sets aside for the footnote definitions,
+ * known only after generation: one per module if every one is cited, its path
+ * and {@link FOOTNOTE_DEFINITION_OVERHEAD}, and
+ * {@link FOOTNOTE_CITED_DETAIL_PER_MODULE} for the pinned lines, canonical
+ * facts and excerpts it brings, never more than
+ * {@link FOOTNOTE_RESERVE_SHARE} of the document.
+ *
+ * Computed from the modules alone, never from the facts sheet: a section's
+ * budget is part of its reuse inputs, and a section is never rewritten for a
+ * fact it was not given.
+ */
+export function footnoteReserveChars(
+  facts: ReadonlyArray<Pick<ModuleFacts, "modulePath">>,
+  documentMaxChars: number,
+): number {
+  return Math.min(
+    Math.floor(documentMaxChars * FOOTNOTE_RESERVE_SHARE),
+    facts.reduce(
+      (n, f) =>
+        n + f.modulePath.length + FOOTNOTE_DEFINITION_OVERHEAD + FOOTNOTE_CITED_DETAIL_PER_MODULE,
+      0,
+    ),
+  );
+}
 
 /**
  * #1070 — whether a document type is planned up front. Business requirements
@@ -7030,20 +7082,17 @@ export function planDocumentTopics(input: {
   const reader = input.readerLayout === true;
   const sheet = buildFactSheet(facts);
   const topicModules = new Map<string, ModuleFacts>();
-  // Room for the footnote definitions, known only after generation: one per
-  // module if every one is cited, and never more than a twentieth of the
-  // document (the run-7 BRD's were 5.9k of 247k). It only shapes what the
-  // sections are ASKED for: the fit at assembly measures the definitions
-  // themselves, so room this over-estimates is used and a shortfall is cut.
-  // This room is computed from the modules alone, never from the facts sheet.
-  // The sheet is read below for one thing only: which modules hold a fact the
-  // section itself owns (the priority lift). A section is always given the
-  // facts it owns, so its budget never moves because of a fact it was not
-  // given (see the reuse inputs).
-  const reservedChars = Math.min(
-    Math.floor(input.documentMaxChars * FOOTNOTE_RESERVE_SHARE),
-    facts.reduce((n, f) => n + f.modulePath.length + FOOTNOTE_DEFINITION_OVERHEAD, 0),
-  );
+  // Room for the footnote definitions (`footnoteReserveChars`). It only
+  // shapes what the sections are ASKED for: the fit at assembly measures the
+  // definitions themselves, so room this over-estimates is used and a
+  // shortfall is cut. #1352 — the shortfall is what a plan that the model
+  // writes to exactly still loses at the section ends: run B planned 244,231
+  // for a body of 234,277. This room is computed from the modules alone,
+  // never from the facts sheet. The sheet is read below for one thing only:
+  // which modules hold a fact the section itself owns (the priority lift). A
+  // section is always given the facts it owns, so its budget never moves
+  // because of a fact it was not given (see the reuse inputs).
+  const reservedChars = footnoteReserveChars(facts, input.documentMaxChars);
   const demands: SectionDemand[] = groups.map((group) => {
     const { bundle } = providerForSection(input.router, group);
     const unbounded =
@@ -7199,27 +7248,57 @@ export function planDocumentTopics(input: {
         ? null
         : { id: fact.ownerSectionId, label };
     },
-    lengthLimited: new Set(
-      plan.sections
-        .filter(
-          (section) =>
-            section.kind === "single" &&
-            !batchedOff.has(section.sectionId) &&
-            // #1175 — a main section of the reader layout is always told its
-            // target: the main part's length is what the layout is for.
-            (section.budgetChars < section.demandChars ||
-              (reader && isMainSection(section.sectionId))),
-        )
-        .map((section) => section.sectionId),
-    ),
+    lengthLimited: singleCallLengthLimited(plan, { reader, batchedOff }),
   };
 }
 
-/** #1070 — the length a single-call section is asked to keep to, as a prompt block. */
-function lengthLimitNote(budgetChars: number): string {
+/**
+ * #1070 / #1352 — the single-call sections of a plan whose prompt states a
+ * length. One is told its planned length whenever its PART's budget binds
+ * (some section of the same part was planned less than it asks), even when it
+ * was given all it asks: its overrun is then taken at assembly from the
+ * sections the fit shortens, since the fit keeps the shortest whole. Run B's
+ * Core Business Capabilities, planned its 24,000 and told nothing, wrote
+ * 38,397. A catalogue-layout document is one part; the reader layout's main
+ * part and appendix are planned and fitted apart (#1175), so each binds on
+ * its own sections only, and a main section is always told its target (the
+ * main part's length is what the layout is for). Never a catalogue section
+ * written in one call because batching is off (`batchedOff`), which keeps the
+ * instructions it had.
+ */
+export function singleCallLengthLimited(
+  plan: Pick<DocumentPlan, "sections">,
+  options: { reader: boolean; batchedOff?: ReadonlySet<string> },
+): Set<string> {
+  const partOf = (sectionId: string): string =>
+    options.reader ? (isMainSection(sectionId) ? "main" : "appendix") : "document";
+  const binds = new Set(
+    plan.sections
+      .filter((section) => section.budgetChars < section.demandChars)
+      .map((section) => partOf(section.sectionId)),
+  );
+  return new Set(
+    plan.sections
+      .filter(
+        (section) =>
+          section.kind === "single" &&
+          !options.batchedOff?.has(section.sectionId) &&
+          (binds.has(partOf(section.sectionId)) ||
+            (options.reader && isMainSection(section.sectionId))),
+      )
+      .map((section) => section.sectionId),
+  );
+}
+
+/**
+ * #1070 — the length a single-call section is asked to keep to, as a prompt
+ * block. #1352 — in words for its planned characters divided by the model's
+ * overrun (1 for a model with no measured factor, which is asked as before).
+ */
+function lengthLimitNote(budgetChars: number, overrun: number): string {
   return [
     "=== LENGTH LIMIT ===",
-    `Write at most about ${batchWordBudget(budgetChars)} words for this section group. This overrides the word counts in your instructions and any instruction to document every item: cover the most significant points first, so that what is left out is the minor detail.`,
+    `Write at most about ${batchWordBudget(budgetChars / overrun)} words for this section group. This overrides the word counts in your instructions and any instruction to document every item: cover the most significant points first, so that what is left out is the minor detail.`,
     "=== END LENGTH LIMIT ===",
   ].join("\n");
 }

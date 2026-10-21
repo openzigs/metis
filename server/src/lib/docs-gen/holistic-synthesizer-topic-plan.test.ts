@@ -31,6 +31,7 @@ import type { GroundingContext } from "./grounding/grounding-context.js";
 import {
   docsGenTuning,
   documentTypeIsPlanned,
+  footnoteReserveChars,
   planDocumentTopics,
   planSectionBatches,
   sectionGroupsFor,
@@ -363,13 +364,33 @@ describe("planDocumentTopics", () => {
     expect(total + p.unallocatedChars).toBe(p.budgetChars);
   });
 
-  it("sets aside room for the footnote definitions, at most a twentieth of the document", () => {
+  it("sets aside room for the footnote definitions, at most 8% of the document", () => {
     const facts = project(12);
+    // Each module's own definition (its path and 34), and 100 for the pinned
+    // lines, canonical facts and excerpts it brings (#1352).
     expect(250_000 - plan(facts).plan.budgetChars).toBe(
-      facts.reduce((n, f) => n + f.modulePath.length + 34, 0),
+      facts.reduce((n, f) => n + f.modulePath.length + 34 + 100, 0),
     );
-    // 40 modules' definitions would be 1,640 characters: the share caps it.
-    expect(10_000 - plan(project(40), 10_000).plan.budgetChars).toBe(500);
+    expect(footnoteReserveChars(facts, 250_000)).toBe(12 * (7 + 134));
+    // 40 modules' definitions would be 5,640 characters: the share caps it.
+    expect(10_000 - plan(project(40), 10_000).plan.budgetChars).toBe(800);
+  });
+
+  it("#1352 — reserves what run B's definitions needed, so its plan fits the body it was given", () => {
+    // Run B of #995 (2026-10-21): 102 modules whose paths come to 2,301
+    // characters, so the module definitions alone reserved 5,769 and the plan
+    // shared 244,231. The document's definitions then took 15,723 of the
+    // 250,000 (logged `bodyMaxChars` 234,277): ~10k past the plan was cut at
+    // the section ends however closely the model kept to it.
+    const paths = Array.from({ length: 102 }, (_, i) => `internal/${String(i).padStart(2, "0")}`);
+    const lengths = paths.reduce((n, p) => n + p.length, 0);
+    const pad = 2_301 - lengths;
+    paths[0] = paths[0] + "x".repeat(pad);
+    const runB = paths.map((modulePath) => ({ modulePath }));
+    expect(runB.reduce((n, m) => n + m.modulePath.length + 34, 0)).toBe(5_769);
+    const reserved = footnoteReserveChars(runB, 250_000);
+    expect(reserved).toBeGreaterThanOrEqual(250_000 - 234_277);
+    expect(250_000 - reserved).toBeLessThanOrEqual(234_277);
   });
 
   it("sets that room aside from the modules alone: the facts sheet does not move a budget", () => {
@@ -503,10 +524,30 @@ describe("planDocumentTopics", () => {
     expect(planning.plan.sections.find((s) => s.sectionId === "rules")!.budgetChars).toBeLessThan(
       60_000,
     );
-    expect([...planning.lengthLimited]).toEqual([]);
+    // #1352 — the sections single-call by design are, though they were given
+    // all they ask: an overrun of theirs comes out of the levelled sections.
+    expect([...planning.lengthLimited].sort()).toEqual([
+      "capabilities",
+      "integrations-and-glossary",
+      "overview",
+    ]);
   });
 
-  it("marks a single-call section as length-limited only when the plan gave it less than it asks", () => {
+  it("#1352 — tells a single-call section its length whenever the document's budget binds, given all it asks or not", () => {
+    // Run B's shape: the catalogue sections levelled below the section cap,
+    // every single-call section planned the 24,000 it asks.
+    const planning = plan(project(60));
+    const byId = new Map(planning.plan.sections.map((s) => [s.sectionId, s]));
+    expect(byId.get("rules")!.budgetChars).toBeLessThan(byId.get("rules")!.demandChars);
+    for (const id of ["overview", "capabilities", "integrations-and-glossary"]) {
+      expect(byId.get(id)!.budgetChars).toBe(SINGLE_CALL_SECTION_CHARS);
+      expect(planning.lengthLimited.has(id)).toBe(true);
+    }
+    // Never a catalogue section: it is held and asked for words per part.
+    expect(planning.lengthLimited.has("rules")).toBe(false);
+  });
+
+  it("marks a single-call section as length-limited only when the document's budget binds", () => {
     expect([...plan(project(12)).lengthLimited]).toEqual([]);
     expect([...plan(project(12), 40_000).lengthLimited].sort()).toEqual([
       "capabilities",
@@ -1295,6 +1336,42 @@ describe("judge-gated escalation of a planned document", () => {
       { section: glossary, local: true, canonical: 1 },
       { section: glossary, local: false, canonical: 1 },
     ]);
+  });
+
+  it("#1352 — asks a single-call section for its words at the overrun of the model that writes it, escalation included", async () => {
+    vi.stubEnv("DOCS_GEN_JUDGE_ESCALATION", "1");
+    vi.stubEnv("DOCS_GEN_LOCAL_FACTS_CHAR_CAP", "6000");
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
+    // Measured for the local model only: the escalation model is asked as before.
+    vi.stubEnv("DOCS_GEN_LENGTH_OVERRUN", "fake-section=2");
+    const local = fakeModel({ inject: () => "[local] " }, "local-gemma");
+    const cloud = fakeModel();
+    (cloud as { model: string }).model = "cloud-escalation-model";
+    const glossary = label("integrations-and-glossary");
+    scoreFaithfulnessMock.mockImplementation(async (section: string, markdown: string) =>
+      markdown.includes("[local]") && section === glossary ? verified(1, 10) : verified(10, 10),
+    );
+    await synthesizeFinalDocument(
+      project(6),
+      META,
+      "business-requirements",
+      "BRD",
+      hybrid(local, cloud),
+      "p1",
+      {
+        sources: [{ sourceId: "rag:doc:0", kind: "rag", label: "notes.md", text: "evidence" }],
+        sourceIds: new Set(["rag:doc:0"]),
+        isEmpty: false,
+      } as unknown as GroundingContext,
+    );
+    const words = (call: Call): number =>
+      Number(/Write at most about (\d+) words for this section group/.exec(call.user)![1]);
+    const [drafted] = callsFor(local, glossary);
+    const [escalated] = callsFor(cloud, glossary);
+    // The same planned length, asked of the local model at half the words.
+    expect(words(drafted) * 2).toBeGreaterThanOrEqual(words(escalated) - 50);
+    expect(words(drafted) * 2).toBeLessThanOrEqual(words(escalated) + 50);
+    expect(words(drafted)).toBeLessThan(words(escalated));
   });
 });
 
