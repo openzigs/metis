@@ -106,9 +106,12 @@ export async function reconcileIssueChange(
   event: IssueChangeEvent,
   deps: ReconcileDeps = {},
 ): Promise<ReconcileResult> {
-  // 1. Find the PublishedIssue by external id
+  // 1. Find the PublishedIssue by external id. One issue has a row per batch
+  // that published it; the newest one describes what the issue carries now
+  // (#1049 review: its batch's Additional labels), and Adopt reads the same row.
   const publishedIssue = await prisma.publishedIssue.findFirst({
     where: { issueId: event.externalId },
+    orderBy: [{ publishedAt: "desc" }, { id: "desc" }],
     include: {
       batch: { include: { project: true } },
       draft: true,

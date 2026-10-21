@@ -139,6 +139,19 @@ export function issueLabels(
 }
 
 /**
+ * #1049 review — whether two label lists name the same set, ignoring case and
+ * order (GitHub label names are case-insensitive). `null` is an unknown set,
+ * which matches nothing.
+ */
+export function sameLabels(a: readonly string[], b: readonly string[] | null): boolean {
+  if (b === null) return false;
+  const key = (l: string) => l.trim().toLowerCase();
+  const left = new Set(a.map(key));
+  const right = new Set(b.map(key));
+  return left.size === right.size && [...left].every((k) => right.has(k));
+}
+
+/**
  * #1049 (adversarial review) — the labels a Jira issue carries: as
  * {@link issueLabels}, with each run of whitespace made a `-`. Jira refuses a
  * label containing a space, and the batch's free-text labels may hold one

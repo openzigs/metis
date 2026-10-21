@@ -623,6 +623,68 @@ describe("#1049 — the batch's Additional labels reach every issue it writes", 
     expect((patch?.data as { labels: string[] }).labels).toEqual(["feature", "sprint-42"]);
   });
 
+  /** Issue #55, published unchanged by `batch_0` with that batch's Additional labels. */
+  function seedEarlierPublish(earlierLabels: string[]) {
+    seedDraft({ id: "feat_1", title: "[Feature] Login", body: "same body", labels: '["feature"]' });
+    seedBatch({
+      id: "batch_0",
+      status: "completed",
+      metadata: JSON.stringify({ draftIds: ["feat_1"], additionalLabels: earlierLabels }),
+    });
+    issues.set(pubIssueKey("batch_0", "feat_1"), {
+      id: "pi_old",
+      batchId: "batch_0",
+      draftId: "feat_1",
+      issueNumber: 55,
+      issueId: "I_kwDOold55",
+      htmlUrl: "https://github.com/acme/metis/issues/55",
+      status: "created",
+      parentIssueNumber: null,
+      dedupHash: computeDedupHash("acme", "metis", "[Feature] Login"),
+      bodyHash: computeBodyHash("same body"),
+      errorMessage: null,
+      publishedAt: new Date("2026-10-01T00:00:00Z"),
+    });
+  }
+
+  it("review — an unchanged issue gets this batch's labels when they differ (labels only)", async () => {
+    seedEarlierPublish(["sprint-41"]);
+    seedBatch({
+      metadata: JSON.stringify({ draftIds: ["feat_1"], additionalLabels: ["sprint-42"] }),
+    });
+    const calls = await publishRecording();
+    const patches = calls.filter((c) => c.method === "PATCH" && /\/issues\/55$/.test(c.url ?? ""));
+    expect(patches.map((c) => c.data)).toEqual([{ labels: ["feature", "sprint-42"] }]);
+    // Still a dedup skip: no body was sent, and the new row names the issue.
+    expect(batches.get("batch_1")!.dedupSkipped).toBe(1);
+    expect(issues.get(pubIssueKey("batch_1", "feat_1"))!.issueNumber).toBe(55);
+  });
+
+  it("review — an unchanged issue whose labels already match is not touched", async () => {
+    seedEarlierPublish(["Sprint-42"]);
+    seedBatch({
+      metadata: JSON.stringify({ draftIds: ["feat_1"], additionalLabels: ["sprint-42"] }),
+    });
+    const calls = await publishRecording();
+    expect(calls.filter((c) => c.method === "PATCH")).toEqual([]);
+  });
+
+  it("review — the dry run says the skipped issue's labels will be updated", async () => {
+    seedEarlierPublish(["sprint-41"]);
+    seedBatch({
+      dryRun: true,
+      metadata: JSON.stringify({ draftIds: ["feat_1"], additionalLabels: ["sprint-42"] }),
+    });
+    await runBatch({ batchId: "batch_1", dryRun: true, secretRef: null, sleep: noopSleep });
+    const plan = JSON.parse(batches.get("batch_1")!.dryRunPlan!) as {
+      actions: Array<{ kind: string; reason?: string; labels?: string[] }>;
+    };
+    expect(plan.actions.find((a) => a.kind === "issue.skipDuplicate")).toMatchObject({
+      reason: "body unchanged; labels updated",
+      labels: ["feature", "sprint-42"],
+    });
+  });
+
   it("the dry run and the preview list them on each issue the live run writes", async () => {
     seedDraft({ id: "feat_1", title: "[Feature] Login", labels: '["feature"]' });
     seedBatch({

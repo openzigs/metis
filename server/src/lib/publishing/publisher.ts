@@ -69,7 +69,13 @@ import {
   sourceMarkerForDraft,
   stripMarker,
 } from "./dedup.js";
-import { batchAdditionalLabels, issueLabels, labelsToSync, syncLabels } from "./label-sync.js";
+import {
+  batchAdditionalLabels,
+  issueLabels,
+  labelsToSync,
+  sameLabels,
+  syncLabels,
+} from "./label-sync.js";
 import { publishedDraftBody, type ParentEpicIssue } from "./published-body.js";
 import { namesRepository, type NamedRepository } from "../docs-gen/approved-requirements-scope.js";
 import { assertCodeLinksMatchTarget } from "./draft-code-links.js";
@@ -502,6 +508,34 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
       if (existing) {
         if (existing.bodyHash === bodyHash) {
           dedupSkipped += 1;
+          // #1049 review — the row upserted below says this batch published the
+          // issue, and drift detection reads this batch's labels off the newest
+          // row. So the issue must carry them: when they differ from the ones
+          // METIS last sent it (the matched row's batch), PATCH the labels only.
+          const draftLabels = parseLabels(draft.labels);
+          const labels = issueLabels(draftLabels, additionalLabels);
+          const sentBefore =
+            existing.additionalLabels === null
+              ? null
+              : issueLabels(draftLabels, existing.additionalLabels);
+          if (!sameLabels(labels, sentBefore)) {
+            await client.request<GhIssue>({
+              method: "PATCH",
+              url: issuePath(target, existing.issueNumber),
+              data: { labels },
+            });
+            audit({
+              actor: { id: batch.startedById },
+              action: "publish.issue.labels_update",
+              target: {
+                type: "github_issue",
+                id: `${target.owner}/${target.repo}#${existing.issueNumber}`,
+              },
+              args: { draftId: draft.id },
+              metadata: { batchId: batch.id, projectId: batch.projectId },
+            });
+          }
+          existingByHash.set(hash, { ...existing, additionalLabels });
           // Refresh draft → published linkage in case caller lost it.
           await prisma.publishedIssue.upsert({
             where: {
@@ -665,6 +699,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
         issueId,
         htmlUrl,
         parentIssueNumber,
+        additionalLabels,
       });
       publishedCount += 1;
       audit({
@@ -1217,6 +1252,12 @@ interface ExistingMatch {
   htmlUrl: string;
   bodyHash: string | null;
   parentIssueNumber: number | null;
+  /**
+   * #1049 — the Additional labels of the batch the matched row belongs to, so
+   * a dedup skip can tell whether the issue carries this batch's labels.
+   * `null` when unknown.
+   */
+  additionalLabels: string[] | null;
 }
 
 /**
@@ -1244,6 +1285,7 @@ async function loadExistingByHash(
       status: { in: ["created", "updated"] },
       dedupHash: { not: null },
     },
+    include: { batch: { select: { metadata: true } } },
   });
   const best = new Map<string, (typeof rows)[number]>();
   for (const row of rows) {
@@ -1259,6 +1301,7 @@ async function loadExistingByHash(
       htmlUrl: row.htmlUrl,
       bodyHash: row.bodyHash,
       parentIssueNumber: row.parentIssueNumber,
+      additionalLabels: row.batch ? batchAdditionalLabels(row.batch.metadata) : null,
     });
   }
   return out;
@@ -1543,6 +1586,7 @@ async function reconcileFromRemote(args: ReconcileArgs): Promise<void> {
       htmlUrl: identity.htmlUrl,
       bodyHash: computeBodyHash(stripped),
       parentIssueNumber: dbRow.parentIssueNumber ?? null,
+      additionalLabels: batchAdditionalLabels(dbRow.batch.metadata),
     });
     log.info("publish.reconcile.recovered", {
       batchId: args.batchId,
