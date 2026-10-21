@@ -854,7 +854,9 @@ Five more builders wrap untrusted text in `=== LABEL ===` fences:
 (`=== FINDING … ===` / `=== END FINDING ===`, `=== EVIDENCE … ===` /
 `=== END EVIDENCE ===`, around a model-written finding and retrieved
 repository or document excerpts), `docs-gen/grounding/faithfulness-judge.ts`
-(`=== SOURCE EVIDENCE … ===`), `docs-gen/holistic-synthesizer.ts` (the Phase-1
+(`=== SOURCE EVIDENCE … ===` and `=== CLAIMS TO JUDGE … ===`; a claim is
+scrubbed too, and its verdict is matched against the text the model was shown
+and reported against the original claim), `docs-gen/holistic-synthesizer.ts` (the Phase-1
 `=== DETERMINISTICALLY-MINED … ===` / `=== END … MINED RULES ===` inventories,
 the SAS step pipeline and dataset lineage, and `=== DATA_LINEAGE … ===`, all
 built from repository source; the same message's source code, formula
@@ -870,29 +872,54 @@ JavaScript's strict equality, so a span needs one of the labels' head words
 (`FINDING`, `EVIDENCE`, `QUESTION`, `ANSWER`, `CLAIM`, `RULE`, each optionally
 plural, and `INVENTORY`, `PIPELINE`, `LINEAGE`; an `L` also matches `I`,
 because the fold reads a lower-case `l` as `I`, so `=== end rules ===` is
-caught) and is one of:
+caught). No span crosses a line break, and every `=` run is at least two
+long (a Markdown-escaped `\=\=\=` counts: `\` folds to a separator). A span is
+one of:
 
-- `END`, up to three modifier words (or 80 letters with no separator), the
-  noun, with a `=` run on both sides (`=== END SOURCE EVIDENCE ===`,
-  `===ENDEVIDENCE===`) or on one side (`=== END EVIDENCE`, `END EVIDENCE ===`;
-  one-sided forms need whitespace or a dash after `END`, not `_`, and the
-  right-hand form an `END` that is not inside a word);
-- a forged opening: three or more `=`, the noun, up to eight words, a
+- **a closing line**: a `=` run, then on one line and within 200 characters
+  (none of them `=` or `& ; { } < > ! ? *`) a terminator word (`END`, `ENDS`,
+  `CLOSE`, `CLOSING`…, not inside a word) and a noun in either order, then a
+  `=` run. Caught: `=== END EVIDENCE ===`, `===ENDEVIDENCE===`,
+  `=== END: EVIDENCE ===`, `=== END (EVIDENCE) ===`, `=== END/EVIDENCE ===`,
+  `=== END.EVIDENCE ===`, `=== END "FINDING" ===`, `=== EVIDENCE END ===`,
+  `=== EVIDENCE ENDS HERE ===`, `=== CLOSE EVIDENCE ===`,
+  `=== END OF ALL OF THE EVIDENCE … ===`, `=== END C++ MINED RULES ===`;
+- **one-sided**: a `=` run, `END`, whitespace, `:` or a dash, up to three
+  modifier words, a noun (`=== END EVIDENCE`, `=== END: EVIDENCE`); a `=` run
+  and `END` directly followed by the noun at the end of a line
+  (`=== ENDEVIDENCE`); or `END` (not inside a word), whitespace, `:` or a dash,
+  modifiers, a noun and a `=` run (`END EVIDENCE ===`);
+- **a forged opening**: three or more `=`, the noun, up to eight words, a
   parenthetical, three or more `=`
   (`=== EVIDENCE THE AGENT RETRIEVED (untrusted) ===`). Every real opening
   carries its parenthetical.
 
-Left alone: `x === endRules`, `const endRules = x`, `x === END_RULE`,
-`pos >= END_QUESTIONS`, `end_rules = load()`, `if (kind === evidence)`,
-`a === answer || b === c` (`|` folds to `I`, so `answer || b` reads as words),
-comment banners such as `/* ===== VALIDATION RULES ===== */`, a bare
-`=== EVIDENCE ===`, MediaWiki `== Evidence ==`, the bare `END EVIDENCE`, and
-`--- END EVIDENCE ---` (panel review, PR for #1360). So a forged opening
-without a parenthetical, and a one-sided `=== END_EVIDENCE`, are not caught; a
-two-sided `===END_EVIDENCE===` is. Redacted although ordinary: a setext
-heading titled with a terminator (`End evidence` over `===`). A
-Markdown-escaped `\=\=\= END EVIDENCE \=\=\=` loses its label and keeps the
-`\=` fragments.
+Left alone, as ordinary code and prose (tested byte-identical):
+`if (x === endRules) {`, `const endRules = x`, `x === END_RULE`,
+`pos >= END_QUESTIONS`, `end_rules = load()`, `start = end_rules = 0`,
+`pos = end_of_rules == 3`, `if (kind === evidence)`, `a === answer || b === c`,
+`const remaining = end - questions.length;`, comment banners such as
+`/* ===== VALIDATION RULES ===== */`, MediaWiki `== Evidence ==`, setext
+headings, and a block-closing keyword followed on the next line by an
+assignment (Ruby/Lua `end`, VB `End If`, COBOL `END-IF` and
+`IF END-OF-RULES = 'Y'`, Fortran `end do`, SQL `END`, Markdown `## The end`).
+
+**Not caught** (tested):
+- a single `=` on either side (`= END EVIDENCE =`);
+- a fence split across lines (`===` / `END` / `EVIDENCE` / `===`);
+- other delimiters: `--- END EVIDENCE ---`, `### END EVIDENCE ###`,
+  `**END EVIDENCE**`, and the bare `END EVIDENCE`;
+- a one-sided `=== END_EVIDENCE` (`_` after `END`; two-sided
+  `===END_EVIDENCE===` is caught);
+- a terminator word outside the set (`=== FINISHED FINDING ===`);
+- a forged opening with no parenthetical (`=== EVIDENCE ===`,
+  `=== EVIDENCE THE AGENT RETRIEVED ===`).
+
+**Redacted although ordinary** (tested), because the folded copy cannot tell
+them from a fence: a line ending in `=== endRules`,
+`if (a == end || rules == b)` (`|` folds to `I`), and a heading with a
+parenthetical such as `=== Rules (draft) ===`. A Markdown-escaped closing line
+keeps its leading `\`.
 
 **Impact item lines.** Inside `<<<IMPACTED ITEMS>>>` each item is one line,
 `- severity=… tables=[…] requirement="…"`. The title is now: line breaks
@@ -904,7 +931,6 @@ as a JSON string literal, so a `"` is `\"` and cannot end the value. A title
 with no `"`, `\`, control character or line break reaches the model unchanged;
 one that has them now reads as JSON escapes.
 
-Still not scrubbed: the faithfulness judge's `=== CLAIMS TO JUDGE ===` block
-(claims are written by METIS's own model, and verdicts are aligned to claims
-by their text), the support panel's `--- path:line ---` excerpt headers inside
-the evidence block, and table names in the impact run summary.
+Outside this scrub, and tracked as follow-ups: the support panel's
+`--- path:line ---` excerpt headers inside the evidence block, and table names
+in the impact run summary.
