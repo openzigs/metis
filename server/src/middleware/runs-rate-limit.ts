@@ -3,15 +3,24 @@
  * chat-turn list, a run, its replay and its sandbox sessions). The router had
  * none and the app has no global one, so every route on it was CodeQL
  * `js/missing-rate-limiting` (alert 520 on the list; 562 on `GET /chat-turns`,
- * a failing check on #1112). `backgroundRunsRouter` shares the `/api/runs`
- * prefix and is NOT covered by these (#1116).
+ * a failing check on #1112). #1116 — and on every route of
+ * `backgroundRunsRouter` (background runs, run groups, steering), which shares
+ * the `/api/runs` prefix: the whole prefix is limited.
  *
  * Every route requires a signed-in user, so THE BUDGET IS THE USER'S:
  *
- *  - {@link runsUserRateLimiter} — AFTER `requireAuth`, keyed on
+ *  - {@link runsUserRateLimiter} — every READ, AFTER `requireAuth`, keyed on
  *    `req.user.userId`. Default 3000 per 15 minutes per user (`RUNS_LIMIT_MAX`):
  *    `/runs` makes two requests per load and per filter keystroke, a run's page
- *    three. Nobody but the user can spend it.
+ *    three, and the dashboard's active-runs widget polls
+ *    `GET /runs/background` every 10 s (90 a window per open tab). Nobody but
+ *    the user can spend it.
+ *  - {@link runsWriteUserRateLimiter} — every WRITE of `backgroundRunsRouter`
+ *    (submit, cancel, pause, resume, best-of-N, steer), AFTER `requireAuth`.
+ *    A budget of its own, default 300 per 15 minutes per user
+ *    (`RUNS_WRITE_LIMIT_MAX`): a write is a click, a submit can start up to
+ *    eight agent runs, and a polling read must never be refused because the
+ *    user clicked, nor the other way round.
  *
  * WHY NOT THE CLIENT ADDRESS. `req.ip` under the default `trust proxy = 1` is
  * the last entry of `X-Forwarded-For`, and when the Next UI server is the edge
@@ -26,15 +35,18 @@
  *
  *      • a request carrying an access token THIS server signed is keyed on the
  *        user id inside it (`signedAccessTokenUserId`: a signature check, no
- *        database read). An expired token still counts as its user's, so a
- *        browser whose token just ran out gets the 401 `TOKEN_EXPIRED` it
- *        refreshes on, never a 429. Spending this budget needs the user's own
- *        token — any of them, however old: the age is not bounded yet (#1117).
- *      • every other request — no token, or one we did not sign — is keyed on
- *        the TCP peer (the UI server or the proxy; never a header). All of
- *        those are requests `requireAuth` answers 401 anyway, so exhausting
- *        that bucket refuses nobody who would have been served — though a
- *        browser with no token at all is then told 429, not 401 (#1117).
+ *        database read). A token that expired at most 15 minutes ago still
+ *        counts as its user's, so a browser whose token just ran out gets the
+ *        401 `TOKEN_EXPIRED` it refreshes on, never a 429. An older one does
+ *        not (#1117): a token from months ago cannot spend its user's budget.
+ *      • every other request — no token, one we did not sign, one expired
+ *        longer ago — is keyed on the TCP peer (the UI server or the proxy;
+ *        never a header). Every one of those is a request `requireAuth`
+ *        refuses, so when that bucket is exhausted the guard answers with
+ *        `requireAuth`'s own 401 instead of 429 (#1117,
+ *        `preauth-limit-handler.ts`): a browser whose cookie fell out of
+ *        the jar must reach the 401 it recovers from (refresh, else sign-in),
+ *        and nobody who would have been served is refused.
  *
  *    The spec-kit guard keys the first case on a digest of the PRESENTED token
  *    without checking it; a caller inventing a token per request then mints a
@@ -49,12 +61,14 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { clusterRateLimitStore } from "./cluster-rate-limit-store.js";
 import { envMs } from "../lib/config/env-ms.js";
 import { signedAccessTokenUserId } from "../lib/auth/jwt.js";
+import { preAuthLimitReachedHandler } from "./preauth-limit-handler.js";
 import type { Request, RequestHandler } from "express";
 import type { ApiResponse } from "@metis/shared";
 
 const FIFTEEN_MIN_MS = 15 * 60_000;
 export const RUNS_USER_DEFAULT_MAX = 3_000;
 export const RUNS_PREAUTH_DEFAULT_MAX = 20_000;
+export const RUNS_WRITE_DEFAULT_MAX = 300;
 
 function intFromEnv(name: string, fallback: number): number {
   const n = Number.parseInt(process.env[name] ?? "", 10);
@@ -101,6 +115,15 @@ export function runsUserKey(req: Request): string {
   return req.user?.userId ? `user:${req.user.userId}` : peerKey(req);
 }
 
+/**
+ * {@link runsWriteUserRateLimiter}'s key. Exported for its test. Under
+ * `write:` so it is never the key {@link runsUserKey} or {@link runsPreAuthKey}
+ * gives the same request (same store class: `ERR_ERL_DOUBLE_COUNT`).
+ */
+export function runsWriteUserKey(req: Request): string {
+  return `write:${runsUserKey(req)}`;
+}
+
 const WINDOW_MS = envMs("RUNS_LIMIT_WINDOW_MS", FIFTEEN_MIN_MS, { min: 1 });
 
 const limited: ApiResponse = {
@@ -116,7 +139,8 @@ export const runsPreAuthRateLimiter: RequestHandler = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => runsPreAuthKey(req as unknown as Request),
-  message: limited,
+  // #1117 — a spent user bucket is 429; a spent peer bucket is requireAuth's 401.
+  handler: preAuthLimitReachedHandler(runsPreAuthKey, limited),
 }) as unknown as RequestHandler;
 
 export const runsUserRateLimiter: RequestHandler = rateLimit({
@@ -126,5 +150,15 @@ export const runsUserRateLimiter: RequestHandler = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => runsUserKey(req as unknown as Request),
+  message: limited,
+}) as unknown as RequestHandler;
+
+export const runsWriteUserRateLimiter: RequestHandler = rateLimit({
+  store: clusterRateLimitStore("runs-write-user"),
+  windowMs: WINDOW_MS,
+  limit: () => intFromEnv("RUNS_WRITE_LIMIT_MAX", RUNS_WRITE_DEFAULT_MAX),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => runsWriteUserKey(req as unknown as Request),
   message: limited,
 }) as unknown as RequestHandler;
