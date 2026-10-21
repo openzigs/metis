@@ -39,4 +39,12 @@ A business-requirements document CAN be planned before it is written since #1070
 - **`FLOOR_SHARE` must apply only when the budget is short,** or the planner drops topics from sections whose demand fits. Budget fixtures need an everything-fits case too: every Miniflux replay is short.
 - **A consistency check limited to facts-sheet names misses the prose contradictions walkthroughs report.** Before shipping any detector, run it over the stored run-8, run-9 and Haiku BRD records for false positives.
 
+## Batch hold and length overrun (PR for #1327, 2026-10-21)
+
+- **Replay the ASSEMBLY of a planned run from its stored records alone.** A version's `sectionSynthesis.records[]` carry `parts` (`budgets`, run-length `runs`; `decodePartRuns`): split each catalogue record back into its batch replies (re-emit the H3/H4 a part wrote under when another part first wrote it), re-merge with `mergeBatchBlocks`, `fitSectionToPlan` at 60k, then `fitDocumentToPlan` with the logged `bodyMaxChars`. With no change applied it reproduces run B exactly (84 cut, same keptChars) — run that control first.
+- **Overrun measured on stored records under-reads it:** the records are AFTER the section cap. Use the `Batched section synthesized` `replyChars` at each record's raw/rendered ratio: run B DeepSeek was 1.50–1.64×, not 1.30–1.45×. The log now has `renderedReplyChars`.
+- **Discarding text at write time breaks 7 tests** (`cuts nothing while the document fits`, the #741 body-fill pair): the #1113 rule again. The hold REORDERS (overflow to the part's tail) and lets the caps cut.
+- **`factsSourceIdOf` in holistic-synthesizer does not match the minted id** for a module with no repository (`src/m00` vs `facts:src_m00:0`); rank citations with `factsSourceId` from grounding-context.
+- **Plan budgets overflow the body by the footnote definitions:** run B planned 244,231 vs `bodyMaxChars` 234,277 (one definition per section per module cited, not per module), so a perfectly calibrated run is still cut ~10k at assembly.
+
 Links: [[project_read-live-is-not-read-completely]], [[project_never-dropped-silently-needs-a-fixture-per-cap]], [[project_deterministic-gate-over-llm-output-probes]].

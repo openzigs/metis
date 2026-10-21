@@ -316,6 +316,19 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "#1070 — whether a business-requirements document is planned before it is written (default off; only `on` turns it on). on: the document budget (DOCS_GEN_DOCUMENT_MAX_CHARS) is shared among the sections and each catalogue section's share among its topics (one per module) before generation, with no model call, and each prompt states its share; a topic that cannot have even a minimum share is left out by priority and listed with the section's omitted topics; a share is a target, so nothing is cut from a document that fits its caps, and when a cap is exceeded each overrunning part loses its own tail instead of the section losing its last topics, the document as a whole never keeping less than without a plan (headings counted; one section can keep less, and every planned run logs what each section kept); sections are given the canonical facts sheet (named constants and formulas read from the source) to cite; and the finished document is checked for one of those values stated differently from the source (an informational note, nothing is changed). off: generated exactly as before #1070. Other document types are never planned. Turning it on or off rewrites the document's sections once, on its next generation.",
     sensitive: false,
   },
+  DOCS_GEN_LENGTH_OVERRUN: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z
+      .string()
+      .regex(
+        /^\s*[^=,\s][^=,]*=\s*\d+(?:\.\d+)?\s*(?:,\s*[^=,\s][^=,]*=\s*\d+(?:\.\d+)?\s*)*$/,
+        "comma-separated pattern=factor pairs, e.g. deepseek=1.5,haiku=1.1",
+      ),
+    description:
+      "#1327 — how much longer than asked each model writes a planned business-requirements batch (DOCS_GEN_TOPIC_PLAN=on or the reader layout), as comma-separated `pattern=factor` pairs matched case-insensitively against the section model's id (`*` matches any model); the first match wins, then the built-in default (deepseek=1.5), else 1. Each batch is asked for its planned words divided by the factor, and is held to its planned share when written either way: what does not fit is its least important topics, listed in the section's note. Measured: DeepSeek 1.5-1.64x before the section cap, Haiku 1.00-1.16x. Factors are clamped to 0.5-3. Changing it rewrites a planned BRD's catalogue sections once, on their next generation.",
+    sensitive: false,
+  },
   DOCS_GEN_BRD_LAYOUT: {
     tier: "tunable",
     valueType: "string",

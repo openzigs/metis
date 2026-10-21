@@ -961,6 +961,20 @@ has measured a BRD generated with it on.
   facts change can move the budget of a catalogue section that reads nothing new from it
   and rewrite that section too. Catalogue sections read every module with content for
   them, so most were being rewritten for that module already.
+- **Each batch is held to its share as it is written, and asked for words corrected by the
+  model's overrun (#1327).** A batch's topics past its planned share, least important by
+  the modules they cite, become the end of its reply, which is what a cap takes first;
+  nothing is removed while the document fits. `DOCS_GEN_LENGTH_OVERRUN` (registry tunable,
+  `pattern=factor` pairs such as `deepseek=1.5,haiku=1.1`, matched against the section
+  model's id; built in `deepseek=1.5`, every other model 1) divides the words each batch
+  prompt asks for. To set it for a model, read `Batched section synthesized` (module
+  `docs-gen:holistic`) on a planned run: `renderedReplyChars / estimatedReplyChars` is the
+  overrun, `lengthOverrun` the factor in use, `heldParts` and `overflowTopics` what was put
+  past its share. **Upgrading, or changing the factor, rewrites the four catalogue
+  sections of every planned BRD once** on its next generation (the hold version and the
+  factor are in their reuse inputs; the single-call sections are reused): for the
+  walkthrough Miniflux BRD on DeepSeek, 21 of run B's 24 section calls ($0.69 in all) and
+  most of its 78 fact-check calls ($0.41): about $1. A BRD with the plan off is unaffected.
 
 ### 6.8 `DOCS_GEN_BRD_LAYOUT` (#1175): a main document plus an appendix, off by default
 
