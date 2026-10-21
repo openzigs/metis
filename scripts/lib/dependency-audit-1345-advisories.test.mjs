@@ -169,12 +169,16 @@ describe("the #1345 advisory set is closed in the resolved tree", () => {
 
     it("resolves NO browserslist copy below 4.28.7", () => {
       const resolved = resolvedVersions("browserslist");
-      expect(
-        resolved.length,
-        "expected at least one browserslist copy in the tree — a lookup that finds " +
-          "nothing reads as 'no vulnerable version present', the fail-open shape this " +
-          "file exists to guard against",
-      ).toBeGreaterThan(0);
+      // #1306 — browserslist left the tree with ui's eslint-config-next (its only route
+      // was @babel/core under that config's plugins); the override stays for any dep that
+      // brings it back. An empty lookup would read as 'no vulnerable version present', so
+      // prove the lookup itself still finds a package the lockfile certainly holds.
+      if (resolved.length === 0) {
+        expect(
+          resolvedVersions("next").length,
+          "resolvedVersions finds nothing at all — the lookup is broken, not the tree clean",
+        ).toBeGreaterThan(0);
+      }
       const breaching = resolved.filter((v) => !versionAtLeast(v, FIXED));
       expect(
         breaching,

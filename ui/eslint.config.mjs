@@ -1,7 +1,8 @@
 // Local ESLint config for the UI workspace. Adds JSX/React parser options so
-// `eslint .` from the repo root can lint .tsx files. We keep this minimal —
-// the typed Next.js rules run only via the Next-aware `next lint` command if
-// invoked separately, but `pnpm lint` at the repo root is the gate.
+// `eslint .` from the repo root can lint .tsx files. We keep this minimal:
+// `pnpm lint` at the repo root is the gate. Next 16 removed `next lint` and
+// build-time linting, and no Next.js rule set is loaded here, so the unused
+// eslint-config-next devDependency was dropped (#1306).
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(

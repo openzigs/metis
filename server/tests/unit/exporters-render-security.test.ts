@@ -14,23 +14,58 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+/** A request as the #1017 interception handler sees it, settled into `outcome`. */
+interface FakeRequest {
+  url: () => string;
+  isInterceptResolutionHandled: () => boolean;
+  continue: () => Promise<void>;
+  abort: (reason?: string) => Promise<void>;
+}
+type RequestHandler = (request: FakeRequest) => void;
+
 interface Recorded {
   launches: Array<{ args?: string[] }>;
   contents: string[];
   scripts: string[];
   closed: number;
+  /** Per page: whether interception was on when `setContent` ran, and its handlers. */
+  pages: Array<{ interceptingAtSetContent: boolean | null; handlers: RequestHandler[] }>;
+  /** Every addScriptTag / addStyleTag call, in order. */
+  injected: Array<{ kind: "script" | "style"; path?: string; url?: string }>;
 }
 
-const rec: Recorded = { launches: [], contents: [], scripts: [], closed: 0 };
+const rec: Recorded = {
+  launches: [],
+  contents: [],
+  scripts: [],
+  closed: 0,
+  pages: [],
+  injected: [],
+};
 const launchBehaviour: { fail: boolean; pdfFail: boolean } = { fail: false, pdfFail: false };
 
 function fakePage() {
+  let intercepting = false;
+  const page: Recorded["pages"][number] = { interceptingAtSetContent: null, handlers: [] };
+  rec.pages.push(page);
   return {
+    setRequestInterception: async (on: boolean) => {
+      intercepting = on;
+    },
+    on: (event: string, handler: RequestHandler) => {
+      if (event === "request") page.handlers.push(handler);
+    },
     setViewport: async () => {},
     setContent: async (html: string) => {
+      page.interceptingAtSetContent = intercepting;
       rec.contents.push(html);
     },
-    addScriptTag: async () => {},
+    addScriptTag: async (opts: { path?: string; url?: string }) => {
+      rec.injected.push({ kind: "script", ...opts });
+    },
+    addStyleTag: async (opts: { path?: string; url?: string }) => {
+      rec.injected.push({ kind: "style", ...opts });
+    },
     evaluate: async (script: string) => {
       rec.scripts.push(script);
     },
@@ -59,8 +94,78 @@ vi.mock("puppeteer", () => ({
   },
 }));
 
-const { exportDocument, MERMAID_RENDER_SECURITY, chromeLaunchArgs, mermaidInitScript } =
-  await import("../../src/lib/docs-gen/exporters.js");
+const {
+  exportDocument,
+  MERMAID_RENDER_SECURITY,
+  chromeLaunchArgs,
+  mermaidInitScript,
+  isExportRequestAllowed,
+  EXPORT_PAGE_CSP,
+  EXPORT_PAGE_CSP_META,
+  EXPORT_NETWORK_LOCKDOWN_ARGS,
+} = await import("../../src/lib/docs-gen/exporters.js");
+
+/** The directives of a CSP string, as a name -> sources map. */
+function cspDirectives(csp: string): Map<string, string[]> {
+  return new Map(
+    csp
+      .split(";")
+      .map((d) => d.trim().split(/\s+/))
+      .filter((parts) => parts[0])
+      .map(([name, ...sources]) => [name!, sources]),
+  );
+}
+
+/** Asserts `html` opens its <head> with the export CSP and links nothing external. */
+function expectLockedDownHtml(html: string): void {
+  const head = html.slice(html.indexOf("<head>"), html.indexOf("</head>"));
+  expect(head.trimStart().startsWith(`<head>`)).toBe(true);
+  // The CSP is the first element in <head>, so nothing above it can load first.
+  expect(head.replace("<head>", "").trimStart().startsWith(EXPORT_PAGE_CSP_META)).toBe(true);
+  expect(html).not.toMatch(/<link\b/i);
+  expect(html).not.toMatch(/cdn\.jsdelivr|https?:\/\/(?!www\.w3\.org)/i);
+}
+
+/**
+ * Drive `url` through every request handler a page registered and report what
+ * happened to it: `continue`, `abort:<reason>`, or `unhandled` (which in a real
+ * Chrome with interception on is a request that hangs).
+ */
+function settle(page: Recorded["pages"][number], url: string): string {
+  let outcome = "unhandled";
+  const request: FakeRequest = {
+    url: () => url,
+    isInterceptResolutionHandled: () => outcome !== "unhandled",
+    continue: async () => {
+      outcome = "continue";
+    },
+    abort: async (reason) => {
+      outcome = `abort:${reason ?? ""}`;
+    },
+  };
+  for (const handler of page.handlers) handler(request);
+  return outcome;
+}
+
+/** Every kind of request a sanitiser miss could make the export page issue. */
+const BLOCKED_URLS = [
+  "http://169.254.169.254/latest/meta-data/",
+  "https://attacker.example/beacon.png",
+  "http://localhost:4000/api/projects",
+  "file:///etc/passwd",
+  "ftp://attacker.example/x",
+  "ws://attacker.example/socket",
+  "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js",
+];
+
+/** Asserts a page intercepted before any content loaded, blocking all but data: and about:blank. */
+function expectExternalRequestsBlocked(page: Recorded["pages"][number]): void {
+  expect(page.interceptingAtSetContent).toBe(true);
+  expect(page.handlers).toHaveLength(1);
+  for (const url of BLOCKED_URLS) expect(settle(page, url), url).toBe("abort:blockedbyclient");
+  expect(settle(page, "data:image/png;base64,iVBORw0KGgo=")).toBe("continue");
+  expect(settle(page, "about:blank")).toBe("continue");
+}
 
 const PAYLOAD = "<img src=x onerror=alert(1)>";
 const MALICIOUS = [
@@ -109,6 +214,8 @@ beforeEach(() => {
   rec.contents.length = 0;
   rec.scripts.length = 0;
   rec.closed = 0;
+  rec.pages.length = 0;
+  rec.injected.length = 0;
   launchBehaviour.fail = false;
   launchBehaviour.pdfFail = false;
 });
@@ -222,6 +329,113 @@ describe("mermaid render security (#686)", () => {
     });
   });
 
+  describe("request interception (#1017)", () => {
+    it("PDF: intercepts before setContent and aborts every non-data: request", async () => {
+      await exportDocument(MALICIOUS, "xss-probe", "pdf");
+
+      expect(rec.pages).toHaveLength(1);
+      expectExternalRequestsBlocked(rec.pages[0]!);
+    });
+
+    it("DOCX: the diagram rasteriser's page is held to the same rule", async () => {
+      await exportDocument(MALICIOUS, "xss-probe", "docx");
+
+      expect(rec.pages).toHaveLength(1);
+      expectExternalRequestsBlocked(rec.pages[0]!);
+    });
+
+    it("leaves a request another handler already settled alone", async () => {
+      await exportDocument("# Hi", "t", "pdf");
+      const handler = rec.pages[0]!.handlers[0]!;
+      const calls: string[] = [];
+      handler({
+        url: () => "https://attacker.example/",
+        isInterceptResolutionHandled: () => true,
+        continue: async () => void calls.push("continue"),
+        abort: async () => void calls.push("abort"),
+      });
+      expect(calls).toEqual([]);
+    });
+
+    it("swallows a settle that rejects because the page already closed", async () => {
+      await exportDocument("# Hi", "t", "pdf");
+      const handler = rec.pages[0]!.handlers[0]!;
+      const unhandled = vi.fn();
+      process.on("unhandledRejection", unhandled);
+      try {
+        handler({
+          url: () => "https://attacker.example/",
+          isInterceptResolutionHandled: () => false,
+          continue: async () => {},
+          abort: () => Promise.reject(new Error("Target closed")),
+        });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(unhandled).not.toHaveBeenCalled();
+      } finally {
+        process.off("unhandledRejection", unhandled);
+      }
+    });
+
+    // PR #1321 review — interception never sees a WebSocket handshake, so the CSP must refuse it.
+    it("the export CSP refuses every connect channel, frame and base, and allows data: images only", () => {
+      const d = cspDirectives(EXPORT_PAGE_CSP);
+      expect(d.get("default-src")).toEqual(["'none'"]);
+      expect(d.get("connect-src")).toEqual(["'none'"]);
+      expect(d.get("frame-src")).toEqual(["'none'"]);
+      expect(d.get("object-src")).toEqual(["'none'"]);
+      expect(d.get("base-uri")).toEqual(["'none'"]);
+      expect(d.get("form-action")).toEqual(["'none'"]);
+      expect(d.get("img-src")).toEqual(["data:"]);
+      expect(d.get("font-src")).toEqual(["data:"]);
+      // Injected bundles are inline elements; no source list names a host or scheme beyond data:.
+      expect(d.get("script-src")).toEqual(["'unsafe-inline'"]);
+      expect(d.get("style-src")).toEqual(["'unsafe-inline'"]);
+    });
+
+    it("PDF: the page HTML starts with the CSP and links no stylesheet or CDN", async () => {
+      await exportDocument("# Maths\n\n$$x^2$$\n\nText.\n", "t", "pdf");
+      expect(rec.contents).toHaveLength(1);
+      expectLockedDownHtml(rec.contents[0]!);
+    });
+
+    it("DOCX: the diagram page HTML starts with the CSP too", async () => {
+      await exportDocument(MALICIOUS, "xss-probe", "docx");
+      expect(rec.contents).toHaveLength(1);
+      expectLockedDownHtml(rec.contents[0]!);
+    });
+
+    it("injects mermaid and KaTeX (script and stylesheet) from local paths, never a URL", async () => {
+      await exportDocument("# Maths\n\n$$x^2$$\n", "t", "pdf");
+      expect(rec.injected.filter((i) => i.url !== undefined)).toEqual([]);
+      const paths = rec.injected.map((i) => `${i.kind}:${i.path?.split(/[\\/]/).pop()}`);
+      expect(paths).toEqual([
+        "script:mermaid.min.js",
+        "style:katex.min.css",
+        "script:katex.min.js",
+        "script:auto-render.min.js",
+      ]);
+    });
+
+    // PR #1321 review — without the CDN fallback a missing mermaid must not throw in the page.
+    it("the PDF diagram script returns quietly when mermaid is not loaded", async () => {
+      await exportDocument(MALICIOUS, "xss-probe", "pdf");
+      const script = mermaidInitScripts()[0]!;
+      const { runInNewContext } = await import("node:vm");
+      // No `mermaid` and no `document`: the guard must return before touching either.
+      await expect(runInNewContext(script, {})).resolves.toBeUndefined();
+    });
+
+    it("isExportRequestAllowed admits only data: URLs and about:blank", () => {
+      expect(isExportRequestAllowed("DATA:text/plain,x")).toBe(true);
+      expect(isExportRequestAllowed("about:blank")).toBe(true);
+      expect(isExportRequestAllowed("about:srcdoc")).toBe(false);
+      expect(isExportRequestAllowed("blob:null/1234")).toBe(false);
+      expect(isExportRequestAllowed("javascript:alert(1)")).toBe(false);
+      expect(isExportRequestAllowed(" data:text/plain,x")).toBe(false);
+      for (const url of BLOCKED_URLS) expect(isExportRequestAllowed(url), url).toBe(false);
+    });
+  });
+
   describe("mermaidInitScript (#447)", () => {
     it("keeps the security posture when a layout supplies its own flowchart options", () => {
       const configs = initConfigs(
@@ -249,6 +463,24 @@ describe("mermaid render security (#686)", () => {
         expect(args).toContain("--disable-setuid-sandbox");
       } finally {
         if (prev !== undefined) process.env.PDF_EXPORT_CHROME_SANDBOX = prev;
+      }
+    });
+
+    it("always cuts the browser off the network: dead proxy, loopback proxied, no direct WebRTC UDP (#1017)", () => {
+      const prev = process.env.PDF_EXPORT_CHROME_SANDBOX;
+      try {
+        for (const sandbox of [undefined, "true"]) {
+          if (sandbox === undefined) delete process.env.PDF_EXPORT_CHROME_SANDBOX;
+          else process.env.PDF_EXPORT_CHROME_SANDBOX = sandbox;
+          const args = chromeLaunchArgs();
+          expect(args).toEqual(expect.arrayContaining([...EXPORT_NETWORK_LOCKDOWN_ARGS]));
+          expect(args).toContain("--proxy-bypass-list=<-loopback>");
+          expect(args).toContain("--webrtc-ip-handling-policy=disable_non_proxied_udp");
+          expect(args.some((a) => a.startsWith("--proxy-server="))).toBe(true);
+        }
+      } finally {
+        if (prev === undefined) delete process.env.PDF_EXPORT_CHROME_SANDBOX;
+        else process.env.PDF_EXPORT_CHROME_SANDBOX = prev;
       }
     });
 

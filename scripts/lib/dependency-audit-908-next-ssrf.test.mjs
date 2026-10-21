@@ -79,12 +79,12 @@ describe("GHSA-cjq9-62q9-8jv4 (next SSRF in Image Optimization) is closed in the
     expect(rangeMeetsFloor(range, FIXED), `ui/package.json declares next "${range}"`).toBe(true);
   });
 
-  it("ui/package.json moves eslint-config-next with next", () => {
-    // eslint-config-next pins @next/eslint-plugin-next EXACTLY to its own version, so a
-    // stale range here keeps a second @next/* line in the tree on the old release.
-    const range = declaredRange("ui/package.json", "eslint-config-next");
-    expect(range, "ui/package.json no longer declares eslint-config-next").toBeDefined();
-    expect(rangeMeetsFloor(range, FIXED), `ui/package.json declares "${range}"`).toBe(true);
+  it("ui/package.json does not declare eslint-config-next (#1306)", () => {
+    // No ESLint config loaded it and Next 16 removed `next lint`, so it was dead weight
+    // whose plugin (@next/eslint-plugin-next -> fast-glob 3.3.1 -> micromatch) was the
+    // only route braces (GHSA-vfj7-8cjw-p6xm, no fixed release) had into the tree.
+    // Re-adding it must also re-add a dated waiver; and its range must then move with next.
+    expect(declaredRange("ui/package.json", "eslint-config-next")).toBeUndefined();
   });
 
   it("the next override targets 16.3.8 and bounds at 16.3.8 (#1208)", () => {
@@ -121,9 +121,10 @@ describe("GHSA-cjq9-62q9-8jv4 (next SSRF in Image Optimization) is closed in the
   });
 
   it("resolves no @next/eslint-plugin-next copy below 16.3.8", () => {
-    expectNoCopyBelowFixed(
-      "@next/eslint-plugin-next",
-      "eslint-config-next pins it exactly, so it moves only with eslint-config-next.",
+    // Absent since #1306; if anything brings it back, it must not be on a stale release.
+    const breaching = resolvedLockfileVersions(lockfile, "@next/eslint-plugin-next").filter(
+      (v) => !resolvedVersionMeetsFloor(v, FIXED),
     );
+    expect(breaching).toEqual([]);
   });
 });
