@@ -283,6 +283,55 @@ export const CODE_LINKS_EDITED_NOTE =
   "is as the draft has it._";
 
 /**
+ * #921 — the section is DERIVED: the files were found by METIS's code search
+ * when the draft was generated (a draft from an import run, whose requirement
+ * holds no recorded link), not linked by an analysis. `retrievalMode` is the
+ * ranking that found them (#1097).
+ */
+export interface DerivedCodeLinks {
+  retrievalMode: "hybrid" | "bm25-only" | null;
+}
+
+/** #921 — the derived section's opening line, naming how the files were found. */
+function derivedIntro(derived: DerivedCodeLinks): string {
+  const how =
+    derived.retrievalMode === "hybrid"
+      ? " by meaning and keywords"
+      : derived.retrievalMode === "bm25-only"
+        ? " by keywords only (the project's code was not embedded for semantic search)"
+        : "";
+  return (
+    `_Files METIS's code search ranks${how} as the most likely affected by this requirement, ` +
+    `derived when this draft was generated. Not verified by an analysis: a starting point, not a ` +
+    `complete list of what to change._`
+  );
+}
+
+/** #921 — the most requirements one Generate maps to code (`draft-impact-files.ts`). */
+export const MAX_DERIVED_REQUIREMENTS = 50;
+
+/** #921 — why a draft from an import run lists no affected files. */
+export type ImpactFilesUnavailable = "no-code-graph" | "over-limit" | "failed";
+
+/** The note for each {@link ImpactFilesUnavailable} reason. */
+export const IMPACT_FILES_UNAVAILABLE_NOTES: Readonly<Record<ImpactFilesUnavailable, string>> = {
+  "no-code-graph":
+    "_No impact files could be derived: this project has no code graph. Connect and ingest its " +
+    "repository to list the files a requirement likely affects._",
+  "over-limit":
+    `_No impact files were derived for this draft: one Generate maps at most ${MAX_DERIVED_REQUIREMENTS} ` +
+    "requirements to code. Generate fewer drafts at a time to list them._",
+  failed:
+    "_No impact files could be derived: METIS's code search failed when this draft was " +
+    "generated. Generate it again to retry._",
+};
+
+/** #921 — the section of a draft whose impact files could not be derived. */
+export function renderImpactFilesUnavailable(reason: ImpactFilesUnavailable): string[] {
+  return [CODE_LINKS_HEADING, ``, IMPACT_FILES_UNAVAILABLE_NOTES[reason]];
+}
+
+/**
  * The section's Markdown lines. Links are listed in the order given (the
  * loader's: highest confidence first), exact repeats once, and at most
  * {@link MAX_DRAFT_CODE_LINKS}; what is left out is counted in a closing line.
@@ -290,12 +339,15 @@ export const CODE_LINKS_EDITED_NOTE =
  * `repo` is the repository to link into, and must be `null` unless the issue is
  * published into that same repository: with `null` every path is plain code and
  * the section names no repository, owner or commit. `total` is how many links
- * the requirement holds when `links` is only the first of them.
+ * the requirement holds when `links` is only the first of them. `derived`
+ * marks links found by code search rather than recorded (#921); they are
+ * rendered, linked and swapped for plain text exactly like recorded ones.
  */
 export function renderCodeLinksSection(
   links: readonly DraftCodeLink[],
   repo: CodeLinkRepo | null,
   total?: number,
+  derived?: DerivedCodeLinks,
 ): string[] {
   const seen = new Set<string>();
   const unique = links.filter((link) => {
@@ -305,7 +357,13 @@ export function renderCodeLinksSection(
     return true;
   });
   if (unique.length === 0) {
-    return [CODE_LINKS_HEADING, ``, `_METIS recorded no code links for this requirement._`];
+    return [
+      CODE_LINKS_HEADING,
+      ``,
+      derived
+        ? `_METIS's code search found no file this requirement likely affects: nothing in the project's code is close enough to it._`
+        : `_METIS recorded no code links for this requirement._`,
+    ];
   }
   const shown = unique.slice(0, MAX_DRAFT_CODE_LINKS);
   // Repeats among the rows read are not locations of their own.
@@ -314,7 +372,9 @@ export function renderCodeLinksSection(
   return [
     CODE_LINKS_HEADING,
     ``,
-    `_Code METIS linked to this requirement. A starting point, not a complete list of what to change._`,
+    derived
+      ? derivedIntro(derived)
+      : `_Code METIS linked to this requirement. A starting point, not a complete list of what to change._`,
     ``,
     ...shown.map((link) => renderLink(link, repo)),
     ...(hidden > 0
@@ -347,9 +407,10 @@ export function codeLinkSectionRecord(
   links: readonly DraftCodeLink[],
   repo: CodeLinkRepo,
   total?: number,
+  derived?: DerivedCodeLinks,
 ): CodeLinkSectionRecord | null {
-  const linked = renderCodeLinksSection(links, repo, total).join("\n");
-  const plain = renderCodeLinksSection(links, null, total).join("\n");
+  const linked = renderCodeLinksSection(links, repo, total, derived).join("\n");
+  const plain = renderCodeLinksSection(links, null, total, derived).join("\n");
   return linked === plain ? null : { linked, plain };
 }
 

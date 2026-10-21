@@ -1778,7 +1778,15 @@ For each requirement, METIS creates a draft issue (an import of more than 25 req
   - Technical Notes (implementation guidance)
   - Evidence (source document references)
   - Related code — the requirement's code links: up to 10, highest confidence first. A closing line counts
-    any links left out; a requirement with none says so (#1064). **What this section reveals depends on
+    any links left out; a requirement with none says so (#1064). **For a draft of an import run** (the
+    requirements are imported tracker items, which no analysis linked to code) whose requirement holds no
+    link, METIS's code search derives the **files it most likely affects** when you click **Generate**:
+    up to five files, one row each with its most likely symbol, and the section says they were derived,
+    and by meaning-and-keywords or keywords only (#921). No AI model is called for this, whatever the number
+    of drafts; at most 50 requirements are mapped per Generate, and a draft past that says so. When the
+    project has no code graph the section says that no impact files could be derived, rather than
+    leaving the section out. Derived files are written into the draft only; they are not saved as the
+    requirement's code links. **What this section reveals depends on
     where the issue is going:**
     - *Drafts generated for the repository METIS analysed* — the publish target has the same host, owner
       and name as the project's single GitHub connector: each path is a link into that repository at the

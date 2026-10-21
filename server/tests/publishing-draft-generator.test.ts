@@ -35,6 +35,17 @@ const codeMappings: Array<{
   codeSymbol: { name: string; kind: string } | null;
 }> = [];
 const repoConnections: Array<Record<string, string | null>> = [];
+/** #921 — the project's code graph (`code_symbols`), as the mapper's BM25 corpus reads it. */
+const codeSymbolRows: Array<{
+  id: string;
+  projectId: string;
+  name: string;
+  qualifiedName: string;
+  kind: string;
+  filePath: string;
+  startLine: number | null;
+  endLine: number | null;
+}> = [];
 /** #1276 — `published_issues` rows, as the re-title guard counts them. */
 const publishedIssueRows: Array<{ draftId: string; status: string; issueNumber: number }> = [];
 /** #1276 — `publish_batches` rows, as the re-title guard reads them. */
@@ -131,6 +142,12 @@ vi.mock("../src/lib/prisma.js", () => ({
       ),
     },
     repoConnection: { findMany: vi.fn(async () => repoConnections) },
+    // #921 — what the requirement→code mapper reads for an import run's drafts.
+    codeSymbol: {
+      findMany: vi.fn(async ({ where }: { where: { projectId: string } }) =>
+        codeSymbolRows.filter((r) => r.projectId === where.projectId),
+      ),
+    },
     publishedIssue: {
       count: vi.fn(
         async ({ where }: { where: CountWhere }) =>
@@ -274,6 +291,7 @@ import {
   bodyWithCodeAsText,
 } from "../src/lib/publishing/draft-code-links.js";
 import { planApprovedRequirementSet } from "../src/lib/analysis/approved-requirement-set.js";
+import { MAX_DERIVED_REQUIREMENTS } from "../src/lib/publishing/draft-impact-files.js";
 import {
   promotionMatchingRecord,
   sharedCriteriaRecords,
@@ -285,6 +303,7 @@ beforeEach(() => {
   publishBatches.length = 0;
   codeMappings.length = 0;
   repoConnections.length = 0;
+  codeSymbolRows.length = 0;
   nextId = 0;
   approvalCounts.pending = 0;
   approvalCounts.rejected = 0;
@@ -1976,6 +1995,176 @@ describe("#863 — import-run drafts", () => {
     } finally {
       requirements.splice(0, requirements.length, ...saved);
     }
+  });
+
+  describe("#921 — the files an imported requirement likely affects", () => {
+    const body = (requirementId: string) =>
+      [...drafts.values()].find((d) => d.requirementId === requirementId)!.body;
+    const meta = (requirementId: string) =>
+      JSON.parse([...drafts.values()].find((d) => d.requirementId === requirementId)!.metadata!);
+
+    /** A Miniflux-shaped code graph; an import run's first two requirements name it. */
+    function withCodeGraph(): void {
+      const rows: Array<[string, string, number]> = [
+        ["markAllAsRead", "internal/ui/unread_mark_all_read.go", 13],
+        ["MarkAllAsReadBeforeDate", "internal/storage/entry.go", 120],
+        ["flushSessions", "internal/cli/flush_sessions.go", 9],
+        ["FlushAllSessions", "internal/storage/web_session.go", 40],
+        ["refreshFeed", "internal/ui/feed_refresh.go", 20],
+      ];
+      rows.forEach(([name, filePath, line], i) =>
+        codeSymbolRows.push({
+          id: `sym_${i}`,
+          projectId: "proj_1",
+          name,
+          qualifiedName: `${filePath}::${name}`,
+          kind: "function",
+          filePath,
+          startLine: line,
+          endLine: line + 10,
+        }),
+      );
+    }
+
+    /** Import run `asImportRun(n)` with its first requirements about that code (fresh objects). */
+    function importRunAboutTheCode(n: number): () => void {
+      const restore = asImportRun(n);
+      const texts: Array<[string, string]> = [
+        ["Mark all entries as read older than X days", "Mark all as read before a date"],
+        ["Flush all sessions from the settings page", "An admin can flush all sessions at once"],
+      ];
+      texts.forEach(([title, body], i) => {
+        if (requirements[i]) requirements[i] = { ...requirements[i]!, title, body };
+      });
+      return restore;
+    }
+
+    it("says no impact files could be derived when the project has no code graph", async () => {
+      const restore = asImportRun(2);
+      try {
+        await generateDrafts(opts);
+        for (const id of ["imp_req_1", "imp_req_2"]) {
+          expect(body(id)).toContain("## Related code");
+          expect(body(id)).toContain(
+            "_No impact files could be derived: this project has no code graph.",
+          );
+        }
+      } finally {
+        restore();
+      }
+    });
+
+    it("lists the most likely affected files, said to be derived and by which ranking", async () => {
+      const restore = importRunAboutTheCode(2);
+      withCodeGraph();
+      try {
+        await generateDrafts(opts);
+        const mark = body("imp_req_1");
+        expect(mark).toContain("## Related code");
+        // Tests run without a semantic embedder: the ranking falls back to keywords, and says so.
+        expect(mark).toContain(
+          "_Files METIS's code search ranks by keywords only (the project's code was not embedded for semantic search) as the most likely affected by this requirement, derived when this draft was generated.",
+        );
+        expect(mark).toContain("- `internal/ui/unread_mark_all_read.go:13-23` — `markAllAsRead`");
+        expect(mark).toContain("`internal/storage/entry.go:120-130` — `MarkAllAsReadBeforeDate`");
+        // The other requirement's code is not listed here.
+        expect(mark).not.toContain("flush_sessions.go");
+        const flush = body("imp_req_2");
+        expect(flush).toContain("`internal/cli/flush_sessions.go:9-19` — `flushSessions`");
+        expect(flush).not.toContain("unread_mark_all_read.go");
+        // No repository to link into: plain paths, and no swap to record.
+        expect(meta("imp_req_1").codeLinkSection).toBeUndefined();
+        // One corpus load for the whole Generate, whatever the number of drafts.
+        expect(vi.mocked(prisma.codeSymbol.findMany)).toHaveBeenCalledTimes(1);
+      } finally {
+        restore();
+      }
+    });
+
+    it("links derived files into the analysed repository, and records the plain form for Jira", async () => {
+      const restore = importRunAboutTheCode(1);
+      withCodeGraph();
+      repoConnections.push({
+        provider: "github",
+        ownerOrOrg: "acme",
+        repoName: "metis",
+        defaultBranch: "main",
+        apiBaseUrl: null,
+        lastCommitSha: "0123abcd",
+      });
+      try {
+        await generateDrafts(opts);
+        const linked = body("imp_req_1");
+        expect(linked).toContain(
+          "(https://github.com/acme/metis/blob/0123abcd/internal/ui/unread_mark_all_read.go#L13-L23)",
+        );
+        const recorded = meta("imp_req_1");
+        expect(recorded.codeLinkBase).toBe("https://github.com/acme/metis");
+        expect(linked).toContain(recorded.codeLinkSection.linked);
+        expect(recorded.codeLinkSection.plain).not.toContain("acme");
+        expect(recorded.codeLinkSection.plain).toContain("derived when this draft was generated");
+      } finally {
+        restore();
+      }
+    });
+
+    it("keeps an imported requirement's RECORDED links, and maps only the others", async () => {
+      const restore = importRunAboutTheCode(2);
+      withCodeGraph();
+      codeMappings.push({
+        requirementId: "imp_req_1",
+        filePath: "server/src/recorded.ts",
+        startLine: 1,
+        endLine: 2,
+        codeSymbol: null,
+      });
+      try {
+        await generateDrafts(opts);
+        expect(body("imp_req_1")).toContain("_Code METIS linked to this requirement.");
+        expect(body("imp_req_1")).toContain("server/src/recorded.ts");
+        expect(body("imp_req_1")).not.toContain("derived when this draft was generated");
+        expect(body("imp_req_2")).toContain("derived when this draft was generated");
+      } finally {
+        restore();
+      }
+    });
+
+    it("says so when the code search found nothing for a requirement", async () => {
+      const restore = asImportRun(1);
+      withCodeGraph();
+      try {
+        await generateDrafts(opts);
+        expect(body("imp_req_1")).toContain("## Related code");
+        // `asImportRun` titles every requirement "Upstream issue N": no symbol is called that.
+        expect(body("imp_req_1")).toContain(
+          "_METIS's code search found no file this requirement likely affects",
+        );
+      } finally {
+        restore();
+      }
+    });
+
+    it("bounds the mapping: past the limit a draft says its files were not derived", async () => {
+      const restore = asImportRun(MAX_DERIVED_REQUIREMENTS + 2);
+      withCodeGraph();
+      try {
+        const ids = requirements.map((r) => r.id);
+        await generateDrafts({ ...opts, requirementIds: ids });
+        const notDerived = ids.filter((id) =>
+          body(id).includes("_No impact files were derived for this draft"),
+        );
+        expect(notDerived).toHaveLength(2);
+        expect(vi.mocked(prisma.codeSymbol.findMany)).toHaveBeenCalledTimes(1);
+      } finally {
+        restore();
+      }
+    });
+
+    it("leaves an analysed run's drafts as they were: no code search", async () => {
+      withCodeGraph();
+      await generateDrafts(opts);
+      expect(vi.mocked(prisma.codeSymbol.findMany)).not.toHaveBeenCalled();
+    });
   });
 
   describe("listDraftCandidates", () => {
