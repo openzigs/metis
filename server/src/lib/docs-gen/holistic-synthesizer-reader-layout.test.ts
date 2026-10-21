@@ -37,6 +37,7 @@ import {
   docsGenTuning,
   planDocumentTopics,
   sectionGroupsFor,
+  singleCallLengthLimited,
   synthesizeFinalDocument,
   type ModuleFacts,
   type Phase2ProviderBundle,
@@ -385,8 +386,59 @@ describe("planDocumentTopics in the reader layout", () => {
     expect(total).toBeGreaterThanOrEqual(40_000);
     expect(total).toBeLessThanOrEqual(60_000);
     for (const id of MAIN_IDS) expect(lengthLimited.has(id)).toBe(true);
-    // The appendix's single-call section keeps its own instructions, as it did.
-    expect(lengthLimited.has("integrations-and-glossary")).toBe(false);
+    // #1352 — the appendix's single-call section is told its length too when
+    // the document's budget binds, as 102 modules make it: its overrun would
+    // come out of the appendix's levelled catalogue sections.
+    expect(lengthLimited.has("integrations-and-glossary")).toBe(true);
+    // With room for every section it keeps its own instructions, as it did.
+    expect(plan(READER, true, 4).lengthLimited.has("integrations-and-glossary")).toBe(false);
+  });
+
+  it("#1352 — tells an appendix section its length only when the APPENDIX binds: the main part is planned and fitted apart", () => {
+    const section = (
+      sectionId: string,
+      kind: "single" | "enumerative",
+      budget: number,
+      demand: number,
+    ) => ({
+      sectionId,
+      label: sectionId,
+      kind,
+      budgetChars: budget,
+      demandChars: demand,
+      topics: [],
+      dropped: [],
+    });
+    const appendixFits = [
+      ...MAIN_IDS.map((id) => section(id, "single", 5_000, 8_000)),
+      ...["rules", "workflows", "formulas", "data-model"].map((id) =>
+        section(id, "enumerative", 10_000, 10_000),
+      ),
+      section("integrations-and-glossary", "single", 24_000, 24_000),
+    ];
+    // The main part binds; the appendix does not: only the main is told.
+    const told = singleCallLengthLimited({ sections: appendixFits }, { reader: true });
+    for (const id of MAIN_IDS) expect(told.has(id)).toBe(true);
+    expect(told.has("integrations-and-glossary")).toBe(false);
+    // The appendix binds: its single-call section is told too.
+    const appendixBinds = appendixFits.map((s) =>
+      s.sectionId === "rules" ? { ...s, budgetChars: 9_000 } : s,
+    );
+    expect(
+      singleCallLengthLimited({ sections: appendixBinds }, { reader: true }).has(
+        "integrations-and-glossary",
+      ),
+    ).toBe(true);
+    // One part in the catalogue layout: a binding main section tells it.
+    expect(
+      singleCallLengthLimited({ sections: appendixFits }, { reader: false }).has(
+        "integrations-and-glossary",
+      ),
+    ).toBe(true);
+    // Never a catalogue section.
+    expect(
+      singleCallLengthLimited({ sections: appendixBinds }, { reader: true }).has("rules"),
+    ).toBe(false);
   });
 
   it("plans the appendix's catalogue what the catalogue layout plans it, on a project whose catalogue outgrows the budget", () => {
