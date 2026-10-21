@@ -13,11 +13,22 @@
  * The classifier is deliberately CONSERVATIVE: offline / zero-retrieval /
  * malformed-response / any error all degrade safely to "open", and an answer is
  * NEVER returned without at least one valid citation.
+ *
+ * #1081 — "degrade to open" no longer reads as the model's own verdict: a
+ * check that failed (an answer that could not be read after one re-prompt, a
+ * call or retrieval error) still asks the question as open, and marks it
+ * `groundingFailed` so the panel can say project knowledge was not checked.
  */
+import { z } from "zod";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { HAIKU_MODEL_ID, tierModelFor } from "../ai/model-router.js";
 import type { DocumentSource } from "../documents/document-source.js";
 import { createChildLogger } from "../logger.js";
+import {
+  hasVerdict,
+  jsonObjectWhereDeclared,
+  requestStructuredVerdict,
+} from "./structured-verdict.js";
 import type { ClarifyingQuestion, GroundingCitation } from "./types/requirements.js";
 
 const log = createChildLogger("ambiguity-grounding");
@@ -71,6 +82,8 @@ export interface GroundingResult {
   groundingStatus: "grounded" | "partial" | "open";
   groundedAnswer?: string;
   groundingCitations?: GroundingCitation[];
+  /** #1081 — the check failed; "open" is the fallback, not the model's verdict. */
+  groundingFailed?: boolean;
 }
 
 export const GROUNDING_SYSTEM_PROMPT = `You are a requirements analyst. You are given numbered snippets retrieved from a software project's own ingested knowledge (source code and documents) and a single clarifying question about an ambiguous requirement.
@@ -115,32 +128,21 @@ export function buildGroundingMessages(
   ];
 }
 
-interface ParsedGrounding {
-  status: "grounded" | "partial" | "open";
-  answer: string;
-  citationIndexes: number[];
-}
+/**
+ * The model's grounding decision. `status` is the one field that must be
+ * right; the rest is read leniently, as before.
+ */
+const groundingSchema = z.object({
+  status: z.enum(["grounded", "partial", "open"]),
+  answer: z.unknown().optional(),
+  citationIndexes: z.array(z.unknown()).optional(),
+});
 
-/** Robustly parse the model's JSON decision; returns null on any failure. */
-function parseGrounding(content: string): ParsedGrounding | null {
-  try {
-    const cleaned = content.replace(/^```(?:json)?\s*\n?/m, "").replace(/\n?```\s*$/m, "");
-    const json = JSON.parse(cleaned) as Record<string, unknown>;
-    const status = json.status;
-    if (status !== "grounded" && status !== "partial" && status !== "open") {
-      return null;
-    }
-    return {
-      status,
-      answer: typeof json.answer === "string" ? json.answer : "",
-      citationIndexes: Array.isArray(json.citationIndexes)
-        ? json.citationIndexes.filter((n): n is number => typeof n === "number")
-        : [],
-    };
-  } catch {
-    return null;
-  }
-}
+const GROUNDING_SHAPE =
+  '{ "status": "grounded" | "partial" | "open", "answer": string, "citationIndexes": number[] }';
+
+/** #1081 — what a failed check returns: still asked as open, but marked. */
+const CHECK_FAILED: GroundingResult = { groundingStatus: "open", groundingFailed: true };
 
 export class AmbiguityGrounding {
   private readonly provider: AIProvider;
@@ -176,22 +178,39 @@ export class AmbiguityGrounding {
         return { groundingStatus: "open" };
       }
 
-      // 3 + 4. Ask the model to decide, grounded only in the snippets.
+      // 3 + 4. Ask the model to decide, grounded only in the snippets. #1081 —
+      // one re-prompt; an answer that still cannot be read is a FAILED check,
+      // marked as such, not the model saying "open".
       const messages = buildGroundingMessages(question, hits);
-      const response = await this.provider.chat(messages, {
+      const outcome = await requestStructuredVerdict(this.provider, {
+        label: "clarification-grounding",
+        schema: groundingSchema,
+        schemaName: "grounding decision",
+        expectedShape: GROUNDING_SHAPE,
+        messages,
         model: this.model,
         signal,
         disableTools: true,
+        responseFormat: jsonObjectWhereDeclared(this.provider, this.model),
       });
-
-      const parsed = parseGrounding(response.content);
-      if (!parsed || parsed.status === "open") {
+      if (!hasVerdict(outcome)) {
+        log.warn("Grounding answer could not be read — question marked unchecked", {
+          questionId: question.id,
+          reason: outcome.reason,
+        });
+        return CHECK_FAILED;
+      }
+      const parsed = outcome.verdict;
+      if (parsed.status === "open") {
         return { groundingStatus: "open" };
       }
+      const citationIndexes = (parsed.citationIndexes ?? []).filter(
+        (n): n is number => typeof n === "number",
+      );
 
       // 5. Map 1-based citation indexes onto the retrieved hits.
       const citations: GroundingCitation[] = [];
-      for (const idx of parsed.citationIndexes) {
+      for (const idx of citationIndexes) {
         const hit = hits[idx - 1];
         if (!hit) continue; // ignore out-of-range indexes
         citations.push({
@@ -206,7 +225,7 @@ export class AmbiguityGrounding {
 
       // 6. Conservative guard: never an answer without a citation, never an
       //    empty answer. Either condition downgrades to "open".
-      const answer = parsed.answer.trim();
+      const answer = typeof parsed.answer === "string" ? parsed.answer.trim() : "";
       if (citations.length === 0 || answer.length === 0) {
         return { groundingStatus: "open" };
       }
@@ -218,11 +237,11 @@ export class AmbiguityGrounding {
       };
     } catch (err) {
       // 7. Degrade safe on any retrieval/LLM error.
-      log.warn("Grounding failed for question — treating as open", {
+      log.warn("Grounding failed for question — asked as open, marked unchecked", {
         questionId: question.id,
         error: (err as Error).message,
       });
-      return { groundingStatus: "open" };
+      return CHECK_FAILED;
     }
   }
 
@@ -266,7 +285,7 @@ export class AmbiguityGrounding {
             questionId: question.id,
             error: (err as Error).message,
           });
-          result = { groundingStatus: "open" };
+          result = CHECK_FAILED;
         }
         enriched[i] = { ...question, ...result };
       }

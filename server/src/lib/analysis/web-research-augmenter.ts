@@ -152,6 +152,49 @@ const QUERY_SYSTEM_PROMPT = `You are a search query generator. Given a requireme
 
 Respond ONLY with a JSON array of strings. No markdown fences or commentary.`;
 
+/**
+ * #1081 — read the query-generation answer: a JSON array of strings, also
+ * accepted fenced, inside prose, or as `{ "queries": [...] }`. Returns `null`
+ * when nothing readable is there — which is NOT the same as `[]`, the model
+ * saying no search is needed.
+ */
+export function parseQueryList(content: string): string[] | null {
+  let body = content.trim();
+  if (body.startsWith("```")) {
+    const firstNewline = body.indexOf("\n");
+    body = firstNewline >= 0 ? body.slice(firstNewline + 1) : "";
+    if (body.trimEnd().endsWith("```")) body = body.trimEnd().slice(0, -3);
+    body = body.trim();
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    const start = body.indexOf("[");
+    const end = body.lastIndexOf("]");
+    if (start < 0 || end <= start) return null;
+    try {
+      parsed = JSON.parse(body.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+  const list = Array.isArray(parsed)
+    ? parsed
+    : parsed &&
+        typeof parsed === "object" &&
+        Array.isArray((parsed as { queries?: unknown }).queries)
+      ? ((parsed as { queries: unknown[] }).queries as unknown[])
+      : null;
+  if (list === null) return null;
+  const queries = list
+    .filter((q): q is string => typeof q === "string" && q.trim().length > 0)
+    .map((q) => q.trim())
+    .slice(0, 3);
+  // A non-empty list with no usable query in it was not readable either.
+  return list.length > 0 && queries.length === 0 ? null : queries;
+}
+
 // ── Digest generation prompt ───────────────────────────────────────────
 
 const DIGEST_SYSTEM_PROMPT = `You are a research analyst. Given search results for a requirement evidence need, produce a concise digest summarising the key findings. Note any conflicting information.
@@ -501,8 +544,11 @@ export class WebResearchAugmenter {
     signal?: AbortSignal,
   ): Promise<EvidenceDigest | null> {
     try {
-      const queries = await this.generateQueries(requirement, need, signal);
+      const { queries, fromModel } = await this.generateQueries(requirement, need, signal);
       if (queries.length === 0) return null;
+      // #1081 — carried onto the digest so the analyst is told the search used
+      // the need's own wording because the model's queries could not be read.
+      const fallback = fromModel ? {} : { queryFallback: true as const };
 
       const allResults: WebSearchHit[] = [];
       for (const query of queries) {
@@ -520,6 +566,7 @@ export class WebResearchAugmenter {
           sources: [],
           digest: "No web sources found for this evidence need.",
           needsHumanReview: true,
+          ...fallback,
         };
       }
 
@@ -545,6 +592,7 @@ export class WebResearchAugmenter {
         sources,
         digest,
         needsHumanReview,
+        ...fallback,
       };
     } catch (err) {
       log.warn("Failed to process evidence need", {
@@ -557,12 +605,15 @@ export class WebResearchAugmenter {
 
   /**
    * Use the LLM to generate 1-3 search queries from an evidence need.
+   *
+   * #1081 — `fromModel: false` means the model's answer could not be read
+   * (after one re-prompt) and `queries` is the need's own description.
    */
   async generateQueries(
     requirement: StructuredRequirement,
     need: EvidenceNeed,
     signal?: AbortSignal,
-  ): Promise<string[]> {
+  ): Promise<{ queries: string[]; fromModel: boolean }> {
     const messages: ChatMessage[] = [
       { role: "system", content: QUERY_SYSTEM_PROMPT },
       {
@@ -571,26 +622,38 @@ export class WebResearchAugmenter {
       },
     ];
 
-    const response = await this.provider.chat(messages, {
-      model: this.model,
-      signal,
-      disableTools: true,
-    });
-
-    try {
-      const cleaned = response.content
-        .replace(/^```(?:json)?\s*\n?/m, "")
-        .replace(/\n?```\s*$/m, "");
-      const parsed = JSON.parse(cleaned);
-      if (Array.isArray(parsed)) {
-        return parsed.filter((q): q is string => typeof q === "string").slice(0, 3);
-      }
-    } catch {
-      log.warn("Failed to parse query generation response");
+    const chatOpts = { model: this.model, signal, disableTools: true };
+    const first = await this.provider.chat(messages, chatOpts);
+    let queries = parseQueryList(first.content);
+    if (queries === null) {
+      // #1081 — one cheap re-prompt, the same repair the structured callers get.
+      log.warn("Query generation answer could not be read — re-prompting once", {
+        evidenceNeedId: need.id,
+      });
+      const retry = await this.provider.chat(
+        [
+          ...messages,
+          ...(first.content.trim() ? [{ role: "assistant" as const, content: first.content }] : []),
+          {
+            role: "user",
+            content:
+              "Your previous response could not be read as search queries. Reply with ONLY a " +
+              'JSON array of 1-3 strings, e.g. ["query one", "query two"], and nothing else.',
+          },
+        ],
+        chatOpts,
+      );
+      queries = parseQueryList(retry.content);
     }
+    if (queries !== null) return { queries, fromModel: true };
 
-    // Fallback: use the evidence need description itself
-    return [need.description];
+    // #1081 — the deterministic fallback stays (a search on the need's own words
+    // is still useful), but it is LABELLED: the digest says the model's queries
+    // could not be read, instead of passing the description off as one of them.
+    log.warn("Query generation answer still unreadable — searching the need's own wording", {
+      evidenceNeedId: need.id,
+    });
+    return { queries: [need.description], fromModel: false };
   }
 
   /**

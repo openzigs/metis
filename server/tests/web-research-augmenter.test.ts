@@ -14,6 +14,7 @@ import {
   createSearchProvider,
   isWebSearchConfigured,
   NO_WEB_SEARCH_PROVIDER_NOTICE,
+  parseQueryList,
 } from "../src/lib/analysis/web-research-augmenter.js";
 import type { AIProvider, ChatResponse } from "../src/lib/ai/types.js";
 import type {
@@ -360,36 +361,81 @@ describe("WebResearchAugmenter", () => {
       const provider = mockProvider('["query 1", "query 2", "query 3"]');
       const augmenter = new WebResearchAugmenter({ provider });
       const req = makeRequirement();
-      const queries = await augmenter.generateQueries(req, req.evidenceNeeds[0]!);
+      const { queries, fromModel } = await augmenter.generateQueries(req, req.evidenceNeeds[0]!);
 
       expect(queries).toEqual(["query 1", "query 2", "query 3"]);
+      expect(fromModel).toBe(true);
     });
 
     it("limits to 3 queries", async () => {
       const provider = mockProvider('["q1", "q2", "q3", "q4", "q5"]');
       const augmenter = new WebResearchAugmenter({ provider });
       const req = makeRequirement();
-      const queries = await augmenter.generateQueries(req, req.evidenceNeeds[0]!);
+      const { queries } = await augmenter.generateQueries(req, req.evidenceNeeds[0]!);
 
       expect(queries).toHaveLength(3);
     });
 
-    it("falls back to evidence need description on parse failure", async () => {
+    // #1081 — the fallback stays, but only after one re-prompt and LABELLED.
+    it("re-prompts once, then falls back to the need's description marked as a fallback", async () => {
       const provider = mockProvider("not json");
       const augmenter = new WebResearchAugmenter({ provider });
       const req = makeRequirement();
-      const queries = await augmenter.generateQueries(req, req.evidenceNeeds[0]!);
+      const result = await augmenter.generateQueries(req, req.evidenceNeeds[0]!);
 
-      expect(queries).toEqual([req.evidenceNeeds[0]!.description]);
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({ queries: [req.evidenceNeeds[0]!.description], fromModel: false });
+    });
+
+    it("uses the re-prompted answer when it can be read", async () => {
+      const provider = mockProvider("not json");
+      (provider.chat as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({ content: "Here you go: search for SLAs" })
+        .mockResolvedValueOnce({ content: '```json\n["payment SLA"]\n```' });
+      const req = makeRequirement();
+      const result = await new WebResearchAugmenter({ provider }).generateQueries(
+        req,
+        req.evidenceNeeds[0]!,
+      );
+      expect(result).toEqual({ queries: ["payment SLA"], fromModel: true });
     });
 
     it("filters non-string items from array", async () => {
       const provider = mockProvider('["valid", 123, null, "also valid"]');
       const augmenter = new WebResearchAugmenter({ provider });
       const req = makeRequirement();
-      const queries = await augmenter.generateQueries(req, req.evidenceNeeds[0]!);
+      const { queries } = await augmenter.generateQueries(req, req.evidenceNeeds[0]!);
 
       expect(queries).toEqual(["valid", "also valid"]);
+    });
+
+    it("labels the digest when the search used the fallback wording", async () => {
+      const provider = mockProvider("not json");
+      const searchProvider = {
+        search: vi.fn(async () => [
+          { url: "https://nist.gov/a", title: "A", snippet: "s", score: 0.9 },
+        ]),
+      };
+      const augmenter = new WebResearchAugmenter({ provider, searchProvider });
+      const result = await augmenter.augment([makeRequirement()]);
+      expect(result.digests[0]!.queryFallback).toBe(true);
+    });
+  });
+
+  describe("parseQueryList (#1081)", () => {
+    it("reads arrays, fenced arrays, arrays in prose and a queries object", () => {
+      expect(parseQueryList('["a"]')).toEqual(["a"]);
+      expect(parseQueryList('```json\n["a","b"]\n```')).toEqual(["a", "b"]);
+      expect(parseQueryList('Sure: ["a"] — done')).toEqual(["a"]);
+      expect(parseQueryList('{"queries":["a"]}')).toEqual(["a"]);
+    });
+
+    it("tells an unreadable answer (null) from an empty one ([])", () => {
+      expect(parseQueryList("[]")).toEqual([]);
+      expect(parseQueryList("no queries")).toBeNull();
+      expect(parseQueryList('{"other":1}')).toBeNull();
+      expect(parseQueryList("[1, 2]")).toBeNull();
+      expect(parseQueryList("[oops")).toBeNull();
     });
   });
 

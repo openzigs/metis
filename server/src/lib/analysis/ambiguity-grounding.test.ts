@@ -201,7 +201,8 @@ describe("AmbiguityGrounding.groundQuestion", () => {
     expect(result.groundingStatus).toBe("open");
   });
 
-  it("returns open on malformed JSON without throwing", async () => {
+  // #1081 — still asked as open, but marked: no model judged it open.
+  it("re-prompts once on malformed JSON, then returns open marked as a failed check", async () => {
     const { provider } = makeProvider({ content: "not json at all {" });
     const { retriever } = makeRetriever([makeHit("auth.ts", "text")]);
 
@@ -209,6 +210,21 @@ describe("AmbiguityGrounding.groundQuestion", () => {
     const result = await g.groundQuestion("proj-1", QUESTION);
 
     expect(result.groundingStatus).toBe("open");
+    expect(result.groundingFailed).toBe(true);
+    expect(provider.chat).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not mark a question the model judged open", async () => {
+    const { provider } = makeProvider({
+      content: JSON.stringify({ status: "open", answer: "", citationIndexes: [] }),
+    });
+    const { retriever } = makeRetriever([makeHit("auth.ts", "text")]);
+    const result = await new AmbiguityGrounding({ provider, retriever }).groundQuestion(
+      "proj-1",
+      QUESTION,
+    );
+    expect(result.groundingStatus).toBe("open");
+    expect(result.groundingFailed).toBeUndefined();
   });
 
   it("strips ```json fences before parsing", async () => {
@@ -239,6 +255,7 @@ describe("AmbiguityGrounding.groundQuestion", () => {
     const result = await g.groundQuestion("proj-1", QUESTION);
 
     expect(result.groundingStatus).toBe("open");
+    expect(result.groundingFailed).toBe(true);
   });
 
   it("returns open when the provider chat throws (degrade safe)", async () => {

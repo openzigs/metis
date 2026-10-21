@@ -247,10 +247,14 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({
 // resolution step is a deterministic no-op. `chat` is also a spy so a future
 // regression that *expects* a real model surfaces here instead of silently
 // no-opping.
-const providerChat = vi.fn(async () => ({
-  // Empty resolution → parseResolution yields no resolved fields / description,
-  // so submitAnswers returns the requirements unchanged, deterministically.
-  content: "{}",
+const providerChat = vi.fn(async (messages?: Array<{ role: string; content: unknown }>) => ({
+  // Empty resolution → no resolved fields / description, so submitAnswers
+  // returns the requirements unchanged, deterministically. #1081 — the question
+  // prompt gets a legitimately empty question list: a bare `{}` there is no
+  // longer read as "no questions" but as an answer that could not be read.
+  content: String(messages?.[0]?.content ?? "").includes("generate targeted clarifying questions")
+    ? '{"questions":[]}'
+    : "{}",
   usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
   model: "offline-stub",
   provider: "offline-stub",
