@@ -8,6 +8,11 @@
  */
 "use client";
 
+import {
+  describeUnreadAnalysisStep,
+  readUnreadAnalysisSteps,
+  type UnreadAnalysisSteps,
+} from "@metis/shared";
 import type {
   CrossDocFindingsSummary,
   CrossDocFindingSummary,
@@ -92,20 +97,55 @@ function FindingCard({ finding }: { finding: CrossDocFindingSummary }) {
   );
 }
 
+/**
+ * Issue #1081 — the checks whose model answer METIS could not read. Before
+ * this, an unread completeness check rendered "No … completeness gaps
+ * detected", a failed step dressed as a clean result.
+ */
+function UnreadStepsNotice({ unread }: { unread: UnreadAnalysisSteps }) {
+  return (
+    <div
+      role="alert"
+      data-testid="cross-doc-unread-steps"
+      className="mb-2 space-y-1 rounded border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
+    >
+      {unread.steps.map((s) => (
+        <p key={s.step}>
+          <span aria-hidden>⚠</span> {describeUnreadAnalysisStep(s)}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 export function CrossDocFindingsPanel({
   crossDocFindings,
+  metadata,
 }: {
   crossDocFindings: CrossDocFindingsSummary | null;
+  /** #1081 — the analysis metadata, read for `unreadAnalysisSteps`. */
+  metadata?: Record<string, unknown> | null;
 }) {
+  const unread = readUnreadAnalysisSteps(metadata?.unreadAnalysisSteps);
+
   if (!crossDocFindings || crossDocFindings.findings.length === 0) {
     return (
       <div data-testid="cross-doc-panel">
         <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Cross-document findings
         </h4>
-        <p className="text-sm text-muted-foreground">
-          No cross-document contradictions or completeness gaps detected.
-        </p>
+        {unread ? (
+          <>
+            <UnreadStepsNotice unread={unread} />
+            <p className="text-sm text-muted-foreground">
+              Nothing was found by the checks that could be read.
+            </p>
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No cross-document contradictions or completeness gaps detected.
+          </p>
+        )}
       </div>
     );
   }
@@ -126,6 +166,8 @@ export function CrossDocFindingsPanel({
           {crossDocFindings.completenessGapCount === 1 ? "" : "s"}
         </span>
       </div>
+
+      {unread ? <UnreadStepsNotice unread={unread} /> : null}
 
       {contradictions.length > 0 ? (
         <div className="mb-3 space-y-2">

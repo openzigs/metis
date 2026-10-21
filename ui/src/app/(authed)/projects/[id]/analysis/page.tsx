@@ -1446,7 +1446,10 @@ export default function AnalysisPage(): React.ReactElement {
                   </div>
 
                   {/* Epic #203 (#221) — first-class cross-document findings. */}
-                  <CrossDocFindingsPanel crossDocFindings={detail.data.crossDocFindings} />
+                  <CrossDocFindingsPanel
+                    crossDocFindings={detail.data.crossDocFindings}
+                    metadata={detail.data.metadata}
+                  />
                 </TabsContent>
 
                 <TabsContent value="questions" className="space-y-4">

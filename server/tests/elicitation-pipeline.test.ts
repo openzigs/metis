@@ -203,4 +203,33 @@ describe("runElicitation", () => {
     expect(firstOpts.disableTools).toBe(true);
     expect(firstOpts.signal).toBe(controller.signal);
   });
+
+  // #1081 — an elicitor whose answer could not be read is reported, not folded
+  // into "nothing elicited".
+  it("reports an elicitor whose answer could not be read", async () => {
+    const provider = {
+      ...queuedProvider([]),
+      chat: vi.fn(async (messages: ChatMessage[]) => {
+        const system = String(messages.find((m) => m.role === "system")?.content ?? "");
+        const content = system.includes("NON-FUNCTIONAL")
+          ? "no NFRs here"
+          : JSON.stringify({ assumptions: [], risks: [] });
+        return { content, usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+      }),
+    } as unknown as AIProvider;
+    const result = await runElicitation({ provider, segments: SEGMENTS });
+    expect(result.unreadSteps).toEqual([
+      { step: "nfr-elicitation", reason: "unparseable", failedCalls: 1, totalCalls: 1 },
+    ]);
+  });
+
+  it("reports nothing unread when both answers are legitimately empty", async () => {
+    const provider = queuedProvider([
+      JSON.stringify({ nfrs: [], acceptanceCriteria: [] }),
+      JSON.stringify({ assumptions: [], risks: [] }),
+    ]);
+    const result = await runElicitation({ provider, segments: SEGMENTS });
+    expect(result.unreadSteps).toEqual([]);
+    expect(isEmptyElicitation(result)).toBe(true);
+  });
 });

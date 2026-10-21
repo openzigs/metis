@@ -126,4 +126,23 @@ describe("runCrossDocDetection", () => {
     expect(risk!.severity).toBe("medium");
     expect(assumption!.severity).toBe("low");
   });
+
+  // #1081 — an unread check is reported, so "no gaps" is never shown for it.
+  it("reports the completeness and contradiction checks whose answers could not be read", async () => {
+    const provider = routingProvider({ nli: "not json", completeness: '{"answer":"none"}' });
+    const result = await runCrossDocDetection({ provider, segments: SEGMENTS });
+    expect(result.findings).toEqual([]);
+    expect(result.unreadSteps).toEqual([
+      // 2 self passes + 1 pairwise comparison, every one unreadable.
+      { step: "contradiction-check", reason: "unparseable", failedCalls: 3, totalCalls: 3 },
+      { step: "completeness-check", reason: "schema-invalid", failedCalls: 1, totalCalls: 1 },
+    ]);
+  });
+
+  it("reports nothing unread when the checks legitimately find nothing", async () => {
+    const provider = routingProvider({});
+    const result = await runCrossDocDetection({ provider, segments: SEGMENTS });
+    expect(result.findings).toEqual([]);
+    expect(result.unreadSteps).toEqual([]);
+  });
 });

@@ -565,6 +565,14 @@ function makeProvider(opts: {
       if (sysStr.includes("cross-document consistency check")) {
         return stubResponse(opts.consistencyReply ?? "## Summary\nOK\n\n## Contradictions\n- none");
       }
+      // #1081 — the elicitors answer with a legitimately empty envelope; anything
+      // else would now (correctly) be recorded as an unread step.
+      if (sysStr.includes("NON-FUNCTIONAL REQUIREMENTS")) {
+        return stubResponse('{"nfrs":[],"acceptanceCriteria":[]}');
+      }
+      if (sysStr.includes("the ASSUMPTIONS the specification relies on")) {
+        return stubResponse('{"assumptions":[],"risks":[]}');
+      }
 
       let detected = "synthesis";
       if (sysStr.includes("Mary")) detected = "document";
@@ -823,6 +831,34 @@ describe("AnalysisOrchestrator.start", () => {
     expect([...crossDocFindings.values()].filter((r) => r.analysisId === analysisId)).toHaveLength(
       0,
     );
+  });
+
+  // #1081 — an unread check is recorded on the analysis, so the panel cannot
+  // render it as "no contradictions or gaps detected".
+  it("records the cross-doc checks whose answer could not be read (#1081)", async () => {
+    const io = makeIO();
+    const provider = makeProvider({ completenessReply: "Looks complete to me." });
+    const orch = new AnalysisOrchestrator({
+      provider,
+      io: io as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [
+        { documentId: "doc-1", chunkIndex: 0, filename: "s.md", text: "c", score: 0.5 },
+      ],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    for (let i = 0; i < 200 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+    const meta = JSON.parse(analyses.get(analysisId)!.metadata ?? "{}") as {
+      unreadAnalysisSteps?: { steps: Array<{ step: string; reason: string }> };
+    };
+    expect(meta.unreadAnalysisSteps?.steps).toEqual([
+      expect.objectContaining({ step: "completeness-check", reason: "unparseable" }),
+    ]);
   });
 
   it("persists all specialist findings even when synthesis falls back to deterministic merge", async () => {

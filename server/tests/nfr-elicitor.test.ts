@@ -97,21 +97,44 @@ describe("parseNfrAcceptance", () => {
     expect(result.acceptanceCriteria[0]!.statement).toBe("valid");
   });
 
-  it("returns empty on non-JSON or wrong shape", () => {
-    expect(parseNfrAcceptance("nope")).toEqual({ nfrs: [], acceptanceCriteria: [] });
-    expect(parseNfrAcceptance(JSON.stringify(["array"]))).toEqual({
-      nfrs: [],
-      acceptanceCriteria: [],
-    });
-    expect(parseNfrAcceptance(JSON.stringify({ other: 1 }))).toEqual({
+  // #1081 — an unreadable answer is `null`, never the empty answer.
+  it("returns null, not an empty result, on non-JSON or wrong shape", () => {
+    expect(parseNfrAcceptance("nope")).toBeNull();
+    expect(parseNfrAcceptance(JSON.stringify(["array"]))).toBeNull();
+    expect(parseNfrAcceptance(JSON.stringify({ other: 1 }))).toBeNull();
+    expect(parseNfrAcceptance(JSON.stringify({ nfrs: "x", acceptanceCriteria: 3 }))).toBeNull();
+  });
+
+  it("reads a legitimately empty answer as empty", () => {
+    expect(parseNfrAcceptance(JSON.stringify({ nfrs: [], acceptanceCriteria: [] }))).toEqual({
       nfrs: [],
       acceptanceCriteria: [],
     });
   });
+});
 
-  it("tolerates non-array nfrs/acceptanceCriteria fields", () => {
-    const result = parseNfrAcceptance(JSON.stringify({ nfrs: "x", acceptanceCriteria: 3 }));
-    expect(result).toEqual({ nfrs: [], acceptanceCriteria: [] });
+describe("NfrElicitor.elicit — #1081 unreadable answers", () => {
+  it("re-prompts once, then returns the failure marked unread rather than 'no NFRs'", async () => {
+    const provider = mockProvider("I could not find any NFRs, sorry.");
+    const result = await new NfrElicitor({ provider }).elicit("The system must be fast.");
+    expect(provider.chat).toHaveBeenCalledTimes(2);
+    expect(result.unread).toMatchObject({ reason: "unparseable" });
+    expect(result.nfrs).toEqual([]);
+  });
+
+  it("does not mark a legitimately empty answer unread", async () => {
+    const provider = mockProvider(JSON.stringify({ nfrs: [], acceptanceCriteria: [] }));
+    const result = await new NfrElicitor({ provider }).elicit("The system must be fast.");
+    expect(provider.chat).toHaveBeenCalledTimes(1);
+    expect(result.unread).toBeUndefined();
+    expect(result.nfrs).toEqual([]);
+  });
+
+  it("returns a provider failure as unread instead of throwing", async () => {
+    const provider = mockProvider("{}");
+    (provider.chat as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("upstream 503"));
+    const result = await new NfrElicitor({ provider }).elicit("The system must be fast.");
+    expect(result.unread).toMatchObject({ reason: "provider-error" });
   });
 });
 

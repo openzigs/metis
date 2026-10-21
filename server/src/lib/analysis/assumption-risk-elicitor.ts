@@ -8,8 +8,13 @@
  * prompt, then a dedicated `parseAssumptionRisk()` validator (strip fences →
  * `JSON.parse` → shape guard → per-item Zod, applied AFTER parse, never at the
  * model boundary). Modeled on `requirements-extractor.ts`.
+ *
+ * #1081 — an answer that cannot be read is no longer returned as "no
+ * assumptions, no risks": the call goes through `requestStructuredVerdict`
+ * (one re-prompt), and a second failure comes back marked `unread`.
  */
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import {
   type Assumption,
   type AssumptionRiskResult,
@@ -19,6 +24,13 @@ import {
 } from "@metis/shared";
 import type { AIProvider, ChatMessage, TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
+import { extractJsonObject } from "./agent-runner.js";
+import {
+  hasVerdict,
+  jsonObjectWhereDeclared,
+  requestStructuredVerdict,
+} from "./structured-verdict.js";
+import type { UnreadModelReply } from "./unread-reply.js";
 
 const log = createChildLogger("assumption-risk-elicitor");
 
@@ -51,7 +63,26 @@ export interface AssumptionRiskElicitorDeps {
 
 export interface AssumptionRiskElicitationResult extends AssumptionRiskResult {
   usage: TokenUsage;
+  /** #1081 — set when the answer could not be read; the lists are then not "none". */
+  unread?: UnreadModelReply;
 }
+
+/** #1081 — the envelope only; items are still read one by one below. */
+const envelopeSchema = z
+  .object({
+    assumptions: z.array(z.unknown()).optional(),
+    risks: z.array(z.unknown()).optional(),
+  })
+  .refine((o) => o.assumptions !== undefined || o.risks !== undefined, {
+    message: "expected an assumptions or risks array",
+  });
+type AssumptionRiskEnvelope = z.infer<typeof envelopeSchema>;
+
+/** The shape quoted back to the model in the re-prompt. */
+const ASSUMPTION_RISK_SHAPE =
+  '{ "assumptions": [ { "statement": string, "rationale": string, "impactIfFalse": string } ], ' +
+  '"risks": [ { "title": string, "description": string, "likelihood": string, ' +
+  '"impact": string, "mitigation": string } ] }';
 
 function zeroUsage(): TokenUsage {
   return { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -61,50 +92,44 @@ function emptyResult(): AssumptionRiskResult {
   return { assumptions: [], risks: [] };
 }
 
-/**
- * Parse + validate the LLM response into typed assumptions + risks. Strips
- * markdown fences → `JSON.parse` → per-item Zod validation (a missing `id` is
- * synthesised before validation). Invalid items are dropped individually; an
- * unrecoverable parse failure yields an empty result.
- * @internal — exposed for testing.
- */
-export function parseAssumptionRisk(content: string): AssumptionRiskResult {
-  let json: unknown;
-  try {
-    const cleaned = content
-      .replace(/^```(?:json)?\s*\n?/m, "")
-      .replace(/\n?```\s*$/m, "")
-      .trim();
-    json = JSON.parse(cleaned);
-  } catch {
-    log.warn("Failed to parse assumption/risk response as JSON");
-    return emptyResult();
-  }
-
-  if (!json || typeof json !== "object") return emptyResult();
-  const obj = json as Record<string, unknown>;
-
+/** Per-item Zod validation of a read envelope; a missing `id` is synthesised. */
+function normalizeAssumptionRisk(envelope: AssumptionRiskEnvelope): AssumptionRiskResult {
   const assumptions: Assumption[] = [];
-  if (Array.isArray(obj.assumptions)) {
-    for (const raw of obj.assumptions) {
-      if (!raw || typeof raw !== "object") continue;
-      const withId = { id: randomUUID(), ...(raw as Record<string, unknown>) };
-      const parsed = assumptionSchema.safeParse(withId);
-      if (parsed.success) assumptions.push(parsed.data);
-    }
+  for (const raw of envelope.assumptions ?? []) {
+    if (!raw || typeof raw !== "object") continue;
+    const withId = { id: randomUUID(), ...(raw as Record<string, unknown>) };
+    const parsed = assumptionSchema.safeParse(withId);
+    if (parsed.success) assumptions.push(parsed.data);
   }
 
   const risks: Risk[] = [];
-  if (Array.isArray(obj.risks)) {
-    for (const raw of obj.risks) {
-      if (!raw || typeof raw !== "object") continue;
-      const withId = { id: randomUUID(), ...(raw as Record<string, unknown>) };
-      const parsed = riskSchema.safeParse(withId);
-      if (parsed.success) risks.push(parsed.data);
-    }
+  for (const raw of envelope.risks ?? []) {
+    if (!raw || typeof raw !== "object") continue;
+    const withId = { id: randomUUID(), ...(raw as Record<string, unknown>) };
+    const parsed = riskSchema.safeParse(withId);
+    if (parsed.success) risks.push(parsed.data);
   }
 
   return { assumptions, risks };
+}
+
+/**
+ * Parse + validate one LLM response into typed assumptions + risks. Invalid
+ * items are dropped individually.
+ *
+ * #1081 — returns `null` when the response cannot be read at all, which is
+ * NOT the same as an empty answer.
+ * @internal — exposed for testing.
+ */
+export function parseAssumptionRisk(content: string): AssumptionRiskResult | null {
+  let json: unknown;
+  try {
+    json = extractJsonObject(content);
+  } catch {
+    return null;
+  }
+  const envelope = envelopeSchema.safeParse(json);
+  return envelope.success ? normalizeAssumptionRisk(envelope.data) : null;
 }
 
 export class AssumptionRiskElicitor {
@@ -129,18 +154,35 @@ export class AssumptionRiskElicitor {
 
     log.info("Eliciting assumptions + risks from input", { chars: rawInput.length });
 
-    const response = await this.provider.chat(messages, {
+    const outcome = await requestStructuredVerdict(this.provider, {
+      label: "assumption-risk-elicitation",
+      schema: envelopeSchema,
+      schemaName: "assumptions and risks",
+      expectedShape: ASSUMPTION_RISK_SHAPE,
+      messages,
       model: this.model,
       signal,
       disableTools: true,
+      responseFormat: jsonObjectWhereDeclared(this.provider, this.model),
     });
+    if (!hasVerdict(outcome)) {
+      log.warn("Assumption/risk answer could not be read — recorded as unread, not as empty", {
+        reason: outcome.reason,
+        attempts: outcome.attempts,
+      });
+      return {
+        ...emptyResult(),
+        usage: outcome.usage,
+        unread: { reason: outcome.reason, detail: outcome.detail },
+      };
+    }
 
-    const parsed = parseAssumptionRisk(response.content);
+    const parsed = normalizeAssumptionRisk(outcome.verdict);
     log.info("Elicited assumptions + risks", {
       assumptions: parsed.assumptions.length,
       risks: parsed.risks.length,
     });
 
-    return { ...parsed, usage: response.usage ?? zeroUsage() };
+    return { ...parsed, usage: outcome.usage };
   }
 }

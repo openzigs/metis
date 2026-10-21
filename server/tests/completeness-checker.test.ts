@@ -84,9 +84,33 @@ describe("parseCompleteness", () => {
     expect(parsed.gaps[0]!.title).toBe("ok");
   });
 
-  it("returns empty on non-JSON or missing 'gaps'", () => {
-    expect(parseCompleteness("nope").gaps).toEqual([]);
-    expect(parseCompleteness(JSON.stringify({ x: 1 })).gaps).toEqual([]);
+  // #1081 — an unreadable answer is `null`, never "no gaps".
+  it("returns null, not 'no gaps', on non-JSON or missing 'gaps'", () => {
+    expect(parseCompleteness("nope")).toBeNull();
+    expect(parseCompleteness(JSON.stringify({ x: 1 }))).toBeNull();
+  });
+
+  it("reads a legitimately empty answer as no gaps", () => {
+    expect(parseCompleteness(JSON.stringify({ gaps: [] }))).toEqual({ gaps: [] });
+  });
+});
+
+describe("CompletenessChecker.check — #1081 unreadable answers", () => {
+  it("re-prompts once, then returns the check marked unread rather than 'no gaps'", async () => {
+    const provider = mockProvider("Everything looks complete to me.");
+    const result = await new CompletenessChecker({ provider }).check(SEGMENTS);
+    expect(provider.chat).toHaveBeenCalledTimes(2);
+    expect(result.unread).toMatchObject({ reason: "unparseable" });
+    expect(result.gaps).toEqual([]);
+    // Both billed attempts are counted.
+    expect(result.usage.totalTokens).toBe(34);
+  });
+
+  it("does not mark a legitimately empty answer unread", async () => {
+    const provider = mockProvider(JSON.stringify({ gaps: [] }));
+    const result = await new CompletenessChecker({ provider }).check(SEGMENTS);
+    expect(provider.chat).toHaveBeenCalledTimes(1);
+    expect(result.unread).toBeUndefined();
   });
 });
 

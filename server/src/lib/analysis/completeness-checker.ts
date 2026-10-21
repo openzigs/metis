@@ -10,11 +10,24 @@
  *
  * Consumes elicited artifacts from Child Epic 6 (#208) when supplied via
  * `check(..., { elicitedArtifacts })`; works standalone otherwise.
+ *
+ * #1081 — an unreadable answer used to come back as `{ gaps: [] }`, which the
+ * panel rendered as "no completeness gaps detected". It now goes through
+ * `requestStructuredVerdict` (one re-prompt) and a second failure is returned
+ * as `unread`, never as a clean result.
  */
+import { z } from "zod";
 import { type CompletenessGap, completenessGapSchema } from "@metis/shared";
 import type { AIProvider, ChatMessage, TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
+import { extractJsonObject } from "./agent-runner.js";
 import type { DocSegment } from "./cross-doc-validator.js";
+import {
+  hasVerdict,
+  jsonObjectWhereDeclared,
+  requestStructuredVerdict,
+} from "./structured-verdict.js";
+import type { UnreadModelReply } from "./unread-reply.js";
 
 const log = createChildLogger("completeness-checker");
 
@@ -38,7 +51,18 @@ export interface CompletenessCheckOptions {
 export interface CompletenessCheckResult {
   gaps: CompletenessGap[];
   usage: TokenUsage;
+  /** #1081 — set when the answer could not be read; `gaps` is then not "none". */
+  unread?: UnreadModelReply;
 }
+
+/** #1081 — the envelope only; each gap is still validated on its own. */
+const envelopeSchema = z.object({ gaps: z.array(z.unknown()) });
+
+/** The shape quoted back to the model in the re-prompt. */
+const COMPLETENESS_SHAPE =
+  '{ "gaps": [ { "kind": "missing-nfr" | "missing-acceptance-criteria" | ' +
+  '"missing-assumption" | "missing-risk", "title": string, "rationale": string, ' +
+  '"evidenceIds": string[] } ] }';
 
 /** Default per-segment truncation. */
 export const DEFAULT_SEGMENT_CAP = 4000;
@@ -75,36 +99,32 @@ function truncate(text: string, cap: number): string {
   return text.length > cap ? `${text.slice(0, cap)}\n…[truncated]` : text;
 }
 
-/**
- * Parse + validate the LLM completeness response. Strips markdown fences →
- * `JSON.parse` → per-gap Zod validation (invalid gaps dropped individually).
- * Returns an empty result on unrecoverable parse failure.
- * @internal — exposed for testing.
- */
-export function parseCompleteness(content: string): { gaps: CompletenessGap[] } {
-  let json: unknown;
-  try {
-    const cleaned = content
-      .replace(/^```(?:json)?\s*\n?/m, "")
-      .replace(/\n?```\s*$/m, "")
-      .trim();
-    json = JSON.parse(cleaned);
-  } catch {
-    log.warn("Failed to parse completeness response as JSON");
-    return { gaps: [] };
-  }
-
-  if (!json || typeof json !== "object" || !Array.isArray((json as Record<string, unknown>).gaps)) {
-    return { gaps: [] };
-  }
-
-  const rawGaps = (json as { gaps: unknown[] }).gaps;
+/** Per-gap Zod validation (invalid gaps dropped individually). */
+function validGaps(rawGaps: unknown[]): CompletenessGap[] {
   const gaps: CompletenessGap[] = [];
   for (const raw of rawGaps) {
     const parsed = completenessGapSchema.safeParse(raw);
     if (parsed.success) gaps.push(parsed.data);
   }
-  return { gaps };
+  return gaps;
+}
+
+/**
+ * Parse + validate one LLM completeness response.
+ *
+ * #1081 — returns `null` when the response cannot be read at all (no JSON
+ * object, or no `gaps` array), which is NOT the same as `{ gaps: [] }`.
+ * @internal — exposed for testing.
+ */
+export function parseCompleteness(content: string): { gaps: CompletenessGap[] } | null {
+  let json: unknown;
+  try {
+    json = extractJsonObject(content);
+  } catch {
+    return null;
+  }
+  const envelope = envelopeSchema.safeParse(json);
+  return envelope.success ? { gaps: validGaps(envelope.data.gaps) } : null;
 }
 
 export class CompletenessChecker {
@@ -148,15 +168,32 @@ export class CompletenessChecker {
 
     log.info("Running completeness checklist", { segments: usable.length });
 
-    const response = await this.provider.chat(messages, {
+    const outcome = await requestStructuredVerdict(this.provider, {
+      label: "completeness-check",
+      schema: envelopeSchema,
+      schemaName: "completeness",
+      expectedShape: COMPLETENESS_SHAPE,
+      messages,
       model: this.model,
       signal: opts.signal,
       disableTools: true,
+      responseFormat: jsonObjectWhereDeclared(this.provider, this.model),
     });
+    if (!hasVerdict(outcome)) {
+      log.warn("Completeness answer could not be read — recorded as unread, not as no gaps", {
+        reason: outcome.reason,
+        attempts: outcome.attempts,
+      });
+      return {
+        gaps: [],
+        usage: outcome.usage,
+        unread: { reason: outcome.reason, detail: outcome.detail },
+      };
+    }
 
-    const { gaps } = parseCompleteness(response.content);
+    const gaps = validGaps(outcome.verdict.gaps);
     log.info("Completeness checklist complete", { gaps: gaps.length });
 
-    return { gaps, usage: response.usage ?? zeroUsage() };
+    return { gaps, usage: outcome.usage };
   }
 }

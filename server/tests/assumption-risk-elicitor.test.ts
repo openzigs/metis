@@ -105,18 +105,35 @@ describe("parseAssumptionRisk", () => {
     expect(result.risks[0]!.title).toBe("ok");
   });
 
-  it("returns empty on non-JSON or wrong shape", () => {
-    expect(parseAssumptionRisk("nope")).toEqual({ assumptions: [], risks: [] });
-    expect(parseAssumptionRisk(JSON.stringify(["array"]))).toEqual({ assumptions: [], risks: [] });
-    expect(parseAssumptionRisk(JSON.stringify({ other: 1 }))).toEqual({
+  // #1081 — an unreadable answer is `null`, never the empty answer.
+  it("returns null, not an empty result, on non-JSON or wrong shape", () => {
+    expect(parseAssumptionRisk("nope")).toBeNull();
+    expect(parseAssumptionRisk(JSON.stringify(["array"]))).toBeNull();
+    expect(parseAssumptionRisk(JSON.stringify({ other: 1 }))).toBeNull();
+    expect(parseAssumptionRisk(JSON.stringify({ assumptions: "x", risks: 9 }))).toBeNull();
+  });
+
+  it("reads a legitimately empty answer as empty", () => {
+    expect(parseAssumptionRisk(JSON.stringify({ assumptions: [], risks: [] }))).toEqual({
       assumptions: [],
       risks: [],
     });
   });
+});
 
-  it("tolerates non-array assumptions/risks fields", () => {
-    const result = parseAssumptionRisk(JSON.stringify({ assumptions: "x", risks: 9 }));
-    expect(result).toEqual({ assumptions: [], risks: [] });
+describe("AssumptionRiskElicitor.elicit — #1081 unreadable answers", () => {
+  it("re-prompts once, then returns the failure marked unread", async () => {
+    const provider = mockProvider('{"assumptions": "none"}');
+    const result = await new AssumptionRiskElicitor({ provider }).elicit("Users log in.");
+    expect(provider.chat).toHaveBeenCalledTimes(2);
+    expect(result.unread).toMatchObject({ reason: "schema-invalid" });
+  });
+
+  it("does not mark a legitimately empty answer unread", async () => {
+    const provider = mockProvider(JSON.stringify({ assumptions: [], risks: [] }));
+    const result = await new AssumptionRiskElicitor({ provider }).elicit("Users log in.");
+    expect(provider.chat).toHaveBeenCalledTimes(1);
+    expect(result.unread).toBeUndefined();
   });
 });
 

@@ -68,6 +68,7 @@ import {
   type SynthesisDegradation,
   type RequirementReplacementWithheld,
   type SpecKitHandoffRecord,
+  type UnreadAnalysisSteps,
 } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma, resolveDatabaseProvider } from "../prisma.js";
@@ -295,6 +296,11 @@ export interface AnalysisEnhancementPatch {
    */
   synthesisDegraded?: SynthesisDegradation;
   /**
+   * Issue #1081 — the cross-document steps whose model answer could not be
+   * read on the last pass; `null` clears it after a clean pass.
+   */
+  unreadAnalysisSteps?: UnreadAnalysisSteps | null;
+  /**
    * Issue #723 — the structured requirement ids already promoted into rows, so
    * a rejection that is reopened and approved after promotion adds exactly
    * that requirement instead of being ignored as "already promoted".
@@ -394,6 +400,10 @@ function applyEnhancementPatch(
     next.clarificationApplication = patch.clarificationApplication;
   }
   if (patch.synthesisDegraded !== undefined) next.synthesisDegraded = patch.synthesisDegraded;
+  if (patch.unreadAnalysisSteps === null) delete next.unreadAnalysisSteps;
+  else if (patch.unreadAnalysisSteps !== undefined) {
+    next.unreadAnalysisSteps = patch.unreadAnalysisSteps;
+  }
   if (patch.promotedStructuredIds !== undefined) {
     next.promotedStructuredIds = patch.promotedStructuredIds;
   }
