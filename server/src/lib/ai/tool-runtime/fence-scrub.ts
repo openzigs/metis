@@ -219,16 +219,23 @@ const FOLDED_REQUIREMENT_FENCE =
  *
  * Unlike the data-boundary fence there is no unique token: the fence IS a
  * label between `=` runs, and `===` is also JavaScript's strict equality. So
- * a NOUN (one of the labels' head words) must be present, and a span is
+ * a NOUN (one of the labels' head words) must be present, nothing spans a line
+ * break, and every `=` run is at least two long. A span is
  *
- *   T1. a `=` run, `END`, up to 80 letters, digits and separators, a noun,
- *       a `=` run — `=== END SOURCE EVIDENCE ===`, the compact
- *       `===ENDSOURCEEVIDENCE===`;
- *   T2. a `=` run, `END`, whitespace or a dash, up to three modifier words, a
- *       noun — the one-sided `=== END EVIDENCE`;
- *   T3. `END` (not inside a word), whitespace or a dash, modifiers, a noun, a
- *       `=` run — the one-sided `END EVIDENCE ===`;
- *   O.  THREE or more `=`, up to 80 letters, digits and separators, a noun,
+ *   C.  a closing line: two or more `=`, then — on ONE line, at most 200
+ *       characters, none of them `=` or a code operator (`& ; { } < > ! ? *`; `+` is allowed, `C++`)
+ *       — a terminator word (`END`, `ENDS`, `CLOSE`…, not inside a word) and a
+ *       noun in either order, then two or more `=`. So `=== END EVIDENCE ===`,
+ *       `===ENDEVIDENCE===`, `=== END: EVIDENCE ===`, `=== END (EVIDENCE) ===`,
+ *       `=== END "FINDING" ===`, `=== EVIDENCE ENDS HERE ===`,
+ *       `=== CLOSE EVIDENCE ===` and `=== END OF ALL OF THE EVIDENCE … ===`;
+ *   L.  two or more `=`, `END`, whitespace, `:` or a dash, up to three modifier
+ *       words, a noun — the one-sided `=== END EVIDENCE`, `=== END: EVIDENCE`;
+ *   L'. two or more `=`, `END`, the noun with no separator, then only spaces to
+ *       the end of the line — the one-sided compact `=== ENDEVIDENCE`;
+ *   R.  `END` (not inside a word), whitespace, `:` or a dash, modifiers, a noun,
+ *       two or more `=` — the one-sided `END EVIDENCE ===`;
+ *   O.  three or more `=`, up to 80 letters, digits and separators, a noun,
  *       up to eight further words, a parenthetical, three or more `=` — a
  *       forged OPENING such as `=== EVIDENCE THE AGENT RETRIEVED (untrusted) ===`.
  *       Every real opening carries its parenthetical; requiring it keeps
@@ -236,20 +243,25 @@ const FOLDED_REQUIREMENT_FENCE =
  *       `a === answer || b === c` out (`|` folds to `I`, so `answer || b`
  *       reads as the words ANSWER II B).
  *
- * Left alone, so ordinary code and prose in evidence is not rewritten:
- * `x === endRules` and `const endRules = x` (no separator after END on a
- * one-sided form), `x === END_RULE` and `pos >= END_QUESTIONS` (`_` does not
- * count after END on a one-sided form), `a === answer || b === c`,
- * `if (kind === evidence)`, comment banners with no parenthetical, MediaWiki
- * `== Evidence ==`, the bare label with no `=` beside it, and
- * `--- END EVIDENCE ---`.
+ * Left alone, so ordinary code and prose in evidence is not rewritten (panel
+ * and PR #1367 review): `x === endRules)`, `const endRules = x`,
+ * `x === END_RULE`, `pos >= END_QUESTIONS`, `start = end_rules = 0`,
+ * `if (kind === evidence)`, `a === answer || b === c`, banners with no
+ * parenthetical, MediaWiki `== Evidence ==`, and every block-closing keyword
+ * followed on the NEXT line by an assignment (`end` / `End If` / `END-IF` /
+ * `end do` / SQL `END` then `rules = …`) — no form crosses a line break or
+ * accepts a single `=`. Redacted although ordinary, because the folded copy
+ * cannot tell them from a fence: a line ENDING in `=== endRules` (L'),
+ * `if (a == end || rules == b)` (C; `|` folds to `I`), and a heading such as
+ * `=== Rules (draft) ===` (O).
  *
- * Bounded per start: the filler is at most 80 characters (lazy), a modifier
- * at most 24, a parenthetical at most 200, and every match begins at the
- * first `=` of a run or at an `E` not preceded by a letter or digit.
+ * Bounded per start: every match begins at the first `=` of a run or at an
+ * `E` not preceded by a letter or digit; C looks at most 200 characters ahead
+ * (twice, once for the terminator and once for the noun), the filler is at
+ * most 80 characters, a modifier at most 24, a parenthetical at most 200.
  */
-const SEP = "[\\s_-]*";
-const SEP1 = "[\\s_-]+";
+const SEP = "[ \\t_-]*";
+const SEP1 = "[ \\t_-]+";
 /**
  * A label letter in the comparison copy. `L` also matches `I`: the fold reads a
  * lower-case `l` as `I` (it is `I`'s confusables prototype, see `PROTOTYPES`),
@@ -272,22 +284,38 @@ const SECTION_NOUN = `(?:${[
 const MODIFIER = "[A-Z0-9+#]{1,24}";
 const modifiers = (max: number): string => `(?:${MODIFIER}${SEP1}){0,${max}}`;
 const END = spaced("END");
-/** Between two `=` runs, modifier words need no separator: `===ENDSOURCEEVIDENCE===`. */
-const FILLER = "[A-Z0-9+#\\s_-]{0,80}?";
+/** A terminator word, not inside a word: END (ENDS, ENDED…) or CLOS (CLOSE, CLOSED, CLOSING…). */
+const TERMINATOR = `(?<![A-Z0-9])(?:${END}|${spaced("CLOS")})`;
+/** One character of a closing line: no `=`, no line break, no code operator. */
+const LINE_CHAR = "[^=\\n\\r\\v\\f\\x85\\p{Zl}\\p{Zp}&;{}<>!?*]";
+/** Between `===` and a noun, modifier words need no separator: `===SOURCEEVIDENCE(x)===`. */
+const FILLER = "[A-Z0-9+# \\t_-]{0,80}?";
 /**
- * After `END` on a ONE-SIDED form: whitespace or a dash, never `_` — so the
- * constants `x === END_RULE` and `pos >= END_QUESTIONS` are left alone.
+ * After `END` on a ONE-SIDED form: whitespace, `:` or a dash, never `_` — so
+ * the constants `x === END_RULE` and `pos >= END_QUESTIONS` are left alone.
  */
-const AFTER_END = "[\\s-]+";
+const AFTER_END = "[ \\t:-]+";
+/**
+ * A run of two (three) or more `=`, each pair optionally split by ONE separator
+ * `-` — which is how a Markdown-escaped `\=\=\=` reads once `\` has folded to
+ * `-`. A run starts only where no `=` (or `=-`) precedes it, so a long run is
+ * never re-scanned from inside.
+ */
+const OPEN2 = "(?<!=-?)=(?:-?=)+";
+const TAIL2 = "=(?:-?=)+";
+const OPEN3 = "(?<!=-?)=(?:-?=){2,}";
+const TAIL3 = "=(?:-?=){2,}";
 const FOLDED_SECTION_FENCE = new RegExp(
   [
-    `(?<!=)=+${SEP}${END}${FILLER}${SECTION_NOUN}${SEP}=+`,
-    `(?<!=)=+${SEP}${END}${AFTER_END}${modifiers(3)}${SECTION_NOUN}`,
-    `(?<![A-Z0-9])${END}${AFTER_END}${modifiers(3)}${SECTION_NOUN}${SEP}=+`,
-    `(?<!=)={3,}${FILLER}${SECTION_NOUN}` +
-      `(?:${SEP1}${MODIFIER}){0,8}${SEP}\\([^()=\\n]{0,200}\\)${SEP}={3,}`,
+    `${OPEN2}(?=${LINE_CHAR}{0,200}?${TERMINATOR})(?=${LINE_CHAR}{0,200}?${SECTION_NOUN})` +
+      `${LINE_CHAR}{0,200}${TAIL2}`,
+    `${OPEN2}${SEP}${END}${AFTER_END}${modifiers(3)}${SECTION_NOUN}`,
+    `${OPEN2}[ \\t]*${END}[A-Z0-9]{0,40}?${SECTION_NOUN}[ \\t]*(?=[\\n\\r]|$)`,
+    `(?<![A-Z0-9])${END}${AFTER_END}${modifiers(3)}${SECTION_NOUN}[ \\t]*${TAIL2}`,
+    `${OPEN3}${FILLER}${SECTION_NOUN}` +
+      `(?:${SEP1}${MODIFIER}){0,8}${SEP}\\([^()=\\n]{0,200}\\)${SEP}${TAIL3}`,
   ].join("|"),
-  "g",
+  "gu",
 );
 
 /**
