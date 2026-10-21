@@ -194,7 +194,7 @@ Before creating the PR, perform a comprehensive security review:
      pre-auth one on the user id in a token this server signed (`signedAccessTokenUserId`:
      expired at most 15 minutes, #1117), else the TCP peer; never on `req.ip`
      (client-writable `X-Forwarded-For` under `trust proxy`), nor on the presented token.
-     Answer a spent peer bucket with `requireAuth`'s 401, not 429 (the `handler` of `runsPreAuthRateLimiter`).
+     Answer a spent peer bucket with `requireAuth`'s 401, not 429 (`handler: preAuthLimitReachedHandler(key, body)`).
      `spec-kit-delete-rate-limit.ts` keys on `req.ip`: it is the example to avoid, not a
      template. Copy `runs-rate-limit.ts`'s tests too, including both expired-token cases
      (`runs-rate-limit.test.ts`).

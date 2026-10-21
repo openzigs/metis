@@ -324,6 +324,7 @@ export const RUN_LIST_PROJECT_BATCH = 400;
 function newestRunFirst(a: { startedAt: Date; id: string }, b: { startedAt: Date; id: string }) {
   const byTime = b.startedAt.getTime() - a.startedAt.getTime();
   if (byTime !== 0) return byTime;
+  // cuid ids are lowercase ASCII: JS code-unit order matches both engines' `id desc`.
   return a.id < b.id ? 1 : -1;
 }
 

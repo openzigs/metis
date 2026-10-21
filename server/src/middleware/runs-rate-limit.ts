@@ -44,7 +44,7 @@
  *        never a header). Every one of those is a request `requireAuth`
  *        refuses, so when that bucket is exhausted the guard answers with
  *        `requireAuth`'s own 401 instead of 429 (#1117,
- *        the limiter's `handler`): a browser whose cookie fell out of
+ *        `preauth-limit-handler.ts`): a browser whose cookie fell out of
  *        the jar must reach the 401 it recovers from (refresh, else sign-in),
  *        and nobody who would have been served is refused.
  *
@@ -61,8 +61,8 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { clusterRateLimitStore } from "./cluster-rate-limit-store.js";
 import { envMs } from "../lib/config/env-ms.js";
 import { signedAccessTokenUserId } from "../lib/auth/jwt.js";
-import { requireAuth } from "./auth.js";
-import type { NextFunction, Request, RequestHandler, Response } from "express";
+import { preAuthLimitReachedHandler } from "./preauth-limit-handler.js";
+import type { Request, RequestHandler } from "express";
 import type { ApiResponse } from "@metis/shared";
 
 const FIFTEEN_MIN_MS = 15 * 60_000;
@@ -139,33 +139,8 @@ export const runsPreAuthRateLimiter: RequestHandler = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => runsPreAuthKey(req as unknown as Request),
-  /*
-   * #1117 — what the guard answers once a bucket is spent. A user's bucket (a
-   * token this server signed, at most 15 minutes expired) is told 429: it is
-   * theirs to wait out. The PEER bucket only ever holds requests `requireAuth`
-   * refuses — no token, an unsigned one, a refresh token, a token long
-   * expired — so each is told what `requireAuth` tells it (`AUTH_REQUIRED`,
-   * `TOKEN_INVALID`, `TOKEN_EXPIRED`), which the UI recovers from. Should
-   * `requireAuth` ever accept one, it is still refused with 429: the guard
-   * never lets a request past its budget.
-   */
-  handler: (rawReq, rawRes, rawNext) => {
-    const req = rawReq as unknown as Request;
-    const res = rawRes as unknown as Response;
-    const tooMany = () => {
-      res.status(429).json(limited);
-    };
-    if (!runsPreAuthKey(req).startsWith("preauth:peer:")) {
-      tooMany();
-      return;
-    }
-    // A 401 carries no promise that waiting helps.
-    res.removeHeader("Retry-After");
-    void requireAuth(req, res, (err?: unknown) => {
-      if (err) (rawNext as unknown as NextFunction)(err);
-      else tooMany();
-    });
-  },
+  // #1117 — a spent user bucket is 429; a spent peer bucket is requireAuth's 401.
+  handler: preAuthLimitReachedHandler(runsPreAuthKey, limited),
 }) as unknown as RequestHandler;
 
 export const runsUserRateLimiter: RequestHandler = rateLimit({

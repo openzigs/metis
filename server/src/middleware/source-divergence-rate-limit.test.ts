@@ -93,7 +93,11 @@ describe("source-divergence limiters", () => {
     process.env.SOURCE_DIVERGENCE_PREAUTH_LIMIT_MAX = "1";
     const a = app();
     expect((await request(a).post("/answer")).status).toBe(401);
-    expect((await request(a).post("/answer").set("X-Forwarded-For", "9.9.9.9")).status).toBe(429);
+    // #1117 — the peer bucket is spent, and a forwarded address does not make a
+    // new one; the caller is told requireAuth's 401, not 429.
+    const spent = await request(a).post("/answer").set("X-Forwarded-For", "9.9.9.9");
+    expect(spent.status).toBe(401);
+    expect(spent.headers["ratelimit-remaining"]).toBe("0");
 
     process.env.SOURCE_DIVERGENCE_LIMIT_MAX = "not-a-number";
     const auth = `Bearer ${tokenFor("u-1220-fallback")}`;
