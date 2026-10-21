@@ -120,6 +120,19 @@ describe("#1349 — socket.io handshake Origin check", () => {
     ).toEqual({ ok: true });
   });
 
+  it("answers a polling request from either CORS_ORIGIN entry with that origin's CORS header", async () => {
+    // A Node client ignores CORS headers, so read them off the raw response: the
+    // comma list must reach socket.io's `cors` parsed, not as one string (#913).
+    for (const origin of [UI_ORIGIN, "https://other.metis.test"]) {
+      const res = await fetch(`http://127.0.0.1:${port}/socket.io/?EIO=4&transport=polling`, {
+        headers: { origin },
+      });
+      await res.text();
+      expect(res.headers.get("access-control-allow-origin")).toBe(origin);
+      expect(res.headers.get("access-control-allow-credentials")).toBe("true");
+    }
+  });
+
   it("refuses an opaque (null) Origin", async () => {
     const res = await handshake({
       headers: { cookie: cookie("u-1349-null"), origin: "null" },
