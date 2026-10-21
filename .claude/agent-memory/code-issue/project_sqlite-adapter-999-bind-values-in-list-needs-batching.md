@@ -42,6 +42,8 @@ route had the same fault from about 996 projects.
 - Test on real SQLite with well over 1,000 rows of the set (2,500 here), compare
   the page with one raw SQL statement, and assert the largest statement's bind
   count from the client's `query` log event (`JSON.parse(e.params).length`).
-- `listRuns` (`runs-service.ts`) still binds `projectId IN (accessible projects)`
-  with `orderBy` + `take` (from #305): the same 500 for a member of about 995
-  projects. Not fixed in #1112.
+- `listRuns` (`runs-service.ts`) bound `projectId IN (accessible projects)` with
+  `orderBy` + `take`: reproduced as a 500 through the route at 1,101 reachable
+  projects (workspace-less projects are open to every non-admin, so a fixture is
+  just 1,100 `createMany` rows) and fixed in #1121 by 400-project batches
+  (`RUN_LIST_PROJECT_BATCH`). The ACP agents/skills lists have the same shape: #1346.
