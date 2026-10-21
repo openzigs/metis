@@ -7225,12 +7225,6 @@ export function planDocumentTopics(input: {
   const batchedOff = new Set(
     groups.filter((g) => g.batched && !batchedSectionsEnabled()).map((g) => g.id),
   );
-  // #1352 — the document's budget binds: some section was planned less than
-  // it asks. A single-call section's overrun is then taken at assembly from
-  // the sections the fit shortens (it keeps the shortest whole), so it is told
-  // its planned length even when it was given all it asks: run B's Core
-  // Business Capabilities, planned its 24,000 and told nothing, wrote 38,397.
-  const budgetBinds = plan.sections.some((section) => section.budgetChars < section.demandChars);
   return {
     plan,
     sheet,
@@ -7244,19 +7238,46 @@ export function planDocumentTopics(input: {
         ? null
         : { id: fact.ownerSectionId, label };
     },
-    lengthLimited: new Set(
-      plan.sections
-        .filter(
-          (section) =>
-            section.kind === "single" &&
-            !batchedOff.has(section.sectionId) &&
-            // #1175 — a main section of the reader layout is always told its
-            // target: the main part's length is what the layout is for.
-            (budgetBinds || (reader && isMainSection(section.sectionId))),
-        )
-        .map((section) => section.sectionId),
-    ),
+    lengthLimited: singleCallLengthLimited(plan, { reader, batchedOff }),
   };
+}
+
+/**
+ * #1070 / #1352 — the single-call sections of a plan whose prompt states a
+ * length. One is told its planned length whenever its PART's budget binds
+ * (some section of the same part was planned less than it asks), even when it
+ * was given all it asks: its overrun is then taken at assembly from the
+ * sections the fit shortens, since the fit keeps the shortest whole. Run B's
+ * Core Business Capabilities, planned its 24,000 and told nothing, wrote
+ * 38,397. A catalogue-layout document is one part; the reader layout's main
+ * part and appendix are planned and fitted apart (#1175), so each binds on
+ * its own sections only, and a main section is always told its target (the
+ * main part's length is what the layout is for). Never a catalogue section
+ * written in one call because batching is off (`batchedOff`), which keeps the
+ * instructions it had.
+ */
+export function singleCallLengthLimited(
+  plan: Pick<DocumentPlan, "sections">,
+  options: { reader: boolean; batchedOff?: ReadonlySet<string> },
+): Set<string> {
+  const partOf = (sectionId: string): string =>
+    options.reader ? (isMainSection(sectionId) ? "main" : "appendix") : "document";
+  const binds = new Set(
+    plan.sections
+      .filter((section) => section.budgetChars < section.demandChars)
+      .map((section) => partOf(section.sectionId)),
+  );
+  return new Set(
+    plan.sections
+      .filter(
+        (section) =>
+          section.kind === "single" &&
+          !options.batchedOff?.has(section.sectionId) &&
+          (binds.has(partOf(section.sectionId)) ||
+            (options.reader && isMainSection(section.sectionId))),
+      )
+      .map((section) => section.sectionId),
+  );
 }
 
 /**
