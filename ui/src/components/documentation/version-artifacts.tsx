@@ -106,13 +106,16 @@ function CodeIdentifiers({
 }): React.ReactElement | null {
   if (checked.length === 0) return null;
   const flagged = checked.filter((entry) => entry.count > 0);
+  // Each section counts its own distinct names, so a name used in two sections
+  // is two flags: the label says so rather than claim a document-wide count.
   const total = flagged.reduce((n, entry) => n + entry.count, 0);
+  const sections = flagged.length;
   return (
     <div className="mt-1" data-testid={testId}>
       <p className="font-medium">
         {total === 0
           ? "No code names in the main document"
-          : `${total.toLocaleString()} code name${total === 1 ? "" : "s"} in the main document`}
+          : `${total.toLocaleString()} code name${total === 1 ? "" : "s"} flagged in ${sections.toLocaleString()} main section${sections === 1 ? "" : "s"} (counted per section)`}
       </p>
       {flagged.length > 0 && (
         <ul className="max-h-48 overflow-y-auto">

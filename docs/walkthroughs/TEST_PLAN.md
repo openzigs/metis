@@ -416,7 +416,7 @@ grep -nE '\[(facts|rag|web):|<!--|\{\{|metis-source' brd.md
 ```
 
 **SO3 pre-check (#1223).** METIS counts the code names in each main section it wrote. The
-version's **Provenance** panel shows the total and the flagged sections with examples
+version's **Provenance** panel shows the count (per section) and the flagged sections with examples
 (`GET /api/projects/:projectId/docs/:docId/versions/:versionId/provenance/summary`,
 `data.codeIdentifiers`). Start the SO3 list from it, then read the main part for what the
 check misses (an unquoted dotted name such as `feeds.disabled` is a known blind spot). The

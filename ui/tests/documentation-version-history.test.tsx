@@ -367,7 +367,9 @@ describe("DocumentationPage — version history", () => {
     fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
     const panel = await screen.findByTestId("version-provenance-v2");
     const check = await within(panel).findByTestId("version-code-identifiers-v2");
-    expect(within(check).getByText("2 code names in the main document")).toBeInTheDocument();
+    expect(
+      within(check).getByText("2 code names flagged in 1 main section (counted per section)"),
+    ).toBeInTheDocument();
     expect(within(check).getByText("Core Business Capabilities (2)")).toBeInTheDocument();
     expect(within(check).getByText("ShouldMarkAsReadOnView(user)")).toBeInTheDocument();
     expect(within(check).getByText("published_at")).toBeInTheDocument();
