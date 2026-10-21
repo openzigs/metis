@@ -9,7 +9,7 @@
  * `getRequirementChain` and both access seams are mocked; the service's own
  * composition logic runs against a hand-rolled Prisma mock (no real DB).
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getRequirementChain = vi.fn();
 const actorHasProjectAccess = vi.fn();
@@ -27,8 +27,15 @@ vi.mock("../cross-project/cross-project-access.js", () => ({
 }));
 vi.mock("../prisma.js", () => ({ prisma: {} }));
 
-const { clampLinkDepth, getRequirementChainWithLinks, getWorkspaceTraceabilitySummary } =
-  await import("./workspace-rollup.js");
+const {
+  clampLinkDepth,
+  DEFAULT_ROLLUP_CONCURRENCY,
+  getRequirementChainWithLinks,
+  getWorkspaceTraceabilitySummary,
+  mapWithConcurrency,
+  MAX_ROLLUP_CONCURRENCY,
+  resolveRollupConcurrency,
+} = await import("./workspace-rollup.js");
 const { MAX_TRACEABILITY_LINK_DEPTH } = await import("@metis/shared");
 
 const actor = { id: "user-1", role: "developer" as const };
@@ -608,6 +615,117 @@ describe("getWorkspaceTraceabilitySummary", () => {
       expect(three - two).toBeLessThanOrEqual(9);
       expect(two - one).toBeLessThanOrEqual(9);
       expect(one).toBeLessThanOrEqual(2 + 9);
+    });
+  });
+
+  describe("#838 — bounded per-project fan-out", () => {
+    /** Wrap every `requirement.findMany` so it records how many projects are mid-load. */
+    function gatedPrisma(projectIds: string[]) {
+      const prisma = summaryPrisma({
+        links: [],
+        projects: projectIds.map((id) => ({ id, name: id })),
+        reqs: Object.fromEntries(projectIds.map((id) => [id, [`${id}-R1`]])),
+        spec: {},
+        code: {},
+      });
+      const inner = prisma.requirement.findMany;
+      let inFlight = 0;
+      let peak = 0;
+      prisma.requirement.findMany = vi.fn(
+        async (a: { where: { projectId: string; deletedAt: null } }) => {
+          inFlight++;
+          peak = Math.max(peak, inFlight);
+          await new Promise((r) => setTimeout(r, 2));
+          try {
+            return await inner(a);
+          } finally {
+            inFlight--;
+          }
+        },
+      );
+      return { prisma, peak: () => peak };
+    }
+    const twelve = Array.from({ length: 12 }, (_, i) => `p${String(i).padStart(2, "0")}`);
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("computes at most 4 projects at once by default, and keeps input order", async () => {
+      listMemberProjectsInWorkspace.mockResolvedValue(twelve);
+      const { prisma, peak } = gatedPrisma(twelve);
+      const result = await getWorkspaceTraceabilitySummary(actor, "ws1", {
+        prisma: prisma as never,
+      });
+      expect(peak()).toBe(DEFAULT_ROLLUP_CONCURRENCY);
+      expect(DEFAULT_ROLLUP_CONCURRENCY).toBe(4);
+      expect(result.projects.map((p) => p.projectId)).toEqual(twelve);
+      expect(result.projects.every((p) => p.requirements === 1)).toBe(true);
+    });
+
+    it("honours TRACEABILITY_ROLLUP_CONCURRENCY", async () => {
+      vi.stubEnv("TRACEABILITY_ROLLUP_CONCURRENCY", "2");
+      listMemberProjectsInWorkspace.mockResolvedValue(twelve);
+      const { prisma, peak } = gatedPrisma(twelve);
+      await getWorkspaceTraceabilitySummary(actor, "ws1", { prisma: prisma as never });
+      expect(peak()).toBe(2);
+    });
+
+    it("rejects with the first project's failure and starts no further project", async () => {
+      listMemberProjectsInWorkspace.mockResolvedValue(twelve);
+      vi.stubEnv("TRACEABILITY_ROLLUP_CONCURRENCY", "1");
+      const { prisma } = gatedPrisma(twelve);
+      const gated = prisma.requirement.findMany;
+      prisma.requirement.findMany = vi.fn(
+        async (a: { where: { projectId: string; deletedAt: null } }) => {
+          if (a.where.projectId === "p02") throw new Error("db down");
+          return gated(a);
+        },
+      );
+      await expect(
+        getWorkspaceTraceabilitySummary(actor, "ws1", { prisma: prisma as never }),
+      ).rejects.toThrow("db down");
+      expect(prisma.requirement.findMany).toHaveBeenCalledTimes(3);
+    });
+
+    it("at the default limit, workers still in flight take no new project after a failure", async () => {
+      listMemberProjectsInWorkspace.mockResolvedValue(twelve);
+      const { prisma } = gatedPrisma(twelve);
+      const gated = prisma.requirement.findMany;
+      prisma.requirement.findMany = vi.fn(
+        async (a: { where: { projectId: string; deletedAt: null } }) => {
+          if (a.where.projectId === "p02") throw new Error("db down");
+          return gated(a);
+        },
+      );
+      await expect(
+        getWorkspaceTraceabilitySummary(actor, "ws1", { prisma: prisma as never }),
+      ).rejects.toThrow("db down");
+      // Let the three surviving workers finish their current project.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(prisma.requirement.findMany).toHaveBeenCalledTimes(DEFAULT_ROLLUP_CONCURRENCY);
+    });
+  });
+
+  describe("resolveRollupConcurrency", () => {
+    it("defaults, floors and clamps", () => {
+      expect(resolveRollupConcurrency(undefined)).toBe(4);
+      expect(resolveRollupConcurrency("")).toBe(4);
+      expect(resolveRollupConcurrency("abc")).toBe(4);
+      expect(resolveRollupConcurrency("0")).toBe(4);
+      expect(resolveRollupConcurrency("-3")).toBe(4);
+      expect(resolveRollupConcurrency("1")).toBe(1);
+      expect(resolveRollupConcurrency("8")).toBe(8);
+      expect(resolveRollupConcurrency("1000")).toBe(MAX_ROLLUP_CONCURRENCY);
+    });
+  });
+
+  describe("mapWithConcurrency", () => {
+    it("returns [] for no items and treats a bad limit as 1", async () => {
+      expect(await mapWithConcurrency([], 4, async (x: number) => x)).toEqual([]);
+      expect(await mapWithConcurrency([1, 2, 3], Number.NaN, async (x) => x * 2)).toEqual([
+        2, 4, 6,
+      ]);
     });
   });
 

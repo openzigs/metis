@@ -62,6 +62,8 @@
 | Document upload | 10 / 1min / user | `UPLOAD_RATE_LIMIT_*` |
 | Scheduler `runNow` | 10 / 5min / user | `SCHEDULER_RUN_RATE_LIMIT_*` |
 | Project code search | 300 / 15min / user | `CODE_SEARCH_RATE_LIMIT_*` |
+| Traceability test gaps / workspace summary | 300 / 15min / user | `TRACEABILITY_GAPS_RATE_LIMIT_*` |
+| Analysis traceability matrix + report export | 300 / 15min / user | `ANALYSIS_MATRIX_RATE_LIMIT_*` |
 
 The `/api/auth/*` credential-stuffing limiter exempts two unauthenticated,
 read-only, side-effect-free `GET` endpoints that the `/login` page polls before
