@@ -1,108 +1,108 @@
 /**
- * #838 — the analysis matrix limiters: what each one's KEY is. That they sit
- * on the matrix and export routes, and 429 past the budget, is asserted on the
- * real router in `routes/analysis-traceability.test.ts`.
+ * #838 — the analysis matrix limiters, driven through a real request chain in
+ * production order. That they sit on the matrix and export routes is asserted
+ * on the real router in `routes/analysis-traceability.test.ts`. The keys are
+ * `runs-rate-limit.ts`'s (tested there); here: the budgets, the 15-minute
+ * expiry bound on the pre-auth user key (#1117), and the peer bucket's 401.
+ * The limiters are module-level, so each test uses its own users.
  */
-import { describe, expect, it } from "vitest";
-import type { Request } from "express";
+import { afterEach, describe, expect, it } from "vitest";
+import express from "express";
+import request from "supertest";
 import jwt from "jsonwebtoken";
 import { getPermissionsForRole } from "@metis/shared";
 import { issueTokens } from "../lib/auth/jwt.js";
+import { requireAuth } from "./auth.js";
+import { errorHandler } from "./error-handler.js";
 import {
   ANALYSIS_MATRIX_DEFAULT_MAX,
   ANALYSIS_MATRIX_PREAUTH_DEFAULT_MAX,
-  analysisMatrixPreAuthKey,
-  analysisMatrixUserKey,
+  analysisMatrixPreAuthRateLimiter,
+  analysisMatrixUserRateLimiter,
 } from "./analysis-matrix-rate-limit.js";
 
-/** A request as a key function sees it. `ip` is what a client-supplied header would make it. */
-const req = (over: {
-  ip?: string;
-  authorization?: string;
-  cookie?: string;
-  userId?: string;
-  peer?: string;
-  family?: string;
-}): Request =>
-  ({
-    ip: over.ip ?? "203.0.113.200",
-    headers: {
-      ...(over.authorization ? { authorization: over.authorization } : {}),
-      "x-forwarded-for": over.ip ?? "203.0.113.200",
-    },
-    cookies: over.cookie ? { accessToken: over.cookie } : {},
-    user: over.userId ? { userId: over.userId } : undefined,
-    socket: { remoteAddress: over.peer ?? "10.0.0.5", remoteFamily: over.family ?? "IPv4" },
-  }) as unknown as Request;
-
-const tokensFor = (userId: string) =>
+const tokenFor = (userId: string) =>
   issueTokens({
     userId,
     username: userId,
     role: "developer",
     permissions: getPermissionsForRole("developer"),
-  });
+  }).accessToken;
 
-describe("analysisMatrixUserKey", () => {
-  it("is the signed-in user, whatever address the request claims", () => {
-    expect(analysisMatrixUserKey(req({ userId: "u-a", ip: "198.51.100.1" }))).toBe("user:u-a");
-    expect(analysisMatrixUserKey(req({ userId: "u-a", ip: "198.51.100.2" }))).toBe("user:u-a");
-  });
+/** The same user's token, re-signed to have expired `agoSeconds` ago. */
+function expiredFor(userId: string, agoSeconds: number): string {
+  const payload = jwt.decode(tokenFor(userId)) as Record<string, unknown>;
+  const now = Math.floor(Date.now() / 1000);
+  return jwt.sign(
+    { ...payload, iat: now - agoSeconds - 3600, exp: now - agoSeconds },
+    // The same key `issueTokens` signs with under NODE_ENV=test.
+    process.env.JWT_SECRET as string,
+  );
+}
 
-  it("without a user is the TCP peer, never the forwarded address", () => {
-    const a = analysisMatrixUserKey(req({ ip: "198.51.100.1", peer: "10.0.0.1" }));
-    expect(a).toBe("peer:10.0.0.1");
-    expect(analysisMatrixUserKey(req({ ip: "198.51.100.99", peer: "10.0.0.1" }))).toBe(a);
-  });
+/** Production order: pre-auth limiter, requireAuth, user limiter, handler. */
+function app() {
+  const a = express();
+  a.get(
+    "/matrix",
+    analysisMatrixPreAuthRateLimiter,
+    requireAuth,
+    analysisMatrixUserRateLimiter,
+    (_req, res) => {
+      res.status(200).json({ success: true });
+    },
+  );
+  a.use(errorHandler);
+  return a;
+}
 
-  it("groups an IPv6 peer by its /64", () => {
-    const a = analysisMatrixUserKey(req({ peer: "2001:db8:1:1::1", family: "IPv6" }));
-    expect(analysisMatrixUserKey(req({ peer: "2001:db8:1:1::2", family: "IPv6" }))).toBe(a);
-  });
+afterEach(() => {
+  delete process.env.ANALYSIS_MATRIX_RATE_LIMIT_MAX;
+  delete process.env.ANALYSIS_MATRIX_PREAUTH_RATE_LIMIT_MAX;
 });
 
-describe("analysisMatrixPreAuthKey", () => {
-  it("a token this server signed is its user, from the header or the cookie", () => {
-    const { accessToken } = tokensFor("u-alice");
-    expect(analysisMatrixPreAuthKey(req({ authorization: `Bearer ${accessToken}` }))).toBe(
-      "preauth:user:u-alice",
-    );
-    expect(analysisMatrixPreAuthKey(req({ cookie: accessToken }))).toBe("preauth:user:u-alice");
+describe("analysis matrix limiters", () => {
+  it("caps a signed-in user at ANALYSIS_MATRIX_RATE_LIMIT_MAX with its own code", async () => {
+    process.env.ANALYSIS_MATRIX_RATE_LIMIT_MAX = "2";
+    const a = app();
+    const auth = `Bearer ${tokenFor("u-838-cap")}`;
+    expect((await request(a).get("/matrix").set("Authorization", auth)).status).toBe(200);
+    expect((await request(a).get("/matrix").set("Authorization", auth)).status).toBe(200);
+    const limited = await request(a).get("/matrix").set("Authorization", auth);
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe("ANALYSIS_MATRIX_RATE_LIMITED");
+    // Another user's budget is untouched.
+    const other = `Bearer ${tokenFor("u-838-other")}`;
+    expect((await request(a).get("/matrix").set("Authorization", other)).status).toBe(200);
   });
 
-  it("an EXPIRED token we signed is still its user's", () => {
-    const { accessToken } = tokensFor("u-alice");
-    const payload = jwt.decode(accessToken) as Record<string, unknown>;
-    const expired = jwt.sign(
-      { ...payload, iat: 1_000, exp: 2_000 },
-      process.env.JWT_SECRET as string,
-    );
-    expect(analysisMatrixPreAuthKey(req({ authorization: `Bearer ${expired}` }))).toBe(
-      "preauth:user:u-alice",
-    );
+  it("a token expired a minute ago is still its user's pre-auth bucket: 429, not the peer's 401", async () => {
+    process.env.ANALYSIS_MATRIX_PREAUTH_RATE_LIMIT_MAX = "1";
+    const a = app();
+    const auth = `Bearer ${expiredFor("u-838-recent", 60)}`;
+    // Within budget: requireAuth answers the 401 the browser refreshes on.
+    const first = await request(a).get("/matrix").set("Authorization", auth);
+    expect(first.status).toBe(401);
+    expect(first.body.error.code).toBe("TOKEN_EXPIRED");
+    const second = await request(a).get("/matrix").set("Authorization", auth);
+    expect(second.status).toBe(429);
+    expect(second.body.error.code).toBe("ANALYSIS_MATRIX_RATE_LIMITED");
   });
 
-  it("a token we did not sign, an empty bearer, or none at all is the peer", () => {
-    const forged = jwt.sign({ userId: "u-alice" }, "x".repeat(40));
-    const peer = "preauth:peer:10.0.0.1";
-    expect(analysisMatrixPreAuthKey(req({ peer: "10.0.0.1" }))).toBe(peer);
-    expect(
-      analysisMatrixPreAuthKey(req({ authorization: `Bearer ${forged}`, peer: "10.0.0.1" })),
-    ).toBe(peer);
-    expect(analysisMatrixPreAuthKey(req({ authorization: "Bearer  ", peer: "10.0.0.1" }))).toBe(
-      peer,
-    );
-    expect(analysisMatrixPreAuthKey(req({ ip: "198.51.100.7", peer: "10.0.0.1" }))).toBe(peer);
+  it("a token expired over 15 minutes ago is the peer's, and a spent peer bucket answers requireAuth's 401", async () => {
+    process.env.ANALYSIS_MATRIX_PREAUTH_RATE_LIMIT_MAX = "1";
+    const a = app();
+    const stale = `Bearer ${expiredFor("u-838-stale", 16 * 60)}`;
+    await request(a).get("/matrix").set("Authorization", stale);
+    const res = await request(a).get("/matrix").set("Authorization", stale);
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe("TOKEN_EXPIRED");
+    expect(res.headers["retry-after"]).toBeUndefined();
+    const anonymous = await request(a).get("/matrix");
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.body.error.code).toBe("AUTH_REQUIRED");
   });
 
-  it("is never the user limiter's key for the same request", () => {
-    const { accessToken } = tokensFor("u-alice");
-    const signedIn = req({ authorization: `Bearer ${accessToken}`, userId: "u-alice" });
-    expect(analysisMatrixPreAuthKey(signedIn)).not.toBe(analysisMatrixUserKey(signedIn));
-  });
-});
-
-describe("defaults", () => {
   it("the pre-auth guard is coarser than the user budget", () => {
     expect(ANALYSIS_MATRIX_DEFAULT_MAX).toBe(300);
     expect(ANALYSIS_MATRIX_PREAUTH_DEFAULT_MAX).toBeGreaterThan(ANALYSIS_MATRIX_DEFAULT_MAX);
