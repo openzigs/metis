@@ -39,6 +39,10 @@
  * Linear in the length of the text: one pass to fold, one regex pass that cannot
  * backtrack across a run, and, only on a match, one pass to map and splice.
  *
+ * #1351 — `scrubRequirementFenceLookalikes` runs the same fold against a second
+ * pattern, `FOLDED_REQUIREMENT_FENCE`, for the `<<<REQUIREMENT …>>> … <<<END
+ * REQUIREMENT>>>` fence of the traceability and impact-analysis prompts.
+ *
  * Dependency-free (apart from the generated table) so both
  * `analysis/prompts.ts` and `tool-runtime/fence.ts` can use it.
  */
@@ -88,6 +92,30 @@ const EXTRA_DASHES = [0x2014, 0x2015, 0x2500, 0x2501, 0x2e3a, 0x2e3b];
  */
 const EXTRA_SEPARATORS = [0x2e, 0xb7, 0x30fc, 0x05be, 0x2800, 0x5c];
 
+/**
+ * #1351 — read as angle brackets, for the `<<<END REQUIREMENT>>>` fence: the
+ * guillemets, CJK, mathematical and double angle brackets (not in
+ * `confusables.txt` as `<`/`>`) as ONE — they quote ordinary words, `«Requirement»`
+ * — and the very-much signs as three. A multi-unit value is a run of fence
+ * characters, so the closure property (every unit of a fold is final) holds.
+ */
+const EXTRA_ANGLES: ReadonlyArray<readonly [number, string]> = [
+  [0x00ab, "<"],
+  [0x00bb, ">"],
+  [0x226a, "<"],
+  [0x226b, ">"],
+  [0x22d8, "<<<"],
+  [0x22d9, ">>>"],
+  [0x3008, "<"],
+  [0x3009, ">"],
+  [0x27e8, "<"],
+  [0x27e9, ">"],
+  [0x300a, "<"],
+  [0x300b, ">"],
+  [0x27ea, "<"],
+  [0x27eb, ">"],
+];
+
 /** Code point → its fence character. Generated confusables first; hand-added entries never override them. */
 export const CONFUSABLES: ReadonlyMap<number, string> = (() => {
   const map = new Map<number, string>();
@@ -99,6 +127,7 @@ export const CONFUSABLES: ReadonlyMap<number, string> = (() => {
     ...EXTRA_EQUALS.map((c) => [c, "="] as const),
     ...EXTRA_DASHES.map((c) => [c, "-"] as const),
     ...EXTRA_SEPARATORS.map((c) => [c, "-"] as const),
+    ...EXTRA_ANGLES,
   ];
   for (const [c, to] of extra) if (!map.has(c)) map.set(c, to);
   return map;
@@ -130,11 +159,37 @@ const FOLDED_FENCE =
   /(?<!=)=+[\s_-]*M[\s_-]*E[\s_-]*T[\s_-]*I[\s_-]*S[\s_-]*D[\s_-]*A[\s_-]*T[\s_-]*A[\s_-]*B[\s_-]*O[\s_-]*U[\s_-]*N[\s_-]*D[\s_-]*A[\s_-]*R[\s_-]*Y(?:[\s_-]*=+[\s_-]*M[\s_-]*E[\s_-]*T[\s_-]*I[\s_-]*S[\s_-]*D[\s_-]*A[\s_-]*T[\s_-]*A[\s_-]*B[\s_-]*O[\s_-]*U[\s_-]*N[\s_-]*D[\s_-]*A[\s_-]*R[\s_-]*Y)*(?:[\s_-]*=+)?|M[\s_-]*E[\s_-]*T[\s_-]*I[\s_-]*S[\s_-]*D[\s_-]*A[\s_-]*T[\s_-]*A[\s_-]*B[\s_-]*O[\s_-]*U[\s_-]*N[\s_-]*D[\s_-]*A[\s_-]*R[\s_-]*Y(?:[\s_-]*=+[\s_-]*M[\s_-]*E[\s_-]*T[\s_-]*I[\s_-]*S[\s_-]*D[\s_-]*A[\s_-]*T[\s_-]*A[\s_-]*B[\s_-]*O[\s_-]*U[\s_-]*N[\s_-]*D[\s_-]*A[\s_-]*R[\s_-]*Y)*[\s_-]*=+/g;
 
 /**
+ * #1351 — the traceability prompts' `<<<REQUIREMENT …>>> … <<<END REQUIREMENT>>>`
+ * fence, in the same comparison copy. A fence-shaped span is
+ *
+ *   A. a run of at least TWO `<`, optional `/`, the label (`REQUIREMENT` or
+ *      `END REQUIREMENT`), then an optional run of `>` — `<<<END REQUIREMENT>>>`,
+ *      the one-sided `<<<END REQUIREMENT`;
+ *   A'. ONE `<` only before a closing form — `</REQUIREMENT>`, `<END REQUIREMENT>`
+ *      — so `List<Requirement>`, `<Requirement>` and `latency < requirement`
+ *      are left alone (adversarial panel on #1351);
+ *   B. the label then a run of at least TWO `>` — `END REQUIREMENT>>>` (one `>`
+ *      after the word is an arrow: `requirement -> design`);
+ *   C. any run of three or more `<` or `>` — so the fence's brackets cannot
+ *      be forged around a label the patterns above do not know. Deliberately
+ *      broad: a `>>>` REPL prompt in requirement text is redacted too.
+ *
+ * Double-angle quotation marks (`«»`, `《》`, `⟪⟫`, `≪≫`) fold to ONE bracket,
+ * so `«Requirement»` is ordinary text and `««END REQUIREMENT»»` still a fence.
+ *
+ * The bare label is left alone: requirements talk about requirements. The
+ * `(?<!<)` / `(?<!>)` guards start a match only at the first bracket of a run,
+ * so a long run is not re-scanned from every position.
+ */
+const FOLDED_REQUIREMENT_FENCE =
+  /(?<!<)<{2,}[\s_/-]*(?:E[\s_-]*N[\s_-]*D[\s_-]*)?R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T(?:[\s_-]*>+)?|(?<!<)<[\s_-]*(?:\/[\s_-]*(?:E[\s_-]*N[\s_-]*D[\s_-]*)?|E[\s_-]*N[\s_-]*D[\s_-]*)R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T(?:[\s_-]*>+)?|(?:E[\s_-]*N[\s_-]*D[\s_-]*)?R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T[\s_-]*>{2,}|(?<!<)<{3,}|(?<!>)>{3,}/g;
+
+/**
  * HTML character references, read as the character they encode. Bounded: at most
  * 7 decimal or 6 hex digits, so each `&` costs a constant amount of scanning.
  */
 const CHAR_REF =
-  /&(?:#([0-9]{1,7})|#[xX]([0-9a-fA-F]{1,6})|(equals|hyphen|dash|lowbar|UnderBar|nbsp|period|middot|bsol));/y;
+  /&(?:#([0-9]{1,7})|#[xX]([0-9a-fA-F]{1,6})|(equals|hyphen|dash|lowbar|UnderBar|nbsp|period|middot|bsol|lt|gt|LT|GT|laquo|raquo|lsaquo|rsaquo));/y;
 const NAMED_REF: Readonly<Record<string, number>> = {
   equals: 0x3d,
   hyphen: 0x2010,
@@ -145,6 +200,15 @@ const NAMED_REF: Readonly<Record<string, number>> = {
   period: 0x2e,
   middot: 0xb7,
   bsol: 0x5c,
+  // #1351 — the requirement fence.
+  lt: 0x3c,
+  gt: 0x3e,
+  LT: 0x3c,
+  GT: 0x3e,
+  laquo: 0xab,
+  raquo: 0xbb,
+  lsaquo: 0x2039,
+  rsaquo: 0x203a,
 };
 
 /** Text that folds unit for unit: ASCII without `&`. */
@@ -239,6 +303,23 @@ function walk(raw: string, emit: (folded: string, start: number, end: number) =>
  * `replacement` must contain no `=` and no label text (see the module comment).
  */
 export function scrubFenceLookalikes(raw: string, replacement: string): string {
+  return scrubFolded(raw, replacement, FOLDED_FENCE);
+}
+
+/**
+ * #1351 — the same scrub for the traceability prompts' requirement fence
+ * (`FOLDED_REQUIREMENT_FENCE`): every span that reads as `<<<END REQUIREMENT>>>`,
+ * `<<<REQUIREMENT>>>`, a one-sided form, or a run of three or more angle
+ * brackets — exactly or through a look-alike — becomes `replacement`. Returns
+ * `raw` itself when there is no such span.
+ *
+ * `replacement` must contain no `<`, `>` and no `REQUIREMENT` (`[REDACTED-FENCE]`).
+ */
+export function scrubRequirementFenceLookalikes(raw: string, replacement: string): string {
+  return scrubFolded(raw, replacement, FOLDED_REQUIREMENT_FENCE);
+}
+
+function scrubFolded(raw: string, replacement: string, pattern: RegExp): string {
   if (raw.length === 0) return raw;
 
   // ASCII text without `&` folds one unit to one unit, so match offsets ARE the
@@ -246,13 +327,14 @@ export function scrubFenceLookalikes(raw: string, replacement: string): string {
   if (ASCII_NO_REF.test(raw)) {
     let folded = "";
     for (let i = 0; i < raw.length; i++) folded += foldCodePoint(raw.charCodeAt(i));
-    if (!hasFence(folded)) return raw;
+    if (!hasMatch(folded, pattern)) return raw;
     return splice(
       raw,
       folded,
       (j) => j,
       (j) => j + 1,
       replacement,
+      pattern,
     );
   }
 
@@ -262,7 +344,7 @@ export function scrubFenceLookalikes(raw: string, replacement: string): string {
   walk(raw, (f) => {
     folded += f;
   });
-  if (!hasFence(folded)) return raw;
+  if (!hasMatch(folded, pattern)) return raw;
 
   // Pass 2 (a match exists): per folded unit, the original [start, end).
   const starts = new Int32Array(folded.length);
@@ -281,12 +363,13 @@ export function scrubFenceLookalikes(raw: string, replacement: string): string {
     (j) => starts[j],
     (j) => ends[j],
     replacement,
+    pattern,
   );
 }
 
-function hasFence(folded: string): boolean {
-  FOLDED_FENCE.lastIndex = 0;
-  return FOLDED_FENCE.test(folded);
+function hasMatch(folded: string, pattern: RegExp): boolean {
+  pattern.lastIndex = 0;
+  return pattern.test(folded);
 }
 
 /** Replace each folded-copy match with `replacement`, at its ORIGINAL offsets. */
@@ -296,11 +379,12 @@ function splice(
   startOf: (j: number) => number,
   endOf: (j: number) => number,
   replacement: string,
+  pattern: RegExp,
 ): string {
-  FOLDED_FENCE.lastIndex = 0;
+  pattern.lastIndex = 0;
   let out = "";
   let cursor = 0;
-  for (let m = FOLDED_FENCE.exec(folded); m !== null; m = FOLDED_FENCE.exec(folded)) {
+  for (let m = pattern.exec(folded); m !== null; m = pattern.exec(folded)) {
     // Widened to whole code points; never re-emit text already replaced.
     const from = Math.max(startOf(m.index), cursor);
     const to = Math.max(endOf(m.index + m[0].length - 1), from);

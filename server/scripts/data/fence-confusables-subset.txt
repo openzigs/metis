@@ -3,7 +3,7 @@
 # Date: 2026-08-06, 01:05:35 GMT
 # Version: 18.0.0
 # SHA-256 of the full file: 6ed3ee967c9dfdf6677d563c9985182fbc50a2efb7d6059cd57b2e2ce18f5b92
-# Rows: single-code-point source ; single prototype in = - _ l A B D E I M N O R S T U Y (either case) ; type
+# Rows: single-code-point source ; single prototype in = - _ < > l A B D E I M N O Q R S T U Y (either case) ; type
 # Regenerate with server/scripts/generate-fence-confusables.ts --from <confusables.txt>.
 0640 ; 005F ; MA
 07FA ; 005F ; MA
@@ -29,6 +29,17 @@ FE58 ; 002D ; MA
 174D ; 002D ; MA
 1BF3 ; 002D ; MA
 AA7D ; 002D ; MA
+2039 ; 003C ; MA
+276E ; 003C ; MA
+02C2 ; 003C ; MA
+FF1C ; 003C ; MA
+FE64 ; 003C ; MA
+1D236 ; 003C ; MA
+2D66 ; 003C ; MA
+1438 ; 003C ; MA
+16B2 ; 003C ; MA
+16AEC ; 003C ; MA
+1032D ; 003C ; MA
 1400 ; 003D ; MA
 2E40 ; 003D ; MA
 30A0 ; 003D ; MA
@@ -39,6 +50,14 @@ FE66 ; 003D ; MA
 10190 ; 003D ; MA
 11053 ; 003D ; MA
 A60C ; 003D ; MA
+203A ; 003E ; MA
+276F ; 003E ; MA
+02C3 ; 003E ; MA
+FF1E ; 003E ; MA
+FE65 ; 003E ; MA
+1D237 ; 003E ; MA
+1433 ; 003E ; MA
+16F3F ; 003E ; MA
 237A ; 0061 ; MA
 FF41 ; 0061 ; MA
 1D41A ; 0061 ; MA
@@ -609,6 +628,40 @@ A4F3 ; 004F ; MA
 1030F ; 004F ; MA
 10404 ; 004F ; MA
 10516 ; 004F ; MA
+FF51 ; 0071 ; MA
+1D42A ; 0071 ; MA
+1D45E ; 0071 ; MA
+1D492 ; 0071 ; MA
+1D4C6 ; 0071 ; MA
+1D4FA ; 0071 ; MA
+1D52E ; 0071 ; MA
+1D562 ; 0071 ; MA
+1D596 ; 0071 ; MA
+1D5CA ; 0071 ; MA
+1D5FE ; 0071 ; MA
+1D632 ; 0071 ; MA
+1D666 ; 0071 ; MA
+1D69A ; 0071 ; MA
+051B ; 0071 ; MA
+0563 ; 0071 ; MA
+0566 ; 0071 ; MA
+FF31 ; 0051 ; MA
+211A ; 0051 ; MA
+1CCE6 ; 0051 ; MA
+1D410 ; 0051 ; MA
+1D444 ; 0051 ; MA
+1D478 ; 0051 ; MA
+1D4AC ; 0051 ; MA
+1D4E0 ; 0051 ; MA
+1D514 ; 0051 ; MA
+1D57C ; 0051 ; MA
+1D5B0 ; 0051 ; MA
+1D5E4 ; 0051 ; MA
+1D618 ; 0051 ; MA
+1D64C ; 0051 ; MA
+1D680 ; 0051 ; MA
+051A ; 0051 ; MA
+2D55 ; 0051 ; MA
 FF52 ; 0072 ; MA
 1D42B ; 0072 ; MA
 1D45F ; 0072 ; MA

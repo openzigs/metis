@@ -804,8 +804,32 @@ offset map (two `Int32Array`s) is only built when the text holds a match.
   cache prefix), the fence literal is stated in several system prompts, and
   the defence would rest on the model comparing nonces. The scrub removes the
   look-alike instead.
-- **Other delimiter styles** are not covered by this scrub. The
-  `<<<REQUIREMENT …>>> … <<<END REQUIREMENT>>>` blocks in
-  `server/src/lib/traceability/requirement-code-mapping.ts` and
-  `requirement-entity-seeds.ts` insert the requirement text as-is, so a
-  requirement containing `<<<END REQUIREMENT>>>` can close its own block there.
+- **Other `===` delimiter styles** are not covered yet: the `=== END FINDING ===`
+  / `=== END EVIDENCE ===` fences in `analysis/absence-verification.ts` and
+  `analysis/support-panel.ts`, the `=== END … MINED RULES ===` fences in
+  `docs-gen/holistic-synthesizer.ts`, `=== END SOURCE EVIDENCE ===` in
+  `docs-gen/grounding/faithfulness-judge.ts` and `=== END QUESTION ===` /
+  `=== END ANSWER ===`-style fences in `rag/model-ragas-judge.ts` insert their
+  text as-is (#1360).
+
+### 13.3 The requirement fence (#1351)
+
+The traceability prompts (`traceability/requirement-code-mapping.ts`,
+`requirement-entity-seeds.ts`) and the impact-analysis prompts
+(`impact-analysis/table-relevance-filter.ts`, `table-relevance-judge.ts`,
+`additive-column-proposer.ts`, `clause-coverage-reconciler.ts`,
+`impact-summarizer.ts`) wrap requirement text in
+`<<<REQUIREMENT …>>> … <<<END REQUIREMENT>>>`. Requirement text goes through
+`scrubRequirementFenceLookalikes`: the same fold as 13.1 (the confusables table
+now also carries `<`, `>` and `Q`; guillemets, CJK and mathematical angle
+brackets and `&lt;`/`&gt;`/`&laquo;`… references fold to ONE bracket each), with
+its own pattern. It redacts the `REQUIREMENT` or `END REQUIREMENT` label after
+two or more `<` (one side is enough), a closing form after a single `<`
+(`</REQUIREMENT>`, `<END REQUIREMENT>`), the label followed by two or more `>`,
+and **any run of three or more `<` or `>`** whatever it surrounds — which also
+covers the run summary's `<<<IMPACTED ITEMS>>> … <<<END ITEMS>>>` titles. That
+last rule is deliberately broad: a Python `>>>` prompt quoted in a requirement
+is redacted too. The bare word "requirement", `List<Requirement>`,
+`«Requirement»`, `latency < requirement`, an arrow (`requirement -> design`) and
+shift operators (`<<`, `>>`) are left alone, and text with nothing fence-shaped
+is returned as the same string.
