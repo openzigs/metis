@@ -33,6 +33,7 @@ import {
   batchAdditionalLabels,
   isInternalPublishLabel,
   issueLabels,
+  jiraLabels,
 } from "../publishing/label-sync.js";
 import { withoutParentEpicLink, withoutUnverifiedNote } from "../publishing/published-body.js";
 
@@ -51,16 +52,17 @@ function adoptedLabels(
   const own = safeJsonArray(draftLabels).filter((l): l is string => typeof l === "string");
   const internal = own.filter(isInternalPublishLabel);
   // #1049 — a label the batch added belongs to the batch, not the draft: it
-  // stays out unless the draft already carried it.
-  const ownKeys = new Set(own.map((l) => l.trim().toLowerCase()));
+  // stays out unless the draft already carried it. Keyed with whitespace as
+  // `-`, so the form a Jira issue got (`jiraLabels`) is recognised too.
+  const key = (l: string) => l.trim().toLowerCase().replace(/\s+/g, "-");
+  const ownKeys = new Set(own.map(key));
   const batchOnly = new Set(
     batchAdditionalLabels(batchMetadata)
-      .map((l) => l.trim().toLowerCase())
+      .map(key)
       .filter((k) => !ownKeys.has(k)),
   );
   const visible = external.filter(
-    (l) =>
-      typeof l === "string" && !isInternalPublishLabel(l) && !batchOnly.has(l.trim().toLowerCase()),
+    (l) => typeof l === "string" && !isInternalPublishLabel(l) && !batchOnly.has(key(l)),
   );
   return [...new Set([...visible, ...internal])];
 }
@@ -138,8 +140,9 @@ export async function reconcileIssueChange(
     // #744 — the publisher never sends hidden `finding:<id>` labels, so they
     // must not read as drift on drafts generated before they were dropped.
     // #1276 — nor `unverified`. #1049 — the batch's Additional labels were
-    // published with the draft's, so they are part of what METIS wrote.
-    labels: issueLabels(
+    // published with the draft's, so they are part of what METIS wrote — and a
+    // Jira issue got them without whitespace (`jiraLabels`).
+    labels: (publishedIssue.destination === "jira" ? jiraLabels : issueLabels)(
       safeJsonArray(publishedIssue.draft.labels),
       batchAdditionalLabels(publishedIssue.batch.metadata),
     ),

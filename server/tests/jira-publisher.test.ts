@@ -466,6 +466,26 @@ describe("publishBatchToJira", () => {
     expect(fields.labels).toEqual(["enhancement", "sprint-42"]);
   });
 
+  it("#1049 — a label with spaces is sent in the form Jira accepts (no whitespace)", async () => {
+    seedConnection();
+    seedDraft("d1", { title: "First", labels: '["needs  triage"]' });
+    mockCreateIssue.mockResolvedValueOnce({ id: "10001", key: "PROJ-1", self: "" });
+
+    await publishBatchToJira({
+      batchId: "batch_1",
+      draftIds: ["d1"],
+      connectionId: "conn_1",
+      projectKey: "PROJ",
+      actorId: "user_1",
+      additionalLabels: ["good first issue", "good-first-issue"],
+      delayMs: 0,
+      sleep: async () => {},
+    });
+
+    const fields = mockCreateIssue.mock.calls.at(-1)![0] as { labels: string[] };
+    expect(fields.labels).toEqual(["needs-triage", "good-first-issue"]);
+  });
+
   it("continues on individual failures", async () => {
     seedConnection();
     seedDraft("d1");

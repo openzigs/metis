@@ -11,7 +11,7 @@ import { getVaultService } from "../vault/vault-service.js";
 import { createJiraClient, JiraApiError, type JiraClient } from "../connectors/jira/jira-client.js";
 import { assertConnectorHostAllowed } from "../connectors/network-allowlist.js";
 import type { JiraCreateIssueFields } from "../connectors/jira/types.js";
-import { issueLabels } from "./label-sync.js";
+import { jiraLabels } from "./label-sync.js";
 import { bodyWithCodeAsText } from "./draft-code-links.js";
 import { withUnverifiedNote } from "./published-body.js";
 import { publishableBody, sourceIds, sourceMarkerForDraft } from "./dedup.js";
@@ -156,7 +156,7 @@ function mapDraftToJiraFields(
 
   // Map labels — never a hidden `finding:<id>` traceability label (#744), nor
   // the internal `unverified` (#1276). #1049 — plus the batch's requested ones.
-  const labels = issueLabels(draftLabels, additionalLabels);
+  const labels = jiraLabels(draftLabels, additionalLabels);
   if (labels.length > 0) {
     fields.labels = labels;
   }

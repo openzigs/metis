@@ -139,6 +139,21 @@ export function issueLabels(
 }
 
 /**
+ * #1049 (adversarial review) — the labels a Jira issue carries: as
+ * {@link issueLabels}, with each run of whitespace made a `-`. Jira refuses a
+ * label containing a space, and the batch's free-text labels may hold one
+ * (`good first issue`), which would fail the create for every draft.
+ */
+export function jiraLabels(
+  draftLabels: readonly string[],
+  additionalLabels: readonly string[],
+): string[] {
+  return publishableLabels(
+    issueLabels(draftLabels, additionalLabels).map((l) => l.replace(/\s+/g, "-")),
+  );
+}
+
+/**
  * #1049 — the "Additional labels" a batch was created with, read from its
  * `metadata` JSON. Anything that is not an array of strings reads as none.
  */

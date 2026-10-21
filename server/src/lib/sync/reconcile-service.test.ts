@@ -562,6 +562,31 @@ describe("#1049 — the batch's Additional labels are what was published, not dr
     expect(result.reason).toBe("NO_DIFF");
   });
 
+  it("a Jira issue is compared with the labels in the form Jira was sent", async () => {
+    seedPublished(["good first issue"]);
+    const published = (await prisma.publishedIssue.findFirst({} as never)) as unknown as Record<
+      string,
+      unknown
+    >;
+    vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue({
+      ...published,
+      destination: "jira",
+    } as never);
+    const result = await reconcileIssueChange(
+      makeEvent({
+        source: "jira",
+        current: {
+          title: "T",
+          body: "Body",
+          state: "open",
+          labels: ["feature", "good-first-issue"],
+          assignees: [],
+        },
+      }),
+    );
+    expect(result.reason).toBe("NO_DIFF");
+  });
+
   it("removing a batch label on the tracker is still drift", async () => {
     seedPublished(["sprint-42"]);
     vi.mocked(prisma.driftEvent.create).mockImplementation((async ({
@@ -593,7 +618,7 @@ describe("#1049 — the batch's Additional labels are what was published, not dr
         title: "T",
         body: "Body",
         state: "open",
-        labels: ["bug", "Sprint-42", "docs"],
+        labels: ["bug", "Sprint-42", "docs", "good-first-issue"],
         assignees: [],
       }),
       localSnapshot: null,
@@ -615,7 +640,10 @@ describe("#1049 — the batch's Additional labels are what was published, not dr
     vi.mocked(prisma.publishedIssue.findUnique).mockResolvedValue({
       id: "pub-1",
       draftId: "draft-1",
-      batch: { metadata: JSON.stringify({ additionalLabels: ["sprint-42", "docs"] }) },
+      // `good first issue` reached Jira as `good-first-issue`; still the batch's.
+      batch: {
+        metadata: JSON.stringify({ additionalLabels: ["sprint-42", "docs", "good first issue"] }),
+      },
       // The draft already carried `docs` itself, so it keeps it.
       draft: { requirementId: null, labels: JSON.stringify(["feature", "docs"]) },
     } as never);
