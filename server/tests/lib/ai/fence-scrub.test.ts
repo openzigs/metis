@@ -57,6 +57,52 @@ describe("scrubFenceLookalikes — exact fences (unchanged behaviour)", () => {
   });
 });
 
+describe("scrubFenceLookalikes — the output holds no fence", () => {
+  const FW = cp(0xff1d).repeat(3);
+
+  it.each([
+    ["chained exact fences", `===${LABEL}===${LABEL}===`],
+    ["chained full-width fences", `${FW}${LABEL}${FW}${LABEL}${FW}`],
+    ["a chain of three with spacing", `=== ${LABEL} === ${LABEL} ===${LABEL}===`],
+  ])("takes %s as one span", (_label, text) => {
+    expect(scrub(`a${text}b`)).toBe(`a${R}b`);
+    // With a replacement that ends in `=` — what fenceToolResult writes — the
+    // leftover `LABEL===` of a one-fence match would re-form a fence.
+    const quoted = `===${LABEL} (quoted)===`;
+    const once = scrubFenceLookalikes(`a${text}b`, quoted);
+    expect(once).toBe(`a${quoted}b`);
+  });
+
+  it("is idempotent on random fence-fragment soup, for both replacements", () => {
+    // If a second pass changes anything, the first pass left a fence-shaped span.
+    const fragments = [
+      "===",
+      "=",
+      FW,
+      cp(0xff1d),
+      LABEL,
+      "metis data boundary",
+      " ",
+      "-",
+      "x",
+      "(quoted)",
+      cp(0x200b),
+      "METIS",
+      "BOUNDARY",
+    ];
+    const next = rng(4111);
+    for (const replacement of ["[REDACTED-FENCE]", `===${LABEL} (quoted)===`]) {
+      for (let n = 0; n < 3000; n++) {
+        let s = "";
+        const len = 1 + Math.floor(next() * 12);
+        for (let i = 0; i < len; i++) s += fragments[Math.floor(next() * fragments.length)];
+        const once = scrubFenceLookalikes(s, replacement);
+        expect(scrubFenceLookalikes(once, replacement), JSON.stringify(s)).toBe(once);
+      }
+    }
+  });
+});
+
 describe("scrubFenceLookalikes — look-alikes", () => {
   it("folds every listed confusable into its fence character", () => {
     const misses: string[] = [];

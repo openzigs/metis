@@ -9,7 +9,9 @@ export const TOOL_RESULT_FENCE = "===METIS-DATA-BOUNDARY===";
 
 /**
  * What a fence inside tool output becomes. Not itself fence-shaped: the text
- * after the label is not `=`, so it is never re-matched.
+ * after the label is not `=`. It does end in `=`, which is why the scrub takes a
+ * chain of fences (`===LABEL===LABEL===`) as one span: otherwise the leftover
+ * `LABEL===` would close a fence with this marker's trailing `===`.
  */
 const QUOTED_FENCE = "===METIS-DATA-BOUNDARY (quoted)===";
 

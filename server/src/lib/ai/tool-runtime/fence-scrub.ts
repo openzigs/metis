@@ -186,9 +186,14 @@ const IGNORABLE = /[\p{Cf}\p{Default_Ignorable_Code_Point}\p{M}]/gu;
  * `(?<!=)` makes a match start only at the FIRST `=` of a run. Without it, a long
  * run of `=` that is not followed by the label is re-scanned from every position
  * in it: the old pattern took quadratic time on 200 KB of `=` (#1114).
+ *
+ * The `(?:…)+` takes CHAINED fences (`===LABEL===LABEL===`) as one span. Matching
+ * only the first left `LABEL===` behind it, and a replacement that ends in `=`
+ * (tool results' `(quoted)===`) then re-formed a fence with it. Each repetition
+ * needs the whole label, so the group cannot backtrack further than one label.
  */
 const FOLDED_FENCE =
-  /(?<!=)=+[\s_-]*M[\s_-]*E[\s_-]*T[\s_-]*I[\s_-]*S[\s_-]*D[\s_-]*A[\s_-]*T[\s_-]*A[\s_-]*B[\s_-]*O[\s_-]*U[\s_-]*N[\s_-]*D[\s_-]*A[\s_-]*R[\s_-]*Y[\s_-]*=+/g;
+  /(?<!=)=+(?:[\s_-]*M[\s_-]*E[\s_-]*T[\s_-]*I[\s_-]*S[\s_-]*D[\s_-]*A[\s_-]*T[\s_-]*A[\s_-]*B[\s_-]*O[\s_-]*U[\s_-]*N[\s_-]*D[\s_-]*A[\s_-]*R[\s_-]*Y[\s_-]*=+)+/g;
 
 /**
  * ASCII text folds one unit to one unit, so it needs no index map (fast path).
