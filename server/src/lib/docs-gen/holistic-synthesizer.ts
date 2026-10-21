@@ -26,6 +26,7 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
+import { scrubSectionFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
 import type { ExtractedFormula } from "../code-graph/formula-extractor.js";
 import { renderMinedRules } from "../code-graph/java-rule-miner.js";
 import {
@@ -3044,7 +3045,7 @@ ABSOLUTE RULES:
 6. Write each heading ALONE on its own line, spelled exactly as above (no "#", no "**", no numbering). A program splits your output on these headings and sends each topic only to the document section that needs it, so a fact under the wrong heading reaches the wrong section.`;
 
 /** The Phase-1 user turn for one chunk of a module. */
-function buildPhase1UserMessage(input: {
+export function buildPhase1UserMessage(input: {
   moduleName: string;
   classCount: number;
   topClasses: readonly string[];
@@ -3058,7 +3059,11 @@ function buildPhase1UserMessage(input: {
   dataLineage: string | null;
   rationale: ReadonlyArray<{ body: string }>;
 }): string {
-  const { formulas, dataLineage, rationale } = input;
+  // #1360 — text mined from repository source cannot close or forge the
+  // `=== … ===` inventory fences it is placed between.
+  const data = (text: string) => scrubSectionFenceLookalikes(text, "[REDACTED-FENCE]");
+  const { formulas, rationale } = input;
+  const dataLineage = input.dataLineage === null ? null : data(input.dataLineage);
   // Each language's miner renders its own inventory; the persisted shape maps
   // back onto the fields the renderers read (kind, line, summary).
   const byLanguage = (langs: readonly string[]) =>
@@ -3089,10 +3094,10 @@ function buildPhase1UserMessage(input: {
   const sqlRules = byLanguage(["sql"]);
   const sasWorkflow = input.sasSteps.length > 0 ? { steps: [...input.sasSteps] } : null;
   const sasWorkflowBlock = sasWorkflow
-    ? renderSasWorkflow(sasWorkflow, Number.POSITIVE_INFINITY)
+    ? data(renderSasWorkflow(sasWorkflow, Number.POSITIVE_INFINITY))
     : "";
   const sasStepLineageBlock = sasWorkflow
-    ? renderSasDataLineage(sasWorkflow, Number.POSITIVE_INFINITY)
+    ? data(renderSasDataLineage(sasWorkflow, Number.POSITIVE_INFINITY))
     : "";
   const cap = PHASE1_MINED_RENDER_CAP;
   // Each rule is labelled `file:line`, not just `L<line>`: a chunk can hold
@@ -3106,11 +3111,16 @@ function buildPhase1UserMessage(input: {
       if (!files.has(file)) files.set(file, []);
       files.get(file)!.push(r);
     }
-    return [...files]
-      .map(([file, fileRules]) =>
-        render(fileRules, cap).replace(/^- L(\d+):/gm, (_m, line: string) => `- ${file}:${line}:`),
-      )
-      .join("\n");
+    return data(
+      [...files]
+        .map(([file, fileRules]) =>
+          render(fileRules, cap).replace(
+            /^- L(\d+):/gm,
+            (_m, line: string) => `- ${file}:${line}:`,
+          ),
+        )
+        .join("\n"),
+    );
   };
   return `Module path: \`${input.moduleName}\`
 Top classes/interfaces (${input.classCount} total): ${input.topClasses.join(", ")}

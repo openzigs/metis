@@ -43,6 +43,12 @@
  * pattern, `FOLDED_REQUIREMENT_FENCE`, for the `<<<REQUIREMENT …>>> … <<<END
  * REQUIREMENT>>>` fence of the traceability and impact-analysis prompts.
  *
+ * #1360 — two more siblings on the same fold: `scrubSectionFenceLookalikes`
+ * for the `=== LABEL ===` / `=== END LABEL ===` fences of the absence check,
+ * the support panel, the faithfulness judge, the RAGAS relevancy judge and the
+ * docs-gen mined-rule inventories, and `scrubItemsFenceLookalikes` for the
+ * impact run summary's short `END ITEMS` terminator.
+ *
  * Dependency-free (apart from the generated table) so both
  * `analysis/prompts.ts` and `tool-runtime/fence.ts` can use it.
  */
@@ -203,6 +209,90 @@ const FOLDED_REQUIREMENT_FENCE =
   /(?<!<)<{3,}[\s_/-]*(?:E[\s_-]*N[\s_-]*D[\s_-]*)?R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T(?:[\s_-]*>+)?|(?<!<)<{1,2}[\s_/-]*E[\s_-]*N[\s_-]*D[\s_-]*R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T(?:[\s_-]*>+)?|E[\s_-]*N[\s_-]*D[\s_-]*R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T[\s_-]*>{2,}|(?<!<)<{3,}|(?<!>)>{3,}/g;
 
 /**
+ * #1360 — the `=== LABEL ===` section fences of the verifier, judge and
+ * docs-gen prompts (`=== FINDING … ===` / `=== END FINDING ===`,
+ * `=== EVIDENCE … ===`, `=== SOURCE EVIDENCE … ===`, `=== CLAIMS … ===`,
+ * `=== QUESTION … ===`, `=== ANSWER … ===`, `=== DETERMINISTICALLY-MINED …
+ * RULE INVENTORY … ===` / `=== END … MINED RULES ===`, `… STEP PIPELINE`,
+ * `… DATASET LINEAGE`, `DATA_LINEAGE`). Built from these constants once, at
+ * load; every piece below is a literal.
+ *
+ * Unlike the data-boundary fence there is no unique token: the fence IS a
+ * label between `=` runs, and `===` is also JavaScript's strict equality. So
+ * a NOUN (one of the labels' head words) must be present, and a span is
+ *
+ *   T1. a `=` run, `END`, up to 80 letters, digits and separators, a noun,
+ *       a `=` run — `=== END SOURCE EVIDENCE ===`, the compact
+ *       `===ENDSOURCEEVIDENCE===`;
+ *   T2. a `=` run, `END`, a separator, up to three modifier words, a noun —
+ *       the one-sided `=== END EVIDENCE`;
+ *   T3. `END` (not inside a word), a separator, modifiers, a noun, a `=`
+ *       run — the one-sided `END EVIDENCE ===`;
+ *   O.  THREE or more `=`, up to 80 letters, digits and separators, a noun,
+ *       then EITHER three or more `=` (`=== EVIDENCE ===`) OR up to eight
+ *       further words and a parenthetical before them — a forged OPENING
+ *       such as `=== EVIDENCE THE AGENT RETRIEVED (untrusted) ===`. Every
+ *       real opening carries its parenthetical; requiring it keeps
+ *       `a === answer || b === c` out (`|` folds to `I`, so `answer || b`
+ *       reads as the words ANSWER II B).
+ *
+ * Left alone, so ordinary code and prose in evidence is not rewritten:
+ * `x === endRules` and `const endRules = x` (no separator after END on a
+ * one-sided form), `a === answer || b === c` and `if (kind === evidence)`,
+ * MediaWiki `== Evidence ==` (an opening needs three), the bare label with no
+ * `=` beside it, an opening with trailing words and no parenthetical, and
+ * `--- END EVIDENCE ---`.
+ *
+ * Bounded per start: the filler is at most 80 characters (lazy), a modifier
+ * at most 24, a parenthetical at most 200, and every match begins at the
+ * first `=` of a run or at an `E` not preceded by a letter or digit.
+ */
+const SEP = "[\\s_-]*";
+const SEP1 = "[\\s_-]+";
+const spaced = (word: string): string => [...word].join(SEP);
+const pluralisable = (word: string): string => `${spaced(word)}(?:${SEP}S)?`;
+const SECTION_NOUN = `(?:${[
+  pluralisable("FINDING"),
+  spaced("EVIDENCE"),
+  pluralisable("QUESTION"),
+  pluralisable("ANSWER"),
+  pluralisable("CLAIM"),
+  pluralisable("RULE"),
+  spaced("INVENTORY"),
+  spaced("PIPELINE"),
+  spaced("LINEAGE"),
+].join("|")})`;
+const MODIFIER = "[A-Z0-9+#]{1,24}";
+const modifiers = (max: number): string => `(?:${MODIFIER}${SEP1}){0,${max}}`;
+const END = spaced("END");
+/** Between two `=` runs, modifier words need no separator: `===ENDSOURCEEVIDENCE===`. */
+const FILLER = "[A-Z0-9+#\\s_-]{0,80}?";
+const FOLDED_SECTION_FENCE = new RegExp(
+  [
+    `(?<!=)=+${SEP}${END}${FILLER}${SECTION_NOUN}${SEP}=+`,
+    `(?<!=)=+${SEP}${END}${SEP1}${modifiers(3)}${SECTION_NOUN}`,
+    `(?<![A-Z0-9])${END}${SEP1}${modifiers(3)}${SECTION_NOUN}${SEP}=+`,
+    `(?<!=)={3,}${FILLER}${SECTION_NOUN}` +
+      `(?:(?:${SEP1}${MODIFIER}){0,8}${SEP}\\([^()=\\n]{0,200}\\))?${SEP}={3,}`,
+  ].join("|"),
+  "g",
+);
+
+/**
+ * #1360 — the impact run summary's `<<<IMPACTED ITEMS …>>> … <<<END ITEMS>>>`
+ * terminator after any run of `<` (`<<END ITEMS>>`, `<END ITEMS>`,
+ * `</END ITEMS>`, the one-sided `<<END ITEMS`) or before two or more `>`
+ * (`END ITEMS>>`). A bare run of three or more brackets is
+ * {@link FOLDED_REQUIREMENT_FENCE}'s. Only the terminator, as for the
+ * requirement fence: `List<Item>` and `items >> 2` are ordinary text.
+ */
+const FOLDED_ITEMS_FENCE = new RegExp(
+  `(?<!<)<+[\\s_/-]*${END}${SEP}${pluralisable("ITEM")}(?:${SEP}>+)?` +
+    `|(?<![A-Z0-9])${END}${SEP}${pluralisable("ITEM")}${SEP}>{2,}`,
+  "g",
+);
+
+/**
  * HTML character references, read as the character they encode. Bounded: at most
  * 7 decimal or 6 hex digits, so each `&` costs a constant amount of scanning.
  * `&lt` / `&gt` also decode WITHOUT the semicolon, as HTML's legacy parsing does
@@ -337,6 +427,30 @@ export function scrubFenceLookalikes(raw: string, replacement: string): string {
  */
 export function scrubRequirementFenceLookalikes(raw: string, replacement: string): string {
   return scrubFolded(raw, replacement, FOLDED_REQUIREMENT_FENCE);
+}
+
+/**
+ * #1360 — the same scrub for the `=== LABEL ===` section fences
+ * ({@link FOLDED_SECTION_FENCE}): every span that reads as a forged closing
+ * line (`=== END EVIDENCE ===`, one-sided or compact) or a forged opening
+ * (`=== EVIDENCE … ===`), exactly or through a look-alike, becomes
+ * `replacement`. Returns `raw` itself when there is no such span.
+ *
+ * `replacement` must contain no `=` and no label word (`[REDACTED-FENCE]`).
+ */
+export function scrubSectionFenceLookalikes(raw: string, replacement: string): string {
+  return scrubFolded(raw, replacement, FOLDED_SECTION_FENCE);
+}
+
+/**
+ * #1360 — the impact run summary's short `END ITEMS` terminator
+ * ({@link FOLDED_ITEMS_FENCE}). Use AFTER {@link scrubRequirementFenceLookalikes},
+ * which covers every run of three or more brackets.
+ *
+ * `replacement` must contain no `<`, `>` and no `END ITEMS` (`[REDACTED-FENCE]`).
+ */
+export function scrubItemsFenceLookalikes(raw: string, replacement: string): string {
+  return scrubFolded(raw, replacement, FOLDED_ITEMS_FENCE);
 }
 
 function scrubFolded(raw: string, replacement: string, pattern: RegExp): string {

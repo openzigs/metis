@@ -42,6 +42,7 @@
  */
 import { z } from "zod";
 import type { AIProvider, ChatMessage, ResponseFormat } from "../../ai/types.js";
+import { scrubSectionFenceLookalikes } from "../../ai/tool-runtime/fence-scrub.js";
 import { createChildLogger } from "../../logger.js";
 import { isTruncationFinishReason } from "../truncation.js";
 import type { GroundingContext } from "./grounding-context.js";
@@ -359,7 +360,9 @@ export class FaithfulnessJudge {
     resplit?: (half: string[]) => string,
   ): Promise<{ verdicts: ClaimVerdict[] | null; unparseable: boolean; truncated?: true }> {
     const claimsBlock = batch.map((c, i) => `${i + 1}. ${c}`).join("\n");
-    const evidenceText = `=== SOURCE EVIDENCE (untrusted data) ===\n${evidence}\n=== END SOURCE EVIDENCE ===`;
+    // #1360 — the evidence cannot close or forge a `=== … ===` section fence.
+    const shownEvidence = scrubSectionFenceLookalikes(evidence, "[REDACTED-FENCE]");
+    const evidenceText = `=== SOURCE EVIDENCE (untrusted data) ===\n${shownEvidence}\n=== END SOURCE EVIDENCE ===`;
     const claimsText = `=== CLAIMS TO JUDGE (return one verdict per claim, in this order) ===\n${claimsBlock}\n=== END CLAIMS ===`;
 
     // When prompt caching is enabled the user turn is [claims, evidence] — the

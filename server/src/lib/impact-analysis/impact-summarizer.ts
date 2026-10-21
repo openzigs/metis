@@ -47,7 +47,10 @@ import type { MatchQuality, MatchQualityReason } from "@metis/shared";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { extractFirstJson } from "../docs-gen/grounding/json-extract.js";
-import { scrubRequirementFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
+import {
+  scrubItemsFenceLookalikes,
+  scrubRequirementFenceLookalikes,
+} from "../ai/tool-runtime/fence-scrub.js";
 import { verifyOnlyDdl } from "./schema-impact.js";
 import type { ClauseCoverageGap } from "./clause-coverage-reconciler.js";
 
@@ -888,6 +891,29 @@ export interface RunSummaryRequest {
   shown: RunTableFact[];
 }
 
+/** Every line break a reader (or a model) may take as the start of a new line. */
+const LINE_BREAKS = /\r\n|[\r\n\v\f\x85\p{Zl}\p{Zp}]/gu;
+
+/**
+ * One requirement title as the quoted `requirement="…"` value of an item line
+ * inside `<<<IMPACTED ITEMS>>>`.
+ *
+ *  - #1351 — no run of three or more angle brackets (`<<<END ITEMS>>>`).
+ *  - #1360 — no shorter `END ITEMS` terminator (`<<END ITEMS>>`, `END ITEMS>>`),
+ *    no line break of any kind (so the title cannot start a forged
+ *    `- severity=… tables=[…]` item line), and a JSON string literal, so a `"`
+ *    in the title is `\"` and cannot end the value. For a title with no `"`,
+ *    `\`, control character or line break this is the same `"title"` as before.
+ */
+function itemTitleValue(title: string): string {
+  const oneLine = title.replace(LINE_BREAKS, " ");
+  const scrubbed = scrubItemsFenceLookalikes(
+    scrubRequirementFenceLookalikes(oneLine, "[REDACTED-FENCE]"),
+    "[REDACTED-FENCE]",
+  );
+  return JSON.stringify(scrubbed);
+}
+
 /**
  * Build the injection-resistant run-level overview messages, returning the messages
  * TOGETHER WITH the ranking they carry so the caller cannot re-derive a different
@@ -934,8 +960,7 @@ export function buildRunSummaryRequest(facts: ImpactRunFacts): RunSummaryRequest
       return (
         `- severity=${it.severity}, changeType=${it.changeType}, ` +
         `symbols=${it.affectedSymbolCount}, tables=[${tables}] ` +
-        // #1351 — a title cannot forge `<<<END ITEMS>>>` (any 3+ bracket run).
-        `requirement="${scrubRequirementFenceLookalikes(it.requirementTitle, "[REDACTED-FENCE]")}"`
+        `requirement=${itemTitleValue(it.requirementTitle)}`
       );
     })
     .join("\n");

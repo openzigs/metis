@@ -54,6 +54,7 @@ import { FaithfulnessJudge } from "../docs-gen/grounding/faithfulness-judge.js";
 import { extractFirstJson } from "../docs-gen/grounding/json-extract.js";
 import type { ScoreFaithfulnessDeps } from "../docs-gen/grounding/citation-validator.js";
 import { scoreEvidenceFaithfulness } from "../grounding/faithfulness-metric.js";
+import { scrubSectionFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
 import { createChildLogger } from "../logger.js";
 import {
   StubRagasJudge,
@@ -216,12 +217,13 @@ export class ModelAnswerRelevancyScorer implements AnswerRelevancyScorer {
       {
         role: "user",
         content: [
+          // #1360 — neither can close or forge a `=== … ===` section fence.
           "=== QUESTION (untrusted data) ===",
-          question,
+          scrubSectionFenceLookalikes(question, "[REDACTED-FENCE]"),
           "=== END QUESTION ===",
           "",
           "=== ANSWER TO GRADE (untrusted data) ===",
-          answer,
+          scrubSectionFenceLookalikes(answer, "[REDACTED-FENCE]"),
           "=== END ANSWER ===",
         ].join("\n"),
       },

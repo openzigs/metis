@@ -812,14 +812,8 @@ offset map (two `Int32Array`s) is only built when the text holds a match.
   cache prefix), the fence literal is stated in several system prompts, and
   the defence would rest on the model comparing nonces. The scrub removes the
   look-alike instead.
-- **Other `===` delimiter styles** are not covered yet: the `=== END FINDING ===`
-  / `=== END EVIDENCE ===` fences in `analysis/absence-verification.ts` and
-  `analysis/support-panel.ts`, the `=== END … MINED RULES ===` fences in
-  `docs-gen/holistic-synthesizer.ts`, `=== END SOURCE EVIDENCE ===` in
-  `docs-gen/grounding/faithfulness-judge.ts` and `=== END QUESTION ===` /
-  `=== END ANSWER ===`-style fences in `rag/model-ragas-judge.ts` insert their
-  text as-is, and an impact run-summary title can still forge an item line
-  inside `<<<IMPACTED ITEMS>>>` with a quote and a newline (#1360).
+- **Other `===` delimiter styles** are covered by their own sibling scrub
+  (13.4), not by widening this one.
 
 ### 13.3 The requirement fence (#1351)
 
@@ -852,3 +846,59 @@ XML/ReqIF elements (`<Requirement>…</Requirement>`), the SysML stereotype
 `<<requirement>>`, `«Requirement»`, `latency < requirement`,
 `requirement >> design`, `requirement -> design` and shift operators. Text
 with nothing fence-shaped is returned as the same string.
+
+### 13.4 Section fences and impact item lines (#1360)
+
+Five more builders wrap untrusted text in `=== LABEL ===` fences:
+`analysis/absence-verification.ts` and `analysis/support-panel.ts`
+(`=== FINDING … ===` / `=== END FINDING ===`, `=== EVIDENCE … ===` /
+`=== END EVIDENCE ===`, around a model-written finding and retrieved
+repository or document excerpts), `docs-gen/grounding/faithfulness-judge.ts`
+(`=== SOURCE EVIDENCE … ===`), `docs-gen/holistic-synthesizer.ts` (the Phase-1
+`=== DETERMINISTICALLY-MINED … ===` / `=== END … MINED RULES ===` inventories,
+the SAS step pipeline and dataset lineage, and `=== DATA_LINEAGE … ===`, all
+built from repository source) and `rag/model-ragas-judge.ts`
+(`=== QUESTION … ===`, `=== ANSWER TO GRADE … ===`). The relevancy judge runs
+only from `scripts/rag-eval.ts` with `RAGAS_JUDGE=model`; the online scorer
+uses the stub judge. It is scrubbed all the same.
+
+That text goes through `scrubSectionFenceLookalikes`: the fold of 13.1, with
+its own pattern. These fences have no unique token, and `===` is also
+JavaScript's strict equality, so a span needs one of the labels' head words
+(`FINDING`, `EVIDENCE`, `QUESTION`, `ANSWER`, `CLAIM`, `RULE`, each optionally
+plural, and `INVENTORY`, `PIPELINE`, `LINEAGE`) and is one of:
+
+- `END`, up to three modifier words (or 80 letters with no separator), the
+  noun, with a `=` run on both sides (`=== END SOURCE EVIDENCE ===`,
+  `===ENDEVIDENCE===`) or on one side (`=== END EVIDENCE`, `END EVIDENCE ===`;
+  one-sided forms need a separator after `END`, and the right-hand form an
+  `END` that is not inside a word);
+- a forged opening: three or more `=`, the noun, then three or more `=`
+  directly (`=== EVIDENCE ===`) or after up to eight words and a parenthetical
+  (`=== EVIDENCE THE AGENT RETRIEVED (untrusted) ===`). Every real opening
+  carries its parenthetical.
+
+Left alone: `x === endRules`, `const endRules = x`, `if (kind === evidence)`,
+`a === answer || b === c` (`|` folds to `I`, which is why an opening with
+words after the noun needs its parenthetical), MediaWiki `== Evidence ==`,
+setext headings, the bare `END EVIDENCE`, an opening with trailing words and
+no parenthetical, and `--- END EVIDENCE ---`. Redacted although ordinary:
+snake-case identifiers next to `=` (`end_rules = x`, `=== end_answer`) and a
+setext heading titled with a terminator (`End evidence` over `===`). A
+Markdown-escaped `\=\=\= END EVIDENCE \=\=\=` loses its label and keeps the
+`\=` fragments.
+
+**Impact item lines.** Inside `<<<IMPACTED ITEMS>>>` each item is one line,
+`- severity=… tables=[…] requirement="…"`. The title is now: line breaks
+(`\r\n`, `\r`, `\n`, `\v`, `\f`, U+0085, U+2028, U+2029) collapsed to a space;
+the requirement scrub (13.3) and `scrubItemsFenceLookalikes`, which redacts
+`END ITEMS` after any run of `<` (`<<END ITEMS>>`, `<END ITEMS>`,
+`</END ITEMS>`) or before two or more `>` (`END ITEMS>>`); and then written
+as a JSON string literal, so a `"` is `\"` and cannot end the value. A title
+with no `"`, `\`, control character or line break reaches the model unchanged;
+one that has them now reads as JSON escapes.
+
+Still not scrubbed: the faithfulness judge's `=== CLAIMS TO JUDGE ===` block
+(claims are written by METIS's own model, and verdicts are aligned to claims
+by their text), the support panel's `--- path:line ---` excerpt headers inside
+the evidence block, and table names in the impact run summary.
