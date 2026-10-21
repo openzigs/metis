@@ -224,23 +224,24 @@ const FOLDED_REQUIREMENT_FENCE =
  *   T1. a `=` run, `END`, up to 80 letters, digits and separators, a noun,
  *       a `=` run — `=== END SOURCE EVIDENCE ===`, the compact
  *       `===ENDSOURCEEVIDENCE===`;
- *   T2. a `=` run, `END`, a separator, up to three modifier words, a noun —
- *       the one-sided `=== END EVIDENCE`;
- *   T3. `END` (not inside a word), a separator, modifiers, a noun, a `=`
- *       run — the one-sided `END EVIDENCE ===`;
+ *   T2. a `=` run, `END`, whitespace or a dash, up to three modifier words, a
+ *       noun — the one-sided `=== END EVIDENCE`;
+ *   T3. `END` (not inside a word), whitespace or a dash, modifiers, a noun, a
+ *       `=` run — the one-sided `END EVIDENCE ===`;
  *   O.  THREE or more `=`, up to 80 letters, digits and separators, a noun,
- *       then EITHER three or more `=` (`=== EVIDENCE ===`) OR up to eight
- *       further words and a parenthetical before them — a forged OPENING
- *       such as `=== EVIDENCE THE AGENT RETRIEVED (untrusted) ===`. Every
- *       real opening carries its parenthetical; requiring it keeps
+ *       up to eight further words, a parenthetical, three or more `=` — a
+ *       forged OPENING such as `=== EVIDENCE THE AGENT RETRIEVED (untrusted) ===`.
+ *       Every real opening carries its parenthetical; requiring it keeps
+ *       comment banners (`/* ===== VALIDATION RULES ===== *\/`) and
  *       `a === answer || b === c` out (`|` folds to `I`, so `answer || b`
  *       reads as the words ANSWER II B).
  *
  * Left alone, so ordinary code and prose in evidence is not rewritten:
  * `x === endRules` and `const endRules = x` (no separator after END on a
- * one-sided form), `a === answer || b === c` and `if (kind === evidence)`,
- * MediaWiki `== Evidence ==` (an opening needs three), the bare label with no
- * `=` beside it, an opening with trailing words and no parenthetical, and
+ * one-sided form), `x === END_RULE` and `pos >= END_QUESTIONS` (`_` does not
+ * count after END on a one-sided form), `a === answer || b === c`,
+ * `if (kind === evidence)`, comment banners with no parenthetical, MediaWiki
+ * `== Evidence ==`, the bare label with no `=` beside it, and
  * `--- END EVIDENCE ---`.
  *
  * Bounded per start: the filler is at most 80 characters (lazy), a modifier
@@ -249,7 +250,13 @@ const FOLDED_REQUIREMENT_FENCE =
  */
 const SEP = "[\\s_-]*";
 const SEP1 = "[\\s_-]+";
-const spaced = (word: string): string => [...word].join(SEP);
+/**
+ * A label letter in the comparison copy. `L` also matches `I`: the fold reads a
+ * lower-case `l` as `I` (it is `I`'s confusables prototype, see `PROTOTYPES`),
+ * so `rules` folds to `RUIES` and `pipeline` to `PIPEIINE`.
+ */
+const letter = (c: string): string => (c === "L" ? "[LI]" : c);
+const spaced = (word: string): string => [...word].map(letter).join(SEP);
 const pluralisable = (word: string): string => `${spaced(word)}(?:${SEP}S)?`;
 const SECTION_NOUN = `(?:${[
   pluralisable("FINDING"),
@@ -267,13 +274,18 @@ const modifiers = (max: number): string => `(?:${MODIFIER}${SEP1}){0,${max}}`;
 const END = spaced("END");
 /** Between two `=` runs, modifier words need no separator: `===ENDSOURCEEVIDENCE===`. */
 const FILLER = "[A-Z0-9+#\\s_-]{0,80}?";
+/**
+ * After `END` on a ONE-SIDED form: whitespace or a dash, never `_` — so the
+ * constants `x === END_RULE` and `pos >= END_QUESTIONS` are left alone.
+ */
+const AFTER_END = "[\\s-]+";
 const FOLDED_SECTION_FENCE = new RegExp(
   [
     `(?<!=)=+${SEP}${END}${FILLER}${SECTION_NOUN}${SEP}=+`,
-    `(?<!=)=+${SEP}${END}${SEP1}${modifiers(3)}${SECTION_NOUN}`,
-    `(?<![A-Z0-9])${END}${SEP1}${modifiers(3)}${SECTION_NOUN}${SEP}=+`,
+    `(?<!=)=+${SEP}${END}${AFTER_END}${modifiers(3)}${SECTION_NOUN}`,
+    `(?<![A-Z0-9])${END}${AFTER_END}${modifiers(3)}${SECTION_NOUN}${SEP}=+`,
     `(?<!=)={3,}${FILLER}${SECTION_NOUN}` +
-      `(?:(?:${SEP1}${MODIFIER}){0,8}${SEP}\\([^()=\\n]{0,200}\\))?${SEP}={3,}`,
+      `(?:${SEP1}${MODIFIER}){0,8}${SEP}\\([^()=\\n]{0,200}\\)${SEP}={3,}`,
   ].join("|"),
   "g",
 );

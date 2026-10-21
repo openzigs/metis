@@ -3059,8 +3059,8 @@ export function buildPhase1UserMessage(input: {
   dataLineage: string | null;
   rationale: ReadonlyArray<{ body: string }>;
 }): string {
-  // #1360 — text mined from repository source cannot close or forge the
-  // `=== … ===` inventory fences it is placed between.
+  // #1360 — repository source, and text mined from it, cannot close or forge
+  // the `=== … ===` inventory fences of this message.
   const data = (text: string) => scrubSectionFenceLookalikes(text, "[REDACTED-FENCE]");
   const { formulas, rationale } = input;
   const dataLineage = input.dataLineage === null ? null : data(input.dataLineage);
@@ -3128,13 +3128,13 @@ Total methods: ${input.methodCount}
 ${input.part ? `\nThis module is too large for one call, so it is read in parts. THIS is part ${input.part.label}: ${input.part.functions} of its ${input.methodCount} functions plus module-level code. Extract every fact from THIS part; the parts' facts are merged afterwards, so do not describe code you were not given.\n` : ""}
 Source code (grouped by file, in source order, full bodies, plus module-level code — this is the COMPLETE business logic, extract EVERY rule and check you see):
 \`\`\`
-${input.code}
+${data(input.code)}
 \`\`\`
 
 ${
   formulas.length > 0
     ? `Pre-extracted formulas/constants/conditionals (deterministic regex pass — these are STARTING POINTS, find more in the source above):\n${formulas
-        .map((f) => `- ${f.kind}: ${f.expression.slice(0, 200)}`)
+        .map((f) => `- ${f.kind}: ${data(f.expression.slice(0, 200))}`)
         .join("\n")}`
     : ""
 }
@@ -3171,7 +3171,7 @@ ${sqlRules.length > 0 ? `\n=== DETERMINISTICALLY-MINED SQL RULE INVENTORY (${sql
 
 ${dataLineage ? `\n=== DATA_LINEAGE (this module's dataset reads/writes, from the code graph) ===\n${dataLineage}\nWhen describing WORKFLOWS, tie each step to the datasets it reads and writes using the lineage above.\n=== END DATA_LINEAGE ===\n` : ""}
 
-${rationale.length > 0 ? `Developer rationale comments:\n${rationale.map((r) => `- ${r.body.slice(0, 200)}`).join("\n")}` : ""}
+${rationale.length > 0 ? `Developer rationale comments:\n${rationale.map((r) => `- ${data(r.body.slice(0, 200))}`).join("\n")}` : ""}
 
 Extract ALL facts now. Be EXHAUSTIVE — every validation, every conditional, every business rule.`;
 }
