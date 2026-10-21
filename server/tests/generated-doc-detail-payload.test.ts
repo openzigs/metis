@@ -429,6 +429,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
           legacy: { historicalCitations: "legacy-unknown" },
           // #995 — no section of this fixture was shortened.
           omittedTopics: [],
+          codeIdentifiers: [],
         });
         // The full manifest for this version is ~2 MB; the summary is tiny.
         expect(Buffer.byteLength(res.text)).toBeLessThan(1_000);

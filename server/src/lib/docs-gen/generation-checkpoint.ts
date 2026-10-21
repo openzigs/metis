@@ -20,6 +20,8 @@ import {
   generationFailureMessage,
 } from "./generation-failure-message.js";
 import { classifyGroundingError } from "./grounding/transient-retry.js";
+import type { GroundingSource } from "./grounding/grounding-context.js";
+import { renderCitationFootnotes } from "./citation-footnotes.js";
 import type { SectionSynthesisRecord } from "./section-reuse.js";
 
 /** Where in a generation a failure happened. */
@@ -200,12 +202,31 @@ export function hasFailedSections(warnings: unknown): boolean {
  * A document assembled from the sections a run finished, in section order, for
  * a failure that left no assembled document. The note says plainly that it is
  * incomplete; the failure warning says why.
+ *
+ * #996 — a stored section is the model's draft, citation markers and all
+ * (`[facts:repo:%5B…%5D:0]`, `[rag:…]`): the finished document renders them at
+ * assembly, which a cancelled run never reaches. They are rendered here the
+ * same way, from the sources each kept section admitted (its stored evidence),
+ * so a kept section reads as it would have in the finished document. The
+ * evidence holds no source text, so a module citation is not pinned to a line
+ * (#737); an id no kept section admitted is dropped, as at assembly.
  */
 export function partialDocumentMarkdown(
   title: string,
   records: readonly SectionSynthesisRecord[],
 ): string {
   const ordered = [...records].sort((a, b) => a.metadata.sectionIndex - b.metadata.sectionIndex);
-  const body = ordered.map((record) => record.markdown.trim()).join("\n\n");
+  const sources: GroundingSource[] = ordered.flatMap((record) =>
+    record.evidence.map((e) => ({
+      sourceId: e.sourceId,
+      kind: e.kind,
+      label: e.label,
+      text: "",
+    })),
+  );
+  const body = renderCitationFootnotes(
+    ordered.map((record) => record.markdown.trim()).join("\n\n"),
+    sources,
+  );
   return `# ${title}\n\n> **Incomplete document.** Generation stopped before every section was written; ${ordered.length} finished section${ordered.length === 1 ? " is" : "s are"} shown below. Regenerate to write the rest — finished sections are reused.\n\n${body}\n`;
 }

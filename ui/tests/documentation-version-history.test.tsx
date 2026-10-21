@@ -341,6 +341,76 @@ describe("DocumentationPage — version history", () => {
     expect(within(omitted).getByText("Feed / Category")).toBeInTheDocument();
   });
 
+  it("shows the main part's code-name check, by section, for a reader BRD (#1223)", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+      {
+        ...PROVENANCE_SUMMARY,
+        codeIdentifiers: [
+          { section: "Executive Summary", count: 0, examples: [] },
+          {
+            section: "Core Business Capabilities",
+            count: 2,
+            examples: [
+              { kind: "inline-code", text: "ShouldMarkAsReadOnView(user)" },
+              { kind: "snake-case", text: "published_at" },
+            ],
+          },
+        ],
+      },
+    );
+    await openDoc();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const panel = await screen.findByTestId("version-provenance-v2");
+    const check = await within(panel).findByTestId("version-code-identifiers-v2");
+    expect(
+      within(check).getByText("2 code names flagged in 1 main section (counted per section)"),
+    ).toBeInTheDocument();
+    expect(within(check).getByText("Core Business Capabilities (2)")).toBeInTheDocument();
+    expect(within(check).getByText("ShouldMarkAsReadOnView(user)")).toBeInTheDocument();
+    expect(within(check).getByText("published_at")).toBeInTheDocument();
+    // A clean section is not listed.
+    expect(within(check).queryByText(/Executive Summary/)).not.toBeInTheDocument();
+  });
+
+  it("says the main part is clean when no checked section has a code name (#1223)", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+      {
+        ...PROVENANCE_SUMMARY,
+        codeIdentifiers: [{ section: "Executive Summary", count: 0, examples: [] }],
+      },
+    );
+    await openDoc();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const panel = await screen.findByTestId("version-provenance-v2");
+    const check = await within(panel).findByTestId("version-code-identifiers-v2");
+    expect(within(check).getByText("No code names in the main document")).toBeInTheDocument();
+  });
+
+  it("shows no code-name check for a document that was not checked (#1223)", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+    );
+    await openDoc();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const panel = await screen.findByTestId("version-provenance-v2");
+    await within(panel).findByText("gendoc:proj_test:doc_1:v2");
+    expect(within(panel).queryByTestId("version-code-identifiers-v2")).not.toBeInTheDocument();
+  });
+
   it("shows no omitted-topics list when nothing was left out (#995)", async () => {
     setup(
       docDetail({

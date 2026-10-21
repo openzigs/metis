@@ -77,8 +77,9 @@ import {
 } from "./grounding/mined-line-sources.js";
 import {
   citationDefinitionsLength,
-  renderCitationFootnotes,
+  renderCitationFootnotesWithLocations,
   renderedCitationLength,
+  type CitedLine,
 } from "./citation-footnotes.js";
 import { recordDroppedCall, scopedToGeneration } from "./generation-control.js";
 import {
@@ -1777,6 +1778,7 @@ async function runHolisticSynthesis(
     warnings: synthWarnings,
     sections,
     selectedEvidence,
+    citedLines,
     sectionSynthesis,
     regeneration,
     grounding: groundingRecord,
@@ -1850,6 +1852,7 @@ async function runHolisticSynthesis(
     phase2Router,
     phase1PromptVersion: PHASE1_PROMPT_VERSION,
     selectedEvidence,
+    citedLines,
     graphFingerprint: scopedGraphFingerprint,
     sourceRepositories: facts.map((f) => {
       if (!f.repository) return undefined;
@@ -4288,6 +4291,8 @@ async function synthesizeFinalDocumentInRun(
       codeIdentifiers?: CodeIdentifierReport;
     }>;
     selectedEvidence: GroundingSource[];
+    /** #737 — per cited source id, the source lines its footnotes name (`citation-footnotes.ts`). */
+    citedLines: Map<string, CitedLine[]>;
     sectionSynthesis?: SectionSynthesis;
     regeneration?: GeneratedDocVersionManifest["regeneration"];
     /** DOCS_GEN_GROUNDING when it was not `on` (absent = every claim checked). */
@@ -4328,6 +4333,7 @@ async function synthesizeFinalDocumentInRun(
       warnings: [],
       sections: [],
       selectedEvidence: [],
+      citedLines: new Map(),
     };
   }
 
@@ -4365,6 +4371,29 @@ async function synthesizeFinalDocumentInRun(
     return fit.markdown;
   };
   const selectedEvidenceById = new Map<string, GroundingSource>();
+  // #737 review — one module can hold the same facts id in several sections (the
+  // id is its path and its rank there), each with that section's slice of its
+  // facts. The first is the provenance record; the footnotes read every slice,
+  // so a mined rule only the Rules section was given can still be pinned.
+  const footnoteOnlyEvidence = new Map<string, Set<string>>();
+  const admitEvidence = (source: GroundingSource): void => {
+    const first = selectedEvidenceById.get(source.sourceId);
+    if (!first) {
+      selectedEvidenceById.set(source.sourceId, source);
+      return;
+    }
+    if (first.text === source.text) return;
+    const texts = footnoteOnlyEvidence.get(source.sourceId) ?? new Set<string>();
+    texts.add(source.text);
+    footnoteOnlyEvidence.set(source.sourceId, texts);
+  };
+  const footnoteSources = (): GroundingSource[] => [
+    ...selectedEvidenceById.values(),
+    ...[...footnoteOnlyEvidence].flatMap(([sourceId, texts]) => {
+      const first = selectedEvidenceById.get(sourceId);
+      return first ? [...texts].map((text) => ({ ...first, text })) : [];
+    }),
+  ];
   // #1070 — `sectionParts[i]` are the parts of `sectionMarkdowns[i]` when it
   // was written in parts under the topic plan; `partsOfOutput` holds them by
   // (trimmed) markdown until it is known which output is kept.
@@ -5002,9 +5031,7 @@ async function synthesizeFinalDocumentInRun(
       const admitCanonicalFacts = (): void => {
         for (const fact of listedFacts) {
           const source = canonicalFactSource(fact);
-          if (!selectedEvidenceById.has(source.sourceId)) {
-            selectedEvidenceById.set(source.sourceId, source);
-          }
+          admitEvidence(source);
         }
       };
       const previous = previousRecords.get(group.id);
@@ -5038,8 +5065,7 @@ async function synthesizeFinalDocumentInRun(
         // Grounding was freshly retrieved and hashed above, so these are the
         // exact sources whose metadata/evidence accompanied the saved output.
         for (const source of sectionGrounding?.sources ?? []) {
-          if (!selectedEvidenceById.has(source.sourceId))
-            selectedEvidenceById.set(source.sourceId, source);
+          admitEvidence(source);
         }
         sectionParts.push(
           previous.parts
@@ -5419,9 +5445,7 @@ async function synthesizeFinalDocumentInRun(
       sectionMarkdowns.push(finalOutcome.markdown);
       sectionOwners.push(manifestSections.length);
       for (const source of finalGrounding?.sources ?? []) {
-        if (!selectedEvidenceById.has(source.sourceId)) {
-          selectedEvidenceById.set(source.sourceId, source);
-        }
+        admitEvidence(source);
       }
       const keptParts = partsOfOutput.get(finalOutcome.markdown.trim());
       sectionParts.push(keptParts);
@@ -5570,7 +5594,7 @@ async function synthesizeFinalDocumentInRun(
   // 189k of 250k while it dropped 108 topics.
   const footnoteDefinitionsChars = citationDefinitionsLength(
     sectionMarkdowns.join("\n\n"),
-    selectedEvidenceById.values(),
+    footnoteSources(),
   );
   const bodyMaxChars = Math.max(0, documentMaxChars - footnoteDefinitionsChars);
   const alreadyOmitted = sectionOwners.map((owner) => manifestSections[owner].omittedTopics ?? []);
@@ -5770,9 +5794,10 @@ async function synthesizeFinalDocumentInRun(
   // #1360 — last, so heading matching above sees exactly what each group produced.
   // #737 — cited ids of admitted sources become document-scoped footnotes with
   // readable definitions; anything left (an id no section admitted) is stripped.
-  const readableBody = stripLeakedSourceIds(
-    renderCitationFootnotes(body, selectedEvidenceById.values()),
-  );
+  // A module-facts citation is pinned to the `file:line` its sentence restates,
+  // and the lines every footnote names go to the provenance manifest.
+  const footnoted = renderCitationFootnotesWithLocations(body, footnoteSources());
+  const readableBody = stripLeakedSourceIds(footnoted.markdown);
   // #1209 — why later sections were tried only once, for the run's provenance.
   const dropRetries = currentDropRetryBreaker()?.record();
   return {
@@ -5780,6 +5805,7 @@ async function synthesizeFinalDocumentInRun(
     warnings,
     sections: finalManifestSections,
     selectedEvidence: [...selectedEvidenceById.values()],
+    citedLines: footnoted.citedLines,
     ...(groundingRecord ? { grounding: groundingRecord } : {}),
     ...(dropRetries ? { dropRetries } : {}),
     ...(resume.reused.length + resume.stale.length > 0 ? { resume } : {}),

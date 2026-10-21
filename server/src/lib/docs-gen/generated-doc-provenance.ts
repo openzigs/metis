@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { EvidencePolicy } from "./evidence-policy.js";
 import type { DocType } from "./holistic-synthesizer.js";
+import type { CitedLine } from "./citation-footnotes.js";
 import type { GroundingSource } from "./grounding/grounding-context.js";
 import {
   CODE_IDENTIFIER_EXAMPLE_MAX_CHARS,
@@ -63,6 +64,23 @@ const selectedEvidenceRowSchema = z
     startLine: z.number().int().min(1).optional(),
     endLine: z.number().int().min(1).optional(),
     contentHash: z.string().min(1),
+    /**
+     * #737 — the source lines the document's footnotes named for this source:
+     * a typed symbol's range, or each line a module-facts citation was pinned
+     * to. Absent = cited at module level only, or not cited.
+     */
+    citedLines: z
+      .array(
+        z
+          .object({
+            filePath: z.string().min(1),
+            startLine: z.number().int().min(1),
+            endLine: z.number().int().min(1),
+          })
+          .strict(),
+      )
+      .min(1)
+      .optional(),
   })
   .strict();
 
@@ -461,6 +479,8 @@ export function buildGeneratedDocVersionManifest(input: {
   phase2Router: Pick<Phase2Router, "primary" | "hybrid">;
   phase1PromptVersion: number;
   selectedEvidence: GroundingSource[];
+  /** #737 — per cited source id, the lines its footnotes named (`renderCitationFootnotesWithLocations`). */
+  citedLines?: ReadonlyMap<string, readonly CitedLine[]>;
   graphFingerprint: string | null;
   graphFingerprintStatus?: "available" | "unknown";
   sourceRepositories: Array<(RepositoryIdentity & { commitSha?: string | null }) | undefined>;
@@ -531,16 +551,20 @@ export function buildGeneratedDocVersionManifest(input: {
       ...(source.endLine ? { endLine: source.endLine } : {}),
       contentHash: source.contentHash,
     })) ??
-    input.selectedEvidence.map((source) => ({
-      sourceId: source.sourceId,
-      kind: source.kind,
-      label: source.label,
-      evidenceClass: source.evidenceClass ?? null,
-      ...(source.documentId ? { documentId: source.documentId } : {}),
-      ...(source.chunkId ? { chunkId: source.chunkId } : {}),
-      ...(source.repository ? { repository: source.repository } : {}),
-      contentHash: evidenceContentHash(source),
-    }));
+    input.selectedEvidence.map((source) => {
+      const citedLines = input.citedLines?.get(source.sourceId) ?? [];
+      return {
+        sourceId: source.sourceId,
+        kind: source.kind,
+        label: source.label,
+        evidenceClass: source.evidenceClass ?? null,
+        ...(source.documentId ? { documentId: source.documentId } : {}),
+        ...(source.chunkId ? { chunkId: source.chunkId } : {}),
+        ...(source.repository ? { repository: source.repository } : {}),
+        contentHash: evidenceContentHash(source),
+        ...(citedLines.length > 0 ? { citedLines: citedLines.map((line) => ({ ...line })) } : {}),
+      };
+    });
 
   const manifest: GeneratedDocVersionManifest = {
     schemaVersion: GENERATED_DOC_PROVENANCE_SCHEMA_VERSION,
