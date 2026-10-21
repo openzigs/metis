@@ -60,6 +60,8 @@ import {
 
 const MODULE: GoModule[] = [{ dir: "", path: "example.com/app" }];
 const MB = 1024 * 1024;
+/** Readings (two forced collections each) a heap BASELINE settles for — see `measure`. */
+const SETTLE_BASELINE = 6;
 
 const show = (v: GoCallVerdict): string =>
   v.kind === "unknown" && v.why ? `unknown:${v.why}` : showGoVerdict(v);
@@ -74,12 +76,19 @@ interface Measured {
   sourceBytes: number;
 }
 
-/** The real walker, then a resolver over its facts and every call of the tree resolved once. */
-function measure(
-  tree: GoTree,
-  modules: GoModule[] = MODULE,
-  options?: GoResolverOptions,
-): Measured {
+/**
+ * The real walker over `tree`: the facts the resolver is built from and every call to resolve.
+ *
+ * A function of its own so the full parse output is UNREACHABLE once it returns — before
+ * `measure` takes its baseline. #1291: when it was a local of `measure`, it was alive at
+ * the baseline and dead (unused) by the final reading, and whether V8 still held it then
+ * depended on the tier `measure` was running in. An interpreted frame keeps a dead local;
+ * optimized or on-stack-replaced code drops it. Tier-up finishes on a background compiler
+ * thread, so under CPU contention it landed at a different point and the window "lost" the
+ * parse output's size — `small.heap` read -175 KB in CI where it measures +1.1 MB. Pinning
+ * the tier showed the swing: `--always-osr` moved one reading by 1.6 MB.
+ */
+function walk(tree: GoTree) {
   const parsed = Object.entries(tree).map(([filePath, src]) => parseSource(filePath, src, "go"));
   const files = parsed.map((p) => {
     if (!p.goFacts) throw new Error(`${p.filePath} did not parse`);
@@ -90,11 +99,32 @@ function measure(
       .filter((e) => e.kind === "calls")
       .map((e) => ({ file: p.filePath, callee: e.goCallee! })),
   );
+  return { files, calls };
+}
+
+/** The real walker, then a resolver over its facts and every call of the tree resolved once. */
+function measure(
+  tree: GoTree,
+  modules: GoModule[] = MODULE,
+  options?: GoResolverOptions,
+): Measured {
+  const { files, calls } = walk(tree);
   // Both readings are the least of three forced collections: a baseline that
   // still held garbage made the growth read too small, and "the heap grows
   // with the types" then failed once on code that had not changed (PR #1104
   // review cycle 6). No bound below is any looser for it.
-  const before = settledHeap();
+  //
+  // And nothing alive at the baseline may die inside the window (#1291): the parse
+  // output is already gone (see `walk`), and `tree`, `files` and `calls` are all read
+  // AFTER the final reading, so every tier keeps them reachable through it.
+  //
+  // The baseline itself settles for SETTLE_BASELINE readings, not three. V8 releases
+  // some memory only after more than six full collections; with a six-collection
+  // baseline that release could land inside the window and take 0.3 to 1.5 MB off a
+  // reading (CI: `small.heap` at -175 KB, expected about +1.1 MB). Measured under
+  // `--always-osr`, which shifts when it lands: a 6-collection baseline dropped 10 of
+  // 48 readings; 10 collections dropped 0 of 48, and so did 30.
+  const before = settledHeap(SETTLE_BASELINE);
   const resolver = createGoResolver(files, modules, options);
   const tally: Record<string, number> = {};
   let maxCallEntries = 0;
@@ -112,6 +142,8 @@ function measure(
   // The running sum ingest's watchdog reads before every call is that total.
   expect(resolver.retainedTotal()).toBe(retained.total);
   expect(last).toBe(retained.total);
+  // The inputs, read after the reading so no tier can drop them inside the window.
+  expect(files.length + calls.length).toBeGreaterThan(0);
   return {
     tally,
     retained,

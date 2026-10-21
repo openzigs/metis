@@ -15,3 +15,5 @@ An issue draft's title is its dedup key and `editDraft` does not recompute `dedu
 - Changing the rule a second time before release needs no new lookup; after a release, every released rule needs one.
 - A change to a draft BODY is not an identity change: published drafts are not selected by a publish run, so their issues are not rewritten; only a still-selectable draft matched to an issue is updated once, and the dry run lists it.
 - Test it with a seeded draft in status `published` and assert one epic row, same id, title and `dedupHash` after Generate.
+
+**Host is not in the key (#1298 review, 2026-10-20).** `loadExistingByHash` and `computeDedupHash` ignore the API host, so GHES and github.com repos with the same owner/name share dedup state. Re-check any host-aware publishing logic against it.

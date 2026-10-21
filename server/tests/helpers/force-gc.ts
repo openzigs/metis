@@ -37,7 +37,14 @@ export function retainedHeap(): number {
  * compares two growths, on code that did nothing wrong. Garbage only ever
  * adds to a reading, so the least of several is the closest to what is held;
  * a structure that is really retained is in all three.
+ *
+ * `readings` sets how many (two collections each). A BASELINE that another reading will
+ * be subtracted from needs more than three (#1291): V8 releases some memory only once
+ * enough full collections have passed, and when that happens inside the measured window
+ * instead of before it, the growth reads too small — negative, once, in CI.
  */
-export function settledHeap(): number {
-  return Math.min(retainedHeap(), retainedHeap(), retainedHeap());
+export function settledHeap(readings = 3): number {
+  let least = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < readings; i += 1) least = Math.min(least, retainedHeap());
+  return least;
 }
