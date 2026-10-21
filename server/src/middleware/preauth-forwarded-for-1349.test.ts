@@ -27,11 +27,25 @@ const tokenFor = (userId: string) =>
     permissions: getPermissionsForRole("developer"),
   }).accessToken;
 
-/** Production order: the pre-auth limiter, then `requireAuth`, then the handler. */
-function guarded(limiter: RequestHandler) {
+/**
+ * Production order: the pre-auth limiter, then `requireAuth`, then the handler.
+ * Each limiter is named directly (not passed as a parameter) so CodeQL's
+ * `js/missing-rate-limiting` sees the limiter ahead of `requireAuth`.
+ */
+function guardedTraceability() {
   const a = express();
   a.set("trust proxy", 1);
-  a.post("/", limiter, requireAuth, (_req, res) => {
+  a.post("/", traceabilityPreAuthRateLimiter, requireAuth, (_req, res) => {
+    res.status(200).json({ success: true });
+  });
+  a.use(errorHandler);
+  return a;
+}
+
+function guardedApproval() {
+  const a = express();
+  a.set("trust proxy", 1);
+  a.post("/", analysisApprovalPreAuthRateLimiter, requireAuth, (_req, res) => {
     res.status(200).json({ success: true });
   });
   a.use(errorHandler);
@@ -53,12 +67,14 @@ const cases = [
   {
     name: "traceabilityPreAuthRateLimiter",
     limiter: traceabilityPreAuthRateLimiter,
+    guarded: guardedTraceability,
     env: "TRACEABILITY_PREAUTH_RATE_LIMIT_MAX",
     code: "TRACEABILITY_GAPS_RATE_LIMITED",
   },
   {
     name: "analysisApprovalPreAuthRateLimiter",
     limiter: analysisApprovalPreAuthRateLimiter,
+    guarded: guardedApproval,
     env: "ANALYSIS_APPROVAL_PREAUTH_RATE_LIMIT_MAX",
     code: "RATE_LIMITED",
   },
@@ -68,10 +84,10 @@ afterEach(() => {
   for (const c of cases) delete process.env[c.env];
 });
 
-describe.each(cases)("$name (#1349)", ({ name, limiter, env, code }) => {
+describe.each(cases)("$name (#1349)", ({ name, limiter, guarded, env, code }) => {
   it("a signed-in user changing X-Forwarded-For per request gets no fresh bucket", async () => {
     process.env[env] = "1";
-    const a = guarded(limiter);
+    const a = guarded();
     const auth = `Bearer ${tokenFor(`u-1349-xff-${name}`)}`;
     const first = await request(a)
       .post("/")
@@ -99,7 +115,7 @@ describe.each(cases)("$name (#1349)", ({ name, limiter, env, code }) => {
 
   it("two users behind the same peer keep separate budgets", async () => {
     process.env[env] = "1";
-    const a = guarded(limiter);
+    const a = guarded();
     const one = `Bearer ${tokenFor(`u-1349-one-${name}`)}`;
     const two = `Bearer ${tokenFor(`u-1349-two-${name}`)}`;
     expect((await request(a).post("/").set("Authorization", one)).status).toBe(200);
