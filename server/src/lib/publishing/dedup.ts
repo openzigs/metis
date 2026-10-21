@@ -325,13 +325,32 @@ export interface SourceMarker {
  * can close the comment early or add markup to the issue body.
  */
 export function buildSourceMarkerComment(source: SourceMarker): string | null {
+  const ids = sourceIds(source);
+  if (!ids) return null;
+  const parts = [`project=${ids.projectId}`];
+  if (ids.analysisId) parts.push(`analysis=${ids.analysisId}`);
+  if (ids.requirementId) parts.push(`requirement=${ids.requirementId}`);
+  return `${SOURCE_MARKER_PREFIX} ${parts.join(" ")} -->`;
+}
+
+/**
+ * #1103 — a source's ids, each checked against {@link SOURCE_ID_RE}: `null`
+ * when the project id is not a plain id, and `null` for any other id that is
+ * not. What the hidden comment and the Jira `metis.source` property carry.
+ */
+export function sourceIds(source: SourceMarker): {
+  projectId: string;
+  analysisId: string | null;
+  requirementId: string | null;
+} | null {
   // `typeof` first: `RegExp.test` would stringify a missing id to "undefined".
   const isId = (v: unknown): v is string => typeof v === "string" && SOURCE_ID_RE.test(v);
   if (!isId(source.projectId)) return null;
-  const parts = [`project=${source.projectId}`];
-  if (isId(source.analysisId)) parts.push(`analysis=${source.analysisId}`);
-  if (isId(source.requirementId)) parts.push(`requirement=${source.requirementId}`);
-  return `${SOURCE_MARKER_PREFIX} ${parts.join(" ")} -->`;
+  return {
+    projectId: source.projectId,
+    analysisId: isId(source.analysisId) ? source.analysisId : null,
+    requirementId: isId(source.requirementId) ? source.requirementId : null,
+  };
 }
 
 /**

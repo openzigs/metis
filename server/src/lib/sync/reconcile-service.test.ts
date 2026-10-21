@@ -519,6 +519,261 @@ describe("reconcileIssueChange", () => {
   });
 });
 
+describe("#1049 — the batch's Additional labels are what was published, not drift", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function seedPublished(additionalLabels: unknown) {
+    vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue({
+      id: "pub-1",
+      batchId: "batch-1",
+      draftId: "draft-1",
+      issueNumber: 42,
+      issueId: "node-id-abc",
+      htmlUrl: "",
+      status: "created",
+      destination: "github",
+      parentIssueNumber: null,
+      dedupHash: null,
+      bodyHash: null,
+      errorMessage: null,
+      publishedAt: new Date(),
+      batch: {
+        id: "batch-1",
+        projectId: "proj-1",
+        metadata: JSON.stringify({ draftIds: ["draft-1"], additionalLabels }),
+        project: { id: "proj-1" },
+      },
+      draft: {
+        id: "draft-1",
+        title: "T",
+        body: "Body",
+        labels: JSON.stringify(["feature", "unverified"]),
+        requirementId: null,
+      },
+    } as never);
+  }
+
+  const eventWithLabels = (labels: string[]) =>
+    makeEvent({ current: { title: "T", body: "Body", state: "open", labels, assignees: [] } });
+
+  it("an issue carrying the batch's labels as published has not drifted", async () => {
+    seedPublished(["sprint-42", "unverified"]);
+    const result = await reconcileIssueChange(eventWithLabels(["feature", "sprint-42"]));
+    expect(result.reason).toBe("NO_DIFF");
+  });
+
+  it("a Jira issue is compared with the labels in the form Jira was sent", async () => {
+    seedPublished(["good first issue"]);
+    const published = (await prisma.publishedIssue.findFirst({} as never)) as unknown as Record<
+      string,
+      unknown
+    >;
+    vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue({
+      ...published,
+      destination: "jira",
+    } as never);
+    const result = await reconcileIssueChange(
+      makeEvent({
+        source: "jira",
+        current: {
+          title: "T",
+          body: "Body",
+          state: "open",
+          labels: ["feature", "good-first-issue"],
+          assignees: [],
+        },
+      }),
+    );
+    expect(result.reason).toBe("NO_DIFF");
+  });
+
+  it("removing a batch label on the tracker is still drift", async () => {
+    seedPublished(["sprint-42"]);
+    vi.mocked(prisma.driftEvent.create).mockImplementation((async ({
+      data,
+    }: {
+      data: Record<string, unknown>;
+    }) => ({ id: "drift-x", createdAt: new Date(), ...data })) as never);
+    const result = await reconcileIssueChange(eventWithLabels(["feature"]));
+    expect(result.handled).toBe(true);
+    const data = vi.mocked(prisma.driftEvent.create).mock.calls.at(-1)![0].data as {
+      fieldDiffs: string;
+    };
+    expect(JSON.parse(data.fieldDiffs)).toEqual([
+      { field: "labels", local: ["feature", "sprint-42"], external: ["feature"] },
+    ]);
+  });
+
+  it("adopting the tracker's labels does not copy the batch's labels into the draft", async () => {
+    const existing = {
+      id: "drift-1",
+      publishedIssueId: "pub-1",
+      projectId: "proj-1",
+      requirementId: null,
+      source: "github",
+      deliveryId: "del-1",
+      action: "edited",
+      fieldDiffs: JSON.stringify([{ field: "labels", local: [], external: [] }]),
+      externalSnapshot: JSON.stringify({
+        title: "T",
+        body: "Body",
+        state: "open",
+        labels: ["bug", "Sprint-42", "docs", "good-first-issue"],
+        assignees: [],
+      }),
+      localSnapshot: null,
+      status: "pending",
+      resolution: null,
+      resolvedById: null,
+      resolvedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    vi.mocked(prisma.driftEvent.findUnique).mockResolvedValue(existing as never);
+    vi.mocked(prisma.driftEvent.update).mockResolvedValue({
+      ...existing,
+      status: "resolved",
+      resolution: "adopt",
+      resolvedById: "user-1",
+      resolvedAt: new Date(),
+    } as never);
+    vi.mocked(prisma.publishedIssue.findUnique).mockResolvedValue({
+      id: "pub-1",
+      draftId: "draft-1",
+      // `good first issue` reached Jira as `good-first-issue`; still the batch's.
+      batch: {
+        metadata: JSON.stringify({ additionalLabels: ["sprint-42", "docs", "good first issue"] }),
+      },
+      // The draft already carried `docs` itself, so it keeps it.
+      draft: { requirementId: null, labels: JSON.stringify(["feature", "docs"]) },
+    } as never);
+    vi.mocked(prisma.issueDraft.update).mockResolvedValue({} as never);
+
+    await resolveDriftEvent("drift-1", "adopt", "user-1");
+    const data = vi.mocked(prisma.issueDraft.update).mock.calls.at(-1)![0].data as {
+      labels: string;
+    };
+    expect(JSON.parse(data.labels)).toEqual(["bug", "docs"]);
+  });
+});
+
+describe("#1049 review — one issue, a row per batch: the newest row speaks for it", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** Batch A (older, `sprint-41`) then batch B (newer, `sprint-42`) published the issue. */
+  const row = (id: string, batchLabels: string[], publishedAt: string) => ({
+    id,
+    batchId: `batch-${id}`,
+    draftId: "draft-1",
+    issueNumber: 42,
+    issueId: "node-id-abc",
+    htmlUrl: "",
+    status: "updated",
+    destination: "github",
+    parentIssueNumber: null,
+    dedupHash: null,
+    bodyHash: null,
+    errorMessage: null,
+    publishedAt: new Date(publishedAt),
+    batch: {
+      id: `batch-${id}`,
+      projectId: "proj-1",
+      metadata: JSON.stringify({ additionalLabels: batchLabels }),
+      project: { id: "proj-1" },
+    },
+    draft: {
+      id: "draft-1",
+      title: "T",
+      body: "Body",
+      labels: JSON.stringify(["feature"]),
+      requirementId: null,
+    },
+  });
+  const ROWS = [
+    row("A", ["sprint-41"], "2026-10-01T00:00:00Z"),
+    row("B", ["sprint-42"], "2026-10-02T00:00:00Z"),
+  ];
+
+  beforeEach(() => {
+    // Without an ORDER BY a database may return any row; here, the oldest.
+    vi.mocked(prisma.publishedIssue.findFirst).mockImplementation((async (args: {
+      orderBy?: Array<Record<string, "asc" | "desc">> | Record<string, "asc" | "desc">;
+    }) => {
+      const order = [args.orderBy ?? []].flat();
+      const newestFirst = order[0]?.publishedAt === "desc";
+      return newestFirst
+        ? [...ROWS].sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime())[0]
+        : ROWS[0];
+    }) as never);
+    vi.mocked(prisma.driftEvent.create).mockImplementation((async ({
+      data,
+    }: {
+      data: Record<string, unknown>;
+    }) => ({ id: "drift-x", createdAt: new Date(), ...data })) as never);
+  });
+
+  const event = (labels: string[], body = "Body") =>
+    makeEvent({ current: { title: "T", body, state: "open", labels, assignees: [] } });
+
+  it("an issue carrying the newest batch's labels has not drifted", async () => {
+    expect((await reconcileIssueChange(event(["feature", "sprint-42"]))).reason).toBe("NO_DIFF");
+  });
+
+  it("a real edit is filed against the newest row, so Adopt reads that batch's labels", async () => {
+    const result = await reconcileIssueChange(event(["feature", "sprint-42"], "Body, edited"));
+    expect(result.handled).toBe(true);
+    const data = vi.mocked(prisma.driftEvent.create).mock.calls.at(-1)![0].data as {
+      publishedIssueId: string;
+      fieldDiffs: string;
+    };
+    expect(data.publishedIssueId).toBe("B");
+    expect(JSON.parse(data.fieldDiffs).map((d: { field: string }) => d.field)).toEqual(["body"]);
+
+    // Adopt then strips B's own batch label from the draft, not A's.
+    const existing = {
+      id: "drift-x",
+      publishedIssueId: "B",
+      projectId: "proj-1",
+      requirementId: null,
+      source: "github",
+      deliveryId: "d",
+      action: "edited",
+      fieldDiffs: data.fieldDiffs,
+      externalSnapshot: JSON.stringify({
+        title: "T",
+        body: "Body, edited",
+        state: "open",
+        labels: ["feature", "sprint-42"],
+        assignees: [],
+      }),
+      localSnapshot: null,
+      status: "pending",
+      resolution: null,
+      resolvedById: null,
+      resolvedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    vi.mocked(prisma.driftEvent.findUnique).mockResolvedValue(existing as never);
+    vi.mocked(prisma.driftEvent.update).mockResolvedValue({
+      ...existing,
+      status: "resolved",
+      resolution: "adopt",
+    } as never);
+    vi.mocked(prisma.publishedIssue.findUnique).mockImplementation((async ({
+      where,
+    }: {
+      where: { id: string };
+    }) => ROWS.find((r) => r.id === where.id)) as never);
+    vi.mocked(prisma.issueDraft.update).mockResolvedValue({} as never);
+    await resolveDriftEvent("drift-x", "adopt", "user-1");
+    const adopted = vi.mocked(prisma.issueDraft.update).mock.calls.at(-1)![0].data as {
+      labels: string;
+    };
+    expect(JSON.parse(adopted.labels)).toEqual(["feature"]);
+  });
+});
+
 describe("getDriftEventProjectId (#102)", () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -1076,6 +1076,78 @@ describe("SpecKitPage — #789", () => {
     await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeDisabled());
   });
 
+  it("#1211 — asks before publishing into a repo another project connects, then retries with the confirm", async () => {
+    m.runCommand!.mockResolvedValueOnce({
+      ...DRY_RUN,
+      crossProject: { repo: "openzigs/flux-v2", projects: ["Flux sandbox"] },
+    });
+    await openFeature();
+    pickSecret();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    // The dry run went ahead, and says the live export will ask.
+    expect(await screen.findByTestId("cross-project-dry-run-notice")).toHaveTextContent(
+      "openzigs/flux-v2 is already connected to the project “Flux sandbox”",
+    );
+    m.runCommand!.mockRejectedValueOnce(
+      new ApiError(409, "openzigs/flux-v2 is already connected", "REPO_CROSS_PROJECT", {
+        repo: "openzigs/flux-v2",
+        projects: ["Flux sandbox"],
+      }),
+    );
+    await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("spec-kit-export-publish"));
+    await answerDialog("Publish");
+    const text = await screen.findByTestId("cross-project-confirm-text");
+    expect(text).toHaveTextContent(
+      "openzigs/flux-v2 is already connected to the project “Flux sandbox”",
+    );
+    expect(text).toHaveTextContent("Issues exported from this feature's tasks");
+    // A question, not a failure: no error card.
+    expect(screen.queryByTestId("spec-kit-error")).toBeNull();
+
+    m.runCommand!.mockResolvedValueOnce({ message: "Exported 2 task(s).", created: [] });
+    fireEvent.click(screen.getByTestId("cross-project-confirm-button"));
+    await waitFor(() =>
+      expect(m.runCommand).toHaveBeenLastCalledWith("p1", "speckit.taskstoissues", {
+        featureSlug: "001-a",
+        dryRun: false,
+        secretRef: SECRET,
+        expectedPlan: { tasksVersion: 3, digest: "d".repeat(64) },
+        confirmCrossProject: true,
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId("cross-project-confirm")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("#1211 — Cancel on the cross-project confirm publishes nothing", async () => {
+    m.runCommand!.mockResolvedValueOnce(DRY_RUN);
+    await openFeature();
+    pickSecret();
+    fireEvent.click(screen.getByTestId("spec-kit-export-preview"));
+    expect(screen.queryByTestId("cross-project-dry-run-notice")).toBeNull();
+    m.runCommand!.mockRejectedValueOnce(
+      new ApiError(409, "x is already connected", "REPO_CROSS_PROJECT", {
+        repo: "openzigs/flux-v2",
+        projects: [],
+      }),
+    );
+    await waitFor(() => expect(screen.getByTestId("spec-kit-export-publish")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("spec-kit-export-publish"));
+    await answerDialog("Publish");
+    const confirm = await screen.findByTestId("cross-project-confirm");
+    expect(screen.getByTestId("cross-project-confirm-text")).toHaveTextContent(
+      "is already connected to another project",
+    );
+    fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByTestId("cross-project-confirm")).not.toBeInTheDocument(),
+    );
+    await flush();
+    expect(m.runCommand).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps Publish disabled, saying why, when the server cannot publish yet (#936)", async () => {
     m.runCommand!.mockResolvedValue({ ...DRY_RUN, publishAvailable: false });
     await openFeature();

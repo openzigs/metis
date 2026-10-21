@@ -350,6 +350,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(calls).toEqual([]);
       });
 
+      it("#1211 — the dry run says the live run will ask, as a batch dry run does", async () => {
+        await setTarget(SHARED_VISIBLE);
+        const d = await issueDraft();
+        const res = await post(prUrl(d.id), { dryRun: true });
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        expect(res.body.data.crossProject).toEqual({
+          repo: "sandbox-org/shared-1180",
+          projects: [VISIBLE_NAME],
+        });
+        await setTarget(SHARED_HIDDEN);
+        const hidden = await post(prUrl(d.id), { dryRun: true });
+        expect(hidden.body.data.crossProject).toEqual({
+          repo: "secret-org/shared-1180",
+          projects: [],
+        });
+        const wire = JSON.stringify(hidden.body);
+        expect(wire).not.toContain(HIDDEN);
+        expect(wire).not.toContain(HIDDEN_NAME);
+        await setTarget(OWN);
+        const own = await post(prUrl(d.id), { dryRun: true });
+        expect(own.body.data.crossProject).toBeUndefined();
+      });
+
       it("a target no other project connects needs no confirm", async () => {
         await setTarget(OWN);
         const d = await issueDraft();

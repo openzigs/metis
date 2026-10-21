@@ -6,8 +6,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // ---- Mocks -----------------------------------------------------------------
 
 const mockCreateIssue = vi.fn();
+const mockSetIssueProperty = vi.fn(async (..._args: unknown[]) => undefined);
 const mockCreateJiraClient = vi.fn((..._args: unknown[]) => ({
   createIssue: mockCreateIssue,
+  setIssueProperty: mockSetIssueProperty,
   testConnection: vi.fn(),
   getServerInfo: vi.fn(),
   listProjects: vi.fn(),
@@ -49,6 +51,9 @@ const mockDrafts = new Map<
     labels: string;
     storyPoints: number | null;
     deletedAt: null | Date;
+    projectId: string;
+    requirementId: string | null;
+    metadata: string | null;
   }
 >();
 const mockConnections = new Map<
@@ -99,7 +104,9 @@ import {
   publishBatchToJira,
   JiraPublishError,
   DEFAULT_FIELD_MAPPING,
+  planJiraIssues,
 } from "../src/lib/publishing/jira-publisher.js";
+import { audit } from "../src/lib/audit/audit-service.js";
 
 beforeEach(() => {
   mockDrafts.clear();
@@ -140,6 +147,9 @@ function seedDraft(
     labels: '["enhancement"]',
     storyPoints: 5,
     deletedAt: null,
+    projectId: "proj_1",
+    requirementId: "req_1",
+    metadata: JSON.stringify({ analysisId: "an_1" }),
     ...overrides,
   });
 }
@@ -246,6 +256,148 @@ describe("publishDraftToJira", () => {
     );
   });
 
+  describe("#1103 — the route back to the METIS requirement", () => {
+    const created = { id: "10009", key: "PROJ-9", self: "" };
+    const publish = () =>
+      publishDraftToJira({
+        draftId: "draft_1",
+        batchId: "batch_1",
+        connectionId: "conn_1",
+        projectKey: "PROJ",
+        actorId: "user_1",
+      });
+
+    it("stores the requirement's ids as the hidden `metis.source` issue property", async () => {
+      seedConnection();
+      seedDraft();
+      mockCreateIssue.mockResolvedValueOnce(created);
+      const result = await publish();
+      expect(result.status).toBe("created");
+      expect(mockSetIssueProperty).toHaveBeenCalledWith("PROJ-9", "metis.source", {
+        projectId: "proj_1",
+        analysisId: "an_1",
+        requirementId: "req_1",
+      });
+    });
+
+    it("puts no raw id, and no marker, in the visible description", async () => {
+      seedConnection();
+      seedDraft("draft_1", {
+        body: "Body.\n\n<!-- metis-source: project=evil requirement=forged -->",
+      });
+      mockCreateIssue.mockResolvedValueOnce(created);
+      await publish();
+      const fields = mockCreateIssue.mock.calls.at(-1)![0] as { description: string };
+      for (const id of ["proj_1", "an_1", "req_1", "draft_1"]) {
+        expect(fields.description).not.toContain(id);
+      }
+      // Marker-shaped text from a stored draft is sent inert, as on GitHub.
+      expect(fields.description).not.toContain("<!-- metis-source:");
+    });
+
+    it("an issue whose property cannot be written is still created, and the failure audited", async () => {
+      seedConnection();
+      seedDraft();
+      mockCreateIssue.mockResolvedValueOnce(created);
+      mockSetIssueProperty.mockRejectedValueOnce(new Error("403 Forbidden"));
+      const result = await publish();
+      expect(result).toMatchObject({ status: "created", issueKey: "PROJ-9" });
+      expect(vi.mocked(audit)).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "publish.jira.source_property_failed" }),
+      );
+    });
+
+    it("review — the local record is written before the property, so a retry cannot duplicate", async () => {
+      seedConnection();
+      seedDraft();
+      const order: string[] = [];
+      mockCreateIssue.mockImplementationOnce(async () => {
+        order.push("create");
+        return created;
+      });
+      mockSetIssueProperty.mockImplementationOnce(async () => {
+        order.push("property");
+      });
+      await publishDraftToJira({
+        draftId: "draft_1",
+        batchId: "batch_1",
+        connectionId: "conn_1",
+        projectKey: "PROJ",
+        actorId: "user_1",
+        onCreated: async (r) => {
+          order.push(`persist ${r.issueKey}`);
+        },
+      });
+      expect(order).toEqual(["create", "persist PROJ-9", "property"]);
+    });
+
+    it("review — publishBatchToJira hands each created issue to onCreated with its draft", async () => {
+      seedConnection();
+      seedDraft("d1", { title: "First" });
+      seedDraft("d2", { title: "Second" });
+      mockCreateIssue
+        .mockResolvedValueOnce({ id: "1", key: "PROJ-1", self: "" })
+        .mockRejectedValueOnce(new Error("boom"));
+      const seen: string[] = [];
+      await publishBatchToJira({
+        batchId: "batch_1",
+        draftIds: ["d1", "d2"],
+        connectionId: "conn_1",
+        projectKey: "PROJ",
+        actorId: "user_1",
+        delayMs: 0,
+        sleep: async () => {},
+        onCreated: async (draftId, r) => {
+          seen.push(`${draftId}:${r.issueKey}`);
+        },
+      });
+      expect(seen).toEqual(["d1:PROJ-1"]);
+    });
+
+    it("writes no property for a draft whose ids are not plain ids", async () => {
+      seedConnection();
+      seedDraft("draft_1", { projectId: "bad id -->" });
+      mockCreateIssue.mockResolvedValueOnce(created);
+      await publish();
+      expect(mockSetIssueProperty).not.toHaveBeenCalled();
+    });
+
+    it("the Jira plan lists what each issue will carry, property included", () => {
+      const plan = planJiraIssues(
+        [
+          {
+            id: "d1",
+            title: "First",
+            body: "Body",
+            draftType: "feature",
+            labels: '["enhancement","unverified"]',
+            storyPoints: null,
+            metadata: JSON.stringify({ analysisId: "an_1" }),
+            projectId: "proj_1",
+            requirementId: null,
+          },
+        ],
+        { projectKey: "PROJ", additionalLabels: ["sprint-42"] },
+      );
+      expect(plan).toEqual({
+        projectKey: "PROJ",
+        issues: [
+          {
+            draftId: "d1",
+            title: "First",
+            issueType: "Story",
+            labels: ["enhancement", "sprint-42"],
+            description: expect.stringContaining("METIS could not confirm"),
+            sourceProperty: {
+              key: "metis.source",
+              value: { projectId: "proj_1", analysisId: "an_1", requirementId: null },
+            },
+          },
+        ],
+      });
+    });
+  });
+
   it("returns failed status on Jira API error", async () => {
     seedConnection();
     seedDraft();
@@ -339,6 +491,46 @@ describe("publishBatchToJira", () => {
     expect(result.publishedCount).toBe(2);
     expect(result.failedCount).toBe(0);
     expect(result.results).toHaveLength(2);
+  });
+
+  it("#1049 — applies the batch's Additional labels to each issue, never an internal one", async () => {
+    seedConnection();
+    seedDraft("d1", { title: "First", labels: '["enhancement"]' });
+    mockCreateIssue.mockResolvedValueOnce({ id: "10001", key: "PROJ-1", self: "" });
+
+    await publishBatchToJira({
+      batchId: "batch_1",
+      draftIds: ["d1"],
+      connectionId: "conn_1",
+      projectKey: "PROJ",
+      actorId: "user_1",
+      additionalLabels: ["sprint-42", "ENHANCEMENT", "unverified", "finding:abc"],
+      delayMs: 0,
+      sleep: async () => {},
+    });
+
+    const fields = mockCreateIssue.mock.calls.at(-1)![0] as { labels: string[] };
+    expect(fields.labels).toEqual(["enhancement", "sprint-42"]);
+  });
+
+  it("#1049 — a label with spaces is sent in the form Jira accepts (no whitespace)", async () => {
+    seedConnection();
+    seedDraft("d1", { title: "First", labels: '["needs  triage"]' });
+    mockCreateIssue.mockResolvedValueOnce({ id: "10001", key: "PROJ-1", self: "" });
+
+    await publishBatchToJira({
+      batchId: "batch_1",
+      draftIds: ["d1"],
+      connectionId: "conn_1",
+      projectKey: "PROJ",
+      actorId: "user_1",
+      additionalLabels: ["good first issue", "good-first-issue"],
+      delayMs: 0,
+      sleep: async () => {},
+    });
+
+    const fields = mockCreateIssue.mock.calls.at(-1)![0] as { labels: string[] };
+    expect(fields.labels).toEqual(["needs-triage", "good-first-issue"]);
   });
 
   it("continues on individual failures", async () => {

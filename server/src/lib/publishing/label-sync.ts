@@ -110,8 +110,11 @@ export const UNVERIFIED_LABEL = "unverified";
  * case.
  */
 export function isInternalPublishLabel(label: string): boolean {
-  const name = label.trim();
-  return isHiddenRequirementLabel(name) || name.toLowerCase() === UNVERIFIED_LABEL;
+  // #1049 review — lower-cased first: a batch's free-text labels reach here,
+  // and `Finding:abc` must stay internal too. `isHiddenRequirementLabel` itself
+  // stays as analysis writes it.
+  const name = label.trim().toLowerCase();
+  return isHiddenRequirementLabel(name) || name === UNVERIFIED_LABEL;
 }
 
 /**
@@ -123,6 +126,64 @@ export function isInternalPublishLabel(label: string): boolean {
  */
 export function publishableLabels(labels: readonly string[]): string[] {
   return uniqueLabelsExcept(labels, isInternalPublishLabel);
+}
+
+/**
+ * #1049 — the labels a published issue carries: its draft's, then the batch's
+ * "Additional labels", each once (first spelling wins), with every internal
+ * label dropped from both ({@link publishableLabels}). One function for the
+ * live run, the dry run, Jira and drift detection, so they cannot disagree.
+ */
+export function issueLabels(
+  draftLabels: readonly string[],
+  additionalLabels: readonly string[],
+): string[] {
+  return publishableLabels([...draftLabels, ...additionalLabels]);
+}
+
+/**
+ * #1049 review — whether two label lists name the same set, ignoring case and
+ * order (GitHub label names are case-insensitive). `null` is an unknown set,
+ * which matches nothing.
+ */
+export function sameLabels(a: readonly string[], b: readonly string[] | null): boolean {
+  if (b === null) return false;
+  const key = (l: string) => l.trim().toLowerCase();
+  const left = new Set(a.map(key));
+  const right = new Set(b.map(key));
+  return left.size === right.size && [...left].every((k) => right.has(k));
+}
+
+/**
+ * #1049 (adversarial review) — the labels a Jira issue carries: as
+ * {@link issueLabels}, with each run of whitespace made a `-`. Jira refuses a
+ * label containing a space, and the batch's free-text labels may hold one
+ * (`good first issue`), which would fail the create for every draft.
+ */
+export function jiraLabels(
+  draftLabels: readonly string[],
+  additionalLabels: readonly string[],
+): string[] {
+  return publishableLabels(
+    issueLabels(draftLabels, additionalLabels).map((l) => l.replace(/\s+/g, "-")),
+  );
+}
+
+/**
+ * #1049 — the "Additional labels" a batch was created with, read from its
+ * `metadata` JSON. Anything that is not an array of strings reads as none.
+ */
+export function batchAdditionalLabels(metadata: string | null | undefined): string[] {
+  if (!metadata) return [];
+  try {
+    const parsed = JSON.parse(metadata) as { additionalLabels?: unknown };
+    if (Array.isArray(parsed.additionalLabels)) {
+      return parsed.additionalLabels.filter((s): s is string => typeof s === "string");
+    }
+  } catch {
+    /* malformed metadata — no labels */
+  }
+  return [];
 }
 
 /**

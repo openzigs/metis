@@ -148,6 +148,26 @@ describe("createJiraClient — Cloud edition", () => {
     expect(call[1].method).toBe("POST");
   });
 
+  it("#1103 — setIssueProperty PUTs the JSON value and accepts an empty 201", async () => {
+    const fetchFn = vi.fn(async () => new Response("", { status: 201 })) as unknown as typeof fetch;
+    const client = createJiraClient(CLOUD_CONFIG, fetchFn);
+    await client.setIssueProperty("TEST-2", "metis.source", { projectId: "p1" });
+    const call = (fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(call[0])).toBe(
+      "https://test.atlassian.net/rest/api/3/issue/TEST-2/properties/metis.source",
+    );
+    expect(call[1].method).toBe("PUT");
+    expect(JSON.parse(call[1].body as string)).toEqual({ projectId: "p1" });
+  });
+
+  it("#1103 — setIssueProperty surfaces a refusal as JiraApiError", async () => {
+    const fetchFn = mockFetch([{ status: 403, body: { message: "Forbidden" } }]);
+    const client = createJiraClient(CLOUD_CONFIG, fetchFn);
+    await expect(client.setIssueProperty("TEST-2", "metis.source", {})).rejects.toMatchObject({
+      status: 403,
+    });
+  });
+
   it("throws JiraApiError on non-2xx", async () => {
     const fetchFn = mockFetch([{ status: 401, body: { message: "Unauthorized" } }]);
     const client = createJiraClient(CLOUD_CONFIG, fetchFn);

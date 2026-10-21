@@ -88,6 +88,43 @@ describe("publishing domain", () => {
       ).toThrow();
     });
 
+    describe("#1049 review — additionalLabels", () => {
+      const parse = (additionalLabels: unknown) =>
+        createPublishBatchSchema.safeParse({
+          projectId: validId,
+          targetOwner: "acme",
+          targetRepo: "core",
+          draftIds: [validId],
+          additionalLabels,
+        });
+
+      it("accepts a 50-character label (GitHub's limit), counted in characters", () => {
+        expect(parse(["a".repeat(50), "é".repeat(50), "good first issue"]).success).toBe(true);
+      });
+
+      it("refuses a label over 50 characters, saying why", () => {
+        const r = parse(["a".repeat(51)]);
+        expect(r.success).toBe(false);
+        expect(JSON.stringify(r.error?.issues)).toContain("50 characters");
+      });
+
+      it.each([
+        ["a control character", "sprint\u000742"],
+        ["a newline", "sprint\n42"],
+        ["a bidi override", `sprint${String.fromCodePoint(0x202e)}24`],
+      ])("refuses a label holding %s", (_what, label) => {
+        const r = parse([label]);
+        expect(r.success).toBe(false);
+        expect(JSON.stringify(r.error?.issues)).toContain("control");
+      });
+
+      it("trims the labels it accepts, and refuses a blank one", () => {
+        const r = parse(["  sprint-42  "]);
+        expect(r.success && r.data.additionalLabels).toEqual(["sprint-42"]);
+        expect(parse(["   "]).success).toBe(false);
+      });
+    });
+
     it("publishBatchSchema validates a hydrated row", () => {
       expect(
         publishBatchSchema.parse({

@@ -3,11 +3,15 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  batchAdditionalLabels,
   combineLabels,
+  issueLabels,
   DEFAULT_PUBLISH_LABELS,
   isInternalPublishLabel,
   labelsToSync,
+  jiraLabels,
   publishableLabels,
+  sameLabels,
   syncLabels,
 } from "../src/lib/publishing/label-sync.js";
 import type {
@@ -161,4 +165,41 @@ describe("#1276 — `unverified` is an internal label", () => {
     expect(isInternalPublishLabel("unverified-claims")).toBe(false);
     expect(isInternalPublishLabel("verified")).toBe(false);
   });
+});
+
+describe("#1049 — issueLabels / batchAdditionalLabels", () => {
+  it("the draft's labels, then the batch's, once each, without internal ones", () => {
+    expect(
+      issueLabels(["feature", "unverified"], ["Feature", "sprint-42", "review:x", "", "sprint-42"]),
+    ).toEqual(["feature", "sprint-42"]);
+  });
+
+  it("review — a user-typed internal label is dropped in any case", () => {
+    expect(issueLabels(["feature"], ["Finding:abc", "REVIEW:x", "UnVerified", "ok"])).toEqual([
+      "feature",
+      "ok",
+    ]);
+    expect(isInternalPublishLabel("Finding:abc")).toBe(true);
+    expect(jiraLabels([], ["FINDING:abc", "ok label"])).toEqual(["ok-label"]);
+  });
+
+  it("review — sameLabels compares sets, ignoring case and order; null is unknown", () => {
+    expect(sameLabels(["a", "B"], ["b", "A"])).toBe(true);
+    expect(sameLabels(["a"], ["a", "b"])).toBe(false);
+    expect(sameLabels([], null)).toBe(false);
+  });
+
+  it("reads the batch's additional labels from its metadata", () => {
+    expect(batchAdditionalLabels(JSON.stringify({ additionalLabels: ["a", 3, "b"] }))).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+
+  it.each([null, undefined, "", "{not json", JSON.stringify({ additionalLabels: "a" })])(
+    "reads %j as no labels",
+    (meta) => {
+      expect(batchAdditionalLabels(meta)).toEqual([]);
+    },
+  );
 });

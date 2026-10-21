@@ -9,7 +9,7 @@
 import { type DryRunAction, type DryRunPlan } from "./internal-shared.js";
 import type { ApprovalGateCheckResult, CredentialCheckResult } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
-import { labelsToSync, publishableLabels } from "./label-sync.js";
+import { issueLabels, labelsToSync, sameLabels } from "./label-sync.js";
 import {
   computeDraftBodyHash,
   computeDedupHash,
@@ -35,7 +35,10 @@ export interface DryRunInput {
   }>;
   additionalLabels: string[];
   /** dedupHash → existing issue number (from PublishedIssue rows). */
-  existingByHash: Map<string, { issueNumber: number; bodyHash: string | null }>;
+  existingByHash: Map<
+    string,
+    { issueNumber: number; bodyHash: string | null; additionalLabels?: string[] | null }
+  >;
   /** Estimated cost per API call (ms). */
   perCallMs: number;
   /**
@@ -57,13 +60,18 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
   // 1. label upserts — one per label some draft carries, plus the batch's
   // requested labels (#744: never a hidden `finding:<id>` label, never an
   // unused base label). Mirrors the live run's `syncLabels` call.
-  const drafts = input.drafts.map((d) => ({ ...d, labels: publishableLabels(d.labels) }));
   for (const l of labelsToSync(
-    drafts.map((d) => d.labels),
+    input.drafts.map((d) => d.labels),
     input.additionalLabels,
   )) {
     actions.push({ kind: "label.upsert", labels: [l.name] });
   }
+  // #1049 — each issue lists the labels the live run sends it: the draft's,
+  // then the batch's requested ones.
+  const drafts = input.drafts.map((d) => ({
+    ...d,
+    labels: issueLabels(d.labels, input.additionalLabels),
+  }));
   const blocked = new Set(input.approvalGate?.blockedDraftIds ?? []);
   const gateMark = (draftId: string) =>
     blocked.has(draftId) ? { blockedByApprovalGate: true } : {};
@@ -86,11 +94,20 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
     const bodyHash = computeDraftBodyHash(d.body);
     if (existing) {
       if (existing.bodyHash === bodyHash) {
+        // #1049 review — as the live run: a skipped issue whose labels differ
+        // from the ones METIS last sent it gets a labels-only update.
+        const draft = input.drafts.find((x) => x.id === d.id)!;
+        const sentBefore =
+          existing.additionalLabels === undefined || existing.additionalLabels === null
+            ? null
+            : issueLabels(draft.labels, existing.additionalLabels);
+        const relabel = !sameLabels(d.labels, sentBefore);
         actions.push({
           kind: "issue.skipDuplicate",
           draftId: d.id,
           existingIssueNumber: existing.issueNumber,
-          reason: "body unchanged",
+          reason: relabel ? "body unchanged; labels updated" : "body unchanged",
+          ...(relabel ? { labels: d.labels } : {}),
         });
       } else {
         actions.push({

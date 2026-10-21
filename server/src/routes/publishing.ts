@@ -228,7 +228,22 @@ export function publishingRouter(): Router {
         secretRef: body.secretRef,
         confirmCrossProject: body.confirmCrossProject === true,
       });
-      res.status(body.dryRun ? 200 : 201).json(ok(result));
+      // #1211 — like a batch dry run (#1171), the plan says the live run will
+      // ask, so the confirm is no surprise after "Open draft PR".
+      const crossProject =
+        body.dryRun && body.confirmCrossProject !== true
+          ? await crossProjectDryRunNotice(
+              {
+                projectId: projectIdOf(req),
+                targetOwner: result.target.owner,
+                targetRepo: result.target.repo,
+              },
+              req.user,
+            )
+          : null;
+      res
+        .status(body.dryRun ? 200 : 201)
+        .json(ok(crossProject ? { ...result, crossProject } : result));
     } catch (err) {
       // #1180 — name the other project only if this caller may open it.
       if (err instanceof CrossProjectRepoError && req.user) {

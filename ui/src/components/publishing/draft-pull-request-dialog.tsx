@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   CrossProjectConfirmDialog,
+  CrossProjectDryRunNotice,
   extractCrossProjectRefusal,
   type CrossProjectRefusal,
 } from "@/components/publishing/cross-project-confirm-dialog";
@@ -150,6 +151,16 @@ export function DraftPullRequestDialog({
                 <p className="mt-1 text-muted-foreground" data-testid="draft-pr-upstream-check">
                   {plan.upstreamCheck.note}
                 </p>
+              )}
+              {plan.sourceMarker && (
+                <p className="mt-1 text-muted-foreground" data-testid="draft-pr-source-marker">
+                  The pull request body ends with a hidden comment that links it back to its METIS
+                  requirement: <code className="break-all">{plan.sourceMarker}</code>
+                </p>
+              )}
+              {/* #1211 — said at plan time, so the confirm is no surprise. */}
+              {!opened && plan.crossProject && (
+                <CrossProjectDryRunNotice notice={plan.crossProject} />
               )}
               {opened && (
                 <p className="mt-2">

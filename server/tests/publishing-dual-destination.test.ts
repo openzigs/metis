@@ -40,13 +40,52 @@ vi.mock("../src/lib/prisma.js", () => ({
             projectId: "proj_dual",
             status: "pending",
             dryRun: false,
-            metadata: JSON.stringify({ draftIds: ["draft_1", "draft_2"], secretRef: null }),
+            metadata: JSON.stringify({
+              draftIds: ["draft_1", "draft_2"],
+              additionalLabels: ["sprint-42"],
+              secretRef: null,
+            }),
+            startedById: "user_1",
+          };
+        }
+        // #1103 — a dry run, whose GitHub leg already stored its plan (or, for
+        // `batch_jira_dry`, a Jira-only project's, which has none).
+        if (where.id === "batch_dual_dry" || where.id === "batch_jira_dry") {
+          return {
+            id: where.id,
+            projectId: "proj_dual",
+            status: "pending",
+            dryRun: true,
+            targetOwner: "acme",
+            targetRepo: "metis",
+            targetBaseUrl: null,
+            provider: "github",
+            dryRunPlan:
+              where.id === "batch_dual_dry"
+                ? JSON.stringify({ batchId: "batch_dual_dry", actions: [], totalActions: 0 })
+                : null,
+            metadata: JSON.stringify({ draftIds: ["draft_1"], additionalLabels: ["sprint-42"] }),
             startedById: "user_1",
           };
         }
         return null;
       }),
       update: vi.fn(async () => ({})),
+    },
+    issueDraft: {
+      findMany: vi.fn(async () => [
+        {
+          id: "draft_1",
+          projectId: "proj_dual",
+          requirementId: "req_1",
+          title: "Login",
+          body: "Body",
+          draftType: "feature",
+          labels: '["feature"]',
+          storyPoints: null,
+          metadata: JSON.stringify({ analysisId: "an_1" }),
+        },
+      ]),
     },
     project: {
       // #619 — gate off so dual-destination behavior stays under test.
@@ -102,17 +141,25 @@ vi.mock("../src/lib/publishing/publisher.js", () => ({
   archiveBatch: vi.fn(),
 }));
 
-vi.mock("../src/lib/publishing/jira-publisher.js", () => ({
-  publishBatchToJira: vi.fn(async (opts: { draftIds: string[] }) => ({
-    results: opts.draftIds.map((id: string) => ({
-      status: "created" as const,
-      issueId: `JIRA-${id}`,
-      issueKey: `MET-${id}`,
-      htmlUrl: `https://jira.example.com/browse/MET-${id}`,
-    })),
-    publishedCount: opts.draftIds.length,
-    failedCount: 0,
-  })),
+vi.mock("../src/lib/publishing/jira-publisher.js", async (importOriginal) => ({
+  // The dry run's Jira plan is built by the real mapping (#1103).
+  ...(await importOriginal<typeof import("../src/lib/publishing/jira-publisher.js")>()),
+  // Like the real one, hands each created issue to `onCreated` (#1103 review).
+  publishBatchToJira: vi.fn(
+    async (opts: {
+      draftIds: string[];
+      onCreated?: (draftId: string, r: Record<string, unknown>) => Promise<void>;
+    }) => {
+      const results = opts.draftIds.map((id: string) => ({
+        status: "created" as const,
+        issueId: `JIRA-${id}`,
+        issueKey: `MET-${id}`,
+        htmlUrl: `https://jira.example.com/browse/MET-${id}`,
+      }));
+      for (const [i, r] of results.entries()) await opts.onCreated?.(opts.draftIds[i]!, r);
+      return { results, publishedCount: opts.draftIds.length, failedCount: 0 };
+    },
+  ),
 }));
 
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
@@ -126,6 +173,7 @@ vi.mock("../src/lib/logger.js", () => ({
 }));
 
 import { executeBatch } from "../src/lib/publishing/publishing-service.js";
+import { publishBatchToJira } from "../src/lib/publishing/jira-publisher.js";
 
 beforeEach(() => {
   publishedIssues.length = 0;
@@ -134,7 +182,74 @@ beforeEach(() => {
 });
 afterEach(() => vi.clearAllMocks());
 
+describe("executeBatch — destination=both, dry run (#1103)", () => {
+  it("adds the Jira leg to the stored plan, with the source property, and writes nothing to Jira", async () => {
+    const { prisma } = (await import("../src/lib/prisma.js")) as unknown as {
+      prisma: { publishBatch: { update: Mock<(args: unknown) => Promise<unknown>> } };
+    };
+    await executeBatch({ batchId: "batch_dual_dry", actorId: "user_1" });
+    expect(publishBatchToJira).not.toHaveBeenCalled();
+    const write = prisma.publishBatch.update.mock.calls
+      .map((c) => c[0] as { data: { dryRunPlan?: string } })
+      .find((a) => a.data.dryRunPlan);
+    const plan = JSON.parse(write!.data.dryRunPlan!) as {
+      batchId: string;
+      jira: { projectKey: string; issues: Array<Record<string, unknown>> };
+    };
+    // The GitHub leg's plan is kept; the Jira leg is added beside it.
+    expect(plan.batchId).toBe("batch_dual_dry");
+    expect(plan.jira.projectKey).toBe("MET");
+    expect(plan.jira.issues).toEqual([
+      expect.objectContaining({
+        draftId: "draft_1",
+        title: "Login",
+        labels: ["feature", "sprint-42"],
+        sourceProperty: {
+          key: "metis.source",
+          value: { projectId: "proj_dual", analysisId: "an_1", requirementId: "req_1" },
+        },
+      }),
+    ]);
+  });
+
+  it("a Jira-only project's dry run gets a plan of its Jira leg alone", async () => {
+    const { prisma } = (await import("../src/lib/prisma.js")) as unknown as {
+      prisma: {
+        project: { findUnique: Mock<(args: unknown) => Promise<unknown>> };
+        publishBatch: { update: Mock<(args: unknown) => Promise<unknown>> };
+      };
+    };
+    prisma.project.findUnique.mockResolvedValueOnce({
+      publishDestination: "jira",
+      jiraConnectionId: "jc_1",
+      jiraProjectKey: "MET",
+      requireApprovedReview: false,
+    });
+    const result = await executeBatch({ batchId: "batch_jira_dry", actorId: "user_1" });
+    expect(result.status).toBe("completed");
+    const write = prisma.publishBatch.update.mock.calls
+      .map((c) => c[0] as { data: { dryRunPlan?: string } })
+      .find((a) => a.data.dryRunPlan);
+    const plan = JSON.parse(write!.data.dryRunPlan!) as {
+      actions: unknown[];
+      targetOwner: string;
+      jira: { issues: unknown[] };
+    };
+    expect(plan.actions).toEqual([]);
+    expect(plan.targetOwner).toBe("acme");
+    expect(plan.jira.issues).toHaveLength(1);
+    expect(publishBatchToJira).not.toHaveBeenCalled();
+  });
+});
+
 describe("executeBatch — destination=both", () => {
+  it("#1049 — hands the batch's Additional labels to the Jira leg", async () => {
+    await executeBatch({ batchId: "batch_dual", actorId: "user_1" });
+    expect(publishBatchToJira).toHaveBeenCalledWith(
+      expect.objectContaining({ additionalLabels: ["sprint-42"] }),
+    );
+  });
+
   it("creates separate GitHub and Jira PublishedIssue rows for the same batch+draft", async () => {
     const result = await executeBatch({ batchId: "batch_dual", actorId: "user_1" });
 

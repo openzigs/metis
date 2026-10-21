@@ -59,6 +59,7 @@ import {
 } from "./analysed-repo-guard.js";
 import { assertCodeLinksMatchTarget } from "./draft-code-links.js";
 import { assertNotCrossProject } from "./cross-project-guard.js";
+import { buildSourceMarkerComment, publishableBody, sourceMarkerForDraft } from "./dedup.js";
 import { PublishError, type PublishOctokitLike } from "./types.js";
 
 const log = createChildLogger("draft-pull-request");
@@ -136,6 +137,8 @@ export async function openDraftPullRequest(
     ],
     credentialCheck: "missing",
     pullRequest: null,
+    // #1103 — the comment the PR body ends with, shown by the dry run too.
+    sourceMarker: buildSourceMarkerComment(sourceMarkerForDraft(draft)),
     upstreamCheck: input.dryRun
       ? {
           forkNetworkChecked: false,
@@ -208,7 +211,7 @@ export async function openDraftPullRequest(
     title: draft.title,
     head: branch,
     base,
-    body: prBody(draft.body, draft.id),
+    body: prBody(draft.body, plan.sourceMarker),
   });
 
   await prisma.issueDraft.update({
@@ -265,11 +268,18 @@ function specFile(title: string, body: string): string {
   return `# ${title}\n\n${body.trim()}\n`;
 }
 
-function prBody(body: string, draftId: string): string {
+/**
+ * #1103 — the PR body: the draft (marker-shaped text made inert, as on an
+ * issue), a footer that names no internal id (#1064), and the hidden
+ * `metis-source` comment that routes the PR back to its METIS requirement —
+ * last, where `parseSourceMarker` looks for it.
+ */
+function prBody(body: string, sourceMarker: string | null): string {
   return (
-    `${body.trim()}\n\n---\n` +
-    `Opened as a **draft** by METIS from issue draft \`${draftId}\`. ` +
-    "Review the spec before marking this pull request ready."
+    `${publishableBody(body)}\n\n---\n` +
+    "Opened as a **draft** by METIS from an issue draft. " +
+    "Review the spec before marking this pull request ready." +
+    (sourceMarker ? `\n\n${sourceMarker}\n` : "")
   );
 }
 

@@ -11,9 +11,32 @@ import { getVaultService } from "../vault/vault-service.js";
 import { createJiraClient, JiraApiError, type JiraClient } from "../connectors/jira/jira-client.js";
 import { assertConnectorHostAllowed } from "../connectors/network-allowlist.js";
 import type { JiraCreateIssueFields } from "../connectors/jira/types.js";
-import { publishableLabels } from "./label-sync.js";
+import { jiraLabels } from "./label-sync.js";
 import { bodyWithCodeAsText } from "./draft-code-links.js";
 import { withUnverifiedNote } from "./published-body.js";
+import { publishableBody, sourceIds, sourceMarkerForDraft } from "./dedup.js";
+
+/**
+ * #1103 — the Jira issue property that routes an issue back to its METIS
+ * requirement: `{ projectId, analysisId, requirementId }`. A property, not
+ * text: #1064 keeps ids out of the visible description, and Jira shows an
+ * HTML comment as text or drops it. Like `parseSourceMarker`'s comment, it is
+ * a HINT — anyone who can edit the issue can rewrite it — so whatever reads it
+ * must confirm it against the `PublishedIssue` rows, never authorise on it.
+ */
+export const JIRA_SOURCE_PROPERTY_KEY = "metis.source";
+
+/** The draft's columns the source property is built from. */
+interface DraftSource {
+  projectId: string;
+  requirementId: string | null;
+  metadata?: string | null;
+}
+
+/** #1103 — the `metis.source` value for a draft, or null when it has no plain project id. */
+export function jiraSourceProperty(draft: DraftSource): ReturnType<typeof sourceIds> {
+  return sourceIds(sourceMarkerForDraft({ ...draft, metadata: draft.metadata ?? null }));
+}
 
 const log = createChildLogger("jira-publisher");
 
@@ -112,6 +135,7 @@ function mapDraftToJiraFields(
   },
   projectKey: string,
   mapping: JiraFieldMapping,
+  additionalLabels: readonly string[] = [],
 ): JiraCreateIssueFields {
   const issueType = draft.draftType === "epic" ? "Epic" : mapping.issueType || "Story";
   const draftLabels = safeParseLabelArray(draft.labels);
@@ -124,13 +148,15 @@ function mapDraftToJiraFields(
     // from, so the Related code section goes out in its plain form: paths and
     // symbols as code, with no owner, commit SHA or URL of that repository.
     // #1276 — a draft labelled `unverified` says so in a sentence instead.
-    description: withUnverifiedNote(bodyWithCodeAsText(draft), draftLabels),
+    // #1103 — marker-shaped text a stored draft may hold is sent inert, as on
+    // GitHub (`publishableBody`); drift detection compares against that form.
+    description: withUnverifiedNote(publishableBody(bodyWithCodeAsText(draft)), draftLabels),
     ...mapping.additionalFields,
   };
 
   // Map labels — never a hidden `finding:<id>` traceability label (#744), nor
-  // the internal `unverified` (#1276).
-  const labels = publishableLabels(draftLabels);
+  // the internal `unverified` (#1276). #1049 — plus the batch's requested ones.
+  const labels = jiraLabels(draftLabels, additionalLabels);
   if (labels.length > 0) {
     fields.labels = labels;
   }
@@ -152,6 +178,84 @@ function safeParseLabelArray(labelsJson: string): string[] {
   }
 }
 
+/**
+ * #1103 — write `metis.source` on a just-created issue. Best effort: the issue
+ * exists whether or not this succeeds, so a refusal (a permission the token
+ * lacks, an old Data Center) is logged and audited, never turned into a
+ * failed publish that a retry would duplicate.
+ */
+async function setSourceProperty(
+  client: JiraClient,
+  issueKey: string,
+  draft: DraftSource,
+  opts: { draftId: string; batchId: string; actorId: string },
+): Promise<void> {
+  const value = jiraSourceProperty(draft);
+  if (!value) return;
+  try {
+    await client.setIssueProperty(issueKey, JIRA_SOURCE_PROPERTY_KEY, value);
+  } catch (err) {
+    const status = err instanceof JiraApiError ? err.status : null;
+    log.warn("Could not set the METIS source property on a Jira issue", {
+      draftId: opts.draftId,
+      issueKey,
+      status,
+    });
+    audit({
+      actor: { id: opts.actorId },
+      action: "publish.jira.source_property_failed",
+      target: { type: "issue_draft", id: opts.draftId },
+      metadata: { batchId: opts.batchId, jiraKey: issueKey, status },
+    });
+  }
+}
+
+/** #1103 — what one Jira issue of a batch will be created with. */
+export interface JiraPlannedIssue {
+  draftId: string;
+  title: string;
+  issueType: string;
+  labels: string[];
+  description: string;
+  sourceProperty: { key: string; value: NonNullable<ReturnType<typeof sourceIds>> } | null;
+}
+
+/**
+ * #1103 — the Jira leg of a dry run: each issue as `publishDraftToJira` would
+ * create it (the same field mapping) and the `metis.source` property it would
+ * then set. Pure: no Jira call.
+ */
+export function planJiraIssues(
+  drafts: ReadonlyArray<
+    {
+      id: string;
+      title: string;
+      body: string;
+      draftType: string;
+      labels: string;
+      storyPoints: number | null;
+    } & DraftSource
+  >,
+  opts: { projectKey: string; additionalLabels?: readonly string[]; mapping?: JiraFieldMapping },
+): { projectKey: string; issues: JiraPlannedIssue[] } {
+  const mapping = opts.mapping ?? DEFAULT_FIELD_MAPPING;
+  return {
+    projectKey: opts.projectKey,
+    issues: drafts.map((d) => {
+      const fields = mapDraftToJiraFields(d, opts.projectKey, mapping, opts.additionalLabels);
+      const value = jiraSourceProperty(d);
+      return {
+        draftId: d.id,
+        title: fields.summary,
+        issueType: fields.issuetype.name,
+        labels: Array.isArray(fields.labels) ? (fields.labels as string[]) : [],
+        description: String(fields.description ?? ""),
+        sourceProperty: value ? { key: JIRA_SOURCE_PROPERTY_KEY, value } : null,
+      };
+    }),
+  };
+}
+
 // ---- Publishing API --------------------------------------------------------
 
 /**
@@ -164,6 +268,15 @@ export async function publishDraftToJira(opts: {
   projectKey: string;
   fieldMapping?: JiraFieldMapping;
   actorId: string;
+  /** #1049 — the batch's "Additional labels", applied after the draft's own. */
+  additionalLabels?: readonly string[];
+  /**
+   * #1103 review — records the created issue (the `PublishedIssue` row) as
+   * soon as it exists, BEFORE the `metis.source` round trip: a crash or a
+   * timeout there must not leave a Jira issue METIS has no record of, which a
+   * retry would file again. An error here propagates, as the row write did.
+   */
+  onCreated?: (result: JiraPublishResult) => Promise<void>;
 }): Promise<JiraPublishResult> {
   const draft = await prisma.issueDraft.findFirst({
     where: { id: opts.draftId, deletedAt: null },
@@ -174,28 +287,22 @@ export async function publishDraftToJira(opts: {
 
   const mapping = opts.fieldMapping ?? DEFAULT_FIELD_MAPPING;
 
+  let client: JiraClient;
+  let result: JiraPublishResult;
   try {
-    const { client, baseUrl } = await resolveJiraClient(opts.connectionId);
-    const fields = mapDraftToJiraFields(draft, opts.projectKey, mapping);
+    const resolved = await resolveJiraClient(opts.connectionId);
+    client = resolved.client;
+    const fields = mapDraftToJiraFields(
+      draft,
+      opts.projectKey,
+      mapping,
+      opts.additionalLabels ?? [],
+    );
     const created = await client.createIssue(fields);
-
-    const htmlUrl = `${baseUrl.replace(/\/+$/, "")}/browse/${created.key}`;
-
-    audit({
-      actor: { id: opts.actorId },
-      action: "publish.jira.issue_created",
-      target: { type: "issue_draft", id: opts.draftId },
-      metadata: {
-        batchId: opts.batchId,
-        jiraKey: created.key,
-        projectKey: opts.projectKey,
-      },
-    });
-
-    return {
+    result = {
       issueKey: created.key,
       issueId: created.id,
-      htmlUrl,
+      htmlUrl: `${resolved.baseUrl.replace(/\/+$/, "")}/browse/${created.key}`,
       status: "created",
     };
   } catch (err) {
@@ -212,6 +319,20 @@ export async function publishDraftToJira(opts: {
       errorMessage: msg,
     };
   }
+
+  audit({
+    actor: { id: opts.actorId },
+    action: "publish.jira.issue_created",
+    target: { type: "issue_draft", id: opts.draftId },
+    metadata: {
+      batchId: opts.batchId,
+      jiraKey: result.issueKey,
+      projectKey: opts.projectKey,
+    },
+  });
+  await opts.onCreated?.(result);
+  await setSourceProperty(client, result.issueKey, draft, opts);
+  return result;
 }
 
 /**
@@ -224,6 +345,10 @@ export async function publishBatchToJira(opts: {
   projectKey: string;
   fieldMapping?: JiraFieldMapping;
   actorId: string;
+  /** #1049 — the batch's "Additional labels", applied to every issue. */
+  additionalLabels?: readonly string[];
+  /** #1103 review — records each created issue before its source property is set. */
+  onCreated?: (draftId: string, result: JiraPublishResult) => Promise<void>;
   /** Inter-call delay (ms) to respect Jira rate limits. Default 500ms. */
   delayMs?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -248,6 +373,8 @@ export async function publishBatchToJira(opts: {
       projectKey: opts.projectKey,
       fieldMapping: opts.fieldMapping,
       actorId: opts.actorId,
+      additionalLabels: opts.additionalLabels,
+      ...(opts.onCreated ? { onCreated: (r) => opts.onCreated!(draftId, r) } : {}),
     });
 
     results.push(result);

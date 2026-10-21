@@ -52,6 +52,8 @@ export interface JiraFetchInit {
   method?: string;
   body?: unknown;
   headers?: Record<string, string>;
+  /** A success needs no body read: Jira may send an empty 200/201 (an issue property PUT). */
+  ignoreBody?: boolean;
 }
 
 /**
@@ -100,7 +102,7 @@ async function jiraFetch(
     throw new JiraApiError(response.status, "JIRA_API_ERROR", msg, body);
   }
 
-  if (response.status === 204) return null;
+  if (response.status === 204 || init.ignoreBody) return null;
 
   return response.json();
 }
@@ -114,6 +116,12 @@ export interface JiraClient {
   searchIssues(jql: string, opts?: JiraSearchOptions): Promise<JiraSearchResult>;
   getIssue(key: string, expand?: string[]): Promise<JiraIssueDetail>;
   createIssue(fields: JiraCreateIssueFields): Promise<JiraIssue>;
+  /**
+   * #1103 — set an issue entity property (`PUT /issue/{key}/properties/{name}`):
+   * JSON stored on the issue, readable through the API, not shown in its
+   * description. Cloud and Data Center both support it.
+   */
+  setIssueProperty(issueKey: string, propertyKey: string, value: unknown): Promise<void>;
   searchIssuesAll(
     jql: string,
     opts?: Omit<JiraSearchOptions, "startAt">,
@@ -244,6 +252,19 @@ export function createJiraClient(
     return data;
   }
 
+  async function setIssueProperty(
+    issueKey: string,
+    propertyKey: string,
+    value: unknown,
+  ): Promise<void> {
+    await jiraFetch(
+      config,
+      `${prefix}/issue/${encodeURIComponent(issueKey)}/properties/${encodeURIComponent(propertyKey)}`,
+      { method: "PUT", body: value, ignoreBody: true },
+      fetchFn,
+    );
+  }
+
   async function* searchIssuesAll(
     jql: string,
     opts: Omit<JiraSearchOptions, "startAt"> = {},
@@ -270,6 +291,7 @@ export function createJiraClient(
     searchIssues,
     getIssue,
     createIssue,
+    setIssueProperty,
     searchIssuesAll,
     async fetchRaw(absoluteUrl: string) {
       return fetchJiraRaw(absoluteUrl, {
@@ -357,6 +379,9 @@ export function createMockJiraClient(mockData: MockJiraData = {}): JiraClient {
         self: "https://jira.example.com/rest/api/2/issue/10001",
         fields: {},
       };
+    },
+    async setIssueProperty() {
+      failIfNeeded();
     },
     async *searchIssuesAll(_jql, _opts = {}) {
       failIfNeeded();

@@ -519,3 +519,66 @@ describe("vaultRefHint (#1094)", () => {
     expect(vaultRefHint("my-token-label")).toBe(`Must be written as ${VAULT_REF_EXAMPLE}.`);
   });
 });
+
+describe("#1103 — the Jira leg of a dry run", () => {
+  const JIRA: NonNullable<DryRunPlan["jira"]> = {
+    projectKey: "MET",
+    issues: [
+      {
+        draftId: "draft_000000001",
+        title: "Login",
+        issueType: "Story",
+        labels: ["feature", "sprint-42"],
+        description: "Body",
+        sourceProperty: {
+          key: "metis.source",
+          value: { projectId: "p1", analysisId: "a1", requirementId: "r1" },
+        },
+      },
+      {
+        draftId: "draft_000000002",
+        title: "Logout",
+        issueType: "Story",
+        labels: [],
+        description: "Body",
+        sourceProperty: null,
+      },
+    ],
+  };
+
+  it("lists the Jira issues and says which carry the hidden metis.source property", () => {
+    render(<DryRunPlanPanel plan={makePlan({ jira: JIRA })} />);
+    const jira = screen.getByTestId("dry-run-jira");
+    expect(jira).toHaveTextContent("Jira — 2 issues in project MET");
+    expect(jira).toHaveTextContent("Story: Login · labels feature, sprint-42");
+    expect(screen.getByTestId("dry-run-jira-source")).toHaveTextContent(
+      "1 of 2 issues also gets the issue property metis.source",
+    );
+    // The GitHub leg is still described.
+    expect(screen.getAllByTestId("dry-run-row").length).toBeGreaterThan(0);
+  });
+
+  it("a Jira-only plan shows the Jira leg alone, without GitHub credential text", () => {
+    render(
+      <DryRunPlanPanel
+        plan={makePlan({
+          actions: [],
+          totalActions: 0,
+          credentialResolved: false,
+          credentialCheck: "missing",
+          jira: { ...JIRA, issues: [JIRA.issues[0]!] },
+        })}
+      />,
+    );
+    expect(screen.getByTestId("dry-run-jira-source")).toHaveTextContent(
+      "Each issue also gets the issue property metis.source",
+    );
+    expect(screen.queryByText(/vault secret ref/)).toBeNull();
+    expect(screen.queryByTestId("dry-run-row")).toBeNull();
+  });
+
+  it("a plan without a Jira leg shows none", () => {
+    render(<DryRunPlanPanel plan={makePlan()} />);
+    expect(screen.queryByTestId("dry-run-jira")).toBeNull();
+  });
+});

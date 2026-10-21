@@ -44,10 +44,13 @@ describe("pnpm typecheck covers @metis/server tests (#698)", () => {
     //  - The src-only pass stays: its `rootDir: "src"` rejects a src file importing from
     //    outside src/ (TS6059, which breaks `build`); the test config's `rootDir: ".."`
     //    cannot, so it is not a full superset.
-    //  - The test config peaks at ~6.7 GB and OOMs at Node's default heap. `node --max-...`
-    //    rather than a POSIX `NODE_OPTIONS=` prefix, so the script also runs on Windows.
+    //  - The test config OOMs at Node's default heap. It peaked at ~6.7 GB when this was
+    //    written and at ~8.43 GB by 2026-10 (PR #1308), past the original 8192 MB cap, so
+    //    CI's `api` typecheck died (exit 134); 12288 MB fits the 16 GB hosted runner.
+    //    `node --max-...` rather than a POSIX `NODE_OPTIONS=` prefix, so the script also
+    //    runs on Windows.
     expect(scripts().typecheck).toBe(
-      "tsc --noEmit -p tsconfig.json && node --max-old-space-size=8192 node_modules/typescript/bin/tsc -p tsconfig.test.json",
+      "tsc --noEmit -p tsconfig.json && node --max-old-space-size=12288 node_modules/typescript/bin/tsc -p tsconfig.test.json",
     );
   });
 

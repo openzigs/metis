@@ -212,7 +212,54 @@ export interface DryRunPlanPanelProps {
   maxRows?: number;
 }
 
+/**
+ * #1103 — the Jira leg of a dry run: what each Jira issue is created with, and
+ * the hidden `metis.source` property that routes it back to its requirement.
+ */
+export function JiraDryRunSection({ jira }: { jira: NonNullable<DryRunPlan["jira"]> }) {
+  const withProperty = jira.issues.filter((i) => i.sourceProperty !== null).length;
+  return (
+    <div className="mt-3 border-t border-border pt-3" data-testid="dry-run-jira">
+      <h4 className="text-sm font-semibold">
+        Jira — {jira.issues.length} issue{jira.issues.length === 1 ? "" : "s"} in project{" "}
+        <span className="font-mono">{jira.projectKey}</span>
+      </h4>
+      <p className="mt-1 text-xs text-muted-foreground" data-testid="dry-run-jira-source">
+        {withProperty === jira.issues.length
+          ? "Each issue"
+          : `${withProperty} of ${jira.issues.length} issues`}{" "}
+        also gets the issue property <span className="font-mono">metis.source</span>, holding the
+        METIS project, analysis and requirement it came from. It is not shown in the description.
+        Nothing was written to Jira.
+      </p>
+      <ul className="mt-2 list-disc pl-4 text-xs" aria-label="Jira issues">
+        {jira.issues.map((i) => (
+          <li key={i.draftId}>
+            {i.issueType}: {i.title}
+            {i.labels.length > 0 ? (
+              <span className="text-muted-foreground"> · labels {i.labels.join(", ")}</span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
+  // #1103 — a Jira-only project's plan has no GitHub leg to describe.
+  if (plan.jira && plan.actions.length === 0) {
+    return (
+      <section className="mt-4 rounded border border-border p-3" data-testid="dry-run-plan">
+        <h3 className="text-sm font-semibold">Dry-run plan</h3>
+        <JiraDryRunSection jira={plan.jira} />
+      </section>
+    );
+  }
+  return <GitHubDryRunPlan plan={plan} maxRows={maxRows} />;
+}
+
+function GitHubDryRunPlan({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
   const summary = summarizeDryRunPlan(plan);
   const warning = credentialWarning(plan);
   const gateWarning = approvalGateWarning(plan);
@@ -314,6 +361,7 @@ export function DryRunPlanPanel({ plan, maxRows = 25 }: DryRunPlanPanelProps) {
           {expanded ? "Show fewer steps" : `Show all ${rows.length} steps`}
         </Button>
       )}
+      {plan.jira ? <JiraDryRunSection jira={plan.jira} /> : null}
     </section>
   );
 }

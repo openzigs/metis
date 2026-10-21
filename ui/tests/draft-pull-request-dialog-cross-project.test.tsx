@@ -128,6 +128,57 @@ describe("<DraftPullRequestDialog /> — cross-project confirm (#1180)", () => {
     expect(draftPullRequest).toHaveBeenCalledTimes(2);
   });
 
+  it("#1211 — the plan says the live run will ask when the server sends a notice", async () => {
+    draftPullRequest.mockResolvedValueOnce({
+      ...PLAN,
+      crossProject: { repo: "openzigs/flux-v2", projects: ["Flux sandbox"] },
+    });
+    render(
+      <DraftPullRequestDialog
+        projectId="proj_1"
+        draft={{ id: "d1", title: "Spec" }}
+        onOpenChange={() => {}}
+      />,
+      { wrapper: makeWrapper({ withAuth: false }) },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Plan (dry run)" }));
+    expect(await screen.findByTestId("cross-project-dry-run-notice")).toHaveTextContent(
+      "openzigs/flux-v2 is already connected to the project “Flux sandbox”. Publishing for real will ask you to confirm.",
+    );
+  });
+
+  it("#1103 — the plan shows the hidden comment the PR body ends with", async () => {
+    const marker = "<!-- metis-source: project=p1 analysis=a1 requirement=r1 -->";
+    draftPullRequest.mockResolvedValueOnce({ ...PLAN, sourceMarker: marker });
+    render(
+      <DraftPullRequestDialog
+        projectId="proj_1"
+        draft={{ id: "d1", title: "Spec" }}
+        onOpenChange={() => {}}
+      />,
+      { wrapper: makeWrapper({ withAuth: false }) },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Plan (dry run)" }));
+    const line = await screen.findByTestId("draft-pr-source-marker");
+    expect(line).toHaveTextContent("ends with a hidden comment");
+    expect(line).toHaveTextContent(marker);
+  });
+
+  it("#1211 — a plan without a notice shows none", async () => {
+    draftPullRequest.mockResolvedValueOnce(PLAN);
+    render(
+      <DraftPullRequestDialog
+        projectId="proj_1"
+        draft={{ id: "d1", title: "Spec" }}
+        onOpenChange={() => {}}
+      />,
+      { wrapper: makeWrapper({ withAuth: false }) },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Plan (dry run)" }));
+    await screen.findByTestId("draft-pr-plan");
+    expect(screen.queryByTestId("cross-project-dry-run-notice")).not.toBeInTheDocument();
+  });
+
   it("any other failure opens no confirm", async () => {
     draftPullRequest
       .mockResolvedValueOnce(PLAN)

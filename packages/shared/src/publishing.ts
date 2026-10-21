@@ -119,6 +119,28 @@ export const publishBatchSchema = z
   .merge(timestampsSchema);
 export type PublishBatch = z.infer<typeof publishBatchSchema>;
 
+/**
+ * #1049 review — the longest label name GitHub accepts: a longer one is refused
+ * with 422 (measured in #988). A batch's labels now go on every issue, so one
+ * over-long label would fail the whole batch rather than only its label sync.
+ */
+export const GITHUB_LABEL_NAME_MAX = 50;
+
+/** Control characters, and the bidi controls that can reorder displayed text. */
+const LABEL_CONTROL_RE = /[\p{Cc}\p{Bidi_Control}]/u;
+
+/** #1049 review — one "Additional labels" entry: trimmed, 1–50 characters, printable. */
+export const batchLabelSchema = z
+  .string()
+  .trim()
+  .min(1, "A label cannot be blank.")
+  .refine((s) => [...s].length <= GITHUB_LABEL_NAME_MAX, {
+    message: `A label can be at most ${GITHUB_LABEL_NAME_MAX} characters (GitHub's limit).`,
+  })
+  .refine((s) => !LABEL_CONTROL_RE.test(s), {
+    message: "A label cannot contain control or text-direction characters.",
+  });
+
 export const createPublishBatchSchema = z.object({
   projectId: idSchema,
   targetOwner: githubOwnerSchema,
@@ -132,7 +154,7 @@ export const createPublishBatchSchema = z.object({
   provider: z.enum(PUBLISH_PROVIDERS).default("github"),
   draftIds: z.array(idSchema).min(1).max(MAX_BATCH_ISSUES),
   dryRun: z.boolean().default(false),
-  additionalLabels: z.array(z.string().min(1).max(64)).max(32).default([]),
+  additionalLabels: z.array(batchLabelSchema).max(32).default([]),
   milestone: z.number().int().min(1).optional(),
   secretRef: z.string().min(1).max(256).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
@@ -393,6 +415,36 @@ export const dryRunPlanSchema = z.object({
     })
     .nullable()
     .default(null),
+  /**
+   * #1103 — the Jira leg of a batch whose project publishes to Jira (or to
+   * both): each issue as it would be created, and the hidden `metis.source`
+   * issue property that routes it back to its METIS requirement. Absent when
+   * the batch does not publish to Jira, and on plans stored before #1103.
+   */
+  jira: z
+    .object({
+      projectKey: z.string(),
+      issues: z.array(
+        z.object({
+          draftId: idSchema,
+          title: z.string(),
+          issueType: z.string(),
+          labels: z.array(z.string()),
+          description: z.string(),
+          sourceProperty: z
+            .object({
+              key: z.string(),
+              value: z.object({
+                projectId: z.string(),
+                analysisId: z.string().nullable(),
+                requirementId: z.string().nullable(),
+              }),
+            })
+            .nullable(),
+        }),
+      ),
+    })
+    .optional(),
 });
 export type DryRunPlan = z.infer<typeof dryRunPlanSchema>;
 
@@ -460,9 +512,21 @@ export interface DraftPullRequestResult {
   /** Set on a live run: the draft PR opened (or the open one found for this branch). */
   pullRequest: { number: number; htmlUrl: string; reused: boolean } | null;
   /**
+   * #1103 — the hidden `<!-- metis-source: … -->` comment the PR body ends
+   * with, routing it back to its METIS requirement; null when the draft has
+   * no plain project id. Not shown when GitHub renders the body.
+   */
+  sourceMarker: string | null;
+  /**
    * What the never-target-the-analysed-repo guard covered. A dry run makes no
    * network call, so it compares the target with the project's repo
    * connections only; the target's fork parent/source is checked on a live run.
    */
   upstreamCheck: { forkNetworkChecked: boolean; note: string };
+  /**
+   * #1211 — on a dry run whose target another project has connected: the live
+   * run will ask to confirm. `projects` names only those the caller may open.
+   * Computed per response, never stored.
+   */
+  crossProject?: { repo: string; projects: string[] };
 }
