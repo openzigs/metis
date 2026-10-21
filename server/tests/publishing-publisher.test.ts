@@ -293,7 +293,12 @@ import {
   __resetPublishOctokitCache,
   __setPublishOctokitFactory,
 } from "../src/lib/publishing/octokit-factory.js";
-import { runBatch, archiveBatch, previewBatchPlan } from "../src/lib/publishing/publisher.js";
+import {
+  runBatch,
+  archiveBatch,
+  configurePublisher,
+  previewBatchPlan,
+} from "../src/lib/publishing/publisher.js";
 import { audit } from "../src/lib/audit/audit-service.js";
 import { prisma } from "../src/lib/prisma.js";
 import { resolveVaultRef } from "../src/lib/connectors/vault-resolver.js";
@@ -338,8 +343,10 @@ function makeRemoteIssue(number: number, body: string): FakeIssue {
     node_id: `I_kwDOfake${number}`,
     number,
     html_url: `https://github.com/acme/metis/issues/${number}`,
+    // #1106 review — the recorded fixture names octocat/Hello-World here.
+    repository_url: "https://api.github.com/repos/acme/metis",
     body,
-  };
+  } as FakeIssue;
 }
 
 const remoteIssues = new Map<number, FakeIssue>();
@@ -2559,9 +2566,13 @@ describe("reconcileFromRemote — the marker's hash is checked against what METI
     };
   }
 
+  /** Every issue read the fake tracker was sent (#1106 review). */
+  const trackerReads: string[] = [];
+
   /** The fake tracker, recording every write it is sent. */
   function tracker(): string[] {
     const writes: string[] = [];
+    trackerReads.length = 0;
     __setPublishOctokitFactory(async () => {
       const base = makeFakeOctokit();
       return fakeOctokit({
@@ -2571,6 +2582,9 @@ describe("reconcileFromRemote — the marker's hash is checked against what METI
             /\/issues(\/\d+)?$/.test(args.url ?? "")
           ) {
             writes.push(`${args.method} ${args.url}`);
+          }
+          if ((args.method ?? "GET") === "GET" && /\/issues/.test(args.url ?? "")) {
+            trackerReads.push(`GET ${args.url}`);
           }
           return base.request(args);
         },
@@ -2624,6 +2638,7 @@ describe("reconcileFromRemote — the marker's hash is checked against what METI
     expect(issues.get("batch_2::f2")!.issueNumber).not.toBe(42);
     // #1106 — "Billing" has no row, so the tracker was never consulted for it:
     // the edited marker could not even be read, let alone start a match.
+    expect(trackerReads).toEqual([]);
 
     // When "Login" itself is published again (its row's batch archived, so the
     // tracker is checked), the edited hash is one METIS cannot vouch for: no
@@ -3297,6 +3312,106 @@ describe("#1106 — the sweep matches from METIS's own rows; the tracker's marke
     });
   });
 
+  describe("a transferred issue answered through a redirect (#1106 review)", () => {
+    it.each([
+      ["repository_url", { repository_url: "https://api.github.com/repos/acme/elsewhere" }],
+      ["html_url", { html_url: "https://github.com/acme/elsewhere/issues/42" }],
+      ["both missing", { repository_url: undefined, html_url: "not a url" }],
+    ])("same number, but %s names another repository: not matched", async (_label, over) => {
+      seedArchivedLogin();
+      const calls = tracker((args) =>
+        /\/issues\/42$/.test(args.url ?? "") && (args.method ?? "GET") === "GET"
+          ? Promise.resolve({
+              status: 200,
+              headers: {},
+              data: {
+                ...makeRemoteIssue(42, `login body\n\n${marker("f1", H_LOGIN)}\n`),
+                ...over,
+              },
+            })
+          : null,
+      );
+      batch2(["f1"]);
+      await run2();
+      expect(writes(calls)).toEqual(["POST /repos/acme/metis/issues"]);
+    });
+
+    it("the same repository in another letter case is still this one", async () => {
+      seedArchivedLogin();
+      const calls = tracker((args) =>
+        /\/issues\/42$/.test(args.url ?? "") && (args.method ?? "GET") === "GET"
+          ? Promise.resolve({
+              status: 200,
+              headers: {},
+              data: {
+                ...makeRemoteIssue(42, `login body\n\n${marker("f1", H_LOGIN)}\n`),
+                repository_url: "https://api.github.com/repos/Acme/Metis",
+                html_url: "https://github.com/Acme/Metis/issues/42",
+              },
+            })
+          : null,
+      );
+      batch2(["f1"]);
+      await run2();
+      expect(writes(calls)).toEqual([]);
+    });
+  });
+
+  describe("progress and timing for the reads (#1106 review)", () => {
+    it("each read emits a dedup-scan progress event", async () => {
+      const progress: Array<Record<string, unknown>> = [];
+      configurePublisher({
+        emitter: {
+          status: () => undefined,
+          progress: (e) => progress.push(e as unknown as Record<string, unknown>),
+          completed: () => undefined,
+        },
+      });
+      try {
+        seedArchivedLogin();
+        tracker();
+        batch2(["f1"]);
+        await run2();
+      } finally {
+        configurePublisher({ emitter: undefined });
+      }
+      expect(progress).toContainEqual(
+        expect.objectContaining({
+          phase: "dedup-scan",
+          step: "reading-issue",
+          current: 1,
+          total: 1,
+          draftId: "f1",
+          issueNumber: 42,
+        }),
+      );
+    });
+
+    it("the dry-run estimate counts one call per issue read at publish", async () => {
+      seedArchivedLogin();
+      batch2(["f1"], true);
+      await runBatch({
+        batchId: "batch_2_dry",
+        dryRun: true,
+        secretRef: null,
+        sleep: noopSleep,
+        rateLimit: {
+          delayMs: 1000,
+          jitterMs: 0,
+          secondaryBackoffBaseMs: 0,
+          secondaryBackoffMaxMs: 0,
+          maxRetries: 0,
+          backoffBudgetMs: 0,
+        },
+      });
+      const plan = JSON.parse(batches.get("batch_2_dry")!.dryRunPlan!) as {
+        totalActions: number;
+        estimatedDurationMs: number;
+      };
+      expect(plan.estimatedDurationMs).toBe((plan.totalActions + 1) * 1000);
+    });
+  });
+
   describe("item 5 — no page limit", () => {
     it("recovers a draft whose issue sits past the first 100 metis-generated issues", async () => {
       for (let n = 1; n <= 150; n += 1) {
@@ -3312,27 +3427,57 @@ describe("#1106 — the sweep matches from METIS's own rows; the tracker's marke
   });
 
   describe("item 6 — a failed read is logged and reported on the batch", () => {
-    it("a failed GET does not create a possible duplicate; the batch says why", async () => {
+    /** Every request the fake tracker is sent, labels included; issue reads fail with 502. */
+    function failingReads(): string[] {
+      const all: string[] = [];
+      __setPublishOctokitFactory(async () => {
+        const base = makeFakeOctokit();
+        return fakeOctokit({
+          request: async (args) => {
+            const method = args.method ?? "GET";
+            all.push(`${method} ${args.url}`);
+            if (method === "GET" && /\/issues\/\d+$/.test(args.url ?? "")) {
+              throw Object.assign(new Error("Bad Gateway"), { status: 502 });
+            }
+            return base.request(args);
+          },
+        });
+      });
+      return all;
+    }
+
+    it("a failed read stops the batch before ANY write: nothing created, nothing rolled back", async () => {
+      // Two drafts whose issues cannot be read, one new draft. Counting the
+      // two as failed drafts would cross the >50% auto-rollback threshold and
+      // close the new draft's issue, which has nothing to do with them.
       seedArchivedLogin();
-      seedDraft({ id: "f2", title: "Billing", body: "billing body", status: "approved" });
-      seedDraft({ id: "f3", title: "Search", body: "search body", status: "approved" });
-      const calls = tracker((args) =>
-        (args.method ?? "GET") === "GET" && /\/issues/.test(args.url ?? "")
-          ? Promise.reject(Object.assign(new Error("Bad Gateway"), { status: 502 }))
-          : null,
+      seedDraft({ id: "f4", title: "Export", body: "export body", status: "approved" });
+      issues.set(
+        "batch_1::f4",
+        row({
+          id: "pi_44",
+          draftId: "f4",
+          issueNumber: 44,
+          dedupHash: computeDedupHash("acme", "metis", "Export"),
+        }),
       );
-      batch2(["f1", "f2", "f3"]);
-      await run2();
-      // f2 and f3 have no row: created. f1 may be #42: not created, failed.
-      expect(writes(calls)).toEqual([
-        "POST /repos/acme/metis/issues",
-        "POST /repos/acme/metis/issues",
+      seedDraft({ id: "f2", title: "Billing", body: "billing body", status: "approved" });
+      const all = failingReads();
+      batch2(["f1", "f4", "f2"]);
+      const rowsBefore = issues.size;
+      expect((await run2()).status).toBe("failed");
+      // Only the auth check and the two reads: no label sync, no POST, no close.
+      expect(all.filter((c) => !c.startsWith("GET "))).toEqual([]);
+      expect(all.filter((c) => /\/issues\/\d+$/.test(c))).toEqual([
+        "GET /repos/acme/metis/issues/42",
+        "GET /repos/acme/metis/issues/44",
       ]);
-      expect(issues.get("batch_2::f1")).toMatchObject({ status: "failed", issueNumber: 0 });
-      expect(issues.get("batch_2::f1")!.errorMessage).toMatch(/#42/);
+      expect(issues.size).toBe(rowsBefore);
+      expect(remoteIssues.size).toBe(1);
+      for (const id of ["f1", "f4", "f2"]) expect(drafts.get(id)!.status).toBe("approved");
       const b = batches.get("batch_2")!;
-      expect(b.failedCount).toBe(1);
-      expect(b.errorMessage).toMatch(/could not read issue #42/);
+      expect(b).toMatchObject({ status: "failed", publishedCount: 0, failedCount: 0 });
+      expect(b.errorMessage).toMatch(/could not read issue #42, #44 .*retry the batch/);
       expect(audit).toHaveBeenCalledWith(
         expect.objectContaining({
           action: "publish.reconcile.read_failed",
@@ -3340,6 +3485,56 @@ describe("#1106 — the sweep matches from METIS's own rows; the tracker's marke
           metadata: expect.objectContaining({ status: 502 }),
         }),
       );
+      expect(audit).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: "publish.issue.closed" }),
+      );
+    });
+
+    it("re-running the same batch after a failed read records the whole row (ids, link, no stale error)", async () => {
+      seedArchivedLogin();
+      batch2(["f1"]);
+      // A row an earlier failed run of this batch left: no issue, an error.
+      issues.set(
+        "batch_2::f1",
+        row({
+          id: "pi_2",
+          batchId: "batch_2",
+          status: "failed",
+          issueNumber: 0,
+          issueId: "",
+          htmlUrl: "",
+          dedupHash: null,
+          bodyHash: null,
+          errorMessage: "simulated earlier failure",
+          publishedAt: new Date("2026-10-10T00:00:00Z"),
+        }),
+      );
+      failingReads();
+      expect((await run2()).status).toBe("failed");
+      expect(issues.get("batch_2::f1")!.errorMessage).toBe("simulated earlier failure");
+
+      // GitHub is back: the same batch is run again.
+      __resetPublishOctokitCache();
+      const calls = tracker();
+      expect((await run2()).status).toBe("completed");
+      expect(writes(calls)).toEqual([]);
+      expect(issues.get("batch_2::f1")).toMatchObject({
+        issueNumber: 42,
+        issueId: "I_kwDOfake42",
+        htmlUrl: "https://github.com/acme/metis/issues/42",
+        status: "updated",
+        dedupHash: H_LOGIN,
+        bodyHash: computeBodyHash("login body"),
+        errorMessage: null,
+      });
+      // Drift detection's lookup (`reconcileIssueChange`): the newest row
+      // whose issueId is the webhook's node id. It must be this batch's row.
+      const byNodeId = [...issues.values()]
+        .filter((r) => r.issueId === "I_kwDOfake42")
+        .sort(
+          (a, b) => b.publishedAt.getTime() - a.publishedAt.getTime() || (b.id > a.id ? 1 : -1),
+        );
+      expect(byNodeId[0]).toMatchObject({ batchId: "batch_2", errorMessage: null });
     });
 
     it("an issue deleted on the tracker (404) is not a failure: the draft is created", async () => {

@@ -165,7 +165,8 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
     targetBaseUrl: input.targetBaseUrl,
     provider: input.provider,
     totalActions: actions.length,
-    estimatedDurationMs: actions.length * input.perCallMs,
+    // #1106 review — plus one read per issue the live run checks on the tracker.
+    estimatedDurationMs: (actions.length + (input.mayMatch?.size ?? 0)) * input.perCallMs,
     actions,
     credentialResolved: credential.check === "resolved",
     credentialCheck: credential.check,

@@ -9,6 +9,6 @@ section: Fixed
   draft at another issue.
 - The dry run marks each draft whose issue is checked at publish as "may match
   existing issue #N". Recovery no longer stops at 100 `metis-generated` issues.
-- If GitHub cannot be read for such an issue, the draft is not created as a
-  possible duplicate. It is marked failed and the batch says which issue could
-  not be read.
+- If GitHub cannot be read for such an issue, the batch stops before writing
+  anything, so no possible duplicate is created and nothing is rolled back. The
+  batch says which issue could not be read.

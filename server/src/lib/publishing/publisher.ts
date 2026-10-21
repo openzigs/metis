@@ -429,21 +429,8 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
   });
   await verifyAuthScope(client, { owner: target.owner, repo: target.repo });
 
-  emitter().progress({
-    batchId: batch.id,
-    phase: "sync-labels",
-    step: "starting",
-  });
-  // #744 — only labels some draft carries (plus the batch's requested ones);
-  // the dry-run plan lists exactly these. #1049 — the batch's requested ones
-  // are then applied to every issue this run creates or updates.
-  const additionalLabels = batchAdditionalLabels(batch.metadata);
-  const labels = labelsToSync(
-    drafts.map((d) => parseLabels(d.labels)),
-    additionalLabels,
-  );
-  await syncLabels(client, { owner: target.owner, repo: target.repo }, labels);
-
+  // #1106 review — the dedup scan and the remote check run BEFORE the label
+  // sync, so a batch the check stops has written nothing at all.
   emitter().progress({
     batchId: batch.id,
     phase: "dedup-scan",
@@ -474,6 +461,60 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     recoverable,
     batchId: batch.id,
   });
+  // #1106 review — an issue that could not be read may be a draft's existing
+  // issue: creating that draft could file a duplicate, and counting it as a
+  // failed draft would let the >50% auto-rollback close issues unrelated to
+  // it. So the batch stops here, before ANY write (labels included): nothing
+  // created, nothing rolled back, the drafts left as they were. A retry
+  // checks again.
+  if (sweep.note !== null) {
+    await prisma.publishBatch.update({
+      where: { id: batch.id },
+      data: {
+        status: "failed",
+        totalDrafts: drafts.length,
+        publishedCount: 0,
+        failedCount: 0,
+        dedupSkipped: 0,
+        errorMessage: sweep.note,
+        completedAt: new Date(),
+      },
+    });
+    audit({
+      actor: { id: batch.startedById },
+      action: "publish.batch.stopped",
+      target: { type: "publish_batch", id: batch.id },
+      metadata: {
+        projectId: batch.projectId,
+        repo: `${target.owner}/${target.repo}`,
+        unreadIssueNumbers: sweep.unreadNumbers,
+      },
+    });
+    emitter().completed({
+      batchId: batch.id,
+      status: "failed",
+      publishedCount: 0,
+      failedCount: 0,
+      dedupSkipped: 0,
+      dryRun: false,
+    });
+    return { status: "failed" };
+  }
+
+  emitter().progress({
+    batchId: batch.id,
+    phase: "sync-labels",
+    step: "starting",
+  });
+  // #744 — only labels some draft carries (plus the batch's requested ones);
+  // the dry-run plan lists exactly these. #1049 — the batch's requested ones
+  // are then applied to every issue this run creates or updates.
+  const additionalLabels = batchAdditionalLabels(batch.metadata);
+  const labels = labelsToSync(
+    drafts.map((d) => parseLabels(d.labels)),
+    additionalLabels,
+  );
+  await syncLabels(client, { owner: target.owner, repo: target.repo }, labels);
 
   // #1276 — what each draft is published as: its body, plus the number of a
   // parent epic that already has an issue, plus the `unverified` sentence.
@@ -528,11 +569,6 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     // even when the local write is what failed.
     let remoteCreated: { issueNumber: number; nodeId: string; htmlUrl: string } | null = null;
     try {
-      // #1106 — this draft's issue could not be read, so whether it already
-      // has one is unknown: recorded as failed (before any write) rather than
-      // created as a possible duplicate. A retry checks again.
-      const unreadable = sweep.unreadable.get(draft.id);
-      if (unreadable !== undefined) throw new Error(unreadable);
       let issueNumber: number;
       let issueId: string;
       let restIssueId: number;
@@ -581,11 +617,17 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
             // `existing` was found under `hash` with this body: record both
             // with the issue, so a row left by an earlier failed run (another
             // title's hash, no issue) describes the issue it now names.
+            // #1106 review — and the issue's identifiers and link, with no stale
+            // error: a row an earlier failed run left holds `""` for both and
+            // that run's message, and drift detection finds a row by `issueId`.
             update: {
               issueNumber: existing.issueNumber,
+              issueId: existing.issueId,
+              htmlUrl: existing.htmlUrl,
               status: "updated",
               dedupHash: hash,
               bodyHash,
+              errorMessage: null,
             },
             create: {
               batchId: batch.id,
@@ -853,10 +895,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
             // #1091 — say plainly what the rollback did and did NOT manage to
             // undo. "auto-rollback after >50% failures" read as if GitHub had
             // been left clean when 8 issues were in fact still open.
-            errorMessage: withSweepNote(
-              rollbackOutcomeMessage(failedCount, ordered.length, rollback),
-              sweep.note,
-            ),
+            errorMessage: rollbackOutcomeMessage(failedCount, ordered.length, rollback),
             completedAt: new Date(),
           },
         });
@@ -914,10 +953,8 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
       failedCount,
       dedupSkipped,
       completedAt: new Date(),
-      errorMessage: withSweepNote(
+      errorMessage:
         failedCount > 0 ? `${failedCount} drafts failed (within rollback threshold)` : null,
-        sweep.note,
-      ),
     },
   });
   audit({
@@ -1576,9 +1613,9 @@ interface ReconcileArgs {
 
 /** #1106 — what the remote check could not settle, for the run and the batch row. */
 interface ReconcileOutcome {
-  /** Draft id → why it is not published this run (its issue could not be read). */
-  unreadable: Map<string, string>;
-  /** One line for the batch's `errorMessage`, or `null`. */
+  /** Issues a read failed for (not gone): the run stops before any write. */
+  unreadNumbers: number[];
+  /** One line for the batch's `errorMessage`, or `null` when every read settled. */
   note: string | null;
 }
 
@@ -1601,19 +1638,29 @@ const ISSUE_GONE_STATUSES = new Set([301, 404, 410]);
  *
  * Reads are one `GET` per named issue, so there is no listing and no page limit
  * (item 5); they are bounded by the drafts in the batch. A read that fails for
- * any reason other than the issue being gone is logged, audited and reported on
- * the batch, and that draft is NOT created this run — creating it could file a
- * duplicate of the issue that could not be read (item 6). A retry checks again.
+ * any reason other than the issue being gone is logged and audited, and the
+ * caller stops the whole batch before any write (item 6): creating that draft
+ * could file a duplicate of the issue that could not be read. A retry checks
+ * again. Each read emits a `dedup-scan` progress event.
  */
 async function reconcileFromRemote(args: ReconcileArgs): Promise<ReconcileOutcome> {
   const { client, target, drafts, existingByHash, recoverable } = args;
-  const unreadable = new Map<string, string>();
   const unreadNumbers: number[] = [];
-  for (const draft of drafts) {
-    const candidate = recoverable.get(draft.id);
-    if (!candidate) continue;
+  const toRead = drafts.filter((d) => recoverable.has(d.id));
+  for (let i = 0; i < toRead.length; i += 1) {
+    const draft = toRead[i]!;
+    const candidate = recoverable.get(draft.id)!;
     const hash = computeDedupHash(target.owner, target.repo, draft.title);
     const issueRef = `${target.owner}/${target.repo}#${candidate.issueNumber}`;
+    emitter().progress({
+      batchId: args.batchId,
+      phase: "dedup-scan",
+      step: "reading-issue",
+      current: i + 1,
+      total: toRead.length,
+      draftId: draft.id,
+      issueNumber: candidate.issueNumber,
+    });
     let issue: GhIssue;
     try {
       const resp = await client.request<GhIssue>({
@@ -1649,12 +1696,6 @@ async function reconcileFromRemote(args: ReconcileArgs): Promise<ReconcileOutcom
           status: e.status ?? null,
         },
       });
-      unreadable.set(
-        draft.id,
-        `could not read issue #${candidate.issueNumber} to check whether it is this draft's ` +
-          `issue (${e.status ? `HTTP ${e.status}` : "no response"}); not published, so as not ` +
-          "to file a duplicate. Retry the batch.",
-      );
       unreadNumbers.push(candidate.issueNumber);
       continue;
     }
@@ -1668,8 +1709,10 @@ async function reconcileFromRemote(args: ReconcileArgs): Promise<ReconcileOutcom
       });
       continue;
     }
-    if (identity.number !== candidate.issueNumber) {
-      // Answered with another issue (a redirect followed to a transferred one).
+    // Answered with another issue: a redirect followed to a transferred one,
+    // which can keep its number in another repository. So the answer must
+    // name this number AND this repository.
+    if (identity.number !== candidate.issueNumber || !issueIsInRepository(issue, target)) {
       log.warn("publish.reconcile.issue_moved", {
         batchId: args.batchId,
         draftId: draft.id,
@@ -1729,14 +1772,51 @@ async function reconcileFromRemote(args: ReconcileArgs): Promise<ReconcileOutcom
     unreadNumbers.length === 0
       ? null
       : `could not read issue ${unreadNumbers.map((n) => `#${n}`).join(", ")} on GitHub to ` +
-        `check ${unreadNumbers.length === 1 ? "it" : "them"}; ` +
-        `${unreadNumbers.length} draft(s) not published, retry the batch`;
-  return { unreadable, note };
+        `check whether ${unreadNumbers.length === 1 ? "it is a draft's" : "they are drafts'"} ` +
+        "existing issue; nothing was published, retry the batch";
+  return { unreadNumbers, note };
 }
-/** #1106 — a batch message with the remote check's note appended, when there is one. */
-function withSweepNote(message: string | null, note: string | null): string | null {
-  if (!note) return message;
-  return message ? `${message}; ${note}` : note;
+/** The non-empty, decoded path segments of a URL, or `null` when it is not one. */
+function urlSegments(value: unknown): string[] | null {
+  if (typeof value !== "string") return null;
+  try {
+    return new URL(value).pathname
+      .split("/")
+      .filter((s) => s !== "")
+      .map((s) => decodeURIComponent(s));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #1106 review — whether an issue GitHub answered with lives in `target`. A
+ * redirect followed to a transferred issue answers from the NEW repository,
+ * possibly under the same number. Every repository URL the payload carries —
+ * `repository_url` (`…/repos/{owner}/{repo}`) and `html_url`
+ * (`…/{owner}/{repo}/issues/{n}`) — must name the target (case-insensitive,
+ * `namesRepository`), and it must carry at least one.
+ */
+function issueIsInRepository(issue: GhIssue, target: { owner: string; repo: string }): boolean {
+  const repository: NamedRepository = {
+    owner: target.owner.trim().toLowerCase(),
+    name: target.repo.trim().toLowerCase(),
+  };
+  const named: Array<[string, string] | null> = [];
+  const api = urlSegments((issue as { repository_url?: unknown }).repository_url);
+  if (api) {
+    const i = api.lastIndexOf("repos");
+    named.push(i >= 0 && i + 3 === api.length ? [api[i + 1]!, api[i + 2]!] : null);
+  }
+  const html = urlSegments(issue.html_url);
+  if (html) {
+    const n = html.length;
+    named.push(n >= 4 && html[n - 2] === "issues" ? [html[n - 4]!, html[n - 3]!] : null);
+  }
+  return (
+    named.length > 0 &&
+    named.every((pair) => pair !== null && namesRepository(repository, pair[0], pair[1]))
+  );
 }
 
 function safeWhereFromMetadata(meta: string): Record<string, unknown> {
