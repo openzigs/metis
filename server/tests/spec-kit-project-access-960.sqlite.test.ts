@@ -2,9 +2,14 @@
  * #960 — object-level project scope (OWASP A01 / BOLA) on every Spec Kit route.
  *
  * `POST /commands/:cmd` checked only the `project.update` role, and #953 added
- * an object-level check for `speckit.taskstoissues` alone, so a `project.update`
- * holder in workspace A could read and write workspace B's Spec Kit artifacts
- * through the other commands and through most of the plain routes.
+ * an object-level check for `speckit.taskstoissues` alone; most plain routes
+ * had none either. The router itself would have let a `project.update` holder
+ * in workspace A read and write workspace B's Spec Kit artifacts. In the
+ * assembled app that was not reachable: `projectsRouter()`'s
+ * `r.use("/:id/:sub", requireAuth, requireProjectAccess("id"))` is mounted
+ * first and 404s the request upstream (`docs/SECURITY.md` §12.3). So this suite
+ * mounts `specKitRouter()` ON ITS OWN, to prove the router is safe by itself
+ * rather than because of the mount order.
  *
  * Driven through the REAL Spec Kit router, REAL auth (a signed token) and REAL
  * `requireProjectAccess` against a REAL SQLite database built by the migration

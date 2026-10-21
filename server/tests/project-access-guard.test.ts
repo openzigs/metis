@@ -87,18 +87,21 @@ function guardPrecedesHandlers(router: RouterLike): boolean {
  * Or on every route individually (#960, `spec-kit.ts`): a router whose routes
  * need their own pre-auth rate limiters ahead of `requireAuth` cannot use a
  * router-level guard, which needs `req.user`. Holds only when the router has at
- * least one route, every route's own stack carries the guard, and nothing else
- * can serve a request (no nested sub-router).
+ * least one route, every route's own stack carries the guard AHEAD of the
+ * route's last layer (its handler — a guard after it runs too late), and
+ * nothing else can serve a request (no nested sub-router).
  */
 function guardOnEveryRoute(router: RouterLike): boolean {
   const routes = router.stack.filter((l) => l.route !== undefined);
   if (routes.length === 0 || router.stack.some((l) => asRouter(l.handle) !== null)) return false;
-  return routes.every((l) =>
-    ((l.route as { stack?: Layer[] }).stack ?? []).some(
+  return routes.every((l) => {
+    const stack = (l.route as { stack?: Layer[] }).stack ?? [];
+    const guardAt = stack.findIndex(
       (h) =>
         typeof h.handle === "function" && (h.handle as { name?: string }).name === GUARD_FN_NAME,
-    ),
-  );
+    );
+    return guardAt !== -1 && guardAt < stack.length - 1;
+  });
 }
 
 /** The guard may also be supplied at the mount site, alongside the router. */
@@ -382,6 +385,17 @@ describe("guard detector", () => {
       expect(
         guardOnEveryRoute(
           mk([route("requireAuth", GUARD_FN_NAME, "handler"), route("requireAuth", "handler")]),
+        ),
+      ).toBe(false);
+    });
+
+    it("rejects a route whose guard comes after its handler", () => {
+      expect(
+        guardOnEveryRoute(
+          mk([
+            route("requireAuth", GUARD_FN_NAME, "handler"),
+            route("requireAuth", "handler", GUARD_FN_NAME),
+          ]),
         ),
       ).toBe(false);
     });
