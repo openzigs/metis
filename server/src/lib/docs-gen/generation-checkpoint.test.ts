@@ -3,7 +3,9 @@ import { AIProviderError } from "../ai/errors.js";
 import {
   errorClassOf,
   generationFailureWarning,
+  hasCutOffSections,
   hasFailedSections,
+  hasSectionsToRedraft,
   markDroppedAttempts,
   partialDocumentMarkdown,
   sectionFailureWarning,
@@ -312,6 +314,19 @@ describe("#1209 — isBodyTimeout", () => {
     expect(isBodyTimeout(reset)).toBe(false);
     expect(isBodyTimeout(new TypeError("terminated"))).toBe(false);
     expect(isBodyTimeout("terminated")).toBe(false);
+  });
+});
+
+describe("#1132 — hasCutOffSections / hasSectionsToRedraft", () => {
+  it("a cut-off section makes a published document regeneratable, like a failed one", () => {
+    const cut = [{ kind: "section-truncated", section: "Components" }];
+    expect(hasCutOffSections(cut)).toBe(true);
+    expect(hasSectionsToRedraft(cut)).toBe(true);
+    expect(hasSectionsToRedraft([{ kind: "section-failed", section: "A" }])).toBe(true);
+    expect(hasCutOffSections([{ kind: "section-failed", section: "A" }])).toBe(false);
+    expect(hasSectionsToRedraft([{ kind: "section-ungrounded", section: "A" }])).toBe(false);
+    expect(hasSectionsToRedraft([null, "x"])).toBe(false);
+    expect(hasSectionsToRedraft(null)).toBe(false);
   });
 });
 

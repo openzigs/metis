@@ -597,7 +597,16 @@ describe.each([
     const noted = result.sections.filter((s) =>
       sectionOf(result.markdown, s.sectionLabel).includes("**Shortened for length.**"),
     );
-    expect(shortened.map((s) => s.sectionLabel)).toEqual(noted.map((s) => s.sectionLabel));
+    // #1132 — and a section the output cap cut off is told so even when no
+    // topic heading can be named (the paragraph it was writing was removed).
+    const cutOff = new Set(
+      result.warnings.filter((w) => w.kind === "section-truncated").map((w) => w.section),
+    );
+    expect(shortened.map((s) => s.sectionLabel)).toEqual(
+      noted
+        .filter((s) => !cutOff.has(s.sectionLabel) || s.omittedTopics?.length)
+        .map((s) => s.sectionLabel),
+    );
     for (const entry of shortened) {
       const section = sectionOf(result.markdown, entry.sectionLabel);
       expect(section).toContain("**Shortened for length.**");

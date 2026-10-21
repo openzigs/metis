@@ -107,8 +107,12 @@ import {
   resolveClaimMaxOutputTokens,
   resolveFactsMaxOutputTokens,
   resolveSectionMaxOutputTokens,
+  resolveSectionOutputBudget,
+  describeOutputBudget,
   servedModelThinksByDefault,
+  type OutputTokenBudget,
 } from "./output-caps.js";
+import { cutOffNote, trimCutOffSection } from "./cut-off-section.js";
 import {
   FACT_SLICES,
   MINED_RULES_ENTRY_CHAR_CAP,
@@ -4049,7 +4053,7 @@ ${plannedOmissionNote(plannedOut, {
           allowanceSpent: cutOff.filter((d) => d.keptWhole === "allowance").map(names),
           runaway: cutOff.filter((d) => d.keptWhole === "runaway").map(names),
         },
-        cutOff[0].result.maxTokens,
+        cutOff[0].result.budget ?? cutOff[0].result.maxTokens,
       ),
     );
   }
@@ -4370,6 +4374,19 @@ async function synthesizeFinalDocumentInRun(
     if (fit.trimmed) recordShortened(fit.markdown, fit.omittedTopics);
     return fit.markdown;
   };
+  // #1132 — a reply the output cap cut off is first taken back to its last
+  // complete sub-section, and closed with a note naming what is now absent
+  // (the sub-section cut mid-way included); the length fit then counts those
+  // topics with any it leaves out itself.
+  const fitGeneratedSection = (generated: SectionGroupResult, maxChars: number): string => {
+    const drafted = generated.markdown.trim();
+    if (!generated.truncation.truncated) return fitToSectionCap(drafted, maxChars);
+    const cut = trimCutOffSection(drafted);
+    const noted = `${cut.markdown}\n\n${cutOffNote(cut.omittedTopics, cut.trimmed)}`;
+    const fit = fitSectionToBudget(noted, maxChars, cut.omittedTopics, renderedCitationLength);
+    recordShortened(fit.markdown, fit.omittedTopics);
+    return fit.markdown;
+  };
   const selectedEvidenceById = new Map<string, GroundingSource>();
   // #737 review — one module can hold the same facts id in several sections (the
   // id is its path and its rank there), each with that section's slice of its
@@ -4477,6 +4494,7 @@ async function synthesizeFinalDocumentInRun(
         reuse.checkpoint,
         groups.map((group) => group.id),
         false,
+        true,
       )
     : new Map<string, SectionSynthesisRecord>();
   // #782 — persist what is finished after every section: a 77-minute run that
@@ -5167,8 +5185,9 @@ async function synthesizeFinalDocumentInRun(
         );
         keptTruncation = generated;
         // #741 — within the section cap before it is fact-checked: what is left
-        // out is neither checked nor paid for.
-        generated.markdown = fitToSectionCap(generated.markdown.trim(), sectionMaxChars);
+        // out is neither checked nor paid for. #1132 — a cut-off reply first
+        // loses the sub-section it was writing.
+        generated.markdown = fitGeneratedSection(generated, sectionMaxChars);
         // #273 — post-validate the freshly-synthesized section by ENTAILMENT:
         // decompose it into atomic claims, then judge each claim's support against
         // THIS section's grounding context (the judge sees source TEXT, not ids),
@@ -5318,7 +5337,7 @@ async function synthesizeFinalDocumentInRun(
               flowBlob,
               sectionAddendum,
             );
-            escMd.markdown = fitToSectionCap(escMd.markdown.trim(), sectionMaxChars);
+            escMd.markdown = fitGeneratedSection(escMd, sectionMaxChars);
             const escValidated = await validateSectionGrounding(
               group.label,
               escMd.markdown.trim(),
@@ -5473,13 +5492,22 @@ async function synthesizeFinalDocumentInRun(
         truncationWarning = sectionTruncatedWarning(
           group.label,
           describeTruncation(keptTruncation.truncation),
-          keptTruncation.maxTokens,
+          keptTruncation.budget ?? keptTruncation.maxTokens,
         );
+        // #1132 — the answer budget (the setting) and the reasoning allowance
+        // apart, so the total is not read as the setting.
         log.warn("Section group truncated by the output-token cap", {
           projectId,
           docType,
           group: group.id,
           maxTokens: keptTruncation.maxTokens,
+          ...(keptTruncation.budget
+            ? {
+                answerBudget: keptTruncation.budget.answer,
+                reasoningAllowance: keptTruncation.budget.reasoning,
+                outputCap: describeOutputBudget(keptTruncation.budget),
+              }
+            : {}),
           signals: keptTruncation.truncation.signals,
           finishReason: keptTruncation.truncation.reason,
         });
@@ -7060,6 +7088,8 @@ export interface SectionGroupResult {
   markdown: string;
   truncation: TruncationDetection;
   maxTokens: number;
+  /** #1132 — `maxTokens` as its answer budget and reasoning allowance. */
+  budget?: OutputTokenBudget;
 }
 
 /** @internal Exported for the prompt-prefix tests (#1277). */
@@ -7387,7 +7417,12 @@ Output ONLY the corrected Markdown, starting with its first \`##\` heading. No p
     }
   }
 
-  return { markdown: content.trim(), truncation, maxTokens: draft.maxTokens };
+  return {
+    markdown: content.trim(),
+    truncation,
+    maxTokens: draft.maxTokens,
+    ...(draft.budget ? { budget: draft.budget } : {}),
+  };
 }
 
 /**
@@ -7401,6 +7436,8 @@ export interface SectionStreamResult {
   truncation: TruncationDetection;
   /** The OUTPUT cap that was in force, for the operator-facing warning. */
   maxTokens: number;
+  /** #1132 — `maxTokens` as its answer budget and reasoning allowance. */
+  budget?: OutputTokenBudget;
 }
 
 /**
@@ -7438,7 +7475,8 @@ async function streamSectionContent(
   let finishReason: string | undefined;
   // #1226 — configurable OUTPUT cap (was hardcoded 8192), clamped to the
   // model's known ceiling.
-  const maxTokens = resolveSectionMaxOutputTokens(provider.model);
+  const budget = resolveSectionOutputBudget(provider.model);
+  const { maxTokens } = budget;
   let firstChunk = true;
   let received = 0;
   let outputChars = 0;
@@ -7517,7 +7555,7 @@ async function streamSectionContent(
   // #1226 — strip the gateway's max-tokens placeholder BEFORE the text can
   // reach `generated_documents.content`, and report the verdict to the caller.
   const truncation = detectTruncation(chunks.join(""), finishReason);
-  return { text: truncation.text.trim(), truncation, maxTokens };
+  return { text: truncation.text.trim(), truncation, maxTokens, budget };
 }
 
 /**

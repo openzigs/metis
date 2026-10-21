@@ -9,6 +9,7 @@ import {
   sectionSynthesisSchema,
   storedSectionSynthesisSchema,
   type SectionInputHashes,
+  wasCutOff,
 } from "./section-reuse.js";
 
 const inputs = {
@@ -24,7 +25,7 @@ const payload = {
   markdown: "## Overview\n\nHistorical output.",
   warnings: [
     {
-      kind: "section-truncated" as const,
+      kind: "section-ungrounded" as const,
       severity: "error" as const,
       section: "Overview",
       message: "Cut off",
@@ -249,6 +250,34 @@ describe("#782 — a partial generation checkpoint", () => {
     expect(checkpointSectionRecords(null, ["overview"], false).size).toBe(0);
     expect(checkpointSectionRecords(snapshot(), ["overview"], false).size).toBe(0);
     expect(checkpointSectionRecords(stored, ["overview"], true).size).toBe(0);
+  });
+});
+
+describe("#1132 — a cut-off section in a checkpoint", () => {
+  const cutOff = () =>
+    recordSectionSynthesis("rules", hashSectionInputs(inputs), {
+      ...payload,
+      markdown: "## Rules\n\nCut.",
+      warnings: [
+        { kind: "section-truncated", severity: "error", section: "Rules", message: "Cut off" },
+      ],
+      metadata: { ...payload.metadata, sectionLabel: "Rules", sectionIndex: 1 },
+    });
+
+  it("is not offered for reuse, so a regenerate writes it again", () => {
+    expect(wasCutOff(cutOff())).toBe(true);
+    expect(wasCutOff(record())).toBe(false);
+    const stored = buildGenerationCheckpoint([record(), cutOff()]);
+    expect([...checkpointSectionRecords(stored, ["overview", "rules"], false).keys()]).toEqual([
+      "overview",
+    ]);
+  });
+
+  it("is still carried when asked, so a run stopped before reaching it keeps it", () => {
+    const stored = buildGenerationCheckpoint([record(), cutOff()]);
+    expect([
+      ...checkpointSectionRecords(stored, ["overview", "rules"], false, true).keys(),
+    ]).toEqual(["overview", "rules"]);
   });
 });
 

@@ -75,7 +75,7 @@ import { TaskAbortError } from "../lib/scheduler/task-abort.js";
 import type { DocWarning as DocWarningShape } from "../lib/docs-gen/grounding/degraded-warnings.js";
 import {
   generationFailureWarning,
-  hasFailedSections,
+  hasSectionsToRedraft,
   partialDocumentMarkdown,
   UnpublishableGenerationError,
   type GenerationStage,
@@ -970,10 +970,12 @@ export function generatedDocsRouter(): Router {
         // while the rest finished: the regenerate writes that section and
         // reuses the finished ones (kept in the checkpoint at publish). The
         // warnings are left as they are, so a cancel can restore them.
+        // #1132 — and one with a section the output cap cut off: the
+        // regenerate writes the cut-off sections again, the same way.
         // Compare-and-set on the row read, as the reset above does on status.
         const resumable =
           existing.status === "degraded" &&
-          hasFailedSections(existing.warnings) &&
+          hasSectionsToRedraft(existing.warnings) &&
           (
             await prisma.generatedDocument.updateMany({
               where: {
@@ -1023,7 +1025,7 @@ export function generatedDocsRouter(): Router {
         throw new AppError(
           409,
           "DOC_NOT_REGENERATABLE",
-          `Only a failed, cancelled, partially generated or section-failed document, or one whose approved requirements changed since it was generated, can be regenerated (status: ${existing.status})`,
+          `Only a failed, cancelled, partially generated, section-failed or cut-off document, or one whose approved requirements changed since it was generated, can be regenerated (status: ${existing.status})`,
         );
       }
       void generateDocumentAsync(docId, projectId).catch((err) => {
@@ -1265,7 +1267,7 @@ export async function generateDocumentAsync(
       };
     // #942 — a published degraded document reset by POST /regenerate to retry
     // its failed sections: a cancel restores it as it was, warnings and all.
-    else if (original.status === "pending" && hasFailedSections(original.warnings))
+    else if (original.status === "pending" && hasSectionsToRedraft(original.warnings))
       restoreOnCancel = {
         status: "degraded",
         errorMessage: null,
@@ -1962,9 +1964,10 @@ export async function generateDocumentAsync(
           generatedAt,
           // #782 — published: nothing left to resume. #942 — unless a section
           // failed: the finished ones stay stored, so a regenerate writes only
-          // what failed.
+          // what failed. #1132 — or was cut off (its record stays stored, and
+          // is not reused).
           generationCheckpoint:
-            hasFailedSections(docWarnings) && finishedSections.length > 0
+            hasSectionsToRedraft(docWarnings) && finishedSections.length > 0
               ? (buildGenerationCheckpoint(finishedSections) as unknown as Prisma.InputJsonValue)
               : Prisma.DbNull,
         },

@@ -25,6 +25,8 @@ const state = vi.hoisted(() => ({
   // #942 — this section's model call fails; the section's own handler catches
   // it, so the run publishes a `degraded` version without the section.
   failSection: null as string | null,
+  // #1132 — this section's reply stops at the output-token cap mid sub-section.
+  cutOff: null as string | null,
   // #855 / #856 — runs inside a section's model call, before it answers.
   duringSection: null as null | ((label: string, signal?: AbortSignal) => Promise<void> | void),
   // #855 — usage every model call reports.
@@ -244,6 +246,8 @@ import { TaskAbortError } from "../src/lib/scheduler/task-abort.js";
 import { noteRunUsage } from "../src/lib/docs-gen/run-cost.js";
 import { GENERATION_HEARTBEAT_MS } from "../src/lib/docs-gen/interrupted-generations.js";
 import { checkpointSectionRecords } from "../src/lib/docs-gen/section-reuse.js";
+import { hasSectionsToRedraft } from "../src/lib/docs-gen/generation-checkpoint.js";
+import { parseGeneratedDocVersionManifest } from "../src/lib/docs-gen/generated-doc-provenance.js";
 import { sectionGroupsFor } from "../src/lib/docs-gen/holistic-synthesizer.js";
 import {
   GENERATION_CANCELLED_MESSAGE,
@@ -277,6 +281,7 @@ beforeEach(() => {
   state.changeInputs = false;
   state.crashIn = null;
   state.failSection = null;
+  state.cutOff = null;
   state.doc = {
     id: "d",
     projectId: "p",
@@ -321,6 +326,17 @@ beforeEach(() => {
     if (label && label === state.failSection) throw new SyntaxError("Unexpected token < in JSON");
     if (label && state.duringSection) await state.duringSection(label, opts?.signal);
     if (state.usage) yield { type: "usage", usage: state.usage };
+    if (label && label === state.cutOff) {
+      yield {
+        type: "delta",
+        content:
+          `## ${label}\n\nThe API validates requests.\n\n` +
+          `### 1. Request Gateway\n\n**Purpose**: The gateway validates every request.\n\n` +
+          `### 2. Outbound Integration Hub\n\n**Purpose**\n\n`,
+      };
+      yield { type: "done", finishReason: "max_tokens" };
+      return;
+    }
     yield {
       type: "delta",
       content: label
@@ -698,6 +714,89 @@ describe("#942 — a published document with a failed section regenerates just t
     expect(state.doc.content).toBe(published);
     expect(state.doc.warnings).toEqual(publishedWarnings);
     expect(state.versions).toHaveLength(1);
+  });
+});
+
+describe("#1132 — a section cut off at the output cap", () => {
+  const cut = () => GROUPS[1];
+  /** The published text of the cut-off section, up to the next section. */
+  const sectionText = () => {
+    const content = String(state.doc.content);
+    const start = content.indexOf(`## ${cut().label}`);
+    const next = content.indexOf(`\n## ${GROUPS[2].label}`, start);
+    return content.slice(start, next < 0 ? undefined : next).trim();
+  };
+
+  it("is trimmed to its last complete sub-section, never ending on an empty heading or label", async () => {
+    state.cutOff = cut().label;
+    await generateDocumentAsync("d", "p");
+
+    expect(state.versions).toHaveLength(1);
+    expect(state.doc.status).toBe("degraded");
+    const text = sectionText();
+    expect(text).toContain("### 1. Request Gateway");
+    expect(text).toContain("The gateway validates every request.");
+    // The sub-section the model was writing is gone, heading and bare label both.
+    expect(text).not.toContain("### 2. Outbound Integration Hub");
+    expect(text).not.toMatch(/\*\*Purpose\*\*\s*(\n|$)/);
+    // It ends on the closing note, never on a heading.
+    const lines = text.split("\n").filter((l) => l.trim() !== "");
+    expect(lines.at(-1)).toMatch(/^> \*\*Shortened for length\.\*\*/);
+    expect(lines.at(-2)).not.toMatch(/^#{1,6}\s/);
+  });
+
+  it("counts the topic cut mid-way among those left out, in the note and the manifest", async () => {
+    state.cutOff = cut().label;
+    await generateDocumentAsync("d", "p");
+
+    expect(sectionText()).toContain("1 further topic was left out: 2. Outbound Integration Hub.");
+    const manifest = parseGeneratedDocVersionManifest(state.versions[0].provenanceManifest);
+    expect(manifest.sections.find((s) => s.sectionLabel === cut().label)?.omittedTopics).toEqual([
+      "2. Outbound Integration Hub",
+    ]);
+  });
+
+  it("names the answer budget and the reasoning allowance apart in the warning", async () => {
+    state.cutOff = cut().label;
+    await generateDocumentAsync("d", "p");
+
+    const w = warnings().find((x) => x.kind === "section-truncated")!;
+    expect(w).toMatchObject({ section: cut().label, severity: "error" });
+    // `test-model` has no known ceiling and does not reason: 8,192 is all answer.
+    expect(String(w.message)).toContain("8,192 tokens (answer 8,192, no reasoning)");
+  });
+
+  it("is regeneratable, and a regenerate redrafts only the cut-off section", async () => {
+    state.cutOff = cut().label;
+    await generateDocumentAsync("d", "p");
+
+    expect(hasSectionsToRedraft(state.doc.warnings)).toBe(true);
+    // Every section stays stored; the cut-off one is not offered for reuse.
+    expect(checkpointIds()).toEqual(GROUPS.map((g) => g.id));
+    expect(
+      [
+        ...checkpointSectionRecords(
+          state.doc.generationCheckpoint,
+          GROUPS.map((g) => g.id),
+          false,
+        ).keys(),
+      ].sort(),
+    ).toEqual(
+      GROUPS.filter((g) => g !== cut())
+        .map((g) => g.id)
+        .sort(),
+    );
+
+    state.cutOff = null;
+    state.doc.status = "pending";
+    state.stream.mockClear();
+    await generateDocumentAsync("d", "p");
+
+    expect(sectionCalls()).toBe(1);
+    expect(state.versions).toHaveLength(2);
+    expect(warnings()?.some((w) => w.kind === "section-truncated") ?? false).toBe(false);
+    expect(sectionText()).not.toContain("Shortened for length");
+    expect(state.doc.generationCheckpoint).toBeNull();
   });
 });
 

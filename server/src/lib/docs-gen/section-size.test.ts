@@ -9,9 +9,11 @@ import {
   DEFAULT_SECTION_MAX_CHARS,
   DOCUMENT_MAX_CHARS_KEY,
   MIN_SECTION_MAX_CHARS,
+  NOTE_RESERVE,
   SECTION_MAX_CHARS_KEY,
   batchWordBudget,
   fitSectionToBudget,
+  isEmptyLead,
   fitSectionsToDocumentBudget,
   resolveDocumentMaxChars,
   resolveSectionMaxChars,
@@ -100,6 +102,47 @@ describe("fitSectionToBudget", () => {
     expect(body.trimEnd().split("\n").at(-1)).not.toMatch(/^#/);
     // A kept topic is never also listed as omitted.
     for (const topic of fit.omittedTopics) expect(body).not.toContain(`### ${topic}\n`);
+  });
+
+  it("#1132 — never ends on a bare label, and names the topic it then leaves empty", () => {
+    const filler = Array.from({ length: 200 }, (_, i) => `w${i}`).join(" ");
+    const md = [
+      "## Component Breakdown",
+      "Intro.",
+      "### 6. Feed Reader",
+      `**Purpose**: ${filler}.`,
+      "### 7. Outbound Integration Hub",
+      "**Purpose**",
+      `${filler}.`,
+      "### 8. Scheduler",
+      `${filler}.`,
+    ].join("\n\n");
+    // Room for everything up to the bare `**Purpose**` label, not the paragraph under it.
+    const upTo = md.indexOf("**Purpose**\n\n") + "**Purpose**".length;
+    const fit = fitSectionToBudget(md, upTo + NOTE_RESERVE + 10);
+    const body = fit.markdown.split("\n\n> **Shortened")[0];
+    expect(body.trimEnd().endsWith(`${filler}.`)).toBe(true);
+    expect(body).not.toContain("### 7.");
+    expect(fit.omittedTopics).toEqual(["7. Outbound Integration Hub", "8. Scheduler"]);
+  });
+
+  it("#1132 — reads a one-line label as empty, and real content as content", () => {
+    for (const text of [
+      "**Purpose**",
+      "**Purpose:**",
+      "**Purpose**:",
+      "- **Depends on**:",
+      "Depends on:",
+    ])
+      expect(isEmptyLead({ text, depth: 0 })).toBe(true);
+    for (const text of [
+      "**Purpose**: reads feeds.",
+      "A sentence.",
+      "**Responsibilities**:\n- Poll",
+      "| a: | b |",
+    ])
+      expect(isEmptyLead({ text, depth: 0 })).toBe(false);
+    expect(isEmptyLead({ text: "### X", depth: 3 })).toBe(true);
   });
 
   it("never splits a code fence, a math block or a table", () => {

@@ -250,11 +250,22 @@ export function buildGenerationCheckpoint(
   return { version: SECTION_SYNTHESIS_VERSION, records: [...records] };
 }
 
-/** The intact records of a stored checkpoint, keyed by section id (first wins). */
+/** #1132 — true when the record's section was cut off by the output-token cap. */
+export function wasCutOff(record: Pick<SectionSynthesisRecord, "warnings">): boolean {
+  return record.warnings.some((w) => w.kind === "section-truncated");
+}
+
+/**
+ * The intact records of a stored checkpoint, keyed by section id (first wins).
+ * #1132 — a record of a cut-off section is left out, so it is written again,
+ * unless `keepCutOff` (the records a run CARRIES into its own checkpoints until
+ * it reaches their section, so a run stopped first still keeps them).
+ */
 export function checkpointSectionRecords(
   checkpoint: unknown,
   sectionIds: readonly string[],
   sharedEscalationEnabled: boolean,
+  keepCutOff = false,
 ): Map<string, SectionSynthesisRecord> {
   const parsed = generationCheckpointSchema.safeParse(checkpoint);
   const byId = new Map<string, SectionSynthesisRecord>();
@@ -264,6 +275,9 @@ export function checkpointSectionRecords(
     const record = sectionRecordSchema.safeParse(raw);
     if (!record.success || !wanted.has(record.data.sectionId)) continue;
     if (byId.has(record.data.sectionId) || !recordIntact(record.data)) continue;
+    // #1132 — a section the output cap cut off is incomplete: a regenerate
+    // writes it again, as it does a failed one, and reuses the rest.
+    if (!keepCutOff && wasCutOff(record.data)) continue;
     byId.set(record.data.sectionId, record.data);
   }
   return byId;

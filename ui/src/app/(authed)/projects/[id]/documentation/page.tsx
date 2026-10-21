@@ -206,6 +206,7 @@ export default function DocumentationPage(): React.ReactElement {
   // opened for a database-scope document (Epic #895).
   const isDatabaseDoc = docDetail.data?.scope === "database";
   const failedSectionList = docDetail.data ? failedSections(docDetail.data) : [];
+  const cutOffSectionList = docDetail.data ? cutOffSections(docDetail.data) : [];
   const schemaGraphQuery = useQuery<SchemaGraph>({
     queryKey: ["schema-graph", projectId, selectedDoc],
     queryFn: () => apiFetch<SchemaGraph>(`/projects/${projectId}/docs/${selectedDoc}/schema-graph`),
@@ -582,6 +583,16 @@ export default function DocumentationPage(): React.ReactElement {
           {failedSectionList.length > 0 && (
             <FailedSectionsBanner
               failed={failedSectionList}
+              regenerating={regenerateMutation.isPending}
+              onRegenerate={() => regenerateMutation.mutate(docDetail.data.id)}
+            />
+          )}
+
+          {/* #1132 — a published document with a section the AI model could not
+              finish redrafts just those sections. */}
+          {cutOffSectionList.length > 0 && (
+            <CutOffSectionsBanner
+              sections={cutOffSectionList}
               regenerating={regenerateMutation.isPending}
               onRegenerate={() => regenerateMutation.mutate(docDetail.data.id)}
             />
@@ -1730,6 +1741,63 @@ export function failedSections(
 ): DocWarning[] {
   if (doc.status !== "degraded" || (doc.versions?.length ?? 0) === 0) return [];
   return (doc.warnings ?? []).filter((w) => w.kind === "section-failed" && w.stage === undefined);
+}
+
+/**
+ * #1132 — the sections of a published `degraded` document that the AI model was
+ * cut off from finishing (`section-truncated`), by name, each once. The server
+ * regenerates exactly these, reusing the rest.
+ */
+export function cutOffSections(
+  doc: Pick<GeneratedDoc, "status" | "versions" | "warnings">,
+): string[] {
+  if (doc.status !== "degraded" || (doc.versions?.length ?? 0) === 0) return [];
+  const names = (doc.warnings ?? [])
+    .filter((w) => w.kind === "section-truncated")
+    .map((w) => w.section);
+  return [...new Set(names)];
+}
+
+/** #1132 — names the unfinished sections in plain words and redrafts just those. */
+export function CutOffSectionsBanner({
+  sections,
+  regenerating,
+  onRegenerate,
+}: {
+  sections: string[];
+  regenerating: boolean;
+  onRegenerate: () => void;
+}): React.ReactElement {
+  const plural = sections.length !== 1;
+  return (
+    <Card
+      className="border-destructive/40 bg-destructive/10 p-4"
+      role="alert"
+      data-testid="cut-off-sections-banner"
+    >
+      <p className="font-medium text-destructive">
+        {sections.length} section{plural ? "s" : ""} could not be finished
+      </p>
+      <p className="mt-1 text-sm text-destructive">
+        The AI model reached the most it can write in one answer before it finished{" "}
+        {plural ? "these sections" : "this section"}:
+      </p>
+      <ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-destructive">
+        {sections.map((name) => (
+          <li key={name}>{name}</li>
+        ))}
+      </ul>
+      <p className="mt-1 text-sm text-destructive">
+        The unfinished part was removed, and a note at the end of{" "}
+        {plural ? "each section" : "the section"} lists what is missing. Regenerating writes{" "}
+        {plural ? "these sections" : "this section"} again and reuses the other sections, where it
+        can.
+      </p>
+      <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
+        {regenerating ? "Regenerating…" : `Regenerate unfinished section${plural ? "s" : ""}`}
+      </Button>
+    </Card>
+  );
 }
 
 /** #942 — names the failed sections, says why, and regenerates just those. */

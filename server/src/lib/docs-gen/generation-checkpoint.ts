@@ -199,6 +199,31 @@ export function hasFailedSections(warnings: unknown): boolean {
 }
 
 /**
+ * #1132 — true when a document's warnings name a section the output-token cap
+ * cut off (`section-truncated`). Like a failed section, it is written again by
+ * a regenerate, which reuses the finished sections.
+ */
+export function hasCutOffSections(warnings: unknown): boolean {
+  return (
+    Array.isArray(warnings) &&
+    warnings.some(
+      (w) =>
+        w != null &&
+        typeof w === "object" &&
+        (w as { kind?: unknown }).kind === "section-truncated",
+    )
+  );
+}
+
+/**
+ * #942 / #1132 — a published document a regenerate can complete section by
+ * section: one with a failed section or a cut-off one.
+ */
+export function hasSectionsToRedraft(warnings: unknown): boolean {
+  return hasFailedSections(warnings) || hasCutOffSections(warnings);
+}
+
+/**
  * A document assembled from the sections a run finished, in section order, for
  * a failure that left no assembled document. The note says plainly that it is
  * incomplete; the failure warning says why.

@@ -41,6 +41,7 @@ import DocumentationPage, {
   FailedGenerationBanner,
   generationStopCause,
   generationStopStage,
+  cutOffSections,
   failedSections,
   isPartialGeneration,
 } from "@/app/(authed)/projects/[id]/documentation/page";
@@ -331,6 +332,74 @@ describe("#942 — a published document with a failed section can regenerate it"
     expect(banner).toHaveTextContent("(SyntaxError)");
     expect(banner).toHaveTextContent(/reuses the finished sections/i);
     fireEvent.click(screen.getByRole("button", { name: /regenerate failed section/i }));
+    await waitFor(() =>
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        `/projects/proj_test/docs/${DOC_ID}/regenerate`,
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+  });
+});
+
+describe("#1132 — a published document with a cut-off section can redraft it", () => {
+  const CUT = {
+    kind: "section-truncated",
+    section: "Component Breakdown",
+    severity: "error",
+    message:
+      'Section "Component Breakdown" was CUT OFF by the model\'s output-token cap (provider finish reason "max_tokens"), so its content is incomplete and later sub-sections may be missing entirely. The output cap in force was 49,152 tokens (answer 16,384 + reasoning 32,768) — raise DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS (the answer budget) or narrow the section, and regenerate.',
+  };
+  const V1 = [{ id: "v1", version: 1, diffSummary: null, createdAt: "2026-10-13T00:00:00.000Z" }];
+
+  it("names each cut-off section once, only on a published degraded document", () => {
+    expect(
+      cutOffSections({ status: "degraded", versions: V1, warnings: [CUT, CUT] as never }),
+    ).toEqual(["Component Breakdown"]);
+    expect(cutOffSections({ status: "degraded", versions: [], warnings: [CUT] as never })).toEqual(
+      [],
+    );
+    expect(cutOffSections({ status: "ready", versions: V1, warnings: [CUT] as never })).toEqual([]);
+    expect(cutOffSections({ status: "degraded", versions: V1, warnings: null })).toEqual([]);
+  });
+
+  it("explains it in plain words and POSTs /regenerate from the page", async () => {
+    const DOC_ID = "doc_1132";
+    const doc = {
+      id: DOC_ID,
+      title: "Architecture",
+      scope: "repository",
+      autoUpdate: false,
+      generatedAt: null,
+      createdAt: "2026-10-13T00:00:00.000Z",
+      status: "degraded",
+      content: "# Architecture",
+      warnings: [CUT],
+      versions: V1,
+    };
+    mockApiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+      if (path.endsWith(`/docs/${DOC_ID}/regenerate`) && init?.method === "POST")
+        return { id: DOC_ID, status: "pending" };
+      if (path.endsWith(`/docs/${DOC_ID}`)) return doc;
+      if (path.endsWith("/docs")) return [{ ...doc, content: undefined }];
+      return [];
+    });
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(
+      <Wrapper>
+        <DocumentationPage />
+      </Wrapper>,
+    );
+    fireEvent.click(await screen.findByTestId(`doc-card-${DOC_ID}`));
+
+    const banner = await screen.findByTestId("cut-off-sections-banner");
+    expect(banner).toHaveTextContent("1 section could not be finished");
+    expect(banner).toHaveTextContent("Component Breakdown");
+    expect(banner).toHaveTextContent(/a note at the end of the section lists what is missing/i);
+    expect(banner).toHaveTextContent(/reuses the other sections/i);
+    // Plain words: no setting names or token counts in the analyst's banner.
+    expect(banner).not.toHaveTextContent("DOCS_GEN");
+    expect(screen.queryByTestId("failed-sections-banner")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /regenerate unfinished section/i }));
     await waitFor(() =>
       expect(mockApiFetch).toHaveBeenCalledWith(
         `/projects/proj_test/docs/${DOC_ID}/regenerate`,
