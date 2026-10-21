@@ -3,4 +3,4 @@ issue: 737
 section: Fixed
 ---
 
-- Generated documents: a footnote citing a module now names the `file:line` its statement restates, when the module's facts carry a matching line (a mined rule), instead of only the module path. The provenance manifest records the lines each source's footnotes named (`citedLines`).
+- Generated documents: when a statement clearly restates a rule, limit or default METIS read directly from a module's source code, its footnote names that `file:line` instead of only the module path. A weaker match, or a tie between two rules, keeps the module footnote. The provenance manifest records the lines each source's footnotes named (`citedLines`).

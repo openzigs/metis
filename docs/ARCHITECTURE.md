@@ -5070,8 +5070,13 @@ LLM-written bullet may be invented, so it never is. The file must have a source
 extension (a host and port such as `redis.example.com:6379` is not a file) and,
 for a repository id, lie under the cited module's path. `pinnedLocator` compares
 the sentence the marker ends (the prose since the last sentence end or
-table-cell border on its line, markers excluded) with each rule's line **less its
-locator** (a path's words are shared by every rule of the module). Identifiers
+table-cell border on its line, markers excluded) with each rule's **own text**:
+the line after its `[<language> <kind>]` tag and before its locator, less the
+miners' fixed summary wording (`MINER_TEMPLATE_PHRASES`, read from the
+`*-rule-miner.ts` templates: `Constant`, `Rejects when`,
+`Identity (PRIMARY KEY)` and the like). The kind, the template and the path are
+shared by every rule of their kind or module, so they say nothing about which
+rule a sentence restates. Identifiers
 are split and lightly stemmed. A rule qualifies only when the two share **at
 least two content words**; numbers never count towards that, because business
 prose repeats small numbers about unrelated things ("API keys are rotated every
@@ -5082,7 +5087,9 @@ module footnote, as does any sentence that qualifies for no rule. A pin reads
 `` `path:line` — `module` (module facts) ``. One module can hold the same facts
 id in several sections, each with its own slice of the facts. The synthesizer
 keeps the first as the provenance record, but the footnotes read the mined rules
-of every slice. The work is linear: a rule line is matched by one anchored
+of every slice. A legacy id with no repository is the exception: it is a lossy
+sanitisation of the module path, which two modules can share, so only its first
+text is read. The work is linear: a rule line is matched by one anchored
 pattern and is at most 1,200 characters, and the sentences of a line are read in
 one left-to-right pass, keeping at most 1,000 characters.
 `renderCitationFootnotesWithLocations` also returns the lines each source's

@@ -191,6 +191,107 @@ function wordsOf(text: string): Set<string> {
 }
 
 /**
+ * The fixed wording of the rule miners' summaries (`server/src/lib/code-graph/
+ * *-rule-miner.ts` and `rule-miner-brace-shared.ts`, read from their summary
+ * templates and labels, #1305 review). Every rule of a kind carries it, so it
+ * says nothing about which rule a sentence restates: "API keys are the primary
+ * key to every integration" shares `primary` and `key` with every
+ * `Identity (PRIMARY KEY)` rule, and "a constant max" shares `constant` with
+ * every `Constant` rule. Only the rule's own text (its expression and the
+ * variable part of its summary) is scored. The SQL constraint keywords are
+ * here too: the SQL miner's expressions are those keywords.
+ */
+const MINER_TEMPLATE_PHRASES = [
+  // Guards, branches and exits (go, c, rs, scala, cbl, ts, java, kt, cs, py).
+  "Rejects when",
+  "Rejects/exits when",
+  "Branches on threshold",
+  "Branches when",
+  "Branch when",
+  "Early exit when",
+  "Null guard on with early exit",
+  "Guard against",
+  "Otherwise",
+  "When then (branch)",
+  "Dispatch on with branches",
+  "State dispatch on with branches",
+  "Validates",
+  "Calculates (rounded)",
+  "Macro (no parameters) parameters",
+  // Errors and assertions.
+  "Throws",
+  "Raises",
+  "Error",
+  "Returns error",
+  "Fails",
+  "Fails with RuntimeException IllegalStateException",
+  "Asserts",
+  "Postcondition ensuring",
+  // Constants, enumerations and fields.
+  "Constant",
+  "Allowed values for",
+  "Default for",
+  "Field constraints",
+  "Field schema constraints",
+  "Field validation",
+  "Validation hook for",
+  // Annotation and attribute summaries (java, kt, cs).
+  "Boolean assertion: must be true false",
+  "Field must not be null blank empty",
+  "Field is required",
+  "Must be a valid email address",
+  "Length constraint",
+  "Length/size constraint: default bounds",
+  "Numeric bound",
+  "Range constraint",
+  "Regex constraint",
+  "Must match pattern",
+  "Value must be within range",
+  "Sign constraint",
+  "Temporal constraint",
+  "Cascade validation to nested object",
+  // Precondition labels (java).
+  "Null guard",
+  "Guava precondition",
+  "Apache Commons Validate",
+  "Spring Assert",
+  "Custom precondition",
+  // SQL.
+  "Identity (PRIMARY KEY)",
+  "Mandatory field (NOT NULL)",
+  "Uniqueness on (UNIQUE)",
+  "Value rule (CHECK)",
+  "Referential rule",
+  "Trigger (event-driven rule)",
+  "View includes rows where",
+  "Select rows where",
+  "FOREIGN KEY REFERENCES CONSTRAINT DEFAULT",
+  // SAS.
+  "Keep observation only when",
+  "Keeps rows where",
+  "Filters rows where",
+  "Retains across rows",
+  "Output keeps drops fields",
+  "Group/sort BY",
+  "Classification CLASS",
+  "Analysis VAR",
+  "Frequency TABLES",
+  "MODEL specification",
+  "SQL GROUP BY",
+  "SQL HAVING filter",
+  "SQL join ON",
+  "SQL ORDER BY",
+];
+const MINER_TEMPLATE_WORDS: ReadonlySet<string> = wordsOf(MINER_TEMPLATE_PHRASES.join(" "));
+
+/** A mined rule's own words: {@link wordsOf} less the miners' template wording. */
+function ruleWordsOf(text: string): Set<string> {
+  const out = wordsOf(text);
+  for (const w of MINER_TEMPLATE_WORDS) out.delete(w);
+  return out;
+}
+
+/**
  * The mined rules' locators in a module-facts source's text, in order, each
  * with the words of its line less the locator. A locator must name a source
  * file and, when `modulePath` is given, lie in that module: a rule of another
@@ -223,7 +324,7 @@ export function sourceLineLocators(text: string, modulePath?: string | null): So
       startLine,
       endLine: startLine,
       locator: `${filePath}:${startLine}`,
-      words: wordsOf(line.slice(0, line.lastIndexOf(locatorText))),
+      words: ruleWordsOf(line.slice(line.indexOf("] ") + 2, line.lastIndexOf(locatorText))),
     });
   }
   return out;
@@ -458,7 +559,11 @@ function renderParts(
       if (!locators) {
         const modulePath = decodeModulePath(source.sourceId);
         const byLocator = new Map<string, SourceLineLocator>();
-        for (const text of textsOf.get(id) ?? []) {
+        // A legacy id (no repository) is a lossy sanitisation of the module
+        // path, so two modules can share it (`factsSourceId`'s collision
+        // caveat): only the text of the module the footnote names is read.
+        const texts = textsOf.get(id) ?? [];
+        for (const text of modulePath ? texts : texts.slice(0, 1)) {
           for (const l of sourceLineLocators(text, modulePath)) {
             if (!byLocator.has(l.locator)) byLocator.set(l.locator, l);
           }
