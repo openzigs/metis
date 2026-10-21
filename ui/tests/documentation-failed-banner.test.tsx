@@ -394,7 +394,8 @@ describe("#1132 — a published document with a cut-off section can redraft it",
     const banner = await screen.findByTestId("cut-off-sections-banner");
     expect(banner).toHaveTextContent("1 section could not be finished");
     expect(banner).toHaveTextContent("Component Breakdown");
-    expect(banner).toHaveTextContent(/a note at the end of the section lists what is missing/i);
+    expect(banner).toHaveTextContent(/part of the section is missing/i);
+    expect(banner).toHaveTextContent(/a note at the end of the section lists it/i);
     expect(banner).toHaveTextContent(/reuses the other sections/i);
     // Plain words: no setting names or token counts in the analyst's banner.
     expect(banner).not.toHaveTextContent("DOCS_GEN");

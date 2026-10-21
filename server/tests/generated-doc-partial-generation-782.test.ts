@@ -798,6 +798,53 @@ describe("#1132 — a section cut off at the output cap", () => {
     expect(sectionText()).not.toContain("Shortened for length");
     expect(state.doc.generationCheckpoint).toBeNull();
   });
+
+  it("cancelling that regenerate restores the degraded version, cut-off warning and all", async () => {
+    state.cutOff = cut().label;
+    await generateDocumentAsync("d", "p");
+    const published = state.doc.content;
+    const publishedWarnings = state.doc.warnings;
+
+    state.cutOff = null;
+    // What POST /regenerate leaves: `pending`, with the warnings column untouched.
+    state.doc.status = "pending";
+    state.duringSection = (label) => {
+      if (label !== cut().label) return;
+      state.doc.status = "cancelling";
+      stopGeneration("d", "aborted");
+    };
+    await generateDocumentAsync("d", "p");
+
+    expect(state.doc.status).toBe("degraded");
+    expect(state.doc.content).toBe(published);
+    expect(state.doc.warnings).toEqual(publishedWarnings);
+    expect(state.versions).toHaveLength(1);
+  });
+
+  it("a regenerate keeps carrying the cut-off record until it reaches that section", async () => {
+    // Section 1 fails and section 2 is cut off, so the regenerate writes 1, then 2.
+    const failed = GROUPS[1];
+    const later = GROUPS[2];
+    state.failSection = failed.label;
+    state.cutOff = later.label;
+    await generateDocumentAsync("d", "p");
+    expect(checkpointIds()).toContain(later.id);
+
+    state.failSection = null;
+    state.cutOff = null;
+    state.doc.status = "pending";
+    // What the run has stored while it writes the failed section: the cut-off
+    // section, not reached yet, must still be in it (a stop here keeps it).
+    let storedMeanwhile: string[] = [];
+    state.duringSection = (label) => {
+      if (label === failed.label) storedMeanwhile = checkpointIds();
+    };
+    await generateDocumentAsync("d", "p");
+
+    expect(sectionCalls()).toBeGreaterThanOrEqual(2);
+    expect(storedMeanwhile).toContain(later.id);
+    expect(storedMeanwhile).not.toContain(failed.id);
+  });
 });
 
 /** Wait, inside a model call, for the run to abort it — as a real provider would. */

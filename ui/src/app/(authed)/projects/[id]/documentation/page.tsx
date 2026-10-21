@@ -1788,8 +1788,8 @@ export function CutOffSectionsBanner({
         ))}
       </ul>
       <p className="mt-1 text-sm text-destructive">
-        The unfinished part was removed, and a note at the end of{" "}
-        {plural ? "each section" : "the section"} lists what is missing. Regenerating writes{" "}
+        Part of {plural ? "each section" : "the section"} is missing. Where METIS could tell what, a
+        note at the end of the section lists it. Regenerating writes{" "}
         {plural ? "these sections" : "this section"} again and reuses the other sections, where it
         can.
       </p>
