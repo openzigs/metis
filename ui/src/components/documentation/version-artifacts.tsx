@@ -41,6 +41,33 @@ interface ProvenanceSummary {
     count: number;
     examples: Array<{ kind: string; text: string }>;
   }>;
+  /** #1070 — a planned document's topic plan; absent = not planned. */
+  topicPlan?: {
+    budgetChars: number;
+    sections: Array<{
+      sectionLabel: string;
+      kind: string;
+      budgetChars: number;
+      plannedTopics: number;
+      dropped: string[];
+      droppedNotListed: number;
+    }>;
+  };
+  /** #1070 — the cross-section consistency check; absent = not run. */
+  consistency?: {
+    statements: number;
+    findingCount: number;
+    findings: ConsistencyFinding[];
+  };
+}
+
+interface ConsistencyFinding {
+  kind: string;
+  name: string;
+  sections: number;
+  forms: number;
+  statements: Array<{ section: string; value: string }>;
+  source?: { value: string; location: string };
 }
 
 /** Save the full manifest as a JSON file. Fetched only on this explicit request. */
@@ -87,6 +114,141 @@ function OmittedTopics({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * #1070 — what the topic plan decided before anything was written: how many
+ * topics each catalogue section was planned, and the topics it left out to fit
+ * the document budget, most important first (so the last listed was the first
+ * to go). Renders nothing for a document that was not planned.
+ */
+export function TopicPlanSummary({
+  plan,
+  testId,
+}: {
+  plan: ProvenanceSummary["topicPlan"];
+  testId: string;
+}): React.ReactElement | null {
+  if (!plan) return null;
+  const catalogue = plan.sections.filter((s) => s.kind === "enumerative");
+  const planned = catalogue.reduce((n, s) => n + s.plannedTopics, 0);
+  const dropped = plan.sections.reduce((n, s) => n + s.dropped.length + s.droppedNotListed, 0);
+  return (
+    <div className="mt-1" data-testid={testId}>
+      <p className="font-medium">
+        Topic plan: {planned.toLocaleString()} topic{planned === 1 ? "" : "s"} planned in{" "}
+        {catalogue.length.toLocaleString()} catalogue section{catalogue.length === 1 ? "" : "s"},
+        within about {Math.round(plan.budgetChars / 1000).toLocaleString()}k characters
+      </p>
+      {dropped === 0 ? (
+        <p className="text-muted-foreground">No topic was left out before writing.</p>
+      ) : (
+        <>
+          <p className="text-muted-foreground">
+            {dropped.toLocaleString()} topic{dropped === 1 ? "" : "s"} left out before writing,
+            least important last:
+          </p>
+          <ul className="max-h-48 overflow-y-auto">
+            {plan.sections
+              .filter((s) => s.dropped.length + s.droppedNotListed > 0)
+              .map((s, i) => (
+                <li key={`${i}:${s.sectionLabel}`}>
+                  <span className="text-muted-foreground">
+                    {s.sectionLabel} ({s.plannedTopics.toLocaleString()} planned)
+                  </span>
+                  <ol className="list-decimal pl-6">
+                    {s.dropped.map((topic, j) => (
+                      <li key={`${j}:${topic}`}>{topic}</li>
+                    ))}
+                  </ol>
+                  {s.droppedNotListed > 0 && (
+                    <p className="pl-4 text-muted-foreground">
+                      and {s.droppedNotListed.toLocaleString()} more
+                    </p>
+                  )}
+                </li>
+              ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** One consistency finding as a sentence an analyst can act on. */
+function consistencyFindingText(f: ConsistencyFinding): string {
+  switch (f.kind) {
+    case "conflict":
+      return `${f.name} is stated differently from the source${
+        f.source ? ` (${f.source.value} at ${f.source.location})` : ""
+      }`;
+    case "restated":
+      return `The formula ${f.name} is written out in ${f.sections} sections, ${f.forms} different way${
+        f.forms === 1 ? "" : "s"
+      }`;
+    case "endpoint":
+      return `The endpoint ${f.name} is given ${f.forms} different methods`;
+    case "count":
+      return `The number of ${f.name} is given ${f.forms} different ways`;
+    case "size":
+      return `The size of the ${f.name} is given ${f.forms} different ways`;
+    default:
+      return f.name;
+  }
+}
+
+/**
+ * #1070 — the cross-section consistency check, shown whatever it found: a
+ * clean result is an answer too. It compares how values are written and
+ * changes nothing in the document. Renders nothing when the check did not run.
+ */
+export function ConsistencySummary({
+  consistency,
+  testId,
+}: {
+  consistency: ProvenanceSummary["consistency"];
+  testId: string;
+}): React.ReactElement | null {
+  if (!consistency) return null;
+  const { statements, findingCount, findings } = consistency;
+  const compared = `${statements.toLocaleString()} statement${statements === 1 ? "" : "s"} compared`;
+  return (
+    <div className="mt-1" data-testid={testId}>
+      <p className="font-medium">
+        {findingCount === 0
+          ? `Consistency check: no differences found (${compared})`
+          : `Consistency check: ${findingCount.toLocaleString()} possible inconsistenc${
+              findingCount === 1 ? "y" : "ies"
+            } (${compared})`}
+      </p>
+      {findings.length > 0 && (
+        <ul className="max-h-48 list-disc overflow-y-auto pl-4">
+          {findings.map((f, i) => (
+            <li key={`${i}:${f.kind}:${f.name}`}>
+              {consistencyFindingText(f)}
+              <ul className="list-[circle] pl-4 text-muted-foreground">
+                {f.statements.map((st, j) => (
+                  <li key={`${j}:${st.section}`}>
+                    {st.section}: <code className="break-all">{st.value}</code>
+                  </li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      )}
+      {findingCount > findings.length && (
+        <p className="text-muted-foreground">
+          and {(findingCount - findings.length).toLocaleString()} more in the full manifest
+        </p>
+      )}
+      {findingCount > 0 && (
+        <p className="text-muted-foreground">
+          Nothing was changed. Compare the statements with the source.
+        </p>
+      )}
     </div>
   );
 }
@@ -266,6 +428,14 @@ export function VersionArtifacts({
               <OmittedTopics
                 omitted={provenance.data.omittedTopics ?? []}
                 testId={`version-omitted-topics-${versionId}`}
+              />
+              <TopicPlanSummary
+                plan={provenance.data.topicPlan}
+                testId={`version-topic-plan-${versionId}`}
+              />
+              <ConsistencySummary
+                consistency={provenance.data.consistency}
+                testId={`version-consistency-${versionId}`}
               />
               <CodeIdentifiers
                 checked={provenance.data.codeIdentifiers ?? []}

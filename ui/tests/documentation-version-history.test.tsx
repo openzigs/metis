@@ -341,6 +341,153 @@ describe("DocumentationPage — version history", () => {
     expect(within(omitted).getByText("Feed / Category")).toBeInTheDocument();
   });
 
+  it("shows the topic plan's drops, most important first, and the consistency findings (#1070)", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+      {
+        ...PROVENANCE_SUMMARY,
+        topicPlan: {
+          budgetChars: 244_231,
+          sections: [
+            {
+              sectionLabel: "Overview & Domain",
+              kind: "single",
+              budgetChars: 24_000,
+              plannedTopics: 1,
+              dropped: [],
+              droppedNotListed: 0,
+            },
+            {
+              sectionLabel: "Business Rules & Policies",
+              kind: "enumerative",
+              budgetChars: 43_057,
+              plannedTopics: 100,
+              dropped: [
+                "dublincore — Business Rules & Policies",
+                "(root) — Business Rules & Policies",
+              ],
+              droppedNotListed: 3,
+            },
+          ],
+        },
+        consistency: {
+          statements: 617,
+          findingCount: 2,
+          findings: [
+            {
+              kind: "count",
+              name: "authentication kinds",
+              sections: 2,
+              forms: 2,
+              statements: [
+                { section: "Overview & Domain", value: "five authentication mechanisms" },
+                {
+                  section: "Core Business Capabilities",
+                  value: "four independent authentication paths",
+                },
+              ],
+            },
+            {
+              kind: "conflict",
+              name: "MaxEntryLimit",
+              sections: 1,
+              forms: 2,
+              statements: [{ section: "Data & Domain Model", value: "500" }],
+              source: { value: "1000", location: "internal/model/entry.go:20" },
+            },
+          ],
+        },
+      },
+    );
+    await openDoc();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const panel = await screen.findByTestId("version-provenance-v2");
+    const plan = await within(panel).findByTestId("version-topic-plan-v2");
+    expect(plan).toHaveTextContent(
+      "Topic plan: 100 topics planned in 1 catalogue section, within about 244k characters",
+    );
+    expect(within(plan).getByText(/5 topics left out before writing/)).toBeInTheDocument();
+    expect(within(plan).getByText("Business Rules & Policies (100 planned)")).toBeInTheDocument();
+    const drops = within(plan)
+      .getAllByRole("listitem")
+      .map((li) => li.textContent);
+    expect(drops).toContain("dublincore — Business Rules & Policies");
+    expect(within(plan).getByText("and 3 more")).toBeInTheDocument();
+    const check = await within(panel).findByTestId("version-consistency-v2");
+    expect(
+      within(check).getByText(
+        "Consistency check: 2 possible inconsistencies (617 statements compared)",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(check).getByText(/The number of authentication kinds is given 2 different ways/),
+    ).toBeInTheDocument();
+    expect(within(check).getByText("five authentication mechanisms")).toBeInTheDocument();
+    expect(
+      within(check).getByText(
+        /MaxEntryLimit is stated differently from the source \(1000 at internal\/model\/entry.go:20\)/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("says the consistency check found nothing, and that the plan dropped nothing (#1070)", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+      {
+        ...PROVENANCE_SUMMARY,
+        topicPlan: {
+          budgetChars: 60_000,
+          sections: [
+            {
+              sectionLabel: "Business Rules & Policies",
+              kind: "enumerative",
+              budgetChars: 30_000,
+              plannedTopics: 12,
+              dropped: [],
+              droppedNotListed: 0,
+            },
+          ],
+        },
+        consistency: { statements: 1, findingCount: 0, findings: [] },
+      },
+    );
+    await openDoc();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const panel = await screen.findByTestId("version-provenance-v2");
+    const plan = await within(panel).findByTestId("version-topic-plan-v2");
+    expect(within(plan).getByText("No topic was left out before writing.")).toBeInTheDocument();
+    const check = await within(panel).findByTestId("version-consistency-v2");
+    expect(check).toHaveTextContent(
+      "Consistency check: no differences found (1 statement compared)",
+    );
+    expect(within(check).queryByText(/Nothing was changed/)).not.toBeInTheDocument();
+  });
+
+  it("shows no plan and no consistency check for a document that was not planned (#1070)", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+      PROVENANCE_SUMMARY,
+    );
+    await openDoc();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const panel = await screen.findByTestId("version-provenance-v2");
+    await within(panel).findByText("gendoc:proj_test:doc_1:v2");
+    expect(within(panel).queryByTestId("version-topic-plan-v2")).not.toBeInTheDocument();
+    expect(within(panel).queryByTestId("version-consistency-v2")).not.toBeInTheDocument();
+  });
+
   it("shows the main part's code-name check, by section, for a reader BRD (#1223)", async () => {
     setup(
       docDetail({

@@ -372,6 +372,12 @@ import {
   type FactSheet,
 } from "./canonical-facts.js";
 import { checkFactConsistency, factInconsistentWarning } from "./fact-consistency.js";
+import {
+  consistencyRecord,
+  topicPlanRecord,
+  type ConsistencyRecord,
+  type TopicPlanRecord,
+} from "./plan-provenance.js";
 
 const log = createChildLogger("docs-gen:holistic");
 
@@ -1783,6 +1789,8 @@ async function runHolisticSynthesis(
     regeneration,
     grounding: groundingRecord,
     dropRetries,
+    topicPlan,
+    consistency,
     resume,
   } = await synthesizeFinalDocument(
     facts,
@@ -1866,6 +1874,8 @@ async function runHolisticSynthesis(
     regeneration,
     ...(groundingRecord ? { grounding: groundingRecord } : {}),
     ...(dropRetries ? { dropRetries } : {}),
+    ...(topicPlan ? { topicPlan } : {}),
+    ...(consistency ? { consistency } : {}),
   });
   return {
     markdown: pathPrefixes ? withPathScopeBanner(markdown, pathPrefixes) : markdown,
@@ -4299,6 +4309,10 @@ async function synthesizeFinalDocumentInRun(
     grounding?: ReturnType<typeof groundingPolicyRecord>;
     /** #1209 — present when the run stopped retrying dropped connections. */
     dropRetries?: DropRetriesRecord;
+    /** #1070 — the topic plan, on a planned document. */
+    topicPlan?: TopicPlanRecord;
+    /** #1070 — the consistency check, on a planned document. */
+    consistency?: ConsistencyRecord;
   }
 > {
   // #243 — best-effort per-section progress reporting; never breaks synthesis.
@@ -5778,6 +5792,7 @@ async function synthesizeFinalDocumentInRun(
   // the document: read as drafted, it could quote one the length fit had just
   // removed. The fit is a function of the sections and the caps, so every run
   // of the same sections still reports the same thing.
+  let consistencyResult: ConsistencyRecord | undefined;
   if (planning) {
     const consistency = checkFactConsistency(
       fittedSections.sections.map((markdown, i) => ({
@@ -5794,6 +5809,9 @@ async function synthesizeFinalDocumentInRun(
       findings: consistency.findings.length,
     });
     if (inconsistent) warnings.push(inconsistent);
+    // Recorded with its result either way: "no differences found" is an
+    // answer an analyst can read in the Provenance panel.
+    consistencyResult = consistencyRecord(consistency);
   }
   // #1360 — last, so heading matching above sees exactly what each group produced.
   // #737 — cited ids of admitted sources become document-scoped footnotes with
@@ -5812,6 +5830,15 @@ async function synthesizeFinalDocumentInRun(
     citedLines: footnoted.citedLines,
     ...(groundingRecord ? { grounding: groundingRecord } : {}),
     ...(dropRetries ? { dropRetries } : {}),
+    ...(planning
+      ? {
+          topicPlan: topicPlanRecord(
+            planning.plan,
+            (id) => groups.find((g) => g.id === id)?.label ?? id,
+          ),
+        }
+      : {}),
+    ...(consistencyResult ? { consistency: consistencyResult } : {}),
     ...(resume.reused.length + resume.stale.length > 0 ? { resume } : {}),
     ...(synthesisRecords.length === groups.length
       ? {

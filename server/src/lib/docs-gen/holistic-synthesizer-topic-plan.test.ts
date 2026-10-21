@@ -1358,6 +1358,71 @@ describe("the consistency check in a planned document", () => {
     vi.stubEnv("DOCS_GEN_TOPIC_PLAN", "off");
     const result = await run(facts(), fakeModel({ inject: disagree }));
     expect(result.warnings).toEqual([]);
+    // And nothing of a plan is recorded for provenance.
+    expect(result).not.toHaveProperty("topicPlan");
+    expect(result).not.toHaveProperty("consistency");
+  });
+
+  it("records the plan and the check for provenance, a clean check included (#1070)", async () => {
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "30000");
+    const result = await run(project(60), fakeModel());
+    // Nothing found: no note on the document, but the answer is recorded.
+    expect(result.warnings.some((w) => w.kind === "fact-inconsistent")).toBe(false);
+    expect(result.consistency).toEqual({
+      statements: expect.any(Number),
+      findingCount: 0,
+      findings: [],
+    });
+    const plan = result.topicPlan!;
+    expect(plan.sections.map((s) => s.sectionLabel)).toEqual(GROUPS.map((g) => g.label));
+    const rules = plan.sections.find((s) => s.sectionLabel === RULES)!;
+    expect(rules.kind).toBe("enumerative");
+    expect(rules.plannedTopics + rules.dropped.length).toBe(60);
+    // Left out at planning time, most important first: m59 is the last.
+    expect(rules.dropped.length).toBeGreaterThan(0);
+    expect(rules.dropped.at(-1)).toBe(`m59 — ${RULES}`);
+    expect(plan.budgetChars).toBe(
+      plan.unallocatedChars + plan.sections.reduce((n, s) => n + s.budgetChars, 0),
+    );
+    // The same topics are listed with the section's omissions.
+    const entry = result.sections.find((s) => s.sectionLabel === RULES)!;
+    expect(entry.omittedTopics).toContain("m59 (not planned)");
+  });
+
+  it("notes two sections that count one kind of thing differently (#1070, run 8)", async () => {
+    const provider = fakeModel({
+      inject: (call) =>
+        call.group === label("overview")
+          ? "Access is governed by five distinct authentication mechanisms. "
+          : call.group === label("integrations-and-glossary")
+            ? "It supports four independent authentication paths. "
+            : "",
+    });
+    const result = await run(facts(), provider);
+    const notes = result.warnings.filter((w) => w.kind === "fact-inconsistent");
+    expect(notes).toHaveLength(1);
+    expect(notes[0].message).toContain(
+      "The number of `authentication kinds` is given 2 different ways in 2 sections",
+    );
+    expect(result.consistency).toEqual(
+      expect.objectContaining({
+        findingCount: 1,
+        findings: [
+          expect.objectContaining({
+            kind: "count",
+            name: "authentication kinds",
+            statements: [
+              { section: label("overview"), value: "five distinct authentication mechanisms" },
+              {
+                section: label("integrations-and-glossary"),
+                value: "four independent authentication paths",
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(deriveDocStatus(result.warnings)).toBe("ready");
   });
 
   it("#1119 — quotes only statements that are in the document: not one the length fit removed", async () => {
