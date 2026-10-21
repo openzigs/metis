@@ -21,3 +21,4 @@ Since #1059 `POST /spec-kit/commands/:cmd` runs a model-backed command through `
 - **`pnpm --filter @metis/server db:gen-postgres` fails**: the script resolves `server/prisma/...` from the repo root. Run `bash scripts/gen-postgres-schema.sh` from the root.
 
 **Why not `background_runs`:** its `recoverStaleRuns` sets a stale `running` row back to `queued` and the runner dispatches it again. For work a user triggered and pays for, a restart must fail the run, never repeat it (docs-gen made the same call in #50). `spec_kit_jobs` follows docs-gen: heartbeat, sweep, fail as interrupted.
+- (#1308) A SQLite route test running several live Spec Kit exports passes `SPECKIT_EXPORT_LIVE_LIMIT_MAX` (10 per user) once retries start, and unrelated tests then get 429. Raise the limit in the test's hoisted env.

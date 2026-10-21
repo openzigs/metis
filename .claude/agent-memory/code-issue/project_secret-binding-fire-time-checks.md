@@ -19,3 +19,4 @@ Learned on #1235 (PR #1242), which scoped a scheduled webhook's `${vault:…}` a
 
 Related: [[object-acl-side-channels]], [[membership-access-widening-checklist]], [[test-falsifiability-traps]].
 - (#1282) Cron firings write `lastRunAt`/`nextRunAt`, which bumps `ScheduledJob.updatedAt`, so the optimistic-concurrency token is `ScheduledJob.version`. In a conflict test, a stale write by a non-binder is refused first by the binding guard (403), so make the stale writer the binder to isolate the 409. A new Rotate-anyway binding type also needs the `confirmedBindings` enum in `routes/vault.ts`.
+- (#1308) To prove a guard runs **before** credential binding (Spec Kit export, publish), assert the secret's `bindingWriteUntil` stays null. Look the secret up by `vault.create().id`: `Secret.name` is not the label. "No GitHub writes" alone stays green with the guard moved after `bindPublishCredential`.

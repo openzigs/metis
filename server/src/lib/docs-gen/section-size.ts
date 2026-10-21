@@ -169,7 +169,19 @@ export function units(markdown: string): Unit[] {
   return out;
 }
 
-const headingText = (unit: Unit): string => HEADING.exec(unit.text)?.[2] ?? unit.text;
+export const headingText = (unit: Unit): string => HEADING.exec(unit.text)?.[2] ?? unit.text;
+
+/**
+ * #1132 — a one-line label that introduces content: `**Purpose**`,
+ * `**Purpose:**`, `- **Responsibilities**:`, `Depends on:`. Left at the end of a
+ * cut section with nothing under it, it reads like a heading with no content.
+ */
+const BARE_LABEL = /^(?:[-*+]\s+)?(?:(?:\*\*|__)[^\n*_]{1,80}(?:\*\*|__)\s*:?|[^\n:|`]{1,80}:)\s*$/;
+
+/** True for a heading, or a bare label ({@link BARE_LABEL}), that a cut must not end on. */
+export function isEmptyLead(unit: Unit): boolean {
+  return unit.depth > 0 || BARE_LABEL.test(unit.text.trim());
+}
 
 /**
  * The sentences of `text` that fit `max` characters, whole. Used only when a
@@ -286,8 +298,8 @@ export function fitSectionToBudget(
     }
   }
   const assemble = (): { markdown: string; omittedTopics: string[] } => {
-    // Never end on a heading with no content under it.
-    while (kept.length > 1 && kept[kept.length - 1].depth > 0) {
+    // Never end on a heading, or a label (#1132), with no content under it.
+    while (kept.length > 1 && isEmptyLead(kept[kept.length - 1])) {
       kept.pop();
       cut -= 1;
     }
