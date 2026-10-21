@@ -685,7 +685,10 @@ Detection runs on a folded **comparison copy**; the redaction is applied to the
 **original** text. Text with no fence-shaped span is returned unchanged, so CJK
 full-width text, ligatures, superscripts and RTL text are not altered, quoted
 snippets still match their chunk, and a prompt without a look-alike is
-byte-identical to one built before #1114. The scrub is linear in the input
+byte-identical to one built before #1114. A chain of fences
+(`===METIS-DATA-BOUNDARY===METIS-DATA-BOUNDARY===`) is one span: matching only
+the first would leave `METIS-DATA-BOUNDARY===`, which the tool-result marker's
+trailing `===` would turn back into a fence. The scrub is linear in the input
 (the pattern only starts a match at the first `=` of a run; the pre-#1114
 pattern was quadratic on a long run of `=`).
 
