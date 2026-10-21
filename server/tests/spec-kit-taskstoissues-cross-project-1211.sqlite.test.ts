@@ -26,6 +26,9 @@ import {
 
 const state = vi.hoisted(() => {
   process.env.RATE_LIMIT_MAX = "100000";
+  // The live-export limiter (10 per user) would otherwise answer 429 once a
+  // few refusals and their retries have run.
+  process.env.SPECKIT_EXPORT_LIVE_LIMIT_MAX = "100000";
   process.env.AI_OFFLINE = "1";
   return { db: null as unknown };
 });
@@ -81,6 +84,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let sqlite: MigratedSqlite;
     let db: PrismaClient;
     let COORD = "";
+    let secretId = "";
     const calls: Call[] = [];
     let nextIssue = 100;
     const prevKey = process.env.VAULT_MASTER_KEY;
@@ -115,8 +119,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       return { tasksVersion: res.body.data.tasksVersion, digest: res.body.data.planDigest };
     }
 
+    /**
+     * Binding the vault secret stamps `bindingWriteUntil` on it (#552): the
+     * trace that the credential was bound. Cleared just before the live call.
+     */
+    async function bindingStamp(): Promise<Date | null> {
+      const s = await db.secret.findUniqueOrThrow({ where: { id: secretId } });
+      return s.bindingWriteUntil;
+    }
+
     async function liveBody(extra: Record<string, unknown> = {}) {
-      return { secretRef: REF, expectedPlan: await plan(), ...extra };
+      const body = { secretRef: REF, expectedPlan: await plan(), ...extra };
+      await db.secret.updateMany({
+        where: { id: secretId },
+        data: { bindingWriteUntil: null },
+      });
+      return body;
     }
 
     async function expectRefusal(res: request.Response, repo: string, names: string[]) {
@@ -126,6 +144,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // Nothing reached GitHub, and no task was claimed.
       expect(writes()).toEqual([]);
       expect(await db.specKitTaskExport.count()).toBe(0);
+      // Review of #1308 — the guard runs before the credential is bound, the
+      // secret read or a client built: no binding stamp, no GitHub call at all.
+      expect(await bindingStamp()).toBeNull();
+      expect(calls).toEqual([]);
     }
 
     function expectNoHiddenLeak(res: request.Response) {
@@ -161,9 +183,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           data: { id, name, slug: id, createdById: COORD_ID, workspaceId, specKitEnabled: true },
         });
       }
-      await vault.create(SECRET_LABEL, "ghp_speckit_token_1211", "global", {
+      const secret = await vault.create(SECRET_LABEL, "ghp_speckit_token_1211", "global", {
         createdById: COORD_ID,
       });
+      secretId = secret.id;
       // This project's analysed repository — never an export target.
       await db.repoConnection.create({
         data: {
@@ -272,6 +295,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(writes()).toEqual([{ method: "POST", url: "/repos/sandbox-org/shared-1211/issues" }]);
       expect(await db.specKitTaskExport.count()).toBe(1);
+      // Positive control for the refusal's "no stamp" check: a bind stamps.
+      expect(await bindingStamp()).not.toBeNull();
     });
 
     it("accepts only a boolean confirm — a string 'true' is not a confirmation", async () => {
