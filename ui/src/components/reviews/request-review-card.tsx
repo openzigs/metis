@@ -232,7 +232,8 @@ export function RequestReviewCard({
             ? `${approvedCount} of them ${approvedCount === 1 ? "is" : "are"} already approved and stay${approvedCount === 1 ? "s" : ""} approved unless the review is rejected. `
             : ""}
           The rest show as awaiting review until it is decided. Withdrawing the review puts every
-          status back.
+          status back, except on a requirement another open review still covers: that one waits for
+          the other review.
         </p>
         <div className="space-y-1">
           <Label htmlFor="review-title">Title</Label>

@@ -150,7 +150,8 @@ export function WithdrawReviewButton({ review, user }: WithdrawReviewButtonProps
         description={
           "The review goes back to a draft and its reviewers can no longer decide on it. " +
           "Each requirement gets back the review status it had before the review was requested, " +
-          "unless someone has changed it since. To ask again, request a new review from the " +
+          "unless someone has changed it since. A requirement another open review still covers " +
+          "keeps waiting for that review. To ask again, request a new review from the " +
           "project's Requirements page."
         }
         confirmLabel="Withdraw review"
