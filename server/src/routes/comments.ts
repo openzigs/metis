@@ -20,6 +20,7 @@ import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { dispatchMentions } from "../lib/collaboration/mentions.js";
+import { emitCommentChanged } from "../lib/collaboration/comment-events.js";
 import type { RoleKey } from "@metis/shared";
 import { canAccessProjectDiscussions } from "../lib/discussions/access.js";
 import { audit } from "../lib/audit/audit-service.js";
@@ -120,6 +121,18 @@ const commentInclude = {
   author: { select: { id: true, username: true, displayName: true } },
 } as const;
 
+/**
+ * A thread's project (the access check) and its requirement or artifact (the
+ * #997 `comment:changed` event, `emitCommentChanged`).
+ */
+const commentThreadLocationSelect = {
+  id: true,
+  requirementId: true,
+  specKitProjectId: true,
+  specKitArtifactName: true,
+  requirement: { select: { projectId: true } },
+} as const;
+
 // ---- Requirement comment routes --------------------------------------------
 
 export function requirementCommentsRouter(): Router {
@@ -171,6 +184,13 @@ export function requirementCommentsRouter(): Router {
       if (firstComment) {
         dispatchMentions(firstComment.id, parsed.data.body, req.user.userId);
       }
+      emitCommentChanged({
+        id: thread.id,
+        requirementId,
+        requirement: { projectId: req_.projectId },
+        specKitProjectId: null,
+        specKitArtifactName: null,
+      });
 
       res.status(201).json({
         success: true,
@@ -289,6 +309,12 @@ export function specKitArtifactCommentsRouter(): Router {
       if (firstComment) {
         dispatchMentions(firstComment.id, parsed.data.body, req.user.userId);
       }
+      emitCommentChanged({
+        id: thread.id,
+        requirementId: null,
+        specKitProjectId: projectId,
+        specKitArtifactName: artifactName,
+      });
 
       res.status(201).json({
         success: true,
@@ -382,12 +408,7 @@ export function commentsRouter(): Router {
 
       const thread = await prisma.commentThread.findUnique({
         where: { id: threadId },
-        select: {
-          id: true,
-          requirementId: true,
-          specKitProjectId: true,
-          requirement: { select: { projectId: true } },
-        },
+        select: commentThreadLocationSelect,
       });
       if (!thread) throw threadNotFound();
 
@@ -409,6 +430,7 @@ export function commentsRouter(): Router {
       });
 
       dispatchMentions(comment.id, parsed.data.body, req.user.userId);
+      emitCommentChanged(thread);
 
       res.status(201).json({ success: true, data: commentView(comment) });
     },
@@ -435,13 +457,7 @@ export function commentsRouter(): Router {
           id: true,
           authorId: true,
           deletedAt: true,
-          thread: {
-            select: {
-              requirementId: true,
-              specKitProjectId: true,
-              requirement: { select: { projectId: true } },
-            },
-          },
+          thread: { select: commentThreadLocationSelect },
         },
       });
       if (!existing || existing.deletedAt) {
@@ -462,6 +478,7 @@ export function commentsRouter(): Router {
         data: { body: parsed.data.body, editedAt: new Date() },
         include: commentInclude,
       });
+      emitCommentChanged(existing.thread);
 
       res.json({ success: true, data: commentView(updated) });
     },
@@ -482,13 +499,7 @@ export function commentsRouter(): Router {
           id: true,
           authorId: true,
           deletedAt: true,
-          thread: {
-            select: {
-              requirementId: true,
-              specKitProjectId: true,
-              requirement: { select: { projectId: true } },
-            },
-          },
+          thread: { select: commentThreadLocationSelect },
         },
       });
       if (!existing || existing.deletedAt) {
@@ -508,6 +519,7 @@ export function commentsRouter(): Router {
         where: { id: commentId },
         data: { deletedAt: new Date() },
       });
+      emitCommentChanged(existing.thread);
 
       res.json({ success: true, data: { id: commentId, deleted: true } });
     },
