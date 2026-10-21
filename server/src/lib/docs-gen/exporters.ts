@@ -7,7 +7,7 @@
  *       rendered as PNG images via Puppeteer.
  */
 
-import type { Browser } from "puppeteer";
+import type { Browser, Page } from "puppeteer";
 import { createRequire } from "module";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -190,6 +190,31 @@ export function chromeLaunchArgs(): string[] {
   return ["--no-sandbox", "--disable-setuid-sandbox", ...base];
 }
 
+// #1017 — the export page may load nothing from outside the document itself.
+// The HTML is sanitised first (#991), but that guard depends on how `marked`
+// tokenises; this one does not. Every request the page makes is intercepted
+// and aborted unless it is a `data:` URL or the blank page Puppeteer starts
+// on. Our own scripts (mermaid, KaTeX) are injected by `addScriptTag({ path })`,
+// which inlines the file's text and makes no request, so they are unaffected.
+// There is deliberately no CDN fallback: these bundles are server dependencies,
+// and a fallback URL would be the one request this guard has to let through.
+export function isExportRequestAllowed(url: string): boolean {
+  return /^data:/i.test(url) || url === "about:blank";
+}
+
+/** Abort every request {@link isExportRequestAllowed} refuses. Call before `setContent`. */
+export async function blockExternalRequests(page: Page): Promise<void> {
+  await page.setRequestInterception(true);
+  page.on("request", (request) => {
+    if (request.isInterceptResolutionHandled()) return;
+    const settled = isExportRequestAllowed(request.url())
+      ? request.continue()
+      : request.abort("blockedbyclient");
+    // A request can be settled by the page closing first; that is not an error here.
+    void settled.catch(() => {});
+  });
+}
+
 async function exportToPdf(markdown: string, title: string): Promise<ExportResult> {
   let puppeteer: typeof import("puppeteer") | undefined;
   try {
@@ -205,19 +230,14 @@ async function exportToPdf(markdown: string, title: string): Promise<ExportResul
       args: chromeLaunchArgs(),
     });
     const page = await browser.newPage();
+    await blockExternalRequests(page);
 
     const html = await buildHtmlDocument(markdown, title);
     // domcontentloaded is sufficient — mermaid is injected below via addScriptTag
     await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 30_000 });
 
-    // Inject mermaid from local filesystem (no CDN dependency)
-    if (_mermaidPath) {
-      await page.addScriptTag({ path: _mermaidPath });
-    } else {
-      await page.addScriptTag({
-        url: "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js",
-      });
-    }
+    // Inject mermaid from the local filesystem; the page may not fetch it (#1017).
+    if (_mermaidPath) await page.addScriptTag({ path: _mermaidPath });
 
     // Render diagrams now that mermaid is loaded, with per-diagram error handling
     await page.evaluate(`
@@ -282,13 +302,6 @@ async function exportToPdf(markdown: string, title: string): Promise<ExportResul
     if (_katexJsPath && _katexAutoRenderPath) {
       await page.addScriptTag({ path: _katexJsPath });
       await page.addScriptTag({ path: _katexAutoRenderPath });
-    } else {
-      await page.addScriptTag({
-        url: "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js",
-      });
-      await page.addScriptTag({
-        url: "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js",
-      });
     }
     await page.evaluate(`
       // Render pre-extracted display math blocks via katex.renderToString
@@ -643,6 +656,7 @@ async function renderMermaidDiagrams(markdown: string): Promise<Map<number, Buff
       if (budgetExpired || !browser) break;
       try {
         const page = await browser.newPage();
+        await blockExternalRequests(page);
         await page.setViewport({ width: 1200, height: 800 });
 
         const html = `<!DOCTYPE html>
@@ -654,14 +668,8 @@ async function renderMermaidDiagrams(markdown: string): Promise<Map<number, Buff
 
         await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 15_000 });
 
-        // Inject mermaid from local filesystem (no CDN dependency)
-        if (_mermaidPath) {
-          await page.addScriptTag({ path: _mermaidPath });
-        } else {
-          await page.addScriptTag({
-            url: "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js",
-          });
-        }
+        // Inject mermaid from the local filesystem; the page may not fetch it (#1017).
+        if (_mermaidPath) await page.addScriptTag({ path: _mermaidPath });
 
         // Render the single diagram manually
         await page.evaluate(`

@@ -16,6 +16,8 @@ import { z } from "zod";
 import { parseAcceptanceCriteria, stripMetisMarkers } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { formatStartedAt } from "../analysis/run-start-label.js";
+import { snapshotAtVersion } from "../reviews/baseline-service.js";
+import { pickTracked, type VersionRow } from "../requirements/requirement-version-service.js";
 
 /** Upper bound on an explicit selection, so one request cannot name the whole table. */
 export const MAX_SELECTED_REQUIREMENTS = 500;
@@ -79,7 +81,13 @@ export interface ScopedRequirement {
   reviewStatus: string | null;
   verdict: string | null;
   acceptanceCriteria: string;
+  /** The version rendered: the review's pin for a review-scoped document, else the current one. */
   version: number;
+  /**
+   * #1017 — set only when a review pinned an older version than the stored one:
+   * the text above is that pinned version, and this is the version it has since become.
+   */
+  currentVersion?: number;
   updatedAt: Date;
   codeMappings: Array<{
     filePath: string;
@@ -129,9 +137,83 @@ export async function loadScopedRequirements(
       },
     },
   });
-  return [...rows].sort(
+  const rendered = filter.reviewRequestId
+    ? await atReviewPins(projectId, filter.reviewRequestId, rows)
+    : rows;
+  return [...rendered].sort(
     (a, b) => (PRIORITY_RANK[a.priority] ?? 4) - (PRIORITY_RANK[b.priority] ?? 4),
   );
+}
+
+function versionedText(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+/**
+ * #1017 — a review-scoped document shows what the review pinned, not what the
+ * requirement says now. A requirement edited after submission is rebuilt at its
+ * pinned version by replaying its recorded changes backward from the current row,
+ * the same replay a baseline uses (`snapshotAtVersion`). A requirement pinned at
+ * its current version, or not pinned by this review, is shown as stored. Review
+ * status and verdict are not versioned (#1162), so they stay current.
+ *
+ * The pins are read through the review, within the project, so another
+ * project's review pins nothing.
+ */
+async function atReviewPins(
+  projectId: string,
+  reviewRequestId: string,
+  rows: ScopedRequirement[],
+): Promise<ScopedRequirement[]> {
+  if (rows.length === 0) return rows;
+  const items = await prisma.reviewRequestItem.findMany({
+    where: {
+      reviewRequestId,
+      reviewRequest: { projectId },
+      requirementId: { in: rows.map((r) => r.id) },
+    },
+    select: { requirementId: true, pinnedVersion: true },
+  });
+  const pins = new Map<string, number>();
+  for (const item of items)
+    if (item.requirementId) pins.set(item.requirementId, item.pinnedVersion);
+  const moved = rows.filter((r) => (pins.get(r.id) ?? r.version) < r.version);
+  if (moved.length === 0) return rows;
+
+  const history = await prisma.requirementVersion.findMany({
+    where: { requirementId: { in: moved.map((r) => r.id) } },
+    orderBy: [{ requirementId: "asc" }, { version: "desc" }],
+    select: {
+      requirementId: true,
+      version: true,
+      changedFields: true,
+      actorId: true,
+      reason: true,
+      createdAt: true,
+    },
+  });
+  const byRequirement = new Map<string, VersionRow[]>();
+  for (const row of history) {
+    const list = byRequirement.get(row.requirementId) ?? [];
+    list.push(row);
+    byRequirement.set(row.requirementId, list);
+  }
+
+  return rows.map((r) => {
+    const pin = pins.get(r.id);
+    if (pin === undefined || pin >= r.version) return r;
+    const at = snapshotAtVersion(pickTracked({ ...r }), byRequirement.get(r.id) ?? [], pin);
+    return {
+      ...r,
+      title: versionedText(at.title),
+      body: versionedText(at.body),
+      type: versionedText(at.type),
+      priority: versionedText(at.priority),
+      acceptanceCriteria: versionedText(at.acceptanceCriteria),
+      version: pin,
+      currentVersion: r.version,
+    };
+  });
 }
 
 /** Changes whenever a selected requirement or one of its code links does. */
@@ -400,6 +482,12 @@ export function renderRequirementEntry(
       r.reviewStatus ?? "draft",
     )} · **Verdict:** ${cell(r.verdict ?? "not assessed")}`,
     "",
+    ...(r.currentVersion !== undefined
+      ? [
+          `_Shown at version ${r.version}, the version the review pinned. It has changed since (now version ${r.currentVersion})._`,
+          "",
+        ]
+      : []),
     requirementBodyMarkdown(r.body) || "_No description recorded._",
     "",
     "#### Acceptance criteria",

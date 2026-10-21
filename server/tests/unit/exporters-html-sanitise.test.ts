@@ -11,6 +11,8 @@ vi.mock("puppeteer", () => ({
   default: {
     launch: async () => ({
       newPage: async () => ({
+        setRequestInterception: async () => {},
+        on: () => {},
         setViewport: async () => {},
         setContent: async (html: string) => void contents.push(html),
         addScriptTag: async () => {},

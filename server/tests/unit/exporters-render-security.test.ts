@@ -14,20 +14,41 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+/** A request as the #1017 interception handler sees it, settled into `outcome`. */
+interface FakeRequest {
+  url: () => string;
+  isInterceptResolutionHandled: () => boolean;
+  continue: () => Promise<void>;
+  abort: (reason?: string) => Promise<void>;
+}
+type RequestHandler = (request: FakeRequest) => void;
+
 interface Recorded {
   launches: Array<{ args?: string[] }>;
   contents: string[];
   scripts: string[];
   closed: number;
+  /** Per page: whether interception was on when `setContent` ran, and its handlers. */
+  pages: Array<{ interceptingAtSetContent: boolean | null; handlers: RequestHandler[] }>;
 }
 
-const rec: Recorded = { launches: [], contents: [], scripts: [], closed: 0 };
+const rec: Recorded = { launches: [], contents: [], scripts: [], closed: 0, pages: [] };
 const launchBehaviour: { fail: boolean; pdfFail: boolean } = { fail: false, pdfFail: false };
 
 function fakePage() {
+  let intercepting = false;
+  const page: Recorded["pages"][number] = { interceptingAtSetContent: null, handlers: [] };
+  rec.pages.push(page);
   return {
+    setRequestInterception: async (on: boolean) => {
+      intercepting = on;
+    },
+    on: (event: string, handler: RequestHandler) => {
+      if (event === "request") page.handlers.push(handler);
+    },
     setViewport: async () => {},
     setContent: async (html: string) => {
+      page.interceptingAtSetContent = intercepting;
       rec.contents.push(html);
     },
     addScriptTag: async () => {},
@@ -59,8 +80,54 @@ vi.mock("puppeteer", () => ({
   },
 }));
 
-const { exportDocument, MERMAID_RENDER_SECURITY, chromeLaunchArgs, mermaidInitScript } =
-  await import("../../src/lib/docs-gen/exporters.js");
+const {
+  exportDocument,
+  MERMAID_RENDER_SECURITY,
+  chromeLaunchArgs,
+  mermaidInitScript,
+  isExportRequestAllowed,
+} = await import("../../src/lib/docs-gen/exporters.js");
+
+/**
+ * Drive `url` through every request handler a page registered and report what
+ * happened to it: `continue`, `abort:<reason>`, or `unhandled` (which in a real
+ * Chrome with interception on is a request that hangs).
+ */
+function settle(page: Recorded["pages"][number], url: string): string {
+  let outcome = "unhandled";
+  const request: FakeRequest = {
+    url: () => url,
+    isInterceptResolutionHandled: () => outcome !== "unhandled",
+    continue: async () => {
+      outcome = "continue";
+    },
+    abort: async (reason) => {
+      outcome = `abort:${reason ?? ""}`;
+    },
+  };
+  for (const handler of page.handlers) handler(request);
+  return outcome;
+}
+
+/** Every kind of request a sanitiser miss could make the export page issue. */
+const BLOCKED_URLS = [
+  "http://169.254.169.254/latest/meta-data/",
+  "https://attacker.example/beacon.png",
+  "http://localhost:4000/api/projects",
+  "file:///etc/passwd",
+  "ftp://attacker.example/x",
+  "ws://attacker.example/socket",
+  "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js",
+];
+
+/** Asserts a page intercepted before any content loaded, blocking all but data: and about:blank. */
+function expectExternalRequestsBlocked(page: Recorded["pages"][number]): void {
+  expect(page.interceptingAtSetContent).toBe(true);
+  expect(page.handlers).toHaveLength(1);
+  for (const url of BLOCKED_URLS) expect(settle(page, url), url).toBe("abort:blockedbyclient");
+  expect(settle(page, "data:image/png;base64,iVBORw0KGgo=")).toBe("continue");
+  expect(settle(page, "about:blank")).toBe("continue");
+}
 
 const PAYLOAD = "<img src=x onerror=alert(1)>";
 const MALICIOUS = [
@@ -109,6 +176,7 @@ beforeEach(() => {
   rec.contents.length = 0;
   rec.scripts.length = 0;
   rec.closed = 0;
+  rec.pages.length = 0;
   launchBehaviour.fail = false;
   launchBehaviour.pdfFail = false;
 });
@@ -219,6 +287,64 @@ describe("mermaid render security (#686)", () => {
       // #447 — the DOCX rasteriser used to set only securityLevel, leaving HTML labels on.
       expectStrictPosture(configs[0]);
       expect(rec.closed).toBe(1);
+    });
+  });
+
+  describe("request interception (#1017)", () => {
+    it("PDF: intercepts before setContent and aborts every non-data: request", async () => {
+      await exportDocument(MALICIOUS, "xss-probe", "pdf");
+
+      expect(rec.pages).toHaveLength(1);
+      expectExternalRequestsBlocked(rec.pages[0]!);
+    });
+
+    it("DOCX: the diagram rasteriser's page is held to the same rule", async () => {
+      await exportDocument(MALICIOUS, "xss-probe", "docx");
+
+      expect(rec.pages).toHaveLength(1);
+      expectExternalRequestsBlocked(rec.pages[0]!);
+    });
+
+    it("leaves a request another handler already settled alone", async () => {
+      await exportDocument("# Hi", "t", "pdf");
+      const handler = rec.pages[0]!.handlers[0]!;
+      const calls: string[] = [];
+      handler({
+        url: () => "https://attacker.example/",
+        isInterceptResolutionHandled: () => true,
+        continue: async () => void calls.push("continue"),
+        abort: async () => void calls.push("abort"),
+      });
+      expect(calls).toEqual([]);
+    });
+
+    it("swallows a settle that rejects because the page already closed", async () => {
+      await exportDocument("# Hi", "t", "pdf");
+      const handler = rec.pages[0]!.handlers[0]!;
+      const unhandled = vi.fn();
+      process.on("unhandledRejection", unhandled);
+      try {
+        handler({
+          url: () => "https://attacker.example/",
+          isInterceptResolutionHandled: () => false,
+          continue: async () => {},
+          abort: () => Promise.reject(new Error("Target closed")),
+        });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(unhandled).not.toHaveBeenCalled();
+      } finally {
+        process.off("unhandledRejection", unhandled);
+      }
+    });
+
+    it("isExportRequestAllowed admits only data: URLs and about:blank", () => {
+      expect(isExportRequestAllowed("DATA:text/plain,x")).toBe(true);
+      expect(isExportRequestAllowed("about:blank")).toBe(true);
+      expect(isExportRequestAllowed("about:srcdoc")).toBe(false);
+      expect(isExportRequestAllowed("blob:null/1234")).toBe(false);
+      expect(isExportRequestAllowed("javascript:alert(1)")).toBe(false);
+      expect(isExportRequestAllowed(" data:text/plain,x")).toBe(false);
+      for (const url of BLOCKED_URLS) expect(isExportRequestAllowed(url), url).toBe(false);
     });
   });
 
