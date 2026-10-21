@@ -951,4 +951,12 @@ one that has them now reads as JSON escapes.
 
 Outside this scrub, and tracked as follow-ups: the support panel's
 `--- path:line ---` excerpt headers inside the evidence block, and table names
-in the impact run summary.
+in the impact run summary. Not yet scrubbed either, and outside the five
+builders #1360 listed: the docs-gen Phase-2 writer's
+`=== RETRIEVED GROUNDING SOURCES ===` block
+(`docs-gen/grounding/grounding-context.ts`, the same source text the
+faithfulness judge now sees scrubbed) and its `=== … FORMULAS ===` block
+(`docs-gen/holistic-synthesizer.ts`, the same formula expressions Phase 1 now
+scrubs), plus the `END FLOW` / `END MODULE FACTS` fences and those in
+`schema-inventory.ts` and `canonical-facts.ts`, whose contents have not been
+traced for untrusted input.
