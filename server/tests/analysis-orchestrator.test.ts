@@ -489,6 +489,8 @@ function makeProvider(opts: {
   /** Epic #203 (#221) — cross-doc detector replies. */
   nliReply?: string;
   completenessReply?: string;
+  /** #1081 — make every NLI call fail (the cross-doc pass throws). */
+  nliThrows?: boolean;
   /** #1099 — override the synthesis reply. */
   synthesisReply?: string;
   consistencyReply?: string;
@@ -559,6 +561,7 @@ function makeProvider(opts: {
       // Epic #203 (#221) — cross-doc detection passes. Keyed off the detector
       // system prompts so the pipeline test exercises real detection output.
       if (sysStr.includes("Natural Language Inference")) {
+        if (opts.nliThrows) throw new Error("upstream 503");
         return stubResponse(opts.nliReply ?? '{"verdicts":[]}');
       }
       if (sysStr.includes("auditing a set of requirement documents")) {
@@ -862,6 +865,36 @@ describe("AnalysisOrchestrator.start", () => {
     expect(meta.unreadAnalysisSteps?.steps).toEqual([
       expect.objectContaining({ step: "completeness-check", reason: "unparseable" }),
     ]);
+  });
+
+  // #1081 (panel finding) — a pass that throws is recorded as not finished, and
+  // a later clean pass clears the record.
+  it("records an unfinished cross-doc pass, and a clean marker write clears it (#1081)", async () => {
+    const io = makeIO();
+    const orch = new AnalysisOrchestrator({
+      provider: makeProvider({ nliThrows: true }),
+      io: io as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [
+        { documentId: "doc-1", chunkIndex: 0, filename: "s.md", text: "c", score: 0.5 },
+      ],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    for (let i = 0; i < 200 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+    const read = () =>
+      JSON.parse(analyses.get(analysisId)!.metadata ?? "{}") as {
+        unreadAnalysisSteps?: { steps: Array<{ step: string }> };
+      };
+    expect(read().unreadAnalysisSteps?.steps.map((s) => s.step)).toEqual(["cross-doc-detection"]);
+
+    const { persistAnalysisEnhancement } = await import("../src/lib/analysis/analysis-service.js");
+    await persistAnalysisEnhancement(analysisId, { unreadAnalysisSteps: null });
+    expect(read().unreadAnalysisSteps).toBeUndefined();
   });
 
   // #1099 — a malformed optional field is left out, the reply is kept, and the

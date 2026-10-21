@@ -263,8 +263,49 @@ describe("runSynthesis — one malformed field never costs the reply (#1099)", (
   });
 });
 
+describe("runSynthesis — #1099 repair beyond the whole-reply path (panel findings)", () => {
+  it("repairs a requirement salvaged from a cut-off reply and records it", async () => {
+    const salvaged = { ...good, storyPoints: 3.5, evidenceFindingIndexes: [0, 1] };
+    let n = 0;
+    const provider = {
+      key: "offline-stub",
+      model: "stub",
+      offline: true,
+      chat: vi.fn(async () => {
+        n += 1;
+        return {
+          content: `{"summary":"s","requirements":[${JSON.stringify(salvaged)},{"type":"ta`,
+          finishReason: "max_tokens",
+          usage: { promptTokens: 5, completionTokens: 7, totalTokens: 12 },
+          model: "stub",
+          provider: "offline-stub",
+        } as ChatResponse;
+      }),
+    } as unknown as AIProvider;
+    const result = await runSynthesis(provider, { projectName: "P", findings: FINDINGS });
+    expect(n).toBe(1);
+    expect(result.output.requirements.map((r) => r.title)).toEqual(["Audit every login"]);
+    expect(result.output.requirements[0]!.storyPoints).toBeUndefined();
+    expect(result.fieldRepairs).toEqual([
+      {
+        field: "storyPoints",
+        action: "dropped",
+        requirementNumber: 1,
+        requirementTitle: "Audit every login",
+      },
+    ]);
+  });
+
+  it("does not adopt a summary the repair generated as the model's", async () => {
+    const provider = providerReturning({ summary: null, requirements: [good] });
+    const result = await runSynthesis(provider, { projectName: "P", findings: FINDINGS });
+    // The run-level fallback, which names the finding count, not the repair's text.
+    expect(result.output.summary).toBe("Synthesized 1 requirement(s) from 2 finding(s).");
+  });
+});
+
 describe("repairSynthesisReply (#1099)", () => {
-  it("generates a missing summary and records it, without shadowing a real one", () => {
+  it("generates a missing summary and records it", () => {
     const { reply, repairs } = repairSynthesisReply({ summary: null, requirements: [good] });
     expect((reply as { summary: string }).summary).toBe("Synthesized 1 requirement(s).");
     expect(repairs).toEqual([

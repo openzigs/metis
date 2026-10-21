@@ -370,6 +370,67 @@ describe("#1021 — impact LLM stages reach the token ledger", () => {
     expect(prismaMock.aISession.create).toHaveBeenCalledTimes(1);
   });
 
+  // #1081 (panel finding) — the ROUTE must report each stage's unread answer;
+  // the per-stage unit tests only prove the stage returns the marker.
+  it("#1081 — names every wired stage whose answer could not be read", async () => {
+    for (const flag of [
+      "IMPACT_LLM_TABLE_FILTER",
+      "IMPACT_LLM_ADDITIVE_DDL",
+      "IMPACT_LLM_CLAUSE_RECONCILE",
+      "IMPACT_LLM_TABLE_JUDGE",
+      "IMPACT_LLM_SEEDING",
+      "IMPACT_LLM_ENTITY_SEEDS",
+    ]) {
+      vi.stubEnv(flag, "1");
+    }
+    providerFactory = () => liveProvider(() => "Sorry, no JSON today.");
+    codeSymbolRows.push(
+      ...[
+        { id: "t-orders", name: "orders", qualifiedName: "orders", kind: "table" },
+        { id: "t-account", name: "account", qualifiedName: "account", kind: "table" },
+        { id: "c-account-name", name: "name", qualifiedName: "account.name", kind: "column" },
+      ].map((r) => ({ ...r, filePath: "schema.sql", language: "sql", startLine: 1, endLine: 1 })),
+      {
+        id: "s-order-service",
+        name: "OrderService",
+        qualifiedName: "com.app.OrderService",
+        kind: "class",
+        filePath: "src/OrderService.java",
+        language: "java",
+        startLine: 1,
+        endLine: 40,
+      },
+    );
+    const deps = impactRunDeps("user-1", ["proj-1"]);
+    const requirement = "A cancelled order must record who cancelled it and when";
+
+    await runInImpactProjectScope("proj-1", async () => {
+      const filtered = await deps.tableRelevanceFilter!(requirement, [tableRow("orders")]);
+      expect(filtered.applied).toBe(false);
+      await deps.additiveColumnProposer!(requirement, [tableRow("orders")], {
+        projectId: "proj-1",
+        liveIndex: null,
+        writers: [],
+      });
+      await deps.clauseCoverageReconciler!(requirement, "proj-1", ["orders"]);
+      await deps.tableRecoveryJudge!(requirement, "proj-1", ["orders"]);
+      await deps.mapRequirement!({ id: "", title: "OrderService orders", body: "" }, "proj-1");
+    });
+
+    const notice = deps.llmDegradationNotice!()!;
+    expect(notice).toContain("The AI's answer could not be read for");
+    for (const label of [
+      "table relevance filtering",
+      "additive-column proposals",
+      "clause coverage advisories",
+      "column-informed table recovery",
+      "requirement-to-code seeding",
+      "entity seed recall",
+    ]) {
+      expect(notice).toContain(label);
+    }
+  });
+
   it("#1003 — the wired proposer drops a column the code graph already has", async () => {
     vi.stubEnv("IMPACT_LLM_ADDITIVE_DDL", "1");
     providerFactory = () =>
