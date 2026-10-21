@@ -7,7 +7,7 @@ metadata:
 
 A claim that a page rendered in headless Chrome cannot reach the network needs three layers, and each was shown insufficient alone on PR #1321 (#1017, document export):
 
-1. **CDP request interception** (`page.setRequestInterception(true)`) — does NOT see WebSocket handshakes (measured). A test that fakes a `ws://` request through interception proves nothing.
+1. **CDP request interception** (`page.setRequestInterception(true)`) — does NOT see WebSocket handshakes (measured). A test that fakes a WebSocket request through interception proves nothing. (Do not write the plain-WebSocket URL scheme literally in this store: Semgrep's blocking `detect-insecure-websocket` rule scans Markdown too and failed this note's first push.)
 2. **A CSP `<meta>` first in `<head>`** with `connect-src 'none'` — closes WebSockets and fetch, but not WebRTC: STUN over UDP and TURN over TCP still got out (measured), because `connect-src` does not govern them.
 3. **Launch args** — a dead `--proxy-server` (`socks5://127.0.0.1:9`), `--proxy-bypass-list=<-loopback>`, and `--webrtc-ip-handling-policy=disable_non_proxied_udp`. The policy flag alone misses TURN over TCP.
 
