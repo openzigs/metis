@@ -37,6 +37,7 @@ const LABELS: Record<string, string> = { overview: "Overview & Domain", rules: "
 const report = (findings: ConsistencyReport["findings"], statements = 9): ConsistencyReport => ({
   findings,
   statements,
+  compared: Math.min(statements, 4),
 });
 
 const manifestInput = (
@@ -123,6 +124,7 @@ describe("consistencyRecord", () => {
   it("records a clean check as an answer: the statements read and no finding", () => {
     expect(consistencyRecord(report([], 395))).toEqual({
       statements: 395,
+      compared: 4,
       findingCount: 0,
       findings: [],
     });

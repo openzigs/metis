@@ -161,6 +161,7 @@ const topicPlanSchema = z
 const consistencySchema = z
   .object({
     statements: z.number().int().min(0),
+    compared: z.number().int().min(0),
     findingCount: z.number().int().min(0),
     findings: z
       .array(
@@ -168,6 +169,7 @@ const consistencySchema = z
           .object({
             kind: z.enum(["conflict", "restated", "endpoint", "count", "size"]),
             name: recordedText,
+            label: recordedText.optional(),
             sections: z.number().int().min(0),
             forms: z.number().int().min(0),
             statements: z.array(z.object({ section: recordedText, value: recordedText }).strict()),

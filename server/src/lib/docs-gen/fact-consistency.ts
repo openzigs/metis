@@ -369,6 +369,8 @@ export type ConsistencyFindingKind = "conflict" | "restated" | "endpoint" | "cou
 export interface ConsistencyFinding {
   kind: ConsistencyFindingKind;
   name: string;
+  /** For a prose finding, what it is about as written ("API token (characters)"). */
+  label?: string;
   /** The sheet's value and source line; absent for a prose finding. */
   canonical?: { value: string; source: string };
   statements: FindingStatement[];
@@ -380,6 +382,8 @@ export interface ConsistencyFinding {
 
 export interface ConsistencyReport {
   findings: ConsistencyFinding[];
+  /** Statements that had something to be compared with: the source's value or another place. */
+  compared: number;
   /** Statements read, for the log. */
   statements: number;
 }
@@ -433,6 +437,8 @@ export interface ProseStatement {
   value: string;
   /** As written (clipped), for the note. */
   raw: string;
+  /** What it is about as a reader would name it: "API token (characters)". */
+  label: string;
   /** 1-based line within the scanned text. */
   line: number;
 }
@@ -441,6 +447,13 @@ export interface ProseStatement {
 const MAX_PROSE_QUOTE = 120;
 
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH"]);
+/**
+ * How a write method is compared. PUT and PATCH on one path are routinely
+ * both offered (replace and update), so they are one answer; POST against
+ * either is the run-8 contradiction (`POST …/save` vs `PUT …/save`).
+ */
+const updateOrCreate = (method: string): string =>
+  method === "PUT" || method === "PATCH" ? "PUT or PATCH" : method;
 /** `POST /v1/entries/{id}/save`, in a code span or not. One bounded run of path characters. */
 const ENDPOINT = /\b(GET|POST|PUT|PATCH|DELETE)\s+`?(\/[A-Za-z0-9_{}:.~\-/]{0,200})/g;
 
@@ -460,22 +473,25 @@ const NUMBER_WORDS: Readonly<Record<string, number>> = {
 
 /**
  * Nouns that name a KIND of thing, each mapped to the class it is compared
- * in: "five authentication mechanisms" and "four authentication paths" count
- * the same thing.
+ * in. Only the nouns for a way of DOING something are read as one:
+ * "five authentication mechanisms" and "four authentication paths" count the
+ * same thing (run 8). An option, a type, a mode or a category is its own
+ * noun: "two payment methods" and "three payment options", or "file paths"
+ * and "file types", are different things (PR #1316 review).
  */
 const KIND_NOUNS: Readonly<Record<string, string>> = {
-  mechanism: "kinds",
-  method: "kinds",
-  path: "kinds",
-  way: "kinds",
-  mode: "kinds",
-  option: "kinds",
-  flow: "kinds",
-  scheme: "kinds",
-  strategy: "kinds",
-  variant: "kinds",
-  type: "kinds",
-  category: "kinds",
+  mechanism: "ways",
+  method: "ways",
+  path: "ways",
+  way: "ways",
+  flow: "ways",
+  scheme: "ways",
+  mode: "modes",
+  option: "options",
+  strategy: "strategies",
+  variant: "variants",
+  type: "types",
+  category: "categories",
   state: "states",
   status: "states",
   role: "roles",
@@ -489,12 +505,14 @@ const KIND_NOUNS: Readonly<Record<string, string>> = {
 };
 
 /**
- * A count, up to three words, then a kind noun. Every quantifier is bounded and
+ * A count, up to three words, then a kind noun. The number must not follow a
+ * digit, a letter, a point or a comma: the `5` of "Version 1.5 release types"
+ * is not a count. Every quantifier is bounded and
  * the words are separated by required whitespace, so one match attempt costs a
  * constant and a line is read in linear time.
  */
 const COUNTED = new RegExp(
-  `\\b(${Object.keys(NUMBER_WORDS).join("|")}|[2-9]|[1-9]\\d)\\s+((?:[A-Za-z][A-Za-z0-9/-]{0,30}\\s+){0,3}?)(mechanisms|methods|paths|ways|modes|options|flows|schemes|strategies|variants|types|categories|states|statuses|roles|levels|formats|schedulers|tiers|backends|protocols|providers)\\b`,
+  `(?<![\\w.,-])(${Object.keys(NUMBER_WORDS).join("|")}|[2-9]|[1-9]\\d)\\s+((?:[A-Za-z][A-Za-z0-9/-]{0,30}\\s+){0,3}?)(mechanisms|methods|paths|ways|modes|options|flows|schemes|strategies|variants|types|categories|states|statuses|roles|levels|formats|schedulers|tiers|backends|protocols|providers)\\b`,
   "gi",
 );
 
@@ -513,7 +531,7 @@ const PROSE_UNITS: Readonly<Record<string, string>> = {
 
 /** "64-character API token", "32 byte session key". Bounded like {@link COUNTED}. */
 const SIZED =
-  /\b(\d{1,4})[- ](bytes?|characters?|chars?|bits?|digits?)\s+((?:[A-Za-z][A-Za-z0-9-]{0,30}\s+){0,2}?)(tokens?|keys?|secrets?|verifiers?|hashes|hash|digests?|identifiers?|passwords?|salts?|nonces?|codes?|strings?)\b/gi;
+  /(?<![\w.,-])(\d{1,4})[- ](bytes?|characters?|chars?|bits?|digits?)\s+((?:[A-Za-z][A-Za-z0-9-]{0,30}\s+){0,2}?)(tokens?|keys?|secrets?|verifiers?|hashes|hash|digests?|identifiers?|passwords?|salts?|nonces?|codes?|strings?)\b/gi;
 
 /**
  * Words that qualify nothing: "five DISTINCT authentication mechanisms", a
@@ -606,6 +624,15 @@ function qualifiersOf(words: string): string[] | null {
   return kept.length > 0 ? kept : null;
 }
 
+/** The qualifying words as written, filler left out: "distinct authentication" → "authentication". */
+function asWritten(words: string): string {
+  return words
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length > 0 && !FILLER.has(w.toLowerCase()))
+    .join(" ");
+}
+
 /** An endpoint path compared: placeholders as `{}`, no trailing slash or punctuation. */
 export function endpointKey(path: string): string {
   return path
@@ -615,15 +642,25 @@ export function endpointKey(path: string): string {
 }
 
 /** Read one line (not in a fence or a `$$` block) for prose statements. */
-function scanProseLine(text: string, line: number, out: ProseStatement[]): void {
+function scanProseLine(written: string, line: number, out: ProseStatement[]): void {
+  // A non-breaking or Unicode hyphen ("64‑character") reads as a hyphen. One
+  // character for one, so every index below is an index into the line.
+  const text = written.replace(/[\u2010\u2011]/g, "-");
   const quote = (from: number, length: number): string =>
     text.slice(from, from + Math.min(length, MAX_PROSE_QUOTE)).replace(/`/g, "");
   for (const m of text.matchAll(ENDPOINT)) {
     const key = endpointKey(m[2]);
     if (key.length < 2) continue;
     const method = m[1].toUpperCase();
-    const written = m[2].replace(/[.,;:]+$/, "");
-    out.push({ kind: "endpoint", key, value: method, raw: `${method} ${written}`, line });
+    const path = m[2].replace(/[.,;:]+$/, "");
+    out.push({
+      kind: "endpoint",
+      key,
+      value: updateOrCreate(method),
+      raw: `${method} ${path}`,
+      label: key,
+      line,
+    });
   }
   for (const m of text.matchAll(COUNTED)) {
     const words = qualifiersOf(m[2]);
@@ -634,6 +671,7 @@ function scanProseLine(text: string, line: number, out: ProseStatement[]): void 
       key: `${words.join(" ")} ${KIND_NOUNS[noun] ?? `${noun}s`}`,
       value: String(NUMBER_WORDS[m[1].toLowerCase()] ?? Number(m[1])),
       raw: quote(m.index, m[0].length),
+      label: `${asWritten(m[2])} ${m[3]}`,
       line,
     });
   }
@@ -647,6 +685,7 @@ function scanProseLine(text: string, line: number, out: ProseStatement[]): void 
       key: `${words.join(" ")} ${singularWord(m[4].toLowerCase())} in ${PROSE_UNITS[m[2].toLowerCase()]}`,
       value: String(Number(m[1])),
       raw: quote(m.index, m[0].length),
+      label: `${asWritten(m[3])} ${singularWord(m[4])} (${PROSE_UNITS[m[2].toLowerCase()]})`,
       line,
     });
   }
@@ -692,19 +731,22 @@ export function scanProseStatements(markdown: string): ProseStatement[] {
  * section makes with more than one value is left alone: that section is
  * describing several cases, and the others may each describe one of them.
  */
-function proseFindings(
-  statements: ReadonlyArray<ProseStatement & { section: string }>,
-): ConsistencyFinding[] {
+function proseFindings(statements: ReadonlyArray<ProseStatement & { section: string }>): {
+  findings: ConsistencyFinding[];
+  /** Statements that had another place to be compared with. */
+  compared: number;
+} {
   const groups = new Map<string, Array<ProseStatement & { section: string }>>();
   for (const s of statements) {
     // A read and a write on one path are two operations, not two answers.
-    if (s.kind === "endpoint" && !WRITE_METHODS.has(s.value)) continue;
+    if (s.kind === "endpoint" && !WRITE_METHODS.has(s.raw.slice(0, s.raw.indexOf(" ")))) continue;
     const id = `${s.kind}\u0000${s.key}`;
     const list = groups.get(id) ?? [];
     list.push(s);
     groups.set(id, list);
   }
   const findings: ConsistencyFinding[] = [];
+  let compared = 0;
   for (const list of groups.values()) {
     // An endpoint is compared line by line, within a section too: one path
     // with two write methods is rare enough to be worth a look (run 8 gave
@@ -719,7 +761,9 @@ function proseFindings(
       values.add(s.value);
       byScope.set(scope(s), values);
     }
-    if (byScope.size < 2 || [...byScope.values()].some((values) => values.size > 1)) continue;
+    if (byScope.size < 2) continue;
+    compared += list.length;
+    if ([...byScope.values()].some((values) => values.size > 1)) continue;
     const forms = new Set(list.map((s) => s.value)).size;
     if (forms < 2) continue;
     // One quote per place and value: where each says what it says.
@@ -731,6 +775,7 @@ function proseFindings(
     findings.push({
       kind: list[0].kind,
       name: list[0].key,
+      label: list[0].label,
       statements: [...quoted.values()].map((s) => ({
         section: s.section,
         line: s.line,
@@ -740,7 +785,7 @@ function proseFindings(
       forms,
     });
   }
-  return findings;
+  return { findings, compared };
 }
 
 /**
@@ -779,6 +824,7 @@ export function checkFactConsistency(
     list.push({ ...s, value });
     stated.set(s.name, list);
   }
+  let compared = 0;
   for (const [name, statements] of stated) {
     const fact = canonicalByName.get(name)!;
     const canonical = comparableValue(normalizeForm(fact.value));
@@ -787,6 +833,7 @@ export function checkFactConsistency(
     const differing = statements.filter(
       (s) => s.value.slice(0, s.value.indexOf(":")) === cls && s.value !== canonical,
     );
+    compared += statements.filter((s) => s.value.slice(0, s.value.indexOf(":")) === cls).length;
     if (differing.length === 0) continue;
     findings.push({
       kind: "conflict",
@@ -809,6 +856,7 @@ export function checkFactConsistency(
     if (operands.names.size === 0) continue;
     const matches = expressions.filter((e) => restates(operands, e.operands));
     const inSections = new Set(matches.map((m) => m.statement.section));
+    compared += matches.length;
     if (inSections.size < 2) continue;
     findings.push({
       kind: "restated",
@@ -824,11 +872,13 @@ export function checkFactConsistency(
     });
   }
   // #1070 (run 8) — prose statements two sections make differently.
-  findings.push(...proseFindings(prose));
+  const fromProse = proseFindings(prose);
+  findings.push(...fromProse.findings);
+  compared += fromProse.compared;
   // By code unit, like the sheet: the note lists its findings in the same
   // order on every machine, which `localeCompare` does not promise.
   findings.sort((a, b) => compareCodeUnits(a.kind, b.kind) || compareCodeUnits(a.name, b.name));
-  return { findings, statements: all.length + prose.length };
+  return { findings, statements: all.length + prose.length, compared };
 }
 
 const quote = (s: string): string => `\`${s.replace(/`/g, "'").slice(0, 80)}\``;
@@ -844,8 +894,8 @@ function describeFinding(f: ConsistencyFinding): string {
       f.kind === "endpoint"
         ? `the endpoint ${quote(f.name)} is given ${f.forms} different methods`
         : f.kind === "count"
-          ? `the number of ${quote(f.name)} is given ${f.forms} different ways`
-          : `the size of ${quote(f.name)} is given ${f.forms} different ways`;
+          ? `the number of ${quote(f.label ?? f.name)} is given ${f.forms} different ways`
+          : `the size of ${quote(f.label ?? f.name)} is given ${f.forms} different ways`;
     return `${what} in ${f.sections === 1 ? "one section" : `${f.sections} sections`} (${where}).`;
   }
   const canonical = f.canonical

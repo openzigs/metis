@@ -23,7 +23,7 @@ vi.mock("../finops/index.js", async (importOriginal) => {
 
 import type { AIProvider, ChatChunk, ChatMessage } from "../ai/types.js";
 import { logger } from "../logger.js";
-import { MIN_TOPIC_CHARS, SINGLE_CALL_SECTION_CHARS } from "./document-plan.js";
+import { FLOOR_SHARE, MIN_TOPIC_CHARS, SINGLE_CALL_SECTION_CHARS } from "./document-plan.js";
 import type { PersistedMinedRule } from "./fact-slices.js";
 import type { FaithfulnessResult } from "./grounding/citation-validator.js";
 import { deriveDocStatus } from "./grounding/degraded-warnings.js";
@@ -885,14 +885,15 @@ describe("a document written under the plan", () => {
 
   it("leaves out the lowest-priority modules at planning time, never reads them, and lists them", async () => {
     // One fixture past the topic floor: 60 modules cannot each have
-    // MIN_TOPIC_CHARS of a section of a 30,000-character document.
+    // MIN_TOPIC_CHARS of a section of a 30,000-character document within
+    // the FLOOR_SHARE of it the floors may take.
     vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "30000");
     const facts = project(60);
     const provider = fakeModel();
     const result = await run(facts, provider);
     const read = new Set(callsFor(provider, RULES).flatMap((c) => c.modules));
     const sectionBudget = Math.floor((30_000 - 1_500) / GROUPS.length);
-    expect(read.size).toBe(Math.floor(sectionBudget / MIN_TOPIC_CHARS));
+    expect(read.size).toBe(Math.floor((sectionBudget * FLOOR_SHARE) / MIN_TOPIC_CHARS));
     // The modules kept are the highest ranked.
     expect([...read].sort()).toEqual(
       facts
@@ -1370,6 +1371,7 @@ describe("the consistency check in a planned document", () => {
     expect(result.warnings.some((w) => w.kind === "fact-inconsistent")).toBe(false);
     expect(result.consistency).toEqual({
       statements: expect.any(Number),
+      compared: expect.any(Number),
       findingCount: 0,
       findings: [],
     });
@@ -1402,7 +1404,7 @@ describe("the consistency check in a planned document", () => {
     const notes = result.warnings.filter((w) => w.kind === "fact-inconsistent");
     expect(notes).toHaveLength(1);
     expect(notes[0].message).toContain(
-      "The number of `authentication kinds` is given 2 different ways in 2 sections",
+      "The number of `authentication mechanisms` is given 2 different ways in 2 sections",
     );
     expect(result.consistency).toEqual(
       expect.objectContaining({
@@ -1410,7 +1412,8 @@ describe("the consistency check in a planned document", () => {
         findings: [
           expect.objectContaining({
             kind: "count",
-            name: "authentication kinds",
+            name: "authentication ways",
+            label: "authentication mechanisms",
             statements: [
               { section: label("overview"), value: "five distinct authentication mechanisms" },
               {

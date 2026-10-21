@@ -376,11 +376,13 @@ describe("DocumentationPage — version history", () => {
         },
         consistency: {
           statements: 617,
-          findingCount: 2,
+          compared: 13,
+          findingCount: 53,
           findings: [
             {
               kind: "count",
-              name: "authentication kinds",
+              name: "authentication ways",
+              label: "authentication mechanisms",
               sections: 2,
               forms: 2,
               statements: [
@@ -399,6 +401,17 @@ describe("DocumentationPage — version history", () => {
               statements: [{ section: "Data & Domain Model", value: "500" }],
               source: { value: "1000", location: "internal/model/entry.go:20" },
             },
+            {
+              kind: "size",
+              name: "api token in characters",
+              label: "API token (characters)",
+              sections: 2,
+              forms: 2,
+              statements: [
+                { section: "Overview & Domain", value: "64-character API token" },
+                { section: "Data & Domain Model", value: "32-character API token" },
+              ],
+            },
           ],
         },
       },
@@ -408,24 +421,30 @@ describe("DocumentationPage — version history", () => {
     const panel = await screen.findByTestId("version-provenance-v2");
     const plan = await within(panel).findByTestId("version-topic-plan-v2");
     expect(plan).toHaveTextContent(
-      "Topic plan: 100 topics planned in 1 catalogue section, within about 244k characters",
+      "Topic plan: 100 topics across 1 reference section; document length limit about 244k characters",
     );
     expect(within(plan).getByText(/5 topics left out before writing/)).toBeInTheDocument();
-    expect(within(plan).getByText("Business Rules & Policies (100 planned)")).toBeInTheDocument();
-    const drops = within(plan)
+    expect(plan).toHaveTextContent("they are listed above as “(not planned)”");
+    // Counted, not repeated: the titles are in the left-out list above.
+    const rows = within(plan)
       .getAllByRole("listitem")
       .map((li) => li.textContent);
-    expect(drops).toContain("dublincore — Business Rules & Policies");
-    expect(within(plan).getByText("and 3 more")).toBeInTheDocument();
+    expect(rows).toEqual(["Business Rules & Policies: 100 planned, 5 left out"]);
+    expect(plan).not.toHaveTextContent("dublincore");
     const check = await within(panel).findByTestId("version-consistency-v2");
     expect(
       within(check).getByText(
-        "Consistency check: 2 possible inconsistencies (617 statements compared)",
+        "Consistency check: 53 possible inconsistencies (13 statements compared across sections)",
       ),
     ).toBeInTheDocument();
     expect(
-      within(check).getByText(/The number of authentication kinds is given 2 different ways/),
+      within(check).getByText(/The number of authentication mechanisms is given 2 different ways/),
     ).toBeInTheDocument();
+    expect(
+      within(check).getByText(/The size of the API token \(characters\) is given 2 different ways/),
+    ).toBeInTheDocument();
+    // The manifest keeps at most 50: the rest are not anywhere to look up.
+    expect(within(check).getByText("and 50 more, not listed")).toBeInTheDocument();
     expect(within(check).getByText("five authentication mechanisms")).toBeInTheDocument();
     expect(
       within(check).getByText(
@@ -456,7 +475,7 @@ describe("DocumentationPage — version history", () => {
             },
           ],
         },
-        consistency: { statements: 1, findingCount: 0, findings: [] },
+        consistency: { statements: 4, compared: 1, findingCount: 0, findings: [] },
       },
     );
     await openDoc();
@@ -466,7 +485,7 @@ describe("DocumentationPage — version history", () => {
     expect(within(plan).getByText("No topic was left out before writing.")).toBeInTheDocument();
     const check = await within(panel).findByTestId("version-consistency-v2");
     expect(check).toHaveTextContent(
-      "Consistency check: no differences found (1 statement compared)",
+      "Consistency check: no differences found (1 statement compared across sections)",
     );
     expect(within(check).queryByText(/Nothing was changed/)).not.toBeInTheDocument();
   });

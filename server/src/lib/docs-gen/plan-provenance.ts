@@ -46,6 +46,8 @@ export interface TopicPlanRecord {
 export interface ConsistencyFindingRecord {
   kind: "conflict" | "restated" | "endpoint" | "count" | "size";
   name: string;
+  /** For a prose finding, what it is about as written ("API token (characters)"). */
+  label?: string;
   /** Distinct sections among the statements. */
   sections: number;
   /** Distinct values (or forms) stated. */
@@ -58,6 +60,8 @@ export interface ConsistencyFindingRecord {
 export interface ConsistencyRecord {
   /** Statements read across the document. */
   statements: number;
+  /** Of those, the ones that had something to be compared with. */
+  compared: number;
   /** Findings in all, listed or not. */
   findingCount: number;
   findings: ConsistencyFindingRecord[];
@@ -90,10 +94,12 @@ export function topicPlanRecord(
 export function consistencyRecord(report: ConsistencyReport): ConsistencyRecord {
   return {
     statements: report.statements,
+    compared: report.compared,
     findingCount: report.findings.length,
     findings: report.findings.slice(0, MAX_RECORDED_FINDINGS).map((f) => ({
       kind: f.kind,
       name: clip(f.name),
+      ...(f.label ? { label: clip(f.label) } : {}),
       sections: f.sections,
       forms: f.forms,
       statements: f.statements.slice(0, MAX_LISTED_STATEMENTS).map((s) => ({

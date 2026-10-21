@@ -56,6 +56,8 @@ interface ProvenanceSummary {
   /** #1070 — the cross-section consistency check; absent = not run. */
   consistency?: {
     statements: number;
+    /** Of those, the ones that had something to be compared with. */
+    compared: number;
     findingCount: number;
     findings: ConsistencyFinding[];
   };
@@ -64,6 +66,8 @@ interface ProvenanceSummary {
 interface ConsistencyFinding {
   kind: string;
   name: string;
+  /** What a prose finding is about, as written ("API token (characters)"). */
+  label?: string;
   sections: number;
   forms: number;
   statements: Array<{ section: string; value: string }>;
@@ -120,9 +124,10 @@ function OmittedTopics({
 
 /**
  * #1070 — what the topic plan decided before anything was written: how many
- * topics each catalogue section was planned, and the topics it left out to fit
- * the document budget, most important first (so the last listed was the first
- * to go). Renders nothing for a document that was not planned.
+ * topics each reference section was planned within the document's length
+ * limit, and how many it left out. The left-out topics themselves are already
+ * listed above, as `(not planned)`, so they are counted here, not repeated.
+ * Renders nothing for a document that was not planned.
  */
 export function TopicPlanSummary({
   plan,
@@ -132,42 +137,34 @@ export function TopicPlanSummary({
   testId: string;
 }): React.ReactElement | null {
   if (!plan) return null;
-  const catalogue = plan.sections.filter((s) => s.kind === "enumerative");
-  const planned = catalogue.reduce((n, s) => n + s.plannedTopics, 0);
-  const dropped = plan.sections.reduce((n, s) => n + s.dropped.length + s.droppedNotListed, 0);
+  const reference = plan.sections.filter((s) => s.kind === "enumerative");
+  const planned = reference.reduce((n, s) => n + s.plannedTopics, 0);
+  const leftOut = (s: (typeof plan.sections)[number]): number =>
+    s.dropped.length + s.droppedNotListed;
+  const dropped = plan.sections.reduce((n, s) => n + leftOut(s), 0);
   return (
     <div className="mt-1" data-testid={testId}>
       <p className="font-medium">
-        Topic plan: {planned.toLocaleString()} topic{planned === 1 ? "" : "s"} planned in{" "}
-        {catalogue.length.toLocaleString()} catalogue section{catalogue.length === 1 ? "" : "s"},
-        within about {Math.round(plan.budgetChars / 1000).toLocaleString()}k characters
+        Topic plan: {planned.toLocaleString()} topic{planned === 1 ? "" : "s"} across{" "}
+        {reference.length.toLocaleString()} reference section
+        {reference.length === 1 ? "" : "s"}; document length limit about{" "}
+        {Math.round(plan.budgetChars / 1000).toLocaleString()}k characters
       </p>
       {dropped === 0 ? (
         <p className="text-muted-foreground">No topic was left out before writing.</p>
       ) : (
         <>
           <p className="text-muted-foreground">
-            {dropped.toLocaleString()} topic{dropped === 1 ? "" : "s"} left out before writing,
-            least important last:
+            {dropped.toLocaleString()} topic{dropped === 1 ? "" : "s"} left out before writing, the
+            least important first; they are listed above as &ldquo;(not planned)&rdquo;.
           </p>
-          <ul className="max-h-48 overflow-y-auto">
+          <ul className="list-disc pl-4">
             {plan.sections
-              .filter((s) => s.dropped.length + s.droppedNotListed > 0)
+              .filter((s) => leftOut(s) > 0)
               .map((s, i) => (
                 <li key={`${i}:${s.sectionLabel}`}>
-                  <span className="text-muted-foreground">
-                    {s.sectionLabel} ({s.plannedTopics.toLocaleString()} planned)
-                  </span>
-                  <ol className="list-decimal pl-6">
-                    {s.dropped.map((topic, j) => (
-                      <li key={`${j}:${topic}`}>{topic}</li>
-                    ))}
-                  </ol>
-                  {s.droppedNotListed > 0 && (
-                    <p className="pl-4 text-muted-foreground">
-                      and {s.droppedNotListed.toLocaleString()} more
-                    </p>
-                  )}
+                  {s.sectionLabel}: {s.plannedTopics.toLocaleString()} planned,{" "}
+                  {leftOut(s).toLocaleString()} left out
                 </li>
               ))}
           </ul>
@@ -179,6 +176,7 @@ export function TopicPlanSummary({
 
 /** One consistency finding as a sentence an analyst can act on. */
 function consistencyFindingText(f: ConsistencyFinding): string {
+  const what = f.label ?? f.name;
   switch (f.kind) {
     case "conflict":
       return `${f.name} is stated differently from the source${
@@ -191,11 +189,11 @@ function consistencyFindingText(f: ConsistencyFinding): string {
     case "endpoint":
       return `The endpoint ${f.name} is given ${f.forms} different methods`;
     case "count":
-      return `The number of ${f.name} is given ${f.forms} different ways`;
+      return `The number of ${what} is given ${f.forms} different ways`;
     case "size":
-      return `The size of the ${f.name} is given ${f.forms} different ways`;
+      return `The size of the ${what} is given ${f.forms} different ways`;
     default:
-      return f.name;
+      return what;
   }
 }
 
@@ -212,16 +210,16 @@ export function ConsistencySummary({
   testId: string;
 }): React.ReactElement | null {
   if (!consistency) return null;
-  const { statements, findingCount, findings } = consistency;
-  const compared = `${statements.toLocaleString()} statement${statements === 1 ? "" : "s"} compared`;
+  const { compared, findingCount, findings } = consistency;
+  const across = `${compared.toLocaleString()} statement${compared === 1 ? "" : "s"} compared across sections`;
   return (
     <div className="mt-1" data-testid={testId}>
       <p className="font-medium">
         {findingCount === 0
-          ? `Consistency check: no differences found (${compared})`
+          ? `Consistency check: no differences found (${across})`
           : `Consistency check: ${findingCount.toLocaleString()} possible inconsistenc${
               findingCount === 1 ? "y" : "ies"
-            } (${compared})`}
+            } (${across})`}
       </p>
       {findings.length > 0 && (
         <ul className="max-h-48 list-disc overflow-y-auto pl-4">
@@ -241,7 +239,7 @@ export function ConsistencySummary({
       )}
       {findingCount > findings.length && (
         <p className="text-muted-foreground">
-          and {(findingCount - findings.length).toLocaleString()} more in the full manifest
+          and {(findingCount - findings.length).toLocaleString()} more, not listed
         </p>
       )}
       {findingCount > 0 && (

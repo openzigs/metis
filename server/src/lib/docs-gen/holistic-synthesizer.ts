@@ -5004,9 +5004,11 @@ async function synthesizeFinalDocumentInRun(
           //    length note in its prompt, which `prompts` below already hashes;
           //  - EVERY canonical fact the section is given — a batch may be given
           //    one past the forty this section's own prompt lists.
-          // Nothing here is derived from a fact the section was NOT given (the
-          // budget is planned from the modules, never from the sheet), so a
-          // changed fact rewrites the sections given it, and no others.
+          // Nothing here is derived from a fact the section was NOT given: the
+          // budget is planned from the modules and, since #1070's priority
+          // lift, from the facts THIS section owns, which it is always given
+          // (`factsGivenTo`) and so are hashed above. A changed fact rewrites
+          // the sections given it, and no others.
           ...(planning && plannedSection
             ? {
                 topicPlan: {
@@ -5806,6 +5808,7 @@ async function synthesizeFinalDocumentInRun(
       projectId,
       docType,
       statements: consistency.statements,
+      compared: consistency.compared,
       findings: consistency.findings.length,
     });
     if (inconsistent) warnings.push(inconsistent);
@@ -6891,8 +6894,11 @@ export function planDocumentTopics(input: {
   // document (the run-7 BRD's were 5.9k of 247k). It only shapes what the
   // sections are ASKED for: the fit at assembly measures the definitions
   // themselves, so room this over-estimates is used and a shortfall is cut.
-  // Nothing here reads the facts sheet — a section's budget must not move
-  // because a fact it was never given changed (see the reuse inputs).
+  // This room is computed from the modules alone, never from the facts sheet.
+  // The sheet is read below for one thing only: which modules hold a fact the
+  // section itself owns (the priority lift). A section is always given the
+  // facts it owns, so its budget never moves because of a fact it was not
+  // given (see the reuse inputs).
   const reservedChars = Math.min(
     Math.floor(input.documentMaxChars * FOOTNOTE_RESERVE_SHARE),
     facts.reduce((n, f) => n + f.modulePath.length + FOOTNOTE_DEFINITION_OVERHEAD, 0),
