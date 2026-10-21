@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AffectedCodeCandidate } from "@metis/shared";
 import {
   computeAffectedCodeContext,
+  relativeToBestSeed,
   renderAffectedCodeBlock,
   estimateAffectedCodeTokens,
   EMPTY_AFFECTED_CODE_CONTEXT,
@@ -524,7 +525,67 @@ describe("computeAffectedCodeContext — hybrid ranking and its record (#1097)",
     expect(flush!.confidence).toBeLessThan(0.5);
     expect(caller!.relation).toBe("caller");
     expect(caller!.confidence).toBeLessThanOrEqual(flush!.confidence);
-    expect(ctx.block).toContain(`conf ${flush!.confidence.toFixed(2)}`);
+    // The code agent's block keeps the scale it always had (best seed = 1.00):
+    // no model run measured feeding it the absolute scale (review of PR #1325).
+    expect(ctx.block).toContain("FlushAllSessions (direct, conf 1.00)");
+    expect(ctx.block).not.toContain(`conf ${flush!.confidence.toFixed(2)}`);
+    expect(ctx.result.candidates[0]!.retrievalMode).toBe("hybrid");
+  });
+
+  it("records a run whose requirements were answered differently as `mixed`, each with its own mode", async () => {
+    // The vector channel answers the first requirement and has nothing for the second.
+    const searcher = new HybridCodeSymbolSearcher({
+      bm25: new MemoizingBm25CodeSymbolSearcher(prisma),
+      hybrid: {
+        async search(q, _p, opts) {
+          const answered = q.includes("terminate");
+          opts?.onRetrievalMode?.(answered ? "hybrid" : "bm25-only");
+          return answered
+            ? [
+                {
+                  symbolId: "flush",
+                  filePath: "",
+                  name: "flush",
+                  kind: "function",
+                  score: 1,
+                  vectorScore: 0.7,
+                },
+              ]
+            : [];
+        },
+      },
+      semanticModel: () => "Alibaba-NLP/gte-modernbert-base",
+    });
+    const ctx = await computeAffectedCodeContext({
+      projectId: "proj-miniflux",
+      extraInstructions:
+        "- Add a button to terminate all sessions\n- Remove a session from the list",
+      enabled: true,
+      tokenBudget: 100000,
+      deps: { prisma, dataSourceFor: () => graph, searcher },
+    });
+    expect(ctx.result.retrievalMode).toBe("mixed");
+    expect(ctx.result.candidates.map((c) => c.retrievalMode)).toEqual(["hybrid", "bm25-only"]);
+  });
+
+  it("relativeToBestSeed: the best reads 1.00, the rest keep their ratio, an empty or zero list is unchanged", () => {
+    const c = {
+      id: "NR-1",
+      title: "t",
+      body: "t",
+      symbols: [0.2, 0.1].map((confidence, i) => ({
+        filePath: `f${i}.go`,
+        qualifiedName: `f${i}`,
+        startLine: 1,
+        endLine: 2,
+        relation: "direct" as const,
+        depth: 0,
+        confidence,
+      })),
+    };
+    expect(relativeToBestSeed(c).symbols.map((s) => s.confidence)).toEqual([1, 0.5]);
+    const zero = { ...c, symbols: c.symbols.map((s) => ({ ...s, confidence: 0 })) };
+    expect(relativeToBestSeed(zero)).toBe(zero);
   });
 
   it("records `bm25-only` when the vector channel had nothing, and keeps the keyword link rules", async () => {

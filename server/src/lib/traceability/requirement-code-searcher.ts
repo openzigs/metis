@@ -99,6 +99,12 @@ export interface HybridCodeSymbolSearcherDeps {
 
 interface HybridAnswer {
   hits: RankedHit[];
+  /**
+   * Whether the active model's cosines are calibrated (`COSINE_CALIBRATED_MODELS`).
+   * An uncalibrated answer gives the confidence no semantic evidence, so its
+   * links are shown under the KEYWORD fallback's rules (review of PR #1325).
+   */
+  calibrated: boolean;
 }
 
 /**
@@ -128,7 +134,7 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
     );
   }
 
-  /** #921 — whether the project has a code graph (loads the BM25 corpus once). */
+  /** #921 — whether the project has a code graph (loads the BM25 corpus once; throws when it cannot be read). */
   loadsCodeGraph(projectId: string): Promise<boolean> {
     return this.deps.bm25.loadsCodeGraph(projectId);
   }
@@ -151,9 +157,12 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
         onRetrievalMode: opts.onRetrievalMode,
       });
     }
-    const ranker = this.deps.hybridOptions
-      ? this.deps.bm25.withOptions(this.deps.hybridOptions)
-      : this.deps.bm25;
+    // An uncalibrated model ranks, but its links are gated as keywords: the
+    // hybrid floor alone would show any one-shared-word symbol (the #1095 shape).
+    const ranker =
+      this.deps.hybridOptions && answer.calibrated
+        ? this.deps.bm25.withOptions(this.deps.hybridOptions)
+        : this.deps.bm25;
     const candidates = await ranker.rankHits(query, projectId, answer.hits, limit);
     opts.onRetrievalMode?.("hybrid");
     return candidates;
@@ -191,13 +200,22 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
     }
     if (mode !== "hybrid") return null;
     // Another model's cosines are on another scale: rank with them, but score
-    // the confidence on the lexical evidence alone.
+    // the confidence on the lexical evidence alone (and gate it as keywords).
     const calibrated = COSINE_CALIBRATED_MODELS.has(model);
+    // A hit only BM25 returned was NOT among the vector channel's nearest, so
+    // its cosine is at most the lowest one the channel did return. Scoring it
+    // as "no cosine" (the lexical model) treated that absence as average, and a
+    // one-shared-word keyword hit cleared the floor (review of PR #1325).
+    const returned = results
+      .map((r) => r.vectorScore)
+      .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+    const cutoff = returned.length > 0 ? Math.min(...returned) : null;
     return {
+      calibrated,
       hits: results.map((r) => ({
         symbolId: r.symbolId,
         score: r.score,
-        cosine: calibrated ? (r.vectorScore ?? null) : null,
+        cosine: calibrated ? (r.vectorScore ?? cutoff) : null,
       })),
     };
   }

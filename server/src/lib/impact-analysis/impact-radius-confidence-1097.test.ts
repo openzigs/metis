@@ -66,11 +66,49 @@ describe("blast radius under absolute confidence (#1097)", () => {
     ]);
   });
 
-  it("scales each caller's confidence by the best seed's: never surer than the link it came by", async () => {
+  it("scales each caller's confidence by its seed's: never surer than the link it came by", async () => {
     const weak = await impactWithSeedConfidence(0.3);
     const by = new Map(weak.affectedSymbols.map((s) => [s.qualifiedName, s.confidence]));
     expect(by.get("seed.go::seed")).toBe(0.3);
     expect(by.get("caller.go::caller")).toBeCloseTo(0.3, 10);
     expect(by.get("grandcaller.go::grandcaller")).toBeCloseTo(0.21, 10);
+  });
+
+  it("with several seeds, scales each caller by the seed it was REACHED through (review of PR #1325)", async () => {
+    // strong <- a <- aa ; weak <- b ; both <- strong AND weak
+    const two = new InMemoryCodeGraphDataSource(
+      ["strong", "weak", "a", "aa", "b", "both"].map(sym),
+      [
+        { id: "e1", fromSymbolId: "a", toSymbolId: "strong", kind: "calls" },
+        { id: "e2", fromSymbolId: "aa", toSymbolId: "a", kind: "calls" },
+        { id: "e3", fromSymbolId: "b", toSymbolId: "weak", kind: "calls" },
+        { id: "e4", fromSymbolId: "both", toSymbolId: "weak", kind: "calls" },
+        { id: "e5", fromSymbolId: "both", toSymbolId: "strong", kind: "calls" },
+      ],
+    );
+    const match = (id: string, confidence: number) => ({
+      codeSymbolId: id,
+      filePath: `${id}.go`,
+      qualifiedName: `${id}.go::${id}`,
+      startLine: 1,
+      endLine: 5,
+      confidence,
+    });
+    const impact = await computeProjectImpact(
+      { requirementId: "r", title: "t", body: "t", changeType: "added", bodyDelta: 1 },
+      "p",
+      {
+        mapRequirement: async () => [match("strong", 0.45), match("weak", 0.08)],
+        dataSourceFor: () => two,
+        includeSchemaImpact: false,
+      },
+    );
+    const by = new Map(impact.affectedSymbols.map((s) => [s.qualifiedName, s.confidence]));
+    expect(by.get("a.go::a")).toBeCloseTo(0.45, 10);
+    expect(by.get("aa.go::aa")).toBeCloseTo(0.45 * 0.7, 10);
+    // Reached only through the 0.08 seed: it reads 0.08, not the best seed's 0.45.
+    expect(by.get("b.go::b")).toBeCloseTo(0.08, 10);
+    // Reached through both at the same depth: the better path wins.
+    expect(by.get("both.go::both")).toBeCloseTo(0.45, 10);
   });
 });

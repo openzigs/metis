@@ -270,6 +270,49 @@ describe("MATCH_QUALITY_THRESHOLDS (#994 drift guard)", () => {
   });
 });
 
+describe("absolute seed confidences (#1097)", () => {
+  it("grades an absolute set as it grades the same set normalized to its top", () => {
+    // `mapRequirementToCode` now reports absolute confidences: a 0.27 / 0.10 pair
+    // is a clear winner (0.10 is 37% of the top), which an absolute gap of 0.17
+    // would also say — but 0.10 / 0.07 must too, where the absolute gap is 0.03.
+    const absolute = seeds([
+      [0.1, "a.ts"],
+      [0.07, "b.ts"],
+    ]);
+    const normalized = seeds([
+      [1, "a.ts"],
+      [0.7, "b.ts"],
+    ]);
+    expect(deriveMatchQualityDetailed(absolute)).toEqual(deriveMatchQualityDetailed(normalized));
+    expect(deriveMatchQualityDetailed(absolute).quality).toBe("strong");
+  });
+
+  it("keeps a near-tied absolute pack near-tied, whatever the scale", () => {
+    const pack = (scale: number) =>
+      seeds(
+        ["Account.ts", "Item.ts", "Orders.ts", "Cart.ts", "Product.ts"].map(
+          (f, i) => [scale * (1 - i * 0.01), `src/${f}`] as [number, string],
+        ),
+      );
+    expect(deriveMatchQualityDetailed(pack(0.096))).toEqual(deriveMatchQualityDetailed(pack(1)));
+    expect(deriveMatchQualityDetailed(pack(0.096))).toEqual({
+      quality: "weak",
+      reason: "scattered",
+    });
+  });
+
+  it("does not divide by a zero top", () => {
+    expect(
+      deriveMatchQualityDetailed(
+        seeds([
+          [0, "a.ts"],
+          [0, "b.ts"],
+        ]),
+      ).quality,
+    ).toBe("moderate");
+  });
+});
+
 describe("deriveMatchQuality back-compat wrapper (#961/#994)", () => {
   it("returns only the bare quality, matching deriveMatchQualityDetailed's quality field", () => {
     const s = seeds([[0.31, "a.ts"]]);

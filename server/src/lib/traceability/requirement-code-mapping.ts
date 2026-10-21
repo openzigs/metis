@@ -117,6 +117,12 @@ export interface MapRequirementOptions {
   persist?: boolean;
   /** #1097 — told which ranking answered (see {@link RequirementRetrievalMode}). */
   onRetrievalMode?: (mode: RequirementRetrievalMode) => void;
+  /**
+   * #921 — told when the search failed. The mapper still returns no matches
+   * (it never throws on a search failure); this lets a caller tell "nothing
+   * matched" from "the search failed".
+   */
+  onSearchError?: (err: unknown) => void;
 }
 
 type MappingPrisma = Pick<PrismaClient, "codeSymbol" | "requirementCodeMapping" | "$transaction">;
@@ -734,14 +740,14 @@ export const ANALYSIS_LINK_SEARCH_OPTIONS: Readonly<Bm25SearcherOptions> = Objec
  *   BM25     two terms + subject + tests     60     17     0.28        9 / 13   (shipped before #1097)
  *   hybrid   two terms + subject + tests     49     16     0.33        6 / 13
  *   hybrid   subject + tests + conf ≥ 0.05   104    32     0.31       10 / 13
- *   hybrid   subject + tests + conf ≥ 0.08    98    29     0.30       10 / 13   (this)
+ *   hybrid   subject + tests + conf ≥ 0.08    98    30     0.31       10 / 13   (this)
  *   hybrid   subject + tests + conf ≥ 0.10    85    27     0.32        8 / 13
  *
  * The two-term rule was written against a ranking that matched on words alone;
  * the embeddings find the right code through OTHER words ("terminate all
  * sessions" → `FlushAllSessions`, `removeSession`), and the rule then removes
  * exactly those links: with the hybrid ranking it keeps 16 right links where
- * the floor keeps 29, and leaves four more requirements without a right one.
+ * the floor keeps 30, and leaves four more requirements without a right one.
  * The confidence floor does the rule's job instead: a link that shares no
  * word and sits far from the requirement is not shown.
  *
@@ -753,6 +759,12 @@ export const ANALYSIS_LINK_SEARCH_OPTIONS: Readonly<Bm25SearcherOptions> = Objec
  * review probes still hold on the replay ("terminate all sessions" never links
  * `InlineKeyboardButton`, "IPv4 or IPv6 per feed" never links
  * `ForceRefreshInterval`).
+ *
+ * Two conditions keep the floor honest (review of PR #1325): a hit only BM25
+ * returned is scored at the vector channel's lowest returned cosine, not as a
+ * hit with no cosine, so one shared word alone cannot clear it; and an
+ * embedding model the confidence is not calibrated for is gated by the keyword
+ * rules instead (`requirement-code-searcher.ts`).
  */
 export const ANALYSIS_HYBRID_LINK_MIN_CONFIDENCE = 0.08;
 
@@ -763,8 +775,8 @@ export const ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS: Readonly<Bm25SearcherOptions> 
   minConfidence: ANALYSIS_HYBRID_LINK_MIN_CONFIDENCE,
 });
 
-/** The endings after which English writes a plural `-es` (`statuses`, `boxes`, `quizzes`, `matches`, `wishes`). */
-const ES_PLURAL_RE = /(?:s|x|z|ch|sh)es$/;
+/** The endings after which English writes a plural `-es` (`statuses`, `boxes`, `quizzes`, `matches`, `wishes`, `heroes`). */
+const ES_PLURAL_RE = /(?:s|x|z|ch|sh|o)es$/;
 
 /**
  * The forms a word can take as a singular, the word itself first: `feeds` →
@@ -781,7 +793,7 @@ const ES_PLURAL_RE = /(?:s|x|z|ch|sh)es$/;
  * `response`+s in `responses`. Constant work per word.
  *
  * #1097 (review of PR #1227) — `-es` is stripped only where English writes it,
- * after s, x, z, ch or sh. Stripped from every word it made `notes` match
+ * after s, x, z, ch, sh or o. Stripped from every word it made `notes` match
  * "not", `ones` match "on" and `news` match "new". And a shortened form of
  * three letters or fewer that is a #943 stopword ({@link REQUIREMENT_QUERY_STOPWORDS})
  * is not a form at all: `news` → new, `uses` → use, `sets` → set are ordinary
@@ -1277,14 +1289,11 @@ export class MemoizingBm25CodeSymbolSearcher implements CodeSymbolSearcher {
   /**
    * #921 — whether the project has any code symbol to match, loading its
    * corpus if this instance has not yet (the load is then reused by searches).
-   * A failed load reads as no code graph.
+   * A failed load THROWS: "the code graph could not be read" is not "there is
+   * no code graph" (review of PR #1325).
    */
   async loadsCodeGraph(projectId: string): Promise<boolean> {
-    try {
-      return (await this.corpus(projectId)).size > 0;
-    } catch {
-      return false;
-    }
+    return (await this.corpus(projectId)).size > 0;
   }
 
   /**
@@ -1611,6 +1620,7 @@ export async function mapRequirementToCode(
       onRetrievalMode: opts.onRetrievalMode,
     });
   } catch (err) {
+    opts.onSearchError?.(err);
     log.warn("code search failed; returning no matches", {
       requirementId: requirement.id,
       projectId,

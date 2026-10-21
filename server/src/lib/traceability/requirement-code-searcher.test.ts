@@ -197,6 +197,46 @@ describe("HybridCodeSymbolSearcher — ranks with the hybrid search", () => {
   });
 });
 
+describe("HybridCodeSymbolSearcher — calibration holes (review of PR #1325)", () => {
+  const links = (ranker: HybridRanker, model?: string) =>
+    searcherOf(ranker, model === undefined ? {} : { model }).withOptions(
+      ANALYSIS_LINK_SEARCH_OPTIONS,
+      ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS,
+    );
+
+  it("scores a hit only BM25 returned at the vector channel's lowest returned cosine, not as average", async () => {
+    // `button` shares one word and the vector channel did not return it.
+    const { ranker } = rankerOf([
+      { id: "flush", cosine: 0.7 },
+      { id: "remove", cosine: 0.55 },
+      { id: "button" },
+    ]);
+    const raw = await searcherOf(ranker).search(TERMINATE, PROJECT);
+    const button = raw.find((c) => c.symbolId === "button")!;
+    expect(button.confidence).toBe(linkConfidence({ sharedNameTerms: 1, cosine: 0.55 }));
+    // Scored as "no cosine" it would clear the floor on one shared word (0.096).
+    expect(linkConfidence({ sharedNameTerms: 1 })).toBeGreaterThanOrEqual(
+      ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS.minConfidence!,
+    );
+    const shown = await links(ranker).search(TERMINATE, PROJECT);
+    expect(shown.map((c) => c.symbolId)).not.toContain("button");
+    expect(shown.map((c) => c.symbolId)).toContain("flush");
+  });
+
+  it("gates an uncalibrated model's links with the keyword rules (two shared name terms)", async () => {
+    const { ranker } = rankerOf([{ id: "flush", cosine: 0.9 }]);
+    // `FlushAllSessions` shares ONE word: the hybrid floor would show it (0.096 ≥ 0.08) ...
+    expect(await links(ranker, GTE).search(TERMINATE, PROJECT)).not.toEqual([]);
+    // ... but with no calibrated cosine nothing semantic gates it, so the #1095 rule does.
+    const modes: RequirementRetrievalMode[] = [];
+    const out = await links(ranker, "BAAI/bge-small-en-v1.5").search(TERMINATE, PROJECT, {
+      onRetrievalMode: (m) => modes.push(m),
+    });
+    expect(out).toEqual([]);
+    expect(modes).toEqual(["hybrid"]);
+  });
+});
+
 describe("HybridCodeSymbolSearcher — falls back to BM25 and says so", () => {
   async function fallsBack(
     searcher: HybridCodeSymbolSearcher,

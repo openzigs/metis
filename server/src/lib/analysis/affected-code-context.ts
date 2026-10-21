@@ -150,6 +150,17 @@ export const DEFAULT_AFFECTED_CODE_TOKEN_BUDGET = 1500;
 export const DEFAULT_AFFECTED_CODE_MAX_CANDIDATES = 8;
 export const DEFAULT_AFFECTED_CODE_MAX_SYMBOLS = 8;
 
+/**
+ * #1097 — a candidate's symbols with each confidence divided by the candidate's
+ * best, so the best reads 1.00: the scale the code agent's block has always
+ * carried. A candidate whose best is 0 is unchanged.
+ */
+export function relativeToBestSeed(c: AffectedCodeCandidate): AffectedCodeCandidate {
+  const best = c.symbols.reduce((m, s) => Math.max(m, s.confidence), 0);
+  if (best <= 0) return c;
+  return { ...c, symbols: c.symbols.map((s) => ({ ...s, confidence: s.confidence / best })) };
+}
+
 /** Render one affected symbol as a single reference line (pure DATA). */
 function renderSymbolLine(s: AffectedCodeSymbol): string {
   const locator = s.startLine != null ? `${s.filePath}:${s.startLine}` : s.filePath;
@@ -313,8 +324,11 @@ export async function mapAffectedCodeCandidates(opts: {
   // #1097 — the ranking that answered, recorded on the run. `hybrid` only when
   // every mapped requirement was answered by the embeddings.
   const modes = new Set<RequirementRetrievalMode>();
+  // The ranking that answered the LINKS of the requirement being mapped now.
+  let candidateMode: RequirementRetrievalMode | undefined;
   const noteMode = (mode: RequirementRetrievalMode): void => {
     modes.add(mode);
+    candidateMode = mode;
   };
   const mapSeeds: MapRequirementFn =
     injectedMapper ??
@@ -393,12 +407,13 @@ export async function mapAffectedCodeCandidates(opts: {
     // mapping and its requirement entry are traceable to one another.
     const id = newRequirementId(i);
     const head = { id, title: change.title, body: change.body };
+    candidateMode = undefined;
     const seedSymbols = await mapChange(change, id, mapSeeds, "seed");
     seeds.push({ ...head, symbols: seedSymbols });
-    links.push({
-      ...head,
-      symbols: mapLinks ? await mapChange(change, id, mapLinks, "link") : seedSymbols,
-    });
+    const linkSymbols = mapLinks ? await mapChange(change, id, mapLinks, "link") : seedSymbols;
+    // #1097 — which ranking (and so which link rule) produced THIS requirement's links.
+    const mode = candidateMode as RequirementRetrievalMode | undefined;
+    links.push({ ...head, symbols: linkSymbols, ...(mode ? { retrievalMode: mode } : {}) });
   }
 
   // Degrade cleanly when NOTHING matched across all candidates — the typical
@@ -406,12 +421,16 @@ export async function mapAffectedCodeCandidates(opts: {
   // no fence is emitted, rather than an empty "(no code matched)" block that
   // carries no signal. Per-candidate empty states still render when SOME
   // candidates matched and others did not.
-  // #1097 — one word for the run: keywords if ANY requirement fell back.
-  const retrievalMode: RequirementRetrievalMode | undefined = modes.has("bm25-only")
-    ? "bm25-only"
-    : modes.has("hybrid")
-      ? "hybrid"
-      : undefined;
+  // #1097 — one word for the run, `mixed` when some requirements were answered
+  // by the embeddings and others fell back to keywords (each candidate says which).
+  const retrievalMode: AnalysisAffectedCode["retrievalMode"] =
+    modes.size > 1
+      ? "mixed"
+      : modes.has("hybrid")
+        ? "hybrid"
+        : modes.has("bm25-only")
+          ? "bm25-only"
+          : undefined;
   const withMode = retrievalMode ? { retrievalMode } : {};
   const hasAnySeed = seeds.some((c) => c.symbols.length > 0);
   if (!hasAnySeed) {
@@ -432,7 +451,11 @@ export async function mapAffectedCodeCandidates(opts: {
 
   // The block and the provenance list are the AGENT's: built from the seeds. A
   // requirement the page shows as "No code matched" can still seed the agent.
-  const rendered = renderAffectedCodeBlock(seeds, tokenBudget);
+  // #1097 (review of PR #1325) — the agent keeps the scale it always had: each
+  // requirement's confidences relative to its best seed (best = 1.00). The
+  // absolute scale is the analyst's; no model run measured feeding it to the
+  // agent, and its rule (`AFFECTED_CODE_RULE`) reads "low confidence" on its own terms.
+  const rendered = renderAffectedCodeBlock(seeds.map(relativeToBestSeed), tokenBudget);
   const filePaths = [...new Set(seeds.flatMap((c) => c.symbols.map((s) => s.filePath)))];
   return {
     result: { candidates: links, truncated: rendered.truncated, ...withMode },

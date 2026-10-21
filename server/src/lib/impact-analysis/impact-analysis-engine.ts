@@ -394,20 +394,24 @@ export async function computeProjectImpact(
   if (seedIds.length > 0) {
     // #1097 — WHICH callers the radius reaches is structural (edge kind and
     // depth against the radius floor), so it walks from a seed of 1, as it did
-    // when every mapper's best hit read 1.0. HOW SURE a caller is follows its
-    // seeds: the reported confidence is scaled by the best seed's, which is
-    // absolute since #1097 — a caller is never surer than the link it came by.
-    const seedScale = topConfidence > 0 ? Math.min(1, topConfidence) : 1;
-    radius = (
-      await blastRadius(deps.dataSourceFor(projectId), seedIds, {
-        maxDepth,
-        seedConfidence: 1,
-        // Callers/importers only by default; downstream deps are opt-in.
-        includeDependencies: deps.includeDependencies ?? false,
-        // Let blastRadius apply its own default floor when undefined.
-        minConfidence: deps.minConfidence,
-      })
-    ).map((r) => ({ ...r, confidence: r.confidence * seedScale }));
+    // when every mapper's best hit read 1.0. HOW SURE a caller is follows the
+    // seed it was reached through (`seedWeights`; the best one when several
+    // reach it at the same depth): a caller is never surer than its link.
+    const seedWeights = new Map<string, number>();
+    for (const m of matches) {
+      if (!m.codeSymbolId) continue;
+      const c = Number.isFinite(m.confidence) && m.confidence > 0 ? m.confidence : 0;
+      seedWeights.set(m.codeSymbolId, Math.max(seedWeights.get(m.codeSymbolId) ?? 0, c));
+    }
+    radius = await blastRadius(deps.dataSourceFor(projectId), seedIds, {
+      maxDepth,
+      seedConfidence: 1,
+      seedWeights,
+      // Callers/importers only by default; downstream deps are opt-in.
+      includeDependencies: deps.includeDependencies ?? false,
+      // Let blastRadius apply its own default floor when undefined.
+      minConfidence: deps.minConfidence,
+    });
   }
 
   // Merge + dedupe (direct wins over radius).

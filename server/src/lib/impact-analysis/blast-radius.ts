@@ -91,6 +91,14 @@ export interface BlastRadiusOptions {
    * to reach shallower paths. Default {@link DEFAULT_RADIUS_MIN_CONFIDENCE}.
    */
   minConfidence?: number;
+  /**
+   * #1097 (review of PR #1325) — each seed's own confidence. WHICH symbols are
+   * reached is unchanged (the walk and the floor use `seedConfidence`), but each
+   * emitted symbol's confidence is then multiplied by the confidence of the
+   * seed it was reached through: the best of the seeds whose paths reach it at
+   * its (shallowest) depth. Absent ⇒ every seed counts 1, as before.
+   */
+  seedWeights?: ReadonlyMap<string, number>;
 }
 
 /** Per-hop confidence decay applied to deeper blast-radius rings. */
@@ -138,6 +146,9 @@ export async function blastRadius(
 
   const visited = new Set<string>(seeds);
   const out = new Map<string, RadiusSymbol>();
+  // #1097 — the confidence of the seed each node is reached through (best of
+  // its same-depth parents). Only read when `seedWeights` is given.
+  const scaleOf = new Map<string, number>(seeds.map((id) => [id, opts.seedWeights?.get(id) ?? 1]));
 
   let frontier: FrontierNode[] = seeds.map((id) => ({ id, depth: 0, relation: "direct" }));
 
@@ -163,20 +174,32 @@ export async function blastRadius(
       outgoingByFrom = groupEdges(outgoing, (e) => e.fromSymbolId);
     }
 
+    // Nodes first discovered in this round: another same-depth parent may
+    // still raise the seed confidence they carry.
+    const thisRound = new Set<string>();
+    const claim = (id: string, parent: string): boolean => {
+      const scale = scaleOf.get(parent) ?? 1;
+      if (visited.has(id)) {
+        if (thisRound.has(id)) scaleOf.set(id, Math.max(scaleOf.get(id) ?? 0, scale));
+        return false;
+      }
+      visited.add(id);
+      thisRound.add(id);
+      scaleOf.set(id, scale);
+      return true;
+    };
     for (const node of frontier) {
       // Callers-only by default: only walk incoming edges. Downstream
       // dependencies (getEdgesFrom) are consulted only when opted in.
       for (const e of incomingByTo.get(node.id) ?? []) {
-        if (!e.fromSymbolId || visited.has(e.fromSymbolId)) continue;
-        visited.add(e.fromSymbolId);
+        if (!e.fromSymbolId || !claim(e.fromSymbolId, node.id)) continue;
         const relation = node.relation === "direct" ? relationForIncoming(e.kind) : node.relation;
         discovered.push({ id: e.fromSymbolId, depth: depth + 1, relation, kind: e.kind });
       }
 
       if (outgoingByFrom) {
         for (const e of outgoingByFrom.get(node.id) ?? []) {
-          if (!e.toSymbolId || visited.has(e.toSymbolId)) continue;
-          visited.add(e.toSymbolId);
+          if (!e.toSymbolId || !claim(e.toSymbolId, node.id)) continue;
           const relation = node.relation === "direct" ? "dependency" : node.relation;
           discovered.push({ id: e.toSymbolId, depth: depth + 1, relation, kind: e.kind });
         }
@@ -211,7 +234,13 @@ export async function blastRadius(
   // Emit only symbols that clear the confidence floor. The filter runs on the
   // final output set (after traversal), so a low-confidence node still served
   // as a stepping stone to any shallower path during the BFS.
+  const weights = opts.seedWeights;
   return [...out.values()]
     .filter((s) => s.confidence >= minConfidence)
+    .map((s) =>
+      weights
+        ? { ...s, confidence: s.confidence * Math.min(1, scaleOf.get(s.codeSymbolId) ?? 1) }
+        : s,
+    )
     .sort((a, b) => a.depth - b.depth || b.confidence - a.confidence);
 }

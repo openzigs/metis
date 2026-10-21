@@ -18,14 +18,20 @@
  * embeddings, a link needs a confidence of at least 0.08; with keywords alone,
  * the symbol's NAME must share two of the requirement's terms (#1063). Both
  * apply the subject rules and leave test code out, so "no link" is an
- * ordinary, honest outcome. The code agent's own seed list is wider and is not
+ * ordinary, honest outcome. Links under `STRONG_LINK_CONFIDENCE` are folded
+ * under "N weaker matches", and a `mixed` run labels each requirement with the
+ * ranking that answered it. The code agent's own seed list is wider and is not
  * what this panel shows.
  *
  * Renders nothing when there is no mapping (plain runs / no new requirements /
  * no code graph), so it never adds noise to a standard analysis.
  */
 import { useState } from "react";
-import type { AnalysisAffectedCode, AffectedCodeSymbol } from "@/lib/analysis-api";
+import type {
+  AnalysisAffectedCode,
+  AffectedCodeCandidate,
+  AffectedCodeSymbol,
+} from "@/lib/analysis-api";
 
 interface Props {
   affectedCode: AnalysisAffectedCode | null;
@@ -43,8 +49,23 @@ function relationClass(relation: AffectedCodeSymbol["relation"]): string {
     : "bg-muted text-foreground border-border";
 }
 
+type RunMode = AnalysisAffectedCode["retrievalMode"];
+type CandidateMode = AffectedCodeCandidate["retrievalMode"];
+
+/**
+ * #1097 (review of PR #1325) — a link at or above this confidence is listed;
+ * the rest of a requirement's links are folded under "N weaker matches".
+ *
+ * Basis, on the run-7 Miniflux replay (`eval-data/reqmap-replay/`, one
+ * annotator, in-sample): with the hybrid ranking, the 53 links at 0.15 or more
+ * were right 34% of the time and the 45 below it 27%; listing only the former
+ * keeps the list about the size it was before the embeddings found more code
+ * (58 links), and folding, not dropping, the rest hides nothing.
+ */
+export const STRONG_LINK_CONFIDENCE = 0.15;
+
 /** #1097 — the sentence that says which ranking produced the links. */
-function retrievalModeNote(mode: AnalysisAffectedCode["retrievalMode"]): string {
+function retrievalModeNote(mode: RunMode): string {
   if (mode === "hybrid") {
     return " Ranked by meaning and keywords together (the project's symbol embeddings).";
   }
@@ -55,6 +76,13 @@ function retrievalModeNote(mode: AnalysisAffectedCode["retrievalMode"]): string 
       "Re-run once embedding has finished to compare."
     );
   }
+  if (mode === "mixed") {
+    return (
+      " Some requirements were ranked by meaning and keywords together (the project's symbol " +
+      "embeddings); others by keywords only, because the embeddings did not answer for them. " +
+      "Each requirement says which."
+    );
+  }
   return "";
 }
 
@@ -62,18 +90,51 @@ function retrievalModeNote(mode: AnalysisAffectedCode["retrievalMode"]): string 
  * #1097 — what a confidence means. A run recorded before #1097 carries no
  * ranking, and its confidences are relative to each requirement's best link.
  */
-function confidenceNote(mode: AnalysisAffectedCode["retrievalMode"]): string {
+function confidenceNote(mode: RunMode): string {
   return mode
-    ? "Confidence estimates how often a link like this one is right, on the same scale for every requirement: 0.30 means about three in ten such links were right when METIS measured it, so most links read well under 1.00."
+    ? `Confidence estimates how often a link like this one is right, on the same scale for every requirement: 0.30 means about three in ten such links were right on METIS's own measurement sample, so most links read well under 1.00. Links under ${STRONG_LINK_CONFIDENCE.toFixed(2)} are folded under "weaker matches".`
     : "Confidence is relative to the best link for that requirement, not a probability.";
 }
 
-/** #1097 — what a direct match needs to be shown, for the ranking that ran. */
-function linkRule(mode: AnalysisAffectedCode["retrievalMode"]): string {
-  return mode === "hybrid"
-    ? "A direct match is shown when its confidence is at least 0.08 and it is about the requirement's subject"
-    : "A direct match is shown only when the symbol's name (with its enclosing type or table, never its file path) shares at least two of the requirement's terms and its subject";
+const HYBRID_RULE =
+  "with meaning and keywords, a direct match is shown when its confidence is at least 0.08";
+const KEYWORD_RULE =
+  "with keywords only, a direct match is shown only when the symbol's name (with its enclosing type or table, never its file path) shares at least two of the requirement's terms";
+
+/** #1097 — what a direct match needs to be shown, for the ranking(s) that ran. */
+function linkRule(mode: RunMode): string {
+  if (mode === "hybrid")
+    return `Ranked ${HYBRID_RULE}, and when it is about the requirement's subject`;
+  if (mode === "mixed") {
+    return `Ranked ${HYBRID_RULE}; ranked ${KEYWORD_RULE}. Either way it must be about the requirement's subject`;
+  }
+  return "A direct match is shown only when the symbol's name (with its enclosing type or table, never its file path) shares at least two of the requirement's terms and its subject";
 }
+
+/** #1097 — the ranking one requirement's links came from. */
+function candidateModeLabel(mode: CandidateMode): string | null {
+  if (mode === "hybrid") return "meaning + keywords";
+  if (mode === "bm25-only") return "keywords only";
+  return null;
+}
+
+function SymbolRow({ symbol }: { symbol: AffectedCodeSymbol }): React.ReactElement {
+  return (
+    <li className="flex flex-wrap items-center gap-2 text-xs">
+      <span
+        className={`rounded border px-1.5 py-0.5 font-medium ${relationClass(symbol.relation)}`}
+      >
+        {symbol.relation}
+      </span>
+      <span className="font-mono text-foreground">{symbol.qualifiedName}</span>
+      <span className="font-mono text-muted-foreground">{symbolLocator(symbol)}</span>
+      <span className="text-muted-foreground">conf {symbol.confidence.toFixed(2)}</span>
+    </li>
+  );
+}
+
+const symbolKey = (s: AffectedCodeSymbol): string =>
+  `${s.filePath}:${s.startLine}:${s.qualifiedName}`;
 
 export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement | null {
   const candidates = affectedCode?.candidates ?? [];
@@ -100,6 +161,16 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
       <ul className="space-y-2">
         {candidates.map((candidate) => {
           const isOpen = open[candidate.id] ?? true;
+          const ranking = mode === "mixed" ? candidateModeLabel(candidate.retrievalMode) : null;
+          // Only absolute confidences (a run that records its ranking) are folded.
+          const fold = Boolean(mode);
+          const strong = fold
+            ? candidate.symbols.filter((s) => s.confidence >= STRONG_LINK_CONFIDENCE)
+            : candidate.symbols;
+          const weaker = fold
+            ? candidate.symbols.filter((s) => s.confidence < STRONG_LINK_CONFIDENCE)
+            : [];
+          const emptyRuleHybrid = (candidate.retrievalMode ?? mode) === "hybrid";
           return (
             <li
               key={candidate.id}
@@ -115,9 +186,18 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
                 <span className="text-sm">
                   <span className="font-mono text-xs text-muted-foreground">{candidate.id}</span>{" "}
                   <span className="font-medium text-foreground">{candidate.title}</span>
+                  {ranking ? (
+                    <span
+                      data-testid={`affected-code-ranking-${candidate.id}`}
+                      className="ml-2 text-xs text-muted-foreground"
+                    >
+                      ({ranking})
+                    </span>
+                  ) : null}
                 </span>
                 <span className="shrink-0 text-xs text-muted-foreground">
-                  {candidate.symbols.length} symbol{candidate.symbols.length === 1 ? "" : "s"}
+                  {candidate.symbols.length} symbol
+                  {candidate.symbols.length === 1 ? "" : "s"}
                 </span>
               </button>
               {isOpen ? (
@@ -128,7 +208,7 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
                       className="text-xs text-muted-foreground"
                     >
                       No code matched.{" "}
-                      {mode === "hybrid"
+                      {emptyRuleHybrid
                         ? "No symbol is close enough to this requirement and about its subject"
                         : "No symbol's name shares two of this requirement's terms and its subject"}
                       , so nothing is linked rather than showing a weak guess. The code agent still
@@ -136,27 +216,39 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
                       see the coverage indicator.
                     </p>
                   ) : (
-                    <ul className="space-y-1.5">
-                      {candidate.symbols.map((symbol) => (
-                        <li
-                          key={`${symbol.filePath}:${symbol.startLine}:${symbol.qualifiedName}`}
-                          className="flex flex-wrap items-center gap-2 text-xs"
+                    <>
+                      {strong.length > 0 ? (
+                        <ul className="space-y-1.5">
+                          {strong.map((symbol) => (
+                            <SymbolRow key={symbolKey(symbol)} symbol={symbol} />
+                          ))}
+                        </ul>
+                      ) : (
+                        <p
+                          data-testid={`affected-code-no-strong-${candidate.id}`}
+                          className="text-xs text-muted-foreground"
                         >
-                          <span
-                            className={`rounded border px-1.5 py-0.5 font-medium ${relationClass(symbol.relation)}`}
-                          >
-                            {symbol.relation}
-                          </span>
-                          <span className="font-mono text-foreground">{symbol.qualifiedName}</span>
-                          <span className="font-mono text-muted-foreground">
-                            {symbolLocator(symbol)}
-                          </span>
-                          <span className="text-muted-foreground">
-                            conf {symbol.confidence.toFixed(2)}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
+                          No link reaches {STRONG_LINK_CONFIDENCE.toFixed(2)}; only weaker matches.
+                        </p>
+                      )}
+                      {weaker.length > 0 ? (
+                        <details
+                          data-testid={`affected-code-weaker-${candidate.id}`}
+                          className="mt-2 text-xs"
+                        >
+                          <summary className="cursor-pointer text-muted-foreground">
+                            {weaker.length} weaker match
+                            {weaker.length === 1 ? "" : "es"} (confidence under{" "}
+                            {STRONG_LINK_CONFIDENCE.toFixed(2)})
+                          </summary>
+                          <ul className="mt-1.5 space-y-1.5">
+                            {weaker.map((symbol) => (
+                              <SymbolRow key={symbolKey(symbol)} symbol={symbol} />
+                            ))}
+                          </ul>
+                        </details>
+                      ) : null}
+                    </>
                   )}
                 </div>
               ) : null}

@@ -116,7 +116,11 @@ export type MatchQuality = (typeof MATCH_QUALITIES)[number];
  * coherence). The `filePath` is what makes that coherence check possible.
  */
 export interface MatchQualitySeed {
-  /** Top-normalized seed confidence in [0,1] (see the type doc above). */
+  /**
+   * Seed confidence in [0,1]. Top-normalized on the default Impact Analysis
+   * path; absolute (#1097) through `mapRequirementToCode`.
+   * `deriveMatchQualityDetailed` normalizes to the top seed itself, so either works.
+   */
   confidence: number;
   /** File path of the matched symbol — feeds the coherence discriminator. */
   filePath: string;
@@ -272,7 +276,12 @@ export function deriveMatchQualityDetailed(seeds: readonly MatchQualitySeed[]): 
   if (seedCount === 0) return { quality: "weak", reason: "no-entity" };
 
   // A single seed stands out by definition; otherwise measure the top-vs-runner-up gap.
-  const spread = seedCount === 1 ? Infinity : valid[0].confidence - valid[1].confidence;
+  // #1097 — a mapper may now report ABSOLUTE confidences (top seed well under
+  // 1.0, on lexical steps). The thresholds are tuned to top-normalized seeds, so
+  // the gap is measured on that scale whatever the input: an already
+  // normalized set is unchanged (its top is 1.0).
+  const top = valid[0].confidence;
+  const spread = seedCount === 1 ? Infinity : top > 0 ? (top - valid[1].confidence) / top : 0;
   const clearWinner = spread >= T.CLEAR_WINNER_SPREAD;
   if (clearWinner) return { quality: "strong", reason: null };
 
