@@ -105,6 +105,8 @@ describe.each(builders)("%s (#1351)", (_name, build) => {
     "The requirement -> design mapping must use x << 2 and a >> b.",
     `Unicode text: caf${cp(0xe9)}, ${cp(0x65e5, 0x672c)}, ${cp(0x2039)}quoted${cp(0x203a)}, ${cp(0xab)}quoted${cp(0xbb)}, ${cp(0x3008)}x${cp(0x3009)}.`,
     "Shift operators come in twos: << and >>, and requirements are numbered.",
+    "Return a Map<String, List<Requirement>> and map each requirement >> design.",
+    "A <<requirement>> block exported as <Requirement>...</Requirement>.",
   ])("leaves clean text byte-identical: %s", (text) => {
     expect(block(build(text))).toBe(`\n${text}\n`);
   });

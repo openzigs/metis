@@ -114,6 +114,19 @@ const EXTRA_ANGLES: ReadonlyArray<readonly [number, string]> = [
   [0x300b, ">"],
   [0x27ea, "<"],
   [0x27eb, ">"],
+  // PR #1362 review: ornament, tortoise-shell-like and nested angle brackets.
+  [0x2770, "<"],
+  [0x2771, ">"],
+  [0x276c, "<"],
+  [0x276d, ">"],
+  [0x29fc, "<"],
+  [0x29fd, ">"],
+  [0x2aa1, "<"],
+  [0x2aa2, ">"],
+  [0x2991, "<"],
+  [0x2992, ">"],
+  [0x2993, "<"],
+  [0x2994, ">"],
 ];
 
 /** Code point → its fence character. Generated confusables first; hand-added entries never override them. */
@@ -162,17 +175,22 @@ const FOLDED_FENCE =
  * #1351 — the traceability prompts' `<<<REQUIREMENT …>>> … <<<END REQUIREMENT>>>`
  * fence, in the same comparison copy. A fence-shaped span is
  *
- *   A. a run of at least TWO `<`, optional `/`, the label (`REQUIREMENT` or
+ *   A. a run of THREE or more `<`, optional `/`, the label (`REQUIREMENT` or
  *      `END REQUIREMENT`), then an optional run of `>` — `<<<END REQUIREMENT>>>`,
- *      the one-sided `<<<END REQUIREMENT`;
- *   A'. ONE `<` only before a closing form — `</REQUIREMENT>`, `<END REQUIREMENT>`
- *      — so `List<Requirement>`, `<Requirement>` and `latency < requirement`
- *      are left alone (adversarial panel on #1351);
- *   B. the label then a run of at least TWO `>` — `END REQUIREMENT>>>` (one `>`
- *      after the word is an arrow: `requirement -> design`);
+ *      `<<<REQUIREMENT>>>`, the one-sided `<<<END REQUIREMENT`;
+ *   A'. one or two `<`, optional `/`, then `END REQUIREMENT` — `<END REQUIREMENT>`,
+ *      `<<END REQUIREMENT>>`, `</END REQUIREMENT>`;
+ *   B. `END REQUIREMENT` then a run of two or more `>` — `END REQUIREMENT>>>`;
  *   C. any run of three or more `<` or `>` — so the fence's brackets cannot
  *      be forged around a label the patterns above do not know. Deliberately
  *      broad: a `>>>` REPL prompt in requirement text is redacted too.
+ *
+ * Only the TERMINATOR (`END REQUIREMENT`) is caught with fewer than three
+ * brackets, so ordinary code and modelling text is left alone (PR #1362
+ * review): `List<Requirement>`, `Map<String, List<Requirement>>`,
+ * `Func<Requirement>>`, `<Requirement>`, the ReqIF closing tag `</Requirement>`,
+ * the SysML stereotype `<<requirement>>`, `requirement >> design` and
+ * `latency < requirement`.
  *
  * Double-angle quotation marks (`«»`, `《》`, `⟪⟫`, `≪≫`) fold to ONE bracket,
  * so `«Requirement»` is ordinary text and `««END REQUIREMENT»»` still a fence.
@@ -182,14 +200,16 @@ const FOLDED_FENCE =
  * so a long run is not re-scanned from every position.
  */
 const FOLDED_REQUIREMENT_FENCE =
-  /(?<!<)<{2,}[\s_/-]*(?:E[\s_-]*N[\s_-]*D[\s_-]*)?R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T(?:[\s_-]*>+)?|(?<!<)<[\s_-]*(?:\/[\s_-]*(?:E[\s_-]*N[\s_-]*D[\s_-]*)?|E[\s_-]*N[\s_-]*D[\s_-]*)R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T(?:[\s_-]*>+)?|(?:E[\s_-]*N[\s_-]*D[\s_-]*)?R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T[\s_-]*>{2,}|(?<!<)<{3,}|(?<!>)>{3,}/g;
+  /(?<!<)<{3,}[\s_/-]*(?:E[\s_-]*N[\s_-]*D[\s_-]*)?R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T(?:[\s_-]*>+)?|(?<!<)<{1,2}[\s_/-]*E[\s_-]*N[\s_-]*D[\s_-]*R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T(?:[\s_-]*>+)?|E[\s_-]*N[\s_-]*D[\s_-]*R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T[\s_-]*>{2,}|(?<!<)<{3,}|(?<!>)>{3,}/g;
 
 /**
  * HTML character references, read as the character they encode. Bounded: at most
  * 7 decimal or 6 hex digits, so each `&` costs a constant amount of scanning.
+ * `&lt` / `&gt` also decode WITHOUT the semicolon, as HTML's legacy parsing does
+ * (`&lt&lt&ltEND REQUIREMENT`; PR #1362 review).
  */
 const CHAR_REF =
-  /&(?:#([0-9]{1,7})|#[xX]([0-9a-fA-F]{1,6})|(equals|hyphen|dash|lowbar|UnderBar|nbsp|period|middot|bsol|lt|gt|LT|GT|laquo|raquo|lsaquo|rsaquo));/y;
+  /&(?:#([0-9]{1,7});|#[xX]([0-9a-fA-F]{1,6});|(equals|hyphen|dash|lowbar|UnderBar|nbsp|period|middot|bsol|laquo|raquo|lsaquo|rsaquo);|(lt|gt|LT|GT);?)/y;
 const NAMED_REF: Readonly<Record<string, number>> = {
   equals: 0x3d,
   hyphen: 0x2010,
@@ -268,7 +288,7 @@ function charRefAt(raw: string, i: number): { cp: number; width: number } | null
       ? parseInt(m[1], 10)
       : m[2] !== undefined
         ? parseInt(m[2], 16)
-        : NAMED_REF[m[3]];
+        : NAMED_REF[m[3] ?? m[4]];
   if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return null;
   return { cp, width: m[0].length };
 }

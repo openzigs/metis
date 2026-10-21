@@ -131,7 +131,15 @@ rooms (cross-site WebSocket hijacking), so the handshake checks `Origin`
 `CORS_ORIGIN` is parsed as a comma list here too (it reached socket.io's `cors`
 as one string before). On the API, `METIS_TRUSTED_ORIGINS` is read by the socket
 check only; list there any origin the UI is served from that `CORS_ORIGIN`
-does not name.
+does not name. The server logs the trusted list once at startup ("Socket.IO
+cookie handshakes accept these origins").
+
+The own-host rule compares `Origin` with the raw `Host` header and never reads
+`X-Forwarded-Host`. **A reverse proxy that rewrites `Host`** — plain nginx's
+default `proxy_set_header Host $proxy_host` makes the API see `server:4000` —
+breaks that match, so a UI served from the API's public host is refused unless
+`CORS_ORIGIN` (or `METIS_TRUSTED_ORIGINS`) names the public UI origin. Set it,
+or forward the original host (`proxy_set_header Host $host`).
 
 **Pre-auth limiters (#1349).** The traceability (`traceabilityPreAuthRateLimiter`)
 and analysis-approval (`analysisApprovalPreAuthRateLimiter`) guards in front of
@@ -810,7 +818,8 @@ offset map (two `Int32Array`s) is only built when the text holds a match.
   `docs-gen/holistic-synthesizer.ts`, `=== END SOURCE EVIDENCE ===` in
   `docs-gen/grounding/faithfulness-judge.ts` and `=== END QUESTION ===` /
   `=== END ANSWER ===`-style fences in `rag/model-ragas-judge.ts` insert their
-  text as-is (#1360).
+  text as-is, and an impact run-summary title can still forge an item line
+  inside `<<<IMPACTED ITEMS>>>` with a quote and a newline (#1360).
 
 ### 13.3 The requirement fence (#1351)
 
@@ -821,15 +830,25 @@ The traceability prompts (`traceability/requirement-code-mapping.ts`,
 `impact-summarizer.ts`) wrap requirement text in
 `<<<REQUIREMENT …>>> … <<<END REQUIREMENT>>>`. Requirement text goes through
 `scrubRequirementFenceLookalikes`: the same fold as 13.1 (the confusables table
-now also carries `<`, `>` and `Q`; guillemets, CJK and mathematical angle
-brackets and `&lt;`/`&gt;`/`&laquo;`… references fold to ONE bracket each), with
-its own pattern. It redacts the `REQUIREMENT` or `END REQUIREMENT` label after
-two or more `<` (one side is enough), a closing form after a single `<`
-(`</REQUIREMENT>`, `<END REQUIREMENT>`), the label followed by two or more `>`,
-and **any run of three or more `<` or `>`** whatever it surrounds — which also
-covers the run summary's `<<<IMPACTED ITEMS>>> … <<<END ITEMS>>>` titles. That
-last rule is deliberately broad: a Python `>>>` prompt quoted in a requirement
-is redacted too. The bare word "requirement", `List<Requirement>`,
-`«Requirement»`, `latency < requirement`, an arrow (`requirement -> design`) and
-shift operators (`<<`, `>>`) are left alone, and text with nothing fence-shaped
-is returned as the same string.
+now also carries `<`, `>` and `Q`; guillemets, CJK, mathematical, ornament and
+dotted angle brackets and `&lt;`/`&gt;`/`&laquo;`… references — `&lt`/`&gt`
+also without the semicolon — fold to ONE bracket each), with its own pattern.
+It redacts:
+
+- `REQUIREMENT` or `END REQUIREMENT` after **three** or more `<` (one side is
+  enough: `<<<END REQUIREMENT`, `<<<REQUIREMENT>>>`);
+- the terminator `END REQUIREMENT` after one or two `<`, with an optional `/`
+  (`<END REQUIREMENT>`, `<<END REQUIREMENT>>`, `</END REQUIREMENT>`);
+- `END REQUIREMENT` followed by two or more `>`;
+- **any run of three or more `<` or `>`** whatever it surrounds — which also
+  covers the run summary's `<<<IMPACTED ITEMS>>> … <<<END ITEMS>>>` titles.
+  Deliberately broad: a Python `>>>` prompt quoted in a requirement is
+  redacted too.
+
+Left alone, because fewer than three brackets only ever count around the
+terminator (PR #1362 review): the bare word "requirement", generics
+(`List<Requirement>`, `Map<String, List<Requirement>>`, `Func<Requirement>>`),
+XML/ReqIF elements (`<Requirement>…</Requirement>`), the SysML stereotype
+`<<requirement>>`, `«Requirement»`, `latency < requirement`,
+`requirement >> design`, `requirement -> design` and shift operators. Text
+with nothing fence-shaped is returned as the same string.
