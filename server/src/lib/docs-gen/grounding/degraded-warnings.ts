@@ -10,6 +10,7 @@
  * as a clean `ready`. Warnings are persisted (JSON) and surfaced in the UI.
  */
 import { schemaComparisonWords, type SchemaInventory } from "../schema-inventory.js";
+import { describeOutputBudget, type OutputTokenBudget } from "../output-caps.js";
 
 /** What kind of degradation occurred. */
 export type DocWarningKind =
@@ -907,14 +908,19 @@ export function phase1ChunksFailedWarning(
 export function sectionTruncatedWarning(
   section: string,
   detail: string,
-  maxTokens?: number,
+  maxTokens?: number | OutputTokenBudget,
   configKey = "DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS",
 ): DocWarning {
+  // #1132 — with the budget's parts, the answer budget (the setting) and the
+  // reasoning allowance are named apart, so "49,152" is not read as the setting.
   const capNote =
     typeof maxTokens === "number"
       ? ` The output cap in force was ${maxTokens} tokens — raise ` +
         `${configKey} (or narrow the section) and regenerate.`
-      : ` Raise ${configKey} (or narrow the section) and regenerate.`;
+      : maxTokens
+        ? ` The output cap in force was ${describeOutputBudget(maxTokens)} — raise ` +
+          `${configKey} (the answer budget) or narrow the section, and regenerate.`
+        : ` Raise ${configKey} (or narrow the section) and regenerate.`;
   return {
     kind: "section-truncated",
     section,
@@ -960,8 +966,13 @@ export function batchTruncatedWarning(
     /** One entry per batch, each listing its modules. */
     runaway: readonly (readonly string[])[];
   },
-  maxTokens: number,
+  maxTokens: number | OutputTokenBudget,
 ): DocWarning {
+  // #1132 — the answer budget and the reasoning allowance, named apart.
+  const cap =
+    typeof maxTokens === "number"
+      ? `(${maxTokens} tokens)`
+      : `of ${describeOutputBudget(maxTokens)}`;
   const parts: string[] = [];
   if (cutOff.singleModules.length > 0) {
     const one = cutOff.singleModules.length === 1;
@@ -991,9 +1002,9 @@ export function batchTruncatedWarning(
     kind: "section-truncated",
     section,
     message:
-      `Section "${section}" is incomplete: the output-token cap (${maxTokens} tokens) CUT OFF ` +
+      `Section "${section}" is incomplete: the output-token cap ${cap} CUT OFF ` +
       `the part written from specific modules — ${parts.join("; ")}. Raise ` +
-      `DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS and regenerate.`,
+      `DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS${typeof maxTokens === "number" ? "" : " (the answer budget)"} and regenerate.`,
     severity: "error",
   };
 }

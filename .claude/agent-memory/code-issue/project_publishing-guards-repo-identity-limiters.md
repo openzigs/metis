@@ -45,3 +45,7 @@ Two checks read `PublishBatch.targetOwner`/`targetRepo`: `namesRepository` (case
 - Adding any prisma call to `generateDrafts` breaks hand-written mocks OUTSIDE `tests/publishing-*` too (`clarify-answer-reaches-published-draft.test.ts` lacked `issueDraft.findMany`). Grep `issueDraft: {` in every test that calls `generateDrafts`.
 - Repo/host identity guards in the publisher (`apiBaseKey` vs `targetBaseUrl`) ship untested because every fixture uses public GitHub with a null base URL. Delete each guard as a mutation, and require a GHES-vs-github.com fixture.
 - No code path sets `IssueDraft.status` to `'publishing'` (only read filters do), so a guard relying on "not publishing" to exclude an in-flight batch is a no-op.
+
+**From #1308 and its reviews (2026-10-21).**
+- `PublishedIssue` holds one row per (batch, draft, destination), so one remote issue can have several rows. Any `findFirst` by `issueId` or `draftId` that reads `row.batch.*` (e.g. `reconcile-service`) must order by `publishedAt desc, id desc`, and the dedup-skip path must make the newest row's claim true.
+- The Jira publish leg has no dedup (`dedupHash` null, its rows never consulted), so a "prevents a duplicate on retry" claim about Jira is false.

@@ -107,8 +107,12 @@ import {
   resolveClaimMaxOutputTokens,
   resolveFactsMaxOutputTokens,
   resolveSectionMaxOutputTokens,
+  resolveSectionOutputBudget,
+  describeOutputBudget,
   servedModelThinksByDefault,
+  type OutputTokenBudget,
 } from "./output-caps.js";
+import { cutOffNote, trimCutOffSection } from "./cut-off-section.js";
 import {
   FACT_SLICES,
   MINED_RULES_ENTRY_CHAR_CAP,
@@ -320,6 +324,7 @@ import {
   planDocument,
   plannedOmissionNote,
   readTopicPlanSetting,
+  splitClosingNote,
   summarizeDocumentPlan,
   TOPIC_PLAN_KEY,
   TOPIC_PLAN_VERSION,
@@ -372,6 +377,12 @@ import {
   type FactSheet,
 } from "./canonical-facts.js";
 import { checkFactConsistency, factInconsistentWarning } from "./fact-consistency.js";
+import {
+  consistencyRecord,
+  topicPlanRecord,
+  type ConsistencyRecord,
+  type TopicPlanRecord,
+} from "./plan-provenance.js";
 
 const log = createChildLogger("docs-gen:holistic");
 
@@ -1783,6 +1794,8 @@ async function runHolisticSynthesis(
     regeneration,
     grounding: groundingRecord,
     dropRetries,
+    topicPlan,
+    consistency,
     resume,
   } = await synthesizeFinalDocument(
     facts,
@@ -1866,6 +1879,8 @@ async function runHolisticSynthesis(
     regeneration,
     ...(groundingRecord ? { grounding: groundingRecord } : {}),
     ...(dropRetries ? { dropRetries } : {}),
+    ...(topicPlan ? { topicPlan } : {}),
+    ...(consistency ? { consistency } : {}),
   });
   return {
     markdown: pathPrefixes ? withPathScopeBanner(markdown, pathPrefixes) : markdown,
@@ -4049,7 +4064,7 @@ ${plannedOmissionNote(plannedOut, {
           allowanceSpent: cutOff.filter((d) => d.keptWhole === "allowance").map(names),
           runaway: cutOff.filter((d) => d.keptWhole === "runaway").map(names),
         },
-        cutOff[0].result.maxTokens,
+        cutOff[0].result.budget ?? cutOff[0].result.maxTokens,
       ),
     );
   }
@@ -4299,6 +4314,10 @@ async function synthesizeFinalDocumentInRun(
     grounding?: ReturnType<typeof groundingPolicyRecord>;
     /** #1209 — present when the run stopped retrying dropped connections. */
     dropRetries?: DropRetriesRecord;
+    /** #1070 — the topic plan, on a planned document. */
+    topicPlan?: TopicPlanRecord;
+    /** #1070 — the consistency check, on a planned document. */
+    consistency?: ConsistencyRecord;
   }
 > {
   // #243 — best-effort per-section progress reporting; never breaks synthesis.
@@ -4369,6 +4388,34 @@ async function synthesizeFinalDocumentInRun(
     const fit = fitSectionToBudget(markdown, maxChars, [], renderedCitationLength);
     if (fit.trimmed) recordShortened(fit.markdown, fit.omittedTopics);
     return fit.markdown;
+  };
+  // #1132 — a reply the output cap cut off is first taken back to its last
+  // complete sub-section. The body is then fitted to the length cap, leaving
+  // room for the closing note, which goes on last so the fit cannot drop it:
+  // it says why the section is short and names every topic now absent (the
+  // sub-section cut mid-way, and any the fit left out).
+  const fitGeneratedSection = (generated: SectionGroupResult, maxChars: number): string => {
+    const drafted = generated.markdown.trim();
+    if (!generated.truncation.truncated) return fitToSectionCap(drafted, maxChars);
+    const cut = trimCutOffSection(drafted);
+    const eol = drafted.includes("\r\n") ? "\r\n" : "\n";
+    const room =
+      renderedCitationLength(cutOffNote(cut.omittedTopics, { shortenedToChars: maxChars })) + 2;
+    const fit = fitSectionToBudget(
+      cut.markdown,
+      Math.max(0, maxChars - room),
+      cut.omittedTopics,
+      renderedCitationLength,
+    );
+    // A fit that shortened the body closed it with its own note; this one replaces it.
+    const body = fit.trimmed ? splitClosingNote(fit.markdown).body : fit.markdown;
+    const note = cutOffNote(fit.omittedTopics, {
+      removed: cut.trimmed || fit.trimmed,
+      ...(fit.trimmed ? { shortenedToChars: maxChars } : {}),
+    });
+    const markdown = `${body.trimEnd()}${eol}${eol}${note}`;
+    recordShortened(markdown, fit.omittedTopics);
+    return markdown;
   };
   const selectedEvidenceById = new Map<string, GroundingSource>();
   // #737 review — one module can hold the same facts id in several sections (the
@@ -4460,7 +4507,7 @@ async function synthesizeFinalDocumentInRun(
     const checkpointed = checkpointSectionRecords(
       reuse.checkpoint,
       groups.map((group) => group.id),
-      sharedEscalationEnabled,
+      { sharedEscalationEnabled },
     );
     for (const [id, record] of checkpointed) {
       if (!previousRecords.has(id)) previousRecords.set(id, record);
@@ -4476,7 +4523,7 @@ async function synthesizeFinalDocumentInRun(
     ? checkpointSectionRecords(
         reuse.checkpoint,
         groups.map((group) => group.id),
-        false,
+        { sharedEscalationEnabled: false, keepCutOff: true },
       )
     : new Map<string, SectionSynthesisRecord>();
   // #782 — persist what is finished after every section: a 77-minute run that
@@ -4757,11 +4804,15 @@ async function synthesizeFinalDocumentInRun(
         (s) => s.sectionId === group.id,
       );
       const moduleBudgets = planning?.budgets.get(group.id);
+      const modulePriorities = planning?.priorities.get(group.id);
       const topicBudgets: SectionTopicBudgets | undefined =
         plannedSection && moduleBudgets
           ? {
               budgetChars: plannedSection.budgetChars,
               budgetOf: (module) => moduleBudgets.get(module) ?? null,
+              ...(modulePriorities
+                ? { priorityOf: (module: ModuleFacts) => modulePriorities.get(module) ?? 0 }
+                : {}),
             }
           : undefined;
       const plannedBatches =
@@ -4986,9 +5037,11 @@ async function synthesizeFinalDocumentInRun(
           //    length note in its prompt, which `prompts` below already hashes;
           //  - EVERY canonical fact the section is given — a batch may be given
           //    one past the forty this section's own prompt lists.
-          // Nothing here is derived from a fact the section was NOT given (the
-          // budget is planned from the modules, never from the sheet), so a
-          // changed fact rewrites the sections given it, and no others.
+          // Nothing here is derived from a fact the section was NOT given: the
+          // budget is planned from the modules and, since #1070's priority
+          // lift, from the facts THIS section owns, which it is always given
+          // (`factsGivenTo`) and so are hashed above. A changed fact rewrites
+          // the sections given it, and no others.
           ...(planning && plannedSection
             ? {
                 topicPlan: {
@@ -5167,8 +5220,9 @@ async function synthesizeFinalDocumentInRun(
         );
         keptTruncation = generated;
         // #741 — within the section cap before it is fact-checked: what is left
-        // out is neither checked nor paid for.
-        generated.markdown = fitToSectionCap(generated.markdown.trim(), sectionMaxChars);
+        // out is neither checked nor paid for. #1132 — a cut-off reply first
+        // loses the sub-section it was writing.
+        generated.markdown = fitGeneratedSection(generated, sectionMaxChars);
         // #273 — post-validate the freshly-synthesized section by ENTAILMENT:
         // decompose it into atomic claims, then judge each claim's support against
         // THIS section's grounding context (the judge sees source TEXT, not ids),
@@ -5318,7 +5372,7 @@ async function synthesizeFinalDocumentInRun(
               flowBlob,
               sectionAddendum,
             );
-            escMd.markdown = fitToSectionCap(escMd.markdown.trim(), sectionMaxChars);
+            escMd.markdown = fitGeneratedSection(escMd, sectionMaxChars);
             const escValidated = await validateSectionGrounding(
               group.label,
               escMd.markdown.trim(),
@@ -5473,13 +5527,22 @@ async function synthesizeFinalDocumentInRun(
         truncationWarning = sectionTruncatedWarning(
           group.label,
           describeTruncation(keptTruncation.truncation),
-          keptTruncation.maxTokens,
+          keptTruncation.budget ?? keptTruncation.maxTokens,
         );
+        // #1132 — the answer budget (the setting) and the reasoning allowance
+        // apart, so the total is not read as the setting.
         log.warn("Section group truncated by the output-token cap", {
           projectId,
           docType,
           group: group.id,
           maxTokens: keptTruncation.maxTokens,
+          ...(keptTruncation.budget
+            ? {
+                answerBudget: keptTruncation.budget.answer,
+                reasoningAllowance: keptTruncation.budget.reasoning,
+                outputCap: describeOutputBudget(keptTruncation.budget),
+              }
+            : {}),
           signals: keptTruncation.truncation.signals,
           finishReason: keptTruncation.truncation.reason,
         });
@@ -5774,6 +5837,7 @@ async function synthesizeFinalDocumentInRun(
   // the document: read as drafted, it could quote one the length fit had just
   // removed. The fit is a function of the sections and the caps, so every run
   // of the same sections still reports the same thing.
+  let consistencyResult: ConsistencyRecord | undefined;
   if (planning) {
     const consistency = checkFactConsistency(
       fittedSections.sections.map((markdown, i) => ({
@@ -5787,9 +5851,13 @@ async function synthesizeFinalDocumentInRun(
       projectId,
       docType,
       statements: consistency.statements,
+      compared: consistency.compared,
       findings: consistency.findings.length,
     });
     if (inconsistent) warnings.push(inconsistent);
+    // Recorded with its result either way: "no differences found" is an
+    // answer an analyst can read in the Provenance panel.
+    consistencyResult = consistencyRecord(consistency);
   }
   // #1360 — last, so heading matching above sees exactly what each group produced.
   // #737 — cited ids of admitted sources become document-scoped footnotes with
@@ -5808,6 +5876,15 @@ async function synthesizeFinalDocumentInRun(
     citedLines: footnoted.citedLines,
     ...(groundingRecord ? { grounding: groundingRecord } : {}),
     ...(dropRetries ? { dropRetries } : {}),
+    ...(planning
+      ? {
+          topicPlan: topicPlanRecord(
+            planning.plan,
+            (id) => groups.find((g) => g.id === id)?.label ?? id,
+          ),
+        }
+      : {}),
+    ...(consistencyResult ? { consistency: consistencyResult } : {}),
     ...(resume.reused.length + resume.stale.length > 0 ? { resume } : {}),
     ...(synthesisRecords.length === groups.length
       ? {
@@ -6653,6 +6730,8 @@ export interface SectionBatchPlan {
 export interface SectionTopicBudgets {
   budgetChars: number;
   budgetOf: (module: ModuleFacts) => number | null;
+  /** The module's topic priority (higher first); absent = relevance order. */
+  priorityOf?: (module: ModuleFacts) => number;
 }
 
 /**
@@ -6688,7 +6767,20 @@ export function planSectionBatches(
   // renders (PR #169 review).
   const readsFormulas = factSlicesFor(group).includes("formulas");
   const outputBudget = batchOutputBudgetChars(maxTokens);
-  for (const f of rankRelevantFacts(facts, group)) {
+  // #1070 — under a plan the modules are written in the plan's priority order,
+  // so the parts are too: what a length cap gives up last-resort at the
+  // section's tail is then the lowest-priority topics, not whichever modules
+  // the relevance score happened to rank last. A stable sort: without a
+  // priority (or with equal ones) the relevance order stands.
+  const ranked = rankRelevantFacts(facts, group);
+  const priorityOf = topicBudgets?.priorityOf;
+  const ordered = priorityOf
+    ? ranked
+        .map((f, i) => ({ f, i, p: priorityOf(f) }))
+        .sort((a, b) => b.p - a.p || a.i - b.i)
+        .map((x) => x.f)
+    : ranked;
+  for (const f of ordered) {
     const parts = factsModuleParts(f, group);
     const formulas = readsFormulas ? distinctFormulas([f]) : [];
     const minedCount = readsMinedRules(group) ? (f.minedRules?.length ?? 0) : 0;
@@ -6755,6 +6847,8 @@ export interface DocumentPlanning {
   sheet: FactSheet;
   /** Per batched section id, each module's planned characters (`null` = left out). */
   budgets: Map<string, Map<ModuleFacts, number | null>>;
+  /** Per batched section id, each module's topic priority (higher is written first). */
+  priorities: Map<string, Map<ModuleFacts, number>>;
   /**
    * The section that owns a fact in this document: the section its kind names,
    * when that section is written and the plan did not leave the fact's module
@@ -6831,6 +6925,8 @@ export function planDocumentTopics(input: {
    * is planned first, within `mainPlanBudget`; the appendix in the rest.
    */
   readerLayout?: boolean;
+  /** The least a kept topic is planned; default `MIN_TOPIC_CHARS` (`document-plan.ts`). */
+  minTopicChars?: number;
 }): DocumentPlanning {
   const { facts, groups } = input;
   const reader = input.readerLayout === true;
@@ -6841,8 +6937,11 @@ export function planDocumentTopics(input: {
   // document (the run-7 BRD's were 5.9k of 247k). It only shapes what the
   // sections are ASKED for: the fit at assembly measures the definitions
   // themselves, so room this over-estimates is used and a shortfall is cut.
-  // Nothing here reads the facts sheet — a section's budget must not move
-  // because a fact it was never given changed (see the reuse inputs).
+  // This room is computed from the modules alone, never from the facts sheet.
+  // The sheet is read below for one thing only: which modules hold a fact the
+  // section itself owns (the priority lift). A section is always given the
+  // facts it owns, so its budget never moves because of a fact it was not
+  // given (see the reuse inputs).
   const reservedChars = Math.min(
     Math.floor(input.documentMaxChars * FOOTNOTE_RESERVE_SHARE),
     facts.reduce((n, f) => n + f.modulePath.length + FOOTNOTE_DEFINITION_OVERHEAD, 0),
@@ -6900,6 +6999,24 @@ export function planDocumentTopics(input: {
       estimates.set(m.item, (estimates.get(m.item) ?? 0) + m.outputChars);
     }
     const ranked = [...estimates];
+    // #1070 (run 8) — a module that holds a canonical fact THIS section owns
+    // (a formula, a constant, an enumeration with a source line) is planned
+    // before every module that holds none, then by relevance. Relevance alone
+    // measures volume: run 8 cut "Feed Polling & Scheduling Rules" while five
+    // sub-sections of swipe arithmetic stayed. Replayed on run 8's inputs,
+    // `internal/model` (the scheduler formula) moves from 8th to 1st of 102 in
+    // Business Rules, 11th to 4th in Calculations, 6th to 1st in Data Model.
+    // Only facts this section owns, which it is given whatever its modules
+    // say, so a fact elsewhere on the sheet never moves this section's plan.
+    const holdsOwnedFact = new Set(
+      sheet.facts
+        .filter((fact) => fact.ownerSectionId === group.id)
+        .map((fact) => repositoryPathIdentity(fact.repository, fact.modulePath)),
+    );
+    const lift = (module: ModuleFacts): number =>
+      holdsOwnedFact.has(repositoryPathIdentity(module.repository, module.modulePath))
+        ? ranked.length
+        : 0;
     return {
       sectionId: group.id,
       label: group.label,
@@ -6918,7 +7035,7 @@ export function planDocumentTopics(input: {
         return {
           id,
           title: `${module.moduleName || module.modulePath || "(root)"} — ${group.label}`,
-          priority: ranked.length - rank,
+          priority: lift(module) + ranked.length - rank,
           estimatedChars,
         };
       }),
@@ -6929,6 +7046,7 @@ export function planDocumentTopics(input: {
     documentMaxChars: input.documentMaxChars,
     sectionMaxChars: input.sectionMaxChars,
     reservedChars,
+    ...(input.minTopicChars !== undefined ? { minTopicChars: input.minTopicChars } : {}),
     // #1175 — the main part first, within its own budget.
     // #1218 — what the main sections ask. #1270 — their targets, with the
     // approved requirements or without: the same at every budget.
@@ -6942,14 +7060,20 @@ export function planDocumentTopics(input: {
       : {}),
   });
   const budgets = new Map<string, Map<ModuleFacts, number | null>>();
+  const priorities = new Map<string, Map<ModuleFacts, number>>();
   /** Per section id, the modules the plan left out of it, by repository and path. */
   const leftOut = new Map<string, Set<string>>();
   for (const section of plan.sections) {
     if (section.kind !== "enumerative") continue;
     const byModule = new Map<ModuleFacts, number | null>();
-    for (const t of section.topics) byModule.set(topicModules.get(t.id)!, t.budgetChars);
+    const priorityOf = new Map<ModuleFacts, number>();
+    for (const t of section.topics) {
+      byModule.set(topicModules.get(t.id)!, t.budgetChars);
+      priorityOf.set(topicModules.get(t.id)!, t.priority);
+    }
     for (const t of section.dropped) byModule.set(topicModules.get(t.id)!, null);
     budgets.set(section.sectionId, byModule);
+    priorities.set(section.sectionId, priorityOf);
     leftOut.set(
       section.sectionId,
       new Set(
@@ -6968,6 +7092,7 @@ export function planDocumentTopics(input: {
     plan,
     sheet,
     budgets,
+    priorities,
     ownerOf: (fact) => {
       const label = labels.get(fact.ownerSectionId);
       if (label === undefined) return null;
@@ -7060,6 +7185,8 @@ export interface SectionGroupResult {
   markdown: string;
   truncation: TruncationDetection;
   maxTokens: number;
+  /** #1132 — `maxTokens` as its answer budget and reasoning allowance. */
+  budget?: OutputTokenBudget;
 }
 
 /** @internal Exported for the prompt-prefix tests (#1277). */
@@ -7387,7 +7514,12 @@ Output ONLY the corrected Markdown, starting with its first \`##\` heading. No p
     }
   }
 
-  return { markdown: content.trim(), truncation, maxTokens: draft.maxTokens };
+  return {
+    markdown: content.trim(),
+    truncation,
+    maxTokens: draft.maxTokens,
+    ...(draft.budget ? { budget: draft.budget } : {}),
+  };
 }
 
 /**
@@ -7401,6 +7533,8 @@ export interface SectionStreamResult {
   truncation: TruncationDetection;
   /** The OUTPUT cap that was in force, for the operator-facing warning. */
   maxTokens: number;
+  /** #1132 — `maxTokens` as its answer budget and reasoning allowance. */
+  budget?: OutputTokenBudget;
 }
 
 /**
@@ -7438,7 +7572,8 @@ async function streamSectionContent(
   let finishReason: string | undefined;
   // #1226 — configurable OUTPUT cap (was hardcoded 8192), clamped to the
   // model's known ceiling.
-  const maxTokens = resolveSectionMaxOutputTokens(provider.model);
+  const budget = resolveSectionOutputBudget(provider.model);
+  const { maxTokens } = budget;
   let firstChunk = true;
   let received = 0;
   let outputChars = 0;
@@ -7517,7 +7652,7 @@ async function streamSectionContent(
   // #1226 — strip the gateway's max-tokens placeholder BEFORE the text can
   // reach `generated_documents.content`, and report the verdict to the caller.
   const truncation = detectTruncation(chunks.join(""), finishReason);
-  return { text: truncation.text.trim(), truncation, maxTokens };
+  return { text: truncation.text.trim(), truncation, maxTokens, budget };
 }
 
 /**

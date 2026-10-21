@@ -23,7 +23,7 @@ vi.mock("../finops/index.js", async (importOriginal) => {
 
 import type { AIProvider, ChatChunk, ChatMessage } from "../ai/types.js";
 import { logger } from "../logger.js";
-import { MIN_TOPIC_CHARS, SINGLE_CALL_SECTION_CHARS } from "./document-plan.js";
+import { FLOOR_SHARE, MIN_TOPIC_CHARS, SINGLE_CALL_SECTION_CHARS } from "./document-plan.js";
 import type { PersistedMinedRule } from "./fact-slices.js";
 import type { FaithfulnessResult } from "./grounding/citation-validator.js";
 import { deriveDocStatus } from "./grounding/degraded-warnings.js";
@@ -95,6 +95,36 @@ const constant = (name: string, value: string): PersistedMinedRule => ({
   line: 12,
   context: null,
 });
+
+/**
+ * `count` modules where module `from` and each of `rivals` holds one
+ * enumeration value (owned by Data & Domain Model) that m00's rules and m01's
+ * workflows mention, so every one is on the facts sheet: `exportFormatName` in
+ * `from`, `rivalFormatA`, `rivalFormatB`, … in the rivals. Every holder is
+ * planned before every other module (#1070), so among the holders it is the
+ * relevance order that decides which one is left out.
+ */
+function withOwnedEnumerations(count: number, from: number, rivals: number[] = []): ModuleFacts[] {
+  const facts = project(count);
+  const name = (i: number): string => `m${String(i).padStart(2, "0")}`;
+  const rivalName = (k: number): string => `rivalFormat${String.fromCharCode(65 + k)}`;
+  rivals.forEach((i, k) => {
+    facts[i] = mod(name(i), 2 * count - i, {
+      minedRules: [constant(rivalName(k), `"r${k}"`)],
+    });
+  });
+  facts[from] = mod(name(from), 2 * count - from, {
+    minedRules: [constant("exportFormatName", '"ndjson"')],
+  });
+  const named = ["exportFormatName", ...rivals.map((_, k) => rivalName(k))]
+    .map((n) => `\`${n}\``)
+    .join(", ");
+  facts[0] = mod("m00", 2 * count, { rules: `- Exports are written as ${named}.` });
+  facts[1] = mod("m01", 2 * count - 1, {
+    workflows: `- The export job names its file after ${named}.`,
+  });
+  return facts;
+}
 
 /** `count` modules, larger first, so the relevance order is m00, m01, … */
 const project = (count: number): ModuleFacts[] =>
@@ -368,18 +398,9 @@ describe("planDocumentTopics", () => {
   });
 
   it("names the section that owns a fact only when that section can state it", () => {
-    // An enumeration value read from the LOWEST-ranked module of 60, mentioned
-    // by two other modules. Data & Domain Model owns enumerations.
-    const facts = (count: number): ModuleFacts[] => {
-      const all = project(count);
-      const last = count - 1;
-      all[last] = mod(`m${last}`, 2 * count - last, {
-        minedRules: [constant("exportFormatName", '"ndjson"')],
-      });
-      all[0] = mod("m00", 2 * count, { rules: "- Exports use `exportFormatName`." });
-      all[1] = mod("m01", 2 * count - 1, { workflows: "- The job writes `exportFormatName`." });
-      return all;
-    };
+    // An enumeration value read from the LOWEST-ranked module, mentioned by
+    // two other modules. Data & Domain Model owns enumerations.
+    const facts = (count: number): ModuleFacts[] => withOwnedEnumerations(count, count - 1);
     // Room for every module: the data model reads m05 and owns the fact.
     const roomy = plan(facts(6));
     const [fact] = roomy.sheet.facts;
@@ -388,11 +409,15 @@ describe("planDocumentTopics", () => {
     );
     expect(roomy.ownerOf(fact)).toEqual({ id: "data-model", label: label("data-model") });
     // A 30,000-character document cannot plan all 60 modules into the data
-    // model: m59 is left out, so no section can state the fact as its owner.
-    const tight = plan(facts(60), 30_000);
+    // model, nor all fifteen that hold a fact it owns: m59 is the lowest
+    // ranked of those and is left out, so no section can state the fact as
+    // its owner.
+    const rivals = Array.from({ length: 14 }, (_, k) => 45 + k);
+    const tight = plan(withOwnedEnumerations(60, 59, rivals), 30_000);
     const dataModel = tight.plan.sections.find((s) => s.sectionId === "data-model")!;
     expect(dataModel.dropped.map((t) => t.title)).toContain(`m59 — ${label("data-model")}`);
-    expect(tight.ownerOf(tight.sheet.facts[0])).toBeNull();
+    const exportFormat = tight.sheet.facts.find((f) => f.name === "exportFormatName")!;
+    expect(tight.ownerOf(exportFormat)).toBeNull();
     // Nor when the owning section is not part of the document at all.
     const withoutOwner = planDocumentTopics({
       facts: facts(6),
@@ -402,6 +427,40 @@ describe("planDocumentTopics", () => {
       documentMaxChars: 250_000,
     });
     expect(withoutOwner.ownerOf(withoutOwner.sheet.facts[0])).toBeNull();
+  });
+
+  it("plans a module holding a fact its section owns before every module that holds none", () => {
+    // m59 is the least relevant of 60 and holds the one enumeration value.
+    const tight = plan(withOwnedEnumerations(60, 59), 30_000);
+    const section = (id: string) => tight.plan.sections.find((s) => s.sectionId === id)!;
+    const title = (id: string): string => `m59 — ${label(id)}`;
+    // The data model owns enumerations: m59 is planned first there, and kept.
+    expect(section("data-model").dropped.length).toBeGreaterThan(0);
+    expect(section("data-model").topics[0].title).toBe(title("data-model"));
+    // Business rules owns constants, not this fact: m59 is ranked by relevance
+    // alone there, last, and is the first module left out.
+    expect(section("rules").dropped.map((t) => t.title)).toContain(title("rules"));
+    // And the batches are written in that order: m59 is in the first.
+    const moduleBudgets = tight.budgets.get("data-model")!;
+    const priorities = tight.priorities.get("data-model")!;
+    const group = GROUPS.find((g) => g.id === "data-model")!;
+    const batches = planSectionBatches(
+      withOwnedEnumerations(60, 59),
+      group,
+      100_000,
+      16_384,
+      60_000,
+      {
+        budgetChars: section("data-model").budgetChars,
+        budgetOf: (m) =>
+          [...moduleBudgets].find(([k]) => k.moduleName === m.moduleName)?.[1] ?? null,
+        priorityOf: (m) => [...priorities].find(([k]) => k.moduleName === m.moduleName)?.[1] ?? 0,
+      },
+    );
+    expect(batches.modules[0].item.moduleName).toBe("m59");
+    expect(batches.modules.slice(1).map((m) => m.item.moduleName)).toEqual(
+      [...batches.modules.slice(1)].map((m) => m.item.moduleName).sort(),
+    );
   });
 
   it("names a module at the repository root", () => {
@@ -826,14 +885,15 @@ describe("a document written under the plan", () => {
 
   it("leaves out the lowest-priority modules at planning time, never reads them, and lists them", async () => {
     // One fixture past the topic floor: 60 modules cannot each have
-    // MIN_TOPIC_CHARS of a section of a 30,000-character document.
+    // MIN_TOPIC_CHARS of a section of a 30,000-character document within
+    // the FLOOR_SHARE of it the floors may take.
     vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "30000");
     const facts = project(60);
     const provider = fakeModel();
     const result = await run(facts, provider);
     const read = new Set(callsFor(provider, RULES).flatMap((c) => c.modules));
     const sectionBudget = Math.floor((30_000 - 1_500) / GROUPS.length);
-    expect(read.size).toBe(Math.floor(sectionBudget / MIN_TOPIC_CHARS));
+    expect(read.size).toBe(Math.floor((sectionBudget * FLOOR_SHARE) / MIN_TOPIC_CHARS));
     // The modules kept are the highest ranked.
     expect([...read].sort()).toEqual(
       facts
@@ -1002,10 +1062,18 @@ describe("the canonical facts sheet in a planned document", () => {
 
   it("names no owner, and issues no 'do not re-derive', for a fact whose owner cannot state it", async () => {
     // 60 modules in a 30,000-character document: the data model cannot plan
-    // them all, and the module the fact is read from (the lowest ranked) is left out.
+    // them all, nor all fifteen modules that hold a fact it owns: the module the
+    // fact is read from (the lowest ranked of those) is left out.
     vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "30000");
     const provider = fakeModel();
-    const result = await run(withEnumeration(60, 59), provider);
+    const result = await run(
+      withOwnedEnumerations(
+        60,
+        59,
+        Array.from({ length: 14 }, (_, k) => 45 + k),
+      ),
+      provider,
+    );
     const entry = result.sections.find((s) => s.sectionLabel === label("data-model"))!;
     expect(entry.omittedTopics).toContain("m59 (not planned)");
     for (const call of callsFor(provider, label("data-model"))) {
@@ -1017,7 +1085,9 @@ describe("the canonical facts sheet in a planned document", () => {
     for (const call of told) {
       expect(FACT_LINE.exec(call.user)![1]).toBe("none");
       expect(call.user).toContain("A fact with NO owning section");
-      expect(call.user).not.toContain(`owner: ${label("data-model")}`);
+      // The rivals the data model reads are still its own; this fact is not.
+      const line = call.user.split("\n").find((l) => FACT_LINE.test(l))!;
+      expect(line).not.toContain(`owner: ${label("data-model")}`);
     }
   });
 
@@ -1289,6 +1359,73 @@ describe("the consistency check in a planned document", () => {
     vi.stubEnv("DOCS_GEN_TOPIC_PLAN", "off");
     const result = await run(facts(), fakeModel({ inject: disagree }));
     expect(result.warnings).toEqual([]);
+    // And nothing of a plan is recorded for provenance.
+    expect(result).not.toHaveProperty("topicPlan");
+    expect(result).not.toHaveProperty("consistency");
+  });
+
+  it("records the plan and the check for provenance, a clean check included (#1070)", async () => {
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "30000");
+    const result = await run(project(60), fakeModel());
+    // Nothing found: no note on the document, but the answer is recorded.
+    expect(result.warnings.some((w) => w.kind === "fact-inconsistent")).toBe(false);
+    expect(result.consistency).toEqual({
+      statements: expect.any(Number),
+      compared: expect.any(Number),
+      findingCount: 0,
+      findings: [],
+    });
+    const plan = result.topicPlan!;
+    expect(plan.sections.map((s) => s.sectionLabel)).toEqual(GROUPS.map((g) => g.label));
+    const rules = plan.sections.find((s) => s.sectionLabel === RULES)!;
+    expect(rules.kind).toBe("enumerative");
+    expect(rules.plannedTopics + rules.dropped.length).toBe(60);
+    // Left out at planning time, most important first: m59 is the last.
+    expect(rules.dropped.length).toBeGreaterThan(0);
+    expect(rules.dropped.at(-1)).toBe(`m59 — ${RULES}`);
+    expect(plan.budgetChars).toBe(
+      plan.unallocatedChars + plan.sections.reduce((n, s) => n + s.budgetChars, 0),
+    );
+    // The same topics are listed with the section's omissions.
+    const entry = result.sections.find((s) => s.sectionLabel === RULES)!;
+    expect(entry.omittedTopics).toContain("m59 (not planned)");
+  });
+
+  it("notes two sections that count one kind of thing differently (#1070, run 8)", async () => {
+    const provider = fakeModel({
+      inject: (call) =>
+        call.group === label("overview")
+          ? "Access is governed by five distinct authentication mechanisms. "
+          : call.group === label("integrations-and-glossary")
+            ? "It supports four independent authentication paths. "
+            : "",
+    });
+    const result = await run(facts(), provider);
+    const notes = result.warnings.filter((w) => w.kind === "fact-inconsistent");
+    expect(notes).toHaveLength(1);
+    expect(notes[0].message).toContain(
+      "The number of `authentication mechanisms` is given 2 different ways in 2 sections",
+    );
+    expect(result.consistency).toEqual(
+      expect.objectContaining({
+        findingCount: 1,
+        findings: [
+          expect.objectContaining({
+            kind: "count",
+            name: "authentication ways",
+            label: "authentication mechanisms",
+            statements: [
+              { section: label("overview"), value: "five distinct authentication mechanisms" },
+              {
+                section: label("integrations-and-glossary"),
+                value: "four independent authentication paths",
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(deriveDocStatus(result.warnings)).toBe("ready");
   });
 
   it("#1119 — quotes only statements that are in the document: not one the length fit removed", async () => {

@@ -10,6 +10,13 @@ import {
   CODE_IDENTIFIER_KINDS,
   type CodeIdentifierReport,
 } from "./main-part-language.js";
+import {
+  MAX_RECORDED_DROPPED_TOPICS,
+  MAX_RECORDED_FINDINGS,
+  MAX_RECORDED_TEXT_CHARS,
+  type ConsistencyRecord,
+  type TopicPlanRecord,
+} from "./plan-provenance.js";
 import type { RepositoryIdentity } from "./repository-identity.js";
 import type { DocsGenTuning, Phase2Router } from "./holistic-synthesizer.js";
 import { generationInputSnapshotSchema } from "./regeneration-plan.js";
@@ -129,6 +136,51 @@ const sectionManifestSchema = z
   })
   .strict();
 
+const recordedText = z.string().max(MAX_RECORDED_TEXT_CHARS);
+
+const topicPlanSchema = z
+  .object({
+    version: z.number().int().min(1),
+    budgetChars: z.number().int().min(0),
+    unallocatedChars: z.number().int().min(0),
+    sections: z.array(
+      z
+        .object({
+          sectionLabel: z.string().min(1),
+          kind: z.enum(["enumerative", "single"]),
+          budgetChars: z.number().int().min(0),
+          plannedTopics: z.number().int().min(0),
+          dropped: z.array(recordedText).max(MAX_RECORDED_DROPPED_TOPICS),
+          droppedNotListed: z.number().int().min(0),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+const consistencySchema = z
+  .object({
+    statements: z.number().int().min(0),
+    compared: z.number().int().min(0),
+    findingCount: z.number().int().min(0),
+    findings: z
+      .array(
+        z
+          .object({
+            kind: z.enum(["conflict", "restated", "endpoint", "count", "size"]),
+            name: recordedText,
+            label: recordedText.optional(),
+            sections: z.number().int().min(0),
+            forms: z.number().int().min(0),
+            statements: z.array(z.object({ section: recordedText, value: recordedText }).strict()),
+            source: z.object({ value: recordedText, location: recordedText }).strict().optional(),
+          })
+          .strict(),
+      )
+      .max(MAX_RECORDED_FINDINGS),
+  })
+  .strict();
+
 const provenanceManifestSchema = z
   .object({
     schemaVersion: z.literal(GENERATED_DOC_PROVENANCE_SCHEMA_VERSION),
@@ -244,6 +296,17 @@ const provenanceManifestSchema = z
         z.object({ mode: z.literal("unchanged"), changed: z.array(z.string()) }).strict(),
       ])
       .optional(),
+    /**
+     * #1070 — a planned document's topic plan: per section, what it was
+     * planned and the topics left out before anything was written, highest
+     * priority first. Absent = the document was not planned.
+     */
+    topicPlan: topicPlanSchema.optional(),
+    /**
+     * #1070 — the cross-section consistency check of a planned document,
+     * recorded whether or not it found anything. Absent = not run.
+     */
+    consistency: consistencySchema.optional(),
     historicalCitations: z
       .object({
         status: z.enum(["available", "unavailable", "unknown"]),
@@ -524,6 +587,10 @@ export function buildGeneratedDocVersionManifest(input: {
   grounding?: NonNullable<GeneratedDocVersionManifest["generation"]["grounding"]>;
   /** #1209 — the run stopped retrying dropped connections; omitted when it never did. */
   dropRetries?: NonNullable<GeneratedDocVersionManifest["generation"]["dropRetries"]>;
+  /** #1070 — the topic plan of a planned document. */
+  topicPlan?: TopicPlanRecord;
+  /** #1070 — the consistency check of a planned document. */
+  consistency?: ConsistencyRecord;
   sections: Array<{
     sectionLabel: string;
     sectionIndex: number;
@@ -627,6 +694,8 @@ export function buildGeneratedDocVersionManifest(input: {
     selectedEvidence: { primary },
     ...(input.sectionSynthesis ? { sectionSynthesis: input.sectionSynthesis } : {}),
     ...(input.regeneration ? { regeneration: input.regeneration } : {}),
+    ...(input.topicPlan ? { topicPlan: input.topicPlan } : {}),
+    ...(input.consistency ? { consistency: input.consistency } : {}),
     sections: input.sections.map((section) => ({
       sectionSlug: slugifySectionLabel(section.sectionLabel),
       sectionLabel: section.sectionLabel,

@@ -108,17 +108,31 @@ export const TOPIC_PLAN_KEY = "DOCS_GEN_TOPIC_PLAN";
  * Bumped when the allocation rule changes, so a section written under another
  * rule is not reused (the plan is part of each section's reuse inputs).
  */
-export const TOPIC_PLAN_VERSION = 1;
+export const TOPIC_PLAN_VERSION = 2;
 
 /**
- * The least a planned topic is given: about 25 words, one rule stated as a
- * sentence. A topic that cannot have this much is dropped at planning time
- * rather than asked for in a phrase. On the #706 run-7 inputs (102 modules, a
- * 41k section budget) the floors take 15k and the other 26k is shared in
- * proportion to the estimates, so the largest module is planned about twenty
- * times the smallest.
+ * The least a planned topic is given: about 35 words, a short paragraph.
+ *
+ * Measured (#1070, the #1074 Haiku A/B, replayed offline from its stored
+ * sections): a model that keeps to its plan wrote Key Workflows and Data Model
+ * at 1.00 and 1.02 of their budgets, 43,003 rendered characters over 100
+ * topics and 43,933 over 102: about 430 a topic ON AVERAGE. The floor is half
+ * that mean, and the floors may take at most {@link FLOOR_SHARE} of a
+ * section's budget, so a section plans no more topics than its budget gives
+ * that measured average, and the other half is still shared in proportion to
+ * the estimates: an important module is planned several times a minor one.
+ * (A floor AT the mean took the whole budget and planned every topic alike,
+ * PR #1316 review.) Under the old floor of 150 run 8's plan dropped nothing
+ * (102 topics in 43k per catalogue section) and every topic it lost was cut at
+ * a section's tail after writing.
  */
-export const MIN_TOPIC_CHARS = 150;
+export const MIN_TOPIC_CHARS = 215;
+
+/**
+ * The most of a section's budget its topics' floors may take. The rest is
+ * shared by estimate, which is what keeps budgets proportional to importance.
+ */
+export const FLOOR_SHARE = 0.5;
 
 /**
  * What a section written in ONE call asks of the document budget: about 4,000
@@ -257,24 +271,39 @@ export function waterFill(asks: readonly number[], total: number): number[] {
 /**
  * Share a section's `budget` among its topics. Every kept topic gets its floor
  * (its estimate when that is smaller); what is left is divided in proportion to
- * what each topic still needs, and no topic gets more than its estimate. When
- * the floors alone exceed the budget, the lowest-priority topics are dropped
- * until they fit. The kept budgets sum to at most `budget`, and to exactly
- * `budget` whenever the kept topics' estimates reach it.
+ * what each topic still needs, and no topic gets more than its estimate.
+ *
+ * Nothing is dropped while the kept topics' whole estimates fit the budget.
+ * Only when they do not, AND their floors would take more than
+ * {@link FLOOR_SHARE} of it, are the lowest-priority topics dropped, one at a
+ * time, until either holds (the highest-priority topic is kept whenever its
+ * floor fits the budget at all). The kept budgets sum to at most `budget`, and
+ * to exactly `budget` whenever the kept topics' estimates reach it.
  */
 export function allocateTopicBudgets(
   topics: readonly TopicCandidate[],
   budget: number,
+  minTopicChars: number = MIN_TOPIC_CHARS,
 ): { kept: Array<TopicCandidate & { budgetChars: number }>; dropped: TopicCandidate[] } {
   const ranked = byPriority(topics);
   const need = (t: TopicCandidate): number => Math.max(1, Math.floor(t.estimatedChars));
-  const floorOf = (t: TopicCandidate): number => Math.min(need(t), MIN_TOPIC_CHARS);
+  const floorOf = (t: TopicCandidate): number => Math.min(need(t), Math.max(1, minTopicChars));
   const room = Math.max(0, Math.floor(budget));
+  const floorRoom = Math.floor(room * FLOOR_SHARE);
   let keptCount = ranked.length;
   let floors = ranked.reduce((n, t) => n + floorOf(t), 0);
-  while (keptCount > 0 && floors > room) {
+  let needs = ranked.reduce((n, t) => n + need(t), 0);
+  // A section with room for every topic's estimate drops nothing, however
+  // much of the budget the floors would take (PR #1316 cycle-2 review).
+  while (
+    keptCount > 0 &&
+    needs > room &&
+    floors > floorRoom &&
+    !(keptCount === 1 && floors <= room)
+  ) {
     keptCount -= 1;
     floors -= floorOf(ranked[keptCount]);
+    needs -= need(ranked[keptCount]);
   }
   const kept = ranked.slice(0, keptCount);
   const dropped = ranked.slice(keptCount);
@@ -326,6 +355,8 @@ export function planDocument(input: {
    * are planned first, in that budget alone; the others in what is left.
    */
   mainBudgetChars?: number;
+  /** The least a kept topic is planned (default {@link MIN_TOPIC_CHARS}). */
+  minTopicChars?: number;
 }): DocumentPlan {
   const budgetChars = Math.max(
     0,
@@ -357,7 +388,7 @@ export function planDocument(input: {
     budgetChars,
   );
   const planned: PlannedSection[] = demands.map((d, i) => {
-    const { kept, dropped } = allocateTopicBudgets(d.topics, shares[i]);
+    const { kept, dropped } = allocateTopicBudgets(d.topics, shares[i], input.minTopicChars);
     const sectionId = d.section.sectionId;
     return {
       sectionId,
@@ -389,6 +420,7 @@ function planInParts(
     sections: readonly SectionDemand[];
     sectionMaxChars: number;
     mainBudgetChars: number;
+    minTopicChars?: number;
   },
   budgetChars: number,
 ): DocumentPlan {
@@ -398,12 +430,14 @@ function planInParts(
     sections: input.sections.filter((_, i) => isMain[i]),
     documentMaxChars: mainBudget,
     sectionMaxChars: input.sectionMaxChars,
+    minTopicChars: input.minTopicChars,
   });
   const mainGiven = main.sections.reduce((n, s) => n + s.budgetChars, 0);
   const appendix = planDocument({
     sections: input.sections.filter((_, i) => !isMain[i]),
     documentMaxChars: budgetChars - mainGiven,
     sectionMaxChars: input.sectionMaxChars,
+    minTopicChars: input.minTopicChars,
   });
   let m = 0;
   let a = 0;

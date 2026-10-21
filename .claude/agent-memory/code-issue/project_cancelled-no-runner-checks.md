@@ -10,3 +10,5 @@ On the 2026-10-05 cloud-session PRs (#877–#902), 9 of 13 red non-CLA checks in
 **Why:** hosted-runner queue starvation; the job hits its timeout in the queue.
 
 **How to apply:** check `gh run view <id> --json jobs` steps length before reading logs, then re-run (or `gh pr update-branch`). Treat a never-run `postgres-adapter` as unproven, not green — a PR's own Postgres test may never have executed.
+
+**The other zero-step state:** a job that reads `in_progress` with no steps for hours cannot be cancelled or re-run through any API; `gh pr update-branch <pr>` starts a fresh run. See [[stuck-ci-run-update-branch]] (PR #619).

@@ -22,3 +22,5 @@ Measured across PR heads, 2026-10-16/17 (#1217 re-review, then every PR from #12
 - `generative-e2e` failing with the Chat page `h1` hidden and "disk full" in the runner log is infrastructure: confirm `main` passed at the base, then re-run once (#1260).
 
 - **22 checks, not 21, when `real-model-worker` runs** (2026-10-20). It is path-filtered (`embed-real-model-nightly.yml:23-37`: `pnpm-lock.yaml`, `pnpm-workspace.yaml`, server/embeddings package manifests, the embed sources and tests), so any lockfile or workspace change adds it. `Check CLA signature` reads `skipping` on owner PRs (`cla.yml:68-73`, author `mgcronin`).
+
+- **A PR whose base moved with conflicts gets zero `pull_request` workflow runs** (#1308): `gh pr checks` then shows only the CLA check, which reads like a queue. Check `gh pr view <pr> --json mergeable` before waiting on CI.

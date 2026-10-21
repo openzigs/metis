@@ -44,13 +44,12 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Test harness false greens](project_test-harness-false-greens.md) — pipe-to-tail exit codes; helper-only tests; fireEvent file input
 - [beforeEach return is cleanup](project_vitest-beforeeach-return-is-cleanup.md) — block body; a returned mock runs after every test (#685)
 - [Socket handler patterns](project_socket-handler-patterns.md) — payload?.x, onClientEvent/onRoomJoin, {message, room} refusals
-- [Stuck CI run](project_stuck-ci-run-update-branch.md) — no steps for hours: gh pr update-branch, re-gate the new SHA
 - [Citation shapes](project_citation-shapes.md) — doc filename vs code filePath/symbolId; resolve code citations via CodeSymbol
 - [Docs-gen model-written keys](project_docs-gen-model-keys.md) — S1/[^storage] tables were model output after [facts:] stripping
 - [Access rule in fixtures](project_access-rule-in-fixtures.md) — socket/discussion tests encode access in mocks; update together
 - [Compaction truncates evidence](project_compaction-truncates-evidence.md) — 600-char tool-result cut; check before blaming tools
 - [e2e replay provider is not offline](project_e2e-replay-provider-not-offline.md) — detect stub by key "offline-stub" too (#900)
-- [cancelled no-runner checks](project_cancelled-no-runner-checks.md) — 0 steps + log 404 = queue cancel; re-run it
+- [0-step checks](project_cancelled-no-runner-checks.md) — log 404 = queue cancel, re-run; stuck for hours: update-branch
 - [seeded mappings symbol-bound](project_seeded-mappings-are-symbol-bound.md) — fixtures must match seeder shapes (#897)
 - [structured req ids repeat](project_structured-req-ids-repeat.md) — REQ-001 ids repeat across re-runs; scope promoted ids to run (#902)
 - [simple-git 4 env guard](project_simple-git-4-env-guard.md) — GIT_* env needs allowEnvironment; use real-git test (#906)
@@ -130,3 +129,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Product repo access traps](project_product-repo-access-traps.md) — new-writes-only fixes; echoing PATCH; per-product docs (#1258)
 - [Run claims + citation salvage](project_analysis-run-claims-and-citation-salvage.md) — releaseClaim; failed finalize; per-finding marks
 - [AI metering + prompt caching](project_ai-usage-metering-and-caching.md) — retried attempts once; gateway false; cache floors
+- [Footnote line pins](project_footnote-line-pins.md) — assembly only; facts ids repeat per section; real mined-rule fixtures (#1305)
+- [matchMedia effect misses a switch](project_matchmedia-effect-misses-switch.md) — subscribe once; read .matches (#1307)
+- [Server typecheck OOM = capacity](project_server-typecheck-memory-cap.md) — 12,288 MB cap; compare Types counts (#1308)

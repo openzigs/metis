@@ -11,9 +11,12 @@ import {
   MAX_LISTED_STATEMENTS,
   checkFactConsistency,
   comparableValue,
+  endpointKey,
   factInconsistentWarning,
   normalizeForm,
   scanFactStatements,
+  scanProseStatements,
+  singularWord,
 } from "./fact-consistency.js";
 import { affectsDocStatus, deriveDocStatus } from "./grounding/degraded-warnings.js";
 
@@ -516,8 +519,9 @@ describe("checkFactConsistency", () => {
     expect(checkFactConsistency([{ label: "A", markdown: "Plain prose." }])).toEqual({
       findings: [],
       statements: 0,
+      compared: 0,
     });
-    expect(checkFactConsistency([])).toEqual({ findings: [], statements: 0 });
+    expect(checkFactConsistency([])).toEqual({ findings: [], statements: 0, compared: 0 });
   });
 });
 
@@ -541,7 +545,7 @@ describe("the fact-inconsistent note", () => {
   });
 
   it("is absent when the check found nothing", () => {
-    expect(factInconsistentWarning({ findings: [], statements: 12 })).toBeNull();
+    expect(factInconsistentWarning({ findings: [], statements: 12, compared: 0 })).toBeNull();
   });
 
   it("counts both kinds, and says a single conflict in the singular", () => {
@@ -604,5 +608,264 @@ describe("the fact-inconsistent note", () => {
     const quoted = warning.message.match(/`[^`]*`/g) ?? [];
     for (const q of quoted) expect(q.length).toBeLessThanOrEqual(82);
     expect(warning.message).toContain("`\"a'b");
+  });
+});
+
+/**
+ * #1070 (run 8) — the sheet found nothing in a BRD that contradicted itself in
+ * prose. These are the run's own lines (trimmed), from its stored sections.
+ */
+const RUN8_AUTH = [
+  {
+    label: "Overview & Domain",
+    markdown:
+      "Access is governed by **five distinct authentication mechanisms**, each of which resolves to the same underlying `User` record.",
+  },
+  {
+    label: "Core Business Capabilities",
+    markdown:
+      "The product supports four independent authentication paths — local passwords, OAuth2/OpenID Connect, WebAuthn/passkeys, and reverse-proxy header auth — plus API keys for machine access.",
+  },
+];
+const RUN8_SAVE = {
+  label: "Integrations & Glossary",
+  markdown: [
+    "| Entry mutation | `PUT /v1/entries/{id}`, `PUT /v1/entries/{id}/star`, `POST /v1/entries/{id}/save`, `GET /v1/entries/{id}/fetch-content` |",
+    "",
+    "Eligibility is determined by `HasSaveEntry(userID)`; `PUT /v1/entries/{id}/save` returns **202 Accepted** on success.",
+  ].join("\n"),
+};
+
+describe("prose statements made in more than one way (#1070, run 8)", () => {
+  it("finds run 8's five authentication mechanisms against its four authentication paths", () => {
+    const report = checkFactConsistency(RUN8_AUTH);
+    expect(report.findings).toEqual([
+      {
+        kind: "count",
+        name: "authentication ways",
+        label: "authentication mechanisms",
+        statements: [
+          {
+            section: "Overview & Domain",
+            line: 1,
+            value: "five distinct authentication mechanisms",
+          },
+          {
+            section: "Core Business Capabilities",
+            line: 1,
+            value: "four independent authentication paths",
+          },
+        ],
+        sections: 2,
+        forms: 2,
+      },
+    ]);
+    expect(factInconsistentWarning(report)!.message).toContain(
+      "Consistency check: 1 statement made in more than one way. The number of `authentication mechanisms` is given 2 different ways in 2 sections (`five distinct authentication mechanisms` in Overview & Domain; `four independent authentication paths` in Core Business Capabilities).",
+    );
+  });
+
+  it("finds run 8's save endpoint given as POST in a table and PUT two lines later", () => {
+    const report = checkFactConsistency([RUN8_SAVE]);
+    expect(report.findings).toEqual([
+      {
+        kind: "endpoint",
+        name: "/v1/entries/{}/save",
+        label: "/v1/entries/{}/save",
+        statements: [
+          { section: "Integrations & Glossary", line: 1, value: "POST /v1/entries/{id}/save" },
+          { section: "Integrations & Glossary", line: 3, value: "PUT /v1/entries/{id}/save" },
+        ],
+        sections: 1,
+        forms: 2,
+      },
+    ]);
+    expect(factInconsistentWarning(report)!.message).toContain("in one section");
+  });
+
+  it("reads an endpoint across sections, and not a read beside a write or a line naming both", () => {
+    const report = checkFactConsistency([
+      { label: "A", markdown: "Create with `POST /v1/feeds/:feedID/refresh`." },
+      { label: "B", markdown: "Refresh with `PUT /v1/feeds/{id}/refresh/`." },
+      // A read and a write of one path are two operations.
+      { label: "C", markdown: "`GET /v1/users/{id}` reads it." },
+      { label: "D", markdown: "`PUT /v1/users/{id}` updates it." },
+      // One line that names both methods describes both.
+      {
+        label: "E",
+        markdown: "It takes `POST /v1/categories` or `PUT /v1/categories`.",
+      },
+      { label: "F", markdown: "`POST /v1/categories` creates one." },
+    ]);
+    expect(report.findings.map((f) => [f.kind, f.name, f.forms])).toEqual([
+      ["endpoint", "/v1/feeds/{}/refresh", 2],
+    ]);
+  });
+
+  it("reads one count of a kind once, and not a count that is not of a qualified kind", () => {
+    const same = checkFactConsistency([
+      { label: "A", markdown: "There are three entry states: unread, read, removed." },
+      { label: "B", markdown: "Entries move between 3 entry statuses." },
+    ]);
+    expect(same.findings).toEqual([]);
+    const differ = checkFactConsistency([
+      { label: "A", markdown: "There are three entry states: unread, read, removed." },
+      { label: "B", markdown: "Entries have two entry statuses, unread and read." },
+    ]);
+    expect(differ.findings.map((f) => [f.kind, f.name])).toEqual([["count", "entry states"]]);
+    // Filler alone qualifies nothing, and "of the" / "to" make another phrase.
+    const unqualified = checkFactConsistency([
+      { label: "A", markdown: "Five distinct mechanisms. Two of the types. Three ways to log in." },
+      { label: "B", markdown: "Four distinct mechanisms. Six of the types. Two ways to log in." },
+    ]);
+    expect(unqualified.findings).toEqual([]);
+  });
+
+  it("does not compare one section with itself, nor read fenced code or a math block", () => {
+    const report = checkFactConsistency([
+      {
+        label: "A",
+        markdown: "Two retry modes for feeds, and later three retry modes for bookmarks.",
+      },
+      { label: "B", markdown: "```\nfive retry modes\n```\n$$\nfour retry modes\n$$" },
+    ]);
+    expect(report.findings).toEqual([]);
+    expect(scanProseStatements("```\nfive retry modes\n```")).toEqual([]);
+    expect(scanProseStatements("$$\nfour retry modes\n$$\nsix retry modes")).toEqual([
+      expect.objectContaining({ kind: "count", value: "6", line: 4 }),
+    ]);
+  });
+
+  it("compares a size only in one unit, and only of a qualified thing", () => {
+    const report = checkFactConsistency([
+      {
+        label: "A",
+        markdown:
+          "Each user gets a 64-character API token; the verifier is a 32-character hex string.",
+      },
+      {
+        label: "B",
+        markdown:
+          "API keys are 32 byte API tokens. A 32-character API token is shown once. State is a 24-character hex string.",
+      },
+    ]);
+    // 64 against 32 characters is a finding; 32 bytes is another unit; a
+    // "hex string" says what it is no more than "a string" does.
+    expect(report.findings).toEqual([
+      {
+        kind: "size",
+        name: "api token in characters",
+        label: "API token (characters)",
+        statements: [
+          { section: "A", line: 1, value: "64-character API token" },
+          { section: "B", line: 1, value: "32-character API token" },
+        ],
+        sections: 2,
+        forms: 2,
+      },
+    ]);
+    expect(factInconsistentWarning(report)!.message).toContain(
+      "The size of `API token (characters)` is given 2 different ways in 2 sections",
+    );
+  });
+
+  it("counts prose statements with the others, and lists them after the sheet's findings", () => {
+    const report = checkFactConsistency(
+      [...RUN8_AUTH, { label: "API", markdown: "At most `MaxEntryLimit = 100` entries." }],
+      { facts: [fact({})] },
+    );
+    expect(report.statements).toBe(3);
+    expect(report.findings.map((f) => f.kind)).toEqual(["conflict", "count"]);
+    expect(factInconsistentWarning(report)!.message).toContain(
+      "Consistency check: 1 value stated differently from the source and 1 statement made in more than one way.",
+    );
+  });
+
+  it("does not read unrelated nouns, a decimal or PUT beside PATCH as a contradiction (PR #1316 review)", () => {
+    const report = checkFactConsistency([
+      {
+        label: "A",
+        markdown: [
+          "It accepts two file paths and two payment methods.",
+          "Version 1.5 release types are listed below.",
+          "| Update | `PUT /v1/users/{id}` |",
+        ].join("\n"),
+      },
+      {
+        label: "B",
+        markdown: [
+          "It accepts three file types and three payment options.",
+          "There are 3 release types.",
+          "Partial updates use `PATCH /v1/users/{id}`.",
+        ].join("\n"),
+      },
+    ]);
+    expect(report.findings).toEqual([]);
+    // A count of a different decimal is still not read; a plain one is.
+    expect(scanProseStatements("v2 release types; 1,5 release types; 4 release types")).toEqual([
+      expect.objectContaining({ kind: "count", value: "4" }),
+    ]);
+    // POST against PUT or PATCH still is (run 8).
+    const post = checkFactConsistency([
+      { label: "A", markdown: "`PATCH /v1/users/{id}` updates." },
+      { label: "B", markdown: "`POST /v1/users/{id}` updates." },
+    ]);
+    expect(post.findings.map((f) => f.kind)).toEqual(["endpoint"]);
+  });
+
+  it("reads a non-breaking hyphen as a hyphen", () => {
+    const report = checkFactConsistency([
+      { label: "A", markdown: "A 64\u2011character API token." },
+      { label: "B", markdown: "A 32\u2010character API token." },
+    ]);
+    expect(report.findings.map((f) => [f.kind, f.label])).toEqual([
+      ["size", "API token (characters)"],
+    ]);
+  });
+
+  it("counts as compared only the statements that had something to compare with", () => {
+    const report = checkFactConsistency(
+      [
+        {
+          label: "A",
+          markdown:
+            "`GET /v1/me` reads. Five authentication mechanisms. Two retry modes. `MaxEntryLimit = 1000`.",
+        },
+        { label: "B", markdown: "Five authentication paths. `otherLimit = 7`." },
+      ],
+      { facts: [fact({})] },
+    );
+    // Read: the GET (as an endpoint, and as the expression its code span
+    // holds), two counts in A, one in B, two assignments.
+    expect(report.statements).toBe(7);
+    // Compared: the two authentication counts (A and B) and the sheet value.
+    expect(report.compared).toBe(3);
+    expect(report.findings).toEqual([]);
+  });
+
+  it("normalises a path and a word as the comparison needs", () => {
+    expect(endpointKey("/v1/feeds/{feedID}/entries/:entryID/")).toBe("/v1/feeds/{}/entries/{}");
+    expect(endpointKey("/v1/me.")).toBe("/v1/me");
+    expect(singularWord("entries")).toBe("entry");
+    expect(singularWord("statuses")).toBe("status");
+    expect(singularWord("hashes")).toBe("hash");
+    expect(singularWord("access")).toBe("access");
+    expect(singularWord("feeds")).toBe("feed");
+    expect(singularWord("ids")).toBe("ids");
+  });
+
+  it("reads prose in linear time, whatever repeats", () => {
+    for (const [label, unit] of [
+      ["count openers", "five "],
+      ["count phrases", "five authentication "],
+      ["size openers", "64-character "],
+      ["endpoint openers", "POST /"],
+      ["endpoint paths", "POST /v1/{id}/x "],
+    ] as const) {
+      expectLinearTime(`scanProseStatements: ${label}`, (size) => {
+        const text = unit.repeat(Math.ceil(size / unit.length));
+        return () => scanProseStatements(text);
+      });
+    }
   });
 });
