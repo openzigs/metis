@@ -97,8 +97,8 @@ describe("requirementsScopeWhere", () => {
         approvedOnly: true,
       }),
     ).toEqual({
+      // #1017 — no `deletedAt` filter: a pinned requirement deleted since stays in the review.
       projectId: "p1",
-      deletedAt: null,
       id: { in: ["r1", "r2"] },
       reviewItems: { some: { reviewRequestId: "rv", reviewRequest: { projectId: "p1" } } },
       reviewStatus: "approved",
@@ -243,6 +243,44 @@ describe("loadScopedRequirements for a review", () => {
     expect(sourceFingerprint).toBe(
       requirementsSourceFingerprint([req({ version: 0, title: "Export invoices", body: "" })]),
     );
+  });
+
+  it("keeps a pinned requirement deleted since, and says so", async () => {
+    const deletedAt = new Date("2026-10-15T00:00:00Z");
+    findMany.mockResolvedValue([
+      req({ id: "gone", title: "Gone", version: 1, deletedAt }),
+      req({ id: "gone-and-edited", title: "Edited", version: 2, deletedAt }),
+      req({ id: "kept", title: "Kept", version: 1 }),
+    ]);
+    itemFindMany.mockResolvedValue([
+      { requirementId: "gone", pinnedVersion: 1 },
+      { requirementId: "gone-and-edited", pinnedVersion: 1 },
+      { requirementId: "kept", pinnedVersion: 1 },
+    ]);
+    versionFindMany.mockResolvedValue([
+      versionRow("gone-and-edited", 2, change({ title: ["Before", "Edited"] })),
+    ]);
+
+    const { markdown } = await synthesizeRequirementsDocument(
+      "p1",
+      { reviewRequestId: "rv" },
+      "BRD",
+    );
+
+    expect(findMany.mock.calls[0]![0].where).not.toHaveProperty("deletedAt");
+    expect(markdown).toContain(
+      "### R1. Gone\n\n**Type:** feature · **Priority:** medium · **Review status:** approved · " +
+        "**Verdict:** implemented\n\n_Shown at version 1, the version the review pinned. " +
+        "It has since been deleted._",
+    );
+    expect(markdown).toContain(
+      "_Shown at version 1, the version the review pinned. It has changed since (now version 2). " +
+        "It has since been deleted._",
+    );
+    expect(markdown).toContain("### R2. Before");
+    // A requirement still as pinned carries no note.
+    const kept = markdown.slice(markdown.indexOf("### R3. Kept"));
+    expect(kept).not.toContain("_Shown at version");
   });
 
   it("skips the history read when every pin is current", async () => {

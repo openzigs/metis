@@ -185,10 +185,24 @@ export function mermaidInitScript(layout: MermaidLayout): string {
 // already blocked by the strict mermaid security level above, so the sandbox is
 // defense-in-depth here.
 export function chromeLaunchArgs(): string[] {
-  const base = ["--disable-dev-shm-usage"];
+  const base = ["--disable-dev-shm-usage", ...EXPORT_NETWORK_LOCKDOWN_ARGS];
   if (process.env.PDF_EXPORT_CHROME_SANDBOX === "true") return base;
   return ["--no-sandbox", "--disable-setuid-sandbox", ...base];
 }
+
+// #1017 (PR #1321 review) — the export browser has no network at all, at the
+// process level, under the page-level guards below. WebRTC escapes both of
+// them: ICE traffic is not a request interception sees, and CSP's
+// `connect-src` does not govern it, so a STUN (UDP) or TURN-over-TCP server
+// named in page script is reached either way (measured). Every connection is
+// sent through a proxy that does not exist, with loopback NOT bypassed (Chrome
+// bypasses it by default), and WebRTC may not use UDP outside that proxy. The
+// page itself needs no network: its content and bundles are inlined.
+export const EXPORT_NETWORK_LOCKDOWN_ARGS: readonly string[] = [
+  "--proxy-server=socks5://127.0.0.1:9",
+  "--proxy-bypass-list=<-loopback>",
+  "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+];
 
 // #1017 — the export page may load nothing from outside the document itself.
 // The HTML is sanitised first (#991), but that guard depends on how `marked`
@@ -198,9 +212,34 @@ export function chromeLaunchArgs(): string[] {
 // which inlines the file's text and makes no request, so they are unaffected.
 // There is deliberately no CDN fallback: these bundles are server dependencies,
 // and a fallback URL would be the one request this guard has to let through.
+// Interception is one of three layers: see EXPORT_PAGE_CSP (WebSockets) and
+// EXPORT_NETWORK_LOCKDOWN_ARGS (WebRTC, and everything else at process level).
 export function isExportRequestAllowed(url: string): boolean {
   return /^data:/i.test(url) || url === "about:blank";
 }
+
+// #1017 (PR #1321 review) — request interception runs on CDP `Fetch`, which
+// never pauses a WebSocket handshake, so the page also carries a CSP that
+// refuses every fetch-like channel outright: no WebSocket, beacon, EventSource
+// or fetch (`connect-src 'none'`), no frame, object, form or <base>, and
+// images and fonts from `data:` only. Inline script and style stay allowed:
+// `addScriptTag({ path })` / `addStyleTag({ path })` insert the bundles as
+// inline elements, and mermaid writes inline styles into its SVG.
+export const EXPORT_PAGE_CSP = [
+  "default-src 'none'",
+  "script-src 'unsafe-inline'",
+  "style-src 'unsafe-inline'",
+  "img-src data:",
+  "font-src data:",
+  "connect-src 'none'",
+  "frame-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join("; ");
+
+/** The CSP `<meta>` every export page's `<head>` starts with. */
+export const EXPORT_PAGE_CSP_META = `<meta http-equiv="Content-Security-Policy" content="${EXPORT_PAGE_CSP}">`;
 
 /** Abort every request {@link isExportRequestAllowed} refuses. Call before `setContent`. */
 export async function blockExternalRequests(page: Page): Promise<void> {
@@ -239,9 +278,12 @@ async function exportToPdf(markdown: string, title: string): Promise<ExportResul
     // Inject mermaid from the local filesystem; the page may not fetch it (#1017).
     if (_mermaidPath) await page.addScriptTag({ path: _mermaidPath });
 
-    // Render diagrams now that mermaid is loaded, with per-diagram error handling
+    // Render diagrams now that mermaid is loaded, with per-diagram error handling.
+    // Without mermaid (a broken install) the diagrams stay as source text rather
+    // than the whole PDF degrading to the HTML fallback.
     await page.evaluate(`
       (async () => {
+        if (typeof mermaid === 'undefined') return;
         ${mermaidInitScript({ startOnLoad: false, theme: "neutral", maxTextSize: 500000, flowchart: { useMaxWidth: true }, sequence: { useMaxWidth: true } })}
         const elements = document.querySelectorAll('pre.mermaid');
         for (let i = 0; i < elements.length; i++) {
@@ -298,8 +340,11 @@ async function exportToPdf(markdown: string, title: string): Promise<ExportResul
       })()
     `);
 
-    // Inject KaTeX and render math expressions
+    // Inject KaTeX and render math expressions. The stylesheet is inlined from
+    // the local file: a `<link>` to it would be a request, which the page may
+    // not make (#1017). Its relative font URLs still resolve to nothing (#1324).
     if (_katexJsPath && _katexAutoRenderPath) {
+      if (_katexCssPath) await page.addStyleTag({ path: _katexCssPath });
       await page.addScriptTag({ path: _katexJsPath });
       await page.addScriptTag({ path: _katexAutoRenderPath });
     }
@@ -429,10 +474,10 @@ async function buildHtmlDocument(markdown: string, title: string): Promise<strin
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
+  ${EXPORT_PAGE_CSP_META}
   <meta charset="utf-8">
   <title>${escapeHtml(title)}</title>
   <style>${PDF_CSS}</style>
-  ${_katexCssPath ? `<link rel="stylesheet" href="file://${_katexCssPath}">` : `<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">`}
 </head>
 <body>
   ${_logoSvg ? `<div class="doc-header">${_logoSvg}<span class="doc-header-title">${escapeHtml(title)}</span></div>` : ""}
@@ -661,6 +706,7 @@ async function renderMermaidDiagrams(markdown: string): Promise<Map<number, Buff
 
         const html = `<!DOCTYPE html>
 <html><head>
+${EXPORT_PAGE_CSP_META}
 <style>body { margin: 0; padding: 16px; background: white; } #container { display: inline-block; background: white; }</style>
 </head><body>
 <div id="container"><pre class="mermaid">${escapeHtml(blocks[i])}</pre></div>

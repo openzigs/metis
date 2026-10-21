@@ -30,9 +30,18 @@ interface Recorded {
   closed: number;
   /** Per page: whether interception was on when `setContent` ran, and its handlers. */
   pages: Array<{ interceptingAtSetContent: boolean | null; handlers: RequestHandler[] }>;
+  /** Every addScriptTag / addStyleTag call, in order. */
+  injected: Array<{ kind: "script" | "style"; path?: string; url?: string }>;
 }
 
-const rec: Recorded = { launches: [], contents: [], scripts: [], closed: 0, pages: [] };
+const rec: Recorded = {
+  launches: [],
+  contents: [],
+  scripts: [],
+  closed: 0,
+  pages: [],
+  injected: [],
+};
 const launchBehaviour: { fail: boolean; pdfFail: boolean } = { fail: false, pdfFail: false };
 
 function fakePage() {
@@ -51,7 +60,12 @@ function fakePage() {
       page.interceptingAtSetContent = intercepting;
       rec.contents.push(html);
     },
-    addScriptTag: async () => {},
+    addScriptTag: async (opts: { path?: string; url?: string }) => {
+      rec.injected.push({ kind: "script", ...opts });
+    },
+    addStyleTag: async (opts: { path?: string; url?: string }) => {
+      rec.injected.push({ kind: "style", ...opts });
+    },
     evaluate: async (script: string) => {
       rec.scripts.push(script);
     },
@@ -86,7 +100,31 @@ const {
   chromeLaunchArgs,
   mermaidInitScript,
   isExportRequestAllowed,
+  EXPORT_PAGE_CSP,
+  EXPORT_PAGE_CSP_META,
+  EXPORT_NETWORK_LOCKDOWN_ARGS,
 } = await import("../../src/lib/docs-gen/exporters.js");
+
+/** The directives of a CSP string, as a name -> sources map. */
+function cspDirectives(csp: string): Map<string, string[]> {
+  return new Map(
+    csp
+      .split(";")
+      .map((d) => d.trim().split(/\s+/))
+      .filter((parts) => parts[0])
+      .map(([name, ...sources]) => [name!, sources]),
+  );
+}
+
+/** Asserts `html` opens its <head> with the export CSP and links nothing external. */
+function expectLockedDownHtml(html: string): void {
+  const head = html.slice(html.indexOf("<head>"), html.indexOf("</head>"));
+  expect(head.trimStart().startsWith(`<head>`)).toBe(true);
+  // The CSP is the first element in <head>, so nothing above it can load first.
+  expect(head.replace("<head>", "").trimStart().startsWith(EXPORT_PAGE_CSP_META)).toBe(true);
+  expect(html).not.toMatch(/<link\b/i);
+  expect(html).not.toMatch(/cdn\.jsdelivr|https?:\/\/(?!www\.w3\.org)/i);
+}
 
 /**
  * Drive `url` through every request handler a page registered and report what
@@ -177,6 +215,7 @@ beforeEach(() => {
   rec.scripts.length = 0;
   rec.closed = 0;
   rec.pages.length = 0;
+  rec.injected.length = 0;
   launchBehaviour.fail = false;
   launchBehaviour.pdfFail = false;
 });
@@ -337,6 +376,55 @@ describe("mermaid render security (#686)", () => {
       }
     });
 
+    // PR #1321 review — interception never sees a WebSocket handshake, so the CSP must refuse it.
+    it("the export CSP refuses every connect channel, frame and base, and allows data: images only", () => {
+      const d = cspDirectives(EXPORT_PAGE_CSP);
+      expect(d.get("default-src")).toEqual(["'none'"]);
+      expect(d.get("connect-src")).toEqual(["'none'"]);
+      expect(d.get("frame-src")).toEqual(["'none'"]);
+      expect(d.get("object-src")).toEqual(["'none'"]);
+      expect(d.get("base-uri")).toEqual(["'none'"]);
+      expect(d.get("form-action")).toEqual(["'none'"]);
+      expect(d.get("img-src")).toEqual(["data:"]);
+      expect(d.get("font-src")).toEqual(["data:"]);
+      // Injected bundles are inline elements; no source list names a host or scheme beyond data:.
+      expect(d.get("script-src")).toEqual(["'unsafe-inline'"]);
+      expect(d.get("style-src")).toEqual(["'unsafe-inline'"]);
+    });
+
+    it("PDF: the page HTML starts with the CSP and links no stylesheet or CDN", async () => {
+      await exportDocument("# Maths\n\n$$x^2$$\n\nText.\n", "t", "pdf");
+      expect(rec.contents).toHaveLength(1);
+      expectLockedDownHtml(rec.contents[0]!);
+    });
+
+    it("DOCX: the diagram page HTML starts with the CSP too", async () => {
+      await exportDocument(MALICIOUS, "xss-probe", "docx");
+      expect(rec.contents).toHaveLength(1);
+      expectLockedDownHtml(rec.contents[0]!);
+    });
+
+    it("injects mermaid and KaTeX (script and stylesheet) from local paths, never a URL", async () => {
+      await exportDocument("# Maths\n\n$$x^2$$\n", "t", "pdf");
+      expect(rec.injected.filter((i) => i.url !== undefined)).toEqual([]);
+      const paths = rec.injected.map((i) => `${i.kind}:${i.path?.split(/[\\/]/).pop()}`);
+      expect(paths).toEqual([
+        "script:mermaid.min.js",
+        "style:katex.min.css",
+        "script:katex.min.js",
+        "script:auto-render.min.js",
+      ]);
+    });
+
+    // PR #1321 review — without the CDN fallback a missing mermaid must not throw in the page.
+    it("the PDF diagram script returns quietly when mermaid is not loaded", async () => {
+      await exportDocument(MALICIOUS, "xss-probe", "pdf");
+      const script = mermaidInitScripts()[0]!;
+      const { runInNewContext } = await import("node:vm");
+      // No `mermaid` and no `document`: the guard must return before touching either.
+      await expect(runInNewContext(script, {})).resolves.toBeUndefined();
+    });
+
     it("isExportRequestAllowed admits only data: URLs and about:blank", () => {
       expect(isExportRequestAllowed("DATA:text/plain,x")).toBe(true);
       expect(isExportRequestAllowed("about:blank")).toBe(true);
@@ -375,6 +463,24 @@ describe("mermaid render security (#686)", () => {
         expect(args).toContain("--disable-setuid-sandbox");
       } finally {
         if (prev !== undefined) process.env.PDF_EXPORT_CHROME_SANDBOX = prev;
+      }
+    });
+
+    it("always cuts the browser off the network: dead proxy, loopback proxied, no direct WebRTC UDP (#1017)", () => {
+      const prev = process.env.PDF_EXPORT_CHROME_SANDBOX;
+      try {
+        for (const sandbox of [undefined, "true"]) {
+          if (sandbox === undefined) delete process.env.PDF_EXPORT_CHROME_SANDBOX;
+          else process.env.PDF_EXPORT_CHROME_SANDBOX = sandbox;
+          const args = chromeLaunchArgs();
+          expect(args).toEqual(expect.arrayContaining([...EXPORT_NETWORK_LOCKDOWN_ARGS]));
+          expect(args).toContain("--proxy-bypass-list=<-loopback>");
+          expect(args).toContain("--webrtc-ip-handling-policy=disable_non_proxied_udp");
+          expect(args.some((a) => a.startsWith("--proxy-server="))).toBe(true);
+        }
+      } finally {
+        if (prev === undefined) delete process.env.PDF_EXPORT_CHROME_SANDBOX;
+        else process.env.PDF_EXPORT_CHROME_SANDBOX = prev;
       }
     });
 

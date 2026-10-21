@@ -16,12 +16,15 @@
  * and the assertions below are unconditional, so a Chromium that cannot launch
  * fails this suite. CI runs it in the `server` job (#456).
  */
+import { createSocket } from "node:dgram";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer as createTcpServer, type AddressInfo } from "node:net";
 import puppeteer from "puppeteer";
 import { describe, it, expect } from "vitest";
 import {
   blockExternalRequests,
+  EXPORT_NETWORK_LOCKDOWN_ARGS,
+  EXPORT_PAGE_CSP_META,
   chromeLaunchArgs,
   exportDocument,
 } from "../src/lib/docs-gen/exporters.js";
@@ -86,62 +89,120 @@ describe.runIf(enabled)("document export against a real Chromium (integration)",
     // the embedded image part directly.
     expect(result.buffer.includes(Buffer.from("word/media/"))).toBe(true);
   });
+  // #1017 — the export browser's three network guards, in a real Chromium,
+  // against probe servers that record every HTTP request, WebSocket upgrade,
+  // TURN-over-TCP connection and STUN (UDP) packet they receive. Content that
+  // names any of them (as a sanitiser miss plus script execution would) must
+  // reach nothing, while a data: image still renders.
+  //
+  // - Request interception (`blockExternalRequests`) runs on CDP `Fetch`: it
+  //   aborts http(s) loads but never sees a WebSocket handshake or WebRTC.
+  // - The page CSP (`EXPORT_PAGE_CSP_META`) refuses the WebSocket, but CSP
+  //   does not govern WebRTC ICE traffic.
+  // - The launch args (`EXPORT_NETWORK_LOCKDOWN_ARGS`) give the browser no
+  //   network at all: a dead proxy for everything, loopback included, and no
+  //   direct WebRTC UDP.
+  //
+  // The arms below show each guard's share (PR #1321 review), and that the
+  // exporter's full posture stops every channel. (A file:// URL never becomes
+  // a request: Chrome refuses local resources to the about:blank page; the
+  // unit suite covers our refusal of it.)
+  describe("network guards (#1017)", () => {
+    const sandboxOnly = () =>
+      chromeLaunchArgs().filter((a) => !EXPORT_NETWORK_LOCKDOWN_ARGS.includes(a));
 
-  // #1017 — the export page's request guard, in a real Chromium: content that
-  // names an http URL (as a sanitiser miss would) reaches no server, while a
-  // data: image still renders. (A file:// URL never becomes a request here at
-  // all: Chrome refuses local resources to the about:blank page before
-  // interception sees them; the unit suite covers our refusal of it.) The
-  // unguarded control proves the probe would see the requests if they went.
-  describe("request interception (#1017)", () => {
-    async function probe(guarded: boolean) {
+    async function probe(guards: { intercept: boolean; csp: boolean; lockdown: boolean }) {
       const hits: string[] = [];
-      const server = createServer((req, res) => {
+      const web = createServer((req, res) => {
         hits.push(req.url ?? "");
         res.end("");
       });
-      await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-      const { port } = server.address() as AddressInfo;
+      web.on("upgrade", (req, socket) => {
+        hits.push(`upgrade ${req.url ?? ""}`);
+        socket.destroy();
+      });
+      const turn = createTcpServer((socket) => {
+        hits.push("turn-tcp");
+        socket.destroy();
+      });
+      const stun = createSocket("udp4");
+      stun.on("message", () => hits.push("stun-udp"));
+      await new Promise<void>((r) => web.listen(0, "127.0.0.1", r));
+      await new Promise<void>((r) => turn.listen(0, "127.0.0.1", r));
+      await new Promise<void>((r) => stun.bind(0, "127.0.0.1", r));
+      const { port } = web.address() as AddressInfo;
+      const turnPort = (turn.address() as AddressInfo).port;
+      const stunPort = stun.address().port;
       const base = `http://127.0.0.1:${port}`;
-      const browser = await puppeteer.launch({ headless: true, args: chromeLaunchArgs() });
-      const failed: Array<{ url: string; error: string }> = [];
+      const browser = await puppeteer.launch({
+        headless: true,
+        args: guards.lockdown ? chromeLaunchArgs() : sandboxOnly(),
+      });
       try {
         const page = await browser.newPage();
-        if (guarded) await blockExternalRequests(page);
-        page.on("requestfailed", (r) =>
-          failed.push({ url: r.url(), error: r.failure()?.errorText ?? "" }),
-        );
+        if (guards.intercept) await blockExternalRequests(page);
         await page.setContent(
-          `<html><head><link rel="stylesheet" href="${base}/css"></head><body>
+          `<html><head>${guards.csp ? EXPORT_PAGE_CSP_META : ""}
+           <link rel="stylesheet" href="${base}/css"></head><body>
            <img src="${base}/img"><img src="file:///etc/hosts">
            <img id="inline" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
-           <script src="${base}/js"></script></body></html>`,
+           <script src="${base}/js"></script>
+           <script>
+             try { new WebSocket("ws://127.0.0.1:${port}/ws"); } catch (e) {}
+             try {
+               const relay = new RTCPeerConnection({
+                 iceServers: [{ urls: "turn:127.0.0.1:${turnPort}?transport=tcp", username: "u", credential: "p" }],
+                 iceTransportPolicy: "relay",
+               });
+               relay.createDataChannel("x");
+               relay.createOffer().then((o) => relay.setLocalDescription(o));
+               const direct = new RTCPeerConnection({ iceServers: [{ urls: "stun:127.0.0.1:${stunPort}" }] });
+               direct.createDataChannel("x");
+               direct.createOffer().then((o) => direct.setLocalDescription(o));
+             } catch (e) {}
+           </script>
+           </body></html>`,
           { waitUntil: "load", timeout: 15_000 },
         );
         await page.evaluate(`fetch("${base}/fetch").catch(() => {})`);
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 2_500));
         const inlineWidth = await page.evaluate(`document.getElementById("inline").naturalWidth`);
-        return { hits, failed, inlineWidth };
+        return { hits: [...new Set(hits)].sort(), inlineWidth };
       } finally {
         await browser.close();
-        await new Promise((r) => server.close(r));
+        await new Promise((r) => web.close(r));
+        await new Promise((r) => turn.close(r));
+        stun.close();
       }
     }
 
-    it("aborts every http request the page makes and still renders data: images", async () => {
-      const { hits, failed, inlineWidth } = await probe(true);
+    const HTTP = ["/css", "/fetch", "/img", "/js"];
+
+    it("the exporter's posture (all three) reaches nothing and still renders data: images", async () => {
+      const { hits, inlineWidth } = await probe({ intercept: true, csp: true, lockdown: true });
       expect(hits).toEqual([]);
-      // Chrome reports a client abort as ERR_BLOCKED_BY_CLIENT (with an `.Inspector` suffix).
-      const blocked = failed.filter((f) => f.error.startsWith("net::ERR_BLOCKED_BY_CLIENT"));
-      expect(blocked.map((f) => new URL(f.url).pathname)).toEqual(
-        expect.arrayContaining(["/css", "/img", "/js", "/fetch"]),
-      );
       expect(inlineWidth).toBe(1);
     });
 
-    it("control: without the guard the same page reaches the server", async () => {
-      const { hits } = await probe(false);
-      expect(hits).toEqual(expect.arrayContaining(["/css", "/img", "/js", "/fetch"]));
+    it("interception alone stops http but NOT the WebSocket upgrade or WebRTC", async () => {
+      const { hits } = await probe({ intercept: true, csp: false, lockdown: false });
+      expect(hits).toEqual(["stun-udp", "turn-tcp", "upgrade /ws"]);
+    });
+
+    it("interception + CSP stop the WebSocket too, but NOT WebRTC", async () => {
+      const { hits } = await probe({ intercept: true, csp: true, lockdown: false });
+      expect(hits).toEqual(["stun-udp", "turn-tcp"]);
+    });
+
+    it("the launch args alone stop every channel, WebRTC included", async () => {
+      const { hits, inlineWidth } = await probe({ intercept: false, csp: false, lockdown: true });
+      expect(hits).toEqual([]);
+      expect(inlineWidth).toBe(1);
+    });
+
+    it("control: with no guard the same page reaches the probes on every channel", async () => {
+      const { hits } = await probe({ intercept: false, csp: false, lockdown: false });
+      expect(hits).toEqual([...HTTP, "stun-udp", "turn-tcp", "upgrade /ws"].sort());
     });
   });
 });

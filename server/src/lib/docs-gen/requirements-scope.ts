@@ -46,11 +46,17 @@ export type RequirementsScopeFilter = z.infer<typeof requirementsScopeFilterSche
 /** Thrown when a requirements scope selects nothing in the project. */
 export const REQUIREMENTS_SCOPE_EMPTY_CODE = "REQUIREMENTS_SCOPE_EMPTY";
 
-/** The Prisma `where` for the requirements a filter selects, always within `projectId`. */
+/**
+ * The Prisma `where` for the requirements a filter selects, always within `projectId`.
+ *
+ * Deleted requirements are left out, except in a review's scope (#1017, PR #1321
+ * review): a requirement the review pinned stays in the document even if it was
+ * soft-deleted afterwards, as a baseline keeps it, and is marked as deleted.
+ */
 export function requirementsScopeWhere(projectId: string, filter: RequirementsScopeFilter) {
   return {
     projectId,
-    deletedAt: null,
+    ...(filter.reviewRequestId ? {} : { deletedAt: null }),
     ...(filter.analysisId ? { analysisId: filter.analysisId } : {}),
     ...(filter.requirementIds ? { id: { in: [...new Set(filter.requirementIds)] } } : {}),
     ...(filter.reviewRequestId
@@ -88,6 +94,8 @@ export interface ScopedRequirement {
    * the text above is that pinned version, and this is the version it has since become.
    */
   currentVersion?: number;
+  /** Set only in a review's scope, for a pinned requirement soft-deleted since. */
+  deletedAt?: Date | null;
   updatedAt: Date;
   codeMappings: Array<{
     filePath: string;
@@ -125,6 +133,7 @@ export async function loadScopedRequirements(
       verdict: true,
       acceptanceCriteria: true,
       version: true,
+      deletedAt: true,
       updatedAt: true,
       codeMappings: {
         where: { projectId },
@@ -454,6 +463,20 @@ export function headingWithCount(title: string, count: number): string {
   return `${title} (${count} ${noun})`;
 }
 
+/**
+ * #1017 — in a review's scope, the line saying how the requirement has moved
+ * since the review pinned it: edited (a newer version) and/or deleted. Lines
+ * to insert, or none when it is still as pinned.
+ */
+function pinNote(r: ScopedRequirement): string[] {
+  const since: string[] = [];
+  if (r.currentVersion !== undefined)
+    since.push(`It has changed since (now version ${r.currentVersion}).`);
+  if (r.deletedAt) since.push("It has since been deleted.");
+  if (!since.length) return [];
+  return [`_Shown at version ${r.version}, the version the review pinned. ${since.join(" ")}_`, ""];
+}
+
 /** What {@link renderRequirementEntry} shows besides the requirement's own text. */
 export interface RequirementEntryOptions {
   /** #1218 — the stored requirement id, on the line under the heading. */
@@ -482,12 +505,7 @@ export function renderRequirementEntry(
       r.reviewStatus ?? "draft",
     )} · **Verdict:** ${cell(r.verdict ?? "not assessed")}`,
     "",
-    ...(r.currentVersion !== undefined
-      ? [
-          `_Shown at version ${r.version}, the version the review pinned. It has changed since (now version ${r.currentVersion})._`,
-          "",
-        ]
-      : []),
+    ...pinNote(r),
     requirementBodyMarkdown(r.body) || "_No description recorded._",
     "",
     "#### Acceptance criteria",

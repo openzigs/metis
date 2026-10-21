@@ -143,11 +143,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
       await requirement("req-a-edited", PA, RUN_A, "Export invoices as CSV");
       await requirement("req-a-same", PA, RUN_A, "Keep an audit log");
+      await requirement("req-a-deleted", PA, RUN_A, "Email monthly statements");
       await requirement("req-b", PB, RUN_B, "Mallory's requirement");
-      // Both pinned at version 0, as submitted.
+      // All pinned at version 0, as submitted.
       await review(REVIEW_A, PA, "alice", [
         ["req-a-edited", 0],
         ["req-a-same", 0],
+        ["req-a-deleted", 0],
       ]);
       await review(REVIEW_B, PB, "mallory", [["req-b", 0]]);
       // Edited after submission, through the versioned writer: now version 1.
@@ -156,6 +158,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         patch: { title: "Export invoices as XLSX", body: "Rewritten after the review." },
         actorId: "alice",
         projectId: PA,
+      });
+      // Soft-deleted after submission.
+      await db.requirement.update({
+        where: { id: "req-a-deleted" },
+        data: { deletedAt: new Date() },
       });
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
@@ -210,6 +217,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "_Shown at version 0, the version the review pinned. It has changed since (now version 1)._",
       );
       expect(doc.content).toContain("Keep an audit log");
+      // A pinned requirement deleted since stays in the review's document, marked.
+      expect(doc.content).toContain("### R3. Email monthly statements");
+      expect(doc.content).toContain(
+        "_Shown at version 0, the version the review pinned. It has since been deleted._",
+      );
       expect(doc.content).not.toContain("Mallory's requirement");
     });
   },
