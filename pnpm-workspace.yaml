@@ -150,7 +150,8 @@ overrides:
   axios@<1.20.0: ^1.20.0
   tmp@<0.2.6: ^0.2.6
   esbuild@<0.28.1: ^0.28.1
-  vite: ^8.0.16
+  # GHSA-587h-7wmj-h5pm CVSS 7.5 (launch-editor existsSync bypass), fixed in 8.3.3.
+  vite: ^8.3.4
   postcss@<8.5.18: ^8.5.18
   uuid@<14.0.0: ">=14.0.0"
   "@grpc/grpc-js@<1.14.4": ^1.14.4
