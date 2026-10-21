@@ -4438,6 +4438,10 @@ export class AnalysisOrchestrator {
     signal: AbortSignal;
     accumulator: TokenUsage;
   }): Promise<void> {
+    // #1081 — the steps whose answer could not be read, recorded on the
+    // analysis so the panel never presents an unread check as "none found".
+    // Declared outside the try so the catch keeps what was already collected.
+    const unreadSteps: UnreadAnalysisStep[] = [];
     try {
       const segments: DocSegment[] = input.flatFindings
         .map((f) => ({
@@ -4454,9 +4458,6 @@ export class AnalysisOrchestrator {
       // the checker accounts for facts captured outside the raw documents.
       // Best-effort: a failure degrades to "no elicited artifacts".
       let elicitedArtifacts: string | undefined;
-      // #1081 — the steps whose answer could not be read, recorded on the
-      // analysis so the panel never presents an unread check as "none found".
-      const unreadSteps: UnreadAnalysisStep[] = [];
       try {
         const elicitation = await runElicitation({
           provider: this.deps.provider,
@@ -4512,6 +4513,7 @@ export class AnalysisOrchestrator {
       // #1081 — the pass is non-fatal, but an unfinished pass must not read as
       // "no contradictions or gaps": say on the analysis that it did not finish.
       await this.recordUnreadAnalysisSteps(input.analysisId, [
+        ...unreadSteps,
         { step: "cross-doc-detection", reason: "provider-error", failedCalls: 1, totalCalls: 1 },
       ]);
     }

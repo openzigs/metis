@@ -24,6 +24,7 @@ import type { Dispatcher } from "undici";
 import { proxyAgentForBuiltinFetch } from "../net/builtin-fetch-dispatcher.js";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
+import { clipEchoedReply } from "./unread-reply.js";
 import type {
   DomainTrust,
   EvidenceDigest,
@@ -633,7 +634,9 @@ export class WebResearchAugmenter {
       const retry = await this.provider.chat(
         [
           ...messages,
-          ...(first.content.trim() ? [{ role: "assistant" as const, content: first.content }] : []),
+          ...(first.content.trim()
+            ? [{ role: "assistant" as const, content: clipEchoedReply(first.content) }]
+            : []),
           {
             role: "user",
             content:

@@ -28,7 +28,7 @@ import {
   jsonObjectWhereDeclared,
   requestStructuredVerdict,
 } from "./structured-verdict.js";
-import type { UnreadModelReply } from "./unread-reply.js";
+import { noUsableItem, type UnreadModelReply } from "./unread-reply.js";
 
 const log = createChildLogger("contradiction-detector");
 
@@ -60,7 +60,11 @@ export interface ContradictionDetectionResult {
 }
 
 /** #1081 — the envelope only; each verdict is still validated on its own. */
-const envelopeSchema = z.object({ verdicts: z.array(z.unknown()) });
+const envelopeSchema = z.object({ verdicts: z.array(z.unknown()) }).refine(
+  // #1081 review — verdicts listed, but not one usable, is not "no contradictions".
+  (o) => !noUsableItem(o.verdicts, (v) => nliVerdictSchema.safeParse(v).success),
+  { message: "no verdicts entry has the required fields", path: ["verdicts"] },
+);
 
 /** The shape quoted back to the model in the re-prompt. */
 const NLI_SHAPE =

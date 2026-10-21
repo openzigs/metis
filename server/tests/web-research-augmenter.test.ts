@@ -387,6 +387,20 @@ describe("WebResearchAugmenter", () => {
       expect(result).toEqual({ queries: [req.evidenceNeeds[0]!.description], fromModel: false });
     });
 
+    it("clips the reply it replays in the re-prompt to 2,000 characters (#1081 review)", async () => {
+      const provider = mockProvider("x".repeat(5000));
+      const req = makeRequirement();
+      await new WebResearchAugmenter({ provider }).generateQueries(req, req.evidenceNeeds[0]!);
+      const retryMessages = (provider.chat as ReturnType<typeof vi.fn>).mock.calls[1]![0] as Array<{
+        role: string;
+        content: string;
+      }>;
+      const echoed = retryMessages.find((m) => m.role === "assistant")!;
+      expect(echoed.content.startsWith("x".repeat(2000))).toBe(true);
+      expect(echoed.content).toContain("[truncated 3000 chars]");
+      expect(echoed.content.length).toBeLessThan(2100);
+    });
+
     it("uses the re-prompted answer when it can be read", async () => {
       const provider = mockProvider("not json");
       (provider.chat as ReturnType<typeof vi.fn>)

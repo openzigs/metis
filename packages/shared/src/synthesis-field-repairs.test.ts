@@ -10,8 +10,10 @@ import {
   describeSynthesisFieldRepair,
   describeSynthesisFieldRepairs,
   readSynthesisFieldRepairs,
+  SYNTHESIS_FIELD_LIMITS,
   type SynthesisFieldRepair,
 } from "./synthesis-field-repairs.js";
+import { synthesisOutputSchema, synthesizedRequirementSchema } from "./analysis.js";
 
 const rep = (over: Partial<SynthesisFieldRepair>): SynthesisFieldRepair => ({
   field: "storyPoints",
@@ -68,6 +70,57 @@ describe("describeSynthesisFieldRepair", () => {
     expect(describeSynthesisFieldRepairs({ repairs: [rep({})], total: 3, at: "" })).toContain(
       "3 values METIS could not use",
     );
+  });
+});
+
+/**
+ * #1081 review — the repair's limits must be the schema's. If they drift, the
+ * repair passes a value the schema then rejects (costing the whole reply again)
+ * or drops one the schema would have kept. Probed at the boundary: N passes,
+ * N + 1 fails.
+ */
+describe("SYNTHESIS_FIELD_LIMITS match the synthesis schema caps", () => {
+  const L = SYNTHESIS_FIELD_LIMITS;
+  const base = { title: "t", body: "b" };
+  const req = (over: Record<string, unknown>) =>
+    synthesizedRequirementSchema.safeParse({ ...base, ...over }).success;
+  const atAndOver = (make: (n: number) => Record<string, unknown>, n: number) => [
+    req(make(n)),
+    req(make(n + 1)),
+  ];
+
+  it.each([
+    ["titleChars", (n: number) => ({ title: "x".repeat(n) }), L.titleChars],
+    ["bodyChars", (n: number) => ({ body: "x".repeat(n) }), L.bodyChars],
+    ["labels", (n: number) => ({ labels: Array.from({ length: n }, () => "l") }), L.labels],
+    ["labelChars", (n: number) => ({ labels: ["x".repeat(n)] }), L.labelChars],
+    ["storyPointsMax", (n: number) => ({ storyPoints: n }), L.storyPointsMax],
+    [
+      "evidenceIndexes",
+      (n: number) => ({ evidenceFindingIndexes: Array.from({ length: n }, (_, i) => i) }),
+      L.evidenceIndexes,
+    ],
+    [
+      "acceptanceCriteria",
+      (n: number) => ({ acceptanceCriteria: Array.from({ length: n }, () => "c") }),
+      L.acceptanceCriteria,
+    ],
+    ["criterionChars", (n: number) => ({ acceptanceCriteria: ["x".repeat(n)] }), L.criterionChars],
+  ] as const)("%s", (_name, make, n) => {
+    expect(atAndOver(make, n)).toEqual([true, false]);
+  });
+
+  it("summaryChars and requirements", () => {
+    const out = (summary: string, count: number) =>
+      synthesisOutputSchema.safeParse({
+        summary,
+        requirements: Array.from({ length: count }, () => base),
+      }).success;
+    expect([out("x".repeat(L.summaryChars), 1), out("x".repeat(L.summaryChars + 1), 1)]).toEqual([
+      true,
+      false,
+    ]);
+    expect([out("s", L.requirements), out("s", L.requirements + 1)]).toEqual([true, false]);
   });
 });
 

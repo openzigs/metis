@@ -39,6 +39,7 @@
 import { z } from "zod";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
+import { clipEchoedReply } from "../analysis/unread-reply.js";
 import { extractFirstJson } from "../docs-gen/grounding/json-extract.js";
 import type { AffectedTableInput } from "./schema-impact.js";
 
@@ -354,7 +355,9 @@ async function judge(
   const retry = await provider.chat(
     [
       ...messages,
-      ...(first.content.trim() ? [{ role: "assistant" as const, content: first.content }] : []),
+      ...(first.content.trim()
+        ? [{ role: "assistant" as const, content: clipEchoedReply(first.content) }]
+        : []),
       RELEVANCE_REPAIR_MESSAGE,
     ],
     chatOpts,

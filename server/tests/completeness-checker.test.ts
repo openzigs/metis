@@ -106,6 +106,13 @@ describe("CompletenessChecker.check — #1081 unreadable answers", () => {
     expect(result.usage.totalTokens).toBe(34);
   });
 
+  it("treats gaps listed but none usable as unread, not 'no gaps' (#1081 review)", async () => {
+    const provider = mockProvider(JSON.stringify({ gaps: [{ kind: "missing-everything" }] }));
+    const result = await new CompletenessChecker({ provider }).check(SEGMENTS);
+    expect(provider.chat).toHaveBeenCalledTimes(2);
+    expect(result.unread).toMatchObject({ reason: "schema-invalid" });
+  });
+
   it("does not mark a legitimately empty answer unread", async () => {
     const provider = mockProvider(JSON.stringify({ gaps: [] }));
     const result = await new CompletenessChecker({ provider }).check(SEGMENTS);

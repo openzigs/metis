@@ -491,6 +491,8 @@ function makeProvider(opts: {
   completenessReply?: string;
   /** #1081 — make every NLI call fail (the cross-doc pass throws). */
   nliThrows?: boolean;
+  /** #1081 review — override the NFR elicitor reply. */
+  nfrReply?: string;
   /** #1099 — override the synthesis reply. */
   synthesisReply?: string;
   consistencyReply?: string;
@@ -573,7 +575,7 @@ function makeProvider(opts: {
       // #1081 — the elicitors answer with a legitimately empty envelope; anything
       // else would now (correctly) be recorded as an unread step.
       if (sysStr.includes("NON-FUNCTIONAL REQUIREMENTS")) {
-        return stubResponse('{"nfrs":[],"acceptanceCriteria":[]}');
+        return stubResponse(opts.nfrReply ?? '{"nfrs":[],"acceptanceCriteria":[]}');
       }
       if (sysStr.includes("the ASSUMPTIONS the specification relies on")) {
         return stubResponse('{"assumptions":[],"risks":[]}');
@@ -895,6 +897,70 @@ describe("AnalysisOrchestrator.start", () => {
     const { persistAnalysisEnhancement } = await import("../src/lib/analysis/analysis-service.js");
     await persistAnalysisEnhancement(analysisId, { unreadAnalysisSteps: null });
     expect(read().unreadAnalysisSteps).toBeUndefined();
+  });
+
+  // #1081 review — the catch keeps the elicitation steps already collected.
+  it("keeps unread elicitation steps when the cross-doc pass then throws", async () => {
+    const io = makeIO();
+    const orch = new AnalysisOrchestrator({
+      provider: makeProvider({ nliThrows: true, nfrReply: "no NFRs, sorry" }),
+      io: io as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [
+        { documentId: "doc-1", chunkIndex: 0, filename: "s.md", text: "c", score: 0.5 },
+      ],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    for (let i = 0; i < 200 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const meta = JSON.parse(analyses.get(analysisId)!.metadata ?? "{}") as {
+      unreadAnalysisSteps?: { steps: Array<{ step: string }> };
+    };
+    expect(meta.unreadAnalysisSteps?.steps.map((s) => s.step)).toEqual([
+      "nfr-elicitation",
+      "cross-doc-detection",
+    ]);
+  });
+
+  // #1081 review — a clean synthesis must WRITE the clear (null), at the
+  // orchestrator, so an earlier run's list on the same analysis disappears.
+  it("a clean synthesis clears an earlier field-repair record on the analysis (#1099)", async () => {
+    const io = makeIO();
+    const orch = new AnalysisOrchestrator({
+      provider: makeProvider({ delayMs: 20 }),
+      io: io as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    // Seed a previous run's record while the specialists are still working.
+    const row = analyses.get(analysisId)!;
+    row.metadata = JSON.stringify({
+      ...(JSON.parse(row.metadata ?? "{}") as object),
+      synthesisFieldRepairs: {
+        repairs: [
+          {
+            field: "storyPoints",
+            action: "dropped",
+            requirementNumber: 1,
+            requirementTitle: "Old",
+          },
+        ],
+        total: 1,
+        at: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    for (let i = 0; i < 400 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+    const meta = JSON.parse(analyses.get(analysisId)!.metadata ?? "{}") as Record<string, unknown>;
+    expect(meta.synthesisFieldRepairs).toBeUndefined();
   });
 
   // #1099 — a malformed optional field is left out, the reply is kept, and the

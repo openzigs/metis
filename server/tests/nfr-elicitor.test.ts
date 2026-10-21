@@ -132,6 +132,15 @@ describe("NfrElicitor.elicit — #1081 unreadable answers", () => {
     expect(result.acceptanceCriteria).toHaveLength(1);
   });
 
+  it("treats a list with entries but none usable as unread, not as 'no NFRs' (#1081 review)", async () => {
+    const provider = mockProvider(
+      JSON.stringify({ nfrs: [{ name: "fast" }, { title: 7 }], acceptanceCriteria: [] }),
+    );
+    const result = await new NfrElicitor({ provider }).elicit("The system must be fast.");
+    expect(provider.chat).toHaveBeenCalledTimes(2);
+    expect(result.unread).toMatchObject({ reason: "schema-invalid" });
+  });
+
   it("does not mark a legitimately empty answer unread", async () => {
     const provider = mockProvider(JSON.stringify({ nfrs: [], acceptanceCriteria: [] }));
     const result = await new NfrElicitor({ provider }).elicit("The system must be fast.");

@@ -109,6 +109,13 @@ describe("ContradictionDetector.detect — #1081 unreadable answers", () => {
     expect(result.unread[0]).toMatchObject({ reason: "unparseable" });
   });
 
+  it("treats verdicts listed but none usable as unread (#1081 review)", async () => {
+    const provider = mockProvider([JSON.stringify({ verdicts: [{ premise: 1 }] })]);
+    const result = await new ContradictionDetector({ provider }).detect([SEG_A]);
+    expect(result.calls).toBe(1);
+    expect(result.unread).toEqual([expect.objectContaining({ reason: "schema-invalid" })]);
+  });
+
   it("does not mark legitimately empty answers unread", async () => {
     const provider = mockProvider(['{"verdicts":[]}']);
     const result = await new ContradictionDetector({ provider }).detect([SEG_A, SEG_B]);

@@ -14,6 +14,29 @@ export interface UnreadModelReply {
 }
 
 /**
+ * #1081 review — a list the model wrote that has entries but not ONE usable
+ * one is not an empty answer: it is an answer METIS could not read. Used as an
+ * envelope refinement, so the caller re-prompts and then reports it unread.
+ * (The same rule `parseQueryList` applies to search queries.)
+ */
+export function noUsableItem(
+  list: readonly unknown[] | null | undefined,
+  usable: (item: unknown) => boolean,
+): boolean {
+  return !!list && list.length > 0 && !list.some(usable);
+}
+
+/** Longest slice of a model reply echoed back in a re-prompt (as `requestStructuredVerdict`). */
+export const MAX_ECHOED_REPLY_CHARS = 2_000;
+
+/** Clip a reply before it is replayed to the model, marking the cut. */
+export function clipEchoedReply(raw: string): string {
+  return raw.length <= MAX_ECHOED_REPLY_CHARS
+    ? raw
+    : `${raw.slice(0, MAX_ECHOED_REPLY_CHARS)}\n…[truncated ${raw.length - MAX_ECHOED_REPLY_CHARS} chars]`;
+}
+
+/**
  * Fold the unread replies of one step into the persisted record, or `null`
  * when every call of the step was read. The first reason is kept: it is
  * enough to word the notice, and the log has the rest.

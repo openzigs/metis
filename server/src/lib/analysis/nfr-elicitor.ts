@@ -30,7 +30,7 @@ import {
   jsonObjectWhereDeclared,
   requestStructuredVerdict,
 } from "./structured-verdict.js";
-import type { UnreadModelReply } from "./unread-reply.js";
+import { noUsableItem, type UnreadModelReply } from "./unread-reply.js";
 
 const log = createChildLogger("nfr-elicitor");
 
@@ -86,8 +86,29 @@ const envelopeSchema = z
   })
   .refine((o) => o.nfrs != null || o.acceptanceCriteria != null, {
     message: "expected an nfrs or acceptanceCriteria array",
-  });
+  })
+  // #1081 review — entries, but not one usable, is not "none found".
+  .refine((o) => !noUsableItem(o.nfrs, (i) => nfrSchema.safeParse(withId(i)).success), {
+    message: "no nfrs entry has the required fields",
+    path: ["nfrs"],
+  })
+  .refine(
+    (o) =>
+      !noUsableItem(
+        o.acceptanceCriteria,
+        (i) => acceptanceCriterionSchema.safeParse(withId(i)).success,
+      ),
+    {
+      message: "no acceptanceCriteria entry has the required fields",
+      path: ["acceptanceCriteria"],
+    },
+  );
 type NfrEnvelope = z.infer<typeof envelopeSchema>;
+
+/** The item as validated: the model need not invent an id. */
+function withId(raw: unknown): unknown {
+  return raw && typeof raw === "object" ? { id: randomUUID(), ...(raw as object) } : raw;
+}
 
 /** The shape quoted back to the model in the re-prompt. */
 const NFR_SHAPE =

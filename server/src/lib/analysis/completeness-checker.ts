@@ -27,7 +27,7 @@ import {
   jsonObjectWhereDeclared,
   requestStructuredVerdict,
 } from "./structured-verdict.js";
-import type { UnreadModelReply } from "./unread-reply.js";
+import { noUsableItem, type UnreadModelReply } from "./unread-reply.js";
 
 const log = createChildLogger("completeness-checker");
 
@@ -56,7 +56,11 @@ export interface CompletenessCheckResult {
 }
 
 /** #1081 — the envelope only; each gap is still validated on its own. */
-const envelopeSchema = z.object({ gaps: z.array(z.unknown()) });
+const envelopeSchema = z.object({ gaps: z.array(z.unknown()) }).refine(
+  // #1081 review — gaps listed, but not one usable, is not "no gaps".
+  (o) => !noUsableItem(o.gaps, (g) => completenessGapSchema.safeParse(g).success),
+  { message: "no gaps entry has the required fields", path: ["gaps"] },
+);
 
 /** The shape quoted back to the model in the re-prompt. */
 const COMPLETENESS_SHAPE =

@@ -403,6 +403,15 @@ describe("deterministic passthrough (c)", () => {
     expect(res.secondary).toHaveLength(0);
   });
 
+  it("#1081 review — clips the reply it replays in the repair turn to 2,000 characters", async () => {
+    const provider = mockProvider(() => "y".repeat(5000));
+    await filterAffectedTablesByRelevance("x", tables, provider, { enabled: true });
+    const retry = (provider.chat as ReturnType<typeof vi.fn>).mock.calls[1]![0] as ChatMessage[];
+    const echoed = retry.find((m) => m.role === "assistant")!;
+    expect(String(echoed.content)).toContain("[truncated 3000 chars]");
+    expect(String(echoed.content).length).toBeLessThan(2100);
+  });
+
   it("#1081 — uses the repaired answer when the second reply can be read", async () => {
     let call = 0;
     const provider = mockProvider((candidates) => {

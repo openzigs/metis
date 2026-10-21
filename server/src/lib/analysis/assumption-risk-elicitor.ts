@@ -30,7 +30,7 @@ import {
   jsonObjectWhereDeclared,
   requestStructuredVerdict,
 } from "./structured-verdict.js";
-import type { UnreadModelReply } from "./unread-reply.js";
+import { noUsableItem, type UnreadModelReply } from "./unread-reply.js";
 
 const log = createChildLogger("assumption-risk-elicitor");
 
@@ -75,8 +75,22 @@ const envelopeSchema = z
   })
   .refine((o) => o.assumptions != null || o.risks != null, {
     message: "expected an assumptions or risks array",
+  })
+  // #1081 review — entries, but not one usable, is not "none found".
+  .refine(
+    (o) => !noUsableItem(o.assumptions, (i) => assumptionSchema.safeParse(withId(i)).success),
+    { message: "no assumptions entry has the required fields", path: ["assumptions"] },
+  )
+  .refine((o) => !noUsableItem(o.risks, (i) => riskSchema.safeParse(withId(i)).success), {
+    message: "no risks entry has the required fields",
+    path: ["risks"],
   });
 type AssumptionRiskEnvelope = z.infer<typeof envelopeSchema>;
+
+/** The item as validated: the model need not invent an id. */
+function withId(raw: unknown): unknown {
+  return raw && typeof raw === "object" ? { id: randomUUID(), ...(raw as object) } : raw;
+}
 
 /** The shape quoted back to the model in the re-prompt. */
 const ASSUMPTION_RISK_SHAPE =

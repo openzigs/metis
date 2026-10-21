@@ -184,6 +184,17 @@ describe("ClarificationDialog", () => {
       expect(await getDialogState("test-analysis")).toBeUndefined();
     });
 
+    it("fails visibly when questions are listed but none is usable (#1081 review)", async () => {
+      const provider = mockProvider(
+        JSON.stringify({ questions: [{ question: "", context: "x" }] }),
+      );
+      await expect(
+        new ClarificationDialog({ provider }).startOrContinue("test-analysis", makeRequirements()),
+      ).rejects.toMatchObject({ code: "MODEL_REPLY_UNREADABLE" });
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(await getDialogState("test-analysis")).toBeUndefined();
+    });
+
     it("keeps a legitimately empty question list as an empty round", async () => {
       const provider = mockProvider('{"questions":[]}');
       const dialog = new ClarificationDialog({ provider });
@@ -257,9 +268,24 @@ describe("ClarificationDialog", () => {
       expect(result.updatedRequirements.requirements[0]!.description).toBe("Clarified.");
     });
 
+    it.each([
+      ["an empty object", {}],
+      ["snake_case keys", { resolved_fields: ["field-0"], updated_description: "Clarified." }],
+    ])("records %s as an unread resolution (#1081 review)", async (_label, reply) => {
+      const provider = mockProvider(JSON.stringify(reply));
+      await seedRound();
+      const result = await new ClarificationDialog({ provider }).submitAnswers(
+        "test-analysis",
+        [{ questionId: "q-1", answer: "Field-0 means X" }],
+        makeRequirements(),
+      );
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(result.state.rounds[0]!.unreadResolutions).toEqual(["req-1"]);
+    });
+
     it("records nothing when the resolution answer is read", async () => {
       const provider = mockProvider(
-        JSON.stringify({ resolvedFields: [], remainingUncertainty: 1 }),
+        JSON.stringify({ resolvedFields: [], updatedDescription: null, remainingUncertainty: 1 }),
       );
       await seedRound();
       const result = await new ClarificationDialog({ provider }).submitAnswers(

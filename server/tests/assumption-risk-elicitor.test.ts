@@ -129,6 +129,13 @@ describe("AssumptionRiskElicitor.elicit — #1081 unreadable answers", () => {
     expect(result.unread).toMatchObject({ reason: "schema-invalid" });
   });
 
+  it("treats a list with entries but none usable as unread (#1081 review)", async () => {
+    const provider = mockProvider(JSON.stringify({ assumptions: [], risks: [{ name: "outage" }] }));
+    const result = await new AssumptionRiskElicitor({ provider }).elicit("Users log in.");
+    expect(provider.chat).toHaveBeenCalledTimes(2);
+    expect(result.unread).toMatchObject({ reason: "schema-invalid" });
+  });
+
   it("does not mark a legitimately empty answer unread", async () => {
     const provider = mockProvider(JSON.stringify({ assumptions: [], risks: [] }));
     const result = await new AssumptionRiskElicitor({ provider }).elicit("Users log in.");

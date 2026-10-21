@@ -18,6 +18,7 @@ import {
   jsonObjectWhereDeclared,
   requestStructuredVerdict,
 } from "./structured-verdict.js";
+import { noUsableItem } from "./unread-reply.js";
 import {
   deleteDialogState,
   readDialogState,
@@ -638,7 +639,11 @@ export class ClarificationDialog {
 }
 
 /** #1081 — the envelope only; each question is still read leniently. */
-const questionsEnvelopeSchema = z.object({ questions: z.array(z.unknown()) });
+const questionsEnvelopeSchema = z.object({ questions: z.array(z.unknown()) }).refine(
+  // #1081 review — questions listed, but not one usable, must not save an empty round.
+  (o) => !noUsableItem(o.questions, (q) => toQuestions([q]).length > 0),
+  { message: "no questions entry has a question and a requirementId", path: ["questions"] },
+);
 
 const QUESTIONS_SHAPE =
   '{ "questions": [ { "requirementId": string, "ambiguityField": string, "question": string, ' +
@@ -651,8 +656,11 @@ const QUESTIONS_SHAPE =
  * without a word.
  */
 const resolutionSchema = z.object({
-  resolvedFields: z.array(z.unknown()).nullish(),
-  updatedDescription: z.unknown().optional(),
+  // #1081 review — the two keys the dialog acts on must be PRESENT (null is a
+  // readable "nothing"), so `{}` or snake_case keys are an unread resolution,
+  // recorded in `unreadResolutions`, not a silent no-op.
+  resolvedFields: z.array(z.unknown()).nullable(),
+  updatedDescription: z.string().nullable(),
   remainingUncertainty: z.unknown().optional(),
 });
 
