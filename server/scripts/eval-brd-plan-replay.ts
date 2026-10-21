@@ -35,7 +35,24 @@
  * facts by their module (`--no-canonical-rank` for the replay before #1368,
  * which ranked module facts only), and a `--watch` theme that survives is
  * reported with the rendered characters under it: a heading a later batch
- * re-emitted over a line ("kept (43)") is not a written theme.
+ * re-emitted over a line ("kept (43)") is not a written theme. That size is a
+ * range when another batch wrote below the theme ("kept (2123-2400)"): what
+ * the batch that wrote its heading wrote there, and everything below the
+ * heading, H4s another batch may have opened with included.
+ *
+ * How ranks are approximated, unlike the synthesizer:
+ *   - a module-facts citation's rank is its id's trailing index
+ *     (`facts:<module>:<index>`), whatever repository the id names;
+ *   - a canonical fact's module is the FOLDER of the file in its evidence
+ *     label (`selectedEvidence.primary[].label`, `path/file.go:12 — NAME`),
+ *     not `CanonicalFact.modulePath`, which the manifest does not store. The
+ *     two agree when Phase 1 groups a module by folder, as it did for run B;
+ *   - that folder is matched to a path alone, ignoring repository identity,
+ *     so in a multi-repository run two repositories' same-named folders
+ *     share one rank (the first cited);
+ *   - only a module the section cites has an index (the synthesizer ranks
+ *     every module the section read, which can only make a rank more
+ *     important).
  *
  *   npx tsx scripts/eval-brd-plan-replay.ts --db ../server/dev.db \
  *     --version cmvi3h71u00e9o99k3c0iq4ec --body-max 234277
@@ -256,15 +273,39 @@ function toldBefore(plan: Pick<DocumentPlan, "sections">): Set<string> {
 const h3 = (md: string): Set<string> =>
   new Set([...md.matchAll(/^### (.+?)\s*$/gm)].map((m) => m[1].trim()));
 
-/** The rendered characters under every `### theme` of a section, to the next H2 or H3. */
-function themeChars(markdown: string, theme: string): number {
-  let n = 0;
-  let inside = false;
-  for (const u of units(markdown)) {
-    if (u.depth > 0 && u.depth <= 3) inside = u.depth === 3 && u.text.slice(4).trim() === theme;
-    if (inside) n += renderedCitationLength(u.text) + 2;
-  }
-  return n;
+/**
+ * The rendered characters written under every `### theme` of a section, as a
+ * range. `upTo`: everything below the heading up to the next H2 or H3, its
+ * H4s included. `own`: only what the batch that wrote the heading wrote there
+ * (`partOf`, the batch of each unit of the section's body), or, with no parts,
+ * the heading's own body up to the next heading of any depth. The merge puts
+ * a later batch's H4 under the H3 an earlier batch wrote, whether that batch
+ * wrote it under the same theme or opened its reply with it, and a stored
+ * section does not say which, so the theme's written size is between the two.
+ */
+function themeChars(
+  markdown: string,
+  theme: string,
+  partOf?: readonly number[],
+): { own: number; upTo: number } {
+  const body = units(splitClosingNote(markdown).body);
+  const parts = partOf?.length === body.length ? partOf : undefined;
+  let own = 0;
+  let upTo = 0;
+  let inTheme = false;
+  let headingPart = -1;
+  let inBody = false;
+  body.forEach((u, i) => {
+    if (u.depth > 0 && u.depth <= 3) {
+      inTheme = u.depth === 3 && u.text.slice(4).trim() === theme;
+      headingPart = parts?.[i] ?? -1;
+    }
+    if (u.depth > 0) inBody = inTheme && u.depth === 3;
+    const n = renderedCitationLength(u.text) + 2;
+    if (inTheme) upTo += n;
+    if (parts ? inTheme && parts[i] === headingPart : inBody) own += n;
+  });
+  return { own, upTo };
 }
 
 /** `markdown` as a model writing exactly `budget` rendered characters of it would. */
@@ -460,7 +501,10 @@ function assemble(
     watch: args.watch.map((t) => {
       if (!written.has(t)) return `${t}: absent`;
       if (!final.has(t)) return `${t}: LOST`;
-      return `${t}: kept (${fit.sections.reduce((n, s) => n + themeChars(s, t), 0)})`;
+      const size = fit.sections.map((s, i) => themeChars(s, t, fit.parts[i]?.partOf));
+      const own = size.reduce((n, s) => n + s.own, 0);
+      const upTo = size.reduce((n, s) => n + s.upTo, 0);
+      return `${t}: kept (${own === upTo ? own : `${own}-${upTo}`})`;
     }),
   };
 }

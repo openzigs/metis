@@ -182,6 +182,26 @@ describe("holdBatchReply", () => {
       expect(held.overflowTopics).toEqual(["Big minor"]);
     });
 
+    it("keeps written order when smallest first would keep no more tied topics", () => {
+      // The PR #1371 review's probe: room for "Big core" alone or for "Small"
+      // alone, never for two. One-for-one, the topic the model wrote first
+      // stays; smallest first would give it up for a smaller one.
+      const oneForOne = [
+        "## S",
+        "### Minor",
+        para(20, "facts:mod1:1"),
+        "### Big core",
+        para(560, "facts:mod0:0"),
+        "### Mid",
+        para(330, "facts:mod0:0"),
+        "### Small",
+        para(275, "facts:mod0:0"),
+      ].join("\n\n");
+      const held = holdBatchReply(oneForOne, 640, { rankOf });
+      expect(headings(held.markdown)).toEqual(["S", "Big core", "Mid", "Small", "Minor"]);
+      expect(held.overflowTopics).toEqual(["Mid", "Small", "Minor"]);
+    });
+
     it("falls back to written order between tied topics of equal size", () => {
       // A minor topic written first makes the hold reorder, so which two of
       // the three equal rank-0 topics stay is visible.
@@ -199,6 +219,42 @@ describe("holdBatchReply", () => {
       const held = holdBatchReply(equal, 470, { rankOf });
       expect(headings(held.markdown)).toEqual(["S", "Alpha", "Bravo", "Delta", "Minor"]);
       expect(held.overflowTopics).toEqual(["Delta", "Minor"]);
+    });
+
+    it("takes equal sizes in written order when smallest first is the one kept", () => {
+      // "Big" fits nothing, so written order keeps none of rank 0 and
+      // smallest first keeps two of the three equal topics: the first two.
+      const equal = [
+        "## S",
+        "### Big",
+        para(520, "facts:mod0:0"),
+        "### Alpha",
+        para(200, "facts:mod0:0"),
+        "### Bravo",
+        para(200, "facts:mod0:0"),
+        "### Delta",
+        para(200, "facts:mod0:0"),
+      ].join("\n\n");
+      const held = holdBatchReply(equal, 470, { rankOf });
+      expect(headings(held.markdown)).toEqual(["S", "Alpha", "Bravo", "Big", "Delta"]);
+      expect(held.overflowTopics).toEqual(["Big", "Delta"]);
+    });
+
+    it("counts written order as the #1353 prefix: it stops at the first tied topic that does not fit", () => {
+      // Written order keeps "Big" and stops at "Mid"; it does not skip on to
+      // "Small". Smallest first keeps two ("Small", "Mid"), which is more.
+      const reply = [
+        "## S",
+        "### Big",
+        para(380, "facts:mod0:0"),
+        "### Mid",
+        para(280, "facts:mod0:0"),
+        "### Small",
+        para(180, "facts:mod0:0"),
+      ].join("\n\n");
+      const held = holdBatchReply(reply, 640, { rankOf });
+      expect(headings(held.markdown)).toEqual(["S", "Mid", "Small", "Big"]);
+      expect(held.overflowTopics).toEqual(["Big"]);
     });
   });
 

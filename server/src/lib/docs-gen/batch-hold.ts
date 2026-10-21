@@ -13,7 +13,7 @@
  * {@link holdBatchReply} decides, as the batch is written, which of its topics
  * fit its share: its opening, then its topics MOST important first while they
  * fit, stopping at the first that does not; among equally important topics,
- * the smallest first (#1368). A topic's importance is that of
+ * smallest first when that keeps more of them (#1368). A topic's importance is that of
  * the highest-priority module it cites (the batch's modules are in plan
  * priority order, and every citation marker names the module facts it came
  * from). A topic that cites nothing ranked (an overview) is not moved. The
@@ -36,8 +36,8 @@ import { units, type Measure, type Unit } from "./section-size.js";
 /**
  * Bumped when what a batch is held to, or how it is asked for its length,
  * changes: a section's reuse inputs carry it, so a section written under
- * another rule is written again rather than reused. 2: tied topics smaller
- * first (#1368).
+ * another rule is written again rather than reused. 2: tied topics smallest
+ * first when that keeps more of them (#1368).
  */
 export const BATCH_HOLD_VERSION = 2;
 
@@ -111,9 +111,10 @@ interface Topic {
  * Otherwise its opening (the section heading and anything before the first
  * topic) and its unranked topics (citing nothing the batch reads) are counted
  * against the share first and stay in place; then its ranked topics, most
- * important first and, within a rank, smallest first (equal sizes in written
- * order), while they fit. The first that does not fit, and every
- * topic after it in priority order, is overflow: a smaller, less important
+ * important first, a whole rank at a time while it fits. In the first rank
+ * that does not, the tied topics kept are its written-order prefix, or its
+ * smallest-first prefix when that keeps more of them; the rest of that rank,
+ * and every topic of a lower rank, is overflow: a smaller, less important
  * topic is never kept ahead of a more important one. The topics kept stay in
  * the order the model wrote them; the overflow follows, most important first.
  * A reply whose topics are numbered (`1.`, `2)`, `Step 3:`) is a sequence and
@@ -179,24 +180,50 @@ export function holdBatchReply(
     maxChars -
     lead.reduce((n, i) => n + cost[i], 0) -
     pinned.reduce((n, topic) => n + topic.cost, 0);
-  // #1368 — topics of one rank (several that cite the section's top module)
-  // are equally important, so the smaller goes first: as many of them fit as
-  // can. In written order a large tied topic ended the prefix ahead of a small
-  // one that fitted: run B's "Content Entities" (2,118 characters) moved
-  // behind "Subscription Structure" (4,263). Equal sizes keep written order.
   const ranked = topics
     .filter((topic) => topic.rank !== Infinity)
-    .sort((a, b) => a.rank - b.rank || a.cost - b.cost || a.order - b.order);
-  // A priority PREFIX: the first ranked topic that does not fit ends it, so a
-  // smaller, less important topic never stays while a more important one moves.
-  // Within a rank nothing is lost by stopping: every tied topic after the
-  // first that does not fit is at least as large.
+    .sort((a, b) => a.rank - b.rank || a.order - b.order);
+  // A priority PREFIX, rank by rank: a rank that fits is kept whole; the first
+  // that does not ends it, so a smaller, less important topic never stays
+  // while a more important one moves.
+  //
+  // #1368 — within that rank the topics are equally important, so it keeps
+  // whichever of two prefixes keeps MORE of them: written order (stopping at
+  // the first that does not fit), or smallest first. In written order a large
+  // tied topic ended the prefix ahead of a small one that fitted: run B's
+  // "Content Entities" (2,118 characters) moved behind "Subscription
+  // Structure" (4,263). Smallest first only when it keeps more, so a large
+  // topic the model wrote first is never given up for a small one one-for-one.
+  // Equal sizes keep written order.
   const fits = new Set<Topic>(pinned);
-  for (const topic of ranked) {
-    if (topic.cost > room) break;
-    fits.add(topic);
-    room -= topic.cost;
+  const prefix = (tied: readonly Topic[]): Topic[] => {
+    const kept: Topic[] = [];
+    let left = room;
+    for (const topic of tied) {
+      if (topic.cost > left) break;
+      kept.push(topic);
+      left -= topic.cost;
+    }
+    return kept;
+  };
+  for (let k = 0; k < ranked.length;) {
+    let end = k;
+    while (end < ranked.length && ranked[end].rank === ranked[k].rank) end++;
+    const tied = ranked.slice(k, end);
+    const asWritten = prefix(tied);
+    if (asWritten.length === tied.length) {
+      for (const topic of tied) fits.add(topic);
+      room -= tied.reduce((n, topic) => n + topic.cost, 0);
+      k = end;
+      continue;
+    }
+    const smallest = prefix([...tied].sort((a, b) => a.cost - b.cost || a.order - b.order));
+    for (const topic of smallest.length > asWritten.length ? smallest : asWritten) {
+      fits.add(topic);
+    }
+    break;
   }
+  // Most important first; tied topics in written order.
   const overflow = ranked.filter((topic) => !fits.has(topic));
   const ordered = [...topics.filter((topic) => fits.has(topic)), ...overflow];
   if (ordered.every((topic, k) => topic === topics[k])) return unchanged;
