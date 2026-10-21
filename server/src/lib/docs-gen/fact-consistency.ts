@@ -16,6 +16,25 @@
  *     section, with how many different forms it took. #706 run 7 wrote the
  *     Miniflux scheduler interval in four sections.
  *
+ * #1070 (run 8) — the sheet alone found nothing in a BRD that contradicted
+ * itself in prose: "five distinct authentication mechanisms" against "four
+ * independent authentication paths", `POST /v1/entries/{id}/save` against
+ * `PUT …/save`. Three prose statements are therefore also read, and two
+ * SECTIONS that state one of them differently are reported. A section that
+ * states two values itself is left alone: that is far more often two cases
+ * than a contradiction.
+ *
+ *   - an ENDPOINT stated with a different write method (POST, PUT, PATCH),
+ *     compared line by line, so within one section too; a line that names
+ *     both methods is describing both and is left alone;
+ *   - a COUNT of a qualified kind — "five authentication mechanisms" — where
+ *     the nouns that name a kind of thing (mechanism, path, method, way, mode,
+ *     …) are read as one, and at least one qualifying word is required;
+ *   - a SIZE of a qualified thing — "64-character API token" — in one unit.
+ *
+ * These have no source to compare with, so the note says only that two
+ * sections disagree, and quotes both.
+ *
  * The check only REPORTS. It is a text heuristic over model output: it cannot
  * tell `1440` minutes from `24h`, and two spellings of one formula are two
  * forms to it. So it never edits, removes or rewrites anything — the markdown
@@ -340,12 +359,20 @@ export interface FindingStatement {
   value: string;
 }
 
+/**
+ * `conflict` — a sheet value stated differently. `restated` — a sheet formula,
+ * several sections. `endpoint`, `count`, `size` — a prose statement two
+ * sections make differently (no source to compare with).
+ */
+export type ConsistencyFindingKind = "conflict" | "restated" | "endpoint" | "count" | "size";
+
 export interface ConsistencyFinding {
-  /** `conflict` — a sheet value stated differently. `restated` — a sheet formula, several sections. */
-  kind: "conflict" | "restated";
+  kind: ConsistencyFindingKind;
   name: string;
-  /** The sheet's value and source line. */
-  canonical: { value: string; source: string };
+  /** For a prose finding, what it is about as written ("API token (characters)"). */
+  label?: string;
+  /** The sheet's value and source line; absent for a prose finding. */
+  canonical?: { value: string; source: string };
   statements: FindingStatement[];
   /** Distinct sections among the statements. */
   sections: number;
@@ -355,6 +382,8 @@ export interface ConsistencyFinding {
 
 export interface ConsistencyReport {
   findings: ConsistencyFinding[];
+  /** Statements that had something to be compared with: the source's value or another place. */
+  compared: number;
   /** Statements read, for the log. */
   statements: number;
 }
@@ -395,6 +424,371 @@ function restates(
   return names >= 2 || (names >= 1 && shared(fact.numbers, statement.numbers) >= 2);
 }
 
+// ---------------------------------------------------------------------------
+// Prose statements (#1070, run 8)
+// ---------------------------------------------------------------------------
+
+/** One prose statement: what it is about, its value, and where. */
+export interface ProseStatement {
+  kind: "endpoint" | "count" | "size";
+  /** What it is about, normalised: the path, the kind counted, the thing sized. */
+  key: string;
+  /** What is compared: the method, the count, the size with its unit. */
+  value: string;
+  /** As written (clipped), for the note. */
+  raw: string;
+  /** What it is about as a reader would name it: "API token (characters)". */
+  label: string;
+  /** 1-based line within the scanned text. */
+  line: number;
+}
+
+/** Longest prose statement quoted. */
+const MAX_PROSE_QUOTE = 120;
+
+const WRITE_METHODS = new Set(["POST", "PUT", "PATCH"]);
+/**
+ * How a write method is compared. PUT and PATCH on one path are routinely
+ * both offered (replace and update), so they are one answer; POST against
+ * either is the run-8 contradiction (`POST …/save` vs `PUT …/save`).
+ */
+const updateOrCreate = (method: string): string =>
+  method === "PUT" || method === "PATCH" ? "PUT or PATCH" : method;
+/** `POST /v1/entries/{id}/save`, in a code span or not. One bounded run of path characters. */
+const ENDPOINT = /\b(GET|POST|PUT|PATCH|DELETE)\s+`?(\/[A-Za-z0-9_{}:.~\-/]{0,200})/g;
+
+const NUMBER_WORDS: Readonly<Record<string, number>> = {
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+};
+
+/**
+ * Nouns that name a KIND of thing, each mapped to the class it is compared
+ * in. Only a few nouns for a route to something are read as one —
+ * mechanism, path, way, flow: "five authentication mechanisms" and "four
+ * authentication paths" count the same thing (run 8). A method, a scheme, an
+ * option, a type, a mode or a category is its own noun: "two payment methods"
+ * and "three payment options", or "file paths" and "file types", are
+ * different things (PR #1316 review, both cycles).
+ */
+const KIND_NOUNS: Readonly<Record<string, string>> = {
+  mechanism: "ways",
+  method: "methods",
+  path: "ways",
+  way: "ways",
+  flow: "ways",
+  scheme: "schemes",
+  mode: "modes",
+  option: "options",
+  strategy: "strategies",
+  variant: "variants",
+  type: "types",
+  category: "categories",
+  state: "states",
+  status: "states",
+  role: "roles",
+  level: "levels",
+  format: "formats",
+  scheduler: "schedulers",
+  tier: "tiers",
+  backend: "backends",
+  protocol: "protocols",
+  provider: "providers",
+};
+
+/**
+ * A count, up to three words, then a kind noun. The number must not follow a
+ * digit, a letter, a point or a comma: the `5` of "Version 1.5 release types"
+ * is not a count. Every quantifier is bounded and
+ * the words are separated by required whitespace, so one match attempt costs a
+ * constant and a line is read in linear time.
+ */
+const COUNTED = new RegExp(
+  `(?<![\\w.,-])(${Object.keys(NUMBER_WORDS).join("|")}|[2-9]|[1-9]\\d)\\s+((?:[A-Za-z][A-Za-z0-9/-]{0,30}\\s+){0,3}?)(mechanisms|methods|paths|ways|modes|options|flows|schemes|strategies|variants|types|categories|states|statuses|roles|levels|formats|schedulers|tiers|backends|protocols|providers)\\b`,
+  "gi",
+);
+
+const PROSE_UNITS: Readonly<Record<string, string>> = {
+  byte: "bytes",
+  bytes: "bytes",
+  character: "characters",
+  characters: "characters",
+  char: "characters",
+  chars: "characters",
+  bit: "bits",
+  bits: "bits",
+  digit: "digits",
+  digits: "digits",
+};
+
+/** "64-character API token", "32 byte session key". Bounded like {@link COUNTED}. */
+const SIZED =
+  /(?<![\w.,-])(\d{1,4})[- ](bytes?|characters?|chars?|bits?|digits?)\s+((?:[A-Za-z][A-Za-z0-9-]{0,30}\s+){0,2}?)(tokens?|keys?|secrets?|verifiers?|hashes|hash|digests?|identifiers?|passwords?|salts?|nonces?|codes?|strings?)\b/gi;
+
+/**
+ * Words that qualify nothing: "five DISTINCT authentication mechanisms", a
+ * "32-character HEX string". A phrase of these alone does not say what is
+ * counted or sized, so it is not compared.
+ */
+const FILLER = new Set([
+  "distinct",
+  "independent",
+  "different",
+  "separate",
+  "supported",
+  "main",
+  "core",
+  "key",
+  "primary",
+  "available",
+  "unique",
+  "possible",
+  "built-in",
+  "builtin",
+  "other",
+  "more",
+  "additional",
+  "major",
+  "basic",
+  "standard",
+  "random",
+  "secure",
+  "opaque",
+  "generated",
+  "new",
+  "lowercase",
+  "uppercase",
+  "hex",
+  "hexadecimal",
+  "base64",
+  "alphanumeric",
+  "ascii",
+  "encoded",
+]);
+
+/** A word that makes the phrase something other than "N <qualifier> <kind>". */
+const BREAKS = new Set([
+  "of",
+  "the",
+  "a",
+  "an",
+  "and",
+  "or",
+  "to",
+  "for",
+  "in",
+  "on",
+  "with",
+  "per",
+  "each",
+  "by",
+  "from",
+  "at",
+  "are",
+  "is",
+  "be",
+  "its",
+  "their",
+  "these",
+  "those",
+]);
+
+/** `entries` → `entry`, `feeds` → `feed`: enough for a comparison key. */
+export function singularWord(word: string): string {
+  if (word.length > 4 && word.endsWith("ies")) return `${word.slice(0, -3)}y`;
+  if (/(?:sh|ch|x|z|ss|us)es$/.test(word)) return word.slice(0, -2);
+  if (/(?:ss|us|is)$/.test(word)) return word;
+  return word.length > 3 && word.endsWith("s") ? word.slice(0, -1) : word;
+}
+
+/**
+ * The qualifying words of a phrase, normalised, or null when the phrase does
+ * not qualify a kind ("two of the …", "three ways to …") or holds only filler.
+ */
+function qualifiersOf(words: string): string[] | null {
+  const list = words
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length > 0);
+  if (list.some((w) => BREAKS.has(w))) return null;
+  const kept = list.filter((w) => !FILLER.has(w)).map(singularWord);
+  return kept.length > 0 ? kept : null;
+}
+
+/** The qualifying words as written, filler left out: "distinct authentication" → "authentication". */
+function asWritten(words: string): string {
+  return words
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length > 0 && !FILLER.has(w.toLowerCase()))
+    .join(" ");
+}
+
+/** An endpoint path compared: placeholders as `{}`, no trailing slash or punctuation. */
+export function endpointKey(path: string): string {
+  return path
+    .replace(/[.,;:]+$/, "")
+    .replace(/\{[^}/]*\}|:[A-Za-z_][A-Za-z0-9_]*/g, "{}")
+    .replace(/\/+$/, "");
+}
+
+/** Read one line (not in a fence or a `$$` block) for prose statements. */
+function scanProseLine(written: string, line: number, out: ProseStatement[]): void {
+  // A non-breaking or Unicode hyphen ("64‑character") reads as a hyphen. One
+  // character for one, so every index below is an index into the line.
+  const text = written.replace(/[\u2010\u2011]/g, "-");
+  const quote = (from: number, length: number): string =>
+    text.slice(from, from + Math.min(length, MAX_PROSE_QUOTE)).replace(/`/g, "");
+  for (const m of text.matchAll(ENDPOINT)) {
+    const key = endpointKey(m[2]);
+    if (key.length < 2) continue;
+    const method = m[1].toUpperCase();
+    const path = m[2].replace(/[.,;:]+$/, "");
+    out.push({
+      kind: "endpoint",
+      key,
+      value: updateOrCreate(method),
+      raw: `${method} ${path}`,
+      label: key,
+      line,
+    });
+  }
+  for (const m of text.matchAll(COUNTED)) {
+    const words = qualifiersOf(m[2]);
+    if (!words) continue;
+    const noun = singularWord(m[3].toLowerCase());
+    out.push({
+      kind: "count",
+      key: `${words.join(" ")} ${KIND_NOUNS[noun] ?? `${noun}s`}`,
+      value: String(NUMBER_WORDS[m[1].toLowerCase()] ?? Number(m[1])),
+      raw: quote(m.index, m[0].length),
+      label: `${asWritten(m[2])} ${m[3]}`,
+      line,
+    });
+  }
+  for (const m of text.matchAll(SIZED)) {
+    const words = qualifiersOf(m[3]);
+    if (!words) continue;
+    // The unit is part of what is compared: 32 bytes and 64 characters of hex
+    // are one value, which the check cannot know.
+    out.push({
+      kind: "size",
+      key: `${words.join(" ")} ${singularWord(m[4].toLowerCase())} in ${PROSE_UNITS[m[2].toLowerCase()]}`,
+      value: String(Number(m[1])),
+      raw: quote(m.index, m[0].length),
+      label: `${asWritten(m[3])} ${singularWord(m[4])} (${PROSE_UNITS[m[2].toLowerCase()]})`,
+      line,
+    });
+  }
+}
+
+/**
+ * Every endpoint, count of a kind and size `markdown` states outside code
+ * blocks (tables and code spans included; fenced code and `$$` blocks skipped).
+ */
+export function scanProseStatements(markdown: string): ProseStatement[] {
+  const out: ProseStatement[] = [];
+  const lines = markdown.split("\n");
+  let fence: string | null = null;
+  let mathLines = 0;
+  for (let n = 0; n < lines.length; n++) {
+    const text = lines[n];
+    const trimmed = text.trim();
+    if (fence) {
+      if (trimmed.startsWith(fence) && trimmed.replace(/[`~]/g, "").trim() === "") fence = null;
+      continue;
+    }
+    if (mathLines > 0) {
+      // As `scanFactStatements` reads it: closed by `$$`, or taken as unclosed.
+      mathLines = trimmed.endsWith("$$") || mathLines >= MAX_MATH_LINES ? 0 : mathLines + 1;
+      continue;
+    }
+    const opened = FENCE.exec(text);
+    if (opened) {
+      fence = opened[1];
+      continue;
+    }
+    if (trimmed.startsWith("$$") && !(trimmed.length > 4 && trimmed.endsWith("$$"))) {
+      mathLines = 1;
+      continue;
+    }
+    scanProseLine(text, n + 1, out);
+  }
+  return out;
+}
+
+/**
+ * The prose statements two or more SECTIONS make differently. A statement some
+ * section makes with more than one value is left alone: that section is
+ * describing several cases, and the others may each describe one of them.
+ */
+function proseFindings(statements: ReadonlyArray<ProseStatement & { section: string }>): {
+  findings: ConsistencyFinding[];
+  /** Statements that had another place to be compared with. */
+  compared: number;
+} {
+  const groups = new Map<string, Array<ProseStatement & { section: string }>>();
+  for (const s of statements) {
+    // A read and a write on one path are two operations, not two answers.
+    if (s.kind === "endpoint" && !WRITE_METHODS.has(s.raw.slice(0, s.raw.indexOf(" ")))) continue;
+    const id = `${s.kind}\u0000${s.key}`;
+    const list = groups.get(id) ?? [];
+    list.push(s);
+    groups.set(id, list);
+  }
+  const findings: ConsistencyFinding[] = [];
+  let compared = 0;
+  for (const list of groups.values()) {
+    // An endpoint is compared line by line, within a section too: one path
+    // with two write methods is rare enough to be worth a look (run 8 gave
+    // `…/save` as POST in a table and PUT twenty lines later), and a line
+    // that names both is describing both. Counts and sizes are compared
+    // section by section.
+    const scope = (s: ProseStatement & { section: string }): string =>
+      s.kind === "endpoint" ? `${s.section}\u0000${s.line}` : s.section;
+    const byScope = new Map<string, Set<string>>();
+    for (const s of list) {
+      const values = byScope.get(scope(s)) ?? new Set<string>();
+      values.add(s.value);
+      byScope.set(scope(s), values);
+    }
+    if (byScope.size < 2) continue;
+    compared += list.length;
+    if ([...byScope.values()].some((values) => values.size > 1)) continue;
+    const forms = new Set(list.map((s) => s.value)).size;
+    if (forms < 2) continue;
+    // One quote per place and value: where each says what it says.
+    const quoted = new Map<string, ProseStatement & { section: string }>();
+    for (const s of list) {
+      const id = `${s.section}\u0000${s.value}`;
+      if (!quoted.has(id)) quoted.set(id, s);
+    }
+    findings.push({
+      kind: list[0].kind,
+      name: list[0].key,
+      label: list[0].label,
+      statements: [...quoted.values()].map((s) => ({
+        section: s.section,
+        line: s.line,
+        value: s.raw,
+      })),
+      sections: new Set(list.map((s) => s.section)).size,
+      forms,
+    });
+  }
+  return { findings, compared };
+}
+
 /**
  * Check the sections of one document against each other and against the sheet.
  * `markdown` is each section as it goes into the document, after the length
@@ -406,9 +800,12 @@ export function checkFactConsistency(
   sheet?: Pick<FactSheet, "facts">,
 ): ConsistencyReport {
   const all: Array<StatedValue & { section: string }> = [];
+  const prose: Array<ProseStatement & { section: string }> = [];
   for (const section of sections) {
     for (const s of scanFactStatements(section.markdown))
       all.push({ ...s, section: section.label });
+    for (const s of scanProseStatements(section.markdown))
+      prose.push({ ...s, section: section.label });
   }
   const findings: ConsistencyFinding[] = [];
   const facts = sheet?.facts ?? [];
@@ -428,6 +825,7 @@ export function checkFactConsistency(
     list.push({ ...s, value });
     stated.set(s.name, list);
   }
+  let compared = 0;
   for (const [name, statements] of stated) {
     const fact = canonicalByName.get(name)!;
     const canonical = comparableValue(normalizeForm(fact.value));
@@ -436,6 +834,7 @@ export function checkFactConsistency(
     const differing = statements.filter(
       (s) => s.value.slice(0, s.value.indexOf(":")) === cls && s.value !== canonical,
     );
+    compared += statements.filter((s) => s.value.slice(0, s.value.indexOf(":")) === cls).length;
     if (differing.length === 0) continue;
     findings.push({
       kind: "conflict",
@@ -458,6 +857,7 @@ export function checkFactConsistency(
     if (operands.names.size === 0) continue;
     const matches = expressions.filter((e) => restates(operands, e.operands));
     const inSections = new Set(matches.map((m) => m.statement.section));
+    compared += matches.length;
     if (inSections.size < 2) continue;
     findings.push({
       kind: "restated",
@@ -472,10 +872,14 @@ export function checkFactConsistency(
       forms: new Set(matches.map((m) => m.statement.form)).size,
     });
   }
+  // #1070 (run 8) — prose statements two sections make differently.
+  const fromProse = proseFindings(prose);
+  findings.push(...fromProse.findings);
+  compared += fromProse.compared;
   // By code unit, like the sheet: the note lists its findings in the same
   // order on every machine, which `localeCompare` does not promise.
   findings.sort((a, b) => compareCodeUnits(a.kind, b.kind) || compareCodeUnits(a.name, b.name));
-  return { findings, statements: all.length };
+  return { findings, statements: all.length + prose.length, compared };
 }
 
 const quote = (s: string): string => `\`${s.replace(/`/g, "'").slice(0, 80)}\``;
@@ -486,7 +890,18 @@ function describeFinding(f: ConsistencyFinding): string {
   const where = `${listed.map((s) => `${quote(s.value)} in ${s.section}`).join("; ")}${
     more > 0 ? `; and ${more} more` : ""
   }`;
-  const canonical = ` The source has ${quote(f.canonical.value)} at ${f.canonical.source}.`;
+  if (f.kind === "endpoint" || f.kind === "count" || f.kind === "size") {
+    const what =
+      f.kind === "endpoint"
+        ? `the endpoint ${quote(f.name)} is given ${f.forms} different methods`
+        : f.kind === "count"
+          ? `the number of ${quote(f.label ?? f.name)} is given ${f.forms} different ways`
+          : `the size of ${quote(f.label ?? f.name)} is given ${f.forms} different ways`;
+    return `${what} in ${f.sections === 1 ? "one section" : `${f.sections} sections`} (${where}).`;
+  }
+  const canonical = f.canonical
+    ? ` The source has ${quote(f.canonical.value)} at ${f.canonical.source}.`
+    : "";
   return f.kind === "conflict"
     ? `${quote(f.name)} is stated with a value that is not the source's (${where}).${canonical}`
     : `the formula ${quote(f.name)} is written out ${f.statements.length} times in ${f.sections} sections, in ${f.forms} form${f.forms === 1 ? "" : "s"} (${where}).${canonical}`;
@@ -500,13 +915,17 @@ export function factInconsistentWarning(report: ConsistencyReport): DocWarning |
   const { findings } = report;
   if (findings.length === 0) return null;
   const conflicts = findings.filter((f) => f.kind === "conflict").length;
-  const restated = findings.length - conflicts;
+  const restated = findings.filter((f) => f.kind === "restated").length;
+  const disagree = findings.length - conflicts - restated;
   const counts = [
     conflicts > 0
       ? `${conflicts} value${conflicts === 1 ? "" : "s"} stated differently from the source`
       : "",
     restated > 0
       ? `${restated} formula${restated === 1 ? "" : "s"} written out in more than one section`
+      : "",
+    disagree > 0
+      ? `${disagree} statement${disagree === 1 ? "" : "s"} made in more than one way`
       : "",
   ]
     .filter(Boolean)
