@@ -191,11 +191,13 @@ Before creating the PR, perform a comprehensive security review:
      There is no global limiter. Chain `<preAuthLimiter>, requireAuth, <userLimiter>, …`
      inline on each route, each limiter a module-scoped `rateLimit()` result: CodeQL's
      `js/missing-rate-limiting` counts only a limiter ahead of `requireAuth`. Key the
-     pre-auth one on the user id in a token this server signed (expiry ignored), else the
-     TCP peer; never on `req.ip` (client-writable `X-Forwarded-For` under `trust proxy`),
-     nor on the presented token. `spec-kit-delete-rate-limit.ts` keys on `req.ip`: it is the
-     example to avoid, not a template. Copy `runs-rate-limit.ts`'s tests too,
-     including the expired-token case (`runs-rate-limit.test.ts`).
+     pre-auth one on the user id in a token this server signed (`signedAccessTokenUserId`:
+     expired at most 15 minutes, #1117), else the TCP peer; never on `req.ip`
+     (client-writable `X-Forwarded-For` under `trust proxy`), nor on the presented token.
+     Answer a spent peer bucket with `requireAuth`'s 401, not 429 (the `handler` of `runsPreAuthRateLimiter`).
+     `spec-kit-delete-rate-limit.ts` keys on `req.ip`: it is the example to avoid, not a
+     template. Copy `runs-rate-limit.ts`'s tests too, including both expired-token cases
+     (`runs-rate-limit.test.ts`).
 3. **Report to user** — Present findings with severity and suggested fixes
 4. **Apply fixes** — Fix all identified vulnerabilities and re-run tests
 

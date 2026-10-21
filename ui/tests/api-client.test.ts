@@ -637,3 +637,36 @@ describe("retryable refresh refusal (#582)", () => {
     expect(onFail).toHaveBeenCalledTimes(1);
   });
 });
+
+// #1117 — on `/api/runs` a 429 now reaches only a SIGNED-IN user past their
+// own budget (an anonymous browser is told the 401 it recovers from). So the
+// UI treats it as "retry later": no refresh, no sign-out, the error surfaced to
+// the caller, and a poller simply tries again on its next tick.
+describe("429 RUNS_RATE_LIMITED on /api/runs (#1117)", () => {
+  const limited = { success: false, error: { code: "RUNS_RATE_LIMITED", message: "Too many" } };
+
+  it("surfaces as a retry-later ApiError: no refresh, no sign-out", async () => {
+    const onFail = vi.fn();
+    setOnRefreshFailure(onFail);
+    for (const path of ["/runs/background", "/runs", "/runs/r1/steer"]) {
+      fetchMock.mockResolvedValueOnce(makeResponse(limited, { status: 429 }));
+      const err = await apiFetch(path).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err).toMatchObject({ status: 429, code: "RUNS_RATE_LIMITED" });
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.map((c) => c[0])).not.toContain("/api/auth/refresh");
+    expect(onFail).not.toHaveBeenCalled();
+  });
+
+  it("the anonymous answer is a 401 AUTH_REQUIRED, which refreshes and retries", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        makeResponse({ success: false, error: { code: "AUTH_REQUIRED" } }, { status: 401 }),
+      )
+      .mockResolvedValueOnce(makeResponse({ success: true }, { status: 200 }))
+      .mockResolvedValueOnce(makeResponse({ success: true, data: { items: [] } }));
+    expect(await apiFetch("/runs/background")).toEqual({ items: [] });
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/auth/refresh");
+  });
+});
