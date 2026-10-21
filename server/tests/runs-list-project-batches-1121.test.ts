@@ -101,8 +101,10 @@ describe("#1121 listRuns over more reachable projects than a statement can name"
       run("r-early", project(0), 1),
       run("r-b1-new", project(10), 50),
       run("r-b3-new", project(950), 49),
-      run("r-tie-a", project(500), 40),
-      run("r-tie-z", project(5), 40),
+      // A tie whose BATCH order (project 5 is read first) is the opposite of the
+      // id order the page needs, so only the merge's id tie-break puts z first.
+      run("r-tie-a", project(5), 40),
+      run("r-tie-z", project(500), 40),
       run("r-mid", project(820), 30),
       run("x-outside", "p-elsewhere", 59),
       run("x-system", null, 58),

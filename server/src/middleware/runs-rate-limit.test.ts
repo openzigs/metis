@@ -3,7 +3,7 @@
  * on which route, and in what order relative to `requireAuth`, is asserted on
  * the REAL router in `tests/runs-chat-turns-route.sqlite.test.ts`.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import express from "express";
 import request from "supertest";
 import type { Request } from "express";
@@ -170,10 +170,16 @@ describe("#1117 runsPreAuthRateLimiter — what a spent guard answers", () => {
     return authorization ? r.set("Authorization", authorization) : r;
   };
 
-  beforeAll(async () => {
+  beforeAll(() => {
     process.env.RUNS_PREAUTH_LIMIT_MAX = "1";
-    // Spend the loopback peer's bucket.
-    expect((await call()).status).toBe(200);
+  });
+  // Spend the loopback peer's bucket in a per-test hook, never in `beforeAll`:
+  // `tests/setup.ts` installs the supertest loopback spy in `beforeEach` and
+  // `vi.restoreAllMocks()` drops it after each test, so a `beforeAll` request
+  // leaves from 127.0.0.1 and a test's from ::1 — two different peers, and the
+  // spend never counted (the first version passed only on retry).
+  beforeEach(async () => {
+    await call();
   });
   afterAll(() => {
     delete process.env.RUNS_PREAUTH_LIMIT_MAX;
