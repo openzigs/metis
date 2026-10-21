@@ -135,7 +135,7 @@ export function buildGroundingMessages(
 const groundingSchema = z.object({
   status: z.enum(["grounded", "partial", "open"]),
   answer: z.unknown().optional(),
-  citationIndexes: z.array(z.unknown()).optional(),
+  citationIndexes: z.array(z.unknown()).nullish(),
 });
 
 const GROUNDING_SHAPE =

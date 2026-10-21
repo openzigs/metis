@@ -242,6 +242,21 @@ describe("ClarificationDialog", () => {
       expect(result.updatedRequirements.requirements[0]!.description).toBe("A test requirement");
     });
 
+    it("applies the description when resolvedFields is null (panel finding)", async () => {
+      const provider = mockProvider(
+        JSON.stringify({ resolvedFields: null, updatedDescription: "Clarified." }),
+      );
+      await seedRound();
+      const result = await new ClarificationDialog({ provider }).submitAnswers(
+        "test-analysis",
+        [{ questionId: "q-1", answer: "Field-0 means X" }],
+        makeRequirements(),
+      );
+      expect(provider.chat).toHaveBeenCalledTimes(1);
+      expect(result.state.rounds[0]!.unreadResolutions).toBeUndefined();
+      expect(result.updatedRequirements.requirements[0]!.description).toBe("Clarified.");
+    });
+
     it("records nothing when the resolution answer is read", async () => {
       const provider = mockProvider(
         JSON.stringify({ resolvedFields: [], remainingUncertainty: 1 }),

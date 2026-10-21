@@ -122,6 +122,16 @@ describe("NfrElicitor.elicit — #1081 unreadable answers", () => {
     expect(result.nfrs).toEqual([]);
   });
 
+  it("reads a null list as absent and keeps its sibling, in one call (panel finding)", async () => {
+    const provider = mockProvider(
+      JSON.stringify({ nfrs: null, acceptanceCriteria: [{ statement: "Login works." }] }),
+    );
+    const result = await new NfrElicitor({ provider }).elicit("The system must be fast.");
+    expect(provider.chat).toHaveBeenCalledTimes(1);
+    expect(result.unread).toBeUndefined();
+    expect(result.acceptanceCriteria).toHaveLength(1);
+  });
+
   it("does not mark a legitimately empty answer unread", async () => {
     const provider = mockProvider(JSON.stringify({ nfrs: [], acceptanceCriteria: [] }));
     const result = await new NfrElicitor({ provider }).elicit("The system must be fast.");

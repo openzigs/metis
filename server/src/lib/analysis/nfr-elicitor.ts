@@ -81,10 +81,10 @@ export interface NfrElicitationResult extends NfrAcceptanceResult {
  */
 const envelopeSchema = z
   .object({
-    nfrs: z.array(z.unknown()).optional(),
-    acceptanceCriteria: z.array(z.unknown()).optional(),
+    nfrs: z.array(z.unknown()).nullish(),
+    acceptanceCriteria: z.array(z.unknown()).nullish(),
   })
-  .refine((o) => o.nfrs !== undefined || o.acceptanceCriteria !== undefined, {
+  .refine((o) => o.nfrs != null || o.acceptanceCriteria != null, {
     message: "expected an nfrs or acceptanceCriteria array",
   });
 type NfrEnvelope = z.infer<typeof envelopeSchema>;

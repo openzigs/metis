@@ -70,10 +70,10 @@ export interface AssumptionRiskElicitationResult extends AssumptionRiskResult {
 /** #1081 — the envelope only; items are still read one by one below. */
 const envelopeSchema = z
   .object({
-    assumptions: z.array(z.unknown()).optional(),
-    risks: z.array(z.unknown()).optional(),
+    assumptions: z.array(z.unknown()).nullish(),
+    risks: z.array(z.unknown()).nullish(),
   })
-  .refine((o) => o.assumptions !== undefined || o.risks !== undefined, {
+  .refine((o) => o.assumptions != null || o.risks != null, {
     message: "expected an assumptions or risks array",
   });
 type AssumptionRiskEnvelope = z.infer<typeof envelopeSchema>;

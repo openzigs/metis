@@ -651,7 +651,7 @@ const QUESTIONS_SHAPE =
  * without a word.
  */
 const resolutionSchema = z.object({
-  resolvedFields: z.array(z.unknown()).optional(),
+  resolvedFields: z.array(z.unknown()).nullish(),
   updatedDescription: z.unknown().optional(),
   remainingUncertainty: z.unknown().optional(),
 });
