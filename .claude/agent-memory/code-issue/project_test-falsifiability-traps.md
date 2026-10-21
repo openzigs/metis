@@ -96,3 +96,11 @@ Older single-trap entries, folded here (retired from the index 2026-10-16; files
   cannot see a plain `r.use(handler)` layer; see [[project-access-guard-wiring]] (#1344).
 - **A sanitiser needs an idempotence test:** scrub twice, the second pass changes nothing.
   It caught two fence re-formations on #1350; see [[fence-scrub-unicode-traps]].
+
+**From #930 (2026-10-21).**
+- **A race barrier must hold racers AFTER their first statement returns, not before it runs.**
+  Releasing gated calls together let a check-then-act mutation pass on Postgres: the pg pool
+  opens a second connection lazily, so one racer read and wrote before the other's read ran.
+  Same barrier failed the mutation on SQLite. See `server/tests/helpers/approval-review-race-suite.ts`.
+- **Assert the barrier filled.** A barrier with a fallback timer that opens it early forced no
+  interleave; fail the test unless every racer arrived before it opened (#1359 review).
