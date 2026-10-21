@@ -22,6 +22,7 @@ import compression from "compression";
 import cookieParser from "cookie-parser";
 import { MAX_DOCUMENT_BYTES } from "@metis/shared";
 import { requestLogger } from "./middleware/request-logger.js";
+import { csrfProtection } from "./middleware/csrf-protection.js";
 import { errorHandler, notFoundHandler } from "./middleware/error-handler.js";
 import { apiRouter } from "./routes/index.js";
 import { reconciliationJson } from "./routes/admin/auth-reconciliation.js";
@@ -105,12 +106,8 @@ export function createApp(opts: CreateAppOptions = {}): Application {
   app.set("trust proxy", parseTrustProxy(process.env.TRUST_PROXY));
 
   app.use(helmet());
-  app.use(
-    cors({
-      origin: opts.corsOrigin ?? process.env.CORS_ORIGIN ?? "http://localhost:3000",
-      credentials: true,
-    }),
-  );
+  const corsOrigin = opts.corsOrigin ?? process.env.CORS_ORIGIN ?? "http://localhost:3000";
+  app.use(cors({ origin: corsOrigin, credentials: true }));
   // Issue #579 — mount the Slack Bolt receiver BEFORE the global JSON body parser
   // so Bolt can read+verify the RAW request body (Slack signs the raw bytes; a
   // pre-parsed body would break signature verification). Mounted only when
@@ -138,6 +135,9 @@ export function createApp(opts: CreateAppOptions = {}): Application {
   );
   app.use(express.urlencoded({ extended: true, limit: JSON_LIMIT }));
   app.use(cookieParser());
+  // #913 — a state-changing request authenticated by a session cookie (not a
+  // bearer header) must carry X-METIS-CSRF and not come from another origin.
+  app.use(csrfProtection({ trustedOrigins: corsOrigin.split(",") }));
   app.use(compression());
   app.use(requestLogger);
   app.use(metricsMiddleware);

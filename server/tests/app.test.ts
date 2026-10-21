@@ -261,4 +261,82 @@ describe("createApp", () => {
     expect(cookieStr).toMatch(/accessToken=;/);
     expect(cookieStr).toMatch(/refreshToken=;/);
   });
+  // #913 — CSRF on the cookie-authenticated path.
+  describe("CSRF protection (#913)", () => {
+    async function refreshCookie(): Promise<string> {
+      const login = await request(app)
+        .post("/api/auth/login")
+        .send({ username: "developer", password: "password" });
+      return `refreshToken=${login.body.data.refreshToken as string}`;
+    }
+
+    it("refuses a cookie-authenticated write without X-METIS-CSRF", async () => {
+      const res = await request(app)
+        .post("/api/auth/refresh")
+        .set("Cookie", await refreshCookie());
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("CSRF_REJECTED");
+    });
+
+    it("serves a cookie-authenticated write that carries X-METIS-CSRF", async () => {
+      const res = await request(app)
+        .post("/api/auth/refresh")
+        .set("Cookie", await refreshCookie())
+        .set("X-METIS-CSRF", "1");
+      expect(res.status).toBe(200);
+      expect(res.body.data.accessToken).toBeTypeOf("string");
+    });
+
+    it("refuses a cookie-authenticated write the browser marks cross-site, header or not", async () => {
+      const res = await request(app)
+        .post("/api/auth/refresh")
+        .set("Cookie", await refreshCookie())
+        .set("X-METIS-CSRF", "1")
+        .set("Sec-Fetch-Site", "cross-site")
+        .set("Origin", "https://evil.example");
+      expect(res.status).toBe(403);
+    });
+
+    it("serves the configured UI origin (CORS_ORIGIN) on a cookie-authenticated write", async () => {
+      const res = await request(app)
+        .post("/api/auth/refresh")
+        .set("Cookie", await refreshCookie())
+        .set("X-METIS-CSRF", "1")
+        .set("Sec-Fetch-Site", "same-site")
+        .set("Origin", "http://localhost:3000");
+      expect(res.status).toBe(200);
+    });
+
+    it("does not gate a bearer-authenticated write that also carries cookies", async () => {
+      const login = await request(app)
+        .post("/api/auth/login")
+        .send({ username: "reader", password: "password" });
+      const res = await request(app)
+        .post("/api/auth/logout")
+        .set("Authorization", `Bearer ${login.body.data.accessToken as string}`)
+        .set("Cookie", `accessToken=${login.body.data.accessToken as string}`)
+        .set("Sec-Fetch-Site", "cross-site");
+      expect(res.status).toBe(200);
+    });
+
+    it("leaves the SAML ACS reachable for the identity provider's cross-site POST", async () => {
+      const res = await request(app)
+        .post("/api/auth/saml/acs")
+        .set("Cookie", await refreshCookie())
+        .set("Sec-Fetch-Site", "cross-site")
+        .send({ SAMLResponse: "x" });
+      expect(res.status).not.toBe(403);
+    });
+
+    it("never gates a read", async () => {
+      const login = await request(app)
+        .post("/api/auth/login")
+        .send({ username: "reader", password: "password" });
+      const res = await request(app)
+        .get("/api/auth/me")
+        .set("Cookie", `accessToken=${login.body.data.accessToken as string}`)
+        .set("Sec-Fetch-Site", "cross-site");
+      expect(res.status).toBe(200);
+    });
+  });
 });

@@ -43,7 +43,7 @@
   secret, and a secret shorter than 32 bytes is rejected there too. Using the fallback logs
   a loud startup warning. Generate one with `openssl rand -hex 32` (`pnpm bootstrap` does
   this for you locally).
-- **Refresh token** — opaque ULID stored in an `httpOnly`, `Secure`, `SameSite=Strict` cookie. Rotated on every refresh.
+- **Refresh token** — stored in an `httpOnly`, `SameSite=Lax` cookie (`Secure` in production). Rotated on every refresh.
 - Logout revokes the active refresh row server-side.
 
 ### 2.3 RBAC
@@ -75,6 +75,38 @@ exact path match (`isRateLimitExempt` in `server/src/middleware/rate-limit.ts`):
 
 All credential-accepting routes (`/login`, `/refresh`, `/logout`, SSO callbacks)
 and every other `/sso/*` route remain throttled.
+
+### 2.5 Cross-site request forgery (#913)
+
+The browser never holds an API credential it could be tricked into sending
+anywhere but METIS: its session is the `metis.at` / `metis.rt` cookies on the
+UI origin (`HttpOnly`, `SameSite=Lax`), and the UI's `/api/*` proxy turns the
+access cookie into the `Authorization: Bearer` header the API reads. Two checks
+sit on top of `SameSite=Lax`, which keeps the cookies off a cross-*site* POST
+but not off one from a sibling subdomain (same site, other origin):
+
+| Where | What is refused | Code |
+|---|---|---|
+| UI proxy (`/api/*`, `/api/auth/login`, `/logout`, `/refresh`) | Any `POST`/`PUT`/`PATCH`/`DELETE` whose `Sec-Fetch-Site` is not `same-origin`/`none`, or — without Fetch Metadata — whose `Origin` is not this host (`Host` or `X-Forwarded-Host`). | `ui/src/lib/csrf-guard.ts` |
+| API (`createApp`) | A state-changing request authenticated by the `accessToken`/`refreshToken` cookie rather than a bearer header, unless it carries `X-METIS-CSRF` **and** is not marked cross-origin (as above, with `CORS_ORIGIN` trusted). | `server/src/middleware/csrf-protection.ts` |
+
+Both answer 403 `CSRF_REJECTED`. The UI-side rule is the algorithm of Go's
+`http.CrossOriginProtection`: it needs no token and no client change, and a
+request with neither `Sec-Fetch-Site` nor `Origin` (a webhook, a script) passes
+because no browser can be forged into sending it. Reads (`GET`/`HEAD`/`OPTIONS`)
+are never gated, so no route may change state on a `GET`.
+
+- **Bearer requests are exempt** — a page on another origin cannot attach an
+  `Authorization` header without a CORS preflight, which `CORS_ORIGIN` refuses.
+- **The SAML ACS (`POST /api/auth/saml/acs`) is exempt** — the identity provider
+  posts to it cross-origin by design, and it is authenticated by the signed
+  assertion.
+- **Webhooks and the Slack receiver** carry an HMAC signature and no session
+  cookie, so neither check applies to them.
+- **A deployment that serves the UI under another origin than the browser
+  sends** (a proxy rewriting `Host` without `X-Forwarded-Host`, over plain HTTP
+  where browsers omit Fetch Metadata) lists that origin in
+  `METIS_TRUSTED_ORIGINS` (comma-separated) on the UI server.
 
 ---
 
