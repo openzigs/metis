@@ -34,19 +34,35 @@ import {
 
 const RETENTION = "Removed entries are purged after 60 days";
 
+/**
+ * A repository module whose facts carry a mined rule (#155). The Business
+ * Rules section reads mined rules, so its facts source holds the deterministic
+ * `MINED_RULES` line. The LLM bullets name a line too; it must never be pinned.
+ */
 function retentionModule(): ModuleFacts {
   return {
-    modulePath: "src/storage",
+    repository: { codeGraphId: "g1", repoConnectorId: "r1" },
+    modulePath: "internal/storage",
     moduleName: "storage",
     classCount: 1,
     methodCount: 4,
     facts: [
       "PURPOSE",
-      `storage keeps feeds and entries. ${RETENTION.toLowerCase()} (src/storage/entry.go:310).`,
-      "Each request returns at most 1000 entries (src/storage/query.go:42).",
+      "storage keeps feeds and entries.",
       "RULES",
-      `- ${RETENTION} (src/storage/entry.go:310)`,
+      `- ${RETENTION} (internal/storage/entry.go:999)`,
     ].join("\n"),
+    minedRules: [
+      {
+        language: "go",
+        kind: "retention",
+        expression: "cleanupRemovedEntriesDays = 60",
+        summary: RETENTION.toLowerCase(),
+        file: "internal/storage/entry.go",
+        line: 310,
+        context: null,
+      },
+    ],
     formulas: [],
     topClasses: [],
   };
@@ -102,8 +118,8 @@ function run(provider: AIProvider) {
   return synthesizeFinalDocument(
     [retentionModule()],
     META,
-    "architecture",
-    "Architecture",
+    "business-requirements",
+    "BRD",
     routerFor(provider),
     "p1",
     undefined,
@@ -134,13 +150,17 @@ describe("cited source lines (#737)", () => {
   it("pins the footnote of a module-facts citation to the line its sentence restates", async () => {
     const result = await run(fakeModel());
     expect(result.markdown).toMatch(
-      /^\[\^src-1\]: `src\/storage\/entry\.go:310` — `storage` \(module facts\)$/m,
+      /^\[\^src-\d+\]: `internal\/storage\/entry\.go:310` — `internal\/storage` \(module facts\)$/m,
     );
     expect(result.markdown).not.toMatch(/\[facts:/);
+    // The LLM bullet's own locator is never a footnote.
+    expect(result.markdown).not.toContain("entry.go:999");
     const cited = [...result.citedLines.values()];
     expect(cited.length).toBeGreaterThan(0);
     for (const lines of cited) {
-      expect(lines).toEqual([{ filePath: "src/storage/entry.go", startLine: 310, endLine: 310 }]);
+      expect(lines).toEqual([
+        { filePath: "internal/storage/entry.go", startLine: 310, endLine: 310 },
+      ]);
     }
   });
 
@@ -150,9 +170,9 @@ describe("cited source lines (#737)", () => {
     const manifest = parseGeneratedDocVersionManifest(
       buildGeneratedDocVersionManifest({
         revision: { projectId: "p1", generatedDocumentId: "d1", version: 1 },
-        title: "Architecture",
+        title: "BRD",
         scope: "full",
-        docType: "architecture",
+        docType: "business-requirements",
         generatedAt: new Date("2026-10-20T00:00:00Z"),
         policy: {
           projectId: "p1",
@@ -177,7 +197,7 @@ describe("cited source lines (#737)", () => {
     expect(withLines.length).toBeGreaterThan(0);
     for (const row of withLines) {
       expect(row.citedLines).toEqual([
-        { filePath: "src/storage/entry.go", startLine: 310, endLine: 310 },
+        { filePath: "internal/storage/entry.go", startLine: 310, endLine: 310 },
       ]);
     }
     // A source no footnote named a line of carries no field at all.

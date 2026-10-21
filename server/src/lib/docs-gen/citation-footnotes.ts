@@ -17,11 +17,12 @@
  *     per-section rank-suffixed id differs (`facts:…:0` vs `facts:…:3`);
  *   - each definition names the source a reader can open: the module path, or
  *     `file:start-end` for a typed-symbol source;
- *   - a module-facts citation is pinned to the `file:line` in that module's
- *     facts (a mined rule's locator, #155) whose line its sentence restates,
- *     when one matches well enough ({@link pinnedLocator}); otherwise it stays
- *     the module path. Modules are cited far more than symbols, so without this
- *     a whole architecture document carried no `file:line` at all;
+ *   - a module-facts citation is pinned to the `file:line` of the one mined
+ *     rule (#155) in that module's facts that its sentence clearly restates
+ *     ({@link pinnedLocator}: two shared content words at least, and no tie);
+ *     otherwise it stays the module path. Modules are cited far more than
+ *     symbols, so without this a whole architecture document carried no
+ *     `file:line` at all;
  *   - a parenthesised run of markers collapses to the references alone;
  *   - an id that matches no admitted source is dropped, as before;
  *   - a bare id the model copied into its own prose or key table is replaced by
@@ -94,14 +95,18 @@ const code = (s: string): string => `\`${s.replace(/`/g, "")}\``;
  */
 const CANONICAL_FACT_ID = /^facts:canon:cf-[0-9a-f]{10}$/;
 
-/** One `file:line` or `file:start-end` locator found in a source's text. */
+/** One mined rule's `file:line`, read from a module-facts source's text. */
 export interface SourceLineLocator {
   filePath: string;
   startLine: number;
   endLine: number;
-  /** `file:line` or `file:start-end`, as a reader sees it. */
+  /** `file:line`, as a reader sees it. */
   locator: string;
-  /** The words of the text line the locator stands on, for matching a sentence to it. */
+  /**
+   * The words of the rule's line WITHOUT its locator: a path's words
+   * (`internal`, `storage`, `entry`) are shared by every rule of a module, so
+   * counting them would pin any sentence about the module to one of its rules.
+   */
   words: ReadonlySet<string>;
 }
 
@@ -113,16 +118,32 @@ export interface CitedLine {
 }
 
 /**
- * One whitespace-delimited token that is a whole locator. Anchored, and run on
- * one token at a time of at most {@link MAX_LOCATOR_TOKEN} characters that
- * holds a colon, so it stays linear: the facts text is model output that
- * repository content can steer.
+ * The languages the miner writes (`MinedRuleLanguage`, `fact-slices.ts`). A
+ * mined rule's line is `- [<language> <kind>] \`<expr>\` — <summary> (<file>:<line>)`
+ * (`minedRuleLine`); only lines of that shape, inside a `MINED_RULES` block,
+ * are pinnable. The LLM-written bullets around them may carry a locator the
+ * summariser invented, so they never are.
  */
-const LOCATOR_TOKEN_RE = /^([\w./-]+\.[A-Za-z0-9]+):(\d{1,7})(?:-(\d{1,7}))?$/;
-const MAX_LOCATOR_TOKEN = 512;
-/** Punctuation a locator is wrapped in: `(x.go:42)`, `` `x.go:42` ``, `x.go:42,`. */
-const LOCATOR_LEAD_RE = /^[([{<`'"]+/;
-const LOCATOR_TAIL_RE = /[)\]}>`'",;.:]+$/;
+const MINED_LANGUAGES = "java|ts|js|py|go|sas|sql|cs|kt|cbl|scala|rs|c|cpp";
+/**
+ * The mined-rule line, anchored at both ends. Linear: `.*` is followed by a
+ * literal ` (` and a class that excludes it, and the file class excludes `(`,
+ * `)`, `:` and whitespace, so each position is tried a bounded number of ways.
+ */
+const MINED_RULE_LINE_RE = new RegExp(
+  String.raw`^- \[(?:${MINED_LANGUAGES}) [^\]\n]{1,80}\] .* \(([^()\s:]{1,400}):(\d{1,7})\)\s*$`,
+);
+/** The heading a mined-rule inventory or page opens with (`fact-slices.ts`). */
+const MINED_RULES_HEADING_RE = /^MINED_RULES\b/;
+/** The longest facts line read for a rule; a longer one is not a rule `minedRuleLine` wrote. */
+const MAX_RULE_LINE = 1_200;
+
+/**
+ * A source file's extension: a locator must name a file, so a host and port
+ * (`redis.example.com:6379`, `host.docker.internal:5432`) never reads as one.
+ */
+const SOURCE_EXTENSION_RE =
+  /\.(?:java|kt|kts|scala|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|go|rs|c|h|cc|cpp|cxx|hpp|hh|cs|sql|sas|cbl|cob|cpy)$/i;
 
 const STOP_WORDS = new Set(
   (
@@ -144,7 +165,7 @@ function stem(word: string): string {
   return w;
 }
 
-/** Marks a number among the words: it counts double, as a limit or a period names one rule. */
+/** Marks a number among the words. */
 const NUMBER_PREFIX = "#";
 
 /**
@@ -170,43 +191,62 @@ function wordsOf(text: string): Set<string> {
 }
 
 /**
- * Every `path.ext:line` / `path.ext:start-end` locator in `text`, in order,
- * each with the words of the line it stands on. Only a whole
- * whitespace-delimited token (less any wrapping punctuation) counts.
+ * The mined rules' locators in a module-facts source's text, in order, each
+ * with the words of its line less the locator. A locator must name a source
+ * file and, when `modulePath` is given, lie in that module: a rule of another
+ * module is not this module's evidence.
  */
-export function sourceLineLocators(text: string): SourceLineLocator[] {
+export function sourceLineLocators(text: string, modulePath?: string | null): SourceLineLocator[] {
   const out: SourceLineLocator[] = [];
+  const within = modulePath?.replace(/\/+$/, "");
+  let inMined = false;
   for (const line of text.split("\n")) {
-    let words: Set<string> | undefined;
-    for (const raw of line.split(/\s+/)) {
-      if (raw.length > MAX_LOCATOR_TOKEN || !raw.includes(":")) continue;
-      const m = LOCATOR_TOKEN_RE.exec(
-        raw.replace(LOCATOR_LEAD_RE, "").replace(LOCATOR_TAIL_RE, ""),
-      );
-      if (!m) continue;
-      const startLine = Number(m[2]);
-      const endLine = m[3] ? Number(m[3]) : startLine;
-      if (startLine < 1 || endLine < startLine) continue;
-      words ??= wordsOf(line);
-      out.push({
-        filePath: m[1],
-        startLine,
-        endLine,
-        locator: endLine === startLine ? `${m[1]}:${startLine}` : `${m[1]}:${startLine}-${endLine}`,
-        words,
-      });
+    if (MINED_RULES_HEADING_RE.test(line)) {
+      inMined = true;
+      continue;
     }
+    if (!line.startsWith("- ")) {
+      inMined = false;
+      continue;
+    }
+    if (!inMined || line.length > MAX_RULE_LINE) continue;
+    const m = MINED_RULE_LINE_RE.exec(line);
+    if (!m) continue;
+    const [locatorText, filePath, lineText] = [`(${m[1]}:${m[2]})`, m[1], m[2]];
+    const startLine = Number(lineText);
+    if (startLine < 1 || !SOURCE_EXTENSION_RE.test(filePath)) continue;
+    if (within && within !== "." && filePath !== within && !filePath.startsWith(`${within}/`)) {
+      continue;
+    }
+    out.push({
+      filePath,
+      startLine,
+      endLine: startLine,
+      locator: `${filePath}:${startLine}`,
+      words: wordsOf(line.slice(0, line.lastIndexOf(locatorText))),
+    });
   }
   return out;
 }
 
-/** The least overlap that pins a citation to a line: a number and a word, or three words. */
-const PIN_MIN_SCORE = 3;
+/**
+ * The least overlap that pins a citation to a rule: two content words in
+ * common. A number does not count towards it. Business prose repeats a few
+ * small numbers (10, 30, 60, 100) about unrelated things, so "API keys are
+ * rotated every 60 days" shares a number and the word "day" with a retention
+ * rule and is still about something else; one word and a number pinned it.
+ * Two words are what a sentence restating the rule shares with it in every
+ * case the tests hold, and anything less keeps the module footnote, which was
+ * the behaviour before pinning.
+ */
+const PIN_MIN_WORDS = 2;
 
 /**
- * The locator whose line `sentence` restates best, or null when none shares
- * enough of its words ({@link PIN_MIN_SCORE}; a number counts two). Ties go to
- * the first in the text. Deterministic and pure.
+ * The rule whose line `sentence` restates best, or null. A rule qualifies when
+ * the two share at least {@link PIN_MIN_WORDS} content words; among those that
+ * do, the score is the shared words plus two per shared number, so a number
+ * decides between two rules a sentence matches equally in words. A tie at the
+ * best score is ambiguous and pins nothing. Deterministic and pure.
  */
 export function pinnedLocator(
   sentence: string,
@@ -215,16 +255,27 @@ export function pinnedLocator(
   if (locators.length === 0) return null;
   const words = wordsOf(sentence);
   let best: SourceLineLocator | null = null;
-  let bestScore = PIN_MIN_SCORE - 1;
+  let bestScore = 0;
+  let tied = false;
   for (const locator of locators) {
-    let score = 0;
-    for (const w of words) if (locator.words.has(w)) score += w.startsWith(NUMBER_PREFIX) ? 2 : 1;
+    let shared = 0;
+    let numbers = 0;
+    for (const w of words) {
+      if (!locator.words.has(w)) continue;
+      if (w.startsWith(NUMBER_PREFIX)) numbers += 1;
+      else shared += 1;
+    }
+    if (shared < PIN_MIN_WORDS) continue;
+    const score = shared + 2 * numbers;
     if (score > bestScore) {
       best = locator;
       bestScore = score;
+      tied = false;
+    } else if (score === bestScore) {
+      tied = true;
     }
   }
-  return best;
+  return tied ? null : best;
 }
 
 /** A module-facts source: not a canonical fact and not a typed symbol. */
@@ -248,23 +299,43 @@ function symbolLines(sourceId: string): CitedLine | null {
   const m = location ? /^(.+):(\d+)(?:-(\d+))?$/.exec(location) : null;
   if (!m) return null;
   const startLine = Number(m[2]);
-  return { filePath: m[1], startLine, endLine: m[3] ? Number(m[3]) : startLine };
+  return {
+    filePath: m[1],
+    startLine,
+    endLine: m[3] ? Number(m[3]) : startLine,
+  };
 }
 
+/** The longest tail of a sentence read for pinning; the words nearest the marker. */
+const MAX_SENTENCE_CHARS = 1_000;
+/** A sentence end or a table-cell border. */
+const SENTENCE_BREAK_RE = /(?<=[.!?])\s+|\|/;
+
 /**
- * The sentence a marker at `offset` of `line` cites: the text before it, other
- * markers removed, from the last sentence end or table-cell border. A marker
- * that stands after its sentence's full stop cites that sentence.
+ * The sentence each marker cluster of ONE line cites, read left to right in a
+ * single pass: the prose since the last sentence end or table-cell border
+ * (markers are never part of it), or, for a marker that stands after its
+ * sentence's full stop, that sentence. Each call scans only the prose since
+ * the previous cluster and keeps at most {@link MAX_SENTENCE_CHARS}, so a line
+ * with many markers is linear in its length (#737 review: re-slicing the line
+ * per marker was quadratic).
  */
-function sentenceBefore(line: string, offset: number): string {
-  const pieces = line
-    .slice(0, offset)
-    .replace(MARKER_RE, " ")
-    .split(/(?<=[.!?])\s+|\|/);
-  for (let i = pieces.length - 1; i >= 0; i--) {
-    if (pieces[i].trim()) return pieces[i];
-  }
-  return "";
+function sentenceTracker(line: string): (offset: number, end: number) => string {
+  let scanned = 0;
+  let current = "";
+  let previous = "";
+  return (offset, end) => {
+    const pieces = line.slice(scanned, offset).split(SENTENCE_BREAK_RE);
+    scanned = end;
+    for (let i = 0; i < pieces.length; i++) {
+      if (i > 0) {
+        if (current.trim()) previous = current;
+        current = "";
+      }
+      current = (current + pieces[i]).slice(-MAX_SENTENCE_CHARS);
+    }
+    return current.trim() ? current : previous;
+  };
 }
 
 /** The reference a reader can follow for one admitted grounding source. */
@@ -298,35 +369,36 @@ function readableBareId(id: string, byId: ReadonlyMap<string, GroundingSource>):
 function rewriteMarkers(
   markdown: string,
   byId: ReadonlyMap<string, GroundingSource>,
-  referenceFor: (id: string, sentence: () => string) => string | null,
+  referenceFor: (id: string, sentence: string) => string | null,
 ): string {
-  const renderCluster = (
-    _match: string,
-    lead: string,
-    open: string | undefined,
-    inner: string,
-    close: string | undefined,
-    offset: number,
-    line: string,
-  ): string => {
-    const references: string[] = [];
-    let cited: string | undefined;
-    const sentence = (): string => (cited ??= sentenceBefore(line, offset));
-    for (const marker of inner.match(MARKER_RE) ?? []) {
-      const body = marker.replace(/^\[\s*/, "").replace(/\]$/, "");
-      for (const token of body.split(/[,;\s]+/)) {
-        if (!/^(?:facts|rag|web):/.test(token)) continue;
-        const reference = referenceFor(token, sentence);
-        if (reference !== null && !references.includes(reference)) references.push(reference);
+  const renderClusterOf =
+    (sentenceAt: (offset: number, end: number) => string) =>
+    (
+      match: string,
+      lead: string,
+      open: string | undefined,
+      inner: string,
+      close: string | undefined,
+      offset: number,
+    ): string => {
+      const references: string[] = [];
+      // Every cluster advances the line's tracker, in order, cited or not.
+      const sentence = sentenceAt(offset, offset + match.length);
+      for (const marker of inner.match(MARKER_RE) ?? []) {
+        const body = marker.replace(/^\[\s*/, "").replace(/\]$/, "");
+        for (const token of body.split(/[,;\s]+/)) {
+          if (!/^(?:facts|rag|web):/.test(token)) continue;
+          const reference = referenceFor(token, sentence);
+          if (reference !== null && !references.includes(reference)) references.push(reference);
+        }
       }
-    }
-    const refs = references.join("");
-    // A bracket pair the cluster owns is dropped with it; an unmatched one
-    // belongs to the surrounding prose and is kept.
-    if (open && !close) return `${lead}(${refs}`;
-    if (close && !open) return `${refs})`;
-    return refs;
-  };
+      const refs = references.join("");
+      // A bracket pair the cluster owns is dropped with it; an unmatched one
+      // belongs to the surrounding prose and is kept.
+      if (open && !close) return `${lead}(${refs}`;
+      if (close && !open) return `${refs})`;
+      return refs;
+    };
 
   let inFence = false;
   return markdown
@@ -338,7 +410,7 @@ function rewriteMarkers(
       }
       if (inFence) return line;
       return line
-        .replace(CLUSTER_RE, renderCluster)
+        .replace(CLUSTER_RE, renderClusterOf(sentenceTracker(line)))
         .replace(BARE_ID_RE, (match, id: string) => readableBareId(id, byId) ?? match);
     })
     .join("\n");
@@ -350,7 +422,15 @@ function renderParts(
   sources: Iterable<GroundingSource>,
 ): { body: string; definitions: string[]; citedLines: Map<string, CitedLine[]> } {
   const byId = new Map<string, GroundingSource>();
-  for (const s of sources) if (!byId.has(s.sourceId)) byId.set(s.sourceId, s);
+  // The first source under an id names it; every text under the id is read for
+  // its mined rules (a module's facts are sliced per section, #154).
+  const textsOf = new Map<string, string[]>();
+  for (const s of sources) {
+    if (!byId.has(s.sourceId)) byId.set(s.sourceId, s);
+    const texts = textsOf.get(s.sourceId) ?? [];
+    if (!texts.includes(s.text)) texts.push(s.text);
+    textsOf.set(s.sourceId, texts);
+  }
   // A module's locators, read once per source however often it is cited.
   const locatorsOf = new Map<string, SourceLineLocator[]>();
   const citedLines = new Map<string, CitedLine[]>();
@@ -376,10 +456,17 @@ function renderParts(
     if (isModuleFacts(source)) {
       let locators = locatorsOf.get(id);
       if (!locators) {
-        locators = sourceLineLocators(source.text);
+        const modulePath = decodeModulePath(source.sourceId);
+        const byLocator = new Map<string, SourceLineLocator>();
+        for (const text of textsOf.get(id) ?? []) {
+          for (const l of sourceLineLocators(text, modulePath)) {
+            if (!byLocator.has(l.locator)) byLocator.set(l.locator, l);
+          }
+        }
+        locators = [...byLocator.values()];
         locatorsOf.set(id, locators);
       }
-      const pin = pinnedLocator(sentence(), locators);
+      const pin = pinnedLocator(sentence, locators);
       if (pin) {
         reference = pinnedReference(source, pin);
         recordLine(id, { filePath: pin.filePath, startLine: pin.startLine, endLine: pin.endLine });
