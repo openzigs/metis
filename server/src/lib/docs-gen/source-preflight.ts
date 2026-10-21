@@ -18,9 +18,12 @@ import { REPO_PROVIDER_LOCAL, REPO_PROVIDER_UPLOAD } from "@metis/shared";
 
 import { prisma } from "../prisma.js";
 import { ensureConnectorClone, type EnsureCloneOutcome } from "../connectors/repo/clone-health.js";
-import { SOURCE_CLONE_UNAVAILABLE_CODE } from "./generation-failure-message.js";
+import {
+  SOURCE_CLONE_BUSY_CODE,
+  SOURCE_CLONE_UNAVAILABLE_CODE,
+} from "./generation-failure-message.js";
 
-export { SOURCE_CLONE_UNAVAILABLE_CODE };
+export { SOURCE_CLONE_BUSY_CODE, SOURCE_CLONE_UNAVAILABLE_CODE };
 
 export interface UnavailableRepository {
   repoConnectorId: string;
@@ -28,15 +31,22 @@ export interface UnavailableRepository {
   reason: Extract<EnsureCloneOutcome, { status: "unavailable" }>["reason"];
 }
 
-/** Thrown when a repository's source is missing or hollow and could not be restored. */
+/**
+ * Thrown when a repository's source is missing or hollow and could not be made
+ * usable. `code` is {@link SOURCE_CLONE_BUSY_CODE} ("try again in a few minutes")
+ * when the ONLY obstacle was another job holding a connector past the wait, and
+ * {@link SOURCE_CLONE_UNAVAILABLE_CODE} ("re-ingest") otherwise.
+ */
 export class SourceCloneUnavailableError extends Error {
-  readonly code = SOURCE_CLONE_UNAVAILABLE_CODE;
+  readonly code: typeof SOURCE_CLONE_BUSY_CODE | typeof SOURCE_CLONE_UNAVAILABLE_CODE;
   constructor(readonly repositories: readonly UnavailableRepository[]) {
+    const busyOnly = repositories.every((r) => r.reason === "busy");
     super(
       `Source checkout missing or empty for repository ${repositories
         .map((r) => `${r.repoConnectorId} (${r.reason})`)
-        .join(", ")}; re-ingest it, then generate again.`,
+        .join(", ")}; ${busyOnly ? "another job holds it, try again" : "re-ingest it"}.`,
     );
+    this.code = busyOnly ? SOURCE_CLONE_BUSY_CODE : SOURCE_CLONE_UNAVAILABLE_CODE;
     this.name = "SourceCloneUnavailableError";
   }
 }
@@ -82,10 +92,24 @@ export async function ensureRepositorySourcesReady(
     if (connector.provider === REPO_PROVIDER_LOCAL || connector.provider === REPO_PROVIDER_UPLOAD) {
       continue;
     }
+    // The graph's commit as read above; re-read after any wait for the connector,
+    // since an ingest that held it may have moved the graph on.
+    let first = true;
+    const loadCommitSha = async (): Promise<string | null> => {
+      if (first) {
+        first = false;
+        return graph.commitSha ?? null;
+      }
+      const fresh = await prisma.codeGraph.findFirst({
+        where: { id: graph.id, projectId: scope.projectId },
+        select: { commitSha: true },
+      });
+      return fresh?.commitSha ?? null;
+    };
     const outcome = await deps.ensureClone({
       projectId: scope.projectId,
       connectorId: connector.id,
-      commitSha: graph.commitSha ?? null,
+      loadCommitSha,
     });
     outcomes.set(graph.id, outcome);
     if (outcome.status === "unavailable") {

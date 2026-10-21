@@ -85,6 +85,13 @@ export const GENERATION_PATH_SCOPE_EMPTY_MESSAGE =
  */
 export const SOURCE_CLONE_UNAVAILABLE_CODE = "SOURCE_CLONE_UNAVAILABLE";
 
+/** #1322 — the clone could not be checked because another job held it past the wait. */
+export const SOURCE_CLONE_BUSY_CODE = "SOURCE_CLONE_BUSY";
+
+/** #1322 — another job (an ingest, another run) was preparing the repository's source. */
+export const GENERATION_SOURCE_BUSY_MESSAGE =
+  "Another job is preparing this repository's source on the server, so generation stopped before any AI spend. Try again in a few minutes.";
+
 /** #1322 — a repository's clone was missing or empty and could not be restored. */
 export const GENERATION_SOURCE_UNAVAILABLE_MESSAGE =
   "The repository's source checkout is missing or empty and could not be restored at the indexed commit, so generation stopped before any AI spend. Re-ingest the repository, then generate again.";
@@ -203,6 +210,7 @@ const SAFE_MESSAGES: ReadonlySet<string> = new Set([
   GENERATION_PROVIDER_CLOSED_MESSAGE,
   GENERATION_PATH_SCOPE_EMPTY_MESSAGE,
   GENERATION_SOURCE_UNAVAILABLE_MESSAGE,
+  GENERATION_SOURCE_BUSY_MESSAGE,
   ...REASONING_REJECTED_MESSAGES,
 ]);
 
@@ -458,6 +466,7 @@ export function generationFailureMessage(err: unknown): string {
 
   if (readCode(err) === PATH_SCOPE_EMPTY_CODE) return GENERATION_PATH_SCOPE_EMPTY_MESSAGE;
   if (readCode(err) === SOURCE_CLONE_UNAVAILABLE_CODE) return GENERATION_SOURCE_UNAVAILABLE_MESSAGE;
+  if (readCode(err) === SOURCE_CLONE_BUSY_CODE) return GENERATION_SOURCE_BUSY_MESSAGE;
   if (readCode(err) === "BUDGET_EXCEEDED" || /monthly budget exceeded/i.test(message)) {
     return GENERATION_BUDGET_EXCEEDED_MESSAGE;
   }

@@ -3,6 +3,10 @@
  * a clone that has gone missing or hollow (directories, no files: what an OS temp
  * purge leaves), at the commit the connector's code graph was built from.
  *
+ * The commit is the CODE GRAPH's — the same source of truth the docs-gen
+ * preflight uses (`CodeGraph` is unique per project and connector) — so analysis
+ * and documents never disagree about which commit a clone should be at.
+ *
  * If it cannot be put back the pass runs as #777 designed: without the file
  * tools, and reporting `repo-clone-unavailable`. A hollow clone is never offered
  * as a working tree — `resolveExistingCloneDir` alone only asks whether the
@@ -23,6 +27,13 @@ const log = createChildLogger("analysis-clone-restore");
 /** `unusable` ⇒ withhold the file tools; otherwise the clone has files to read. */
 export type AnalysisCloneState = "healthy" | "restored" | "unusable";
 
+function warn(connectorId: string, err: unknown): void {
+  log.warn("Could not check or restore the repository clone for analysis", {
+    connectorId,
+    error: err instanceof Error ? err.message : String(err),
+  });
+}
+
 export async function prepareAnalysisClone(
   projectId: string,
   connectorId: string,
@@ -30,31 +41,40 @@ export async function prepareAnalysisClone(
     ensureClone: (...args) => ensureConnectorClone(...args),
   },
 ): Promise<AnalysisCloneState> {
-  const dir = resolveRepoClonePath(connectorId);
-  if ((await inspectClone(dir, { requireHead: false })).state === "healthy") return "healthy";
+  let connector: { provider: string } | null = null;
   try {
-    const connector = await prisma.repoConnection.findFirst({
+    connector = await prisma.repoConnection.findFirst({
       where: { id: connectorId, projectId, deletedAt: null },
-      select: { provider: true, lastCommitSha: true },
+      select: { provider: true },
     });
-    if (
-      !connector ||
-      connector.provider === REPO_PROVIDER_LOCAL ||
-      connector.provider === REPO_PROVIDER_UPLOAD
-    ) {
-      return "unusable";
-    }
+  } catch (err) {
+    warn(connectorId, err);
+  }
+  if (
+    !connector ||
+    connector.provider === REPO_PROVIDER_LOCAL ||
+    connector.provider === REPO_PROVIDER_UPLOAD
+  ) {
+    // Nothing to restore from: offer what is on disk, if it has files.
+    const found = await inspectClone(resolveRepoClonePath(connectorId), { requireHead: false });
+    return found.state === "healthy" ? "healthy" : "unusable";
+  }
+  try {
     const outcome = await deps.ensureClone({
       projectId,
       connectorId,
-      commitSha: connector.lastCommitSha ?? null,
+      loadCommitSha: async () =>
+        (
+          await prisma.codeGraph.findFirst({
+            where: { projectId, repoConnectionId: connectorId },
+            select: { commitSha: true },
+          })
+        )?.commitSha ?? null,
     });
-    return outcome.status === "unavailable" ? "unusable" : "restored";
+    if (outcome.status === "unavailable") return "unusable";
+    return outcome.status === "healthy" ? "healthy" : "restored";
   } catch (err) {
-    log.warn("Could not check or restore the repository clone for analysis", {
-      connectorId,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    warn(connectorId, err);
     return "unusable";
   }
 }

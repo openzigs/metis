@@ -1453,15 +1453,56 @@ export async function fetchCommitInto(
   remoteUrl: string,
   commitSha: string,
   git: SimpleGitLike,
+  /** M6, as for a clone: no single blob over this many bytes is downloaded. */
+  blobLimitBytes: number = resolveRepoCloneMaxBytes(),
 ): Promise<void> {
   if (!SHA_RE.test(commitSha)) throw new Error("not a full commit SHA");
   if (typeof git.raw !== "function") throw new Error("git client cannot run raw commands");
   await git.raw(["init", "--quiet"]);
   await git.raw(["remote", "add", "origin", remoteUrl]);
-  await git.raw(["fetch", "--quiet", "--depth=1", "--no-tags", "origin", commitSha]);
+  await git.raw([
+    "fetch",
+    "--quiet",
+    "--depth=1",
+    "--no-tags",
+    `--filter=blob:limit=${blobLimitBytes}`,
+    "origin",
+    commitSha,
+  ]);
   await git.raw(["checkout", "--quiet", "--detach", "FETCH_HEAD"]);
   const head = await readCloneHeadSha(dir);
   if (head !== commitSha) throw new Error("checked-out commit does not match");
+}
+
+const RESTORE_STAGING_PREFIX = ".restore-";
+/** A staging dir this old belongs to a restore that died (a crash, a killed pod). */
+const STALE_RESTORE_MS = 60 * 60 * 1000;
+
+/**
+ * #1322 — remove `.restore-*` staging directories a dead restore left in the clone
+ * root. Only ones older than {@link STALE_RESTORE_MS}: on a shared (RWX) volume
+ * another pod's restore may be writing a younger one right now. Best-effort.
+ */
+export async function sweepStaleRestoreDirs(root: string, now = Date.now()): Promise<number> {
+  let removed = 0;
+  let entries;
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(RESTORE_STAGING_PREFIX)) continue;
+    const dir = path.join(root, entry.name);
+    try {
+      if (now - (await fs.stat(dir)).mtimeMs < STALE_RESTORE_MS) continue;
+      await fs.rm(dir, { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      /* gone already, or not ours to remove */
+    }
+  }
+  return removed;
 }
 
 /**
@@ -1490,7 +1531,8 @@ export async function restoreCloneAtCommit(
   const root = resolveRepoCloneRoot();
   await fs.mkdir(root, { recursive: true });
   const target = resolveRepoClonePath(id);
-  const staging = path.join(root, `.restore-${id}-${ulid()}`);
+  await sweepStaleRestoreDirs(root);
+  const staging = path.join(root, `${RESTORE_STAGING_PREFIX}${id}-${ulid()}`);
   await fs.mkdir(staging);
   try {
     await assertHostFromBaseUrl(conn.apiBaseUrl);
@@ -1505,8 +1547,8 @@ export async function restoreCloneAtCommit(
       token && typeof baseGit.env === "function"
         ? baseGit.env(authenticatedGitEnv(token))
         : baseGit;
-    await fetchCommitInto(staging, cloneUrl, commitSha, git);
     const cloneMaxBytes = resolveRepoCloneMaxBytes();
+    await fetchCommitInto(staging, cloneUrl, commitSha, git, cloneMaxBytes);
     const sizeBytes = await dirSize(staging, cloneMaxBytes);
     if (sizeBytes > cloneMaxBytes) {
       throw new ConnectorError(413, "CLONE_TOO_LARGE", "restored clone exceeded the size cap");

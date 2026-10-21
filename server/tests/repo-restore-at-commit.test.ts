@@ -12,6 +12,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,6 +60,7 @@ import {
   authenticatedGitEnv,
   fetchCommitInto,
   restoreCloneAtCommit,
+  sweepStaleRestoreDirs,
   type SimpleGitLike,
 } from "../src/lib/connectors/repo/repo-service.js";
 import { inspectClone } from "../src/lib/connectors/repo/clone-health.js";
@@ -91,6 +93,8 @@ beforeAll(() => {
   execFileSync("git", ["clone", "-q", "--bare", work, bare]);
   // What github.com serves: any commit reachable from a ref can be fetched by id.
   git(bare, "config", "uploadpack.allowReachableSHA1InWant", "true");
+  // …and honours a partial-clone filter (M6: no oversized blob is downloaded).
+  git(bare, "config", "uploadpack.allowFilter", "true");
 });
 
 afterAll(() => {
@@ -106,6 +110,22 @@ describe("fetchCommitInto — the real git client", () => {
     expect(readFileSync(join(dir, "src", "app.ts"), "utf8")).toBe("export const v = 1;\n");
     expect(await inspectClone(dir)).toEqual({ state: "healthy", headSha: firstSha });
     expect(firstSha).not.toBe(tipSha);
+  });
+
+  it("fetches with the clone's blob-size filter (L1), and still checks out", async () => {
+    const dir = mkdtempSync(join(base, "fetch-filter-"));
+    const real = (await defaultGit(dir)) as SimpleGitLike;
+    const calls: string[][] = [];
+    const spy: SimpleGitLike = {
+      clone: real.clone.bind(real),
+      raw: async (args) => {
+        calls.push(args);
+        return real.raw!(args);
+      },
+    };
+    await fetchCommitInto(dir, bare, firstSha, spy, 12345);
+    expect(calls.find((a) => a[0] === "fetch")).toContain("--filter=blob:limit=12345");
+    expect(await inspectClone(dir)).toEqual({ state: "healthy", headSha: firstSha });
   });
 
   it("refuses anything that is not a full commit SHA, before running git", async () => {
@@ -246,5 +266,33 @@ describe("restoreCloneAtCommit", () => {
     rows.set("conn_1", { ...rows.get("conn_1")!, provider: "upload" });
     await expect(restoreCloneAtCommit("proj_1", "conn_1", firstSha, "system")).rejects.toThrow();
     expect(readdirSync(cloneRoot)).toEqual([]);
+  });
+
+  it("sweeps a dead restore's staging directory, but not a live one (L3)", async () => {
+    const stale = join(cloneRoot, ".restore-conn_9-OLD");
+    const live = join(cloneRoot, ".restore-conn_8-NEW");
+    mkdirSync(stale);
+    mkdirSync(live);
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(stale, old, old);
+
+    await restoreCloneAtCommit("proj_1", "conn_1", firstSha, "system");
+
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(live)).toBe(true);
+    expect(readdirSync(cloneRoot).sort()).toEqual([".restore-conn_8-NEW", "conn_1"]);
+  });
+});
+
+describe("sweepStaleRestoreDirs", () => {
+  it("leaves clones and other entries alone, and tolerates a missing root", async () => {
+    const root = mkdtempSync(join(base, "sweep-"));
+    mkdirSync(join(root, "conn_1"));
+    mkdirSync(join(root, ".restore-x"));
+    writeFileSync(join(root, ".restore-file"), "x");
+    const later = Date.now() + 2 * 60 * 60 * 1000;
+    expect(await sweepStaleRestoreDirs(root, later)).toBe(1);
+    expect(readdirSync(root).sort()).toEqual([".restore-file", "conn_1"]);
+    expect(await sweepStaleRestoreDirs(join(base, "no-such-root"))).toBe(0);
   });
 });

@@ -3,14 +3,23 @@ import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 import type { ensureConnectorClone } from "../connectors/repo/clone-health.js";
 
-const graphs = vi.hoisted(() => ({ rows: [] as Array<Record<string, unknown>> }));
+const graphs = vi.hoisted(() => ({
+  rows: [] as Array<Record<string, unknown>>,
+  fresh: null as string | null,
+}));
 vi.mock("../prisma.js", () => ({
-  prisma: { codeGraph: { findMany: vi.fn(async () => graphs.rows) } },
+  prisma: {
+    codeGraph: {
+      findMany: vi.fn(async () => graphs.rows),
+      findFirst: vi.fn(async () => ({ commitSha: graphs.fresh })),
+    },
+  },
 }));
 
 import { prisma } from "../prisma.js";
 import {
   ensureRepositorySourcesReady,
+  SOURCE_CLONE_BUSY_CODE,
   SOURCE_CLONE_UNAVAILABLE_CODE,
   SourceCloneUnavailableError,
 } from "./source-preflight.js";
@@ -32,17 +41,36 @@ const conn = (id: string, extra: Record<string, unknown> = {}) => ({
 let ensureClone: Mock<typeof ensureConnectorClone>;
 beforeEach(() => {
   vi.clearAllMocks();
-  ensureClone = vi.fn<typeof ensureConnectorClone>(async () => ({ status: "healthy", path: "/x" }));
+  graphs.fresh = null;
+  ensureClone = vi.fn<typeof ensureConnectorClone>(async () => ({
+    status: "healthy",
+    path: "/x",
+  }));
 });
 
+const unavailable = (reason: "busy" | "restore-failed" | "no-recorded-commit") =>
+  ({ status: "unavailable", reason, state: "hollow" }) as const;
+
 describe("ensureRepositorySourcesReady", () => {
-  it("checks each live git connector at its graph's commit and passes when all are usable", async () => {
+  it("checks each live git connector and passes when all are usable", async () => {
     graphs.rows = [graph("g1", conn("c1")), graph("g2", conn("c2", { provider: "gitlab" }))];
     ensureClone.mockResolvedValueOnce({ status: "restored", path: "/c1" });
     const out = await ensureRepositorySourcesReady({ projectId: "p" }, { ensureClone });
-    expect(ensureClone).toHaveBeenCalledWith({ projectId: "p", connectorId: "c1", commitSha: SHA });
-    expect(ensureClone).toHaveBeenCalledWith({ projectId: "p", connectorId: "c2", commitSha: SHA });
+    expect(ensureClone.mock.calls.map(([i]) => i.connectorId)).toEqual(["c1", "c2"]);
     expect(out.get("g1")).toEqual({ status: "restored", path: "/c1" });
+  });
+
+  it("gives the graph's commit first, and re-reads the graph on later asks", async () => {
+    graphs.rows = [graph("g1", conn("c1"))];
+    graphs.fresh = "e".repeat(40);
+    await ensureRepositorySourcesReady({ projectId: "p" }, { ensureClone });
+    const { loadCommitSha } = ensureClone.mock.calls[0]![0];
+    expect(await loadCommitSha()).toBe(SHA);
+    expect(prisma.codeGraph.findFirst).not.toHaveBeenCalled();
+    expect(await loadCommitSha()).toBe("e".repeat(40));
+    expect(prisma.codeGraph.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "g1", projectId: "p" } }),
+    );
   });
 
   it("narrows to the document's graph when it has one", async () => {
@@ -69,19 +97,15 @@ describe("ensureRepositorySourcesReady", () => {
   it("passes a null commit through rather than guessing one", async () => {
     graphs.rows = [graph("g1", conn("c1"), null as unknown as string)];
     await ensureRepositorySourcesReady({ projectId: "p" }, { ensureClone });
-    expect(ensureClone).toHaveBeenCalledWith(expect.objectContaining({ commitSha: null }));
+    expect(await ensureClone.mock.calls[0]![0].loadCommitSha()).toBeNull();
   });
 
-  it("throws one error naming every repository that could not be made usable", async () => {
+  it("throws one re-ingest error naming every repository that could not be made usable", async () => {
     graphs.rows = [graph("g1", conn("c1")), graph("g2", conn("c2")), graph("g3", conn("c3"))];
     ensureClone
-      .mockResolvedValueOnce({ status: "unavailable", reason: "restore-failed", state: "hollow" })
+      .mockResolvedValueOnce(unavailable("restore-failed"))
       .mockResolvedValueOnce({ status: "healthy", path: "/c2" })
-      .mockResolvedValueOnce({
-        status: "unavailable",
-        reason: "ingest-in-progress",
-        state: "missing",
-      });
+      .mockResolvedValueOnce(unavailable("busy"));
     const err = await ensureRepositorySourcesReady({ projectId: "p" }, { ensureClone }).catch(
       (e: unknown) => e,
     );
@@ -89,8 +113,18 @@ describe("ensureRepositorySourcesReady", () => {
     expect((err as SourceCloneUnavailableError).code).toBe(SOURCE_CLONE_UNAVAILABLE_CODE);
     expect((err as SourceCloneUnavailableError).repositories).toEqual([
       { repoConnectorId: "c1", codeGraphId: "g1", reason: "restore-failed" },
-      { repoConnectorId: "c3", codeGraphId: "g3", reason: "ingest-in-progress" },
+      { repoConnectorId: "c3", codeGraphId: "g3", reason: "busy" },
     ]);
     expect((err as Error).message).toMatch(/re-ingest/);
+  });
+
+  it("says busy, never re-ingest, when another job holding a connector is the only obstacle", async () => {
+    graphs.rows = [graph("g1", conn("c1"))];
+    ensureClone.mockResolvedValueOnce(unavailable("busy"));
+    const err = (await ensureRepositorySourcesReady({ projectId: "p" }, { ensureClone }).catch(
+      (e: unknown) => e,
+    )) as SourceCloneUnavailableError;
+    expect(err.code).toBe(SOURCE_CLONE_BUSY_CODE);
+    expect(err.message).not.toMatch(/re-ingest/);
   });
 });

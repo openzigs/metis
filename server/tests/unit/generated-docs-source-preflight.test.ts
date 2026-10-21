@@ -27,6 +27,7 @@ vi.mock("../../src/lib/prisma.js", () => ({
     codeSymbol: { findMany: vi.fn(async () => []) },
     codeEdge: { findMany: vi.fn(async () => []) },
     knowledgeChunk: { findMany: vi.fn(async () => []) },
+    analysis: { findMany: vi.fn(async () => []) },
     project: { findFirst: vi.fn(async () => ({ name: "P", description: null })) },
   },
 }));
@@ -48,34 +49,34 @@ vi.mock("../../src/lib/docs-gen/evidence-policy.js", async (importOriginal) => (
   assertEvidencePolicy: vi.fn(),
 }));
 
+vi.mock("../../src/lib/docs-gen/incremental.js", () => ({
+  checkIncrementalRegeneration: vi.fn(async () => undefined),
+}));
+
 const ensureClone = vi.hoisted(() => vi.fn());
 vi.mock("../../src/lib/connectors/repo/clone-health.js", () => ({
   ensureConnectorClone: ensureClone,
 }));
 
-// Everything that spends: none of it may be reached.
+// Everything that spends: none of it may be reached. (Constructing a provider
+// makes no call — the input snapshot reads its model names — so the real
+// constructors run; what would call a model is below.)
 const spend = vi.hoisted(() => ({
   synthesize: vi.fn(),
-  buildDocsGenProvider: vi.fn(),
-  resolvePhase2Router: vi.fn(),
-  buildProvider: vi.fn(),
   webResearch: vi.fn(),
   grounding: vi.fn(),
 }));
 vi.mock("../../src/lib/docs-gen/holistic-synthesizer.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/lib/docs-gen/holistic-synthesizer.js")>()),
   synthesizeHolisticDocument: spend.synthesize,
-  buildDocsGenProvider: spend.buildDocsGenProvider,
-  resolvePhase2Router: spend.resolvePhase2Router,
-}));
-vi.mock("../../src/lib/ai/index.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../src/lib/ai/index.js")>()),
-  buildProvider: spend.buildProvider,
 }));
 vi.mock("../../src/lib/docs-gen/grounding/domain-web-research.js", () => ({
   runDomainWebResearch: spend.webResearch,
 }));
-vi.mock("../../src/lib/docs-gen/grounding/grounding-retrieval.js", () => ({
+vi.mock("../../src/lib/docs-gen/grounding/grounding-retrieval.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../src/lib/docs-gen/grounding/grounding-retrieval.js")
+  >()),
   buildProjectGroundingContext: spend.grounding,
   buildSectionGroundingRetriever: spend.grounding,
 }));
@@ -83,9 +84,12 @@ vi.mock("../../src/lib/docs-gen/grounding/grounding-retrieval.js", () => ({
 import { prisma } from "../../src/lib/prisma.js";
 import { generateDocumentAsync } from "../../src/routes/generated-docs.js";
 import {
+  GENERATION_SOURCE_BUSY_MESSAGE,
   GENERATION_SOURCE_UNAVAILABLE_MESSAGE,
   generationFailureMessage,
 } from "../../src/lib/docs-gen/generation-failure-message.js";
+import { captureGenerationInputs } from "../../src/lib/docs-gen/generation-inputs.js";
+import type { EvidencePolicy } from "../../src/lib/docs-gen/evidence-policy.js";
 
 const SHA = "b".repeat(40);
 
@@ -128,11 +132,10 @@ describe("#1322 — generation from a purged clone", () => {
 
     await generateDocumentAsync("doc-1", "proj-1");
 
-    expect(ensureClone).toHaveBeenCalledWith({
-      projectId: "proj-1",
-      connectorId: "conn-1",
-      commitSha: SHA,
-    });
+    expect(ensureClone).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "proj-1", connectorId: "conn-1" }),
+    );
+    expect(await ensureClone.mock.calls[0]![0].loadCommitSha()).toBe(SHA);
     for (const fn of Object.values(spend)) expect(fn).not.toHaveBeenCalled();
     // Never claimed: the pending row is failed with the fixed re-ingest message.
     expect(prisma.generatedDocument.updateMany).toHaveBeenCalledTimes(1);
@@ -152,8 +155,21 @@ describe("#1322 — generation from a purged clone", () => {
       state: "missing",
     });
     await generateDocumentAsync("doc-1", "proj-1");
-    expect(ensureClone).toHaveBeenCalledWith(expect.objectContaining({ commitSha: null }));
+    expect(await ensureClone.mock.calls[0]![0].loadCommitSha()).toBeNull();
     expect(spend.synthesize).not.toHaveBeenCalled();
+  });
+
+  it("another job holding the repository past the wait: try again later, never re-ingest", async () => {
+    ensureClone.mockResolvedValue({ status: "unavailable", reason: "busy", state: "missing" });
+    await generateDocumentAsync("doc-1", "proj-1");
+    for (const fn of Object.values(spend)) expect(fn).not.toHaveBeenCalled();
+    expect(prisma.generatedDocument.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { status: "failed", errorMessage: GENERATION_SOURCE_BUSY_MESSAGE },
+      }),
+    );
+    expect(GENERATION_SOURCE_BUSY_MESSAGE).toMatch(/try again in a few minutes/i);
+    expect(GENERATION_SOURCE_BUSY_MESSAGE).not.toMatch(/re-ingest/i);
   });
 
   it("a restored clone lets the run go on to snapshot the restored source", async () => {
@@ -173,6 +189,50 @@ describe("#1322 — generation from a purged clone", () => {
     db.doc = pendingDoc("database");
     await generateDocumentAsync("doc-1", "proj-1").catch(() => undefined);
     expect(ensureClone).not.toHaveBeenCalled();
+  });
+});
+
+describe("#1322 L4 — an automatic regeneration checks clones only once it will run", () => {
+  const signal = new AbortController().signal;
+  async function currentFingerprint(): Promise<string> {
+    const { resolveEvidencePolicy } = await import("../../src/lib/docs-gen/evidence-policy.js");
+    const policy = (await resolveEvidencePolicy(db.doc as never)) as EvidencePolicy;
+    return (await captureGenerationInputs(db.doc as never, policy)).fingerprint;
+  }
+
+  beforeEach(() => {
+    db.doc = { ...pendingDoc("full"), status: "ready", autoUpdate: true };
+    ensureClone.mockResolvedValue({
+      status: "unavailable",
+      reason: "restore-failed",
+      state: "hollow",
+    });
+  });
+
+  it("a task whose inputs moved on returns before touching any clone", async () => {
+    const task = {
+      projectId: "proj-1",
+      generatedDocumentId: "doc-1",
+      expectedVersion: 0,
+      fingerprint: "stale-fingerprint",
+    };
+    await generateDocumentAsync("doc-1", "proj-1", { ...task, signal }).catch(() => undefined);
+    expect(ensureClone).not.toHaveBeenCalled();
+  });
+
+  it("a task that will run checks the clones first, and stops before any model call", async () => {
+    const task = {
+      projectId: "proj-1",
+      generatedDocumentId: "doc-1",
+      expectedVersion: 0,
+      fingerprint: await currentFingerprint(),
+    };
+    vi.clearAllMocks();
+    await expect(
+      generateDocumentAsync("doc-1", "proj-1", { ...task, signal }),
+    ).rejects.toMatchObject({ code: "SOURCE_CLONE_UNAVAILABLE" });
+    expect(ensureClone).toHaveBeenCalledOnce();
+    for (const fn of Object.values(spend)) expect(fn).not.toHaveBeenCalled();
   });
 });
 

@@ -7,21 +7,24 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi, type Mock } 
 
 import type { ensureConnectorClone } from "../connectors/repo/clone-health.js";
 
-const connector = vi.hoisted(() => ({
-  row: null as null | { provider: string; lastCommitSha: string | null },
+const db = vi.hoisted(() => ({
+  row: null as null | { provider: string },
+  graphCommit: null as string | null,
   fail: false,
 }));
 vi.mock("../prisma.js", () => ({
   prisma: {
     repoConnection: {
       findFirst: vi.fn(async () => {
-        if (connector.fail) throw new Error("db down");
-        return connector.row;
+        if (db.fail) throw new Error("db down");
+        return db.row;
       }),
     },
+    codeGraph: { findFirst: vi.fn(async () => ({ commitSha: db.graphCommit })) },
   },
 }));
 
+import { prisma } from "../prisma.js";
 import { prepareAnalysisClone } from "./clone-restore.js";
 
 const root = mkdtempSync(path.join(os.tmpdir(), "metis-1322-analysis-"));
@@ -32,12 +35,19 @@ let ensureClone: Mock<typeof ensureConnectorClone>;
 let n = 0;
 let id = "";
 
+function withFiles(): void {
+  mkdirSync(path.join(root, id, "src"), { recursive: true });
+  writeFileSync(path.join(root, id, "src", "a.ts"), "x");
+}
+
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.stubEnv("REPO_CLONE_DIR", root);
   n += 1;
   id = `conn-${n}`;
-  connector.row = { provider: "github", lastCommitSha: SHA };
-  connector.fail = false;
+  db.row = { provider: "github" };
+  db.graphCommit = SHA;
+  db.fail = false;
   ensureClone = vi.fn<typeof ensureConnectorClone>(async () => ({
     status: "restored",
     path: "/x",
@@ -46,38 +56,42 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("prepareAnalysisClone", () => {
-  it("uses a clone with files as it is, without touching the database", async () => {
-    mkdirSync(path.join(root, id, "src"), { recursive: true });
-    writeFileSync(path.join(root, id, "src", "a.ts"), "x");
+  it("a git connector's clone is checked at the CODE GRAPH's commit (one source of truth)", async () => {
+    ensureClone.mockResolvedValueOnce({ status: "healthy", path: "/x" });
+    expect(await prepareAnalysisClone("p", id, { ensureClone })).toBe("healthy");
+    const { loadCommitSha } = ensureClone.mock.calls[0]![0];
+    expect(await loadCommitSha()).toBe(SHA);
+    expect(prisma.codeGraph.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { projectId: "p", repoConnectionId: id } }),
+    );
+  });
+
+  it("reports a restored clone as restored", async () => {
+    expect(await prepareAnalysisClone("p", id, { ensureClone })).toBe("restored");
+  });
+
+  it("withholds the file tools when the clone cannot be made usable", async () => {
+    ensureClone.mockResolvedValueOnce({ status: "unavailable", reason: "busy", state: "missing" });
+    expect(await prepareAnalysisClone("p", id, { ensureClone })).toBe("unusable");
+    ensureClone.mockRejectedValueOnce(new Error("boom"));
+    expect(await prepareAnalysisClone("p", id, { ensureClone })).toBe("unusable");
+  });
+
+  it("local/upload or unknown connectors: what is on disk, only if it has files", async () => {
+    db.row = { provider: "upload" };
+    expect(await prepareAnalysisClone("p", id, { ensureClone })).toBe("unusable");
+    mkdirSync(path.join(root, id, "empty", "dirs"), { recursive: true });
+    db.row = null;
+    expect(await prepareAnalysisClone("p", id, { ensureClone })).toBe("unusable");
+    withFiles();
     expect(await prepareAnalysisClone("p", id, { ensureClone })).toBe("healthy");
     expect(ensureClone).not.toHaveBeenCalled();
   });
 
-  it("restores a hollow clone at the connector's last ingested commit", async () => {
-    mkdirSync(path.join(root, id, "src", "deep"), { recursive: true });
-    expect(await prepareAnalysisClone("p", id, { ensureClone })).toBe("restored");
-    expect(ensureClone).toHaveBeenCalledWith({ projectId: "p", connectorId: id, commitSha: SHA });
-  });
-
-  it("withholds the file tools when the clone cannot be restored", async () => {
-    ensureClone.mockResolvedValueOnce({
-      status: "unavailable",
-      reason: "restore-failed",
-      state: "missing",
-    });
+  it("a failed connector lookup falls back to what is on disk, never throws", async () => {
+    db.fail = true;
     expect(await prepareAnalysisClone("p", id, { ensureClone })).toBe("unusable");
-  });
-
-  it("withholds them for a local/upload connector or an unknown one", async () => {
-    connector.row = { provider: "upload", lastCommitSha: null };
-    expect(await prepareAnalysisClone("p", id, { ensureClone })).toBe("unusable");
-    connector.row = null;
-    expect(await prepareAnalysisClone("p", id, { ensureClone })).toBe("unusable");
-    expect(ensureClone).not.toHaveBeenCalled();
-  });
-
-  it("degrades to no file tools, never throws, when the lookup fails", async () => {
-    connector.fail = true;
-    expect(await prepareAnalysisClone("p", id, { ensureClone })).toBe("unusable");
+    withFiles();
+    expect(await prepareAnalysisClone("p", id, { ensureClone })).toBe("healthy");
   });
 });
