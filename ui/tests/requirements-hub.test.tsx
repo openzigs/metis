@@ -236,6 +236,36 @@ describe("<RequirementsHub />", () => {
     expect(screen.queryByTestId("requirements-skipped-empty")).not.toBeInTheDocument();
   });
 
+  it("#1016 — the 'stays approved' note counts the rows the server reports approved, one by one", async () => {
+    // The server resolves each row's status (column, else a legacy
+    // `review:approved` label) and its submit keeps exactly those approved.
+    // The note follows the per-row statuses, not the run's tally.
+    list.mockResolvedValue({
+      items: [run("a1", "completed", { draft: 1, approved: 5 })],
+    } as never);
+    get.mockResolvedValue({
+      requirements: [
+        { id: "legacy", title: "Legacy approved", reviewStatus: "approved" },
+        { id: "fresh", title: "Fresh", reviewStatus: "draft" },
+      ],
+    } as never);
+    const user = {
+      id: "me",
+      username: "me",
+      displayName: "me",
+      email: "me@example.test",
+      role: "developer" as const,
+      permissions: getPermissionsForRole("developer"),
+    };
+    render(<RequirementsHub projectId="p1" />, {
+      wrapper: makeWrapper({ initialUser: user, withAuth: true }),
+    });
+    fireEvent.click(await screen.findByTestId("request-review"));
+    expect(screen.getByTestId("request-review-status-note")).toHaveTextContent(
+      "1 of them is already approved and stays approved unless the review is rejected.",
+    );
+  });
+
   it("names an earlier run with nothing waiting 'Open this analysis'", async () => {
     list.mockResolvedValue({
       items: [run("new", "completed"), run("old", "completed", { approved: 2 })],

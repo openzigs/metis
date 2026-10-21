@@ -29,14 +29,22 @@ const mockPrisma = {
     updateMany: vi.fn(),
     count: vi.fn(),
   },
-  reviewRequestItem: { update: vi.fn() },
+  reviewRequestItem: {
+    update: vi.fn(),
+    // #1016 — no other open review covers the scope unless a test says so.
+    findMany: vi.fn(async () => []),
+    updateMany: vi.fn(async () => ({ count: 0 })),
+  },
   reviewerAssignment: { updateMany: vi.fn(), findMany: vi.fn() },
   baseline: { create: vi.fn() },
   auditLog: { findMany: vi.fn(), create: vi.fn() },
   $transaction: vi.fn(),
 };
 
-vi.mock("../src/lib/prisma.js", () => ({ prisma: mockPrisma }));
+vi.mock("../src/lib/prisma.js", () => ({
+  prisma: mockPrisma,
+  resolveDatabaseProvider: () => "sqlite" as const,
+}));
 
 // #621 — review notification fan-out is fire-and-forget and tested in its own
 // suites (src/lib/reviews/notify.test.ts + review-service-notify.test.ts);

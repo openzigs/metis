@@ -15,13 +15,21 @@ const mockPrisma = {
   generatedDocument: { findMany: vi.fn() },
   generatedDocumentVersion: { findFirst: vi.fn() },
   reviewRequest: { findUnique: vi.fn(), updateMany: vi.fn() },
-  reviewRequestItem: { update: vi.fn() },
+  reviewRequestItem: {
+    update: vi.fn(),
+    // #1016 — no other open review covers the scope unless a test says so.
+    findMany: vi.fn(async () => []),
+    updateMany: vi.fn(async () => ({ count: 0 })),
+  },
   reviewerAssignment: { updateMany: vi.fn(), findMany: vi.fn() },
   baseline: { create: vi.fn() },
   auditLog: { create: vi.fn() },
   $transaction: vi.fn(),
 };
-vi.mock("../prisma.js", () => ({ prisma: mockPrisma }));
+vi.mock("../prisma.js", () => ({
+  prisma: mockPrisma,
+  resolveDatabaseProvider: () => "sqlite" as const,
+}));
 
 // ---- Notify double ----------------------------------------------------------
 const dispatchReviewSubmitted = vi.fn();

@@ -22,9 +22,11 @@
  *   check) so two racing requests can never both fire a final transition or
  *   silently overwrite a concurrent withdraw/decision.
  */
+import { REQUIREMENT_REVIEW_STATUSES } from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
+import { parseRequirementLabels } from "../analysis/requirement-labels.js";
 import { buildAuditLogData } from "../audit/audit-service.js";
-import { prisma } from "../prisma.js";
+import { Prisma, prisma, resolveDatabaseProvider } from "../prisma.js";
 import { dispatchReviewDecision, dispatchReviewSubmitted } from "./notify.js";
 import { noteRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import { attachSharedCriteria } from "./review-shared-criteria.js";
@@ -149,16 +151,124 @@ type ReviewTx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 // this module's `review.*` audit-log entries instead.
 
 /**
+ * #1016 — Postgres only: lock the scope's requirement rows (`FOR UPDATE`, in id
+ * order so two transactions over overlapping scopes cannot deadlock) before
+ * reading which other reviews are open on them.
+ *
+ * Two reviews of one requirement each decide from "is another review open on
+ * it?". Under READ COMMITTED two withdraws racing could each still see the
+ * other as open and neither restore, leaving the requirement awaiting a review
+ * nobody holds. With the rows locked first, the second transaction waits for
+ * the first to commit, and its next statement (a fresh snapshot) sees it.
+ *
+ * SQLite needs nothing: the driver adapter runs one transaction at a time.
+ */
+async function lockScopeRequirements(tx: ReviewTx, requirementIds: string[]): Promise<void> {
+  if (requirementIds.length === 0 || resolveDatabaseProvider() !== "postgresql") return;
+  const ids = [...new Set(requirementIds)].sort();
+  await tx.$queryRaw`SELECT 1 FROM "requirements" WHERE "id" IN (${Prisma.join(ids)}) ORDER BY "id" FOR UPDATE`;
+}
+
+/**
+ * #1016 — for each requirement in `requirementIds` that ANOTHER review still in
+ * `in_review` covers, the status that review captured before it moved the
+ * requirement. Read after {@link lockScopeRequirements}.
+ */
+async function priorsHeldByOtherOpenReviews(
+  tx: ReviewTx,
+  reviewId: string,
+  requirementIds: string[],
+): Promise<Map<string, string | null>> {
+  const held = new Map<string, string | null>();
+  if (requirementIds.length === 0) return held;
+  const rows = await tx.reviewRequestItem.findMany({
+    where: {
+      requirementId: { in: requirementIds },
+      reviewRequestId: { not: reviewId },
+      reviewRequest: { status: "in_review" },
+    },
+    select: { requirementId: true, priorReviewStatus: true },
+    orderBy: { createdAt: "asc" },
+  });
+  for (const row of rows) {
+    if (row.requirementId === null) continue;
+    // A "draft" capture is what a review opened before #1016 recorded while
+    // another review held the requirement; any other capture is the status
+    // from before either review, so it wins.
+    if (!held.has(row.requirementId) || held.get(row.requirementId) === "draft") {
+      held.set(row.requirementId, row.priorReviewStatus ?? null);
+    }
+  }
+  return held;
+}
+
+/**
+ * #1016 — record `priorById`'s capture on every OTHER `in_review` review item
+ * of `requirementIds`, so all open reviews of a requirement agree on the
+ * status the last one to leave restores.
+ */
+async function shareCaptureWithOtherOpenReviews(
+  tx: ReviewTx,
+  reviewId: string,
+  requirementIds: string[],
+  priorById: ReadonlyMap<string, string | null>,
+): Promise<void> {
+  const byPrior = new Map<string | null, string[]>();
+  for (const id of requirementIds) {
+    const prior = priorById.get(id) ?? null;
+    const ids = byPrior.get(prior);
+    if (ids) ids.push(id);
+    else byPrior.set(prior, [id]);
+  }
+  for (const [prior, ids] of byPrior) {
+    await tx.reviewRequestItem.updateMany({
+      where: {
+        requirementId: { in: ids },
+        reviewRequestId: { not: reviewId },
+        reviewRequest: { status: "in_review" },
+      },
+      data: { priorReviewStatus: prior },
+    });
+  }
+}
+
+/**
+ * #1016 — the status a requirement holds for review purposes: the typed column,
+ * else a legacy `review:*` label (rows written before the column existed), the
+ * precedence every reader uses (`resolveRequirementReviewStatus`). Null when it
+ * has neither, or the label is not a known status.
+ */
+export function heldReviewStatus(column: string | null, labelsRaw: string | null): string | null {
+  if (column !== null) return column;
+  const label = parseRequirementLabels(labelsRaw).find((l) => l.startsWith("review:"));
+  const fromLabel = label ? label.slice("review:".length) : null;
+  return fromLabel !== null &&
+    (REQUIREMENT_REVIEW_STATUSES as readonly string[]).includes(fromLabel)
+    ? fromLabel
+    : null;
+}
+
+/**
  * #989 — put back the reviewStatus each requirement held before the review was
  * submitted. Used when a review leaves `in_review` without a verdict (withdraw,
  * or close). An approved requirement was never moved by the submit, so it has
  * nothing to restore; for the rest the write is guarded on the `draft` the
  * submit left, so a status someone set since is not overwritten.
  */
-async function restorePriorReviewStatuses(tx: ReviewTx, items: ReviewItemRow[]): Promise<void> {
+async function restorePriorReviewStatuses(
+  tx: ReviewTx,
+  reviewId: string,
+  items: ReviewItemRow[],
+): Promise<void> {
+  // #1016 — a requirement another open review still covers stays as that
+  // review left it; the last open review to leave restores it.
+  const ids = requirementIdsInScope(items);
+  await lockScopeRequirements(tx, ids);
+  const stillCovered = await priorsHeldByOtherOpenReviews(tx, reviewId, ids);
   const byPrior = new Map<string | null, string[]>();
   for (const item of items) {
     if (item.requirementId === null) continue;
+    if (stillCovered.has(item.requirementId)) continue;
     const prior = item.priorReviewStatus ?? null;
     if (prior === "approved" || prior === "draft") continue;
     const ids = byPrior.get(prior);
@@ -379,14 +489,40 @@ export async function submitReview(
 
     // #989 — capture each requirement's status before the review touches it,
     // so a withdraw (or a close before any verdict) can give it back.
+    await lockScopeRequirements(tx, requirementIds);
     const priorRows =
       requirementIds.length > 0
         ? await tx.requirement.findMany({
             where: { id: { in: requirementIds } },
-            select: { id: true, reviewStatus: true },
+            select: { id: true, reviewStatus: true, labels: true },
           })
         : [];
-    const priorById = new Map(priorRows.map((r) => [r.id, r.reviewStatus]));
+    // #1016 — a legacy `review:approved` label counts as approved, as it does
+    // for every reader (the Requirements counts, the review form's note).
+    const currentById = new Map(
+      priorRows.map((r) => [r.id, heldReviewStatus(r.reviewStatus, r.labels)]),
+    );
+    // #1016 — a requirement another open review already moved to "draft"
+    // inherits that review's capture, so whichever review leaves last restores
+    // the status from before either was requested.
+    const heldByOthers = await priorsHeldByOtherOpenReviews(tx, reviewId, requirementIds);
+    const priorById = new Map(
+      requirementIds.map((id) => {
+        const current = currentById.get(id) ?? null;
+        const inherit = current === "draft" && heldByOthers.has(id);
+        return [id, inherit ? (heldByOthers.get(id) ?? null) : current] as const;
+      }),
+    );
+    // #1016 — and the other way round: a requirement that is NOT as an open
+    // review left it (another review's verdict, or someone's edit, set it
+    // since) has a newer status than those reviews captured. They take this
+    // capture too, so every open review of a requirement restores the same one.
+    await shareCaptureWithOtherOpenReviews(
+      tx,
+      reviewId,
+      requirementIds.filter((id) => heldByOthers.has(id) && currentById.get(id) !== "draft"),
+      priorById,
+    );
 
     for (const item of pinnedItems) {
       await tx.reviewRequestItem.update({
@@ -407,7 +543,7 @@ export async function submitReview(
     // #989 — an approved requirement stays approved while it is under review;
     // only a rejection changes it. The rest move to the derived in-review
     // status ("draft" — awaiting review).
-    const toAwaitReview = requirementIds.filter((id) => priorById.get(id) !== "approved");
+    const toAwaitReview = requirementIds.filter((id) => currentById.get(id) !== "approved");
     if (toAwaitReview.length > 0) {
       await tx.requirement.updateMany({
         where: { id: { in: toAwaitReview } },
@@ -559,6 +695,9 @@ export async function recordDecision(
       const requirementIds = requirementIdsInScope(review.items);
       const derived = deriveRequirementReviewStatus(status);
       if (requirementIds.length > 0 && derived !== null) {
+        // #1016 — the lock order submit and withdraw use (review row, then the
+        // scope's requirements by id), so overlapping reviews cannot deadlock.
+        await lockScopeRequirements(tx, requirementIds);
         await tx.requirement.updateMany({
           where: { id: { in: requirementIds } },
           data: { reviewStatus: derived },
@@ -683,7 +822,7 @@ async function transitionReview(
     });
     if (transitioned.count === 0) throw reviewStateChangedError();
 
-    if (restorePrior) await restorePriorReviewStatuses(tx, review.items);
+    if (restorePrior) await restorePriorReviewStatuses(tx, reviewId, review.items);
 
     await tx.auditLog.create({
       data: buildAuditLogData({

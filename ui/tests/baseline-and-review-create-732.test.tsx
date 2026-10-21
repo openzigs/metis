@@ -225,7 +225,9 @@ describe("RequestReviewCard", () => {
     expect(note).toHaveTextContent(
       "2 of them are already approved and stay approved unless the review is rejected.",
     );
-    expect(note).toHaveTextContent("Withdrawing the review puts every status back.");
+    expect(note).toHaveTextContent(
+      "Withdrawing the review puts every status back, except on a requirement another open review still covers: that one waits for the other review.",
+    );
   });
 
   it("#989 — says nothing about approvals when none are approved", () => {

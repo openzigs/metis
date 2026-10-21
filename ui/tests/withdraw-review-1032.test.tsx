@@ -197,6 +197,10 @@ describe("<WithdrawReviewButton />", () => {
     expect(dialog.textContent).toContain(
       "Each requirement gets back the review status it had before the review was requested",
     );
+    // #1016 — the server leaves a requirement another open review covers as it is.
+    expect(dialog.textContent).toContain(
+      "A requirement another open review still covers keeps waiting for that review.",
+    );
     expect(withdrawMock).not.toHaveBeenCalled();
   });
 
