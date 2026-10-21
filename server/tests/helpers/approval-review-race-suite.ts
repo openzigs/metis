@@ -34,14 +34,30 @@ interface Barrier {
   size: number;
   remaining: number;
   arrived: number;
+  /**
+   * How many racers had returned when the barrier opened: `size` when it
+   * filled, fewer when the fallback timer opened it. `null` while closed.
+   */
+  arrivedAtOpen: number | null;
   open: Promise<void>;
   release: () => void;
 }
 
 function newBarrier(size: number): Barrier {
-  let release!: () => void;
-  const open = new Promise<void>((r) => (release = r));
-  return { size, remaining: size, arrived: 0, open, release };
+  let resolve!: () => void;
+  const open = new Promise<void>((r) => (resolve = r));
+  const barrier: Barrier = {
+    size,
+    remaining: size,
+    arrived: 0,
+    arrivedAtOpen: null,
+    open,
+    release: () => {
+      barrier.arrivedAtOpen ??= barrier.arrived;
+      resolve();
+    },
+  };
+  return barrier;
 }
 
 /**
@@ -117,11 +133,21 @@ export function describeApprovalReviewRace(opts: {
       return row.id;
     }
 
-    /** Run `calls` with their first `calls.length` delegate calls held together. */
+    /**
+     * Run `calls` with their first `calls.length` delegate calls held together.
+     * Fails unless every racer reached the barrier before it opened: a barrier
+     * the fallback timer opened forced no interleave, so whatever the
+     * assertions then see proves nothing about the race.
+     */
     async function together<T>(calls: Array<() => Promise<T>>): Promise<PromiseSettledResult<T>[]> {
-      barrier = newBarrier(calls.length);
+      const armed = newBarrier(calls.length);
+      barrier = armed;
       try {
-        return await Promise.allSettled(calls.map((call) => call()));
+        const results = await Promise.allSettled(calls.map((call) => call()));
+        expect(armed.arrivedAtOpen, "every racer reached the barrier before it opened").toBe(
+          calls.length,
+        );
+        return results;
       } finally {
         barrier = null;
       }
