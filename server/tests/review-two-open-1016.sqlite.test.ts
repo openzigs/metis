@@ -232,9 +232,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const req = await makeRequirement("rejected");
       const first = await openReview([req]);
       const second = await openReview([req]);
-      // What a second review submitted before #1016 recorded.
+      // What a review submitted second before #1016 recorded. It goes on the
+      // OLDER item (a review created first but submitted after the other), so
+      // the oldest-first read meets the "draft" before the real capture.
       await db.reviewRequestItem.updateMany({
-        where: { reviewRequestId: second, requirementId: req },
+        where: { reviewRequestId: first, requirementId: req },
         data: { priorReviewStatus: "draft" },
       });
       const third = await openReview([req]);
@@ -244,9 +246,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       expect(captured.priorReviewStatus).toBe("rejected");
 
+      await withdrawReview(REQUESTER, first, false);
       await withdrawReview(REQUESTER, second, false);
       await withdrawReview(REQUESTER, third, false);
-      await withdrawReview(REQUESTER, first, false);
       expect(await status(req)).toBe("rejected");
     });
 
