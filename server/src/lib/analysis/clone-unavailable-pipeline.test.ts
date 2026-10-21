@@ -398,6 +398,27 @@ describe("#777 — connector present, clone dir ABSENT: the file tools are never
 });
 
 /**
+ * #1322 — what an OS temp purge leaves: the clone's directories and no files. The
+ * directory EXISTS, so the #777 existence check alone offered both file tools
+ * against an empty tree. It cannot be restored here (no connector row to restore
+ * from), so it must be treated exactly like an absent clone.
+ */
+describe("#1322 — connector present, clone HOLLOW (directories, no files)", () => {
+  beforeEach(async () => {
+    await mkdir(path.join(cloneRoot, CONNECTOR_ID, "server/src/drift"), { recursive: true });
+    await mkdir(path.join(cloneRoot, CONNECTOR_ID, ".git/objects"), { recursive: true });
+  });
+
+  it("does not offer the file tools and raises repo-clone-unavailable", async () => {
+    await runPipeline(GRAPH_ONLY_SCRIPT);
+
+    expect(promptOffersFileTools()).toBe(false);
+    expect(capability()?.reasons).toContain("repo-clone-unavailable");
+    expect(capability()?.reasons).not.toContain("code-retrieval-degraded");
+  });
+});
+
+/**
  * THE ACCEPTANCE BAR (#777). Stopping the errors is not the point — the point is that
  * a clone-less, fully-indexed project produces USABLE VERDICTS from graph search alone.
  * Post-#773 every requirement on such a run came back `could-not-verify`; here a

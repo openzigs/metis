@@ -190,6 +190,8 @@ async function defaultOctokit(args: OctokitFactoryArgs): Promise<OctokitLike> {
 export interface SimpleGitLike {
   clone(repoUrl: string, target: string, options?: string[]): Promise<unknown>;
   env?: (envVars: Record<string, string>) => SimpleGitLike;
+  /** #1322 — plain `git <args>` in the client's directory (restore at a commit). */
+  raw?: (args: string[]) => Promise<string>;
 }
 export type SimpleGitFactory = (cwd: string) => SimpleGitLike;
 let gitFactoryOverride: SimpleGitFactory | null = null;
@@ -1433,6 +1435,105 @@ export async function pullOrCloneRepo(
     );
     const result = await shallowCloneRepo(projectId, id, actorId);
     return { ...result, pulled: false, filesChanged: 0 };
+  }
+}
+
+/**
+ * #1322 — materialise exactly `commitSha` of `remoteUrl` into the EMPTY directory
+ * `dir`, through `git` (a client whose cwd is `dir`). `init` + a depth-1 fetch of
+ * the one commit + a detached checkout, so the working tree is that commit and no
+ * other — `git clone --branch` would check out wherever the branch is NOW.
+ *
+ * Throws when git cannot, or when HEAD does not then read as `commitSha`.
+ * Exported for the local bare-repository test; production goes through
+ * {@link restoreCloneAtCommit}, which adds the connector's host check and auth.
+ */
+export async function fetchCommitInto(
+  dir: string,
+  remoteUrl: string,
+  commitSha: string,
+  git: SimpleGitLike,
+): Promise<void> {
+  if (!SHA_RE.test(commitSha)) throw new Error("not a full commit SHA");
+  if (typeof git.raw !== "function") throw new Error("git client cannot run raw commands");
+  await git.raw(["init", "--quiet"]);
+  await git.raw(["remote", "add", "origin", remoteUrl]);
+  await git.raw(["fetch", "--quiet", "--depth=1", "--no-tags", "origin", commitSha]);
+  await git.raw(["checkout", "--quiet", "--detach", "FETCH_HEAD"]);
+  const head = await readCloneHeadSha(dir);
+  if (head !== commitSha) throw new Error("checked-out commit does not match");
+}
+
+/**
+ * #1322 — re-create a git connector's clone at the commit its code graph was built
+ * from, after the clone went missing or hollow (an OS temp purge, an emptyDir
+ * volume, a pod on another node). Never a different commit: the graph's line
+ * numbers and symbols describe that commit and no other, so if the host cannot
+ * serve it this throws and the caller stops instead.
+ *
+ * Builds into a sibling staging directory and renames it over the clone only once
+ * HEAD is verified, so a failed restore never leaves a half-written clone where a
+ * reader would take it for the real one. Same host allow-list, Basic-auth header
+ * (never in the URL) and size cap as {@link shallowCloneRepo}.
+ */
+export async function restoreCloneAtCommit(
+  projectId: string,
+  id: string,
+  commitSha: string,
+  actorId: string,
+): Promise<ShallowCloneResult> {
+  if (!SHA_RE.test(commitSha)) {
+    throw new ConnectorError(400, "RESTORE_COMMIT_INVALID", "recorded commit is not a full SHA");
+  }
+  const conn = await getRepoConnector(projectId, id);
+  const gitRepo = assertGitConnector(conn);
+  const root = resolveRepoCloneRoot();
+  await fs.mkdir(root, { recursive: true });
+  const target = resolveRepoClonePath(id);
+  const staging = path.join(root, `.restore-${id}-${ulid()}`);
+  await fs.mkdir(staging);
+  try {
+    await assertHostFromBaseUrl(conn.apiBaseUrl);
+    const cloneUrl = buildCloneUrl({
+      ...conn,
+      ownerOrOrg: gitRepo.ownerOrOrg,
+      repoName: gitRepo.repoName,
+    });
+    const token = await resolveSecret(conn.secretRef);
+    const baseGit = gitFactoryOverride ? gitFactoryOverride(staging) : await defaultGit(staging);
+    const git =
+      token && typeof baseGit.env === "function"
+        ? baseGit.env(authenticatedGitEnv(token))
+        : baseGit;
+    await fetchCommitInto(staging, cloneUrl, commitSha, git);
+    const cloneMaxBytes = resolveRepoCloneMaxBytes();
+    const sizeBytes = await dirSize(staging, cloneMaxBytes);
+    if (sizeBytes > cloneMaxBytes) {
+      throw new ConnectorError(413, "CLONE_TOO_LARGE", "restored clone exceeded the size cap");
+    }
+    await fs.rm(target, { recursive: true, force: true });
+    await fs.rename(staging, target);
+    audit({
+      actor: { id: actorId },
+      action: "connector.repo.restore",
+      target: { type: "repo_connector", id },
+      metadata: { projectId, sizeBytes, commitSha },
+    });
+    return { path: target, sizeBytes, commitSha };
+  } catch (err) {
+    await fs.rm(staging, { recursive: true, force: true });
+    audit({
+      actor: { id: actorId },
+      action: "connector.repo.restore.failed",
+      target: { type: "repo_connector", id },
+      metadata: { projectId, commitSha, code: "RESTORE_FAILED" },
+    });
+    if (err instanceof ConnectorError) throw err;
+    throw new ConnectorError(
+      502,
+      "RESTORE_FAILED",
+      `could not restore the clone at ${commitSha.slice(0, 12)}: ${(err as Error).message}`,
+    );
   }
 }
 

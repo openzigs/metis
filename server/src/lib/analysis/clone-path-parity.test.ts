@@ -19,7 +19,12 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { resolveRepoCloneRoot, resolveRepoClonePath } from "../connectors/repo/clone-path.js";
+import {
+  legacyTmpCloneRoot,
+  resolveRepoCloneRoot,
+  resolveRepoClonePath,
+} from "../connectors/repo/clone-path.js";
+import { resolveServerRoot } from "../server-root.js";
 import { cloneDirPath } from "./clone-availability.js";
 
 const CONNECTOR_ID = "cmrbvw85j000hfj9kitujps5u";
@@ -39,11 +44,13 @@ describe("#777 clone-path parity — analysis must look where ingest writes", ()
 
     expect(analysisPath).toBe(ingestPath);
 
-    // And it must be the tmpdir-anchored root ingest actually uses — NOT `./data/repos`.
-    const expectedRoot = path.resolve(path.join(os.tmpdir(), "metis-repo-clones"));
+    // And it must be the durable server-data root ingest actually uses (#1322) —
+    // NOT `./data/repos`, and NOT the OS temp dir, which the OS purges.
+    const expectedRoot = path.resolve(resolveServerRoot(), "data", "repo-clones");
     expect(resolveRepoCloneRoot()).toBe(expectedRoot);
     expect(analysisPath).toBe(path.join(expectedRoot, CONNECTOR_ID));
     expect(analysisPath).not.toContain("data/repos");
+    expect(analysisPath.startsWith(path.resolve(os.tmpdir()))).toBe(false);
   });
 
   it("agrees with the ingest pipeline when REPO_CLONE_DIR is SET", () => {
@@ -58,5 +65,13 @@ describe("#777 clone-path parity — analysis must look where ingest writes", ()
 
     vi.stubEnv("REPO_CLONE_DIR", "custom-clones");
     expect(path.isAbsolute(cloneDirPath(CONNECTOR_ID))).toBe(true);
+  });
+
+  it("#1322 — names the old tmp root only when REPO_CLONE_DIR is unset", () => {
+    vi.stubEnv("REPO_CLONE_DIR", "");
+    expect(legacyTmpCloneRoot()).toBe(path.resolve(os.tmpdir(), "metis-repo-clones"));
+    vi.stubEnv("REPO_CLONE_DIR", "/srv/clones");
+    expect(legacyTmpCloneRoot()).toBeNull();
+    expect(resolveRepoCloneRoot()).toBe(path.resolve("/srv/clones"));
   });
 });

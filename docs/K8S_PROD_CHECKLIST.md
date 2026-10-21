@@ -88,6 +88,9 @@
 
 - [ ] PVCs reclaim policy = `Retain` (`Retain` on the StorageClass + `helm.sh/resource-policy: keep` on the PVC).  
   `kubectl get pvc -n metis -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.metadata.annotations.helm\.sh/resource-policy}{"\n"}{end}'`
+- [ ] Repository clones on a persistent volume (#1322). The chart sets `REPO_CLONE_DIR=/app/server/data/repo-clones`, on the server's **data** volume (`persistence.data`, PVC `<release>-server-data`), never `/tmp`.  
+  `kubectl exec deploy/metis-server -n metis -- printenv REPO_CLONE_DIR`  
+  With `persistence.data.enabled=false` (`values-prod.yaml`, multi-replica) that directory is an emptyDir: a pod that finds a clone missing re-fetches it at the code graph's commit before generating a document (egress to the git host required), or stops the run before any AI spend and asks for a re-ingest.
 - [ ] Backup policy in place — Velero schedule **or** EBS snapshot lifecycle policy on the volumes.
 - [ ] Restore tested — at least one successful PVC restore drill on a side environment.
 

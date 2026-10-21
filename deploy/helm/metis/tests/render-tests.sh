@@ -124,6 +124,9 @@ assert_contains "lancedb default 5Gi" 'storage: "5Gi"' "${PVC_RENDER}"
 assert_contains "uploads default RWO" "ReadWriteOnce" "${PVC_RENDER}"
 assert_contains "uploads default SC gp3" 'storageClassName: "gp3"' "${PVC_RENDER}"
 assert_contains "Retain reclaim via helm.sh/resource-policy keep" '"helm.sh/resource-policy": "keep"' "${PVC_RENDER}"
+# #1322 — repository clones on the data PVC, never the pod's /tmp emptyDir.
+assert_contains "data PVC mounted at /app/server/data" "mountPath: /app/server/data" "${PVC_RENDER}"
+assert_contains "REPO_CLONE_DIR on the data volume" "value: \"/app/server/data/repo-clones\"" "${PVC_RENDER}"
 
 EFS_RENDER=$(template --set persistence.efs.enabled=true)
 assert_contains "EFS toggle switches to RWX" "ReadWriteMany" "${EFS_RENDER}"

@@ -78,6 +78,12 @@ server:
     # degradation). SQL_LINEAGE_TOKEN is injected from the secret (keyMap).
     SQL_LINEAGE_MODE: sidecar
     SQL_LINEAGE_URL: http://{{ .Release.Name }}-sql-lineage:5070
+    # #1322 — repository clones live on the server's data volume
+    # (persistence.data), never /tmp: a clone the OS or a restart wipes leaves
+    # documents generated from no source. With persistence.data.enabled=false
+    # (values-prod.yaml) this is an emptyDir, and a pod that finds its clone
+    # missing re-fetches it at the code graph's commit before generating.
+    REPO_CLONE_DIR: /app/server/data/repo-clones
     # #659 — with replicaCount > 1 (Postgres DATABASE_URL), each pod re-checks its
     # sockets against the database on this interval, the bound on a revocation
     # whose cross-replica publish failed. Plain ms; default 60000, min 10000;
@@ -561,7 +567,8 @@ backup:
   # unset, stored repo archives, and the uploads + LanceDB volumes nested in it.
   # #75 — it used to archive only `uploads` and `lancedb`, so on SQLite
   # `backup.enabled=true` backed up everything except the database.
-  # `repo-extracts` is left out: it is re-extracted from `repo-archives`.
+  # `repo-extracts` is left out: it is re-extracted from `repo-archives`. So is
+  # `repo-clones` (#1322): a clone is re-fetched at its code graph's commit on use.
   #
   # CONSISTENCY: this copies the files of a LIVE database. It is crash-consistent
   # at best — the same as pulling the plug — and GNU tar's "file changed as we
@@ -580,7 +587,7 @@ backup:
       ts="$(date -u +%Y%m%dT%H%M%SZ)";
       out="/backup/metis-backup-${ts}.tar.gz";
       rc=0;
-      tar -czf "$out" --warning=no-file-changed --exclude=./repo-extracts -C /app/server/data . || rc=$?;
+      tar -czf "$out" --warning=no-file-changed --exclude=./repo-extracts --exclude=./repo-clones -C /app/server/data . || rc=$?;
       if [ "$rc" -gt 1 ]; then echo "[backup] tar failed (exit $rc)" >&2; rm -f "$out"; exit "$rc"; fi;
       echo "[backup] wrote $out";
       if [ "${BACKUP_RETENTION_DAYS:-30}" -gt 0 ]; then

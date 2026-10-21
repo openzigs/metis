@@ -33,6 +33,12 @@ const state = vi.hoisted(() => ({
   usage: null as null | { promptTokens: number; completionTokens: number; totalTokens: number },
 }));
 
+// #1322 — this fixture's repository has no clone on disk by design; the source
+// preflight (restore a purged clone or stop) is covered by source-preflight.test.ts.
+vi.mock("../src/lib/docs-gen/source-preflight.js", () => ({
+  ensureRepositorySourcesReady: vi.fn(async () => new Map()),
+}));
+
 vi.mock("../src/lib/prisma.js", () => {
   // The status and stale-claim filters the claim guard and the fences use.
   type StatusFilter = string | { not?: string; in?: string[]; notIn?: string[] };

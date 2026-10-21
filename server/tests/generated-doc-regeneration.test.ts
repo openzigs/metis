@@ -73,6 +73,12 @@ function matchesTask(row: Task, where: TaskFilter): boolean {
   );
 }
 
+// #1322 — this fixture's repository has no clone on disk by design; the source
+// preflight (restore a purged clone or stop) is covered by source-preflight.test.ts.
+vi.mock("../src/lib/docs-gen/source-preflight.js", () => ({
+  ensureRepositorySourcesReady: vi.fn(async () => new Map()),
+}));
+
 vi.mock("../src/lib/prisma.js", () => {
   const prisma = {
     project: {

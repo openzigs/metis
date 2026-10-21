@@ -124,6 +124,7 @@ import {
   generationFailureMessage,
   publicDocWarnings,
   publicGenerationErrorMessage,
+  SOURCE_CLONE_UNAVAILABLE_CODE,
 } from "../lib/docs-gen/generation-failure-message.js";
 import {
   releaseGenerationControl,
@@ -1349,7 +1350,10 @@ export async function generateDocumentAsync(
       // code graph; its source fingerprint below records them.
       original.scope === "database" || original.scope === "requirements"
         ? null
-        : await captureGenerationInputs(original, policy);
+        : // #1322 — the first capture first restores a purged clone at its graph's
+          // commit, or throws before any model call telling the user to re-ingest,
+          // so the run is fenced on the restored source.
+          await captureGenerationInputs(original, policy, { ensureSources: true });
     if (automatic && inputSnapshot?.fingerprint !== automatic.fingerprint) {
       const { checkIncrementalRegeneration } = await import("../lib/docs-gen/incremental.js");
       await checkIncrementalRegeneration(projectId, policy.repoConnectorId);
@@ -2224,7 +2228,15 @@ export async function generateDocumentAsync(
               updatedAt: pendingUpdatedAt,
               codeGraphHash: originalHash,
             },
-            data: { status: "failed", errorMessage: genericFailureMessage("doc-generation") },
+            data: {
+              status: "failed",
+              // #1322 — a missing source checkout is the user's to fix (re-ingest),
+              // so it gets its fixed message rather than the generic one.
+              errorMessage:
+                (err as { code?: unknown } | null)?.code === SOURCE_CLONE_UNAVAILABLE_CODE
+                  ? generationFailureMessage(err)
+                  : genericFailureMessage("doc-generation"),
+            },
           })
         : null;
     // #239 — broadcast the failure so the UI leaves the "generating" state.
