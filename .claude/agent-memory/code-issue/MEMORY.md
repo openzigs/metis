@@ -60,7 +60,8 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Read live ≠ read completely](project_read-live-is-not-read-completely.md) — no completeness proof: mark, never delete (#1093)
 - [Mapper precision rule vs recall](project_mapper-precision-rules-halve-impact-recall.md) — run both evals; option, not global (#1063)
 - [0 findings: read token_usages](project_zero-findings-read-token-usages-first.md) — output == cap + empty reply = reasoning (#1063)
-- [Synthesis field must fail soft](project_synthesis-optional-field-must-fail-soft.md) — one null discards every requirement (#1063)
+- [Synthesis field must fail soft](project_synthesis-optional-field-must-fail-soft.md) — new field: add a repair rule or .catch (#1099)
+- [Unread answer is not empty](project_unread-answer-is-not-empty.md) — mark parse failures; stubs answering "{}" now read unread (#1081)
 - [Code-graph extractor version](project_code-graph-extractor-version.md) — bump + EXTRACTOR_UPGRADES; hub for #1071 resolver lessons
 - [Recursion audit: bound work, not depth](project_recursion-audit-must-bound-work-not-depth.md) — lattice + scaling ratio (#1071)
 - [Test helper keys must be unique](project_test-helper-keys-must-be-unique.md) — throw on a duplicate key (#1071)
