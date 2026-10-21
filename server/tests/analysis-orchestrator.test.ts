@@ -902,6 +902,13 @@ describe("AnalysisOrchestrator.start", () => {
       synthesisDegraded?: unknown;
     };
     expect(meta.synthesisDegraded).toBeUndefined();
+    // Panel finding — a clean re-synthesis must clear it; pinned at the merge.
+    const { persistAnalysisEnhancement } = await import("../src/lib/analysis/analysis-service.js");
+    await persistAnalysisEnhancement(analysisId, { synthesisFieldRepairs: null });
+    expect(
+      (JSON.parse(analyses.get(analysisId)!.metadata ?? "{}") as Record<string, unknown>)
+        .synthesisFieldRepairs,
+    ).toBeUndefined();
     expect(meta.synthesisFieldRepairs).toMatchObject({
       total: 1,
       repairs: [{ field: "storyPoints", action: "dropped", requirementTitle: "Implement" }],

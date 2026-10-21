@@ -303,9 +303,9 @@ export interface AnalysisEnhancementPatch {
   unreadAnalysisSteps?: UnreadAnalysisSteps | null;
   /**
    * Issue #1099 — the values synthesis could not use and left out, defaulted or
-   * shortened, field by field. Absent on a run that needed none.
+   * shortened, field by field. `null` clears it after a clean synthesis.
    */
-  synthesisFieldRepairs?: SynthesisFieldRepairs;
+  synthesisFieldRepairs?: SynthesisFieldRepairs | null;
   /**
    * Issue #723 — the structured requirement ids already promoted into rows, so
    * a rejection that is reopened and approved after promotion adds exactly
@@ -406,7 +406,8 @@ function applyEnhancementPatch(
     next.clarificationApplication = patch.clarificationApplication;
   }
   if (patch.synthesisDegraded !== undefined) next.synthesisDegraded = patch.synthesisDegraded;
-  if (patch.synthesisFieldRepairs !== undefined) {
+  if (patch.synthesisFieldRepairs === null) delete next.synthesisFieldRepairs;
+  else if (patch.synthesisFieldRepairs !== undefined) {
     next.synthesisFieldRepairs = patch.synthesisFieldRepairs;
   }
   if (patch.unreadAnalysisSteps === null) delete next.unreadAnalysisSteps;

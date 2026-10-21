@@ -4111,16 +4111,21 @@ export class AnalysisOrchestrator {
       });
 
       // Issue #1099 — the values synthesis could not use and left out, so the
-      // analyst can check them before publishing. Written only when there are
-      // some; best-effort, like every other marker here.
-      if (result.fieldRepairs && result.fieldRepairs.length > 0) {
+      // analyst can check them before publishing. A clean synthesis clears an
+      // earlier run's record (regenerate and resume re-synthesise the same
+      // analysis); best-effort, like every other marker here.
+      {
+        const repairs = result.fieldRepairs ?? [];
         try {
           await persistAnalysisEnhancement(input.analysisId, {
-            synthesisFieldRepairs: {
-              repairs: result.fieldRepairs.slice(0, MAX_RECORDED_SYNTHESIS_REPAIRS),
-              total: result.fieldRepairs.length,
-              at: new Date().toISOString(),
-            },
+            synthesisFieldRepairs:
+              repairs.length > 0
+                ? {
+                    repairs: repairs.slice(0, MAX_RECORDED_SYNTHESIS_REPAIRS),
+                    total: repairs.length,
+                    at: new Date().toISOString(),
+                  }
+                : null,
           });
         } catch (err) {
           log.error("Could not record the synthesis field repairs", {
