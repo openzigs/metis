@@ -5152,6 +5152,10 @@ confirmation first. Withdrawing puts the review back to **Draft**, so
 its reviewers can no longer decide on it, and each requirement gets
 back the review status it had before the review was requested —
 unless someone has changed that status since. A toast confirms it.
+If the review was decided or withdrawn by someone else in the
+meantime, the toast says so and the page shows the current status.
+A withdrawn review cannot be resubmitted from the UI yet: request a
+new review from the project's Requirements page.
 
 **One requirement in two open reviews (#1016).** You can request a
 second review of requirements that are already in review, for example
@@ -5163,16 +5167,13 @@ status it had before any of them was requested, whichever order you
 withdraw them in. A verdict counts: if one review rejects a requirement
 and you then request another review of it, withdrawing every open
 review puts the rejection back, not the status from before the first
-review. An approved requirement stays approved throughout.
+review. Requesting or withdrawing reviews never changes an approved
+requirement; only a review that rejects it does.
 
 **Requirements approved before the review status was tracked.** A
 requirement approved in an older version of METIS counts as approved
-on the Requirements page, and requesting a review keeps it approved,
-as the Request review form says.
-If the review was decided or withdrawn by someone else in the
-meantime, the toast says so and the page shows the current status.
-A withdrawn review cannot be resubmitted from the UI yet: request a
-new review from the project's Requirements page.
+on the Requirements page, and requesting a review keeps it approved
+unless the review rejects it, as the Request review form says.
 
 ### Requesting a review (the BA side)
 

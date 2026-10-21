@@ -216,6 +216,48 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await status(req)).toBe("approved");
     });
 
+    it("a withdraw restores the capture as it is at commit, not as it was when the review was loaded", async () => {
+      const req = await makeRequirement("deferred");
+      const first = await openReview([req]);
+      const second = await openReview([req]);
+
+      // The withdraw of `first` loads the review (captures: "deferred"), then,
+      // before its transaction opens, other work lands: `second` is rejected,
+      // a third review is requested (sharing the newer capture, "rejected",
+      // onto `first`'s item) and withdrawn again while `first` still holds it.
+      let between: (() => Promise<void>) | null = async () => {
+        await recordDecision(REVIEWER, second, "rejected");
+        const third = await openReview([req]);
+        await withdrawReview(REQUESTER, third, false);
+        expect(await status(req)).toBe("draft");
+      };
+      state.db = new Proxy(db, {
+        get(target, prop, receiver) {
+          if (prop === "$transaction" && between) {
+            const run = between;
+            between = null;
+            return async (...args: unknown[]) => {
+              await run();
+              return (target.$transaction as (...a: unknown[]) => unknown)(...args);
+            };
+          }
+          const value = Reflect.get(target, prop, receiver) as unknown;
+          return typeof value === "function"
+            ? (value as (...a: unknown[]) => unknown).bind(target)
+            : value;
+        },
+      });
+      try {
+        await withdrawReview(REQUESTER, first, false);
+      } finally {
+        state.db = db;
+      }
+
+      expect(between).toBeNull();
+      // The rejection is what stands, not the "deferred" `first` captured.
+      expect(await status(req)).toBe("rejected");
+    });
+
     it("two withdraws at once still restore the status (SQLite runs them one at a time)", async () => {
       const req = await makeRequirement("rejected");
       const first = await openReview([req]);

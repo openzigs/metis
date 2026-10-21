@@ -31,8 +31,16 @@ const mockPrisma = {
   },
   reviewRequestItem: {
     update: vi.fn(),
-    // #1016 — no other open review covers the scope unless a test says so.
-    findMany: vi.fn(async () => []),
+    // #1016 — no other open review covers the scope unless a test says so; a
+    // read of the review's OWN items (the withdraw's re-read under the lock)
+    // returns the items of the review `reviewRequest.findUnique` serves.
+    findMany: vi.fn(async (args?: { where?: { reviewRequestId?: unknown } }) => {
+      if (typeof args?.where?.reviewRequestId !== "string") return [];
+      const review = (await mockPrisma.reviewRequest.findUnique()) as {
+        items?: unknown[];
+      } | null;
+      return review?.items ?? [];
+    }),
     updateMany: vi.fn(async () => ({ count: 0 })),
   },
   reviewerAssignment: { updateMany: vi.fn(), findMany: vi.fn() },

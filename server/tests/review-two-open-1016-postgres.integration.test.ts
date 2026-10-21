@@ -219,7 +219,11 @@ describe.skipIf(!enabled)("#1016 — two open reviews withdrawn at once (Postgre
     expect(reviews.map((r) => r.status)).toEqual(["draft", "draft"]);
   });
 
-  it("two withdraws started together leave no requirement awaiting a review nobody holds", async () => {
+  // A smoke test of the unforced race over two requirements in opposite scope
+  // order (no deadlock, both restored). Its interleaving is up to the
+  // scheduler, so it does NOT prove the lock: a run without the lock can pass.
+  // The forced test above is the proof.
+  it("smoke (not the lock proof): two withdraws started together over two requirements both restore", async () => {
     const reqs = [await makeRequirement("rejected"), await makeRequirement("deferred")];
     const first = await openReview(reqs);
     const second = await openReview([...reqs].reverse());

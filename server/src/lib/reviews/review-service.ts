@@ -237,6 +237,15 @@ async function shareCaptureWithOtherOpenReviews(
  * else a legacy `review:*` label (rows written before the column existed), the
  * precedence every reader uses (`resolveRequirementReviewStatus`). Null when it
  * has neither, or the label is not a known status.
+ *
+ * Deliberately not `resolveRequirementReviewStatus` itself: that one is for
+ * display and reads "nothing recorded" as `draft`, whereas this result is what
+ * a submit CAPTURES to restore later. A requirement that never had a status
+ * must get null back on withdraw (#989), not a `draft` it never held — and a
+ * `draft` capture is skipped by the restore, which would leave the submit's
+ * `draft` in the column for good. The precedence (column, then label) is the
+ * same; only the empty case differs. An unknown column value is returned as
+ * is, so it is restored exactly; readers show it as `draft` either way.
  */
 export function heldReviewStatus(column: string | null, labelsRaw: string | null): string | null {
   if (column !== null) return column;
@@ -265,8 +274,17 @@ async function restorePriorReviewStatuses(
   const ids = requirementIdsInScope(items);
   await lockScopeRequirements(tx, ids);
   const stillCovered = await priorsHeldByOtherOpenReviews(tx, reviewId, ids);
+  // #1016 — the captures are re-read under the lock, never taken from the
+  // review loaded before the transaction: another review's submit may have
+  // shared a newer capture onto this review's items in between (see
+  // shareCaptureWithOtherOpenReviews), and restoring the stale one would put
+  // back a status that a verdict has since replaced.
+  const current = await tx.reviewRequestItem.findMany({
+    where: { reviewRequestId: reviewId, requirementId: { not: null } },
+    select: { requirementId: true, priorReviewStatus: true },
+  });
   const byPrior = new Map<string | null, string[]>();
-  for (const item of items) {
+  for (const item of current) {
     if (item.requirementId === null) continue;
     if (stillCovered.has(item.requirementId)) continue;
     const prior = item.priorReviewStatus ?? null;
