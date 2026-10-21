@@ -189,6 +189,12 @@ import {
   type EvidenceSalvageResult,
 } from "./agentic-evidence.js";
 import { summarizeToolCalls, type ToolCallRecord } from "./tool-telemetry.js";
+import {
+  beginLiveAgent,
+  endLiveAgent,
+  markLiveAgentSynthesizing,
+  recordLiveToolCall,
+} from "./live-agent-progress.js";
 import { readSourceRequirements, toSynthesisSourceItems } from "./source-items.js";
 import {
   FINAL_ANSWER_INSTRUCTION,
@@ -1114,6 +1120,9 @@ export class AnalysisOrchestrator {
     let outcome: "completed" | "failed" = "completed";
     let errorMessage: string | null = null;
     let reopened: ReopenedRun = null;
+    // #766 — the agent's card reads the re-run as running (with the code
+    // agent's tool calls so far) instead of its stale `completed` result.
+    beginLiveAgent(opts.analysisId, opts.agentKey, { rerun: true });
     try {
       reopened = await reopenForFollowUp(opts.analysisId);
       // #1145 — resolved inside the try, so a failure here is recorded and the
@@ -1161,6 +1170,7 @@ export class AnalysisOrchestrator {
       delta.promptTokens += result.usage.promptTokens;
       delta.completionTokens += result.usage.completionTokens;
       delta.totalTokens += result.usage.totalTokens;
+      markLiveAgentSynthesizing(opts.analysisId, opts.agentKey);
       // Re-run synthesis using all currently-persisted findings.
       await this.runSynthesisAndPersist({
         analysisId: opts.analysisId,
@@ -1221,6 +1231,7 @@ export class AnalysisOrchestrator {
         });
         if (statusWriteError) throw statusWriteError;
       } finally {
+        endLiveAgent(opts.analysisId, opts.agentKey);
         this.releaseClaim(opts.analysisId);
       }
     }
@@ -2933,6 +2944,9 @@ export class AnalysisOrchestrator {
     });
 
     return withInvokeAgentSpan(agentKey, async () => {
+      // #766 — the code agent's tool calls, live, for the analysis page. A
+      // Regenerate already began the entry (and ends it after re-synthesis).
+      const ownsLiveEntry = beginLiveAgent(input.analysisId, agentKey, { rerun: false });
       try {
         // #777 — Determine the clone directory for the file tools by EXISTENCE, not by
         // the truthiness of a speculatively-built path string. One async stat per
@@ -3124,6 +3138,7 @@ export class AnalysisOrchestrator {
               ...(nativeTools ? { native: nativeTools } : {}),
               maxTurns,
               maxTokens: effectiveBudget,
+              onToolCall: () => recordLiveToolCall(input.analysisId, agentKey),
               signal: input.signal,
               model: input.model,
               promptCaching: { system: true, messages: true },
@@ -3651,6 +3666,8 @@ export class AnalysisOrchestrator {
           ts: Date.now(),
         });
         throw err;
+      } finally {
+        if (ownsLiveEntry) endLiveAgent(input.analysisId, agentKey);
       }
     });
   }

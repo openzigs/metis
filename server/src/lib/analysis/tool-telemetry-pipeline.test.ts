@@ -225,3 +225,43 @@ describe("#774 — flat tool args + tool telemetry through the real pipeline", (
     expect(telemetry?.errorSamples[0]?.message).toContain("received keys: [limit]");
   });
 });
+
+describe("#766 — the code agent's tool calls are visible while it runs", () => {
+  it("counts each executed tool call on the live entry, and clears it when the pass ends", async () => {
+    const { readLiveAgents } = await import("./live-agent-progress.js");
+    const seen: Array<ReturnType<typeof readLiveAgents>> = [];
+    const provider = makeProvider();
+    const scripted = provider.chat.getMockImplementation()!;
+    provider.chat.mockImplementation(async () => {
+      seen.push(readLiveAgents(ANALYSIS_ID));
+      return scripted();
+    });
+    const orch = new AnalysisOrchestrator({
+      provider: provider as never,
+      retrieve: async () => [],
+      knowledge: {} as never,
+    });
+    await (orch as unknown as { runPipeline: (...a: unknown[]) => Promise<void> }).runPipeline(
+      ANALYSIS_ID,
+      "Metis",
+      "A test project",
+      ["document", "code"],
+      {
+        projectId: PROJECT_ID,
+        startedById: "u1",
+        model: "test-model",
+      },
+    );
+
+    // Call 1 is the document agent: nothing live. Calls 2-4 are the code loop;
+    // the 4th model call comes after both tool calls ran.
+    expect(seen[0]).toEqual([]);
+    expect(seen[1]).toEqual([
+      expect.objectContaining({ agentKey: "code", toolCalls: 0, rerun: false }),
+    ]);
+    expect(seen[3]).toEqual([
+      expect.objectContaining({ agentKey: "code", toolCalls: 2, phase: "investigating" }),
+    ]);
+    expect(readLiveAgents(ANALYSIS_ID)).toEqual([]);
+  });
+});

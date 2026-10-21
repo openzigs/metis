@@ -112,3 +112,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Route guard wiring](project_project-access-guard-wiring.md) — guard per route behind a limiter; mount order; detector blind spot (#1344)
 - [Fence scrub Unicode traps](project_fence-scrub-unicode-traps.md) — X+ regex; marker re-forms a fence; splice widening; fold order (#1350)
 - [Clone preflight + health](project_repo-clone-preflight-and-health.md) — mock source-preflight; lease wait; index count; template repo (#1354)
+- [Code-agent budget from ledger](project_code-agent-budget-read-from-ledger-cache-pattern.md) — cacheRead drops = rewrites; sim compaction (#766)

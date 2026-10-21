@@ -9,7 +9,7 @@
  * Everything here is pure so the page — a thin wiring layer excluded from
  * coverage — keeps no logic of its own worth measuring.
  */
-import { AGENT_DEGRADED_NOTE_PREFIX } from "@metis/shared";
+import { AGENT_DEGRADED_NOTE_PREFIX, type AnalysisLiveAgent } from "@metis/shared";
 import type {
   AnalysisAgentStatus,
   AnalysisFinding,
@@ -265,10 +265,19 @@ export function traceabilityPendingMessage(status: AnalysisStatus): string | nul
  * `degraded`, not a green `completed`: the code agent that exhausted its budget
  * and recovered 0 findings looked like a clean run everywhere but the Summary.
  */
-export function agentDisplayStatus(agent: {
-  status: AnalysisAgentStatus;
-  notes?: readonly string[] | null;
-}): AnalysisAgentStatus | "degraded" {
+export function agentDisplayStatus(
+  agent: {
+    status: AnalysisAgentStatus;
+    notes?: readonly string[] | null;
+  },
+  /**
+   * #766 — the agent's live entry, when it is running right now. A Regenerate
+   * leaves the old row `completed` until the new result replaces it, so the
+   * live entry wins over the stored status.
+   */
+  live?: AnalysisLiveAgent | null,
+): AnalysisAgentStatus | "degraded" {
+  if (live) return "running";
   if (
     agent.status === "completed" &&
     (agent.notes ?? []).some((n) => n.startsWith(AGENT_DEGRADED_NOTE_PREFIX))
@@ -276,6 +285,56 @@ export function agentDisplayStatus(agent: {
     return "degraded";
   }
   return agent.status;
+}
+
+/** Whole minutes and seconds since `startedAt`, e.g. `4m 12s`; `0s` for a future time. */
+function elapsedLabel(startedAt: string, now: number): string {
+  const seconds = Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1000));
+  if (!Number.isFinite(seconds)) return "";
+  const minutes = Math.floor(seconds / 60);
+  return minutes > 0 ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+}
+
+/**
+ * Issue #766 — the line an agent card shows while the agent runs: whether it is
+ * a re-run, what it is doing, the code agent's tool calls so far, and for how
+ * long. A 23-minute "Continue" used to show nothing but the run header's
+ * `running` (#706 run 8).
+ */
+export function liveAgentLine(live: AnalysisLiveAgent, now: number = Date.now()): string {
+  const parts = [live.rerun ? "Re-running" : "Running"];
+  if (live.phase === "synthesizing") {
+    parts.push("updating the run summary with the new findings");
+  } else if (live.toolCalls > 0) {
+    parts.push(`${live.toolCalls} tool call${live.toolCalls === 1 ? "" : "s"} so far`);
+  }
+  const elapsed = elapsedLabel(live.startedAt, now);
+  if (elapsed) parts.push(elapsed);
+  return parts.join(" · ");
+}
+
+/**
+ * Issue #766 — the cards the Agent output tab renders: every stored result,
+ * plus a placeholder for an agent running with no stored result yet (the code
+ * agent mid-investigation in a normal run), so a running agent is never
+ * invisible. Each card carries its live entry, or `null`.
+ */
+export function agentCards<T extends { agentKey: string }>(
+  results: readonly T[],
+  live: readonly AnalysisLiveAgent[],
+): Array<{ result: T | null; agentKey: string; live: AnalysisLiveAgent | null }> {
+  const byKey = new Map(live.map((l) => [l.agentKey, l]));
+  const cards: Array<{ result: T | null; agentKey: string; live: AnalysisLiveAgent | null }> =
+    results.map((result) => ({
+      result,
+      agentKey: result.agentKey,
+      live: byKey.get(result.agentKey) ?? null,
+    }));
+  const shown = new Set(results.map((r) => r.agentKey));
+  for (const l of live) {
+    if (!shown.has(l.agentKey)) cards.push({ result: null, agentKey: l.agentKey, live: l });
+  }
+  return cards;
 }
 
 // ── Tab counts ──────────────────────────────────────────────────────────────

@@ -95,6 +95,7 @@ import {
   summaryCostUsd,
 } from "../finops/ledger-usage-summary.js";
 import { isServerAuthored } from "./server-authored.js";
+import { readLiveAgents } from "./live-agent-progress.js";
 import { CODE_GRAPH_DOCUMENT_PREFIX } from "./fused-code-chunks.js";
 import type { ToolCallTelemetry } from "./tool-telemetry.js";
 import type { NoVerdictReason } from "./structured-verdict.js";
@@ -1519,6 +1520,8 @@ export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot 
     failedAgents: analysisFailedAgents(row.agentResults),
     droppedCitations: snapshot.capability?.droppedCitations ?? [],
     ledgerUsage: await readAnalysisLedgerUsage(row.projectId, id),
+    // #766 — a Regenerate in progress, shown on the agent's card.
+    liveAgents: readLiveAgents(id),
   };
 }
 

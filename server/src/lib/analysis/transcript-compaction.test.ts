@@ -410,6 +410,98 @@ describe("compaction telemetry survives log redaction (#1225)", () => {
   });
 });
 
+/**
+ * #766 — the #706 DeepSeek code-agent runs batch ~6 tool calls into one result
+ * turn (~2.6k provider tokens median, measured from the ledger's prompt growth),
+ * so three preserved turns plus the assistant turns and stubs weigh more than
+ * the hysteresis target. Every pass then stopped at that floor, the next turn
+ * re-crossed the ceiling, and the message that had just left the preserved tail
+ * was rewritten on EVERY turn: a prompt-cache miss per turn, re-billed against
+ * the token budget (cache reads stuck at the system prefix, 15-20k uncached
+ * input per turn from turn 6 on).
+ */
+describe("compaction with a floor above the target (#766)", () => {
+  /** Drive the loop's shape: compact, "send", append one batch result. */
+  function drive(turns: number, resultTokens: number) {
+    const messages: ChatMessage[] = [{ role: "user", content: "TASK: analyse the project." }];
+    const sent: string[][] = [];
+    let events = 0;
+    for (let t = 0; t < turns; t++) {
+      if (compactTranscript(messages, 1).compacted) events++;
+      sent.push(messages.map((m) => String(m.content)));
+      messages.push({ role: "assistant", content: "A".repeat(1_200) });
+      messages.push(toolResult("read_file_slice", `turn-${t} `.padEnd(resultTokens * 4, "x")));
+    }
+    return { events, sent };
+  }
+
+  /** Turns whose prompt rewrote something the previous prompt already carried. */
+  function prefixBreaks(sent: string[][]): number {
+    let breaks = 0;
+    for (let t = 1; t < sent.length; t++) {
+      const prev = sent[t - 1];
+      if (prev.some((content, i) => sent[t][i] !== content)) breaks++;
+    }
+    return breaks;
+  }
+
+  it("does not rewrite the transcript on every turn once the ceiling is crossed", () => {
+    const { events, sent } = drive(20, 3_000);
+
+    // 20 turns of 3k results: the default 16k ceiling is crossed by turn ~6.
+    expect(events).toBeGreaterThan(0);
+    // Before #766 this was one rewrite per turn from the first crossing on.
+    expect(prefixBreaks(sent)).toBe(events);
+    expect(events).toBeLessThanOrEqual(7);
+  });
+
+  it("frees at least the hysteresis headroom at every compaction event", () => {
+    const messages: ChatMessage[] = [{ role: "user", content: "TASK" }];
+    const headroom =
+      DEFAULT_TRANSCRIPT_COMPACTION.maxTranscriptTokens *
+      (1 - DEFAULT_TRANSCRIPT_COMPACTION.targetRatio);
+    let events = 0;
+    for (let t = 0; t < 20; t++) {
+      const result = compactTranscript(messages, 1);
+      if (result.compacted) {
+        events++;
+        expect(result.tokensBefore - result.tokensAfter).toBeGreaterThanOrEqual(headroom - 1);
+      }
+      messages.push({ role: "assistant", content: "A".repeat(1_200) });
+      messages.push(toolResult("read_file_slice", `t${t} `.padEnd(12_000, "x")));
+    }
+    expect(events).toBeGreaterThan(0);
+  });
+
+  it("still compacts a transcript whose floor is under the target down to the target", () => {
+    const messages = transcript(10, 8_000);
+    const result = compactTranscript(messages, 1, { preserveRecentTurns: 1 });
+    expect(result.compacted).toBe(true);
+    expect(result.tokensAfter).toBeLessThanOrEqual(
+      DEFAULT_TRANSCRIPT_COMPACTION.maxTranscriptTokens * DEFAULT_TRANSCRIPT_COMPACTION.targetRatio,
+    );
+  });
+
+  it("never rewrites a body the marker would make longer", () => {
+    // 610 characters: over the 600-character head slice, but the marker that
+    // replaces the last 10 is far longer than they are.
+    const messages: ChatMessage[] = [
+      { role: "user", content: "TASK" },
+      toolResult("search_code_graph", "y".repeat(610)),
+      toolResult("search_code_graph", "z".repeat(610)),
+    ];
+    const before = messages.map((m) => m.content);
+
+    const result = compactTranscript(messages, 1, {
+      maxTranscriptTokens: 100,
+      preserveRecentTurns: 0,
+    });
+
+    expect(result.compacted).toBe(false);
+    expect(messages.map((m) => m.content)).toEqual(before);
+  });
+});
+
 describe("estimateTokens", () => {
   it("approximates four characters per token", () => {
     expect(estimateTokens("")).toBe(0);
