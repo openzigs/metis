@@ -21,8 +21,10 @@
  *   7. Always emit progress + final status events.
  *
  * Idempotency contract: re-running a batch with the same drafts produces no
- * new issues. The marker comment in each issue body provides recovery if
- * the local PublishedIssue rows are wiped.
+ * new issues. A draft whose PublishedIssue row the dedup map does not use
+ * (archived batch, no recorded hash, a failed row naming its issue) is matched
+ * from that row and confirmed by the marker comment in the issue body (#1106);
+ * the marker alone never starts a match.
  *
  * ## Which identifier `PublishedIssue.issueId` stores (#1091)
  *
@@ -65,7 +67,7 @@ import {
   computeDraftBodyHash,
   computeDedupHash,
   injectMarker,
-  parseMarker,
+  parseMarkers,
   sourceMarkerForDraft,
   stripMarker,
 } from "./dedup.js";
@@ -184,6 +186,13 @@ export async function previewBatchPlan(input: PreviewBatchPlanInput): Promise<Dr
     drafts,
     existingByHash,
   );
+  // #1106 — DB-only: the drafts the live run checks against the tracker.
+  const recoverable = await loadRecoverableIssues(
+    input.projectId,
+    { owner: input.targetOwner, repo: input.targetRepo, baseUrl: input.targetBaseUrl ?? null },
+    drafts,
+    existingByHash,
+  );
   return buildDryRunPlan({
     batchId: PREVIEW_PLAN_BATCH_ID,
     targetOwner: input.targetOwner,
@@ -201,6 +210,7 @@ export async function previewBatchPlan(input: PreviewBatchPlanInput): Promise<Dr
     })),
     additionalLabels: input.additionalLabels,
     existingByHash,
+    mayMatch: mayMatchIssues(recoverable),
     perCallMs: rateLimit.delayMs,
     credential,
     approvalGate,
@@ -329,6 +339,14 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
       drafts,
       existingByHash,
     );
+    // #1106 — DB-only, so M1 holds: the drafts whose issue the live run looks
+    // up on the tracker. The plan names each one; it cannot know the answer.
+    const recoverable = await loadRecoverableIssues(
+      batch.projectId,
+      { owner: batch.targetOwner, repo: batch.targetRepo, baseUrl: batch.targetBaseUrl },
+      drafts,
+      existingByHash,
+    );
     const plan = buildDryRunPlan({
       batchId: batch.id,
       targetOwner: dryTarget.owner,
@@ -346,6 +364,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
       })),
       additionalLabels: batchAdditionalLabels(batch.metadata),
       existingByHash,
+      mayMatch: mayMatchIssues(recoverable),
       perCallMs: rateLimit.delayMs,
       credential,
       approvalGate,
@@ -437,14 +456,23 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     drafts.map((d) => d.id),
   );
 
-  // Recover lost PublishedIssue rows by parsing marker comments on remote issues.
-  await reconcileFromRemote({
+  // #1106 — recover issues the dedup map cannot see (archived batch, no
+  // recorded hash, a failed row naming its issue): matched from METIS's own
+  // rows, each confirmed against its issue on the tracker. The dry run planned
+  // from the same `loadRecoverableIssues` call.
+  const recoverable = await loadRecoverableIssues(
+    batch.projectId,
+    { owner: target.owner, repo: target.repo, baseUrl: batch.targetBaseUrl },
+    drafts,
+    existingByHash,
+  );
+  const sweep = await reconcileFromRemote({
     client,
     target,
     drafts,
     existingByHash,
+    recoverable,
     batchId: batch.id,
-    projectId: batch.projectId,
   });
 
   // #1276 — what each draft is published as: its body, plus the number of a
@@ -500,6 +528,11 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     // even when the local write is what failed.
     let remoteCreated: { issueNumber: number; nodeId: string; htmlUrl: string } | null = null;
     try {
+      // #1106 — this draft's issue could not be read, so whether it already
+      // has one is unknown: recorded as failed (before any write) rather than
+      // created as a possible duplicate. A retry checks again.
+      const unreadable = sweep.unreadable.get(draft.id);
+      if (unreadable !== undefined) throw new Error(unreadable);
       let issueNumber: number;
       let issueId: string;
       let restIssueId: number;
@@ -820,7 +853,10 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
             // #1091 — say plainly what the rollback did and did NOT manage to
             // undo. "auto-rollback after >50% failures" read as if GitHub had
             // been left clean when 8 issues were in fact still open.
-            errorMessage: rollbackOutcomeMessage(failedCount, ordered.length, rollback),
+            errorMessage: withSweepNote(
+              rollbackOutcomeMessage(failedCount, ordered.length, rollback),
+              sweep.note,
+            ),
             completedAt: new Date(),
           },
         });
@@ -878,8 +914,10 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
       failedCount,
       dedupSkipped,
       completedAt: new Date(),
-      errorMessage:
+      errorMessage: withSweepNote(
         failedCount > 0 ? `${failedCount} drafts failed (within rollback threshold)` : null,
+        sweep.note,
+      ),
     },
   });
   audit({
@@ -1424,142 +1462,246 @@ function outranks(
   return a.id > b.id;
 }
 
+/**
+ * #1106 — a draft whose issue METIS can name only from a `PublishedIssue` row
+ * the dedup map does not use: a row of an archived batch, one that recorded no
+ * dedup hash, or a `failed` row that still names the issue it created.
+ */
+interface RecoverableIssue {
+  issueNumber: number;
+  dedupHash: string | null;
+  parentIssueNumber: number | null;
+  additionalLabels: string[] | null;
+}
+
+/**
+ * #1106 — which drafts of a batch the publish will look for on the tracker,
+ * and under which issue number. DATABASE ONLY, so the dry run and the preview
+ * (M1: no network) compute exactly the set the live run checks, and the plan
+ * can say so per draft.
+ *
+ * The match KEY is METIS's own record — draft id → issue number — never text
+ * on the tracker. For each draft whose title hash is not already in the dedup
+ * map, the row used is:
+ *   - a GitHub row of this project (a Jira row holds issue number 0);
+ *   - for THIS target: the same repository (owner and name compared
+ *     case-insensitively, as GitHub does) on the same API host;
+ *   - one that names an issue (`issueNumber > 0`), so a newer failed row that
+ *     recorded none never shadows the older one that did;
+ *   - the newest of those: `publishedAt` desc, then row `id` desc, so the pick
+ *     never depends on the order the database returns rows in.
+ * An issue number the dedup map, or an earlier draft of this batch, already
+ * claims is not offered again: two drafts are never filed onto one issue.
+ */
+async function loadRecoverableIssues(
+  projectId: string,
+  target: { owner: string; repo: string; baseUrl: string | null },
+  drafts: ReadonlyArray<{ id: string; title: string }>,
+  existingByHash: ReadonlyMap<string, { issueNumber: number }>,
+): Promise<Map<string, RecoverableIssue>> {
+  const missing = drafts.filter(
+    (d) => !existingByHash.has(computeDedupHash(target.owner, target.repo, d.title)),
+  );
+  const out = new Map<string, RecoverableIssue>();
+  if (missing.length === 0) return out;
+  const ids = new Set(missing.map((d) => d.id));
+  const rows = await prisma.publishedIssue.findMany({
+    where: {
+      draftId: { in: [...ids] },
+      destination: "github",
+      issueNumber: { gt: 0 },
+      batch: { projectId },
+    },
+    include: {
+      batch: {
+        select: {
+          projectId: true,
+          targetOwner: true,
+          targetRepo: true,
+          targetBaseUrl: true,
+          metadata: true,
+        },
+      },
+    },
+    orderBy: [{ publishedAt: "desc" }, { id: "desc" }],
+  });
+  const repository: NamedRepository = {
+    owner: target.owner.trim().toLowerCase(),
+    name: target.repo
+      .trim()
+      .toLowerCase()
+      .replace(/\.git$/, ""),
+  };
+  const host = apiBaseKey(target.baseUrl);
+  const best = new Map<string, (typeof rows)[number]>();
+  for (const row of rows) {
+    // The query says most of this; it is checked again here so the pick does
+    // not rest on a filter or an order the caller cannot see.
+    const b = row.batch;
+    if (!ids.has(row.draftId) || !(row.issueNumber > 0)) continue;
+    if (!b || b.projectId !== projectId) continue;
+    if (!namesRepository(repository, b.targetOwner, b.targetRepo)) continue;
+    if (apiBaseKey(b.targetBaseUrl) !== host) continue;
+    const current = best.get(row.draftId);
+    if (!current || outranks(row, current, new Set())) best.set(row.draftId, row);
+  }
+  const claimed = new Set([...existingByHash.values()].map((e) => e.issueNumber));
+  for (const d of missing) {
+    const row = best.get(d.id);
+    if (!row || claimed.has(row.issueNumber)) continue;
+    claimed.add(row.issueNumber);
+    out.set(d.id, {
+      issueNumber: row.issueNumber,
+      dedupHash: row.dedupHash,
+      parentIssueNumber: row.parentIssueNumber ?? null,
+      additionalLabels: batchAdditionalLabels(row.batch.metadata),
+    });
+  }
+  return out;
+}
+
+/** #1106 — the dry-run view of {@link loadRecoverableIssues}: draft id → issue number. */
+function mayMatchIssues(recoverable: ReadonlyMap<string, RecoverableIssue>): Map<string, number> {
+  return new Map([...recoverable].map(([draftId, r]) => [draftId, r.issueNumber]));
+}
+
 interface ReconcileArgs {
   client: PublishOctokitLike;
   target: { owner: string; repo: string };
   drafts: Array<{ id: string; title: string; body: string }>;
   existingByHash: Map<string, ExistingMatch>;
+  recoverable: ReadonlyMap<string, RecoverableIssue>;
   batchId: string;
-  projectId: string;
 }
 
-async function reconcileFromRemote(args: ReconcileArgs): Promise<void> {
-  const { client, target, drafts, existingByHash, projectId } = args;
-  // Only run if there are drafts whose dedup hash is NOT in our local map —
-  // saves a round-trip when everything is already known.
-  const missing = drafts.filter((d) => {
-    const h = computeDedupHash(target.owner, target.repo, d.title);
-    return !existingByHash.has(h);
-  });
-  if (missing.length === 0) return;
-  // Single page sweep — issues with our marker comment.
-  let resp;
-  try {
-    resp = await client.request<GhIssue[]>({
-      method: "GET",
-      url: `/repos/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}/issues?state=all&per_page=100&labels=metis-generated`,
-    });
-  } catch {
-    return;
-  }
-  const remote = Array.isArray(resp.data) ? resp.data : [];
-  for (const issue of remote) {
-    const marker = parseMarker(issue.body ?? "");
-    if (!marker) continue;
-    if (existingByHash.has(marker.hash)) continue;
-    // F3: marker is a HINT ONLY. Cross-check the DB to confirm the linkage
-    // is real — an attacker-controlled requirement body could ship a fake
-    // marker pointing at any draft/batch in the world. Authoritative
-    // mapping lives in the PublishedIssue table; if the marker disagrees
-    // with the DB (or the referenced batch is for a different project),
-    // reject the linkage and log a warning instead of trusting it.
-    const dbRow = await prisma.publishedIssue.findFirst({
-      where: {
-        draftId: marker.draftId,
-        // A GitHub issue is matched against a GitHub row: the Jira row of the
-        // same draft holds issue number 0 and would read as a mismatch.
-        destination: "github",
-        batch: { projectId },
-      },
-      include: { batch: true },
-    });
-    if (!dbRow) {
-      log.warn("publish.reconcile.marker_not_in_db", {
-        batchId: args.batchId,
-        markerBatchId: marker.batchId,
-        markerDraftId: marker.draftId,
-        issueNumber: issue.number,
+/** #1106 — what the remote check could not settle, for the run and the batch row. */
+interface ReconcileOutcome {
+  /** Draft id → why it is not published this run (its issue could not be read). */
+  unreadable: Map<string, string>;
+  /** One line for the batch's `errorMessage`, or `null`. */
+  note: string | null;
+}
+
+/** HTTP statuses that mean "this issue is not here any more": moved, missing, deleted. */
+const ISSUE_GONE_STATUSES = new Set([301, 404, 410]);
+
+/**
+ * Recover the issue of each draft {@link loadRecoverableIssues} named, by
+ * reading THAT issue by number and confirming it.
+ *
+ * #1106, item 3 — the decision: the match comes from METIS's `PublishedIssue`
+ * row; the tracker-side marker is a consistency check only. Text on the
+ * tracker can stop a match, never start one: an issue METIS has no row for is
+ * never read, and no marker can point a draft at an issue its own row does not
+ * name. The issue is confirmed when one of its publish markers alone on its line
+ * — any of them, last first (item 2) — names this draft with a hash METIS can
+ * vouch for: the hash recorded on the row, or the hash the draft has now (a
+ * draft retitled after a failed run, #1102 cycle 3). Otherwise it is no match,
+ * the draft is created, and the conflict is audited.
+ *
+ * Reads are one `GET` per named issue, so there is no listing and no page limit
+ * (item 5); they are bounded by the drafts in the batch. A read that fails for
+ * any reason other than the issue being gone is logged, audited and reported on
+ * the batch, and that draft is NOT created this run — creating it could file a
+ * duplicate of the issue that could not be read (item 6). A retry checks again.
+ */
+async function reconcileFromRemote(args: ReconcileArgs): Promise<ReconcileOutcome> {
+  const { client, target, drafts, existingByHash, recoverable } = args;
+  const unreadable = new Map<string, string>();
+  const unreadNumbers: number[] = [];
+  for (const draft of drafts) {
+    const candidate = recoverable.get(draft.id);
+    if (!candidate) continue;
+    const hash = computeDedupHash(target.owner, target.repo, draft.title);
+    const issueRef = `${target.owner}/${target.repo}#${candidate.issueNumber}`;
+    let issue: GhIssue;
+    try {
+      const resp = await client.request<GhIssue>({
+        method: "GET",
+        url: issuePath(target, candidate.issueNumber),
       });
-      continue;
-    }
-    if (dbRow.batch.projectId !== projectId) {
-      log.warn("publish.reconcile.marker_cross_project", {
+      issue = resp.data;
+    } catch (err) {
+      const e = err as { status?: number; message?: string };
+      if (e.status !== undefined && ISSUE_GONE_STATUSES.has(e.status)) {
+        log.info("publish.reconcile.issue_gone", {
+          batchId: args.batchId,
+          draftId: draft.id,
+          issueNumber: candidate.issueNumber,
+          status: e.status,
+        });
+        continue;
+      }
+      log.warn("publish.reconcile.read_failed", {
         batchId: args.batchId,
-        markerBatchId: marker.batchId,
-        markerDraftId: marker.draftId,
-        issueNumber: issue.number,
-      });
-      continue;
-    }
-    if (dbRow.issueNumber !== issue.number) {
-      // Marker points at a real draft we own, but the DB has a different
-      // canonical issue for it. DB wins — log the discrepancy and audit.
-      log.warn("publish.reconcile.marker_db_mismatch", {
-        batchId: args.batchId,
-        markerDraftId: marker.draftId,
-        markerIssueNumber: issue.number,
-        dbIssueNumber: dbRow.issueNumber,
+        draftId: draft.id,
+        issueNumber: candidate.issueNumber,
+        status: e.status ?? null,
+        message: e.message,
       });
       audit({
         actor: { id: "system" },
-        action: "publish.reconcile.marker_mismatch",
-        target: {
-          type: "github_issue",
-          id: `${target.owner}/${target.repo}#${issue.number}`,
-        },
+        action: "publish.reconcile.read_failed",
+        target: { type: "github_issue", id: issueRef },
         metadata: {
           batchId: args.batchId,
-          markerBatchId: marker.batchId,
-          markerDraftId: marker.draftId,
-          dbIssueNumber: dbRow.issueNumber,
+          draftId: draft.id,
+          status: e.status ?? null,
         },
       });
-      continue;
-    }
-    // #1102 review — the marker's HASH is a hint as well, and it is the key the
-    // recovered issue is filed under: whichever draft of this batch has that
-    // hash is then PATCHed onto this issue. Anyone who can edit the issue can
-    // rewrite it (it is sha256 of `owner/repo:title`, so it is computable) to
-    // the hash of ANOTHER draft, and the next batch then overwrote this issue
-    // with that draft while the draft never got an issue of its own. So the
-    // hash must be one METIS can vouch for, for THIS issue's own draft (the row
-    // above ties the draft the marker names to this issue number):
-    //   - the hash recorded for the issue, or
-    //   - the hash that draft has now, when it is in this batch.
-    // The second is the only reading for a row that recorded no hash, and it
-    // is what recovers a draft retitled after a failed run: rows written
-    // before the failed branch recorded the hash with the issue hold the OLD
-    // title's hash beside an issue stamped with the new one, and refusing
-    // those created a second issue. It gives an editor of the tracker nothing:
-    // it files this issue under its own draft's hash, which is where that
-    // draft publishes anyway. Anything else is no match: the draft is created
-    // as a new issue and the conflict reported.
-    const named = drafts.find((d) => d.id === marker.draftId);
-    const vouched =
-      (dbRow.dedupHash !== null && dbRow.dedupHash === marker.hash) ||
-      (named !== undefined &&
-        computeDedupHash(target.owner, target.repo, named.title) === marker.hash);
-    if (!vouched) {
-      const claimedBy = drafts.find(
-        (d) => computeDedupHash(target.owner, target.repo, d.title) === marker.hash,
+      unreadable.set(
+        draft.id,
+        `could not read issue #${candidate.issueNumber} to check whether it is this draft's ` +
+          `issue (${e.status ? `HTTP ${e.status}` : "no response"}); not published, so as not ` +
+          "to file a duplicate. Retry the batch.",
       );
-      log.warn("publish.reconcile.marker_hash_mismatch", {
+      unreadNumbers.push(candidate.issueNumber);
+      continue;
+    }
+    let identity;
+    try {
+      identity = readIssueIdentity(issue);
+    } catch {
+      log.warn("publish.reconcile.malformed_issue", {
         batchId: args.batchId,
-        markerDraftId: marker.draftId,
-        issueNumber: issue.number,
-        claimedByDraftId: claimedBy?.id ?? null,
+        issueNumber: candidate.issueNumber,
+      });
+      continue;
+    }
+    if (identity.number !== candidate.issueNumber) {
+      // Answered with another issue (a redirect followed to a transferred one).
+      log.warn("publish.reconcile.issue_moved", {
+        batchId: args.batchId,
+        draftId: draft.id,
+        issueNumber: candidate.issueNumber,
+        answeredNumber: identity.number,
+      });
+      continue;
+    }
+    const markers = parseMarkers(issue.body ?? "");
+    const own = markers.filter((m) => m.draftId === draft.id);
+    const confirmed = own.find(
+      (m) => (candidate.dedupHash !== null && m.hash === candidate.dedupHash) || m.hash === hash,
+    );
+    if (!confirmed) {
+      const action =
+        own.length > 0
+          ? "publish.reconcile.marker_hash_mismatch"
+          : "publish.reconcile.marker_mismatch";
+      log.warn(action, {
+        batchId: args.batchId,
+        draftId: draft.id,
+        issueNumber: candidate.issueNumber,
+        markersRead: markers.length,
       });
       audit({
         actor: { id: "system" },
-        action: "publish.reconcile.marker_hash_mismatch",
-        target: {
-          type: "github_issue",
-          id: `${target.owner}/${target.repo}#${issue.number}`,
-        },
+        action,
+        target: { type: "github_issue", id: issueRef },
         metadata: {
           batchId: args.batchId,
-          markerDraftId: marker.draftId,
-          claimedByDraftId: claimedBy?.id ?? null,
+          draftId: draft.id,
+          markerDraftIds: [...new Set(markers.map((m) => m.draftId))].slice(0, 10),
         },
       });
       continue;
@@ -1567,33 +1709,34 @@ async function reconcileFromRemote(args: ReconcileArgs): Promise<void> {
     // Strip the marker before hashing so the recovered bodyHash matches the
     // hash format used at write time (raw user-supplied body).
     const stripped = stripMarker(issue.body ?? "").trimEnd();
-    // #1091 — `issue.id` here is the numeric REST id; `PublishedIssue.issueId`
-    // stores the node id. Reading the wrong one poisoned the dedup map, so a
-    // retry re-failed on the very rows recovery had just repaired.
-    let identity;
-    try {
-      identity = readIssueIdentity(issue);
-    } catch {
-      log.warn("publish.reconcile.malformed_issue", {
-        batchId: args.batchId,
-        issueNumber: issue.number,
-      });
-      continue;
-    }
-    existingByHash.set(marker.hash, {
+    existingByHash.set(hash, {
       issueNumber: identity.number,
+      // #1091 — the node id, never the numeric REST id.
       issueId: identity.nodeId,
       htmlUrl: identity.htmlUrl,
       bodyHash: computeBodyHash(stripped),
-      parentIssueNumber: dbRow.parentIssueNumber ?? null,
-      additionalLabels: batchAdditionalLabels(dbRow.batch.metadata),
+      parentIssueNumber: candidate.parentIssueNumber,
+      additionalLabels: candidate.additionalLabels,
     });
     log.info("publish.reconcile.recovered", {
       batchId: args.batchId,
-      issueNumber: issue.number,
-      hash: marker.hash,
+      draftId: draft.id,
+      issueNumber: identity.number,
+      hash,
     });
   }
+  const note =
+    unreadNumbers.length === 0
+      ? null
+      : `could not read issue ${unreadNumbers.map((n) => `#${n}`).join(", ")} on GitHub to ` +
+        `check ${unreadNumbers.length === 1 ? "it" : "them"}; ` +
+        `${unreadNumbers.length} draft(s) not published, retry the batch`;
+  return { unreadable, note };
+}
+/** #1106 — a batch message with the remote check's note appended, when there is one. */
+function withSweepNote(message: string | null, note: string | null): string | null {
+  if (!note) return message;
+  return message ? `${message}; ${note}` : note;
 }
 
 function safeWhereFromMetadata(meta: string): Record<string, unknown> {

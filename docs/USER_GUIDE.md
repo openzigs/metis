@@ -1971,6 +1971,8 @@ Always run a **dry-run** before a live publish:
 3. METIS computes the exact set of issues it _would_ create or update, including label-sync deltas, dedup matches, and parent/child sub-issue relationships — without ever calling GitHub.
 4. The resulting batch is recorded with `dryRun=true` so you can review the full plan in the Recent Batches table.
 
+**"May match existing issue #N, checked at publish" (#1106).** Usually METIS knows from its own records whether a draft already has an issue. Sometimes the record it would use is one it cannot rely on alone: the batch was archived, the record predates the stored hash, or an earlier run failed after creating the issue. The live publish then reads that one issue on GitHub. If the issue still carries this draft's hidden METIS marker, METIS updates or skips it. If not, it creates a new issue. A dry run does not call GitHub, so it lists such a draft as a create with this note instead of guessing.
+
 Permission required: `issue.preview` (everyone except `reader`).
 
 #### 13.7.6 Publishing a Live Batch
@@ -1981,6 +1983,8 @@ Once the dry-run looks correct:
 2. Make sure your **Vault secret ref** is filled in.
 3. Click **Publish now**.
 4. Watch live progress in the Recent Batches table — click **Watch** on the new batch to stream `publish:status` / `publish:progress` / `publish:completed` events over the WebSocket. Watch on a batch that has already finished says so, with its counts and the issues it created, instead of waiting for events. Once a batch has published, its **Published** cell and each published draft show the created issue's number as a link (for example `owner/repo#12`) (#1136).
+
+**How a re-publish finds an issue METIS published before (#1106).** METIS matches a draft to an issue from its own publish records, never from text on GitHub. The hidden marker at the end of the issue body only confirms the match. Editing or pasting a marker on GitHub can stop a match, but it cannot point a draft at another issue. No marker can make METIS update an issue it has no record of publishing for that draft. Issues are read one at a time by number, so there is no limit on how many `metis-generated` issues the repository holds. If GitHub cannot be read for one of these issues (an outage, a rate limit), METIS does not create that draft, because it might already have an issue. The draft is marked failed, the batch's message says `could not read issue #N`, and running the batch again checks once more. An issue that was deleted or moved counts as gone, and the draft is created.
 
 Permission required: `issue.publish` (admin / coordinator only). Developers can dry-run but cannot live-publish.
 

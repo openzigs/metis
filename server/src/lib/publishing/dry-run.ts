@@ -39,6 +39,13 @@ export interface DryRunInput {
     string,
     { issueNumber: number; bodyHash: string | null; additionalLabels?: string[] | null }
   >;
+  /**
+   * #1106 — draft id → the issue number METIS's own record names for a draft
+   * the dedup map does not cover. The live run reads that issue and updates or
+   * skips it when its marker confirms the draft; a plan makes no network call,
+   * so it marks those creates as "may match #N — checked at publish".
+   */
+  mayMatch?: ReadonlyMap<string, number>;
   /** Estimated cost per API call (ms). */
   perCallMs: number;
   /**
@@ -123,6 +130,7 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
       if (d.draftType === "epic") epicNumbers.set(d.id, existing.issueNumber);
       continue;
     }
+    const mayMatch = input.mayMatch?.get(d.id);
     actions.push({
       kind: "issue.create",
       draftId: d.id,
@@ -130,6 +138,12 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
       body: stampedBody,
       labels: d.labels,
       parentDraftId: d.parentDraftId ?? undefined,
+      ...(mayMatch !== undefined
+        ? {
+            mayMatchIssueNumber: mayMatch,
+            reason: `may match existing issue #${mayMatch}, checked at publish: updated or skipped if it still carries this draft's marker, otherwise created`,
+          }
+        : {}),
       ...gateMark(d.id),
     });
     const synthetic = nextSyntheticNumber++;
