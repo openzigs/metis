@@ -117,3 +117,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Same-origin href check](project_same-origin-href-check.md) — new URL origin, then re-check the normalised result; tab, %2e (#1315)
 - [Docs-gen reuse + regenerate](project_docs-gen-section-reuse-and-regenerate.md) — checkpoint timing; one-child trim; stage (#1317)
 - [Headless Chrome offline proof](project_headless-chrome-network-lockdown.md) — interception + CSP + launch args; real probe (#1321)
+- [`\u` escapes land literal](project_unicode-escapes-arrive-literal.md) — use String.fromCodePoint; scan for Cf/bidi; `(?<!=)=+` linear (#1114)
