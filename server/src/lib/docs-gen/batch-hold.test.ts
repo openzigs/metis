@@ -191,4 +191,13 @@ describe("citedSourceIds", () => {
       ),
     ).toEqual(["facts:a:1", "facts:b:2", "facts:c:3", "rag:doc:0", "web:x"]);
   });
+
+  it("stays linear on a reply full of unclosed markers", () => {
+    // A wall-clock bound with a wide margin either way: the quadratic scan of
+    // these 280,000 characters took about 5 s, the linear one about 1 ms.
+    const hostile = "[facts:".repeat(40_000);
+    const started = performance.now();
+    expect(citedSourceIds(`${hostile}[facts:ok:1]`)).toEqual(["facts:ok:1"]);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
 });

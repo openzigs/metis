@@ -342,22 +342,22 @@ describe("#1327 — a planned batch held to its share when it is written", () =>
   });
 
   it("logs the overrun factor, the rendered reply length and the topics put past their shares", async () => {
-    const info = vi.spyOn(logger, "info");
+    const write = vi.spyOn(logger, "write");
     try {
       vi.stubEnv("DOCS_GEN_LENGTH_OVERRUN", "fake-section=1.2");
       await run(project(12), regroupingModel(1.4));
-      const entry = info.mock.calls.find(
-        ([message, meta]) =>
-          message === "Batched section synthesized" &&
-          (meta as { group?: string }).group === "rules",
-      )![1] as Record<string, number>;
+      const entry = write.mock.calls
+        .map(([logged]) => logged as unknown as Record<string, unknown>)
+        .find(
+          (logged) => logged.message === "Batched section synthesized" && logged.group === "rules",
+        ) as Record<string, number>;
       expect(entry.lengthOverrun).toBe(1.2);
       expect(entry.renderedReplyChars).toBeGreaterThan(0);
       expect(entry.renderedReplyChars).toBeLessThan(entry.replyChars);
       expect(entry.heldParts).toBeGreaterThan(0);
       expect(entry.overflowTopics).toBeGreaterThan(0);
     } finally {
-      info.mockRestore();
+      write.mockRestore();
     }
   });
 

@@ -58,8 +58,12 @@ export interface BatchHold {
 
 const THEMATIC_BREAK = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 const HEADING_TEXT = /^#{1,6}\s+(.+?)\s*#*\s*$/;
-/** One citation marker's inner text; a cluster may hold several ids. */
-const CITATION = /\[\s*((?:facts|rag|web):[^\]\n]*)\]/g;
+/**
+ * One citation marker's inner text; a cluster may hold several ids. A marker
+ * never contains `[` (ids are URL-encoded), and excluding it keeps the scan
+ * linear on a reply full of unclosed `[facts:` (each attempt stops at the next).
+ */
+const CITATION = /\[\s*((?:facts|rag|web):[^[\]\n]*)\]/g;
 
 /** The source ids the markers in `text` cite. */
 export function citedSourceIds(text: string): string[] {
