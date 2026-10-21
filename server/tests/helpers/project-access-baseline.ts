@@ -64,11 +64,6 @@ export const PROJECT_ACCESS_BASELINE: readonly BaselineEntry[] = [
     note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
   },
   {
-    path: "/projects/:projectId/analyses/model-recommendation",
-    expression: "initModelRecommendationRouter()",
-    note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
-  },
-  {
     path: "/projects/:projectId/usage",
     expression: "projectUsageRouter()",
     note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
@@ -97,11 +92,6 @@ export const PROJECT_ACCESS_BASELINE: readonly BaselineEntry[] = [
     path: "/projects/:projectId",
     expression: "skillDirectoriesRouter()",
     note: "role gate fixed in #1075 (project.read / project.update / skill.manage); still no requireProjectAccess of its own",
-  },
-  {
-    path: "/projects/:projectId/spec-kit",
-    expression: "specKitRouter()",
-    note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
   },
   {
     path: "/projects/:projectId/pr-reviews",
