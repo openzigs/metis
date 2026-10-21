@@ -27,7 +27,15 @@
  * Caveat: the stored replies were written to the run's own plan, so a module
  * newly planned out still has text here; the simulation scales shares, it
  * cannot remove that module's text. The "as written" row is the control: on
- * run B it must reproduce 45 themes cut (72 topics listed).
+ * run B under the #1327 hold with `--no-canonical-rank` it reproduces 45
+ * themes cut (72 topics listed); ranking canonical facts as the synthesizer
+ * does, 44 (71), and 42 (69) once tied topics go smaller first (#1368).
+ *
+ * #1368 — a batch's topics are ranked as the synthesizer ranks them, canonical
+ * facts by their module (`--no-canonical-rank` for the replay before #1368,
+ * which ranked module facts only), and a `--watch` theme that survives is
+ * reported with the rendered characters under it: a heading a later batch
+ * re-emitted over a line ("kept (43)") is not a written theme.
  *
  *   npx tsx scripts/eval-brd-plan-replay.ts --db ../server/dev.db \
  *     --version cmvi3h71u00e9o99k3c0iq4ec --body-max 234277
@@ -41,7 +49,7 @@
 /* eslint-disable no-console -- a local CLI whose output is the table it prints */
 import Database from "better-sqlite3";
 import { renderedCitationLength } from "../src/lib/docs-gen/citation-footnotes.js";
-import { holdBatchReply } from "../src/lib/docs-gen/batch-hold.js";
+import { citedSourceIds, holdBatchReply } from "../src/lib/docs-gen/batch-hold.js";
 import {
   decodePartRuns,
   fitDocumentToPlan,
@@ -76,6 +84,8 @@ interface Args {
   watch: string[];
   factsWindowMin: number;
   list: boolean;
+  /** Rank canonical-fact citations by their module, as the synthesizer does (#1368). */
+  canonicalRank: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -93,6 +103,7 @@ function parseArgs(argv: string[]): Args {
     watch: (get("watch") ?? "Content Entities,Entry and Media Entities").split(","),
     factsWindowMin: Number(get("facts-window-min") ?? 30),
     list: argv.includes("--list"),
+    canonicalRank: !argv.includes("--no-canonical-rank"),
   };
 }
 
@@ -111,6 +122,8 @@ interface Run {
     sections: Array<{ sectionLabel: string; budgetChars: number }>;
   };
   model: string;
+  /** The module directory of each canonical fact, by its source id (#1368). */
+  canonicalModuleOf: Map<string, string>;
 }
 
 function load(args: Args): Run {
@@ -127,7 +140,16 @@ function load(args: Args): Run {
     const manifest = JSON.parse(version.manifest) as {
       sectionSynthesis: { records: StoredRecord[] };
       topicPlan: Run["storedPlan"];
+      selectedEvidence?: { primary?: Array<{ sourceId: string; label: string }> };
     };
+    // A canonical fact's evidence label is `path/to/file.go:12 — NAME = value`;
+    // its module is the file's directory, as Phase 1 groups modules.
+    const canonicalModuleOf = new Map<string, string>();
+    for (const item of manifest.selectedEvidence?.primary ?? []) {
+      if (!item.sourceId.startsWith("facts:canon:")) continue;
+      const file = item.label.split(":")[0];
+      canonicalModuleOf.set(item.sourceId, file.slice(0, Math.max(0, file.lastIndexOf("/"))));
+    }
     const records = manifest.sectionSynthesis.records;
     const model = records[0]?.metadata.model ?? "";
     const until = new Date(version.createdAt);
@@ -160,7 +182,7 @@ function load(args: Args): Run {
       ),
       topClasses: JSON.parse(String(list[0].topClassesJson)) as ModuleFacts["topClasses"],
     }));
-    return { facts, records, storedPlan: manifest.topicPlan, model };
+    return { facts, records, storedPlan: manifest.topicPlan, model, canonicalModuleOf };
   } finally {
     db.close();
   }
@@ -234,6 +256,17 @@ function toldBefore(plan: Pick<DocumentPlan, "sections">): Set<string> {
 const h3 = (md: string): Set<string> =>
   new Set([...md.matchAll(/^### (.+?)\s*$/gm)].map((m) => m[1].trim()));
 
+/** The rendered characters under every `### theme` of a section, to the next H2 or H3. */
+function themeChars(markdown: string, theme: string): number {
+  let n = 0;
+  let inside = false;
+  for (const u of units(markdown)) {
+    if (u.depth > 0 && u.depth <= 3) inside = u.depth === 3 && u.text.slice(4).trim() === theme;
+    if (inside) n += renderedCitationLength(u.text) + 2;
+  }
+  return n;
+}
+
 /** `markdown` as a model writing exactly `budget` rendered characters of it would. */
 function writtenTo(markdown: string, budget: number): string {
   if (renderedCitationLength(markdown) <= budget) return markdown;
@@ -304,11 +337,37 @@ function repliesOf(record: StoredRecord): string[] {
   return replies.map((parts) => parts.join("\n\n"));
 }
 
-/** The module-facts rank a citation names: its index in the section. */
-const rankOf = (id: string): number | undefined => {
-  const m = /^facts:(?!canon:|symbol:).*:(\d+)$/.exec(id);
-  return m ? Number(m[1]) : undefined;
-};
+/** A repository module's facts id: `facts:repo:<encoded [connector, graph, path]>:<index>`. */
+const MODULE_FACTS_ID = /^facts:repo:([^:]+):(\d+)$/;
+
+/**
+ * The rank a citation in `record` names, as the synthesizer ranks it when it
+ * holds a batch (`rankOfSource`): a module's facts by the module's index in
+ * the section, and (#1368, unless `--no-canonical-rank`) a canonical fact by
+ * its module's index. Before #1368 the replay ranked module facts only, so a
+ * topic whose most important citation was a canonical fact of the section's
+ * top module ranked lower here than in the run. Only a module the section
+ * cites has an index here; the synthesizer also ranks a module it read but no
+ * topic cited, which can only make a rank more important.
+ */
+function rankerFor(record: StoredRecord, run: Run, args: Args): (id: string) => number | undefined {
+  const indexOf = new Map<string, number>();
+  for (const id of citedSourceIds(record.markdown)) {
+    const m = MODULE_FACTS_ID.exec(id);
+    if (!m) continue;
+    const parts = JSON.parse(decodeURIComponent(m[1])) as unknown[];
+    const path = parts[parts.length - 1];
+    if (typeof path === "string" && !indexOf.has(path)) indexOf.set(path, Number(m[2]));
+  }
+  return (id) => {
+    if (id.startsWith("facts:canon:")) {
+      const path = args.canonicalRank ? run.canonicalModuleOf.get(id) : undefined;
+      return path === undefined ? undefined : indexOf.get(path);
+    }
+    const m = /^facts:(?!canon:|symbol:).*:(\d+)$/.exec(id);
+    return m ? Number(m[1]) : undefined;
+  };
+}
 
 interface Assembly {
   offered: number;
@@ -344,6 +403,7 @@ function assemble(
     }
     const scale = budgetOf(r) / oldBudget(r);
     const budgets = r.parts.budgets.map((b) => Math.floor(b * scale));
+    const rankOf = rankerFor(r, run, args);
     const held = repliesOf(r).map((text, p) => {
       const h = holdBatchReply(text, budgets[p], {
         measure: renderedCitationLength,
@@ -395,9 +455,13 @@ function assemble(
     notWritten,
     cut,
     listed,
-    watch: args.watch.map(
-      (t) => `${t}: ${!written.has(t) ? "absent" : final.has(t) ? "kept" : "LOST"}`,
-    ),
+    // #1368 — "kept" with the rendered characters under the theme's headings,
+    // so a heading a part re-emitted over a line or two is not read as written.
+    watch: args.watch.map((t) => {
+      if (!written.has(t)) return `${t}: absent`;
+      if (!final.has(t)) return `${t}: LOST`;
+      return `${t}: kept (${fit.sections.reduce((n, s) => n + themeChars(s, t), 0)})`;
+    }),
   };
 }
 

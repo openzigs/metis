@@ -128,6 +128,80 @@ describe("holdBatchReply", () => {
     expect(held.overflowTopics).toEqual(["Large", "Mid", "Small minor"]);
   });
 
+  describe("#1368 — topics tied at the same rank", () => {
+    const para = (n: number, id: string) => `${"x".repeat(n)} [${id}]`;
+    // Run B's Data Model part 0, scaled down: three topics that each cite the
+    // section's top module, written largest first.
+    const tied = [
+      "## Data Model",
+      "### Account",
+      para(580, "facts:mod0:0"),
+      "### Subscription",
+      para(420, "facts:mod0:0"),
+      "### Content",
+      para(210, "facts:mod0:0"),
+    ].join("\n\n");
+
+    it("keeps the smaller of tied topics first, so more of them fit", () => {
+      // Room for Account alone, or for Subscription and Content together.
+      // Written order kept Account and ended the prefix at Subscription,
+      // moving Content (#1368: run B never wrote "Content Entities").
+      const held = holdBatchReply(tied, 720, { rankOf });
+      expect(headings(held.markdown)).toEqual(["Data Model", "Subscription", "Content", "Account"]);
+      expect(held.overflowTopics).toEqual(["Account"]);
+    });
+
+    it("never keeps a less important topic while a tied, more important one moves", () => {
+      // Content and Subscription fit with room to spare; a tiny rank-1 topic
+      // fits that room, but Account (rank 0) moves, so it must move too.
+      const withMinor = `${tied}\n\n### Minor\n\n${para(20, "facts:mod1:1")}`;
+      const held = holdBatchReply(withMinor, 780, { rankOf });
+      expect(held.overflowTopics).toEqual(["Account", "Minor"]);
+      expect(headings(held.markdown)).toEqual([
+        "Data Model",
+        "Subscription",
+        "Content",
+        "Account",
+        "Minor",
+      ]);
+    });
+
+    it("keeps a tied topic of a less important rank only once its whole rank fits", () => {
+      // Every rank-0 topic fits: then the rank-1 topics, smaller first.
+      const ranks = [
+        "## S",
+        "### Big minor",
+        para(300, "facts:mod1:1"),
+        "### Core",
+        para(100, "facts:mod0:0"),
+        "### Small minor",
+        para(120, "facts:mod1:1"),
+      ].join("\n\n");
+      const held = holdBatchReply(ranks, 300, { rankOf });
+      expect(headings(held.markdown)).toEqual(["S", "Core", "Small minor", "Big minor"]);
+      expect(held.overflowTopics).toEqual(["Big minor"]);
+    });
+
+    it("falls back to written order between tied topics of equal size", () => {
+      // A minor topic written first makes the hold reorder, so which two of
+      // the three equal rank-0 topics stay is visible.
+      const equal = [
+        "## S",
+        "### Minor",
+        para(20, "facts:mod1:1"),
+        "### Alpha",
+        para(200, "facts:mod0:0"),
+        "### Bravo",
+        para(200, "facts:mod0:0"),
+        "### Delta",
+        para(200, "facts:mod0:0"),
+      ].join("\n\n");
+      const held = holdBatchReply(equal, 470, { rankOf });
+      expect(headings(held.markdown)).toEqual(["S", "Alpha", "Bravo", "Delta", "Minor"]);
+      expect(held.overflowTopics).toEqual(["Delta", "Minor"]);
+    });
+  });
+
   it("never reorders numbered or step topics: only the cap's tail cut applies", () => {
     for (const [one, two] of [
       ["1. Fetch", "2. Parse"],
