@@ -20,3 +20,5 @@ Measured across PR heads, 2026-10-16/17 (#1217 re-review, then every PR from #12
 **Correcting a fact in one place.** When you correct a CI or tooling fact in one skill, `git grep` the old claim across every skill, agent and instruction file. Fixing one copy turns a consistent error into two contradicting skills.
 
 - `generative-e2e` failing with the Chat page `h1` hidden and "disk full" in the runner log is infrastructure: confirm `main` passed at the base, then re-run once (#1260).
+
+- **22 checks, not 21, when `real-model-worker` runs** (2026-10-20). It is path-filtered (`embed-real-model-nightly.yml:23-37`: `pnpm-lock.yaml`, `pnpm-workspace.yaml`, server/embeddings package manifests, the embed sources and tests), so any lockfile or workspace change adds it. `Check CLA signature` reads `skipping` on owner PRs (`cla.yml:68-73`, author `mgcronin`).

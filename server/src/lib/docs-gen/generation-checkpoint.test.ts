@@ -155,6 +155,74 @@ describe("#782 — partialDocumentMarkdown", () => {
       "1 finished section is shown below",
     );
   });
+
+  describe("#996 — citations in the kept sections", () => {
+    const repoId = `repo:${encodeURIComponent(JSON.stringify(["r", "g", "internal/storage"]))}`;
+    const storage = `facts:${repoId}:0`;
+    const cited = (id: string, index: number, markdown: string, evidence: string[]) =>
+      recordSectionSynthesis(
+        id,
+        hashSectionInputs({
+          facts: id,
+          formulas: "",
+          flow: "",
+          grounding: "",
+          context: "",
+          config: "",
+          prompts: "",
+        }),
+        {
+          markdown,
+          warnings: [],
+          score: null,
+          metadata: {
+            sectionLabel: id,
+            sectionIndex: index,
+            providerKind: "anthropic",
+            model: "m",
+            factsSourceIds: [],
+            groundingSourceIds: evidence,
+          },
+          evidence: evidence.map((sourceId) => ({
+            sourceId,
+            kind: sourceId.startsWith("rag:") ? ("rag" as const) : ("facts" as const),
+            label: sourceId.startsWith("rag:") ? "README.md" : "storage",
+            evidenceClass: "repository-source" as const,
+            contentHash: "h",
+          })),
+        },
+      );
+
+    it("renders each admitted source id as a document-wide footnote", () => {
+      const md = partialDocumentMarkdown("Architecture", [
+        cited("Overview", 0, `## Overview\n\nFeeds are stored per user ([${storage}]).\n`, [
+          storage,
+        ]),
+        cited(
+          "Components",
+          1,
+          `## Components\n\nStorage again [${storage}] and docs [rag:doc1:c2].\n`,
+          [storage, "rag:doc1:c2"],
+        ),
+      ]);
+      expect(md).toContain("Feeds are stored per user[^src-1].");
+      expect(md).toContain("Storage again[^src-1] and docs[^src-2].");
+      expect(md).toContain("[^src-1]: `internal/storage` (module facts)");
+      expect(md).toContain("[^src-2]: `README.md` (retrieved excerpt)");
+      expect(md).not.toMatch(/\[(?:facts|rag|web):/);
+      expect(md).not.toContain("%5B");
+      expect(md).not.toContain("(,");
+    });
+
+    it("drops an id no kept section admitted, as the finished document does", () => {
+      const md = partialDocumentMarkdown("Architecture", [
+        cited("Overview", 0, "## Overview\n\nInvented [facts:nowhere:3].\n", []),
+      ]);
+      expect(md).toContain("Invented.");
+      expect(md).not.toContain("facts:");
+      expect(md).not.toContain("[^src-");
+    });
+  });
 });
 
 describe("#942 — sectionFailureWarning", () => {

@@ -150,7 +150,10 @@ overrides:
   axios@<1.20.0: ^1.20.0
   tmp@<0.2.6: ^0.2.6
   esbuild@<0.28.1: ^0.28.1
-  # GHSA-587h-7wmj-h5pm CVSS 7.5 (launch-editor existsSync bypass), fixed in 8.3.3.
+  # vite GHSA-587h-7wmj-h5pm (CVSS 7.5, launch-editor path check bypass on Windows),
+  #   published 2026-10-20, fixed 8.3.3 on the 8.3 line. 8.3.4 (2026-10-08) cleared
+  #   minimumReleaseAge and returns zero vulns on api.osv.dev (2026-10-20). Guarded by
+  #   scripts/lib/dependency-audit-ghsa-587h-vite.test.mjs.
   vite: ^8.3.4
   postcss@<8.5.18: ^8.5.18
   uuid@<14.0.0: ">=14.0.0"

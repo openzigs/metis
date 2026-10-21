@@ -767,6 +767,40 @@ describe("#855 — cancel", () => {
     expect(state.versions).toHaveLength(1);
   });
 
+  it("#996 — a kept section's citations render as footnotes, never as raw source ids", async () => {
+    // Each section cites the first facts source it was given, as a model does.
+    const original = state.stream.getMockImplementation()!;
+    let citedId: string | undefined;
+    state.stream.mockImplementation(async function* (messages, opts?: { signal?: AbortSignal }) {
+      const user = messages.at(-1).content as string;
+      const label = user.match(/Section group: \*\*(.+?)\*\*/)?.[1];
+      const id = user.match(/\bfacts:[^\]\s,;)`]+/)?.[0];
+      if (label === GROUPS[0].label && id) {
+        citedId = id;
+        yield { type: "delta", content: `## ${label}\n\nThe API validates requests [${id}].\n` };
+        yield { type: "done" };
+        return;
+      }
+      yield* original(messages, opts);
+    });
+    state.duringSection = async (label, signal) => {
+      if (label !== GROUPS[1].label) return;
+      state.doc.status = "cancelling";
+      stopGeneration("d", "aborted");
+      await abortedBy(signal);
+    };
+    await generateDocumentAsync("d", "p");
+
+    expect(citedId).toBeDefined();
+    expect(state.doc.status).toBe("cancelled");
+    const content = String(state.doc.content);
+    expect(content).toContain("Incomplete document");
+    expect(content).toContain("The API validates requests[^src-1].");
+    expect(content).toMatch(/^\[\^src-1\]: `.+` \(module facts\)$/m);
+    expect(content).not.toMatch(/\[(?:facts|rag|web):/);
+    expect(content).not.toContain("%5B");
+  });
+
   it("stops a run cancelled from another replica at the next section", async () => {
     state.duringSection = (label) => {
       // Only the row changes: this process holds no stop for it.

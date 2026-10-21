@@ -119,6 +119,36 @@ describe("cachedProvenanceSummary", () => {
     );
   });
 
+  it("lists each checked main section's code identifiers, clean ones included (#1223)", async () => {
+    const stored = JSON.parse(manifest(4));
+    stored.sections[0].codeIdentifiers = { count: 0, examples: [] };
+    stored.sections[1].codeIdentifiers = {
+      count: 2,
+      examples: [
+        { kind: "inline-code", text: "ShouldMarkAsReadOnView(user)" },
+        { kind: "snake-case", text: "published_at" },
+      ],
+    };
+    // Sections 2 and 3 were not checked (the appendix, the approved requirements).
+    const summary = await cachedProvenanceSummary(row(), async () => JSON.stringify(stored));
+    expect(summary?.codeIdentifiers).toEqual([
+      { section: "S 0", count: 0, examples: [] },
+      {
+        section: "S 1",
+        count: 2,
+        examples: [
+          { kind: "inline-code", text: "ShouldMarkAsReadOnView(user)" },
+          { kind: "snake-case", text: "published_at" },
+        ],
+      },
+    ]);
+    clearGeneratedDocVersionReadCaches();
+    // A document with no checked section (any but a reader-layout BRD) lists none.
+    expect(
+      (await cachedProvenanceSummary(row(), async () => manifest(3)))?.codeIdentifiers,
+    ).toEqual([]);
+  });
+
   it("returns null for an unreadable manifest and remembers that", async () => {
     const load = vi.fn(async () => "{not json");
     expect(await cachedProvenanceSummary(row(), load)).toBeNull();
