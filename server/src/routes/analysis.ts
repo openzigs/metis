@@ -42,6 +42,10 @@ import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import { analysisDeepDiveRateLimiter } from "../middleware/analysis-deepdive-rate-limit.js";
 import { importedRequirementsRateLimiter } from "../middleware/imported-requirements-rate-limit.js";
 import {
+  analysisMatrixPreAuthRateLimiter,
+  analysisMatrixUserRateLimiter,
+} from "../middleware/analysis-matrix-rate-limit.js";
+import {
   analysisApprovalPreAuthRateLimiter,
   analysisApprovalPromoteRateLimiter,
   analysisApprovalReopenRateLimiter,
@@ -982,8 +986,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    */
   projectScoped.get(
     "/:id/traceability",
+    // #838 — the matrix loads the code graph: bounded per user (see the module).
+    analysisMatrixPreAuthRateLimiter,
     requireAuth,
     requirePermission("analysis.read"),
+    analysisMatrixUserRateLimiter,
     async (req: Request, res: Response) => {
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);
@@ -1063,8 +1070,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    */
   projectScoped.get(
     "/:id/export",
+    // #838 — the matrix loads the code graph: bounded per user (see the module).
+    analysisMatrixPreAuthRateLimiter,
     requireAuth,
     requirePermission("analysis.read"),
+    analysisMatrixUserRateLimiter,
     async (req: Request, res: Response) => {
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);

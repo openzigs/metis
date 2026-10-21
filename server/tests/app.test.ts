@@ -65,7 +65,7 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 
 import request from "supertest";
-import { createApp } from "../src/app.js";
+import { createApp, parseCorsOrigins } from "../src/app.js";
 
 beforeEach(() => {
   userRows.clear();
@@ -260,5 +260,122 @@ describe("createApp", () => {
     const cookieStr = Array.isArray(setCookie) ? setCookie.join(";") : String(setCookie ?? "");
     expect(cookieStr).toMatch(/accessToken=;/);
     expect(cookieStr).toMatch(/refreshToken=;/);
+  });
+  // #913 — CSRF on the cookie-authenticated path.
+  describe("CSRF protection (#913)", () => {
+    async function refreshCookie(): Promise<string> {
+      const login = await request(app)
+        .post("/api/auth/login")
+        .send({ username: "developer", password: "password" });
+      return `refreshToken=${login.body.data.refreshToken as string}`;
+    }
+
+    it("refuses a cookie-authenticated write without X-METIS-CSRF", async () => {
+      const res = await request(app)
+        .post("/api/auth/refresh")
+        .set("Cookie", await refreshCookie());
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("CSRF_REJECTED");
+    });
+
+    it("serves a cookie-authenticated write that carries X-METIS-CSRF", async () => {
+      const res = await request(app)
+        .post("/api/auth/refresh")
+        .set("Cookie", await refreshCookie())
+        .set("X-METIS-CSRF", "1");
+      expect(res.status).toBe(200);
+      expect(res.body.data.accessToken).toBeTypeOf("string");
+    });
+
+    it("refuses a cookie-authenticated write the browser marks cross-site, header or not", async () => {
+      const res = await request(app)
+        .post("/api/auth/refresh")
+        .set("Cookie", await refreshCookie())
+        .set("X-METIS-CSRF", "1")
+        .set("Sec-Fetch-Site", "cross-site")
+        .set("Origin", "https://evil.example");
+      expect(res.status).toBe(403);
+    });
+
+    it("serves the configured UI origin (CORS_ORIGIN) on a cookie-authenticated write", async () => {
+      const res = await request(app)
+        .post("/api/auth/refresh")
+        .set("Cookie", await refreshCookie())
+        .set("X-METIS-CSRF", "1")
+        .set("Sec-Fetch-Site", "same-site")
+        .set("Origin", "http://localhost:3000");
+      expect(res.status).toBe(200);
+    });
+
+    it("does not gate a bearer-authenticated write that also carries cookies", async () => {
+      const login = await request(app)
+        .post("/api/auth/login")
+        .send({ username: "reader", password: "password" });
+      const res = await request(app)
+        .post("/api/auth/logout")
+        .set("Authorization", `Bearer ${login.body.data.accessToken as string}`)
+        .set("Cookie", `accessToken=${login.body.data.accessToken as string}`)
+        .set("Sec-Fetch-Site", "cross-site");
+      expect(res.status).toBe(200);
+    });
+
+    it("leaves the SAML ACS reachable for the identity provider's cross-site POST", async () => {
+      const res = await request(app)
+        .post("/api/auth/saml/acs")
+        .set("Cookie", await refreshCookie())
+        .set("Sec-Fetch-Site", "cross-site")
+        .send({ SAMLResponse: "x" });
+      expect(res.status).not.toBe(403);
+    });
+
+    it("parses CORS_ORIGIN once: cors() and the CSRF trust list accept the same origins", async () => {
+      expect(parseCorsOrigins(" http://a.test , ,http://b.test")).toEqual([
+        "http://a.test",
+        "http://b.test",
+      ]);
+      const listed = createApp({ corsOrigin: "http://a.test, http://b.test" });
+      const login = await request(listed)
+        .post("/api/auth/login")
+        .send({ username: "developer", password: "password" });
+      const cookie = `refreshToken=${login.body.data.refreshToken as string}`;
+
+      const preflight = await request(listed)
+        .options("/api/auth/refresh")
+        .set("Origin", "http://b.test")
+        .set("Access-Control-Request-Method", "POST")
+        .set("Access-Control-Request-Headers", "x-metis-csrf");
+      expect(preflight.headers["access-control-allow-origin"]).toBe("http://b.test");
+      const trusted = await request(listed)
+        .post("/api/auth/refresh")
+        .set("Cookie", cookie)
+        .set("X-METIS-CSRF", "1")
+        .set("Sec-Fetch-Site", "same-site")
+        .set("Origin", "http://b.test");
+      expect(trusted.status).toBe(200);
+
+      const other = await request(listed)
+        .options("/api/auth/refresh")
+        .set("Origin", "http://c.test")
+        .set("Access-Control-Request-Method", "POST");
+      expect(other.headers["access-control-allow-origin"]).toBeUndefined();
+      const refused = await request(listed)
+        .post("/api/auth/refresh")
+        .set("Cookie", cookie)
+        .set("X-METIS-CSRF", "1")
+        .set("Sec-Fetch-Site", "same-site")
+        .set("Origin", "http://c.test");
+      expect(refused.status).toBe(403);
+    });
+
+    it("never gates a read", async () => {
+      const login = await request(app)
+        .post("/api/auth/login")
+        .send({ username: "reader", password: "password" });
+      const res = await request(app)
+        .get("/api/auth/me")
+        .set("Cookie", `accessToken=${login.body.data.accessToken as string}`)
+        .set("Sec-Fetch-Site", "cross-site");
+      expect(res.status).toBe(200);
+    });
   });
 });

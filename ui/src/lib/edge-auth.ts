@@ -1,5 +1,6 @@
 import { type NextResponse } from "next/server";
 import { ACCESS_COOKIE, REFRESH_COOKIE, UPSTREAM_API_BASE } from "@/lib/config";
+import { CSRF_HEADER } from "@/lib/csrf-guard";
 
 /**
  * Auth helpers shared by the Node route-handler proxy (`auth-proxy.ts`) and
@@ -208,6 +209,9 @@ async function fetchUpstreamRefresh(refreshTokenValue: string): Promise<Upstream
       method: "POST",
       headers: {
         Accept: "application/json",
+        // #913 — the API demands this on a cookie-authenticated write. This
+        // refresh is server-initiated, never a request a browser can forge.
+        [CSRF_HEADER]: "1",
         Cookie: `${UPSTREAM_REFRESH_COOKIE}=${refreshTokenValue}`,
       },
     });

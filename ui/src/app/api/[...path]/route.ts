@@ -15,6 +15,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ACCESS_COOKIE, UPSTREAM_API_BASE } from "@/lib/config";
 import { isUnsafeProxySegment, pathBelowUpstreamBase } from "@/lib/proxy-upstream";
+import { CSRF_HEADER, rejectCrossOrigin } from "@/lib/csrf-guard";
 import {
   isSpecKitCommandRequest,
   specKitCommandFetch,
@@ -51,6 +52,23 @@ async function handle(req: NextRequest, ctx: RouteCtx): Promise<NextResponse> {
   const upstreamPath = pathBelowUpstreamBase(upstreamUrl, UPSTREAM_API_BASE);
   if (upstreamPath === null) return invalidPath();
 
+  // #913 — the SAML ACS is served by the API, never through this proxy, and
+  // its identity provider posts cross-origin. Say so plainly, ahead of the
+  // CSRF refusal an IdP pointed here would otherwise get.
+  if (upstreamPath === "auth/saml/acs") {
+    return NextResponse.json(
+      {
+        success: false,
+        error: {
+          code: "SAML_ACS_WRONG_ORIGIN",
+          message:
+            "The SAML Assertion Consumer Service is served by the METIS API, not the web app. Point the identity provider's ACS URL at <API origin>/api/auth/saml/acs.",
+        },
+      },
+      { status: 404 },
+    );
+  }
+
   // Auth endpoints have their own proxy.
   if (upstreamPath.split("/")[0] === "auth") {
     return NextResponse.json(
@@ -58,6 +76,11 @@ async function handle(req: NextRequest, ctx: RouteCtx): Promise<NextResponse> {
       { status: 404 },
     );
   }
+
+  // #913 — the session cookie becomes a bearer token below, so a forged
+  // cross-origin write must be refused here, before it is forwarded.
+  const refused = rejectCrossOrigin(req);
+  if (refused) return refused;
 
   const search = req.nextUrl.search;
   if (search) upstreamUrl.search = search;
@@ -68,6 +91,9 @@ async function handle(req: NextRequest, ctx: RouteCtx): Promise<NextResponse> {
   }
   const access = req.cookies.get(ACCESS_COOKIE)?.value;
   if (access) headers.set("Authorization", `Bearer ${access}`);
+  // #913 — the request passed the same-origin check above; vouch for it to the
+  // API, which demands this header on a cookie-authenticated write.
+  headers.set(CSRF_HEADER, "1");
 
   const init: UpstreamRequestInit = {
     method: req.method,

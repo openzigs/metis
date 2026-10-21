@@ -74,6 +74,53 @@ function pickPrisma(deps?: RollupDeps): RollupPrisma {
   return (deps?.prisma ?? (defaultPrisma as unknown as RollupPrisma)) as RollupPrisma;
 }
 
+/**
+ * #838 — how many projects the workspace summary computes at once. Each one
+ * loads its requirement bodies and a code-graph slice, so an unbounded
+ * `Promise.all` over a large workspace ran every project's queries together
+ * and held every graph in memory at the same time. Default 4; set
+ * `TRACEABILITY_ROLLUP_CONCURRENCY` (1..32) to tune it. Read per call.
+ */
+export const DEFAULT_ROLLUP_CONCURRENCY = 4;
+export const MAX_ROLLUP_CONCURRENCY = 32;
+
+export function resolveRollupConcurrency(
+  raw = process.env.TRACEABILITY_ROLLUP_CONCURRENCY,
+): number {
+  const n = Number.parseInt(raw ?? "", 10);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_ROLLUP_CONCURRENCY;
+  return Math.min(n, MAX_ROLLUP_CONCURRENCY);
+}
+
+/**
+ * `Promise.all(items.map(fn))` with at most `limit` calls in flight: results
+ * in input order, and the first rejection rejects the whole (no new item
+ * starts after it).
+ */
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  let failed = false;
+  const worker = async (): Promise<void> => {
+    while (!failed && next < items.length) {
+      const index = next++;
+      try {
+        results[index] = await fn(items[index]!);
+      } catch (err) {
+        failed = true;
+        throw err;
+      }
+    }
+  };
+  const workers = Math.max(1, Math.min(Math.floor(limit) || 1, items.length));
+  await Promise.all(Array.from({ length: workers }, worker));
+  return results;
+}
+
 /** Clamp a requested depth into `[1, MAX_TRACEABILITY_LINK_DEPTH]` (default 1). */
 export function clampLinkDepth(requested?: number): number {
   if (requested == null || !Number.isFinite(requested)) return 1;
@@ -274,8 +321,11 @@ export async function getWorkspaceTraceabilitySummary(
   });
   const nameById = new Map(projectRows.map((p) => [p.id, p.name] as const));
 
-  const projects: WorkspaceProjectTraceability[] = await Promise.all(
-    projectIds.map(async (pid): Promise<WorkspaceProjectTraceability> => {
+  // #838 — a bounded number of projects at a time, not all of them at once.
+  const projects: WorkspaceProjectTraceability[] = await mapWithConcurrency(
+    projectIds,
+    resolveRollupConcurrency(),
+    async (pid): Promise<WorkspaceProjectTraceability> => {
       const [liveRequirements, specMapped, codeMapped] = await Promise.all([
         prisma.requirement.findMany({
           where: { projectId: pid, deletedAt: null },
@@ -339,7 +389,7 @@ export async function getWorkspaceTraceabilitySummary(
         testCoverage: fraction(tested, codeMappedRequirements),
         strictTestCoverage: fraction(strictlyTested, codeMappedRequirements),
       };
-    }),
+    },
   );
 
   return { projects, crossProjectLinks };
