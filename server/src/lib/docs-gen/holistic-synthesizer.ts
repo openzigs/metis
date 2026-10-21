@@ -324,6 +324,7 @@ import {
   planDocument,
   plannedOmissionNote,
   readTopicPlanSetting,
+  splitClosingNote,
   summarizeDocumentPlan,
   TOPIC_PLAN_KEY,
   TOPIC_PLAN_VERSION,
@@ -4375,17 +4376,32 @@ async function synthesizeFinalDocumentInRun(
     return fit.markdown;
   };
   // #1132 — a reply the output cap cut off is first taken back to its last
-  // complete sub-section, and closed with a note naming what is now absent
-  // (the sub-section cut mid-way included); the length fit then counts those
-  // topics with any it leaves out itself.
+  // complete sub-section. The body is then fitted to the length cap, leaving
+  // room for the closing note, which goes on last so the fit cannot drop it:
+  // it says why the section is short and names every topic now absent (the
+  // sub-section cut mid-way, and any the fit left out).
   const fitGeneratedSection = (generated: SectionGroupResult, maxChars: number): string => {
     const drafted = generated.markdown.trim();
     if (!generated.truncation.truncated) return fitToSectionCap(drafted, maxChars);
     const cut = trimCutOffSection(drafted);
-    const noted = `${cut.markdown}\n\n${cutOffNote(cut.omittedTopics, cut.trimmed)}`;
-    const fit = fitSectionToBudget(noted, maxChars, cut.omittedTopics, renderedCitationLength);
-    recordShortened(fit.markdown, fit.omittedTopics);
-    return fit.markdown;
+    const eol = drafted.includes("\r\n") ? "\r\n" : "\n";
+    const room =
+      renderedCitationLength(cutOffNote(cut.omittedTopics, { shortenedToChars: maxChars })) + 2;
+    const fit = fitSectionToBudget(
+      cut.markdown,
+      Math.max(0, maxChars - room),
+      cut.omittedTopics,
+      renderedCitationLength,
+    );
+    // A fit that shortened the body closed it with its own note; this one replaces it.
+    const body = fit.trimmed ? splitClosingNote(fit.markdown).body : fit.markdown;
+    const note = cutOffNote(fit.omittedTopics, {
+      removed: cut.trimmed || fit.trimmed,
+      ...(fit.trimmed ? { shortenedToChars: maxChars } : {}),
+    });
+    const markdown = `${body.trimEnd()}${eol}${eol}${note}`;
+    recordShortened(markdown, fit.omittedTopics);
+    return markdown;
   };
   const selectedEvidenceById = new Map<string, GroundingSource>();
   // #737 review — one module can hold the same facts id in several sections (the
@@ -4477,7 +4493,7 @@ async function synthesizeFinalDocumentInRun(
     const checkpointed = checkpointSectionRecords(
       reuse.checkpoint,
       groups.map((group) => group.id),
-      sharedEscalationEnabled,
+      { sharedEscalationEnabled },
     );
     for (const [id, record] of checkpointed) {
       if (!previousRecords.has(id)) previousRecords.set(id, record);
@@ -4493,8 +4509,7 @@ async function synthesizeFinalDocumentInRun(
     ? checkpointSectionRecords(
         reuse.checkpoint,
         groups.map((group) => group.id),
-        false,
-        true,
+        { sharedEscalationEnabled: false, keepCutOff: true },
       )
     : new Map<string, SectionSynthesisRecord>();
   // #782 — persist what is finished after every section: a 77-minute run that

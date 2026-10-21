@@ -76,6 +76,7 @@ import type { DocWarning as DocWarningShape } from "../lib/docs-gen/grounding/de
 import {
   generationFailureWarning,
   hasSectionsToRedraft,
+  isSectionRedraftReset,
   partialDocumentMarkdown,
   UnpublishableGenerationError,
   type GenerationStage,
@@ -385,6 +386,32 @@ async function versionRevisionId(
   return summary.revisionId;
 }
 
+/**
+ * #1132 — for a published degraded document with failed or cut-off sections:
+ * whether `POST /regenerate` can reuse its finished sections. It can only from a
+ * stored checkpoint, which a database-scope document never has and a document
+ * published before #1132 with only cut-off sections was not given — those are
+ * written again in full. Absent when no such regenerate is on offer. The
+ * checkpoint is read only here, never with the document's own fields.
+ */
+async function redraftReuse(doc: {
+  id: string;
+  projectId: string;
+  scope: string;
+  status: string;
+  warnings: unknown;
+  versions: readonly unknown[];
+}): Promise<{ redraftReusesSections?: boolean }> {
+  if (doc.status !== "degraded" || doc.versions.length === 0) return {};
+  if (!hasSectionsToRedraft(doc.warnings)) return {};
+  if (doc.scope === "database") return { redraftReusesSections: false };
+  const row = await prisma.generatedDocument.findFirst({
+    where: { id: doc.id, projectId: doc.projectId, deletedAt: null },
+    select: { generationCheckpoint: true },
+  });
+  return { redraftReusesSections: row?.generationCheckpoint != null };
+}
+
 const refreshAuthenticatedUser: RequestHandler =
   authMiddleware.refreshAuthenticatedUser ?? ((_req, _res, next) => next());
 
@@ -685,6 +712,10 @@ export function generatedDocsRouter(): Router {
         // #1252 — a reader BRD without auto-update whose approved requirements
         // changed since its latest version: the UI says so and offers a regenerate.
         approvedRequirementsOutOfDate: await approvedRequirementsOutOfDate(doc),
+        // #1132 — whether a regenerate of this document's failed or cut-off
+        // sections can reuse the rest, so the view can say before the click
+        // when it would write every section again instead.
+        ...(await redraftReuse(doc)),
         versions: await Promise.all(
           versions.map(async (version) => ({
             id: version.id,
@@ -1267,7 +1298,10 @@ export async function generateDocumentAsync(
       };
     // #942 — a published degraded document reset by POST /regenerate to retry
     // its failed sections: a cancel restores it as it was, warnings and all.
-    else if (original.status === "pending" && hasSectionsToRedraft(original.warnings))
+    // #1132 — or its cut-off ones. A failed or cancelled row the first reset
+    // took to `pending` keeps its warnings too, and may carry a cut-off
+    // section, but it also carries its run's stop cause: that one is not.
+    else if (original.status === "pending" && isSectionRedraftReset(original.warnings))
       restoreOnCancel = {
         status: "degraded",
         errorMessage: null,

@@ -407,7 +407,7 @@ describe("#782 — a late failure keeps what was finished", () => {
       checkpointSectionRecords(
         state.doc.generationCheckpoint,
         GROUPS.map((g) => g.id),
-        false,
+        { sharedEscalationEnabled: false },
       ).size,
     ).toBe(GROUPS.length);
   });
@@ -496,7 +496,7 @@ describe("#782 — a late failure keeps what was finished", () => {
       checkpointSectionRecords(
         state.doc.generationCheckpoint,
         GROUPS.map((g) => g.id),
-        false,
+        { sharedEscalationEnabled: false },
       ).size,
     ).toBe(GROUPS.length);
   });
@@ -521,7 +521,7 @@ describe("#782 — a late failure keeps what was finished", () => {
       checkpointSectionRecords(
         state.doc.generationCheckpoint,
         GROUPS.map((g) => g.id),
-        false,
+        { sharedEscalationEnabled: false },
       ).size,
     ).toBe(GROUPS.length);
 
@@ -632,7 +632,7 @@ describe("#782 — a resumed run that fails again keeps every finished section",
       checkpointSectionRecords(
         state.doc.generationCheckpoint,
         BRD.map((g) => g.id),
-        false,
+        { sharedEscalationEnabled: false },
       ).size,
     ).toBe(4);
     // ...and the partial document shows all four.
@@ -778,7 +778,7 @@ describe("#1132 — a section cut off at the output cap", () => {
         ...checkpointSectionRecords(
           state.doc.generationCheckpoint,
           GROUPS.map((g) => g.id),
-          false,
+          { sharedEscalationEnabled: false },
         ).keys(),
       ].sort(),
     ).toEqual(
@@ -819,6 +819,67 @@ describe("#1132 — a section cut off at the output cap", () => {
     expect(state.doc.content).toBe(published);
     expect(state.doc.warnings).toEqual(publishedWarnings);
     expect(state.versions).toHaveLength(1);
+  });
+
+  it("keeps its cut-off note when the length cap shortens the section too", async () => {
+    vi.stubEnv("DOCS_GEN_SECTION_MAX_CHARS", "5000");
+    try {
+      const base = state.stream.getMockImplementation()!;
+      const para = `${"The gateway validates every request it receives. ".repeat(12).trim()}`;
+      state.stream.mockImplementation(async function* (messages, opts) {
+        const user = (messages as Array<{ content: string }>).at(-1)!.content;
+        const label = user.match(/Section group: \*\*(.+?)\*\*/)?.[1];
+        if (label !== cut().label) {
+          yield* base(messages, opts);
+          return;
+        }
+        const topics = Array.from(
+          { length: 12 },
+          (_, i) => `### ${i + 1}. Topic ${i + 1}\n\n${para}`,
+        );
+        yield {
+          type: "delta",
+          content: `## ${label}\n\nIntro.\n\n${topics.join("\n\n")}\n\n### 13. Last\n\n**Purpose**\n\n`,
+        };
+        yield { type: "done", finishReason: "max_tokens" };
+      });
+      await generateDocumentAsync("d", "p");
+
+      const text = sectionText();
+      // One closing note, the cut-off one, saying the cap shortened it as well.
+      expect(text.match(/Shortened for length/g)).toHaveLength(1);
+      expect(text).toContain("The AI model reached the most it can write in one answer");
+      expect(text).toContain("It was also shortened to about 5k characters");
+      expect(text).toContain("13. Last");
+      expect(text).toContain("12. Topic 12");
+      expect(text).toContain("Topics it had not reached yet may be missing as well.");
+    } finally {
+      vi.unstubAllEnvs();
+      for (const key of ["BEDROCK_GATEWAY_URL", "BEDROCK_BASE_URL", "DOCS_GEN_PHASE2_ROUTING"])
+        vi.stubEnv(key, "");
+    }
+  });
+
+  it("a cancelled run's row carrying a cut-off section is not taken for a redraft reset", async () => {
+    // A cancelled run, reset to `pending` by POST /regenerate's first reset:
+    // its warnings still hold a cut-off section, and its own stop cause.
+    state.versions.push({ version: 1, provenanceManifest: null });
+    state.doc.status = "pending";
+    state.doc.warnings = [
+      { kind: "section-truncated", section: cut().label, message: "m", severity: "error" },
+      { kind: "section-failed", section: GROUPS[0].label, stage: "sections", message: "m" },
+    ];
+    state.duringSection = (label) => {
+      if (label !== cut().label) return;
+      state.doc.status = "cancelling";
+      stopGeneration("d", "aborted");
+    };
+    await generateDocumentAsync("d", "p");
+
+    // Not "restored" as a degraded version with these warnings: a cancel over a
+    // published version settles as #867 has it, `ready`, the warnings cleared.
+    expect(state.doc.status).toBe("ready");
+    expect(state.doc.warnings).toBeNull();
   });
 
   it("a regenerate keeps carrying the cut-off record until it reaches that section", async () => {

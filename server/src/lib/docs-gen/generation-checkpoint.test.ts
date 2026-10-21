@@ -6,6 +6,7 @@ import {
   hasCutOffSections,
   hasFailedSections,
   hasSectionsToRedraft,
+  isSectionRedraftReset,
   markDroppedAttempts,
   partialDocumentMarkdown,
   sectionFailureWarning,
@@ -327,6 +328,18 @@ describe("#1132 — hasCutOffSections / hasSectionsToRedraft", () => {
     expect(hasSectionsToRedraft([{ kind: "section-ungrounded", section: "A" }])).toBe(false);
     expect(hasSectionsToRedraft([null, "x"])).toBe(false);
     expect(hasSectionsToRedraft(null)).toBe(false);
+  });
+});
+
+describe("#1132 — isSectionRedraftReset", () => {
+  it("is a published degraded doc's redraft reset, never a failed or cancelled run's row", () => {
+    const cut = { kind: "section-truncated", section: "Components" };
+    expect(isSectionRedraftReset([cut])).toBe(true);
+    expect(isSectionRedraftReset([{ kind: "section-failed", section: "A" }])).toBe(true);
+    // A failed or cancelled run carries its stop cause (a `stage`) beside it.
+    expect(isSectionRedraftReset([cut, { kind: "section-failed", stage: "sections" }])).toBe(false);
+    expect(isSectionRedraftReset([{ kind: "section-ungrounded", section: "A" }])).toBe(false);
+    expect(isSectionRedraftReset(null)).toBe(false);
   });
 });
 

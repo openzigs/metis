@@ -264,8 +264,10 @@ export function wasCutOff(record: Pick<SectionSynthesisRecord, "warnings">): boo
 export function checkpointSectionRecords(
   checkpoint: unknown,
   sectionIds: readonly string[],
-  sharedEscalationEnabled: boolean,
-  keepCutOff = false,
+  {
+    sharedEscalationEnabled = false,
+    keepCutOff = false,
+  }: { sharedEscalationEnabled?: boolean; keepCutOff?: boolean } = {},
 ): Map<string, SectionSynthesisRecord> {
   const parsed = generationCheckpointSchema.safeParse(checkpoint);
   const byId = new Map<string, SectionSynthesisRecord>();

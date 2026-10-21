@@ -41,7 +41,9 @@ import DocumentationPage, {
   FailedGenerationBanner,
   generationStopCause,
   generationStopStage,
+  CutOffSectionsBanner,
   cutOffSections,
+  FailedSectionsBanner,
   failedSections,
   isPartialGeneration,
 } from "@/app/(authed)/projects/[id]/documentation/page";
@@ -375,6 +377,7 @@ describe("#1132 — a published document with a cut-off section can redraft it",
       content: "# Architecture",
       warnings: [CUT],
       versions: V1,
+      redraftReusesSections: true,
     };
     mockApiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
       if (path.endsWith(`/docs/${DOC_ID}/regenerate`) && init?.method === "POST")
@@ -396,7 +399,8 @@ describe("#1132 — a published document with a cut-off section can redraft it",
     expect(banner).toHaveTextContent("Component Breakdown");
     expect(banner).toHaveTextContent(/part of the section is missing/i);
     expect(banner).toHaveTextContent(/a note at the end of the section lists it/i);
-    expect(banner).toHaveTextContent(/reuses the other sections/i);
+    expect(banner).toHaveTextContent(/reuses the finished sections/i);
+    expect(banner).toHaveTextContent(/stops in the same place again, ask an administrator/i);
     // Plain words: no setting names or token counts in the analyst's banner.
     expect(banner).not.toHaveTextContent("DOCS_GEN");
     expect(screen.queryByTestId("failed-sections-banner")).toBeNull();
@@ -407,5 +411,72 @@ describe("#1132 — a published document with a cut-off section can redraft it",
         expect.objectContaining({ method: "POST" }),
       ),
     );
+  });
+
+  it("says before the click when the regenerate writes the whole document", () => {
+    render(
+      <CutOffSectionsBanner
+        sections={["Database tables"]}
+        reusesSections={false}
+        regenerating={false}
+        onRegenerate={() => undefined}
+      />,
+    );
+    const banner = screen.getByTestId("cut-off-sections-banner");
+    expect(banner).toHaveTextContent(/writes the whole document again/i);
+    expect(banner).not.toHaveTextContent(/reuses the finished sections/i);
+    render(
+      <FailedSectionsBanner
+        failed={[]}
+        reusesSections={false}
+        regenerating={false}
+        onRegenerate={() => undefined}
+      />,
+    );
+    expect(screen.getByTestId("failed-sections-banner")).toHaveTextContent(
+      /writes the whole document again/i,
+    );
+  });
+
+  it("shows one Regenerate button when a document has failed and cut-off sections", async () => {
+    const DOC_ID = "doc_1132_both";
+    const FAILED = {
+      kind: "section-failed",
+      section: "Overview",
+      severity: "error",
+      detailSafe: true,
+      message: 'Section "Overview" could not be generated.',
+    };
+    const doc = {
+      id: DOC_ID,
+      title: "Architecture",
+      scope: "repository",
+      autoUpdate: false,
+      generatedAt: null,
+      createdAt: "2026-10-13T00:00:00.000Z",
+      status: "degraded",
+      content: "# Architecture",
+      warnings: [FAILED, CUT],
+      versions: V1,
+      redraftReusesSections: true,
+    };
+    mockApiFetch.mockImplementation(async (path: string) => {
+      if (path.endsWith(`/docs/${DOC_ID}`)) return doc;
+      if (path.endsWith("/docs")) return [{ ...doc, content: undefined }];
+      return [];
+    });
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(
+      <Wrapper>
+        <DocumentationPage />
+      </Wrapper>,
+    );
+    fireEvent.click(await screen.findByTestId(`doc-card-${DOC_ID}`));
+
+    const cut = await screen.findByTestId("cut-off-sections-banner");
+    expect(screen.getByTestId("failed-sections-banner")).toBeInTheDocument();
+    expect(cut).toHaveTextContent(/regenerating the failed sections above writes this one again/i);
+    expect(screen.queryByRole("button", { name: /regenerate unfinished section/i })).toBeNull();
+    expect(screen.getAllByRole("button", { name: /regenerate failed section/i })).toHaveLength(1);
   });
 });

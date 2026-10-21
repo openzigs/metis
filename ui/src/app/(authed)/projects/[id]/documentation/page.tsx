@@ -132,6 +132,12 @@ interface GeneratedDoc {
    */
   approvedRequirementsOutOfDate?: boolean;
   /**
+   * #1132 — set by the detail endpoint on a published degraded document with
+   * failed or cut-off sections: false when a regenerate cannot reuse the
+   * finished sections and writes the whole document again.
+   */
+  redraftReusesSections?: boolean;
+  /**
    * Epic #204 follow-up (#252) — dedicated structured warnings column. A
    * `DocWarning[]` for `degraded` docs; null/undefined otherwise.
    */
@@ -583,18 +589,23 @@ export default function DocumentationPage(): React.ReactElement {
           {failedSectionList.length > 0 && (
             <FailedSectionsBanner
               failed={failedSectionList}
+              reusesSections={docDetail.data.redraftReusesSections}
               regenerating={regenerateMutation.isPending}
               onRegenerate={() => regenerateMutation.mutate(docDetail.data.id)}
             />
           )}
 
           {/* #1132 — a published document with a section the AI model could not
-              finish redrafts just those sections. */}
+              finish redrafts just those sections. With a failed section as
+              well, the failed-sections banner's one button does both. */}
           {cutOffSectionList.length > 0 && (
             <CutOffSectionsBanner
               sections={cutOffSectionList}
+              reusesSections={docDetail.data.redraftReusesSections}
               regenerating={regenerateMutation.isPending}
-              onRegenerate={() => regenerateMutation.mutate(docDetail.data.id)}
+              {...(failedSectionList.length === 0
+                ? { onRegenerate: () => regenerateMutation.mutate(docDetail.data.id) }
+                : {})}
             />
           )}
 
@@ -1758,15 +1769,31 @@ export function cutOffSections(
   return [...new Set(names)];
 }
 
-/** #1132 — names the unfinished sections in plain words and redrafts just those. */
+/**
+ * #1132 — what a regenerate will cost, said before the click: only the named
+ * sections, or (`reusesSections === false`) the whole document.
+ */
+function redraftScope(reusesSections: boolean | undefined, plural: boolean): string {
+  return reusesSections === false
+    ? "Regenerating writes the whole document again, because METIS kept no copy of its finished sections to reuse."
+    : `Regenerating writes ${plural ? "these sections" : "this section"} again and reuses the finished sections whose inputs have not changed, where it can.`;
+}
+
+/**
+ * #1132 — names the unfinished sections in plain words and redrafts just those.
+ * Without `onRegenerate` it has no button: the failed-sections banner's
+ * button, shown with it, regenerates both.
+ */
 export function CutOffSectionsBanner({
   sections,
+  reusesSections,
   regenerating,
   onRegenerate,
 }: {
   sections: string[];
+  reusesSections?: boolean;
   regenerating: boolean;
-  onRegenerate: () => void;
+  onRegenerate?: () => void;
 }): React.ReactElement {
   const plural = sections.length !== 1;
   return (
@@ -1789,13 +1816,20 @@ export function CutOffSectionsBanner({
       </ul>
       <p className="mt-1 text-sm text-destructive">
         Part of {plural ? "each section" : "the section"} is missing. Where METIS could tell what, a
-        note at the end of the section lists it. Regenerating writes{" "}
-        {plural ? "these sections" : "this section"} again and reuses the other sections, where it
-        can.
+        note at the end of the section lists it.
       </p>
-      <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
-        {regenerating ? "Regenerating…" : `Regenerate unfinished section${plural ? "s" : ""}`}
-      </Button>
+      <p className="mt-1 text-sm text-destructive">
+        {onRegenerate
+          ? redraftScope(reusesSections, plural)
+          : `Regenerating the failed sections above writes ${plural ? "these" : "this one"} again too.`}{" "}
+        If the AI model stops in the same place again, ask an administrator to raise its answer
+        limit before regenerating once more.
+      </p>
+      {onRegenerate && (
+        <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
+          {regenerating ? "Regenerating…" : `Regenerate unfinished section${plural ? "s" : ""}`}
+        </Button>
+      )}
     </Card>
   );
 }
@@ -1803,10 +1837,13 @@ export function CutOffSectionsBanner({
 /** #942 — names the failed sections, says why, and regenerates just those. */
 export function FailedSectionsBanner({
   failed,
+  reusesSections,
   regenerating,
   onRegenerate,
 }: {
   failed: DocWarning[];
+  /** #1132 — see {@link redraftScope}. */
+  reusesSections?: boolean;
   regenerating: boolean;
   onRegenerate: () => void;
 }): React.ReactElement {
@@ -1825,10 +1862,7 @@ export function FailedSectionsBanner({
           <li key={i}>{w.message}</li>
         ))}
       </ul>
-      <p className="mt-1 text-sm text-destructive">
-        Regenerating writes {plural ? "these sections" : "this section"} again and reuses the
-        finished sections whose inputs have not changed, where it can.
-      </p>
+      <p className="mt-1 text-sm text-destructive">{redraftScope(reusesSections, plural)}</p>
       <Button className="mt-3" size="sm" onClick={onRegenerate} disabled={regenerating}>
         {regenerating ? "Regenerating…" : `Regenerate failed section${plural ? "s" : ""}`}
       </Button>

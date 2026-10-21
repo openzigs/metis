@@ -281,6 +281,31 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       ]);
     });
 
+    it("#1132 — says whether a regenerate of cut-off sections reuses the rest", async () => {
+      const cut = [{ kind: "section-truncated", section: "Components", severity: "error" }];
+      // A clean published document: no regenerate on offer, no flag.
+      expect((await get("/projects/project/docs/doc")).body.data).not.toHaveProperty(
+        "redraftReusesSections",
+      );
+      // Published before #1132: degraded with a cut-off section, no checkpoint kept.
+      await db.generatedDocument.update({
+        where: { id: "doc" },
+        data: { status: "degraded", warnings: cut },
+      });
+      const before = await get("/projects/project/docs/doc");
+      expect(before.body.data.redraftReusesSections).toBe(false);
+      // The checkpoint is read only for the flag, never sent.
+      expect(before.body.data).not.toHaveProperty("generationCheckpoint");
+      await db.generatedDocument.update({
+        where: { id: "doc" },
+        data: { generationCheckpoint: { version: 4, records: [] } },
+      });
+      expect((await get("/projects/project/docs/doc")).body.data.redraftReusesSections).toBe(true);
+      // A database document is always written again in full.
+      await db.generatedDocument.update({ where: { id: "doc" }, data: { scope: "database" } });
+      expect((await get("/projects/project/docs/doc")).body.data.redraftReusesSections).toBe(false);
+    });
+
     it("serves one version's body on demand", async () => {
       const res = await get("/projects/project/docs/doc/versions/v1");
       expect(res.status).toBe(200);

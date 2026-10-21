@@ -205,7 +205,9 @@ describe("#782 — a partial generation checkpoint", () => {
 
   it("round-trips a partial set: one finished section of several is reusable", () => {
     const stored = JSON.parse(JSON.stringify(buildGenerationCheckpoint([record()])));
-    const byId = checkpointSectionRecords(stored, ["overview", "rules", "glossary"], false);
+    const byId = checkpointSectionRecords(stored, ["overview", "rules", "glossary"], {
+      sharedEscalationEnabled: false,
+    });
     expect([...byId.keys()]).toEqual(["overview"]);
     expect(byId.get("overview")).toEqual(record());
   });
@@ -213,7 +215,9 @@ describe("#782 — a partial generation checkpoint", () => {
   it("drops only the tampered record, never the rest", () => {
     const stored = buildGenerationCheckpoint([record(), second()]);
     stored.records[0] = { ...stored.records[0], markdown: "## Overview\n\nEdited." };
-    const byId = checkpointSectionRecords(stored, ["overview", "rules"], false);
+    const byId = checkpointSectionRecords(stored, ["overview", "rules"], {
+      sharedEscalationEnabled: false,
+    });
     expect([...byId.keys()]).toEqual(["rules"]);
   });
 
@@ -222,10 +226,14 @@ describe("#782 — a partial generation checkpoint", () => {
       version: SECTION_SYNTHESIS_VERSION,
       records: [{ sectionId: "overview" }, second()],
     };
-    expect([...checkpointSectionRecords(stored, ["overview", "rules"], false).keys()]).toEqual([
-      "rules",
-    ]);
-    expect(checkpointSectionRecords(stored, ["overview"], false).size).toBe(0);
+    expect([
+      ...checkpointSectionRecords(stored, ["overview", "rules"], {
+        sharedEscalationEnabled: false,
+      }).keys(),
+    ]).toEqual(["rules"]);
+    expect(
+      checkpointSectionRecords(stored, ["overview"], { sharedEscalationEnabled: false }).size,
+    ).toBe(0);
   });
 
   it("keeps the first of two records for one section", () => {
@@ -233,7 +241,7 @@ describe("#782 — a partial generation checkpoint", () => {
     const byId = checkpointSectionRecords(
       buildGenerationCheckpoint([record(), later]),
       ["overview"],
-      false,
+      { sharedEscalationEnabled: false },
     );
     expect(byId.get("overview")!.markdown).toBe(payload.markdown);
   });
@@ -244,12 +252,18 @@ describe("#782 — a partial generation checkpoint", () => {
       checkpointSectionRecords(
         { ...stored, version: SECTION_SYNTHESIS_VERSION - 1 },
         ["overview"],
-        false,
+        { sharedEscalationEnabled: false },
       ).size,
     ).toBe(0);
-    expect(checkpointSectionRecords(null, ["overview"], false).size).toBe(0);
-    expect(checkpointSectionRecords(snapshot(), ["overview"], false).size).toBe(0);
-    expect(checkpointSectionRecords(stored, ["overview"], true).size).toBe(0);
+    expect(
+      checkpointSectionRecords(null, ["overview"], { sharedEscalationEnabled: false }).size,
+    ).toBe(0);
+    expect(
+      checkpointSectionRecords(snapshot(), ["overview"], { sharedEscalationEnabled: false }).size,
+    ).toBe(0);
+    expect(
+      checkpointSectionRecords(stored, ["overview"], { sharedEscalationEnabled: true }).size,
+    ).toBe(0);
   });
 });
 
@@ -268,15 +282,20 @@ describe("#1132 — a cut-off section in a checkpoint", () => {
     expect(wasCutOff(cutOff())).toBe(true);
     expect(wasCutOff(record())).toBe(false);
     const stored = buildGenerationCheckpoint([record(), cutOff()]);
-    expect([...checkpointSectionRecords(stored, ["overview", "rules"], false).keys()]).toEqual([
-      "overview",
-    ]);
+    expect([
+      ...checkpointSectionRecords(stored, ["overview", "rules"], {
+        sharedEscalationEnabled: false,
+      }).keys(),
+    ]).toEqual(["overview"]);
   });
 
   it("is still carried when asked, so a run stopped before reaching it keeps it", () => {
     const stored = buildGenerationCheckpoint([record(), cutOff()]);
     expect([
-      ...checkpointSectionRecords(stored, ["overview", "rules"], false, true).keys(),
+      ...checkpointSectionRecords(stored, ["overview", "rules"], {
+        sharedEscalationEnabled: false,
+        keepCutOff: true,
+      }).keys(),
     ]).toEqual(["overview", "rules"]);
   });
 });

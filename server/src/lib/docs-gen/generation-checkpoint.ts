@@ -224,6 +224,19 @@ export function hasSectionsToRedraft(warnings: unknown): boolean {
 }
 
 /**
+ * #1132 — true for the warnings of a published degraded document that
+ * `POST /regenerate` reset to `pending` to redraft its failed or cut-off
+ * sections. A failed or cancelled run's row, which the other reset takes to
+ * `pending` with its warnings untouched, also carries that run's stop cause (a
+ * warning with a `stage`), so a cut-off section among its warnings does not
+ * make it one.
+ */
+export function isSectionRedraftReset(warnings: unknown): boolean {
+  if (!hasSectionsToRedraft(warnings) || !Array.isArray(warnings)) return false;
+  return !warnings.some((w) => w != null && typeof w === "object" && "stage" in w);
+}
+
+/**
  * A document assembled from the sections a run finished, in section order, for
  * a failure that left no assembled document. The note says plainly that it is
  * incomplete; the failure warning says why.
