@@ -170,6 +170,7 @@ import {
   type GroundingSource,
   type GroundingContext,
   type FactsSourceInput,
+  factsSourceId,
   mergeFactsIntoContext,
   renderGroundingBlock,
 } from "./grounding/grounding-context.js";
@@ -365,6 +366,7 @@ import type { ScopedRequirement } from "./requirements-scope.js";
 import {
   buildFactSheet,
   canonicalFactSource,
+  canonicalSourceId,
   FACT_SHEET_VERSION,
   factSheetFingerprint,
   factsGivenTo,
@@ -377,6 +379,8 @@ import {
   type FactSheet,
 } from "./canonical-facts.js";
 import { checkFactConsistency, factInconsistentWarning } from "./fact-consistency.js";
+import { BATCH_HOLD_VERSION, holdBatchReply } from "./batch-hold.js";
+import { resolveLengthOverrun } from "./length-calibration.js";
 import {
   consistencyRecord,
   topicPlanRecord,
@@ -3791,6 +3795,33 @@ async function synthesizeBatchedSection(input: {
       return here.has(from) || (!readModules.has(from) && batch.includes(lead));
     });
   };
+  // #1327 — under a topic plan whose budget binds this section, each reply is
+  // held to its planned share as it is written ({@link holdBatchReply}): the
+  // topics past its share, least important last by the modules they cite,
+  // become the reply's tail, which is what a cap takes first from each part
+  // (`planOrderedFit`). So one batch's overrun never costs another batch a
+  // topic within its share, and a batch gives up its least important topics,
+  // not whichever theme it wrote last. Nothing is removed while the document
+  // fits. The share is the part budget the fit uses (`batchOutputChars`). The
+  // prompt asks for it divided by the model's measured overrun
+  // (`length-calibration.ts`), so a model that writes long comes back near it.
+  const holding = Boolean(input.planned && plan.sectionBudget);
+  const overrun = input.planned ? resolveLengthOverrun(bundle.provider.model) : 1;
+  const rankOfSource = new Map<string, number>();
+  if (holding) {
+    // The id each module's facts are cited by, as the grounding context mints it.
+    sources.forEach((source, i) =>
+      rankOfSource.set(factsSourceId(source.moduleDir, source.idx, source.repository), i),
+    );
+    const firstOf = new Map<string, number>();
+    plan.modules.forEach((m, i) => {
+      if (!firstOf.has(moduleKey(m.item))) firstOf.set(moduleKey(m.item), i);
+    });
+    for (const fact of input.planned?.canonicalFacts ?? []) {
+      const rank = firstOf.get(moduleKey(fact));
+      if (rank !== undefined) rankOfSource.set(canonicalSourceId(fact), rank);
+    }
+  }
   // #178 — batches run through a bounded worker pool. Every counter below is
   // read and written only in synchronous code between awaits, so concurrent
   // batches cannot race on it: in particular the re-split budget is checked
@@ -3804,6 +3835,10 @@ async function synthesizeBatchedSection(input: {
     grounding: GroundingContext | undefined;
     /** Why a cut-off multi-module batch was kept whole (PR #169 review). */
     keptWhole?: "allowance" | "runaway";
+    /** #1327 — the topics past this reply's share, moved to its end. */
+    overflow?: string[];
+    /** #1327 — the reply's rendered length as written, before any reorder. */
+    renderedChars?: number;
   };
   type BatchFailed = { batch: SectionBatchModule[]; err: unknown };
   type BatchOutcome = { done: BatchDone } | { failed: BatchFailed };
@@ -3863,9 +3898,9 @@ async function synthesizeBatchedSection(input: {
             plan.modules.length,
             plan.sectionBudget
               ? {
-                  words: batchWordBudget(batchOutputChars(batch)),
-                  sectionWords: batchWordBudget(plan.sectionBudget.maxChars),
-                  ...(input.planned ? { topics: batchTopicWords(batch) } : {}),
+                  words: batchWordBudget(batchOutputChars(batch) / overrun),
+                  sectionWords: batchWordBudget(plan.sectionBudget.maxChars / overrun),
+                  ...(input.planned ? { topics: batchTopicWords(batch, overrun) } : {}),
                 }
               : undefined,
           ),
@@ -3915,9 +3950,33 @@ async function synthesizeBatchedSection(input: {
       result.truncation.truncated && batch.length > 1
         ? keptWholeReason(batch, plan.outputBudget)
         : undefined;
+    // #1327 — held to its share before the section is merged.
+    let overflow: string[] = [];
+    const renderedChars = holding ? renderedCitationLength(result.markdown) : undefined;
+    if (holding && result.markdown.trim().length > 0) {
+      const held = holdBatchReply(result.markdown, batchOutputChars(batch), {
+        measure: renderedCitationLength,
+        rankOf: (id) => rankOfSource.get(id),
+      });
+      if (held.reordered) {
+        result = { ...result, markdown: held.markdown };
+        overflow = held.overflowTopics;
+      }
+    }
     batchesDone += 1;
     progress();
-    return [{ done: { batch, result, grounding: judged, ...(keptWhole ? { keptWhole } : {}) } }];
+    return [
+      {
+        done: {
+          batch,
+          result,
+          grounding: judged,
+          ...(keptWhole ? { keptWhole } : {}),
+          ...(overflow.length > 0 ? { overflow } : {}),
+          ...(renderedChars !== undefined ? { renderedChars } : {}),
+        },
+      },
+    ];
   };
 
   const concurrency = resolvePhase2Concurrency(bundle.provider.key);
@@ -4208,6 +4267,18 @@ ${plannedOmissionNote(plannedOut, {
     // Planned vs actual reply size — the data to calibrate the output estimate.
     estimatedReplyChars: done.reduce((n, d) => n + batchOutputChars(d.batch), 0),
     replyChars: done.reduce((n, d) => n + d.result.markdown.length, 0),
+    // #1327 — the same as it renders, the measure the plan's budgets are in:
+    // over `estimatedReplyChars` it is the model's overrun, the figure
+    // DOCS_GEN_LENGTH_OVERRUN is set from. And how many parts the hold
+    // reordered, with the topics it put past their shares.
+    ...(holding
+      ? {
+          lengthOverrun: overrun,
+          renderedReplyChars: done.reduce((n, d) => n + (d.renderedChars ?? 0), 0),
+          reorderedParts: done.filter((d) => d.overflow !== undefined).length,
+          overflowTopics: done.reduce((n, d) => n + (d.overflow?.length ?? 0), 0),
+        }
+      : {}),
     wallMs: Date.now() - startedAt,
   });
 
@@ -4226,6 +4297,8 @@ ${plannedOmissionNote(plannedOut, {
 /** #1070 — the words planned for each module of a batch, for its prompt. */
 function batchTopicWords(
   batch: readonly SectionBatchModule[],
+  /** #1327 — the model's measured overrun: the words asked for are divided by it. */
+  overrun = 1,
 ): Array<{ module: string; words: number }> {
   const chars = new Map<string, number>();
   for (const m of batch) {
@@ -4233,7 +4306,7 @@ function batchTopicWords(
   }
   return [...chars].map(([module, n]) => ({
     module,
-    words: Math.max(25, Math.round(n / CHARS_PER_WORD / 25) * 25),
+    words: Math.max(25, Math.round(n / overrun / CHARS_PER_WORD / 25) * 25),
   }));
 }
 
@@ -5047,7 +5120,22 @@ async function synthesizeFinalDocumentInRun(
                 topicPlan: {
                   version: TOPIC_PLAN_VERSION,
                   factSheetVersion: FACT_SHEET_VERSION,
-                  ...(batchPlan ? { budgetChars: plannedSection.budgetChars } : {}),
+                  // #1327 — a batched section that is GIVEN a length (the
+                  // plan's budget binds it) is also held, and asked for its
+                  // words, by a rule and a per-model factor: either changing
+                  // writes it again. A section told no length is neither held
+                  // nor asked for words, so neither is in its inputs.
+                  ...(batchPlan
+                    ? {
+                        budgetChars: plannedSection.budgetChars,
+                        ...(batchPlan.sectionBudget
+                          ? {
+                              batchHold: BATCH_HOLD_VERSION,
+                              lengthOverrun: resolveLengthOverrun(provider.model),
+                            }
+                          : {}),
+                      }
+                    : {}),
                   facts: factSheetFingerprint(sectionFacts, planning.ownerOf),
                 },
               }
