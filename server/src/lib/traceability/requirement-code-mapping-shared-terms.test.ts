@@ -27,6 +27,7 @@ import {
   Bm25CodeSymbolSearcher,
   MemoizingBm25CodeSymbolSearcher,
   denoiseRequirementQuery,
+  linkConfidence,
   mapRequirementToCode,
   requiredSharedTerms,
   symbolNameTerms,
@@ -477,7 +478,7 @@ describe("the two wrong links from #706 run 7", () => {
     expect(names(ipv)[0]).toBe("ForceRefreshInterval");
   });
 
-  it("BEFORE: relative confidence reports the wrong top hit at 1.0", async () => {
+  it("#1097: the one-word top hit no longer reads 1.0 — its confidence is absolute", async () => {
     const { prisma } = fakePrisma();
     const matches = await mapRequirementToCode(
       { id: "NR-4", title: TERMINATE, body: TERMINATE },
@@ -485,8 +486,10 @@ describe("the two wrong links from #706 run 7", () => {
       {},
       { prisma: prisma as never },
     );
-    expect(names(matches)[0]).toBe("InlineKeyboardButton");
-    expect(matches[0]!.confidence).toBe(1);
+    // Before #1097 the best hit read 1.0 because confidence was relative to it.
+    // Now it is what one shared word is worth, on every requirement.
+    expect(matches[0]!.confidence).toBe(linkConfidence({ sharedNameTerms: 1 }));
+    expect(matches[0]!.confidence).toBeLessThan(0.2);
   });
 
   it("no symbol's name shares more than one word with either requirement", () => {

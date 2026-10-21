@@ -3,16 +3,19 @@
  *
  * Given a single requirement (title + body) and a project whose code is
  * ingested into the AST code graph, `mapRequirementToCode` returns the most
- * relevant code symbols (file/function/symbol) ranked by a normalized 0–1
- * confidence. These mappings are the *seed set* the impact engine (#162)
- * expands into a transitive blast radius.
+ * relevant code symbols (file/function/symbol) with an absolute 0–1
+ * confidence ({@link linkConfidence}, #1097). These mappings are the *seed
+ * set* the impact engine (#162) expands into a transitive blast radius.
  *
  * Design notes:
  *   - The code searcher is dependency-injected (`CodeSymbolSearcher`) so unit
- *     tests need no embeddings, vector store, or live DB. The default
- *     implementation is keyword-only (BM25 over ingested `CodeSymbol` rows),
- *     reusing `BM25Index` from the hybrid-search module — it degrades
- *     gracefully to an empty result when a project has no code graph yet.
+ *     tests need no embeddings, vector store, or live DB. Since #1097 the
+ *     default is the hybrid searcher (`requirement-code-searcher.ts`: BM25
+ *     fused with the project's symbol embeddings), which falls back to the
+ *     keyword-only BM25 searchers below (BM25 over ingested `CodeSymbol` rows,
+ *     reusing `BM25Index` from the hybrid-search module) and says which ran.
+ *     Either degrades gracefully to an empty result for a project with no
+ *     code graph yet.
  *   - This function NEVER throws on a missing/empty graph: it returns `[]`.
  *   - Persistence (opt-in) is idempotent: a re-run replaces the prior
  *     `semantic` mappings for the requirement rather than duplicating rows.
@@ -23,6 +26,7 @@ import {
   BM25Index,
   tokenizeCode,
   tokenizeCodeRoots,
+  type RetrievalMode,
   type SearchableSymbol,
 } from "../code-graph/hybrid-search.js";
 import { prisma as defaultPrisma } from "../prisma.js";
@@ -49,7 +53,11 @@ export interface RequirementCodeMatch {
   qualifiedName: string;
   startLine: number | null;
   endLine: number | null;
-  /** Normalized 0–1 confidence. */
+  /**
+   * 0–1 confidence. Absolute since #1097 ({@link linkConfidence}): an estimate
+   * of how often a link like this is right, comparable across requirements.
+   * Relative to the best hit only for a searcher that reports none.
+   */
   confidence: number;
 }
 
@@ -63,6 +71,29 @@ export interface CodeSymbolCandidate {
   startLine?: number | null;
   endLine?: number | null;
   score: number;
+  /**
+   * #1097 — an ABSOLUTE 0–1 confidence the searcher vouches for
+   * ({@link linkConfidence}), comparable across requirements. When every
+   * candidate of a result carries one, {@link mapRequirementToCode} reports it
+   * as is; otherwise it falls back to {@link normalizeConfidence} over `score`
+   * (the opt-in LLM seeder's bands are relative to its best hit by design).
+   */
+  confidence?: number;
+}
+
+/**
+ * #1097 — which ranking produced a mapping: `hybrid` when the symbol
+ * embeddings answered (HybridCodeSearch), `bm25-only` when the mapper fell back
+ * to keywords (no semantic embedder, the project's symbols not embedded yet, or
+ * the vector search failed). The same two words Impact Analysis records (#1036).
+ */
+export type RequirementRetrievalMode = RetrievalMode;
+
+/** Options a {@link CodeSymbolSearcher} receives per search. */
+export interface CodeSymbolSearchOptions {
+  limit?: number;
+  /** #1097 — called once per search with the ranking that answered it. */
+  onRetrievalMode?: (mode: RequirementRetrievalMode) => void;
 }
 
 /** Pluggable code search backend (BM25 default; hybrid/vector in production). */
@@ -70,17 +101,28 @@ export interface CodeSymbolSearcher {
   search(
     query: string,
     projectId: string,
-    opts?: { limit?: number },
+    opts?: CodeSymbolSearchOptions,
   ): Promise<CodeSymbolCandidate[]>;
 }
 
 export interface MapRequirementOptions {
   /** Maximum matches returned/persisted. Default 10. */
   topK?: number;
-  /** Drop matches below this normalized confidence. Default 0.3. */
+  /**
+   * Drop matches below this confidence. Default {@link DEFAULT_MIN_CONFIDENCE}.
+   * Absolute since #1097 for searchers that report {@link CodeSymbolCandidate.confidence}.
+   */
   minConfidence?: number;
   /** Persist matches as `RequirementCodeMapping` rows (idempotent). Default false. */
   persist?: boolean;
+  /** #1097 — told which ranking answered (see {@link RequirementRetrievalMode}). */
+  onRetrievalMode?: (mode: RequirementRetrievalMode) => void;
+  /**
+   * #921 — told when the search failed. The mapper still returns no matches
+   * (it never throws on a search failure); this lets a caller tell "nothing
+   * matched" from "the search failed".
+   */
+  onSearchError?: (err: unknown) => void;
 }
 
 type MappingPrisma = Pick<PrismaClient, "codeSymbol" | "requirementCodeMapping" | "$transaction">;
@@ -91,7 +133,20 @@ export interface MapRequirementDeps {
 }
 
 export const DEFAULT_TOP_K = 10;
-export const DEFAULT_MIN_CONFIDENCE = 0.3;
+/**
+ * The confidence below which a match is dropped. #1097: on the absolute scale
+ * ({@link linkConfidence}) this keeps a link that shares a word with the
+ * requirement, or that the embeddings place close to it, and drops a link
+ * with neither. Until #1097 it was 0.3 of the best hit's score.
+ */
+export const DEFAULT_MIN_CONFIDENCE = 0.03;
+
+/**
+ * The floor for a searcher that reports no absolute confidence, whose scores
+ * are normalized to the best hit: the pre-#1097 default, which the opt-in LLM
+ * seeder's score bands are placed around (its retained-only band sits below it).
+ */
+export const RELATIVE_MIN_CONFIDENCE = 0.3;
 
 /** Build the BM25/embedding query text for a requirement. */
 export function requirementQueryText(req: Pick<RequirementInput, "title" | "body">): string {
@@ -403,6 +458,101 @@ export function normalizeConfidence(score: number, maxScore: number): number {
   return Math.min(1, Math.max(0, c));
 }
 
+// ── Absolute link confidence — Issue #1097 ───────────────────────────────────
+//
+// Until #1097 every link's confidence was its score divided by the best hit's
+// ({@link normalizeConfidence}), so the top link of EVERY requirement read about
+// 1.00, right or wrong: on the #706 run-7 Miniflux links the confidence-1.00
+// link was wrong for four of five imported requirements. A number that is 1.00
+// whatever happens tells an analyst nothing, and two requirements' 0.80s meant
+// different things.
+//
+// The confidence is now an estimate of how often a link like this one is
+// right, from two facts about the link alone, so it means the same thing on
+// every requirement:
+//   - how many of the requirement's words the symbol's NAME uses
+//     ({@link sharedNameTermCount}; a plural and its singular are one word);
+//   - when the symbol embeddings answered, the cosine between the requirement
+//     and the symbol (`gte-modernbert-base`, the default model).
+// It is a logistic model fitted on hand-labelled links (see
+// `eval-data/reqmap-replay/README.md`): 13 run-7 requirements, the top 40
+// vector hits of each, 520 links, one annotator who marked a link right when it
+// is code a developer would read or change for the requirement. On that sample
+// the shared-word count carries most of the signal (none shared: 2% right; one:
+// 13%; two or more: 30%) and the cosine adds to it (likelihood-ratio test,
+// p ≈ 0.02). Read a confidence of 0.3 as "about three in ten links like this
+// were right": the scale is honest and therefore LOW. One repository, one
+// annotator: re-fit before trusting the third decimal.
+
+/** Logistic coefficients of {@link linkConfidence}, lexical evidence only. */
+export const LEXICAL_CONFIDENCE_MODEL = Object.freeze({ intercept: -3.51, perSharedTerm: 1.266 });
+
+/**
+ * Logistic coefficients of {@link linkConfidence} with the cosine, per 0.05 of
+ * cosine above 0.60. Fitted on `gte-modernbert-base` vectors only: another
+ * model's cosines sit on another scale, so a link ranked by one is scored with
+ * {@link LEXICAL_CONFIDENCE_MODEL} instead ({@link COSINE_CALIBRATED_MODELS}).
+ */
+export const SEMANTIC_CONFIDENCE_MODEL = Object.freeze({
+  intercept: -3.436,
+  perSharedTerm: 1.088,
+  perCosineStep: 0.507,
+  cosineCentre: 0.6,
+  cosineStep: 0.05,
+});
+
+/** Embedding models whose cosines {@link SEMANTIC_CONFIDENCE_MODEL} was fitted on. */
+export const COSINE_CALIBRATED_MODELS: ReadonlySet<string> = new Set([
+  "Alibaba-NLP/gte-modernbert-base",
+]);
+
+/** Shared terms past this many add nothing more (the labelled sample had few links above three). */
+const MAX_COUNTED_SHARED_TERMS = 3;
+
+/**
+ * #1097 — the absolute confidence of one requirement→code link: an estimate of
+ * how often a link with this evidence is right. `cosine` is used only when
+ * given (the vector channel answered and its model is calibrated).
+ */
+export function linkConfidence(evidence: {
+  sharedNameTerms: number;
+  cosine?: number | null;
+}): number {
+  const shared = Math.max(
+    0,
+    Math.min(MAX_COUNTED_SHARED_TERMS, Math.floor(evidence.sharedNameTerms)),
+  );
+  const cosine = evidence.cosine;
+  let z: number;
+  if (cosine != null && Number.isFinite(cosine)) {
+    const m = SEMANTIC_CONFIDENCE_MODEL;
+    z =
+      m.intercept +
+      m.perSharedTerm * shared +
+      m.perCosineStep * ((cosine - m.cosineCentre) / m.cosineStep);
+  } else {
+    const m = LEXICAL_CONFIDENCE_MODEL;
+    z = m.intercept + m.perSharedTerm * shared;
+  }
+  return Math.round((1 / (1 + Math.exp(-z))) * 1000) / 1000;
+}
+
+/**
+ * #1097 — how many DISTINCT `queryTerms` the symbol's name uses, a plural and
+ * its singular being one word ({@link sameWord}). `symbolForms` is
+ * {@link wordForms} of {@link symbolNameTerms}.
+ */
+export function sharedNameTermCount(
+  symbolForms: ReadonlySet<string>,
+  queryTerms: Iterable<string>,
+): number {
+  let shared = 0;
+  for (const term of new Set(queryTerms)) {
+    if (namesWord(symbolForms, term)) shared++;
+  }
+  return shared;
+}
+
 /**
  * Default keyword-only searcher: loads a project's ingested `CodeSymbol` rows
  * and ranks them with BM25 against the requirement query. No embeddings, no
@@ -439,6 +589,8 @@ interface Bm25Corpus {
   nameTerms: Map<string, NameTermSets>;
   /** {@link corpusEntityWords}, computed on first use (#1063). */
   entityWords: ReadonlySet<string> | null;
+  /** {@link wordForms} of each symbol's name terms, filled on first use (#1097). */
+  nameForms: Map<string, ReadonlySet<string>>;
 }
 
 /** Load a project's code symbols and build the BM25 index once. */
@@ -472,6 +624,7 @@ async function buildBm25Corpus(
     size: rows.length,
     nameTerms: new Map(),
     entityWords: null,
+    nameForms: new Map(),
   };
 }
 
@@ -513,6 +666,11 @@ async function buildBm25Corpus(
  * PROVISIONAL and in-sample: chosen on the #706 run-7 Miniflux requirements and
  * the two committed eval fixtures. It trades recall for precision. There is no
  * stemming: "terminate a session" does not share `sessions`.
+ *
+ * #1097 — re-measured against the hybrid ranking and kept for the KEYWORD
+ * FALLBACK only: with the embeddings it removes the right links they find
+ * through other words, and an absolute confidence floor replaces it there
+ * ({@link ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS}).
  */
 export const ANALYSIS_LINK_MIN_SHARED_TERMS = 2;
 
@@ -535,6 +693,11 @@ export interface Bm25SearcherOptions {
    * See {@link ANALYSIS_LINK_SEARCH_OPTIONS}.
    */
   requireSubject?: boolean;
+  /**
+   * #1097 — drop a candidate whose absolute {@link linkConfidence} is below
+   * this, before the limit. Default: none (the mapper's own floor still applies).
+   */
+  minConfidence?: number;
 }
 
 /**
@@ -564,9 +727,61 @@ export const ANALYSIS_LINK_SEARCH_OPTIONS: Readonly<Bm25SearcherOptions> = Objec
 });
 
 /**
+ * #1097 — what the analysis path asks of a link it shows when the HYBRID search
+ * ranked it: no test code, the subject rules, and an absolute confidence of at
+ * least {@link ANALYSIS_HYBRID_LINK_MIN_CONFIDENCE}. NOT the two-shared-name-terms
+ * rule ({@link ANALYSIS_LINK_MIN_SHARED_TERMS}), which stays for the keyword
+ * fallback ({@link ANALYSIS_LINK_SEARCH_OPTIONS}).
+ *
+ * Re-measured on the #706 run-7 Miniflux replay (13 requirements, 8 links
+ * each, one annotator's labels committed under `eval-data/reqmap-replay/`):
+ *
+ *   ranking  link rules                    links  right  precision  requirements with a right link
+ *   BM25     two terms + subject + tests     60     17     0.28        9 / 13   (shipped before #1097)
+ *   hybrid   two terms + subject + tests     49     16     0.33        6 / 13
+ *   hybrid   subject + tests + conf ≥ 0.05   104    32     0.31       10 / 13
+ *   hybrid   subject + tests + conf ≥ 0.08    98    30     0.31       10 / 13   (this)
+ *   hybrid   subject + tests + conf ≥ 0.10    85    27     0.32        8 / 13
+ *
+ * The two-term rule was written against a ranking that matched on words alone;
+ * the embeddings find the right code through OTHER words ("terminate all
+ * sessions" → `FlushAllSessions`, `removeSession`), and the rule then removes
+ * exactly those links: with the hybrid ranking it keeps 16 right links where
+ * the floor keeps 30, and leaves four more requirements without a right one.
+ * The confidence floor does the rule's job instead: a link that shares no
+ * word and sits far from the requirement is not shown.
+ *
+ * Why 0.08 and not 0.05: on `pnpm eval:reqmap` a weak direct link (0.07 for
+ * the order-confirmation e-mail on "partial refunds") brings its callers with
+ * it, and at 0.05 the eval's precision fell from 0.87 to 0.70 (recall 0.90 to
+ * 1.00). 0.08 is the lowest floor that keeps the eval at its bar (P 0.87,
+ * R 0.90) — chosen on both samples, so in-sample on both. The four PR #1095
+ * review probes still hold on the replay ("terminate all sessions" never links
+ * `InlineKeyboardButton`, "IPv4 or IPv6 per feed" never links
+ * `ForceRefreshInterval`).
+ *
+ * Two conditions keep the floor honest (review of PR #1325): a hit only BM25
+ * returned is scored at the vector channel's lowest returned cosine, not as a
+ * hit with no cosine, so one shared word alone cannot clear it; and an
+ * embedding model the confidence is not calibrated for is gated by the keyword
+ * rules instead (`requirement-code-searcher.ts`).
+ */
+export const ANALYSIS_HYBRID_LINK_MIN_CONFIDENCE = 0.08;
+
+/** See {@link ANALYSIS_HYBRID_LINK_MIN_CONFIDENCE}. */
+export const ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS: Readonly<Bm25SearcherOptions> = Object.freeze({
+  excludeTestCode: true,
+  requireSubject: true,
+  minConfidence: ANALYSIS_HYBRID_LINK_MIN_CONFIDENCE,
+});
+
+/** The endings after which English writes a plural `-es` (`statuses`, `boxes`, `quizzes`, `matches`, `wishes`, `heroes`). */
+const ES_PLURAL_RE = /(?:s|x|z|ch|sh|o)es$/;
+
+/**
  * The forms a word can take as a singular, the word itself first: `feeds` →
  * feeds, feed; `addresses` → addresses, addresse, address; `movies` → movies,
- * movie, movi, movy. A word of three letters or fewer, one ending in `ss`, or one
+ * movie, movy. A word of three letters or fewer, one ending in `ss`, or one
  * not ending in `s` has only itself.
  *
  * Two words are the same word, singular or plural, when their forms share one
@@ -576,13 +791,27 @@ export const ANALYSIS_LINK_SEARCH_OPTIONS: Readonly<Bm25SearcherOptions> = Objec
  * `menus`/menu, `cookies`/cookie, `categories`/category), which a single
  * "singular" string cannot do: `-ses` is `status`+es in `statuses` but
  * `response`+s in `responses`. Constant work per word.
+ *
+ * #1097 (review of PR #1227) — `-es` is stripped only where English writes it,
+ * after s, x, z, ch, sh or o. Stripped from every word it made `notes` match
+ * "not", `ones` match "on" and `news` match "new". And a shortened form of
+ * three letters or fewer that is a #943 stopword ({@link REQUIREMENT_QUERY_STOPWORDS})
+ * is not a form at all: `news` → new, `uses` → use, `sets` → set are ordinary
+ * short words, never the singular a code name means. Longer stopwords stay
+ * forms on purpose: `users` → user and `entries` → entry are how the subject
+ * rules recognise that a table is named by a stopword ({@link sharesRequirementSubject}).
  */
 export function singularForms(term: string): readonly string[] {
   if (term.length <= 3 || !term.endsWith("s") || term.endsWith("ss")) return [term];
-  const forms = [term, term.slice(0, -1)];
-  if (term.endsWith("es")) forms.push(term.slice(0, -2));
-  if (term.endsWith("ies")) forms.push(`${term.slice(0, -3)}y`);
-  return forms;
+  const shortened = [term.slice(0, -1)];
+  if (ES_PLURAL_RE.test(term)) shortened.push(term.slice(0, -2));
+  if (term.endsWith("ies")) shortened.push(`${term.slice(0, -3)}y`);
+  return [term, ...shortened.filter(isSingularForm)];
+}
+
+/** Whether a shortened word may stand as a singular form ({@link singularForms}). */
+function isSingularForm(form: string): boolean {
+  return !(form.length <= 3 && REQUIREMENT_QUERY_STOPWORDS.has(form));
 }
 
 /** Whether two words are the same word, singular or plural ({@link singularForms}). */
@@ -872,6 +1101,28 @@ function sharesEnoughNameTerms(
   return shared >= required && own;
 }
 
+/** {@link wordForms} of a corpus symbol's name terms, computed once per corpus. */
+function cachedNameForms(corpus: Bm25Corpus, symbolId: string): ReadonlySet<string> {
+  let forms = corpus.nameForms.get(symbolId);
+  if (!forms) {
+    forms = wordForms(cachedNameTermSets(corpus, symbolId).all);
+    corpus.nameForms.set(symbolId, forms);
+  }
+  return forms;
+}
+
+/**
+ * #1097 — one ranked hit, from BM25 or from the hybrid search, before the
+ * searcher's options and the confidence are applied. `cosine` is the vector
+ * channel's similarity, present only when that channel found the symbol and
+ * its model is calibrated ({@link COSINE_CALIBRATED_MODELS}).
+ */
+export interface RankedHit {
+  symbolId: string;
+  score: number;
+  cosine?: number | null;
+}
+
 /** Score a query against a pre-built corpus into ranked candidates. */
 function scoreBm25Corpus(
   corpus: Bm25Corpus,
@@ -884,7 +1135,25 @@ function scoreBm25Corpus(
   // the QUERY so the entity nouns anchor the seed instead of a rare-in-corpus
   // scaffolding token dominating it. Corpus/index untouched.
   const denoised = denoiseRequirementQuery(query);
-  let scored = corpus.index.score(denoised).filter((s) => s.score > 0);
+  return rankCorpusHits(corpus, query, corpus.index.score(denoised), limit, options);
+}
+
+/**
+ * Apply a searcher's options to ranked hits (in their order) and attach each
+ * one's absolute confidence ({@link linkConfidence}). Shared by the BM25
+ * searchers and, since #1097, the hybrid one ({@link MemoizingBm25CodeSymbolSearcher.rankHits}):
+ * a hit outside the corpus (a documentation path, #1003) is dropped either way.
+ */
+function rankCorpusHits(
+  corpus: Bm25Corpus,
+  query: string,
+  hits: readonly RankedHit[],
+  limit: number,
+  options: Bm25SearcherOptions,
+): CodeSymbolCandidate[] {
+  if (corpus.size === 0) return [];
+  const denoised = denoiseRequirementQuery(query);
+  let scored = hits.filter((s) => s.score > 0 && corpus.byId.has(s.symbolId));
   // #1063 — only when a caller asks for it, and BEFORE the limit, so a
   // requirement whose top hits each share one word still reaches the two-word
   // hits ranked below them. Without the option nothing is filtered, so a caller
@@ -911,7 +1180,9 @@ function scoreBm25Corpus(
       ),
     );
   }
-  return scored.slice(0, limit).map((s) => {
+  // #1097 — the absolute confidence, from what the link itself shows.
+  const queryTerms = tokenizeCode(denoised);
+  let candidates = scored.map((s) => {
     const row = corpus.byId.get(s.symbolId)!;
     return {
       symbolId: row.id,
@@ -922,8 +1193,18 @@ function scoreBm25Corpus(
       startLine: row.startLine,
       endLine: row.endLine,
       score: s.score,
+      confidence: linkConfidence({
+        sharedNameTerms: sharedNameTermCount(cachedNameForms(corpus, s.symbolId), queryTerms),
+        cosine: s.cosine,
+      }),
     } satisfies CodeSymbolCandidate;
   });
+  // #1097 — only when a caller asks for it; before the limit, like the rules above.
+  if (options.minConfidence !== undefined) {
+    const floor = options.minConfidence;
+    candidates = candidates.filter((c) => c.confidence >= floor);
+  }
+  return candidates.slice(0, limit);
 }
 
 export class Bm25CodeSymbolSearcher implements CodeSymbolSearcher {
@@ -935,9 +1216,10 @@ export class Bm25CodeSymbolSearcher implements CodeSymbolSearcher {
   async search(
     query: string,
     projectId: string,
-    opts: { limit?: number } = {},
+    opts: CodeSymbolSearchOptions = {},
   ): Promise<CodeSymbolCandidate[]> {
     const corpus = await buildBm25Corpus(this.prisma, projectId);
+    opts.onRetrievalMode?.("bm25-only");
     return scoreBm25Corpus(corpus, query, opts.limit ?? DEFAULT_TOP_K, this.options);
   }
 }
@@ -969,17 +1251,49 @@ export class MemoizingBm25CodeSymbolSearcher implements CodeSymbolSearcher {
     return new MemoizingBm25CodeSymbolSearcher(this.prisma, options, this.cache);
   }
 
-  async search(
-    query: string,
-    projectId: string,
-    opts: { limit?: number } = {},
-  ): Promise<CodeSymbolCandidate[]> {
+  /** The project's corpus, loaded once per instance family. */
+  private corpus(projectId: string): Promise<Bm25Corpus> {
     let corpusP = this.cache.get(projectId);
     if (!corpusP) {
       corpusP = buildBm25Corpus(this.prisma, projectId);
       this.cache.set(projectId, corpusP);
     }
-    return scoreBm25Corpus(await corpusP, query, opts.limit ?? DEFAULT_TOP_K, this.options);
+    return corpusP;
+  }
+
+  async search(
+    query: string,
+    projectId: string,
+    opts: CodeSymbolSearchOptions = {},
+  ): Promise<CodeSymbolCandidate[]> {
+    const corpus = await this.corpus(projectId);
+    opts.onRetrievalMode?.("bm25-only");
+    return scoreBm25Corpus(corpus, query, opts.limit ?? DEFAULT_TOP_K, this.options);
+  }
+
+  /**
+   * #1097 — candidates for hits ranked elsewhere (the hybrid search), in the
+   * order given, under this searcher's options and with each one's absolute
+   * confidence. The corpus is the one {@link search} reads, so both rankings
+   * see the same symbols and the same rules.
+   */
+  async rankHits(
+    query: string,
+    projectId: string,
+    hits: readonly RankedHit[],
+    limit: number = DEFAULT_TOP_K,
+  ): Promise<CodeSymbolCandidate[]> {
+    return rankCorpusHits(await this.corpus(projectId), query, hits, limit, this.options);
+  }
+
+  /**
+   * #921 — whether the project has any code symbol to match, loading its
+   * corpus if this instance has not yet (the load is then reused by searches).
+   * A failed load THROWS: "the code graph could not be read" is not "there is
+   * no code graph" (review of PR #1325).
+   */
+  async loadsCodeGraph(projectId: string): Promise<boolean> {
+    return (await this.corpus(projectId)).size > 0;
   }
 
   /**
@@ -1110,7 +1424,7 @@ export class LlmCodeSymbolSearcher implements CodeSymbolSearcher {
   async search(
     query: string,
     projectId: string,
-    opts: { limit?: number } = {},
+    opts: CodeSymbolSearchOptions = {},
   ): Promise<CodeSymbolCandidate[]> {
     const deterministicLimit = opts.limit ?? DEFAULT_TOP_K;
     const wideK = Math.max(deterministicLimit, this.wideCandidateK);
@@ -1118,7 +1432,10 @@ export class LlmCodeSymbolSearcher implements CodeSymbolSearcher {
     // Deterministic BM25 recall of a WIDE pool. A BM25 failure is not something
     // the LLM can repair — let it propagate exactly as the pure BM25 path would
     // (mapRequirementToCode already turns it into an empty result set).
-    const widePool = await this.bm25.search(query, projectId, { limit: wideK });
+    const widePool = await this.bm25.search(query, projectId, {
+      limit: wideK,
+      onRetrievalMode: opts.onRetrievalMode,
+    });
     if (widePool.length === 0) return [];
     // The deterministic top-K that the union must remain a SUPERSET of.
     const deterministicTopK = widePool.slice(0, deterministicLimit);
@@ -1226,15 +1543,18 @@ export class LlmCodeSymbolSearcher implements CodeSymbolSearcher {
       retained.push(cand);
     }
 
+    // #1097 — the bands ARE the ranking here, and they are relative to the best
+    // hit by design, so the candidates' absolute confidences are dropped:
+    // `mapRequirementToCode` then normalizes the band scores, as before #1097.
     const out: CodeSymbolCandidate[] = [];
     selected.forEach((c, i) =>
-      out.push({ ...c, score: LLM_SELECTED_SCORE - i * LLM_BAND_EPSILON }),
+      out.push({ ...c, score: LLM_SELECTED_SCORE - i * LLM_BAND_EPSILON, confidence: undefined }),
     );
     expanded.forEach((c, i) =>
-      out.push({ ...c, score: LLM_EXPANDED_SCORE - i * LLM_BAND_EPSILON }),
+      out.push({ ...c, score: LLM_EXPANDED_SCORE - i * LLM_BAND_EPSILON, confidence: undefined }),
     );
     retained.forEach((c, i) =>
-      out.push({ ...c, score: LLM_RETAINED_SCORE - i * LLM_BAND_EPSILON }),
+      out.push({ ...c, score: LLM_RETAINED_SCORE - i * LLM_BAND_EPSILON, confidence: undefined }),
     );
     return out;
   }
@@ -1283,17 +1603,24 @@ export async function mapRequirementToCode(
   deps: MapRequirementDeps = {},
 ): Promise<RequirementCodeMatch[]> {
   const topK = opts.topK ?? DEFAULT_TOP_K;
-  const minConfidence = opts.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
   const prisma = (deps.prisma ?? (defaultPrisma as unknown as MappingPrisma)) as MappingPrisma;
-  const searcher = deps.searcher ?? new Bm25CodeSymbolSearcher(prisma);
 
   const query = requirementQueryText(requirement);
   if (query.length === 0) return [];
 
   let candidates: CodeSymbolCandidate[];
   try {
-    candidates = await searcher.search(query, projectId, { limit: Math.max(topK * 2, topK) });
+    // #1097 — hybrid by default, BM25 when it cannot (`requirement-code-searcher.ts`).
+    // Imported on use: that module builds on this one.
+    const searcher =
+      deps.searcher ??
+      (await import("./requirement-code-searcher.js")).createRequirementCodeSearcher(prisma);
+    candidates = await searcher.search(query, projectId, {
+      limit: Math.max(topK * 2, topK),
+      onRetrievalMode: opts.onRetrievalMode,
+    });
   } catch (err) {
+    opts.onSearchError?.(err);
     log.warn("code search failed; returning no matches", {
       requirementId: requirement.id,
       projectId,
@@ -1303,6 +1630,12 @@ export async function mapRequirementToCode(
   }
   if (candidates.length === 0) return [];
 
+  // #1097 — a searcher that vouches for an absolute confidence on every
+  // candidate is reported as is; anything else is normalized to its best hit,
+  // as before (the opt-in LLM seeder's bands are relative by design).
+  const absolute = candidates.every((c) => typeof c.confidence === "number");
+  const minConfidence =
+    opts.minConfidence ?? (absolute ? DEFAULT_MIN_CONFIDENCE : RELATIVE_MIN_CONFIDENCE);
   const maxScore = candidates.reduce((m, c) => Math.max(m, c.score), 0);
   const matches: RequirementCodeMatch[] = candidates
     .map((c) => ({
@@ -1311,7 +1644,7 @@ export async function mapRequirementToCode(
       qualifiedName: c.qualifiedName,
       startLine: c.startLine ?? null,
       endLine: c.endLine ?? null,
-      confidence: normalizeConfidence(c.score, maxScore),
+      confidence: absolute ? (c.confidence as number) : normalizeConfidence(c.score, maxScore),
     }))
     .filter((m) => m.confidence >= minConfidence)
     .sort((a, b) => b.confidence - a.confidence)

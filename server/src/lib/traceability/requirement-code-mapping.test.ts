@@ -111,7 +111,9 @@ describe("requirement-code-mapping", () => {
       );
       expect(matches).toHaveLength(1);
       expect(matches[0].codeSymbolId).toBe("s1");
-      expect(DEFAULT_MIN_CONFIDENCE).toBe(0.3);
+      // #1097 — absolute by default; 0.3 of the best hit for a searcher that
+      // reports no confidence (this one), as before.
+      expect(DEFAULT_MIN_CONFIDENCE).toBe(0.03);
     });
 
     it("respects topK", async () => {

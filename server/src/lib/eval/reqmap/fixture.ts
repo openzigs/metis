@@ -28,9 +28,12 @@ import { buildSymbolsFromRepo, type EvalCodeSymbol } from "../codegraph/fixture.
 import {
   ANALYSIS_LINK_SEARCH_OPTIONS,
   Bm25CodeSymbolSearcher,
+  MemoizingBm25CodeSymbolSearcher,
   type Bm25SearcherOptions,
   type CodeSymbolSearcher,
 } from "../../traceability/requirement-code-mapping.js";
+import { formatSymbolForEmbedding, type SymbolKind } from "../../code-graph/symbol-embeddings.js";
+import type { EmbeddableSymbol } from "../recorded-vectors.js";
 import type {
   CodeGraphDataSource,
   EdgeKind,
@@ -71,6 +74,11 @@ export interface ReqMapFixture {
   symbols: EvalCodeSymbol[];
   /** Production BM25 searcher over the in-memory symbols (no DB). */
   searcher: CodeSymbolSearcher;
+  /**
+   * #1097 — the symbols with the text production embeds for each (kind, name,
+   * file and the first body lines, `formatSymbolForEmbedding`), for the hybrid arm.
+   */
+  embeddable: EmbeddableSymbol[];
   /** In-memory code graph for the blast-radius traversal. */
   dataSource: CodeGraphDataSource;
   cases: ReqMapCase[];
@@ -113,6 +121,21 @@ export function buildBm25Searcher(
   // run-9 subject rules.
   options: Bm25SearcherOptions = ANALYSIS_LINK_SEARCH_OPTIONS,
 ): CodeSymbolSearcher {
+  return new Bm25CodeSymbolSearcher(symbolStub(symbols), options);
+}
+
+/**
+ * #1097 — the memoizing BM25 searcher the hybrid arm turns its hits into
+ * candidates with (and falls back to), with the analysis path's options.
+ */
+export function buildMemoizingBm25Searcher(
+  symbols: EvalCodeSymbol[],
+  options: Bm25SearcherOptions = ANALYSIS_LINK_SEARCH_OPTIONS,
+): MemoizingBm25CodeSymbolSearcher {
+  return new MemoizingBm25CodeSymbolSearcher(symbolStub(symbols), options);
+}
+
+function symbolStub(symbols: EvalCodeSymbol[]): Pick<PrismaClient, "codeSymbol"> {
   const stub = {
     codeSymbol: {
       async findMany(args: { where?: { projectId?: string } }) {
@@ -131,7 +154,33 @@ export function buildBm25Searcher(
       },
     },
   } as unknown as Pick<PrismaClient, "codeSymbol">;
-  return new Bm25CodeSymbolSearcher(stub, options);
+  return stub;
+}
+
+/** #1097 — the text production would embed for each symbol (no context lines: the fixture has none). */
+export function embeddableSymbols(
+  symbols: EvalCodeSymbol[],
+  files: ReadonlyArray<{ relPath: string; content: string }>,
+): EmbeddableSymbol[] {
+  const lines = new Map(files.map((f) => [f.relPath, f.content.split("\n")]));
+  return symbols.map((s) => ({
+    symbolId: s.id,
+    name: s.name,
+    qualifiedName: s.qualifiedName,
+    kind: s.kind,
+    filePath: s.filePath,
+    embeddingText: formatSymbolForEmbedding({
+      kind: s.kind as SymbolKind,
+      name: s.name,
+      filePath: s.filePath,
+      bodyLines: (lines.get(s.filePath) ?? []).slice(s.startLine - 1, s.endLine),
+    } as Parameters<typeof formatSymbolForEmbedding>[0]),
+  }));
+}
+
+/** #1097 — the committed recorded vectors of the fixture (`recorded-vectors.ts`). */
+export function defaultReqMapVectorsFile(dir = defaultReqMapFixtureDir()): string {
+  return path.join(dir, "vectors.gte-modernbert-base.json");
 }
 
 /**
@@ -222,6 +271,7 @@ export async function loadReqMapFixture(dir = defaultReqMapFixtureDir()): Promis
     projectId: REQMAP_FIXTURE_PROJECT_ID,
     symbols,
     searcher,
+    embeddable: embeddableSymbols(symbols, files),
     dataSource,
     cases: spec.cases,
   };

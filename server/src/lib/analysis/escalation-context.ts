@@ -25,6 +25,7 @@ import { createChildLogger } from "../logger.js";
 import { blastRadius } from "../impact-analysis/blast-radius.js";
 import { PrismaCodeGraphDataSource } from "../impact-analysis/impact-analysis-engine.js";
 import { mapRequirementToCode } from "../traceability/requirement-code-mapping.js";
+import { createRequirementCodeSearcher } from "../traceability/requirement-code-searcher.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 import type { AffectedCodeDeps } from "./affected-code-context.js";
 import {
@@ -132,9 +133,12 @@ export async function computeRequirementEscalations(opts: {
   if (!enabled || opts.requirements.length === 0) return null;
 
   const prisma = opts.deps?.prisma ?? defaultPrisma;
+  // #1097 — one hybrid searcher (BM25 fallback) for every requirement escalated.
+  const searcher = opts.deps?.mapRequirement ? null : createRequirementCodeSearcher(prisma);
   const mapRequirement: NonNullable<AffectedCodeDeps["mapRequirement"]> =
     opts.deps?.mapRequirement ??
-    ((req, projectId) => mapRequirementToCode(req, projectId, {}, { prisma }));
+    ((req, projectId) =>
+      mapRequirementToCode(req, projectId, {}, { prisma, searcher: searcher ?? undefined }));
   const dataSourceFor: NonNullable<AffectedCodeDeps["dataSourceFor"]> =
     opts.deps?.dataSourceFor ??
     ((projectId: string) => new PrismaCodeGraphDataSource(prisma, projectId));

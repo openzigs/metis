@@ -55,6 +55,7 @@ import { extractFirstJson } from "../docs-gen/grounding/json-extract.js";
 import { isDocumentationFilePath } from "../analysis/traceability-matrix.js";
 import {
   DEFAULT_MIN_CONFIDENCE,
+  RELATIVE_MIN_CONFIDENCE,
   DEFAULT_TOP_K,
   type CodeSymbolCandidate,
   type CodeSymbolSearcher,
@@ -501,7 +502,9 @@ export interface EntitySeedUnionOptions extends ExtractEntitySeedsOptions {
   maxExtraSeeds?: number;
   /**
    * The confidence floor `mapRequirementToCode` will apply downstream, used to place
-   * the extra-seed band. Default {@link DEFAULT_MIN_CONFIDENCE}.
+   * the extra-seed band. Default {@link RELATIVE_MIN_CONFIDENCE} for a base searcher
+   * normalized to its best hit, {@link DEFAULT_MIN_CONFIDENCE} for one that reports
+   * absolute confidences (#1097).
    */
   minConfidence?: number;
 }
@@ -587,11 +590,22 @@ export class EntitySeedUnionSearcher implements CodeSymbolSearcher {
     // confidence to preserve, so extras keep their own BM25 scores — a pure gain.
     if (maxBase <= 0) return picked;
 
-    const minConfidence = this.opts.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
-    const bandScore = maxBase * minConfidence * UNION_FLOOR_MARGIN;
+    // #1097 — two floors: the relative one the band SCORE sits above (a base
+    // searcher normalized to its best hit), and the absolute one the band
+    // CONFIDENCE sits above (a base searcher that reports confidences).
+    const bandScore =
+      maxBase * (this.opts.minConfidence ?? RELATIVE_MIN_CONFIDENCE) * UNION_FLOOR_MARGIN;
     // One shared score: `mapRequirementToCode` sorts with a stable comparator, so
     // ties keep this emission order (entity relevance, then BM25 rank).
-    return picked.map((c) => ({ ...c, score: bandScore }));
+    // #1097 — a searcher that reports an ABSOLUTE confidence is read by that, not
+    // by the score: the extras are placed on the same band there, a hair above
+    // the floor, so they still only fill unused budget.
+    const bandConfidence = (this.opts.minConfidence ?? DEFAULT_MIN_CONFIDENCE) * UNION_FLOOR_MARGIN;
+    return picked.map((c) => ({
+      ...c,
+      score: bandScore,
+      ...(c.confidence === undefined ? {} : { confidence: bandConfidence }),
+    }));
   }
 }
 

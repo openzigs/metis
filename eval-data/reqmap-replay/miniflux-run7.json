@@ -1,0 +1,183 @@
+{
+  "id": "reqmap-replay-miniflux-run7",
+  "note": "#1097 \u2014 the #706 run-7 Miniflux v2.3.3 requirements and one annotator's labels. A link is RIGHT when it is code a developer would read or change for the requirement; every other link is wrong. Replayed by server/scripts/eval-reqmap-replay.ts against a database and vector store holding the two run-7 projects; see README.md.",
+  "annotator": "one annotator (the #1097 implementer), 2026-10-21",
+  "sets": {
+    "j1": {
+      "projectId": "cmv2x496u10d6jm9kdo2olkqq",
+      "requirements": [
+        {
+          "id": "NR-1",
+          "title": "Mark all as read older than X",
+          "body": "Mark all as read older than X",
+          "right": [
+            "internal/ui/unread_mark_all_read.go::markAllAsRead",
+            "internal/ui/unread_mark_all_read.go",
+            "client/client.go::MarkAllAsRead",
+            "client/client.go::MarkAllAsReadContext",
+            "internal/storage/entry.go::MarkAllAsRead",
+            "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+            "internal/storage/entry_query_builder.go::BeforePublishedDate"
+          ]
+        },
+        {
+          "id": "NR-2",
+          "title": "Last Successful refresh in feed API",
+          "body": "Last Successful refresh in feed API",
+          "right": [
+            "internal/storage/feed.go::CheckedAt",
+            "internal/model/feed.go::Feed",
+            "feeds.checked_at",
+            "internal/api/feed_handlers.go",
+            "internal/reader/handler/handler.go::RefreshFeed",
+            "internal/storage/feed_query_builder.go::GetFeed",
+            "client/model.go::Feed"
+          ]
+        },
+        {
+          "id": "NR-3",
+          "title": "Deduplicate entries across feeds",
+          "body": "Deduplicate entries across feeds",
+          "right": [
+            "internal/storage/entry.go::RefreshFeedEntries",
+            "internal/storage/entry.go::entryExists",
+            "internal/reader/processor/processor.go::ProcessFeedEntries",
+            "entries",
+            "internal/storage/entry.go::createEntry",
+            "internal/storage/entry.go::InsertEntryForFeed"
+          ]
+        },
+        {
+          "id": "NR-4",
+          "title": "Add a button to terminate all sessions",
+          "body": "Add a button to terminate all sessions",
+          "right": [
+            "internal/storage/web_session.go::FlushAllSessions",
+            "internal/cli/flush_sessions.go::flushSessions",
+            "internal/cli/flush_sessions.go",
+            "internal/ui/session_remove.go",
+            "internal/ui/session_remove.go::removeSession",
+            "internal/ui/session_list.go",
+            "internal/ui/session_list.go::showSessionsPage",
+            "internal/storage/web_session.go",
+            "user_sessions",
+            "web_sessions"
+          ]
+        },
+        {
+          "id": "NR-5",
+          "title": "Ability to force IPv4 or IPv6 per feed",
+          "body": "Ability to force IPv4 or IPv6 per feed",
+          "right": [
+            "internal/reader/fetcher/request_builder.go::WithCustomFeedProxyURL",
+            "internal/reader/fetcher/request_builder.go",
+            "internal/reader/fetcher/request_builder.go::ExecuteRequest",
+            "internal/model/feed.go::Feed",
+            "feeds",
+            "internal/reader/fetcher/request_builder.go::normalizeDialAddress",
+            "internal/reader/fetcher/request_builder.go::DisableHTTP2",
+            "internal/reader/fetcher/request_builder.go::IgnoreTLSErrors"
+          ]
+        }
+      ]
+    },
+    "main": {
+      "projectId": "cmv2nx3ad000bjm9kv6om3q8o",
+      "requirements": [
+        {
+          "id": "NR-1",
+          "title": "Spec Kit handoff: evaluate these requirements from spec.md against the current implementation. Only spec.md's require...",
+          "body": "AC-1: Relative cutoff selects exactly the stale unread entries. Given a signed-in user with unread entries published at a spread of dates. When the user triggers \"mark all entries older than N days as read\" with `N` = 30. Then every one of that user's unread entries whose published date is strictly before (current time \u2212 30 days) becomes read, and every unread entry at or after that cutoff remains unread. Example: input `N=30` with unread entries published 45 days ago and 5 days ago \u2192 output: the 45-day-old entry is read; the 5-day-old entry is still unread; reported change count is `1`.",
+          "right": [
+            "internal/ui/unread_mark_all_read.go::markAllAsRead",
+            "internal/ui/unread_mark_all_read.go",
+            "internal/storage/entry.go::MarkAllAsRead",
+            "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+            "internal/storage/entry_query_builder.go::BeforePublishedDate"
+          ]
+        },
+        {
+          "id": "NR-2",
+          "title": "AC-2: Boundary is strictly \"older than\".",
+          "body": "AC-2: Boundary is strictly \"older than\". Given an unread entry whose published date is exactly `N` days before the moment the action runs. When the user triggers the action with that `N`. Then that entry remains unread and is not counted as changed. Example: input `N=7`, entry published exactly 7 days ago \u2192 output: entry unread, reported change count `0` for that entry.",
+          "right": [
+            "internal/ui/unread_mark_all_read.go::markAllAsRead",
+            "internal/ui/unread_mark_all_read.go",
+            "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+            "internal/storage/entry_query_builder.go::BeforePublishedDate",
+            "internal/storage/entry_query_builder.go"
+          ]
+        },
+        {
+          "id": "NR-3",
+          "title": "AC-3: Starred and shared state survive the change.",
+          "body": "AC-3: Starred and shared state survive the change. Given an unread entry older than the cutoff that is starred and has a share link. When the user triggers the action. Then the entry becomes read while remaining starred, its share link still resolves, and its title and content are unchanged. Example: input starred unread entry published 100 days ago, `N=30` \u2192 output: `status=read`, `starred=true`, existing share URL still opens the entry.",
+          "right": [
+            "internal/ui/unread_mark_all_read.go::markAllAsRead",
+            "internal/ui/unread_mark_all_read.go",
+            "internal/storage/entry.go::MarkAllAsRead",
+            "internal/storage/entry.go::MarkAllAsReadBeforeDate"
+          ]
+        },
+        {
+          "id": "NR-4",
+          "title": "AC-4: The action is confined to the acting user.",
+          "body": "AC-4: The action is confined to the acting user. Given two users, A and B, each with unread entries older than the cutoff. When user A triggers the action. Then only A's matching entries become read; B's unread entries and B's unread count are unchanged. Example: input: A has 10 stale unread entries, B has 10 stale unread entries, A acts \u2192 output: A unread count decreases by 10, B unread count unchanged.",
+          "right": [
+            "internal/ui/unread_mark_all_read.go::markAllAsRead",
+            "internal/ui/unread_mark_all_read.go",
+            "internal/storage/entry.go::MarkAllAsRead",
+            "internal/storage/entry.go::MarkAllAsReadBeforeDate"
+          ]
+        },
+        {
+          "id": "NR-5",
+          "title": "AC-5: Repeating the action is a no-op and does not disturb already-read entries.",
+          "body": "AC-5: Repeating the action is a no-op and does not disturb already-read entries. Given the user has just run the action with the same `N`. When the user runs it again immediately. Then no entries change state, the reported change count is `0`, no error is surfaced, and entries that were already read keep their previous last-changed timestamp so delta-syncing clients see no spurious changes. Example: input: run twice with `N=30` \u2192 output: first run reports `12` changed, second run reports `0` changed.",
+          "right": [
+            "internal/ui/unread_mark_all_read.go::markAllAsRead",
+            "internal/ui/unread_mark_all_read.go",
+            "internal/storage/entry.go::MarkAllAsRead",
+            "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+            "entries.changed_at"
+          ]
+        },
+        {
+          "id": "NR-6",
+          "title": "AC-6: Invalid `N` is rejected without side effects.",
+          "body": "AC-6: Invalid `N` is rejected without side effects. Given a signed-in user attempting the action. When `N` is zero, negative, non-numeric, or otherwise not a positive whole number of days. Then the action is rejected with an explicit error, no entry's status changes, and no partial application occurs. Example: input `N=0` \u2192 output: error surfaced to the user, `0` entries marked read, unread count unchanged.",
+          "right": [
+            "internal/ui/unread_mark_all_read.go::markAllAsRead",
+            "internal/ui/unread_mark_all_read.go",
+            "internal/validator/entry.go::ValidateEntriesStatusUpdateRequest"
+          ]
+        },
+        {
+          "id": "NR-7",
+          "title": "AC-7: Reported change count matches the observable effect.",
+          "body": "AC-7: Reported change count matches the observable effect. Given a user with `U` unread entries, `K` of which are older than the cutoff. When the user triggers the action. Then the number reported to the user equals `K`, and the user's unread count decreases by exactly `K`. Example: input `U=200`, `K=57`, `N=45` \u2192 output: message reports `57` entries marked as read; unread count goes from `200` to `143`.",
+          "right": [
+            "internal/ui/unread_mark_all_read.go::markAllAsRead",
+            "internal/ui/unread_mark_all_read.go",
+            "internal/storage/entry.go::MarkAllAsRead",
+            "internal/storage/entry.go::MarkAllAsReadBeforeDate",
+            "internal/ui/static/js/app.js::updateUnreadCounterValue"
+          ]
+        },
+        {
+          "id": "NR-8",
+          "title": "AC-8: Result is visible immediately in the interface.",
+          "body": "AC-8: Result is visible immediately in the interface. Given the action has just completed successfully. When the user views their entry list, unread counters and navigation without reloading manually. Then the affected entries appear as read and the unread counters already reflect the new totals. Example: input: user marks entries older than 60 days read \u2192 output: previously shown unread badge decreases in the same view, no manual refresh required.",
+          "right": [
+            "internal/ui/unread_mark_all_read.go::markAllAsRead",
+            "internal/ui/unread_mark_all_read.go",
+            "internal/storage/entry.go::MarkAllAsRead",
+            "internal/ui/static/js/app.js::markPageAsReadAction",
+            "internal/ui/static/js/app.js::updateUnreadCounterValue",
+            "internal/ui/static/js/app.js::updateEntriesStatus"
+          ]
+        }
+      ]
+    }
+  }
+}

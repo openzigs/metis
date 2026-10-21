@@ -859,3 +859,47 @@ describe("tokenizeCodeRoots — the acronym split is linear and unchanged (PR #1
     expect(performance.now() - start).toBeLessThan(500);
   });
 });
+
+// ---- #1097 — the vector channel's own similarity on each result -------------
+
+describe("HybridCodeSearch — vectorScore (#1097)", () => {
+  it("carries the vector store's cosine onto a hit the vector channel returned, and none onto a BM25-only hit", async () => {
+    const vectorStore = new MockVectorStore();
+    const symbolIndex = new MockSymbolIndex();
+    symbolIndex.symbols = [
+      makeSearchableSymbol({
+        symbolId: "v",
+        name: "flushAllSessions",
+        signature: "",
+        docstring: "",
+      }),
+      makeSearchableSymbol({
+        symbolId: "b",
+        name: "terminateButton",
+        signature: "",
+        docstring: "",
+      }),
+    ];
+    vectorStore.results = [
+      {
+        metadata: {
+          symbolId: "v",
+          filePath: "src/server.ts",
+          kind: "function",
+          name: "flushAllSessions",
+          qualifiedName: "server.flushAllSessions",
+          contentHash: "",
+        },
+        score: 0.6667,
+      },
+    ];
+    const search = new HybridCodeSearch(vectorStore, symbolIndex, new MockEmbedService());
+    const results = await search.search("terminate button", "p1", { limit: 5 });
+    const byId = new Map(results.map((r) => [r.symbolId, r]));
+    expect(byId.get("v")?.vectorScore).toBe(0.6667);
+    expect(byId.get("b")).toBeDefined();
+    expect(byId.get("b")).not.toHaveProperty("vectorScore");
+    // The fused score is a rank score, not the cosine.
+    expect(byId.get("v")?.score).not.toBe(0.6667);
+  });
+});

@@ -392,9 +392,21 @@ export async function computeProjectImpact(
 
   let radius: RadiusSymbol[] = [];
   if (seedIds.length > 0) {
+    // #1097 — WHICH callers the radius reaches is structural (edge kind and
+    // depth against the radius floor), so it walks from a seed of 1, as it did
+    // when every mapper's best hit read 1.0. HOW SURE a caller is follows the
+    // seed it was reached through (`seedWeights`; the best one when several
+    // reach it at the same depth): a caller is never surer than its link.
+    const seedWeights = new Map<string, number>();
+    for (const m of matches) {
+      if (!m.codeSymbolId) continue;
+      const c = Number.isFinite(m.confidence) && m.confidence > 0 ? m.confidence : 0;
+      seedWeights.set(m.codeSymbolId, Math.max(seedWeights.get(m.codeSymbolId) ?? 0, c));
+    }
     radius = await blastRadius(deps.dataSourceFor(projectId), seedIds, {
       maxDepth,
-      seedConfidence: topConfidence || 1,
+      seedConfidence: 1,
+      seedWeights,
       // Callers/importers only by default; downstream deps are opt-in.
       includeDependencies: deps.includeDependencies ?? false,
       // Let blastRadius apply its own default floor when undefined.

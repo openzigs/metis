@@ -12,7 +12,7 @@ metadata:
 
 **Why:** impact seeding is recall-first (its blast radius is scored on recall only) and its fixture's right answers are often one-shared-word matches on the entity noun. The same is true in real data: on the #706 run-7 Miniflux graph the rule dropped `flushSessions` and the two `*_sessions` tables along with the wrong `InlineKeyboardButton`.
 
-**How to apply:** put a precision rule behind a searcher option (`Bm25SearcherOptions.minSharedTerms`) and set it only for the links that are PERSISTED AND SHOWN to a person. Run BOTH evals before and after any change to the scorer; `eval-impact-recall` needs `--no-filter` offline. Do not change `normalizeConfidence` to an absolute scale: `LlmCodeSymbolSearcher` and `EntitySeedUnionSearcher` place score bands relative to the best hit and `minConfidence`.
+**How to apply:** put a precision rule behind a searcher option (`Bm25SearcherOptions.minSharedTerms`) and set it only for the links that are PERSISTED AND SHOWN to a person. Run BOTH evals before and after any change to the scorer; `eval-impact-recall` needs `--no-filter` offline. Superseded by #1097: confidence IS absolute now (`linkConfidence`), but only when EVERY candidate carries one; the LLM seeder drops it so its relative bands keep the 0.3 `RELATIVE_MIN_CONFIDENCE` floor, and the entity union bands on whichever scale its base uses. See [[hybrid-mapper-recorded-vectors]].
 
 Two facts the first version of this note got wrong, both found in review of PR #1095:
 

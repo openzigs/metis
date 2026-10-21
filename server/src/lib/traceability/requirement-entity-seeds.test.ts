@@ -14,7 +14,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatMessage, ChatResponse } from "../ai/types.js";
 import type { CodeSymbolCandidate, CodeSymbolSearcher } from "./requirement-code-mapping.js";
-import { DEFAULT_MIN_CONFIDENCE, mapRequirementToCode } from "./requirement-code-mapping.js";
+import { RELATIVE_MIN_CONFIDENCE, mapRequirementToCode } from "./requirement-code-mapping.js";
 import {
   allEntityTerms,
   buildEntitySeedMessages,
@@ -627,7 +627,8 @@ describe("EntitySeedUnionSearcher", () => {
     );
     const out = await searcher.search(REQ, "p1", { limit: 10 });
     const extras = out.slice(1);
-    const floor = 4 * DEFAULT_MIN_CONFIDENCE;
+    // The fake base reports no confidence, so the band sits on the RELATIVE floor (#1097).
+    const floor = 4 * RELATIVE_MIN_CONFIDENCE;
     for (const e of extras) {
       expect(e.score).toBeGreaterThan(floor);
       expect(e.score).toBeLessThan(4);

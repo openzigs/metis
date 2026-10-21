@@ -218,19 +218,21 @@ describe("run 9 — the links #1095's rule still let through", () => {
     expect(await linked(NR1, BEFORE)).toEqual(expect.arrayContaining(WRONG_NR1));
   });
 
-  it("BEFORE: relative confidence reports one of the wrong links at 1.0", async () => {
+  it("#1097: a wrong link sharing two words reads what two words are worth, not 1.0", async () => {
     // In run 9's full graph the top hit was LastForceRefresh; in this excerpt the
-    // corpus statistics differ and it is api_keys.last_used_at. Either way the
-    // best surviving hit reads 1.0, because confidence is relative to it.
+    // corpus statistics differ and it is api_keys.last_used_at. Before #1097 the
+    // best surviving hit read 1.0, because confidence was relative to it.
     const searcher = new Bm25CodeSymbolSearcher(fakePrisma().prisma, BEFORE);
-    const [top] = await mapRequirementToCode(
+    const matches = await mapRequirementToCode(
       { id: "NR-2", title: NR2, body: NR2 },
       PROJECT,
       {},
       { searcher },
     );
-    expect(top!.confidence).toBe(1);
-    expect(WRONG_NR2).toContain(top!.qualifiedName);
+    const wrong = matches.filter((m) => WRONG_NR2.includes(m.qualifiedName));
+    expect(wrong.length).toBeGreaterThan(0);
+    for (const m of wrong) expect(m.confidence).toBeLessThan(0.6);
+    expect(Math.max(...matches.map((m) => m.confidence))).toBeLessThan(1);
   });
 
   it("root cause: api_keys.last_used_at shares 'last' through its own name and 'api' through its table", () => {
@@ -523,7 +525,8 @@ describe("singularForms / sameWord — a plural and its singular are the same wo
     ["ies", ["ies"]],
     ["bus", ["bus"]],
     ["api", ["api"]],
-    ["movies", ["movies", "movie", "movi", "movy"]],
+    // #1097 — `-es` only after s, x, z, ch or sh: `movi` is not a form.
+    ["movies", ["movies", "movie", "movy"]],
   ])("singularForms(%s)", (word, forms) => {
     expect(singularForms(word)).toEqual(forms);
   });

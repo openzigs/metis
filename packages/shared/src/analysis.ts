@@ -1874,7 +1874,11 @@ export interface AffectedCodeSymbol {
   relation: ImpactAffectedRelation;
   /** BFS depth from the seed set: 0 = direct, ≥1 = blast radius. */
   depth: number;
-  /** Normalized 0–1 confidence. */
+  /**
+   * 0–1 confidence. Since #1097 it is absolute — an estimate of how often a
+   * link like this one is right, the same scale on every requirement — where
+   * it used to be relative to the requirement's best link.
+   */
   confidence: number;
 }
 
@@ -1888,6 +1892,11 @@ export interface AffectedCodeCandidate {
   body: string;
   /** Affected symbols, most-relevant first. Empty when nothing matched. */
   symbols: AffectedCodeSymbol[];
+  /**
+   * #1097 — which ranking produced THIS requirement's links, and so which rule
+   * decided what is shown. Absent on runs before #1097.
+   */
+  retrievalMode?: "hybrid" | "bm25-only";
 }
 
 /**
@@ -1899,6 +1908,14 @@ export interface AffectedCodeCandidate {
 export interface AnalysisAffectedCode {
   candidates: AffectedCodeCandidate[];
   truncated: boolean;
+  /**
+   * #1097 — which ranking mapped the requirements: `hybrid` (keywords fused
+   * with the project's symbol embeddings), `bm25-only` (keywords alone: no
+   * semantic embedder, or the project's symbols not embedded yet), or `mixed`
+   * when some requirements fell back and others did not (each candidate's own
+   * `retrievalMode` says which). Absent on runs before #1097.
+   */
+  retrievalMode?: "hybrid" | "bm25-only" | "mixed";
 }
 
 // ---- Traceability matrix (Issue #737, Epic #726) ---------------------------

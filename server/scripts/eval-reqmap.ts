@@ -11,6 +11,15 @@
  *
  *   pnpm eval:reqmap            # fail (exit 1) if the aggregate drops below the floor
  *   pnpm eval:reqmap --no-fail  # always exit 0 (local exploration)
+ *   pnpm eval:reqmap --searcher bm25   # the keyword fallback arm (#1097)
+ *   pnpm eval:reqmap --record-vectors  # re-record the fixture's vectors (local model)
+ *
+ * #1097 — the default arm is production's: the hybrid search (BM25 fused with
+ * symbol embeddings) over the fixture's RECORDED vectors
+ * (`vectors.gte-modernbert-base.json`, `src/lib/eval/recorded-vectors.ts`), so
+ * no model is loaded. `--record-vectors` runs the hybrid arm with the local
+ * `gte-modernbert-base` weights (`TRANSFORMERS_CACHE`, no network, no paid
+ * model) and writes the file.
  *
  * This file is thin orchestration; all logic lives in the unit-tested
  * `src/lib/eval/reqmap/*` modules.
@@ -18,16 +27,88 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadReqMapFixture } from "../src/lib/eval/reqmap/fixture.js";
+import {
+  buildMemoizingBm25Searcher,
+  defaultReqMapVectorsFile,
+  loadReqMapFixture,
+  type ReqMapFixture,
+} from "../src/lib/eval/reqmap/fixture.js";
 import { checkThresholds, runReqMapEval } from "../src/lib/eval/reqmap/runner.js";
+import {
+  buildEvalHybridSearcher,
+  loadRecordedVectors,
+  RecordedEmbedService,
+  RecordingEmbedService,
+  assertFullyRecorded,
+  writeRecordedVectors,
+} from "../src/lib/eval/recorded-vectors.js";
+import {
+  ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS,
+  type CodeSymbolSearcher,
+} from "../src/lib/traceability/requirement-code-mapping.js";
+
+const RERECORD = "pnpm eval:reqmap --record-vectors";
+
+/** `--searcher <hybrid|bm25>`, default hybrid (production's ranking since #1097). */
+function searcherArm(argv: string[]): "hybrid" | "bm25" {
+  const i = argv.indexOf("--searcher");
+  return i !== -1 && argv[i + 1] === "bm25" ? "bm25" : "hybrid";
+}
+
+/** The replay's recorded embedder, checked after the run (`assertFullyRecorded`). */
+let replayEmbed: RecordedEmbedService | null = null;
+
+async function hybridSearcher(
+  fixture: ReqMapFixture,
+  record: RecordingEmbedService | null,
+): Promise<CodeSymbolSearcher> {
+  let embed;
+  let model;
+  if (record) {
+    const { getEmbedder } = await import("../src/lib/rag/embedder.js");
+    model = getEmbedder().model;
+    embed = record;
+  } else {
+    const recording = await loadRecordedVectors(defaultReqMapVectorsFile());
+    if (!recording) throw new Error(`no recorded vectors; record them with: ${RERECORD}`);
+    model = recording.model;
+    replayEmbed = new RecordedEmbedService(recording, RERECORD);
+    embed = replayEmbed;
+  }
+  return buildEvalHybridSearcher({
+    symbols: fixture.embeddable,
+    bm25: buildMemoizingBm25Searcher(fixture.symbols),
+    // The analysis path's link rules for each ranking (#1097).
+    hybridOptions: ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS,
+    embed,
+    model,
+  });
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 
 async function main() {
   const failOnBreak = !process.argv.includes("--no-fail");
+  const arm = searcherArm(process.argv);
   const fixture = await loadReqMapFixture();
-  const { scores, aggregate } = await runReqMapEval(fixture);
+  let record: RecordingEmbedService | null = null;
+  if (process.argv.includes("--record-vectors")) {
+    const { getEmbedder } = await import("../src/lib/rag/embedder.js");
+    record = new RecordingEmbedService(getEmbedder());
+  }
+  const searcher = arm === "bm25" ? fixture.searcher : await hybridSearcher(fixture, record);
+  const { scores, aggregate } = await runReqMapEval(fixture, searcher);
+  if (replayEmbed) assertFullyRecorded(replayEmbed);
+  if (record) {
+    const file = defaultReqMapVectorsFile();
+    const recorded = record.toFiles(
+      "Recorded by `pnpm eval:reqmap --record-vectors` (#1097): the fixture's symbol texts and case queries, embedded by the local model.",
+    );
+    await writeRecordedVectors(file, recorded);
+    // eslint-disable-next-line no-console
+    console.log(`recorded ${recorded.file.keys.length} vectors (${recorded.file.model}) → ${file}`);
+  }
   const { passed, checks } = checkThresholds(aggregate);
 
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
@@ -40,6 +121,7 @@ async function main() {
       {
         kind: "requirement-code-mapping",
         fixture: fixture.spec.id,
+        searcher: arm,
         passed,
         thresholds: checks,
         aggregate,
@@ -63,7 +145,7 @@ async function main() {
 
   // eslint-disable-next-line no-console
   console.log(
-    `Requirement→code mapping eval — cases=${aggregate.caseCount} ` +
+    `Requirement→code mapping eval [${arm}] — cases=${aggregate.caseCount} ` +
       `macroP=${aggregate.macroPrecision.toFixed(2)} macroR=${aggregate.macroRecall.toFixed(2)} ` +
       `macroF1=${aggregate.macroF1.toFixed(2)} hitRate=${aggregate.hitRate.toFixed(2)} ` +
       `→ ${passed ? "PASS" : "FAIL"} (${resultPath})`,

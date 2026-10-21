@@ -81,7 +81,123 @@ describe("AffectedCodePanel", () => {
       /a type is shown only when the requirement uses the last word of its name, and a table column only when the requirement names its table/,
     );
     expect(panel).toHaveTextContent(/Test code is not shown/);
+    // A run recorded before #1097 carries no ranking: its confidence was relative.
     expect(panel).toHaveTextContent(/not a probability/);
+    expect(panel).not.toHaveTextContent(/Ranked by/);
+  });
+
+  it("#1097 — a hybrid run says so, states the confidence floor, and that confidence is absolute", () => {
+    render(<AffectedCodePanel affectedCode={{ ...affectedCode, retrievalMode: "hybrid" }} />);
+    const panel = screen.getByTestId("affected-code-explainer");
+    expect(panel).toHaveTextContent(/Ranked by meaning and keywords together/);
+    expect(panel).toHaveTextContent(/confidence is at least 0.08/);
+    expect(panel).not.toHaveTextContent(/shares at least two of the requirement's terms/);
+    expect(panel).toHaveTextContent(/same scale for every requirement/);
+    expect(panel).not.toHaveTextContent(/not a probability/);
+    expect(screen.getByTestId("affected-code-empty-NR-4")).toHaveTextContent(
+      /No symbol is close enough to this requirement and about its subject/,
+    );
+  });
+
+  it("#1097 — a keyword-only run says the embeddings were not used, and keeps the two-term rule", () => {
+    render(<AffectedCodePanel affectedCode={{ ...affectedCode, retrievalMode: "bm25-only" }} />);
+    const panel = screen.getByTestId("affected-code-explainer");
+    expect(panel).toHaveTextContent(/Ranked by keywords only/);
+    expect(panel).toHaveTextContent(/Re-run once embedding has finished to compare/);
+    expect(panel).toHaveTextContent(/shares at least two of the requirement's terms/);
+    expect(panel).toHaveTextContent(/same scale for every requirement/);
+  });
+
+  const sym = (name: string, confidence: number) => ({
+    filePath: `internal/${name}.go`,
+    qualifiedName: `internal/${name}.go::${name}`,
+    startLine: 1,
+    endLine: 2,
+    relation: "direct" as const,
+    depth: 0,
+    confidence,
+  });
+
+  it("#1097 review — folds links under 0.15 into a 'weaker matches' disclosure on an absolute run", () => {
+    render(
+      <AffectedCodePanel
+        affectedCode={{
+          truncated: false,
+          retrievalMode: "hybrid",
+          candidates: [
+            {
+              id: "NR-1",
+              title: "Terminate all sessions",
+              body: "Terminate all sessions",
+              retrievalMode: "hybrid",
+              symbols: [
+                sym("FlushAllSessions", 0.16),
+                sym("removeSession", 0.14),
+                sym("Parse", 0.09),
+              ],
+            },
+            {
+              id: "NR-2",
+              title: "Only weak",
+              body: "Only weak",
+              symbols: [sym("WithFeedID", 0.09)],
+            },
+          ],
+        }}
+      />,
+    );
+    const first = screen.getByTestId("affected-code-candidate-NR-1");
+    const weaker = screen.getByTestId("affected-code-weaker-NR-1");
+    expect(weaker).toHaveTextContent(/2 weaker matches \(confidence under 0\.15\)/);
+    expect(weaker).toHaveTextContent("removeSession");
+    expect(weaker).not.toHaveTextContent("FlushAllSessions");
+    expect(weaker).not.toHaveAttribute("open");
+    expect(first).toHaveTextContent("FlushAllSessions");
+    expect(screen.getByTestId("affected-code-no-strong-NR-2")).toHaveTextContent(
+      /No link reaches 0\.15/,
+    );
+    expect(screen.getByTestId("affected-code-weaker-NR-2")).toHaveTextContent(/1 weaker match /);
+    expect(screen.getByTestId("affected-code-explainer")).toHaveTextContent(
+      /Links under 0\.15 are folded under "weaker matches"/,
+    );
+  });
+
+  it("#1097 review — does not fold a pre-#1097 run (relative confidences)", () => {
+    render(
+      <AffectedCodePanel
+        affectedCode={{
+          truncated: false,
+          candidates: [{ id: "NR-1", title: "t", body: "t", symbols: [sym("a", 0.1)] }],
+        }}
+      />,
+    );
+    expect(screen.queryByTestId("affected-code-weaker-NR-1")).toBeNull();
+    expect(screen.getByTestId("affected-code-candidate-NR-1")).toHaveTextContent("conf 0.10");
+  });
+
+  it("#1097 review — a mixed run explains both rules and labels each requirement's ranking", () => {
+    render(
+      <AffectedCodePanel
+        affectedCode={{
+          truncated: false,
+          retrievalMode: "mixed",
+          candidates: [
+            { id: "NR-1", title: "a", body: "a", retrievalMode: "hybrid", symbols: [] },
+            { id: "NR-2", title: "b", body: "b", retrievalMode: "bm25-only", symbols: [] },
+          ],
+        }}
+      />,
+    );
+    const panel = screen.getByTestId("affected-code-explainer");
+    expect(panel).toHaveTextContent(/Some requirements were ranked by meaning and keywords/);
+    expect(panel).toHaveTextContent(/confidence is at least 0\.08/);
+    expect(panel).toHaveTextContent(/shares at least two of the requirement's terms/);
+    expect(screen.getByTestId("affected-code-ranking-NR-1")).toHaveTextContent(
+      "meaning + keywords",
+    );
+    expect(screen.getByTestId("affected-code-ranking-NR-2")).toHaveTextContent("keywords only");
+    expect(screen.getByTestId("affected-code-empty-NR-1")).toHaveTextContent(/close enough/);
+    expect(screen.getByTestId("affected-code-empty-NR-2")).toHaveTextContent(/shares two/);
   });
 
   it("notes when the prompt block was cut for length", () => {
