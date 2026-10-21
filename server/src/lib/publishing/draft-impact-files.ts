@@ -120,7 +120,19 @@ export async function deriveDraftImpactFiles(
     ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS,
   );
 
-  if (!(await searcher.loadsCodeGraph(projectId))) {
+  let hasCodeGraph: boolean;
+  try {
+    hasCodeGraph = await searcher.loadsCodeGraph(projectId);
+  } catch (err) {
+    // Could not READ the code graph: that is a failure, not "no code graph".
+    log.warn("could not read the code graph; impact files not derived", {
+      projectId,
+      error: (err as Error).message,
+    });
+    for (const r of requirements) byRequirement.set(r.id, { status: "failed" });
+    return { byRequirement };
+  }
+  if (!hasCodeGraph) {
     for (const r of requirements) byRequirement.set(r.id, { status: "no-code-graph" });
     return { byRequirement };
   }
@@ -131,6 +143,7 @@ export async function deriveDraftImpactFiles(
       continue;
     }
     let mode: RequirementRetrievalMode | null = null;
+    let searchFailed = false;
     try {
       const matches = await mapRequirementToCode(
         { id: r.id, title: r.title, body: r.body },
@@ -140,10 +153,19 @@ export async function deriveDraftImpactFiles(
           onRetrievalMode: (m) => {
             mode = m;
           },
+          onSearchError: () => {
+            searchFailed = true;
+          },
         },
         { prisma: prisma as never, searcher },
       );
-      byRequirement.set(r.id, { status: "derived", links: filesOf(matches), retrievalMode: mode });
+      byRequirement.set(
+        r.id,
+        // A failed search is not "nothing matched": the draft says it failed.
+        searchFailed
+          ? { status: "failed" }
+          : { status: "derived", links: filesOf(matches), retrievalMode: mode },
+      );
     } catch (err) {
       // `mapRequirementToCode` itself turns a search failure into no matches;
       // anything that still escapes is this requirement's alone.

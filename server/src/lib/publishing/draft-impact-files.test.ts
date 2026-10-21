@@ -97,10 +97,31 @@ describe("deriveDraftImpactFiles", () => {
     ]);
   });
 
-  it("reads an unreadable code graph as none, and never throws", async () => {
+  it("reports an unreadable code graph as `failed`, not as no code graph, and never throws", async () => {
     const { prisma } = prismaOf(new Error("db down"));
-    const out = await deriveDraftImpactFiles("p", [req("a", "x")], { prisma });
-    expect(out.byRequirement.get("a")).toEqual({ status: "no-code-graph" });
+    const out = await deriveDraftImpactFiles("p", [req("a", "x"), req("b", "y")], { prisma });
+    expect([...out.byRequirement.values()]).toEqual([{ status: "failed" }, { status: "failed" }]);
+  });
+
+  it("reports a failed SEARCH as `failed`, not as nothing matched", async () => {
+    const { prisma } = prismaOf(rows);
+    const real = new HybridCodeSymbolSearcher({
+      bm25: new MemoizingBm25CodeSymbolSearcher(prisma),
+      hybrid: { search: async () => [] },
+      semanticModel: () => null,
+    });
+    const throwing = {
+      withOptions: () => throwing,
+      loadsCodeGraph: (id: string) => real.loadsCodeGraph(id),
+      search: async () => {
+        throw new Error("index exploded");
+      },
+    } as unknown as HybridCodeSymbolSearcher;
+    const out = await deriveDraftImpactFiles("p", [req("a", "Flush all sessions")], {
+      prisma,
+      searcher: throwing,
+    });
+    expect(out.byRequirement.get("a")).toEqual({ status: "failed" });
   });
 
   it("maps each requirement to its files with the analysis link rules, saying which ranking ran", async () => {
