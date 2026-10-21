@@ -84,3 +84,9 @@ Older single-trap entries, folded here (retired from the index 2026-10-16; files
   after the side effect stays green (Spec Kit / publish guard moved after
   `bindPublishCredential`). Mutate the guard's position as well as its presence, and assert the
   side effect itself did not happen; see [[secret-binding-fire-time-checks]].
+
+**From #930 (2026-10-21).**
+- **A race barrier must hold racers AFTER their first statement returns, not before it runs.**
+  Releasing gated calls together let a check-then-act mutation pass on Postgres: the pg pool
+  opens a second connection lazily, so one racer read and wrote before the other's read ran.
+  Same barrier failed the mutation on SQLite. See `server/tests/helpers/approval-review-race-suite.ts`.

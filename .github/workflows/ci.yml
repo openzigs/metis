@@ -991,6 +991,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration analysis-metadata-lock-930-postgres
 
+      # Issue #930 — an approval review's `pending` check rides its UPDATE. Prove that
+      # reviews forced to run at once on separate connections land exactly one
+      # decision, and every other reviewer gets a 409 instead of overwriting it.
+      - name: Prove concurrent approval reviews land exactly one decision on real Postgres
+        working-directory: server
+        run: pnpm test:integration approval-review-race-930-postgres
+
       # Issue #1059 — the Spec Kit job table's rules are conditional UPDATEs, and
       # staleness is judged with the DATABASE's clock in SQL that differs per
       # engine (`clock_timestamp()` here, `strftime` on SQLite). Prove the same
