@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import express from "express";
 import request from "supertest";
+import { errorHandler } from "./error-handler.js";
 import {
   traceabilityGapsRateLimiter,
   traceabilityPreAuthRateLimiter,
@@ -62,15 +63,17 @@ describe("traceabilityPreAuthRateLimiter (#815)", () => {
     });
     a.use(traceabilityPreAuthRateLimiter);
     a.get("/", (_req, res) => res.json({ ok: true }));
+    a.use(errorHandler);
     return a;
   }
 
-  it("keys by IP even when a user is present, at TRACEABILITY_PREAUTH_RATE_LIMIT_MAX", async () => {
+  it("keys a request with no signed token on the peer, and a spent peer bucket answers requireAuth's 401 (#1349)", async () => {
     process.env.TRACEABILITY_PREAUTH_RATE_LIMIT_MAX = "1";
+    // `req.user` set upstream is not a token: the key ignores it (no header read).
     expect((await request(preAuthApp("pa-user-1")).get("/")).status).toBe(200);
     const res = await request(preAuthApp("pa-user-2")).get("/");
-    expect(res.status).toBe(429);
-    expect(res.body.error.code).toBe("TRACEABILITY_GAPS_RATE_LIMITED");
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe("AUTH_REQUIRED");
   });
 
   it("defaults to a generous per-IP ceiling", async () => {

@@ -12,7 +12,9 @@
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { clusterRateLimitStore } from "./cluster-rate-limit-store.js";
 import { envMs } from "../lib/config/env-ms.js";
-import type { RequestHandler } from "express";
+import { preAuthLimitReachedHandler } from "./preauth-limit-handler.js";
+import { runsPreAuthKey } from "./runs-rate-limit.js";
+import type { Request, RequestHandler } from "express";
 import type { ApiResponse } from "@metis/shared";
 
 const FIFTEEN_MIN_MS = 15 * 60_000;
@@ -86,13 +88,18 @@ export const analysisApprovalPromoteRateLimiter: RequestHandler = rateLimit({
 }) as unknown as RequestHandler;
 
 /**
- * PR #902 CI — a per-IP ceiling AHEAD of `requireAuth` on the promote and
+ * PR #902 CI — a coarse ceiling AHEAD of `requireAuth` on the promote and
  * reopen routes only. CodeQL `js/missing-rate-limiting` flags the route's own
  * `requireAuth` ("performs authorization, but is not rate-limited") unless an
  * `express-rate-limit` handler precedes it; the per-user limiters above then
- * run after the permission check, unchanged. Keyed by IP alone, and generous
- * because one IP may front many users (a NAT or proxy). Same shape as
- * `traceabilityPreAuthRateLimiter` (#815) and `importsPreAuthRateLimiter` (#850).
+ * run after the permission check, unchanged. Same shape as
+ * `traceabilityPreAuthRateLimiter` (#815).
+ *
+ * #1349 — keyed like the runs guard (`runsPreAuthKey`): the user id in a token
+ * this server signed, else the TCP peer — never `req.ip`, which under
+ * `trust proxy` is the client-written `X-Forwarded-For`. A spent peer bucket
+ * answers `requireAuth`'s 401, a spent user bucket 429
+ * (`preAuthLimitReachedHandler`, #1117).
  */
 export const ANALYSIS_APPROVAL_PREAUTH_DEFAULT_MAX = 3_600;
 
@@ -104,13 +111,12 @@ export const analysisApprovalPreAuthRateLimiter: RequestHandler = rateLimit({
     intFromEnv("ANALYSIS_APPROVAL_PREAUTH_RATE_LIMIT_MAX", ANALYSIS_APPROVAL_PREAUTH_DEFAULT_MAX),
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req, res) =>
-    `ip:${ipKeyGenerator(req.ip ?? "", res.req?.socket?.remoteFamily === "IPv6" ? 64 : 32)}`,
-  message: {
+  keyGenerator: (req) => runsPreAuthKey(req as unknown as Request),
+  handler: preAuthLimitReachedHandler(runsPreAuthKey, {
     success: false,
     error: {
       code: "RATE_LIMITED",
       message: "Too many approval requests — please try again later",
     },
-  } satisfies ApiResponse,
+  }),
 }) as unknown as RequestHandler;

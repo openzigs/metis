@@ -12,7 +12,9 @@
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { clusterRateLimitStore } from "./cluster-rate-limit-store.js";
 import { envMs } from "../lib/config/env-ms.js";
-import type { RequestHandler } from "express";
+import { preAuthLimitReachedHandler } from "./preauth-limit-handler.js";
+import { runsPreAuthKey } from "./runs-rate-limit.js";
+import type { Request, RequestHandler } from "express";
 import type { ApiResponse } from "@metis/shared";
 
 const FIFTEEN_MIN_MS = 15 * 60_000;
@@ -56,12 +58,25 @@ export const traceabilityGapsRateLimiter: RequestHandler = rateLimit({
   } satisfies ApiResponse,
 }) as unknown as RequestHandler;
 
+const preAuthLimited: ApiResponse = {
+  success: false,
+  error: {
+    code: "TRACEABILITY_GAPS_RATE_LIMITED",
+    message: "Too many traceability coverage requests — slow down",
+  },
+};
+
 /**
- * #815 — a per-IP ceiling ahead of JWT verification on routers that have no
+ * #815 — a coarse ceiling ahead of JWT verification on routers that have no
  * upstream `requireAuth` (the workspace summary). CodeQL js/missing-rate-limiting
  * needs a limiter before the auth middleware; the per-user budget above then
- * runs after `requireAuth`. The cap is generous because one IP may front many
- * users (a NAT or proxy). Same pair as `generated-docs-rate-limit.ts` (#632).
+ * runs after `requireAuth`. Same pair as `generated-docs-rate-limit.ts` (#632).
+ *
+ * #1349 — keyed like the runs guard (`runsPreAuthKey`): the user id in a token
+ * this server signed, else the TCP peer. It was `req.ip`, which under
+ * `trust proxy` is the client-written `X-Forwarded-For`, so a new value per
+ * request minted a new bucket. A spent peer bucket answers `requireAuth`'s
+ * 401, a spent user bucket 429 (`preAuthLimitReachedHandler`, #1117).
  */
 // `as unknown as RequestHandler` bridges the Express 4↔5 type split.
 export const traceabilityPreAuthRateLimiter: RequestHandler = rateLimit({
@@ -70,13 +85,6 @@ export const traceabilityPreAuthRateLimiter: RequestHandler = rateLimit({
   limit: () => intFromEnv("TRACEABILITY_PREAUTH_RATE_LIMIT_MAX", TRACEABILITY_PREAUTH_DEFAULT_MAX),
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req, res) =>
-    `ip:${ipKeyGenerator(req.ip ?? "", res.req?.socket?.remoteFamily === "IPv6" ? 64 : 32)}`,
-  message: {
-    success: false,
-    error: {
-      code: "TRACEABILITY_GAPS_RATE_LIMITED",
-      message: "Too many traceability coverage requests — slow down",
-    },
-  } satisfies ApiResponse,
+  keyGenerator: (req) => runsPreAuthKey(req as unknown as Request),
+  handler: preAuthLimitReachedHandler(runsPreAuthKey, preAuthLimited),
 }) as unknown as RequestHandler;

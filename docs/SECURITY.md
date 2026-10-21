@@ -114,6 +114,32 @@ are never gated, so no route may change state on a `GET`.
   where browsers omit Fetch Metadata) lists that origin in
   `METIS_TRUSTED_ORIGINS` (comma-separated) on the UI server.
 
+**WebSockets (#1349).** The browser's socket.io client is not proxied: it
+connects straight to the API (`NEXT_PUBLIC_SOCKET_URL`) from the UI's origin,
+and authenticates with the `metis.at` cookie. `SameSite=Lax` would let a page
+on a sibling subdomain open that socket as the signed-in user and join their
+rooms (cross-site WebSocket hijacking), so the handshake checks `Origin`
+(`socketOriginRefusal` in `server/src/lib/socket/server.ts`):
+
+| Handshake | Origin | Result |
+|---|---|---|
+| Cookie-authenticated | an entry of `CORS_ORIGIN` (the UI), of `METIS_TRUSTED_ORIGINS`, or the API's own host | admitted |
+| Cookie-authenticated | anything else, including `null` (sandboxed frame) | `connect_error` `ORIGIN_REJECTED` |
+| Cookie-authenticated | **absent** | admitted — every browser sends `Origin` on a cross-origin WebSocket upgrade and on a cross-origin polling request, so a handshake without one is not a page another origin could forge (the same rule as the HTTP guard above) |
+| `auth.token` or `Authorization: Bearer` | not checked | a foreign page cannot read the token to present it; this is how Node clients, scripts and the e2e helpers connect |
+
+`CORS_ORIGIN` is parsed as a comma list here too (it reached socket.io's `cors`
+as one string before). On the API, `METIS_TRUSTED_ORIGINS` is read by the socket
+check only; list there any origin the UI is served from that `CORS_ORIGIN`
+does not name.
+
+**Pre-auth limiters (#1349).** The traceability (`traceabilityPreAuthRateLimiter`)
+and analysis-approval (`analysisApprovalPreAuthRateLimiter`) guards in front of
+`requireAuth` key like the `/api/runs` guard (`runsPreAuthKey`): the user in a
+token this server signed, else the TCP peer — never `req.ip`, which under
+`trust proxy` is the client-written `X-Forwarded-For`. A spent peer bucket
+answers `requireAuth`'s 401 (`preAuthLimitReachedHandler`, #1117).
+
 ---
 
 ## 3. Secret Management

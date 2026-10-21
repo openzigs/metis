@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import express from "express";
 import request from "supertest";
+import { errorHandler } from "./error-handler.js";
 import {
   ANALYSIS_APPROVAL_PREAUTH_DEFAULT_MAX,
   analysisApprovalPreAuthRateLimiter,
@@ -116,6 +117,7 @@ describe("analysisApprovalPreAuthRateLimiter (PR #902)", () => {
       authRan.n += 1;
       res.status(401).json({ success: false });
     });
+    a.use(errorHandler);
     return a;
   }
 
@@ -123,15 +125,16 @@ describe("analysisApprovalPreAuthRateLimiter (PR #902)", () => {
     delete process.env.ANALYSIS_APPROVAL_PREAUTH_RATE_LIMIT_MAX;
   });
 
-  it("returns 429 before auth runs once the per-IP budget is spent, across users", async () => {
+  it("stops a request with no signed token at the spent peer bucket, before the route's auth runs (#1349)", async () => {
     process.env.ANALYSIS_APPROVAL_PREAUTH_RATE_LIMIT_MAX = "1";
     const authRan = { n: 0 };
     expect((await request(preAuthApp("pre-user-1", authRan)).post("/")).status).toBe(401);
     expect(authRan.n).toBe(1);
-    // A different user from the same IP shares the budget: keyed by IP only.
+    // `req.user` set upstream is not a token, so both share the peer bucket;
+    // the limiter answers with requireAuth's own 401, not 429 (#1117).
     const limited = await request(preAuthApp("pre-user-2", authRan)).post("/");
-    expect(limited.status).toBe(429);
-    expect(limited.body.error.code).toBe("RATE_LIMITED");
+    expect(limited.status).toBe(401);
+    expect(limited.body.error.code).toBe("AUTH_REQUIRED");
     expect(authRan.n).toBe(1);
   });
 
