@@ -16,3 +16,8 @@ Collected from #1063 / PR #1227 and its reviews (2026-10-17).
 **Measure without spending.** Replay stored requirements through the mapper, comparing links before and after (NR-1 to NR-5 in run 9), and run `eval:reqmap` and `eval:impact-recall`. No model is called.
 
 Related: [[mapper-precision-rules-halve-impact-recall]], [[seeded-mappings-are-symbol-bound]].
+
+**Folded here (retired from the index 2026-10-21; files unchanged):**
+
+- [[seeded-mappings-are-symbol-bound]] — seeded mappings symbol-bound: fixtures must match seeder shapes (#897)
+- [[mapper-precision-rules-halve-impact-recall]] — Mapper precision rule vs recall: run both evals; option, not global (#1063)
