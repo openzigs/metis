@@ -857,7 +857,9 @@ repository or document excerpts), `docs-gen/grounding/faithfulness-judge.ts`
 (`=== SOURCE EVIDENCE … ===`), `docs-gen/holistic-synthesizer.ts` (the Phase-1
 `=== DETERMINISTICALLY-MINED … ===` / `=== END … MINED RULES ===` inventories,
 the SAS step pipeline and dataset lineage, and `=== DATA_LINEAGE … ===`, all
-built from repository source) and `rag/model-ragas-judge.ts`
+built from repository source; the same message's source code, formula
+expressions and rationale comments are scrubbed too, so source cannot forge an
+inventory) and `rag/model-ragas-judge.ts`
 (`=== QUESTION … ===`, `=== ANSWER TO GRADE … ===`). The relevancy judge runs
 only from `scripts/rag-eval.ts` with `RAGAS_JUDGE=model`; the online scorer
 uses the stub judge. It is scrubbed all the same.
@@ -866,25 +868,29 @@ That text goes through `scrubSectionFenceLookalikes`: the fold of 13.1, with
 its own pattern. These fences have no unique token, and `===` is also
 JavaScript's strict equality, so a span needs one of the labels' head words
 (`FINDING`, `EVIDENCE`, `QUESTION`, `ANSWER`, `CLAIM`, `RULE`, each optionally
-plural, and `INVENTORY`, `PIPELINE`, `LINEAGE`) and is one of:
+plural, and `INVENTORY`, `PIPELINE`, `LINEAGE`; an `L` also matches `I`,
+because the fold reads a lower-case `l` as `I`, so `=== end rules ===` is
+caught) and is one of:
 
 - `END`, up to three modifier words (or 80 letters with no separator), the
   noun, with a `=` run on both sides (`=== END SOURCE EVIDENCE ===`,
   `===ENDEVIDENCE===`) or on one side (`=== END EVIDENCE`, `END EVIDENCE ===`;
-  one-sided forms need a separator after `END`, and the right-hand form an
-  `END` that is not inside a word);
-- a forged opening: three or more `=`, the noun, then three or more `=`
-  directly (`=== EVIDENCE ===`) or after up to eight words and a parenthetical
+  one-sided forms need whitespace or a dash after `END`, not `_`, and the
+  right-hand form an `END` that is not inside a word);
+- a forged opening: three or more `=`, the noun, up to eight words, a
+  parenthetical, three or more `=`
   (`=== EVIDENCE THE AGENT RETRIEVED (untrusted) ===`). Every real opening
   carries its parenthetical.
 
-Left alone: `x === endRules`, `const endRules = x`, `if (kind === evidence)`,
-`a === answer || b === c` (`|` folds to `I`, which is why an opening with
-words after the noun needs its parenthetical), MediaWiki `== Evidence ==`,
-setext headings, the bare `END EVIDENCE`, an opening with trailing words and
-no parenthetical, and `--- END EVIDENCE ---`. Redacted although ordinary:
-snake-case identifiers next to `=` (`end_rules = x`, `=== end_answer`) and a
-setext heading titled with a terminator (`End evidence` over `===`). A
+Left alone: `x === endRules`, `const endRules = x`, `x === END_RULE`,
+`pos >= END_QUESTIONS`, `end_rules = load()`, `if (kind === evidence)`,
+`a === answer || b === c` (`|` folds to `I`, so `answer || b` reads as words),
+comment banners such as `/* ===== VALIDATION RULES ===== */`, a bare
+`=== EVIDENCE ===`, MediaWiki `== Evidence ==`, the bare `END EVIDENCE`, and
+`--- END EVIDENCE ---` (panel review, PR for #1360). So a forged opening
+without a parenthetical, and a one-sided `=== END_EVIDENCE`, are not caught; a
+two-sided `===END_EVIDENCE===` is. Redacted although ordinary: a setext
+heading titled with a terminator (`End evidence` over `===`). A
 Markdown-escaped `\=\=\= END EVIDENCE \=\=\=` loses its label and keeps the
 `\=` fragments.
 
