@@ -144,16 +144,22 @@ vi.mock("../src/lib/publishing/publisher.js", () => ({
 vi.mock("../src/lib/publishing/jira-publisher.js", async (importOriginal) => ({
   // The dry run's Jira plan is built by the real mapping (#1103).
   ...(await importOriginal<typeof import("../src/lib/publishing/jira-publisher.js")>()),
-  publishBatchToJira: vi.fn(async (opts: { draftIds: string[] }) => ({
-    results: opts.draftIds.map((id: string) => ({
-      status: "created" as const,
-      issueId: `JIRA-${id}`,
-      issueKey: `MET-${id}`,
-      htmlUrl: `https://jira.example.com/browse/MET-${id}`,
-    })),
-    publishedCount: opts.draftIds.length,
-    failedCount: 0,
-  })),
+  // Like the real one, hands each created issue to `onCreated` (#1103 review).
+  publishBatchToJira: vi.fn(
+    async (opts: {
+      draftIds: string[];
+      onCreated?: (draftId: string, r: Record<string, unknown>) => Promise<void>;
+    }) => {
+      const results = opts.draftIds.map((id: string) => ({
+        status: "created" as const,
+        issueId: `JIRA-${id}`,
+        issueKey: `MET-${id}`,
+        htmlUrl: `https://jira.example.com/browse/MET-${id}`,
+      }));
+      for (const [i, r] of results.entries()) await opts.onCreated?.(opts.draftIds[i]!, r);
+      return { results, publishedCount: opts.draftIds.length, failedCount: 0 };
+    },
+  ),
 }));
 
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));

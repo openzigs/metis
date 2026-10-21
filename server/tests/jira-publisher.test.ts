@@ -307,6 +307,53 @@ describe("publishDraftToJira", () => {
       );
     });
 
+    it("review — the local record is written before the property, so a retry cannot duplicate", async () => {
+      seedConnection();
+      seedDraft();
+      const order: string[] = [];
+      mockCreateIssue.mockImplementationOnce(async () => {
+        order.push("create");
+        return created;
+      });
+      mockSetIssueProperty.mockImplementationOnce(async () => {
+        order.push("property");
+      });
+      await publishDraftToJira({
+        draftId: "draft_1",
+        batchId: "batch_1",
+        connectionId: "conn_1",
+        projectKey: "PROJ",
+        actorId: "user_1",
+        onCreated: async (r) => {
+          order.push(`persist ${r.issueKey}`);
+        },
+      });
+      expect(order).toEqual(["create", "persist PROJ-9", "property"]);
+    });
+
+    it("review — publishBatchToJira hands each created issue to onCreated with its draft", async () => {
+      seedConnection();
+      seedDraft("d1", { title: "First" });
+      seedDraft("d2", { title: "Second" });
+      mockCreateIssue
+        .mockResolvedValueOnce({ id: "1", key: "PROJ-1", self: "" })
+        .mockRejectedValueOnce(new Error("boom"));
+      const seen: string[] = [];
+      await publishBatchToJira({
+        batchId: "batch_1",
+        draftIds: ["d1", "d2"],
+        connectionId: "conn_1",
+        projectKey: "PROJ",
+        actorId: "user_1",
+        delayMs: 0,
+        sleep: async () => {},
+        onCreated: async (draftId, r) => {
+          seen.push(`${draftId}:${r.issueKey}`);
+        },
+      });
+      expect(seen).toEqual(["d1:PROJ-1"]);
+    });
+
     it("writes no property for a draft whose ids are not plain ids", async () => {
       seedConnection();
       seedDraft("draft_1", { projectId: "bad id -->" });

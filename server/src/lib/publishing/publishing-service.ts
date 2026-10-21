@@ -539,19 +539,16 @@ async function executeBatchInner(opts: {
       const draftIds =
         meta && "draftIds" in meta ? ((meta as { draftIds?: string[] }).draftIds ?? []) : [];
       if (draftIds.length > 0) {
-        const jiraResult = await publishBatchToJira({
+        await publishBatchToJira({
           batchId: opts.batchId,
           draftIds,
           connectionId: project.jiraConnectionId,
           projectKey: project.jiraProjectKey,
           actorId: opts.actorId,
           additionalLabels: batchAdditionalLabels(batch.metadata),
-        });
-
-        // Record Jira published issues
-        for (const r of jiraResult.results) {
-          if (r.status === "created") {
-            const draftId = draftIds[jiraResult.results.indexOf(r)];
+          // #1103 review — each Jira issue is recorded the moment it exists,
+          // before its `metis.source` property is set, not after the whole loop.
+          onCreated: async (draftId, r) => {
             await prisma.publishedIssue.create({
               data: {
                 batchId: opts.batchId,
@@ -565,8 +562,8 @@ async function executeBatchInner(opts: {
                 bodyHash: null,
               },
             });
-          }
-        }
+          },
+        });
       }
     } catch (err) {
       log.error("Jira publish failed for batch", {

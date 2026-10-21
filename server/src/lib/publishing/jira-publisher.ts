@@ -270,6 +270,13 @@ export async function publishDraftToJira(opts: {
   actorId: string;
   /** #1049 — the batch's "Additional labels", applied after the draft's own. */
   additionalLabels?: readonly string[];
+  /**
+   * #1103 review — records the created issue (the `PublishedIssue` row) as
+   * soon as it exists, BEFORE the `metis.source` round trip: a crash or a
+   * timeout there must not leave a Jira issue METIS has no record of, which a
+   * retry would file again. An error here propagates, as the row write did.
+   */
+  onCreated?: (result: JiraPublishResult) => Promise<void>;
 }): Promise<JiraPublishResult> {
   const draft = await prisma.issueDraft.findFirst({
     where: { id: opts.draftId, deletedAt: null },
@@ -280,8 +287,11 @@ export async function publishDraftToJira(opts: {
 
   const mapping = opts.fieldMapping ?? DEFAULT_FIELD_MAPPING;
 
+  let client: JiraClient;
+  let result: JiraPublishResult;
   try {
-    const { client, baseUrl } = await resolveJiraClient(opts.connectionId);
+    const resolved = await resolveJiraClient(opts.connectionId);
+    client = resolved.client;
     const fields = mapDraftToJiraFields(
       draft,
       opts.projectKey,
@@ -289,25 +299,10 @@ export async function publishDraftToJira(opts: {
       opts.additionalLabels ?? [],
     );
     const created = await client.createIssue(fields);
-    await setSourceProperty(client, created.key, draft, opts);
-
-    const htmlUrl = `${baseUrl.replace(/\/+$/, "")}/browse/${created.key}`;
-
-    audit({
-      actor: { id: opts.actorId },
-      action: "publish.jira.issue_created",
-      target: { type: "issue_draft", id: opts.draftId },
-      metadata: {
-        batchId: opts.batchId,
-        jiraKey: created.key,
-        projectKey: opts.projectKey,
-      },
-    });
-
-    return {
+    result = {
       issueKey: created.key,
       issueId: created.id,
-      htmlUrl,
+      htmlUrl: `${resolved.baseUrl.replace(/\/+$/, "")}/browse/${created.key}`,
       status: "created",
     };
   } catch (err) {
@@ -324,6 +319,20 @@ export async function publishDraftToJira(opts: {
       errorMessage: msg,
     };
   }
+
+  audit({
+    actor: { id: opts.actorId },
+    action: "publish.jira.issue_created",
+    target: { type: "issue_draft", id: opts.draftId },
+    metadata: {
+      batchId: opts.batchId,
+      jiraKey: result.issueKey,
+      projectKey: opts.projectKey,
+    },
+  });
+  await opts.onCreated?.(result);
+  await setSourceProperty(client, result.issueKey, draft, opts);
+  return result;
 }
 
 /**
@@ -338,6 +347,8 @@ export async function publishBatchToJira(opts: {
   actorId: string;
   /** #1049 — the batch's "Additional labels", applied to every issue. */
   additionalLabels?: readonly string[];
+  /** #1103 review — records each created issue before its source property is set. */
+  onCreated?: (draftId: string, result: JiraPublishResult) => Promise<void>;
   /** Inter-call delay (ms) to respect Jira rate limits. Default 500ms. */
   delayMs?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -363,6 +374,7 @@ export async function publishBatchToJira(opts: {
       fieldMapping: opts.fieldMapping,
       actorId: opts.actorId,
       additionalLabels: opts.additionalLabels,
+      ...(opts.onCreated ? { onCreated: (r) => opts.onCreated!(draftId, r) } : {}),
     });
 
     results.push(result);
