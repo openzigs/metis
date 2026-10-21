@@ -3,8 +3,9 @@
  *
  * `dedupHash` is sha256(targetOwner + "/" + targetRepo + ":" + normalizedTitle).
  * The hash is stamped on the IssueDraft AND embedded in a marker comment in
- * the published issue body so the linkage can be recovered if the local
- * PublishedIssue row is lost.
+ * the published issue body, so a draft matched to an issue from its
+ * PublishedIssue row can be confirmed against the issue itself (#1106: the
+ * row is the key, the marker only a consistency check).
  *
  * The marker is a single HTML comment line of the form:
  *
@@ -483,4 +484,21 @@ export function parseMarker(body: string | null | undefined): PublishMarker | nu
     if (m) return { batchId: m[1]!, draftId: m[2]!, hash: m[3]! };
   }
   return null;
+}
+
+/**
+ * #1106 — every publish marker of an issue body that is alone on its line, last
+ * first. A tracker edit can leave more than one (a marker line pasted under the
+ * block METIS wrote), and the caller wants the one the database confirms, not
+ * whichever sits last. Marker-shaped text inside a line is never read. Hints
+ * only, as {@link parseMarker}.
+ */
+export function parseMarkers(body: string | null | undefined): PublishMarker[] {
+  if (!body) return [];
+  const out: PublishMarker[] = [];
+  for (const line of markerCandidateLinesFromEnd(body)) {
+    const m = PUBLISH_LINE_RE.exec(line.text);
+    if (m) out.push({ batchId: m[1]!, draftId: m[2]!, hash: m[3]! });
+  }
+  return out;
 }

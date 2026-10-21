@@ -49,3 +49,7 @@ Two checks read `PublishBatch.targetOwner`/`targetRepo`: `namesRepository` (case
 **From #1308 and its reviews (2026-10-21).**
 - `PublishedIssue` holds one row per (batch, draft, destination), so one remote issue can have several rows. Any `findFirst` by `issueId` or `draftId` that reads `row.batch.*` (e.g. `reconcile-service`) must order by `publishedAt desc, id desc`, and the dedup-skip path must make the newest row's claim true.
 - The Jira publish leg has no dedup (`dedupHash` null, its rows never consulted), so a "prevents a duplicate on retry" claim about Jira is false.
+
+**From #1106 (2026-10-21).**
+- Remote-issue recovery is keyed on `PublishedIssue` rows (`loadRecoverableIssues` in `publisher.ts`), never on tracker text; the marker only vetoes. Keep any new matching DB-only so the dry run and `previewBatchPlan` call the same function and agree (`mayMatchIssueNumber`).
+- `publishing-publisher.test.ts`'s fake octokit now pages listings and serves `GET /issues/{n}` (404 when unknown). A test overriding the old list URL no longer reaches recovery: intercept `/issues/{n}$`.
