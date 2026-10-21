@@ -4,17 +4,22 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { findMany, count, analysisFindFirst, reviewFindFirst } = vi.hoisted(() => ({
-  findMany: vi.fn(),
-  count: vi.fn(),
-  analysisFindFirst: vi.fn(),
-  reviewFindFirst: vi.fn(),
-}));
+const { findMany, count, analysisFindFirst, reviewFindFirst, itemFindMany, versionFindMany } =
+  vi.hoisted(() => ({
+    findMany: vi.fn(),
+    count: vi.fn(),
+    analysisFindFirst: vi.fn(),
+    reviewFindFirst: vi.fn(),
+    itemFindMany: vi.fn(),
+    versionFindMany: vi.fn(),
+  }));
 vi.mock("../prisma.js", () => ({
   prisma: {
     requirement: { findMany, count },
     analysis: { findFirst: analysisFindFirst },
     reviewRequest: { findFirst: reviewFindFirst },
+    reviewRequestItem: { findMany: itemFindMany },
+    requirementVersion: { findMany: versionFindMany },
   },
 }));
 
@@ -54,6 +59,8 @@ beforeEach(() => {
   count.mockReset();
   analysisFindFirst.mockReset().mockResolvedValue(null);
   reviewFindFirst.mockReset().mockResolvedValue(null);
+  itemFindMany.mockReset().mockResolvedValue([]);
+  versionFindMany.mockReset().mockResolvedValue([]);
 });
 
 describe("requirementsScopeFilterSchema", () => {
@@ -90,8 +97,8 @@ describe("requirementsScopeWhere", () => {
         approvedOnly: true,
       }),
     ).toEqual({
+      // #1017 — no `deletedAt` filter: a pinned requirement deleted since stays in the review.
       projectId: "p1",
-      deletedAt: null,
       id: { in: ["r1", "r2"] },
       reviewItems: { some: { reviewRequestId: "rv", reviewRequest: { projectId: "p1" } } },
       reviewStatus: "approved",
@@ -120,6 +127,174 @@ describe("loadScopedRequirements", () => {
     const args = findMany.mock.calls[0]![0];
     expect(args.where).toEqual({ projectId: "p1", deletedAt: null, analysisId: "a1" });
     expect(args.select.codeMappings.where).toEqual({ projectId: "p1" });
+  });
+
+  it("reads no review pins for a scope that is not a review", async () => {
+    findMany.mockResolvedValue([req()]);
+    await loadScopedRequirements("p1", { analysisId: "a1" });
+    expect(itemFindMany).not.toHaveBeenCalled();
+  });
+});
+
+// #1017 — a review-scoped document renders the versions the review pinned.
+describe("loadScopedRequirements for a review", () => {
+  const change = (fields: Record<string, [unknown, unknown]>) =>
+    JSON.stringify(
+      Object.fromEntries(Object.entries(fields).map(([k, [from, to]]) => [k, { from, to }])),
+    );
+  const versionRow = (requirementId: string, version: number, changedFields: string) => ({
+    requirementId,
+    version,
+    changedFields,
+    actorId: null,
+    reason: null,
+    createdAt: new Date("2026-10-02T00:00:00Z"),
+  });
+
+  it("rebuilds a requirement edited after submission at its pinned version", async () => {
+    findMany.mockResolvedValue([
+      req({
+        id: "edited",
+        title: "Export invoices as XLSX",
+        body: "Now XLSX.",
+        priority: "critical",
+        acceptanceCriteria: JSON.stringify(["XLSX opens in Excel."]),
+        version: 3,
+      }),
+      req({ id: "unchanged", title: "Audit log", version: 1, priority: "low" }),
+      req({ id: "not-pinned", title: "Search", version: 2, priority: "low" }),
+    ]);
+    itemFindMany.mockResolvedValue([
+      { requirementId: "edited", pinnedVersion: 1 },
+      { requirementId: "unchanged", pinnedVersion: 1 },
+    ]);
+    versionFindMany.mockResolvedValue([
+      versionRow("edited", 3, change({ priority: ["medium", "critical"] })),
+      versionRow(
+        "edited",
+        2,
+        change({
+          title: ["Export invoices", "Export invoices as XLSX"],
+          body: ["Users can export invoices as CSV.", "Now XLSX."],
+          acceptanceCriteria: [
+            JSON.stringify(["CSV has one row per invoice."]),
+            JSON.stringify(["XLSX opens in Excel."]),
+          ],
+        }),
+      ),
+    ]);
+
+    const rows = await loadScopedRequirements("p1", { reviewRequestId: "rv" });
+
+    const edited = rows.find((r) => r.id === "edited")!;
+    expect(edited).toMatchObject({
+      title: "Export invoices",
+      body: "Users can export invoices as CSV.",
+      priority: "medium",
+      acceptanceCriteria: JSON.stringify(["CSV has one row per invoice."]),
+      version: 1,
+      currentVersion: 3,
+    });
+    // Pinned at its current version, or not pinned by this review: shown as stored.
+    expect(rows.find((r) => r.id === "unchanged")).not.toHaveProperty("currentVersion");
+    expect(rows.find((r) => r.id === "not-pinned")).toMatchObject({ version: 2, title: "Search" });
+    expect(rows.find((r) => r.id === "not-pinned")).not.toHaveProperty("currentVersion");
+    // Sorted by the PINNED priority (medium), not the current one (critical).
+    expect(rows.map((r) => r.id)).toEqual(["edited", "unchanged", "not-pinned"]);
+
+    // The pins are read through the review, within the project; history only for the moved one.
+    expect(itemFindMany.mock.calls[0]![0].where).toEqual({
+      reviewRequestId: "rv",
+      reviewRequest: { projectId: "p1" },
+      requirementId: { in: ["edited", "unchanged", "not-pinned"] },
+    });
+    expect(versionFindMany.mock.calls[0]![0].where).toEqual({
+      requirementId: { in: ["edited"] },
+    });
+  });
+
+  it("renders the pinned text and says the requirement has since changed", async () => {
+    findMany.mockResolvedValue([req({ title: "New title", body: "New body.", version: 2 })]);
+    itemFindMany.mockResolvedValue([{ requirementId: "req-1", pinnedVersion: 0 }]);
+    versionFindMany.mockResolvedValue([
+      versionRow(
+        "req-1",
+        1,
+        change({ title: ["Export invoices", "New title"], body: [null, "New body."] }),
+      ),
+    ]);
+    reviewFindFirst.mockResolvedValue({ title: "Q4 sign-off" });
+
+    const { markdown, sourceFingerprint } = await synthesizeRequirementsDocument(
+      "p1",
+      { reviewRequestId: "rv" },
+      "Q4 BRD",
+    );
+
+    expect(markdown).toContain("### R1. Export invoices");
+    expect(markdown).not.toContain("New title");
+    expect(markdown).not.toContain("New body.");
+    // A body that was empty at the pin renders as such, not as the current body.
+    expect(markdown).toContain("_No description recorded._");
+    expect(markdown).toContain(
+      "_Shown at version 0, the version the review pinned. It has changed since (now version 2)._",
+    );
+    // The fingerprint follows the rendered (pinned) version.
+    expect(sourceFingerprint).toBe(
+      requirementsSourceFingerprint([req({ version: 0, title: "Export invoices", body: "" })]),
+    );
+  });
+
+  it("keeps a pinned requirement deleted since, and says so", async () => {
+    const deletedAt = new Date("2026-10-15T00:00:00Z");
+    findMany.mockResolvedValue([
+      req({ id: "gone", title: "Gone", version: 1, deletedAt }),
+      req({ id: "gone-and-edited", title: "Edited", version: 2, deletedAt }),
+      req({ id: "kept", title: "Kept", version: 1 }),
+    ]);
+    itemFindMany.mockResolvedValue([
+      { requirementId: "gone", pinnedVersion: 1 },
+      { requirementId: "gone-and-edited", pinnedVersion: 1 },
+      { requirementId: "kept", pinnedVersion: 1 },
+    ]);
+    versionFindMany.mockResolvedValue([
+      versionRow("gone-and-edited", 2, change({ title: ["Before", "Edited"] })),
+    ]);
+
+    const { markdown } = await synthesizeRequirementsDocument(
+      "p1",
+      { reviewRequestId: "rv" },
+      "BRD",
+    );
+
+    expect(findMany.mock.calls[0]![0].where).not.toHaveProperty("deletedAt");
+    expect(markdown).toContain(
+      "### R1. Gone\n\n**Type:** feature · **Priority:** medium · **Review status:** approved · " +
+        "**Verdict:** implemented\n\n_Shown at version 1, the version the review pinned. " +
+        "It has since been deleted._",
+    );
+    expect(markdown).toContain(
+      "_Shown at version 1, the version the review pinned. It has changed since (now version 2). " +
+        "It has since been deleted._",
+    );
+    expect(markdown).toContain("### R2. Before");
+    // A requirement still as pinned carries no note.
+    const kept = markdown.slice(markdown.indexOf("### R3. Kept"));
+    expect(kept).not.toContain("_Shown at version");
+  });
+
+  it("skips the history read when every pin is current", async () => {
+    findMany.mockResolvedValue([req({ version: 2 })]);
+    itemFindMany.mockResolvedValue([{ requirementId: "req-1", pinnedVersion: 2 }]);
+    const rows = await loadScopedRequirements("p1", { reviewRequestId: "rv" });
+    expect(rows[0]).not.toHaveProperty("currentVersion");
+    expect(versionFindMany).not.toHaveBeenCalled();
+  });
+
+  it("reads no pins when the review selects nothing", async () => {
+    findMany.mockResolvedValue([]);
+    await expect(loadScopedRequirements("p1", { reviewRequestId: "rv" })).resolves.toEqual([]);
+    expect(itemFindMany).not.toHaveBeenCalled();
   });
 });
 

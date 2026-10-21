@@ -172,44 +172,13 @@ jobs:
           #
           # An empty dict is the CORRECT steady state. The suppression path stays
           # covered either way: scripts/lib/sast-waiver-gate.test.mjs substitutes a
-          # fixture dict (its regex handles both the single-line `{}` form and this
+          # fixture dict (its regex handles both the single-line `{}` form and the
           # multi-line one), and scripts/lib/sast-waiver-expiry.test.mjs asserts
           # that nothing in here has gone stale.
-          WAIVERS = {
-              # braces@3.0.3, CVSS 8.7, published 2026-09-18 (#767). Stack-exhaustion
-              # DoS via deeply nested brace patterns. OSV: `introduced 0,
-              # last_affected 3.0.3`, and 3.0.3 is the latest braces on npm, so no
-              # fixed version exists to override to (checked 2026-10-02).
-              # scripts/lib/dependency-audit-767-braces.test.mjs fails if braces
-              # gains any route other than the dev-only one named in `reason`.
-              # On expiry: if braces or micromatch has shipped a fix, override to it
-              # and delete this entry. Otherwise re-verify, then re-date it.
-              #
-              # RE-DATED 2026-10-20 from 2026-11-01 (#777). Re-checked against
-              # api.osv.dev and registry.npmjs.org: still `last_affected 3.0.3`;
-              # braces latest 3.0.3, micromatch latest 4.0.8 (needs braces ^3.0.3),
-              # fast-glob latest 3.3.3 (needs micromatch ^4.0.8), and
-              # @next/eslint-plugin-next 16.4.2 still pins fast-glob 3.3.1. Nothing
-              # upstream to move to. Reachability is narrower than first recorded:
-              # no ESLint config in this repo imports eslint-config-next or
-              # @next/eslint-plugin-next, and Next 16 removed `next lint` and
-              # build-time linting, so the plugin is installed but never loaded.
-              # Even if it were, its only fast-glob call is
-              # `globSync(settings.next.rootDir)` (dist/utils/get-root-dirs.js),
-              # which METIS does not set. The 767 test fails if a config starts
-              # loading the plugin. Review again by expiry.
-              "GHSA-vfj7-8cjw-p6xm": {
-                  "expires": "2027-01-15",
-                  "reason": ("No patched braces release exists. Not exploitable "
-                             "here: braces is reached only through ui's dev-time "
-                             "lint tooling (eslint-config-next -> "
-                             "@next/eslint-plugin-next -> fast-glob -> micromatch), "
-                             "which no ESLint config in the repo loads; its only "
-                             "glob call expands settings.next.rootDir, which METIS "
-                             "does not set. It never ships in the server image or "
-                             "UI bundle, and never sees request input."),
-              },
-          }
+          # The braces entry, GHSA-vfj7-8cjw-p6xm, was deleted rather than
+          # re-dated once ui dropped the unused eslint-config-next, braces' only
+          # route into the tree (#1306).
+          WAIVERS = {}
           today = datetime.date.today()
 
           def waiver_for(ids):
