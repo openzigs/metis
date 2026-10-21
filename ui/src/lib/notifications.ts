@@ -239,7 +239,15 @@ export function safeInAppHref(href: string | null | undefined): string | undefin
   }
   if (url.origin !== origin) return undefined;
   // Hand back the parsed form, so the anchor gets exactly what was judged.
-  return `${url.pathname}${url.search}${url.hash}`;
+  const result = `${url.pathname}${url.search}${url.hash}`;
+  // Normalising dot segments can itself produce a protocol-relative path:
+  // "/.//evil.example" resolves on this origin to the pathname "//evil.example",
+  // which an anchor then opens as http://evil.example. Judge the result again.
+  if (!result.startsWith("/") || result.startsWith("//") || result.startsWith("/\\")) {
+    return undefined;
+  }
+  if (new URL(result, origin).origin !== origin) return undefined;
+  return result;
 }
 
 /** The server-built text and link of a `user:{id}` notification event (#104). */

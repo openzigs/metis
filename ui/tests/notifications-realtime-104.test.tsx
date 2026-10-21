@@ -179,6 +179,13 @@ describe("safeInAppHref", () => {
     ["/\n/evil.example", undefined],
     ["/\r\n/evil.example", undefined],
     ["/\t\\evil.example", undefined],
+    // Same-origin as given, but dot-segment normalisation leaves the pathname
+    // "//evil.example", which an anchor opens as http://evil.example.
+    ["/.//evil.example", undefined],
+    ["/..//evil.example", undefined],
+    ["/./\\evil.example", undefined],
+    ["/a/..//evil.example", undefined],
+    ["/%2e//evil.example", undefined],
     ["javascript:alert(1)", undefined],
     ["https://evil.example", undefined],
     ["", undefined],
