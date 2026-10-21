@@ -13,7 +13,8 @@
  *    authorization step). Keyed on the user id inside an access token this
  *    server signed, otherwise on the TCP peer — never on `req.ip`, which under
  *    `trust proxy` is a value the client can choose. Default 20000 per 15
- *    minutes (`SOURCE_DIVERGENCE_PREAUTH_LIMIT_MAX`).
+ *    minutes (`SOURCE_DIVERGENCE_PREAUTH_LIMIT_MAX`). A spent peer bucket answers
+ *    `requireAuth`'s own 401, not 429 (#1117, `preauth-limit-handler.ts`).
  *
  * The keys are `runs-rate-limit.ts`'s own key functions, so the two never drift
  * apart; the stores are separate (`source-divergence-*` prefixes).
@@ -24,6 +25,7 @@
  */
 import rateLimit from "express-rate-limit";
 import { clusterRateLimitStore } from "./cluster-rate-limit-store.js";
+import { preAuthLimitReachedHandler } from "./preauth-limit-handler.js";
 import { runsPreAuthKey, runsUserKey } from "./runs-rate-limit.js";
 import { envMs } from "../lib/config/env-ms.js";
 import type { Request, RequestHandler } from "express";
@@ -57,7 +59,8 @@ export const sourceDivergencePreAuthRateLimiter: RequestHandler = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => runsPreAuthKey(req as unknown as Request),
-  message: limited,
+  // #1117 — a spent user bucket is 429; a spent peer bucket is requireAuth's 401.
+  handler: preAuthLimitReachedHandler(runsPreAuthKey, limited),
 }) as unknown as RequestHandler;
 
 export const sourceDivergenceUserRateLimiter: RequestHandler = rateLimit({

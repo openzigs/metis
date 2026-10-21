@@ -3,15 +3,23 @@
  * on which route, and in what order relative to `requireAuth`, is asserted on
  * the REAL router in `tests/runs-chat-turns-route.sqlite.test.ts`.
  */
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import express from "express";
+import request from "supertest";
 import type { Request } from "express";
+import { errorHandler } from "./error-handler.js";
 import jwt from "jsonwebtoken";
 import { getPermissionsForRole } from "@metis/shared";
-import { issueTokens, signedAccessTokenUserId } from "../lib/auth/jwt.js";
+import {
+  EXPIRED_ACCESS_TOKEN_KEY_GRACE_SECONDS,
+  issueTokens,
+  signedAccessTokenUserId,
+} from "../lib/auth/jwt.js";
 import {
   RUNS_PREAUTH_DEFAULT_MAX,
   RUNS_USER_DEFAULT_MAX,
   runsPreAuthKey,
+  runsPreAuthRateLimiter,
   runsUserKey,
 } from "./runs-rate-limit.js";
 
@@ -71,18 +79,45 @@ describe("runsPreAuthKey — nothing a caller chooses", () => {
     );
   });
 
-  it("an EXPIRED token we signed is still its user's, so it reaches the 401 it refreshes on", () => {
-    const { accessToken } = tokensFor("u-alice");
+  /** An access token this server signed for `userId`, which ran out `secondsAgo` ago. */
+  const expiredFor = (userId: string, secondsAgo: number) => {
+    const { accessToken } = tokensFor(userId);
     const payload = jwt.decode(accessToken) as Record<string, unknown>;
-    const expired = jwt.sign(
-      { ...payload, iat: 1_000, exp: 2_000 },
-      // The same key `issueTokens` signs with under NODE_ENV=test.
+    const exp = Math.floor(Date.now() / 1000) - secondsAgo;
+    // The same key `issueTokens` signs with under NODE_ENV=test.
+    return jwt.sign({ ...payload, iat: exp - 3600, exp }, process.env.JWT_SECRET as string);
+  };
+
+  it("a token that has JUST expired is still its user's, so it reaches the 401 it refreshes on", () => {
+    for (const secondsAgo of [1, 60, EXPIRED_ACCESS_TOKEN_KEY_GRACE_SECONDS - 5]) {
+      const expired = expiredFor("u-alice", secondsAgo);
+      expect(() => jwt.verify(expired, process.env.JWT_SECRET as string)).toThrow(/expired/);
+      expect(runsPreAuthKey(req({ authorization: `Bearer ${expired}` }))).toBe(
+        "preauth:user:u-alice",
+      );
+    }
+  });
+
+  it("#1117 — a token expired longer ago than the grace is no key of its own: it is the peer", () => {
+    for (const secondsAgo of [EXPIRED_ACCESS_TOKEN_KEY_GRACE_SECONDS + 5, 86_400, 90 * 86_400]) {
+      const stale = expiredFor("u-alice", secondsAgo);
+      expect(signedAccessTokenUserId(stale)).toBeNull();
+      expect(runsPreAuthKey(req({ authorization: `Bearer ${stale}`, peer: "10.0.0.1" }))).toBe(
+        "preauth:peer:10.0.0.1",
+      );
+    }
+    // A token from 1970 too — the old fixture of this test.
+    const { accessToken } = tokensFor("u-alice");
+    const ancient = jwt.sign(
+      { ...(jwt.decode(accessToken) as Record<string, unknown>), iat: 1_000, exp: 2_000 },
       process.env.JWT_SECRET as string,
     );
-    expect(() => jwt.verify(expired, process.env.JWT_SECRET as string)).toThrow(/expired/);
-    expect(runsPreAuthKey(req({ authorization: `Bearer ${expired}` }))).toBe(
-      "preauth:user:u-alice",
-    );
+    expect(signedAccessTokenUserId(ancient)).toBeNull();
+  });
+
+  it("the grace is long enough for the refresh round trip and no longer than one window", () => {
+    expect(EXPIRED_ACCESS_TOKEN_KEY_GRACE_SECONDS).toBeGreaterThanOrEqual(60);
+    expect(EXPIRED_ACCESS_TOKEN_KEY_GRACE_SECONDS).toBeLessThanOrEqual(15 * 60);
   });
 
   it("a token we did NOT sign is no key of its own: every one of them is the peer", () => {
@@ -119,5 +154,71 @@ describe("defaults", () => {
   it("the pre-auth guard is coarser than the user budget", () => {
     expect(RUNS_USER_DEFAULT_MAX).toBe(3_000);
     expect(RUNS_PREAUTH_DEFAULT_MAX).toBeGreaterThan(RUNS_USER_DEFAULT_MAX);
+  });
+});
+
+describe("#1117 runsPreAuthRateLimiter — what a spent guard answers", () => {
+  // The limiter in front of a handler that would serve anything: whatever is
+  // refused here is refused by the guard itself. supertest's peer is loopback.
+  const app = express();
+  app.get("/x", runsPreAuthRateLimiter, (_req, res) => {
+    res.json({ served: true });
+  });
+  app.use(errorHandler);
+  const call = (authorization?: string) => {
+    const r = request(app).get("/x");
+    return authorization ? r.set("Authorization", authorization) : r;
+  };
+
+  beforeAll(() => {
+    process.env.RUNS_PREAUTH_LIMIT_MAX = "1";
+  });
+  // Spend the loopback peer's bucket in a per-test hook, never in `beforeAll`:
+  // `tests/setup.ts` installs the supertest loopback spy in `beforeEach` and
+  // `vi.restoreAllMocks()` drops it after each test, so a `beforeAll` request
+  // leaves from 127.0.0.1 and a test's from ::1 — two different peers, and the
+  // spend never counted (the first version passed only on retry).
+  beforeEach(async () => {
+    await call();
+  });
+  afterAll(() => {
+    delete process.env.RUNS_PREAUTH_LIMIT_MAX;
+  });
+
+  it("the spent peer bucket hands each request requireAuth's own 401, with no Retry-After", async () => {
+    const cases: Array<[string | undefined, string]> = [
+      [undefined, "AUTH_REQUIRED"],
+      ["Bearer not-ours", "TOKEN_INVALID"],
+      [`Bearer ${tokensFor("u-alice").refreshToken}`, "TOKEN_INVALID"],
+    ];
+    for (const [authorization, code] of cases) {
+      const res = await call(authorization);
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe(code);
+      expect(res.headers["retry-after"]).toBeUndefined();
+      expect(res.headers["ratelimit-remaining"]).toBe("0");
+    }
+  });
+
+  it("a signed-in user's spent bucket is 429 RUNS_RATE_LIMITED", async () => {
+    const auth = `Bearer ${tokensFor("u-spent").accessToken}`;
+    expect((await call(auth)).status).toBe(200);
+    const res = await call(auth);
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe("RUNS_RATE_LIMITED");
+  });
+
+  it("is never a way past the budget: a token requireAuth accepts but that names no user is 429", async () => {
+    // Signed by this server, unexpired, but no `userId` claim: the key is the
+    // peer, and `requireAuth` would accept it.
+    const odd = jwt.sign({ role: "developer" }, process.env.JWT_SECRET as string, {
+      expiresIn: 60,
+    });
+    expect(runsPreAuthKey(req({ authorization: `Bearer ${odd}`, peer: "10.0.0.1" }))).toBe(
+      "preauth:peer:10.0.0.1",
+    );
+    const res = await call(`Bearer ${odd}`);
+    expect(res.status).toBe(429);
+    expect(res.body).not.toHaveProperty("served");
   });
 });

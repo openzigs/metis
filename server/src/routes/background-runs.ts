@@ -1,10 +1,20 @@
 /**
  * Epic #156 (#146) — `/api/runs/background` routes.
+ *
+ * #1116 — every route carries the `/api/runs` limiters
+ * (`middleware/runs-rate-limit.ts`): the pre-auth guard ahead of
+ * `requireAuth`, then the user's read budget on a GET and the user's smaller
+ * write budget on a POST.
  */
 import { Router, type Request } from "express";
 import { z } from "zod";
 import type { ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
+import {
+  runsPreAuthRateLimiter,
+  runsUserRateLimiter,
+  runsWriteUserRateLimiter,
+} from "../middleware/runs-rate-limit.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
@@ -68,57 +78,80 @@ export function backgroundRunsRouter(): Router {
   const r = Router();
 
   // POST /api/runs/background — submit a new background run.
-  r.post("/background", requireAuth, requirePermission("analysis.run"), async (req, res) => {
-    const parsed = submitSchema.safeParse(req.body);
-    if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
-    actorId(req); // auth gate
-    await authorizeRunProject(req.user, parsed.data.projectId);
-    const runner = getAsyncRunner();
-    const out = await runner.submit({
-      projectId: parsed.data.projectId,
-      sessionId: parsed.data.sessionId ?? null,
-      kind: parsed.data.kind,
-      payload: parsed.data.payload,
-      priority: parsed.data.priority,
-    });
-    res.status(202).json(ok({ runId: out.id }));
-  });
+  r.post(
+    "/background",
+    runsPreAuthRateLimiter,
+    requireAuth,
+    runsWriteUserRateLimiter,
+    requirePermission("analysis.run"),
+    async (req, res) => {
+      const parsed = submitSchema.safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+      actorId(req); // auth gate
+      await authorizeRunProject(req.user, parsed.data.projectId);
+      const runner = getAsyncRunner();
+      const out = await runner.submit({
+        projectId: parsed.data.projectId,
+        sessionId: parsed.data.sessionId ?? null,
+        kind: parsed.data.kind,
+        payload: parsed.data.payload,
+        priority: parsed.data.priority,
+      });
+      res.status(202).json(ok({ runId: out.id }));
+    },
+  );
 
   // GET /api/runs/background?status=&projectId=
-  r.get("/background", requireAuth, requirePermission("analysis.read"), async (req, res) => {
-    const status = typeof req.query.status === "string" ? req.query.status : undefined;
-    const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
-    const limit = Math.min(
-      Math.max(Number.parseInt(String(req.query.limit ?? "50"), 10) || 50, 1),
-      200,
-    );
-    // An explicit filter is authorized directly; an unfiltered list is narrowed
-    // to the caller's own projects so it cannot enumerate other tenants' runs.
-    if (projectId) await authorizeRunProject(req.user, projectId);
-    const items = await prisma.backgroundRun.findMany({
-      where: {
-        ...(status ? { status } : {}),
-        ...(projectId ? { projectId } : runProjectScope(req.user)),
-      },
-      orderBy: [{ createdAt: "desc" }],
-      take: limit,
-    });
-    res.json(ok({ items }));
-  });
+  r.get(
+    "/background",
+    runsPreAuthRateLimiter,
+    requireAuth,
+    runsUserRateLimiter,
+    requirePermission("analysis.read"),
+    async (req, res) => {
+      const status = typeof req.query.status === "string" ? req.query.status : undefined;
+      const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
+      const limit = Math.min(
+        Math.max(Number.parseInt(String(req.query.limit ?? "50"), 10) || 50, 1),
+        200,
+      );
+      // An explicit filter is authorized directly; an unfiltered list is narrowed
+      // to the caller's own projects so it cannot enumerate other tenants' runs.
+      if (projectId) await authorizeRunProject(req.user, projectId);
+      const items = await prisma.backgroundRun.findMany({
+        where: {
+          ...(status ? { status } : {}),
+          ...(projectId ? { projectId } : runProjectScope(req.user)),
+        },
+        orderBy: [{ createdAt: "desc" }],
+        take: limit,
+      });
+      res.json(ok({ items }));
+    },
+  );
 
-  r.get("/background/:id", requireAuth, requirePermission("analysis.read"), async (req, res) => {
-    const scope = await runScope(req);
-    const row = await prisma.backgroundRun.findFirst({
-      where: scopedById(String(req.params.id), scope),
-      include: { messages: { orderBy: { ord: "asc" } } },
-    });
-    if (!row) throw new AppError(404, "RUN_NOT_FOUND", "Background run not found");
-    res.json(ok(row));
-  });
+  r.get(
+    "/background/:id",
+    runsPreAuthRateLimiter,
+    requireAuth,
+    runsUserRateLimiter,
+    requirePermission("analysis.read"),
+    async (req, res) => {
+      const scope = await runScope(req);
+      const row = await prisma.backgroundRun.findFirst({
+        where: scopedById(String(req.params.id), scope),
+        include: { messages: { orderBy: { ord: "asc" } } },
+      });
+      if (!row) throw new AppError(404, "RUN_NOT_FOUND", "Background run not found");
+      res.json(ok(row));
+    },
+  );
 
   r.post(
     "/background/:id/cancel",
+    runsPreAuthRateLimiter,
     requireAuth,
+    runsWriteUserRateLimiter,
     requirePermission("analysis.run"),
     async (req, res) => {
       await runScope(req);
@@ -130,7 +163,9 @@ export function backgroundRunsRouter(): Router {
 
   r.post(
     "/background/:id/pause",
+    runsPreAuthRateLimiter,
     requireAuth,
+    runsWriteUserRateLimiter,
     requirePermission("analysis.run"),
     async (req, res) => {
       await runScope(req);
@@ -142,7 +177,9 @@ export function backgroundRunsRouter(): Router {
 
   r.post(
     "/background/:id/resume",
+    runsPreAuthRateLimiter,
     requireAuth,
+    runsWriteUserRateLimiter,
     requirePermission("analysis.run"),
     async (req, res) => {
       await runScope(req);
@@ -153,65 +190,86 @@ export function backgroundRunsRouter(): Router {
   );
 
   // POST /api/runs/group — best-of-N
-  r.post("/group", requireAuth, requirePermission("analysis.run"), async (req, res) => {
-    const parsed = groupSchema.safeParse(req.body);
-    if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
-    actorId(req);
-    await authorizeRunProject(req.user, parsed.data.projectId);
-    const out = await submitGroup({
-      projectId: parsed.data.projectId,
-      kind: parsed.data.kind,
-      payload: parsed.data.payload,
-      n: parsed.data.n,
-      selectionMethod: parsed.data.selectionMethod,
-      strategy: parsed.data.strategy,
-    });
-    res.status(202).json(ok(out));
-  });
+  r.post(
+    "/group",
+    runsPreAuthRateLimiter,
+    requireAuth,
+    runsWriteUserRateLimiter,
+    requirePermission("analysis.run"),
+    async (req, res) => {
+      const parsed = groupSchema.safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+      actorId(req);
+      await authorizeRunProject(req.user, parsed.data.projectId);
+      const out = await submitGroup({
+        projectId: parsed.data.projectId,
+        kind: parsed.data.kind,
+        payload: parsed.data.payload,
+        n: parsed.data.n,
+        selectionMethod: parsed.data.selectionMethod,
+        strategy: parsed.data.strategy,
+      });
+      res.status(202).json(ok(out));
+    },
+  );
 
-  r.get("/group/:id", requireAuth, requirePermission("analysis.read"), async (req, res) => {
-    const scope = await authorizeRunGroup(req.user, String(req.params.id));
-    const row = await prisma.runGroup.findFirst({
-      where: scopedById(String(req.params.id), scope),
-      include: { runs: { orderBy: { createdAt: "asc" } } },
-    });
-    if (!row) throw new AppError(404, "GROUP_NOT_FOUND", "Run group not found");
-    res.json(ok(row));
-  });
+  r.get(
+    "/group/:id",
+    runsPreAuthRateLimiter,
+    requireAuth,
+    runsUserRateLimiter,
+    requirePermission("analysis.read"),
+    async (req, res) => {
+      const scope = await authorizeRunGroup(req.user, String(req.params.id));
+      const row = await prisma.runGroup.findFirst({
+        where: scopedById(String(req.params.id), scope),
+        include: { runs: { orderBy: { createdAt: "asc" } } },
+      });
+      if (!row) throw new AppError(404, "GROUP_NOT_FOUND", "Run group not found");
+      res.json(ok(row));
+    },
+  );
 
   // POST /api/runs/:id/steer — mid-run message queue. Steering injects text
   // into a live agent loop that runs with the owning project's context and
   // tool permissions, so the caller MUST be authorized against that project
   // before anything is queued (#1056).
-  r.post("/:id/steer", requireAuth, requirePermission("analysis.run"), async (req, res) => {
-    const parsed = steerSchema.safeParse(req.body);
-    if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
-    const runId = String(req.params.id);
-    const scope = await runScope(req);
-    const run = await prisma.backgroundRun.findFirst({
-      where: scopedById(runId, scope),
-      select: { id: true, status: true },
-    });
-    if (!run) throw new AppError(404, "RUN_NOT_FOUND", "Background run not found");
-    if (run.status !== "running" && run.status !== "queued" && run.status !== "paused") {
-      throw new AppError(409, "RUN_TERMINAL", "Run has terminated");
-    }
-    const last = await prisma.runMessage.findFirst({
-      where: { runId },
-      orderBy: { ord: "desc" },
-      select: { ord: true },
-    });
-    const ord = (last?.ord ?? -1) + 1;
-    const created = await prisma.runMessage.create({
-      data: {
-        runId,
-        ord,
-        role: parsed.data.role,
-        content: parsed.data.message,
-      },
-    });
-    res.status(202).json(ok({ messageId: created.id, ord }));
-  });
+  r.post(
+    "/:id/steer",
+    runsPreAuthRateLimiter,
+    requireAuth,
+    runsWriteUserRateLimiter,
+    requirePermission("analysis.run"),
+    async (req, res) => {
+      const parsed = steerSchema.safeParse(req.body);
+      if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+      const runId = String(req.params.id);
+      const scope = await runScope(req);
+      const run = await prisma.backgroundRun.findFirst({
+        where: scopedById(runId, scope),
+        select: { id: true, status: true },
+      });
+      if (!run) throw new AppError(404, "RUN_NOT_FOUND", "Background run not found");
+      if (run.status !== "running" && run.status !== "queued" && run.status !== "paused") {
+        throw new AppError(409, "RUN_TERMINAL", "Run has terminated");
+      }
+      const last = await prisma.runMessage.findFirst({
+        where: { runId },
+        orderBy: { ord: "desc" },
+        select: { ord: true },
+      });
+      const ord = (last?.ord ?? -1) + 1;
+      const created = await prisma.runMessage.create({
+        data: {
+          runId,
+          ord,
+          role: parsed.data.role,
+          content: parsed.data.message,
+        },
+      });
+      res.status(202).json(ok({ messageId: created.id, ord }));
+    },
+  );
 
   return r;
 }
