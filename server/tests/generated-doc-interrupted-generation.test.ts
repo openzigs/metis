@@ -450,7 +450,7 @@ describe("#50 — POST /:docId/regenerate (one-click regenerate)", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error?.message ?? res.text).toMatch(
-      /failed, cancelled, partially generated or section-failed/,
+      /failed, cancelled, partially generated, section-failed or cut-off/,
     );
     expect(doc().status).toBe("degraded");
     expect(synthesizeDbSchemaDocument).not.toHaveBeenCalled();
@@ -461,6 +461,22 @@ describe("#50 — POST /:docId/regenerate (one-click regenerate)", () => {
       status: "degraded",
       versionCount: 1,
       warnings: [{ kind: "section-failed", section: "Overview", message: "m", severity: "error" }],
+    });
+
+    const res = await request(app).post("/projects/proj-1/docs/doc-1/regenerate").send({});
+
+    expect(res.status).toBe(202);
+    expect(res.body.data).toMatchObject({ id: "doc-1", status: "pending" });
+    await vi.waitFor(() => expect(doc().status).toBe("generating"));
+  });
+
+  it("#1132 — regenerates a published degraded document whose section was cut off", async () => {
+    seed({
+      status: "degraded",
+      versionCount: 1,
+      warnings: [
+        { kind: "section-truncated", section: "Components", message: "m", severity: "error" },
+      ],
     });
 
     const res = await request(app).post("/projects/proj-1/docs/doc-1/regenerate").send({});

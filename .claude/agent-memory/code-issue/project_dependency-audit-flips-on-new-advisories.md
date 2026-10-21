@@ -16,3 +16,10 @@ On 2026-09-30 a next critical and five axios Highs landed within 15 minutes; eve
 - `pnpm update -r --depth Infinity <transitive>` (pnpm 10.33) also re-resolves unrelated packages (a duplicate `@babel/runtime` under `@testing-library/dom`). Diff the lockfile and revert the extras.
 - `images/mcp-wrappers/*` have no committed `package-lock.json`, so their Dockerfiles fall back to `npm install`, and pnpm's `minimumReleaseAge` and frozen lockfile never apply there. Review transitive resolution there, not just the top-level pin.
 - The braces waiver GHSA-vfj7-8cjw-p6xm is gone (#1306): ui dropped the unused `eslint-config-next`, braces' only route into the tree, so `WAIVERS = {}` again. Re-adding that package re-adds braces.
+
+**From #1307 and #1308 (2026-10-21).**
+- A vite floor must move in **both** the root `package.json` and the `pnpm-workspace.yaml` overrides; `pnpm up` alone leaves a lockfile that fails `--frozen-lockfile`.
+- `pnpm install` after a targeted override bump can move unrelated `transitivePeerDependencies` annotations between lockfile snapshots. Reverting them by hand is safe; confirm with `pnpm install --frozen-lockfile`.
+
+**From #1306 (2026-10-21).**
+- Dropping `eslint-config-next` also took `browserslist` (via `@babel/core`) out of the tree, so `dependency-audit-1345-advisories.test.mjs`'s "at least one copy" arm went red. A guard that demands presence breaks when a dependency leaves; it now checks the lookup still works instead.

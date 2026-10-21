@@ -247,15 +247,63 @@ export function resolveDocsGenMaxOutputTokens(
   model?: string,
   config: ConfigService = getConfigService(),
 ): number {
+  return resolveDocsGenOutputBudget(key, fallback, model, config).maxTokens;
+}
+
+/**
+ * #1132 — the parts an OUTPUT cap is made of. `maxTokens` is what the request
+ * sends: `answer + reasoning`, clamped to the model's known `ceiling`. Kept
+ * apart so a warning can say which part was the operator's setting — run 8
+ * reported "49,152" against `DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS=16384`, and an
+ * operator could not tell whether the setting had been applied.
+ */
+export interface OutputTokenBudget {
+  /** The cap in force: `answer + reasoning`, clamped to `ceiling`. */
+  maxTokens: number;
+  /** The configured answer budget (the `DOCS_GEN_*_MAX_OUTPUT_TOKENS` value or its default). */
+  answer: number;
+  /** The reasoning allowance added on top (`0` for a model that does not reason from it). */
+  reasoning: number;
+  /** The model's known output ceiling, or `null` when unknown (no clamp). */
+  ceiling: number | null;
+}
+
+/** {@link resolveDocsGenMaxOutputTokens}, with the answer budget and reasoning allowance kept apart. */
+export function resolveDocsGenOutputBudget(
+  key: DocsGenMaxOutputTokensKey,
+  fallback: number,
+  model?: string,
+  config: ConfigService = getConfigService(),
+): OutputTokenBudget {
   const ceiling = modelOutputCeiling(model);
   const safeFallback = ceiling === null ? Math.min(fallback, UNKNOWN_MODEL_SAFE_DEFAULT) : fallback;
   const raw = config.getNumber(key, safeFallback);
-  const configured = Number.isFinite(raw) && raw >= MIN_MAX_OUTPUT_TOKENS ? raw : safeFallback;
+  const answer = Number.isFinite(raw) && raw >= MIN_MAX_OUTPUT_TOKENS ? raw : safeFallback;
   // #25 — the configured value is the ANSWER budget; a model that reasons by
   // default spends its reasoning from the same `max_tokens`, so add room for it
   // before clamping to the model's ceiling.
-  const withReasoning = configured + reasoningAllowanceTokens(model, config);
-  return ceiling === null ? withReasoning : Math.min(withReasoning, ceiling);
+  const reasoning = reasoningAllowanceTokens(model, config);
+  const withReasoning = answer + reasoning;
+  const maxTokens = ceiling === null ? withReasoning : Math.min(withReasoning, ceiling);
+  return { maxTokens, answer, reasoning, ceiling };
+}
+
+const tokenCount = (n: number): string => Math.round(n).toLocaleString("en-US");
+
+/**
+ * #1132 — an output cap as an operator reads it: `49,152 tokens (answer 16,384
+ * + reasoning 32,768)`, saying so when the model's ceiling lowered the sum.
+ */
+export function describeOutputBudget(budget: OutputTokenBudget): string {
+  const parts =
+    budget.reasoning > 0
+      ? `answer ${tokenCount(budget.answer)} + reasoning ${tokenCount(budget.reasoning)}`
+      : `answer ${tokenCount(budget.answer)}, no reasoning`;
+  const lowered =
+    budget.maxTokens < budget.answer + budget.reasoning
+      ? `, lowered to the model's ${tokenCount(budget.maxTokens)} maximum`
+      : "";
+  return `${tokenCount(budget.maxTokens)} tokens (${parts}${lowered})`;
 }
 
 /** #1226 — OUTPUT cap for one Phase-2 section synthesis call. */
@@ -263,7 +311,15 @@ export function resolveSectionMaxOutputTokens(
   model?: string,
   config: ConfigService = getConfigService(),
 ): number {
-  return resolveDocsGenMaxOutputTokens(
+  return resolveSectionOutputBudget(model, config).maxTokens;
+}
+
+/** #1132 — {@link resolveSectionMaxOutputTokens} with its answer and reasoning parts. */
+export function resolveSectionOutputBudget(
+  model?: string,
+  config: ConfigService = getConfigService(),
+): OutputTokenBudget {
+  return resolveDocsGenOutputBudget(
     "DOCS_GEN_SECTION_MAX_OUTPUT_TOKENS",
     DEFAULT_SECTION_MAX_OUTPUT_TOKENS,
     model,

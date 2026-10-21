@@ -47,3 +47,5 @@ was 200 times too small.
 
 See also `project_retained-counter-sees-only-what-it-was-written-for.md` (cycle 5) and
 `project_memoised-closure-cache-is-entities-times-closure.md` (cycle 4).
+
+**Heap-delta baselines (#1307).** V8's usual 6-GC settle is not enough for a heap-delta test baseline: some memory is freed only after more than 6 full GCs (`--always-osr` reproduces it: 10 of 48 runs dropped with 6 GCs, 0 of 48 with 10). Settle with more GCs, and keep every pre-baseline input reachable until the final reading.

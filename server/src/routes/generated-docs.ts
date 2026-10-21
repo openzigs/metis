@@ -75,7 +75,8 @@ import { TaskAbortError } from "../lib/scheduler/task-abort.js";
 import type { DocWarning as DocWarningShape } from "../lib/docs-gen/grounding/degraded-warnings.js";
 import {
   generationFailureWarning,
-  hasFailedSections,
+  hasSectionsToRedraft,
+  isSectionRedraftReset,
   partialDocumentMarkdown,
   UnpublishableGenerationError,
   type GenerationStage,
@@ -385,6 +386,32 @@ async function versionRevisionId(
   return summary.revisionId;
 }
 
+/**
+ * #1132 — for a published degraded document with failed or cut-off sections:
+ * whether `POST /regenerate` can reuse its finished sections. It can only from a
+ * stored checkpoint, which a database-scope document never has and a document
+ * published before #1132 with only cut-off sections was not given — those are
+ * written again in full. Absent when no such regenerate is on offer. The
+ * checkpoint is read only here, never with the document's own fields.
+ */
+async function redraftReuse(doc: {
+  id: string;
+  projectId: string;
+  scope: string;
+  status: string;
+  warnings: unknown;
+  versions: readonly unknown[];
+}): Promise<{ redraftReusesSections?: boolean }> {
+  if (doc.status !== "degraded" || doc.versions.length === 0) return {};
+  if (!hasSectionsToRedraft(doc.warnings)) return {};
+  if (doc.scope === "database") return { redraftReusesSections: false };
+  const row = await prisma.generatedDocument.findFirst({
+    where: { id: doc.id, projectId: doc.projectId, deletedAt: null },
+    select: { generationCheckpoint: true },
+  });
+  return { redraftReusesSections: row?.generationCheckpoint != null };
+}
+
 const refreshAuthenticatedUser: RequestHandler =
   authMiddleware.refreshAuthenticatedUser ?? ((_req, _res, next) => next());
 
@@ -685,6 +712,10 @@ export function generatedDocsRouter(): Router {
         // #1252 — a reader BRD without auto-update whose approved requirements
         // changed since its latest version: the UI says so and offers a regenerate.
         approvedRequirementsOutOfDate: await approvedRequirementsOutOfDate(doc),
+        // #1132 — whether a regenerate of this document's failed or cut-off
+        // sections can reuse the rest, so the view can say before the click
+        // when it would write every section again instead.
+        ...(await redraftReuse(doc)),
         versions: await Promise.all(
           versions.map(async (version) => ({
             id: version.id,
@@ -970,10 +1001,12 @@ export function generatedDocsRouter(): Router {
         // while the rest finished: the regenerate writes that section and
         // reuses the finished ones (kept in the checkpoint at publish). The
         // warnings are left as they are, so a cancel can restore them.
+        // #1132 — and one with a section the output cap cut off: the
+        // regenerate writes the cut-off sections again, the same way.
         // Compare-and-set on the row read, as the reset above does on status.
         const resumable =
           existing.status === "degraded" &&
-          hasFailedSections(existing.warnings) &&
+          hasSectionsToRedraft(existing.warnings) &&
           (
             await prisma.generatedDocument.updateMany({
               where: {
@@ -1023,7 +1056,7 @@ export function generatedDocsRouter(): Router {
         throw new AppError(
           409,
           "DOC_NOT_REGENERATABLE",
-          `Only a failed, cancelled, partially generated or section-failed document, or one whose approved requirements changed since it was generated, can be regenerated (status: ${existing.status})`,
+          `Only a failed, cancelled, partially generated, section-failed or cut-off document, or one whose approved requirements changed since it was generated, can be regenerated (status: ${existing.status})`,
         );
       }
       void generateDocumentAsync(docId, projectId).catch((err) => {
@@ -1265,7 +1298,10 @@ export async function generateDocumentAsync(
       };
     // #942 — a published degraded document reset by POST /regenerate to retry
     // its failed sections: a cancel restores it as it was, warnings and all.
-    else if (original.status === "pending" && hasFailedSections(original.warnings))
+    // #1132 — or its cut-off ones. A failed or cancelled row the first reset
+    // took to `pending` keeps its warnings too, and may carry a cut-off
+    // section, but it also carries its run's stop cause: that one is not.
+    else if (original.status === "pending" && isSectionRedraftReset(original.warnings))
       restoreOnCancel = {
         status: "degraded",
         errorMessage: null,
@@ -1962,9 +1998,10 @@ export async function generateDocumentAsync(
           generatedAt,
           // #782 — published: nothing left to resume. #942 — unless a section
           // failed: the finished ones stay stored, so a regenerate writes only
-          // what failed.
+          // what failed. #1132 — or was cut off (its record stays stored, and
+          // is not reused).
           generationCheckpoint:
-            hasFailedSections(docWarnings) && finishedSections.length > 0
+            hasSectionsToRedraft(docWarnings) && finishedSections.length > 0
               ? (buildGenerationCheckpoint(finishedSections) as unknown as Prisma.InputJsonValue)
               : Prisma.DbNull,
         },

@@ -3,7 +3,10 @@ import { AIProviderError } from "../ai/errors.js";
 import {
   errorClassOf,
   generationFailureWarning,
+  hasCutOffSections,
   hasFailedSections,
+  hasSectionsToRedraft,
+  isSectionRedraftReset,
   markDroppedAttempts,
   partialDocumentMarkdown,
   sectionFailureWarning,
@@ -312,6 +315,31 @@ describe("#1209 — isBodyTimeout", () => {
     expect(isBodyTimeout(reset)).toBe(false);
     expect(isBodyTimeout(new TypeError("terminated"))).toBe(false);
     expect(isBodyTimeout("terminated")).toBe(false);
+  });
+});
+
+describe("#1132 — hasCutOffSections / hasSectionsToRedraft", () => {
+  it("a cut-off section makes a published document regeneratable, like a failed one", () => {
+    const cut = [{ kind: "section-truncated", section: "Components" }];
+    expect(hasCutOffSections(cut)).toBe(true);
+    expect(hasSectionsToRedraft(cut)).toBe(true);
+    expect(hasSectionsToRedraft([{ kind: "section-failed", section: "A" }])).toBe(true);
+    expect(hasCutOffSections([{ kind: "section-failed", section: "A" }])).toBe(false);
+    expect(hasSectionsToRedraft([{ kind: "section-ungrounded", section: "A" }])).toBe(false);
+    expect(hasSectionsToRedraft([null, "x"])).toBe(false);
+    expect(hasSectionsToRedraft(null)).toBe(false);
+  });
+});
+
+describe("#1132 — isSectionRedraftReset", () => {
+  it("is a published degraded doc's redraft reset, never a failed or cancelled run's row", () => {
+    const cut = { kind: "section-truncated", section: "Components" };
+    expect(isSectionRedraftReset([cut])).toBe(true);
+    expect(isSectionRedraftReset([{ kind: "section-failed", section: "A" }])).toBe(true);
+    // A failed or cancelled run carries its stop cause (a `stage`) beside it.
+    expect(isSectionRedraftReset([cut, { kind: "section-failed", stage: "sections" }])).toBe(false);
+    expect(isSectionRedraftReset([{ kind: "section-ungrounded", section: "A" }])).toBe(false);
+    expect(isSectionRedraftReset(null)).toBe(false);
   });
 });
 
