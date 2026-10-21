@@ -33,17 +33,18 @@ const COORDINATOR = { username: "coordinator", password: "password" };
 
 test.describe("Epic #34 — Comment panel + @mention (AC1, browser)", () => {
   let projectId: string;
-  /** A second, API-only session: the "other writer" of the #997 test. */
-  let otherSessionToken: string;
+  /** The coordinator's access token: the second user of the #997 test. */
+  let coordinatorToken: string;
 
   test.beforeAll(async () => {
     const primed = await primeAdminUser(API_BASE);
-    otherSessionToken = primed.accessToken;
     // Prime the coordinator row too so the @mention search can resolve it.
     const ctx = await request.newContext({ baseURL: API_BASE });
-    await ctx.post("/api/auth/login", {
+    const login = await ctx.post("/api/auth/login", {
       data: { username: COORDINATOR.username, password: COORDINATOR.password },
     });
+    expect(login.status(), await login.text()).toBe(200);
+    coordinatorToken = ((await login.json()) as { data: { accessToken: string } }).data.accessToken;
     await ctx.dispose();
 
     const project = await createProjectViaApi(API_BASE, primed.accessToken, "e2e-comment-ui");
@@ -95,18 +96,20 @@ test.describe("Epic #34 — Comment panel + @mention (AC1, browser)", () => {
     await expect(panel.commentBubble(`@${COORDINATOR.username}`)).toBeVisible({ timeout: 10_000 });
   });
 
-  // #997 — a reply written elsewhere (another session; the server pushes
-  // `comment:changed` for every writer alike) appears in the open panel
-  // without a reload. Before the fix the thread kept the first list it was
-  // shown, so the reply appeared only after a full page reload.
-  test("#997: a reply posted from another session appears in the open panel live", async ({
-    page,
-  }) => {
+  // #997 — another user's reply appears in the open panel without a reload.
+  // Before the fix the thread kept the first list it was shown, so the
+  // coordinator's reply appeared only after a full page reload.
+  test("#997: the coordinator's reply appears in the admin's open panel live", async ({ page }) => {
+    // The project is the COORDINATOR's, so both users can open it: the
+    // coordinator as its creator, the admin through the admin bypass. A
+    // project the admin created is not one the coordinator may reach.
+    const coordProject = await createProjectViaApi(API_BASE, coordinatorToken, "e2e-997");
+
     const login = new LoginPage(page);
     await login.loginAsAdmin();
 
     const specKit = new SpecKitPage(page);
-    await specKit.goto(projectId);
+    await specKit.goto(coordProject.id);
     await specKit.openComments();
 
     const panel = new CommentPanelPage(page);
@@ -117,19 +120,31 @@ test.describe("Epic #34 — Comment panel + @mention (AC1, browser)", () => {
       (res) => res.request().method() === "POST" && /\/comments$/.test(new URL(res.url()).pathname),
     );
     await panel.postComment(opening);
-    const threadId = ((await (await created).json()) as { data: { id: string } }).data.id;
+    const thread = (
+      (await (await created).json()) as {
+        data: { id: string; comments: Array<{ authorId: string }> };
+      }
+    ).data;
+    const threadId = thread.id;
+    const adminId = thread.comments[0].authorId;
     await expect(panel.commentBubble(opening)).toBeVisible({ timeout: 10_000 });
 
-    const reply = `Reply from another session ${Date.now()}`;
-    const other = await request.newContext({
+    const reply = `Reply from the coordinator ${Date.now()}`;
+    const coordinator = await request.newContext({
       baseURL: API_BASE,
-      extraHTTPHeaders: { Authorization: `Bearer ${otherSessionToken}` },
+      extraHTTPHeaders: { Authorization: `Bearer ${coordinatorToken}` },
     });
     try {
-      const res = await other.post(`/api/comments/${threadId}/replies`, { data: { body: reply } });
+      const res = await coordinator.post(`/api/comments/${threadId}/replies`, {
+        data: { body: reply },
+      });
       expect(res.status(), await res.text()).toBe(201);
+      // A different user wrote it: the case the issue reported.
+      expect(((await res.json()) as { data: { authorId: string } }).data.authorId).not.toBe(
+        adminId,
+      );
     } finally {
-      await other.dispose();
+      await coordinator.dispose();
     }
 
     // No reload: the push re-reads the thread list and the thread adopts it.
