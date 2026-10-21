@@ -817,7 +817,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const body = (pr?.data as { body: string }).body;
         expect(body.trimEnd().endsWith(marker)).toBe(true);
         expect(parseSourceMarker(body)).toMatchObject({ projectId: P, analysisId: "an-1" });
-        const visible = body.replace(/<!--[\s\S]*?-->/g, "");
+        // Everything before the hidden comment is what GitHub shows.
+        const visible = body.slice(0, body.lastIndexOf(marker));
         for (const id of [d.id, P, "an-1"]) expect(visible).not.toContain(id);
         // The draft's own marker-shaped text went out inert: one comment only.
         expect(body.match(/<!-- metis-source:/g)).toHaveLength(1);
