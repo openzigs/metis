@@ -220,6 +220,12 @@ export interface ImpactSummaryResult {
    * consumer branches on it.
    */
   grounded: boolean;
+  /**
+   * #1081 — the final draft could not be read at all (not JSON, or an empty
+   * summary), so `summary` is null for that reason, not because a check
+   * rejected it. The caller reports it on the run's notice.
+   */
+  unreadable?: boolean;
 }
 
 export interface ImpactSummaryOptions {
@@ -1071,7 +1077,13 @@ async function runGroundedSummarizer(
     const last = attempt === maxAttempts;
     const summary = await callSummarizer(messages, provider, opts);
     if (summary === null) {
-      if (last) return { summary: null, applied: true, grounded: false };
+      if (last) {
+        // #1081 — the deterministic summary stays, and the run is told why.
+        log.warn("impact summary unreadable after repair; deterministic summary kept", {
+          attempts: attempt,
+        });
+        return { summary: null, applied: true, grounded: false, unreadable: true };
+      }
       messages.push(malformedRepairMessage());
       continue;
     }

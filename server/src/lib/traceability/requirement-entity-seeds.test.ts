@@ -545,10 +545,23 @@ describe("extractGroundedEntities", () => {
     );
   });
 
-  it("degrades to no seeds on malformed output after the repair pass", async () => {
+  it("degrades to no seeds on malformed output after the repair pass, and reports it (#1081)", async () => {
     const provider = fakeProvider(["not json at all", "still not json"]);
-    await expect(extractGroundedEntities("x", VOCAB, provider)).resolves.toEqual([]);
+    const onUnreadable = vi.fn();
+    await expect(extractGroundedEntities("x", VOCAB, provider, { onUnreadable })).resolves.toEqual(
+      [],
+    );
     expect(provider.chat).toHaveBeenCalledTimes(2);
+    expect(onUnreadable).toHaveBeenCalledTimes(1);
+  });
+
+  it("#1081 — does not report a legitimately empty answer as unread", async () => {
+    const provider = fakeProvider(['{"entities":[]}']);
+    const onUnreadable = vi.fn();
+    await expect(extractGroundedEntities("x", VOCAB, provider, { onUnreadable })).resolves.toEqual(
+      [],
+    );
+    expect(onUnreadable).not.toHaveBeenCalled();
   });
 
   it("degrades to no seeds when the provider throws", async () => {
@@ -558,7 +571,12 @@ describe("extractGroundedEntities", () => {
         throw new Error("boom");
       }),
     } as unknown as AIProvider;
-    await expect(extractGroundedEntities("x", VOCAB, provider)).resolves.toEqual([]);
+    const onUnreadable = vi.fn();
+    await expect(extractGroundedEntities("x", VOCAB, provider, { onUnreadable })).resolves.toEqual(
+      [],
+    );
+    // A failed call is the runtime's to count, not an unread answer.
+    expect(onUnreadable).not.toHaveBeenCalled();
   });
 
   it("skips the call entirely when the project has no vocabulary", async () => {

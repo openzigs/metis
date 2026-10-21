@@ -591,6 +591,19 @@ describe("#1024 — graceful degradation with no usable provider", () => {
     expect(tokenRows).toHaveLength(0);
   });
 
+  // #1081 — a malformed reply is a successful call. Before #1081 the notice
+  // above fired only on a provider failure, so this run read as fully enriched.
+  it("says so when every answer comes back unreadable", async () => {
+    const { row, items } = await runWith("ia-garbage", () =>
+      liveProvider(() => "I'm sorry, I cannot produce JSON for this."),
+    );
+    expect(row.status).toBe("completed");
+    expect(items.length).toBeGreaterThan(0);
+    expect(row.summary).toContain("The AI's answer could not be read for");
+    expect(row.summary).toContain("narrative summaries");
+    expect(row.summary).not.toContain("AI enrichment did not run");
+  });
+
   it("completes when the provider throws on every call", async () => {
     const { row, items } = await runWith("ia-throw", () =>
       liveProvider(() => {
