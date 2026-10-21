@@ -40,3 +40,8 @@ Parsers like `repositoryOfPrUrl` that use `indexOf('pull')` mis-parse an owner o
 ## Two "same repository" checks (#1294 review)
 
 Two checks read `PublishBatch.targetOwner`/`targetRepo`: `namesRepository` (case-insensitive) and `pr-reviewer/ac-traceability.ts` (exact case; tracked as #1296). On any repo-matching change, grep `targetOwner` and route every match through `namesRepository`.
+
+**From #1298 and its review (2026-10-20).**
+- Adding any prisma call to `generateDrafts` breaks hand-written mocks OUTSIDE `tests/publishing-*` too (`clarify-answer-reaches-published-draft.test.ts` lacked `issueDraft.findMany`). Grep `issueDraft: {` in every test that calls `generateDrafts`.
+- Repo/host identity guards in the publisher (`apiBaseKey` vs `targetBaseUrl`) ship untested because every fixture uses public GitHub with a null base URL. Delete each guard as a mutation, and require a GHES-vs-github.com fixture.
+- No code path sets `IssueDraft.status` to `'publishing'` (only read filters do), so a guard relying on "not publishing" to exclude an in-flight batch is a no-op.

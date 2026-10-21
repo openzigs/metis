@@ -20,3 +20,8 @@ In the publishing code, "untrusted text is safe inside a code span" must be test
 - A property test's hostile generator must include the literal strings the implementation searches for or branches on — twice here it omitted exactly that input (a link-reference-definition shape; the repository's own blob-URL prefix).
 - Never "clean" a user-editable Markdown body with a whole-body scan; replace only the section METIS wrote, byte for byte, and leave the rest alone. (The generator records both renderings in `metadata.codeLinkSection`; `bodyWithCodeAsText` swaps them.)
 - Semgrep's `detect-non-literal-regexp` is blocking in CI and not installed locally — use string search in `server/src`.
+
+**From #1298 and its review (2026-10-20).**
+- The `unverified` requirement label is written by the synthesis model (prompt rule 4), not by code, so the publish-boundary filter `isInternalPublishLabel` is the only guard. Any new label the model is told to emit needs the same check.
+- A publish body hash that includes text added at publish time from batch composition (parent link, notes) makes the issue body depend on which drafts share the batch. Check any new publish-time body transform for PATCH churn across differently-shaped batches.
+- Publishing test prisma mocks read only `where.draftId` (`publishedIssue.count` in `publishing-draft-generator.test.ts`), so the status/issueNumber conditions deciding "ever published" can be weakened unnoticed. Make a mock evaluate its `where` before trusting tests on it.
