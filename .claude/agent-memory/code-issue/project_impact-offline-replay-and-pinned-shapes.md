@@ -27,3 +27,7 @@ Impact analysis can be measured offline, with no provider call, by replaying its
 - A new Prisma model needs three SQL edits, not two: the SQLite migration, an idempotent Postgres migration, and an append to the cumulative `prisma/postgres/migrations/00000000000000_init` baseline (`tests/schema-parity.test.ts` counts its `CREATE TABLE`s). Regenerate the Postgres schema with `bash scripts/gen-postgres-schema.sh` from the repo root.
 
 Links: [[go-methods-unresolved]], [[project_go-call-resolver-binds-by-bare-name]].
+
+**Folded here (retired from the index 2026-10-21; files unchanged):**
+
+- [[go-call-resolver-binds-by-bare-name]] — Go resolver binds by bare name: false positives for claims (#1086)

@@ -21,3 +21,7 @@ A "never dropped silently" claim is only tested for caps applied where the outpu
 - "In hand" is the test for whether a depth bound owes a count: if the rows were fetched and then discarded (the callee step's second hop, outside the data layer), count them; if the read was never made, the bound is stated in the header and that is enough.
 
 **And, from the same PR:** do not ship a check that states what an English sentence in model output is 'about' as fact; #1094's claim check was wrong in two review cycles and was removed in favour of the stored file list. It matched the phrase "not in the retrieved context" to the nearest backticked path with clause and list rules; each review found correct plan lines it flagged (`Unlike `b.go`, `zz.go` is not …`, two paths in one table cell, an aside between dashes) and one shape where it named the wrong file and missed the real one. Record what the model was given (`plan-context.md`) and tell the reader how to look; a regex is not a reader.
+
+**Folded here (retired from the index 2026-10-21; files unchanged):**
+
+- [[capped-list-filter-must-share-the-fits-function]] — Filter the capped list: filter + render share one fits() (#163)
