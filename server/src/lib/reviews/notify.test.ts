@@ -166,6 +166,34 @@ describe("notifyReviewSubmitted", () => {
 
     await expect(notifyReviewSubmitted(submittedInput())).resolves.toBeUndefined();
     expect(emit).toHaveBeenCalledTimes(2);
+    // #104 — no row, so no id to merge on; the text and link still ride along.
+    expect(emit.mock.calls[0][1]).toMatchObject({
+      notificationId: null,
+      title: "Review requested",
+      href: "/reviews/rev-1",
+    });
+  });
+
+  it("emits the persisted row's id, title, message and link for the drawer (#104)", async () => {
+    notificationCreate.mockImplementation(({ data }: { data: { userId: string } }) =>
+      Promise.resolve({ id: `n-${data.userId}` }),
+    );
+
+    await notifyReviewSubmitted(submittedInput({ reviewerIds: ["rev-a"] }));
+
+    const rows = createdRows();
+    expect(emit).toHaveBeenCalledWith("review:notification", {
+      kind: "review_requested",
+      reviewId: "rev-1",
+      userId: "rev-a",
+      ts: expect.any(Number),
+      projectId: "proj-1",
+      notificationId: "n-rev-a",
+      title: rows[0].title,
+      message: rows[0].message,
+      href: rows[0].href,
+    });
+    expect(rows[0].message).toBe('You are assigned as a reviewer on "Sprint 4 sign-off"');
   });
 
   it("is a no-op emit when no socket server is registered (rows still persist)", async () => {

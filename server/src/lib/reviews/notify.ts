@@ -76,17 +76,24 @@ async function persistAndEmit(n: ReviewNotification): Promise<void> {
     ...n.extra,
   };
 
+  const href = reviewHref(n.reviewId);
+  // #104 — the persisted row's id rides on the emit, so the drawer's live item
+  // and its hydrated copy are one item. Null when persisting failed.
+  let notificationId: string | null = null;
+
   try {
-    await prisma.notification.create({
+    const row = await prisma.notification.create({
       data: {
         userId: n.userId,
         type: n.kind,
         title: n.title,
         message: n.message,
-        href: reviewHref(n.reviewId),
+        href,
         payload: JSON.stringify(payload),
       },
+      select: { id: true },
     });
+    notificationId = row?.id ?? null;
   } catch (err) {
     log.warn("Failed to persist review notification", {
       reviewId: n.reviewId,
@@ -100,7 +107,15 @@ async function persistAndEmit(n: ReviewNotification): Promise<void> {
     // Personal room joined from the verified JWT only (never client-supplied).
     // Literal event name — the shared socket-contract guard scans for it.
     const io = getSocketServer();
-    if (io) io.to(userRoom(n.userId)).emit("review:notification", payload);
+    if (io) {
+      io.to(userRoom(n.userId)).emit("review:notification", {
+        ...payload,
+        notificationId,
+        title: n.title,
+        message: n.message,
+        href,
+      });
+    }
   } catch (err) {
     log.warn("Failed to emit review notification", {
       reviewId: n.reviewId,

@@ -9,6 +9,12 @@
  * reload/reconnect; the in-memory store is the presentation layer.
  */
 
+import type {
+  DiscussionMentionEvent,
+  InAppNotificationFields,
+  ReviewNotificationEvent,
+} from "@metis/shared";
+
 export type NotificationLevel = "info" | "warn" | "error";
 
 export interface Notification {
@@ -24,9 +30,17 @@ export interface Notification {
   read: boolean;
 }
 
+/** A notification before the store stamps it; `id` only when the server persisted it. */
+export type NotificationDraft = Omit<Notification, "id" | "createdAt" | "read"> & {
+  id?: string;
+};
+
 type Listener = (snapshot: Notification[]) => void;
 
 const MAX_NOTIFICATIONS = 50;
+
+/** Persisted `Notification.type`s shown as a warning, live or hydrated alike. */
+const WARN_TYPES: ReadonlySet<string> = new Set(["sla_deadline", "review_rejected"]);
 
 export class NotificationStore {
   private items: Notification[] = [];
@@ -40,10 +54,17 @@ export class NotificationStore {
     return this.items.reduce((acc, n) => (n.read ? acc : acc + 1), 0);
   }
 
-  push(input: Omit<Notification, "id" | "createdAt" | "read">): Notification {
+  /**
+   * Add a live notification. #104 — a draft carrying the persisted row's `id`
+   * keeps it, so the history hydrate merges it rather than listing it twice;
+   * a draft whose id is already listed is not added again.
+   */
+  push(input: NotificationDraft): Notification {
+    const existing = input.id ? this.items.find((n) => n.id === input.id) : undefined;
+    if (existing) return existing;
     const n: Notification = {
       ...input,
-      id: `n_${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
+      id: input.id ?? `n_${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
       createdAt: new Date().toISOString(),
       read: false,
     };
@@ -75,7 +96,7 @@ export class NotificationStore {
       .filter((s) => !existingIds.has(s.id))
       .map((s) => ({
         id: s.id,
-        level: (s.type === "sla_deadline" ? "warn" : "info") as NotificationLevel,
+        level: (WARN_TYPES.has(s.type) ? "warn" : "info") as NotificationLevel,
         title: s.title,
         message: s.message,
         createdAt: s.createdAt,
@@ -194,6 +215,49 @@ export function slaEventToNotification(
     source: "sla_deadline",
     href: `/requirements/${encodeURIComponent(event.requirementId)}`,
   };
+}
+
+/**
+ * #104 — the href of a live notification, only if it is a same-origin relative
+ * path. The server builds it, but the drawer renders it as a link, so anything
+ * else (`//host`, `/\host`, `javascript:`, an absolute URL) is dropped rather
+ * than followed.
+ */
+export function safeInAppHref(href: string | null | undefined): string | undefined {
+  if (typeof href !== "string") return undefined;
+  if (!href.startsWith("/") || href.startsWith("//") || href.startsWith("/\\")) return undefined;
+  return href;
+}
+
+/** The server-built text and link of a `user:{id}` notification event (#104). */
+function inAppDraft(
+  event: InAppNotificationFields,
+  source: string,
+  level: NotificationLevel,
+): NotificationDraft {
+  return {
+    ...(event.notificationId ? { id: event.notificationId } : {}),
+    level,
+    title: event.title,
+    message: event.message,
+    source,
+    href: safeInAppHref(event.href),
+  };
+}
+
+/** #104 — map a `discussion:mention` event into a Notification draft. */
+export function discussionMentionEventToNotification(
+  event: DiscussionMentionEvent,
+): NotificationDraft {
+  return inAppDraft(event, event.kind, "info");
+}
+
+/**
+ * #104 — map a `review:notification` event into a Notification draft. A
+ * rejection is a `warn`: it asks the requester to act.
+ */
+export function reviewEventToNotification(event: ReviewNotificationEvent): NotificationDraft {
+  return inAppDraft(event, event.kind, event.kind === "review_rejected" ? "warn" : "info");
 }
 
 export const _MAX_NOTIFICATIONS_FOR_TESTS = MAX_NOTIFICATIONS;
