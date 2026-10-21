@@ -151,7 +151,12 @@ const NAMED_REF: Readonly<Record<string, number>> = {
 const ASCII_NO_REF = /^[\x00-\x25\x27-\x7f]*$/;
 
 const foldMemo = new Map<number, string>();
-const FOLD_MEMO_LIMIT = 4096;
+export const FOLD_MEMO_LIMIT = 4096;
+
+/** How many folds are memoised — for the test that the memo stays bounded. */
+export function foldMemoSize(): number {
+  return foldMemo.size;
+}
 
 /** Map one unit (already decomposed, not ignorable) through case and confusables. */
 function foldUnit(part: string): string {

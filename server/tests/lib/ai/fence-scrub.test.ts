@@ -9,7 +9,9 @@ import { describe, expect, it } from "vitest";
 import { fenceToolResult } from "../../../src/lib/ai/tool-runtime/fence.js";
 import {
   CONFUSABLES,
+  FOLD_MEMO_LIMIT,
   foldCodePoint,
+  foldMemoSize,
   scrubFenceLookalikes,
 } from "../../../src/lib/ai/tool-runtime/fence-scrub.js";
 import { expectLinearTime } from "../../helpers/linear-time.js";
@@ -177,6 +179,22 @@ describe("scrubFenceLookalikes — look-alikes", () => {
     const fence = `${cp(0xff1d).repeat(3)}${LABEL}===`;
     expect(scrub(s + fence)).toBe(s + R);
     expect(scrub(fence + s)).toBe(R + s);
+    // 6,000 distinct code points went through the fold: the memo kept at most the limit.
+    expect(foldMemoSize()).toBeGreaterThan(0);
+    expect(foldMemoSize()).toBeLessThanOrEqual(FOLD_MEMO_LIMIT);
+  });
+
+  it.each([
+    ["beyond U+10FFFF (decimal)", "&#9999999;"],
+    ["beyond U+10FFFF (hex)", "&#x110000;"],
+    ["a lone surrogate (hex)", "&#xD800;"],
+    ["a lone surrogate (decimal)", "&#57343;"],
+  ])("leaves a character reference to %s alone and does not throw", (_label, ref) => {
+    const text = `before ${ref} after ===${LABEL}`;
+    expect(() => scrub(text)).not.toThrow();
+    // Not decoded: the reference survives, and only the fence is redacted.
+    expect(scrub(text)).toBe(`before ${ref} after ${R}`);
+    expect(() => fenceToolResult("read_file", `${ref}${ref}`)).not.toThrow();
   });
 });
 
