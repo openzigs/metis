@@ -966,12 +966,14 @@ has measured a BRD generated with it on.
   the modules they cite, become the end of its reply, which is what a cap takes first;
   nothing is removed while the document fits. `DOCS_GEN_LENGTH_OVERRUN` (registry tunable,
   `pattern=factor` pairs such as `deepseek=1.5,haiku=1.1`, matched against the section
-  model's id; built in `deepseek=1.5`, every other model 1) divides the words each batch
+  model's id; built in `deepseek=1.5`, measured on `deepseek-flash` only and applied to every
+  DeepSeek id; every other model 1; a factor of 0 is rejected, and an ignored or clamped
+  entry is logged once) divides the words each batch
   prompt asks for. To set it for a model, read `Batched section synthesized` (module
   `docs-gen:holistic`) on a planned run: `renderedReplyChars / estimatedReplyChars` is the
-  overrun, `lengthOverrun` the factor in use, `heldParts` and `overflowTopics` what was put
+  overrun, `lengthOverrun` the factor in use, `reorderedParts` and `overflowTopics` what was put
   past its share. **Upgrading, or changing the factor, rewrites the four catalogue
-  sections of every planned BRD once** on its next generation (the hold version and the
+  sections of every planned BRD whose budget binds them once** on its next generation (the hold version and the
   factor are in their reuse inputs; the single-call sections are reused): for the
   walkthrough Miniflux BRD on DeepSeek, 21 of run B's 24 section calls ($0.69 in all) and
   most of its 78 fact-check calls ($0.41): about $1. A BRD with the plan off is unaffected.
