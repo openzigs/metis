@@ -39,6 +39,17 @@ export interface GeneratedDocProvenanceSummary {
    * Empty for any other document.
    */
   codeIdentifiers: Array<{ section: string; count: number; examples: CodeIdentifierHit[] }>;
+  /**
+   * #1070 — a planned document's topic plan: per section, what it was planned
+   * and the topics left out before writing, highest priority first. Absent =
+   * not planned.
+   */
+  topicPlan?: GeneratedDocVersionManifest["topicPlan"];
+  /**
+   * #1070 — the cross-section consistency check, found something or not.
+   * Absent = not run (a document without a plan).
+   */
+  consistency?: GeneratedDocVersionManifest["consistency"];
 }
 
 export function summarizeGeneratedDocVersionManifest(
@@ -74,6 +85,8 @@ export function summarizeGeneratedDocVersionManifest(
           ]
         : [],
     ),
+    ...(manifest.topicPlan ? { topicPlan: manifest.topicPlan } : {}),
+    ...(manifest.consistency ? { consistency: manifest.consistency } : {}),
   };
 }
 

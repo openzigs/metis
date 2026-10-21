@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { ConfigService } from "../config/config-service.js";
 import { expectLinearTime } from "../../../tests/helpers/linear-time.js";
 import {
+  FLOOR_SHARE,
   MIN_TOPIC_CHARS,
   SINGLE_CALL_SECTION_CHARS,
   TOPIC_PLAN_KEY,
@@ -114,6 +115,30 @@ describe("waterFill", () => {
 });
 
 describe("allocateTopicBudgets", () => {
+  it("10 × 300 in 3,000 keeps all ten: nothing is dropped while every estimate fits (PR #1316 cycle 2)", () => {
+    const ten = Array.from({ length: 10 }, (_, i) => topic(`t${i}`, 10 - i, 300));
+    const { kept, dropped } = allocateTopicBudgets(ten, 3_000);
+    expect(dropped).toEqual([]);
+    expect(kept.map((t) => t.budgetChars)).toEqual(Array(10).fill(300));
+  });
+
+  it("drops nothing from a section with room when the document has room (PR #1316 cycle 2)", () => {
+    const plan = planDocument({
+      sections: [
+        enumerative(
+          "rules",
+          Array.from({ length: 20 }, (_, i) => topic(`rules/m${i}`, 20 - i, 400)),
+        ),
+      ],
+      documentMaxChars: 237_000,
+      sectionMaxChars: 60_000,
+    });
+    expect(plan.sections[0].dropped).toEqual([]);
+    expect(plan.sections[0].topics).toHaveLength(20);
+    expect(plan.sections[0].budgetChars).toBe(8_000);
+    expect(plan.unallocatedChars).toBe(237_000 - 8_000);
+  });
+
   it("gives every topic its floor and shares the rest by estimate", () => {
     const { kept, dropped } = allocateTopicBudgets(
       [topic("a", 3, 10_000), topic("b", 2, 5_000), topic("c", 1, 1_000)],
@@ -133,12 +158,16 @@ describe("allocateTopicBudgets", () => {
   });
 
   it("drops the LOWEST-PRIORITY topics when even the floors do not fit, and names them", () => {
-    // One fixture past the floor: ten topics, room for four floors.
+    // One fixture past the floor: ten topics, room for four floors in the
+    // share of the budget the floors may take.
     const topics = Array.from({ length: 10 }, (_, i) => topic(`t${i}`, i, 2_000));
-    const { kept, dropped } = allocateTopicBudgets(topics, MIN_TOPIC_CHARS * 4 + 20);
+    const { kept, dropped } = allocateTopicBudgets(
+      topics,
+      (MIN_TOPIC_CHARS * 4 + 20) / FLOOR_SHARE,
+    );
     expect(kept.map((t) => t.id)).toEqual(["t9", "t8", "t7", "t6"]);
     expect(dropped.map((t) => t.id)).toEqual(["t5", "t4", "t3", "t2", "t1", "t0"]);
-    expect(sum(kept.map((t) => t.budgetChars))).toBe(MIN_TOPIC_CHARS * 4 + 20);
+    expect(sum(kept.map((t) => t.budgetChars))).toBe((MIN_TOPIC_CHARS * 4 + 20) / FLOOR_SHARE);
     // Every topic is accounted for: kept with a budget, or dropped by name.
     expect(kept.length + dropped.length).toBe(topics.length);
   });
@@ -148,9 +177,54 @@ describe("allocateTopicBudgets", () => {
     const tied = ["rules/alpha", "rules/Zeta", "rules/beta"].map((id) => topic(id, 5, 2_000));
     const expected = { kept: ["rules/Zeta", "rules/alpha"], dropped: ["rules/beta"] };
     for (const topics of [tied, [...tied].reverse()]) {
-      const { kept, dropped } = allocateTopicBudgets(topics, MIN_TOPIC_CHARS * 2 + 10);
+      const { kept, dropped } = allocateTopicBudgets(
+        topics,
+        (MIN_TOPIC_CHARS * 2 + 10) / FLOOR_SHARE,
+      );
       expect({ kept: kept.map((t) => t.id), dropped: dropped.map((t) => t.id) }).toEqual(expected);
     }
+  });
+
+  it("#1070 — drops at planning time on a run-8-sized section, where the old floor dropped nothing", () => {
+    // Run 8: 102 topics per catalogue section, 43,057 characters each. Under a
+    // floor of 150 every topic was planned about 422 characters, the plan
+    // dropped none, and 48 topics were cut at section tails after writing.
+    const run8 = Array.from({ length: 102 }, (_, i) => topic(`m${i}`, 102 - i, 1_500));
+    const old = allocateTopicBudgets(run8, 43_057, 150);
+    expect(old.dropped).toEqual([]);
+    const now = allocateTopicBudgets(run8, 43_057);
+    expect(MIN_TOPIC_CHARS).toBe(215);
+    expect(now.dropped.map((t) => t.id)).toEqual(["m100", "m101"]);
+    for (const t of now.kept) expect(t.budgetChars).toBeGreaterThanOrEqual(MIN_TOPIC_CHARS);
+    // The floor is the plan's to set: planDocument passes it through.
+    const planned = planDocument({
+      sections: [{ sectionId: "rules", label: "Rules", kind: "enumerative", topics: run8 }],
+      documentMaxChars: 43_057,
+      sectionMaxChars: 60_000,
+      minTopicChars: 150,
+    });
+    expect(planned.sections[0].dropped).toEqual([]);
+  });
+
+  it("#1070 — keeps budgets proportional to the estimates when topics are dropped (PR #1316 review)", () => {
+    // Run-8-sized, with skewed estimates as the batch planner gives them: a
+    // few large modules (the scheduler, the entities) and a long tail.
+    const skewed = Array.from({ length: 102 }, (_, i) =>
+      topic(`m${String(i).padStart(3, "0")}`, 102 - i, Math.round(12_000 / (1 + i / 4))),
+    );
+    const { kept, dropped } = allocateTopicBudgets(skewed, 43_057);
+    expect(dropped.length).toBeGreaterThan(0);
+    const budgets = kept.map((t) => t.budgetChars);
+    const largest = Math.max(...budgets);
+    const smallest = Math.min(...budgets);
+    // A floor at the mean planned every kept topic about alike; here the
+    // largest is planned several times the smallest, and the top topic most.
+    expect(largest).toBeGreaterThanOrEqual(5 * smallest);
+    expect(kept[0].budgetChars).toBe(largest);
+    // The floors take no more than their share; the rest follows the estimates.
+    const floors = kept.reduce((n, t) => n + Math.min(t.estimatedChars, MIN_TOPIC_CHARS), 0);
+    expect(floors).toBeLessThanOrEqual(43_057 * FLOOR_SHARE);
+    expect(sum(budgets)).toBe(43_057);
   });
 
   it("drops by priority, not by size or by input order", () => {
@@ -277,7 +351,7 @@ describe("planDocument", () => {
           Array.from({ length: 50 }, (_, i) => topic(`rules/m${i}`, 50 - i, 3_000)),
         ),
       ],
-      documentMaxChars: MIN_TOPIC_CHARS * 20,
+      documentMaxChars: (MIN_TOPIC_CHARS * 20) / FLOOR_SHARE,
       sectionMaxChars: 60_000,
     });
     const [rules] = plan.sections;
@@ -291,7 +365,7 @@ describe("planDocument", () => {
         sectionId: "rules",
         kind: "enumerative",
         demandChars: 60_000,
-        budgetChars: MIN_TOPIC_CHARS * 20,
+        budgetChars: (MIN_TOPIC_CHARS * 20) / FLOOR_SHARE,
         topics: 20,
         dropped: 30,
       },
