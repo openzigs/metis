@@ -319,11 +319,33 @@ describe("runSynthesis — a malformed sourceIds never costs the reply (PR #1095
     expect(result.output.requirements.map((r) => r.sourceIds)).toEqual([["NR-1"], ["NR-4"]]);
   });
 
-  it("still rejects the reply when a REQUIRED field is malformed (the gate is not gone)", async () => {
+  // #1099 — a REQUIRED field still gates, but per requirement: the one with no
+  // title is left out (and recorded), not every requirement of the reply.
+  it("drops only the requirement whose REQUIRED field is malformed, and records it", async () => {
     const { provider, calls } = providerReturning([
       req("A", { sourceIds: ["NR-4"] }),
       req("", { sourceIds: ["NR-1"], evidenceFindingIndexes: [1] }),
     ]);
+    const result = await runSynthesis(provider, {
+      projectName: "Miniflux",
+      findings: FINDINGS,
+      sourceItems: SOURCE_ITEMS,
+    });
+    expect(calls).toHaveLength(1);
+    expect(result.degraded).toBeUndefined();
+    expect(result.output.requirements.map((r) => r.title)).toEqual(["A"]);
+    expect(result.fieldRepairs).toEqual([
+      {
+        field: "requirement",
+        action: "requirement-dropped",
+        requirementNumber: 2,
+        requirementTitle: null,
+      },
+    ]);
+  });
+
+  it("still rejects a reply with no usable requirement at all (the gate is not gone)", async () => {
+    const { provider, calls } = providerReturning([req("", { sourceIds: ["NR-1"] })]);
     const result = await runSynthesis(provider, {
       projectName: "Miniflux",
       findings: FINDINGS,

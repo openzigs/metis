@@ -68,6 +68,7 @@ import {
   type SynthesisDegradation,
   type RequirementReplacementWithheld,
   type SpecKitHandoffRecord,
+  type SynthesisFieldRepairs,
   type UnreadAnalysisSteps,
 } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
@@ -301,6 +302,11 @@ export interface AnalysisEnhancementPatch {
    */
   unreadAnalysisSteps?: UnreadAnalysisSteps | null;
   /**
+   * Issue #1099 — the values synthesis could not use and left out, defaulted or
+   * shortened, field by field. Absent on a run that needed none.
+   */
+  synthesisFieldRepairs?: SynthesisFieldRepairs;
+  /**
    * Issue #723 — the structured requirement ids already promoted into rows, so
    * a rejection that is reopened and approved after promotion adds exactly
    * that requirement instead of being ignored as "already promoted".
@@ -400,6 +406,9 @@ function applyEnhancementPatch(
     next.clarificationApplication = patch.clarificationApplication;
   }
   if (patch.synthesisDegraded !== undefined) next.synthesisDegraded = patch.synthesisDegraded;
+  if (patch.synthesisFieldRepairs !== undefined) {
+    next.synthesisFieldRepairs = patch.synthesisFieldRepairs;
+  }
   if (patch.unreadAnalysisSteps === null) delete next.unreadAnalysisSteps;
   else if (patch.unreadAnalysisSteps !== undefined) {
     next.unreadAnalysisSteps = patch.unreadAnalysisSteps;

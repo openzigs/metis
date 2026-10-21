@@ -278,10 +278,11 @@ import {
 } from "./new-requirements.js";
 import { computeRequirementEscalations } from "./escalation-context.js";
 import { splitEscalationBudget, type EscalationPolicyConfig } from "./escalation-policy.js";
-import type {
-  RequirementEscalation,
-  SpecKitHandoffRecord,
-  UnreadAnalysisStep,
+import {
+  MAX_RECORDED_SYNTHESIS_REPAIRS,
+  type RequirementEscalation,
+  type SpecKitHandoffRecord,
+  type UnreadAnalysisStep,
 } from "@metis/shared";
 import { TaskProfiler } from "../ai/task-profiler.js";
 import { ModelRouter, projectRunModel, type ModelPreferences } from "../ai/model-router.js";
@@ -4108,6 +4109,26 @@ export class AnalysisOrchestrator {
         completedAt: new Date(),
         usage: result.usage,
       });
+
+      // Issue #1099 — the values synthesis could not use and left out, so the
+      // analyst can check them before publishing. Written only when there are
+      // some; best-effort, like every other marker here.
+      if (result.fieldRepairs && result.fieldRepairs.length > 0) {
+        try {
+          await persistAnalysisEnhancement(input.analysisId, {
+            synthesisFieldRepairs: {
+              repairs: result.fieldRepairs.slice(0, MAX_RECORDED_SYNTHESIS_REPAIRS),
+              total: result.fieldRepairs.length,
+              at: new Date().toISOString(),
+            },
+          });
+        } catch (err) {
+          log.error("Could not record the synthesis field repairs", {
+            analysisId: input.analysisId,
+            error: (err as Error).message,
+          });
+        }
+      }
 
       // Issue #1117 (findings B + C) — a degraded synthesis changes the output
       // profoundly (no types, no acceptance criteria) and used to leave no

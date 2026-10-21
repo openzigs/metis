@@ -489,6 +489,8 @@ function makeProvider(opts: {
   /** Epic #203 (#221) — cross-doc detector replies. */
   nliReply?: string;
   completenessReply?: string;
+  /** #1099 — override the synthesis reply. */
+  synthesisReply?: string;
   consistencyReply?: string;
   /**
    * #750 — requirements the DOCUMENT agent emits in its structured output.
@@ -597,7 +599,8 @@ function makeProvider(opts: {
       if (opts.failAgent && opts.failAgent === detected) {
         throw new Error(`forced failure for ${detected}`);
       }
-      if (detected === "synthesis") return stubResponse(buildSynthesisJson());
+      if (detected === "synthesis")
+        return stubResponse(opts.synthesisReply ?? buildSynthesisJson());
       if (detected === "document")
         return stubResponse(buildAgentJson(detected, opts.docRequirements));
       // #769 — scripted code persona: drives the real loop to exhaustion / prose.
@@ -859,6 +862,50 @@ describe("AnalysisOrchestrator.start", () => {
     expect(meta.unreadAnalysisSteps?.steps).toEqual([
       expect.objectContaining({ step: "completeness-check", reason: "unparseable" }),
     ]);
+  });
+
+  // #1099 — a malformed optional field is left out, the reply is kept, and the
+  // analysis records what was left out.
+  it("records the synthesis field repairs on the analysis (#1099)", async () => {
+    const io = makeIO();
+    const provider = makeProvider({
+      synthesisReply: JSON.stringify({
+        summary: "merged",
+        requirements: [
+          {
+            type: "feature",
+            title: "Implement",
+            body: "Body",
+            priority: "high",
+            labels: ["x"],
+            storyPoints: 3.5,
+            evidenceFindingIndexes: [0],
+          },
+        ],
+      }),
+    });
+    const orch = new AnalysisOrchestrator({
+      provider,
+      io: io as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    for (let i = 0; i < 200 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+    const meta = JSON.parse(analyses.get(analysisId)!.metadata ?? "{}") as {
+      synthesisFieldRepairs?: { repairs: unknown[]; total: number };
+      synthesisDegraded?: unknown;
+    };
+    expect(meta.synthesisDegraded).toBeUndefined();
+    expect(meta.synthesisFieldRepairs).toMatchObject({
+      total: 1,
+      repairs: [{ field: "storyPoints", action: "dropped", requirementTitle: "Implement" }],
+    });
   });
 
   it("persists all specialist findings even when synthesis falls back to deterministic merge", async () => {
