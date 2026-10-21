@@ -559,6 +559,7 @@ Two ways to reach the seam, depending on how the route names its project:
 | Route shape | How to scope it | Reference |
 |---|---|---|
 | Mounted under `/projects/:projectId/**` | `r.use(requireAuth, requireProjectAccess());` above the first route | `server/src/routes/connectors.ts:269` |
+| Mounted under `/projects/:projectId/**`, with routes whose rate limiters must run before `requireAuth` | `requireProjectAccess()` on **every** route, straight after its `requireAuth` | `server/src/routes/spec-kit.ts` (#960) |
 | Project resolved from a **resource id** | resolve the row, then `assertProjectAccess`, and thread the resolved `projectId` into the follow-up query | `server/src/lib/connectors/connection-authz.ts`, `server/src/lib/async/run-authz.ts` |
 
 The second column of that table matters: for id-resolved routes the scope must
@@ -587,7 +588,7 @@ files at once. Three tests now enforce it, all under `server/tests/`:
   in `server/src/routes/index.ts` (never a hardcoded list, so a new router is
   covered the day it is added), zips it against the assembled Express stack, and
   asserts each `:projectId`-mounted router applies `requireProjectAccess()`
-  before any handler. Routers that predate the rule live in
+  before any handler, either router-level or on every one of its routes (#960). Routers that predate the rule live in
   `tests/helpers/project-access-baseline.ts`.
 - **`project-access-effective.test.ts`** — *behavioural*. Stubs
   `assertProjectAccess` to always deny, then replays a non-admin caller against
