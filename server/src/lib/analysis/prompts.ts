@@ -13,23 +13,21 @@
  */
 import type { AnalysisAgentKey } from "@metis/shared";
 import { FINDING_CATEGORIES, MODEL_ASSERTABLE_FINDING_DERIVATIONS } from "@metis/shared";
+import { scrubFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
 import { getPersona } from "./personas.js";
 
 const FENCE = "===METIS-DATA-BOUNDARY===";
 const REDACTED = "[REDACTED-FENCE]";
-// Match the fence anywhere inside chunk text, not just on its own line. The
-// pattern collapses around whitespace, hyphens and underscores between the
-// METIS / DATA / BOUNDARY tokens and tolerates any number of leading/trailing
-// `=` signs in any case so an attacker cannot smuggle a fence mid-chunk by
-// padding it (e.g. `=== Metis_Data Boundary ===`).
-const FENCE_PATTERN =
-  /=+[\s_-]*M[\s_-]*E[\s_-]*T[\s_-]*I[\s_-]*S[\s_-]*D[\s_-]*A[\s_-]*T[\s_-]*A[\s_-]*B[\s_-]*O[\s_-]*U[\s_-]*N[\s_-]*D[\s_-]*A[\s_-]*R[\s_-]*Y[\s_-]*=+/gi;
 
 const escapeContext = (raw: string): string => {
-  // Substring scrub: any occurrence of the fence (or a normalized variant)
-  // anywhere inside the chunk gets neutralized BEFORE prompt composition so
-  // an injected document cannot terminate the data boundary early.
-  return raw.replace(FENCE_PATTERN, REDACTED);
+  // Substring scrub: any occurrence of the fence anywhere inside the chunk is
+  // neutralised BEFORE prompt composition so an injected document cannot
+  // terminate the data boundary early. That covers padding, case and separator
+  // variants (`=== Metis_Data Boundary ===`) and, since #1114, Unicode
+  // look-alikes (full-width `=`, zero-width or bidi characters in the label,
+  // hyphen look-alikes, homoglyphs). Text with no fence-shaped span is returned
+  // unchanged, so a prompt without one is byte-identical to before.
+  return scrubFenceLookalikes(raw, REDACTED);
 };
 
 export interface AgentPromptInput {
