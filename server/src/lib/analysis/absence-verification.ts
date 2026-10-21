@@ -72,6 +72,7 @@ import type {
 } from "@metis/shared";
 import { ABSENCE_CLAIM_VERDICTS } from "@metis/shared";
 import type { AIProvider, TokenUsage } from "../ai/types.js";
+import { scrubSectionFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
 import { extractGroundedLocator, MAX_VOTE_REASONING_CHARS } from "./support-panel-tally.js";
 import { hasVerdict, requestStructuredVerdict } from "./structured-verdict.js";
 import type { StructuredVerdictMetrics } from "./structured-verdict.js";
@@ -259,14 +260,16 @@ export function buildAbsenceCheckPrompt(
   finding: { title: string; body: string },
   evidenceBlock: string,
 ): string {
+  // #1360 — untrusted text cannot close or forge a `=== … ===` section fence.
+  const data = (text: string) => scrubSectionFenceLookalikes(text, "[REDACTED-FENCE]");
   return [
     "=== FINDING claiming something is MISSING (untrusted) ===",
-    `TITLE: ${finding.title}`,
-    `BODY: ${finding.body}`,
+    `TITLE: ${data(finding.title)}`,
+    `BODY: ${data(finding.body)}`,
     "=== END FINDING ===",
     "",
     "=== EVIDENCE THE AGENT RETRIEVED (untrusted) ===",
-    evidenceBlock || "(no evidence was retrieved for this finding)",
+    data(evidenceBlock) || "(no evidence was retrieved for this finding)",
     "=== END EVIDENCE ===",
     "",
     "First identify, in your own head, exactly WHAT this finding says is missing. Then decide",

@@ -77,6 +77,7 @@ import {
   type SupportPanelVote,
 } from "@metis/shared";
 import type { AIProvider, TokenUsage } from "../ai/types.js";
+import { scrubSectionFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
 import { createChildLogger } from "../logger.js";
 import {
   applyAbsenceVerdictToConfidence,
@@ -330,13 +331,15 @@ export function buildLensPrompt(
   finding: { title: string; body: string },
   evidence: readonly PanelEvidence[],
 ): string {
-  const block = renderEvidenceBlock(evidence);
+  // #1360 — untrusted text cannot close or forge a `=== … ===` section fence.
+  const data = (text: string) => scrubSectionFenceLookalikes(text, "[REDACTED-FENCE]");
+  const block = data(renderEvidenceBlock(evidence));
   return [
     LENS_INSTRUCTIONS[lens],
     "",
     "=== FINDING (untrusted) ===",
-    `TITLE: ${finding.title}`,
-    `BODY: ${finding.body}`,
+    `TITLE: ${data(finding.title)}`,
+    `BODY: ${data(finding.body)}`,
     "=== END FINDING ===",
     "",
     "=== EVIDENCE THE AGENT RETRIEVED (untrusted) ===",

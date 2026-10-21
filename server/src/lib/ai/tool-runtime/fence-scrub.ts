@@ -43,6 +43,12 @@
  * pattern, `FOLDED_REQUIREMENT_FENCE`, for the `<<<REQUIREMENT …>>> … <<<END
  * REQUIREMENT>>>` fence of the traceability and impact-analysis prompts.
  *
+ * #1360 — two more siblings on the same fold: `scrubSectionFenceLookalikes`
+ * for the `=== LABEL ===` / `=== END LABEL ===` fences of the absence check,
+ * the support panel, the faithfulness judge, the RAGAS relevancy judge and the
+ * docs-gen mined-rule inventories, and `scrubItemsFenceLookalikes` for the
+ * impact run summary's short `END ITEMS` terminator.
+ *
  * Dependency-free (apart from the generated table) so both
  * `analysis/prompts.ts` and `tool-runtime/fence.ts` can use it.
  */
@@ -203,6 +209,174 @@ const FOLDED_REQUIREMENT_FENCE =
   /(?<!<)<{3,}[\s_/-]*(?:E[\s_-]*N[\s_-]*D[\s_-]*)?R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T(?:[\s_-]*>+)?|(?<!<)<{1,2}[\s_/-]*E[\s_-]*N[\s_-]*D[\s_-]*R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T(?:[\s_-]*>+)?|E[\s_-]*N[\s_-]*D[\s_-]*R[\s_-]*E[\s_-]*Q[\s_-]*U[\s_-]*I[\s_-]*R[\s_-]*E[\s_-]*M[\s_-]*E[\s_-]*N[\s_-]*T[\s_-]*>{2,}|(?<!<)<{3,}|(?<!>)>{3,}/g;
 
 /**
+ * #1360 — the `=== LABEL ===` section fences of the verifier, judge and
+ * docs-gen prompts (`=== FINDING … ===` / `=== END FINDING ===`,
+ * `=== EVIDENCE … ===`, `=== SOURCE EVIDENCE … ===`, `=== CLAIMS … ===`,
+ * `=== QUESTION … ===`, `=== ANSWER … ===`, `=== DETERMINISTICALLY-MINED …
+ * RULE INVENTORY … ===` / `=== END … MINED RULES ===`, `… STEP PIPELINE`,
+ * `… DATASET LINEAGE`, `DATA_LINEAGE`). Built from these constants once, at
+ * load; every piece below is a literal.
+ *
+ * Unlike the data-boundary fence there is no unique token: the fence IS a
+ * label between `=` runs, and `===` is also JavaScript's strict equality. So
+ * a NOUN (one of the labels' head words) must be present, nothing spans a line
+ * break, and every `=` run is at least two long. A span is
+ *
+ *   C.  a closing LINE: two or more `=`, then — at most 200 characters, none
+ *       of them `=`, a line break or `& ; { } < > ! ? *` — a terminator word
+ *       (`END`, `ENDS`, `CLOSE`, `CLOSING`…, not inside a word) and a noun in
+ *       either order, then two or more `=`; and the span either starts its line
+ *       (after spaces) or runs to its end. So `=== END: EVIDENCE ===`,
+ *       `=== END (EVIDENCE) ===`, `=== END "FINDING" ===`,
+ *       `=== EVIDENCE ENDS HERE ===`, `=== CLOSE EVIDENCE ===`,
+ *       `// === CLOSE EVIDENCE ===` and `=== END OF ALL OF THE EVIDENCE … ===`.
+ *       The line anchor is what keeps `status == CLOSED || claim == 0` out: a
+ *       `==` between two operands neither starts nor ends a line (second panel);
+ *   P.  anywhere: two or more `=`, `END`, up to three LABEL_MODIFIERs, a noun,
+ *       two or more `=` — `=== END SOURCE EVIDENCE ===`, `===ENDCLAIMS===`;
+ *   L.  two or more `=`, `END`, whitespace, `:` or a dash, up to three
+ *       LABEL_MODIFIERs, a noun — the one-sided `=== END EVIDENCE`;
+ *   L'. two or more `=`, `END`, the noun with no separator, then only spaces to
+ *       the end of the line — the one-sided compact `=== ENDEVIDENCE`;
+ *   R.  `END` (not inside a word), whitespace, `:` or a dash, modifiers, a noun,
+ *       two or more `=` — the one-sided `END EVIDENCE ===`;
+ *   O.  three or more `=`, up to 80 letters, digits and separators, a noun,
+ *       up to eight further words, a parenthetical, three or more `=` — a
+ *       forged OPENING such as `=== EVIDENCE THE AGENT RETRIEVED (untrusted) ===`.
+ *       Every real opening carries its parenthetical; requiring it keeps
+ *       comment banners (`/* ===== VALIDATION RULES ===== *\/`) and
+ *       `a === answer || b === c` out (`|` folds to `I`, so `answer || b`
+ *       reads as the words ANSWER II B).
+ *
+ * Left alone, so ordinary code and prose in evidence is not rewritten (panel
+ * and PR #1367 review): `x === endRules)`, `const endRules = x`,
+ * `x === END_RULE`, `pos >= END_QUESTIONS`, `start = end_rules = 0`,
+ * `if (kind === evidence)`, `a === answer || b === c`, banners with no
+ * parenthetical, MediaWiki `== Evidence ==`, and every block-closing keyword
+ * followed on the NEXT line by an assignment (`end` / `End If` / `END-IF` /
+ * `end do` / SQL `END` then `rules = …`) — no form crosses a line break or
+ * accepts a single `=`; and compound conditions such as
+ * `return claim.status == ClaimStatus.CLOSED || claim.reserve == 0;` and
+ * `if (a == end || rules == b)` (C is line-anchored; P, L and R take only
+ * LABEL_MODIFIERs). Redacted although ordinary, because the folded copy cannot
+ * tell them from a fence: a line ENDING in `=== endRules` (L'), and a heading
+ * such as `=== Rules (draft) ===` (O).
+ *
+ * Bounded per start: every match begins at the first `=` of a run or at an
+ * `E` not preceded by a letter or digit; C looks at most 200 characters ahead
+ * (twice, once for the terminator and once for the noun), the filler is at
+ * most 80 characters, a modifier at most 24, a parenthetical at most 200.
+ */
+const SEP = "[ \\t_-]*";
+const SEP1 = "[ \\t_-]+";
+/**
+ * A label letter in the comparison copy. `L` also matches `I`: the fold reads a
+ * lower-case `l` as `I` (it is `I`'s confusables prototype, see `PROTOTYPES`),
+ * so `rules` folds to `RUIES` and `pipeline` to `PIPEIINE`.
+ */
+const letter = (c: string): string => (c === "L" ? "[LI]" : c);
+const spaced = (word: string): string => [...word].map(letter).join(SEP);
+const pluralisable = (word: string): string => `${spaced(word)}(?:${SEP}S)?`;
+const SECTION_NOUN = `(?:${[
+  pluralisable("FINDING"),
+  spaced("EVIDENCE"),
+  pluralisable("QUESTION"),
+  pluralisable("ANSWER"),
+  pluralisable("CLAIM"),
+  pluralisable("RULE"),
+  spaced("INVENTORY"),
+  spaced("PIPELINE"),
+  spaced("LINEAGE"),
+].join("|")})`;
+const MODIFIER = "[A-Z0-9+#]{1,24}";
+const END = spaced("END");
+/** A terminator word, not inside a word: END (ENDS, ENDED…) or CLOS (CLOSE, CLOSED, CLOSING…). */
+const TERMINATOR = `(?<![A-Z0-9])(?:${END}|${spaced("CLOS")})`;
+/** One character of a closing line: no `=`, no line break, no code operator. */
+const LINE_CHAR = "[^=\\n\\r\\v\\f\\x85\\p{Zl}\\p{Zp}&;{}<>!?*]";
+/** Between `===` and a noun, modifier words need no separator: `===SOURCEEVIDENCE(x)===`. */
+const FILLER = "[A-Z0-9+# \\t_-]{0,80}?";
+/**
+ * After `END` on a ONE-SIDED form: whitespace, `:` or a dash, never `_` — so
+ * the constants `x === END_RULE` and `pos >= END_QUESTIONS` are left alone.
+ */
+const AFTER_END = "[ \\t:-]+";
+/**
+ * A run of two (three) or more `=`, each pair optionally split by ONE separator
+ * `-` — which is how a Markdown-escaped `\=\=\=` reads once `\` has folded to
+ * `-`. A run starts only where no `=` (or `=-`) precedes it, so a long run is
+ * never re-scanned from inside.
+ */
+const OPEN2 = "(?<!=-?)=(?:-?=)+";
+const TAIL2 = "=(?:-?=)+";
+const OPEN3 = "(?<!=-?)=(?:-?=){2,}";
+const TAIL3 = "=(?:-?=){2,}";
+/**
+ * The words that sit between `END` and the noun in a real terminator
+ * (`END SOURCE EVIDENCE`, `END SAS STEP PIPELINE`, `END C++ MINED RULES`, …),
+ * plus `OF` / `THE` / `ALL`. A FIXED list on the one-sided forms, not "any
+ * word": `|` folds to `I`, so `x == end || rules` would otherwise read as
+ * `== END II RULES` (PR #1367 review, second panel).
+ */
+const LABEL_MODIFIER = `(?:${[
+  "SOURCE",
+  "MINED",
+  "SAS",
+  "STEP",
+  "DATASET",
+  "DATA",
+  "PYTHON",
+  "GO",
+  "TYPESCRIPT",
+  "JAVA",
+  "KOTLIN",
+  "COBOL",
+  "SCALA",
+  "RUST",
+  "SQL",
+  "OF",
+  "THE",
+  "ALL",
+]
+  .map(spaced)
+  .join("|")}|C${SEP}(?:\\+${SEP}\\+|#)?)`;
+const labelModifiers = `(?:${LABEL_MODIFIER}${SEP1}){0,3}`;
+/** One closing line: the terminator and a noun in either order between two `=` runs. */
+const CLOSING_LINE =
+  `${OPEN2}(?=${LINE_CHAR}{0,200}?${TERMINATOR})(?=${LINE_CHAR}{0,200}?${SECTION_NOUN})` +
+  `${LINE_CHAR}{0,200}${TAIL2}`;
+const FOLDED_SECTION_FENCE = new RegExp(
+  [
+    // C: only as a whole line — at its start, or running to its end. A `==`
+    // between two operands (`status == CLOSED || claim == 0`) is neither.
+    `(?<![^\\n\\r])[ \\t]*${CLOSING_LINE}`,
+    `${CLOSING_LINE}(?=[ \\t]*(?:[\\n\\r]|$))`,
+    // Anywhere in a line, the plain shape: `=== END SOURCE EVIDENCE ===`, `===ENDCLAIMS===`.
+    `${OPEN2}${SEP}${END}${SEP}${labelModifiers}${SECTION_NOUN}${SEP}${TAIL2}`,
+    `${OPEN2}${SEP}${END}${AFTER_END}${labelModifiers}${SECTION_NOUN}`,
+    `${OPEN2}[ \\t]*${END}[A-Z0-9]{0,40}?${SECTION_NOUN}[ \\t]*(?=[\\n\\r]|$)`,
+    `(?<![A-Z0-9])${END}${AFTER_END}${labelModifiers}${SECTION_NOUN}[ \\t]*${TAIL2}`,
+    `${OPEN3}${FILLER}${SECTION_NOUN}` +
+      `(?:${SEP1}${MODIFIER}){0,8}${SEP}\\([^()=\\n]{0,200}\\)${SEP}${TAIL3}`,
+  ].join("|"),
+  "gu",
+);
+
+/**
+ * #1360 — the impact run summary's `<<<IMPACTED ITEMS …>>> … <<<END ITEMS>>>`
+ * terminator after any run of `<` (`<<END ITEMS>>`, `<END ITEMS>`,
+ * `</END ITEMS>`, the one-sided `<<END ITEMS`) or before two or more `>`
+ * (`END ITEMS>>`). A bare run of three or more brackets is
+ * {@link FOLDED_REQUIREMENT_FENCE}'s. Only the terminator, as for the
+ * requirement fence: `List<Item>` and `items >> 2` are ordinary text.
+ */
+const FOLDED_ITEMS_FENCE = new RegExp(
+  `(?<!<)<+[\\s_/-]*${END}${SEP}${pluralisable("ITEM")}(?:${SEP}>+)?` +
+    `|(?<![A-Z0-9])${END}${SEP}${pluralisable("ITEM")}${SEP}>{2,}`,
+  "g",
+);
+
+/**
  * HTML character references, read as the character they encode. Bounded: at most
  * 7 decimal or 6 hex digits, so each `&` costs a constant amount of scanning.
  * `&lt` / `&gt` also decode WITHOUT the semicolon, as HTML's legacy parsing does
@@ -337,6 +511,30 @@ export function scrubFenceLookalikes(raw: string, replacement: string): string {
  */
 export function scrubRequirementFenceLookalikes(raw: string, replacement: string): string {
   return scrubFolded(raw, replacement, FOLDED_REQUIREMENT_FENCE);
+}
+
+/**
+ * #1360 — the same scrub for the `=== LABEL ===` section fences
+ * ({@link FOLDED_SECTION_FENCE}): every span that reads as a forged closing
+ * line (`=== END EVIDENCE ===`, one-sided or compact) or a forged opening
+ * (`=== EVIDENCE … ===`), exactly or through a look-alike, becomes
+ * `replacement`. Returns `raw` itself when there is no such span.
+ *
+ * `replacement` must contain no `=` and no label word (`[REDACTED-FENCE]`).
+ */
+export function scrubSectionFenceLookalikes(raw: string, replacement: string): string {
+  return scrubFolded(raw, replacement, FOLDED_SECTION_FENCE);
+}
+
+/**
+ * #1360 — the impact run summary's short `END ITEMS` terminator
+ * ({@link FOLDED_ITEMS_FENCE}). Use AFTER {@link scrubRequirementFenceLookalikes},
+ * which covers every run of three or more brackets.
+ *
+ * `replacement` must contain no `<`, `>` and no `END ITEMS` (`[REDACTED-FENCE]`).
+ */
+export function scrubItemsFenceLookalikes(raw: string, replacement: string): string {
+  return scrubFolded(raw, replacement, FOLDED_ITEMS_FENCE);
 }
 
 function scrubFolded(raw: string, replacement: string, pattern: RegExp): string {

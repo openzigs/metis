@@ -812,14 +812,8 @@ offset map (two `Int32Array`s) is only built when the text holds a match.
   cache prefix), the fence literal is stated in several system prompts, and
   the defence would rest on the model comparing nonces. The scrub removes the
   look-alike instead.
-- **Other `===` delimiter styles** are not covered yet: the `=== END FINDING ===`
-  / `=== END EVIDENCE ===` fences in `analysis/absence-verification.ts` and
-  `analysis/support-panel.ts`, the `=== END … MINED RULES ===` fences in
-  `docs-gen/holistic-synthesizer.ts`, `=== END SOURCE EVIDENCE ===` in
-  `docs-gen/grounding/faithfulness-judge.ts` and `=== END QUESTION ===` /
-  `=== END ANSWER ===`-style fences in `rag/model-ragas-judge.ts` insert their
-  text as-is, and an impact run-summary title can still forge an item line
-  inside `<<<IMPACTED ITEMS>>>` with a quote and a newline (#1360).
+- **Other `===` delimiter styles** are covered by their own sibling scrub
+  (13.4), not by widening this one.
 
 ### 13.3 The requirement fence (#1351)
 
@@ -852,3 +846,117 @@ XML/ReqIF elements (`<Requirement>…</Requirement>`), the SysML stereotype
 `<<requirement>>`, `«Requirement»`, `latency < requirement`,
 `requirement >> design`, `requirement -> design` and shift operators. Text
 with nothing fence-shaped is returned as the same string.
+
+### 13.4 Section fences and impact item lines (#1360)
+
+Five more builders wrap untrusted text in `=== LABEL ===` fences:
+`analysis/absence-verification.ts` and `analysis/support-panel.ts`
+(`=== FINDING … ===` / `=== END FINDING ===`, `=== EVIDENCE … ===` /
+`=== END EVIDENCE ===`, around a model-written finding and retrieved
+repository or document excerpts), `docs-gen/grounding/faithfulness-judge.ts`
+(`=== SOURCE EVIDENCE … ===` and `=== CLAIMS TO JUDGE … ===`; a claim is
+scrubbed too, and its verdict is matched against the text the model was shown
+and reported against the original claim), `docs-gen/holistic-synthesizer.ts` (the Phase-1
+`=== DETERMINISTICALLY-MINED … ===` / `=== END … MINED RULES ===` inventories,
+the SAS step pipeline and dataset lineage, and `=== DATA_LINEAGE … ===`, all
+built from repository source; the same message's source code, formula
+expressions and rationale comments are scrubbed too, so source cannot forge an
+inventory) and `rag/model-ragas-judge.ts`
+(`=== QUESTION … ===`, `=== ANSWER TO GRADE … ===`). The relevancy judge runs
+only from `scripts/rag-eval.ts` with `RAGAS_JUDGE=model`; the online scorer
+uses the stub judge. It is scrubbed all the same.
+
+That text goes through `scrubSectionFenceLookalikes`: the fold of 13.1, with
+its own pattern. These fences have no unique token, and `===` is also
+JavaScript's strict equality, so a span needs one of the labels' head words
+(`FINDING`, `EVIDENCE`, `QUESTION`, `ANSWER`, `CLAIM`, `RULE`, each optionally
+plural, and `INVENTORY`, `PIPELINE`, `LINEAGE`; an `L` also matches `I`,
+because the fold reads a lower-case `l` as `I`, so `=== end rules ===` is
+caught). No span crosses a line break, and every `=` run is at least two
+long (a Markdown-escaped `\=\=\=` counts: `\` folds to a separator). A span is
+one of:
+
+- **a closing line**: a `=` run, then within 200 characters (none of them
+  `=`, a line break or `& ; { } < > ! ? *`) a terminator word (`END`, `ENDS`,
+  `CLOSE`, `CLOSING`…, not inside a word) and a noun in either order, then a
+  `=` run, where the span starts its line (after spaces) or runs to its end.
+  Caught: `=== END: EVIDENCE ===`, `=== END (EVIDENCE) ===`,
+  `=== END/EVIDENCE ===`, `=== END.EVIDENCE ===`, `=== END "FINDING" ===`,
+  `=== EVIDENCE END ===`, `=== EVIDENCE ENDS HERE ===`,
+  `=== CLOSE EVIDENCE ===`, `// === CLOSE EVIDENCE ===`,
+  `=== END OF ALL OF THE EVIDENCE … ===`. The line anchor keeps compound
+  conditions out: a `==` between two operands neither starts nor ends a line;
+- **the plain shape, anywhere in a line**: a `=` run, `END`, up to three of the
+  words real terminators use (`SOURCE`, `MINED`, `SAS`, `STEP`, `DATASET`,
+  `DATA`, the inventory languages, `C`, `C++`, `C#`, `OF`, `THE`, `ALL`), a
+  noun, a `=` run (`=== END SOURCE EVIDENCE ===`, `===ENDEVIDENCE===`,
+  `=== END C++ MINED RULES ===`);
+- **one-sided**: a `=` run, `END`, whitespace, `:` or a dash, up to three of
+  those words, a noun (`=== END EVIDENCE`, `=== END: EVIDENCE`); a `=` run and
+  `END` directly followed by the noun at the end of a line
+  (`=== ENDEVIDENCE`); or `END` (not inside a word), whitespace, `:` or a dash,
+  those words, a noun and a `=` run (`END EVIDENCE ===`). Only those words,
+  not any word, because `|` folds to `I`: `== end || rules` would otherwise
+  read as `== END II RULES`;
+- **a forged opening**: three or more `=`, the noun, up to eight words, a
+  parenthetical, three or more `=`
+  (`=== EVIDENCE THE AGENT RETRIEVED (untrusted) ===`). Every real opening
+  carries its parenthetical.
+
+Left alone, as ordinary code and prose (tested byte-identical):
+`if (x === endRules) {`, `const endRules = x`, `x === END_RULE`,
+`pos >= END_QUESTIONS`, `end_rules = load()`, `start = end_rules = 0`,
+`pos = end_of_rules == 3`, `if (kind === evidence)`, `a === answer || b === c`,
+`const remaining = end - questions.length;`, comment banners such as
+`/* ===== VALIDATION RULES ===== */`, MediaWiki `== Evidence ==`, setext
+headings, and a block-closing keyword followed on the next line by an
+assignment (Ruby/Lua `end`, VB `End If`, COBOL `END-IF` and
+`IF END-OF-RULES = 'Y'`, Fortran `end do`, SQL `END`, Markdown `## The end`),
+and compound conditions with a terminator-like word and a noun between two
+`==` (`return claim.status == ClaimStatus.CLOSED || claim.reserve == 0;`,
+`if claim.status == "CLOSED" or claim.amount == 0:`,
+`if (a == end || rules == b)`, `while pos == end and answer == None:`, and the
+`===` form in JavaScript).
+
+**Not caught** (tested):
+- a single `=` on either side (`= END EVIDENCE =`);
+- a fence split across lines (`===` / `END` / `EVIDENCE` / `===`);
+- other delimiters: `--- END EVIDENCE ---`, `### END EVIDENCE ###`,
+  `**END EVIDENCE**`, and the bare `END EVIDENCE`;
+- a one-sided `=== END_EVIDENCE` (`_` after `END`; two-sided
+  `===END_EVIDENCE===` is caught);
+- a terminator word outside the set (`=== FINISHED FINDING ===`);
+- a reordered, punctuated or `CLOSE` closing line in the MIDDLE of a line,
+  with text on both sides (`foo === EVIDENCE END === bar`); the plain shape
+  `foo === END EVIDENCE === bar` is caught;
+- a forged opening with no parenthetical (`=== EVIDENCE ===`,
+  `=== EVIDENCE THE AGENT RETRIEVED ===`).
+
+**Redacted although ordinary** (tested), because the folded copy cannot tell
+them from a fence: a line ending in `=== endRules` (the compact one-sided
+form), any line that starts or ends with a `==`-bounded span holding a
+terminator word and a noun (a code line rarely does: an operand follows `==`),
+and a heading with a parenthetical such as `=== Rules (draft) ===`. A
+Markdown-escaped closing line keeps its leading `\`.
+
+**Impact item lines.** Inside `<<<IMPACTED ITEMS>>>` each item is one line,
+`- severity=… tables=[…] requirement="…"`. The title is now: line breaks
+(`\r\n`, `\r`, `\n`, `\v`, `\f`, U+0085, U+2028, U+2029) collapsed to a space;
+the requirement scrub (13.3) and `scrubItemsFenceLookalikes`, which redacts
+`END ITEMS` after any run of `<` (`<<END ITEMS>>`, `<END ITEMS>`,
+`</END ITEMS>`) or before two or more `>` (`END ITEMS>>`); and then written
+as a JSON string literal, so a `"` is `\"` and cannot end the value. A title
+with no `"`, `\`, control character or line break reaches the model unchanged;
+one that has them now reads as JSON escapes.
+
+Outside this scrub, and tracked as follow-ups: the support panel's
+`--- path:line ---` excerpt headers inside the evidence block, and table names
+in the impact run summary. Not yet scrubbed either, and outside the five
+builders #1360 listed: the docs-gen Phase-2 writer's
+`=== RETRIEVED GROUNDING SOURCES ===` block
+(`docs-gen/grounding/grounding-context.ts`, the same source text the
+faithfulness judge now sees scrubbed) and its `=== … FORMULAS ===` block
+(`docs-gen/holistic-synthesizer.ts`, the same formula expressions Phase 1 now
+scrubs), plus the `END FLOW` / `END MODULE FACTS` fences and those in
+`schema-inventory.ts` and `canonical-facts.ts`, whose contents have not been
+traced for untrusted input.

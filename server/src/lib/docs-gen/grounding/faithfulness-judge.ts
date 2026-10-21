@@ -42,6 +42,7 @@
  */
 import { z } from "zod";
 import type { AIProvider, ChatMessage, ResponseFormat } from "../../ai/types.js";
+import { scrubSectionFenceLookalikes } from "../../ai/tool-runtime/fence-scrub.js";
 import { createChildLogger } from "../../logger.js";
 import { isTruncationFinishReason } from "../truncation.js";
 import type { GroundingContext } from "./grounding-context.js";
@@ -358,8 +359,15 @@ export class FaithfulnessJudge {
     signal?: AbortSignal,
     resplit?: (half: string[]) => string,
   ): Promise<{ verdicts: ClaimVerdict[] | null; unparseable: boolean; truncated?: true }> {
-    const claimsBlock = batch.map((c, i) => `${i + 1}. ${c}`).join("\n");
-    const evidenceText = `=== SOURCE EVIDENCE (untrusted data) ===\n${evidence}\n=== END SOURCE EVIDENCE ===`;
+    // #1360 — a claim is decomposed from model-written text that may echo
+    // untrusted documents, so it cannot close or forge a fence either. The model
+    // echoes the claim it was SHOWN, so verdicts are matched against that text
+    // and re-anchored to the original claim (identical when nothing was scrubbed).
+    const shownClaims = batch.map((c) => scrubSectionFenceLookalikes(c, "[REDACTED-FENCE]"));
+    const claimsBlock = shownClaims.map((c, i) => `${i + 1}. ${c}`).join("\n");
+    // #1360 — the evidence cannot close or forge a `=== … ===` section fence.
+    const shownEvidence = scrubSectionFenceLookalikes(evidence, "[REDACTED-FENCE]");
+    const evidenceText = `=== SOURCE EVIDENCE (untrusted data) ===\n${shownEvidence}\n=== END SOURCE EVIDENCE ===`;
     const claimsText = `=== CLAIMS TO JUDGE (return one verdict per claim, in this order) ===\n${claimsBlock}\n=== END CLAIMS ===`;
 
     // When prompt caching is enabled the user turn is [claims, evidence] — the
@@ -464,7 +472,7 @@ export class FaithfulnessJudge {
     }
     if (format) log.info("Faithfulness judge batch parsed", { mode: format.type });
 
-    const matched = this.alignVerdicts(rawVerdicts, batch);
+    const matched = this.alignVerdicts(rawVerdicts, batch, shownClaims);
     const ratio = batch.length === 0 ? 0 : matched.length / batch.length;
     const matchLog = {
       matched: matched.length,
@@ -533,7 +541,12 @@ export class FaithfulnessJudge {
    * verdicts cannot satisfy two distinct claims.
    * @internal — exposed for testing.
    */
-  alignVerdicts(rawVerdicts: ClaimVerdict[], requestedClaims: string[]): ClaimVerdict[] {
+  alignVerdicts(
+    rawVerdicts: ClaimVerdict[],
+    requestedClaims: string[],
+    /** #1360 — the claim text the model was shown, index for index (defaults to requestedClaims). */
+    shownClaims: readonly string[] = requestedClaims,
+  ): ClaimVerdict[] {
     // Map normalized verdict-claim → queue of verdicts (preserve duplicates so a
     // repeated claim text can still match multiple requested claims if present).
     const byNorm = new Map<string, ClaimVerdict[]>();
@@ -546,8 +559,8 @@ export class FaithfulnessJudge {
     }
 
     const aligned: ClaimVerdict[] = [];
-    for (const claim of requestedClaims) {
-      const key = normalizeClaim(claim);
+    for (const [i, claim] of requestedClaims.entries()) {
+      const key = normalizeClaim(shownClaims[i] ?? claim);
       const bucket = byNorm.get(key);
       if (!bucket || bucket.length === 0) continue; // no verdict for this claim → drop it
       const v = bucket.shift()!;
