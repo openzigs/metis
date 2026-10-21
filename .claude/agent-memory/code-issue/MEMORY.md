@@ -118,3 +118,5 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Docs-gen reuse + regenerate](project_docs-gen-section-reuse-and-regenerate.md) — checkpoint timing; one-child trim; stage (#1317)
 - [Headless Chrome offline proof](project_headless-chrome-network-lockdown.md) — interception + CSP + launch args; real probe (#1321)
 - [`\u` escapes land literal](project_unicode-escapes-arrive-literal.md) — use String.fromCodePoint; scan for Cf/bidi; `(?<!=)=+` linear (#1114)
+- [Unmounted-middleware ratchet](project_unmounted-mw-ratchet.md) — inline a limiter's handler; never export it (#1117)
+- [Supertest peer in beforeAll](project_supertest-beforeall-peer-differs.md) — 127.0.0.1 vs ::1; spend peer limits per test (#1117)

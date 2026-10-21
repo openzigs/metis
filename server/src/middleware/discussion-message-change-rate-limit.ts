@@ -19,7 +19,9 @@
  *    never a value the caller chooses: a request carrying an access token THIS
  *    server signed is keyed on the user id inside it (`signedAccessTokenUserId`,
  *    a signature check, no database read); every other request is keyed on the
- *    TCP peer, never a header. Those are requests `requireAuth` refuses anyway.
+ *    TCP peer, never a header. Those are requests `requireAuth` refuses anyway,
+ *    so a spent peer bucket answers `requireAuth`'s own 401, not 429 (#1117,
+ *    `preauth-limit-handler.ts`).
  *
  * WHY NOT THE CLIENT ADDRESS. `req.ip` under `trust proxy = 1` is the last
  * entry of `X-Forwarded-For`, which the Next UI server passes through from the
@@ -32,6 +34,7 @@
  */
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { clusterRateLimitStore } from "./cluster-rate-limit-store.js";
+import { preAuthLimitReachedHandler } from "./preauth-limit-handler.js";
 import { envMs } from "../lib/config/env-ms.js";
 import { signedAccessTokenUserId } from "../lib/auth/jwt.js";
 import type { Request, RequestHandler } from "express";
@@ -103,7 +106,8 @@ export const discussionMessageChangePreAuthRateLimiter: RequestHandler = rateLim
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => discussionMessageChangePreAuthKey(req as unknown as Request),
-  message: limited,
+  // #1117 — a spent user bucket is 429; a spent peer bucket is requireAuth's 401.
+  handler: preAuthLimitReachedHandler(discussionMessageChangePreAuthKey, limited),
 }) as unknown as RequestHandler;
 
 export const discussionMessageChangeUserRateLimiter: RequestHandler = rateLimit({

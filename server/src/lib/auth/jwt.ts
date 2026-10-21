@@ -305,15 +305,32 @@ export function verifyAccessToken(token: string): AuthPayload {
 }
 
 /**
- * The user id inside an access token THIS server signed, whether or not it has
- * expired; `null` for anything else (no signature match, a refresh token, a
- * malformed string). NOT an authentication — `requireAuth` decides that. It is
- * for a rate-limit key that must be something a caller cannot choose: only a
- * holder of a token we issued to a user can produce that user's id here.
+ * #1117 — how long past its `exp` an access token still names its user to
+ * {@link signedAccessTokenUserId}: 15 minutes, one rate-limit window.
+ *
+ * A token that has only just run out must keep its user's rate-limit key, so
+ * the browser reaches the `401 TOKEN_EXPIRED` it refreshes on rather than a
+ * shared bucket; the refresh round trip takes seconds. With no bound, an access
+ * token from months ago — long expired, its session since revoked — still
+ * selected its user's bucket, and whoever held it could spend that user's
+ * pre-auth allowance and have them answered 429.
+ */
+export const EXPIRED_ACCESS_TOKEN_KEY_GRACE_SECONDS = 15 * 60;
+
+/**
+ * The user id inside an access token THIS server signed that is unexpired, or
+ * expired no more than {@link EXPIRED_ACCESS_TOKEN_KEY_GRACE_SECONDS} ago;
+ * `null` for anything else (no signature match, a refresh token, a malformed
+ * string, a token expired longer ago). NOT an authentication — `requireAuth`
+ * decides that. It is for a rate-limit key that must be something a caller
+ * cannot choose: only a holder of a token we issued to a user can produce that
+ * user's id here.
  */
 export function signedAccessTokenUserId(token: string): string | null {
   try {
-    const decoded = jwt.verify(token, getSecret(), { ignoreExpiration: true }) as {
+    const decoded = jwt.verify(token, getSecret(), {
+      clockTolerance: EXPIRED_ACCESS_TOKEN_KEY_GRACE_SECONDS,
+    }) as {
       userId?: unknown;
       type?: unknown;
     };
