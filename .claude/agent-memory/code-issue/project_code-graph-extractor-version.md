@@ -19,3 +19,10 @@ The code graph has an extractor version since #1071. A parser change that alters
 - The version is stamped once the tree was upgraded. A file that cannot be re-parsed is named in `IngestStats.filesUpgradeFailed` and remembered in `CodeGraph.extractorUpgradeFailed` with the hash of the content that failed; it is retried only when that content changes, so one broken file does not make every ingest redo the upgrade.
 - Run `tests/generated-doc-regeneration.test.ts`: its `#1071` block fails if the new upgrade schedules a regeneration, and if a graph-only change AFTER it does not.
 - Say what the first refresh after upgrading does in `docs/OPERATIONS.md` and the changelog fragment, not only in the PR body.
+
+## Other #1071 resolver lessons, folded here (retired from the index 2026-10-21; files unchanged)
+
+- [[binding-more-edges-check-fallback-consumers]] — binding more edges changes what every fallback consumer sees; diff replay tables per seed.
+- [[identifier-shape-change-rerun-other-features-probes]] — after an identifier shape change old fixtures stay green; re-run the other features' probes.
+- [[decided-verdicts-need-positive-evidence]] — a verdict downstream treats as decided (Go `external`) needs positive evidence; "could not determine" stays undecided so the fallback runs.
+- [[suppression-rule-needs-positive-evidence-acknowledged-once]] — "skip X when only Y changed" needs evidence Y happened in THIS run, acknowledged once; never infer it from a missing field.

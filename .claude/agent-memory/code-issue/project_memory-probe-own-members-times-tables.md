@@ -46,6 +46,11 @@ was 200 times too small.
   the count rule alone.
 
 See also `project_retained-counter-sees-only-what-it-was-written-for.md` (cycle 5) and
-`project_memoised-closure-cache-is-entities-times-closure.md` (cycle 4).
+`project_memoised-closure-cache-is-entities-times-closure.md` (cycle 4). Both were retired
+from the index on 2026-10-21 and are reached from here; files unchanged. In one line each:
+cycle 4 — a per-entity cache of a flattened closure is entities × closure, so probe heap at
+two sizes in a child `node --expose-gc`; cycle 5 — a retained-entry counter only sees the
+structures it was written for, so audit every `Map`/`Set` (`GO_RESOLVER_CACHES` in
+`server/src/lib/code-graph/go-type-resolution.ts`) and probe every type form.
 
 **Heap-delta baselines (#1307).** V8's usual 6-GC settle is not enough for a heap-delta test baseline: some memory is freed only after more than 6 full GCs (`--always-osr` reproduces it: 10 of 48 runs dropped with 6 GCs, 0 of 48 with 10). Settle with more GCs, and keep every pre-baseline input reachable until the final reading.

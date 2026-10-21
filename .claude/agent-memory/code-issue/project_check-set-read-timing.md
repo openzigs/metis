@@ -23,4 +23,11 @@ Measured across PR heads, 2026-10-16/17 (#1217 re-review, then every PR from #12
 
 - **22 checks, not 21, when `real-model-worker` runs** (2026-10-20). It is path-filtered (`embed-real-model-nightly.yml:23-37`: `pnpm-lock.yaml`, `pnpm-workspace.yaml`, server/embeddings package manifests, the embed sources and tests), so any lockfile or workspace change adds it. `Check CLA signature` reads `skipping` on owner PRs (`cla.yml:68-73`, author `mgcronin`).
 
+- **Waiting from an isolated worktree** (PR #1316): Bash there refuses `sleep N` chained before another command. Wait with `timeout 570 gh pr checks <pr> --watch` on its own, then re-read.
+
 - **A PR whose base moved with conflicts gets zero `pull_request` workflow runs** (#1308): `gh pr checks` then shows only the CLA check, which reads like a queue. Check `gh pr view <pr> --json mergeable` before waiting on CI.
+
+## Folded here (retired from the index 2026-10-21; files unchanged)
+
+- [[project_cancelled-no-runner-checks]] — a red check with 0 steps and a log 404 was cancelled in the queue, not failed: re-run; stuck `in_progress` for hours: `gh pr update-branch`.
+- [[image-budget-rationale-lives-in-three-places]] — the server image-budget rationale lives in `docs/OPERATIONS.md` and two comments (`verify-image-size.mjs`, `ci.yml`); an instance of "Correcting a fact in one place" above.

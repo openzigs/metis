@@ -13,12 +13,24 @@ From #1210 (2026-10-16). Checked against `main` at b16dcc30.
   `LOWER` folds ASCII only on SQLite. Example: `findCrossProjectOwners` in
   `server/src/lib/publishing/cross-project-guard.ts`.
 - **Importing `resolveDatabaseProvider` from `lib/prisma.ts` breaks test mocks.** Every
-  `vi.mock` of `prisma.js` that returns only `{ prisma, Prisma }` then lacks the export.
-  Prefer SQL both databases accept over branching on the provider.
+  `vi.mock` of `prisma.js` that returns only `{ prisma, Prisma }` then lacks the export
+  ("No export defined on the mock"; recurred on PR #1314). Grep the importers' tests and add
+  the export to each factory. Prefer SQL both databases accept over branching on the provider.
 - **A new `*-postgres.integration.test.ts`** needs its own `pnpm test:integration <name>` step
   in `ci.yml`'s `postgres-adapter` job; nothing checks that, so a suite with no step never
-  runs. Its `src/` imports must be in `POSTGRES_PATTERNS` (`scripts/lib/ci-changes-core.mjs`),
-  which `scripts/lib/ci-changes-repo.test.mjs` does check.
+  runs. Every `../src/` import **and every `vi.mock` target** must be in `POSTGRES_PATTERNS`
+  (`scripts/lib/ci-changes-core.mjs`), which `scripts/lib/ci-changes-repo.test.mjs` does
+  check (PR #1314).
+
+## Re-read after the lock; SQLite cannot test it (PR #1314)
+
+- In `server/src/lib/reviews/review-service.ts`, a value read by `loadReviewOr404` BEFORE the
+  transaction (e.g. an item's saved prior status) is safe only while no other transaction
+  writes it. Once another review can write those rows, re-read them inside the transaction,
+  after the lock.
+- `lockScopeRequirements` / `lockRequirementSet` are no-ops on SQLite, so no SQLite test can
+  tell "read after the lock" from "read before it": moving the read above the lock still
+  passes. Prove such a fix with a forced-interleave Postgres integration test.
 
 Older entries, folded here (retired from the index 2026-10-16; files unchanged):
 

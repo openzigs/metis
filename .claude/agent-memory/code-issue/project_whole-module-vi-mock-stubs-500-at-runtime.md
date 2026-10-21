@@ -44,3 +44,18 @@ strictly better and cannot rot.
 **Where to look first** when a supertest case returns an unexplained 500:
 `console.log(res.status, JSON.stringify(res.body))` — vitest's mock errors
 arrive as ordinary thrown errors and are swallowed by the app's error handler.
+
+## A Prisma double must honour `select` (PR #1315)
+
+A `findUnique` mock that returns a full fixture whatever `select` asks for hides a
+column the real query forgot to select: the code reads it from the fixture and
+the test passes. Make the double apply `select` — the `selecting()` helper in
+`server/tests/comments-live-997.test.ts` does. Same family as the publishing
+doubles that ignored `where` ([[publishing-safety-is-tested-on-the-stamped-body]]).
+
+## Other vitest mock traps, folded here (retired from the index 2026-10-21; files unchanged)
+
+- [[vi-mock-const-misses-default-param]] — mocking an exported constant does not
+  reach a default parameter inside the same module; pass it explicitly (#509).
+- [[vitest-beforeeach-return-is-cleanup]] — `beforeEach(() => m.mockReset())`
+  returns the mock, which vitest runs as cleanup; use a block body (#685).

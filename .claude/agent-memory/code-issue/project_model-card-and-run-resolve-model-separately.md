@@ -13,4 +13,6 @@ In METIS, the Model card (model-recommendation route, `server/src/routes/model-p
 
 - When a model decision moves from `ModelRouter.select()`/`buildSelection` to a raw id the orchestrator sends itself (`resolveRunModel`, `runBudgetDowngrade`), it loses `buildSelection`'s fallback to `provider.model` for ids the provider cannot serve. Every raw-id path must apply `cannotServe` itself. Probe with `{key:'openai', model: SONNET_MODEL_ID, servesRouterModel: () => false}` (PR #1150 re-review 3).
 
+**Folded here (retired from the index 2026-10-21; file unchanged):** [[model-resolution-three-entry-points]] — the RUN path itself resolves the model at three entry points (start, resume via `resumeSkippedRepos`, regenerate reloading raw `metadata.model`); PR #523's first fix covered only start. Cover all three, each with a non-Claude-provider test.
+
 **How to apply:** for every Auto-semantics change, write one test per path (route test + orchestrator `modelsSentBy`) for each config combination, and prove each by deleting the wiring line at that call site.
