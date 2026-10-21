@@ -270,11 +270,15 @@ function makeProvider(script: string[]) {
 
 let cloneRoot: string;
 
-async function runPipeline(script: string[]): Promise<void> {
+async function runPipeline(
+  script: string[],
+  extraDeps: Partial<ConstructorParameters<typeof AnalysisOrchestrator>[0]> = {},
+): Promise<void> {
   const orch = new AnalysisOrchestrator({
     provider: makeProvider(script) as never,
     retrieve: async () => [],
     knowledge: {} as never,
+    ...extraDeps,
   });
   await (
     orch as unknown as {
@@ -415,6 +419,20 @@ describe("#1322 — connector present, clone HOLLOW (directories, no files)", ()
     expect(promptOffersFileTools()).toBe(false);
     expect(capability()?.reasons).toContain("repo-clone-unavailable");
     expect(capability()?.reasons).not.toContain("code-retrieval-degraded");
+  });
+
+  it("offers the file tools again once the clone is restored at the graph's commit", async () => {
+    const prepareRepoClone = vi.fn(async (_projectId: string, connectorId: string) => {
+      // What a successful restore leaves: the working tree back on disk.
+      const dir = path.join(cloneRoot, connectorId, "server/src/drift");
+      await writeFile(path.join(dir, "severity.ts"), "export const s = 1;\n", "utf8");
+      return "restored" as const;
+    });
+    await runPipeline(GRAPH_ONLY_SCRIPT, { prepareRepoClone });
+
+    expect(prepareRepoClone).toHaveBeenCalledWith(PROJECT_ID, CONNECTOR_ID);
+    expect(promptOffersFileTools()).toBe(true);
+    expect(capability()?.reasons ?? []).not.toContain("repo-clone-unavailable");
   });
 });
 
