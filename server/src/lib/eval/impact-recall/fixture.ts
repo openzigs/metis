@@ -34,8 +34,11 @@ import type { SchemaEdgeKind } from "@metis/shared";
 import { SCHEMA_IMPACT_EDGE_KINDS } from "@metis/shared";
 import {
   Bm25CodeSymbolSearcher,
+  MemoizingBm25CodeSymbolSearcher,
   type CodeSymbolSearcher,
 } from "../../traceability/requirement-code-mapping.js";
+import { formatSymbolForEmbedding } from "../../code-graph/symbol-embeddings.js";
+import type { EmbeddableSymbol } from "../recorded-vectors.js";
 import { InMemoryCodeGraphDataSource } from "../../impact-analysis/impact-analysis-engine.js";
 import type {
   CodeGraphDataSource,
@@ -299,6 +302,44 @@ function enclosingTypeOf(qualifiedName: string): string | null {
  * scoped filter included, exactly like the Prisma-backed path).
  */
 export function buildBm25Searcher(symbols: FixtureCodeSymbol[]): CodeSymbolSearcher {
+  return new Bm25CodeSymbolSearcher(symbolStub(symbols));
+}
+
+/** #1097 — the memoizing BM25 searcher the hybrid arm ranks into and falls back to. */
+export function buildMemoizingBm25Searcher(
+  symbols: FixtureCodeSymbol[],
+): MemoizingBm25CodeSymbolSearcher {
+  return new MemoizingBm25CodeSymbolSearcher(symbolStub(symbols));
+}
+
+/**
+ * #1097 — the in-corpus symbols with the text production embeds for each. The
+ * manifest carries no source, so it is the `{kind} {name} in {filePath}` head
+ * line alone (`formatSymbolForEmbedding`).
+ */
+export function embeddableSymbols(symbols: FixtureCodeSymbol[]): EmbeddableSymbol[] {
+  return symbols
+    .filter((s) => s.inCorpus)
+    .map((s) => ({
+      symbolId: s.id,
+      name: s.name,
+      qualifiedName: s.qualifiedName,
+      kind: s.kind,
+      filePath: s.filePath,
+      embeddingText: formatSymbolForEmbedding({
+        kind: s.kind,
+        name: s.name,
+        filePath: s.filePath,
+      } as Parameters<typeof formatSymbolForEmbedding>[0]),
+    }));
+}
+
+/** #1097 — the corpus's committed recorded vectors (`recorded-vectors.ts`). */
+export function recordedVectorsFile(dir: string): string {
+  return path.join(dir, "vectors.gte-modernbert-base.json");
+}
+
+function symbolStub(symbols: FixtureCodeSymbol[]): Pick<PrismaClient, "codeSymbol"> {
   const corpus = symbols.filter((s) => s.inCorpus);
   const stub = {
     codeSymbol: {
@@ -318,7 +359,7 @@ export function buildBm25Searcher(symbols: FixtureCodeSymbol[]): CodeSymbolSearc
       },
     },
   } as unknown as Pick<PrismaClient, "codeSymbol">;
-  return new Bm25CodeSymbolSearcher(stub);
+  return stub;
 }
 
 function toGraphSymbol(s: FixtureCodeSymbol): GraphSymbol {

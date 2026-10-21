@@ -66,6 +66,13 @@ export interface HybridSearchResult {
   kind: string;
   score: number;
   snippet?: string;
+  /**
+   * #1097 — the vector channel's own similarity for this symbol (the store's
+   * cosine), when that channel returned it. `score` is the fused RRF score,
+   * which says where a hit RANKED and nothing about how close it is: rank 1
+   * scores the same for every query. Absent for a hit only BM25 found.
+   */
+  vectorScore?: number;
 }
 
 export interface HybridSearchOptions {
@@ -771,6 +778,9 @@ export class HybridCodeSearch {
       }
     }
 
+    // #1097 — each vector hit's own similarity, carried onto the result.
+    const vectorScores = new Map(vectorResults.map((v) => [v.id, v.score]));
+
     // RRF fusion with weights
     const bm25Ranked = bm25Results.map((r) => ({ id: r.symbolId, score: r.score }));
 
@@ -810,6 +820,7 @@ export class HybridCodeSearch {
         kind: sym.kind,
         score,
         snippet: sym.snippet ?? sym.signature,
+        ...(vectorScores.has(id) ? { vectorScore: vectorScores.get(id) } : {}),
       });
     }
 

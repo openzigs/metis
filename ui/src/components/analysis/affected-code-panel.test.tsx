@@ -81,7 +81,31 @@ describe("AffectedCodePanel", () => {
       /a type is shown only when the requirement uses the last word of its name, and a table column only when the requirement names its table/,
     );
     expect(panel).toHaveTextContent(/Test code is not shown/);
+    // A run recorded before #1097 carries no ranking: its confidence was relative.
     expect(panel).toHaveTextContent(/not a probability/);
+    expect(panel).not.toHaveTextContent(/Ranked by/);
+  });
+
+  it("#1097 — a hybrid run says so, states the confidence floor, and that confidence is absolute", () => {
+    render(<AffectedCodePanel affectedCode={{ ...affectedCode, retrievalMode: "hybrid" }} />);
+    const panel = screen.getByTestId("affected-code-explainer");
+    expect(panel).toHaveTextContent(/Ranked by meaning and keywords together/);
+    expect(panel).toHaveTextContent(/confidence is at least 0.08/);
+    expect(panel).not.toHaveTextContent(/shares at least two of the requirement's terms/);
+    expect(panel).toHaveTextContent(/same scale for every requirement/);
+    expect(panel).not.toHaveTextContent(/not a probability/);
+    expect(screen.getByTestId("affected-code-empty-NR-4")).toHaveTextContent(
+      /No symbol is close enough to this requirement and about its subject/,
+    );
+  });
+
+  it("#1097 — a keyword-only run says the embeddings were not used, and keeps the two-term rule", () => {
+    render(<AffectedCodePanel affectedCode={{ ...affectedCode, retrievalMode: "bm25-only" }} />);
+    const panel = screen.getByTestId("affected-code-explainer");
+    expect(panel).toHaveTextContent(/Ranked by keywords only/);
+    expect(panel).toHaveTextContent(/Re-run once embedding has finished to compare/);
+    expect(panel).toHaveTextContent(/shares at least two of the requirement's terms/);
+    expect(panel).toHaveTextContent(/same scale for every requirement/);
   });
 
   it("notes when the prompt block was cut for length", () => {

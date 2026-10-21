@@ -14,7 +14,10 @@
  */
 import { computeProjectImpact } from "../../impact-analysis/impact-analysis-engine.js";
 import type { ChangedRequirement } from "../../impact-analysis/extract-changes.js";
-import { mapRequirementToCode } from "../../traceability/requirement-code-mapping.js";
+import {
+  mapRequirementToCode,
+  type CodeSymbolSearcher,
+} from "../../traceability/requirement-code-mapping.js";
 import { aggregateScores, scoreCase, type AggregateScore, type CaseScore } from "./scorer.js";
 import type { ReqMapCase, ReqMapFixture } from "./fixture.js";
 
@@ -87,11 +90,12 @@ export function caseToChange(c: ReqMapCase): ChangedRequirement {
 export async function predictAffectedFiles(
   fixture: ReqMapFixture,
   c: ReqMapCase,
+  // #1097 — the arm: the fixture's BM25 searcher by default, or the hybrid one.
+  searcher: CodeSymbolSearcher = fixture.searcher,
 ): Promise<string[]> {
   const impact = await computeProjectImpact(caseToChange(c), fixture.projectId, {
-    // Inject the fixture's production BM25 searcher — no DB.
-    mapRequirement: (req, projectId) =>
-      mapRequirementToCode(req, projectId, {}, { searcher: fixture.searcher }),
+    // Inject the fixture's production searcher — no DB.
+    mapRequirement: (req, projectId) => mapRequirementToCode(req, projectId, {}, { searcher }),
     // Inject the in-memory code graph so blastRadius walks the declared callers.
     dataSourceFor: () => fixture.dataSource,
     // Code-symbol impact only — no schema crossing in this eval.
@@ -112,10 +116,13 @@ export async function predictAffectedFiles(
 }
 
 /** Run the full eval across every fixture case and aggregate the scores. */
-export async function runReqMapEval(fixture: ReqMapFixture): Promise<ReqMapEvalResult> {
+export async function runReqMapEval(
+  fixture: ReqMapFixture,
+  searcher: CodeSymbolSearcher = fixture.searcher,
+): Promise<ReqMapEvalResult> {
   const scores: CaseScore[] = [];
   for (const c of fixture.cases) {
-    const predicted = await predictAffectedFiles(fixture, c);
+    const predicted = await predictAffectedFiles(fixture, c, searcher);
     scores.push(scoreCase(c.id, predicted, c.changedFiles));
   }
   return { scores, aggregate: aggregateScores(scores) };

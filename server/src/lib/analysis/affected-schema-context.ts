@@ -64,6 +64,7 @@ import {
   mapRequirementToCode,
   type RequirementCodeMatch,
 } from "../traceability/requirement-code-mapping.js";
+import { createRequirementCodeSearcher } from "../traceability/requirement-code-searcher.js";
 import type { CodeGraphDataSource } from "../code-graph/query-service.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 
@@ -355,9 +356,12 @@ export async function computeRunAffectedSchemaContext(opts: {
 
   const prisma = (opts.deps?.prisma ??
     (defaultPrisma as unknown as RunAffectedSchemaPrisma)) as RunAffectedSchemaPrisma;
+  // #1097 — one hybrid searcher (BM25 fallback) for every candidate of the run.
+  const searcher = opts.deps?.mapRequirement ? null : createRequirementCodeSearcher(prisma);
   const mapRequirement: MapRequirementFn =
     opts.deps?.mapRequirement ??
-    ((req, projectId) => mapRequirementToCode(req, projectId, {}, { prisma }));
+    ((req, projectId) =>
+      mapRequirementToCode(req, projectId, {}, { prisma, searcher: searcher ?? undefined }));
   const dataSourceFor =
     opts.deps?.dataSourceFor ??
     ((projectId: string) => new PrismaCodeGraphDataSource(prisma, projectId));

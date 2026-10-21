@@ -14,9 +14,11 @@ import {
 } from "../src/lib/analysis/affected-code-context.js";
 import {
   Bm25CodeSymbolSearcher,
+  MemoizingBm25CodeSymbolSearcher,
   mapRequirementToCode,
   type RequirementCodeMatch,
 } from "../src/lib/traceability/requirement-code-mapping.js";
+import { HybridCodeSymbolSearcher } from "../src/lib/traceability/requirement-code-searcher.js";
 import { InMemoryCodeGraphDataSource } from "../src/lib/impact-analysis/impact-analysis-engine.js";
 import type { CodeGraphDataSource } from "../src/lib/code-graph/query-service.js";
 
@@ -439,5 +441,121 @@ describe("computeAffectedCodeContext — test code in the links (#1063, run 9)",
     const ctx = await run();
     expect(ctx.block).toContain("TestRefreshFeedEndpoint");
     expect(ctx.filePaths).toContain(TEST);
+  });
+});
+
+describe("computeAffectedCodeContext — hybrid ranking and its record (#1097)", () => {
+  const rows = [
+    ["flush", "FlushAllSessions", "internal/storage/web_session.go"],
+    ["remove", "removeSession", "internal/ui/session_remove.go"],
+    ["button", "InlineKeyboardButton", "internal/integration/telegrambot/client.go"],
+    ["caller", "handleSessions", "internal/ui/routes.go"],
+  ].map(([id, name, filePath], i) => ({
+    id: id!,
+    name: name!,
+    qualifiedName: `${filePath}::${name}`,
+    kind: "function",
+    filePath: filePath!,
+    startLine: 10 + i,
+    endLine: 20 + i,
+  }));
+  const prisma = { codeSymbol: { findMany: async () => rows } } as never;
+  const graph = new InMemoryCodeGraphDataSource(
+    rows.map((r) => ({ ...r, language: "go" })),
+    [{ id: "e", fromSymbolId: "caller", toSymbolId: "flush", kind: "calls" }],
+  );
+
+  /** A hybrid ranker answering with fixed cosines, or with nothing (not embedded). */
+  const searcherWith = (hits: Array<[string, number]> | null) =>
+    new HybridCodeSymbolSearcher({
+      bm25: new MemoizingBm25CodeSymbolSearcher(prisma),
+      hybrid: {
+        async search(_q, _p, opts) {
+          opts?.onRetrievalMode?.(hits ? "hybrid" : "bm25-only");
+          return (hits ?? []).map(([symbolId, cosine], i) => ({
+            symbolId,
+            filePath: "",
+            name: symbolId,
+            kind: "function",
+            score: 1 / (61 + i),
+            vectorScore: cosine,
+          }));
+        },
+      },
+      semanticModel: () => "Alibaba-NLP/gte-modernbert-base",
+    });
+
+  const run = (searcher: HybridCodeSymbolSearcher) =>
+    computeAffectedCodeContext({
+      projectId: "proj-miniflux",
+      extraInstructions: "- Add a button to terminate all sessions",
+      enabled: true,
+      tokenBudget: 100000,
+      deps: { prisma, dataSourceFor: () => graph, searcher },
+    });
+
+  it("records `hybrid`, and SHOWS a one-word link the embeddings rank close (no two-term rule)", async () => {
+    const ctx = await run(
+      searcherWith([
+        ["flush", 0.667],
+        ["remove", 0.649],
+        ["button", 0.45],
+      ]),
+    );
+    expect(ctx.result.retrievalMode).toBe("hybrid");
+    const shown = ctx.result.candidates[0]!.symbols;
+    expect(shown.map((s) => s.qualifiedName)).toEqual(
+      expect.arrayContaining([
+        "internal/storage/web_session.go::FlushAllSessions",
+        "internal/ui/session_remove.go::removeSession",
+      ]),
+    );
+    // The far one-word button is under the floor: not shown.
+    expect(shown.map((s) => s.qualifiedName)).not.toContain(
+      "internal/integration/telegrambot/client.go::InlineKeyboardButton",
+    );
+  });
+
+  it("reports absolute confidences: a caller is never surer than its best seed, and nothing reads 1.0", async () => {
+    const ctx = await run(searcherWith([["flush", 0.667]]));
+    const [flush, caller] = ["FlushAllSessions", "handleSessions"].map((n) =>
+      ctx.result.candidates[0]!.symbols.find((s) => s.qualifiedName.endsWith(n)),
+    );
+    expect(flush!.confidence).toBeLessThan(0.5);
+    expect(caller!.relation).toBe("caller");
+    expect(caller!.confidence).toBeLessThanOrEqual(flush!.confidence);
+    expect(ctx.block).toContain(`conf ${flush!.confidence.toFixed(2)}`);
+  });
+
+  it("records `bm25-only` when the vector channel had nothing, and keeps the keyword link rules", async () => {
+    const ctx = await run(searcherWith(null));
+    expect(ctx.result.retrievalMode).toBe("bm25-only");
+    // Every name shares one word at most: the two-term rule leaves the requirement unlinked.
+    expect(ctx.result.candidates[0]!.symbols).toEqual([]);
+    expect(ctx.block).toContain("FlushAllSessions"); // the agent is still seeded
+  });
+
+  it("records no mode for an injected mapper", async () => {
+    const ctx = await computeAffectedCodeContext({
+      projectId: "proj-miniflux",
+      extraInstructions: "- Add a button to terminate all sessions",
+      enabled: true,
+      tokenBudget: 100000,
+      deps: {
+        prisma,
+        dataSourceFor: () => graph,
+        mapRequirement: async () => [
+          {
+            codeSymbolId: "flush",
+            filePath: rows[0]!.filePath,
+            qualifiedName: rows[0]!.qualifiedName,
+            startLine: 10,
+            endLine: 20,
+            confidence: 0.5,
+          },
+        ],
+      },
+    });
+    expect(ctx.result).not.toHaveProperty("retrievalMode");
   });
 });

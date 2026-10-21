@@ -10,13 +10,16 @@
  * code. This panel renders that deterministic mapping: one collapsible section
  * per candidate, each listing the affected symbols with their
  * `filePath:startLine` locator, relation (direct vs blast-radius), and
- * confidence. Candidates with no mapped code show an explicit empty state:
- * since #1063 a direct match is shown only when the symbol's NAME (with its
- * enclosing type or table; never its file path) shares two of the
- * requirement's terms, and since #706 run 9 also its subject (the rules in
- * `sharesRequirementSubject`, server side) and is not test code, so "no link"
- * is an ordinary, honest outcome. The code
- * agent's own seed list is wider and is not what this panel shows.
+ * confidence. Since #1097 the mapping ranks with the project's symbol
+ * embeddings fused with keywords (`retrievalMode: "hybrid"`) and falls back to
+ * keywords alone (`"bm25-only"`), and the panel says which ran. Confidence is
+ * ABSOLUTE: an estimate of how often a link like it is right, the same scale
+ * on every requirement. What is shown depends on the ranking: with the
+ * embeddings, a link needs a confidence of at least 0.08; with keywords alone,
+ * the symbol's NAME must share two of the requirement's terms (#1063). Both
+ * apply the subject rules and leave test code out, so "no link" is an
+ * ordinary, honest outcome. The code agent's own seed list is wider and is not
+ * what this panel shows.
  *
  * Renders nothing when there is no mapping (plain runs / no new requirements /
  * no code graph), so it never adds noise to a standard analysis.
@@ -40,8 +43,41 @@ function relationClass(relation: AffectedCodeSymbol["relation"]): string {
     : "bg-muted text-foreground border-border";
 }
 
+/** #1097 — the sentence that says which ranking produced the links. */
+function retrievalModeNote(mode: AnalysisAffectedCode["retrievalMode"]): string {
+  if (mode === "hybrid") {
+    return " Ranked by meaning and keywords together (the project's symbol embeddings).";
+  }
+  if (mode === "bm25-only") {
+    return (
+      " Ranked by keywords only: the project's symbols are not embedded yet, or no embedding " +
+      "model is configured, so code that uses other words for the same thing can be missed. " +
+      "Re-run once embedding has finished to compare."
+    );
+  }
+  return "";
+}
+
+/**
+ * #1097 — what a confidence means. A run recorded before #1097 carries no
+ * ranking, and its confidences are relative to each requirement's best link.
+ */
+function confidenceNote(mode: AnalysisAffectedCode["retrievalMode"]): string {
+  return mode
+    ? "Confidence estimates how often a link like this one is right, on the same scale for every requirement: 0.30 means about three in ten such links were right when METIS measured it, so most links read well under 1.00."
+    : "Confidence is relative to the best link for that requirement, not a probability.";
+}
+
+/** #1097 — what a direct match needs to be shown, for the ranking that ran. */
+function linkRule(mode: AnalysisAffectedCode["retrievalMode"]): string {
+  return mode === "hybrid"
+    ? "A direct match is shown when its confidence is at least 0.08 and it is about the requirement's subject"
+    : "A direct match is shown only when the symbol's name (with its enclosing type or table, never its file path) shares at least two of the requirement's terms and its subject";
+}
+
 export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement | null {
   const candidates = affectedCode?.candidates ?? [];
+  const mode = affectedCode?.retrievalMode;
   const [open, setOpen] = useState<Record<string, boolean>>({});
   if (candidates.length === 0) return null;
 
@@ -50,15 +86,13 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
       <h4 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
         Affected code (deterministic mapping)
       </h4>
-      <p className="text-xs text-muted-foreground">
-        Each new requirement mapped to existing code via Impact Analysis (mapper + blast radius). A
-        direct match is shown only when the symbol&apos;s name (with its enclosing type or table,
-        never its file path) shares at least two of the requirement&apos;s terms and its subject:
-        when the requirement names something the project stores (such as a feed), the symbol or the
-        type it belongs to must name it too; a type is shown only when the requirement uses the last
-        word of its name, and a table column only when the requirement names its table. Test code is
-        not shown, and callers and importers of a direct match are listed with it. Confidence is
-        relative to the best link for that requirement, not a probability.
+      <p data-testid="affected-code-explainer" className="text-xs text-muted-foreground">
+        Each new requirement mapped to existing code via Impact Analysis (mapper + blast radius).
+        {retrievalModeNote(mode)} {linkRule(mode)}: when the requirement names something the project
+        stores (such as a feed), the symbol or the type it belongs to must name it too; a type is
+        shown only when the requirement uses the last word of its name, and a table column only when
+        the requirement names its table. Test code is not shown, and callers and importers of a
+        direct match are listed with it. {confidenceNote(mode)}
         {affectedCode?.truncated
           ? " Some entries were omitted from the analysis prompt for length."
           : ""}
@@ -93,10 +127,13 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
                       data-testid={`affected-code-empty-${candidate.id}`}
                       className="text-xs text-muted-foreground"
                     >
-                      No code matched. No symbol&apos;s name shares two of this requirement&apos;s
-                      terms and its subject, so nothing is linked rather than showing a weak guess.
-                      The code agent still investigates it, and may start from weaker candidates
-                      that are not shown here; see the coverage indicator.
+                      No code matched.{" "}
+                      {mode === "hybrid"
+                        ? "No symbol is close enough to this requirement and about its subject"
+                        : "No symbol's name shares two of this requirement's terms and its subject"}
+                      , so nothing is linked rather than showing a weak guess. The code agent still
+                      investigates it, and may start from weaker candidates that are not shown here;
+                      see the coverage indicator.
                     </p>
                   ) : (
                     <ul className="space-y-1.5">

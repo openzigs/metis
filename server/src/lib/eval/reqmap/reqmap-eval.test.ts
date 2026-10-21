@@ -15,8 +15,25 @@
  * no-op.
  */
 import { describe, expect, it } from "vitest";
-import { buildBm25Searcher, loadReqMapFixture, type ReqMapFixture } from "./fixture.js";
 import {
+  buildBm25Searcher,
+  buildMemoizingBm25Searcher,
+  defaultReqMapVectorsFile,
+  loadReqMapFixture,
+  type ReqMapFixture,
+} from "./fixture.js";
+import {
+  assertFullyRecorded,
+  buildEvalHybridSearcher,
+  loadRecordedVectors,
+  RecordedEmbedService,
+} from "../recorded-vectors.js";
+import {
+  ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS,
+  requirementQueryText,
+} from "../../traceability/requirement-code-mapping.js";
+import {
+  caseToChange,
   checkThresholds,
   predictAffectedFiles,
   REQMAP_EVAL_THRESHOLDS,
@@ -134,5 +151,56 @@ describe("reqmap eval — the searcher replays the display path's rule", () => {
   it("is the pre-#1063 arm when asked for one shared term", async () => {
     const hits = await buildBm25Searcher(symbols, { minSharedTerms: 1 }).search(TERMINATE, "p");
     expect(hits.map((h) => h.name).sort()).toEqual(["InlineKeyboardButton", "flushSessions"]);
+  });
+});
+
+/**
+ * #1097 — production's default ranking (hybrid) over the fixture's COMMITTED
+ * recorded vectors: no model is loaded, and a changed text fails loudly.
+ */
+describe("reqmap eval — the hybrid arm over recorded vectors (#1097)", () => {
+  async function hybrid(f: ReqMapFixture) {
+    const recording = await loadRecordedVectors(defaultReqMapVectorsFile());
+    expect(recording).not.toBeNull();
+    const embed = new RecordedEmbedService(recording!, "pnpm eval:reqmap --record-vectors");
+    const searcher = await buildEvalHybridSearcher({
+      symbols: f.embeddable,
+      bm25: buildMemoizingBm25Searcher(f.symbols),
+      hybridOptions: ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS,
+      embed,
+      model: recording!.model,
+    });
+    return { searcher, embed };
+  }
+
+  it("holds the bars the BM25 arm holds (P 0.87, R 0.90 on the committed fixture)", async () => {
+    const f = await fixture();
+    const { searcher, embed } = await hybrid(f);
+    const modes: string[] = [];
+    // Through the real hybrid search, with the mapper's own query text: it answers.
+    await searcher.search(requirementQueryText(caseToChange(f.cases[0]!)), f.projectId, {
+      onRetrievalMode: (m) => modes.push(m),
+    });
+    expect(modes).toEqual(["hybrid"]);
+    const { aggregate } = await runReqMapEval(f, searcher);
+    // Every case's query was recorded: no case fell back to BM25.
+    expect(() => assertFullyRecorded(embed)).not.toThrow();
+    expect(checkThresholds(aggregate).passed).toBe(true);
+    expect(aggregate.macroPrecision).toBeGreaterThanOrEqual(0.86);
+    expect(aggregate.macroRecall).toBeGreaterThanOrEqual(0.9);
+    expect(aggregate.hitRate).toBe(1);
+  });
+
+  it("fails the run on a text it has no recorded vector for, naming the re-record command", async () => {
+    const f = await fixture();
+    const { searcher, embed } = await hybrid(f);
+    // HybridCodeSearch catches the embed failure and answers with BM25 ...
+    const modes: string[] = [];
+    await searcher.search("a requirement nobody recorded", f.projectId, {
+      onRetrievalMode: (m) => modes.push(m),
+    });
+    expect(modes).toEqual(["bm25-only"]);
+    // ... so the miss is kept, and the eval refuses to report it as hybrid.
+    expect(() => assertFullyRecorded(embed)).toThrow(/pnpm eval:reqmap --record-vectors/);
   });
 });

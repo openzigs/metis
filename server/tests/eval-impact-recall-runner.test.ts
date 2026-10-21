@@ -13,12 +13,21 @@ import type { CodeSymbolSearcher } from "../src/lib/traceability/requirement-cod
 import type { AIProvider } from "../src/lib/ai/types.js";
 import { EntitySeedUnionSearcher } from "../src/lib/traceability/requirement-entity-seeds.js";
 import {
+  buildMemoizingBm25Searcher,
   buildSyntheticFixture,
+  embeddableSymbols,
   fixtureEntityVocabulary,
   loadImpactRecallFixture,
+  recordedVectorsFile,
   resolveCorpusDir,
   resolveFixtureConsumers,
 } from "../src/lib/eval/impact-recall/fixture.js";
+import {
+  RecordedEmbedService,
+  assertFullyRecorded,
+  buildEvalHybridSearcher,
+  loadRecordedVectors,
+} from "../src/lib/eval/recorded-vectors.js";
 import {
   checkThresholds,
   DEFAULT_IMPACT_RECALL_THRESHOLDS,
@@ -78,6 +87,41 @@ describe("resolveSearcher (Phase-2 swap seam)", () => {
       resolveSearcher(fx, { searcherKind: "entity-union", entitySeedSearcherFactory: factory }),
     ).toBe(union);
     expect(factory).toHaveBeenCalledOnce();
+  });
+
+  it("throws for searcherKind:'hybrid' with no injected searcher (#1097)", () => {
+    expect(() => resolveSearcher(fx, { searcherKind: "hybrid" })).toThrow(/hybridSearcher/);
+  });
+});
+
+/**
+ * #1097 — `mapRequirementToCode`'s default ranking over the corpus's committed
+ * recorded vectors: no model, and the recall bars the BM25 arm holds.
+ */
+describe("searcherKind:'hybrid' over recorded vectors (#1097)", () => {
+  it("holds table recall 0.91 and lifts code recall, with every query recorded", async () => {
+    const dir = resolveCorpusDir("impact-recall-01-jpetstore");
+    const fixture = await loadImpactRecallFixture(dir);
+    const recording = await loadRecordedVectors(recordedVectorsFile(dir));
+    expect(recording).not.toBeNull();
+    const embed = new RecordedEmbedService(recording!, "re-record");
+    const hybridSearcher = await buildEvalHybridSearcher({
+      symbols: embeddableSymbols(fixture.manifest.codeSymbols),
+      bm25: buildMemoizingBm25Searcher(fixture.manifest.codeSymbols),
+      embed,
+      model: recording!.model,
+    });
+    const hybrid = await runImpactRecallEval(fixture, { searcherKind: "hybrid", hybridSearcher });
+    const bm25 = await runImpactRecallEval(fixture, {});
+    expect(() => assertFullyRecorded(embed)).not.toThrow();
+    expect(hybrid.configuration.searcher).toBe("hybrid");
+    expect(hybrid.aggregate.tables.macroRecall).toBeGreaterThanOrEqual(
+      bm25.aggregate.tables.macroRecall,
+    );
+    expect(hybrid.aggregate.tables.macroRecall).toBeGreaterThanOrEqual(0.9);
+    expect(hybrid.aggregate.code!.macroRecall).toBeGreaterThanOrEqual(
+      bm25.aggregate.code!.macroRecall,
+    );
   });
 });
 

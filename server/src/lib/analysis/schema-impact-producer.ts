@@ -67,9 +67,9 @@ import type { LiveSchemaIndex } from "../impact-analysis/live-schema-ingest.js";
 import type { ChangedRequirement } from "../impact-analysis/extract-changes.js";
 import {
   mapRequirementToCode,
-  MemoizingBm25CodeSymbolSearcher,
   type RequirementCodeMatch,
 } from "../traceability/requirement-code-mapping.js";
+import { createRequirementCodeSearcher } from "../traceability/requirement-code-searcher.js";
 import {
   CachingCodeGraphDataSource,
   type CodeGraphDataSource,
@@ -161,7 +161,8 @@ export async function loadAnalysisSchemaImpact(
 
   const projectId = snapshot.projectId;
   const prisma = (deps.prisma ?? (defaultPrisma as unknown as ProducerPrisma)) as ProducerPrisma;
-  const sharedSearcher = new MemoizingBm25CodeSymbolSearcher(prisma as never);
+  // #1097 — the hybrid searcher (BM25 fallback), one per report.
+  const sharedSearcher = createRequirementCodeSearcher(prisma as never);
   const mapRequirement: MapRequirementFn =
     deps.mapRequirement ??
     // Reuse ONE BM25 index across every requirement in this report (#849/#872

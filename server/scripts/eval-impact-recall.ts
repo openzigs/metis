@@ -63,12 +63,25 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  buildMemoizingBm25Searcher,
+  embeddableSymbols,
   fixtureEntityVocabulary,
   fixtureTableCatalog,
   loadImpactRecallFixture,
+  recordedVectorsFile,
   resolveCorpusDir,
   resolveFixtureConsumers,
+  type ImpactRecallFixture,
 } from "../src/lib/eval/impact-recall/fixture.js";
+import {
+  buildEvalHybridSearcher,
+  loadRecordedVectors,
+  RecordedEmbedService,
+  RecordingEmbedService,
+  assertFullyRecorded,
+  writeRecordedVectors,
+} from "../src/lib/eval/recorded-vectors.js";
+import type { EmbedService } from "../src/lib/code-graph/symbol-embeddings.js";
 import {
   checkThresholds,
   describeConfiguration,
@@ -90,14 +103,56 @@ import { impactLlmTableJudgeEnabled } from "../src/lib/impact-analysis/table-rel
 import { buildProvider, loadAIConfig } from "../src/lib/ai/index.js";
 import type { AIProvider } from "../src/lib/ai/types.js";
 
-/** Parse `--searcher <bm25|llm|entity-union>` (default bm25 — what production seeds with). */
+/** Parse `--searcher <bm25|llm|entity-union|hybrid>` (default bm25). */
 function parseSearcherKind(argv: string[]): SearcherKind {
   const i = argv.indexOf("--searcher");
   if (i < 0) return "bm25";
   const next = argv[i + 1];
   if (next === "llm") return "llm";
   if (next === "entity-union") return "entity-union";
+  if (next === "hybrid") return "hybrid";
   return "bm25";
+}
+
+/**
+ * #1097 — `--searcher hybrid`: `mapRequirementToCode`'s default ranking since
+ * #1097, over the corpus's RECORDED vectors (no model loaded). With
+ * `--record-vectors` it embeds with the local model instead and writes them.
+ */
+/** The replay's recorded embedder, checked after the run (`assertFullyRecorded`). */
+let replayEmbed: RecordedEmbedService | null = null;
+
+async function withHybridSearcher(
+  opts: RunImpactRecallOptions,
+  fixture: ImpactRecallFixture,
+  corpusDir: string,
+  corpus: string,
+): Promise<RecordingEmbedService | null> {
+  if (opts.searcherKind !== "hybrid") return null;
+  const rerecord = `pnpm eval:impact-recall --corpus ${corpus} --no-filter --searcher hybrid --record-vectors`;
+  let embed: EmbedService;
+  let model: string;
+  let recording: RecordingEmbedService | null = null;
+  if (process.argv.includes("--record-vectors")) {
+    const { getEmbedder } = await import("../src/lib/rag/embedder.js");
+    recording = new RecordingEmbedService(getEmbedder());
+    embed = recording;
+    model = getEmbedder().model;
+  } else {
+    const recorded = await loadRecordedVectors(recordedVectorsFile(corpusDir));
+    if (!recorded)
+      throw new Error(`no recorded vectors for ${corpus}; record them with: ${rerecord}`);
+    embed = new RecordedEmbedService(recorded, rerecord);
+    replayEmbed = embed as RecordedEmbedService;
+    model = recorded.model;
+  }
+  opts.hybridSearcher = await buildEvalHybridSearcher({
+    symbols: embeddableSymbols(fixture.manifest.codeSymbols),
+    bm25: buildMemoizingBm25Searcher(fixture.manifest.codeSymbols),
+    embed,
+    model,
+  });
+  return recording;
 }
 
 /**
@@ -138,7 +193,10 @@ function buildRunOptions(argv: string[]): RunImpactRecallOptions {
   const opts: RunImpactRecallOptions = {
     consumerResolver: (args) => resolveFixtureConsumers(args),
   };
-  if (searcherKind === "bm25" && !withFilter && !withJudge) return opts;
+  if (searcherKind === "hybrid") opts.searcherKind = "hybrid";
+  if ((searcherKind === "bm25" || searcherKind === "hybrid") && !withFilter && !withJudge) {
+    return opts;
+  }
   const provider = buildProvider({ config: loadAIConfig() });
   if (searcherKind === "llm") {
     opts.searcherKind = "llm";
@@ -200,7 +258,18 @@ async function main() {
 
   // Throws on a corpus whose qualified names diverge from what ingest emits (#1016).
   const fixture = await loadImpactRecallFixture(resolveCorpusDir(corpus));
+  const recording = await withHybridSearcher(runOptions, fixture, resolveCorpusDir(corpus), corpus);
   const summary = await runImpactRecallEvalRepeated(fixture, runOptions, runCount);
+  if (replayEmbed) assertFullyRecorded(replayEmbed);
+  if (recording) {
+    const file = recordedVectorsFile(resolveCorpusDir(corpus));
+    const recorded = recording.toFiles(
+      "Recorded by `pnpm eval:impact-recall --searcher hybrid --record-vectors` (#1097): the corpus's symbol texts and requirement queries, embedded by the local model.",
+    );
+    await writeRecordedVectors(file, recorded);
+    // eslint-disable-next-line no-console
+    console.log(`recorded ${recorded.file.keys.length} vectors (${recorded.file.model}) → ${file}`);
+  }
   const result = summary.runs[0];
   const { passed, checks } = checkThresholds(summary.meanAggregate, thresholds);
 

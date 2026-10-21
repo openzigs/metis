@@ -45,7 +45,7 @@ import type { MatchQuality } from "@metis/shared";
  * run measures the recall the union adds while every BM25 seed is still present at
  * an unchanged confidence.
  */
-export type SearcherKind = "bm25" | "llm" | "entity-union";
+export type SearcherKind = "bm25" | "llm" | "entity-union" | "hybrid";
 
 export interface RunImpactRecallOptions {
   /** Directly inject a searcher (wins over `searcherKind`). Used by tests. */
@@ -60,6 +60,12 @@ export interface RunImpactRecallOptions {
    * the runner itself stays free of env reads and network.
    */
   entitySeedSearcherFactory?: (fixture: ImpactRecallFixture) => CodeSymbolSearcher;
+  /**
+   * #1097 — the hybrid searcher (BM25 fused with recorded symbol embeddings),
+   * production's default ranking for `mapRequirementToCode`. Built by the CLI
+   * from the corpus's recorded vectors so the runner stays free of I/O.
+   */
+  hybridSearcher?: CodeSymbolSearcher;
   /**
    * #922 DAO/mapper sibling expansion. Defaults to `true` — the impact engine's
    * own default — so the harness measures the SAME behaviour production runs.
@@ -431,6 +437,13 @@ export function resolveSearcher(
   if (opts.searcher) return opts.searcher;
   const kind = opts.searcherKind ?? "bm25";
   if (kind === "bm25") return fixture.searcher;
+  if (kind === "hybrid") {
+    if (opts.hybridSearcher) return opts.hybridSearcher;
+    throw new Error(
+      "The hybrid searcher (#1097) must be injected as hybridSearcher (the CLI builds it from " +
+        "the corpus's recorded vectors).",
+    );
+  }
   if (kind === "entity-union") {
     if (opts.entitySeedSearcherFactory) return opts.entitySeedSearcherFactory(fixture);
     throw new Error(
