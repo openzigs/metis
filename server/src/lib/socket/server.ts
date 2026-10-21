@@ -179,6 +179,11 @@ export function createSocketServer(
   }
   // #1349 — read once, as `createApp` reads `CORS_ORIGIN`.
   const trustedOrigins = socketTrustedOrigins(opts.corsOrigin);
+  // Once per server, so an operator whose UI is refused `ORIGIN_REJECTED` can
+  // see what the API trusts (CORS_ORIGIN, METIS_TRUSTED_ORIGINS, own host).
+  log.info("Socket.IO cookie handshakes accept these origins (plus the API's own host)", {
+    origins: [...trustedOrigins],
+  });
   const io: MetisIOServer = new SocketIOServer(httpServer, {
     cors: {
       // A comma list reached `cors` as one string, which no origin equals (#913).
