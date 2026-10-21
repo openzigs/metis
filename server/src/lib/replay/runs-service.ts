@@ -302,6 +302,32 @@ export async function finishRun(opts: FinishRunOptions): Promise<void> {
   });
 }
 
+/**
+ * #1121 — how many reachable projects one `GET /api/runs` statement names.
+ *
+ * Prisma's better-sqlite3 adapter refuses a statement binding more than 999
+ * values (P2029) and does not split a read with an `orderBy` or a `take`, so
+ * `projectId IN (every reachable project)` answered 500 to a member who could
+ * reach about 995 projects. The list is read this many projects at a time
+ * instead; each statement also binds the session id, two dates, LIMIT and
+ * OFFSET, so 400 leaves a wide margin on SQLite and is nothing on Postgres.
+ *
+ * THE PAGE ACROSS BATCHES. Every batch is read in the same total order
+ * (`startedAt desc, id desc`) with the same `take`; the page is the first
+ * `take` of their union in that order. A run of the true page is always among
+ * its own batch's first `take`, so nothing is missed and the order is the one
+ * a single statement gives.
+ */
+export const RUN_LIST_PROJECT_BATCH = 400;
+
+/** Newest first; runs started in the same millisecond by id, so the order is total. */
+function newestRunFirst(a: { startedAt: Date; id: string }, b: { startedAt: Date; id: string }) {
+  const byTime = b.startedAt.getTime() - a.startedAt.getTime();
+  if (byTime !== 0) return byTime;
+  // cuid ids are lowercase ASCII: JS code-unit order matches both engines' `id desc`.
+  return a.id < b.id ? 1 : -1;
+}
+
 export interface ListRunsFilter {
   projectId?: string;
   /**
@@ -357,14 +383,6 @@ export async function listRuns(filter: ListRunsFilter): Promise<
   }>
 > {
   const where: Record<string, unknown> = {};
-  if (filter.accessibleProjectIds) {
-    const allowed = filter.projectId
-      ? filter.accessibleProjectIds.filter((id) => id === filter.projectId)
-      : filter.accessibleProjectIds;
-    where.projectId = { in: allowed };
-  } else if (filter.projectId) {
-    where.projectId = filter.projectId;
-  }
   if (filter.sessionId) where.sessionId = filter.sessionId;
   if (filter.from || filter.to) {
     const startedAt: { gte?: Date; lte?: Date } = {};
@@ -372,12 +390,29 @@ export async function listRuns(filter: ListRunsFilter): Promise<
     if (filter.to) startedAt.lte = filter.to;
     where.startedAt = startedAt;
   }
-  const rows = await prisma.agentRun.findMany({
-    where,
-    orderBy: { startedAt: "desc" },
-    take: pageSize(filter.limit, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT),
-    include: { _count: { select: { steps: true } } },
-  });
+  const take = pageSize(filter.limit, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT);
+  const read = (projectScope: unknown) =>
+    prisma.agentRun.findMany({
+      where: projectScope === undefined ? where : { ...where, projectId: projectScope },
+      orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+      take,
+      include: { _count: { select: { steps: true } } },
+    });
+
+  let rows: Awaited<ReturnType<typeof read>>;
+  if (filter.accessibleProjectIds) {
+    const allowed = filter.projectId
+      ? filter.accessibleProjectIds.filter((id) => id === filter.projectId)
+      : filter.accessibleProjectIds;
+    // #1121 — never one `IN` list of every reachable project: see RUN_LIST_PROJECT_BATCH.
+    const found = [];
+    for (let i = 0; i < allowed.length; i += RUN_LIST_PROJECT_BATCH) {
+      found.push(...(await read({ in: allowed.slice(i, i + RUN_LIST_PROJECT_BATCH) })));
+    }
+    rows = found.sort(newestRunFirst).slice(0, take);
+  } else {
+    rows = await read(filter.projectId);
+  }
   const ledger = await runLedgerFigures(rows);
   return rows.map((r) => ({
     id: r.id,

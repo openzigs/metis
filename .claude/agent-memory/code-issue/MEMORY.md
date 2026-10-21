@@ -122,3 +122,5 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Shard stuck pending](project_gh-checks-shard-stuck-pending.md) — steps all success but job in_progress; read steps, re-read (#1347)
 - [Pre-auth limiters on req.ip](project_preauth-limiters-keyed-on-req-ip.md) — gaps + approval still do; copy runs key (#838)
 - [Cross-PR helper semantics](project_shared-helper-semantics-cross-pr.md) — tests pinning a shared helper break on merge order (#1348)
+- [Unmounted-middleware ratchet](project_unmounted-mw-ratchet.md) — inline a limiter's handler; never export it (#1117)
+- [Supertest peer in beforeAll](project_supertest-beforeall-peer-differs.md) — 127.0.0.1 vs ::1; spend peer limits per test (#1117)

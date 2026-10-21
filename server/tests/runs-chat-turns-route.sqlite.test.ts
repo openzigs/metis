@@ -155,6 +155,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "uRate3",
         "uRate4",
         "uRate5",
+        "uRate6",
+        "uRate7",
       ];
       for (const id of users) {
         await db.user.create({
@@ -172,6 +174,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ["wsA", "uRate3"],
         ["wsA", "uRate4"],
         ["wsA", "uRate5"],
+        ["wsA", "uRate6"],
+        ["wsA", "uRate7"],
       ] as const) {
         await db.workspaceMember.create({ data: { workspaceId, userId } });
       }
@@ -337,7 +341,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       token.admin = mk("uAdmin", "admin", []);
       // The token still claims the workspace the user has left.
       token.left = mk("uLeft", "developer", ["wsA"]);
-      for (const n of [1, 2, 3, 4, 5]) token[`rate${n}`] = mk(`uRate${n}`, "developer", ["wsA"]);
+      for (const n of [1, 2, 3, 4, 5, 6, 7])
+        token[`rate${n}`] = mk(`uRate${n}`, "developer", ["wsA"]);
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -691,33 +696,72 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       it("a guard runs ahead of requireAuth on every route, keyed on nothing the caller chooses", async () => {
         // The anonymous requests above already counted against the TCP peer.
+        // #1117 — an exhausted peer bucket answers the 401 `requireAuth` would
+        // have given, not 429: every request in it is one `requireAuth` refuses,
+        // and a browser recovers from a 401 (refresh, or sign-in) but not a 429.
+        // The guard is still there, ahead of authentication: it has counted.
         process.env.RUNS_PREAUTH_LIMIT_MAX = "1";
         for (const path of ROUTES) {
           const res = await get(path).set("X-Forwarded-For", "203.0.113.77");
-          expect(res.status).toBe(429);
+          expect(res.status).toBe(401);
+          expect(res.body.error.code).toBe("AUTH_REQUIRED");
+          expect(res.headers["ratelimit-remaining"]).toBe("0");
+          expect(res.headers["retry-after"]).toBeUndefined();
         }
-        // A made-up token is not a key of its own: it is the same peer bucket.
+        // A made-up token is not a key of its own: it is the same peer bucket,
+        // and is told what `requireAuth` tells it.
         const forged = await request(app())
           .get("/api/runs/chat-turns")
           .set("Authorization", "Bearer not-a-token-we-signed");
-        expect(forged.status).toBe(429);
+        expect(forged.status).toBe(401);
+        expect(forged.body.error.code).toBe("TOKEN_INVALID");
+        expect(forged.headers["ratelimit-remaining"]).toBe("0");
       });
 
-      it("an exhausted peer bucket refuses anonymous callers only: a signed-in user is still served", async () => {
+      it("#1117 — a token expired past the grace cannot spend its user's budget: it is the peer's", async () => {
+        // Somebody holding a week-old access token of uRate7's: before #1117 it
+        // selected uRate7's own pre-auth bucket, so spending it answered uRate7 429.
+        process.env.RUNS_PREAUTH_LIMIT_MAX = "2";
+        const { default: jwt } = await import("jsonwebtoken");
+        const payload = jwt.decode(token.rate7!) as Record<string, unknown>;
+        const exp = Math.floor(Date.now() / 1000) - 7 * 86_400;
+        const stale = jwt.sign({ ...payload, iat: exp - 3600, exp }, process.env.JWT_SECRET!);
+        for (let i = 0; i < 3; i += 1) {
+          const res = await request(app())
+            .get("/api/runs/chat-turns")
+            .set("Authorization", `Bearer ${stale}`);
+          // Told what `requireAuth` tells it, never 429 — the peer bucket is long spent.
+          expect(res.status).toBe(401);
+          expect(res.body.error.code).toBe("TOKEN_EXPIRED");
+        }
+        // uRate7 is untouched.
+        expect((await get("/api/runs/chat-turns", "rate7")).status).toBe(200);
+        expect((await get("/api/runs/chat-turns", "rate7")).status).toBe(200);
+      });
+
+      it("an exhausted peer bucket refuses nobody who would have been served: a signed-in user still is", async () => {
         // The guard's key for a signed-in request is the user inside its token,
         // not the TCP peer it shares with every anonymous caller. Were it the
         // peer, anyone could lock every user out of these routes from outside.
         process.env.RUNS_PREAUTH_LIMIT_MAX = "3";
         const anonymous: number[] = [];
         for (let i = 0; i < 5; i += 1) anonymous.push((await get("/api/runs/chat-turns")).status);
-        expect(anonymous.slice(-2)).toEqual([429, 429]);
+        expect(anonymous).toEqual([401, 401, 401, 401, 401]);
         // Same peer, same instant, a token this server signed: served, on every
         // route (#1232 — the by-id route too: uRate5 is a member of the run's workspace).
         const served: number[] = [];
         for (const path of ROUTES.slice(0, 3)) served.push((await get(path, "rate5")).status);
         expect(served).toEqual([200, 200, 200]);
-        // The peer is still refused.
-        expect((await get("/api/runs/chat-turns")).status).toBe(429);
+        // The peer is still refused, with the 401 it can recover from.
+        expect((await get("/api/runs/chat-turns")).status).toBe(401);
+      });
+
+      it("a signed-in user past the guard's own budget is told 429: that one is theirs to wait out", async () => {
+        process.env.RUNS_PREAUTH_LIMIT_MAX = "1";
+        expect((await get("/api/runs/chat-turns", "rate6")).status).toBe(200);
+        const res = await get("/api/runs/chat-turns", "rate6");
+        expect(res.status).toBe(429);
+        expect(res.body.error.code).toBe("RUNS_RATE_LIMITED");
       });
     });
   },

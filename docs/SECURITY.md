@@ -64,6 +64,8 @@
 | Project code search | 300 / 15min / user | `CODE_SEARCH_RATE_LIMIT_*` |
 | Traceability test gaps / workspace summary | 300 / 15min / user | `TRACEABILITY_GAPS_RATE_LIMIT_*` |
 | Analysis traceability matrix + report export | 300 / 15min / user | `ANALYSIS_MATRIX_RATE_LIMIT_*` |
+| `/api/runs` reads (run list, chat turns, replay, background runs, groups) | 3000 / 15min / user | `RUNS_LIMIT_MAX`, `RUNS_LIMIT_WINDOW_MS` |
+| `/api/runs` writes (submit, cancel, pause, resume, best-of-N, steer) | 300 / 15min / user | `RUNS_WRITE_LIMIT_MAX` |
 
 The `/api/auth/*` credential-stuffing limiter exempts two unauthenticated,
 read-only, side-effect-free `GET` endpoints that the `/login` page polls before

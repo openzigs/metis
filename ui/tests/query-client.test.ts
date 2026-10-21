@@ -43,4 +43,12 @@ describe("createQueryClient", () => {
     expect(retry(0, new ApiError(400, "x"))).toBe(false);
     expect(retry(0, new ApiError(503, "x"))).toBe(true);
   });
+
+  // #1117 — a 429 on `/api/runs` is a signed-in user's own budget: retrying at
+  // once only spends it, and a polling query retries on its next interval.
+  it("does not retry a rate-limited (429) query at once", () => {
+    const retry = createQueryClient().getDefaultOptions().queries?.retry;
+    if (typeof retry !== "function") throw new Error("expected function");
+    expect(retry(0, new ApiError(429, "Too many", "RUNS_RATE_LIMITED"))).toBe(false);
+  });
 });
