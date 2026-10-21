@@ -240,6 +240,32 @@ describe("discussion mention notifications", () => {
     notificationCreate.mockRejectedValue(new Error("db down"));
     await notifyDiscussionMentions(baseInput());
     expect(emit).toHaveBeenCalledTimes(1);
+    // #104 — no row, so no id to merge on; the text and link still ride along.
+    expect(emit.mock.calls[0][1]).toMatchObject({
+      notificationId: null,
+      title: "Alice Author mentioned you in a discussion",
+      href: "/projects/p1/discussions/t1",
+    });
+  });
+
+  it("#104 — emits the persisted row's id, title, message and link for the drawer", async () => {
+    resolveUsernames.mockResolvedValue([{ id: "bob", username: "bob" }]);
+    notificationCreate.mockResolvedValue({ id: "notif-42" });
+
+    await notifyDiscussionMentions(baseInput());
+
+    const data = notificationCreate.mock.calls[0][0].data;
+    expect(emit).toHaveBeenCalledWith("discussion:mention", {
+      kind: "discussion_mention",
+      threadId: "t1",
+      messageId: "m1",
+      mentionedUserId: "bob",
+      ts: expect.any(Number),
+      notificationId: "notif-42",
+      title: data.title,
+      message: data.message,
+      href: data.href,
+    });
   });
 
   it("is a no-op (no throw) when no socket server is registered", async () => {
