@@ -8,7 +8,8 @@
  *      `server/scripts/data/fence-confusables-subset.txt`: every line whose source is
  *      one code point and whose prototype is one character a fence is built from
  *      (`=`, `-`, `_`, the letters of METIS DATA BOUNDARY in either case, and `l`,
- *      the prototype of `I`). Comments are dropped, so the subset is pure ASCII.
+ *      the prototype of `I`; since #1351 also `<`, `>` and `Q`, for the
+ *      `<<<END REQUIREMENT>>>` fence). Comments are dropped, so the subset is pure ASCII.
  *      The header records the source URL, its `Date:`/`Version:` lines and the
  *      SHA-256 of the full file.
  *   2. The subset → `server/src/lib/ai/tool-runtime/fence-confusables.generated.ts`.
@@ -31,8 +32,8 @@ export const SOURCE_URL = "https://www.unicode.org/Public/security/latest/confus
 
 /** Prototype character → the character the scrub's comparison copy uses. */
 const FOLD_TARGET: Readonly<Record<string, string>> = (() => {
-  const out: Record<string, string> = { "=": "=", "-": "-", _: "_", l: "I" };
-  for (const c of "ABDEIMNORSTUY") {
+  const out: Record<string, string> = { "=": "=", "-": "-", _: "_", l: "I", "<": "<", ">": ">" };
+  for (const c of "ABDEIMNOQRSTUY") {
     out[c] = c;
     out[c.toLowerCase()] = c;
   }
@@ -61,7 +62,7 @@ export function extractSubset(full: string): string {
     `# Source: ${SOURCE_URL}`,
     ...meta,
     `# SHA-256 of the full file: ${sha}`,
-    "# Rows: single-code-point source ; single prototype in = - _ l A B D E I M N O R S T U Y (either case) ; type",
+    "# Rows: single-code-point source ; single prototype in = - _ < > l A B D E I M N O Q R S T U Y (either case) ; type",
     "# Regenerate with server/scripts/generate-fence-confusables.ts --from <confusables.txt>.",
     ...rows,
     "",

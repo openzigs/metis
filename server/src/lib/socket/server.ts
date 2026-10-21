@@ -2,7 +2,17 @@
  * Socket.IO server bootstrap.
  *
  * Auth model:
- *   - JWT supplied via `socket.handshake.auth.token` OR `Authorization` header.
+ *   - JWT supplied via `socket.handshake.auth.token` OR `Authorization` header,
+ *     else the browser's `metis.at` session cookie.
+ *   - #1349 — a COOKIE-authenticated handshake must come from a trusted
+ *     Origin (`socketOriginRefusal`): the API's own, a `CORS_ORIGIN` entry or
+ *     a `METIS_TRUSTED_ORIGINS` entry. `SameSite=Lax` keeps the cookie off a
+ *     cross-site request but not off one from a sibling subdomain, so without
+ *     this a page there could open a socket as the signed-in user
+ *     (cross-site WebSocket hijacking). No Origin passes: a browser always
+ *     sends one on a cross-origin handshake, so its absence is not a page
+ *     that could be forged into sending the cookie. A token handshake is not
+ *     checked — a foreign page cannot read the token to present it.
  *   - Connections without a valid token are REJECTED at handshake (issue #22
  *     acceptance criterion 1) — no events are processed for unauth sockets.
  *   - #617 — the handshake then re-reads the user: a soft-deleted or inactive
@@ -105,6 +115,12 @@ import { bumpEpoch, readEpoch } from "./revocation-relay.js";
 import { MAX_TIMEOUT_MS, envMs } from "../config/env-ms.js";
 import { onClientEvent, onConnection, runDetached } from "./client-event-handler.js";
 import { onRoomJoin, roomFromField } from "./join-rate-limit.js";
+import {
+  normaliseOrigin,
+  parseCorsOrigins,
+  socketTrustedOrigins,
+  DEFAULT_CORS_ORIGIN,
+} from "../config/cors-origins.js";
 
 const log = createChildLogger("socket");
 
@@ -161,9 +177,17 @@ export function createSocketServer(
   if (opts.revalidateIntervalMs !== undefined) {
     assertRevalidateInterval(opts.revalidateIntervalMs);
   }
+  // #1349 — read once, as `createApp` reads `CORS_ORIGIN`.
+  const trustedOrigins = socketTrustedOrigins(opts.corsOrigin);
+  // Once per server, so an operator whose UI is refused `ORIGIN_REJECTED` can
+  // see what the API trusts (CORS_ORIGIN, METIS_TRUSTED_ORIGINS, own host).
+  log.info("Socket.IO cookie handshakes accept these origins (plus the API's own host)", {
+    origins: [...trustedOrigins],
+  });
   const io: MetisIOServer = new SocketIOServer(httpServer, {
     cors: {
-      origin: opts.corsOrigin ?? process.env.CORS_ORIGIN ?? "http://localhost:3000",
+      // A comma list reached `cors` as one string, which no origin equals (#913).
+      origin: parseCorsOrigins(opts.corsOrigin ?? process.env.CORS_ORIGIN ?? DEFAULT_CORS_ORIGIN),
       credentials: true,
     },
     pingInterval: 30_000,
@@ -181,7 +205,7 @@ export function createSocketServer(
     // #613 — taken BEFORE the live-user read (see `attachHandlers`).
     const revocationEpoch = userSocketRevocationEpoch(io);
     try {
-      user = await authenticateHandshake(socket);
+      user = await authenticateHandshake(socket, trustedOrigins);
     } catch (err) {
       return next(err as Error);
     }
@@ -460,12 +484,45 @@ async function revalidateUserSockets(
   }
 }
 
+function headerValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/**
+ * #1349 — why a COOKIE-authenticated handshake is refused, or null when it may
+ * proceed. `trusted` holds normalised origins (`socketTrustedOrigins`).
+ *
+ *  - No `Origin` header: passes. Every browser sends one on a cross-origin
+ *    request — the WebSocket upgrade always, the polling transport's XHR
+ *    whenever it is cross-origin — so a handshake without one is not a page on
+ *    another origin. (Same rule as the HTTP CSRF guard, `csrf-protection.ts`.)
+ *  - An opaque (`null`) or malformed Origin: refused.
+ *  - A trusted origin, or the API's own (`Origin` host equals `Host`): passes.
+ *  - Anything else: refused.
+ *
+ * Exported for its test.
+ */
+export function socketOriginRefusal(
+  headers: Record<string, string | string[] | undefined>,
+  trusted: ReadonlySet<string>,
+): string | null {
+  const rawOrigin = headerValue(headers.origin);
+  if (rawOrigin === undefined) return null;
+  const origin = normaliseOrigin(rawOrigin);
+  if (!origin) return "opaque Origin";
+  if (trusted.has(origin)) return null;
+  const host = headerValue(headers.host);
+  return host && new URL(origin).host === host.toLowerCase() ? null : "untrusted Origin";
+}
+
 /**
  * Resolve the live user for a socket handshake, or throw the error the client
- * receives as `connect_error` (`UNAUTHORIZED`, `TOKEN_EXPIRED`, `TOKEN_INVALID`).
+ * receives as `connect_error` (`UNAUTHORIZED`, `TOKEN_EXPIRED`, `TOKEN_INVALID`,
+ * `ORIGIN_REJECTED`).
  */
 async function authenticateHandshake(
   socket: Pick<Socket, "id" | "handshake">,
+  trustedOrigins: ReadonlySet<string>,
 ): Promise<AuthPayload> {
   const auth = socket.handshake.auth as { token?: string } | undefined;
   const headerAuth = socket.handshake.headers.authorization;
@@ -480,13 +537,25 @@ async function authenticateHandshake(
     .map((c) => c.trim())
     .find((c) => c.startsWith("metis.at="))
     ?.slice("metis.at=".length);
-  const token =
+  const presented =
     auth?.token ??
-    (headerAuth?.startsWith("Bearer ") ? headerAuth.slice("Bearer ".length).trim() : undefined) ??
-    cookieToken;
+    (headerAuth?.startsWith("Bearer ") ? headerAuth.slice("Bearer ".length).trim() : undefined);
+  const token = presented ?? cookieToken;
   if (!token) {
     log.warn("Socket handshake rejected: no token", { socketId: socket.id });
     throw new Error("UNAUTHORIZED");
+  }
+  // #1349 — only the cookie rides along on a request a foreign page starts.
+  if (presented === undefined) {
+    const refusal = socketOriginRefusal(socket.handshake.headers, trustedOrigins);
+    if (refusal) {
+      log.warn("Socket handshake rejected: cookie-authenticated from an untrusted Origin", {
+        socketId: socket.id,
+        reason: refusal,
+        origin: headerValue(socket.handshake.headers.origin)?.slice(0, 200),
+      });
+      throw new Error("ORIGIN_REJECTED");
+    }
   }
   let verified: AuthPayload;
   try {

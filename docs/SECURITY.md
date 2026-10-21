@@ -114,6 +114,40 @@ are never gated, so no route may change state on a `GET`.
   where browsers omit Fetch Metadata) lists that origin in
   `METIS_TRUSTED_ORIGINS` (comma-separated) on the UI server.
 
+**WebSockets (#1349).** The browser's socket.io client is not proxied: it
+connects straight to the API (`NEXT_PUBLIC_SOCKET_URL`) from the UI's origin,
+and authenticates with the `metis.at` cookie. `SameSite=Lax` would let a page
+on a sibling subdomain open that socket as the signed-in user and join their
+rooms (cross-site WebSocket hijacking), so the handshake checks `Origin`
+(`socketOriginRefusal` in `server/src/lib/socket/server.ts`):
+
+| Handshake | Origin | Result |
+|---|---|---|
+| Cookie-authenticated | an entry of `CORS_ORIGIN` (the UI), of `METIS_TRUSTED_ORIGINS`, or the API's own host | admitted |
+| Cookie-authenticated | anything else, including `null` (sandboxed frame) | `connect_error` `ORIGIN_REJECTED` |
+| Cookie-authenticated | **absent** | admitted — every browser sends `Origin` on a cross-origin WebSocket upgrade and on a cross-origin polling request, so a handshake without one is not a page another origin could forge (the same rule as the HTTP guard above) |
+| `auth.token` or `Authorization: Bearer` | not checked | a foreign page cannot read the token to present it; this is how Node clients, scripts and the e2e helpers connect |
+
+`CORS_ORIGIN` is parsed as a comma list here too (it reached socket.io's `cors`
+as one string before). On the API, `METIS_TRUSTED_ORIGINS` is read by the socket
+check only; list there any origin the UI is served from that `CORS_ORIGIN`
+does not name. The server logs the trusted list once at startup ("Socket.IO
+cookie handshakes accept these origins").
+
+The own-host rule compares `Origin` with the raw `Host` header and never reads
+`X-Forwarded-Host`. **A reverse proxy that rewrites `Host`** — plain nginx's
+default `proxy_set_header Host $proxy_host` makes the API see `server:4000` —
+breaks that match, so a UI served from the API's public host is refused unless
+`CORS_ORIGIN` (or `METIS_TRUSTED_ORIGINS`) names the public UI origin. Set it,
+or forward the original host (`proxy_set_header Host $host`).
+
+**Pre-auth limiters (#1349).** The traceability (`traceabilityPreAuthRateLimiter`)
+and analysis-approval (`analysisApprovalPreAuthRateLimiter`) guards in front of
+`requireAuth` key like the `/api/runs` guard (`runsPreAuthKey`): the user in a
+token this server signed, else the TCP peer — never `req.ip`, which under
+`trust proxy` is the client-written `X-Forwarded-For`. A spent peer bucket
+answers `requireAuth`'s 401 (`preAuthLimitReachedHandler`, #1117).
+
 ---
 
 ## 3. Secret Management
@@ -778,8 +812,43 @@ offset map (two `Int32Array`s) is only built when the text holds a match.
   cache prefix), the fence literal is stated in several system prompts, and
   the defence would rest on the model comparing nonces. The scrub removes the
   look-alike instead.
-- **Other delimiter styles** are not covered by this scrub. The
-  `<<<REQUIREMENT …>>> … <<<END REQUIREMENT>>>` blocks in
-  `server/src/lib/traceability/requirement-code-mapping.ts` and
-  `requirement-entity-seeds.ts` insert the requirement text as-is, so a
-  requirement containing `<<<END REQUIREMENT>>>` can close its own block there.
+- **Other `===` delimiter styles** are not covered yet: the `=== END FINDING ===`
+  / `=== END EVIDENCE ===` fences in `analysis/absence-verification.ts` and
+  `analysis/support-panel.ts`, the `=== END … MINED RULES ===` fences in
+  `docs-gen/holistic-synthesizer.ts`, `=== END SOURCE EVIDENCE ===` in
+  `docs-gen/grounding/faithfulness-judge.ts` and `=== END QUESTION ===` /
+  `=== END ANSWER ===`-style fences in `rag/model-ragas-judge.ts` insert their
+  text as-is, and an impact run-summary title can still forge an item line
+  inside `<<<IMPACTED ITEMS>>>` with a quote and a newline (#1360).
+
+### 13.3 The requirement fence (#1351)
+
+The traceability prompts (`traceability/requirement-code-mapping.ts`,
+`requirement-entity-seeds.ts`) and the impact-analysis prompts
+(`impact-analysis/table-relevance-filter.ts`, `table-relevance-judge.ts`,
+`additive-column-proposer.ts`, `clause-coverage-reconciler.ts`,
+`impact-summarizer.ts`) wrap requirement text in
+`<<<REQUIREMENT …>>> … <<<END REQUIREMENT>>>`. Requirement text goes through
+`scrubRequirementFenceLookalikes`: the same fold as 13.1 (the confusables table
+now also carries `<`, `>` and `Q`; guillemets, CJK, mathematical, ornament and
+dotted angle brackets and `&lt;`/`&gt;`/`&laquo;`… references — `&lt`/`&gt`
+also without the semicolon — fold to ONE bracket each), with its own pattern.
+It redacts:
+
+- `REQUIREMENT` or `END REQUIREMENT` after **three** or more `<` (one side is
+  enough: `<<<END REQUIREMENT`, `<<<REQUIREMENT>>>`);
+- the terminator `END REQUIREMENT` after one or two `<`, with an optional `/`
+  (`<END REQUIREMENT>`, `<<END REQUIREMENT>>`, `</END REQUIREMENT>`);
+- `END REQUIREMENT` followed by two or more `>`;
+- **any run of three or more `<` or `>`** whatever it surrounds — which also
+  covers the run summary's `<<<IMPACTED ITEMS>>> … <<<END ITEMS>>>` titles.
+  Deliberately broad: a Python `>>>` prompt quoted in a requirement is
+  redacted too.
+
+Left alone, because fewer than three brackets only ever count around the
+terminator (PR #1362 review): the bare word "requirement", generics
+(`List<Requirement>`, `Map<String, List<Requirement>>`, `Func<Requirement>>`),
+XML/ReqIF elements (`<Requirement>…</Requirement>`), the SysML stereotype
+`<<requirement>>`, `«Requirement»`, `latency < requirement`,
+`requirement >> design`, `requirement -> design` and shift operators. Text
+with nothing fence-shaped is returned as the same string.

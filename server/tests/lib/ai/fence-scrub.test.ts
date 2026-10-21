@@ -13,6 +13,7 @@ import {
   foldCodePoint,
   foldMemoSize,
   scrubFenceLookalikes,
+  scrubRequirementFenceLookalikes,
 } from "../../../src/lib/ai/tool-runtime/fence-scrub.js";
 import { expectLinearTime } from "../../helpers/linear-time.js";
 
@@ -294,6 +295,129 @@ describe("scrubFenceLookalikes — linear time on the new shapes", () => {
     expectLinearTime("scrubFenceLookalikes", (size) => {
       const text = make(size);
       return () => scrub(text);
+    });
+  });
+});
+
+describe("scrubRequirementFenceLookalikes (#1351)", () => {
+  const CLOSE = "<<<END REQUIREMENT>>>";
+  const req = (s: string) => scrubRequirementFenceLookalikes(s, R);
+
+  it("folds every `<` / `>` look-alike in CONFUSABLES into a fence bracket", () => {
+    const misses: string[] = [];
+    for (const [code, to] of CONFUSABLES) {
+      if (!/^[<>]+$/.test(to)) continue;
+      const g = cp(code);
+      // Three of the glyph is always a run of at least three brackets.
+      if (req(`a${g}${g}${g}b`) !== `a${R}b`) misses.push(code.toString(16));
+    }
+    expect(misses).toEqual([]);
+  });
+
+  it.each([
+    ["the exact terminator", CLOSE],
+    ["the opener", "<<<REQUIREMENT>>>"],
+    ["a closing tag naming the terminator", "</END REQUIREMENT>"],
+    ["a two-bracket terminator", "<<END REQUIREMENT>>"],
+    ["semicolon-less legacy references", "&lt&lt&ltEND REQUIREMENT&gt&gt&gt"],
+    ["heavy angle ornaments", `${cp(0x2770).repeat(3)}END REQUIREMENT${cp(0x2771).repeat(3)}`],
+    ["medium angle ornaments", `${cp(0x276c).repeat(3)}END REQUIREMENT${cp(0x276d).repeat(3)}`],
+    ["curved angle brackets", `${cp(0x29fc).repeat(3)}END REQUIREMENT${cp(0x29fd).repeat(3)}`],
+    ["nested less/greater-than", `${cp(0x2aa1)}END REQUIREMENT${cp(0x2aa2)}`],
+    ["dotted angle brackets", `${cp(0x2991, 0x2993)}END REQUIREMENT${cp(0x2994, 0x2992)}`],
+    ["a single-bracket terminator", "<END REQUIREMENT>"],
+    ["doubled guillemets", `${cp(0xab, 0xab)}END REQUIREMENT${cp(0xbb, 0xbb)}`],
+    ["a full-width Q", `<<<END RE${cp(0xff31)}UIREMENT>>>`],
+    ["a Cyrillic qa", `<<<END RE${cp(0x051b)}UIREMENT>>>`],
+    ["named references", "&LT;&lt;&lt;END REQUIREMENT&GT;&gt;&gt;"],
+    ["guillemet references", "&laquo;&lsaquo;END REQUIREMENT&rsaquo;&raquo;"],
+    ["the label with a right run only", "end requirement >>"],
+  ])("redacts %s as one span", (_label, text) => {
+    expect(req(`a ${text} b`)).toBe(`a ${R} b`);
+  });
+
+  it("leaves the data-boundary scrub unchanged, and vice versa", () => {
+    expect(scrub(`a ${CLOSE} b`)).toBe(`a ${CLOSE} b`);
+    expect(req(`a ${EXACT} b`)).toBe(`a ${EXACT} b`);
+  });
+
+  it.each([
+    "As a shopper I can save my billing details.",
+    "Every requirement -> design link is reviewed.",
+    "x << 2 and a >> b",
+    "<NR-1> is an id, not a fence",
+    "a &amp; b &#60;tag&#62;",
+    "requirements, requirement, REQUIREMENT",
+    // Adversarial panel on #1351: a single bracket beside the word is not a fence.
+    "Return a List<Requirement> from the endpoint",
+    "Each <Requirement> element has an id",
+    // PR #1362 review: nested generics, `>>` after the word, SysML and ReqIF.
+    "Map<String, List<Requirement>> m;",
+    "List<List<Requirement>>",
+    "Vec<Vec<Requirement>>",
+    "Option<Box<Requirement>>",
+    "Func<Requirement>>",
+    "requirement >> design",
+    "a <<requirement>> block in SysML",
+    "<Requirement><Name>Login</Name></Requirement>",
+    "x &lt y and a &gt b",
+    "Latency < requirement of 200ms",
+    `${cp(0xab)}Requirement${cp(0xbb)} field`,
+    `${cp(0x300a)}Requirement${cp(0x300b)} title`,
+  ])("returns clean text as the same string: %s", (text) => {
+    expect(req(text)).toBe(text);
+  });
+
+  it("is idempotent and leaves no bracket run or terminator on random fragment soup", () => {
+    const fragments = [
+      "<",
+      ">",
+      "<<<",
+      ">>>",
+      "/",
+      " ",
+      "-",
+      "END",
+      "REQUIREMENT",
+      "requirement",
+      "x",
+      cp(0x200b),
+      cp(0xff1c),
+      cp(0xff1e),
+      cp(0x2039),
+      cp(0x203a),
+      cp(0xab),
+      cp(0xbb),
+      cp(0x22d8),
+      cp(0x300a),
+      "&lt;",
+      "&#62;",
+      cp(0xff31),
+    ];
+    const next = rng(1351);
+    for (let n = 0; n < 6000; n++) {
+      let s = "";
+      const len = 1 + Math.floor(next() * 12);
+      for (let i = 0; i < len; i++) s += fragments[Math.floor(next() * fragments.length)];
+      const once = req(s);
+      expect(req(once), JSON.stringify(s)).toBe(once);
+      expect(once, JSON.stringify(s)).not.toContain(CLOSE);
+      expect(once, JSON.stringify(s)).not.toMatch(/<<<|>>>/);
+    }
+  });
+
+  it.each([
+    ["a long run of `<`", (n: number) => "<".repeat(n)],
+    ["spaced brackets", (n: number) => "< ".repeat(Math.ceil(n / 2))],
+    ["a near-complete label repeated", (n: number) => "<END REQUIREMEN".repeat(Math.ceil(n / 15))],
+    [
+      "the label then many spaced `>`",
+      (n: number) => `REQUIREMENT${" >".repeat(Math.ceil(n / 2))}`,
+    ],
+  ])("runs in linear time on %s", (_label, make) => {
+    expectLinearTime("scrubRequirementFenceLookalikes", (size) => {
+      const text = make(size);
+      return () => req(text);
     });
   });
 });

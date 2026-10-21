@@ -34,6 +34,7 @@ import { metricsMiddleware } from "./lib/metrics/middleware.js";
 import { metricsHandler } from "./lib/metrics/route.js";
 import { mountSlackReceiver } from "./lib/slack/slack-receiver.js";
 import { JSON_LIMIT_BYTES } from "./lib/config/json-limit.js";
+import { parseCorsOrigins } from "./lib/config/cors-origins.js";
 
 const JSON_LIMIT = JSON_LIMIT_BYTES; // 10 MiB, matches MAX_DOCUMENT_BYTES for upload routes
 
@@ -75,16 +76,8 @@ export function parseTrustProxy(raw: string | undefined): number | boolean | str
   return trimmed;
 }
 
-/**
- * #913 — `CORS_ORIGIN` as the list of origins it names: comma-separated,
- * trimmed, empty entries dropped. Shared by `cors()` and `csrfProtection`.
- */
-export function parseCorsOrigins(raw: string): string[] {
-  return raw
-    .split(",")
-    .map((o) => o.trim())
-    .filter((o) => o.length > 0);
-}
+// #913 — `CORS_ORIGIN` as a list; #1349 moved it beside the socket's Origin check.
+export { parseCorsOrigins };
 
 export interface CreateAppOptions {
   /** Override CORS origin — defaults to `process.env.CORS_ORIGIN` or localhost:3000. */

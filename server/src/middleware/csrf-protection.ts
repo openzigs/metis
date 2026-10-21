@@ -38,6 +38,7 @@
  */
 import type { RequestHandler } from "express";
 import { AppError } from "./error-handler.js";
+import { normaliseOrigin } from "../lib/config/cors-origins.js";
 
 /** The custom header a cookie-authenticated state-changing request must carry. */
 export const CSRF_HEADER = "x-metis-csrf";
@@ -58,17 +59,8 @@ export interface CsrfProtectionOptions {
   trustedOrigins?: readonly string[];
 }
 
-/** Normalise an origin string to `scheme://host[:port]`, or null when it is not one. */
-export function normaliseOrigin(raw: string | undefined): string | null {
-  if (!raw || raw === "null") return null;
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    return url.origin;
-  } catch {
-    return null;
-  }
-}
+// Shared with the socket.io handshake's Origin check (#1349).
+export { normaliseOrigin };
 
 function hasBearer(header: string | undefined): boolean {
   return Boolean(header?.startsWith("Bearer ") && header.slice("Bearer ".length).trim());
