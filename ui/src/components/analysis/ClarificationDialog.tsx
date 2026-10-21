@@ -64,6 +64,33 @@ export function AnsweredRounds({
   );
 }
 
+/**
+ * Issue #1081 — say when METIS could not read the model's update for some
+ * requirements after the user's answers. The answers still count (they are
+ * recorded without a model); what is missing is the rewritten description.
+ * Before #1081 this failure left no trace at all.
+ */
+export function UnreadResolutionsNote({
+  state,
+}: {
+  state: ClarificationStatePayload;
+}): React.ReactElement | null {
+  const ids = new Set(state.rounds.flatMap((r) => r.unreadResolutions ?? []));
+  if (ids.size === 0) return null;
+  const count = ids.size;
+  return (
+    <p
+      role="status"
+      className="text-xs text-warning"
+      data-testid="clarification-unread-resolutions"
+    >
+      METIS could not read the model’s update for {count} requirement{count === 1 ? "" : "s"} after
+      your answers, so {count === 1 ? "its description was" : "their descriptions were"} not
+      rewritten from them. Your answers are saved and still count.
+    </p>
+  );
+}
+
 interface ClarificationDialogProps {
   projectId: string;
   analysisId: string;
@@ -262,6 +289,7 @@ export function ClarificationDialogPanel({
             from your answers and carried into the analysis either way — no answer was discarded.
           </p>
         )}
+        <UnreadResolutionsNote state={state} />
         {/* Issue #1104 (finding C) — the answers the user wrote are part of the
             analysis record, so show them. A bare "complete" summary is how a
             dozen hand-written answers became unreachable through the UI. */}
@@ -310,6 +338,7 @@ export function ClarificationDialogPanel({
           {answeredCount} of {questions.length} answered
         </span>
       </div>
+      <UnreadResolutionsNote state={state} />
 
       <div className="space-y-4">
         {questions.map((q: ClarifyingQuestion) => {
@@ -340,6 +369,13 @@ export function ClarificationDialogPanel({
                 {q.question}
               </Label>
               {q.context && <p className="mb-2 text-xs text-muted-foreground">{q.context}</p>}
+              {/* #1081 — open because the check failed, not because a model judged it. */}
+              {q.groundingFailed && !isSelfResolved && (
+                <p className="mb-2 text-xs text-warning" data-testid="grounding-failed">
+                  METIS could not check your project’s documents and code for an answer to this
+                  question, so none is suggested.
+                </p>
+              )}
 
               {isSelfResolved && (
                 <div className="mb-2 space-y-1">

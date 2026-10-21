@@ -489,6 +489,12 @@ function makeProvider(opts: {
   /** Epic #203 (#221) — cross-doc detector replies. */
   nliReply?: string;
   completenessReply?: string;
+  /** #1081 — make every NLI call fail (the cross-doc pass throws). */
+  nliThrows?: boolean;
+  /** #1081 review — override the NFR elicitor reply. */
+  nfrReply?: string;
+  /** #1099 — override the synthesis reply. */
+  synthesisReply?: string;
   consistencyReply?: string;
   /**
    * #750 — requirements the DOCUMENT agent emits in its structured output.
@@ -557,6 +563,7 @@ function makeProvider(opts: {
       // Epic #203 (#221) — cross-doc detection passes. Keyed off the detector
       // system prompts so the pipeline test exercises real detection output.
       if (sysStr.includes("Natural Language Inference")) {
+        if (opts.nliThrows) throw new Error("upstream 503");
         return stubResponse(opts.nliReply ?? '{"verdicts":[]}');
       }
       if (sysStr.includes("auditing a set of requirement documents")) {
@@ -564,6 +571,14 @@ function makeProvider(opts: {
       }
       if (sysStr.includes("cross-document consistency check")) {
         return stubResponse(opts.consistencyReply ?? "## Summary\nOK\n\n## Contradictions\n- none");
+      }
+      // #1081 — the elicitors answer with a legitimately empty envelope; anything
+      // else would now (correctly) be recorded as an unread step.
+      if (sysStr.includes("NON-FUNCTIONAL REQUIREMENTS")) {
+        return stubResponse(opts.nfrReply ?? '{"nfrs":[],"acceptanceCriteria":[]}');
+      }
+      if (sysStr.includes("the ASSUMPTIONS the specification relies on")) {
+        return stubResponse('{"assumptions":[],"risks":[]}');
       }
 
       let detected = "synthesis";
@@ -589,7 +604,8 @@ function makeProvider(opts: {
       if (opts.failAgent && opts.failAgent === detected) {
         throw new Error(`forced failure for ${detected}`);
       }
-      if (detected === "synthesis") return stubResponse(buildSynthesisJson());
+      if (detected === "synthesis")
+        return stubResponse(opts.synthesisReply ?? buildSynthesisJson());
       if (detected === "document")
         return stubResponse(buildAgentJson(detected, opts.docRequirements));
       // #769 — scripted code persona: drives the real loop to exhaustion / prose.
@@ -823,6 +839,179 @@ describe("AnalysisOrchestrator.start", () => {
     expect([...crossDocFindings.values()].filter((r) => r.analysisId === analysisId)).toHaveLength(
       0,
     );
+  });
+
+  // #1081 — an unread check is recorded on the analysis, so the panel cannot
+  // render it as "no contradictions or gaps detected".
+  it("records the cross-doc checks whose answer could not be read (#1081)", async () => {
+    const io = makeIO();
+    const provider = makeProvider({ completenessReply: "Looks complete to me." });
+    const orch = new AnalysisOrchestrator({
+      provider,
+      io: io as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [
+        { documentId: "doc-1", chunkIndex: 0, filename: "s.md", text: "c", score: 0.5 },
+      ],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    for (let i = 0; i < 200 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+    const meta = JSON.parse(analyses.get(analysisId)!.metadata ?? "{}") as {
+      unreadAnalysisSteps?: { steps: Array<{ step: string; reason: string }> };
+    };
+    expect(meta.unreadAnalysisSteps?.steps).toEqual([
+      expect.objectContaining({ step: "completeness-check", reason: "unparseable" }),
+    ]);
+  });
+
+  // #1081 (panel finding) — a pass that throws is recorded as not finished, and
+  // a later clean pass clears the record.
+  it("records an unfinished cross-doc pass, and a clean marker write clears it (#1081)", async () => {
+    const io = makeIO();
+    const orch = new AnalysisOrchestrator({
+      provider: makeProvider({ nliThrows: true }),
+      io: io as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [
+        { documentId: "doc-1", chunkIndex: 0, filename: "s.md", text: "c", score: 0.5 },
+      ],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    for (let i = 0; i < 200 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+    const read = () =>
+      JSON.parse(analyses.get(analysisId)!.metadata ?? "{}") as {
+        unreadAnalysisSteps?: { steps: Array<{ step: string }> };
+      };
+    expect(read().unreadAnalysisSteps?.steps.map((s) => s.step)).toEqual(["cross-doc-detection"]);
+
+    const { persistAnalysisEnhancement } = await import("../src/lib/analysis/analysis-service.js");
+    await persistAnalysisEnhancement(analysisId, { unreadAnalysisSteps: null });
+    expect(read().unreadAnalysisSteps).toBeUndefined();
+  });
+
+  // #1081 review — the catch keeps the elicitation steps already collected.
+  it("keeps unread elicitation steps when the cross-doc pass then throws", async () => {
+    const io = makeIO();
+    const orch = new AnalysisOrchestrator({
+      provider: makeProvider({ nliThrows: true, nfrReply: "no NFRs, sorry" }),
+      io: io as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [
+        { documentId: "doc-1", chunkIndex: 0, filename: "s.md", text: "c", score: 0.5 },
+      ],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    for (let i = 0; i < 200 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const meta = JSON.parse(analyses.get(analysisId)!.metadata ?? "{}") as {
+      unreadAnalysisSteps?: { steps: Array<{ step: string }> };
+    };
+    expect(meta.unreadAnalysisSteps?.steps.map((s) => s.step)).toEqual([
+      "nfr-elicitation",
+      "cross-doc-detection",
+    ]);
+  });
+
+  // #1081 review — a clean synthesis must WRITE the clear (null), at the
+  // orchestrator, so an earlier run's list on the same analysis disappears.
+  it("a clean synthesis clears an earlier field-repair record on the analysis (#1099)", async () => {
+    const io = makeIO();
+    const orch = new AnalysisOrchestrator({
+      provider: makeProvider({ delayMs: 20 }),
+      io: io as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    // Seed a previous run's record while the specialists are still working.
+    const row = analyses.get(analysisId)!;
+    row.metadata = JSON.stringify({
+      ...(JSON.parse(row.metadata ?? "{}") as object),
+      synthesisFieldRepairs: {
+        repairs: [
+          {
+            field: "storyPoints",
+            action: "dropped",
+            requirementNumber: 1,
+            requirementTitle: "Old",
+          },
+        ],
+        total: 1,
+        at: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    for (let i = 0; i < 400 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+    const meta = JSON.parse(analyses.get(analysisId)!.metadata ?? "{}") as Record<string, unknown>;
+    expect(meta.synthesisFieldRepairs).toBeUndefined();
+  });
+
+  // #1099 — a malformed optional field is left out, the reply is kept, and the
+  // analysis records what was left out.
+  it("records the synthesis field repairs on the analysis (#1099)", async () => {
+    const io = makeIO();
+    const provider = makeProvider({
+      synthesisReply: JSON.stringify({
+        summary: "merged",
+        requirements: [
+          {
+            type: "feature",
+            title: "Implement",
+            body: "Body",
+            priority: "high",
+            labels: ["x"],
+            storyPoints: 3.5,
+            evidenceFindingIndexes: [0],
+          },
+        ],
+      }),
+    });
+    const orch = new AnalysisOrchestrator({
+      provider,
+      io: io as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    for (let i = 0; i < 200 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+    const meta = JSON.parse(analyses.get(analysisId)!.metadata ?? "{}") as {
+      synthesisFieldRepairs?: { repairs: unknown[]; total: number };
+      synthesisDegraded?: unknown;
+    };
+    expect(meta.synthesisDegraded).toBeUndefined();
+    // Panel finding — a clean re-synthesis must clear it; pinned at the merge.
+    const { persistAnalysisEnhancement } = await import("../src/lib/analysis/analysis-service.js");
+    await persistAnalysisEnhancement(analysisId, { synthesisFieldRepairs: null });
+    expect(
+      (JSON.parse(analyses.get(analysisId)!.metadata ?? "{}") as Record<string, unknown>)
+        .synthesisFieldRepairs,
+    ).toBeUndefined();
+    expect(meta.synthesisFieldRepairs).toMatchObject({
+      total: 1,
+      repairs: [{ field: "storyPoints", action: "dropped", requirementTitle: "Implement" }],
+    });
   });
 
   it("persists all specialist findings even when synthesis falls back to deterministic merge", async () => {

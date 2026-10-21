@@ -326,6 +326,45 @@ describe("suggestMappings", () => {
     // Batch failed but the run completed without throwing.
     expect(result.candidates).toEqual([]);
     expect(result.budgetExhausted).toBe(false);
+    // #1081 — and it says so, instead of `note: null` reading as "no match".
+    expect(result.note).toMatch(/the model call failed for 1 batch of tables/i);
+    expect(result.note).toMatch(/does not mean no table matches/);
+  });
+
+  it("#1081 — an unreadable answer is reported, not read as no candidates", async () => {
+    const provider = fakeProvider("I could not find a mapping, sorry.");
+    const result = await suggestMappings("proj-1", "req-1", {
+      prisma: fakePrisma({
+        requirement: REQUIREMENT,
+        connectors: [{ id: "db-1", label: "Prod DB" }],
+      }),
+      knowledge: fakeKnowledge(SCHEMA_HITS),
+      provider,
+      env: {},
+    });
+    expect(result.candidates).toEqual([]);
+    expect(result.unreadBatches).toBe(1);
+    expect(result.note).toBe(
+      "METIS could not read the model's answer for 1 batch of tables, so those tables were " +
+        "not checked. No suggestions here does not mean no table matches this requirement — try again.",
+    );
+  });
+
+  it("#1081 — JSON without a candidates list is unread; an empty list is a real answer", async () => {
+    const run = (reply: string) =>
+      suggestMappings("proj-1", "req-1", {
+        prisma: fakePrisma({
+          requirement: REQUIREMENT,
+          connectors: [{ id: "db-1", label: "Prod DB" }],
+        }),
+        knowledge: fakeKnowledge(SCHEMA_HITS),
+        provider: fakeProvider(reply),
+        env: {},
+      });
+    expect((await run('{"mappings":[]}')).unreadBatches).toBe(1);
+    const empty = await run('{"candidates":[]}');
+    expect(empty.unreadBatches).toBeUndefined();
+    expect(empty.note).toBeNull();
   });
 
   it("never throws — a failing knowledge search degrades to an error note", async () => {
@@ -519,6 +558,7 @@ describe("suggestMappings output cap (#751)", () => {
     const result = await suggestMappings("proj-1", "req-1", deps(provider));
     expect(chat).toHaveBeenCalledTimes(1);
     expect(result.candidates).toEqual([]);
+    expect(result.unreadBatches).toBe(1);
   });
 
   it("does not split a single-table batch forever", async () => {

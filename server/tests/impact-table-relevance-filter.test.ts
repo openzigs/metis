@@ -393,12 +393,42 @@ describe("deterministic passthrough (c)", () => {
     expect(provider.chat).not.toHaveBeenCalled();
   });
 
-  it("passes through on malformed / unparseable JSON", async () => {
+  it("passes through on malformed / unparseable JSON, after one repair, marked unread (#1081)", async () => {
     const provider = mockProvider(() => "this is not json at all {{{");
     const res = await filterAffectedTablesByRelevance("x", tables, provider, { enabled: true });
     expect(res.applied).toBe(false);
+    expect(res.unreadable).toBe(true);
+    expect(provider.chat).toHaveBeenCalledTimes(2);
     expect(res.primary).toEqual(tables);
     expect(res.secondary).toHaveLength(0);
+  });
+
+  it("#1081 review — clips the reply it replays in the repair turn to 2,000 characters", async () => {
+    const provider = mockProvider(() => "y".repeat(5000));
+    await filterAffectedTablesByRelevance("x", tables, provider, { enabled: true });
+    const retry = (provider.chat as ReturnType<typeof vi.fn>).mock.calls[1]![0] as ChatMessage[];
+    const echoed = retry.find((m) => m.role === "assistant")!;
+    expect(String(echoed.content)).toContain("[truncated 3000 chars]");
+    expect(String(echoed.content).length).toBeLessThan(2100);
+  });
+
+  it("#1081 — uses the repaired answer when the second reply can be read", async () => {
+    let call = 0;
+    const provider = mockProvider((candidates) => {
+      call += 1;
+      return call === 1 ? "sorry, here:" : tierByName({ inventory: "unlikely" })(candidates);
+    });
+    const res = await filterAffectedTablesByRelevance("x", tables, provider, { enabled: true });
+    expect(res.applied).toBe(true);
+    expect(res.unreadable).toBeUndefined();
+  });
+
+  it("#1081 — a provider failure is not marked unread (the runtime counts it as a failure)", async () => {
+    const provider = mockProvider(() => "x");
+    (provider.chat as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("503"));
+    const res = await filterAffectedTablesByRelevance("x", tables, provider, { enabled: true });
+    expect(res.applied).toBe(false);
+    expect(res.unreadable).toBeUndefined();
   });
 
   it("passes through on schema-invalid JSON (wrong tier value)", async () => {

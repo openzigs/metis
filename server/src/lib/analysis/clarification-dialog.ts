@@ -6,10 +6,19 @@
  * Haiku to Sonnet when uncertainty exceeds a threshold.
  */
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { HAIKU_MODEL_ID, SONNET_MODEL_ID, tierModelFor } from "../ai/model-router.js";
 import { createChildLogger } from "../logger.js";
+import { AppError } from "../../middleware/error-handler.js";
+import { extractJsonObject } from "./agent-runner.js";
 import { AmbiguityGrounding, type GroundingRetriever } from "./ambiguity-grounding.js";
+import {
+  hasVerdict,
+  jsonObjectWhereDeclared,
+  requestStructuredVerdict,
+} from "./structured-verdict.js";
+import { noUsableItem } from "./unread-reply.js";
 import {
   deleteDialogState,
   readDialogState,
@@ -403,14 +412,37 @@ export class ClarificationDialog {
     signal?: AbortSignal,
   ): Promise<ClarifyingQuestion[]> {
     const messages = buildQuestionMessages(requirements, state.currentRound, [...addressed]);
+    const model = this.getModel(state);
 
-    const response = await this.provider.chat(messages, {
-      model: this.getModel(state),
+    // #1081 — one re-prompt, then an ERROR the analyst sees. This used to read an
+    // unparseable answer as zero questions and persist an empty round, which the
+    // panel showed as "nothing to clarify".
+    const outcome = await requestStructuredVerdict(this.provider, {
+      label: "clarification-questions",
+      schema: questionsEnvelopeSchema,
+      schemaName: "clarifying questions",
+      expectedShape: QUESTIONS_SHAPE,
+      messages,
+      model,
       signal,
       disableTools: true,
+      responseFormat: jsonObjectWhereDeclared(this.provider, model),
     });
-
-    return this.parseQuestions(response.content);
+    if (!hasVerdict(outcome)) {
+      // A transport failure keeps its own error (and its HTTP mapping), as before.
+      if (outcome.reason === "provider-error") throw outcome.cause ?? new Error(outcome.detail);
+      log.warn("Clarifying questions could not be read — no round started", {
+        reason: outcome.reason,
+        attempts: outcome.attempts,
+      });
+      throw new AppError(
+        502,
+        "MODEL_REPLY_UNREADABLE",
+        "METIS could not read the clarifying questions in the model's answer, so no round was " +
+          "started. This does not mean there is nothing to clarify — try again.",
+      );
+    }
+    return toQuestions(outcome.verdict.questions);
   }
 
   /**
@@ -438,7 +470,12 @@ export class ClarificationDialog {
       log.warn("Self-resolution grounding pass failed — surfacing questions as open", {
         error: (err as Error).message,
       });
-      return questions.map((q) => ({ ...q, groundingStatus: q.groundingStatus ?? "open" }));
+      // #1081 — open because the check failed, not because a model said so.
+      return questions.map((q) => ({
+        ...q,
+        groundingStatus: q.groundingStatus ?? "open",
+        groundingFailed: true,
+      }));
     }
   }
 
@@ -479,6 +516,8 @@ export class ClarificationDialog {
     // twice. The live incident recorded 40 "resolved" entries for 12 real
     // ambiguities, which then drove `totalAmbiguities` to -28.
     const resolved = new Set(state.resolvedAmbiguities);
+    /** #1081 — requirements whose resolution answer could not be read. */
+    const unreadResolutions: string[] = [];
 
     for (const reqId of affectedReqIds) {
       const reqIndex = updatedReqs.findIndex((r) => r.id === reqId);
@@ -508,13 +547,31 @@ export class ClarificationDialog {
       const messages = buildResolutionMessages(req, reqQA);
 
       try {
-        const response = await this.provider.chat(messages, {
-          model: this.getModel(state),
+        const model = this.getModel(state);
+        const outcome = await requestStructuredVerdict(this.provider, {
+          label: "clarification-resolution",
+          schema: resolutionSchema,
+          schemaName: "clarification resolution",
+          expectedShape: RESOLUTION_SHAPE,
+          messages,
+          model,
           signal,
           disableTools: true,
+          responseFormat: jsonObjectWhereDeclared(this.provider, model),
         });
-
-        const resolution = this.parseResolution(response.content);
+        if (!hasVerdict(outcome)) {
+          // #1081 — the answers are already credited above (answeredAmbiguities),
+          // so nothing the user wrote is lost; what did not happen is the rewrite
+          // of this requirement's description. Record it on the round so the
+          // panel can say so instead of staying silent. A failed call is the
+          // same outcome for the analyst, so it is recorded the same way.
+          log.warn("Clarification resolution could not be read — description not updated", {
+            requirementId: reqId,
+            reason: outcome.reason,
+          });
+          unreadResolutions.push(reqId);
+        }
+        const resolution = hasVerdict(outcome) ? toResolution(outcome.verdict) : null;
         if (resolution) {
           for (const field of resolution.resolvedFields) {
             if (!realFields.has(field) || !answeredFields.has(field)) {
@@ -539,6 +596,8 @@ export class ClarificationDialog {
     }
 
     state.resolvedAmbiguities = [...resolved];
+    if (unreadResolutions.length > 0) currentRound.unreadResolutions = unreadResolutions;
+    else delete currentRound.unreadResolutions;
 
     // Issue #1104 (finding C) — count what is STILL unresolved on the
     // requirements themselves. The old `total - resolved.length` subtraction
@@ -562,46 +621,76 @@ export class ClarificationDialog {
     };
   }
 
-  /** @internal — exposed for testing */
-  parseQuestions(content: string): ClarifyingQuestion[] {
+  /**
+   * @internal — exposed for testing. #1081 — `null` when the answer cannot be
+   * read at all (no JSON object, or no `questions` array); `[]` only for an
+   * answer that really lists no questions.
+   */
+  parseQuestions(content: string): ClarifyingQuestion[] | null {
+    let json: unknown;
     try {
-      const cleaned = content.replace(/^```(?:json)?\s*\n?/m, "").replace(/\n?```\s*$/m, "");
-      const json = JSON.parse(cleaned) as { questions?: unknown[] };
-      if (!Array.isArray(json.questions)) return [];
-
-      return json.questions
-        .filter((q): q is Record<string, unknown> => !!q && typeof q === "object")
-        .map((q) => ({
-          id: randomUUID(),
-          requirementId: typeof q.requirementId === "string" ? q.requirementId : "",
-          ambiguityField: typeof q.ambiguityField === "string" ? q.ambiguityField : "",
-          question: typeof q.question === "string" ? q.question : "",
-          context: typeof q.context === "string" ? q.context : "",
-        }))
-        .filter((q) => q.question && q.requirementId);
-    } catch {
-      log.warn("Failed to parse questions response");
-      return [];
-    }
-  }
-
-  private parseResolution(
-    content: string,
-  ): { resolvedFields: string[]; updatedDescription: string; remainingUncertainty: number } | null {
-    try {
-      const cleaned = content.replace(/^```(?:json)?\s*\n?/m, "").replace(/\n?```\s*$/m, "");
-      const json = JSON.parse(cleaned) as Record<string, unknown>;
-      return {
-        resolvedFields: Array.isArray(json.resolvedFields)
-          ? json.resolvedFields.filter((f): f is string => typeof f === "string")
-          : [],
-        updatedDescription:
-          typeof json.updatedDescription === "string" ? json.updatedDescription : "",
-        remainingUncertainty:
-          typeof json.remainingUncertainty === "number" ? json.remainingUncertainty : 1,
-      };
+      json = extractJsonObject(content);
     } catch {
       return null;
     }
+    const envelope = questionsEnvelopeSchema.safeParse(json);
+    return envelope.success ? toQuestions(envelope.data.questions) : null;
   }
+}
+
+/** #1081 — the envelope only; each question is still read leniently. */
+const questionsEnvelopeSchema = z.object({ questions: z.array(z.unknown()) }).refine(
+  // #1081 review — questions listed, but not one usable, must not save an empty round.
+  (o) => !noUsableItem(o.questions, (q) => toQuestions([q]).length > 0),
+  { message: "no questions entry has a question and a requirementId", path: ["questions"] },
+);
+
+const QUESTIONS_SHAPE =
+  '{ "questions": [ { "requirementId": string, "ambiguityField": string, "question": string, ' +
+  '"context": string } ] }';
+
+/**
+ * #1081 — the resolution answer. Every field the dialog reads is optional, as
+ * before; what is new is that an answer that is not a JSON object at all is
+ * re-prompted once and then recorded on the round instead of being dropped
+ * without a word.
+ */
+const resolutionSchema = z.object({
+  // #1081 review — the two keys the dialog acts on must be PRESENT (null is a
+  // readable "nothing"), so `{}` or snake_case keys are an unread resolution,
+  // recorded in `unreadResolutions`, not a silent no-op.
+  resolvedFields: z.array(z.unknown()).nullable(),
+  updatedDescription: z.string().nullable(),
+  remainingUncertainty: z.unknown().optional(),
+});
+
+const RESOLUTION_SHAPE =
+  '{ "resolvedFields": string[], "updatedDescription": string, "remainingUncertainty": number }';
+
+/** Read each question leniently; one without a question or requirement is dropped. */
+function toQuestions(raw: unknown[]): ClarifyingQuestion[] {
+  return raw
+    .filter((q): q is Record<string, unknown> => !!q && typeof q === "object")
+    .map((q) => ({
+      id: randomUUID(),
+      requirementId: typeof q.requirementId === "string" ? q.requirementId : "",
+      ambiguityField: typeof q.ambiguityField === "string" ? q.ambiguityField : "",
+      question: typeof q.question === "string" ? q.question : "",
+      context: typeof q.context === "string" ? q.context : "",
+    }))
+    .filter((q) => q.question && q.requirementId);
+}
+
+/** Read a validated resolution answer into the shape the dialog applies. */
+function toResolution(json: z.infer<typeof resolutionSchema>): {
+  resolvedFields: string[];
+  updatedDescription: string;
+  remainingUncertainty: number;
+} {
+  return {
+    resolvedFields: (json.resolvedFields ?? []).filter((f): f is string => typeof f === "string"),
+    updatedDescription: typeof json.updatedDescription === "string" ? json.updatedDescription : "",
+    remainingUncertainty:
+      typeof json.remainingUncertainty === "number" ? json.remainingUncertainty : 1,
+  };
 }

@@ -508,6 +508,15 @@ describe("summarizeImpactItem — passthrough, never throws (d)", () => {
     const res = await summarizeImpactItem(itemFacts(), provider, { enabled: true });
     expect(res.applied).toBe(true);
     expect(res.summary).toBeNull();
+    // #1081 — marked, so the run's notice says the narrative could not be read.
+    expect(res.unreadable).toBe(true);
+  });
+
+  it("#1081 — an ungrounded draft is rejected, not marked unread", async () => {
+    const provider = mockProvider(() => reply("Touches `invented_table` heavily."));
+    const res = await summarizeImpactItem(itemFacts(), provider, { enabled: true });
+    expect(res.summary).toBeNull();
+    expect(res.unreadable).toBeUndefined();
   });
 
   it("returns null on schema-invalid JSON", async () => {

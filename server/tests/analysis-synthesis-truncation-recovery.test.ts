@@ -405,10 +405,12 @@ describe("#751 synthesis recovers from an output-cap truncation", () => {
   });
 
   it("never keeps a salvaged element that fails the schema, and re-asks for its findings", async () => {
+    // #1099 — an unknown `type` is now repaired (defaulted, recorded) rather
+    // than failing the element, so the element fails on a REQUIRED field.
     const bogus = {
-      type: "nonsense",
+      type: "feature",
       title: "Bogus",
-      body: "b",
+      body: "",
       evidenceFindingIndexes: [0, 1, 2],
     };
     const real = reqJson({ title: "Real 3", evidenceFindingIndexes: [3] });

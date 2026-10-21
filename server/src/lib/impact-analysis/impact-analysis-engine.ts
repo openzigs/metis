@@ -519,7 +519,10 @@ export async function computeProjectImpact(
         );
         affectedTables = filtered.primary;
         affectedTablesSecondary = filtered.secondary;
-        relevanceFilterApplied = true;
+        // #1081 — a passthrough (the judge's answer could not be read, or it
+        // was never asked) did not filter anything: do not treat it as if it
+        // had. Only an explicit `applied: false` opts out.
+        relevanceFilterApplied = filtered.applied !== false;
       } catch (err) {
         log.warn("table relevance filter failed; keeping unfiltered crossing", {
           projectId,

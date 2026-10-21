@@ -23,12 +23,14 @@ import {
   type CrossDocFindingKind,
   type FindingSeverity,
   type NliVerdict,
+  type UnreadAnalysisStep,
 } from "@metis/shared";
 import type { AIProvider, TokenUsage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { CompletenessChecker } from "./completeness-checker.js";
 import { ContradictionDetector } from "./contradiction-detector.js";
 import { CrossDocValidator, type DocSegment } from "./cross-doc-validator.js";
+import { unreadStep } from "./unread-reply.js";
 
 const log = createChildLogger("cross-doc-detection");
 
@@ -49,6 +51,12 @@ export interface CrossDocDetectionResult {
   completenessGapCount: number;
   generatedAt: string;
   usage: TokenUsage;
+  /**
+   * #1081 — the checks whose answer (or some of whose answers) could not be
+   * read. Empty on a clean pass. Without it, an unread completeness check and a
+   * corpus with no gaps rendered the same "none detected" line.
+   */
+  unreadSteps: UnreadAnalysisStep[];
 }
 
 /** Completeness gap kind → finding severity. Risks/NFRs are weightier gaps. */
@@ -131,6 +139,7 @@ export async function runCrossDocDetection(
       completenessGapCount: 0,
       generatedAt: now().toISOString(),
       usage,
+      unreadSteps: [],
     };
   }
 
@@ -181,10 +190,15 @@ export async function runCrossDocDetection(
 
   const contradictionCount = findings.filter((f) => f.kind === "contradiction").length;
   const completenessGapCount = findings.length - contradictionCount;
+  const unreadSteps = [
+    unreadStep("contradiction-check", contradictionResult.unread, contradictionResult.calls),
+    unreadStep("completeness-check", [completeness.unread], 1),
+  ].filter((s): s is UnreadAnalysisStep => s !== null);
 
   log.info("Cross-doc detection complete", {
     contradictions: contradictionCount,
     completenessGaps: completenessGapCount,
+    unreadSteps: unreadSteps.map((s) => s.step),
   });
 
   return {
@@ -193,5 +207,6 @@ export async function runCrossDocDetection(
     completenessGapCount,
     generatedAt: now().toISOString(),
     usage,
+    unreadSteps,
   };
 }

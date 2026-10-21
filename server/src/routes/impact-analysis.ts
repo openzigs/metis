@@ -190,16 +190,20 @@ function llmSeedingMapRequirement(
   const entityProvider = entitySeedsEnabled
     ? instrumentStage(runtime, "entity-seeds", built)
     : null;
+  // #1081 — an answer either stage could not read is reported on the run's
+  // notice; both keep their deterministic result, as before.
   const base = selectCodeSymbolSearcher({
     prisma,
     provider: seedProvider,
     enabled: seedingEnabled,
+    llmOptions: { onUnreadable: () => runtime.markUnreadable("seeding") },
   });
   const searcher = withEntitySeedUnion({
     base,
     provider: entityProvider,
     loadVocabulary: buildPrismaEntityVocabularyLoader(prisma),
     enabled: entitySeedsEnabled,
+    unionOptions: { onUnreadable: () => runtime.markUnreadable("entity-seeds") },
   });
   return (req, projectId) => mapRequirementToCode(req, projectId, {}, { searcher });
 }
@@ -222,6 +226,8 @@ function tableRelevanceFilterDep(
     const result = await filterAffectedTablesByRelevance(requirementText, tables, liveProvider, {
       enabled: true,
     });
+    // #1081 — an unfiltered crossing must never read as a filtered one.
+    if (result.unreadable) runtime.markUnreadable("table-filter");
     return result;
   };
 }
@@ -261,6 +267,7 @@ function additiveColumnProposerDep(
       // the request before it proposes new state.
       writers,
     });
+    if (result.unreadable) runtime.markUnreadable("additive-ddl");
     // #791 — the rows WITH the model's justification and covering writers: the
     // engine's deterministic gate reads both, and trusts neither to make a column
     // a core migration.
@@ -296,6 +303,8 @@ function clauseCoverageReconcilerDep(
       liveProvider,
       { enabled: true },
     );
+    // #1081 — the route returns only `gaps`, so an unread answer is reported here.
+    if (result.unreadable) runtime.markUnreadable("clause-reconcile");
     return result.gaps;
   };
 }
@@ -327,6 +336,7 @@ function tableRecoveryJudgeDep(
       catalog,
       provider: liveProvider,
       options: { enabled: true },
+      onUnreadable: () => runtime.markUnreadable("table-judge"),
     });
   };
 }
@@ -351,7 +361,21 @@ function impactSummarizerDep(
   const itemProvider = instrumentStage(runtime, "summary-item", built);
   const runProvider = instrumentStage(runtime, "summary-run", built);
   if (!itemProvider || !runProvider) return undefined;
-  return buildImpactSummarizer({ itemProvider, runProvider });
+  const summarizer = buildImpactSummarizer({ itemProvider, runProvider });
+  // #1081 — the deterministic summary stays when a draft cannot be read; the
+  // run's notice says so instead of serving it as the AI narrative.
+  return {
+    summarizeItem: async (facts) => {
+      const result = await summarizer.summarizeItem(facts);
+      if (result.unreadable) runtime.markUnreadable("summary-item");
+      return result;
+    },
+    summarizeRun: async (facts) => {
+      const result = await summarizer.summarizeRun(facts);
+      if (result.unreadable) runtime.markUnreadable("summary-run");
+      return result;
+    },
+  };
 }
 
 /**

@@ -875,6 +875,11 @@ export interface ClarifyingQuestion {
    * treated as "open" (a plain blank question).
    */
   groundingStatus?: "grounded" | "partial" | "open";
+  /**
+   * Issue #1081 — METIS could not check project knowledge for this question
+   * (the check's answer could not be read, or it failed). It is asked as open.
+   */
+  groundingFailed?: boolean;
   /** Suggested answer text to pre-fill (grounded/partial only). */
   groundedAnswer?: string;
   /** Supporting citations for the suggested answer. */
@@ -891,6 +896,12 @@ export interface ClarificationRound {
   round: number;
   questions: ClarifyingQuestion[];
   answers: Array<{ questionId: string; answer: string }>;
+  /**
+   * Issue #1081 — requirements whose description METIS could not update from
+   * this round's answers (the model's answer could not be read). The answers
+   * themselves still count.
+   */
+  unreadResolutions?: string[];
 }
 
 export interface ClarificationStatePayload {
@@ -936,6 +947,11 @@ export interface EvidenceDigest {
   sources: WebSource[];
   digest: string;
   needsHumanReview: boolean;
+  /**
+   * Issue #1081 — the model's search queries could not be read, so the search
+   * used the evidence need's own wording.
+   */
+  queryFallback?: boolean;
 }
 
 export interface WebResearchResultPayload {

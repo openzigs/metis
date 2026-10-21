@@ -202,6 +202,32 @@ const SYSTEM_PROMPT =
   "schema. You never invent tables or columns that are not listed.";
 
 /**
+ * #1081 — the analyst-facing sentence for schema batches that produced no
+ * readable answer. When nothing was suggested at all it also says what the
+ * empty list does NOT mean.
+ */
+export function unreadBatchesNote(
+  unread: number,
+  failed: number,
+  nothingSuggested: boolean,
+): string {
+  const batches = (n: number) => `${n} batch${n === 1 ? "" : "es"} of tables`;
+  const parts: string[] = [];
+  if (unread > 0) {
+    parts.push(`METIS could not read the model's answer for ${batches(unread)}`);
+  }
+  if (failed > 0) parts.push(`the model call failed for ${batches(failed)}`);
+  const sentence = parts.join(", and ");
+  const lead = sentence.charAt(0).toUpperCase() + sentence.slice(1);
+  return (
+    `${lead}, so those tables were not checked.` +
+    (nothingSuggested
+      ? " No suggestions here does not mean no table matches this requirement — try again."
+      : "")
+  );
+}
+
+/**
  * Run a budget-bounded suggest pass. Never throws.
  */
 export async function suggestMappings(
@@ -272,6 +298,11 @@ export async function suggestMappings(
     let callsUsed = 0;
     let tokensUsed = 0;
     let budgetExhausted = false;
+    // #1081 — batches whose answer could not be read, and batches whose call
+    // failed. Both used to vanish: every batch failing returned `candidates: []`
+    // with `note: null`, which reads as "no table matches this requirement".
+    let unreadBatches = 0;
+    let failedBatches = 0;
 
     // #751 AC4 — never below what the provider would have used (#868 review),
     // and held at what the model will actually accept, so a model with a lower
@@ -332,12 +363,27 @@ export async function suggestMappings(
         if (truncated && batch.length > 1) {
           const mid = Math.ceil(batch.length / 2);
           batches.unshift(batch.slice(0, mid), batch.slice(mid));
+        } else if (err instanceof JsonLlmParseError) {
+          unreadBatches += 1;
+        } else {
+          failedBatches += 1;
         }
         continue;
       }
       callsUsed += 1;
 
-      for (const raw of parsed.candidates ?? []) {
+      // #1081 — JSON with no `candidates` list is not "no candidates".
+      if (!Array.isArray(parsed.candidates)) {
+        log.warn("suggest batch answer had no candidates list; counted as unread", {
+          projectId,
+          requirementId,
+          tables: batch.length,
+        });
+        unreadBatches += 1;
+        continue;
+      }
+
+      for (const raw of parsed.candidates) {
         const dbConnectorId = typeof raw.dbConnectorId === "string" ? raw.dbConnectorId : "";
         const schemaName = typeof raw.schemaName === "string" ? raw.schemaName : "";
         const tableName = typeof raw.tableName === "string" ? raw.tableName : "";
@@ -373,12 +419,20 @@ export async function suggestMappings(
       deduped.push(c);
     }
 
+    const notes = [
+      unreadBatches + failedBatches > 0
+        ? unreadBatchesNote(unreadBatches, failedBatches, deduped.length === 0)
+        : null,
+      budgetExhausted
+        ? "Suggestion budget reached; returning partial results. Increase DATA_MAPPING_SUGGEST_MAX_CALLS or token budget for a full pass."
+        : null,
+    ].filter((n): n is string => n !== null);
+
     return {
       candidates: deduped,
       budgetExhausted,
-      note: budgetExhausted
-        ? "Suggestion budget reached; returning partial results. Increase DATA_MAPPING_SUGGEST_MAX_CALLS or token budget for a full pass."
-        : null,
+      note: notes.length > 0 ? notes.join(" ") : null,
+      ...(unreadBatches > 0 ? { unreadBatches } : {}),
     };
   } catch (err) {
     log.warn("suggestMappings failed", {

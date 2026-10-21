@@ -53,7 +53,7 @@ describe("parseAssumptionRisk", () => {
         },
       ],
     });
-    const result = parseAssumptionRisk(json);
+    const result = parseAssumptionRisk(json)!;
     expect(result.assumptions).toHaveLength(1);
     expect(result.assumptions[0]!.impactIfFalse).toBe("high");
     expect(result.assumptions[0]!.id).toBeTruthy();
@@ -68,7 +68,7 @@ describe("parseAssumptionRisk", () => {
       assumptions: [{ statement: "X is true." }],
       risks: [{ title: "R", description: "A risk." }],
     });
-    const result = parseAssumptionRisk(json);
+    const result = parseAssumptionRisk(json)!;
     expect(result.assumptions[0]!.rationale).toBe("");
     expect(result.assumptions[0]!.impactIfFalse).toBe("medium");
     expect(result.risks[0]!.likelihood).toBe("medium");
@@ -79,7 +79,7 @@ describe("parseAssumptionRisk", () => {
   it("strips markdown fences", () => {
     const fenced =
       '```json\n{"assumptions":[{"statement":"s"}],"risks":[{"title":"t","description":"d"}]}\n```';
-    const result = parseAssumptionRisk(fenced);
+    const result = parseAssumptionRisk(fenced)!;
     expect(result.assumptions).toHaveLength(1);
     expect(result.risks).toHaveLength(1);
   });
@@ -98,25 +98,49 @@ describe("parseAssumptionRisk", () => {
         { title: "", description: "empty title" },
       ],
     });
-    const result = parseAssumptionRisk(json);
+    const result = parseAssumptionRisk(json)!;
     expect(result.assumptions).toHaveLength(1);
     expect(result.assumptions[0]!.statement).toBe("valid");
     expect(result.risks).toHaveLength(1);
     expect(result.risks[0]!.title).toBe("ok");
   });
 
-  it("returns empty on non-JSON or wrong shape", () => {
-    expect(parseAssumptionRisk("nope")).toEqual({ assumptions: [], risks: [] });
-    expect(parseAssumptionRisk(JSON.stringify(["array"]))).toEqual({ assumptions: [], risks: [] });
-    expect(parseAssumptionRisk(JSON.stringify({ other: 1 }))).toEqual({
+  // #1081 — an unreadable answer is `null`, never the empty answer.
+  it("returns null, not an empty result, on non-JSON or wrong shape", () => {
+    expect(parseAssumptionRisk("nope")).toBeNull();
+    expect(parseAssumptionRisk(JSON.stringify(["array"]))).toBeNull();
+    expect(parseAssumptionRisk(JSON.stringify({ other: 1 }))).toBeNull();
+    expect(parseAssumptionRisk(JSON.stringify({ assumptions: "x", risks: 9 }))).toBeNull();
+  });
+
+  it("reads a legitimately empty answer as empty", () => {
+    expect(parseAssumptionRisk(JSON.stringify({ assumptions: [], risks: [] }))).toEqual({
       assumptions: [],
       risks: [],
     });
   });
+});
 
-  it("tolerates non-array assumptions/risks fields", () => {
-    const result = parseAssumptionRisk(JSON.stringify({ assumptions: "x", risks: 9 }));
-    expect(result).toEqual({ assumptions: [], risks: [] });
+describe("AssumptionRiskElicitor.elicit — #1081 unreadable answers", () => {
+  it("re-prompts once, then returns the failure marked unread", async () => {
+    const provider = mockProvider('{"assumptions": "none"}');
+    const result = await new AssumptionRiskElicitor({ provider }).elicit("Users log in.");
+    expect(provider.chat).toHaveBeenCalledTimes(2);
+    expect(result.unread).toMatchObject({ reason: "schema-invalid" });
+  });
+
+  it("treats a list with entries but none usable as unread (#1081 review)", async () => {
+    const provider = mockProvider(JSON.stringify({ assumptions: [], risks: [{ name: "outage" }] }));
+    const result = await new AssumptionRiskElicitor({ provider }).elicit("Users log in.");
+    expect(provider.chat).toHaveBeenCalledTimes(2);
+    expect(result.unread).toMatchObject({ reason: "schema-invalid" });
+  });
+
+  it("does not mark a legitimately empty answer unread", async () => {
+    const provider = mockProvider(JSON.stringify({ assumptions: [], risks: [] }));
+    const result = await new AssumptionRiskElicitor({ provider }).elicit("Users log in.");
+    expect(provider.chat).toHaveBeenCalledTimes(1);
+    expect(result.unread).toBeUndefined();
   });
 });
 

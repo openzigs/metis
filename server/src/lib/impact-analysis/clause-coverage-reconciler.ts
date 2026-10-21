@@ -305,6 +305,8 @@ export interface ClauseCoverageResult {
   gaps: ClauseCoverageGap[];
   /** false ⇒ deterministic passthrough (flag off / offline / no candidates / malformed). */
   applied: boolean;
+  /** #1081 — the last answer could not be read (after the repair pass). */
+  unreadable?: boolean;
 }
 
 /** Deterministic passthrough: no gaps, no advisory. */
@@ -367,7 +369,8 @@ export async function reconcileClauseCoverage(
       if (!reply) {
         if (last) {
           log.warn("clause reconciler returned malformed output; no gaps", { attempt });
-          return passthrough();
+          // #1081 — "no gaps" here is an unread answer, not the model's verdict.
+          return { ...passthrough(), unreadable: true };
         }
         messages.push({ role: "assistant", content });
         messages.push(reconcileRepairMessage([]));

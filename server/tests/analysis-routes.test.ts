@@ -247,10 +247,15 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({
 // resolution step is a deterministic no-op. `chat` is also a spy so a future
 // regression that *expects* a real model surfaces here instead of silently
 // no-opping.
-const providerChat = vi.fn(async () => ({
-  // Empty resolution → parseResolution yields no resolved fields / description,
-  // so submitAnswers returns the requirements unchanged, deterministically.
-  content: "{}",
+const providerChat = vi.fn(async (messages?: Array<{ role: string; content: unknown }>) => ({
+  // Empty resolution → no resolved fields / description, so submitAnswers
+  // returns the requirements unchanged, deterministically. #1081 — the question
+  // prompt gets a legitimately empty question list: a bare `{}` there is no
+  // longer read as "no questions" but as an answer that could not be read, and
+  // the resolution must carry its two keys (#1081 review).
+  content: String(messages?.[0]?.content ?? "").includes("generate targeted clarifying questions")
+    ? '{"questions":[]}'
+    : '{"resolvedFields":[],"updatedDescription":null}',
   usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
   model: "offline-stub",
   provider: "offline-stub",
@@ -1050,7 +1055,10 @@ describe("POST /api/projects/:projectId/analyses/:id/clarify (Epic #922)", () =>
       questions: [{ requirementId: "req-1", ambiguityField: "retention", question: "How long?" }],
     });
     providerChat.mockImplementation(async () => ({
-      content: providerChat.mock.calls.length === 1 ? QUESTIONS : "{}",
+      content:
+        providerChat.mock.calls.length === 1
+          ? QUESTIONS
+          : '{"resolvedFields":[],"updatedDescription":null}',
       // The real `TokenUsage` shape (the shared stub above uses other names).
       usage: { promptTokens: 50, completionTokens: 5, totalTokens: 55 } as never,
       model: "offline-stub",

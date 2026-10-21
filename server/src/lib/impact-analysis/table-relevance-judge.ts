@@ -76,6 +76,11 @@ export interface TableJudgeDecision {
 export interface TableJudgeResult {
   selected: TableJudgeDecision[];
   applied: boolean;
+  /**
+   * #1081 — too few samples could be READ for the vote to select anything, so
+   * an empty `selected` is not the judge's answer. Absent otherwise.
+   */
+  unreadable?: boolean;
 }
 
 export interface TableJudgeOptions {
@@ -161,13 +166,16 @@ export function buildJudgeMessages(
   ];
 }
 
-/** One sample. Returns the set of in-range selected indices; null on malformed/error. */
+/**
+ * One sample. Returns the set of in-range selected indices; null when the call
+ * failed; #1081 — "unreadable" when it answered and the answer could not be read.
+ */
 async function judgeOnce(
   messages: ChatMessage[],
   candidateCount: number,
   provider: AIProvider,
   opts: TableJudgeOptions,
-): Promise<Set<number> | null> {
+): Promise<Set<number> | null | "unreadable"> {
   let content: string;
   try {
     const res = await provider.chat(messages, {
@@ -183,7 +191,7 @@ async function judgeOnce(
   }
   const parsed = extractFirstJson(content);
   const validated = parsed === null ? null : replySchema.safeParse(parsed);
-  if (!validated?.success) return null;
+  if (!validated?.success) return "unreadable";
   const out = new Set<number>();
   for (const t of validated.data.tables) {
     if (Number.isInteger(t.index) && t.index >= 0 && t.index < candidateCount) out.add(t.index);
@@ -222,16 +230,33 @@ export async function judgeRelevantTables(
     // Self-consistency: tally index votes across independent samples. A malformed sample
     // contributes no votes; all-malformed degrades to an empty passthrough.
     const votes = new Array<number>(candidates.length).fill(0);
-    let anyValid = false;
+    let validSamples = 0;
+    let unreadableSamples = 0;
     for (let i = 0; i < samples; i++) {
       const picked = await judgeOnce(messages, candidates.length, provider, opts);
       if (picked === null) continue;
-      anyValid = true;
+      if (picked === "unreadable") {
+        unreadableSamples += 1;
+        continue;
+      }
+      validSamples += 1;
       for (const idx of picked) votes[idx] += 1;
     }
-    if (!anyValid) {
-      log.warn("table judge: every sample malformed; no selection", { samples });
-      return { selected: [], applied: false };
+    // #1081 — with fewer readable samples than the vote threshold, no table can
+    // be selected whatever the samples said: "nothing recovered" would be a
+    // claim the vote never made. Report it when unreadable answers caused it.
+    if (validSamples < threshold) {
+      log.warn("table judge: too few readable samples to vote; no selection", {
+        samples,
+        validSamples,
+        unreadableSamples,
+        threshold,
+      });
+      return {
+        selected: [],
+        applied: false,
+        ...(unreadableSamples > 0 ? { unreadable: true } : {}),
+      };
     }
 
     const selected: TableJudgeDecision[] = [];

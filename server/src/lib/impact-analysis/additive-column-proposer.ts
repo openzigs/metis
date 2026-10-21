@@ -618,6 +618,8 @@ export interface AdditiveColumnProposalResult {
   coveringWriterIds: string[];
   /** false ⇒ deterministic passthrough (flag off / offline / no candidates / malformed). */
   applied: boolean;
+  /** #1081 — the last answer could not be read (after the repair pass). */
+  unreadable?: boolean;
 }
 
 /** Deterministic passthrough: no proposals, nothing appended. */
@@ -690,7 +692,8 @@ export async function proposeAdditiveColumns(
           log.warn("additive-column proposer returned malformed output; no proposals", {
             attempt,
           });
-          return passthrough();
+          // #1081 — "no proposals" here is an unread answer, not the model's.
+          return { ...passthrough(), unreadable: true };
         }
         messages.push({ role: "assistant", content });
         messages.push(additiveRepairMessage([]));

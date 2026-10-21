@@ -278,7 +278,12 @@ import {
 } from "./new-requirements.js";
 import { computeRequirementEscalations } from "./escalation-context.js";
 import { splitEscalationBudget, type EscalationPolicyConfig } from "./escalation-policy.js";
-import type { RequirementEscalation, SpecKitHandoffRecord } from "@metis/shared";
+import {
+  MAX_RECORDED_SYNTHESIS_REPAIRS,
+  type RequirementEscalation,
+  type SpecKitHandoffRecord,
+  type UnreadAnalysisStep,
+} from "@metis/shared";
 import { TaskProfiler } from "../ai/task-profiler.js";
 import { ModelRouter, projectRunModel, type ModelPreferences } from "../ai/model-router.js";
 import { servedProviderModels } from "../ai/model-catalog.js";
@@ -4105,6 +4110,31 @@ export class AnalysisOrchestrator {
         usage: result.usage,
       });
 
+      // Issue #1099 — the values synthesis could not use and left out, so the
+      // analyst can check them before publishing. A clean synthesis clears an
+      // earlier run's record (regenerate and resume re-synthesise the same
+      // analysis); best-effort, like every other marker here.
+      {
+        const repairs = result.fieldRepairs ?? [];
+        try {
+          await persistAnalysisEnhancement(input.analysisId, {
+            synthesisFieldRepairs:
+              repairs.length > 0
+                ? {
+                    repairs: repairs.slice(0, MAX_RECORDED_SYNTHESIS_REPAIRS),
+                    total: repairs.length,
+                    at: new Date().toISOString(),
+                  }
+                : null,
+          });
+        } catch (err) {
+          log.error("Could not record the synthesis field repairs", {
+            analysisId: input.analysisId,
+            error: (err as Error).message,
+          });
+        }
+      }
+
       // Issue #1117 (findings B + C) — a degraded synthesis changes the output
       // profoundly (no types, no acceptance criteria) and used to leave no
       // trace outside a log line. Record it on the analysis so every later
@@ -4408,6 +4438,10 @@ export class AnalysisOrchestrator {
     signal: AbortSignal;
     accumulator: TokenUsage;
   }): Promise<void> {
+    // #1081 — the steps whose answer could not be read, recorded on the
+    // analysis so the panel never presents an unread check as "none found".
+    // Declared outside the try so the catch keeps what was already collected.
+    const unreadSteps: UnreadAnalysisStep[] = [];
     try {
       const segments: DocSegment[] = input.flatFindings
         .map((f) => ({
@@ -4434,6 +4468,7 @@ export class AnalysisOrchestrator {
         input.accumulator.promptTokens += elicitation.usage.promptTokens;
         input.accumulator.completionTokens += elicitation.usage.completionTokens;
         input.accumulator.totalTokens += elicitation.usage.totalTokens;
+        unreadSteps.push(...(elicitation.unreadSteps ?? []));
         if (!isEmptyElicitation(elicitation)) {
           elicitedArtifacts = formatElicitedArtifacts(elicitation);
         }
@@ -4461,6 +4496,8 @@ export class AnalysisOrchestrator {
         analysisId: input.analysisId,
         findings: detection.findings,
       });
+      unreadSteps.push(...(detection.unreadSteps ?? []));
+      await this.recordUnreadAnalysisSteps(input.analysisId, unreadSteps);
 
       log.info("Cross-doc detection persisted", {
         analysisId: input.analysisId,
@@ -4471,6 +4508,32 @@ export class AnalysisOrchestrator {
       if ((err as { name?: string }).name === "AbortError") throw err;
       log.error("Cross-doc detection failed (non-fatal)", {
         analysisId: input.analysisId,
+        error: (err as Error).message,
+      });
+      // #1081 — the pass is non-fatal, but an unfinished pass must not read as
+      // "no contradictions or gaps": say on the analysis that it did not finish.
+      await this.recordUnreadAnalysisSteps(input.analysisId, [
+        ...unreadSteps,
+        { step: "cross-doc-detection", reason: "provider-error", failedCalls: 1, totalCalls: 1 },
+      ]);
+    }
+  }
+
+  /**
+   * #1081 — write (or, on a clean pass, clear) `metadata.unreadAnalysisSteps`.
+   * Best-effort: a failed marker write is logged and never fails the analysis.
+   */
+  private async recordUnreadAnalysisSteps(
+    analysisId: string,
+    steps: UnreadAnalysisStep[],
+  ): Promise<void> {
+    try {
+      await persistAnalysisEnhancement(analysisId, {
+        unreadAnalysisSteps: steps.length > 0 ? { steps, at: new Date().toISOString() } : null,
+      });
+    } catch (err) {
+      log.error("Could not record the unread-analysis-steps marker", {
+        analysisId,
         error: (err as Error).message,
       });
     }
