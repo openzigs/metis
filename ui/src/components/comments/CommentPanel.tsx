@@ -6,9 +6,13 @@
  * Right-rail slide-out panel (Sheet) that shows all comment threads for
  * a requirement or Spec Kit artifact, and allows creating new threads.
  */
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { MessageSquare, X } from "lucide-react";
+import type { CommentChangedEvent } from "@metis/shared";
+import { useSocket } from "@/lib/socket-client";
+import { keepSubscribed } from "@/lib/socket-subscription";
+import { projectJoin } from "@/lib/socket-rooms";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Separator } from "@/components/ui/separator";
@@ -27,6 +31,20 @@ function threadQueryKey(
   return scope === "requirement"
     ? ["comments", "requirement", id]
     : ["comments", "artifact", id, extra ?? ""];
+}
+
+/**
+ * #997 — whether a `comment:changed` push is about the threads this panel
+ * shows. The socket is shared app-wide and the project room carries every
+ * requirement's and artifact's changes, so the panel filters to its own.
+ */
+export function isForThisPanel(
+  event: CommentChangedEvent,
+  panel: { projectId: string; requirementId?: string; artifactName?: string },
+): boolean {
+  if (event.projectId !== panel.projectId) return false;
+  if (panel.requirementId) return event.requirementId === panel.requirementId;
+  return !!panel.artifactName && event.artifactName === panel.artifactName;
 }
 
 // ---- Props -----------------------------------------------------------------
@@ -96,6 +114,29 @@ export function CommentPanel({
   const handleUpdated = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey });
   }, [queryClient, queryKey]);
+
+  // #997 — while the panel is open, re-read the threads when anyone posts,
+  // replies, edits or deletes on this requirement or artifact. The push goes
+  // to the `project:{id}` room (the comment routes' own access rule) and
+  // carries identifiers only; the re-read is the permission-checked REST list.
+  const socket = useSocket();
+  useEffect(() => {
+    if (!socket || !open || !projectId) return;
+    const key = requirementId
+      ? threadQueryKey("requirement", requirementId)
+      : threadQueryKey("artifact", projectId, artifactName);
+    const refresh = () => void queryClient.invalidateQueries({ queryKey: key });
+    // #642 — re-join on reconnect; #646 — and re-read, for a push sent in the gap.
+    const release = keepSubscribed(socket, projectJoin(socket, projectId), refresh);
+    const onChanged = (event: CommentChangedEvent) => {
+      if (isForThisPanel(event, { projectId, requirementId, artifactName })) refresh();
+    };
+    socket.on("comment:changed", onChanged);
+    return () => {
+      release();
+      socket.off("comment:changed", onChanged);
+    };
+  }, [socket, open, projectId, requirementId, artifactName, queryClient]);
 
   return (
     <Sheet open={open} onOpenChange={(v) => !v && onClose()}>

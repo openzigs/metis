@@ -70,10 +70,6 @@ export const SOCKET_EVENT_ALLOWLIST: Readonly<Record<string, string>> = {
     "#91: analysis:{id} room event with no ui/src listener; the UI follows analysis runs via job:lifecycle.",
   "analysis:cancelled":
     "#91: analysis:{id} room event with no ui/src listener; the UI follows analysis runs via job:lifecycle.",
-  "discussion:mention":
-    "TODO(#104): user:{id} notification with no ui/src listener; the drawer listens to comment:mention only.",
-  "review:notification":
-    "TODO(#104): user:{id} notification with no ui/src listener; nothing renders it in realtime.",
 };
 
 /**

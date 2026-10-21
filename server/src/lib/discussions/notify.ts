@@ -231,19 +231,28 @@ export async function notifyDiscussionMentions(input: DiscussionMentionInput): P
               ts: Date.now(),
             };
 
+            const shown = {
+              title: `${who} mentioned you in a discussion`,
+              message: `${who} mentioned you in a discussion thread`,
+              // #980 — the thread's own page; `?thread=` landed on the list.
+              href: `/projects/${encodeURIComponent(projectId)}/discussions/${encodeURIComponent(threadId)}`,
+            };
+            // #104 — the persisted row's id, so the drawer's live item and its
+            // hydrated copy are one item. Null when persisting failed.
+            let notificationId: string | null = null;
+
             // Persist first so the notification drawer hydrates across reloads.
             try {
-              await prisma.notification.create({
+              const row = await prisma.notification.create({
                 data: {
                   userId: u.id,
                   type: "discussion_mention",
-                  title: `${who} mentioned you in a discussion`,
-                  message: `${who} mentioned you in a discussion thread`,
-                  // #980 — the thread's own page; `?thread=` landed on the list.
-                  href: `/projects/${encodeURIComponent(projectId)}/discussions/${encodeURIComponent(threadId)}`,
+                  ...shown,
                   payload: JSON.stringify(payload),
                 },
+                select: { id: true },
               });
+              notificationId = row?.id ?? null;
             } catch (persistErr) {
               log.warn("Failed to persist discussion mention notification", {
                 threadId,
@@ -255,7 +264,11 @@ export async function notifyDiscussionMentions(input: DiscussionMentionInput): P
             // Deliver to the user's personal room (joined from the verified JWT
             // only — OWASP A01, never a client-supplied room id).
             if (io) {
-              io.to(userRoom(u.id)).emit("discussion:mention", payload);
+              io.to(userRoom(u.id)).emit("discussion:mention", {
+                ...payload,
+                ...shown,
+                notificationId,
+              });
             }
           } catch (err) {
             log.warn("Failed to fan out discussion mention", { threadId, userId: u.id, err });

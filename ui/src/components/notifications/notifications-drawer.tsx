@@ -3,7 +3,8 @@
  *
  * Replaces the old non-functional `audit:warn`/`audit:error` listeners with
  * the real events the server actually emits (`comment:mention`,
- * `sla:deadline_expired`). Hydrates from persisted server history on mount so
+ * `sla:deadline_expired`, and since #104 `discussion:mention` and
+ * `review:notification`). Hydrates from persisted server history on mount so
  * unread count and items survive reload/reconnect.
  */
 "use client";
@@ -14,9 +15,12 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { useSocket } from "@/lib/socket-client";
 import { onReconnect } from "@/lib/socket-subscription";
+import type { DiscussionMentionEvent, ReviewNotificationEvent } from "@metis/shared";
 import {
+  discussionMentionEventToNotification,
   getNotificationStore,
   mentionEventToNotification,
+  reviewEventToNotification,
   slaEventToNotification,
   type MentionEventPayload,
   type Notification,
@@ -72,8 +76,19 @@ export function NotificationsDrawer() {
       store.push(draft);
     };
 
+    // #104 — discussion mentions and review lifecycle events carry the
+    // persisted row's id, text and link, so they render live as they hydrate.
+    const onDiscussionMention = (event: DiscussionMentionEvent) => {
+      store.push(discussionMentionEventToNotification(event));
+    };
+    const onReview = (event: ReviewNotificationEvent) => {
+      store.push(reviewEventToNotification(event));
+    };
+
     socket.on("comment:mention", onMention);
     socket.on("sla:deadline_expired", onSlaExpired);
+    socket.on("discussion:mention", onDiscussionMention);
+    socket.on("review:notification", onReview);
     // #646 — a mention sent while the socket was down is lost; it is persisted
     // server-side, so re-read the history on reconnect (hydrate merges by id).
     const release = onReconnect(socket, () => hydrateFromServer(store));
@@ -82,6 +97,8 @@ export function NotificationsDrawer() {
       release();
       socket.off("comment:mention", onMention);
       socket.off("sla:deadline_expired", onSlaExpired);
+      socket.off("discussion:mention", onDiscussionMention);
+      socket.off("review:notification", onReview);
     };
   }, [socket, store]);
 
@@ -130,7 +147,9 @@ export function NotificationsDrawer() {
           data-testid="notifications-drawer"
         >
           <SheetTitle>Notifications</SheetTitle>
-          <SheetDescription>Mentions and SLA deadline alerts.</SheetDescription>
+          <SheetDescription>
+            Mentions, review requests and decisions, and SLA alerts.
+          </SheetDescription>
           <div className="flex items-center justify-between">
             <span className="text-xs text-muted-foreground">{items.length} item(s)</span>
             <Button

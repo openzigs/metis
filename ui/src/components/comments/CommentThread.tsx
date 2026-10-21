@@ -148,6 +148,17 @@ export function CommentThreadComponent({
   projectId,
 }: CommentThreadProps) {
   const [comments, setComments] = useState<CommentItem[]>(thread.comments);
+  // #997 — adopt every list the panel's query delivers. The local copy only
+  // seeded from the first one, so a refetch carrying another user's reply (on
+  // the viewer's own post, or on a `comment:changed` push) was dropped and the
+  // reply appeared only after a full reload. React Query keeps the array
+  // reference while the data is unchanged, so this never discards an
+  // optimistic edit with a stale copy of the same list.
+  const [seededFrom, setSeededFrom] = useState(thread.comments);
+  if (seededFrom !== thread.comments) {
+    setSeededFrom(thread.comments);
+    setComments(thread.comments);
+  }
   const [replyBody, setReplyBody] = useState("");
   const [replying, setReplying] = useState(false);
 

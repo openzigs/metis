@@ -446,14 +446,16 @@ export interface ServerToClientEvents {
   }) => void;
   /** Epic #728 — a user was @mentioned in a comment. */
   "comment:mention": (data: { commentId: string; mentionedUserId: string; ts: number }) => void;
+  /**
+   * #997 — a comment on a requirement or a Spec Kit artifact was posted,
+   * replied to, edited or deleted. Sent to the `project:{id}` room, whose join
+   * rule is the comment routes' own (`canAccessProjectDiscussions`), so every
+   * member with the comment panel open re-reads the thread list. Identifiers
+   * only, no comment body: the panel re-reads it over the REST route.
+   */
+  "comment:changed": (data: CommentChangedEvent) => void;
   /** Epic #475 (#489) — a project member was @mentioned in a discussion message. */
-  "discussion:mention": (data: {
-    kind: "discussion_mention";
-    threadId: string;
-    messageId: string;
-    mentionedUserId: string;
-    ts: number;
-  }) => void;
+  "discussion:mention": (data: DiscussionMentionEvent) => void;
   /**
    * Epic #609 (#621) — a review lifecycle event for the recipient: reviewers
    * on submit (`review_requested`); the requester on each decision
@@ -461,16 +463,7 @@ export interface ServerToClientEvents {
    * `review_rejected`, with the auto-created baselineId when one exists).
    * Delivered to the recipient's personal `user:{id}` room only.
    */
-  "review:notification": (data: {
-    kind: "review_requested" | "review_decided" | "review_approved" | "review_rejected";
-    reviewId: string;
-    userId: string;
-    ts: number;
-    projectId?: string;
-    reviewerId?: string;
-    decision?: "approved" | "rejected";
-    baselineId?: string | null;
-  }) => void;
+  "review:notification": (data: ReviewNotificationEvent) => void;
   /** Epic #728 — client exceeded the per-socket presence room cap. */
   "presence:error": (data: { message: string }) => void;
   /** Epic #728 — SLA deadline has passed for an assignment. */
@@ -481,6 +474,52 @@ export interface ServerToClientEvents {
     slaDeadline: string | undefined;
     ts: number;
   }) => void;
+}
+
+/** #997 — payload of `comment:changed` (see {@link ServerToClientEvents}). */
+export interface CommentChangedEvent {
+  projectId: string;
+  threadId: string;
+  /** Set for a requirement's thread, null for a Spec Kit artifact's. */
+  requirementId: string | null;
+  /** Set for a Spec Kit artifact's thread, null for a requirement's. */
+  artifactName: string | null;
+  ts: number;
+}
+
+/**
+ * #104 — what a `user:{id}` notification event carries for the notifications
+ * drawer: the persisted `Notification` row's id (null when persisting it
+ * failed), and the same title, message and in-app link the row stores, so the
+ * live item reads exactly as the hydrated one and shares its id.
+ */
+export interface InAppNotificationFields {
+  notificationId: string | null;
+  title: string;
+  message: string;
+  /** A relative in-app path, e.g. `/reviews/{id}`. */
+  href: string;
+}
+
+/** Payload of `discussion:mention`. */
+export interface DiscussionMentionEvent extends InAppNotificationFields {
+  kind: "discussion_mention";
+  threadId: string;
+  messageId: string;
+  mentionedUserId: string;
+  ts: number;
+}
+
+/** Payload of `review:notification`. */
+export interface ReviewNotificationEvent extends InAppNotificationFields {
+  kind: "review_requested" | "review_decided" | "review_approved" | "review_rejected";
+  reviewId: string;
+  userId: string;
+  ts: number;
+  projectId?: string;
+  reviewerId?: string;
+  decision?: "approved" | "rejected";
+  baselineId?: string | null;
 }
 
 export interface ConnectorRoomEvent {
