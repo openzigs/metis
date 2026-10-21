@@ -111,7 +111,7 @@ describe("publishing domain", () => {
       it.each([
         ["a control character", "sprint\u000742"],
         ["a newline", "sprint\n42"],
-        ["a bidi override", "sprint‮24"],
+        ["a bidi override", `sprint${String.fromCodePoint(0x202e)}24`],
       ])("refuses a label holding %s", (_what, label) => {
         const r = parse([label]);
         expect(r.success).toBe(false);

@@ -127,7 +127,7 @@ export type PublishBatch = z.infer<typeof publishBatchSchema>;
 export const GITHUB_LABEL_NAME_MAX = 50;
 
 /** Control characters, and the bidi controls that can reorder displayed text. */
-const LABEL_CONTROL_RE = /[\p{Cc}‎‏‪-‮⁦-⁩]/u;
+const LABEL_CONTROL_RE = /[\p{Cc}\p{Bidi_Control}]/u;
 
 /** #1049 review — one "Additional labels" entry: trimmed, 1–50 characters, printable. */
 export const batchLabelSchema = z
