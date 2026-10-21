@@ -87,7 +87,60 @@ export interface RawLensVerdict {
 }
 
 /**
- * Extract the first `file:line` locator whose FILE is in `evidenceFiles`.
+ * One excerpt a lens was shown: its file and, when known, its line range. A
+ * bare string, or an excerpt with no `startLine`, is a file shown whole.
+ * `PanelEvidence` has this shape.
+ */
+export interface ShownExcerpt {
+  filePath: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+/** Per file, the line ranges shown, or `null` when any excerpt of it was shown whole. */
+type ShownLines = Map<string, Array<readonly [number, number]> | null>;
+
+function shownLines(evidence: ReadonlyArray<string | ShownExcerpt>): ShownLines {
+  const out: ShownLines = new Map();
+  for (const e of evidence) {
+    const filePath = normalizeFilePath(typeof e === "string" ? e : e.filePath);
+    const start = typeof e === "string" ? undefined : e.startLine;
+    if (typeof start !== "number") {
+      out.set(filePath, null);
+      continue;
+    }
+    const ranges = out.get(filePath);
+    if (ranges === null) continue;
+    const end =
+      typeof e !== "string" && typeof e.endLine === "number" ? e.endLine : Number.MAX_SAFE_INTEGER;
+    if (ranges) ranges.push([start, end]);
+    else out.set(filePath, [[start, end]]);
+  }
+  return out;
+}
+
+/** The locator, when its file was shown and its lines overlap a range shown of it. */
+function groundedLocator(
+  shown: ShownLines,
+  filePath: string,
+  start: string,
+  end: string | undefined,
+): string | null {
+  if (!shown.has(filePath)) return null;
+  const ranges = shown.get(filePath);
+  if (ranges) {
+    const from = Number(start);
+    const to = end === undefined ? from : Number(end);
+    const lo = Math.min(from, to);
+    const hi = Math.max(from, to);
+    if (!ranges.some(([a, b]) => lo <= b && hi >= a)) return null;
+  }
+  return end ? `${filePath}:${start}-${end}` : `${filePath}:${start}`;
+}
+
+/**
+ * Extract the first `file:line` locator that names a file the lens was shown
+ * AND a line of it the lens was shown.
  *
  * Searches `citation` first, then falls back to the reasoning — models routinely
  * put the locator in the sentence rather than the field, and discarding an
@@ -95,14 +148,22 @@ export interface RawLensVerdict {
  * formatting reason. Returns `null` when no locator is present, or when every
  * locator names a file the lens was never shown (an ungrounded citation is not a
  * citation).
+ *
+ * #1369 — and when every locator names lines outside the excerpts shown of its
+ * file. An excerpt is untrusted text: one that forged a `--- path:500 ---`
+ * header could point a lens at line 500 of a file shown only at lines 10-40, and
+ * a file-only check counted that citation. A range that OVERLAPS a shown range
+ * counts (`path:35-60` against `10-40`); a file shown whole (no `startLine`, or a
+ * bare path string) accepts any line.
  */
 export function extractGroundedLocator(
   citation: string | null | undefined,
   reasoning: string | null | undefined,
-  evidenceFiles: readonly string[],
+  evidence: ReadonlyArray<string | ShownExcerpt>,
 ): string | null {
-  const allowed = [...new Set(evidenceFiles.map(normalizeFilePath))];
-  if (allowed.length === 0) return null;
+  const shown = shownLines(evidence);
+  if (shown.size === 0) return null;
+  const allowed = [...shown.keys()];
   for (const raw of [citation, reasoning]) {
     if (!raw) continue;
     // Bound the scanned text before matching. The locator pattern has two
@@ -110,23 +171,23 @@ export function extractGroundedLocator(
     // on a pathological body; the schema already caps model output, and this
     // caps it again at the one place a regex meets it.
     const text = raw.slice(0, MAX_VOTE_REASONING_CHARS);
-    const verbatim = matchVerbatimEvidencePath(text, allowed);
-    if (verbatim) return verbatim;
+    for (const [filePath, start, end] of verbatimEvidenceLocators(text, allowed)) {
+      const grounded = groundedLocator(shown, filePath, start, end);
+      if (grounded) return grounded;
+    }
     // `matchAll` on a /g literal is safe to re-enter; lastIndex is per-iterator.
     for (const m of text.matchAll(LOCATOR_RE)) {
-      const filePath = normalizeFilePath(m[1] ?? "");
-      if (!allowed.includes(filePath)) continue;
-      const start = m[2];
-      const end = m[3];
-      return end ? `${filePath}:${start}-${end}` : `${filePath}:${start}`;
+      const grounded = groundedLocator(shown, normalizeFilePath(m[1] ?? ""), m[2], m[3]);
+      if (grounded) return grounded;
     }
   }
   return null;
 }
 
 /**
- * Match `<one of the evidence paths>:<line>` by plain STRING comparison against
- * the known paths, before falling back to the generic pattern.
+ * Every `<one of the evidence paths>:<line>` in `text`, found by plain STRING
+ * comparison against the known paths, before falling back to the generic
+ * pattern.
  *
  * Needed because not every evidence path is a filesystem path: a document chunk
  * arrives as `billing-brd.md#chunk-13`, whose `#` the generic locator pattern
@@ -138,17 +199,19 @@ export function extractGroundedLocator(
  * Deliberately NOT a `new RegExp(evidencePath)`: interpolating an arbitrary path
  * into a pattern is both a ReDoS surface and a SAST failure.
  */
-function matchVerbatimEvidencePath(text: string, allowed: readonly string[]): string | null {
+function* verbatimEvidenceLocators(
+  text: string,
+  allowed: readonly string[],
+): Generator<[string, string, string | undefined]> {
   const haystack = normalizeFilePath(text);
   for (const filePath of allowed) {
-    const at = haystack.indexOf(`${filePath}:`);
-    if (at < 0) continue;
-    const tail = haystack.slice(at + filePath.length + 1);
-    const range = /^(\d+)(?:\s*-\s*(\d+))?/.exec(tail);
-    if (!range) continue;
-    return range[2] ? `${filePath}:${range[1]}-${range[2]}` : `${filePath}:${range[1]}`;
+    const needle = `${filePath}:`;
+    for (let at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + 1)) {
+      const tail = haystack.slice(at + needle.length, at + needle.length + 32);
+      const range = /^(\d+)(?:\s*-\s*(\d+))?/.exec(tail);
+      if (range) yield [filePath, range[1], range[2]];
+    }
   }
-  return null;
 }
 
 /**
@@ -156,7 +219,10 @@ function matchVerbatimEvidencePath(text: string, allowed: readonly string[]): st
  * absent or ungrounded becomes a `missing-citation` discard — it keeps its
  * reasoning for audit but contributes no judgement in either direction.
  */
-export function toVote(raw: RawLensVerdict, evidenceFiles: readonly string[]): SupportPanelVote {
+export function toVote(
+  raw: RawLensVerdict,
+  evidenceFiles: ReadonlyArray<string | ShownExcerpt>,
+): SupportPanelVote {
   const reasoning = (raw.reasoning ?? "").slice(0, MAX_VOTE_REASONING_CHARS);
   const locator = extractGroundedLocator(raw.citation, raw.reasoning, evidenceFiles);
   if (!locator) {

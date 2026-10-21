@@ -77,7 +77,10 @@ import {
   type SupportPanelVote,
 } from "@metis/shared";
 import type { AIProvider, TokenUsage } from "../ai/types.js";
-import { scrubSectionFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
+import {
+  scrubExcerptHeaderLookalikes,
+  scrubSectionFenceLookalikes,
+} from "../ai/tool-runtime/fence-scrub.js";
 import { createChildLogger } from "../logger.js";
 import {
   applyAbsenceVerdictToConfidence,
@@ -239,7 +242,15 @@ export function selectFindingEvidence(
   return (selected.length > 0 ? selected : pool).slice(0, maxItems);
 }
 
-/** Render the evidence block. Bounded twice: per excerpt, then across the block. */
+/**
+ * Render the evidence block. Bounded twice: per excerpt, then across the block.
+ *
+ * #1369 — an excerpt is repository or document text, so a line in it shaped like
+ * this block's own `--- path:line ---` header is replaced with
+ * `[REDACTED HEADER]`: otherwise the excerpt could tell the lens that the code
+ * after it sits at another line, or in another file. The citation gate checks
+ * the line range as well ({@link extractGroundedLocator}).
+ */
 export function renderEvidenceBlock(evidence: readonly PanelEvidence[]): string {
   const parts: string[] = [];
   let budget = MAX_PANEL_EVIDENCE_CHARS;
@@ -251,7 +262,7 @@ export function renderEvidenceBlock(evidence: readonly PanelEvidence[]): string 
         : e.filePath;
     const excerpt = e.excerpt.slice(0, Math.min(MAX_PANEL_EXCERPT_CHARS, budget));
     budget -= excerpt.length;
-    parts.push(`--- ${locator} ---\n${excerpt}`);
+    parts.push(`--- ${locator} ---\n${scrubExcerptHeaderLookalikes(excerpt, "[REDACTED HEADER]")}`);
   }
   return parts.join("\n\n");
 }
@@ -416,7 +427,6 @@ export async function runSupportPanel(
     opts.maxEvidenceItems ?? MAX_PANEL_EVIDENCE_ITEMS,
   );
   if (evidence.length === 0) return null;
-  const allowedFiles = evidenceFilePaths(evidence);
   const lenses = opts.lenses ?? SUPPORT_PANEL_LENSES;
   // #1111 — is this an ABSENCE claim? Reuses the #773 classifier rather than
   // introducing a second notion of "asserts an absence", at the `grader` tier:
@@ -438,7 +448,7 @@ export async function runSupportPanel(
   const absencePromise: Promise<AbsenceCheckResult | null> = claimsAbsence
     ? runAbsenceCheck(
         provider,
-        { finding: input.finding, evidenceBlock, evidenceFiles: allowedFiles },
+        { finding: input.finding, evidenceBlock, evidenceFiles: evidence },
         {
           ...(opts.model ? { model: opts.model } : {}),
           ...(opts.signal ? { signal: opts.signal } : {}),
@@ -463,7 +473,7 @@ export async function runSupportPanel(
       ...(opts.metrics ? { metrics: opts.metrics } : {}),
     });
     const vote: SupportPanelVote = hasVerdict(outcome)
-      ? toVote({ lens, ...outcome.verdict } as RawLensVerdict, allowedFiles)
+      ? toVote({ lens, ...outcome.verdict } as RawLensVerdict, evidence)
       : noSignalVote(lens, `${outcome.reason}: ${outcome.detail}`);
     return { vote, usage: outcome.usage, attempts: outcome.attempts };
   });

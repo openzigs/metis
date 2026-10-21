@@ -53,6 +53,7 @@ import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { extractFirstJson } from "../docs-gen/grounding/json-extract.js";
 import { scrubRequirementFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
+import { promptNameItem, quotedPromptValue } from "./prompt-values.js";
 import { toSnakeIdentifier, type AffectedTableInput } from "./schema-impact.js";
 import type { RelevanceTier } from "./table-relevance-filter.js";
 import type { LiveSchemaIndex } from "./live-schema-ingest.js";
@@ -383,7 +384,7 @@ export const ADDITIVE_DDL_SYSTEM_PROMPT = [
 
 /** Render one candidate table as a single delimited, numbered line. */
 function candidateLine(candidate: AdditiveColumnCandidate, index: number): string {
-  const shown = candidate.knownColumns.slice(0, MAX_KNOWN_COLUMNS_SHOWN);
+  const shown = candidate.knownColumns.slice(0, MAX_KNOWN_COLUMNS_SHOWN).map(promptNameItem);
   const more =
     candidate.knownColumns.length > shown.length
       ? ` (+${candidate.knownColumns.length - shown.length} more)`
@@ -391,7 +392,7 @@ function candidateLine(candidate: AdditiveColumnCandidate, index: number): strin
   const existing = shown.length > 0 ? `${shown.join(", ")}${more}` : "(none known)";
   // The table/column names are DATA — rendered inside this fenced line and never
   // interpreted; proposals map back by `index`, not by any name the model writes.
-  return `[${index}] table="${candidate.tableName}" existing columns: ${existing}`;
+  return `[${index}] table=${quotedPromptValue(candidate.tableName)} existing columns: ${existing}`;
 }
 
 /** Write paths listed in the prompt, at most (the lineage names up to 12). */

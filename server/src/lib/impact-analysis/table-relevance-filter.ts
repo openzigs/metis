@@ -42,6 +42,7 @@ import { createChildLogger } from "../logger.js";
 import { clipEchoedReply } from "../analysis/unread-reply.js";
 import { extractFirstJson } from "../docs-gen/grounding/json-extract.js";
 import { scrubRequirementFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
+import { quotedPromptValue } from "./prompt-values.js";
 import type { AffectedTableInput } from "./schema-impact.js";
 
 const log = createChildLogger("impact-table-relevance");
@@ -176,7 +177,7 @@ function candidateLine(row: AffectedTableInput, index: number): string {
     .join(", ");
   // The table name is DATA — it is only ever rendered inside this fenced line and
   // never interpreted; decisions map back by `index`, not by this name.
-  return `[${index}] table="${row.tableName}" (${attrs})`;
+  return `[${index}] table=${quotedPromptValue(row.tableName)} (${attrs})`;
 }
 
 /** Build the delimited, injection-resistant judge messages. */

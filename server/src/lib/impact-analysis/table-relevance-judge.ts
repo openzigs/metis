@@ -39,6 +39,7 @@ import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { extractFirstJson } from "../docs-gen/grounding/json-extract.js";
 import { scrubRequirementFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
+import { promptNameItem } from "./prompt-values.js";
 
 const log = createChildLogger("impact-table-judge");
 
@@ -141,11 +142,11 @@ export const TABLE_JUDGE_SYSTEM_PROMPT = [
 
 /** Compact one candidate table + its (capped) columns into a single delimited line. */
 function candidateLine(c: JudgeCandidate, index: number, maxCols: number): string {
-  const cols = c.columns.slice(0, maxCols).join(", ");
+  const cols = c.columns.slice(0, maxCols).map(promptNameItem).join(", ");
   const more = c.columns.length > maxCols ? `, ... (+${c.columns.length - maxCols} more)` : "";
   // Names are DATA - rendered inside this fenced line, never interpreted; decisions map
   // back by `index`, not by any name the model writes.
-  return `[${index}] ${c.tableName} (columns: ${cols}${more})`;
+  return `[${index}] ${promptNameItem(c.tableName)} (columns: ${cols}${more})`;
 }
 
 /** Build the delimited, injection-resistant judge messages. */
