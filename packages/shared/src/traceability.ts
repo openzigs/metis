@@ -83,6 +83,11 @@ export interface SuggestDataMappingsResult {
   budgetExhausted: boolean;
   /** Human-readable note (budget exhaustion, empty schema, or error); null otherwise. */
   note: string | null;
+  /**
+   * #1081 — schema batches whose model answer could not be read, so their
+   * tables were not checked. Absent when every batch was read.
+   */
+  unreadBatches?: number;
 }
 
 // ===========================================================================
