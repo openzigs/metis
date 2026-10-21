@@ -85,8 +85,22 @@ Older single-trap entries, folded here (retired from the index 2026-10-16; files
   `bindPublishCredential`). Mutate the guard's position as well as its presence, and assert the
   side effect itself did not happen; see [[secret-binding-fire-time-checks]].
 
+**From #1344, #1350 and #1353 and their reviews (2026-10-21).**
+- **A test named for a precondition must create it.** A huge cap removed the section budget,
+  so the hold the test was named for never ran (#1353 review). Assert the precondition held.
+- **Equal-size fixtures cannot tell "stop at the first misfit" from "skip and continue".** A
+  selector described as "most important first while they fit" must `break` at the first
+  topic that does not fit (a priority prefix); test it with unequal-size items (#1353 review;
+  detail in [[brd-plan-tests-and-docs-gen-offline-replay]]).
+- **A structural "guarded" verdict needs a behavioural twin.** The project-access detectors
+  cannot see a plain `r.use(handler)` layer; see [[project-access-guard-wiring]] (#1344).
+- **A sanitiser needs an idempotence test:** scrub twice, the second pass changes nothing.
+  It caught two fence re-formations on #1350; see [[fence-scrub-unicode-traps]].
+
 **From #930 (2026-10-21).**
 - **A race barrier must hold racers AFTER their first statement returns, not before it runs.**
   Releasing gated calls together let a check-then-act mutation pass on Postgres: the pg pool
   opens a second connection lazily, so one racer read and wrote before the other's read ran.
   Same barrier failed the mutation on SQLite. See `server/tests/helpers/approval-review-race-suite.ts`.
+- **Assert the barrier filled.** A barrier with a fallback timer that opens it early forced no
+  interleave; fail the test unless every racer arrived before it opened (#1359 review).

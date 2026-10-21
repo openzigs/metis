@@ -13,3 +13,7 @@ Learned on PR #1305 (#737, #996) and its review cycles, 2026-10-16. Code: `serve
 - **Use real mined-rule lines in fixtures.** They have the `minedRuleLine` / miner-template shape (`[ts const] … — Constant \`X\` = N`). Invented kinds and free-text summaries hide false pins that come from the shared kind and template vocabulary.
 
 Related: [[citation-shapes]], [[test-falsifiability-traps]].
+
+**Folded here (retired from the index 2026-10-21; files unchanged):**
+
+- [[citation-shapes]] — Citation shapes: doc filename vs code filePath/symbolId; resolve code citations via CodeSymbol

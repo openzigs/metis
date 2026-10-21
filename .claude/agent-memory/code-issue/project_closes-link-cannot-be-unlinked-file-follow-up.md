@@ -12,3 +12,8 @@ A PR with "Closes #N" that defers one of #N's acceptance criteria will close #N 
 **How to apply:** when a PR defers any criterion, file the tracking follow-up issue (naming the criterion and the PR) BEFORE merge and link it from the PR body; check `gh pr view <n> --json closingIssuesReferences` rather than trusting the body text.
 
 - (#1294) Quoting a closing keyword as an example in a PR body (writing "Closes" before an example issue number) linked that issue, and editing it out did not unlink it. Write example issue numbers with no closing keyword in front, and pass an explicit squash `--body` on merge.
+
+- (#1353) A negated sentence ("does not close" before an issue number) still created a
+  closing link. That time, rewording the body DID unlink it, so editing the body is
+  inconsistent either way: re-read `closingIssuesReferences` after every body edit and
+  before merge, and never put a closing keyword in front of a number you do not mean.
