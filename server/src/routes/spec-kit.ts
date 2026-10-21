@@ -81,7 +81,6 @@ import {
   crossProjectDryRunNotice,
   describeCrossProjectRefusal,
 } from "../lib/publishing/cross-project-guard.js";
-import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import {
   createFeature,
   discardEmptyDraftFeature,
@@ -498,13 +497,10 @@ async function prepareCommand(req: Request, res: Response): Promise<PreparedComm
         run: () => dispatchCommand(legacyCmd, projectId, input, actor, resolveProvider),
       };
     }
-    // Object-level scope (BOLA) for the one command that publishes to a third
-    // party: `project.update` alone would let a member of workspace A publish
-    // workspace B's tasks. Checked before anything runs, so a refused caller
-    // records no job scope and emits no `started` event.
-    if (canonical === "speckit.taskstoissues" && req.user) {
-      await assertProjectAccess(req.user, projectId);
-    }
+    // Object-level scope (BOLA) is not checked here: `requireProjectAccess()`
+    // runs on both routes that call this (#960), ahead of the role check, so a
+    // refused caller reaches no command, records no job scope and emits no
+    // `started` event.
     const ctx = {
       force: req.header("x-speckit-force") === "1" || req.header("x-speckit-force") === "true",
       user: req.user,
@@ -672,130 +668,192 @@ function sameStart(job: SpecKitJobDto, cmd: PreparedCommand): SpecKitJobDto {
 
 export function specKitRouter(): Router {
   const r = Router({ mergeParams: true });
+  // #960 — object-level project scope (OWASP A01 / BOLA) on EVERY route here:
+  // `requireProjectAccess()` straight after `requireAuth` (and after the
+  // per-user limiter where a route has one), ahead of the role check, so a
+  // caller outside the project's workspace gets 404 whatever their role.
+  //
+  // Per route, not one router-level `r.use(requireAuth, requireProjectAccess())`:
+  // the guard needs `req.user`, and a router-level `requireAuth` would run ahead
+  // of the routes' pre-auth limiters, which #953 and #1059 put in front of
+  // authentication on purpose (their tests assert that order).
+  // `project-access-guard.test.ts` fails if a route is added without it.
+  // The guard reads the database, so a route with no limiter of its own takes
+  // the coarse `specKitJobPreAuthRateLimiter` ahead of `requireAuth` (CodeQL
+  // js/missing-rate-limiting).
 
-  r.get("/enabled", requireAuth, requirePermission("project.read"), async (req, res) => {
-    try {
-      const enabled = await isSpecKitEnabled(projectIdFrom(req));
-      res.json(ok({ enabled }));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
-
-  r.put("/enabled", requireAuth, requirePermission("project.update"), async (req, res) => {
-    const parsed = enabledSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw new AppError(400, "BAD_REQUEST", parsed.error.message);
-    }
-    try {
-      const enabled = await setSpecKitEnabled(
-        projectIdFrom(req),
-        parsed.data.enabled,
-        actorId(req),
-      );
-      res.json(ok({ enabled }));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
-
-  r.get("/files", requireAuth, requirePermission("project.read"), async (req, res) => {
-    try {
-      const projectId = projectIdFrom(req);
-      const enabled = await isSpecKitEnabled(projectId);
-      const artifacts = enabled ? await listArtifacts(projectId) : [];
-      res.json(ok({ enabled, artifacts }));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
-
-  r.get("/files/:name", requireAuth, requirePermission("project.read"), async (req, res) => {
-    try {
-      const projectId = projectIdFrom(req);
-      await ensureEnabled(projectId);
-      const name = String(req.params.name ?? "");
-      if (!isSpecKitArtifactName(name)) {
-        throw new AppError(400, "SPEC_KIT_INVALID_NAME", `Unknown Spec Kit artifact: ${name}`);
+  r.get(
+    "/enabled",
+    specKitJobPreAuthRateLimiter,
+    requireAuth,
+    requireProjectAccess(),
+    requirePermission("project.read"),
+    async (req, res) => {
+      try {
+        const enabled = await isSpecKitEnabled(projectIdFrom(req));
+        res.json(ok({ enabled }));
+      } catch (err) {
+        rethrow(err);
       }
-      const artifact = await getArtifact(projectId, name);
-      if (!artifact) {
-        throw new AppError(
-          404,
-          "SPEC_KIT_NOT_FOUND",
-          `Artifact ${name} has not been generated yet`,
+    },
+  );
+
+  r.put(
+    "/enabled",
+    specKitJobPreAuthRateLimiter,
+    requireAuth,
+    requireProjectAccess(),
+    requirePermission("project.update"),
+    async (req, res) => {
+      const parsed = enabledSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+      }
+      try {
+        const enabled = await setSpecKitEnabled(
+          projectIdFrom(req),
+          parsed.data.enabled,
+          actorId(req),
         );
+        res.json(ok({ enabled }));
+      } catch (err) {
+        rethrow(err);
       }
-      res.json(ok({ artifact }));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+    },
+  );
 
-  r.put("/files/:name", requireAuth, requirePermission("project.update"), async (req, res) => {
-    const parsed = specKitWriteRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw new AppError(400, "BAD_REQUEST", parsed.error.message);
-    }
-    try {
-      const projectId = projectIdFrom(req);
-      await ensureEnabled(projectId);
-      const name = String(req.params.name ?? "");
-      const artifact = await writeArtifact({
-        projectId,
-        name,
-        content: parsed.data.content,
-        actorId: actorId(req),
-      });
-      res.json(ok({ artifact }));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+  r.get(
+    "/files",
+    specKitJobPreAuthRateLimiter,
+    requireAuth,
+    requireProjectAccess(),
+    requirePermission("project.read"),
+    async (req, res) => {
+      try {
+        const projectId = projectIdFrom(req);
+        const enabled = await isSpecKitEnabled(projectId);
+        const artifacts = enabled ? await listArtifacts(projectId) : [];
+        res.json(ok({ enabled, artifacts }));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
 
-  r.delete("/files/:name", requireAuth, requirePermission("project.update"), async (req, res) => {
-    try {
-      const projectId = projectIdFrom(req);
-      await ensureEnabled(projectId);
-      await deleteArtifact(projectId, String(req.params.name ?? ""), actorId(req));
-      res.status(204).end();
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+  r.get(
+    "/files/:name",
+    specKitJobPreAuthRateLimiter,
+    requireAuth,
+    requireProjectAccess(),
+    requirePermission("project.read"),
+    async (req, res) => {
+      try {
+        const projectId = projectIdFrom(req);
+        await ensureEnabled(projectId);
+        const name = String(req.params.name ?? "");
+        if (!isSpecKitArtifactName(name)) {
+          throw new AppError(400, "SPEC_KIT_INVALID_NAME", `Unknown Spec Kit artifact: ${name}`);
+        }
+        const artifact = await getArtifact(projectId, name);
+        if (!artifact) {
+          throw new AppError(
+            404,
+            "SPEC_KIT_NOT_FOUND",
+            `Artifact ${name} has not been generated yet`,
+          );
+        }
+        res.json(ok({ artifact }));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
 
-  r.post("/constitution", requireAuth, requirePermission("project.update"), async (req, res) => {
-    const parsed = constitutionSchema.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      throw new AppError(400, "BAD_REQUEST", parsed.error.message);
-    }
-    try {
-      const projectId = projectIdFrom(req);
-      await ensureEnabled(projectId);
-      // #788 — derive the constitution from the project's knowledge; the
-      // skeleton only when there is nothing to ground on (and `message` says so).
-      const result = await draftConstitution({
-        projectId,
-        ...(parsed.data.projectOverrides !== undefined
-          ? { projectOverrides: parsed.data.projectOverrides }
-          : {}),
-        actorId: actorId(req),
-        resolveProvider: memoizeProviderResolver(() => resolveProjectProvider(projectId)),
-      });
-      const artifact = await getArtifact(projectId, "constitution.md");
-      res.json(
-        ok({
-          artifact,
-          contentLength: result.content.length,
-          grounded: result.grounded,
-          meta: result.meta,
-          message: result.message,
-        }),
-      );
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+  r.put(
+    "/files/:name",
+    specKitJobPreAuthRateLimiter,
+    requireAuth,
+    requireProjectAccess(),
+    requirePermission("project.update"),
+    async (req, res) => {
+      const parsed = specKitWriteRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+      }
+      try {
+        const projectId = projectIdFrom(req);
+        await ensureEnabled(projectId);
+        const name = String(req.params.name ?? "");
+        const artifact = await writeArtifact({
+          projectId,
+          name,
+          content: parsed.data.content,
+          actorId: actorId(req),
+        });
+        res.json(ok({ artifact }));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
+
+  r.delete(
+    "/files/:name",
+    specKitJobPreAuthRateLimiter,
+    requireAuth,
+    requireProjectAccess(),
+    requirePermission("project.update"),
+    async (req, res) => {
+      try {
+        const projectId = projectIdFrom(req);
+        await ensureEnabled(projectId);
+        await deleteArtifact(projectId, String(req.params.name ?? ""), actorId(req));
+        res.status(204).end();
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
+
+  r.post(
+    "/constitution",
+    specKitJobPreAuthRateLimiter,
+    requireAuth,
+    requireProjectAccess(),
+    requirePermission("project.update"),
+    async (req, res) => {
+      const parsed = constitutionSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+      }
+      try {
+        const projectId = projectIdFrom(req);
+        await ensureEnabled(projectId);
+        // #788 — derive the constitution from the project's knowledge; the
+        // skeleton only when there is nothing to ground on (and `message` says so).
+        const result = await draftConstitution({
+          projectId,
+          ...(parsed.data.projectOverrides !== undefined
+            ? { projectOverrides: parsed.data.projectOverrides }
+            : {}),
+          actorId: actorId(req),
+          resolveProvider: memoizeProviderResolver(() => resolveProjectProvider(projectId)),
+        });
+        const artifact = await getArtifact(projectId, "constitution.md");
+        res.json(
+          ok({
+            artifact,
+            contentLength: result.content.length,
+            grounded: result.grounded,
+            meta: result.meta,
+            message: result.message,
+          }),
+        );
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
 
   // Epic #406 (#423) — Spec Kit commands stream `job:lifecycle` (kind
   // `spec-kit`) and their GROUNDED-COMPLETION line ("Generated spec.md (v3) …
@@ -816,6 +874,7 @@ export function specKitRouter(): Router {
     "/commands/:cmd",
     specKitExportPreAuthRateLimiter,
     requireAuth,
+    requireProjectAccess(),
     requirePermission("project.update"),
     specKitExportLiveRateLimiter,
     async (req, res) => {
@@ -960,22 +1019,31 @@ export function specKitRouter(): Router {
   );
 
   // ---- MVP-5: per-feature routes ------------------------------------------
-  r.get("/features", requireAuth, requirePermission("project.read"), async (req, res) => {
-    try {
-      const projectId = projectIdFrom(req);
-      await ensureEnabled(projectId);
-      const includeArchived =
-        req.query.includeArchived === "1" || req.query.includeArchived === "true";
-      const features = await listFeatures(projectId, { includeArchived });
-      res.json(ok({ features }));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+  r.get(
+    "/features",
+    specKitJobPreAuthRateLimiter,
+    requireAuth,
+    requireProjectAccess(),
+    requirePermission("project.read"),
+    async (req, res) => {
+      try {
+        const projectId = projectIdFrom(req);
+        await ensureEnabled(projectId);
+        const includeArchived =
+          req.query.includeArchived === "1" || req.query.includeArchived === "true";
+        const features = await listFeatures(projectId, { includeArchived });
+        res.json(ok({ features }));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
 
   r.get(
     "/features/:slug/artifacts",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
+    requireProjectAccess(),
     requirePermission("project.read"),
     async (req, res) => {
       try {
@@ -994,7 +1062,9 @@ export function specKitRouter(): Router {
 
   r.get(
     "/features/:slug/artifacts/*key",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
+    requireProjectAccess(),
     requirePermission("project.read"),
     async (req, res) => {
       try {
@@ -1014,7 +1084,9 @@ export function specKitRouter(): Router {
 
   r.put(
     "/features/:slug/artifacts/*key",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
+    requireProjectAccess(),
     requirePermission("project.update"),
     async (req, res) => {
       const parsed = z.object({ content: z.string().max(200_000) }).safeParse(req.body ?? {});
@@ -1065,7 +1137,9 @@ export function specKitRouter(): Router {
   // ---- MVP-8: status endpoint --------------------------------------------
   r.get(
     "/features/:slug/status",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
+    requireProjectAccess(),
     requirePermission("project.read"),
     async (req, res) => {
       try {
@@ -1084,7 +1158,9 @@ export function specKitRouter(): Router {
   // ---- Issue #434: archive / restore -------------------------------------
   r.post(
     "/features/:slug/archive",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
+    requireProjectAccess(),
     requirePermission("project.update"),
     async (req, res) => {
       try {
@@ -1104,7 +1180,9 @@ export function specKitRouter(): Router {
 
   r.post(
     "/features/:slug/restore",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
+    requireProjectAccess(),
     requirePermission("project.update"),
     async (req, res) => {
       try {
@@ -1128,20 +1206,27 @@ export function specKitRouter(): Router {
   );
 
   // ---- MVP-7: filesystem installer ---------------------------------------
-  r.post("/install", requireAuth, requirePermission("project.update"), async (req, res) => {
-    // S-2 — the AttachedWorkspace concept does not yet exist as a
-    // first-class model. Until it does, every `/install` call is
-    // rejected so we cannot accept a caller-supplied workspaceRoot we
-    // have no way to validate against the project's true attached path.
-    // Tracked: follow-up issue for AttachedWorkspace model.
-    void req;
-    void res;
-    throw new AppError(
-      501,
-      "SPECKIT_ATTACHED_WORKSPACE_NOT_IMPLEMENTED",
-      "/spec-kit/install is disabled until the AttachedWorkspace model lands. The installer library is reachable for trusted in-process callers (tests + future server-internal code) but the public route refuses caller-supplied workspaceRoot values to prevent path-not-attached bypass (Epic #396 follow-up).",
-    );
-  });
+  r.post(
+    "/install",
+    specKitJobPreAuthRateLimiter,
+    requireAuth,
+    requireProjectAccess(),
+    requirePermission("project.update"),
+    async (req, res) => {
+      // S-2 — the AttachedWorkspace concept does not yet exist as a
+      // first-class model. Until it does, every `/install` call is
+      // rejected so we cannot accept a caller-supplied workspaceRoot we
+      // have no way to validate against the project's true attached path.
+      // Tracked: follow-up issue for AttachedWorkspace model.
+      void req;
+      void res;
+      throw new AppError(
+        501,
+        "SPECKIT_ATTACHED_WORKSPACE_NOT_IMPLEMENTED",
+        "/spec-kit/install is disabled until the AttachedWorkspace model lands. The installer library is reachable for trusted in-process callers (tests + future server-internal code) but the public route refuses caller-supplied workspaceRoot values to prevent path-not-attached bypass (Epic #396 follow-up).",
+      );
+    },
+  );
 
   return r;
 }
@@ -1361,7 +1446,7 @@ async function dispatchNamespaced(
       const extra = tasksExportBodySchema.safeParse(body);
       if (!extra.success) throw new AppError(400, "BAD_REQUEST", extra.error.message);
       if (!ctx.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-      // BOLA: assertProjectAccess already ran in the route, before the job wrapper.
+      // BOLA: requireProjectAccess() already ran on the route, before the job wrapper.
       const exportInput = {
         projectId,
         featureSlug,

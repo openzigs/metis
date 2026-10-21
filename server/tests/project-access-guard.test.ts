@@ -83,6 +83,27 @@ function guardPrecedesHandlers(router: RouterLike): boolean {
   return firstHandlerAt === -1 || guardAt < firstHandlerAt;
 }
 
+/**
+ * Or on every route individually (#960, `spec-kit.ts`): a router whose routes
+ * need their own pre-auth rate limiters ahead of `requireAuth` cannot use a
+ * router-level guard, which needs `req.user`. Holds only when the router has at
+ * least one route, every route's own stack carries the guard AHEAD of the
+ * route's last layer (its handler — a guard after it runs too late), and
+ * nothing else can serve a request (no nested sub-router).
+ */
+function guardOnEveryRoute(router: RouterLike): boolean {
+  const routes = router.stack.filter((l) => l.route !== undefined);
+  if (routes.length === 0 || router.stack.some((l) => asRouter(l.handle) !== null)) return false;
+  return routes.every((l) => {
+    const stack = (l.route as { stack?: Layer[] }).stack ?? [];
+    const guardAt = stack.findIndex(
+      (h) =>
+        typeof h.handle === "function" && (h.handle as { name?: string }).name === GUARD_FN_NAME,
+    );
+    return guardAt !== -1 && guardAt < stack.length - 1;
+  });
+}
+
 /** The guard may also be supplied at the mount site, alongside the router. */
 function mountSiteGuards(entry: MountedHandler): boolean {
   return entry.siblings.some((s) => s.startsWith("requireProjectAccess("));
@@ -160,7 +181,11 @@ describe("every :projectId-mounted router applies requireProjectAccess()", () =>
       line: entry.line,
       // A non-router handler mounted on a `:projectId` path is plain middleware
       // (a rate limiter, say) and carries no handlers of its own to protect.
-      guarded: router === null || mountSiteGuards(entry) || guardPrecedesHandlers(router),
+      guarded:
+        router === null ||
+        mountSiteGuards(entry) ||
+        guardPrecedesHandlers(router) ||
+        guardOnEveryRoute(router),
       isRouter: router !== null,
     };
   });
@@ -227,6 +252,8 @@ describe("every :projectId-mounted router applies requireProjectAccess()", () =>
       "/projects/:projectId/imports → importsRouter()",
       "/projects/:projectId/hooks → hooksRouter()",
       "/projects/:projectId/suggested-connectors → suggestedConnectorsRouter()",
+      // #960 — guarded on every route rather than router-level.
+      "/projects/:projectId/spec-kit → specKitRouter()",
     ]) {
       expect(guarded, `${key} should be detected as guarded`).toContain(key);
     }
@@ -335,6 +362,53 @@ describe("guard detector", () => {
 
   it("accepts a guard on a router that has no handlers yet", () => {
     expect(guardPrecedesHandlers(mk([{ handle: stub(GUARD_FN_NAME) }]))).toBe(true);
+  });
+
+  describe("guard on every route (#960)", () => {
+    const route = (...names: string[]) => ({
+      handle: stub("bound dispatch"),
+      route: { stack: names.map((n) => ({ handle: stub(n) })) },
+    });
+
+    it("accepts a router whose every route carries the guard", () => {
+      expect(
+        guardOnEveryRoute(
+          mk([
+            route("limiter", "requireAuth", GUARD_FN_NAME, "handler"),
+            route("requireAuth", GUARD_FN_NAME, "handler"),
+          ]),
+        ),
+      ).toBe(true);
+    });
+
+    it("rejects a router with one route missing the guard", () => {
+      expect(
+        guardOnEveryRoute(
+          mk([route("requireAuth", GUARD_FN_NAME, "handler"), route("requireAuth", "handler")]),
+        ),
+      ).toBe(false);
+    });
+
+    it("rejects a route whose guard comes after its handler", () => {
+      expect(
+        guardOnEveryRoute(
+          mk([
+            route("requireAuth", GUARD_FN_NAME, "handler"),
+            route("requireAuth", "handler", GUARD_FN_NAME),
+          ]),
+        ),
+      ).toBe(false);
+    });
+
+    it("rejects a router that also mounts a nested sub-router", () => {
+      expect(
+        guardOnEveryRoute(mk([route("requireAuth", GUARD_FN_NAME, "handler"), { handle: mk([]) }])),
+      ).toBe(false);
+    });
+
+    it("rejects a router with no routes", () => {
+      expect(guardOnEveryRoute(mk([]))).toBe(false);
+    });
   });
 
   it("accepts a guard supplied at the mount site instead of inside the router", () => {

@@ -30,7 +30,9 @@
  * in the app has this property; it is tracked in #1109.
  *
  *  - {@link specKitJobPreAuthRateLimiter} — in front of `requireAuth` on every
- *    job endpoint, because CodeQL js/missing-rate-limiting wants a limiter
+ *    job endpoint and, since #960, on every other Spec Kit route that has no
+ *    limiter of its own (the project-access check those routes now run reads
+ *    the database), because CodeQL js/missing-rate-limiting wants a limiter
  *    ahead of every auth check (as in `spec-kit-delete-rate-limit.ts`). It is a
  *    coarse guard, default 20000 per 15 minutes
  *    (`SPECKIT_JOB_PREAUTH_LIMIT_MAX`), and its key is nothing a caller can aim
