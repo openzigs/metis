@@ -236,6 +236,23 @@ describe("analysisTabCounts", () => {
     );
     expect(counts.questions).toBe(0);
   });
+
+  // #1081 (from the #1084 review) — a failed extraction has no open-question
+  // count; "0" read as "nothing to clarify".
+  it("shows no question count when structured extraction failed", () => {
+    const counts = analysisTabCounts(
+      {
+        ...base,
+        metadata: {
+          enhancement: { enableClarification: true, enableWebResearch: false },
+          structuredRequirements: { requirements: [], totalAmbiguities: 0, totalEvidenceNeeds: 0 },
+          structuredExtractionFailure: { reason: "unparseable", at: "2026-10-21T00:00:00.000Z" },
+        },
+      },
+      undefined,
+    );
+    expect(counts.questions).toBeUndefined();
+  });
 });
 
 describe("runHasQuestionsView / tabCountLabel", () => {
