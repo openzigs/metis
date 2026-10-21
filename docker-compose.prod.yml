@@ -72,6 +72,9 @@ services:
       SQL_LINEAGE_MODE: ${SQL_LINEAGE_MODE:-sidecar}
       SQL_LINEAGE_URL: http://sql-lineage:5070
       SQL_LINEAGE_TOKEN: ${SQL_LINEAGE_TOKEN:?SQL_LINEAGE_TOKEN must be set}
+      # #1322 — repository clones on the `server_prod_data` volume below, set here
+      # rather than inherited: the base file's path is the dev image's volume.
+      REPO_CLONE_DIR: /app/server/data/repo-clones
     # No source mounts in production. #60 — the server's data directory (LanceDB
     # vectors, uploaded documents, repository archive extracts) on a named volume,
     # so it survives the container being recreated. A fresh named volume takes the

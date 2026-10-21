@@ -270,11 +270,15 @@ function makeProvider(script: string[]) {
 
 let cloneRoot: string;
 
-async function runPipeline(script: string[]): Promise<void> {
+async function runPipeline(
+  script: string[],
+  extraDeps: Partial<ConstructorParameters<typeof AnalysisOrchestrator>[0]> = {},
+): Promise<void> {
   const orch = new AnalysisOrchestrator({
     provider: makeProvider(script) as never,
     retrieve: async () => [],
     knowledge: {} as never,
+    ...extraDeps,
   });
   await (
     orch as unknown as {
@@ -394,6 +398,41 @@ describe("#777 — connector present, clone dir ABSENT: the file tools are never
     expect(retrieval().erroredCalls).toBe(0);
     expect(retrieval().successfulSearches).toBe(1); // the hit; the empty one is a valid miss
     expect(retrieval().starved).toBe(false);
+  });
+});
+
+/**
+ * #1322 — what an OS temp purge leaves: the clone's directories and no files. The
+ * directory EXISTS, so the #777 existence check alone offered both file tools
+ * against an empty tree. It cannot be restored here (no connector row to restore
+ * from), so it must be treated exactly like an absent clone.
+ */
+describe("#1322 — connector present, clone HOLLOW (directories, no files)", () => {
+  beforeEach(async () => {
+    await mkdir(path.join(cloneRoot, CONNECTOR_ID, "server/src/drift"), { recursive: true });
+    await mkdir(path.join(cloneRoot, CONNECTOR_ID, ".git/objects"), { recursive: true });
+  });
+
+  it("does not offer the file tools and raises repo-clone-unavailable", async () => {
+    await runPipeline(GRAPH_ONLY_SCRIPT);
+
+    expect(promptOffersFileTools()).toBe(false);
+    expect(capability()?.reasons).toContain("repo-clone-unavailable");
+    expect(capability()?.reasons).not.toContain("code-retrieval-degraded");
+  });
+
+  it("offers the file tools again once the clone is restored at the graph's commit", async () => {
+    const prepareRepoClone = vi.fn(async (_projectId: string, connectorId: string) => {
+      // What a successful restore leaves: the working tree back on disk.
+      const dir = path.join(cloneRoot, connectorId, "server/src/drift");
+      await writeFile(path.join(dir, "severity.ts"), "export const s = 1;\n", "utf8");
+      return "restored" as const;
+    });
+    await runPipeline(GRAPH_ONLY_SCRIPT, { prepareRepoClone });
+
+    expect(prepareRepoClone).toHaveBeenCalledWith(PROJECT_ID, CONNECTOR_ID);
+    expect(promptOffersFileTools()).toBe(true);
+    expect(capability()?.reasons ?? []).not.toContain("repo-clone-unavailable");
   });
 });
 

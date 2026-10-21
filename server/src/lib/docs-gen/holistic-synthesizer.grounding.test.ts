@@ -44,6 +44,13 @@ vi.mock("node:fs/promises", () => ({
   readdir: vi.fn().mockResolvedValue([]),
 }));
 
+// #1322 — the clone here is simulated through the fs mock above, which the
+// source preflight's real stat/HEAD checks cannot see; restore-or-stop is
+// covered by source-preflight.test.ts and clone-health.test.ts.
+vi.mock("./source-preflight.js", () => ({
+  ensureRepositorySourcesReady: vi.fn(async () => new Map()),
+}));
+
 vi.mock("../prisma.js", () => ({
   Prisma: { DbNull: "__DbNull__" },
   prisma: {

@@ -124,6 +124,8 @@ import {
   generationFailureMessage,
   publicDocWarnings,
   publicGenerationErrorMessage,
+  SOURCE_CLONE_BUSY_CODE,
+  SOURCE_CLONE_UNAVAILABLE_CODE,
 } from "../lib/docs-gen/generation-failure-message.js";
 import {
   releaseGenerationControl,
@@ -1349,7 +1351,11 @@ export async function generateDocumentAsync(
       // code graph; its source fingerprint below records them.
       original.scope === "database" || original.scope === "requirements"
         ? null
-        : await captureGenerationInputs(original, policy);
+        : // #1322 — a manual run's first capture first restores a purged clone at
+          // its graph's commit, or throws before any model call telling the user to
+          // re-ingest, so the run is fenced on the restored source. An automatic
+          // run does that below, once it knows it is going to run at all.
+          await captureGenerationInputs(original, policy, { ensureSources: !automatic });
     if (automatic && inputSnapshot?.fingerprint !== automatic.fingerprint) {
       const { checkIncrementalRegeneration } = await import("../lib/docs-gen/incremental.js");
       await checkIncrementalRegeneration(projectId, policy.repoConnectorId);
@@ -1359,7 +1365,7 @@ export async function generateDocumentAsync(
       ? parseGeneratedDocVersionManifest(lastVersion.provenanceManifest)
       : undefined;
     const previous = previousManifest?.inputSnapshot ?? null;
-    const plan = inputSnapshot ? planRegeneration(previous, inputSnapshot) : null;
+    let plan = inputSnapshot ? planRegeneration(previous, inputSnapshot) : null;
     if (automatic && plan?.mode === "unchanged") return;
     // #1071 — neither does an automatic run start for a code-graph extractor
     // upgrade alone: a task queued for exactly that rewrite (by a scheduler
@@ -1373,6 +1379,13 @@ export async function generateDocumentAsync(
         current: inputSnapshot,
       });
       if (settled.outcome !== "changed") return;
+    }
+    // #1322 (review L4) — an automatic run that IS going to run checks its clones
+    // only now, after the "unchanged" returns above, so a no-op task never waits
+    // on or re-fetches a clone. It is fenced on the snapshot taken after the check.
+    if (automatic && inputSnapshot) {
+      inputSnapshot = await captureGenerationInputs(original, policy, { ensureSources: true });
+      plan = planRegeneration(previous, inputSnapshot);
     }
     // #1071 — an upgrade that rewrites the graph WHILE this run is going is
     // not changed inputs either. The evidence is the mark of the very graph
@@ -2224,7 +2237,16 @@ export async function generateDocumentAsync(
               updatedAt: pendingUpdatedAt,
               codeGraphHash: originalHash,
             },
-            data: { status: "failed", errorMessage: genericFailureMessage("doc-generation") },
+            data: {
+              status: "failed",
+              // #1322 — a missing source checkout is the user's to fix (re-ingest),
+              // so it gets its fixed message rather than the generic one.
+              errorMessage: [SOURCE_CLONE_UNAVAILABLE_CODE, SOURCE_CLONE_BUSY_CODE].includes(
+                String((err as { code?: unknown } | null)?.code),
+              )
+                ? generationFailureMessage(err)
+                : genericFailureMessage("doc-generation"),
+            },
           })
         : null;
     // #239 — broadcast the failure so the UI leaves the "generating" state.

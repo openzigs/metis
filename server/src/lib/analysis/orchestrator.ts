@@ -150,6 +150,7 @@ import {
 } from "./analysis-capability.js";
 // #777 — the file tools are gated on the clone EXISTING, not on a path string.
 import { cloneDirPath, resolveExistingCloneDir } from "./clone-availability.js";
+import { prepareAnalysisClone } from "./clone-restore.js";
 import { assertCanStartAnalysis, getProjectMonthlyAnalysisTokens } from "./cost-cap.js";
 import { notifyAnalysisComplete } from "../teams/notification-hooks.js";
 import {
@@ -449,6 +450,8 @@ const REGENERATABLE_STATUSES = new Set(["completed", "failed", "cancelled"]);
 export interface OrchestratorDeps {
   provider: AIProvider;
   knowledge?: KnowledgeService;
+  /** #1322 test seam — restore/check a connector's clone before the file tools. */
+  prepareRepoClone?: typeof prepareAnalysisClone;
   io?: MetisIOServer;
   /** Test seam \u2014 override the retrieval call entirely. */
   retrieve?: (input: {
@@ -2939,7 +2942,16 @@ export class AnalysisOrchestrator {
         // tools that are GUARANTEED to fail on every call, burning the turn budget,
         // and then branding its own (perfectly good) graph-grounded verdicts as
         // retrieval-degraded.
-        const cloneDir = await resolveExistingCloneDir(input.connectorId);
+        // #1322 — a missing or hollow clone is first restored at the graph's commit;
+        // one that cannot be is withheld, never offered as an empty working tree.
+        const cloneState = input.connectorId
+          ? await (this.deps.prepareRepoClone ?? prepareAnalysisClone)(
+              input.projectId,
+              input.connectorId,
+            )
+          : "unusable";
+        const cloneDir =
+          cloneState === "unusable" ? undefined : await resolveExistingCloneDir(input.connectorId);
         const fileToolsAvailable = cloneDir !== undefined;
         if (input.connectorId && !fileToolsAvailable) {
           // Not an error: a fully-indexed project can legitimately have no working

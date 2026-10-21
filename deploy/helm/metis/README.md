@@ -59,7 +59,8 @@ LanceDB vector store**. The chart binds three PVCs by default:
 The server's root filesystem is read-only, so it can write only where a volume is
 mounted (#60). `<release>-server-data` holds the SQLite database when no
 `DATABASE_URL` is supplied — the image's default is
-`file:/app/server/data/metis.db` — and repository archive extracts; the server's
+`file:/app/server/data/metis.db` — repository archive extracts, and repository
+clones (`REPO_CLONE_DIR=/app/server/data/repo-clones`, #1322); the server's
 home directory (`/home/metis`) is an `emptyDir`. With a Postgres `DATABASE_URL`, set
 `persistence.data.enabled=false` (as `values-prod.yaml` does) to keep the data
 directory on an `emptyDir` instead of a `ReadWriteOnce` PVC.
@@ -91,7 +92,8 @@ it RWX with `persistence.efs.enabled=true`.
 The opt-in backup CronJob (`backup.enabled=true`) mounts the server's PVCs
 read-only — the data directory (the SQLite database) and the uploads and
 LanceDB volumes inside it, each only when its PVC exists — and its default
-command archives the whole data directory except `repo-extracts` (#75). It
+command archives the whole data directory except `repo-extracts` (#75) and
+`repo-clones` (#1322), both rebuilt on demand. It
 copies a live database: see the consistency note on `backup.command` in
 `values.yaml`.
 

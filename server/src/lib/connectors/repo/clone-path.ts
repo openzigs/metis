@@ -6,6 +6,7 @@
  *
  *   - ingest (`repo-service.ts`) wrote to
  *       REPO_CLONE_DIR ? resolveDataDir(REPO_CLONE_DIR) : <tmpdir>/metis-repo-clones
+ *     (the default is `<server>/data/repo-clones` since #1322)
  *   - the analysis orchestrator read from
  *       `${REPO_CLONE_DIR || "./data/repos"}/${connectorId}`   // cwd-relative, different root
  *
@@ -30,16 +31,28 @@ import { resolveDataDir } from "../../server-root.js";
  * server root, NOT `process.cwd()` — a cwd-relative path drifts with the working
  * directory of whichever process happens to be running).
  *
- * NOTE: the default root lives under the OS temp directory, which means the OS
- * may reap it. A project can therefore be fully indexed (code graph + RAG intact)
- * while its working tree is gone — that is a normal steady state, not an error.
- * Callers that need to READ FILES must check existence; see `resolveExistingCloneDir`
- * in `../../analysis/clone-availability.ts`.
+ * #1322 — the default is `<server>/data/repo-clones`, next to `uploads/` and
+ * `lancedb/`. It used to be `<os.tmpdir()>/metis-repo-clones`, which macOS and
+ * container restarts purge: a clone was found holding 145 directories and no
+ * files, and a paid BRD was generated from no source. The old location is read
+ * only to move an existing clone across ({@link legacyTmpCloneRoot}).
+ *
+ * A clone can still go missing (an emptyDir volume, a pod on another node), so
+ * callers that need to READ FILES must check it: `inspectClone` /
+ * `ensureConnectorClone` in `./clone-health.ts`.
  */
 export function resolveRepoCloneRoot(): string {
-  return process.env.REPO_CLONE_DIR
-    ? resolveDataDir(process.env.REPO_CLONE_DIR)
-    : path.resolve(path.join(os.tmpdir(), "metis-repo-clones"));
+  return resolveDataDir(process.env.REPO_CLONE_DIR, "repo-clones");
+}
+
+/**
+ * #1322 — the pre-#1322 default root (`<tmpdir>/metis-repo-clones`). Only
+ * consulted when `REPO_CLONE_DIR` is unset, so an install upgraded from the old
+ * default can move across a clone the OS has not reaped yet. Never written to.
+ */
+export function legacyTmpCloneRoot(): string | null {
+  if (process.env.REPO_CLONE_DIR?.trim()) return null;
+  return path.resolve(path.join(os.tmpdir(), "metis-repo-clones"));
 }
 
 /**

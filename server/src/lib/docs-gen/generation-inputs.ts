@@ -18,6 +18,7 @@ import { resolveFactsMaxOutputTokens, resolveSectionMaxOutputTokens } from "./ou
 import { resolveGroundingK } from "./grounding/grounding-retrieval.js";
 import { readdir, readFile } from "node:fs/promises";
 import { loadRepositorySources, resolveSourcePath } from "./repository-sources.js";
+import { ensureRepositorySourcesReady } from "./source-preflight.js";
 import { SQL_SCAN_DIR_CAP } from "./module-grouping.js";
 import { loadAIConfig } from "../ai/config.js";
 import { isJunkSourcePath } from "@metis/shared";
@@ -109,6 +110,14 @@ export async function captureGenerationInputs(
     evidencePolicy: string | null;
   },
   policy: EvidencePolicy,
+  options: {
+    /**
+     * #1322 — first make every in-scope git clone usable (restore a purged one at
+     * its graph's commit) or throw `SourceCloneUnavailableError`. A run's FIRST
+     * capture only: before any model call, and before the snapshot it is fenced on.
+     */
+    ensureSources?: boolean;
+  } = {},
 ): Promise<GenerationInputSnapshot> {
   assertEvidencePolicy(policy, doc.projectId);
   // Never silently broaden a repository snapshot when its resolved graph is missing.
@@ -119,6 +128,9 @@ export async function captureGenerationInputs(
     projectId: doc.projectId,
     ...(policy.codeGraphId ? { codeGraphId: policy.codeGraphId } : {}),
   };
+  if (options.ensureSources && (doc.scope === "full" || doc.scope === "repository")) {
+    await ensureRepositorySourcesReady(where);
+  }
   const [symbols, edges, chunks, project] = await Promise.all([
     prisma.codeSymbol.findMany({
       where,

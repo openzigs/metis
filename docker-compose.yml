@@ -111,6 +111,9 @@ services:
       # published default — it is both a company reference and an infrastructure
       # disclosure (#1373).
       REPO_ALLOWED_HOSTS: ${REPO_ALLOWED_HOSTS:-github.com}
+      # #1322 — repository clones on the `server_data` volume (mounted at
+      # /app/data), not the container's /tmp, which a restart wipes.
+      REPO_CLONE_DIR: ${REPO_CLONE_DIR:-/app/data/repo-clones}
       # Alpine's docker-cli may be newer than Docker Desktop's daemon in local
       # dev. Pin the API to Docker 20.10-compatible commands unless overridden.
       DOCKER_API_VERSION: ${DOCKER_API_VERSION:-1.41}
