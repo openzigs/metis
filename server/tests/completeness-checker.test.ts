@@ -57,7 +57,7 @@ describe("parseCompleteness", () => {
         },
       ],
     });
-    const parsed = parseCompleteness(json);
+    const parsed = parseCompleteness(json)!;
     expect(parsed.gaps).toHaveLength(2);
     expect(parsed.gaps[0]!.kind).toBe("missing-nfr");
     expect(parsed.gaps[1]!.evidenceIds).toEqual([]);
@@ -66,7 +66,7 @@ describe("parseCompleteness", () => {
   it("strips markdown fences", () => {
     const fenced =
       '```json\n{"gaps":[{"kind":"missing-assumption","title":"t","rationale":"r"}]}\n```';
-    const parsed = parseCompleteness(fenced);
+    const parsed = parseCompleteness(fenced)!;
     expect(parsed.gaps).toHaveLength(1);
     expect(parsed.gaps[0]!.kind).toBe("missing-assumption");
   });
@@ -79,7 +79,7 @@ describe("parseCompleteness", () => {
         { kind: "missing-nfr", title: "", rationale: "empty title" },
       ],
     });
-    const parsed = parseCompleteness(json);
+    const parsed = parseCompleteness(json)!;
     expect(parsed.gaps).toHaveLength(1);
     expect(parsed.gaps[0]!.title).toBe("ok");
   });

@@ -58,7 +58,7 @@ describe("parseNliResponse", () => {
         { premise: "p2", hypothesis: "h2", label: "entailment", evidenceIds: [] },
       ],
     });
-    const parsed = parseNliResponse(json);
+    const parsed = parseNliResponse(json)!;
     expect(parsed.verdicts).toHaveLength(2);
     expect(parsed.verdicts[0]!.label).toBe("contradiction");
     expect(parsed.verdicts[0]!.evidenceIds).toEqual(["docA"]);
@@ -67,7 +67,7 @@ describe("parseNliResponse", () => {
   it("strips markdown fences before parsing", () => {
     const fenced =
       '```json\n{"verdicts":[{"premise":"a","hypothesis":"b","label":"neutral"}]}\n```';
-    const parsed = parseNliResponse(fenced);
+    const parsed = parseNliResponse(fenced)!;
     expect(parsed.verdicts).toHaveLength(1);
     expect(parsed.verdicts[0]!.evidenceIds).toEqual([]);
   });
@@ -80,7 +80,7 @@ describe("parseNliResponse", () => {
         { premise: "x", hypothesis: "y", label: "not-a-label" }, // bad enum → invalid
       ],
     });
-    const parsed = parseNliResponse(json);
+    const parsed = parseNliResponse(json)!;
     expect(parsed.verdicts).toHaveLength(1);
     expect(parsed.verdicts[0]!.premise).toBe("ok");
   });

@@ -53,7 +53,7 @@ describe("parseAssumptionRisk", () => {
         },
       ],
     });
-    const result = parseAssumptionRisk(json);
+    const result = parseAssumptionRisk(json)!;
     expect(result.assumptions).toHaveLength(1);
     expect(result.assumptions[0]!.impactIfFalse).toBe("high");
     expect(result.assumptions[0]!.id).toBeTruthy();
@@ -68,7 +68,7 @@ describe("parseAssumptionRisk", () => {
       assumptions: [{ statement: "X is true." }],
       risks: [{ title: "R", description: "A risk." }],
     });
-    const result = parseAssumptionRisk(json);
+    const result = parseAssumptionRisk(json)!;
     expect(result.assumptions[0]!.rationale).toBe("");
     expect(result.assumptions[0]!.impactIfFalse).toBe("medium");
     expect(result.risks[0]!.likelihood).toBe("medium");
@@ -79,7 +79,7 @@ describe("parseAssumptionRisk", () => {
   it("strips markdown fences", () => {
     const fenced =
       '```json\n{"assumptions":[{"statement":"s"}],"risks":[{"title":"t","description":"d"}]}\n```';
-    const result = parseAssumptionRisk(fenced);
+    const result = parseAssumptionRisk(fenced)!;
     expect(result.assumptions).toHaveLength(1);
     expect(result.risks).toHaveLength(1);
   });
@@ -98,7 +98,7 @@ describe("parseAssumptionRisk", () => {
         { title: "", description: "empty title" },
       ],
     });
-    const result = parseAssumptionRisk(json);
+    const result = parseAssumptionRisk(json)!;
     expect(result.assumptions).toHaveLength(1);
     expect(result.assumptions[0]!.statement).toBe("valid");
     expect(result.risks).toHaveLength(1);

@@ -436,7 +436,7 @@ describe("ClarificationDialog", () => {
             },
           ],
         }),
-      );
+      )!;
 
       expect(questions).toHaveLength(1);
       expect(questions[0]!.question).toBe("What scope?");
@@ -461,7 +461,7 @@ describe("ClarificationDialog", () => {
             { requirementId: "req-1", question: "Good question?" },
           ],
         }),
-      );
+      )!;
 
       expect(questions).toHaveLength(1);
       expect(questions[0]!.question).toBe("Good question?");
@@ -472,7 +472,7 @@ describe("ClarificationDialog", () => {
       const json = JSON.stringify({
         questions: [{ requirementId: "r1", question: "Q?", ambiguityField: "f", context: "c" }],
       });
-      const questions = dialog.parseQuestions("```json\n" + json + "\n```");
+      const questions = dialog.parseQuestions("```json\n" + json + "\n```")!;
       expect(questions).toHaveLength(1);
     });
   });

@@ -51,7 +51,7 @@ describe("parseNfrAcceptance", () => {
         },
       ],
     });
-    const result = parseNfrAcceptance(json);
+    const result = parseNfrAcceptance(json)!;
     expect(result.nfrs).toHaveLength(1);
     expect(result.nfrs[0]!.category).toBe("performance");
     expect(result.nfrs[0]!.metric).toBe("p95 < 200ms");
@@ -66,7 +66,7 @@ describe("parseNfrAcceptance", () => {
       nfrs: [{ category: "security", title: "Auth", description: "Must authenticate." }],
       acceptanceCriteria: [{ statement: "It works." }],
     });
-    const result = parseNfrAcceptance(json);
+    const result = parseNfrAcceptance(json)!;
     expect(result.nfrs[0]!.metric).toBe("");
     expect(result.nfrs[0]!.priority).toBe("should-have");
     expect(result.acceptanceCriteria[0]!.given).toBe("");
@@ -75,7 +75,7 @@ describe("parseNfrAcceptance", () => {
   it("strips markdown fences", () => {
     const fenced =
       '```json\n{"nfrs":[{"category":"other","title":"t","description":"d"}],"acceptanceCriteria":[]}\n```';
-    const result = parseNfrAcceptance(fenced);
+    const result = parseNfrAcceptance(fenced)!;
     expect(result.nfrs).toHaveLength(1);
     expect(result.nfrs[0]!.category).toBe("other");
   });
@@ -90,7 +90,7 @@ describe("parseNfrAcceptance", () => {
       ],
       acceptanceCriteria: [{ statement: "valid" }, { statement: "" }, null],
     });
-    const result = parseNfrAcceptance(json);
+    const result = parseNfrAcceptance(json)!;
     expect(result.nfrs).toHaveLength(1);
     expect(result.nfrs[0]!.title).toBe("ok");
     expect(result.acceptanceCriteria).toHaveLength(1);
