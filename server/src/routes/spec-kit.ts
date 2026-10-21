@@ -678,9 +678,13 @@ export function specKitRouter(): Router {
   // of the routes' pre-auth limiters, which #953 and #1059 put in front of
   // authentication on purpose (their tests assert that order).
   // `project-access-guard.test.ts` fails if a route is added without it.
+  // The guard reads the database, so a route with no limiter of its own takes
+  // the coarse `specKitJobPreAuthRateLimiter` ahead of `requireAuth` (CodeQL
+  // js/missing-rate-limiting).
 
   r.get(
     "/enabled",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.read"),
@@ -696,6 +700,7 @@ export function specKitRouter(): Router {
 
   r.put(
     "/enabled",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.update"),
@@ -719,6 +724,7 @@ export function specKitRouter(): Router {
 
   r.get(
     "/files",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.read"),
@@ -736,6 +742,7 @@ export function specKitRouter(): Router {
 
   r.get(
     "/files/:name",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.read"),
@@ -764,6 +771,7 @@ export function specKitRouter(): Router {
 
   r.put(
     "/files/:name",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.update"),
@@ -791,6 +799,7 @@ export function specKitRouter(): Router {
 
   r.delete(
     "/files/:name",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.update"),
@@ -808,6 +817,7 @@ export function specKitRouter(): Router {
 
   r.post(
     "/constitution",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.update"),
@@ -1011,6 +1021,7 @@ export function specKitRouter(): Router {
   // ---- MVP-5: per-feature routes ------------------------------------------
   r.get(
     "/features",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.read"),
@@ -1030,6 +1041,7 @@ export function specKitRouter(): Router {
 
   r.get(
     "/features/:slug/artifacts",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.read"),
@@ -1050,6 +1062,7 @@ export function specKitRouter(): Router {
 
   r.get(
     "/features/:slug/artifacts/*key",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.read"),
@@ -1071,6 +1084,7 @@ export function specKitRouter(): Router {
 
   r.put(
     "/features/:slug/artifacts/*key",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.update"),
@@ -1123,6 +1137,7 @@ export function specKitRouter(): Router {
   // ---- MVP-8: status endpoint --------------------------------------------
   r.get(
     "/features/:slug/status",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.read"),
@@ -1143,6 +1158,7 @@ export function specKitRouter(): Router {
   // ---- Issue #434: archive / restore -------------------------------------
   r.post(
     "/features/:slug/archive",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.update"),
@@ -1164,6 +1180,7 @@ export function specKitRouter(): Router {
 
   r.post(
     "/features/:slug/restore",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.update"),
@@ -1191,6 +1208,7 @@ export function specKitRouter(): Router {
   // ---- MVP-7: filesystem installer ---------------------------------------
   r.post(
     "/install",
+    specKitJobPreAuthRateLimiter,
     requireAuth,
     requireProjectAccess(),
     requirePermission("project.update"),
