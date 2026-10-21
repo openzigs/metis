@@ -117,3 +117,8 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Same-origin href check](project_same-origin-href-check.md) — new URL origin, then re-check the normalised result; tab, %2e (#1315)
 - [Docs-gen reuse + regenerate](project_docs-gen-section-reuse-and-regenerate.md) — checkpoint timing; one-child trim; stage (#1317)
 - [Headless Chrome offline proof](project_headless-chrome-network-lockdown.md) — interception + CSP + launch args; real probe (#1321)
+- [CSRF boundary = UI proxy](project_csrf-boundary-is-the-ui-proxy.md) — metis.at becomes Bearer there; API guard alone protects no one (#913)
+- [CodeQL CSRF heuristic](project_codeql-csrf-query-heuristic.md) — only csurf/lusca or compared csrf-named cookie; dismiss #24 (#913)
+- [Shard stuck pending](project_gh-checks-shard-stuck-pending.md) — steps all success but job in_progress; read steps, re-read (#1347)
+- [Pre-auth limiters on req.ip](project_preauth-limiters-keyed-on-req-ip.md) — gaps + approval still do; copy runs key (#838)
+- [Cross-PR helper semantics](project_shared-helper-semantics-cross-pr.md) — tests pinning a shared helper break on merge order (#1348)

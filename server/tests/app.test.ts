@@ -65,7 +65,7 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 
 import request from "supertest";
-import { createApp } from "../src/app.js";
+import { createApp, parseCorsOrigins } from "../src/app.js";
 
 beforeEach(() => {
   userRows.clear();
@@ -326,6 +326,45 @@ describe("createApp", () => {
         .set("Sec-Fetch-Site", "cross-site")
         .send({ SAMLResponse: "x" });
       expect(res.status).not.toBe(403);
+    });
+
+    it("parses CORS_ORIGIN once: cors() and the CSRF trust list accept the same origins", async () => {
+      expect(parseCorsOrigins(" http://a.test , ,http://b.test")).toEqual([
+        "http://a.test",
+        "http://b.test",
+      ]);
+      const listed = createApp({ corsOrigin: "http://a.test, http://b.test" });
+      const login = await request(listed)
+        .post("/api/auth/login")
+        .send({ username: "developer", password: "password" });
+      const cookie = `refreshToken=${login.body.data.refreshToken as string}`;
+
+      const preflight = await request(listed)
+        .options("/api/auth/refresh")
+        .set("Origin", "http://b.test")
+        .set("Access-Control-Request-Method", "POST")
+        .set("Access-Control-Request-Headers", "x-metis-csrf");
+      expect(preflight.headers["access-control-allow-origin"]).toBe("http://b.test");
+      const trusted = await request(listed)
+        .post("/api/auth/refresh")
+        .set("Cookie", cookie)
+        .set("X-METIS-CSRF", "1")
+        .set("Sec-Fetch-Site", "same-site")
+        .set("Origin", "http://b.test");
+      expect(trusted.status).toBe(200);
+
+      const other = await request(listed)
+        .options("/api/auth/refresh")
+        .set("Origin", "http://c.test")
+        .set("Access-Control-Request-Method", "POST");
+      expect(other.headers["access-control-allow-origin"]).toBeUndefined();
+      const refused = await request(listed)
+        .post("/api/auth/refresh")
+        .set("Cookie", cookie)
+        .set("X-METIS-CSRF", "1")
+        .set("Sec-Fetch-Site", "same-site")
+        .set("Origin", "http://c.test");
+      expect(refused.status).toBe(403);
     });
 
     it("never gates a read", async () => {

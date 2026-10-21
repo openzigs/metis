@@ -128,6 +128,18 @@ describe("the /api/* proxy", () => {
     expect(headers.get(CSRF_HEADER)).toBe("1");
   });
 
+  it("tells an IdP posting to the UI origin that the SAML ACS lives on the API", async () => {
+    const res = await POST(
+      nextReq("POST", "/api/auth/saml/acs", { "sec-fetch-site": "cross-site" }),
+      { params: Promise.resolve({ path: ["auth", "saml", "acs"] }) },
+    );
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error.code).toBe("SAML_ACS_WRONG_ORIGIN");
+    expect(body.error.message).toMatch(/\/api\/auth\/saml\/acs/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("still serves a cross-site read", async () => {
     const res = await GET(
       nextReq("GET", "/api/projects/p1", { "sec-fetch-site": "cross-site" }),

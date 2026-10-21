@@ -90,7 +90,7 @@ but not off one from a sibling subdomain (same site, other origin):
 | Where | What is refused | Code |
 |---|---|---|
 | UI proxy (`/api/*`, `/api/auth/login`, `/logout`, `/refresh`) | Any `POST`/`PUT`/`PATCH`/`DELETE` whose `Sec-Fetch-Site` is not `same-origin`/`none`, or — without Fetch Metadata — whose `Origin` is not this host (`Host` or `X-Forwarded-Host`). | `ui/src/lib/csrf-guard.ts` |
-| API (`createApp`) | A state-changing request authenticated by the `accessToken`/`refreshToken` cookie rather than a bearer header, unless it carries `X-METIS-CSRF` **and** is not marked cross-origin (as above, with `CORS_ORIGIN` trusted). | `server/src/middleware/csrf-protection.ts` |
+| API (`createApp`) | A state-changing request authenticated by the `accessToken`/`refreshToken` cookie rather than a bearer header, unless it carries `X-METIS-CSRF` **and** is not marked cross-origin (as above, with every `CORS_ORIGIN` entry trusted — the same parsed list `cors()` uses). | `server/src/middleware/csrf-protection.ts` |
 
 Both answer 403 `CSRF_REJECTED`. The UI-side rule is the algorithm of Go's
 `http.CrossOriginProtection`: it needs no token and no client change, and a
@@ -100,9 +100,11 @@ are never gated, so no route may change state on a `GET`.
 
 - **Bearer requests are exempt** — a page on another origin cannot attach an
   `Authorization` header without a CORS preflight, which `CORS_ORIGIN` refuses.
-- **The SAML ACS (`POST /api/auth/saml/acs`) is exempt** — the identity provider
-  posts to it cross-origin by design, and it is authenticated by the signed
-  assertion.
+- **The SAML ACS (`POST /api/auth/saml/acs`) is exempt on the API** — the
+  identity provider posts to it cross-origin by design, and it is authenticated
+  by the signed assertion. **Its URL must be the API origin**: the UI proxy does
+  not forward `/api/auth/*`, and answers an IdP posting there with 404
+  `SAML_ACS_WRONG_ORIGIN` naming the right path.
 - **Webhooks and the Slack receiver** carry an HMAC signature and no session
   cookie, so neither check applies to them.
 - **A deployment that serves the UI under another origin than the browser

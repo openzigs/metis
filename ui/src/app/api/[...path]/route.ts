@@ -40,11 +40,6 @@ const invalidPath = (): NextResponse =>
   );
 
 async function handle(req: NextRequest, ctx: RouteCtx): Promise<NextResponse> {
-  // #913 — the session cookie becomes a bearer token below, so a forged
-  // cross-origin write must be refused here, before it is forwarded.
-  const refused = rejectCrossOrigin(req);
-  if (refused) return refused;
-
   const { path = [] } = await ctx.params;
 
   // #1069 — Next decodes each catch-all segment, so one element can hold `/`,
@@ -57,6 +52,23 @@ async function handle(req: NextRequest, ctx: RouteCtx): Promise<NextResponse> {
   const upstreamPath = pathBelowUpstreamBase(upstreamUrl, UPSTREAM_API_BASE);
   if (upstreamPath === null) return invalidPath();
 
+  // #913 — the SAML ACS is served by the API, never through this proxy, and
+  // its identity provider posts cross-origin. Say so plainly, ahead of the
+  // CSRF refusal an IdP pointed here would otherwise get.
+  if (upstreamPath === "auth/saml/acs") {
+    return NextResponse.json(
+      {
+        success: false,
+        error: {
+          code: "SAML_ACS_WRONG_ORIGIN",
+          message:
+            "The SAML Assertion Consumer Service is served by the METIS API, not the web app. Point the identity provider's ACS URL at <API origin>/api/auth/saml/acs.",
+        },
+      },
+      { status: 404 },
+    );
+  }
+
   // Auth endpoints have their own proxy.
   if (upstreamPath.split("/")[0] === "auth") {
     return NextResponse.json(
@@ -64,6 +76,11 @@ async function handle(req: NextRequest, ctx: RouteCtx): Promise<NextResponse> {
       { status: 404 },
     );
   }
+
+  // #913 — the session cookie becomes a bearer token below, so a forged
+  // cross-origin write must be refused here, before it is forwarded.
+  const refused = rejectCrossOrigin(req);
+  if (refused) return refused;
 
   const search = req.nextUrl.search;
   if (search) upstreamUrl.search = search;
