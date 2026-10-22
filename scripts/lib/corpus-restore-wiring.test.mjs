@@ -12,7 +12,8 @@ import { describe, expect, it } from "vitest";
  * ## Why this test exists rather than a comment
  *
  * The first attempt wired the restore into the ROOT `pnpm test` only. That looked like
- * "one place", and it was not: `ci.yml`'s `postgres-adapter` job runs `pnpm test` with
+ * "one place", and it was not: `ci.yml`'s `postgres-adapter` job (since #1365, the
+ * `postgres-unit` legs, with `--shard`) runs `pnpm test` with
  * `working-directory: server`, which resolves to the SERVER package's own script and
  * never touches the root one. Measured on the first CI run of this branch — `api`
  * (root) failed 2 test files, `postgres-adapter` (server) failed 4, and the two extra

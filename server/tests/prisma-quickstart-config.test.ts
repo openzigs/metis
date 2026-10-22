@@ -114,7 +114,7 @@ describe("issue #1384 — `pnpm db:migrate` on a fresh clone", () => {
  *
  * This costs no PR coverage: the `api` job generates the SQLite client, which is the
  * default everywhere, so the round-trip runs on every PR. It skips only for the
- * `postgres-adapter` job's full-suite regression run and for local Postgres dogfooding.
+ * `postgres-unit` job's full-suite regression run and for local Postgres dogfooding.
  * The declaration check above is provider-independent and is NOT skipped, so the postgres
  * arm still fails if `migrations.seed` disappears.
  */

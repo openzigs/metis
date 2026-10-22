@@ -28,7 +28,7 @@ const GATE_AND_DEPENDENCIES = Object.freeze([
 ]);
 
 /**
- * What `postgres-adapter` proves, and so what can change its answer:
+ * What `postgres-unit` and `postgres-adapter` prove, and so what can change their answer:
  *  - the Postgres schema / migrations and the scheme-selected Prisma adapter;
  *  - every Postgres- or pgvector-specific module and integration suite (by name);
  *  - the test helpers those suites pull in (shared suite bodies, fixtures, the pg

@@ -269,7 +269,8 @@ Other people or automated reviewers (e.g., GitHub Copilot code review) may have 
    > **The set is listed once, in CLAUDE.md > "CI and merging"** (#844: twenty-four since #1365, with the
    > e2e suite sharded as `e2e (1/3)`–`e2e (3/3)` and read through `e2e-outcome`, the
    > Postgres unit suite as `postgres-unit (1/3)`–`(3/3)`, and `postgres-adapter` and
-   > `postgres-unit` reading `skipping` on a PR that touches no Postgres path, and the
+   > `postgres-unit` reading `skipping` on a PR that touches no Postgres path, where the legs
+   > should fold into one skipped `postgres-unit` for twenty-two (unconfirmed), and the
    > schedule-only `nightly-report` always reading `skipping`). This note used to end *"Only CI jobs (`api`, `ui`) will
    > appear"*, which was true when it was written and had since become false in ten places;
    > an agent obeying it treated ten checks as non-existent (#1282). Read the set `gh pr

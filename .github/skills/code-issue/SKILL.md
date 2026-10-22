@@ -440,7 +440,8 @@ and a green `CodeQL` does not mean the `Analyze` jobs are done.
    listed in CLAUDE.md > "CI and merging" (#844, #848, #1365): the sharded e2e reports as `e2e (1/3)` to
    `e2e (3/3)` plus the one aggregate to read, `e2e-outcome`, the Postgres unit suite as
    `postgres-unit (1/3)` to `(3/3)`, and `postgres-adapter` and `postgres-unit` read
-   `skipping` on a PR that touches no Postgres path; the schedule-only `nightly-report` always
+   `skipping` on a PR that touches no Postgres path (the legs should fold into one skipped
+   `postgres-unit`, so **twenty-two**; unconfirmed until such a PR shows it); the schedule-only `nightly-report` always
    reads `skipping` on a PR. A run showing only two or three is
    **queued, not green**. Do not check that
    list off from memory: it drifts, which is the whole reason this paragraph was wrong.

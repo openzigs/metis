@@ -6,9 +6,10 @@ on:
       - main
   pull_request:
   workflow_dispatch:
-  # #844 — nightly full run. `postgres-adapter` and the `api` image build/smoke
-  # are path-gated on pull requests (see the `changes` job); this run, and every
-  # push to `main`, always does both, so whatever the path lists miss is caught
+  # #844 — nightly full run. The Postgres jobs (`postgres-unit`, `postgres-adapter`)
+  # and the `api` image build/smoke are path-gated on pull requests (see the
+  # `changes` job); this run, and every push to `main`, always does all of them,
+  # so whatever the path lists miss is caught
   # within a night. Scheduled runs use the default branch's copy of this file.
   schedule:
     - cron: "17 4 * * *"
@@ -34,7 +35,7 @@ permissions:
 jobs:
   # #844 — which conditional work this run needs. Pure logic and its reasoning:
   # scripts/lib/ci-changes-core.mjs; the pinned path lists are there too.
-  #   postgres: run `postgres-adapter`
+  #   postgres: run `postgres-unit` (the sharded unit suite) and `postgres-adapter`
   #   images:   run the `api` job's image build, size gate and container smoke
   # Both are always `true` on push, schedule and workflow_dispatch, and on a PR
   # whose diff cannot be computed (fail-open). Consumers compare `!= 'false'`,
@@ -1575,7 +1576,8 @@ jobs:
 
   # #848 — a red nightly must not go unnoticed. GitHub tells only the user who
   # last edited the `cron` line, and since #844 the nightly (with `main` pushes)
-  # is the only run of the path-gated `postgres-adapter` and `api` image work.
+  # is the only run of the path-gated `postgres-unit` / `postgres-adapter` and `api`
+  # image work.
   # This job opens a `ci-nightly` issue (or comments on the open one) with the run
   # URL and the failing jobs, and comments on and closes it when a later nightly
   # passes. Logic and tests: scripts/lib/ci-nightly-report-core.mjs.

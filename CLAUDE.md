@@ -100,9 +100,12 @@ gh pr merge <pr> --squash --delete-branch   # only after a clean re-read
 `generative-e2e`, `e2e (1/3)`, `e2e (2/3)`, `e2e (3/3)`, `e2e-outcome`, `nightly-report`, plus `Analyze
 javascript-typescript`, `Analyze python`, `CodeQL`, `Check CLA signature`, `Dependency audit`,
 `Semgrep`. Read **`e2e-outcome`** for the sharded suite — unlike `api-outcome` it also reads
-`fail` when a newer push superseded the run (a cancelled shard), so check for a newer run first. On a PR, `postgres-adapter` reads
-**`skipping`** (and the three `postgres-unit` legs fold into one skipped `postgres-unit`, so 22 checks) when no Postgres path changed and `api` skips its image build when no image
-path did — the `changes` job's summary says why; both always run on `main` and nightly.
+`fail` when a newer push superseded the run (a cancelled shard), so check for a newer run first. The `postgres-unit (n/3)` legs have **no** outcome job, so a leg
+cancelled by a newer push reads `fail` the same way: check for a newer run first. On a PR,
+`postgres-adapter` and `postgres-unit` read **`skipping`** when no Postgres path changed (the
+legs are expected to fold into one skipped `postgres-unit`, giving 22 checks: unconfirmed
+until a PR without a Postgres path shows it) and `api` skips its image build when no image
+path did — the `changes` job's summary says why; all three always run on `main` and nightly.
 `skipping` on `postgres-adapter` / `postgres-unit` is expected, on `nightly-report` always (schedule-only:
 it files a `ci-nightly` issue on a red nightly, #848), and on `Check CLA signature` for a
 PR the maintainer opened (`cla.yml`'s `if:`); anywhere else it is not. A PR touching

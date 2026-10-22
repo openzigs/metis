@@ -56,7 +56,7 @@ import { readGeneratedClientProvider } from "../../../tests/lib/db/generated-cli
  * asserted wrongly. This costs no CI coverage: the `api` job builds the SQLite client, which
  * is the default everywhere, so the suite runs on every PR. It skips only in the local
  * dogfooding case this issue exists to unblock (dev switched to Postgres), and for the
- * `postgres-adapter` job's full-suite regression run.
+ * `postgres-unit` job's full-suite regression run.
  */
 const describeOnSqliteClient = describe.skipIf(readGeneratedClientProvider() !== "sqlite");
 

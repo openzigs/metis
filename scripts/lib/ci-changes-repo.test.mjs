@@ -127,6 +127,9 @@ describe("ci.yml wiring (#844)", () => {
     const run = step("postgres-unit", "Prove the unit suite runs on the Postgres-generated client");
     expect(run).toMatch(/working-directory: server/);
     expect(run).toMatch(/run: pnpm test --shard=\$\{\{ matrix\.shard \}\}\n?$/);
+    // A failing leg must fail its check: no `continue-on-error` on the suite step or the job.
+    expect(run).not.toMatch(/continue-on-error/);
+    expect(u).not.toMatch(/\n {4}continue-on-error:/);
     // Same environment the unsharded step had: a live Postgres, the schema pushed and the
     // client generated for it, before the suite runs.
     const lines = (jobs.get("postgres-unit") ?? []).map((l) => l.trim());
