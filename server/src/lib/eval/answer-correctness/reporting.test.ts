@@ -257,7 +257,7 @@ describe("replay of the recorded first run (#1342 provenance)", () => {
    * is no longer one retention policy away from disappearing — but read it lazily
    * anyway. A throw during COLLECTION kills the whole file and surfaces as
    * `Test Files 1 failed` with ZERO failed tests — byte-identical in shape to the
-   * `postgres-adapter` teardown flake CLAUDE.md tells you to re-run away. Failing
+   * `postgres-unit` teardown flake CLAUDE.md tells you to re-run away. Failing
    * inside a test instead puts the missing path in a test name and a message.
    */
   const loadRecorded = (): Recorded => {

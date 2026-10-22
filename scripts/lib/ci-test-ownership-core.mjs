@@ -12,7 +12,8 @@
  *      ran; the check column stays green.
  *   2. A package is dropped from one job on the belief that another job "covers" it,
  *      when that other job runs it under a different configuration. Measured on #4:
- *      `postgres-adapter` runs the server suite against the Postgres-generated Prisma
+ *      `postgres-adapter` (since #1365, the sharded `postgres-unit`) runs the server
+ *      suite against the Postgres-generated Prisma
  *      client, where 15 files (321 tests, on PR #287's final run) SKIP themselves — every `*.sqlite.test.ts`
  *      among them. It is not a substitute for the SQLite run.
  *
