@@ -208,3 +208,14 @@ describe("resolveRateLimitStore — backend selection", () => {
     expect(() => resolveRateLimitStore({ DISCUSSION_RATE_LIMIT_BACKEND: "valkey" })).toThrow();
   });
 });
+
+describe("InMemoryRateLimitStore.count (#1385)", () => {
+  it("counts hits inside the sliding window without recording one", async () => {
+    const store = new InMemoryRateLimitStore();
+    expect(await store.count("k", 1000, 100)).toBe(0);
+    await store.hit("k", 99, 1000, 100);
+    await store.hit("k", 99, 1000, 600);
+    expect(await store.count("k", 1000, 700)).toBe(2);
+    expect(await store.count("k", 1000, 1300)).toBe(1);
+  });
+});

@@ -56,7 +56,11 @@ export class MockAuthProvider implements AuthProvider {
     const user = MOCK_USERS.find((u) => u.username === username && u.password === password);
     if (!user) {
       log.warn("Mock auth failed", { username });
-      return { success: false, error: "Invalid username or password" };
+      return {
+        success: false,
+        error: "Invalid username or password",
+        reason: "invalid_credentials",
+      };
     }
     log.info("Mock auth succeeded", { username, role: user.role });
     const { password: _password, ...safe } = user;

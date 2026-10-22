@@ -48,6 +48,7 @@
 
 ### 2.3 RBAC
 - Roles: `admin`, `coordinator`, `developer`, `reader`. Each maps to a fixed permission set declared in `packages/shared/src/permissions.ts`.
+- **First admin (#1376).** `METIS_BOOTSTRAP_ADMINS` (usernames or e-mails) grants a listed identity `admin` when it signs in through a trusted provider and no user holds the admin role. Once one does, the setting has no effect, so it cannot be replayed to escalate. It re-arms only if every admin role row is removed. Only identities the provider states as-is count: on SAML never the username METIS derives from the e-mail's local part, on OIDC only the `email` claim with `email_verified: true`. Identities that NFKC would change never match. See [`docs/auth/README.md`](auth/README.md#first-admin-metis_bootstrap_admins-1376).
 - Every privileged route is guarded by `requirePermission('<dotted.permission>')`.
 - Project-scoped permissions (e.g. `project.update`) check membership before checking the global role.
 - `requirePermission` is a **global-role** check and is never sufficient on its own for
@@ -56,7 +57,8 @@
 ### 2.4 Rate limiting
 | Surface | Default limit | Variable |
 |---|---|---|
-| `/api/auth/*` | 20 / 15min / IP | `RATE_LIMIT_*` |
+| `/api/auth/*` | 20 / 15min / client address (see below) | `RATE_LIMIT_*` |
+| `POST /api/auth/login` (every path Express routes there) | 10 **failed** sign-ins / 15min / account (username, NFKC-folded) | `AUTH_ACCOUNT_RATE_LIMIT_MAX` (window: `RATE_LIMIT_WINDOW_MS`) |
 | AI chat / stream | 60 / 15min / user | `AI_RATE_LIMIT_*` |
 | Connector mutations | 30 / 5min / user | `CONNECTOR_RATE_LIMIT_*` |
 | Document upload | 10 / 1min / user | `UPLOAD_RATE_LIMIT_*` |
@@ -79,6 +81,52 @@ exact path match (`isRateLimitExempt` in `server/src/middleware/rate-limit.ts`):
 
 All credential-accepting routes (`/login`, `/refresh`, `/logout`, SSO callbacks)
 and every other `/sso/*` route remain throttled.
+
+**Which client address (#1385).** Browser logins, refreshes and logouts reach the
+API through the UI's route handlers, so the API's TCP peer is the UI pod for
+everyone. Keyed on that, the limiter was one bucket for the whole organisation:
+20 wrong passwords from one client locked every user out. Keyed on
+`X-Forwarded-For`, every forged value would buy a fresh bucket. So:
+
+| Route | Keyed on | Set by |
+|---|---|---|
+| `/login`, `/refresh`, `/logout` via the UI | the client address the UI signs: the `METIS_TRUSTED_PROXY_HOPS`-th `X-Forwarded-For` entry from the right (what the Ingress appended), sent as `X-Metis-Client-Address` with an HMAC-SHA256 under `METIS_UI_PROXY_SECRET` | `ui/src/lib/client-address.ts` |
+| the same, with no valid signature (no secret, a secret under 32 characters, a forged or mismatched signature, `METIS_TRUSTED_PROXY_HOPS=0`) | the TCP peer (never a header) | `server/src/middleware/auth-client-address.ts` |
+| `/oidc/*`, `/saml/*` (the Ingress sends these to the API directly) | `req.ip`: the address the Ingress appended, read through `TRUST_PROXY` | same |
+
+Set the same `METIS_UI_PROXY_SECRET` (32+ characters, e.g. `openssl rand -hex 32`)
+on the UI and the API, and `METIS_TRUSTED_PROXY_HOPS` on the UI to the number of
+reverse proxies in front of it (1 behind one Ingress controller or load balancer;
+the Helm chart sets 1). Leave it 0 when browsers reach the UI directly: then every
+`X-Forwarded-For` entry is client-written, the UI sends no address, and the
+limiter falls back to one bucket per UI pod. The generic `/api/*` proxy drops a
+browser's own copy of these headers.
+
+The signature covers the address **and the minute** it was made in
+(`metis-client-address/v2\n<minute>\n<address>`). The API accepts the current
+minute ±1, so a captured header pair can be replayed for about two minutes, not
+for the secret's lifetime. In production the server warns at boot when
+`METIS_UI_PROXY_SECRET` is missing. The UI warns once when
+`METIS_TRUSTED_PROXY_HOPS` is above 0 but it has no secret to sign with.
+
+The per-account guard (`server/src/lib/auth/login-account-guard.ts`) caps
+**refused passwords** for one username, however many addresses they come from, so
+neither a botnet nor a shared NAT can brute-force one account. A successful
+sign-in is never counted, and neither is a directory outage or a
+misconfiguration. Only a provider result of `reason: "invalid_credentials"`
+counts, so users with the right password are not locked out after the
+directory recovers.
+
+- **No decrement needed.** The guard reads the account's failure count before
+  authenticating, using `RateLimitStore.count`, which records nothing. The login
+  handler records a hit only after a failed bind. This works on the cluster-safe
+  Postgres and Valkey stores, which have no decrement.
+- **Mounted on the login route itself.** Express routes `/login/`, `/LOGIN` and
+  `/Login` to the same handler, and a path match skipped all three.
+- **Lockout trade-off.** Like any account lockout, someone who knows a username
+  can hold that user's sign-in back for one window with that many wrong
+  passwords. Raise `AUTH_ACCOUNT_RATE_LIMIT_MAX` if that matters more to you
+  than the brute-force cap.
 
 ### 2.5 Cross-site request forgery (#913)
 

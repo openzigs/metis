@@ -178,9 +178,9 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
     expect(res.headers.location).toContain("/dashboard");
     // Auth cookies were set.
     const cookies = res.headers["set-cookie"] as unknown as string[];
-    expect(cookies.join(";")).toMatch(/accessToken=/);
-    const accessCookie = cookies.find((cookie) => cookie.startsWith("accessToken="));
-    const accessToken = accessCookie?.split(";")[0].slice("accessToken=".length);
+    expect(cookies.join(";")).toMatch(/metis\.at=/);
+    const accessCookie = cookies.find((cookie) => cookie.startsWith("metis.at="));
+    const accessToken = accessCookie?.split(";")[0].slice("metis.at=".length);
     expect(accessToken).toBeTruthy();
     expect(verifyAccessToken(accessToken ?? "").role).toBe("reader");
     expect(prisma.$transaction).toHaveBeenCalled();
@@ -278,8 +278,8 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
 
     expect(res.status).toBe(302);
     const cookies = res.headers["set-cookie"] as unknown as string[];
-    const accessCookie = cookies.find((cookie) => cookie.startsWith("accessToken="));
-    const accessToken = accessCookie?.split(";")[0].slice("accessToken=".length);
+    const accessCookie = cookies.find((cookie) => cookie.startsWith("metis.at="));
+    const accessToken = accessCookie?.split(";")[0].slice("metis.at=".length);
     expect(verifyAccessToken(accessToken ?? "").role).toBe("reader");
     expect(prisma.userRole.create).toHaveBeenCalledWith({
       data: { userId: "user-1", roleId: "role-reader", source: "provider" },
@@ -334,8 +334,8 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
 
     expect(res.status).toBe(302);
     const cookies = res.headers["set-cookie"] as unknown as string[];
-    const accessCookie = cookies.find((cookie) => cookie.startsWith("accessToken="));
-    const accessToken = accessCookie?.split(";")[0].slice("accessToken=".length);
+    const accessCookie = cookies.find((cookie) => cookie.startsWith("metis.at="));
+    const accessToken = accessCookie?.split(";")[0].slice("metis.at=".length);
     expect(verifyAccessToken(accessToken ?? "").role).toBe("coordinator");
   });
 
@@ -364,8 +364,8 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
 
     expect(res.status).toBe(302);
     const cookies = res.headers["set-cookie"] as unknown as string[];
-    const accessCookie = cookies.find((cookie) => cookie.startsWith("accessToken="));
-    const accessToken = accessCookie?.split(";")[0].slice("accessToken=".length);
+    const accessCookie = cookies.find((cookie) => cookie.startsWith("metis.at="));
+    const accessToken = accessCookie?.split(";")[0].slice("metis.at=".length);
     expect(verifyAccessToken(accessToken ?? "").role).toBe("reader");
     expect(prisma.userRole.create).not.toHaveBeenCalled();
     expect(prisma.userRole.deleteMany).not.toHaveBeenCalled();
@@ -413,8 +413,8 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
 
     expect(res.status).toBe(302);
     const cookies = res.headers["set-cookie"] as unknown as string[];
-    const accessCookie = cookies.find((cookie) => cookie.startsWith("accessToken="));
-    const accessToken = accessCookie?.split(";")[0].slice("accessToken=".length);
+    const accessCookie = cookies.find((cookie) => cookie.startsWith("metis.at="));
+    const accessToken = accessCookie?.split(";")[0].slice("metis.at=".length);
     expect(verifyAccessToken(accessToken ?? "").role).toBe("coordinator");
     expect(prisma.userRole.create).not.toHaveBeenCalled();
     expect(prisma.userRole.deleteMany).not.toHaveBeenCalled();

@@ -1,11 +1,18 @@
 /**
- * Rate limiters. Auth endpoints are restricted to 20 requests / 15 minutes per
- * IP to throttle credential-stuffing attempts; the limit is configurable via
- * env so deployments can tune for their reverse-proxy topology.
+ * Rate limiters for `/api/auth/*`. Two budgets (#1385):
+ *
+ *  - {@link authRateLimiter} — per CLIENT ADDRESS, every credential route:
+ *    20 requests / 15 minutes (`RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`). The
+ *    address is the one the UI signed, else the TCP peer — never a header the
+ *    browser wrote (`auth-client-address.ts`).
+ *  - `authAccountGuard` (`lib/auth/login-account-guard.ts`) — per ACCOUNT, on the
+ *    login route itself: 10 FAILED sign-ins / 15 minutes for one username,
+ *    from any number of addresses (`AUTH_ACCOUNT_RATE_LIMIT_MAX`).
  */
 import rateLimit, { type Store } from "express-rate-limit";
 import { clusterRateLimitStore } from "./cluster-rate-limit-store.js";
-import type { RequestHandler } from "express";
+import { authAddressKey } from "./auth-client-address.js";
+import type { Request, RequestHandler } from "express";
 import type { ApiResponse } from "@metis/shared";
 
 const WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? `${15 * 60 * 1000}`, 10);
@@ -69,6 +76,7 @@ export function createAuthRateLimiter(options: AuthRateLimiterOptions = {}): Req
     store: options.store ?? clusterRateLimitStore("auth"),
     windowMs: options.windowMs ?? WINDOW_MS,
     max: options.max ?? MAX,
+    keyGenerator: (req) => authAddressKey(req as unknown as Request),
     skip: (req) => isRateLimitExempt(req.method, req.path),
     standardHeaders: true,
     legacyHeaders: false,

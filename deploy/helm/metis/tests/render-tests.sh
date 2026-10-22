@@ -1095,7 +1095,8 @@ for spec in "default::" "prod::-f ${CHART_DIR}/values-prod.yaml --set scaling.da
   flags=(${spec#*::})
   SJ=$(render_json "${flags[@]}" --set backup.enabled=true)
   KEYS=$(ruby -ryaml -e 'puts YAML.load_file(ARGV[0])["secrets"]["keyMap"].keys.sort.join(",")' "${CHART_DIR}/values.yaml")
-  assert "${label}: ui pod references no secret" "" "$(jqr 'secret_env(pod("metis-ui")) | join(",")' <<<"${SJ}")"
+  # #1385 — the UI's one secret: the HMAC key it signs client addresses with.
+  assert "${label}: ui pod references only METIS_UI_PROXY_SECRET" "METIS_UI_PROXY_SECRET" "$(jqr 'secret_env(pod("metis-ui")) | join(",")' <<<"${SJ}")"
   for k in VAULT_MASTER_KEY JWT_SECRET; do
     assert_not_contains "${label}: ui Deployment never names ${k}" "${k}" "$(jqr 'pod("metis-ui") | tojson' <<<"${SJ}")"
   done
@@ -1120,7 +1121,8 @@ done
 LDAP=$(render_json --set secrets.keyMap.AUTH_LDAP_BIND_PASSWORD=AUTH_LDAP_BIND_PASSWORD)
 assert "added keyMap key reaches the server" yes \
   "$(jqr 'secret_env(pod("metis-server")) | if index("AUTH_LDAP_BIND_PASSWORD") then "yes" else "no" end' <<<"${LDAP}")"
-assert "added keyMap key does not reach the UI" "" "$(jqr 'secret_env(pod("metis-ui")) | join(",")' <<<"${LDAP}")"
+assert "added keyMap key does not reach the UI" no \
+  "$(jqr 'secret_env(pod("metis-ui")) | if index("AUTH_LDAP_BIND_PASSWORD") then "yes" else "no" end' <<<"${LDAP}")"
 # Routing is a values knob, and it refuses a key keyMap does not define.
 ROUTED=$(render_json --set-json 'secrets.components.ui=["METRICS_TOKEN"]')
 assert "secrets.components.ui routes a named key to the UI" "METRICS_TOKEN" "$(jqr 'secret_env(pod("metis-ui")) | join(",")' <<<"${ROUTED}")"

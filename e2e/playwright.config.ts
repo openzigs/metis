@@ -169,6 +169,8 @@ export default defineConfig({
             // 20 req/15 min auth limiter throttles credential stuffing, not
             // e2e flows — raise it so a full-suite run never trips RATE_LIMITED.
             RATE_LIMIT_MAX: process.env.RATE_LIMIT_MAX ?? "100000",
+            // #1385 — and the per-account login cap: every spec signs the one admin in.
+            AUTH_ACCOUNT_RATE_LIMIT_MAX: process.env.AUTH_ACCOUNT_RATE_LIMIT_MAX ?? "100000",
             // Same reasoning for the per-user `/api/admin` and `/api/mcp`
             // limiters (60 req / 15 min, server/src/middleware/mcp-admin-rate-limit.ts):
             // every spec is the one admin user. The production-build UI (#342)

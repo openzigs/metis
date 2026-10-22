@@ -1,3 +1,5 @@
+import { SESSION_ACCESS_COOKIE, SESSION_REFRESH_COOKIE } from "@metis/shared";
+
 /**
  * Internal API base for browser-originating fetches. The Next.js route handlers
  * under `/api/*` proxy to the upstream Express server while keeping JWTs in
@@ -12,6 +14,9 @@ export const API_BASE = "/api";
  */
 export const UPSTREAM_API_BASE = process.env.METIS_API_URL ?? "http://localhost:4000/api";
 
-/** Cookie names the proxy mints on the Next.js origin. */
-export const ACCESS_COOKIE = "metis.at";
-export const REFRESH_COOKIE = "metis.rt";
+/**
+ * Cookie names the proxy mints on the Next.js origin. Shared with the server's
+ * SSO callbacks, which set the same cookies (#1386).
+ */
+export const ACCESS_COOKIE = SESSION_ACCESS_COOKIE;
+export const REFRESH_COOKIE = SESSION_REFRESH_COOKIE;

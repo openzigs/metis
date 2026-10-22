@@ -79,8 +79,8 @@ oidc-down:
 	bash scripts/oidc-harness/down.sh
 
 # Local LDAP test harness (#525). Brings up OpenLDAP seeded deterministically
-# from scripts/ldap-harness/bootstrap.ldif (two users + two groups with explicit
-# memberOf), verifies the bind/search/group→role flow METIS's provider performs,
+# from scripts/ldap-harness/bootstrap.ldif (two users + two groups; memberOf
+# written by the memberof overlay, #1381), verifies the bind/search/group→role flow METIS's provider performs,
 # and prints the exact AUTH_LDAP_* env block. Unlike SAML/OIDC, LDAP is
 # ENV-DRIVEN: export that block and start METIS with AUTH_MODE=ldap. Requires
 # Docker (a running METIS server is only needed for the optional CONFIGURE=1 pass).

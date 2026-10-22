@@ -31,6 +31,8 @@ import { installBuiltinHandlers } from "./lib/hooks/builtin-handlers.js";
 import { startRevocationPruner } from "./lib/auth/revocation-store.js";
 import { registerPostgresRateLimitStore } from "./lib/discussions/rate-limit-store-postgres.js";
 import { registerPostgresSSOStateStore } from "./lib/auth/sso-state-store-postgres.js";
+import { seedSsoProvidersFromEnv } from "./lib/auth/sso-env-providers.js";
+import { warnIfNoUiProxySecret } from "./middleware/auth-client-address.js";
 import { registerPostgresSamlRequestIdCache } from "./lib/auth/saml-request-id-cache-postgres.js";
 import { registerS3Storage } from "./lib/documents/storage-backend-s3.js";
 import { registerPgVectorStore } from "./lib/rag/vector-store-pgvector.js";
@@ -261,6 +263,18 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
     // is cheap and side-effect-free; the S3 client is only constructed (and the
     // bucket config only read) if that backend is actually selected.
     registerS3Storage();
+  }
+
+  // #1376 — OIDC / SAML providers from AUTH_OIDC_* / AUTH_SAML_*, on every
+  // replica, before the first request. Without this an SSO-only install had no
+  // provider until an admin configured one, and no admin until someone signed in.
+  // A half-configured provider throws here: fail the boot, not every login.
+  // #1385 — say at boot when the login limiter will be one bucket per UI pod.
+  warnIfNoUiProxySecret();
+  const seededSso = seedSsoProvidersFromEnv();
+  if (seededSso.length > 0) {
+    // eslint-disable-next-line no-console -- boot-time configuration notice, before the request logger is wired
+    console.info(`SSO providers configured from the environment: ${seededSso.join(", ")}`);
   }
 
   // NOTE: the embedding env (EMBED_POOLING_MAP / EMBED_POOLING / EMBED_DTYPE) is

@@ -257,7 +257,11 @@ describe("LDAPAuthProvider with the real ldapts client", () => {
 
     const result = await new LDAPAuthProvider().authenticate("alice", "wrong");
 
-    expect(result).toEqual({ success: false, error: "Invalid username or password" });
+    expect(result).toEqual({
+      success: false,
+      error: "Invalid username or password",
+      reason: "invalid_credentials",
+    });
     expect(directory.binds).toEqual([SERVICE_DN, USER_DN]);
   });
 

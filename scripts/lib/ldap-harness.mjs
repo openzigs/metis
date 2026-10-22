@@ -17,9 +17,9 @@
  *      groups map to the expected METIS role. This is how the harness verifies
  *      group→role mapping deterministically without a live METIS server.
  *
- * The live OpenLDAP container + the end-to-end METIS login round-trip stay a
- * documented manual `make ldap-up` target (see docs/auth/ldap-local-testing.md),
- * NOT a CI job.
+ * The live OpenLDAP container runs in the `ldap-harness` workflow (#1381), which
+ * also logs in through METIS's LDAP provider against it; see
+ * docs/auth/ldap-local-testing.md.
  *
  * WHY this shape (verified against source, not memory):
  * - `getLDAPConfig()` reads exactly: AUTH_LDAP_URL, AUTH_LDAP_BASE_DN,
@@ -36,8 +36,9 @@
  * - Group→role mapping for LDAP flows through `memberOf`: the provider reads the
  *   `memberOf` attribute and extracts the CN of each group DN via the regex
  *   `^CN=([^,]+)` (case-INsensitive, ldap-provider.ts:108-115). Our seed LDIF
- *   therefore puts each user in `groupOfNames` groups and stamps the user's
- *   `memberOf` with the FULL group DN (`cn=metis-admins,ou=groups,...`); the
+ *   therefore puts each user in `groupOfNames` groups, and the memberof overlay
+ *   (enabled by scripts/ldap-harness/memberof-init.sh, #1381) writes the user's
+ *   `memberOf` as the FULL group DN (`cn=metis-admins,ou=groups,...`); the
  *   provider's regex extracts `metis-admins`. Those names are the `claimValue`s.
  * - `resolveRoleFromGroups(groups, mappings, defaultRole)` returns the
  *   HIGHEST-privilege matched role (hierarchy reader<developer<coordinator<admin,

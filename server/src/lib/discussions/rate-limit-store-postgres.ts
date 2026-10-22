@@ -157,6 +157,16 @@ export class PostgresRateLimitStore implements RateLimitStore {
     return { allowed: true, recentCount: count };
   }
 
+  async count(key: string, windowMs: number, now: number): Promise<number> {
+    await this.ensureTable();
+    const windowStart = Math.floor(now / windowMs) * windowMs;
+    const rows = await this.db.$queryRaw<Array<{ count: number }>>`
+      SELECT "count" FROM "discussion_rate_limit_window"
+      WHERE "bucket_key" = ${key} AND "window_start" = ${windowStart}
+    `;
+    return Number(rows[0]?.count ?? 0);
+  }
+
   async reset(): Promise<void> {
     // Best-effort: only meaningful once the table exists.
     await this.db.$executeRawUnsafe(`TRUNCATE TABLE "${TABLE}"`).catch(() => {
