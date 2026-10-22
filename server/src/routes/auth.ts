@@ -18,8 +18,10 @@ import {
   refreshAccessToken,
   RefreshUnavailableError,
   revokeRefreshToken,
+  sessionIdOf,
   verifyRefreshToken,
 } from "../lib/auth/jwt.js";
+import { disconnectSessionSockets } from "../lib/socket/session-disconnect.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { toAuthUser } from "../lib/auth/auth-user.js";
 import { reconcileTrustedLoginRole } from "../lib/auth/durable-roles.js";
@@ -166,15 +168,25 @@ export function authRouter(): Router {
   r.post("/logout", requireAuth, async (req: Request, res: Response) => {
     const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies;
     const refreshToken = cookies?.refreshToken ?? (req.body?.refreshToken as string | undefined);
+    // #1414 — the session(s) ending here: the access token's and the refresh
+    // token's. Both are tokens this server signed, and the sockets closed are
+    // looked up under the access token's user only (`authSessionRoom`), so a
+    // refresh token of another user cannot reach that user's sockets.
+    const userId = req.user!.userId;
+    const endedSessions = new Set<string | undefined>([sessionIdOf(req.user)]);
     if (refreshToken) {
       try {
         const decoded = await verifyRefreshToken(refreshToken);
+        endedSessions.add(sessionIdOf(decoded));
         const expiresAt = decoded.exp !== undefined ? new Date(decoded.exp * 1000) : new Date();
         await revokeRefreshToken(decoded.tokenId, decoded.userId, expiresAt);
       } catch {
         /* Already invalid — nothing to revoke. */
       }
     }
+    // #1414 — close the ended session's live sockets, and only its: the user's
+    // other sessions (another browser, another device) keep theirs.
+    for (const sid of endedSessions) disconnectSessionSockets(userId, sid);
     res.clearCookie("accessToken", cookieOptions());
     res.clearCookie("refreshToken", cookieOptions());
     audit({

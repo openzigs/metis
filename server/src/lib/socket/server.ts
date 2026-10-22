@@ -18,6 +18,12 @@
  *   - #617 — the handshake then re-reads the user: a soft-deleted or inactive
  *     user is rejected, and `socket.data.user` carries the durable role and
  *     live workspaces, never the token's claims.
+ *   - #1414 — the socket is bound to the token's session (`socket.data.session`):
+ *     it joins its session's server-only room, so a logout closes it
+ *     (`session-disconnect.ts`), and its transport is closed when the token
+ *     expires. A live client renews by re-handshaking with its fresh token
+ *     (`ui/src/lib/socket-client.ts`), which opens a new socket bound to the
+ *     new expiry, so a user who is still signed in is never dropped.
  *
  * Rooms:
  *   - `user:{id}` — personal room auto-joined on connect (NEVER from client input).
@@ -77,7 +83,7 @@ import {
   type ClientToServerEvents,
   type ServerToClientEvents,
 } from "@metis/shared";
-import { verifyAccessToken } from "../auth/jwt.js";
+import { sessionIdOf, verifyAccessToken } from "../auth/jwt.js";
 import { canJoinAnalysisRoom } from "./analysis-room-access.js";
 import {
   canJoinBgRunRoom,
@@ -110,6 +116,11 @@ import { loadLiveAuthPayload } from "../auth/live-auth-payload.js";
 import { createChildLogger } from "../logger.js";
 import { mcpStatusEvictionEpoch, wireMcpStatusEvictionRelay } from "./mcp-status-eviction.js";
 import { userSocketRevocationEpoch, wireUserRevocationRelay } from "./user-disconnect.js";
+import {
+  authSessionRoom,
+  isSessionEnded,
+  wireSessionRevocationRelay,
+} from "./session-disconnect.js";
 import { wireProjectRoomEvictionRelay } from "./project-room-eviction.js";
 import { bumpEpoch, readEpoch } from "./revocation-relay.js";
 import { MAX_TIMEOUT_MS, envMs } from "../config/env-ms.js";
@@ -131,6 +142,16 @@ interface SocketData {
    * live user; compared once the socket is in its `user:{id}` room.
    */
   revocationEpoch: number;
+  /** #1414 — the sign-in session of the access token the handshake verified. */
+  session: SocketSession;
+}
+
+/** #1414 — what a socket keeps of the access token it was opened with. */
+export interface SocketSession {
+  /** The token's session id; `undefined` for a token issued before #1414. */
+  sid: string | undefined;
+  /** The token's `exp` (seconds since the epoch); `undefined` if it has none. */
+  exp: number | undefined;
 }
 
 export type MetisIOServer = SocketIOServer<
@@ -201,15 +222,16 @@ export function createSocketServer(
   // throw) reaches `next(err)` here and fails closed. `next()` runs once,
   // outside the try, so a throw from it is never re-routed into a second call.
   io.use(async (socket, next) => {
-    let user: AuthPayload;
+    let handshake: AuthenticatedHandshake;
     // #613 — taken BEFORE the live-user read (see `attachHandlers`).
     const revocationEpoch = userSocketRevocationEpoch(io);
     try {
-      user = await authenticateHandshake(socket, trustedOrigins);
+      handshake = await authenticateHandshake(socket, trustedOrigins);
     } catch (err) {
       return next(err as Error);
     }
-    socket.data.user = user;
+    socket.data.user = handshake.user;
+    socket.data.session = handshake.session;
     socket.data.revocationEpoch = revocationEpoch;
     next();
   });
@@ -225,6 +247,7 @@ export function createSocketServer(
   // `subscribe:mcp` in flight here re-reads; a role-change reconnect also closes
   // this replica's transports (see `reconnectUserSockets`).
   wireUserRevocationRelay(io, Boolean(opts.adapter));
+  wireSessionRevocationRelay(io, Boolean(opts.adapter));
   wireMcpStatusEvictionRelay(io, Boolean(opts.adapter));
   wireProjectRoomEvictionRelay(io, Boolean(opts.adapter));
   opts.onAdapterListening?.(() =>
@@ -309,6 +332,9 @@ const revalidations = new WeakMap<MetisIOServer, RevalidationState>();
  * #649 — re-validate every socket connected to this replica against the
  * database, applying any revocation it missed while the cluster adapter's
  * `LISTEN` connection was down:
+ *   - a socket whose access token has expired has its transport closed
+ *     (#1414, `applyLiveUser`) — the per-socket expiry timer normally got there
+ *     first; this is the backstop;
  *   - a user no longer live is disconnected, and a changed role re-handshakes
  *     (`applyLiveUser`, as #613's re-check);
  *   - a socket still in an `mcp:status` workspace room it no longer has a live
@@ -515,6 +541,12 @@ export function socketOriginRefusal(
   return host && new URL(origin).host === host.toLowerCase() ? null : "untrusted Origin";
 }
 
+/** What a successful handshake hands the socket. */
+interface AuthenticatedHandshake {
+  user: AuthPayload;
+  session: SocketSession;
+}
+
 /**
  * Resolve the live user for a socket handshake, or throw the error the client
  * receives as `connect_error` (`UNAUTHORIZED`, `TOKEN_EXPIRED`, `TOKEN_INVALID`,
@@ -523,7 +555,7 @@ export function socketOriginRefusal(
 async function authenticateHandshake(
   socket: Pick<Socket, "id" | "handshake">,
   trustedOrigins: ReadonlySet<string>,
-): Promise<AuthPayload> {
+): Promise<AuthenticatedHandshake> {
   const auth = socket.handshake.auth as { token?: string } | undefined;
   const headerAuth = socket.handshake.headers.authorization;
   // Also accept the HttpOnly `metis.at` cookie sent by the browser when
@@ -565,6 +597,19 @@ async function authenticateHandshake(
     if (err instanceof jwt.JsonWebTokenError) throw new Error("TOKEN_INVALID");
     throw err;
   }
+  const session: SocketSession = {
+    sid: sessionIdOf(verified),
+    exp: typeof verified.exp === "number" ? verified.exp : undefined,
+  };
+  // #1414 — an access token of a session that logged out still verifies until
+  // it expires; refuse it here so a closed socket cannot simply reconnect.
+  if (isSessionEnded(verified.userId, session.sid)) {
+    log.warn("Socket handshake rejected: the token's session has ended", {
+      socketId: socket.id,
+      userId: verified.userId,
+    });
+    throw new Error("UNAUTHORIZED");
+  }
   // #617 — a signature check alone admitted a SCIM-deprovisioned user's
   // unexpired token and authorized every room gate from its `role` claim.
   // Re-read the user as the HTTP path does (`refreshAuthenticatedUser`):
@@ -588,7 +633,42 @@ async function authenticateHandshake(
     });
     throw new Error("UNAUTHORIZED");
   }
-  return live;
+  return { user: live, session };
+}
+
+/** #1414 — whether the access token `socket` was opened with has expired. */
+function accessTokenExpired(socket: MetisSocket, nowMs = Date.now()): boolean {
+  const exp = socket.data.session.exp;
+  return exp !== undefined && exp * 1000 <= nowMs;
+}
+
+/**
+ * #1414 — close `socket`'s transport once its access token expires. The
+ * transport close (not `disconnect(true)`) leaves the client's reconnect loop
+ * running: a client that still holds a session refreshes its token and
+ * re-handshakes; one that does not is refused `TOKEN_EXPIRED`. A timer longer
+ * than `MAX_TIMEOUT_MS` is re-armed rather than set (Node would fire it at
+ * once). Cleared on disconnect.
+ */
+function armTokenExpiry(socket: MetisSocket): void {
+  const exp = socket.data.session.exp;
+  if (exp === undefined) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const check = (): void => {
+    const remaining = exp * 1000 - Date.now();
+    if (remaining <= 0) {
+      log.info("Socket access token expired — closing transport", {
+        socketId: socket.id,
+        userId: socket.data.user.userId,
+      });
+      socket.conn.close();
+      return;
+    }
+    timer = setTimeout(check, Math.min(remaining, MAX_TIMEOUT_MS));
+    timer.unref?.();
+  };
+  check();
+  onClientEvent(socket, "disconnect", () => clearTimeout(timer));
 }
 
 /**
@@ -622,12 +702,15 @@ async function recheckLiveUser(socket: MetisSocket): Promise<void> {
 /**
  * Apply a live-user read to `socket`: `undefined` (the lookup failed) closes
  * the transport, `null` (no longer live) disconnects, a changed role closes the
- * transport. Returns whether the socket was left as it is.
+ * transport. #1414 — so does an expired access token, whatever the read said.
+ * Returns whether the socket was left as it is.
  */
 function applyLiveUser(socket: MetisSocket, live: AuthPayload | null | undefined): boolean {
   // Only the role is compared: workspaces are re-read live by `subscribe:mcp`,
   // and the username is not security-relevant.
-  if (live === undefined) {
+  if (live && accessTokenExpired(socket)) {
+    socket.conn.close();
+  } else if (live === undefined) {
     socket.conn.close();
   } else if (!live) {
     socket.disconnect(true);
@@ -668,6 +751,19 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
     socketId: socket.id,
     room: userRoom(user.userId),
   });
+  // #1414 — the session's own room, from the verified token only, so a logout
+  // reaches exactly this session's sockets. A logout that ran while this
+  // handshake was in flight found no socket in the room; it recorded the
+  // session as ended, so look once the socket is in.
+  const ownSessionRoom = authSessionRoom(user.userId, socket.data.session.sid);
+  runDetached(
+    Promise.resolve(socket.join(ownSessionRoom)).then(() => {
+      if (isSessionEnded(user.userId, socket.data.session.sid)) socket.disconnect(true);
+    }),
+    "join session room",
+    socket.id,
+  );
+  armTokenExpiry(socket);
   // #613 — a role change or deprovision that committed after the handshake read
   // the live user, but whose `reconnectUserSockets` / `disconnectUserSockets`
   // ran before the join above, found no socket in `user:{id}` and missed this

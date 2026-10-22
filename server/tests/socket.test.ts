@@ -419,7 +419,11 @@ describe("Socket.IO server", () => {
     it("subscribe:publish joins exactly publishRoom(batchId) and unsubscribe:publish leaves it", async () => {
       const socket = await connectAs("u1", "u1");
       const base = roomsOf(socket);
-      expect(base).toEqual([socket.id!, "user:u1"].sort());
+      // #1414 — plus the server-only room of the token's session.
+      expect(base.filter((room) => !room.startsWith("auth-session:u1:"))).toEqual(
+        [socket.id!, "user:u1"].sort(),
+      );
+      expect(base.filter((room) => room.startsWith("auth-session:u1:"))).toHaveLength(1);
 
       socket.emit("subscribe:publish", { batchId: "b1" });
       await vi.waitFor(() => expect(roomsOf(socket)).toEqual([...base, publishRoom("b1")].sort()));
@@ -432,7 +436,11 @@ describe("Socket.IO server", () => {
     it("subscribe:task joins exactly taskRoom(taskId) and unsubscribe:task leaves it", async () => {
       const socket = await connectAs("u1", "u1");
       const base = roomsOf(socket);
-      expect(base).toEqual([socket.id!, "user:u1"].sort());
+      // #1414 — plus the server-only room of the token's session.
+      expect(base.filter((room) => !room.startsWith("auth-session:u1:"))).toEqual(
+        [socket.id!, "user:u1"].sort(),
+      );
+      expect(base.filter((room) => room.startsWith("auth-session:u1:"))).toHaveLength(1);
 
       socket.emit("subscribe:task", { taskId: "t1" });
       await vi.waitFor(() => expect(roomsOf(socket)).toEqual([...base, taskRoom("t1")].sort()));

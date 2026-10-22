@@ -18,6 +18,7 @@ import type { AuthPayload, PermissionKey, RoleKey } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { revocationStore, type RevocationStore } from "./revocation-store.js";
 import { readLiveWorkspaceIds } from "./live-workspace-ids.js";
+import { disconnectUserSockets } from "../socket/user-disconnect.js";
 
 const log = createChildLogger("jwt");
 
@@ -229,6 +230,29 @@ export interface IssueTokensInput {
   permissions: readonly PermissionKey[];
   /** Epic #759 — workspace IDs the user belongs to. */
   workspaces?: string[];
+  /**
+   * #1414 — the sign-in session the pair belongs to. Omitted at login, which
+   * mints a new one; a refresh passes the presented token's, so the session
+   * (and the sockets bound to it) survives rotation.
+   */
+  sid?: string;
+}
+
+/**
+ * #1414 — a session id this server minted: a ULID. A token without one (issued
+ * before #1414) or with anything else is treated as having no session id.
+ */
+const SESSION_ID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/** The token's session id when it is one this server mints, else `undefined`. */
+export function sessionIdOf(payload: { sid?: unknown } | undefined): string | undefined {
+  const sid = payload?.sid;
+  return typeof sid === "string" && SESSION_ID_PATTERN.test(sid) ? sid : undefined;
+}
+
+/** #1414 — the access-token lifetime in seconds (`JWT_ACCESS_EXPIRY`, default 1h). */
+export function accessTokenTtlSeconds(): number {
+  return parseExpiryToSeconds(ACCESS_EXPIRY);
 }
 
 export interface RefreshPayload {
@@ -237,6 +261,8 @@ export interface RefreshPayload {
   role: RoleKey;
   permissions: readonly PermissionKey[];
   workspaces?: string[];
+  /** #1414 — see {@link IssueTokensInput.sid}. */
+  sid?: string;
   tokenId: string;
   type: "refresh";
   iat?: number;
@@ -263,6 +289,7 @@ function refreshTtlSeconds(): number {
 /** Issue a fresh access + refresh token pair. */
 export function issueTokens(input: IssueTokensInput): TokenPair {
   const tokenId = ulid();
+  const sid = sessionIdOf(input) ?? ulid();
   const secret = getSecret();
   const accessOpts: SignOptions = { expiresIn: ACCESS_EXPIRY as SignOptions["expiresIn"] };
   const refreshOpts: SignOptions = { expiresIn: REFRESH_EXPIRY as SignOptions["expiresIn"] };
@@ -274,6 +301,7 @@ export function issueTokens(input: IssueTokensInput): TokenPair {
       role: input.role,
       permissions: input.permissions,
       ...(input.workspaces?.length ? { workspaces: input.workspaces } : {}),
+      sid,
     } satisfies Omit<AuthPayload, "iat" | "exp">,
     secret,
     accessOpts,
@@ -285,6 +313,7 @@ export function issueTokens(input: IssueTokensInput): TokenPair {
       role: input.role,
       permissions: input.permissions,
       ...(input.workspaces?.length ? { workspaces: input.workspaces } : {}),
+      sid,
       tokenId,
       type: "refresh",
     } satisfies Omit<RefreshPayload, "iat" | "exp">,
@@ -379,9 +408,14 @@ export async function revokeRefreshToken(
  * cutoff = now. Every refresh token issued at/before this instant is rejected;
  * a token issued AFTER (e.g. re-provisioned + re-login) still validates.
  * Used by SCIM deprovisioning (DELETE / PATCH active=false).
+ *
+ * #1414 — every session of the user ends here, so every socket of the user is
+ * disconnected too, after the cutoff is written: a live socket was opened by
+ * one of those sessions and would otherwise outlive it.
  */
 export async function revokeAllUserSessions(userId: string): Promise<void> {
   await store.revokeAllForUser(userId);
+  disconnectUserSockets(userId);
 }
 
 /** Check if a user currently has an active session-revocation cutoff. */
@@ -475,5 +509,8 @@ export async function refreshAccessToken(
     role: decoded.role,
     permissions: decoded.permissions,
     ...(workspaces.length ? { workspaces } : {}),
+    // #1414 — the session survives rotation. A token from before #1414 has
+    // none, and its first refresh mints one.
+    sid: sessionIdOf(decoded),
   });
 }

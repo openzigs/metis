@@ -59,16 +59,27 @@ const setOnRefreshSuccessMock = vi.fn((handler: (() => void) | null) => {
   registeredRefreshSuccess = handler;
 });
 
+// #1414 — the refresh a `TOKEN_EXPIRED` handshake refusal starts.
+const refreshAccessTokenMock = vi.fn(async () => true);
+
 vi.mock("@/lib/api-client", () => ({
   setOnRefreshSuccess: (handler: (() => void) | null) => setOnRefreshSuccessMock(handler),
+  refreshAccessToken: () => refreshAccessTokenMock(),
 }));
 
-import { useSocket, useSocketStatus, __resetSocketStatusForTests } from "@/lib/socket-client";
+import {
+  useSocket,
+  useSocketStatus,
+  __resetSocketStatusForTests,
+  __setSocketIoLoaderForTests,
+} from "@/lib/socket-client";
 
 beforeEach(() => {
   fake = makeFakeSocket();
   ioMock.mockClear();
   setOnRefreshSuccessMock.mockClear();
+  refreshAccessTokenMock.mockReset();
+  refreshAccessTokenMock.mockResolvedValue(true);
   registeredRefreshSuccess = null;
   __resetSocketStatusForTests();
 });
@@ -336,6 +347,73 @@ describe("token-refresh reconnect (#414)", () => {
 
     expect(fake.socket.disconnect).not.toHaveBeenCalled();
     expect(fake.socket.connect).not.toHaveBeenCalled();
+  });
+});
+
+describe("#1414 an expired-token handshake refusal renews the session", () => {
+  it("a TOKEN_EXPIRED connect_error starts one refresh", async () => {
+    renderStatus();
+    await waitFor(() => expect(fake.socket.on).toHaveBeenCalled());
+    fake.fireSocket("connect_error", new Error("TOKEN_EXPIRED"));
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("its success re-handshakes through the refresh-success reconnect", async () => {
+    vi.useFakeTimers();
+    refreshAccessTokenMock.mockImplementation(async () => {
+      registeredRefreshSuccess?.();
+      return true;
+    });
+    renderStatus();
+    await vi.waitFor(() => expect(fake.socket.on).toHaveBeenCalled());
+    fake.fireSocket("connect_error", new Error("TOKEN_EXPIRED"));
+    act(() => vi.advanceTimersByTime(300));
+    expect(fake.socket.disconnect).toHaveBeenCalledTimes(1);
+    expect(fake.socket.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts at most one refresh per cooldown window, then one more after it", async () => {
+    vi.useFakeTimers();
+    renderStatus();
+    await vi.waitFor(() => expect(fake.socket.on).toHaveBeenCalled());
+    fake.fireSocket("connect_error", new Error("TOKEN_EXPIRED"));
+    fake.fireSocket("connect_error", new Error("TOKEN_EXPIRED"));
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
+    act(() => vi.advanceTimersByTime(30_000));
+    fake.fireSocket("connect_error", new Error("TOKEN_EXPIRED"));
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("any other refusal starts no refresh", async () => {
+    renderStatus();
+    await waitFor(() => expect(fake.socket.on).toHaveBeenCalled());
+    fake.fireSocket("connect_error", new Error("UNAUTHORIZED"));
+    fake.fireSocket("connect_error", new Error("TOKEN_INVALID"));
+    expect(refreshAccessTokenMock).not.toHaveBeenCalled();
+  });
+
+  it("a rejected refresh is swallowed", async () => {
+    refreshAccessTokenMock.mockRejectedValue(new Error("network"));
+    const { result } = renderStatus();
+    await waitFor(() => expect(fake.socket.on).toHaveBeenCalled());
+    fake.fireSocket("connect_error", new Error("TOKEN_EXPIRED"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.error).toBe("TOKEN_EXPIRED");
+  });
+});
+
+describe("__setSocketIoLoaderForTests (#1414 review nit)", () => {
+  it("refuses in a production build", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      expect(() => __setSocketIoLoaderForTests(async () => ({ io: ioMock as never }))).toThrow(
+        /not available in production/,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

@@ -54,7 +54,11 @@ function makeFakeSocket() {
 
 let fake: ReturnType<typeof makeFakeSocket>;
 vi.mock("socket.io-client", () => ({ io: () => fake.socket }));
-vi.mock("@/lib/api-client", () => ({ setOnRefreshSuccess: vi.fn() }));
+// #1414 — a TOKEN_EXPIRED refusal now starts a refresh.
+vi.mock("@/lib/api-client", () => ({
+  setOnRefreshSuccess: vi.fn(),
+  refreshAccessToken: vi.fn(async () => false),
+}));
 const toastError = vi.fn();
 vi.mock("sonner", () => ({
   toast: { error: (...args: unknown[]) => toastError(...args) },

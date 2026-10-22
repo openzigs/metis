@@ -163,7 +163,8 @@ import {
 // ── The in-process transport ────────────────────────────────────────────────
 interface FakeSocket {
   id: string;
-  data: { user: AuthPayload };
+  // #1414 — a socket also carries its token's session; no expiry here.
+  data: { user: AuthPayload; session: { sid: undefined; exp: undefined } };
   rooms: Set<string>;
   inbox: Array<{ event: string; payload: unknown }>;
   handlers: Map<string, (payload: unknown) => unknown>;
@@ -205,6 +206,7 @@ function connect(userId: string, claim: Partial<AuthPayload> = {}) {
         permissions: [],
         ...claim,
       },
+      session: { sid: undefined, exp: undefined },
     },
     rooms: new Set([id, userRoom(userId)]),
     inbox: [],

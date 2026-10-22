@@ -189,11 +189,18 @@ export function AuthProvider({
   //    form can explain the involuntary bounce. The `?next` VALUE we set is the
   //    current same-origin pathname+search; the READ side stays guarded by
   //    `safeRedirectPath` against open-redirect (OWASP A01).
-  // #1391 — the realtime socket belongs to the session. The server checks the
-  // JWT only at the handshake, so a socket that outlived the session would stay
-  // authenticated as the old user, and a different user who signs in within the
-  // same tab (client-side navigation, no reload) would inherit it, along with
-  // its rooms. Close it whenever the session ends, by any path.
+  // #1391 — the realtime socket belongs to the session. A socket that outlived
+  // the session would stay authenticated as the old user until the server
+  // closes it (#1414: on logout, or when its token expires), and a different
+  // user who signs in within the same tab (client-side navigation, no reload)
+  // would inherit it, along with its rooms. Close it whenever the session ends,
+  // by any path.
+  //
+  // This effect also runs on first mount, before `/auth/me` has answered, while
+  // `user` is still null. That is safe only because nothing has opened a socket
+  // yet: every `useSocket()` caller sits under `AppShell`, which renders nothing
+  // until a user is signed in. A component that opened a socket outside that
+  // shell would have it closed here on mount.
   useEffect(() => {
     if (!isAuthenticated) closeSocket();
   }, [isAuthenticated]);
