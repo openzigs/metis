@@ -494,7 +494,26 @@ overrides:
   # 16.3.8. METIS runs next/image, so this path is live. Bound and floor move
   # to 16.3.8 with `ui/package.json`. 16.3.8 was published 2026-09-30T16:07Z,
   # clear of minimumReleaseAge; 16.4.0 (10-06) is not.
-  next@<16.3.8: ^16.3.8
+  #
+  # 2026-10-22 (#1420): GHSA-2464-fhr4-w9xw (CRITICAL, CVSS 9.5, unauthenticated
+  # RCE in the Image Optimization API with SVG) and GHSA-p3m5-59mp-jv5r (HIGH,
+  # CVSS 8.2, App Router Server Actions DoS), published ~15:50Z against 16.3.8,
+  # both fixed in 16.4.1. Bound and floor move to 16.4.1 with `ui/package.json`.
+  # 16.4.1 was published 2026-10-14T17:43Z, clear of minimumReleaseAge; 16.4.2
+  # (10-15T20:57Z) is not until 2026-10-22T20:57Z. Verified against api.osv.dev
+  # on 2026-10-22: 16.4.1 AND 16.4.2 each return zero vulns. METIS sets no
+  # `images.dangerouslyAllowSVG` and no remote patterns; next/image renders only
+  # the local `/icon.svg`, which Next serves unoptimized while SVG is disallowed.
+  next@<16.4.1: ^16.4.1
+  # GHSA-mrv2-3pqr-j5jr (HIGH, CVSS 7.6, published 2026-10-22T16:24Z, #1420):
+  # a DOMPurify IN_PLACE hook that removes a parent or sibling leaves the detached
+  # subtree's event handlers armed (incomplete fix for GHSA-p98j-92pf-mc4p).
+  # `introduced 0, fixed 3.4.17`. Two copies were below it: ui's own 3.4.16 and
+  # the 3.4.11 mermaid@11.16.0 resolved through its `^3.3.3` range, so the ui
+  # manifest moves to ^3.4.17 and this override closes mermaid's copy. 3.4.17
+  # was published 2026-10-12T12:41Z, clear of minimumReleaseAge; verified
+  # against api.osv.dev on 2026-10-22 that 3.4.17 returns zero vulns.
+  dompurify@<3.4.17: ^3.4.17
 
   # @xmldom/xmldom, NINETEEN High advisories across two lines, all published
   # 2026-09-08 (#1363) — DOM-clobbering and parser-confusion bugs that let
