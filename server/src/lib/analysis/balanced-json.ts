@@ -10,9 +10,20 @@
  * This scanner walks the text ONCE, tracking brace depth and — while inside an
  * object — JSON string state and backslash escapes, so a `}` inside a string
  * value does not close anything. Each top-level `{…}` span is handed to
- * `JSON.parse` in order and the first that parses wins — unless a JSON token
- * follows it (punctuation, or the opening of another value), which is a
- * structural divergence and not commentary.
+ * `JSON.parse` in order. A span followed by a JSON token (punctuation, or the
+ * opening of another value) is a structural divergence, not commentary, and
+ * nothing is returned.
+ *
+ * #1355 — the answer is the SOLE object that parses, not the first. "First
+ * parseable span wins" read a model's preamble example (`The shape is
+ * {"requirements": []}. Here it is: {"requirements": [ … ]}`) as its answer:
+ * a well-formed, schema-valid, wrong result. Picking the LAST span instead only
+ * moves the trap to an example written after the answer. With no schema at this
+ * layer, two DIFFERENT objects cannot be told apart, so the scan reports
+ * `ambiguous` and the caller fails — which sends the reply to the existing
+ * re-prompt (`requestStructuredVerdict`) or repair (`repairAgentJson`) carrying
+ * a message that says what was wrong. The same object written twice is not
+ * ambiguous.
  *
  * Linear by construction: every character is visited once by the scan, and the
  * spans passed to `JSON.parse` are disjoint, so parsing is bounded by the input
@@ -22,24 +33,39 @@
  * inner fragment of a truncated answer as though it were the answer.
  */
 
-export type BalancedJsonResult = { found: true; value: unknown } | { found: false };
+export type BalancedJsonResult =
+  | { found: true; value: unknown }
+  /** `ambiguous` — two or more DIFFERENT top-level objects parsed (#1355). */
+  | { found: false; ambiguous?: true };
 
 const NOT_FOUND: BalancedJsonResult = { found: false };
+const AMBIGUOUS: BalancedJsonResult = { found: false, ambiguous: true };
 
 /**
- * Parse the first top-level balanced `{…}` span in `text` that is valid JSON.
+ * #1355 — the error a caller raises on an `ambiguous` result. Worded for the
+ * model as much as for the log: the re-prompt and the repair turn both quote
+ * the parse error back, and this one says how to fix the reply.
+ */
+export const AMBIGUOUS_JSON_MESSAGE =
+  "Model response contained more than one different JSON object, so which one is the answer " +
+  "cannot be told; reply with exactly one JSON object and no example objects";
+
+/**
+ * Parse the top-level balanced `{…}` span in `text` that is valid JSON —
+ * provided it is the only one (or every other one is the same object).
  *
  * @param leadingOnly consider only a span that starts at index 0 — used when
  *   the text itself begins with `{`, where the leading object is the answer and
  *   anything after it is commentary.
  */
-export function parseFirstBalancedJsonObject(
+export function parseBalancedJsonObject(
   text: string,
   { leadingOnly = false }: { leadingOnly?: boolean } = {},
 ): BalancedJsonResult {
   let start = -1;
   let depth = 0;
   let inString = false;
+  let answer: { value: unknown; canonical?: string } | null = null;
   const from = text.indexOf("{");
   if (from < 0 || (leadingOnly && from !== 0)) return NOT_FOUND;
 
@@ -74,14 +100,26 @@ export function parseFirstBalancedJsonObject(
             // EARLY and kept writing it (`{"findings":[…]}, {…}]}` — observed
             // on long agent answers): accepting the leading part would drop
             // the rest silently, where failing sends it to repair or re-prompt.
-            return continuesStructurally(text, i + 1) ? NOT_FOUND : { found: true, value };
+            if (continuesStructurally(text, i + 1)) return NOT_FOUND;
+            // The leading object IS the answer when the text starts with it.
+            if (leadingOnly) return { found: true, value };
+            if (answer === null) {
+              answer = { value };
+            } else {
+              // #1355 — a second object. Compared canonically (key order and
+              // whitespace as `JSON.parse` left them), and only now, so the
+              // common single-object reply never pays for a stringify. Each
+              // span is stringified at most once: still linear.
+              answer.canonical ??= JSON.stringify(answer.value);
+              if (JSON.stringify(value) !== answer.canonical) return AMBIGUOUS;
+            }
           }
         }
         if (leadingOnly) return NOT_FOUND;
       }
     }
   }
-  return NOT_FOUND;
+  return answer === null ? NOT_FOUND : { found: true, value: answer.value };
 }
 
 /**

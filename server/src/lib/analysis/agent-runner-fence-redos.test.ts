@@ -41,7 +41,11 @@
 import { describe, expect, it } from "vitest";
 
 import { extractJsonObject } from "./agent-runner.js";
-import { parseFirstBalancedJsonObject, type BalancedJsonResult } from "./balanced-json.js";
+import {
+  AMBIGUOUS_JSON_MESSAGE,
+  parseBalancedJsonObject,
+  type BalancedJsonResult,
+} from "./balanced-json.js";
 
 /**
  * The pre-#1253 pattern, verbatim, as the differential oracle. This regex is
@@ -92,12 +96,13 @@ function leadingObject(trimmed: string): BalancedJsonResult {
       /* fall through, as production does */
     }
   }
-  return parseFirstBalancedJsonObject(trimmed, { leadingOnly: true });
+  return parseBalancedJsonObject(trimmed, { leadingOnly: true });
 }
 
 function balancedOrThrow(trimmed: string): unknown {
-  const balanced = parseFirstBalancedJsonObject(trimmed);
+  const balanced = parseBalancedJsonObject(trimmed);
   if (balanced.found) return balanced.value;
+  if (balanced.ambiguous) throw new SyntaxError(AMBIGUOUS_JSON_MESSAGE);
   const start = trimmed.indexOf("{");
   const end = trimmed.lastIndexOf("}");
   if (start >= 0 && end > start) {

@@ -446,6 +446,33 @@ export function runHasQuestionsView(metadata: Record<string, unknown> | null | u
 }
 
 /**
+ * Issue #1355 — what the Approvals tab says when the run has no approval
+ * checkpoints. A run whose requirements-extraction step failed creates none,
+ * so nothing holds its requirements back: synthesis saves them unreviewed. The
+ * plain "no approval checkpoints" line read as though review was not needed;
+ * this says why there is nothing to approve and what it means for the
+ * requirements already on screen.
+ */
+export function approvalsNoneMessage(
+  metadata: Record<string, unknown> | null | undefined,
+  requirementCount: number,
+): { testId: string; text: string } {
+  if (!enhancementOf(metadata).structuredExtractionFailure) {
+    return { testId: "approvals-none", text: "This run has no approval checkpoints." };
+  }
+  const cause =
+    "No approval checkpoints were created for this run: METIS could not read the requirements " +
+    "out of the model’s answer, so nothing was put up for approval.";
+  const consequence =
+    requirementCount > 0
+      ? ` The ${requirementCount === 1 ? "requirement" : `${requirementCount} requirements`} ` +
+        `on the Requirements tab ${requirementCount === 1 ? "was" : "were"} saved without ` +
+        "review. Run the analysis again to review requirements before they are saved."
+      : " Run the analysis again to review requirements before they are saved.";
+  return { testId: "approvals-none-extraction-failed", text: cause + consequence };
+}
+
+/**
  * The number shown on each tab. Questions and Approvals count what is still
  * OUTSTANDING (open ambiguities, pending approvals) rather than a total, since
  * that is what a reader goes there to clear. `undefined` = no count to show.

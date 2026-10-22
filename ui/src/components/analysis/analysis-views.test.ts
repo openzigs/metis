@@ -25,6 +25,7 @@ import {
   LIVE_AGENT_STICKY_MS,
   liveAgentLine,
   stickyLiveAgents,
+  approvalsNoneMessage,
   runHasQuestionsView,
   tabCountLabel,
   tabForAnchor,
@@ -258,6 +259,37 @@ describe("analysisTabCounts", () => {
       undefined,
     );
     expect(counts.questions).toBeUndefined();
+  });
+});
+
+describe("approvalsNoneMessage (#1355)", () => {
+  const failed = { structuredExtractionFailure: { reason: "unparseable", at: "2026-10-22" } };
+
+  it("keeps the plain line when extraction did not fail", () => {
+    expect(approvalsNoneMessage(null, 3)).toEqual({
+      testId: "approvals-none",
+      text: "This run has no approval checkpoints.",
+    });
+    expect(approvalsNoneMessage({ enhancement: { enableClarification: true } }, 0).testId).toBe(
+      "approvals-none",
+    );
+  });
+
+  it("says a failed extraction is why nothing is gated, and that the requirements were saved unreviewed", () => {
+    const one = approvalsNoneMessage(failed, 1);
+    expect(one.testId).toBe("approvals-none-extraction-failed");
+    expect(one.text).toContain("could not read the requirements");
+    expect(one.text).toContain("nothing was put up for approval");
+    expect(one.text).toContain("The requirement on the Requirements tab was saved without review");
+    expect(approvalsNoneMessage(failed, 4).text).toContain(
+      "The 4 requirements on the Requirements tab were saved without review",
+    );
+  });
+
+  it("does not claim anything was saved when nothing was", () => {
+    const none = approvalsNoneMessage(failed, 0);
+    expect(none.text).not.toContain("saved without review");
+    expect(none.text).toContain("Run the analysis again");
   });
 });
 

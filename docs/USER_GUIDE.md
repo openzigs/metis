@@ -5006,6 +5006,8 @@ Before tickets are created, METIS creates approval requests for:
 
 View approvals at **Analysis → Approvals** tab. Each item shows its status (Pending / Approved / Rejected) and supports adding reviewer notes. Tickets can only be created once all required approvals are resolved.
 
+**When the requirements step fails (#1355).** The checkpoints are built from the requirements METIS reads out of the model's answer. If that answer cannot be read, even after METIS asks once more, no checkpoints are created, so nothing holds the requirements back and they are saved without review. The Approvals tab then says so in place of "This run has no approval checkpoints", including how many requirements were saved. Run the analysis again to review them before they are saved.
+
 ### 35.5 Web Search Configuration
 
 To enable live web search (instead of the offline stub), set the `WEB_SEARCH_API_KEY` environment variable with your [Tavily](https://tavily.com/) API key. `WEB_SEARCH_PROVIDER` (`tavily`, `brave` or `google`) selects another provider. Without one, web research is skipped and the analysis says so once, instead of listing an empty digest per evidence need (#864). This step is the only part of an analysis that searches the web: the Web Researcher specialist never does, and never cites repository or database files.

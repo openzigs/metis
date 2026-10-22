@@ -157,6 +157,7 @@ import {
   parseFindingFilters,
   requirementPage,
   sameFindingFilters,
+  approvalsNoneMessage,
   runHasQuestionsView,
   tabForAnchor,
   traceabilityPendingMessage,
@@ -1530,11 +1531,20 @@ export default function AnalysisPage(): React.ReactElement {
 
                 <TabsContent value="approvals" className="space-y-4">
                   {/* Epic #202 (#217) — human-in-the-loop approval checkpoints. */}
-                  {approvals.data && (approvals.data.items?.length ?? 0) === 0 ? (
-                    <p className="text-sm text-muted-foreground" data-testid="approvals-none">
-                      This run has no approval checkpoints.
-                    </p>
-                  ) : null}
+                  {approvals.data && (approvals.data.items?.length ?? 0) === 0
+                    ? (() => {
+                        // #1355 — say why, when a failed extraction is the reason.
+                        const none = approvalsNoneMessage(
+                          detail.data.metadata,
+                          detail.data.requirements.length,
+                        );
+                        return (
+                          <p className="text-sm text-muted-foreground" data-testid={none.testId}>
+                            {none.text}
+                          </p>
+                        );
+                      })()
+                    : null}
                   <ApprovalsPanel
                     projectId={projectId}
                     analysisId={detail.data.id}

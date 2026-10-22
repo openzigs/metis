@@ -14,7 +14,7 @@
  *
  * Issue #438 — `title`, `description` and the ambiguity text stay OPTIONAL,
  * but default to `""`. Requiring a non-empty title would reject real data:
- * `RequirementsExtractor.parseResponse` keeps a requirement that has a
+ * `RequirementsExtractor.extract` keeps a requirement that has a
  * description and no title, emitting `title: ""`, and those are persisted and
  * sent back by the client. The dialog interpolates these fields straight into
  * its prompts, so without a default a sparse body reached the model — and
