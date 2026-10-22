@@ -639,6 +639,17 @@ export function countUnverifiedRequirements(
   findings: readonly VerdictBearingFinding[],
   requirementIds: Iterable<string>,
 ): number {
+  return unverifiedRequirementIds(findings, requirementIds).length;
+}
+
+/**
+ * #1388 — the ids {@link countUnverifiedRequirements} counts, in input order, so
+ * a caller can name them (the code pass's continuation nudge does).
+ */
+export function unverifiedRequirementIds(
+  findings: readonly VerdictBearingFinding[],
+  requirementIds: Iterable<string>,
+): string[] {
   const byRequirement = new Map<string, VerdictFindingInput[]>();
   for (const id of requirementIds) byRequirement.set(id, []);
   for (const finding of findings) {
@@ -650,10 +661,10 @@ export function countUnverifiedRequirements(
     // Every finding of the agentic code pass is a CODE finding.
     linked.push({ agentKey: "code", verdict });
   }
-  let unverified = 0;
-  for (const linked of byRequirement.values()) {
+  const unverified: string[] = [];
+  for (const [id, linked] of byRequirement) {
     const verdict = deriveRequirementVerdict({ codeAnalysisRan: true, findings: linked });
-    if (verdict === "could-not-verify") unverified += 1;
+    if (verdict === "could-not-verify") unverified.push(id);
   }
   return unverified;
 }
