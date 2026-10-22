@@ -42,13 +42,16 @@ The chart leaves three server settings to you, and the install does not work wit
 - [ ] HPA on `ui`, which needs metrics-server.  
   `kubectl get hpa -n metis`
 - [ ] The `server` HPA is enabled by default (2→6). Keep it on only with the shared backends (Postgres, pgvector, S3, leader election; `values-prod.yaml`). On the single-replica SQLite/LanceDB profile, set `autoscaling.server.enabled=false` and `server.replicaCount=1`.
-- [ ] A Deployment with an enabled HPA renders no `replicas` (#1378), so `helm upgrade` after the HPA has scaled succeeds without `--force-conflicts` and keeps the HPA's count. Check that `helm get manifest metis -n metis` shows no `replicas:` on `metis-ui` or `metis-server`. On the first upgrade from a chart that still set `replicas`, the count drops to 1 once, until the HPA scales back to `minReplicas`. Upgrade outside peak hours, or scale up again right after.
+- [ ] A Deployment with an enabled HPA renders no `replicas` (#1378), so `helm upgrade` after the HPA has scaled succeeds without `--force-conflicts` and keeps the HPA's count. Check that `helm get manifest metis -n metis` shows no `replicas:` on `metis-ui` or `metis-server`. On the first upgrade from a chart that still set `replicas`, Helm 3 drops the count to 1 until the HPA scales back to `minReplicas`. Helm 4 keeps the count of a Deployment the HPA has already scaled. With Helm 3, upgrade outside peak hours, or scale up again right after.
 
 ## 5. NetworkPolicy
 
 - [ ] **Default-deny ingress + default-deny egress** for every METIS pod: `metis-default-deny`, plus `metis-ui`, `metis-server` and `metis-sidecars` granting each component its traffic (chart README, "HPA / PDB / NetworkPolicy").  
   `kubectl get networkpolicy -n metis`
 - [ ] Only the server has external egress: HTTPS (`networkPolicy.egress.https`), the Kubernetes API, the database (`networkPolicy.egress.databaseCidrs`, **required** with Postgres: empty, the server cannot reach RDS) and `networkPolicy.egress.extra` (LDAP, OIDC on a non-443 port, SMTP). With Cilium, HTTPS is scoped to the AI gateway and GitHub FQDNs instead.
+- [ ] With an ALB ingress, `networkPolicy.ingressCidrs` holds the VPC CIDR: the ALB reaches and health-checks the pods from VPC ENIs, which no namespace selector matches. The chart refuses to render an ALB install without it; check that the value is your VPC's, not the `values-prod.yaml` default.  
+  `aws ec2 describe-vpcs --vpc-ids <vpc> --query 'Vpcs[0].CidrBlock'`
+- [ ] With Cilium as the CNI, `networkPolicy.cilium.enabled=true`, and every host the server calls is in the FQDN allow-list (`extraFqdns`: LLM gateway, Jira, GitHub Enterprise, OIDC IdP). Anything not listed is blocked.
 - [ ] The policy actually selects the METIS pods. The command below must list every pod (#1374).  
   `kubectl get pods -n metis -l "$(kubectl get networkpolicy -n metis metis-default-deny -o jsonpath='{.spec.podSelector.matchLabels}' | jq -r 'to_entries|map("\(.key)=\(.value)")|join(",")')"`
 - [ ] Verified with a smoke test **from the server pod itself**. A bare `kubectl run … curlimages/curl` proves nothing: PSA `restricted` rejects it, and without the chart's labels the policy would never select it. With `networkPolicy.egress.https.cidrs` narrowed (or Cilium FQDNs on), expect a host outside the allow-list to fail, `https://api.github.com` to answer, and the embeddings sidecar to answer. With the default `0.0.0.0/0`, every HTTPS host answers:  

@@ -3,10 +3,10 @@ issue: 1374
 section: Security
 ---
 
-- The Helm chart's NetworkPolicy now applies to the METIS pods. It selected a
-  label that no pod carries, so it isolated nothing. Every pod is now
-  default-deny except DNS. Each component gets only its own traffic, and only
-  the server reaches outside the cluster.
-- The server's outbound HTTPS is an `ipBlock` rule, so AI gateways and GitHub
-  stay reachable. `networkPolicy.egress.extra` adds CIDR and port rules for
-  LDAP, OIDC or SMTP, and Cilium scopes HTTPS to an FQDN allow-list.
+- The Helm chart's NetworkPolicies now select the METIS pods (they selected
+  none). Each pod is default-deny except DNS, and only the server leaves the
+  cluster: HTTPS as an `ipBlock`, plus `networkPolicy.egress.extra` rules.
+- Set `networkPolicy.ingressCidrs` to the VPC CIDR for an ALB ingress (the
+  render fails without it) and `databaseCidrs` or `databasePeers` for Postgres.
+- `cilium.enabled=true` installs now enforce the FQDN allow-list on upgrade:
+  add your LLM gateway, Jira and identity provider to `egress.extraFqdns`.

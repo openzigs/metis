@@ -75,8 +75,8 @@ port number (TCP) or a map `{port, protocol}`.
 Operator-configured egress rules for ONE component (#1374). Pass dict
 {root, component}; component is "server" | "ui" | "embeddings" |
 "sql-lineage" | "backup". Emits:
-  - networkPolicy.egress.databaseCidrs on 5432, for the server and the backup
-    CronJob (a pg_dump override of backup.command needs the database);
+  - networkPolicy.egress.databaseCidrs / databasePeers on 5432, for the
+    server and the backup CronJob (a pg_dump override needs the database);
   - every networkPolicy.egress.extra entry whose `components` names this
     component (default ["server"]).
 Empty output = the component gets nothing beyond its built-in rules.
@@ -85,7 +85,8 @@ Empty output = the component gets nothing beyond its built-in rules.
 {{- $root := .root -}}
 {{- $component := .component -}}
 {{- $egress := $root.Values.networkPolicy.egress -}}
-{{- if and $egress.databaseCidrs (has $component (list "server" "backup")) }}
+{{- if has $component (list "server" "backup") }}
+{{- if $egress.databaseCidrs }}
 # Managed-DB egress (e.g. RDS subnets).
 - to:
     {{- range $egress.databaseCidrs }}
@@ -96,8 +97,18 @@ Empty output = the component gets nothing beyond its built-in rules.
     - port: 5432
       protocol: TCP
 {{- end }}
+{{- with $egress.databasePeers }}
+# In-cluster Postgres (networkPolicy.egress.databasePeers).
+- to:
+    {{- toYaml . | nindent 4 }}
+  ports:
+    - port: 5432
+      protocol: TCP
+{{- end }}
+{{- end }}
 {{- range $egress.extra }}
-{{- if has $component (.components | default (list "server")) }}
+{{- $targets := .components | default (list "server") }}
+{{- if or (has $component $targets) (and (eq $component "sql-lineage") (has "sqlLineage" $targets)) }}
 # networkPolicy.egress.extra — e.g. LDAP 389/636, OIDC on a non-443 port, SMTP.
 - to:
     {{- range .cidrs }}
@@ -108,6 +119,31 @@ Empty output = the component gets nothing beyond its built-in rules.
     {{- include "metis.netpolPorts" .ports | trim | nindent 4 }}
 {{- end }}
 {{- end }}
+{{- end -}}
+
+{{/*
+One NetworkPolicy ipBlock peer (#1374). Pass dict {cidr, except, cluster}.
+`except` (operator-given) applies as is. `cluster` (networkPolicy.clusterCidrs)
+is excepted only from an all-addresses block of the same family — 0.0.0.0/0
+gets the IPv4 entries, ::/0 the IPv6 ones — because an except must lie inside
+its cidr and the API server rejects one that does not.
+*/}}
+{{- define "metis.netpolIpBlock" -}}
+{{- $ex := list -}}
+{{- range (.except | default list) }}{{ $ex = append $ex . }}{{ end -}}
+{{- range (.cluster | default list) -}}
+{{- if or (and (eq $.cidr "0.0.0.0/0") (not (contains ":" .))) (and (eq $.cidr "::/0") (contains ":" .)) -}}
+{{- $ex = append $ex . -}}
+{{- end -}}
+{{- end -}}
+- ipBlock:
+    cidr: {{ .cidr | quote }}
+    {{- with ($ex | uniq) }}
+    except:
+      {{- range . }}
+      - {{ . | quote }}
+      {{- end }}
+    {{- end }}
 {{- end -}}
 
 {{- define "metis.netpolPorts" -}}
@@ -215,17 +251,18 @@ through a probe template instead.
 {{/*
 NOTES.txt warning (#1374): the NetworkPolicies select the pods, so on an
 enforcing CNI the server reaches Postgres only through
-networkPolicy.egress.databaseCidrs. A Postgres-backed install with that list
-empty starts but cannot reach its database.
+networkPolicy.egress.databaseCidrs / databasePeers. A Postgres-backed install with that list
+(and databasePeers) empty starts but cannot reach its database.
 */}}
 {{- define "metis.networkPolicyNotesWarning" -}}
 {{- $s := .Values.scaling -}}
 {{- $pg := or (hasPrefix "postgres" ($s.database.url | default "")) (eq ($s.vectorStore | default "") "pgvector") (has "postgres" (list $s.rateLimitBackend $s.ssoStateBackend $s.leaderElection)) -}}
-{{- if and .Values.networkPolicy.enabled $pg (not .Values.networkPolicy.egress.databaseCidrs) }}
+{{- if and .Values.networkPolicy.enabled $pg (not .Values.networkPolicy.egress.databaseCidrs) (not .Values.networkPolicy.egress.databasePeers) }}
 
   ⚠️  NetworkPolicy is on and the server uses Postgres, but networkPolicy.egress.databaseCidrs
-     is empty: on a CNI that enforces policy the server cannot reach the database on 5432.
-     Set it to the database subnets (RDS), or to the Postgres pods' CIDR in-cluster.
+     and databasePeers are empty: on a CNI that enforces policy the server cannot reach the
+     database on 5432. Set databaseCidrs to the database subnets (RDS), or databasePeers to
+     the Postgres pods' namespace/pod selector in-cluster.
 {{- end }}
 {{- end -}}
 
@@ -398,17 +435,21 @@ does not define fails the render rather than silently dropping the variable.
 {{- $component := .component -}}
 {{- $secretName := include "metis.secretName" $root -}}
 {{- $keyMap := $root.Values.secrets.keyMap -}}
-{{- $wanted := index ($root.Values.secrets.components | default dict) $component | default list -}}
-{{- $names := list -}}
-{{- if has "*" $wanted -}}
-{{- $names = keys $keyMap | sortAlpha -}}
-{{- else -}}
+{{- $components := $root.Values.secrets.components | default dict -}}
+{{- /* The sql-lineage component may be keyed either way (networkPolicy uses the hyphen). */ -}}
+{{- $wanted := index $components $component | default list -}}
+{{- if and (eq $component "sqlLineage") (hasKey $components "sql-lineage") -}}
+{{- $wanted = concat $wanted (index $components "sql-lineage" | default list) -}}
+{{- end -}}
+{{- /* Validate every named key, with or without the "*" wildcard. */ -}}
 {{- range $wanted -}}
-{{- if not (hasKey $keyMap .) -}}
+{{- if and (ne . "*") (not (hasKey $keyMap .)) -}}
 {{- fail (printf "metis: secrets.components.%s names %s, which is not in secrets.keyMap (#1375). Add it to secrets.keyMap or remove it from the list." $component .) -}}
 {{- end -}}
-{{- $names = append $names . -}}
 {{- end -}}
+{{- $names := without $wanted "*" | uniq -}}
+{{- if has "*" $wanted -}}
+{{- $names = keys $keyMap | sortAlpha -}}
 {{- end -}}
 {{- range $envName := $names }}
 - name: {{ $envName }}

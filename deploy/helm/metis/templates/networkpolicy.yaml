@@ -30,12 +30,22 @@ policies still render and carry the default-deny and the in-cluster rules.
 {{- $fullname := include "metis.fullname" . -}}
 {{- $np := .Values.networkPolicy -}}
 {{- $cilium := $np.cilium.enabled -}}
+{{- $k8sSse := eq (toString (dig "MCP_RUNTIME" "" (.Values.server.env | default dict))) "k8s-sse" -}}
 {{- range $np.egress.extra }}
+{{- if not .cidrs }}
+{{- fail "metis: every networkPolicy.egress.extra entry needs `cidrs` (#1374): without it the rule would allow its ports to EVERY destination." }}
+{{- end }}
+{{- if not .ports }}
+{{- fail "metis: every networkPolicy.egress.extra entry needs `ports` (#1374): without it the rule would allow EVERY port to its CIDRs." }}
+{{- end }}
 {{- range (.components | default list) }}
-{{- if not (has . (list "server" "ui" "embeddings" "sql-lineage" "backup")) }}
-{{- fail (printf "metis: networkPolicy.egress.extra[].components names %q; use server, ui, embeddings, sql-lineage or backup (#1374)" .) }}
+{{- if not (has . (list "server" "ui" "embeddings" "sql-lineage" "sqlLineage" "backup")) }}
+{{- fail (printf "metis: networkPolicy.egress.extra[].components names %q; use server, ui, embeddings, sqlLineage (or sql-lineage) or backup (#1374)" .) }}
 {{- end }}
 {{- end }}
+{{- end }}
+{{- if and .Values.ingress.enabled (eq .Values.ingress.className "alb") (not $np.ingressCidrs) }}
+{{- fail "metis: ingress.className=alb with networkPolicy.enabled needs networkPolicy.ingressCidrs (#1374). The ALB (target-type ip) reaches the pods and health-checks them from ENIs in the VPC subnets, which no namespace selector matches, so every target would go unhealthy. Set it to the VPC CIDR (or the ALB subnets)." }}
 {{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -55,6 +65,10 @@ spec:
           podSelector:
             matchLabels:
               k8s-app: kube-dns
+        {{- range $np.egress.dnsCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
       ports:
         - port: 53
           protocol: UDP
@@ -78,6 +92,10 @@ spec:
         - namespaceSelector:
             matchLabels:
               {{- toYaml $np.ingressNamespaceSelector | nindent 14 }}
+        {{- range $np.ingressCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
       ports:
         - port: {{ .Values.ui.service.port }}
           protocol: TCP
@@ -112,6 +130,10 @@ spec:
         - namespaceSelector:
             matchLabels:
               {{- toYaml $np.ingressNamespaceSelector | nindent 14 }}
+        {{- range $np.ingressCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
         {{- if .Values.ui.enabled }}
         - podSelector:
             matchLabels:
@@ -158,13 +180,12 @@ spec:
     {{- end }}
     {{- if not $cilium }}
     {{- with $np.egress.kubeApiServer }}
-    {{- if .cidrs }}
-    # Kubernetes API (k8s-sse MCP runtime). Policy is evaluated after the
+    {{- if and $k8sSse .cidrs }}
+    # Kubernetes API (MCP_RUNTIME=k8s-sse). Policy is evaluated after the
     # kubernetes Service is DNATed, so on kubeadm/kind the port is 6443.
     - to:
         {{- range .cidrs }}
-        - ipBlock:
-            cidr: {{ . | quote }}
+        {{- include "metis.netpolIpBlock" (dict "cidr" . "except" list "cluster" $np.clusterCidrs) | nindent 8 }}
         {{- end }}
       ports:
         {{- include "metis.netpolPorts" .ports | trim | nindent 8 }}
@@ -175,16 +196,9 @@ spec:
     # Outbound HTTPS: AI provider gateways, GitHub, OIDC discovery. Narrow
     # `cidrs` to restrict it; an FQDN allow-list needs Cilium (see above).
     - to:
-        {{- $except := .except }}
+        {{- $userExcept := .except }}
         {{- range .cidrs }}
-        - ipBlock:
-            cidr: {{ . | quote }}
-            {{- with $except }}
-            except:
-              {{- range . }}
-              - {{ . | quote }}
-              {{- end }}
-            {{- end }}
+        {{- include "metis.netpolIpBlock" (dict "cidr" . "except" $userExcept "cluster" $np.clusterCidrs) | nindent 8 }}
         {{- end }}
       ports:
         {{- include "metis.netpolPorts" .ports | trim | nindent 8 }}

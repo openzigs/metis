@@ -836,44 +836,88 @@ networkPolicy:
   enabled: true
   ingressNamespaceSelector:
     kubernetes.io/metadata.name: ingress-nginx
+  # Source CIDRs allowed to reach the ui and server pods directly, next to the
+  # ingress controller namespace. REQUIRED with an ALB (`ingress.className: alb`,
+  # target-type ip): its traffic and health checks come from ENIs in the VPC
+  # subnets, which no namespace selector matches, so the render FAILS when this
+  # is empty under an ALB. Set the VPC CIDR (or the ALB subnets). Also how to
+  # admit a Service of type LoadBalancer/NodePort (node or LB addresses).
+  ingressCidrs: []
   # Where Prometheus runs; used only when serviceMonitor.enabled=true.
   monitoringNamespaceSelector:
     kubernetes.io/metadata.name: monitoring
+  # The cluster's pod and service CIDRs (e.g. kind: 10.244.0.0/16, 10.96.0.0/12).
+  # Excepted from the 0.0.0.0/0 HTTPS and Kubernetes API ipBlocks, so those
+  # rules cannot be used to reach in-cluster pods on 443/6443 (Calico and the VPC
+  # CNI match pod IPs in an ipBlock). On EKS with the VPC CNI the pods have VPC
+  # addresses: do NOT list the VPC CIDR here, or the server loses the VPC
+  # interface endpoints (STS, S3, Secrets Manager) and internal IdPs.
+  clusterCidrs: []
   egress:
+    # Extra DNS resolvers every pod may query on 53, e.g. NodeLocal DNSCache
+    # (169.254.20.10/32). kube-dns pods are always allowed.
+    dnsCidrs: []
     # Server outbound HTTPS (AI gateways, GitHub, OIDC discovery) as ipBlocks.
     # Narrow `cidrs` to your gateways' ranges to restrict it, add "::/0" on an
-    # IPv6 cluster. Ignored with cilium.enabled (FQDN-scoped instead).
+    # IPv6 cluster. `except` adds to clusterCidrs. Ignored with cilium.enabled
+    # (FQDN-scoped instead).
     https:
       cidrs:
         - 0.0.0.0/0
       except: []
       ports: [443]
-    # Server -> Kubernetes API, for the k8s-sse MCP runtime. Policy sees the
-    # API server's real port after the `kubernetes` Service DNAT: 6443 on
-    # kubeadm/kind (this rule), 443 on EKS (already allowed by `https` — if you
-    # narrow https.cidrs, add the API endpoint's CIDR here with port 443).
-    # Empty `cidrs` = no rule. Ignored with cilium.enabled (the
-    # CiliumNetworkPolicy allows the kube-apiserver entity instead).
+    # Server -> Kubernetes API on 6443 (kubeadm/kind), rendered ONLY when
+    # server.env.MCP_RUNTIME is "k8s-sse" (the only runtime that calls the API).
+    # On EKS the API listens on 443, already allowed by `https` (if you narrow
+    # https.cidrs, add the endpoint's CIDR here with port 443). Policy sees the
+    # real port after the `kubernetes` Service DNAT. Empty `cidrs` = no rule.
+    # A Cilium CNI does not match the API server with an ipBlock: on Cilium set
+    # cilium.enabled=true, which allows the kube-apiserver entity instead.
     kubeApiServer:
       cidrs:
         - 0.0.0.0/0
       ports: [6443]
     # FQDN allow-list for the Cilium variant (cilium.enabled=true), HTTPS only.
+    # The defaults are the providers METIS calls by default
+    # (server/src/lib/ai/providers) and GitHub (API + git over HTTPS). Add your
+    # Bedrock/LLM gateway, Jira, GitHub Enterprise, OIDC IdP and any other host
+    # to `extraFqdns`; anything not listed is blocked.
     aiGateways:
+      - api.anthropic.com
+      - api.deepseek.com
       - api.openai.com
       - generativelanguage.googleapis.com
     githubHosts:
       - api.github.com
+      - github.com
+      - codeload.github.com
     extraFqdns: []
+    # Cilium matchPattern entries (`*` = one DNS label). The defaults cover the
+    # AWS endpoints an EKS install calls: STS for IRSA credentials, S3 uploads
+    # (UPLOAD_STORAGE_BACKEND=s3), Secrets Manager, Bedrock. Empty it off AWS.
+    fqdnPatterns:
+      - "sts.*.amazonaws.com"
+      - "s3.*.amazonaws.com"
+      - "*.s3.*.amazonaws.com"
+      - "secretsmanager.*.amazonaws.com"
+      - "bedrock-runtime.*.amazonaws.com"
     # CIDRs allowed for managed-DB egress (e.g. RDS subnets), port 5432.
-    # Empty = no rule.
+    # Empty = no rule. Also granted to the backup CronJob (a pg_dump override
+    # of backup.command).
     databaseCidrs: []
-    # CIDRs allowed for managed-DB egress also reach the backup CronJob (a
-    # pg_dump override of backup.command).
-    #
-    # Further egress, each entry `cidrs` + `ports` (a number = TCP, or
-    # {port, protocol}) + optional `components` (default [server]; also ui,
-    # embeddings, sql-lineage, backup). For an identity provider or mail relay:
+    # In-cluster Postgres: NetworkPolicy peers (podSelector / namespaceSelector),
+    # port 5432, for the server and the backup CronJob. Portable across CNIs,
+    # unlike an ipBlock on pod IPs (Cilium does not match those). E.g.:
+    #   - namespaceSelector:
+    #       matchLabels: { kubernetes.io/metadata.name: databases }
+    #     podSelector:
+    #       matchLabels: { app.kubernetes.io/name: postgresql }
+    databasePeers: []
+    # Further egress. Each entry needs `cidrs` and `ports` (a number = TCP, or
+    # {port, protocol}): the render fails without either, since an empty `to`
+    # or `ports` would open every destination or every port. Optional
+    # `components` (default [server]; also ui, embeddings, sqlLineage /
+    # sql-lineage, backup). For an identity provider or mail relay:
     #   - cidrs: ["10.20.0.15/32"]          # LDAPS
     #     ports: [636]
     #   - cidrs: ["10.20.0.40/32"]          # OIDC IdP on a non-443 port

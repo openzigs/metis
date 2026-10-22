@@ -321,6 +321,19 @@ The last three lines are not optional (#1312):
   (#1349).
 - **`MCP_RUNTIME`.** On Kubernetes this is the only safe MCP runtime.
 
+With network policy enforced (VPC CNI `enableNetworkPolicy`, Calico or
+Cilium), also set the two CIDR lists the chart's NetworkPolicies need (#1374):
+
+- **`networkPolicy.ingressCidrs`**: your VPC CIDR
+  (`aws ec2 describe-vpcs --vpc-ids <vpc> --query 'Vpcs[0].CidrBlock'`). The
+  ALB reaches pod IPs and health-checks them from ENIs in the VPC subnets, which
+  no namespace selector matches. `values-prod.yaml` ships `192.168.0.0/16`, the
+  CIDR eksctl uses when it creates the VPC itself. With existing subnets, as
+  above, replace it. The chart refuses to render an ALB install with this list
+  empty.
+- **`networkPolicy.egress.databaseCidrs`**: the RDS subnets. Without it the
+  server cannot reach Postgres, and NOTES.txt warns.
+
 For LDAP, the bind settings and the bind-password key are in the chart README,
 § "Server env the chart does not set for you". There is no supported way to
 bootstrap the first admin on a non-mock install yet (#1376).

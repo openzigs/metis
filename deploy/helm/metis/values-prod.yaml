@@ -140,6 +140,14 @@ networkPolicy:
   enabled: true
   ingressNamespaceSelector:
     kubernetes.io/metadata.name: ingress-nginx
+  # The ALB (target-type ip) sends traffic and health checks from ENIs in the
+  # VPC subnets, not from a namespace, so the ui and server pods must admit the
+  # VPC CIDR or every target goes unhealthy (#1374). 192.168.0.0/16 is the CIDR
+  # eksctl gives a VPC it creates itself; installing into existing subnets
+  # (docs/EKS_DEPLOYMENT.md §2, §7), use your VPC's CIDR (`aws ec2
+  # describe-vpcs`). The chart refuses to render an ALB install with this empty.
+  ingressCidrs:
+    - 192.168.0.0/16
   # OPERATOR: on a CNI that enforces policy, the server reaches Postgres (RDS)
   # ONLY through these CIDRs. Set them to the database subnets; empty, the
   # server cannot reach its database, and NOTES.txt warns (#1374).

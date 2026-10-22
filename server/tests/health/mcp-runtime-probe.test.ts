@@ -196,7 +196,9 @@ describe("probeMCPRuntime — default kubeconfig check (#1380)", () => {
       {
         cwd: fileURLToPath(new URL("../..", import.meta.url)),
         env: { ...process.env, KUBECONFIG: join(dir, "config") },
-        timeout: 15_000,
+        // Below the test's own timeout, so a slow child surfaces as the child's
+        // error (killed, with its stderr) rather than as a bare vitest timeout.
+        timeout: 20_000,
       },
     );
     expect(JSON.parse(stdout)).toEqual({
@@ -204,7 +206,7 @@ describe("probeMCPRuntime — default kubeconfig check (#1380)", () => {
       status: "ok",
       detail: "context=probe-ctx",
     });
-  });
+  }, 40_000);
 });
 
 describe("probeMCPRuntime — caching", () => {

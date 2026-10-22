@@ -3,8 +3,9 @@ Cilium NetworkPolicy — sub-issue #371, reworked in #1374.
 Renders only when networkPolicy.cilium.enabled=true, NEXT TO the vanilla
 policies in networkpolicy.yaml (which keep the default-deny and the in-cluster
 rules). It grants the server what a vanilla NetworkPolicy cannot express:
-HTTPS to an FQDN allow-list (AI gateways, GitHub, `extraFqdns`) and the
-kube-apiserver entity, so networkpolicy.yaml leaves out its 0.0.0.0/0 ipBlocks
+HTTPS to an FQDN allow-list (AI gateways, GitHub, AWS `fqdnPatterns`,
+`extraFqdns`) and, with MCP_RUNTIME=k8s-sse, the kube-apiserver entity, so
+networkpolicy.yaml leaves out its 0.0.0.0/0 ipBlocks
 in this mode. Selects the server only: no other pod leaves the cluster.
 */ -}}
 {{- if and .Values.networkPolicy.enabled .Values.networkPolicy.cilium.enabled .Values.server.enabled -}}
@@ -34,13 +35,19 @@ spec:
           rules:
             dns:
               - matchPattern: "*"
-    # Kubernetes API (k8s-sse MCP runtime).
+    {{- if eq (toString (dig "MCP_RUNTIME" "" (.Values.server.env | default dict))) "k8s-sse" }}
+    # Kubernetes API (MCP_RUNTIME=k8s-sse).
     - toEntities:
         - kube-apiserver
-    # FQDN-scoped HTTPS to AI gateways + GitHub (+ extraFqdns).
+    {{- end }}
+    # FQDN-scoped HTTPS: AI gateways, GitHub, AWS endpoints (fqdnPatterns) and
+    # extraFqdns. Anything not listed here is blocked.
     - toFQDNs:
         {{- range (concat $egress.aiGateways $egress.githubHosts ($egress.extraFqdns | default list)) }}
         - matchName: {{ . | quote }}
+        {{- end }}
+        {{- range ($egress.fqdnPatterns | default list) }}
+        - matchPattern: {{ . | quote }}
         {{- end }}
       toPorts:
         - ports:

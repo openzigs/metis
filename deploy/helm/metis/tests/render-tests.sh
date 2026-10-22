@@ -312,7 +312,8 @@ echo "Test 6: Ingress — sub-issue #369 (three controllers)"
 NO_INGRESS=$(template)
 assert "0× Ingress by default" 0 "$(count_kind Ingress "${NO_INGRESS}")"
 
-ALB=$(template --set ingress.enabled=true)
+# #1374: an ALB (target-type ip) needs networkPolicy.ingressCidrs; see Test 14.
+ALB=$(template --set ingress.enabled=true --set-json 'networkPolicy.ingressCidrs=["10.0.0.0/16"]')
 assert "1× Ingress (alb)" 1 "$(count_kind Ingress "${ALB}")"
 assert_contains "alb scheme annotation" "alb.ingress.kubernetes.io/scheme" "${ALB}"
 assert_contains "alb stickiness for websocket" "stickiness.enabled=true" "${ALB}"
@@ -983,6 +984,61 @@ assert_not_contains "NOTES silent: prod with databaseCidrs" "databaseCidrs" \
   "$(netpol_notes "${PROD_FLAGS[@]}" --set-json 'networkPolicy.egress.databaseCidrs=["10.0.10.0/24"]')"
 assert_not_contains "NOTES silent: default (SQLite) profile" "databaseCidrs" "$(netpol_notes)"
 
+# --- review round (#1374) ---------------------------------------------------
+# ALB (target-type ip) traffic and health checks come from VPC ENIs: the ui and
+# server ingress rules need an ipBlock, and an ALB install without one must not render.
+assert_contains "alb + NetworkPolicy without ingressCidrs: render fails" "needs networkPolicy.ingressCidrs" \
+  "$(template --set ingress.enabled=true --set ingress.className=alb || true)"
+assert_not_contains "nginx ingress without ingressCidrs still renders" "execution error" \
+  "$(template --set ingress.enabled=true --set ingress.className=nginx)"
+PJ=$(render_json "${PROD_FLAGS[@]}")
+for c in ui server; do
+  assert "prod (ALB): ${c} admits the VPC CIDR" yes \
+    "$(jqr --arg c "metis-${c}" 'pod($c).labels as $l | [ingress_for($l)[] | select(any(.from[]?; .ipBlock.cidr == "192.168.0.0/16"))]
+        | if length > 0 then "yes" else "no" end' <<<"${PJ}")"
+done
+assert "prod (ALB): sidecars still admit no CIDR" 0 \
+  "$(jqr 'pod("metis-embeddings").labels as $l | [ingress_for($l)[] | select(any(.from[]?; .ipBlock))] | length' <<<"${PJ}")"
+# egress.extra fails CLOSED: no cidrs would mean every destination, no ports every port.
+assert_contains "extra egress without cidrs: render fails" "needs \`cidrs\`" \
+  "$(template --set-json 'networkPolicy.egress.extra=[{"ports":[636]}]' || true)"
+assert_contains "extra egress without ports: render fails" "needs \`ports\`" \
+  "$(template --set-json 'networkPolicy.egress.extra=[{"cidrs":["10.0.0.1/32"]}]' || true)"
+assert "no egress rule with ports has an empty destination list" 0 \
+  "$(jqr '[netpols[] | .spec.egress // [] | .[] | select(.to == null or (.to | length) == 0)] | length' <<<"${EXTRA}")"
+# The sql-lineage component is spelled either way in both knobs.
+SLJ=$(render_json --set-json 'networkPolicy.egress.extra=[{"cidrs":["10.40.0.1/32"],"ports":[443],"components":["sqlLineage"]}]')
+assert "extra egress components=[sqlLineage]: sql-lineage may reach it" yes \
+  "$(jqr 'pod("metis-sql-lineage").labels as $l | [egress_for($l)[] | select(any(.to[]?; .ipBlock.cidr == "10.40.0.1/32"))]
+      | if length > 0 then "yes" else "no" end' <<<"${SLJ}")"
+# Kubernetes API 6443: only for the runtime that calls it.
+assert "no 6443 rule unless MCP_RUNTIME=k8s-sse" 0 \
+  "$(jqr 'pod("metis-server").labels as $l | [egress_for($l)[] | select(ports_of(.) | index(6443))] | length' <<<"${NPJ}")"
+K8J=$(render_json --set server.env.MCP_RUNTIME=k8s-sse)
+assert "MCP_RUNTIME=k8s-sse: server may reach 6443" yes \
+  "$(jqr 'pod("metis-server").labels as $l | [egress_for($l)[] | select(ports_of(.) | index(6443))] | if length > 0 then "yes" else "no" end' <<<"${K8J}")"
+# clusterCidrs are excepted from the all-addresses ipBlocks only (an except
+# outside its cidr is rejected by the API server).
+CCJ=$(render_json --set server.env.MCP_RUNTIME=k8s-sse --set-json 'networkPolicy.clusterCidrs=["10.244.0.0/16","10.96.0.0/12"]' \
+  --set-json 'networkPolicy.egress.https.cidrs=["0.0.0.0/0","140.82.112.0/20"]')
+assert "clusterCidrs: excepted from 0.0.0.0/0 on 443 and 6443" "10.244.0.0/16,10.96.0.0/12|10.244.0.0/16,10.96.0.0/12" \
+  "$(jqr 'pod("metis-server").labels as $l | [egress_for($l)[] | .to[]? | select(.ipBlock.cidr == "0.0.0.0/0") | .ipBlock.except | join(",")] | join("|")' <<<"${CCJ}")"
+assert "clusterCidrs: not excepted from a narrowed CIDR" "null" \
+  "$(jqr 'pod("metis-server").labels as $l | [egress_for($l)[] | .to[]? | select(.ipBlock.cidr == "140.82.112.0/20") | .ipBlock.except][0] | tostring' <<<"${CCJ}")"
+# NodeLocal DNSCache.
+DNSJ=$(render_json --set-json 'networkPolicy.egress.dnsCidrs=["169.254.20.10/32"]')
+assert "dnsCidrs: every pod may query NodeLocal DNS on 53" "$(jqr '[pods[]] | length' <<<"${DNSJ}")" \
+  "$(jqr '. as $all | [pods[] | .labels as $l | select([$all | egress_for($l)[] | select(any(.to[]?; .ipBlock.cidr == "169.254.20.10/32")) | select(ports_of(.) | index(53))] | length > 0)] | length' <<<"${DNSJ}")"
+# In-cluster Postgres by selector (portable, unlike an ipBlock on pod IPs).
+DBPJ=$(render_json --set backup.enabled=true --set-json 'networkPolicy.egress.databasePeers=[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"databases"}},"podSelector":{"matchLabels":{"app.kubernetes.io/name":"postgresql"}}}]')
+for c in server backup; do
+  assert "databasePeers: ${c} may reach the Postgres pods on 5432" yes \
+    "$(jqr --arg c "metis-${c}" 'pod($c).labels as $l | [egress_for($l)[] | select(any(.to[]?; .podSelector.matchLabels["app.kubernetes.io/name"] == "postgresql")) | select(ports_of(.) | index(5432))]
+        | if length > 0 then "yes" else "no" end' <<<"${DBPJ}")"
+done
+assert_not_contains "NOTES silent: prod with databasePeers" "databaseCidrs" \
+  "$(netpol_notes "${PROD_FLAGS[@]}" --set-json 'networkPolicy.egress.databasePeers=[{"podSelector":{"matchLabels":{"app":"pg"}}}]')"
+
 # A ServiceMonitor is useless if Prometheus cannot reach the server.
 MON=$(render_json --set serviceMonitor.enabled=true)
 assert "serviceMonitor: server accepts the monitoring namespace" yes \
@@ -1002,11 +1058,27 @@ assert "cilium: CNP selects the server pod" yes \
 assert "cilium: CNP does NOT select the UI pod" no \
   "$(jqr 'pod("metis-ui").labels as $l | [.[] | select(.kind == "CiliumNetworkPolicy") | select(selects(.spec.endpointSelector; $l))]
       | if length > 0 then "yes" else "no" end' <<<"${CJ}")"
-assert "cilium: FQDN allow-list carries api.github.com and the AI gateways" "api.github.com,api.openai.com,generativelanguage.googleapis.com" \
-  "$(jqr '[.[] | select(.kind == "CiliumNetworkPolicy") | .spec.egress[] | .toFQDNs // [] | .[] | .matchName] | sort | join(",")' <<<"${CJ}")"
-assert "cilium: kube-apiserver reachable (k8s-sse MCP runtime)" yes \
+# The default allow-list covers the providers METIS calls by default
+# (server/src/lib/ai/providers: Anthropic, DeepSeek, OpenAI) and GitHub (API +
+# git over HTTPS); deployment-specific hosts (gateway, Jira, IdP) go in extraFqdns.
+CILIUM_NAMES=$(jqr '[.[] | select(.kind == "CiliumNetworkPolicy") | .spec.egress[] | .toFQDNs // [] | .[] | .matchName // empty] | join(",")' <<<"${CJ}")
+for host in api.anthropic.com api.deepseek.com api.openai.com api.github.com github.com codeload.github.com; do
+  assert "cilium: FQDN allow-list carries ${host}" yes "$([[ ",${CILIUM_NAMES}," == *",${host},"* ]] && echo yes || echo no)"
+done
+# IRSA needs STS; uploads need S3; ESO / the server read Secrets Manager.
+CILIUM_PATTERNS=$(jqr '[.[] | select(.kind == "CiliumNetworkPolicy") | .spec.egress[] | .toFQDNs // [] | .[] | .matchPattern // empty] | join(",")' <<<"${CJ}")
+for pat in "sts.*.amazonaws.com" "s3.*.amazonaws.com" "*.s3.*.amazonaws.com" "secretsmanager.*.amazonaws.com"; do
+  assert "cilium: FQDN pattern ${pat}" yes "$([[ ",${CILIUM_PATTERNS}," == *",${pat},"* ]] && echo yes || echo no)"
+done
+assert_contains "cilium: extraFqdns reach the allow-list" "jira.example.com" \
+  "$(jqr '[.[] | select(.kind == "CiliumNetworkPolicy") | .spec.egress[] | .toFQDNs // [] | .[] | .matchName // empty] | join(",")' \
+    <<<"$(render_json --set networkPolicy.cilium.enabled=true --set-json 'networkPolicy.egress.extraFqdns=["jira.example.com"]')")"
+assert "cilium: no kube-apiserver entity unless MCP_RUNTIME=k8s-sse" no \
   "$(jqr '[.[] | select(.kind == "CiliumNetworkPolicy") | .spec.egress[] | .toEntities // [] | .[] | select(. == "kube-apiserver")]
       | if length > 0 then "yes" else "no" end' <<<"${CJ}")"
+assert "cilium: kube-apiserver reachable with MCP_RUNTIME=k8s-sse" yes \
+  "$(jqr '[.[] | select(.kind == "CiliumNetworkPolicy") | .spec.egress[] | .toEntities // [] | .[] | select(. == "kube-apiserver")]
+      | if length > 0 then "yes" else "no" end' <<<"$(render_json --set networkPolicy.cilium.enabled=true --set server.env.MCP_RUNTIME=k8s-sse)")"
 assert "cilium: DNS proxied for toFQDNs (dns matchPattern)" yes \
   "$(jqr '[.[] | select(.kind == "CiliumNetworkPolicy") | .spec.egress[] | .toPorts[]? | .rules.dns // [] | .[]]
       | if length > 0 then "yes" else "no" end' <<<"${CJ}")"
@@ -1054,6 +1126,12 @@ ROUTED=$(render_json --set-json 'secrets.components.ui=["METRICS_TOKEN"]')
 assert "secrets.components.ui routes a named key to the UI" "METRICS_TOKEN" "$(jqr 'secret_env(pod("metis-ui")) | join(",")' <<<"${ROUTED}")"
 assert_contains "secrets.components names a key keyMap lacks: render fails" "not in secrets.keyMap" \
   "$(template --set-json 'secrets.components.ui=["NOPE"]' || true)"
+assert_contains "secrets.components with \"*\" still validates the other names" "not in secrets.keyMap" \
+  "$(template --set-json 'secrets.components.server=["*","NOPE"]' || true)"
+# The networkPolicy spelling of the component works here too.
+HYPH=$(render_json --set-json 'secrets.components.sqlLineage=[]' --set-json 'secrets.components.sql-lineage=["SQL_LINEAGE_TOKEN"]')
+assert "secrets.components.sql-lineage routes to the sql-lineage pod" "SQL_LINEAGE_TOKEN" \
+  "$(jqr 'secret_env(pod("metis-sql-lineage")) | join(",")' <<<"${HYPH}")"
 
 # ---------------------------------------------------------------------------
 echo "Test 16: an HPA-managed Deployment renders no replicas — #1378"

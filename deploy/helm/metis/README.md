@@ -161,7 +161,9 @@ The chart references the named Secret but renders nothing.
 ### Which pod gets which key (#1375)
 
 `secrets.components.<component>` lists the `keyMap` env vars a component
-receives. A name not in `keyMap` fails the render.
+receives. A name not in `keyMap` fails the render, with or without `"*"`. The
+sql-lineage component may be keyed `sqlLineage` or `sql-lineage`, matching
+`networkPolicy.egress.extra[].components`.
 
 | Component | Default | Why |
 |-----------|---------|-----|
@@ -308,9 +310,13 @@ eksctl create iamserviceaccount \
   renders no `replicas`, so `replicaCount` is ignored for it. Helm 4 applies
   server-side: a chart that kept setting `replicas` failed every `helm upgrade`
   after the HPA had scaled, with a field-manager conflict on `.spec.replicas`,
-  and Helm 3 silently reset the count. The first upgrade from an older chart
-  version drops the count to 1 once, until the HPA scales back to
-  `minReplicas`.
+  and Helm 3 silently reset the count. On the first upgrade from an older chart
+  version, which still set `replicas`: **Helm 3** (three-way merge) removes the
+  field, so the count drops to 1 until the HPA scales back to `minReplicas`.
+  **Helm 4** (server-side apply) removes a field it stops applying only when no
+  other manager owns it, so a Deployment the HPA has already scaled keeps its
+  count; it drops to 1 only if the HPA has not scaled it since the last
+  `--force-conflicts` upgrade.
 - **PDB** — `minAvailable: 1` for `ui`, `server` and `embeddings`, but a budget
   is only **rendered when the component's replica floor exceeds it** (#786).
   `minAvailable: 1` over a *single* replica is an undrainable node: `kubectl
@@ -325,29 +331,53 @@ eksctl create iamserviceaccount \
   [`docs/EMBEDDINGS_BACKENDS.md`](../../../docs/EMBEDDINGS_BACKENDS.md)
   § "Running the sidecar on Kubernetes / EKS".
 - **NetworkPolicy** (#1374) — every pod of the release is deny-default for
-  ingress and egress, except DNS. Four policies, selecting pods on the labels
-  the pod template carries (`app.kubernetes.io/name`, `instance`, `component`):
+  ingress and egress, except DNS (kube-dns pods, plus `egress.dnsCidrs` for a
+  NodeLocal DNSCache such as `169.254.20.10/32`). The policies select pods on
+  the labels the pod template carries (`app.kubernetes.io/name`, `instance`,
+  `component`):
 
   | Pod | May be reached from | May reach |
   |-----|---------------------|-----------|
-  | `ui` | ingress controller namespace | server |
-  | `server` | ingress controller namespace, `ui`; Prometheus with `serviceMonitor.enabled` | sidecars, the MCP namespace (`rbac.mcpNamespace`), Kubernetes API (`egress.kubeApiServer`, 6443), HTTPS (`egress.https`, `0.0.0.0/0:443`), `egress.databaseCidrs` (5432), `egress.extra` |
+  | `ui` | ingress controller namespace, `ingressCidrs` | server |
+  | `server` | ingress controller namespace, `ingressCidrs`, `ui`; Prometheus with `serviceMonitor.enabled` | sidecars, the MCP namespace (`rbac.mcpNamespace`), HTTPS (`egress.https`, `0.0.0.0/0:443` minus `clusterCidrs`), the Kubernetes API on 6443 (`egress.kubeApiServer`, only with `server.env.MCP_RUNTIME=k8s-sse`), the database (`egress.databaseCidrs` / `databasePeers`, 5432), `egress.extra` |
   | `embeddings`, `sql-lineage` | `server` | nothing (both are air-gapped), unless an `egress.extra` entry names them in `components` |
-  | backup CronJob | nothing | `egress.databaseCidrs` (for a `pg_dump` override); the default command tars the mounted volumes and needs no network |
+  | backup CronJob | nothing | the database (`databaseCidrs` / `databasePeers`, for a `pg_dump` override); the default command tars the mounted volumes and needs no network |
 
   Only the server leaves the cluster. External HTTPS is an `ipBlock`; narrow
-  `networkPolicy.egress.https.cidrs` to restrict it. With
-  `networkPolicy.cilium.enabled=true` the HTTPS and Kubernetes API ipBlocks are
-  dropped and a `CiliumNetworkPolicy` on the server allows HTTPS to an FQDN
-  allow-list (`aiGateways`, `githubHosts`, `extraFqdns`) and the
-  `kube-apiserver` entity; the four vanilla policies still render.
+  `networkPolicy.egress.https.cidrs` to restrict it, and list the cluster's pod
+  and service CIDRs in `networkPolicy.clusterCidrs` so the 0.0.0.0/0 rules
+  cannot reach in-cluster pods (on EKS with the VPC CNI, pods have VPC
+  addresses: do not except the VPC CIDR, or the server loses VPC endpoints).
+- **ALB ingress needs `networkPolicy.ingressCidrs`.** An ALB with
+  `target-type: ip` reaches the pods, and health-checks them, from ENIs in the
+  VPC subnets. No namespace selector matches those, so without the VPC CIDR
+  every target goes unhealthy (502/503). The chart refuses to render
+  `ingress.className=alb` with NetworkPolicy on and `ingressCidrs` empty;
+  `values-prod.yaml` sets `192.168.0.0/16` (eksctl's VPC default), which you
+  replace with your VPC's CIDR. A Service of type `LoadBalancer` or `NodePort`
+  without an ingress controller is the same case: add the node or load
+  balancer addresses to `ingressCidrs`.
+- **Cilium** (`networkPolicy.cilium.enabled=true`): the HTTPS and Kubernetes
+  API ipBlocks are dropped and a `CiliumNetworkPolicy` on the server allows
+  HTTPS to an FQDN allow-list instead: `aiGateways` (Anthropic, DeepSeek,
+  OpenAI, Google), `githubHosts` (API and git over HTTPS), `fqdnPatterns`
+  (AWS STS for IRSA, S3, Secrets Manager, Bedrock) and `extraFqdns`, plus the
+  `kube-apiserver` entity with `MCP_RUNTIME=k8s-sse`. **Anything not listed is
+  blocked**: add your Bedrock or LLM gateway, Jira, GitHub Enterprise and OIDC
+  IdP hosts to `extraFqdns`. Before #1374 this policy selected no pod, so an
+  install that already had `cilium.enabled=true` starts enforcing it on upgrade.
+- **On a Cilium CNI, set `cilium.enabled=true`.** Cilium does not match the API
+  server, or any other cluster-managed identity, with an `ipBlock`, so with
+  `cilium.enabled=false` the 6443 rule does not admit the API server and the
+  k8s-sse MCP runtime (and its readiness check) cannot reach it.
 - **Enforcement** needs a CNI that implements NetworkPolicy: Calico, Cilium, or
   the EKS VPC CNI with network policy enabled. kindnet on a Docker Desktop kind
   cluster did not enforce an egress deny in #1312, so a kind install does not
   test these policies. The render tests (`tests/render-tests.sh`, Test 14)
   assert that every pod is selected and what each may reach.
 
-Add managed-DB egress (RDS), an identity provider or a mail relay via:
+Add managed-DB egress (RDS), an in-cluster Postgres, an identity provider or a
+mail relay via:
 
 ```yaml
 networkPolicy:
@@ -355,7 +385,12 @@ networkPolicy:
     databaseCidrs:
       - 10.0.10.0/24
       - 10.0.11.0/24
-    extra:
+    databasePeers:                   # in-cluster Postgres, any CNI
+      - namespaceSelector:
+          matchLabels: { kubernetes.io/metadata.name: databases }
+        podSelector:
+          matchLabels: { app.kubernetes.io/name: postgresql }
+    extra:                           # cidrs and ports are required
       - cidrs: ["10.20.0.15/32"]     # LDAPS
         ports: [636]
       - cidrs: ["10.20.0.40/32"]     # OIDC IdP on a non-443 port
@@ -367,12 +402,11 @@ networkPolicy:
         components: [embeddings]     # default [server]
 ```
 
-**A Postgres-backed install must set `databaseCidrs`.** On a CNI that enforces
-policy, the server reaches the database only through it; `values-prod.yaml`
-leaves it empty for you to fill, and NOTES.txt warns while it is empty.
-
-A NodeLocal DNSCache (`169.254.20.10`) is not a `kube-dns` pod: add a policy of
-your own allowing UDP/TCP 53 to it for every pod of the release.
+**A Postgres-backed install must set `databaseCidrs` or `databasePeers`.** On a
+CNI that enforces policy, the server reaches the database only through them;
+`values-prod.yaml` leaves them empty for you to fill, and NOTES.txt warns while
+they are. An `ipBlock` on Postgres pod IPs works on Calico and the VPC CNI but
+not on Cilium, and pod IPs change: use `databasePeers` in-cluster.
 
 ---
 
