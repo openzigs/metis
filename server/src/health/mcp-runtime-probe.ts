@@ -64,8 +64,8 @@ export interface MCPRuntimeProbeOptions {
   registry?: string;
   /** Test seam — replace the docker invoker. Receives args; resolves with stdout, rejects with `{code, stderr}`-shape error. */
   dockerExec?: (args: string[], timeoutMs: number) => Promise<string>;
-  /** Test seam — synchronous probe of kubeconfig reachability. */
-  kubeconfigCheck?: () => { ok: boolean; detail?: string };
+  /** Test seam — probe of kubeconfig reachability. */
+  kubeconfigCheck?: () => KubeconfigCheckResult | Promise<KubeconfigCheckResult>;
   /** Test seam — `Date.now()` injection for cache TTL math. */
   now?: () => number;
 }
@@ -87,12 +87,19 @@ async function defaultDockerExec(args: string[], timeoutMs: number): Promise<str
   return stdout;
 }
 
-function defaultKubeconfigCheck(): { ok: boolean; detail?: string } {
-  // Lazy require to avoid pulling @kubernetes/client-node into hot paths
-  // when the runtime is docker-stdio.
+interface KubeconfigCheckResult {
+  ok: boolean;
+  detail?: string;
+}
+
+async function defaultKubeconfigCheck(): Promise<KubeconfigCheckResult> {
+  // Lazy-loaded so @kubernetes/client-node stays out of hot paths when the
+  // runtime is docker-stdio. A dynamic import, never `require()`: the server is
+  // ESM (`"type": "module"`), where `require` is undefined, so the old lazy
+  // require failed every probe with "require is not defined" (#1380). Node
+  // caches the module after the first import.
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const k8s = require("@kubernetes/client-node") as typeof import("@kubernetes/client-node");
+    const k8s = await import("@kubernetes/client-node");
     const kc = new k8s.KubeConfig();
     if (process.env.KUBERNETES_SERVICE_HOST) {
       kc.loadFromCluster();
@@ -214,7 +221,7 @@ async function runProbe(opts: MCPRuntimeProbeOptions, now: number): Promise<MCPR
 
   // kubeconfig — only when runtime=k8s-sse.
   if (runtime === "k8s-sse") {
-    const r = kubeconfigCheck();
+    const r = await kubeconfigCheck();
     checks.push({
       name: "kubeconfig",
       status: r.ok ? "ok" : "fail",

@@ -4,7 +4,14 @@
  * Each substrate condition is mocked end-to-end. No real docker daemon /
  * kubeconfig is touched.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { execFile } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetMcpRuntimeProbeCache,
   probeMCPRuntime,
@@ -110,6 +117,93 @@ describe("probeMCPRuntime — runtime=k8s-sse", () => {
     });
     expect(r.status).toBe("fail");
     expect(r.checks.find((c) => c.name === "kubeconfig")?.status).toBe("fail");
+  });
+});
+
+// #1380 — the tests above inject `kubeconfigCheck`, so none of them ran the
+// DEFAULT check, which called `require()` and so failed under the server's ESM
+// build (`"type": "module"`) with "require is not defined" on every /readyz.
+const KUBECONFIG_YAML = [
+  "apiVersion: v1",
+  "kind: Config",
+  "clusters:",
+  "  - name: probe-cluster",
+  "    cluster: { server: https://127.0.0.1:6443 }",
+  "users:",
+  "  - name: probe-user",
+  "    user: { token: not-a-real-token }",
+  "contexts:",
+  "  - name: probe-ctx",
+  "    context: { cluster: probe-cluster, user: probe-user }",
+  "current-context: probe-ctx",
+  "",
+].join("\n");
+
+describe("probeMCPRuntime — default kubeconfig check (#1380)", () => {
+  let dir: string;
+  const saved = {
+    KUBECONFIG: process.env.KUBECONFIG,
+    KUBERNETES_SERVICE_HOST: process.env.KUBERNETES_SERVICE_HOST,
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "metis-kubeconfig-"));
+    writeFileSync(join(dir, "config"), KUBECONFIG_YAML);
+    process.env.KUBECONFIG = join(dir, "config");
+    delete process.env.KUBERNETES_SERVICE_HOST;
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("loads @kubernetes/client-node without an injected check and reports the current context", async () => {
+    const r = await probeMCPRuntime({ runtime: "k8s-sse", dockerExec: vi.fn() });
+    expect(r.checks.find((c) => c.name === "kubeconfig")).toEqual(
+      expect.objectContaining({ status: "ok", detail: "context=probe-ctx" }),
+    );
+    expect(r.status).toBe("ok");
+  });
+
+  it("fails, naming the cause, when the kubeconfig has no current context", async () => {
+    writeFileSync(
+      join(dir, "config"),
+      KUBECONFIG_YAML.replace("current-context: probe-ctx", 'current-context: ""'),
+    );
+    const r = await probeMCPRuntime({ runtime: "k8s-sse", dockerExec: vi.fn() });
+    const kube = r.checks.find((c) => c.name === "kubeconfig");
+    expect(kube?.status).toBe("fail");
+    expect(kube?.detail).toBe("no current context in kubeconfig");
+  });
+
+  // Vitest runs source through its own module runner, which is not the module
+  // system the built server runs under. This runs the probe in a plain Node ESM
+  // process, where `require` is undefined exactly as in the image.
+  it("passes under plain Node ESM, the module system of the built server", async () => {
+    const probeUrl = new URL("../../src/health/mcp-runtime-probe.ts", import.meta.url).href;
+    const script = [
+      `const m = await import(${JSON.stringify(probeUrl)});`,
+      `const r = await m.probeMCPRuntime({ runtime: "k8s-sse", dockerExec: async () => "" });`,
+      `process.stdout.write(JSON.stringify(r.checks.find((c) => c.name === "kubeconfig")));`,
+    ].join("\n");
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      ["--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", script],
+      {
+        cwd: fileURLToPath(new URL("../..", import.meta.url)),
+        env: { ...process.env, KUBECONFIG: join(dir, "config") },
+        timeout: 15_000,
+      },
+    );
+    expect(JSON.parse(stdout)).toEqual({
+      name: "kubeconfig",
+      status: "ok",
+      detail: "context=probe-ctx",
+    });
   });
 });
 
