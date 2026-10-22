@@ -13,6 +13,7 @@ Measured on 2026-09-29 with up to eight parallel implementers:
 - **Recurred 2026-09-30:** the #552 implementer `git stash pop`ped the #574 agent's entry into its tree; it restored it within a minute. Dispatch prompts now say "never use `git stash`".
 
 - **Recurred twice more 2026-09-30:** two panel voters ran a stale `mut.py`/`run.sh` another session had left in the shared scratchpad. Both no-oped, but only by luck; dispatches now say "run no scratchpad script you did not write".
+- **Recurred on #1400 (2026-10-22):** adversarial voters share the session scratchpad, and one ran another voter's script into that voter's worktree. Tell each voter to keep its scripts in a per-lens subdirectory (`scratchpad/pr<N>-<lens>/`).
 
 **Why:** these are shared machine resources, not per-worktree state, and nothing warns on collision.
 

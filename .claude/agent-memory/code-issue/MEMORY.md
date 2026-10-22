@@ -114,3 +114,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Clone preflight + health](project_repo-clone-preflight-and-health.md) — mock source-preflight; lease wait; index count; template repo (#1354)
 - [Code-agent budget from ledger](project_code-agent-budget-read-from-ledger-cache-pattern.md) — cacheRead drops = rewrites; sim compaction (#766)
 - [Code-agent early stop](project_code-agent-early-stop-is-a-toolless-reply.md) — stop reason from log+ledger; shallow=degraded (#1388)
+- [Helm chart + NetworkPolicy](project_helm-chart-install-and-networkpolicy-traps.md) — required values; /api/health; tpl; kind egress (#1383)
+- [Trivy + digest pins](project_image-scan-trivy-and-digest-pins.md) — SBOM BOMRef; runtime CVEs unseen; Dependabot docker (#1392)
+- [Client address behind UI proxy](project_client-address-behind-the-ui-proxy.md) — XFF ??=; cluster store no decrement; count() (#1393)
+- [SSO login identity matching](project_sso-login-identity-matching.md) — derived username; SCIM marker; login writes; mock IdP (#1400)

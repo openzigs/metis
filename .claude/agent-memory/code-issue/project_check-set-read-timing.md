@@ -27,6 +27,17 @@ Measured across PR heads, 2026-10-16/17 (#1217 re-review, then every PR from #12
 
 - **A PR whose base moved with conflicts gets zero `pull_request` workflow runs** (#1308): `gh pr checks` then shows only the CLA check, which reads like a queue. Check `gh pr view <pr> --json mergeable` before waiting on CI.
 
+- **`postgres-adapter` ran at its timeout** (#1365): 13.5-14.8 min on `main` against
+  `timeout-minutes: 15`. A `fail` whose job conclusion is `cancelled` at ~15m and with no
+  `Test Files … failed` line was the timeout, not a test failure. #1400 raised it to 25 min
+  (`ci.yml`, comment above the job); if it reads cancelled near 25 min, the same applies.
+- **`repo-connector-followups-475.sqlite.test.ts`** once saw no `users` table in `beforeAll`
+  under the full `pnpm test` fan-out and passed alone (#1359, #1364). A `beforeAll`
+  `Test Files 1 failed` is real; never re-run it away.
+- **Extra rows:** `ldap-harness.yml` runs only when `ldap-provider.ts` or the harness paths
+  change (#1400); a `workflow_dispatch` of `ci.yml` on a PR branch attaches a Trivy check to
+  the PR head (#1392).
+
 ## Folded here (retired from the index 2026-10-21; files unchanged)
 
 - [[project_cancelled-no-runner-checks]] — a red check with 0 steps and a log 404 was cancelled in the queue, not failed: re-run; stuck `in_progress` for hours: `gh pr update-branch`.

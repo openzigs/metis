@@ -22,6 +22,10 @@ uncached input was ~93% of budget spend; the last 1-2 rows are the final answer 
 **Cause found (#766):** `compactTranscript` hysteresis fails when the irreducible floor (3
 preserved batch results + assistant turns + stubs) exceeds the 60% target: every turn re-crossed
 the ceiling and rewrote one message. Fixed by raising the trip point by `floor - target`.
+It recurred on #1372: the preserved tail plus assistant turns exceeded `targetRatio x
+maxTranscriptTokens`, so one message was rewritten every turn and the prompt cache missed
+(37% of turns on DeepSeek). Re-check "one rewrite per compaction event" after changing
+`preserveRecentTurns` or any per-tool cap.
 
 **Measuring a compaction change offline:** drive the REAL `compactTranscript` with per-turn
 result sizes taken from pre-compaction prompt deltas (median 2.6k, mean 3.2k tokens), counting

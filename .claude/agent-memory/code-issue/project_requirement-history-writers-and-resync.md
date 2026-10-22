@@ -44,6 +44,12 @@ Related: [[metis-marker-matchers-grep-exact-strings]], [[requirement-version-his
 - `promoteApprovedRequirements` writes clarification answers only when it creates rows. On a set that is already promoted it returns before `applyClarificationsToRequirements`, so Promote is not a way to retry answers (#1266).
 - In analyst copy, "approved" is ambiguous. Approve on the Approvals panel promotes the requirement and runs the clarification pass. Approve on a hub card (a `reviewStatus` PUT) does neither. Say which one you mean.
 
+**Added 2026-10-22 (#1389, PR #1397 and its cycles):**
+- `runSynthesisAndPersist` and `promoteApprovedRequirements` both write the approved set, and they diverged on `reviewStatus` and on re-applying clarifications. Check both writers whenever promotion semantics change.
+- `persistRequirements` hard-deletes and re-creates rows at version 0, so nothing on a replaced row survives unless `replaceRequirementSet` carries it over (`approved-criteria-carry-over.ts`). Record the carried state as history inside the open transaction with `updateRequirementWithHistoryInTransaction(tx, …)`; `updateRequirementWithHistory` opens its own transaction and notes the reader BRD before the caller commits.
+- A version row makes a state restorable only if a row exists for that state: the restore route rejects version 0, and `restoreOnce` needs an exact version row. A "keep it in History" fix must write the kept state as its own version >= 1 and test a real restore.
+- Any "did re-synthesis change it?" check that compares LLM output exactly fires on nearly every run: synthesis criteria for the same requirement are never byte-identical (wording, count and cited lines vary across six Miniflux analyses). Test such a comparison against stored output, and expect normalisation alone not to be enough.
+
 **Folded here (retired from the index 2026-10-21; files unchanged):**
 
 - [[requirement-version-history-is-incomplete]] — Version history has gaps: some writers skip rows; reversed≠pinned (#1162)

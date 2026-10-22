@@ -19,3 +19,7 @@ Seen 2026-09-30:
 ## SQLite fixtures can share a `createdAt` millisecond (#1287)
 
 Rows created in one SQLite test `beforeAll` can share a `createdAt` millisecond, so an `orderBy: createdAt` assertion is flaky. Give fixtures distinct priorities, or compare as sets.
+
+## vitest defines `require` in ESM source (#1387)
+
+vitest's module runner defines `require`, so no vitest test can catch `require is not defined` in `server/src`. Import the module in a plain Node ESM subprocess instead: `node --experimental-strip-types --input-type=module -e "await import(...)"`.

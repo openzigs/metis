@@ -23,6 +23,8 @@ Related: [[requirement-history-writers-and-resync]], [[one-to-one-join-traps]], 
 - `routes/analysis.ts` fires regenerate and resume as `void …catch(() => {})`, so an error a follow-up rethrows from its `finally` must be audited before the rethrow or it leaves no trace.
 - `markAnalysisFailed` / `markAnalysisCancelled` also set `completedAt`, and failed or cancelled runs can be regenerated. Since #1267, `markAnalysisRunning` keeps `completedAt` only for a run that had completed (`countsAsCompletedRun`). A re-run sets `running` before it persists requirements, so anything that reads "the run Requirements opens on" during that window has to use that rule.
 
+- Every #706 walkthrough run stored in the local `dev.db` predates #1033's `structuredIds`, so stored data cannot measure the structured-id join; that needs a new walkthrough run (#1359).
+
 **Folded here (retired from the index 2026-10-21; files unchanged):**
 
 - [[structured-req-ids-repeat]] — structured req ids repeat: REQ-001 ids repeat across re-runs; scope promoted ids to run (#902)

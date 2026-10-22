@@ -52,4 +52,7 @@ Two checks read `PublishBatch.targetOwner`/`targetRepo`: `namesRepository` (case
 
 **From #1106 (2026-10-21).**
 - Remote-issue recovery is keyed on `PublishedIssue` rows (`loadRecoverableIssues` in `publisher.ts`), never on tracker text; the marker only vetoes. Keep any new matching DB-only so the dry run and `previewBatchPlan` call the same function and agree (`mayMatchIssueNumber`).
+- A feature whose answer is "retry the batch" needs a test that re-runs the same batch and checks the whole `PublishedIssue` row: the dedup-skip `upsert.update` wrote only issueNumber/status/hashes, leaving an empty `issueId`/`htmlUrl` and a stale error (#1361 review).
+- In `runBatch` the dedup scan and remote reads run before `syncLabels`, so a stopped batch writes nothing. A new pre-write abort check belongs before the label sync; otherwise failed drafts count toward the >50% auto-rollback, which closes unrelated issues (#1361 c2).
+- `server/tests/fixtures/github-rest-issue.json`'s `repository_url` names `octocat/Hello-World`. Fake issues built from it must override it, or a repository check rejects every issue (#1361 c2).
 - `publishing-publisher.test.ts`'s fake octokit now pages listings and serves `GET /issues/{n}` (404 when unknown). A test overriding the old list URL no longer reaches recovery: intercept `/issues/{n}$`.

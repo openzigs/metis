@@ -48,3 +48,7 @@ Older entries, folded here (retired from the index 2026-10-16; files unchanged):
 ## Date guards in front of SQLite `julianday(?)` (#1281)
 
 A CLI date guard using JS `Date.parse` lets `October 15, 2026` through to SQLite `julianday(?)`, which yields NULL: the comparison matches zero rows with no error. Normalise with `new Date(x).toISOString()` before binding.
+
+## A new `users` column breaks pre-migration fixtures (#1400)
+
+Every test that writes users with today's Prisma client into a pre-migration (`stopBefore`) database, or into a hand-built `CREATE TABLE users`, fails once a column is added. Seed those rows with raw SQL, or add the column to the hand-built table.

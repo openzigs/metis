@@ -57,6 +57,7 @@ Links: [[project_read-live-is-not-read-completely]], [[project_never-dropped-sil
 - **Measure definitions from a published version's content:** lines matching `^\[\^src-\d+\]: `. The pre-cut need is `documentMaxChars - bodyMaxChars` from the log.
 - **The reserve must come from the modules alone** (`footnoteReserveChars`): a test holds that the facts sheet never moves a budget (reuse-hash invariant).
 - **The floor cliff:** `FLOOR_SHARE` 0.5 x 100 topics x `MIN_TOPIC_CHARS` 215 = 43,000. Run B's catalogue budget fell 43,058 to 40,508 and planned-out rose 2 to 8 per section (storage out of Rules, worker out of Formulas).
+- **Below the cliff it is linear** (#1366 review): once estimates do not fit, `allocateTopicBudgets` keeps floor(`FLOOR_SHARE` x budget / `MIN_TOPIC_CHARS`) topics, one planned-out topic per 430 chars of section budget. Compare planned-out against section-end cuts in one unit: modules missing from the whole document.
 - **Replaying "a model that writes to its plan"** needs an exact fill (whole units, then the next paragraph to the room), or whole-unit truncation leaves slack that hides the reserve. Committed: `server/scripts/eval-brd-plan-replay.ts` (reads dev.db read-only; plan + assembly, every reserve/note configuration).
 - **Score a plan change by whole H3 themes lost (not written + cut at ends), not by planned-out pairs.** Run B: note only 47 themes, reserve + note 44; the reserve costs 24 more module-section pairs, 3 modules out of every catalogue section.
 

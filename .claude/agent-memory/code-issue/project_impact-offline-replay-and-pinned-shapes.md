@@ -26,6 +26,14 @@ Impact analysis can be measured offline, with no provider call, by replaying its
 - `server/tests/impact-miniflux-791.sqlite.test.ts` runs `executeImpactAnalysis` with NO injected mapper, so it exercises whatever the default seeding is.
 - A new Prisma model needs three SQL edits, not two: the SQLite migration, an idempotent Postgres migration, and an append to the cumulative `prisma/postgres/migrations/00000000000000_init` baseline (`tests/schema-parity.test.ts` counts its `CREATE TABLE`s). Regenerate the Postgres schema with `bash scripts/gen-postgres-schema.sh` from the repo root.
 
+**Prompt values and citation gates (#1373 reviews, 2026-10-21).**
+- Tightening a citation gate from file-only to line-range: code-graph excerpts begin with a
+  `name (kind) — path:start-end` head line, so models land one past `endLine`. Probe
+  `start-1` and `end+1` before shipping a zero-slack gate.
+- A "quote every value" fix in impact prompts must also cover model-repair echoes
+  (`additiveRepairMessage` in `additive-column-proposer.ts`) that rebuild quoted strings from
+  rejection text; a grep for `key="${` misses them.
+
 Links: [[go-methods-unresolved]], [[project_go-call-resolver-binds-by-bare-name]].
 
 **Folded here (retired from the index 2026-10-21; files unchanged):**

@@ -24,3 +24,13 @@ requirements unverified, so they now get one coverage nudge (an extra code call)
 degraded note/reason. `buildCodeAgentJson(..., "implemented")` keeps a fixture clean. A
 `*token*` key inside a `log.*({...})` call - even in a comment followed by a colon - trips
 `tests/logger.enumeration.test.ts`.
+
+**From the #1399 review and cycle 2.**
+- `runAgentLoop` turns send no `maxTokens`, so a long findings JSON written inside the loop
+  is cut at the provider default (4096 on the OpenAI-compatible adapters). An in-loop re-ask
+  policy should skip a truncated-JSON reply and leave it to the final-answer retry, which has
+  the raised cap.
+- A `codeRetrievalDegraded` run can now omit the `code-retrieval-degraded` reason when
+  `codeAgentStoppedEarly` is set and no other pass degraded retrieval
+  (`analysis-capability.ts`). Tests for a starved or mostly-unchecked pass should expect
+  `code-agent-degraded` instead, unless its searches errored.
