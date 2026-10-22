@@ -146,6 +146,27 @@ export interface AgentLoopOptions {
     reasoning?: Pick<ChatOptions, "reasoningEffort" | "disableThinking">;
   };
   /**
+   * #1388 — ask the model to keep going instead of ending the loop. Consulted
+   * each time a reply carries NO tool call — the moment the loop would otherwise
+   * stop — but only while a turn and token budget remain. `nudge` returns the
+   * instruction to send back (the reply stays in the transcript ahead of it), or
+   * `null` to accept the reply and stop as before.
+   *
+   * Before #1388 any tool-less reply ended the loop on the spot: a 116-token
+   * reply on turn 3 that was neither a parseable call nor the findings JSON
+   * stopped a DeepSeek code pass at 6k of its ~100k budget with 22 of 32
+   * requirements never investigated, and the final-answer retry then told the
+   * model it had no tools left.
+   *
+   * Bounded: at most `maxNudges` extra exchanges per loop, each of which is an
+   * ordinary turn (it counts against `maxTurns` and the token budget). Unset
+   * (the default, and every chat path) ⇒ behaviour is unchanged.
+   */
+  continuation?: {
+    maxNudges: number;
+    nudge: (reply: string, state: AgentLoopContinuationState) => string | null;
+  };
+  /**
    * #1225 — bound the transcript the loop re-sends every turn.
    *
    * The loop re-sends the WHOLE conversation on each call, so `promptTokens`
@@ -385,6 +406,20 @@ export interface AgentLoopResult {
     messagesCompacted: number;
     tokensSaved: number;
   };
+  /**
+   * #1388 — tokens the loop's own turns were charged (what the token budget
+   * counts), excluding the final-answer retry. Lets a caller tell a pass that
+   * stopped by choice far under budget from one the budget cut off.
+   */
+  loopTokens?: number;
+  /** #1388 — continuation nudges sent (see {@link AgentLoopOptions.continuation}). */
+  continuationNudges?: number;
+  /**
+   * #1388 review — a nudge sent back a reply that was ALREADY a usable answer.
+   * When the loop then hits its turn or token cap, METIS's nudge put it there,
+   * not the investigation: a caller must not report the pass as cut short.
+   */
+  answerSentBack?: boolean;
   /** Epic #497 — Graph context injection metadata (when used). */
   graphContext?: {
     snippetCount: number;
@@ -408,6 +443,22 @@ export interface AgentLoopResult {
    * The discarded reply is NOT in `turnsUsed` (its tokens stay in `usage`).
    */
   toolsDroppedTurns?: number;
+}
+
+/** #1388 — what a {@link AgentLoopOptions.continuation} policy is told. */
+export interface AgentLoopContinuationState {
+  /** Model calls made so far, the reply being judged included. */
+  turnsUsed: number;
+  /** Turns still available after this one. Always at least 1 when asked. */
+  turnsLeft: number;
+  /** Tokens charged against the budget so far; `undefined` without a budget. */
+  budgetUsed?: number;
+  /** The token budget; `undefined` without one. */
+  budgetTotal?: number;
+  /** Nudges already sent in this loop. */
+  nudgesSent: number;
+  /** The reply's provider stop reason, verbatim (`max_tokens`, `length`, …), when reported. */
+  finishReason?: string;
 }
 
 const DEFAULT_USAGE: TokenUsage = {
@@ -1525,6 +1576,16 @@ export async function runAgentLoop(
   let lastHadNativeCalls = false;
   let lastAppended = false;
   let toolsDroppedTurns = 0;
+  // #1388 — loop-turn tokens (what the budget is charged) and nudges sent.
+  let loopTokens = 0;
+  let continuationNudges = 0;
+  // #1388 review — the latest USABLE answer a nudge sent back. If the turns
+  // after it end without one (a tool call at the cap, then a failed retry),
+  // this answer is kept rather than lost: a nudge may never cost an answer.
+  let nudgedAnswer: string | undefined;
+  const isNudgeableAnswer = (text: string): boolean =>
+    options.finalAnswerRetry?.isValidFinalAnswer?.(text) ??
+    !isToolCallReply(text, [...toolMap.keys()]);
 
   for (let turn = 0; turn < maxTurns; turn++) {
     if (options.signal?.aborted) {
@@ -1563,6 +1624,7 @@ export async function runAgentLoop(
     const turnPromptTokens = response.usage?.promptTokens ?? 0;
     const turnCompletionTokens = response.usage?.completionTokens ?? 0;
     addUsage(totalUsage, response.usage);
+    loopTokens += turnTokens;
 
     // #1225 — per-turn accounting, so a quadratic prompt curve is visible in the
     // logs instead of only in the bill. `unaccounted` is the reconciliation
@@ -1648,8 +1710,41 @@ export async function runAgentLoop(
       : parseToolCalls(response.content, toolMap.keys());
 
     if (!requested) {
-      // Final answer — exit the loop
-      break;
+      // #1388 — a reply with no tool call ends the loop unless the caller's
+      // continuation policy asks for more while turns and budget remain.
+      const instruction =
+        options.continuation &&
+        continuationNudges < options.continuation.maxNudges &&
+        turn + 1 < maxTurns &&
+        (!budget || budget.hasRemaining()) &&
+        !options.signal?.aborted
+          ? options.continuation.nudge(response.content, {
+              turnsUsed,
+              turnsLeft: maxTurns - turn - 1,
+              ...(budget ? { budgetUsed: budget.used, budgetTotal: budget.total } : {}),
+              nudgesSent: continuationNudges,
+              ...(response.finishReason ? { finishReason: response.finishReason } : {}),
+            })
+          : null;
+      if (!instruction) {
+        // Final answer — exit the loop
+        break;
+      }
+      continuationNudges++;
+      if (isNudgeableAnswer(response.content)) nudgedAnswer = response.content;
+      log.info("Agent loop asked the model to continue", {
+        turn,
+        nudge: continuationNudges,
+        replyLength: response.content.length,
+      });
+      // An empty assistant turn is rejected by some wire formats; the
+      // instruction then joins the previous user turn instead.
+      if (response.content.trim().length > 0) {
+        messages.push({ role: "assistant", content: response.content });
+      }
+      appendUserInstruction(messages, instruction);
+      lastAppended = true;
+      continue;
     }
 
     const batch = requested.slice(0, MAX_TOOL_CALLS_PER_REPLY);
@@ -1917,6 +2012,17 @@ export async function runAgentLoop(
     }
   }
 
+  // #1388 review — the loop and its retry produced no usable answer, but a
+  // continuation nudge sent one back earlier: return that one.
+  if (nudgedAnswer !== undefined && !isValidFinalAnswer(finalResponse)) {
+    finalResponse = nudgedAnswer;
+    finalIsToolCallingReply = false;
+    salvageSource = undefined;
+    log.info("Agent loop kept the answer sent back by a continuation nudge", {
+      nudges: continuationNudges,
+    });
+  }
+
   const hasFinalAnswer = isValidFinalAnswer(finalResponse);
 
   // #713 (d) / #718 — Central guard for BOTH the stream and /chat reuse paths
@@ -1941,6 +2047,10 @@ export async function runAgentLoop(
     ...(retryMeta ? { finalAnswerRetry: retryMeta } : {}),
     ...(salvageSource !== undefined ? { salvageSource } : {}),
     ...(compactionOptions ? { transcriptCompaction: { ...compactionMeta } } : {}),
+    loopTokens,
+    ...(options.continuation
+      ? { continuationNudges, ...(nudgedAnswer !== undefined ? { answerSentBack: true } : {}) }
+      : {}),
     toolCalls,
     graphContext: graphContextMeta,
     ...(options.native
