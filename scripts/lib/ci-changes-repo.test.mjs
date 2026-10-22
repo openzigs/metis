@@ -151,9 +151,8 @@ describe("ci.yml wiring (#844)", () => {
       .readdirSync(path.join(repoRoot, "server/tests"))
       .filter((f) => /(postgres|pgvector).*\.integration\.test\.ts$/.test(f))
       .map((f) => f.replace(/\.integration\.test\.ts$/, ""));
-    const missing = suites.filter(
-      (s) => !new RegExp(`pnpm test:integration ${s}\\s*$`, "m").test(p),
-    );
+    const run = new Set([...p.matchAll(/run: pnpm test:integration (\S+)\s*$/gm)].map((m) => m[1]));
+    const missing = suites.filter((s) => !run.has(s));
     expect(missing).toEqual([]);
   });
 
