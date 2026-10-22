@@ -266,9 +266,10 @@ Other people or automated reviewers (e.g., GitHub Copilot code review) may have 
    > the `CodeQL` check-run is created after the `Analyze` jobs start and finishes before
    > `Analyze javascript-typescript`: a green read taken before `CodeQL` exists is too early,
    > and a green `CodeQL` does not mean the `Analyze` jobs are done.
-   > **The set is listed once, in CLAUDE.md > "CI and merging"** (#844: twenty-one since #848, with the
-   > e2e suite sharded as `e2e (1/3)`–`e2e (3/3)` and read through `e2e-outcome`, and
-   > `postgres-adapter` reading `skipping` on a PR that touches no Postgres path, and the
+   > **The set is listed once, in CLAUDE.md > "CI and merging"** (#844: twenty-four since #1365, with the
+   > e2e suite sharded as `e2e (1/3)`–`e2e (3/3)` and read through `e2e-outcome`, the
+   > Postgres unit suite as `postgres-unit (1/3)`–`(3/3)`, and `postgres-adapter` and
+   > `postgres-unit` reading `skipping` on a PR that touches no Postgres path, and the
    > schedule-only `nightly-report` always reading `skipping`). This note used to end *"Only CI jobs (`api`, `ui`) will
    > appear"*, which was true when it was written and had since become false in ten places;
    > an agent obeying it treated ten checks as non-existent (#1282). Read the set `gh pr

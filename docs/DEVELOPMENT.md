@@ -214,8 +214,8 @@ disagree. Consequences worth knowing:
   builds real SQLite files and skips on a Postgres-generated client. CI's `api` job builds
   the SQLite client, so it still runs on every PR.
 - **Real-Postgres parity stays in `pnpm test:integration`** and the `postgres-adapter` CI
-  job, which also runs the full unit suite against the Postgres client as the regression
-  gate for all of the above.
+  job; the sharded `postgres-unit` job runs the full unit suite against the Postgres client
+  as the regression gate for all of the above (#1365).
 
 ### 5.2 UI (Vitest + React Testing Library)
 - Prefer behavioural assertions (`getByRole`, `getByLabelText`) over snapshot tests.
