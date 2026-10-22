@@ -179,18 +179,45 @@ Routes:
 
 | Path | Backend | Port |
 |------|---------|------|
+| `/api/auth/oidc`, `/api/auth/saml` | `<release>-server` | 4000 (SSO: login redirects, OIDC callback, SAML ACS + metadata) |
 | `/socket.io` | `<release>-server` | 4000 (websocket) |
-| `/` (including `/api`) | `<release>-ui` | 3000 |
+| `/` (including the rest of `/api`) | `<release>-ui` | 3000 |
 
 `/api` goes to the **UI**, not the server (#1312). The UI's route handlers are
 the browser's API:
 
 - at login they mint the `Secure; HttpOnly` session cookies;
 - every other `/api` call they forward to `ui.env.METIS_API_URL` (default
-  `http://<fullname>-server:4000/api`) with the token attached.
+  `http://<fullname>-server:<server.service.port>/api`) with the token attached.
 
 An `/api → server` rule answered login with 200, set no cookie, and sent the
 user back to `/login`.
+
+The SSO endpoints are the exception. The server serves them
+(`server/src/routes/sso.ts`), and the UI has no route for them: its `/api`
+catch-all answers `/api/auth/*` with 404. The Ingress therefore sends
+`/api/auth/oidc` and `/api/auth/saml` to the server, listed ahead of `/` (ALB
+evaluates rules in order). Register the IdP URLs on the **public origin**:
+
+- the OIDC redirect URI is `https://<host>/api/auth/oidc/callback`;
+- the SAML ACS URL is `https://<host>/api/auth/saml/acs`, and its metadata is
+  at `https://<host>/api/auth/saml/metadata`.
+
+The cookies the server sets at the end of an SSO login may not use the names
+the UI's session check reads; that is tracked separately. Check an SSO
+round-trip end to end before relying on it.
+
+Request bodies: ingress-nginx refuses bodies over 1m by default, so the chart
+sets `nginx.ingress.kubernetes.io/proxy-body-size` from
+`ingress.nginx.proxyBodySize` (default `50m`, the server's repository-archive
+cap). For the ALB and traefik, check your controller's own limit.
+
+**Known limit: long idle requests through the UI proxy.** The UI's `/api`
+proxy uses Node's `fetch`, which gives up when no response headers arrive
+within undici's default 300 s `headersTimeout`. Only Spec Kit commands get a
+longer timeout (`METIS_SPEC_KIT_PROXY_TIMEOUT_MS`). Any other call that sends
+no headers for 5 minutes fails at the proxy even if the server finishes, and
+raising the Ingress timeouts does not help.
 
 This has two consequences for operators:
 
@@ -448,10 +475,20 @@ backup came back, with its generated BRD.
 1. Run `kubectl -n metis scale deploy/metis-server --replicas=0` and wait for
    the pod to terminate, so the restore does not race a live SQLite writer.
 2. Run a one-off pod that mounts the same four claims at the server's paths and
-   unpacks the newest tarball. It runs as UID 1001 under PSA `restricted`, so it
-   unpacks to scratch space and copies the files in. The volume roots belong to
-   the provisioner, so a `tar -x` straight onto them fails (exit 2, "Cannot
-   change mode") even though every file lands.
+   unpacks the newest tarball. It unpacks to scratch space first and checks the
+   result, so a bad tarball leaves the live volumes untouched. Only then does
+   it wipe the volumes and copy the files in. Copying, rather than running
+   `tar -x` onto the volumes, is needed because the pod runs as UID 1001 under
+   PSA `restricted`: the volume roots belong to the provisioner, so a `tar -x`
+   straight onto them fails (exit 2, "Cannot change mode") even though every
+   file lands. The scratch space is the pod's `emptyDir`, so the node needs free
+   disk for one unpacked backup.
+
+   The claims are `ReadWriteOnce`, so the pod can only start where the volumes
+   can attach. On kind that is the node holding the local volumes. On EKS an EBS
+   volume attaches only in its own **Availability Zone**: if no schedulable node
+   is in that AZ, the pod stays `Pending` with a volume node-affinity conflict.
+   Keep a node in the AZ (or let the autoscaler add one) before you start.
 
    ```yaml
    apiVersion: v1
@@ -479,10 +516,15 @@ backup came back, with its generated BRD.
              set -eu
              latest="$(ls -1t /backup/metis-backup-*.tar.gz | head -n1)"
              echo "[restore] from $latest"
+             # 1. Unpack to scratch and verify BEFORE touching the live volumes:
+             #    a corrupt or empty tarball must leave the current data alone.
+             mkdir -p /tmp/stage && tar -xzf "$latest" -C /tmp/stage
+             test -s /tmp/stage/metis.db || { echo "[restore] no metis.db in $latest; aborting, nothing changed" >&2; exit 1; }
+             # 2. Only now wipe the data volume and the two volumes mounted inside it
+             #    (the mount points themselves stay), then copy the verified tree in.
              cd /app/server/data
              find . -mindepth 1 -maxdepth 1 ! -name uploads ! -name lancedb -exec rm -rf {} +
              find ./uploads ./lancedb -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-             mkdir -p /tmp/stage && tar -xzf "$latest" -C /tmp/stage
              cp -R /tmp/stage/. /app/server/data/
              echo "[restore] done"
          volumeMounts:

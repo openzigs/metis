@@ -219,7 +219,7 @@ ui:
     # #1312 — where the UI's /api route handlers send every browser API call.
     # Unset, the UI falls back to http://localhost:4000/api — inside the UI pod,
     # where nothing listens — and every login fails.
-    METIS_API_URL: http://{{ include "metis.fullname" . }}-server:4000/api
+    METIS_API_URL: http://{{ include "metis.fullname" . }}-server:{{ .Values.server.service.port }}/api
   probes:
     liveness:
       path: /
@@ -670,6 +670,7 @@ externalSecrets:
 # -----------------------------------------------------------------------------
 # Ingress (sub-issue #369). Switch between alb | nginx | traefik.
 # Routes:
+#   /api/auth/oidc, /api/auth/saml → server svc (4000)  (SSO; the UI has no route)
 #   /socket.io/* → server svc (4000)  (websocket upgrade)
 #   /            → ui svc (3000) — including /api, which the UI's route handlers
 #                  proxy to the server (ui.env.METIS_API_URL) after minting the
@@ -692,6 +693,9 @@ ingress:
     stickinessSeconds: 3600
     extraAnnotations: {}
   nginx:
+    # #1312 — ingress-nginx's default body cap is 1m. METIS accepts repository
+    # archives up to 50 MB (MAX_UPLOAD_ARCHIVE_BYTES) and documents up to 10 MB.
+    proxyBodySize: 50m
     extraAnnotations: {}
   traefik:
     extraAnnotations: {}
