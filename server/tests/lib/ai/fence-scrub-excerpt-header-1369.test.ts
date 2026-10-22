@@ -61,6 +61,9 @@ describe("scrubExcerptHeaderLookalikes", () => {
     "| --- | --- |",
     "x = a --- b",
     "--- title: Notes",
+    "--- Requirement 4.2: Only managers approve refunds ---",
+    "--- Step 1: Insert orders ---",
+    "--- Note: Orders over $500 need review ---",
     "SELECT a --- b:1 --- c",
     "text --- src/a.ts:5 ---",
   ])("leaves ordinary text alone: %s", (line) => {
@@ -120,6 +123,10 @@ describe("scrubExcerptHeaderLookalikes", () => {
     ["one long line of near-headers", (n: number) => "--- a:1 ".repeat(Math.ceil(n / 8))],
     ["many lines of near-headers", (n: number) => "--- a:1 x\n".repeat(Math.ceil(n / 10))],
     ["many short headers", (n: number) => "--- a:1 ---\n".repeat(Math.ceil(n / 12))],
+    [
+      "colon runs of folded digits",
+      (n: number) => `--- :${"I".repeat(290)} x\n`.repeat(Math.ceil(n / 300)),
+    ],
   ])("is linear on %s", (_label, build) => {
     expectLinearTime("scrubExcerptHeaderLookalikes", (size) => {
       const text = build(size);

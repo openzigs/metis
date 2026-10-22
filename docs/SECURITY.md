@@ -987,12 +987,15 @@ a rationale with a `"` now reads as JSON escapes.
    in an excerpt's body with `[REDACTED HEADER]` (`scrubExcerptHeaderLookalikes`,
    the fold of 13.1 with its own pattern): a whole line (after spaces) of three
    or more `-` (any dash look-alike, `.` and `…` fold to `-`), whitespace, at most
-   300 characters holding `:` before a digit, `#` or `/`, whitespace, three or
+   300 characters holding `:` before a number (not running into a letter — the
+   fold reads `0` and `1` as `O` and `I`), `#` or `/`, whitespace, three or
    more `-`. Caught: `--- src/a.ts:500 ---`, `--- a.ts:7 ---`, em-dash, box-drawing,
    minus-sign and full-width forms, a zero-width character in the run, a
    full-width colon, `--- doc.md#chunk-13 ---`, `--- src/other.ts ---`. Left
    alone: `---`, `--- Page 3 ---`, `----- Tables -----`, `// --- a.ts:5 ---`,
-   the diff header `--- a/x.ts`, `| --- |`, `x = a --- b`. **Not caught**
+   the diff header `--- a/x.ts`, `| --- |`, `x = a --- b`,
+   `--- Requirement 4.2: Only managers approve refunds ---`,
+   `--- Step 1: Insert orders ---`. **Not caught**
    (tested): a header naming only a bare file (`--- a.ts ---`) or a backslash
    path with no line, one with fewer than three dashes, a one-sided
    `--- a.ts:5`, a header after other text on its line, and a colon look-alike
@@ -1033,8 +1036,10 @@ Each fence the writer's prompt carries:
 | `=== DATABASE SCHEMA … ===` / `=== END SCHEMA ===` (`schema-inventory.ts`) | table, column and type names from a database or repository SQL | already one line per table, each line opening with `- `; the prompt's names and types now also go through the writer scrub (the rendered schema reference is unchanged). The heading's connector label is stripped of `=` by `plainConnectorLabel` |
 
 Clean text is returned as the same string, so a prompt for clean input is
-byte-identical and the prompt-cache prefix does not move; the section reuse
-hash is taken over the unscrubbed inputs, so it does not move at all.
+byte-identical, and neither the prompt-cache prefix nor the section reuse hash
+moves. For input that does hold a look-alike, the reuse hash (which covers the
+rendered grounding block and the built prompts) moves once, so that section is
+regenerated once.
 
 Left alone (tested): compound conditions (`if (a == end || flow == b)`,
 `return claim.status == ClaimStatus.CLOSED || facts.size == 0;`,

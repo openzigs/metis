@@ -7476,8 +7476,8 @@ RULES:
   // #1370 — the flow, facts and formulas are repository text (the facts via the
   // Phase-1 model): none of them can close or forge a block of this message, or
   // forge a grounding source header. Clean text is returned unchanged, so the
-  // prompt and its cache prefix are byte-identical for it; the section's reuse
-  // hash is taken over the unscrubbed inputs, so it does not move at all.
+  // prompt and its cache prefix are byte-identical for it, and so is the section's reuse
+  // hash (it covers the built prompts); input with a look-alike moves it once.
   const data = (text: string) => scrubWriterFenceLookalikes(text, "[REDACTED-FENCE]");
   const flowSection = flowBlob
     ? `\n=== END-TO-END FLOW (cross-module dependencies + SAS dataset lineage, from the code graph) ===\n\n${data(flowBlob)}\n\nUse this to describe TRUE end-to-end workflows: which module hands off to which, and how datasets flow input→output across modules. Do NOT invent flows not supported by this graph.\n\n=== END FLOW ===\n`

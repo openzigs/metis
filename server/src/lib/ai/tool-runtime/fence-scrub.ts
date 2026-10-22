@@ -449,14 +449,16 @@ const FOLDED_WRITER_FENCE = new RegExp(
  * `--- Page 3 ---`, `----- Tables -----`, a commented banner
  * (`// --- a.ts:5 ---`), a diff header `--- a/x.ts` and `x = a --- b`.
  *
- * The digit class is `[0-9OI]` because the fold reads `0` as `O` and `1` as `I`.
+ * The digit class is `[0-9OI]` because the fold reads `0` as `O` and `1` as `I`; a
+ * run of them must not run into a letter, so `--- Step 1: Only managers ---` and
+ * `--- Note: Insert orders ---` (an `O` or `I` that starts a word) are left alone.
  * Linear: a span starts only at a line start, and each start scans at most 300
  * characters of one line.
  */
 const LINE_BREAK = "\\n\\r\\v\\f\\x85\\p{Zl}\\p{Zp}";
 const FOLDED_EXCERPT_HEADER = new RegExp(
   `(?<![^${LINE_BREAK}])[ \\t]*-{3,}[ \\t]+` +
-    `(?=[^${LINE_BREAK}]{0,300}?(?::[ \\t]*[0-9OI]|#|/))` +
+    `(?=[^${LINE_BREAK}]{0,300}?(?::[ \\t]*[0-9OI]+(?![A-Z])|#|/))` +
     `[^${LINE_BREAK}]{1,300}?[ \\t]+-{3,}[ \\t]*(?=[${LINE_BREAK}]|$)`,
   "gu",
 );

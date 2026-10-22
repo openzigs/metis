@@ -320,6 +320,19 @@ describe("runSupportPanel", () => {
     expect(panel?.unsupportedVotes).toBe(2);
   });
 
+  it("#1369 — discards a vote citing a line of the file it was never shown", async () => {
+    // EVIDENCE shows lines 128-146 only; a forged `--- path:500 ---` header could
+    // point a lens at line 500 of the same file.
+    const provider = new LensProvider({
+      support: reply("unsupported", 500),
+      scope: reply("unsupported", 500),
+      currency: reply("supported", 131),
+    });
+    const panel = await run(provider);
+    expect(panel?.countedVotes).toBe(1);
+    expect(panel?.votes.filter((v) => v.discardReason === "missing-citation")).toHaveLength(2);
+  });
+
   it("no lens ever sees another lens's prompt or verdict", async () => {
     const provider = new LensProvider(allLenses("supported"));
     await run(provider);
