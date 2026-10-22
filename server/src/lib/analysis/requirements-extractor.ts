@@ -18,7 +18,6 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
-import { extractJsonObject } from "./agent-runner.js";
 import {
   hasVerdict,
   jsonObjectWhereDeclared,
@@ -151,27 +150,6 @@ export class RequirementsExtractor {
     });
 
     return parsed;
-  }
-
-  /**
-   * Parse and validate one LLM response into StructuredRequirements.
-   *
-   * @throws RequirementsExtractionError when `content` holds no JSON object or
-   *   the object has no `requirements` array (#1058 — never an empty result).
-   * @internal — exposed for testing; `extract` adds the re-prompt.
-   */
-  parseResponse(content: string, rawSource: string): StructuredRequirements {
-    let json: unknown;
-    try {
-      json = extractJsonObject(content);
-    } catch (err) {
-      throw new RequirementsExtractionError("unparseable", (err as Error).message);
-    }
-    const envelope = extractionSchema.safeParse(json);
-    if (!envelope.success) {
-      throw new RequirementsExtractionError("schema-invalid", "missing 'requirements' array");
-    }
-    return this.toStructured(envelope.data.requirements, rawSource);
   }
 
   private toStructured(rawReqs: unknown[], rawSource: string): StructuredRequirements {

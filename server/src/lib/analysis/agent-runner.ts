@@ -43,7 +43,7 @@ import type { DocumentSource } from "../documents/document-source.js";
 import { createChildLogger } from "../logger.js";
 import { displayFilename } from "../rag/hit-locator.js";
 import { DEFAULT_FINAL_ANSWER_MAX_OUTPUT_TOKENS } from "./agent-loop.js";
-import { parseFirstBalancedJsonObject } from "./balanced-json.js";
+import { AMBIGUOUS_JSON_MESSAGE, parseBalancedJsonObject } from "./balanced-json.js";
 import { buildSpecialistPrompt } from "./prompts.js";
 import { responseFormatForAgent } from "./structured-output-schemas.js";
 
@@ -175,7 +175,7 @@ export function extractJsonObject(raw: string): unknown {
     // #1002 — the answer leads and commentary follows. Taken BEFORE the fence
     // branch because a draft's own Markdown can carry a fenced snippet inside a
     // string value, which the fence pattern would otherwise match.
-    const leading = parseFirstBalancedJsonObject(trimmed, { leadingOnly: true });
+    const leading = parseBalancedJsonObject(trimmed, { leadingOnly: true });
     if (leading.found) return leading.value;
   }
   // Strip ```json ... ``` style fences.
@@ -203,11 +203,15 @@ export function extractJsonObject(raw: string): unknown {
     const inner = fenceMatch[1].trim();
     if (inner.startsWith("{")) return JSON.parse(inner);
   }
-  // #1002 — the first balanced `{...}` that parses, wherever it sits. This
-  // replaces the first-`{`-to-LAST-`}` slice as the extraction step: that slice
-  // broke on any prose after the object that contained a brace.
-  const balanced = parseFirstBalancedJsonObject(trimmed);
+  // #1002 — the balanced `{...}` that parses, wherever it sits. This replaces
+  // the first-`{`-to-LAST-`}` slice as the extraction step: that slice broke on
+  // any prose after the object that contained a brace.
+  const balanced = parseBalancedJsonObject(trimmed);
   if (balanced.found) return balanced.value;
+  // #1355 — two different objects (a preamble example and the answer, say).
+  // The slice below could never parse this shape, so throw the error that
+  // says what is wrong: the re-prompt and the repair turn both quote it.
+  if (balanced.ambiguous) throw new SyntaxError(AMBIGUOUS_JSON_MESSAGE);
   // The scan found nothing it would accept. The pre-#1002 slice stays as the
   // last resort, mostly for the error it throws: its `SyntaxError ... at
   // position N` is what the agent runner's truncation diagnosis reads (#1224).
@@ -398,7 +402,10 @@ export async function repairAgentJson(
             `${originalError.message}\n\n` +
             "Return the SAME content as valid JSON. Do not add, remove, summarise or " +
             "reword any field — fix only the syntax (unbalanced brackets, unescaped " +
-            "quotes or newlines inside strings). Reply with the JSON object and nothing else.\n\n" +
+            "quotes or newlines inside strings). If the text holds more than one JSON " +
+            "object (an example or illustration beside the answer), return only the one " +
+            "that is the answer, unchanged, and drop the others. " +
+            "Reply with the JSON object and nothing else.\n\n" +
             malformed,
         },
       ],

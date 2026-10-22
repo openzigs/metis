@@ -446,6 +446,49 @@ export function runHasQuestionsView(metadata: Record<string, unknown> | null | u
 }
 
 /**
+ * Issue #1355 — what the Approvals tab says when the run has no approval
+ * checkpoints. A run whose requirements-extraction step failed creates none,
+ * so nothing holds its requirements back: synthesis saves them unreviewed. The
+ * plain "no approval checkpoints" line read as though review was not needed;
+ * this says why there is nothing to approve and what it means for the
+ * requirements already on screen.
+ */
+export function approvalsNoneMessage(
+  metadata: Record<string, unknown> | null | undefined,
+  requirementCount: number,
+  analysisStatus: AnalysisStatus,
+): { testId: string; text: string } {
+  const failure = enhancementOf(metadata).structuredExtractionFailure;
+  if (!failure) {
+    return { testId: "approvals-none", text: "This run has no approval checkpoints." };
+  }
+  // PR #1409 review — a provider failure means no answer came back at all, so
+  // it must not be worded as an answer METIS could not read.
+  const why =
+    failure.reason === "provider-error"
+      ? "the request to the AI model failed and no requirements came back"
+      : failure.reason === "empty-response"
+        ? "the AI model returned an empty answer"
+        : "METIS could not read the requirements out of the AI model’s answer";
+  const cause = `No approval checkpoints were created for this run: ${why}, so nothing was put up for approval.`;
+  // While the run is still going, "run it again" is premature advice and no
+  // requirement has been saved yet.
+  if (analysisStatus === "pending" || analysisStatus === "running") {
+    return {
+      testId: "approvals-none-extraction-failed",
+      text: `${cause} Requirements this run saves will not have been reviewed.`,
+    };
+  }
+  const consequence =
+    requirementCount > 0
+      ? ` The ${requirementCount === 1 ? "requirement" : `${requirementCount} requirements`} ` +
+        `on the Requirements tab ${requirementCount === 1 ? "was" : "were"} saved without ` +
+        "review. Run the analysis again to review requirements before they are saved."
+      : " Run the analysis again to review requirements before they are saved.";
+  return { testId: "approvals-none-extraction-failed", text: cause + consequence };
+}
+
+/**
  * The number shown on each tab. Questions and Approvals count what is still
  * OUTSTANDING (open ambiguities, pending approvals) rather than a total, since
  * that is what a reader goes there to clear. `undefined` = no count to show.
