@@ -61,7 +61,13 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
+      {{- if eq $name "server" }}
       serviceAccountName: {{ include "metis.serviceAccountName" $root }}
+      {{- else }}
+      {{- /* #1375: only the server talks to the Kubernetes API or holds the IRSA role. */}}
+      serviceAccountName: {{ include "metis.workloadServiceAccountName" $root }}
+      automountServiceAccountToken: false
+      {{- end }}
       securityContext:
         {{- include "metis.podSecurityContext" $root | nindent 8 }}
       {{- with $root.Values.image.pullSecrets }}
@@ -106,7 +112,7 @@ spec:
             {{- if eq $name "server" }}
             {{- include "metis.scalingEnv" $root | nindent 12 }}
             {{- end }}
-            {{- include "metis.secretEnv" $root | nindent 12 }}
+            {{- include "metis.secretEnv" (dict "root" $root "component" (eq $name "sql-lineage" | ternary "sqlLineage" $name)) | nindent 12 }}
           {{- with $component.probes.liveness }}
           livenessProbe:
             httpGet:

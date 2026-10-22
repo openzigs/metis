@@ -158,6 +158,24 @@ The chart references the named Secret but renders nothing.
 `METRICS_TOKEN`. Override the env-var → secret-key mapping under
 `secrets.keyMap` if your AWS Secrets Manager naming is different.
 
+### Which pod gets which key (#1375)
+
+`secrets.components.<component>` lists the `keyMap` env vars a component
+receives. A name not in `keyMap` fails the render.
+
+| Component | Default | Why |
+|-----------|---------|-----|
+| `server` | `["*"]` (every `keyMap` key) | A key you add to `keyMap`, such as `AUTH_LDAP_BIND_PASSWORD`, reaches the server only. |
+| `ui` | `[]` | The UI reads no secret at runtime. An RCE in the internet-facing Next.js process must not find `VAULT_MASTER_KEY` or `JWT_SECRET` in its environment. |
+| `embeddings` | `[EMBEDDINGS_TOKEN]` | The sidecar's bearer token. |
+| `sqlLineage` | `[SQL_LINEAGE_TOKEN]` | The sidecar's bearer token. |
+| `backup` | `[DATABASE_URL]` | For a `pg_dump` override of `backup.command`. |
+
+The UI and both sidecars also run as `<release>-workload`
+(`serviceAccount.workload`), with no IRSA role, no RBAC and no mounted token,
+so they cannot read the Secret through the Kubernetes or AWS API either. Only
+the server and the backup CronJob use `serviceAccount.name`.
+
 ---
 
 ## Ingress

@@ -326,17 +326,54 @@ rendered profiles). If something ever must, do NOT relax the skip — add a sent
 {{- end -}}
 
 {{/*
-Sensitive env block — every key from secrets.keyMap becomes a secretKeyRef
-into metis-secrets. The same template is shared by all deployments.
+Sensitive env block for ONE component (#1375). Pass dict:
+  root      = $
+  component = "server" | "ui" | "embeddings" | "sqlLineage" | "backup"
+
+`secrets.components.<component>` lists the secrets.keyMap env names that
+component receives; "*" means every keyMap entry (the server's default, so a
+key added to keyMap — AUTH_LDAP_BIND_PASSWORD — reaches the server and nothing
+else). This used to put every key on every pod, which handed the internet-facing
+UI the vault master key and the JWT signing secret. A listed name that keyMap
+does not define fails the render rather than silently dropping the variable.
 */}}
 {{- define "metis.secretEnv" -}}
-{{- $secretName := include "metis.secretName" . -}}
-{{- range $envName, $secretKey := .Values.secrets.keyMap }}
+{{- $root := .root -}}
+{{- $component := .component -}}
+{{- $secretName := include "metis.secretName" $root -}}
+{{- $keyMap := $root.Values.secrets.keyMap -}}
+{{- $wanted := index ($root.Values.secrets.components | default dict) $component | default list -}}
+{{- $names := list -}}
+{{- if has "*" $wanted -}}
+{{- $names = keys $keyMap | sortAlpha -}}
+{{- else -}}
+{{- range $wanted -}}
+{{- if not (hasKey $keyMap .) -}}
+{{- fail (printf "metis: secrets.components.%s names %s, which is not in secrets.keyMap (#1375). Add it to secrets.keyMap or remove it from the list." $component .) -}}
+{{- end -}}
+{{- $names = append $names . -}}
+{{- end -}}
+{{- end -}}
+{{- range $envName := $names }}
 - name: {{ $envName }}
   valueFrom:
     secretKeyRef:
       name: {{ $secretName }}
-      key: {{ $secretKey }}
+      key: {{ index $keyMap $envName }}
       optional: true
 {{- end }}
+{{- end -}}
+
+{{/*
+ServiceAccount for every pod EXCEPT the server (#1375): no IRSA annotation and
+no RBAC, so a compromised UI or sidecar holds neither the server's Kubernetes
+permissions (secrets CRUD in the MCP namespace, cluster-wide under
+rbac.scope=cluster) nor its AWS role (Secrets Manager reads of metis/*).
+*/}}
+{{- define "metis.workloadServiceAccountName" -}}
+{{- if .Values.serviceAccount.workload.create -}}
+{{- default (printf "%s-workload" (include "metis.fullname" .)) .Values.serviceAccount.workload.name -}}
+{{- else -}}
+{{- default "default" .Values.serviceAccount.workload.name -}}
+{{- end -}}
 {{- end -}}

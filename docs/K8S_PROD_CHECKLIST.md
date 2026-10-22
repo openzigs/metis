@@ -81,8 +81,11 @@ The chart leaves three server settings to you, and the install does not work wit
 - [ ] When using ESO, the `ExternalSecret` reports `SecretSyncedError: false`.  
   `kubectl get externalsecret metis-secrets -n metis -o jsonpath='{.status.conditions}'`
 - [ ] No plaintext secret values committed to Git.
-- [ ] Only the server receives the vault key, JWT secret and provider tokens. Today every key goes to every Deployment, including the UI (#1375), so this item fails until that lands:  
-  `kubectl get deploy metis-ui -n metis -o yaml | grep -c VAULT_MASTER_KEY` should return `0`.
+- [ ] Only the server receives the vault key, JWT secret and provider tokens (`secrets.components`, #1375). The UI references no secret, and each sidecar only its own token:  
+  `kubectl get deploy metis-ui -n metis -o yaml | grep -cE 'VAULT_MASTER_KEY|JWT_SECRET|secretKeyRef'` should return `0`.  
+  `kubectl get deploy metis-embeddings metis-sql-lineage -n metis -o jsonpath='{range .items[*]}{.metadata.name}: {.spec.template.spec.containers[0].env[*].valueFrom.secretKeyRef.key}{"\n"}{end}'` should print one token each.
+- [ ] The UI and sidecars run as `metis-workload`, which has no IRSA role and mounts no token:  
+  `kubectl get deploy metis-ui -n metis -o jsonpath='{.spec.template.spec.serviceAccountName} {.spec.template.spec.automountServiceAccountToken}'` should print `metis-workload false`.
 
 ## 9. Image hygiene
 

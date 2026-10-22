@@ -659,6 +659,21 @@ secrets:
     OPENAI_API_KEY: OPENAI_API_KEY
     GITHUB_TOKEN: GITHUB_TOKEN
     METRICS_TOKEN: METRICS_TOKEN
+  # Which keyMap env vars each component receives (#1375). "*" = every keyMap
+  # entry, so a key you add to keyMap (e.g. AUTH_LDAP_BIND_PASSWORD) reaches the
+  # server and nothing else. The UI reads no secret at runtime (its env is
+  # METIS_API_URL, METIS_TRUSTED_ORIGINS, cookie names and NEXT_PUBLIC_*), so it
+  # gets none: an RCE in the internet-facing Next.js process must not find the
+  # vault master key or the JWT signing secret in its environment. A name not in
+  # keyMap fails the render.
+  components:
+    server: ["*"]
+    ui: []
+    embeddings: [EMBEDDINGS_TOKEN]
+    sqlLineage: [SQL_LINEAGE_TOKEN]
+    # The default command only tars the mounted volumes; DATABASE_URL is there
+    # for a pg_dump override.
+    backup: [DATABASE_URL]
 
 externalSecrets:
   enabled: false
@@ -715,6 +730,12 @@ serviceAccount:
   create: true
   name: ""                        # defaults to `<release>-server`
   annotations: {}                  # set eks.amazonaws.com/role-arn here for IRSA
+  # #1375 — the UI and the sidecars run as THIS account instead: no IRSA role,
+  # no RBAC, no mounted token. Only the server (and the backup CronJob) use the
+  # account above. create=false + empty name = the namespace's `default`.
+  workload:
+    create: true
+    name: ""                      # defaults to `<release>-workload`
 
 rbac:
   create: true

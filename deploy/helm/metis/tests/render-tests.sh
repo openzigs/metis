@@ -89,7 +89,8 @@ assert "1× ConfigMap" 1 "$(count_kind ConfigMap "${DEFAULT}")"
 # default render now has 4 deployments/services (server+ui+embeddings+sql-lineage).
 assert "4× Deployment (server+ui+embeddings+sql-lineage)" 4 "$(count_kind Deployment "${DEFAULT}")"
 assert "4× Service" 4 "$(count_kind Service "${DEFAULT}")"
-assert "1× ServiceAccount" 1 "$(count_kind ServiceAccount "${DEFAULT}")"
+# #1375: the server's account + the token-less workload account (ui, sidecars).
+assert "2× ServiceAccount" 2 "$(count_kind ServiceAccount "${DEFAULT}")"
 assert "0× copilot resources (removed, #150)" 0 "$(echo "${DEFAULT}" | grep -ciE 'copilot' || true)"
 assert_contains "sql-lineage deployment present by default" "name: metis-sql-lineage" "${DEFAULT}"
 assert_contains "runAsNonRoot enforced" "runAsNonRoot: true" "${DEFAULT}"
@@ -970,6 +971,50 @@ assert "cilium: kube-apiserver reachable (k8s-sse MCP runtime)" yes \
 assert "cilium: DNS proxied for toFQDNs (dns matchPattern)" yes \
   "$(jqr '[.[] | select(.kind == "CiliumNetworkPolicy") | .spec.egress[] | .toPorts[]? | .rules.dns // [] | .[]]
       | if length > 0 then "yes" else "no" end' <<<"${CJ}")"
+
+# ---------------------------------------------------------------------------
+echo "Test 15: each component receives only the secrets it needs — #1375"
+# ---------------------------------------------------------------------------
+# metis.secretEnv used to put EVERY secrets.keyMap entry on EVERY pod, so an RCE
+# in the internet-facing Next.js process read VAULT_MASTER_KEY and JWT_SECRET
+# from its own environment.
+for spec in "default::" "prod::-f ${CHART_DIR}/values-prod.yaml --set scaling.database.url=postgres://u:p@db:5432/metis --set uploads.s3.bucket=b" "dev::-f ${CHART_DIR}/values-dev.yaml"; do
+  label="${spec%%::*}"
+  # shellcheck disable=SC2206
+  flags=(${spec#*::})
+  SJ=$(render_json "${flags[@]}" --set backup.enabled=true)
+  KEYS=$(ruby -ryaml -e 'puts YAML.load_file(ARGV[0])["secrets"]["keyMap"].keys.sort.join(",")' "${CHART_DIR}/values.yaml")
+  assert "${label}: ui pod references no secret" "" "$(jqr 'secret_env(pod("metis-ui")) | join(",")' <<<"${SJ}")"
+  for k in VAULT_MASTER_KEY JWT_SECRET; do
+    assert_not_contains "${label}: ui Deployment never names ${k}" "${k}" "$(jqr 'pod("metis-ui") | tojson' <<<"${SJ}")"
+  done
+  assert "${label}: embeddings gets EMBEDDINGS_TOKEN only" "EMBEDDINGS_TOKEN" "$(jqr 'secret_env(pod("metis-embeddings")) | join(",")' <<<"${SJ}")"
+  assert "${label}: sql-lineage gets SQL_LINEAGE_TOKEN only" "SQL_LINEAGE_TOKEN" "$(jqr 'secret_env(pod("metis-sql-lineage")) | join(",")' <<<"${SJ}")"
+  assert "${label}: backup gets DATABASE_URL only" "DATABASE_URL" "$(jqr 'secret_env(pod("metis-backup")) | join(",")' <<<"${SJ}")"
+  assert "${label}: server gets every keyMap key" "${KEYS}" "$(jqr 'secret_env(pod("metis-server")) | join(",")' <<<"${SJ}")"
+  # The pod's ServiceAccount is the other way to the Secret: the server's SA
+  # carries the MCP RBAC (secrets CRUD; cluster-wide under rbac.scope=cluster)
+  # and, on EKS, the IRSA role that reads Secrets Manager.
+  for c in ui embeddings sql-lineage; do
+    assert "${label}: ${c} does not mount a ServiceAccount token" "false" \
+      "$(jqr --arg c "metis-${c}" 'pod($c).spec.automountServiceAccountToken | tostring' <<<"${SJ}")"
+    assert "${label}: ${c} does not run as the server's ServiceAccount" "metis-workload" \
+      "$(jqr --arg c "metis-${c}" 'pod($c).spec.serviceAccountName' <<<"${SJ}")"
+  done
+  assert "${label}: the workload ServiceAccount carries no IRSA role" "" \
+    "$(jqr '[.[] | select(.kind == "ServiceAccount" and .metadata.name == "metis-workload") | .metadata.annotations // {} | keys[]] | join(",")' <<<"${SJ}")"
+done
+# A key added to keyMap (e.g. AUTH_LDAP_BIND_PASSWORD for AUTH_MODE=ldap) goes to
+# the server only — no extra routing needed, and never to the UI.
+LDAP=$(render_json --set secrets.keyMap.AUTH_LDAP_BIND_PASSWORD=AUTH_LDAP_BIND_PASSWORD)
+assert "added keyMap key reaches the server" yes \
+  "$(jqr 'secret_env(pod("metis-server")) | if index("AUTH_LDAP_BIND_PASSWORD") then "yes" else "no" end' <<<"${LDAP}")"
+assert "added keyMap key does not reach the UI" "" "$(jqr 'secret_env(pod("metis-ui")) | join(",")' <<<"${LDAP}")"
+# Routing is a values knob, and it refuses a key keyMap does not define.
+ROUTED=$(render_json --set-json 'secrets.components.ui=["METRICS_TOKEN"]')
+assert "secrets.components.ui routes a named key to the UI" "METRICS_TOKEN" "$(jqr 'secret_env(pod("metis-ui")) | join(",")' <<<"${ROUTED}")"
+assert_contains "secrets.components names a key keyMap lacks: render fails" "not in secrets.keyMap" \
+  "$(template --set-json 'secrets.components.ui=["NOPE"]' || true)"
 
 # ---------------------------------------------------------------------------
 echo
