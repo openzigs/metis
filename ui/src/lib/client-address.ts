@@ -66,9 +66,12 @@ export function trustedClientAddress(
   return bareAddress(entries[entries.length - hops]);
 }
 
-/** Must match `signedClientAddressMessage` in the API. */
-function signedMessage(address: string): string {
-  return `metis-client-address/v1\n${address}`;
+/**
+ * Must match `signedClientAddressMessage` in the API. The minute bounds replay:
+ * the API accepts the current minute ±1.
+ */
+function signedMessage(address: string, minute: number): string {
+  return `metis-client-address/v2\n${minute}\n${address}`;
 }
 
 async function hmacHex(secret: string, message: string): Promise<string> {
@@ -88,15 +91,42 @@ async function hmacHex(secret: string, message: string): Promise<string> {
  * The headers to add to an upstream auth request: the trusted client address and
  * its signature, or nothing when either is unavailable. Never throws.
  */
+let warnedHopsWithoutSecret = false;
+
+/** Test hook: let the one-time warning fire again. */
+export function resetClientAddressWarning(): void {
+  warnedHopsWithoutSecret = false;
+}
+
+/**
+ * Trusting a proxy hop without a secret to sign with is a misconfiguration:
+ * the operator meant the API to count per client, and it counts per UI pod.
+ * Said once per process, not per login.
+ */
+function warnHopsWithoutSecret(): void {
+  if (warnedHopsWithoutSecret || trustedProxyHops() === 0) return;
+  warnedHopsWithoutSecret = true;
+  // eslint-disable-next-line no-console -- server-side, once per process: a deployment misconfiguration the operator must see in the UI pod's log
+  console.warn(
+    `METIS_TRUSTED_PROXY_HOPS is ${trustedProxyHops()} but METIS_UI_PROXY_SECRET is unset or shorter than ${UI_PROXY_SECRET_MIN_LENGTH} characters: no client address is sent, so the API's login limiter counts every client behind this UI server as one (#1385)`,
+  );
+}
+
 export async function clientAddressHeaders(incoming: Headers): Promise<Record<string, string>> {
   const secret = process.env.METIS_UI_PROXY_SECRET ?? "";
-  if (secret.length < UI_PROXY_SECRET_MIN_LENGTH) return {};
+  if (secret.length < UI_PROXY_SECRET_MIN_LENGTH) {
+    warnHopsWithoutSecret();
+    return {};
+  }
   const address = trustedClientAddress(incoming);
   if (!address) return {};
   try {
     return {
       [CLIENT_ADDRESS_HEADER]: address,
-      [CLIENT_ADDRESS_SIGNATURE_HEADER]: await hmacHex(secret, signedMessage(address)),
+      [CLIENT_ADDRESS_SIGNATURE_HEADER]: await hmacHex(
+        secret,
+        signedMessage(address, Math.floor(Date.now() / 60_000)),
+      ),
     };
   } catch {
     return {};

@@ -207,5 +207,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.status).toBe(200);
       expect(res.body.data.user).toMatchObject({ username: "reader", role: "admin" });
     });
+
+    // #1385 (#1393 review) — on the REAL login route, a successful sign-in is
+    // never counted against the per-account cap; only failures are.
+    it("the per-account cap counts only failed sign-ins on the real login route", async () => {
+      vi.stubEnv("AUTH_ACCOUNT_RATE_LIMIT_MAX", "2");
+      const app = createApp();
+      const login = (password: string) =>
+        request(app).post("/api/auth/login").send({ username: "developer", password });
+      for (let i = 0; i < 4; i += 1) expect((await login("password")).status).toBe(200);
+      expect((await login("wrong")).status).toBe(401);
+      expect((await login("wrong")).status).toBe(401);
+      expect((await login("password")).status).toBe(429);
+    });
   },
 );

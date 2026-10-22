@@ -36,13 +36,24 @@ export const CLIENT_ADDRESS_SIGNATURE_HEADER = "x-metis-client-address-signature
 export const UI_PROXY_SECRET_MIN_LENGTH = 32;
 
 /** The exact bytes the UI signs. Versioned so the format can change safely. */
-export function signedClientAddressMessage(address: string): string {
-  return `metis-client-address/v1\n${address}`;
+export function signedClientAddressMessage(address: string, minute: number): string {
+  return `metis-client-address/v2\n${minute}\n${address}`;
+}
+
+/** The signing clock: whole minutes since the epoch. */
+export function signingMinute(now: number = Date.now()): number {
+  return Math.floor(now / 60_000);
 }
 
 /** Hex HMAC-SHA256 of `address` under `secret` — what the UI sends. */
-export function clientAddressSignature(secret: string, address: string): string {
-  return createHmac("sha256", secret).update(signedClientAddressMessage(address)).digest("hex");
+export function clientAddressSignature(
+  secret: string,
+  address: string,
+  minute: number = signingMinute(),
+): string {
+  return createHmac("sha256", secret)
+    .update(signedClientAddressMessage(address, minute))
+    .digest("hex");
 }
 
 let warnedShortSecret = false;
@@ -64,6 +75,26 @@ export function uiProxySecret(): string | null {
   return secret;
 }
 
+/**
+ * #1385 review — the boot-time warning for production without the shared
+ * secret: the auth limiter then counts every user behind one UI pod as one
+ * client. Returns the message it logged, or null. Called by `createServer`.
+ */
+export function warnIfNoUiProxySecret(
+  env: Record<string, string | undefined> = process.env,
+  warn: (message: string) => void = (m) => {
+    // eslint-disable-next-line no-console -- boot-time misconfiguration warning, before the request logger is wired
+    console.warn(m);
+  },
+): string | null {
+  if (env.NODE_ENV !== "production") return null;
+  if ((env.METIS_UI_PROXY_SECRET ?? "").length >= UI_PROXY_SECRET_MIN_LENGTH) return null;
+  const message =
+    "METIS_UI_PROXY_SECRET is unset (or under 32 characters): the /api/auth limiter cannot tell clients behind the UI apart, so every user behind one UI pod shares one 20-per-15-minute bucket. Set the same secret on the UI and the server (#1385).";
+  warn(message);
+  return message;
+}
+
 function singleHeader(req: Request, name: string): string | null {
   const value = req.headers[name];
   return typeof value === "string" ? value : null;
@@ -80,9 +111,18 @@ export function verifiedClientAddress(req: Request): string | null {
   const signature = singleHeader(req, CLIENT_ADDRESS_SIGNATURE_HEADER)?.trim().toLowerCase();
   if (!address || !signature || isIP(address) === 0) return null;
   if (!/^[0-9a-f]{64}$/.test(signature)) return null;
-  const expected = Buffer.from(clientAddressSignature(secret, address), "hex");
+  // The signature covers the minute it was made in, so a captured header pair
+  // is good for about two minutes, not for the secret's lifetime. ±1 minute
+  // absorbs a minute boundary between the UI and the API, and clock skew.
   const presented = Buffer.from(signature, "hex");
-  return timingSafeEqual(expected, presented) ? address : null;
+  const minute = signingMinute();
+  let valid = false;
+  for (const m of [minute - 1, minute, minute + 1]) {
+    const expected = Buffer.from(clientAddressSignature(secret, address, m), "hex");
+    // No early exit: every candidate is compared, in constant time.
+    valid = timingSafeEqual(expected, presented) || valid;
+  }
+  return valid ? address : null;
 }
 
 /** The TCP peer of this request: the UI pod, a proxy, or a direct client. Never a header. */

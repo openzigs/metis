@@ -44,7 +44,7 @@ import { onlineEvalRouter } from "./eval-online.js";
 import { findingsRouter } from "./findings.js";
 import { sandboxRouter } from "./sandbox.js";
 import { generatedDocsRouter } from "./generated-docs.js";
-import { authAccountRateLimiter, authRateLimiter } from "../middleware/rate-limit.js";
+import { authRateLimiter } from "../middleware/rate-limit.js";
 import { mcpAdminRateLimiter, mcpServerRateLimiter } from "../middleware/mcp-admin-rate-limit.js";
 import { productsRateLimiter } from "../middleware/products-rate-limit.js";
 import { jiraRateLimiter } from "../middleware/jira-rate-limit.js";
@@ -91,7 +91,7 @@ export function apiRouter(): Router {
   // licence obliges the offer to reach every remote user, not only signed-in
   // ones. Also mounted at top-level /source in app.ts.
   r.use("/source", sourceRouter());
-  r.use("/auth", authRateLimiter, authAccountRateLimiter, authRouter());
+  r.use("/auth", authRateLimiter, authRouter());
   // Epic #748 — SSO authentication routes (SAML + OIDC).
   r.use("/auth", authRateLimiter, ssoRouter());
   r.use("/ai", aiRouter());

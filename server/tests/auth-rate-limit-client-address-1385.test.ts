@@ -15,17 +15,17 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import express from "express";
 import request from "supertest";
-import {
-  createAuthAccountRateLimiter,
-  createAuthRateLimiter,
-  authAccountKey,
-} from "../src/middleware/rate-limit.js";
+import { createAuthRateLimiter } from "../src/middleware/rate-limit.js";
+import { authAccountKey, createAuthAccountGuard } from "../src/middleware/auth-account-guard.js";
+import { InMemoryRateLimitStore } from "../src/lib/discussions/rate-limit-store.js";
 import {
   CLIENT_ADDRESS_HEADER,
   CLIENT_ADDRESS_SIGNATURE_HEADER,
   authAddressKey,
   clientAddressSignature,
+  signingMinute,
   verifiedClientAddress,
+  warnIfNoUiProxySecret,
 } from "../src/middleware/auth-client-address.js";
 import { clusterRateLimitStore } from "../src/middleware/cluster-rate-limit-store.js";
 import { parseTrustProxy } from "../src/app.js";
@@ -39,8 +39,21 @@ afterEach(() => {
   delete process.env.METIS_UI_PROXY_SECRET;
 });
 
-/** The two limiters mounted where `routes/index.ts` mounts them, before a stand-in login. */
-function harness(options: { addressMax?: number; accountMax?: number } = {}) {
+/**
+ * The address limiter where `routes/index.ts` mounts it, and the account guard
+ * where `routes/auth.ts` mounts it — on the login route itself — before a
+ * stand-in login that records a failure the way the real handler does.
+ */
+function harness(
+  options: { addressMax?: number; accountMax?: number; clock?: { now: number } } = {},
+) {
+  const clock = options.clock ?? { now: 1_700_000_000_000 };
+  const guard = createAuthAccountGuard({
+    max: options.accountMax ?? 10,
+    windowMs: 15 * 60_000,
+    store: new InMemoryRateLimitStore(),
+    now: () => clock.now,
+  });
   const app = express();
   // Production's default: trust one proxy hop, so `req.ip` IS the client-written
   // X-Forwarded-For on a direct request — the value that must never buy a bucket.
@@ -52,14 +65,22 @@ function harness(options: { addressMax?: number; accountMax?: number } = {}) {
       max: options.addressMax ?? 20,
       store: clusterRateLimitStore("auth-1385", { now: () => 1_700_000_000_000 }),
     }),
-    createAuthAccountRateLimiter({
-      max: options.accountMax ?? 10,
-      store: clusterRateLimitStore("auth-account-1385", { now: () => 1_700_000_000_000 }),
-    }),
-    (req, res) => {
-      const ok = (req.body as { password?: string } | undefined)?.password === "right";
-      res.status(ok ? 200 : 401).json({ success: ok });
-    },
+    (() => {
+      const r = express.Router();
+      r.post("/login", guard.check, async (req, res) => {
+        const body = req.body as { username?: string; password?: string } | undefined;
+        if (body?.password === "right") {
+          res.status(200).json({ success: true });
+          return;
+        }
+        await guard.recordFailure(body?.username);
+        res.status(401).json({ success: false });
+      });
+      r.post("/refresh", (_req, res) => {
+        res.status(401).json({ success: false });
+      });
+      return r;
+    })(),
   );
   return app;
 }
@@ -127,8 +148,8 @@ describe("address limiter behind the UI proxy (#1385)", () => {
   });
 });
 
-describe("per-account login limiter (#1385)", () => {
-  it("caps failed logins for one account across many addresses", async () => {
+describe("per-account login guard (#1385)", () => {
+  it("caps FAILED logins for one account across many addresses", async () => {
     const app = harness({ addressMax: 1000, accountMax: 3 });
     for (let i = 1; i <= 3; i += 1) {
       expect((await viaUi(app, `203.0.113.${i}`, "alice")).status).toBe(401);
@@ -136,10 +157,32 @@ describe("per-account login limiter (#1385)", () => {
     const res = await viaUi(app, "203.0.113.50", "alice");
     expect(res.status).toBe(429);
     expect(res.body.error.message).toMatch(/this account/);
-    // Folded: the same account however it is spelt.
+    // Even the right password waits out the window: the cap is checked first.
+    expect((await viaUi(app, "203.0.113.52", "alice", "right")).status).toBe(429);
+    // Folded: the same account however it is spelt, NFKC included.
     expect((await viaUi(app, "203.0.113.51", "  ALICE ")).status).toBe(429);
+    expect((await viaUi(app, "203.0.113.51", "\uFF41lice")).status).toBe(429); // full-width a
     // Another account is untouched.
     expect((await viaUi(app, "203.0.113.50", "bob")).status).toBe(401);
+  });
+
+  it("never counts a successful sign-in", async () => {
+    const app = harness({ addressMax: 1000, accountMax: 2 });
+    for (let i = 0; i < 6; i += 1) {
+      expect((await viaUi(app, "203.0.113.9", "carol", "right")).status).toBe(200);
+    }
+    expect((await viaUi(app, "203.0.113.9", "carol")).status).toBe(401);
+    expect((await viaUi(app, "203.0.113.9", "carol")).status).toBe(401);
+    expect((await viaUi(app, "203.0.113.9", "carol")).status).toBe(429);
+  });
+
+  it("frees the account when the window passes", async () => {
+    const clock = { now: 1_700_000_000_000 };
+    const app = harness({ addressMax: 1000, accountMax: 1, clock });
+    expect((await viaUi(app, "203.0.113.9", "erin")).status).toBe(401);
+    expect((await viaUi(app, "203.0.113.9", "erin")).status).toBe(429);
+    clock.now += 15 * 60_000 + 1;
+    expect((await viaUi(app, "203.0.113.9", "erin", "right")).status).toBe(200);
   });
 
   it("does not throttle other auth routes, or a login that names no account", async () => {
@@ -153,21 +196,55 @@ describe("per-account login limiter (#1385)", () => {
     expect((await viaUi(app, "203.0.113.9", "dave", "right")).status).toBe(200);
   });
 
-  it("keys only POST /login with a usable username", () => {
-    const req = (method: string, path: string, body: unknown) =>
-      ({ method, path, body }) as unknown as express.Request;
-    expect(authAccountKey(req("POST", "/login", { username: "alice" }))).toMatch(
-      /^acct:[0-9a-f]{64}$/,
+  it("keys a usable username, NFKC-folded and hashed", () => {
+    expect(authAccountKey("alice")).toMatch(/^auth-account:[0-9a-f]{64}$/);
+    expect(authAccountKey("Alice ")).toBe(authAccountKey("alice"));
+    expect(authAccountKey("\u212Aate")).toBe(authAccountKey("kate")); // Kelvin sign
+    expect(authAccountKey(42)).toBeNull();
+    expect(authAccountKey("   ")).toBeNull();
+    expect(authAccountKey("x".repeat(300))).toBeNull();
+    expect(authAccountKey(undefined)).toBeNull();
+  });
+
+  it("a store error on the check is the error handler's, and on a record is swallowed", async () => {
+    const broken = {
+      hit: async () => {
+        throw new Error("store down");
+      },
+      count: async () => {
+        throw new Error("store down");
+      },
+      reset: async () => {},
+    };
+    const guard = createAuthAccountGuard({ store: broken, max: 1 });
+    await expect(guard.recordFailure("x")).resolves.toBeUndefined();
+    const next = await new Promise<unknown>((resolve) =>
+      guard.check(
+        { body: { username: "x" } } as unknown as express.Request,
+        {} as express.Response,
+        resolve,
+      ),
     );
-    expect(authAccountKey(req("POST", "/login", { username: "Alice " }))).toBe(
-      authAccountKey(req("POST", "/login", { username: "alice" })),
-    );
-    expect(authAccountKey(req("POST", "/refresh", { username: "alice" }))).toBeNull();
-    expect(authAccountKey(req("GET", "/login", { username: "alice" }))).toBeNull();
-    expect(authAccountKey(req("POST", "/login", { username: 42 }))).toBeNull();
-    expect(authAccountKey(req("POST", "/login", { username: "   " }))).toBeNull();
-    expect(authAccountKey(req("POST", "/login", { username: "x".repeat(300) }))).toBeNull();
-    expect(authAccountKey(req("POST", "/login", undefined))).toBeNull();
+    expect(next).toBeInstanceOf(Error);
+  });
+
+  it("a store without count() counts every attempt — stricter, never looser", async () => {
+    const memory = new InMemoryRateLimitStore();
+    const store = { hit: memory.hit.bind(memory), reset: memory.reset.bind(memory) };
+    const guard = createAuthAccountGuard({ store, max: 2, now: () => 1 });
+    const run = () =>
+      new Promise<number | "next">((resolve) =>
+        guard.check(
+          { body: { username: "y" } } as unknown as express.Request,
+          {
+            status: (code: number) => ({ json: () => resolve(code) }),
+          } as unknown as express.Response,
+          () => resolve("next"),
+        ),
+      );
+    expect(await run()).toBe("next");
+    expect(await run()).toBe("next");
+    expect(await run()).toBe(429);
   });
 });
 
@@ -215,6 +292,38 @@ describe("authAddressKey / verifiedClientAddress (#1385)", () => {
         fakeReq({ [CLIENT_ADDRESS_HEADER]: ["192.0.2.1"], [CLIENT_ADDRESS_SIGNATURE_HEADER]: sig }),
       ),
     ).toBeNull();
+  });
+
+  it("accepts a signature from the previous or next minute, not older (bounded replay)", () => {
+    const ip = "192.0.2.10";
+    const now = signingMinute();
+    const at = (minute: number) =>
+      verifiedClientAddress(
+        fakeReq({
+          [CLIENT_ADDRESS_HEADER]: ip,
+          [CLIENT_ADDRESS_SIGNATURE_HEADER]: clientAddressSignature(SECRET, ip, minute),
+        }),
+      );
+    expect(at(now - 1)).toBe(ip);
+    expect(at(now + 1)).toBe(ip);
+    expect(at(now - 3)).toBeNull();
+    expect(at(now + 3)).toBeNull();
+  });
+
+  it("warns at boot in production only, and only without a usable secret", () => {
+    const warn = (m: string) => messages.push(m);
+    const messages: string[] = [];
+    expect(warnIfNoUiProxySecret({ NODE_ENV: "production" }, warn)).toMatch(
+      /METIS_UI_PROXY_SECRET/,
+    );
+    expect(
+      warnIfNoUiProxySecret({ NODE_ENV: "production", METIS_UI_PROXY_SECRET: "short" }, warn),
+    ).not.toBeNull();
+    expect(
+      warnIfNoUiProxySecret({ NODE_ENV: "production", METIS_UI_PROXY_SECRET: SECRET }, warn),
+    ).toBeNull();
+    expect(warnIfNoUiProxySecret({ NODE_ENV: "development" }, warn)).toBeNull();
+    expect(messages).toHaveLength(2);
   });
 
   it("ignores a secret shorter than 32 characters", () => {

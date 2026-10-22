@@ -48,7 +48,7 @@
 
 ### 2.3 RBAC
 - Roles: `admin`, `coordinator`, `developer`, `reader`. Each maps to a fixed permission set declared in `packages/shared/src/permissions.ts`.
-- **First admin (#1376).** `METIS_BOOTSTRAP_ADMINS` (usernames or e-mails) grants a listed identity `admin` when it signs in through a trusted provider and no user holds the admin role. Once one does, the setting has no effect, so it cannot be replayed to escalate. For OIDC only an e-mail with `email_verified: true` counts; the OIDC username (user-editable `preferred_username`, or an unverified e-mail's local part) never does. See [`docs/auth/README.md`](auth/README.md#first-admin-metis_bootstrap_admins-1376).
+- **First admin (#1376).** `METIS_BOOTSTRAP_ADMINS` (usernames or e-mails) grants a listed identity `admin` when it signs in through a trusted provider and no user holds the admin role. Once one does, the setting has no effect, so it cannot be replayed to escalate. It re-arms only if every admin role row is removed. Only identities the provider states as-is count: on SAML never the username METIS derives from the e-mail's local part, on OIDC only the `email` claim with `email_verified: true`. Identities that NFKC would change never match. See [`docs/auth/README.md`](auth/README.md#first-admin-metis_bootstrap_admins-1376).
 - Every privileged route is guarded by `requirePermission('<dotted.permission>')`.
 - Project-scoped permissions (e.g. `project.update`) check membership before checking the global role.
 - `requirePermission` is a **global-role** check and is never sufficient on its own for
@@ -58,7 +58,7 @@
 | Surface | Default limit | Variable |
 |---|---|---|
 | `/api/auth/*` | 20 / 15min / client address (see below) | `RATE_LIMIT_*` |
-| `POST /api/auth/login` | 10 attempts / 15min / account (username, case-folded) | `AUTH_ACCOUNT_RATE_LIMIT_MAX` (window: `RATE_LIMIT_WINDOW_MS`) |
+| `POST /api/auth/login` (every path Express routes there) | 10 **failed** sign-ins / 15min / account (username, NFKC-folded) | `AUTH_ACCOUNT_RATE_LIMIT_MAX` (window: `RATE_LIMIT_WINDOW_MS`) |
 | AI chat / stream | 60 / 15min / user | `AI_RATE_LIMIT_*` |
 | Connector mutations | 30 / 5min / user | `CONNECTOR_RATE_LIMIT_*` |
 | Document upload | 10 / 1min / user | `UPLOAD_RATE_LIMIT_*` |
@@ -102,13 +102,28 @@ the Helm chart sets 1). Leave it 0 when browsers reach the UI directly: then eve
 limiter falls back to one bucket per UI pod. The generic `/api/*` proxy drops a
 browser's own copy of these headers.
 
-The per-account limiter caps sign-in attempts for one username however many
-addresses they come from, so neither a botnet nor a shared NAT can brute-force
-one account. It counts every attempt, successful or not: un-counting a success
-needs a store decrement, which the cluster-safe Postgres and Valkey backends do
-not have. Like any account lockout, it lets someone who knows a username delay
-that user's sign-in for one window; raise `AUTH_ACCOUNT_RATE_LIMIT_MAX` if that
-matters more to you than the brute-force cap.
+The signature covers the address **and the minute** it was made in
+(`metis-client-address/v2\n<minute>\n<address>`). The API accepts the current
+minute ±1, so a captured header pair can be replayed for about two minutes, not
+for the secret's lifetime. In production the server warns at boot when
+`METIS_UI_PROXY_SECRET` is missing. The UI warns once when
+`METIS_TRUSTED_PROXY_HOPS` is above 0 but it has no secret to sign with.
+
+The per-account guard (`server/src/middleware/auth-account-guard.ts`) caps
+**failed** sign-ins for one username, however many addresses they come from, so
+neither a botnet nor a shared NAT can brute-force one account. A successful
+sign-in is never counted.
+
+- **No decrement needed.** The guard reads the account's failure count before
+  authenticating, using `RateLimitStore.count`, which records nothing. The login
+  handler records a hit only after a failed bind. This works on the cluster-safe
+  Postgres and Valkey stores, which have no decrement.
+- **Mounted on the login route itself.** Express routes `/login/`, `/LOGIN` and
+  `/Login` to the same handler, and a path match skipped all three.
+- **Lockout trade-off.** Like any account lockout, someone who knows a username
+  can hold that user's sign-in back for one window with that many wrong
+  passwords. Raise `AUTH_ACCOUNT_RATE_LIMIT_MAX` if that matters more to you
+  than the brute-force cap.
 
 ### 2.5 Cross-site request forgery (#913)
 

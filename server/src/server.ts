@@ -32,6 +32,7 @@ import { startRevocationPruner } from "./lib/auth/revocation-store.js";
 import { registerPostgresRateLimitStore } from "./lib/discussions/rate-limit-store-postgres.js";
 import { registerPostgresSSOStateStore } from "./lib/auth/sso-state-store-postgres.js";
 import { seedSsoProvidersFromEnv } from "./lib/auth/sso-env-providers.js";
+import { warnIfNoUiProxySecret } from "./middleware/auth-client-address.js";
 import { registerPostgresSamlRequestIdCache } from "./lib/auth/saml-request-id-cache-postgres.js";
 import { registerS3Storage } from "./lib/documents/storage-backend-s3.js";
 import { registerPgVectorStore } from "./lib/rag/vector-store-pgvector.js";
@@ -268,6 +269,8 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   // replica, before the first request. Without this an SSO-only install had no
   // provider until an admin configured one, and no admin until someone signed in.
   // A half-configured provider throws here: fail the boot, not every login.
+  // #1385 — say at boot when the login limiter will be one bucket per UI pod.
+  warnIfNoUiProxySecret();
   const seededSso = seedSsoProvidersFromEnv();
   if (seededSso.length > 0) {
     // eslint-disable-next-line no-console -- boot-time configuration notice, before the request logger is wired

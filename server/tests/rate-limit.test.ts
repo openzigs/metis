@@ -227,22 +227,26 @@ describe("auth rate limiter wiring (#1288)", () => {
     expect(res.headers).not.toHaveProperty("ratelimit-limit");
   });
 
-  it("mounts the per-account login limiter on POST /api/auth/login (#1385)", async () => {
-    // The cap is read per request, so this moves it without re-importing the app.
-    const previous = process.env.AUTH_ACCOUNT_RATE_LIMIT_MAX;
-    process.env.AUTH_ACCOUNT_RATE_LIMIT_MAX = "2";
-    try {
-      const login = () =>
-        request(app)
-          .post("/api/auth/login")
-          .send({ username: "wiring-1385-account", password: "nope" });
-      expect((await login()).status).not.toBe(429);
-      expect((await login()).status).not.toBe(429);
-      const res = await login();
-      expect(res.status).toBe(429);
-      expect(res.body.error.message).toMatch(/this account/);
-    } finally {
-      process.env.AUTH_ACCOUNT_RATE_LIMIT_MAX = previous;
-    }
-  });
+  // #1393 review — Express routes `/login/`, `/LOGIN` and `/Login` to the login
+  // handler, and the old limiter matched `req.path === "/login"` exactly, so all
+  // three skipped the cap. The guard now sits on the route itself.
+  it.each(["/api/auth/login", "/api/auth/login/", "/api/auth/LOGIN", "/api/auth/Login"])(
+    "the per-account cap applies to POST %s (#1385)",
+    async (path) => {
+      // The cap is read per request, so this moves it without re-importing the app.
+      const previous = process.env.AUTH_ACCOUNT_RATE_LIMIT_MAX;
+      process.env.AUTH_ACCOUNT_RATE_LIMIT_MAX = "2";
+      const username = `wiring-1385-${Buffer.from(path).toString("hex")}`;
+      try {
+        const login = () => request(app).post(path).send({ username, password: "nope" });
+        expect((await login()).status).toBe(401);
+        expect((await login()).status).toBe(401);
+        const res = await login();
+        expect(res.status).toBe(429);
+        expect(res.body.error.message).toMatch(/this account/);
+      } finally {
+        process.env.AUTH_ACCOUNT_RATE_LIMIT_MAX = previous;
+      }
+    },
+  );
 });

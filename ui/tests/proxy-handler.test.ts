@@ -118,6 +118,9 @@ describe("proxy auth gate (handler)", () => {
     const secret = "proxy-handler-test-secret-long-enough-0123456789";
     vi.stubEnv("METIS_UI_PROXY_SECRET", secret);
     vi.stubEnv("METIS_TRUSTED_PROXY_HOPS", "1");
+    const now = Date.UTC(2026, 9, 21, 12, 0, 30);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
     try {
       refreshMock.mockResolvedValue(refused);
       await run(
@@ -126,13 +129,14 @@ describe("proxy auth gate (handler)", () => {
         }),
       );
       const expected = createHmac("sha256", secret)
-        .update("metis-client-address/v1\n203.0.113.7")
+        .update(`metis-client-address/v2\n${Math.floor(now / 60_000)}\n203.0.113.7`)
         .digest("hex");
       expect(refreshMock).toHaveBeenCalledWith("rt", {
         "x-metis-client-address": "203.0.113.7",
         "x-metis-client-address-signature": expected,
       });
     } finally {
+      vi.useRealTimers();
       vi.unstubAllEnvs();
     }
   });

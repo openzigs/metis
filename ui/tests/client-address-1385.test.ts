@@ -12,6 +12,7 @@ import {
   CLIENT_ADDRESS_HEADER,
   CLIENT_ADDRESS_SIGNATURE_HEADER,
   clientAddressHeaders,
+  resetClientAddressWarning,
   trustedClientAddress,
   trustedProxyHops,
 } from "@/lib/client-address";
@@ -22,8 +23,13 @@ import { GET } from "@/app/api/[...path]/route";
 
 const SECRET = "ui-test-proxy-secret-long-enough-0123456789";
 /** What the API computes (`server/src/middleware/auth-client-address.ts`). */
+// A fixed clock: the signature covers the minute it was made in (#1385 review).
+const NOW = Date.UTC(2026, 9, 21, 12, 0, 30);
+const MINUTE = Math.floor(NOW / 60_000);
 const apiSignature = (address: string) =>
-  createHmac("sha256", SECRET).update(`metis-client-address/v1\n${address}`).digest("hex");
+  createHmac("sha256", SECRET)
+    .update(`metis-client-address/v2\n${MINUTE}\n${address}`)
+    .digest("hex");
 
 const fetchMock = vi.fn();
 beforeEach(() => {
@@ -38,8 +44,11 @@ beforeEach(() => {
   );
   process.env.METIS_UI_PROXY_SECRET = SECRET;
   process.env.METIS_TRUSTED_PROXY_HOPS = "1";
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   delete process.env.METIS_UI_PROXY_SECRET;
   delete process.env.METIS_TRUSTED_PROXY_HOPS;
@@ -94,6 +103,23 @@ describe("clientAddressHeaders", () => {
     expect(await clientAddressHeaders(xff("203.0.113.7"))).toEqual({});
     process.env.METIS_UI_PROXY_SECRET = "short";
     expect(await clientAddressHeaders(xff("203.0.113.7"))).toEqual({});
+  });
+  it("warns once when it trusts a proxy hop but has no secret to sign with", async () => {
+    resetClientAddressWarning();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      delete process.env.METIS_UI_PROXY_SECRET;
+      await clientAddressHeaders(xff("203.0.113.7"));
+      await clientAddressHeaders(xff("203.0.113.7"));
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toMatch(/METIS_UI_PROXY_SECRET/);
+      resetClientAddressWarning();
+      process.env.METIS_TRUSTED_PROXY_HOPS = "0";
+      await clientAddressHeaders(xff("203.0.113.7"));
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
   it("sends nothing at the default 0 hops", async () => {
     delete process.env.METIS_TRUSTED_PROXY_HOPS;
