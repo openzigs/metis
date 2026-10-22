@@ -11,6 +11,7 @@
  * schema — lost the finding carrying the bad citation too.
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { AGENT_DEGRADED_NOTE_PREFIX } from "@metis/shared";
 import type { ChatMessage, ChatOptions } from "../ai/types.js";
 import { __resetConfigSingleton } from "../config/config-service.js";
 
@@ -244,9 +245,12 @@ describe("#298 — an over-long documentId and note are repaired, not fatal", ()
       chunkIndex: 2,
     });
     // The stored limit is kept: truncated to exactly 512, with an ellipsis.
-    expect(output.notes[0]).toHaveLength(512);
-    expect(output.notes[0]!.endsWith("…")).toBe(true);
-    expect(output.notes[0]!.slice(0, 100)).toBe(LONG_NOTE.slice(0, 100));
+    // (#1388 — the pass gathered no code evidence for its requirement, so a
+    // shallow-pass note leads; the model's own notes follow it.)
+    const modelNotes = output.notes.filter((n) => !n.startsWith(AGENT_DEGRADED_NOTE_PREFIX));
+    expect(modelNotes[0]).toHaveLength(512);
+    expect(modelNotes[0]!.endsWith("…")).toBe(true);
+    expect(modelNotes[0]!.slice(0, 100)).toBe(LONG_NOTE.slice(0, 100));
     // Every repair is recorded on the persisted output.
     const repairNote = output.notes.find((n) => n.startsWith("REPAIRED:"));
     expect(repairNote).toContain("1 document-id-resolved");
@@ -360,7 +364,10 @@ describe("#298 — an over-long documentId and note are repaired, not fatal", ()
     );
 
     const output = persistedCodeOutput();
-    expect(output.notes).toEqual(["short"]);
+    // #1388 — plus the shallow-pass note: no code evidence backs REQ-001.
+    expect(output.notes.filter((n) => !n.startsWith(AGENT_DEGRADED_NOTE_PREFIX))).toEqual([
+      "short",
+    ]);
     const lookups = documentFindMany.mock.calls as unknown as Array<
       [{ select?: Record<string, unknown> }]
     >;

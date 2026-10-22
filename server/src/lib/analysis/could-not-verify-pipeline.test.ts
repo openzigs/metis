@@ -384,9 +384,11 @@ describe("#773 — degraded retrieval can never produce a confirmed gap", () => 
     // The incident run persisted `reasons: []` — a fully healthy-looking record.
     expect(capability()?.reasons).toContain("code-retrieval-degraded");
     expect(capability()?.codeRetrievalDegraded).toBe(true);
-    // NOT a duplicate of #769/#770: the agent completed and answered in valid JSON.
+    // NOT a duplicate of #770: the agent completed and answered in valid JSON.
     expect(capability()?.codeAgentFailed).toBe(false);
-    expect(capability()?.codeAgentDegraded).toBe(false);
+    // #1388 — but an answer that leaves its requirements unverified is a shallow
+    // pass, and the code agent is reported degraded rather than a clean `completed`.
+    expect(capability()?.codeAgentDegraded).toBe(true);
   });
 
   it("rolls the requirement up to could-not-verify, never a gap", async () => {
