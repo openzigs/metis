@@ -105,9 +105,9 @@ function keywordRuleCauseNote(cause: KeywordRuleCause, all: boolean): string {
     case "embedding-pending":
       return " Some code was still being embedded, so it is shown only by the keyword rule; re-run once embedding has finished.";
     case "other-model":
-      return " Some code was embedded with a different embedding model from the one in use, so it is shown only by the keyword rule. To change that, ask an administrator to re-embed the project's code with the model in use; a re-run alone will not.";
+      return " Some code was embedded with a different embedding model from the one in use, so it is shown only by the keyword rule. To change that, ask an administrator to re-embed the project's code with the model in use; re-running the analysis alone will not change this.";
     case "not-embedded":
-      return " Some code has no embedding, so it is shown only by the keyword rule. To change that, ask an administrator to re-embed the project's code; a re-run alone will not.";
+      return " Some code has no embedding, so it is shown only by the keyword rule. To change that, ask an administrator to re-embed the project's code; re-running the analysis alone will not change this.";
     default:
       // `no-vector`: the cause was not known (and every #1330 run's code cause).
       return " Some code had no usable embedding when this ran, so it is shown only by the keyword rule.";

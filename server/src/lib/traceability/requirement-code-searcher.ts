@@ -160,9 +160,11 @@ export interface HybridCodeSymbolSearcherDeps {
    * return, to tell "no vector under the active model" from "a vector the
    * search lost". Absent (a test double, the eval harness): their cause is
    * not known (`no-vector`) and they are gated by the keyword rule, as under
-   * #1330. FAILING: any of them may be a lost vector, so all of them are
+   * #1330. FAILING: any code hit among them may be a lost vector, so each is
    * bounded and capped like one (see the module comment) rather than scored
-   * on words alone, which would let a lost two-word hit read 0.273.
+   * on words alone, which would let a lost two-word hit read 0.273; a table
+   * or column is never embedded and stays with the keyword rule. With no
+   * returned cosine to bound them, they go to the keyword rule (`no-vector`).
    */
   embeddingModels?: EmbeddingModelLookup;
 }
@@ -350,7 +352,9 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
     //     never embedded): it has no vector to compare, so it is left to the
     //     keyword rule (see `search`);
     //   - rows that could not be read: any of these hits may be a lost vector,
-    //     so each is bounded and capped like one.
+    //     so each is bounded and capped like one, except a table or column
+    //     (by the search's own `kind`), which is never embedded and so stays
+    //     with the keyword rule (`schema-not-embedded`).
     const unscored = hits.filter((h) => h.cosine == null);
     if (unscored.length === 0) return { calibrated, hits, vectorState, bounded };
     const tags = await this.embeddingModelsOf(
@@ -358,10 +362,13 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
       unscored.map((h) => h.symbolId),
     );
     const cutoff = lowestCosine(hits);
+    const kinds = new Map(results.map((r) => [r.symbolId, r.kind]));
     const out = hits.map((h) => {
       if (h.cosine != null) return h;
       const tag = tags instanceof Map ? tags.get(h.symbolId) : undefined;
-      const lost = tags === "failed" || (tags instanceof Map && tag === model);
+      const lost =
+        (tags === "failed" && !NEVER_EMBEDDED_KINDS.has(kinds.get(h.symbolId) ?? "")) ||
+        (tags instanceof Map && tag === model);
       if (lost && cutoff !== null) {
         bounded.add(h.symbolId);
         return { ...h, cosine: cutoff };

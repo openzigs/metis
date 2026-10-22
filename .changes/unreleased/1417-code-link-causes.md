@@ -5,7 +5,8 @@ section: Fixed
 
 - Code whose embedding the search did not return is no longer shown by the keyword rule: it is
   scored as no closer than the code the search did return, and its confidence is capped just
-  under the lowest of those links, so it is listed after them and only if it still clears 0.08.
+  under the lowest of those links, so it is listed after them, only if it still clears 0.08, and
+  not at all when none of those links is shown.
 - The Affected code panel names every cause behind the keyword-rule links it shows, labels each
   link with the rule that showed it where a requirement mixes both, and advises a re-run only for
   code still being embedded.

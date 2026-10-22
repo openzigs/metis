@@ -283,11 +283,11 @@ describe("AffectedCodePanel", () => {
   it.each([
     [
       "other-model",
-      /embedded with a different embedding model from the one in use, so it is shown only by the keyword rule\. To change that, ask an administrator to re-embed the project's code with the model in use; a re-run alone will not\./,
+      /embedded with a different embedding model from the one in use, so it is shown only by the keyword rule\. To change that, ask an administrator to re-embed the project's code with the model in use; re-running the analysis alone will not change this\./,
     ],
     [
       "not-embedded",
-      /Some code has no embedding, so it is shown only by the keyword rule\. To change that, ask an administrator to re-embed the project's code; a re-run alone will not\./,
+      /Some code has no embedding, so it is shown only by the keyword rule\. To change that, ask an administrator to re-embed the project's code; re-running the analysis alone will not change this\./,
     ],
   ] as const)(
     "#1417 — `%s` says what to do (an administrator re-embeds), not to re-run",
