@@ -13,7 +13,7 @@
  * on `res.locals.run` so handlers re-use it without a second DB hit (#419).
  */
 import { Router } from "express";
-import type { ApiResponse } from "@metis/shared";
+import type { ApiResponse, AuthPayload } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { runsPreAuthRateLimiter, runsUserRateLimiter } from "../middleware/runs-rate-limit.js";
 import { requirePermission } from "../middleware/require-permission.js";
@@ -47,12 +47,38 @@ function parseLimit(value: unknown): number | undefined {
   return n > 0 ? n : undefined;
 }
 
+/**
+ * #1122 — the project scope both lists apply, in one place. A non-admin is
+ * narrowed to `listAccessibleProjectIds`, which leaves out a soft-deleted
+ * project, and an explicit `?projectId=` outside that set answers
+ * `assertProjectAccess`'s 404 — a soft-deleted project too, which
+ * `assertProjectAccess` alone still admits, so it is not an empty 200. An
+ * admin is not narrowed: a soft-deleted project stays open to them, as on
+ * the socket rooms, scheduler and discussions. (The chat session itself does
+ * not yet close a soft-deleted project to a non-admin: #1412.)
+ *
+ * Returns the project ids to narrow to; `undefined` for an admin.
+ */
+async function listProjectScope(
+  user: AuthPayload,
+  projectId: string | undefined,
+): Promise<string[] | undefined> {
+  if (projectId) await assertProjectAccess(user, projectId);
+  if (isAdminActor(user)) return undefined;
+  const accessible = await listAccessibleProjectIds(user);
+  if (projectId && !accessible.includes(projectId)) {
+    throw new AppError(404, "NOT_FOUND", "Project not found");
+  }
+  return accessible;
+}
+
 export function runsRouter(): Router {
   const r = Router();
 
   // #305 — an explicit `?projectId=` must name a project the caller can reach
   // (404 otherwise); every non-admin list, filtered or not, is narrowed to the
   // caller's projects, so `?sessionId=` cannot surface another tenant's runs.
+  // #1122 — a soft-deleted project is not one a non-admin can reach.
   r.get(
     "/",
     runsPreAuthRateLimiter,
@@ -66,10 +92,7 @@ export function runsRouter(): Router {
       const from = parseDate(req.query.from);
       const to = parseDate(req.query.to);
       const limit = parseLimit(req.query.limit);
-      if (projectId) await assertProjectAccess(req.user, projectId);
-      const accessibleProjectIds = isAdminActor(req.user)
-        ? undefined
-        : await listAccessibleProjectIds(req.user);
+      const accessibleProjectIds = await listProjectScope(req.user, projectId);
       const items = await listRuns({ projectId, sessionId, from, to, limit, accessibleProjectIds });
       res.json(ok({ items }));
     },
@@ -84,7 +107,10 @@ export function runsRouter(): Router {
   //     too. A chat session is owner-only everywhere else
   //     (`loadAuthorizedSession`), so a `?sessionId=` that is someone else's
   //     surfaces nothing. Unlike `loadAuthorizedSession`, a chat its owner
-  //     DELETED is still listed to them: it is still their spend.
+  //     DELETED is still listed to them: it is still their spend. A chat in a
+  //     soft-deleted PROJECT is not, to a non-admin (#1122): the project is
+  //     closed to them, so its turns leave the list and `?projectId=` of it
+  //     is a 404, exactly as on the list above.
   // Registered before `/:id`.
   r.get(
     "/chat-turns",
@@ -99,10 +125,7 @@ export function runsRouter(): Router {
       const from = parseDate(req.query.from);
       const to = parseDate(req.query.to);
       const limit = parseLimit(req.query.limit);
-      if (projectId) await assertProjectAccess(req.user, projectId);
-      const accessibleProjectIds = isAdminActor(req.user)
-        ? undefined
-        : await listAccessibleProjectIds(req.user);
+      const accessibleProjectIds = await listProjectScope(req.user, projectId);
       const page = await listChatTurns({
         userId: req.user.userId,
         projectId,
