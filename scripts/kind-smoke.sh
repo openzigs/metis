@@ -56,7 +56,7 @@ log "1/5 Offline chart gate (lint + template + render-tests.sh)"
 helm lint "${CHART_DIR}" >/dev/null && ok "helm lint (default)"
 helm lint "${CHART_DIR}" -f "${CHART_DIR}/values-dev.yaml" >/dev/null && ok "helm lint (values-dev)"
 helm lint "${CHART_DIR}" -f "${CHART_DIR}/values-prod.yaml" >/dev/null && ok "helm lint (values-prod)"
-bash "${CHART_DIR}/tests/render-tests.sh" >/dev/null && ok "render-tests.sh (109 assertions)"
+bash "${CHART_DIR}/tests/render-tests.sh" >/dev/null && ok "render-tests.sh (golden suite)"
 
 # ---------------------------------------------------------------------------
 log "2/5 Create kind cluster '${CLUSTER_NAME}'"
@@ -150,6 +150,23 @@ SERVER_REPLICAS="$(kubectl get deploy "${RELEASE}-server" -n "${NAMESPACE}" -o j
 [[ "${SERVER_REPLICAS}" == "1" ]] && ok "dev profile: server replicas=1" \
   || die "expected dev server replicas=1, got ${SERVER_REPLICAS}"
 
+# #1378: `helm upgrade` must leave an HPA-scaled Deployment alone. Turn on the
+# ui HPA, scale the Deployment the way the HPA would, and upgrade again. With
+# replicas in the manifest, Helm 4 (server-side apply) fails on a field-manager
+# conflict and Helm 3 resets the count. The bounds are wide enough that the
+# HPA, which has no metrics-server here, leaves 3 alone.
+HPA_ARGS=(-n "${NAMESPACE}" -f "${CHART_DIR}/values-dev.yaml"
+  --set autoscaling.ui.enabled=true --set autoscaling.ui.minReplicas=1 --set autoscaling.ui.maxReplicas=5
+  --timeout 120s)
+helm upgrade "${RELEASE}" "${CHART_DIR}" "${HPA_ARGS[@]}" >/dev/null && ok "helm upgrade: ui HPA enabled"
+kubectl scale deploy "${RELEASE}-ui" -n "${NAMESPACE}" --replicas=3 >/dev/null
+helm upgrade "${RELEASE}" "${CHART_DIR}" "${HPA_ARGS[@]}" >/dev/null \
+  && ok "helm upgrade of an HPA-scaled Deployment succeeds without --force-conflicts" \
+  || die "helm upgrade failed on an HPA-scaled Deployment (#1378)"
+UI_REPLICAS="$(kubectl get deploy "${RELEASE}-ui" -n "${NAMESPACE}" -o jsonpath='{.spec.replicas}')"
+[[ "${UI_REPLICAS}" == "3" ]] && ok "upgrade kept the HPA's replica count (3)" \
+  || die "upgrade reset the ui replica count to ${UI_REPLICAS}; expected 3 (#1378)"
+
 # ---------------------------------------------------------------------------
 log "5/5 Assert prod-profile multi-replica posture renders into the cluster (dry-run)"
 # ---------------------------------------------------------------------------
@@ -166,8 +183,14 @@ PROD_RENDER="$(helm template "${RELEASE}" "${CHART_DIR}" \
 # `set -o pipefail`, grep matching a large input closes the pipe early; echo then
 # gets SIGPIPE ("write error: Broken pipe") and the pipeline fails spuriously. A
 # here-string has no pipe and no SIGPIPE, so the check is deterministic.
-grep -qE '^[[:space:]]*replicas: 2' <<<"${PROD_RENDER}" && ok "prod: server Deployment replicas>1" \
-  || die "prod profile did not render replicas: 2"
+# #1378: the prod server count belongs to its HPA (2..6), so the server
+# Deployment states no replicas; the HPA carries the floor.
+PROD_SERVER="$(awk '/^kind: Deployment$/{d=1} /^---$/{d=0; s=0} d && $0 == "  name: '"${RELEASE}"'-server"{s=1} s' <<<"${PROD_RENDER}")"
+[[ -n "${PROD_SERVER}" ]] || die "prod profile rendered no server Deployment"
+! grep -qE '^  replicas:' <<<"${PROD_SERVER}" && ok "prod: server Deployment leaves replicas to its HPA" \
+  || die "prod server Deployment renders replicas although its HPA is enabled (#1378)"
+grep -qE '^  minReplicas: 2$' <<<"${PROD_RENDER}" && ok "prod: server HPA floor 2 (multi-replica)" \
+  || die "prod profile did not render an HPA with minReplicas: 2"
 grep -q 'name: VECTOR_STORE' <<<"${PROD_RENDER}" && ok "prod: VECTOR_STORE scaling env present" \
   || die "prod profile missing VECTOR_STORE env"
 grep -q 'name: SCHEDULER_LEADER_ELECTION' <<<"${PROD_RENDER}" && ok "prod: SCHEDULER_LEADER_ELECTION env present" \

@@ -42,7 +42,7 @@ The chart leaves three server settings to you, and the install does not work wit
 - [ ] HPA on `ui`, which needs metrics-server.  
   `kubectl get hpa -n metis`
 - [ ] The `server` HPA is enabled by default (2→6). Keep it on only with the shared backends (Postgres, pgvector, S3, leader election; `values-prod.yaml`). On the single-replica SQLite/LanceDB profile, set `autoscaling.server.enabled=false` and `server.replicaCount=1`.
-- [ ] `helm upgrade` after an HPA has scaled: Helm 4 fails with a `.spec.replicas` conflict until #1378 lands. Pass `--force-conflicts` until then.
+- [ ] A Deployment with an enabled HPA renders no `replicas` (#1378), so `helm upgrade` after the HPA has scaled succeeds without `--force-conflicts` and keeps the HPA's count. Check that `helm get manifest metis -n metis` shows no `replicas:` on `metis-ui` or `metis-server`. On the first upgrade from a chart that still set `replicas`, the count drops to 1 once, until the HPA scales back to `minReplicas`. Upgrade outside peak hours, or scale up again right after.
 
 ## 5. NetworkPolicy
 

@@ -143,7 +143,8 @@ echo "Test 4b: Multi-replica scaling guard — issue #540 / epic #518"
 # ---------------------------------------------------------------------------
 # Default chart is multi-replica (server.replicaCount: 2) and renders cleanly
 # (enforce: false → NOTES warns, render does not fail).
-assert_contains "default server replicas: 2" "replicas: 2" "$(template)"
+# #1378: the default server HPA owns the count, so the Deployment states none (Test 16).
+assert_contains "default server HPA targets metis-server from 2 pods" "    name: metis-server"$'\n'"  minReplicas: 2" "$(template --show-only templates/hpa.yaml)"
 
 # With scaling.enforce=true, N>1 WITHOUT the shared backends must fail-closed.
 if template --set scaling.enforce=true >/dev/null 2>&1; then
@@ -427,7 +428,8 @@ assert "prod: 1 Ingress" 1 "$(count_kind Ingress "${PROD}")"
 assert "prod: 4 NetworkPolicy (#1374)" 4 "$(count_kind NetworkPolicy "${PROD}")"
 assert_contains "prod IRSA annotation present" "eks.amazonaws.com/role-arn" "${PROD}"
 # Multi-replica server + shared backends wired (#540).
-assert_contains "prod: server replicas 2" "replicas: 2" "${PROD}"
+# The server count belongs to its HPA (2..6, #1378), asserted per Deployment in Test 16.
+assert_contains "prod: server HPA minReplicas 2" "minReplicas: 2" "${PROD}"
 assert "prod: 2 HPA (ui + server)" 2 "$(count_kind HorizontalPodAutoscaler "${PROD}")"
 assert_contains "prod: VECTOR_STORE=pgvector wired" 'value: "pgvector"' "${PROD}"
 assert_contains "prod: SCHEDULER_LEADER_ELECTION=postgres wired" 'value: "postgres"' "${PROD}"
@@ -1015,6 +1017,36 @@ ROUTED=$(render_json --set-json 'secrets.components.ui=["METRICS_TOKEN"]')
 assert "secrets.components.ui routes a named key to the UI" "METRICS_TOKEN" "$(jqr 'secret_env(pod("metis-ui")) | join(",")' <<<"${ROUTED}")"
 assert_contains "secrets.components names a key keyMap lacks: render fails" "not in secrets.keyMap" \
   "$(template --set-json 'secrets.components.ui=["NOPE"]' || true)"
+
+# ---------------------------------------------------------------------------
+echo "Test 16: an HPA-managed Deployment renders no replicas — #1378"
+# ---------------------------------------------------------------------------
+# Helm 4 applies server-side; once the HPA has scaled a Deployment the
+# kube-controller-manager owns .spec.replicas, and a chart that still sets it
+# fails every `helm upgrade` with a field-manager conflict (Helm 3 instead
+# silently resets the count to replicaCount).
+replicas_of() { jqr --arg n "$1" '[.[] | select(.kind == "Deployment" and .metadata.name == $n) | .spec.replicas // "absent"][0] | tostring'; }
+HJ=$(render_json)
+assert "default: server (HPA on) has no replicas" absent "$(replicas_of metis-server <<<"${HJ}")"
+assert "default: ui (HPA on) has no replicas" absent "$(replicas_of metis-ui <<<"${HJ}")"
+assert "default: embeddings (HPA off) keeps replicas" 1 "$(replicas_of metis-embeddings <<<"${HJ}")"
+assert "default: sql-lineage (no HPA) keeps replicas" 1 "$(replicas_of metis-sql-lineage <<<"${HJ}")"
+HJ=$(render_json --set autoscaling.embeddings.enabled=true --set autoscaling.ui.enabled=false)
+assert "embeddings HPA on: no replicas" absent "$(replicas_of metis-embeddings <<<"${HJ}")"
+assert "ui HPA off: replicas = ui.replicaCount" 2 "$(replicas_of metis-ui <<<"${HJ}")"
+HJ=$(render_json -f "${CHART_DIR}/values-prod.yaml" --set scaling.database.url=postgres://u:p@db:5432/metis --set uploads.s3.bucket=b)
+assert "prod: server (HPA on) has no replicas" absent "$(replicas_of metis-server <<<"${HJ}")"
+assert "prod: ui (HPA on) has no replicas" absent "$(replicas_of metis-ui <<<"${HJ}")"
+assert "prod: embeddings (no HPA) runs 2" 2 "$(replicas_of metis-embeddings <<<"${HJ}")"
+HJ=$(render_json -f "${CHART_DIR}/values-dev.yaml")
+for c in server ui embeddings sql-lineage; do
+  assert "dev: ${c} (no HPA) replicas 1" 1 "$(replicas_of "metis-${c}" <<<"${HJ}")"
+done
+# Every HPA's target is a Deployment that leaves replicas to it.
+HJ=$(render_json --set autoscaling.embeddings.enabled=true)
+assert "every HPA target renders no replicas" "" \
+  "$(jqr '. as $all | [.[] | select(.kind == "HorizontalPodAutoscaler") | .spec.scaleTargetRef.name as $t
+      | $all[] | select(.kind == "Deployment" and .metadata.name == $t and .spec.replicas != null) | .metadata.name] | join(",")' <<<"${HJ}")"
 
 # ---------------------------------------------------------------------------
 echo

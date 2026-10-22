@@ -304,6 +304,13 @@ eksctl create iamserviceaccount \
   **on** by default (2→6) since the multi-replica work. On the single-replica
   SQLite/LanceDB profile, turn it off (`autoscaling.server.enabled=false`) along
   with `server.replicaCount: 1`. The HPA needs metrics-server.
+- **Replicas belong to the HPA** (#1378) — a Deployment whose HPA is enabled
+  renders no `replicas`, so `replicaCount` is ignored for it. Helm 4 applies
+  server-side: a chart that kept setting `replicas` failed every `helm upgrade`
+  after the HPA had scaled, with a field-manager conflict on `.spec.replicas`,
+  and Helm 3 silently reset the count. The first upgrade from an older chart
+  version drops the count to 1 once, until the HPA scales back to
+  `minReplicas`.
 - **PDB** — `minAvailable: 1` for `ui`, `server` and `embeddings`, but a budget
   is only **rendered when the component's replica floor exceeds it** (#786).
   `minAvailable: 1` over a *single* replica is an undrainable node: `kubectl
