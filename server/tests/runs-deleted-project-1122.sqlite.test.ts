@@ -3,8 +3,8 @@
  * that has been SOFT-DELETED, through the real router with real access tokens
  * against a real SQLite database built by the migration chain.
  *
- * The rule (the one every other project surface already applies — socket
- * rooms, scheduler, discussions, #1212/#1221/#1251): a soft-deleted project is
+ * The rule (the one the socket rooms, scheduler and discussions already
+ * apply, #1212/#1221/#1251; the chat session itself not yet, #1412): a soft-deleted project is
  * closed to non-admins and open to admins. Both lists apply it the same way:
  *   • a non-admin's unfiltered list leaves the project's rows out;
  *   • a non-admin's explicit `?projectId=` naming it answers the same 404 as a

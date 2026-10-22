@@ -54,7 +54,8 @@ function parseLimit(value: unknown): number | undefined {
  * `assertProjectAccess`'s 404 — a soft-deleted project too, which
  * `assertProjectAccess` alone still admits, so it is not an empty 200. An
  * admin is not narrowed: a soft-deleted project stays open to them, as on
- * every other project surface (socket rooms, scheduler, discussions).
+ * the socket rooms, scheduler and discussions. (The chat session itself does
+ * not yet close a soft-deleted project to a non-admin: #1412.)
  *
  * Returns the project ids to narrow to; `undefined` for an admin.
  */
