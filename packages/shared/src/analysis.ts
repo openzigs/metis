@@ -1531,6 +1531,12 @@ export interface AnalysisSnapshot {
      * the local text and recorded the source's. Null or absent otherwise.
      */
     sourceDivergence?: RequirementSourceDivergence | null;
+    /**
+     * Issue #1389 — a re-synthesis (Regenerate or resume) gave this approved
+     * requirement different acceptance criteria. The row kept the approved
+     * ones; these await the analyst's Accept or Dismiss. Null or absent otherwise.
+     */
+    criteriaProposal?: RequirementCriteriaProposal | null;
   }>;
   /**
    * Epic #203 (#221) — first-class cross-document conflict / contradiction /
@@ -1619,6 +1625,35 @@ export interface RequirementSourceDecision {
   actorId: string | null;
   at: string;
 }
+
+// ---- Re-synthesis criteria proposals (Issue #1389) ---------------------------
+
+/**
+ * Issue #1389 — acceptance criteria a re-synthesis suggested for an approved
+ * requirement in place of the approved ones, which the row keeps. Answered with
+ * `POST /api/requirements/:id/criteria-proposal`.
+ */
+export interface RequirementCriteriaProposal {
+  /** The suggested criteria; `[]` when the re-synthesis gave none. */
+  proposed: string[];
+  /** When the re-synthesis made the suggestion (ISO). */
+  at: string;
+}
+
+/** Issue #1389 — body of `POST /api/requirements/:id/criteria-proposal`. */
+export const resolveCriteriaProposalSchema = z
+  .object({
+    choice: z.enum(["accept", "dismiss"]),
+    /** The version the card showed; checked when accepting. */
+    version: z.number().int().min(0).optional(),
+  })
+  .strict()
+  // Accepting writes a version, so it must say which version it was based on.
+  .refine((v) => v.choice !== "accept" || v.version !== undefined, {
+    message: "`version` is required to accept",
+    path: ["version"],
+  });
+export type ResolveCriteriaProposalInput = z.infer<typeof resolveCriteriaProposalSchema>;
 
 // ---- Analysis from imported requirements (Issue #1006) ----------------------
 

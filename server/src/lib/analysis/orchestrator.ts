@@ -172,7 +172,10 @@ import {
 } from "./promotion-matching.js";
 import type { ApprovalType } from "./types/requirements.js";
 import { runSynthesis, type FlatFinding } from "./synthesis.js";
-import { hasAnsweredClarification } from "./clarification-enrichment.js";
+import {
+  applyClarificationsToRequirements,
+  hasAnsweredClarification,
+} from "./clarification-enrichment.js";
 import { runCrossDocDetection } from "./cross-doc-detection.js";
 import { persistCrossDocFindings } from "./analysis-service.js";
 import type { DocSegment } from "./cross-doc-validator.js";
@@ -4438,9 +4441,20 @@ export class AnalysisOrchestrator {
         // #1202 — each row records the structured requirement it IS, so the
         // clarification answers and the synthesis join look it up by id.
         ...(plan
-          ? { promotedFrom: { runId: refined?.runId ?? null, pairings: plan.pairings } }
+          ? {
+              promotedFrom: { runId: refined?.runId ?? null, pairings: plan.pairings },
+              // #1389 — the user approved each of these in the checkpoint, as
+              // `promoteApprovedRequirements` records (#939). A regenerate
+              // re-creating the set left every row unreviewed.
+              reviewStatus: "approved" as const,
+            }
           : {}),
       });
+      // #1389 — the re-created rows lost the clarification answers written into
+      // their bodies (#1116); write them back, as promotion does. Best-effort.
+      if (plan && !replacementWithheld) {
+        await applyClarificationsToRequirements(input.analysisId);
+      }
 
       // feat/req-code-traceability — auto-seed the requirement→code spine from
       // the CODE agent's finding citations so each requirement's "Requirement →
