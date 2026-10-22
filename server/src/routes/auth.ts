@@ -26,7 +26,7 @@ import { reconcileTrustedLoginRole } from "../lib/auth/durable-roles.js";
 import { LIVE_WORKSPACE_MEMBERSHIP } from "../lib/auth/live-workspace-ids.js";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
-import { authAccountGuard } from "../middleware/auth-account-guard.js";
+import { authAccountGuard } from "../lib/auth/login-account-guard.js";
 import { AppError } from "../middleware/error-handler.js";
 
 const loginSchema = z.object({

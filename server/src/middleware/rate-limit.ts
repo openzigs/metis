@@ -5,7 +5,7 @@
  *    20 requests / 15 minutes (`RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`). The
  *    address is the one the UI signed, else the TCP peer — never a header the
  *    browser wrote (`auth-client-address.ts`).
- *  - `authAccountLoginGuard` (`auth-account-guard.ts`) — per ACCOUNT, on the
+ *  - `authAccountGuard` (`lib/auth/login-account-guard.ts`) — per ACCOUNT, on the
  *    login route itself: 10 FAILED sign-ins / 15 minutes for one username,
  *    from any number of addresses (`AUTH_ACCOUNT_RATE_LIMIT_MAX`).
  */

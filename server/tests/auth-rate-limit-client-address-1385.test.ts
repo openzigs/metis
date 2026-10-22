@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import express from "express";
 import request from "supertest";
 import { createAuthRateLimiter } from "../src/middleware/rate-limit.js";
-import { authAccountKey, createAuthAccountGuard } from "../src/middleware/auth-account-guard.js";
+import { authAccountKey, createAuthAccountGuard } from "../src/lib/auth/login-account-guard.js";
 import { InMemoryRateLimitStore } from "../src/lib/discussions/rate-limit-store.js";
 import {
   CLIENT_ADDRESS_HEADER,

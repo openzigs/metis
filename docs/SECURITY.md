@@ -109,7 +109,7 @@ for the secret's lifetime. In production the server warns at boot when
 `METIS_UI_PROXY_SECRET` is missing. The UI warns once when
 `METIS_TRUSTED_PROXY_HOPS` is above 0 but it has no secret to sign with.
 
-The per-account guard (`server/src/middleware/auth-account-guard.ts`) caps
+The per-account guard (`server/src/lib/auth/login-account-guard.ts`) caps
 **failed** sign-ins for one username, however many addresses they come from, so
 neither a botnet nor a shared NAT can brute-force one account. A successful
 sign-in is never counted.

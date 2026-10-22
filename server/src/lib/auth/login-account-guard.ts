@@ -24,7 +24,7 @@
 import { createHash } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import type { ApiResponse } from "@metis/shared";
-import { resolveRateLimitStore, type RateLimitStore } from "../lib/discussions/rate-limit-store.js";
+import { resolveRateLimitStore, type RateLimitStore } from "../discussions/rate-limit-store.js";
 
 export const AUTH_ACCOUNT_DEFAULT_MAX = 10;
 const DEFAULT_WINDOW_MS = 15 * 60 * 1000;
