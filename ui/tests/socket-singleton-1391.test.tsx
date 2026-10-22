@@ -150,8 +150,16 @@ describe("closeSocket (#1391)", () => {
       const onRefresh = vi.mocked(setOnRefreshSuccess).mock.calls.at(-1)?.[0] as () => void;
       onRefresh();
       closeSocket();
+      // A new session opens its socket inside the 250 ms debounce window. The
+      // renewal queued for the closed socket must not cycle the new one.
+      const b = renderHook(() => useSocket());
+      await waitFor(() => expect(b.result.current).not.toBeNull());
+      const next = b.result.current!;
+      expect(next).not.toBe(socket);
       await vi.advanceTimersByTimeAsync(1_000);
       expect(socket.connect).not.toHaveBeenCalled();
+      expect(next.disconnect).not.toHaveBeenCalled();
+      expect(next.connect).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
