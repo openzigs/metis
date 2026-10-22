@@ -56,6 +56,14 @@ interface MockIdp {
   issuer: string;
   discoveryUrl: string;
   calls: { authorize: number; token: number };
+  setUser(user: {
+    sub: string;
+    preferredUsername: string;
+    email: string;
+    name: string;
+    groups?: string[];
+    emailVerified?: boolean;
+  }): void;
   close(): Promise<void>;
 }
 // A URL specifier: the scripts package ships plain `.mjs` with no declarations.
@@ -239,18 +247,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.userRole.deleteMany({});
       // The username is listed too: on OIDC it must never match on its own.
       vi.stubEnv("METIS_BOOTSTRAP_ADMINS", "boss, boss@corp.test");
+      // One IdP for both sign-ins: the same account at the same issuer (#1395
+      // keys an SSO account on issuer + subject).
+      const idp = await startMockOidcIdp({
+        clientId: "metis-test",
+        clientSecret: "metis-test-secret",
+        redirectUri: REDIRECT_URI,
+        user: { sub: "boss", preferredUsername: "boss", email: "boss@corp.test", name: "boss" },
+      });
       const loginAs = async (preferredUsername: string, emailVerified: boolean) => {
-        const idp = await startMockOidcIdp({
-          clientId: "metis-test",
-          clientSecret: "metis-test-secret",
-          redirectUri: REDIRECT_URI,
-          user: {
-            sub: preferredUsername,
-            preferredUsername,
-            email: "boss@corp.test",
-            name: preferredUsername,
-            emailVerified,
-          },
+        idp.setUser({
+          sub: preferredUsername,
+          preferredUsername,
+          email: "boss@corp.test",
+          name: preferredUsername,
+          emailVerified,
         });
         try {
           __clearDiscoveryCache();
@@ -274,13 +285,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           return me.body.data.user.role as string;
         } finally {
           __resetProviders();
-          await idp.close();
         }
       };
-      // Many IdPs let a user type any address into their profile.
-      expect(await loginAs("boss", false)).toBe("reader");
-      // The same account once the IdP has verified the address.
-      expect(await loginAs("boss", true)).toBe("admin");
+      try {
+        // Many IdPs let a user type any address into their profile.
+        expect(await loginAs("boss", false)).toBe("reader");
+        // The same account once the IdP has verified the address.
+        expect(await loginAs("boss", true)).toBe("admin");
+      } finally {
+        await idp.close();
+      }
     });
 
     it("SAML (#1393 review): a username derived from the e-mail's local part never bootstraps", async () => {

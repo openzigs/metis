@@ -73,10 +73,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     beforeAll(async () => {
       sqlite = createMigratedSqlite("761-backfill", { stopBefore: MIGRATION });
+      // Raw SQL: today's client writes `users` columns added after #761 (#1395's
+      // `authSource`), which this pre-#761 file does not have yet.
+      sqlite.exec(
+        `INSERT INTO "users" ("id","username","displayName","email","updatedAt") VALUES (?,?,?,?,CURRENT_TIMESTAMP)`,
+        [USER, USER, USER, `${USER}@x.test`],
+      );
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
-      await db.user.create({
-        data: { id: USER, username: USER, displayName: USER, email: `${USER}@x.test` },
-      });
       await seedProject(db, "p-legacy");
       await db.$disconnect();
       // Rows in the pre-#761 shape: one priced, one unpriced (#22). `createdAt`

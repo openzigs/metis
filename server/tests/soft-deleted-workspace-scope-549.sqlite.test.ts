@@ -62,6 +62,7 @@ vi.mock("../src/lib/auth/oidc-provider.js", () => ({
       email: "u-both@example.test",
       groups: [],
       mfaPassed: true,
+      rawClaims: { iss: "https://idp.example.test", sub: "u-both" },
     },
   }),
 }));
@@ -122,10 +123,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
       // `developer` is a mock-auth login, so its row id is fixed here and the
-      // login route's upsert (by username) keeps it.
+      // login claims it by username (#1395: an unbound row of unknown provenance
+      // belongs to AUTH_MODE's provider). `u-both` signs in through OIDC, so its
+      // row is recorded as an OIDC account.
       for (const id of ["u-both", "u-dead", "developer"]) {
         await db.user.create({
-          data: { id, username: id, displayName: id, email: `${id}@example.test` },
+          data: {
+            id,
+            username: id,
+            displayName: id,
+            email: `${id}@example.test`,
+            authSource: id === "u-both" ? "oidc" : null,
+          },
         });
       }
       for (const ws of [LIVE, DEAD]) {

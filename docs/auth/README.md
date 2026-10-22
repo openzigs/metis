@@ -200,6 +200,55 @@ The cookies belong to the host that serves the callback, so serve
 An IdP may reach the API on another host only if the UI is served from that
 host too.
 
+### One account per sign-in identity (#1395)
+
+A METIS account is bound to the identity that signs in as it, not to the
+username alone. Every sign-in carries a (provider, issuer, subject) key, stored
+in the `user_identities` table:
+
+| Provider | Issuer | Subject |
+|---|---|---|
+| OIDC | the ID token's `iss` | the ID token's `sub` (never `preferred_username`) |
+| SAML | the assertion's `Issuer` (else the configured IdP entity ID) | the `NameID`; the asserted username when the NameID is transient |
+| LDAP, mock | `ldap` / `mock` (one directory per install) | the account name signed in with |
+
+A sign-in is resolved in this order
+([`login-identity.ts`](../../server/src/lib/auth/login-identity.ts)):
+
+1. The account already bound to the identity, whatever its username is now.
+2. No account has the username: a new account, bound to the identity.
+3. An account has the username but no identity yet (created before this
+   change, by SCIM, or by the seed): the sign-in claims it only if the account
+   belongs to the same provider kind (`users.authSource`). An account whose kind
+   is unknown (`authSource` NULL) can be claimed only by the `AUTH_MODE`
+   provider.
+4. Anything else is **refused** with `409 ACCOUNT_LINK_REQUIRED`: the username
+   belongs to another provider's identity (an OIDC user named like an LDAP user,
+   or a SAML user named like an OIDC user), or to another subject at the same
+   IdP. Nothing about the existing account changes.
+
+The upgrade migration fills `users.authSource` from the audit log: an account
+whose every recorded login came through OIDC is marked `oidc`, through SAML
+`saml`. Every other existing account stays NULL and is claimed by the
+`AUTH_MODE` provider at its next sign-in. If such an account actually signs in
+through a second provider, link it as below.
+
+**Linking two identities to one account.** When the same person really does
+sign in through two providers, a host operator links the second identity. The
+refused sign-in's audit event (`user.login.failed`, reason
+`identity_conflict:*`) records the provider, issuer and subject to use:
+
+```bash
+pnpm --filter @metis/server exec tsx src/lib/auth/link-identity-cli.ts \
+  link --operator "$USER" --username alice --provider oidc \
+  --issuer https://idp.example.com --subject 00u1abcd
+pnpm --filter @metis/server exec tsx src/lib/auth/link-identity-cli.ts list --username alice
+```
+
+The link is audited as `user.identity.linked`. Once linked, both identities
+sign in as the account, and each sign-in reconciles provider-granted roles from
+the provider that signed in.
+
 ### LDAP — admin-API runtime override
 
 `PUT /api/admin/auth/providers/ldap` (and `GET /api/admin/auth/ldap`,

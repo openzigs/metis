@@ -38,6 +38,14 @@ import {
 import { generateAuthorizationUrl, exchangeCodeForTokens } from "../lib/auth/oidc-provider.js";
 import { reconcileTrustedLoginRole } from "../lib/auth/durable-roles.js";
 import { oidcAssertedIdentities, samlAssertedIdentities } from "../lib/auth/bootstrap-admins.js";
+import {
+  oidcIdentity,
+  resolveLoginUser,
+  samlIdentity,
+  type ExternalIdentity,
+  type LoginProfile,
+} from "../lib/auth/login-identity.js";
+import { getAuthProvider } from "../lib/auth/providers.js";
 import { issueTokens } from "../lib/auth/jwt.js";
 import { LIVE_WORKSPACE_MEMBERSHIP } from "../lib/auth/live-workspace-ids.js";
 import { audit } from "../lib/audit/audit-service.js";
@@ -131,36 +139,44 @@ async function readWorkspaceIds(userId: string): Promise<string[]> {
 }
 
 /**
+ * The AUTH_MODE provider's kind — the only kind that may claim an account of
+ * unknown provenance (#1395). Null when AUTH_MODE resolves to nothing usable
+ * (the factory refuses mock in production), so such accounts stay unclaimed.
+ */
+function primaryAuthKind(): string | null {
+  try {
+    return getAuthProvider().name;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #1395 — the local user for an SSO sign-in, keyed on the IdP's identity
+ * (`login-identity.ts`), never on the username alone: a username already bound
+ * to another provider's identity is refused with 409 ACCOUNT_LINK_REQUIRED.
+ *
  * `bootstrapIdentities` (#1376) are the values matched against
  * `METIS_BOOTSTRAP_ADMINS`: only what the IdP vouches for.
  */
 async function ensureUserRow(
-  username: string,
-  displayName: string,
-  email: string,
+  identity: ExternalIdentity | null,
+  profile: LoginProfile,
   role: RoleKey,
   bootstrapIdentities: readonly (string | null)[],
-): Promise<{ id: string; role: RoleKey }> {
-  const row = await prisma.user.upsert({
-    where: { username },
-    update: { displayName, email, lastLoginAt: new Date() },
-    create: {
-      username,
-      displayName,
-      email,
-      status: "active",
-      lastLoginAt: new Date(),
-      authRolesInitializedAt: null,
-    },
-  });
+): Promise<{ id: string; username: string; role: RoleKey }> {
+  if (!identity) {
+    throw new AppError(401, "SSO_IDENTITY_MISSING", "The IdP did not identify the user");
+  }
+  const row = await resolveLoginUser({ identity, profile, primaryKind: primaryAuthKind() });
   try {
     return {
       id: row.id,
+      username: row.username,
       role: await reconcileTrustedLoginRole({
         userId: row.id,
         providerRole: role,
-        authRolesInitializedAt:
-          (row as { authRolesInitializedAt?: Date | null }).authRolesInitializedAt ?? null,
+        authRolesInitializedAt: row.authRolesInitializedAt,
         bootstrapIdentities,
       }),
     };
@@ -237,9 +253,12 @@ export function ssoRouter(): Router {
       provider.defaultRole,
     );
     const userRow = await ensureUserRow(
-      result.user.username,
-      result.user.displayName,
-      result.user.email,
+      samlIdentity(result.user.rawClaims ?? {}, provider.saml.idpIssuer, result.user.username),
+      {
+        username: result.user.username,
+        displayName: result.user.displayName,
+        email: result.user.email,
+      },
       role,
       // Only what the signed assertion states as-is (`samlAssertedIdentities`).
       samlAssertedIdentities(result.user.rawClaims ?? {}),
@@ -247,7 +266,7 @@ export function ssoRouter(): Router {
     const permissions = getPermissionsForRole(userRow.role);
     const tokens = issueTokens({
       userId: userRow.id,
-      username: result.user.username,
+      username: userRow.username,
       role: userRow.role,
       permissions,
       workspaces: await readWorkspaceIds(userRow.id),
@@ -260,7 +279,7 @@ export function ssoRouter(): Router {
       action: "user.login",
       target: { type: "user", id: userRow.id },
       metadata: {
-        username: result.user.username,
+        username: userRow.username,
         role: userRow.role,
         mode: "saml",
         mfaPassed: result.user.mfaPassed,
@@ -338,9 +357,12 @@ export function ssoRouter(): Router {
       provider.defaultRole,
     );
     const userRow = await ensureUserRow(
-      result.user.username,
-      result.user.displayName,
-      result.user.email,
+      oidcIdentity(result.user.rawClaims ?? {}),
+      {
+        username: result.user.username,
+        displayName: result.user.displayName,
+        email: result.user.email,
+      },
       role,
       // OIDC bootstraps on the verified `email` claim only (`oidcAssertedIdentities`).
       oidcAssertedIdentities(result.user.rawClaims ?? {}),
@@ -348,7 +370,7 @@ export function ssoRouter(): Router {
     const permissions = getPermissionsForRole(userRow.role);
     const tokens = issueTokens({
       userId: userRow.id,
-      username: result.user.username,
+      username: userRow.username,
       role: userRow.role,
       permissions,
       workspaces: await readWorkspaceIds(userRow.id),
@@ -361,7 +383,7 @@ export function ssoRouter(): Router {
       action: "user.login",
       target: { type: "user", id: userRow.id },
       metadata: {
-        username: result.user.username,
+        username: userRow.username,
         role: userRow.role,
         mode: "oidc",
         mfaPassed: result.user.mfaPassed,

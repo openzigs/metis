@@ -25,9 +25,11 @@ export function withRouteAuth<
     id: `role_${key}`,
     key,
   }));
+  let identities: Row[] = [];
   beforeEach(() => {
     users.clear();
     grants = [];
+    identities = [];
   });
 
   // Leave the caller's `upsert` out of the spread: intersected with the wrapper
@@ -72,6 +74,62 @@ export function withRouteAuth<
       Object.assign(row, data);
       return row;
     }),
+    // #1395 — login resolves the user by identity, then by username, and
+    // creates or claims it (`login-identity.ts`). `create` still goes through
+    // the caller's `upsert`, so a fixture that records its rows keeps doing so.
+    findUnique: vi.fn(async (query: Query & { select?: Row }) => {
+      const { where } = query;
+      if (typeof where.username === "string") {
+        const row = [...users.values()].find((r) => r.username === where.username) ?? null;
+        if (!row) return null;
+        return {
+          ...row,
+          authSource: row.authSource ?? null,
+          identities: identities.filter((i) => i.userId === row.id),
+        };
+      }
+      const own = (userRest as { findUnique?: (q: unknown) => Promise<unknown> }).findUnique;
+      if (own) return own(query);
+      return users.get(String(where.id)) ?? null;
+    }),
+    findUniqueOrThrow: vi.fn(async ({ where }: Query) => {
+      const row = users.get(String(where.id));
+      if (!row) throw new Error("Route auth fixture user not found");
+      return row;
+    }),
+    create: vi.fn(async ({ data }: { data: Row & { identities?: { create: Row } } }) => {
+      const { identities: nested, ...fields } = data;
+      const created = (await (originalUpsert as unknown as (q: unknown) => Promise<User>)({
+        where: { username: fields.username },
+        create: fields,
+        update: {},
+      })) as User;
+      const row: User = { ...created, ...fields, id: created.id };
+      users.set(row.id, row);
+      if (nested) identities.push({ ...nested.create, userId: row.id });
+      return row;
+    }),
+    updateMany: vi.fn(async ({ where, data }: Query & { data: Row }) => {
+      const row = users.get(String(where.id));
+      const unbound = row && !identities.some((i) => i.userId === row.id);
+      if (!row || !unbound || (row.authSource ?? null) !== where.authSource) return { count: 0 };
+      Object.assign(row, data);
+      return { count: 1 };
+    }),
+  };
+  const userIdentity = {
+    findUnique: vi.fn(async ({ where }: Query) => {
+      const key = where.provider_issuer_subject as Row;
+      const row = identities.find(
+        (i) => i.provider === key.provider && i.issuer === key.issuer && i.subject === key.subject,
+      );
+      return row ? { id: `${row.provider}:${row.issuer}:${row.subject}`, ...row } : null;
+    }),
+    update: vi.fn(async () => ({})),
+    create: vi.fn(async ({ data }: { data: Row }) => {
+      identities.push(data);
+      return data;
+    }),
   };
   const userRole = {
     findFirst: vi.fn(
@@ -109,6 +167,7 @@ export function withRouteAuth<
     ...fixtureRest,
     user,
     userRole,
+    userIdentity,
     role: {
       findFirst: vi.fn(
         async ({ where }: Query) => roles.find((row) => row.key === where.key) ?? null,

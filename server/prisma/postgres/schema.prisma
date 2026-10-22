@@ -130,12 +130,18 @@ model User {
   lastLoginAt            DateTime?
   authRolesInitializedAt DateTime?
   authRoleAuthority      String    @default("unknown") // unknown|provider|revoked|scim|explicit
+  /// #1395 — the kind of sign-in provider this account belongs to
+  /// (mock|ldap|oidc|saml). Null = a legacy row whose provider is unknown: only
+  /// the deployment's AUTH_MODE provider may claim it, by username.
+  authSource             String?
   passwordHash           String? // null when SSO-only
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   deletedAt    DateTime?
 
   roles                    UserRole[]
+  /// #1395 — the external identities (provider, issuer, subject) that sign in as this user.
+  identities               UserIdentity[]
   projects                 Project[]            @relation("ProjectCreator")
   documents                Document[]
   analyses                 Analysis[]
@@ -5068,6 +5074,33 @@ model RevokedRefreshToken {
 /// every CURRENT session in one write, while a token issued AFTER the cutoff
 /// (e.g. after the user is re-provisioned and logs in again) still validates —
 /// matching the SCIM deprovision/reprovision acceptance criteria.
+/// #1395 — an external sign-in identity bound to a local user.
+///
+/// A login is looked up by (provider, issuer, subject) first, and by username
+/// only to create or claim an account: a username already bound to another
+/// provider's identity refuses the sign-in instead of handing over the account.
+/// provider: mock|ldap|oidc|saml. issuer: the OIDC `iss`, the SAML IdP entity
+/// ID, or the provider kind for the single directory (mock, ldap). subject: the
+/// OIDC `sub`, the SAML NameID (the username for a transient NameID), or the
+/// directory account name.
+model UserIdentity {
+  id          String    @id @default(cuid())
+  userId      String
+  provider    String
+  issuer      String
+  subject     String
+  /// Set when an administrator linked this identity by hand (`auth:link-identity`).
+  linkedBy    String?
+  createdAt   DateTime  @default(now())
+  lastLoginAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, issuer, subject])
+  @@index([userId])
+  @@map("user_identities")
+}
+
 model UserSessionRevocation {
   userId    String   @id
   /// Refresh tokens with `iat <= cutoff` for this user are rejected.
