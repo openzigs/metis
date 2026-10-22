@@ -72,6 +72,35 @@ describe("#1354 repository sources", () => {
     );
   });
 
+  it("#1323 — carries the connector's label and repository name for reader-facing names", async () => {
+    vi.stubEnv("REPO_CLONE_DIR", await fixture());
+    findMany.mockResolvedValue([
+      {
+        id: "g1",
+        repoConnection: {
+          id: "c1",
+          projectId: "p",
+          deletedAt: null,
+          label: "Web app",
+          repoName: "web",
+        },
+      },
+      { id: "g2", repoConnection: null },
+    ]);
+    const sources = await loadRepositorySources({ projectId: "p" });
+    expect(sources.get("g1")).toMatchObject({ label: "Web app", repoName: "web" });
+    expect(sources.get("g2")).not.toHaveProperty("label");
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          repoConnection: {
+            select: expect.objectContaining({ label: true, repoName: true }),
+          },
+        }),
+      }),
+    );
+  });
+
   it("encodes graph, connector and exact path without delimiter or sanitization collisions", () => {
     const a = { codeGraphId: "g:a", repoConnectorId: "repo/a" };
     const b = { codeGraphId: "g", repoConnectorId: "a:repo/a" };
