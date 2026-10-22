@@ -314,14 +314,28 @@ ALB=$(template --set ingress.enabled=true)
 assert "1× Ingress (alb)" 1 "$(count_kind Ingress "${ALB}")"
 assert_contains "alb scheme annotation" "alb.ingress.kubernetes.io/scheme" "${ALB}"
 assert_contains "alb stickiness for websocket" "stickiness.enabled=true" "${ALB}"
-assert_contains "/api route to server" "name: metis-server" "${ALB}"
+# #1312 — /api belongs to the UI (its route handlers mint the session cookies
+# and proxy to the server); a /api → server rule broke every browser login.
+assert_not_contains "no /api rule (the UI serves /api)" "path: /api" "${ALB}"
+assert_contains "/socket.io route to server" "name: metis-server" "${ALB}"
 assert_contains "/socket.io route" "path: /socket.io" "${ALB}"
 assert_contains "/ route to ui" "name: metis-ui" "${ALB}"
+
+# #1312 — the UI's /api handlers reach the server through METIS_API_URL; unset,
+# they call localhost:4000 inside the UI pod. In-cluster URLs follow the
+# Service names (metis.fullname), not the bare release name.
+assert_contains "ui METIS_API_URL points at the server Service" "value: \"http://metis-server:4000/api\"" "${DEFAULT}"
+OTHER_RELEASE=$(helm template prod "${CHART_DIR}")
+assert_contains "service URLs follow fullname for another release" "value: \"http://prod-metis-embeddings:5050\"" "${OTHER_RELEASE}"
+assert_contains "ui METIS_API_URL follows fullname for another release" "value: \"http://prod-metis-server:4000/api\"" "${OTHER_RELEASE}"
 
 NGINX=$(template --set ingress.enabled=true --set ingress.className=nginx --set ingress.tls.certManager.enabled=true)
 assert_contains "nginx class set" "ingressClassName: nginx" "${NGINX}"
 assert_contains "cert-manager annotation" "cert-manager.io/cluster-issuer" "${NGINX}"
-assert_contains "websocket upgrade snippet" "proxy_set_header Upgrade" "${NGINX}"
+# #1312 — ingress-nginx v1.9+ rejects snippet annotations by default, so a
+# snippet fails the whole install; the controller forwards Upgrade itself.
+assert_not_contains "no snippet annotation (rejected by ingress-nginx)" "configuration-snippet" "${NGINX}"
+assert_contains "websocket idle timeout on nginx" "nginx.ingress.kubernetes.io/proxy-read-timeout: \"3600\"" "${NGINX}"
 
 TRAEFIK=$(template --set ingress.enabled=true --set ingress.className=traefik --set ingress.tls.certManager.enabled=true)
 assert_contains "traefik class set" "ingressClassName: traefik" "${TRAEFIK}"

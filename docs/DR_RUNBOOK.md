@@ -33,8 +33,9 @@ There is **no separate LanceDB step** — vectors ride the Postgres WAL stream.
 
 ## 1. Declare the incident (target: ≤ 5 min)
 
-1. Confirm the primary is actually down (not a transient blip): `/healthz` and
-   `/readyz` failing for > 2 min, or a region-wide AWS event.
+1. Confirm the primary is actually down (not a transient blip): either
+   `https://<host>/api/health` from outside and the pods' `/readyz` probes
+   have been failing for > 2 min, or there is a region-wide AWS event.
 2. Page the DR on-call and open an incident channel. Assign an **Incident
    Commander** (owns the go/no-go) and a **Scribe** (timestamps every step for
    the post-mortem).
@@ -96,12 +97,16 @@ psql "$STANDBY_DATABASE_URL" -c "SELECT pg_is_in_recovery();"
 2. Confirm the pods are ready and connected to the promoted DB:
    ```bash
    kubectl -n metis get pods -l app.kubernetes.io/component=server
-   # Deep readiness (DB + vault + vector store + scheduler + AI provider):
-   kubectl -n metis exec deploy/metis-server -- \
-     curl -fsS localhost:4000/readyz | jq .
+   # Deep readiness (DB + vault + vector store + scheduler + AI provider).
+   # The server image has no curl (#1312), so use its node:
+   kubectl -n metis exec deploy/metis-server -- node -e \
+     "fetch('http://localhost:4000/readyz').then(r=>r.text()).then(console.log)" | jq .checks
    ```
-   - `database: ok`, `vault: ok` (proves `VAULT_MASTER_KEY` resolved in-region),
-     `vector: ok`.
+   - Look for `database: ok`, `vault: ok` (which proves `VAULT_MASTER_KEY`
+     resolved in-region) and `vectorStore: ok`.
+   - On Helm 4, if the standby's HPA has already scaled, the `helm upgrade`
+     above fails with a `.spec.replicas` conflict (#1378). Re-run it with
+     `--force-conflicts`.
    - If `vault` fails → the standby region cannot read `VAULT_MASTER_KEY`; fix
      secret replication before proceeding (connector secrets are unusable until
      then — see §0).
@@ -148,9 +153,13 @@ aws route53 change-resource-record-sets \
 # External DNS resolves to the standby ALB:
 dig +short metis.example.com
 
-# App is serving from the standby region:
-curl -fsS https://metis.example.com/healthz          # {"status":"ok"}
-curl -fsS https://metis.example.com/readyz | jq .     # all subsystems ok
+# App is serving from the standby region. Through the ingress, health is
+# /api/health (the UI proxies /api to the server); /healthz and /readyz are not
+# routed to the server and answer with a redirect to /login (#1312).
+curl -fsS https://metis.example.com/api/health      # {"status":"ok",...}
+# Deep readiness, in-cluster:
+kubectl -n metis exec deploy/metis-server -- node -e \
+  "fetch('http://localhost:4000/readyz').then(r=>r.text()).then(console.log)" | jq .checks
 
 # Standby is now a PRIMARY (no longer in recovery) — dr:check reports no-standby,
 # which is EXPECTED post-promotion (there is no downstream replica yet).
@@ -222,3 +231,7 @@ still intact and un-fenced:
    the time.
 
 See [`OPERATIONS.md`](./OPERATIONS.md) §3 for backup/restore as the last resort.
+On Kubernetes with the single-replica PVC profile (SQLite), use the backup Job
+and restore pod in the chart README,
+[§ "Backup and restore"](../deploy/helm/metis/README.md#backup-and-restore-single-replica-pvc-profile).
+That procedure was drilled in #1312; `OPERATIONS.md` §3 covers Docker Compose only.
