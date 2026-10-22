@@ -268,10 +268,25 @@ describe("#1414 access-token expiry", () => {
     expect(await handshakeOutcome(token)).toBe("TOKEN_EXPIRED");
   });
 
-  it("does not close a socket whose token expires beyond the longest Node timer", async () => {
-    const c = await connect(() => shortToken("u-long", "01J00000000000000000000005", 40 * 86_400));
-    await sleep(100);
-    expect(c.socket.connected).toBe(true);
+  it("arms one capped timer for a token that expires beyond the longest Node timer", async () => {
+    // Uncapped, Node clamps the overflowing delay to 1 ms and the re-check
+    // re-arms on every tick: a busy loop that keeps the socket open, so only
+    // the overflow warnings show it.
+    const overflows: string[] = [];
+    const onWarning = (warning: Error) => {
+      if (warning.name === "TimeoutOverflowWarning") overflows.push(warning.message);
+    };
+    process.on("warning", onWarning);
+    try {
+      const c = await connect(() =>
+        shortToken("u-long", "01J00000000000000000000005", 40 * 86_400),
+      );
+      await sleep(100);
+      expect(c.socket.connected).toBe(true);
+      expect(overflows).toEqual([]);
+    } finally {
+      process.off("warning", onWarning);
+    }
   });
 });
 
