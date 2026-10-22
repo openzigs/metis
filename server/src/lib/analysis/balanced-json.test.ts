@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { expectLinearTime, threadCpuMs } from "../../../tests/helpers/linear-time.js";
 import { extractJsonObject } from "./agent-runner.js";
 import {
   AMBIGUOUS_JSON_MESSAGE,
@@ -55,6 +56,25 @@ function expectLinear(small: Measured, large: Measured): void {
   const perCharLarge = large.work / large.length;
   expect(perCharLarge).toBeLessThanOrEqual(perCharSmall * 1.2);
   expect(perCharLarge).toBeLessThanOrEqual(MAX_WORK_PER_CHAR);
+}
+
+/**
+ * PR #1423 review — the counters see only the loops that report to them. Work
+ * added without a counter (a per-span `text.slice(0, i).lastIndexOf(…)`, say)
+ * would leave every count unchanged, so each shape also gets a coarse backstop
+ * on this thread's CPU clock at 200 KB: a starved worker accrues nothing, and
+ * a quadratic blows through the 250 ms bound and the ratio of 8.
+ */
+function expectLinearCpu(label: string, make: (n: number) => string): void {
+  expectLinearTime(
+    label,
+    (n) => {
+      const text = make(n);
+      return () => parseBalancedJsonObject(text);
+    },
+    200_000,
+    threadCpuMs,
+  );
 }
 
 const DRAFT = { title: "Add audit logging", affected: { files: ["a.go"], ids: [] } };
@@ -229,12 +249,13 @@ describe("#1002 parseBalancedJsonObject", () => {
     ["many prose spans", (n: number) => "{x}".repeat(Math.floor(n / 3))],
     // Every span reaches `JSON.parse` and throws.
     ["many spans that fail to parse", (n: number) => '{"":}'.repeat(Math.floor(n / 5))],
-  ])("is linear on %s", (_label, make) => {
+  ])("is linear on %s", (label, make) => {
     const small = measureWork(make(2_000));
     const large = measureWork(make(20_000));
     expect(small.result).toEqual({ found: false });
     expect(large.result).toEqual({ found: false });
     expectLinear(small, large);
+    expectLinearCpu(label, make);
   });
 });
 
@@ -411,5 +432,6 @@ describe("#1355 a preamble example followed by the real answer", () => {
     expect(small.result).toEqual({ found: true, value: { a: 1 } });
     expect(large.result).toEqual({ found: true, value: { a: 1 } });
     expectLinear(small, large);
+    expectLinearCpu("identical objects", make);
   });
 });

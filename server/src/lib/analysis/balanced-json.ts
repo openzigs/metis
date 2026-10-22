@@ -51,6 +51,11 @@ export type BalancedJsonResult =
  * them revisit input — restarting the scan from an inner `{`, walking back past
  * the whitespace before a span, re-canonicalising a held answer — shows up as
  * work that grows faster than the input.
+ *
+ * RULE: any new loop over `text` — or any call that walks it, such as
+ * `slice`, `indexOf` or `JSON.parse` on a span — must add what it visits to
+ * one of these fields. Uncounted work is invisible to the counting tests; only
+ * the coarse CPU-clock backstop in `balanced-json.test.ts` would catch it.
  */
 export interface BalancedJsonWork {
   /** Characters the main scan stepped over. */

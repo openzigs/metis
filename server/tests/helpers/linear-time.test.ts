@@ -25,6 +25,8 @@ describe("threadCpuMs", () => {
     let x = 0;
     for (let i = 0; i < 20_000_000; i++) x = (x + i) % 7919;
     expect(x).toBeGreaterThanOrEqual(0);
-    expect(threadCpuMs()).toBeGreaterThan(cpu0);
+    // 20M iterations is tens of ms of CPU; 5 ms proves the work is counted,
+    // not merely that the clock moved (PR #1423 review).
+    expect(threadCpuMs()).toBeGreaterThan(cpu0 + 5);
   });
 });

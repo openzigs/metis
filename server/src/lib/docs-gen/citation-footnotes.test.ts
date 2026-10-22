@@ -587,7 +587,9 @@ describe("a module-facts citation pinned to the mined rule it restates (#737)", 
         const line = `${`Removed entries are purged after 60 days [${storage0}] `.repeat(n)}.`;
         return () => renderCitationFootnotes(line, pinSources);
       },
-      12_000,
+      // ~100 ms of work: well inside the helper's 250 ms fast path even on a
+      // contended runner, so the ratio fallback is the exception (PR #1423 review).
+      6_000,
       threadCpuMs,
     );
   });
