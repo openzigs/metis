@@ -456,13 +456,29 @@ export function runHasQuestionsView(metadata: Record<string, unknown> | null | u
 export function approvalsNoneMessage(
   metadata: Record<string, unknown> | null | undefined,
   requirementCount: number,
+  analysisStatus: AnalysisStatus,
 ): { testId: string; text: string } {
-  if (!enhancementOf(metadata).structuredExtractionFailure) {
+  const failure = enhancementOf(metadata).structuredExtractionFailure;
+  if (!failure) {
     return { testId: "approvals-none", text: "This run has no approval checkpoints." };
   }
-  const cause =
-    "No approval checkpoints were created for this run: METIS could not read the requirements " +
-    "out of the model’s answer, so nothing was put up for approval.";
+  // PR #1409 review — a provider failure means no answer came back at all, so
+  // it must not be worded as an answer METIS could not read.
+  const why =
+    failure.reason === "provider-error"
+      ? "the request to the AI model failed, so no requirements came back to review"
+      : failure.reason === "empty-response"
+        ? "the AI model returned an empty answer, so there were no requirements to review"
+        : "METIS could not read the requirements out of the AI model’s answer";
+  const cause = `No approval checkpoints were created for this run: ${why}, so nothing was put up for approval.`;
+  // While the run is still going, "run it again" is premature advice and no
+  // requirement has been saved yet.
+  if (analysisStatus === "pending" || analysisStatus === "running") {
+    return {
+      testId: "approvals-none-extraction-failed",
+      text: `${cause} Requirements this run saves will not have been reviewed.`,
+    };
+  }
   const consequence =
     requirementCount > 0
       ? ` The ${requirementCount === 1 ? "requirement" : `${requirementCount} requirements`} ` +

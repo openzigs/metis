@@ -402,7 +402,10 @@ export async function repairAgentJson(
             `${originalError.message}\n\n` +
             "Return the SAME content as valid JSON. Do not add, remove, summarise or " +
             "reword any field — fix only the syntax (unbalanced brackets, unescaped " +
-            "quotes or newlines inside strings). Reply with the JSON object and nothing else.\n\n" +
+            "quotes or newlines inside strings). If the text holds more than one JSON " +
+            "object (an example or illustration beside the answer), return only the one " +
+            "that is the answer, unchanged, and drop the others. " +
+            "Reply with the JSON object and nothing else.\n\n" +
             malformed,
         },
       ],

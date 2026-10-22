@@ -257,6 +257,74 @@ describe("#1355 a preamble example followed by the real answer", () => {
     expect(parseBalancedJsonObject(text)).toEqual({ found: false, ambiguous: true });
   });
 
+  /** PR #1409 review — once an answer is held, nothing discards it as not-found. */
+  describe("a held answer is never discarded as not-found", () => {
+    it("keeps the answer when an array of objects follows it in the prose", () => {
+      const text = `Result: ${JSON.stringify(ANSWER)}\nList: [{"a":1}, {"a":2}]`;
+      expect(parseBalancedJsonObject(text)).toEqual({ found: true, value: ANSWER });
+      expect(extractJsonObject(text)).toEqual(ANSWER);
+    });
+
+    it("keeps the answer when a one-element array follows it", () => {
+      const text = `Result: ${JSON.stringify(ANSWER)}\nSee [ {"a":1} ] for the shape.`;
+      expect(extractJsonObject(text)).toEqual(ANSWER);
+    });
+
+    it("skips an array in the prose BEFORE the answer, too", () => {
+      const text = `Inputs: [{"a":1}, {"a":2}]\nResult: ${JSON.stringify(ANSWER)}`;
+      expect(extractJsonObject(text)).toEqual(ANSWER);
+    });
+
+    it("is ambiguous, not not-found, when a later object was closed early", () => {
+      // The held object may be an example and the later one the real answer
+      // cut short, so neither is safe to return — but the reply is not empty.
+      const text = `Example: ${JSON.stringify(EXAMPLE)}\nAnswer: {"requirements":[]}, {"x":1}]}`;
+      expect(parseBalancedJsonObject(text)).toEqual({ found: false, ambiguous: true });
+      expect(() => extractJsonObject(text)).toThrow(AMBIGUOUS_JSON_MESSAGE);
+    });
+
+    it("still treats a prose comma before an object as a rival", () => {
+      const text = `Answer: ${JSON.stringify(ANSWER)} or, e.g., ${JSON.stringify(EXAMPLE)}.`;
+      expect(parseBalancedJsonObject(text)).toEqual({ found: false, ambiguous: true });
+    });
+  });
+
+  /** PR #1409 review — `{}` and key order are not rivals. */
+  describe("objects that are not rivals", () => {
+    it("returns the answer when the prose also mentions an empty {}", () => {
+      const text = `Here it is: ${JSON.stringify(ANSWER)}\nReturn {} when there are none.`;
+      expect(parseBalancedJsonObject(text)).toEqual({ found: true, value: ANSWER });
+      expect(extractJsonObject(text)).toEqual(ANSWER);
+    });
+
+    it("prefers the answer over an empty {} that comes first", () => {
+      const text = `Return {} when there are none. Here it is: ${JSON.stringify(ANSWER)}`;
+      expect(parseBalancedJsonObject(text)).toEqual({ found: true, value: ANSWER });
+    });
+
+    it("returns {} when it is the only object", () => {
+      expect(parseBalancedJsonObject("Nothing found: {} and {}")).toEqual({
+        found: true,
+        value: {},
+      });
+    });
+
+    it("treats a key-order difference as the same object", () => {
+      const text = 'Draft: {"a":1,"b":{"c":2,"d":3}}\nFinal: {"b":{"d":3,"c":2},"a":1}';
+      expect(parseBalancedJsonObject(text)).toEqual({
+        found: true,
+        value: { a: 1, b: { c: 2, d: 3 } },
+      });
+    });
+
+    it("still tells apart objects that differ in an array's order", () => {
+      expect(parseBalancedJsonObject('x {"a":[1,2]} y {"a":[2,1]}')).toEqual({
+        found: false,
+        ambiguous: true,
+      });
+    });
+  });
+
   it("stays linear on many identical objects separated by prose", () => {
     const make = (n: number): string => '{"a":1} x '.repeat(Math.floor(n / 10));
     const time = (n: number): number => {

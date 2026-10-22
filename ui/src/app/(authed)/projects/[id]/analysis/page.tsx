@@ -1537,6 +1537,7 @@ export default function AnalysisPage(): React.ReactElement {
                         const none = approvalsNoneMessage(
                           detail.data.metadata,
                           detail.data.requirements.length,
+                          detail.data.status,
                         );
                         return (
                           <p className="text-sm text-muted-foreground" data-testid={none.testId}>

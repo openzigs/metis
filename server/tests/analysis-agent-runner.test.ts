@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../src/lib/ai/types.js";
 import { __resetOutputCeilingWarnings } from "../src/lib/ai/model-output-limits.js";
 import { DEFAULT_FINAL_ANSWER_MAX_OUTPUT_TOKENS } from "../src/lib/analysis/agent-loop.js";
+import { AMBIGUOUS_JSON_MESSAGE } from "../src/lib/analysis/balanced-json.js";
 import {
   assertFinalAnswerMaxOutputTokensValid,
   enrichCitations,
@@ -281,6 +282,35 @@ describe("malformed-JSON repair retry", () => {
         retrieved: [],
       }),
     ).rejects.toThrow(/Agent database returned non-JSON output/);
+  });
+
+  /**
+   * #1355 / PR #1409 review — an ambiguous reply (two different objects) goes
+   * to repair carrying a message that says to keep the answer and drop the
+   * others. The repair prompt must agree with it rather than forbid removal.
+   */
+  it("repairs an ambiguous reply with a prompt that agrees with the ambiguity message", async () => {
+    const ambiguous = `Shape: {"summary":"example","findings":[]}\nAnswer: ${VALID_OUTPUT}`;
+    const calls: ChatMessage[][] = [];
+    const provider = makeProvider(async (msgs) => {
+      calls.push(msgs);
+      return stubResponse(calls.length === 1 ? ambiguous : VALID_OUTPUT);
+    });
+
+    const result = await runAgent(provider, {
+      agentKey: "code",
+      projectName: "P",
+      projectDescription: "D",
+      retrieved: [],
+    });
+
+    expect(result.output.findings).toHaveLength(1);
+    const prompt = String(calls[1]![0]!.content);
+    expect(prompt).toContain(AMBIGUOUS_JSON_MESSAGE);
+    expect(prompt).toContain(
+      "return only the one that is the answer, unchanged, and drop the others",
+    );
+    expect(AMBIGUOUS_JSON_MESSAGE).toContain("the answer, unchanged, and drop the others");
   });
 
   it("does not fire when the first response already parses", async () => {
