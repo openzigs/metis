@@ -339,6 +339,37 @@ describe("#289 — agent-phase findings in the results view", () => {
     expect(screen.getAllByRole("button", { name: "Regenerate" })).toHaveLength(1);
   });
 
+  // #766 — a Regenerate left the agent's card on its stale `completed` result
+  // with no sign of the re-run beyond the run header.
+  it("shows a re-run in progress on the agent's card, and a running agent with no row yet", async () => {
+    nav.search = new URLSearchParams("tab=agents");
+    const startedAt = new Date(Date.now() - 65_000).toISOString();
+    apiMock.get.mockResolvedValue({
+      ...SNAPSHOT,
+      status: "running",
+      liveAgents: [
+        { agentKey: "code", startedAt, toolCalls: 5, rerun: true, phase: "investigating" },
+        { agentKey: "database", startedAt, toolCalls: 0, rerun: false, phase: "investigating" },
+      ],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("agent-live-code")).toBeInTheDocument());
+
+    const code = screen.getByTestId("agent-card-code");
+    expect(within(code).getByText("running")).toBeInTheDocument();
+    expect(within(code).getByTestId("agent-live-code")).toHaveTextContent(
+      /^Re-running · 5 tool calls so far · 1m \ds$/,
+    );
+    // The stored result is still listed until the re-run replaces it.
+    expect(code).toHaveTextContent("finding");
+    // A running analysis offers no Regenerate.
+    expect(within(code).queryByRole("button", { name: "Regenerate" })).toBeNull();
+
+    const database = screen.getByTestId("agent-card-database");
+    expect(within(database).getByText("running")).toBeInTheDocument();
+    expect(within(database).getByTestId("agent-live-database")).toHaveTextContent(/^Running · /);
+  });
+
   // #23 review — nothing failed if the page stopped passing repo names to the
   // citation label, which then fell back to the connector id's tail.
   it("labels a repository citation with the repository's name (#23)", async () => {

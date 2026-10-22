@@ -1497,74 +1497,80 @@ export default function AnalysisPage(): React.ReactElement {
                       Agents
                     </h4>
                     <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                      {agentCards(detail.data.agentResults, detail.data.liveAgents).map((card) => {
-                        const { result: agent, live } = card;
-                        const persona = personaFor(card.agentKey);
-                        // #289 — an agent-phase agent is not a specialist: it has no
-                        // single-agent regenerate endpoint.
-                        const isSpecialist =
-                          agent !== null && agent.agentKey !== "synthesis" && !agent.source;
-                        return (
-                          <div
-                            key={agent?.id ?? `live-${card.agentKey}`}
-                            className="rounded border border-border bg-muted/30 p-3"
-                            data-testid={`agent-card-${card.agentKey}`}
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-2">
-                                <span className="text-lg">{persona?.avatar ?? "\ud83e\udd16"}</span>
-                                <div>
-                                  <div className="text-sm font-medium">
-                                    {persona?.name ?? card.agentKey}
-                                  </div>
-                                  <div className="text-xs text-muted-foreground">
-                                    {persona?.role ?? card.agentKey}
-                                    {agent ? (
-                                      <>
-                                        {" "}
-                                        · {agent.findings.length} finding
-                                        {agent.findings.length === 1 ? "" : "s"}
-                                      </>
-                                    ) : null}
+                      {agentCards(detail.data.agentResults, detail.data.liveAgents ?? []).map(
+                        (card) => {
+                          const { result: agent, live } = card;
+                          const persona = personaFor(card.agentKey);
+                          // #289 — an agent-phase agent is not a specialist: it has no
+                          // single-agent regenerate endpoint.
+                          const isSpecialist =
+                            agent !== null && agent.agentKey !== "synthesis" && !agent.source;
+                          return (
+                            <div
+                              key={agent?.id ?? `live-${card.agentKey}`}
+                              className="rounded border border-border bg-muted/30 p-3"
+                              data-testid={`agent-card-${card.agentKey}`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-lg">
+                                    {persona?.avatar ?? "\ud83e\udd16"}
+                                  </span>
+                                  <div>
+                                    <div className="text-sm font-medium">
+                                      {persona?.name ?? card.agentKey}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {persona?.role ?? card.agentKey}
+                                      {agent ? (
+                                        <>
+                                          {" "}
+                                          · {agent.findings.length} finding
+                                          {agent.findings.length === 1 ? "" : "s"}
+                                        </>
+                                      ) : null}
+                                    </div>
                                   </div>
                                 </div>
+                                <StatusBadge
+                                  status={agent ? agentDisplayStatus(agent, live) : "running"}
+                                />
                               </div>
-                              <StatusBadge
-                                status={agent ? agentDisplayStatus(agent, live) : "running"}
-                              />
-                            </div>
-                            {/* Issue #766 — a Regenerate or Continue in progress, on the
+                              {/* Issue #766 — a Regenerate or Continue in progress, on the
                             card it will replace: the stored result still reads
                             `completed` until then. */}
-                            {live ? (
-                              <p
-                                className="mt-2 text-xs text-muted-foreground"
-                                role="status"
-                                data-testid={`agent-live-${card.agentKey}`}
-                              >
-                                {liveAgentLine(live)}
-                              </p>
-                            ) : null}
-                            {isSpecialist && agent && detail.data.status === "completed" ? (
-                              <div className="mt-2">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() =>
-                                    regenerate.mutate(agent.agentKey as AnalysisAgentKey)
-                                  }
-                                  disabled={regenerate.isPending}
+                              {live ? (
+                                <p
+                                  className="mt-2 text-xs text-muted-foreground"
+                                  role="status"
+                                  data-testid={`agent-live-${card.agentKey}`}
                                 >
-                                  Regenerate
-                                </Button>
-                              </div>
-                            ) : null}
-                            {agent?.errorMessage ? (
-                              <p className="mt-2 text-xs text-destructive">{agent.errorMessage}</p>
-                            ) : null}
-                          </div>
-                        );
-                      })}
+                                  {liveAgentLine(live)}
+                                </p>
+                              ) : null}
+                              {isSpecialist && agent && detail.data.status === "completed" ? (
+                                <div className="mt-2">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() =>
+                                      regenerate.mutate(agent.agentKey as AnalysisAgentKey)
+                                    }
+                                    disabled={regenerate.isPending}
+                                  >
+                                    Regenerate
+                                  </Button>
+                                </div>
+                              ) : null}
+                              {agent?.errorMessage ? (
+                                <p className="mt-2 text-xs text-destructive">
+                                  {agent.errorMessage}
+                                </p>
+                              ) : null}
+                            </div>
+                          );
+                        },
+                      )}
                     </div>
                   </div>
                 </TabsContent>

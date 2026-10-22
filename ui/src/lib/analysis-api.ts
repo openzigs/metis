@@ -334,7 +334,7 @@ export interface AnalysisSnapshot extends AnalysisListItem {
    */
   ledgerUsage?: AnalysisLedgerUsage | null;
   /** Issue #766 — agents running right now, e.g. a Regenerate in progress. */
-  liveAgents: AnalysisLiveAgent[];
+  liveAgents?: AnalysisLiveAgent[];
   metadata: Record<string, unknown> | null;
   agentResults: AgentResultSummary[];
   requirements: RequirementSummary[];
