@@ -105,6 +105,8 @@ describe("scrubWriterFenceLookalikes — ordinary text is the same string", () =
     "# ===== Formulas =====",
     "===== CONSTANTS =====",
     "=== Data flow ===",
+    "=== Sources ===",
+    "=== Formulas and constants ===",
     "== Sources ==",
     "List<Source> sources = new ArrayList<>();",
     "Map<String, List<Formula>> byId;",
@@ -146,6 +148,14 @@ describe("scrubWriterFenceLookalikes — documented limits (docs/SECURITY.md §1
   it.each([
     ["return x == endFlow", `return x ${R}`],
     ["=== Module facts ===", R],
+    ["=== Database schema ===", R],
+    ["== Canonical facts ==", R],
+    ["=== Grounding sources ===", R],
+    ["=== Formulas / Constants ===", R],
+    ["== Table and column names ==", R],
+    ["== end flow ==", R],
+    ["=== End of facts ===", R],
+    ["x == END_FLOW == y", `x ${R} y`],
     ["foo === MODULE FACTS END === bar", `foo ${R} bar`],
     ["foo === END-TO-END FLOW === bar", `foo ${R} bar`],
   ])("redacted although ordinary, or caught mid-line: %s", (text, out) => {

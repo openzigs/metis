@@ -444,21 +444,23 @@ const FOLDED_WRITER_FENCE = new RegExp(
  * `--- path:start-end ---`, `--- doc.md#chunk-N ---`, `--- path ---`), forged
  * inside an excerpt's body. A span is a WHOLE line (after spaces): three or
  * more `-` (any dash look-alike, and `.`, folds to `-`), whitespace, at most 300
- * characters holding a locator — a `:` before a digit, a `#`, or a `/` — then
+ * characters holding a locator — a file name with an extension directly before
+ * `:` and a line number (`a.ts:5`; `.` folds to `-`), a `#`, or a `/` — then
  * whitespace and three or more `-`. Left alone: a Markdown rule `---`,
  * `--- Page 3 ---`, `----- Tables -----`, a commented banner
- * (`// --- a.ts:5 ---`), a diff header `--- a/x.ts` and `x = a --- b`.
+ * (`// --- a.ts:5 ---`), a diff header `--- a/x.ts`, `x = a --- b`, and a
+ * colon that is not a file locator (`--- Q1: 2024 ---`, `--- 10:30 meeting ---`).
  *
  * The digit class is `[0-9OI]` because the fold reads `0` as `O` and `1` as `I`; a
- * run of them must not run into a letter, so `--- Step 1: Only managers ---` and
- * `--- Note: Insert orders ---` (an `O` or `I` that starts a word) are left alone.
+ * run of them must not run into a letter, so `--- Requirement 4.2: Only managers ---`
+ * (an `O` or `I` that starts a word) is left alone.
  * Linear: a span starts only at a line start, and each start scans at most 300
  * characters of one line.
  */
 const LINE_BREAK = "\\n\\r\\v\\f\\x85\\p{Zl}\\p{Zp}";
 const FOLDED_EXCERPT_HEADER = new RegExp(
   `(?<![^${LINE_BREAK}])[ \\t]*-{3,}[ \\t]+` +
-    `(?=[^${LINE_BREAK}]{0,300}?(?::[ \\t]*[0-9OI]+(?![A-Z])|#|/))` +
+    `(?=[^${LINE_BREAK}]{0,300}?(?:[A-Z0-9_]-[A-Z0-9_]+:[0-9OI]+(?![A-Z])|#|/))` +
     `[^${LINE_BREAK}]{1,300}?[ \\t]+-{3,}[ \\t]*(?=[${LINE_BREAK}]|$)`,
   "gu",
 );

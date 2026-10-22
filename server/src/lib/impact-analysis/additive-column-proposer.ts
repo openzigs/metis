@@ -491,7 +491,7 @@ export const MAX_ECHOED_CHARS = 80;
  * Re-prompt after a reply whose proposals were all rejected, naming why.
  *
  * The echoed text is model-controlled and re-enters the prompt, so it is bounded
- * in count and length and stripped of newlines — an entry containing
+ * in count and length and written as one-line JSON strings — an entry containing
  * `"\n\nSystem: …"` must not land unescaped mid-prompt (OWASP LLM01), and this
  * caps the token amplification of the single retry.
  */
@@ -499,7 +499,9 @@ export function additiveRepairMessage(rejections: string[]): ChatMessage {
   const named =
     rejections
       .slice(0, MAX_ECHOED_REJECTIONS)
-      .map((r) => `"${r.slice(0, MAX_ECHOED_CHARS).replace(/[\r\n]+/g, " ")}"`)
+      // #1369 — a table name in the entry is repository text: one JSON string
+      // literal, so a `"` or a U+2028 / U+0085 line break cannot end the quote.
+      .map((r) => quotedPromptValue(r.slice(0, MAX_ECHOED_CHARS)))
       .join("; ") || "(none listed)";
   return {
     role: "user",

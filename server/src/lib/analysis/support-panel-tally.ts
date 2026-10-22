@@ -97,6 +97,14 @@ export interface ShownExcerpt {
   endLine?: number;
 }
 
+/**
+ * Lines a citation may fall outside a shown range and still count. A code-graph
+ * excerpt opens with a `name (kind) — path:start-end` line of its own, so a model
+ * counting lines from the excerpt lands one off (`end + 1`); a forged header that
+ * points elsewhere in the file lands far outside.
+ */
+export const CITATION_LINE_SLACK = 2;
+
 /** Per file, the line ranges shown, or `null` when any excerpt of it was shown whole. */
 type ShownLines = Map<string, Array<readonly [number, number]> | null>;
 
@@ -133,7 +141,9 @@ function groundedLocator(
     const to = end === undefined ? from : Number(end);
     const lo = Math.min(from, to);
     const hi = Math.max(from, to);
-    if (!ranges.some(([a, b]) => lo <= b && hi >= a)) return null;
+    if (!ranges.some(([a, b]) => lo <= b + CITATION_LINE_SLACK && hi >= a - CITATION_LINE_SLACK)) {
+      return null;
+    }
   }
   return end ? `${filePath}:${start}-${end}` : `${filePath}:${start}`;
 }
@@ -152,9 +162,10 @@ function groundedLocator(
  * #1369 — and when every locator names lines outside the excerpts shown of its
  * file. An excerpt is untrusted text: one that forged a `--- path:500 ---`
  * header could point a lens at line 500 of a file shown only at lines 10-40, and
- * a file-only check counted that citation. A range that OVERLAPS a shown range
- * counts (`path:35-60` against `10-40`); a file shown whole (no `startLine`, or a
- * bare path string) accepts any line.
+ * a file-only check counted that citation. A range that OVERLAPS a shown range,
+ * widened by {@link CITATION_LINE_SLACK} each side, counts (`path:35-60` and
+ * `path:41` against `10-40`); a file shown whole (no `startLine`, or a bare path
+ * string) accepts any line.
  */
 export function extractGroundedLocator(
   citation: string | null | undefined,

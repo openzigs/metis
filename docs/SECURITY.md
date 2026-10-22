@@ -987,24 +987,32 @@ a rationale with a `"` now reads as JSON escapes.
    in an excerpt's body with `[REDACTED HEADER]` (`scrubExcerptHeaderLookalikes`,
    the fold of 13.1 with its own pattern): a whole line (after spaces) of three
    or more `-` (any dash look-alike, `.` and `…` fold to `-`), whitespace, at most
-   300 characters holding `:` before a number (not running into a letter — the
-   fold reads `0` and `1` as `O` and `I`), `#` or `/`, whitespace, three or
+   300 characters holding a file locator — a name with an extension directly
+   before `:` and a line number (`a.ts:5`; the number may not run into a letter,
+   since the fold reads `0` and `1` as `O` and `I`) — or a `#` or `/`, whitespace, three or
    more `-`. Caught: `--- src/a.ts:500 ---`, `--- a.ts:7 ---`, em-dash, box-drawing,
    minus-sign and full-width forms, a zero-width character in the run, a
    full-width colon, `--- doc.md#chunk-13 ---`, `--- src/other.ts ---`. Left
    alone: `---`, `--- Page 3 ---`, `----- Tables -----`, `// --- a.ts:5 ---`,
    the diff header `--- a/x.ts`, `| --- |`, `x = a --- b`,
    `--- Requirement 4.2: Only managers approve refunds ---`,
-   `--- Step 1: Insert orders ---`. **Not caught**
+   `--- Step 1: Insert orders ---`, `--- Note: 1 ---`, `--- Q1: 2024 ---`,
+   `--- 10:30 meeting ---`. **Not caught**
    (tested): a header naming only a bare file (`--- a.ts ---`) or a backslash
    path with no line, one with fewer than three dashes, a one-sided
    `--- a.ts:5`, a header after other text on its line, and a colon look-alike
    NFKD does not fold (U+2236) with no `/` in the path. **Redacted although
-   ordinary** (tested): `--- Note: 1 ---`, `--- see docs/x ---`, `… a/b …`.
+   ordinary** (tested): any `---`-framed line holding a `/` or `#`
+   (`--- see docs/x ---`, `--- 2024/25 budget ---`, `--- Q#1 ---`), one holding
+   `name.ext:N` (`--- v1.2:3 ---`), and `… a/b …` (an ellipsis folds to `---`).
 2. The citation gate checks the line, not only the file. `extractGroundedLocator`
    (`analysis/support-panel-tally.ts`) now takes the excerpts shown, and a
    locator counts only when its lines overlap a range shown of its file
-   (`path:35-60` against `10-40` counts, `path:500` does not); a file shown
+   (`path:35-60` against `10-40` counts, `path:500` does not), with two lines
+   of slack each side (`CITATION_LINE_SLACK`: a code-graph excerpt opens with
+   its own `name (kind) — path:start-end` line, so a model counting lines lands
+   one off; `path:9` and `path:42` count against `10-40`, `path:43` and
+   `path:45` do not); a file shown
    whole (no `startLine`, or a bare path) accepts any line, and an excerpt with
    a start and no end accepts any line from its start. When a locator fails,
    the next one in the citation or the reasoning is tried. The lens votes and
@@ -1051,5 +1059,12 @@ Left alone (tested): compound conditions (`if (a == end || flow == b)`,
 outside the set (`=== FINISHED FORMULAS ===`), a bare-noun opening
 (`=== FORMULAS ===`), a single `=`, other delimiters (`--- END FLOW ---`), a
 fence split across lines, `=== END_FLOW`, a one-sided form in the middle of a
-line, and `[SOURCE_ID=`. **Redacted although ordinary** (tested): a line ending
-in `== endFlow`, and a heading `=== Module facts ===`.
+line, and `[SOURCE_ID=`. **Redacted although ordinary** (tested), because each
+is one of the writer's fences in another case or spacing: a line ending in
+`== endFlow`; a `==`-bounded `END` plus a writer noun anywhere in a line
+(`== end flow ==`, `=== End of facts ===`, `x == END_FLOW == y`); and a heading
+made of a writer opening phrase between `=` runs (`=== Module facts ===`,
+`=== Database schema ===`, `== Canonical facts ==`, `=== Grounding sources ===`,
+`=== Formulas / Constants ===`, `== Table and column names ==`). A bare-noun
+heading (`=== Sources ===`, `=== Formulas and constants ===`, `=== Data flow ===`)
+is left alone.

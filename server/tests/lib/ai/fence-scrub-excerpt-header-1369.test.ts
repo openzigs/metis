@@ -64,6 +64,10 @@ describe("scrubExcerptHeaderLookalikes", () => {
     "--- Requirement 4.2: Only managers approve refunds ---",
     "--- Step 1: Insert orders ---",
     "--- Note: Orders over $500 need review ---",
+    "--- Note: 1 ---",
+    "--- Q1: 2024 ---",
+    "--- 10:30 meeting ---",
+    "--- Step 2:3 ---",
     "SELECT a --- b:1 --- c",
     "text --- src/a.ts:5 ---",
   ])("leaves ordinary text alone: %s", (line) => {
@@ -81,12 +85,14 @@ describe("scrubExcerptHeaderLookalikes", () => {
     expect(header(line)).toBe(line);
   });
 
-  it.each(["--- Note: 1 ---", "--- see docs/x ---", `${cp(0x2026)} a/b ${cp(0x2026)}`])(
-    "redacted although ordinary (documented): %s",
-    (line) => {
-      expect(header(line)).toBe(H);
-    },
-  );
+  it.each([
+    "--- see docs/x ---",
+    "--- 2024/25 budget ---",
+    "--- Q#1 ---",
+    `${cp(0x2026)} a/b ${cp(0x2026)}`,
+  ])("redacted although ordinary (documented): %s", (line) => {
+    expect(header(line)).toBe(H);
+  });
 
   it("is idempotent on random fragment soup, including multi-unit folds", () => {
     const fragments = [

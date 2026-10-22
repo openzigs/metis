@@ -15,7 +15,6 @@ import {
   applySupportPanel,
   buildLensPrompt,
   collectPanelEvidence,
-  evidenceFilePaths,
   MAX_PANEL_EVIDENCE_CHARS,
   MAX_PANEL_EVIDENCE_ITEMS,
   renderEvidenceBlock,
@@ -475,17 +474,5 @@ describe("applySupportPanel (#1109 — never fails a run, never drops a finding)
     await expect(
       applySupportPanel(provider, findings, EVIDENCE, { enabled: true, signal: controller.signal }),
     ).rejects.toThrow();
-  });
-});
-
-describe("evidenceFilePaths", () => {
-  it("dedupes the allow-list a lens's own citation is grounded against", () => {
-    expect(
-      evidenceFilePaths([
-        { filePath: "a.ts", excerpt: "1" },
-        { filePath: "a.ts", excerpt: "2" },
-        { filePath: "b.ts", excerpt: "3" },
-      ]),
-    ).toEqual(["a.ts", "b.ts"]);
   });
 });

@@ -267,11 +267,6 @@ export function renderEvidenceBlock(evidence: readonly PanelEvidence[]): string 
   return parts.join("\n\n");
 }
 
-/** Every file path the lens is shown — the allow-list its own citation is grounded against. */
-export function evidenceFilePaths(evidence: readonly PanelEvidence[]): string[] {
-  return [...new Set(evidence.map((e) => e.filePath))];
-}
-
 // ── Prompts ─────────────────────────────────────────────────────────────────
 
 /**
