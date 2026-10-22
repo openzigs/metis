@@ -5074,6 +5074,15 @@ model RevokedRefreshToken {
 /// every CURRENT session in one write, while a token issued AFTER the cutoff
 /// (e.g. after the user is re-provisioned and logs in again) still validates —
 /// matching the SCIM deprovision/reprovision acceptance criteria.
+model UserSessionRevocation {
+  userId    String   @id
+  /// Refresh tokens with `iat <= cutoff` for this user are rejected.
+  cutoff    DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("user_session_revocations")
+}
+
 /// #1395 — an external sign-in identity bound to a local user.
 ///
 /// A login is looked up by (provider, issuer, subject) first, and by username
@@ -5081,8 +5090,8 @@ model RevokedRefreshToken {
 /// provider's identity refuses the sign-in instead of handing over the account.
 /// provider: mock|ldap|oidc|saml. issuer: the OIDC `iss`, the SAML IdP entity
 /// ID, or the provider kind for the single directory (mock, ldap). subject: the
-/// OIDC `sub`, the SAML NameID (the username for a transient NameID), or the
-/// directory account name.
+/// OIDC `sub`, the SAML NameID (a prefixed username for a transient NameID), or
+/// the directory's canonical id (entryUUID / objectGUID, else its folded account name).
 model UserIdentity {
   id          String    @id @default(cuid())
   userId      String
@@ -5099,15 +5108,6 @@ model UserIdentity {
   @@unique([provider, issuer, subject])
   @@index([userId])
   @@map("user_identities")
-}
-
-model UserSessionRevocation {
-  userId    String   @id
-  /// Refresh tokens with `iat <= cutoff` for this user are rejected.
-  cutoff    DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("user_session_revocations")
 }
 
 // ============================================================================

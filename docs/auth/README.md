@@ -209,8 +209,9 @@ in the `user_identities` table:
 | Provider | Issuer | Subject |
 |---|---|---|
 | OIDC | the ID token's `iss` | the ID token's `sub` (never `preferred_username`) |
-| SAML | the assertion's `Issuer` (else the configured IdP entity ID) | the `NameID`; the asserted username when the NameID is transient |
-| LDAP, mock | `ldap` / `mock` (one directory per install) | the account name signed in with |
+| SAML | the assertion's `Issuer` (else the configured IdP entity ID) | the `NameID`; for a transient NameID, `urn:metis:saml:transient-username:<username>`, a prefix no NameID uses |
+| LDAP | `ldap` (one directory per install) | the entry's `entryUUID` (OpenLDAP) or `objectGUID` (Active Directory); without either, the account name the directory returned (`uid` / `sAMAccountName`), NFKC-folded and lower-cased so `Alice` and `alice` are one identity |
+| mock | `mock` | the folded account name |
 
 A sign-in is resolved in this order
 ([`login-identity.ts`](../../server/src/lib/auth/login-identity.ts)):
@@ -221,17 +222,31 @@ A sign-in is resolved in this order
    change, by SCIM, or by the seed): the sign-in claims it only if the account
    belongs to the same provider kind (`users.authSource`). An account whose kind
    is unknown (`authSource` NULL) can be claimed only by the `AUTH_MODE`
-   provider.
+   provider:
+   - LDAP or mock claim it by username, as they always have;
+   - OIDC claims it only when the IdP asserts `email_verified: true` and that
+     e-mail equals the account's e-mail (case- and NFKC-folded; an address NFKC
+     would change never matches). Without that, the seed's `admin` row would go
+     to whoever the IdP lets call themselves "admin";
+   - SAML asserts no `email_verified`, so it never claims such an account: link
+     it (below).
 4. Anything else is **refused** with `409 ACCOUNT_LINK_REQUIRED`: the username
    belongs to another provider's identity (an OIDC user named like an LDAP user,
-   or a SAML user named like an OIDC user), or to another subject at the same
-   IdP. Nothing about the existing account changes.
+   or a SAML user named like an OIDC user), to another subject at the same IdP,
+   or (step 3) the e-mail is not verified as the account's own. Nothing about
+   the existing account changes.
+
+A **disabled or deleted** account is refused with `403 ACCOUNT_DISABLED` and
+never written on the login path, by any of these steps. When SCIM re-provisions
+a deleted username, the revived account drops the deleted person's identities
+and provider (`authSource` NULL): it is a new person, and the old IdP account
+cannot sign in as them.
 
 The upgrade migration fills `users.authSource` from the audit log: an account
 whose every recorded login came through OIDC is marked `oidc`, through SAML
-`saml`. Every other existing account stays NULL and is claimed by the
-`AUTH_MODE` provider at its next sign-in. If such an account actually signs in
-through a second provider, link it as below.
+`saml`. Every other existing account stays NULL and is claimed as in step 3 at
+its next sign-in. If such an account actually signs in through another
+provider, link it as below.
 
 **Linking two identities to one account.** When the same person really does
 sign in through two providers, a host operator links the second identity. The
@@ -248,6 +263,24 @@ pnpm --filter @metis/server exec tsx src/lib/auth/link-identity-cli.ts list --us
 The link is audited as `user.identity.linked`. Once linked, both identities
 sign in as the account, and each sign-in reconciles provider-granted roles from
 the provider that signed in.
+
+**Switching `AUTH_MODE` (for example LDAP → OIDC).** Accounts are bound to the
+old provider's identities, so after the switch every existing user's first
+sign-in through the new provider is refused with `409 ACCOUNT_LINK_REQUIRED`.
+That is deliberate: nothing proves the new IdP's `alice` is the directory's
+`alice`. To move users across:
+
+1. Before switching, list each account's current binding with
+   `link-identity-cli.ts list --username <name>`.
+2. Switch `AUTH_MODE` and configure the new provider.
+3. Have each user sign in once. The refusal's audit event records their new
+   provider, issuer and subject.
+4. After confirming the person out of band (or matching the IdP's directory
+   export to METIS usernames), run `link-identity-cli.ts link` for each.
+   Until linked, the user cannot sign in through the new provider.
+
+Accounts still unbound (`authSource` NULL, for example seeded or SCIM-provisioned
+ones) follow step 3 above under the new `AUTH_MODE`.
 
 ### LDAP — admin-API runtime override
 

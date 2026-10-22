@@ -234,6 +234,8 @@ export function scimRouter(): Router {
             deletedAt: null,
             authRolesInitializedAt: new Date(),
             authRoleAuthority: "scim",
+            // #1395 — a revived username is a new person: it belongs to no provider yet.
+            authSource: null,
           },
           create: {
             username: body.userName,
@@ -246,6 +248,9 @@ export function scimRouter(): Router {
         });
         // Re-provisioning must not expose provider grants left on a deleted user.
         await tx.userRole.deleteMany({ where: { userId: provisioned.id, source: "provider" } });
+        // #1395 — nor its sign-in identities: the deleted person's IdP account must
+        // not sign in as whoever is provisioned under the name now.
+        await tx.userIdentity.deleteMany({ where: { userId: provisioned.id } });
         return provisioned;
       },
       { isolationLevel: "Serializable" },

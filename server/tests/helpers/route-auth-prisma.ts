@@ -112,7 +112,10 @@ export function withRouteAuth<
     updateMany: vi.fn(async ({ where, data }: Query & { data: Row }) => {
       const row = users.get(String(where.id));
       const unbound = row && !identities.some((i) => i.userId === row.id);
-      if (!row || !unbound || (row.authSource ?? null) !== where.authSource) return { count: 0 };
+      const active = row && row.deletedAt == null && (row.status ?? "active") === "active";
+      if (!row || !unbound || !active || (row.authSource ?? null) !== where.authSource) {
+        return { count: 0 };
+      }
       Object.assign(row, data);
       return { count: 1 };
     }),
@@ -123,7 +126,13 @@ export function withRouteAuth<
       const row = identities.find(
         (i) => i.provider === key.provider && i.issuer === key.issuer && i.subject === key.subject,
       );
-      return row ? { id: `${row.provider}:${row.issuer}:${row.subject}`, ...row } : null;
+      if (!row) return null;
+      const owner = users.get(String(row.userId));
+      return {
+        id: `${row.provider}:${row.issuer}:${row.subject}`,
+        ...row,
+        user: { status: owner?.status ?? "active", deletedAt: owner?.deletedAt ?? null },
+      };
     }),
     update: vi.fn(async () => ({})),
     create: vi.fn(async ({ data }: { data: Row }) => {

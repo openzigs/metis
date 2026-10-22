@@ -75,7 +75,7 @@ async function ensureUserRow(
     throw new AppError(500, "AUTH_PROVIDER_INVALID", "Unsupported password sign-in provider");
   }
   const row = await resolveLoginUser({
-    identity: directoryIdentity(providerName, user.username),
+    identity: directoryIdentity(providerName, user),
     profile: { username: user.username, displayName: user.displayName, email: user.email },
     primaryKind: providerName,
   });

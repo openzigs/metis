@@ -258,6 +258,8 @@ export function ssoRouter(): Router {
         username: result.user.username,
         displayName: result.user.displayName,
         email: result.user.email,
+        // SAML carries no email_verified claim, so it never claims a legacy row by e-mail.
+        verifiedEmail: null,
       },
       role,
       // Only what the signed assertion states as-is (`samlAssertedIdentities`).
@@ -362,6 +364,7 @@ export function ssoRouter(): Router {
         username: result.user.username,
         displayName: result.user.displayName,
         email: result.user.email,
+        verifiedEmail: oidcAssertedIdentities(result.user.rawClaims ?? {})[0] ?? null,
       },
       role,
       // OIDC bootstraps on the verified `email` claim only (`oidcAssertedIdentities`).

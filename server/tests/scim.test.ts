@@ -17,6 +17,7 @@ const { db, revoke, audit } = vi.hoisted(() => ({
     },
     userRole: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), deleteMany: vi.fn() },
     role: { findUnique: vi.fn(), delete: vi.fn() },
+    userIdentity: { deleteMany: vi.fn() },
     $transaction: vi.fn(),
   },
   revoke: vi.fn(),
@@ -135,6 +136,7 @@ describe("SCIM role authority persistence", () => {
     db.userRole.findMany.mockResolvedValue([]);
     db.userRole.findUnique.mockResolvedValue(null);
     db.userRole.deleteMany.mockResolvedValue({ count: 0 });
+    db.userIdentity.deleteMany.mockResolvedValue({ count: 0 });
   });
 
   function expectProviderCleanup(userId = user.id) {
@@ -157,10 +159,12 @@ describe("SCIM role authority persistence", () => {
       expect(db.user.upsert).toHaveBeenCalledWith({
         where: { username: user.username },
         create: expect.objectContaining(authority),
-        update: expect.objectContaining({ ...authority, deletedAt: null }),
+        // #1395 — a revived username is a new person: no provider, no identities.
+        update: expect.objectContaining({ ...authority, deletedAt: null, authSource: null }),
       });
       expectProviderCleanup();
       expect(db.userRole.deleteMany).toHaveBeenCalledTimes(1);
+      expect(db.userIdentity.deleteMany).toHaveBeenCalledWith({ where: { userId: user.id } });
     },
   );
 

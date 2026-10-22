@@ -10,20 +10,28 @@
  * subject) — and is resolved in this order:
  *
  *   1. the user bound to that identity (`user_identities`), whatever its
- *      username is today;
+ *      username is today — if that user is active and not deleted;
  *   2. no user with the username: a new user, bound to the identity;
- *   3. a user with the username and no identity yet (created before #1395, by
- *      SCIM, or by the seed): claimed and bound, but only by the provider kind
- *      it belongs to (`users.authSource`) — or, for a legacy row whose kind is
- *      unknown, by the deployment's AUTH_MODE provider;
+ *   3. an active user with the username and no identity yet (created before
+ *      #1395, by SCIM, or by the seed): claimed and bound, but only by the
+ *      provider kind it belongs to (`users.authSource`). A legacy row whose kind
+ *      is unknown (NULL) is claimable only by the deployment's AUTH_MODE
+ *      provider — and, when that provider is SSO, only if the IdP asserts a
+ *      VERIFIED e-mail equal to the row's e-mail (the seed's `admin` row must not
+ *      go to whoever an IdP calls "admin");
  *   4. anything else — the username belongs to another provider's identity, or
- *      to another subject of the same provider — is REFUSED with
- *      `409 ACCOUNT_LINK_REQUIRED`. An administrator links the two on purpose
- *      with `link-identity-cli.ts` (docs/auth/README.md).
+ *      to another subject of the same provider, or the e-mail is unverified — is
+ *      REFUSED with `409 ACCOUNT_LINK_REQUIRED`. An administrator links the two
+ *      on purpose with `link-identity-cli.ts` (docs/auth/README.md).
+ *
+ * A disabled or soft-deleted account is never written on the login path: its
+ * sign-in is refused with `403 ACCOUNT_DISABLED`.
  */
 import { audit } from "../audit/audit-service.js";
 import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
+import { foldIdentity, isNfkcStable } from "./bootstrap-admins.js";
+import { directoryNameSubject } from "./identity-subject.js";
 
 /** The provider kinds that sign users in. */
 export type LoginProviderKind = "mock" | "ldap" | "oidc" | "saml";
@@ -39,7 +47,7 @@ export interface ExternalIdentity {
   provider: LoginProviderKind;
   /** The OIDC `iss`, the SAML IdP entity ID, or the kind itself for the one directory. */
   issuer: string;
-  /** The OIDC `sub`, the SAML NameID, or the directory account name. */
+  /** The OIDC `sub`, the SAML NameID, or the directory's canonical id. */
   subject: string;
 }
 
@@ -47,6 +55,12 @@ export interface LoginProfile {
   username: string;
   displayName: string;
   email: string;
+  /**
+   * An e-mail the IdP asserts as VERIFIED (OIDC `email` with
+   * `email_verified: true`). Null when it asserts none — SAML has no such claim.
+   * Only consulted when an SSO sign-in would claim a legacy (NULL-kind) row.
+   */
+  verifiedEmail?: string | null;
 }
 
 export interface LoginUserRow {
@@ -56,22 +70,42 @@ export interface LoginUserRow {
 }
 
 export const ACCOUNT_LINK_REQUIRED = "ACCOUNT_LINK_REQUIRED";
+export const ACCOUNT_DISABLED = "ACCOUNT_DISABLED";
 
 /** Why a username match was refused. */
-export type IdentityConflict = "other_provider" | "other_subject";
+export type IdentityConflict = "other_provider" | "other_subject" | "unverified_email";
 
 const TRANSIENT_NAME_ID = "urn:oasis:names:tc:SAML:2.0:nameid-format:transient";
+
+/**
+ * Prefix of the subject that stands in for a transient NameID. A URN no IdP
+ * issues as a NameID, so it cannot collide with a persistent or e-mail NameID.
+ */
+export const SAML_TRANSIENT_SUBJECT_PREFIX = "urn:metis:saml:transient-username:";
+
+const SSO_KINDS: readonly string[] = ["oidc", "saml"];
 
 function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 
+export { directoryNameSubject };
+
 /**
- * The directory providers (mock, LDAP): one directory per deployment, keyed by
- * its account name — the name the directory was searched for and bound as.
+ * The directory providers (mock, LDAP): one directory per deployment. The
+ * subject is the directory's canonical id when it returned one (LDAP
+ * `entryUUID` / `objectGUID`, see `ldap-provider.ts`), else the folded account
+ * name.
  */
-export function directoryIdentity(provider: "mock" | "ldap", username: string): ExternalIdentity {
-  return { provider, issuer: provider, subject: username };
+export function directoryIdentity(
+  provider: "mock" | "ldap",
+  user: { username: string; subject?: string | null },
+): ExternalIdentity {
+  return {
+    provider,
+    issuer: provider,
+    subject: nonEmpty(user.subject) ?? directoryNameSubject(user.username),
+  };
 }
 
 /**
@@ -88,7 +122,7 @@ export function oidcIdentity(claims: Record<string, unknown>): ExternalIdentity 
 /**
  * SAML: the assertion's Issuer (else the configured IdP entity ID) + its
  * NameID. A transient NameID changes on every login, so it cannot key an
- * account: the asserted username stands in for it, as it always has.
+ * account: the asserted username stands in for it, under a prefix of its own.
  */
 export function samlIdentity(
   profile: Record<string, unknown>,
@@ -97,8 +131,24 @@ export function samlIdentity(
 ): ExternalIdentity | null {
   const issuer = nonEmpty(profile.issuer) ?? nonEmpty(configuredIssuer);
   const nameId = nonEmpty(profile.nameID);
-  const subject = nameId && profile.nameIDFormat !== TRANSIENT_NAME_ID ? nameId : username;
-  return issuer && nonEmpty(subject) ? { provider: "saml", issuer, subject } : null;
+  const subject =
+    nameId && profile.nameIDFormat !== TRANSIENT_NAME_ID
+      ? nameId
+      : nonEmpty(username) && `${SAML_TRANSIENT_SUBJECT_PREFIX}${username}`;
+  return issuer && subject ? { provider: "saml", issuer, subject } : null;
+}
+
+/** Whether a verified e-mail is the row's own, compared as `bootstrap-admins.ts` does. */
+export function verifiedEmailMatches(
+  verified: string | null | undefined,
+  rowEmail: string,
+): boolean {
+  return (
+    typeof verified === "string" &&
+    verified.trim() !== "" &&
+    isNfkcStable(verified) &&
+    foldIdentity(verified) === foldIdentity(rowEmail)
+  );
 }
 
 /**
@@ -108,10 +158,12 @@ export function samlIdentity(
 export function usernameClaimVerdict(
   existing: {
     authSource: string | null;
+    email: string;
     identities: readonly { provider: string; issuer: string }[];
   },
   identity: ExternalIdentity,
   primaryKind: string | null,
+  verifiedEmail: string | null = null,
 ): "claim" | IdentityConflict {
   if (existing.identities.length > 0) {
     // The lookup by full key missed, so a same-provider binding is another subject.
@@ -124,7 +176,14 @@ export function usernameClaimVerdict(
   if (existing.authSource !== null) {
     return existing.authSource === identity.provider ? "claim" : "other_provider";
   }
-  return identity.provider === primaryKind ? "claim" : "other_provider";
+  if (identity.provider !== primaryKind) return "other_provider";
+  if (
+    SSO_KINDS.includes(identity.provider) &&
+    !verifiedEmailMatches(verifiedEmail, existing.email)
+  ) {
+    return "unverified_email";
+  }
+  return "claim";
 }
 
 /**
@@ -136,14 +195,43 @@ function isUniqueViolation(error: unknown): boolean {
   return code === "P2002" || code === "P2034";
 }
 
-/** The row a claim may take: the one it judged, still unbound, still that kind. */
+/** Only an active, undeleted account is ever written on the login path. */
+const ACTIVE = { deletedAt: null, status: "active" } as const;
+
+function isActive(row: { deletedAt?: Date | null; status?: string | null }): boolean {
+  return row.deletedAt == null && (row.status ?? "active") === "active";
+}
+
+/** The row a claim may take: the one it judged, active, still unbound, still that kind. */
 export const CLAIMABLE = (id: string, authSource: string | null) => ({
   id,
   authSource,
+  ...ACTIVE,
   identities: { none: {} },
 });
 
 const USER_SELECT = { id: true, username: true, authRolesInitializedAt: true } as const;
+
+function auditRefusal(
+  reason: string,
+  identity: ExternalIdentity,
+  profile: LoginProfile,
+  userId: string | null,
+): void {
+  // The admin who links the accounts needs the exact key, so it is recorded.
+  audit({
+    actor: null,
+    action: "user.login.failed",
+    target: { type: "user", id: userId ?? profile.username },
+    metadata: {
+      reason,
+      username: profile.username,
+      provider: identity.provider,
+      issuer: identity.issuer,
+      subject: identity.subject,
+    },
+  });
+}
 
 function refuse(
   reason: IdentityConflict | "unique_conflict",
@@ -151,19 +239,7 @@ function refuse(
   profile: LoginProfile,
   userId: string | null,
 ): never {
-  // The admin who links the accounts needs the exact key, so it is recorded.
-  audit({
-    actor: null,
-    action: "user.login.failed",
-    target: { type: "user", id: userId ?? profile.username },
-    metadata: {
-      reason: `identity_conflict:${reason}`,
-      username: profile.username,
-      provider: identity.provider,
-      issuer: identity.issuer,
-      subject: identity.subject,
-    },
-  });
+  auditRefusal(`identity_conflict:${reason}`, identity, profile, userId);
   const message =
     reason === "unique_conflict"
       ? "This sign-in's username or e-mail address already belongs to another METIS " +
@@ -172,6 +248,11 @@ function refuse(
         "with a different identity provider or identity. Ask an administrator to link " +
         "the accounts.";
   throw new AppError(409, ACCOUNT_LINK_REQUIRED, message, { reason });
+}
+
+function refuseInactive(identity: ExternalIdentity, profile: LoginProfile, userId: string): never {
+  auditRefusal("account_inactive", identity, profile, userId);
+  throw new AppError(403, ACCOUNT_DISABLED, "This account is disabled.");
 }
 
 async function resolveOnce(
@@ -190,21 +271,36 @@ async function resolveOnce(
 
   const bound = await prisma.userIdentity.findUnique({
     where: key,
-    select: { id: true, userId: true },
+    select: { id: true, userId: true, user: { select: { status: true, deletedAt: true } } },
   });
   if (bound) {
+    if (!isActive(bound.user)) refuseInactive(identity, profile, bound.userId);
+    let row: LoginUserRow;
+    try {
+      // Conditional on the account still being active: a disable or delete that
+      // lands after the read above is never overwritten by a login.
+      row = await prisma.user.update({
+        where: { id: bound.userId, ...ACTIVE },
+        data: { displayName: profile.displayName, email: profile.email, lastLoginAt: now },
+        select: USER_SELECT,
+      });
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code === "P2025") {
+        refuseInactive(identity, profile, bound.userId);
+      }
+      throw error;
+    }
     await prisma.userIdentity.update({ where: { id: bound.id }, data: { lastLoginAt: now } });
-    return prisma.user.update({
-      where: { id: bound.userId },
-      data: { displayName: profile.displayName, email: profile.email, lastLoginAt: now },
-      select: USER_SELECT,
-    });
+    return row;
   }
 
   const existing = await prisma.user.findUnique({
     where: { username: profile.username },
     select: {
       id: true,
+      email: true,
+      status: true,
+      deletedAt: true,
       authSource: true,
       identities: { select: { provider: true, issuer: true } },
     },
@@ -227,12 +323,18 @@ async function resolveOnce(
     });
   }
 
-  const verdict = usernameClaimVerdict(existing, identity, primaryKind);
+  if (!isActive(existing)) refuseInactive(identity, profile, existing.id);
+  const verdict = usernameClaimVerdict(
+    existing,
+    identity,
+    primaryKind,
+    profile.verifiedEmail ?? null,
+  );
   if (verdict !== "claim") refuse(verdict, identity, profile, existing.id);
 
-  // Claim only the row as it was judged — still unbound, still the same kind —
-  // and bind it in the same serializable transaction, so two concurrent claims
-  // of one row cannot both bind (Postgres aborts one with a serialization
+  // Claim only the row as it was judged — active, still unbound, still the same
+  // kind — and bind it in the same serializable transaction, so two concurrent
+  // claims of one row cannot both bind (Postgres aborts one with a serialization
   // failure; the retry then sees the winner's identity and refuses).
   await prisma.$transaction(
     async (tx) => {
@@ -257,8 +359,9 @@ async function resolveOnce(
 
 /**
  * Resolve (create, claim or find) the local user for a sign-in, or refuse it
- * with `409 ACCOUNT_LINK_REQUIRED`. `primaryKind` is the AUTH_MODE provider's
- * name — the only kind that may claim a legacy row of unknown provenance.
+ * with `409 ACCOUNT_LINK_REQUIRED` / `403 ACCOUNT_DISABLED`. `primaryKind` is
+ * the AUTH_MODE provider's name — the only kind that may claim a legacy row of
+ * unknown provenance.
  */
 export async function resolveLoginUser(input: {
   identity: ExternalIdentity;

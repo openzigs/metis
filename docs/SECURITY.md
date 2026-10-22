@@ -39,7 +39,9 @@ bound to (provider, issuer, subject) identities in `user_identities` — OIDC `i
 SAML Issuer+NameID, the directory account name for LDAP. A sign-in whose username already
 belongs to another provider's identity, or to another subject at the same IdP, is refused
 with `409 ACCOUNT_LINK_REQUIRED` and audited; it never inherits that account's roles,
-workspaces or data. Only a host operator can link a second identity to an account
+workspaces or data. An SSO sign-in claims a pre-existing unbound account only on an
+IdP-verified e-mail equal to the account's; a disabled or deleted account is refused
+(`403 ACCOUNT_DISABLED`) and never written on the login path. Only a host operator can link a second identity to an account
 (`link-identity-cli.ts`). Details: [docs/auth/README.md](auth/README.md#one-account-per-sign-in-identity-1395).
 
 ### 2.2 Token model

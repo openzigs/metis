@@ -78,6 +78,9 @@ const { upsertProvider, __resetProviders } = await import("../src/lib/auth/sso-c
 const { __clearDiscoveryCache } = await import("../src/lib/auth/oidc-provider.js");
 const { __resetSAMLInstances } = await import("../src/lib/auth/saml-provider.js");
 const { linkIdentity } = await import("../src/lib/auth/link-identity-cli.js");
+const { scimRouter, addScimToken, __resetScimTokens } = await import("../src/routes/scim.js");
+const { errorHandler } = await import("../src/middleware/error-handler.js");
+const express = (await import("express")).default;
 const helpers = await import("../src/lib/auth/__tests__/saml-test-helpers.js");
 
 interface MockUser {
@@ -86,6 +89,7 @@ interface MockUser {
   email: string;
   name: string;
   groups?: string[];
+  emailVerified?: boolean;
 }
 interface MockIdp {
   issuer: string;
@@ -280,7 +284,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({ id: aliceId, email: "alice@corp.test", authSource: "ldap" });
       expect(rows[0].identities.map((i) => [i.provider, i.issuer, i.subject])).toEqual([
-        ["ldap", "ldap", "alice"],
+        ["ldap", "ldap", "name:alice"],
       ]);
       expect(await db.workspaceMember.count({ where: { userId: aliceId } })).toBe(1);
       // The refusal is audited with the exact identity an admin would link.
@@ -389,7 +393,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           where: { userId: legacy.id },
           select: { provider: true, issuer: true, subject: true },
         }),
-      ).toEqual([{ provider: "ldap", issuer: "ldap", subject: "frank" }]);
+      ).toEqual([{ provider: "ldap", issuer: "ldap", subject: "name:frank" }]);
       expect((await db.user.findUniqueOrThrow({ where: { id: legacy.id } })).authSource).toBe(
         "ldap",
       );
@@ -432,6 +436,154 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(
         await db.userIdentity.count({ where: { provider: "saml", subject: "ivan@saml.test" } }),
       ).toBe(0);
+    });
+
+    describe("an SSO AUTH_MODE claims a legacy row only on a matching VERIFIED e-mail", () => {
+      beforeEach(() => {
+        vi.stubEnv("AUTH_MODE", "oidc");
+        __resetAuthProvider();
+      });
+
+      it("the seed's `admin` row does not go to whoever the IdP calls admin", async () => {
+        const admin = await db.user.create({
+          data: { username: "admin", displayName: "System Admin", email: "admin@metis.local" },
+        });
+        // Any IdP user may be named "admin"; this one's verified address is not the row's.
+        const named = await oidcLogin({
+          sub: "oidc-mallory",
+          preferredUsername: "admin",
+          email: "mallory@evil.test",
+          name: "Mallory",
+        });
+        expect(named.status).toBe(409);
+        expect(named.body.error.details).toEqual({ reason: "unverified_email" });
+        // The row's own address, but the IdP does not vouch for it.
+        const unverified = await oidcLogin({
+          sub: "oidc-mallory",
+          preferredUsername: "admin",
+          email: "ADMIN@metis.local",
+          name: "Mallory",
+          emailVerified: false,
+        });
+        expect(unverified.status).toBe(409);
+        expect(await db.userIdentity.count({ where: { userId: admin.id } })).toBe(0);
+        expect((await db.user.findUniqueOrThrow({ where: { id: admin.id } })).email).toBe(
+          "admin@metis.local",
+        );
+        // Verified and equal (case-folded): the admin's own IdP account claims it.
+        const owner = await oidcLogin({
+          sub: "oidc-admin",
+          preferredUsername: "admin",
+          email: "Admin@Metis.Local",
+          name: "System Admin",
+        });
+        expect(owner.status).toBe(302);
+        expect((await me(accessCookie(owner))).id).toBe(admin.id);
+      });
+
+      it("a verified e-mail NFKC would change never matches (look-alike)", async () => {
+        await db.user.create({
+          data: { username: "kate", displayName: "Kate", email: "kate@corp.test" },
+        });
+        const res = await oidcLogin({
+          sub: "oidc-kate",
+          preferredUsername: "kate",
+          email: "Kate@corp.test", // Kelvin sign
+          name: "Kate",
+        });
+        expect(res.status).toBe(409);
+      });
+
+      it("SAML asserts no email_verified, so it never claims a legacy row", async () => {
+        vi.stubEnv("AUTH_MODE", "saml");
+        __resetAuthProvider();
+        await db.user.create({
+          data: { username: "sam", displayName: "Sam", email: "sam@corp.test" },
+        });
+        const acs = await samlLogin("sam@corp.test", "sam");
+        expect(acs.status).toBe(409);
+        expect(acs.body.error.details).toEqual({ reason: "unverified_email" });
+      });
+    });
+
+    it("LDAP: `Alice` and `alice` are one identity and one account", async () => {
+      directory.set("Alice", { password: "pw", email: "alice@corp.test", role: "reader" });
+      directory.set("alice", { password: "pw", email: "alice@corp.test", role: "reader" });
+      const first = await ldapLogin("Alice");
+      const second = await ldapLogin("alice");
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(second.body.data.user.id).toBe(first.body.data.user.id);
+      expect(await db.user.count()).toBe(1);
+      expect(await db.userIdentity.count()).toBe(1);
+    });
+
+    it("a disabled or deleted account is refused and never written on the login path", async () => {
+      directory.set("kim", { password: "pw", email: "kim@corp.test", role: "reader" });
+      const kimId = (await ldapLogin("kim")).body.data.user.id as string;
+      const before = await db.user.findUniqueOrThrow({ where: { id: kimId } });
+      await db.user.update({ where: { id: kimId }, data: { status: "disabled" } });
+      directory.set("kim", { password: "pw", email: "kim-new@corp.test", role: "admin" });
+      const disabled = await ldapLogin("kim");
+      expect(disabled.status).toBe(403);
+      expect(disabled.body.error.code).toBe("ACCOUNT_DISABLED");
+      const after = await db.user.findUniqueOrThrow({ where: { id: kimId } });
+      expect(after.email).toBe("kim@corp.test");
+      expect(after.lastLoginAt).toEqual(before.lastLoginAt);
+
+      // A soft-deleted legacy row is not claimed either.
+      const gone = await db.user.create({
+        data: {
+          username: "lee",
+          displayName: "Lee",
+          email: "lee@corp.test",
+          deletedAt: new Date(),
+        },
+      });
+      directory.set("lee", { password: "pw", email: "lee@corp.test", role: "reader" });
+      expect((await ldapLogin("lee")).status).toBe(403);
+      expect(await db.userIdentity.count({ where: { userId: gone.id } })).toBe(0);
+      expect(
+        (await db.user.findUniqueOrThrow({ where: { id: gone.id } })).deletedAt,
+      ).not.toBeNull();
+    });
+
+    it("SCIM reviving a deleted username drops the old person's identities and provider", async () => {
+      const old = await oidcLogin({
+        sub: "oidc-old-pat",
+        preferredUsername: "pat",
+        email: "pat@corp.test",
+        name: "Old Pat",
+      });
+      const patId = (await me(accessCookie(old))).id;
+      await db.user.update({ where: { id: patId }, data: { deletedAt: new Date() } });
+
+      __resetScimTokens();
+      addScimToken("scim-1395");
+      const scim = express();
+      scim.use(express.json());
+      scim.use("/scim/v2", scimRouter());
+      scim.use(errorHandler);
+      const created = await request(scim)
+        .post("/scim/v2/Users")
+        .set("Authorization", "Bearer scim-1395")
+        .send({ userName: "pat", emails: [{ value: "new.pat@corp.test" }] });
+      expect(created.status).toBe(201);
+      const revived = await db.user.findUniqueOrThrow({
+        where: { id: patId },
+        include: { identities: true },
+      });
+      expect(revived).toMatchObject({ deletedAt: null, authSource: null, identities: [] });
+
+      // The deleted person's IdP account no longer signs in as the new pat.
+      const again = await oidcLogin({
+        sub: "oidc-old-pat",
+        preferredUsername: "pat",
+        email: "pat@corp.test",
+        name: "Old Pat",
+      });
+      expect(again.status).toBe(409);
+      __resetScimTokens();
     });
 
     it("an administrator's explicit link lets the second identity in", async () => {

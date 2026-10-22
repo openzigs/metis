@@ -182,6 +182,10 @@ function handle(socket: net.Socket, dir: Pick<Directory, "binds" | "filters">): 
                 attr("displayName", "Alice Example"),
                 attr("mail", "alice@example.com"),
                 attr("memberOf", "CN=Admins,OU=Groups,DC=example,DC=com"),
+                // #1395 — a canonical id, when a test asks for one.
+                ...extraEntryAttributes.map(([type, value]) =>
+                  tlv(0x30, Buffer.concat([octets(type), tlv(0x31, tlv(0x04, value))])),
+                ),
               ]),
             ),
           ]),
@@ -233,8 +237,11 @@ function configFor(url: string, overrides: Partial<LDAPConfig> = {}): LDAPConfig
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 let directory: Directory | undefined;
+/** Attributes appended to the directory's one entry (raw octet-string values). */
+let extraEntryAttributes: [string, Buffer][] = [];
 
 afterEach(async () => {
+  extraEntryAttributes = [];
   clearLDAPConfig();
   await directory?.close();
   directory = undefined;
@@ -279,8 +286,39 @@ describe("LDAPAuthProvider with the real ldapts client", () => {
         email: "alice@example.com",
         role: "admin",
         groups: ["Admins"],
+        subject: "name:alice",
       },
     });
+  });
+
+  it("#1395 — the subject is the directory's account name, folded: `ALICE` and `alice` are one identity", async () => {
+    directory = await startDirectory();
+    setLDAPConfig(configFor(directory.url));
+    const upper = await new LDAPAuthProvider().authenticate("ALICE", USER_PW);
+    const lower = await new LDAPAuthProvider().authenticate("alice", USER_PW);
+    expect(upper.success && upper.user.subject).toBe("name:alice");
+    expect(lower.success && lower.user.subject).toBe("name:alice");
+  });
+
+  it("#1395 — a directory's objectGUID (raw bytes) or entryUUID keys the identity", async () => {
+    const guid = Buffer.from("00112233445566778899aabbccddeeff", "hex");
+    extraEntryAttributes = [["objectGUID", guid]];
+    directory = await startDirectory();
+    setLDAPConfig(configFor(directory.url));
+    const ad = await new LDAPAuthProvider().authenticate("Alice", USER_PW);
+    expect(ad.success && ad.user.subject).toBe("objectGUID:00112233445566778899aabbccddeeff");
+    await directory.close();
+
+    extraEntryAttributes = [
+      ["entryUUID", Buffer.from("6F1B2C3D-0000-4000-8000-ABCDEF012345")],
+      ["objectGUID", guid],
+    ];
+    directory = await startDirectory();
+    setLDAPConfig(configFor(directory.url));
+    const openldap = await new LDAPAuthProvider().authenticate("alice", USER_PW);
+    expect(openldap.success && openldap.user.subject).toBe(
+      "entryUUID:6f1b2c3d-0000-4000-8000-abcdef012345",
+    );
   });
 
   it("filter metacharacters in the username reach the directory as a literal equality value", async () => {
