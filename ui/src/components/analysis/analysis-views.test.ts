@@ -305,6 +305,8 @@ describe("approvalsNoneMessage (#1355)", () => {
   it("words a failed request as no answer, not an unreadable one", () => {
     const text = approvalsNoneMessage(failedWith("provider-error"), 2, "completed").text;
     expect(text).toContain("the request to the AI model failed");
+    // Cycle-2 review — one "so" per sentence, not two.
+    expect(text.split(".")[0]!.match(/\bso\b/g)).toHaveLength(1);
     expect(text).not.toContain("could not read");
     expect(text).not.toContain("answer");
   });
@@ -312,6 +314,7 @@ describe("approvalsNoneMessage (#1355)", () => {
   it("words an empty reply as an empty answer", () => {
     const text = approvalsNoneMessage(failedWith("empty-response"), 0, "completed").text;
     expect(text).toContain("returned an empty answer");
+    expect(text.split(".")[0]!.match(/\bso\b/g)).toHaveLength(1);
     expect(text).not.toContain("could not read");
   });
 

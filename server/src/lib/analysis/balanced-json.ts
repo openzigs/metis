@@ -70,6 +70,7 @@ export function parseBalancedJsonObject(
   let depth = 0;
   let inString = false;
   let answer: { value: unknown; canonical?: string } | null = null;
+  let elementBeforeAnswer = false;
   const from = text.indexOf("{");
   if (from < 0 || (leadingOnly && from !== 0)) return NOT_FOUND;
 
@@ -101,10 +102,15 @@ export function parseBalancedJsonObject(
           if (parsed) {
             if (isArrayElement(text, start, i + 1)) {
               // PR #1409 review — an element of an array in the prose
-              // (`List: [{"a":1}, {"a":2}]`) is neither the answer nor a rival
-              // to it: an object answer is never an array element. Recognised
-              // only when BOTH opened by `[`/`,` and closed by `,`/`]`, so a
-              // prose comma (`e.g., {…}`) still reaches the checks below.
+              // (`List: [{"a":1}, {"a":2}]`) AFTER the answer is commentary,
+              // not a rival. Recognised only when BOTH opened by `[`/`,` and
+              // closed by `,`/`]`, so a prose comma (`e.g., {…}`) still
+              // reaches the checks below. BEFORE any answer is held it may BE
+              // the answer (`Here:\n[{…}]\nIf none, use {"requirements":[]}`,
+              // or `Sure, {…}, and an empty one looks like {…}`): taking the
+              // later object would be a schema-valid empty result, so a reply
+              // with such a span and a later answer is ambiguous (cycle-2 review).
+              if (answer === null) elementBeforeAnswer = true;
             } else if (continuesStructurally(text, i + 1)) {
               // What follows decides whether this object is the answer. Prose
               // is commentary. A JSON token means the model closed the object
@@ -127,8 +133,15 @@ export function parseBalancedJsonObject(
               // a key-order difference is the same object), and only now, so
               // the common single-object reply never pays for it. Each span is
               // canonicalised at most once: still linear.
-              answer.canonical ??= canonicalJson(answer.value);
-              if (canonicalJson(value) !== answer.canonical) return AMBIGUOUS;
+              // `canonicalJson` recurses; an object nested thousands deep
+              // overflows the stack, and two objects that cannot be compared
+              // cannot be told to be the same (cycle-2 review).
+              try {
+                answer.canonical ??= canonicalJson(answer.value);
+                if (canonicalJson(value) !== answer.canonical) return AMBIGUOUS;
+              } catch {
+                return AMBIGUOUS;
+              }
             }
           }
         }
@@ -136,7 +149,8 @@ export function parseBalancedJsonObject(
       }
     }
   }
-  return answer === null ? NOT_FOUND : { found: true, value: answer.value };
+  if (answer === null) return NOT_FOUND;
+  return elementBeforeAnswer ? AMBIGUOUS : { found: true, value: answer.value };
 }
 
 /**

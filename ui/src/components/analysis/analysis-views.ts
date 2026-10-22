@@ -466,9 +466,9 @@ export function approvalsNoneMessage(
   // it must not be worded as an answer METIS could not read.
   const why =
     failure.reason === "provider-error"
-      ? "the request to the AI model failed, so no requirements came back to review"
+      ? "the request to the AI model failed and no requirements came back"
       : failure.reason === "empty-response"
-        ? "the AI model returned an empty answer, so there were no requirements to review"
+        ? "the AI model returned an empty answer"
         : "METIS could not read the requirements out of the AI model’s answer";
   const cause = `No approval checkpoints were created for this run: ${why}, so nothing was put up for approval.`;
   // While the run is still going, "run it again" is premature advice and no

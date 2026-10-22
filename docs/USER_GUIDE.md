@@ -5006,7 +5006,13 @@ Before tickets are created, METIS creates approval requests for:
 
 View approvals at **Analysis → Approvals** tab. Each item shows its status (Pending / Approved / Rejected) and supports adding reviewer notes. Tickets can only be created once all required approvals are resolved.
 
-**When the requirements step fails (#1355).** The checkpoints are built from the requirements METIS reads out of the model's answer. If that answer cannot be read, even after METIS asks once more, no checkpoints are created, so nothing holds the requirements back and they are saved without review. The Approvals tab then says so in place of "This run has no approval checkpoints", including how many requirements were saved. Run the analysis again to review them before they are saved.
+**When the requirements step fails (#1355).** The checkpoints are built from the requirements METIS reads out of the model's answer. No checkpoints are created when that step fails, so nothing holds the requirements back and they are saved without review. The step fails in one of three ways, and the Approvals tab names which one in place of "This run has no approval checkpoints":
+
+- **The answer could not be read**, even after METIS asked once more: "METIS could not read the requirements out of the AI model's answer".
+- **The request to the model failed** (a connection error, an upstream outage, a quota): "the request to the AI model failed and no requirements came back".
+- **The model returned an empty answer** twice: "the AI model returned an empty answer".
+
+Once the run has finished, the tab also says how many requirements were saved without review. Run the analysis again to review them before they are saved.
 
 ### 35.5 Web Search Configuration
 

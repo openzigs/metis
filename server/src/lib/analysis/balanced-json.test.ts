@@ -270,9 +270,37 @@ describe("#1355 a preamble example followed by the real answer", () => {
       expect(extractJsonObject(text)).toEqual(ANSWER);
     });
 
-    it("skips an array in the prose BEFORE the answer, too", () => {
+    /**
+     * Cycle-2 review — before any answer is held, an array element may BE the
+     * answer. Skipping it returned the later empty example: schema-valid, zero
+     * requirements, the #1058 silent-loss class. These must fail instead.
+     */
+    it.each([
+      [
+        "an answer in brackets, then an empty example",
+        `Here:\n[${JSON.stringify(ANSWER)}]\nIf none, use {"requirements":[]}.`,
+      ],
+      [
+        "an answer in brackets, then a bare {}",
+        `Here:\n[${JSON.stringify(ANSWER)}]\nIf there are none, return {}.`,
+      ],
+      [
+        "an answer between commas, then an example",
+        `Sure, ${JSON.stringify(ANSWER)}, and an empty one looks like ${JSON.stringify(EXAMPLE)}.`,
+      ],
+    ])("is ambiguous on %s, never returning the later object", (_label, text) => {
+      expect(parseBalancedJsonObject(text)).toEqual({ found: false, ambiguous: true });
+      expect(() => extractJsonObject(text)).toThrow(AMBIGUOUS_JSON_MESSAGE);
+    });
+
+    it("is ambiguous when an array of objects comes BEFORE the answer", () => {
       const text = `Inputs: [{"a":1}, {"a":2}]\nResult: ${JSON.stringify(ANSWER)}`;
-      expect(extractJsonObject(text)).toEqual(ANSWER);
+      expect(parseBalancedJsonObject(text)).toEqual({ found: false, ambiguous: true });
+    });
+
+    it("still reads an answer that is only ever written inside brackets", () => {
+      // No other object: as on main, the last-resort slice reads it.
+      expect(extractJsonObject(`Here:\n[${JSON.stringify(ANSWER)}]`)).toEqual(ANSWER);
     });
 
     it("is ambiguous, not not-found, when a later object was closed early", () => {
@@ -314,6 +342,21 @@ describe("#1355 a preamble example followed by the real answer", () => {
       expect(parseBalancedJsonObject(text)).toEqual({
         found: true,
         value: { a: 1, b: { c: 2, d: 3 } },
+      });
+    });
+
+    it("is ambiguous, not a crash, when a rival is nested too deep to compare", () => {
+      // Cycle-2 review — the canonical comparison recursed and overflowed the
+      // stack at ~3,000 levels. JSON.parse itself takes this depth.
+      const depth = 3_000;
+      const deep = `${'{"a":'.repeat(depth)}1${"}".repeat(depth)}`;
+      expect(() => JSON.parse(deep)).not.toThrow();
+      const text = `Answer: ${JSON.stringify(ANSWER)}\nAlso: ${deep}`;
+      expect(parseBalancedJsonObject(text)).toEqual({ found: false, ambiguous: true });
+      const deeper = `${'{"a":'.repeat(10_000)}1${"}".repeat(10_000)}`;
+      expect(parseBalancedJsonObject(`x ${JSON.stringify(ANSWER)} y ${deeper}`)).toEqual({
+        found: false,
+        ambiguous: true,
       });
     });
 
