@@ -58,6 +58,9 @@ describe("identity keys", () => {
       "entryUUID:abc",
     );
     expect(directoryIdentity("ldap", { username: "bob", subject: " " }).subject).toBe("name:bob");
+    // A look-alike NFKC would fold to `kate` keeps an identity of its own.
+    expect(directoryIdentity("ldap", { username: "Kate" }).subject).toBe("name-exact:Kate");
+    expect(directoryIdentity("ldap", { username: "Kate" }).subject).toBe("name:kate");
   });
 
   it("LDAP subjects: entryUUID, else a 16-byte objectGUID, else the directory's own name", () => {
@@ -146,6 +149,19 @@ describe("usernameClaimVerdict", () => {
     expect(usernameClaimVerdict(unbound("saml"), OIDC, "oidc")).toBe("other_provider");
     expect(usernameClaimVerdict(unbound(null), OIDC, "ldap", email)).toBe("other_provider");
     expect(usernameClaimVerdict(unbound(null), OIDC, null, email)).toBe("other_provider");
+    // Operator-linked identities on a NULL / scim row do not lock out its own provider…
+    const linkedOidc = [{ provider: "oidc", issuer: OIDC.issuer }];
+    const ldapId = { provider: "ldap", issuer: "ldap", subject: "name:a" } as const;
+    expect(
+      usernameClaimVerdict({ authSource: null, email, identities: linkedOidc }, ldapId, "ldap"),
+    ).toBe("claim");
+    expect(
+      usernameClaimVerdict({ authSource: "scim", email, identities: linkedOidc }, ldapId, "ldap"),
+    ).toBe("claim");
+    // …but a row a sign-in claimed (kind recorded) is that provider's alone.
+    expect(
+      usernameClaimVerdict({ authSource: "oidc", email, identities: linkedOidc }, ldapId, "ldap"),
+    ).toBe("other_provider");
     // A SCIM row is the IdP's: AUTH_MODE's provider claims it, with no e-mail gate.
     const saml = { provider: "saml", issuer: "urn:idp", subject: "n" } as const;
     expect(usernameClaimVerdict(unbound("scim"), saml, "saml", null)).toBe("claim");
@@ -292,6 +308,31 @@ describe("resolveLoginUser — races and account state", () => {
     expect(db.userIdentity.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ ...OIDC, userId: "u1" }),
     });
+  });
+
+  it("claiming a row that carries only operator-linked identities requires none of this provider", async () => {
+    const ldapId = { provider: "ldap", issuer: "ldap", subject: "name:alice" } as const;
+    db.userIdentity.findUnique.mockResolvedValue(null);
+    db.user.findUnique.mockResolvedValue(
+      legacy({ authSource: null, identities: [{ provider: "oidc", issuer: OIDC.issuer }] }),
+    );
+    db.user.updateMany.mockResolvedValue({ count: 1 });
+    db.userIdentity.create.mockResolvedValue({});
+    db.user.findUniqueOrThrow.mockResolvedValue(ROW);
+    await expect(
+      resolveLoginUser({ identity: ldapId, profile: PROFILE, primaryKind: "ldap" }),
+    ).resolves.toEqual(ROW);
+    expect(db.user.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: "u1",
+          authSource: null,
+          deletedAt: null,
+          status: "active",
+          identities: { none: { provider: "ldap", issuer: "ldap" } },
+        },
+      }),
+    );
   });
 
   it("an SSO claim of a legacy row with no verified e-mail is refused before any write", async () => {

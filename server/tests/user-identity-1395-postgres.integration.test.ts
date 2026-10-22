@@ -145,6 +145,23 @@ describe.runIf(enabled)("#1395 user identities on real Postgres (integration)", 
       await db.$disconnect();
     });
 
+    it("LDAP finds a legacy row case-insensitively (the raw lookup runs on Postgres)", async () => {
+      const name = `jsmith-${suffix}`;
+      const row = await db.user.create({
+        data: { username: name, displayName: "J", email: `${name}@corp.test` },
+      });
+      try {
+        const resolved = await resolveLoginUser({
+          identity: { provider: "ldap", issuer: "ldap", subject: `name:${name}` },
+          profile: { username: name.toUpperCase(), displayName: "J", email: `${name}@corp.test` },
+          primaryKind: "ldap",
+        });
+        expect(resolved).toMatchObject({ id: row.id, username: name });
+      } finally {
+        await db.user.delete({ where: { id: row.id } });
+      }
+    });
+
     it("racing claims of one unbound legacy row bind exactly one identity", async () => {
       const legacy = `legacy-${suffix}`;
       const row = await db.user.create({

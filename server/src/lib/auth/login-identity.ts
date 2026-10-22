@@ -173,11 +173,19 @@ export function usernameClaimVerdict(
 ): "claim" | IdentityConflict {
   if (existing.identities.length > 0) {
     // The lookup by full key missed, so a same-provider binding is another subject.
-    return existing.identities.some(
-      (bound) => bound.provider === identity.provider && bound.issuer === identity.issuer,
-    )
-      ? "other_subject"
-      : "other_provider";
+    if (
+      existing.identities.some(
+        (bound) => bound.provider === identity.provider && bound.issuer === identity.issuer,
+      )
+    ) {
+      return "other_subject";
+    }
+    // A sign-in binds a row AND records its kind, so identities on a row whose
+    // kind is still NULL or `scim` were all linked by an operator. The row's
+    // own provider has not claimed it yet, and may — by the rules below.
+    if (existing.authSource !== null && existing.authSource !== SCIM_AUTH_SOURCE) {
+      return "other_provider";
+    }
   }
   if (existing.authSource === SCIM_AUTH_SOURCE) {
     // Provisioned by the IdP over SCIM: the AUTH_MODE provider signs those users
@@ -213,12 +221,21 @@ function isActive(row: { deletedAt?: Date | null; status?: string | null }): boo
   return row.deletedAt == null && (row.status ?? "active") === "active";
 }
 
-/** The row a claim may take: the one it judged, active, still unbound, still that kind. */
-export const CLAIMABLE = (id: string, authSource: string | null) => ({
+/**
+ * The row a claim may take: the one it judged, active, still that kind, and
+ * still unbound — or, for a row that only carried operator-linked identities
+ * (`usernameClaimVerdict`), still without one of this provider. Its kind is
+ * NULL or `scim` and the claim changes it, so a second claimer misses anyway.
+ */
+export const CLAIMABLE = (
+  id: string,
+  authSource: string | null,
+  linked: { provider: string; issuer: string } | null = null,
+) => ({
   id,
   authSource,
   ...ACTIVE,
-  identities: { none: {} },
+  identities: { none: linked ? { provider: linked.provider, issuer: linked.issuer } : {} },
 });
 
 const USER_SELECT = { id: true, username: true, authRolesInitializedAt: true } as const;
@@ -266,6 +283,38 @@ function refuseInactive(identity: ExternalIdentity, profile: LoginProfile, userI
   throw new AppError(403, ACCOUNT_DISABLED, "This account is disabled.");
 }
 
+const EXISTING_SELECT = {
+  id: true,
+  email: true,
+  status: true,
+  deletedAt: true,
+  authSource: true,
+  identities: { select: { provider: true, issuer: true } },
+} as const;
+
+/**
+ * The row that holds this sign-in's username. LDAP matches account names
+ * case-insensitively, and its identity is case-folded, so a legacy `jsmith` row
+ * must be found when the user types `JSmith` — otherwise the first such login
+ * creates a second, empty `JSmith` account and binds the identity to it for
+ * good. An exact match wins; one case-insensitive match is used; several
+ * (legacy duplicates such as `Alice` and `alice`) are refused for an operator
+ * to link. Other providers assert the username exactly, so it is matched exactly.
+ */
+async function findUsernameRow(identity: ExternalIdentity, profile: LoginProfile) {
+  const exact = await prisma.user.findUnique({
+    where: { username: profile.username },
+    select: EXISTING_SELECT,
+  });
+  if (exact || identity.provider !== "ldap") return exact;
+  // Parameterised: the username is bound, never spliced into the SQL.
+  const matches = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT "id" FROM "users" WHERE lower("username") = lower(${profile.username})`;
+  if (matches.length === 0) return null;
+  if (matches.length > 1) refuse("other_subject", identity, profile, null);
+  return prisma.user.findUnique({ where: { id: matches[0].id }, select: EXISTING_SELECT });
+}
+
 async function resolveOnce(
   identity: ExternalIdentity,
   profile: LoginProfile,
@@ -305,17 +354,7 @@ async function resolveOnce(
     return row;
   }
 
-  const existing = await prisma.user.findUnique({
-    where: { username: profile.username },
-    select: {
-      id: true,
-      email: true,
-      status: true,
-      deletedAt: true,
-      authSource: true,
-      identities: { select: { provider: true, issuer: true } },
-    },
-  });
+  const existing = await findUsernameRow(identity, profile);
   if (!existing) {
     // `create`, never `upsert`: a row that appeared since the read above is a
     // unique violation, and the retry judges it like any other existing row.
@@ -350,7 +389,11 @@ async function resolveOnce(
   await prisma.$transaction(
     async (tx) => {
       const claimed = await tx.user.updateMany({
-        where: CLAIMABLE(existing.id, existing.authSource),
+        where: CLAIMABLE(
+          existing.id,
+          existing.authSource,
+          existing.identities.length > 0 ? identity : null,
+        ),
         data: {
           authSource: identity.provider,
           displayName: profile.displayName,

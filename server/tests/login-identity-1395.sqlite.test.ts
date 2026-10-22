@@ -520,6 +520,27 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await db.userIdentity.count()).toBe(1);
     });
 
+    it("LDAP: a legacy row is found whatever case the user types first (round-3 panel)", async () => {
+      const legacy = await db.user.create({
+        data: { username: "jsmith", displayName: "J", email: "jsmith@corp.test" },
+      });
+      directory.set("JSmith", { password: "pw", email: "jsmith@corp.test", role: "reader" });
+      const res = await ldapLogin("JSmith");
+      expect(res.status).toBe(200);
+      expect(res.body.data.user).toMatchObject({ id: legacy.id, username: "jsmith" });
+      expect(await db.user.count()).toBe(1);
+
+      // Legacy duplicates differing only in case are ambiguous: refused, not guessed.
+      await db.user.create({ data: { username: "Dup", displayName: "D", email: "d1@x.test" } });
+      await db.user.create({ data: { username: "dup", displayName: "D", email: "d2@x.test" } });
+      directory.set("DUP", { password: "pw", email: "d@x.test", role: "reader" });
+      const dup = await ldapLogin("DUP");
+      expect(dup.status).toBe(409);
+      expect(
+        await db.userIdentity.count({ where: { provider: "ldap", subject: "name:dup" } }),
+      ).toBe(0);
+    });
+
     it("a disabled or deleted account is refused and never written on the login path", async () => {
       directory.set("kim", { password: "pw", email: "kim@corp.test", role: "reader" });
       const kimId = (await ldapLogin("kim")).body.data.user.id as string;
@@ -630,6 +651,36 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }),
       ).toEqual({ authSource: "oidc" });
       __resetScimTokens();
+    });
+
+    it("a link made before the account's own provider signs in does not lock that provider out (round-3 panel)", async () => {
+      const legacy = await db.user.create({
+        data: { username: "olga", displayName: "Olga", email: "olga@corp.test" },
+      });
+      const user = { sub: "oidc-olga", preferredUsername: "olga", email: "x@x.test", name: "O" };
+      expect((await oidcLogin(user)).status).toBe(409);
+      await linkIdentity({
+        operator: "ops",
+        username: "olga",
+        identity: { provider: "oidc", issuer: idp.issuer, subject: "oidc-olga" },
+      });
+      // AUTH_MODE is LDAP: the directory still claims its legacy row…
+      directory.set("olga", { password: "pw", email: "olga@corp.test", role: "reader" });
+      const ldap = await ldapLogin("olga");
+      expect(ldap.status).toBe(200);
+      expect(ldap.body.data.user.id).toBe(legacy.id);
+      // …and the linked identity keeps working. Both are bound now.
+      const oidc = await oidcLogin(user);
+      expect(oidc.status).toBe(302);
+      expect((await me(accessCookie(oidc))).id).toBe(legacy.id);
+      expect(
+        (await db.userIdentity.findMany({ where: { userId: legacy.id } }))
+          .map((i) => i.provider)
+          .sort(),
+      ).toEqual(["ldap", "oidc"]);
+      // A third provider is still refused: the row is LDAP's now.
+      const acs = await samlLogin("olga@saml.test", "olga");
+      expect(acs.status).toBe(409);
     });
 
     it("an administrator's explicit link lets the second identity in", async () => {

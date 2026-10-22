@@ -217,7 +217,10 @@ A sign-in is resolved in this order
 ([`login-identity.ts`](../../server/src/lib/auth/login-identity.ts)):
 
 1. The account already bound to the identity, whatever its username is now.
-2. No account has the username: a new account, bound to the identity.
+2. No account has the username: a new account, bound to the identity. (LDAP
+   matches account names case-insensitively, so a legacy `jsmith` is found when
+   the user types `JSmith`; two legacy accounts differing only in case are
+   refused for an operator to link.)
 3. An account has the username but no identity yet (created before this
    change, by SCIM, or by the seed): the sign-in claims it only if the account
    belongs to the same provider kind (`users.authSource`). An account SCIM
