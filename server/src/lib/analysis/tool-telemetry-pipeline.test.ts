@@ -265,3 +265,56 @@ describe("#766 — the code agent's tool calls are visible while it runs", () =>
     expect(readLiveAgents(ANALYSIS_ID)).toEqual([]);
   });
 });
+
+describe("#766 review — one live entry across a multi-repo code pass", () => {
+  it("keeps the step count and start time across repositories instead of restarting", async () => {
+    const { readLiveAgents } = await import("./live-agent-progress.js");
+    const { prisma } = await import("../prisma.js");
+    vi.mocked(prisma.repoConnection.findMany).mockResolvedValueOnce([
+      { id: "repo_a", label: "api" },
+      { id: "repo_b", label: "web" },
+    ] as never);
+    const script = [
+      AGENT_ANSWER, // document agent
+      JSON.stringify({ tool: "search_code_graph", query: "drift severity" }), // repo a
+      AGENT_ANSWER,
+      JSON.stringify({ tool: "search_code_graph", query: "drift baseline" }), // repo b
+      AGENT_ANSWER,
+    ];
+    const seen: Array<ReturnType<typeof readLiveAgents>> = [];
+    let n = 0;
+    const provider = {
+      chat: vi.fn(async () => {
+        seen.push(readLiveAgents(ANALYSIS_ID));
+        const content = script[n] ?? AGENT_ANSWER;
+        n += 1;
+        return {
+          content,
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          provider: "bedrock" as const,
+        };
+      }),
+    };
+    const orch = new AnalysisOrchestrator({
+      provider: provider as never,
+      retrieve: async () => [],
+      knowledge: {} as never,
+      // No working tree: the graph tools alone, so no clone is touched.
+      prepareRepoClone: async () => "unusable",
+    } as never);
+    await (orch as unknown as { runPipeline: (...a: unknown[]) => Promise<void> }).runPipeline(
+      ANALYSIS_ID,
+      "Metis",
+      "A test project",
+      ["document", "code"],
+      { projectId: PROJECT_ID, startedById: "u1", model: "test-model" },
+    );
+
+    // Call 4 is repo b's first model call: repo a's step is still counted.
+    expect(seen[3]).toEqual([expect.objectContaining({ agentKey: "code", toolCalls: 1 })]);
+    expect(seen[4]).toEqual([expect.objectContaining({ agentKey: "code", toolCalls: 2 })]);
+    expect(seen[4][0].startedAt).toBe(seen[1][0].startedAt);
+    expect(readLiveAgents(ANALYSIS_ID)).toEqual([]);
+  });
+});

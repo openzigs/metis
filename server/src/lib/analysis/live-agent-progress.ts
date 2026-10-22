@@ -11,10 +11,19 @@
  * snapshot reads: which agents are running, since when, how many tool calls the
  * code agent's investigation has made, and whether the re-run has moved on to
  * re-synthesis. It is deliberately in memory — it describes work happening in
- * this process, and it must vanish with it. On a deployment with more than one
- * server process a snapshot served by another process reads no entry, which
- * degrades to the run header alone (the pre-#766 behaviour), never to a wrong
- * state. Nothing here is persisted and no model input changes.
+ * this process, and it must vanish with it. Nothing here is persisted and no
+ * model input changes.
+ *
+ * PER-POD CAVEAT. With more than one server replica (the Helm chart's
+ * `replicaCount: 2`) and no session affinity, successive polls of the snapshot
+ * land on different pods, and only the pod running the agent has its entry.
+ * The analysis page therefore keeps an agent it has seen live showing as
+ * running across polls that lack the entry, until the agent's stored result
+ * changes, the run stops `running`, or `LIVE_AGENT_STICKY_MS` passes without a
+ * sighting (`stickyLiveAgents`, `ui/src/components/analysis/analysis-views.ts`).
+ * The step count shown is then the last one a poll returned, not a live one.
+ * A page whose polls never reach the pod doing the work shows no live entry —
+ * the pre-#766 behaviour, never a wrong one. See `deploy/helm/metis/README.md`.
  */
 import type { AnalysisLiveAgent } from "@metis/shared";
 

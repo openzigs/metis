@@ -1200,6 +1200,9 @@ export class AnalysisOrchestrator {
         ts: Date.now(),
       });
     } finally {
+      // #766 review — first, before the terminal status write can be read:
+      // otherwise a poll could see the run `completed` beside a live entry.
+      endLiveAgent(opts.analysisId, opts.agentKey);
       // #1156 — a failing database write below must not keep the claim: it
       // would refuse every later regenerate or resume until a restart.
       try {
@@ -1231,7 +1234,6 @@ export class AnalysisOrchestrator {
         });
         if (statusWriteError) throw statusWriteError;
       } finally {
-        endLiveAgent(opts.analysisId, opts.agentKey);
         this.releaseClaim(opts.analysisId);
       }
     }
@@ -1484,6 +1486,9 @@ export class AnalysisOrchestrator {
     const resumed: AnalysisSkippedRepo[] = [];
     let remaining: AnalysisSkippedRepo[] = [];
     let reopened: ReopenedRun = null;
+    // #766 — one live entry across every resumed repository, so the card's
+    // step count and elapsed time do not restart per repository.
+    beginLiveAgent(opts.analysisId, "code", { rerun: true });
     try {
       reopened = await reopenForFollowUp(opts.analysisId);
       // Only resume connectors that STILL exist — a repo deleted since the
@@ -1569,6 +1574,7 @@ export class AnalysisOrchestrator {
           resumed.push({ connectorId: connector.id, label: connector.label });
         }
         remaining = skipped.map((c) => ({ connectorId: c.id, label: c.label }));
+        markLiveAgentSynthesizing(opts.analysisId, "code");
 
         // Re-run synthesis over the MERGED finding set so requirements reflect
         // the newly-analyzed repos.
@@ -1599,6 +1605,8 @@ export class AnalysisOrchestrator {
         ts: Date.now(),
       });
     } finally {
+      // #766 review — before the terminal status write, as in regenerate.
+      endLiveAgent(opts.analysisId, "code");
       // #1156 — release the claim even when a database write below throws.
       try {
         await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
@@ -2106,6 +2114,9 @@ export class AnalysisOrchestrator {
             where: { projectId: opts.projectId, deletedAt: null },
             select: { id: true, label: true },
           });
+          // #766 — one live entry across every repository's pass, so the card's
+          // step count and elapsed time do not restart per repository.
+          const ownsCodeLiveEntry = beginLiveAgent(analysisId, "code", { rerun: false });
           try {
             if (connectors.length <= 1) {
               // Single-repo (or none) — original behavior
@@ -2197,6 +2208,8 @@ export class AnalysisOrchestrator {
             // (`specialistSucceeded === 0 && specialistFailed > 0`) sees it.
             // `recordAgentOutcome` ignores AbortError reasons internally.
             recordAgentOutcome({ status: "rejected", reason: err });
+          } finally {
+            if (ownsCodeLiveEntry) endLiveAgent(analysisId, "code");
           }
         }
 

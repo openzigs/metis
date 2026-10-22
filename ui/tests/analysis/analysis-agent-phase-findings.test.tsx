@@ -358,7 +358,7 @@ describe("#289 — agent-phase findings in the results view", () => {
     const code = screen.getByTestId("agent-card-code");
     expect(within(code).getByText("running")).toBeInTheDocument();
     expect(within(code).getByTestId("agent-live-code")).toHaveTextContent(
-      /^Re-running · 5 tool calls so far · 1m \ds$/,
+      /^Re-running · 5 steps so far · 1m \ds$/,
     );
     // The stored result is still listed until the re-run replaces it.
     expect(code).toHaveTextContent("finding");
@@ -369,6 +369,35 @@ describe("#289 — agent-phase findings in the results view", () => {
     expect(within(database).getByText("running")).toBeInTheDocument();
     expect(within(database).getByTestId("agent-live-database")).toHaveTextContent(/^Running · /);
   });
+
+  // #766 review — two replicas, no session affinity: the polls alternate pods
+  // and only one carries the live entry. The card must not flip back to its
+  // stale `completed` row on the other pod's answer.
+  it("keeps the re-run on the card when the next poll is answered by another pod", async () => {
+    nav.search = new URLSearchParams("tab=agents");
+    const startedAt = new Date(Date.now() - 5_000).toISOString();
+    const running = { ...SNAPSHOT, status: "running" };
+    apiMock.get
+      .mockResolvedValueOnce({
+        ...running,
+        liveAgents: [
+          { agentKey: "code", startedAt, toolCalls: 3, rerun: true, phase: "investigating" },
+        ],
+      })
+      .mockResolvedValue({ ...running, liveAgents: [] });
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("agent-live-code")).toBeInTheDocument());
+
+    // The 2.5 s poll lands on the pod that is not running the agent.
+    await waitFor(() => expect(apiMock.get.mock.calls.length).toBeGreaterThanOrEqual(2), {
+      timeout: 5_000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const code = screen.getByTestId("agent-card-code");
+    expect(within(code).getByText("running")).toBeInTheDocument();
+    expect(within(code).getByTestId("agent-live-code")).toHaveTextContent(/3 steps so far/);
+  }, 10_000);
 
   // #23 review — nothing failed if the page stopped passing repo names to the
   // citation label, which then fell back to the connector id's tail.
