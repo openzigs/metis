@@ -34,3 +34,11 @@ Judge an unknown-model-id fallback by what a wrong guess costs (money vs latency
 **Folded here (retired from the index 2026-10-21; files unchanged):**
 
 - [[tiered-price-needs-one-requests-usage]] — Tiered price = ONE request: split a sum by isLongPrompt, price with tierRate (#1080)
+
+**From #1416 review (2026-10-22).**
+- Anthropic `cache_control` here is block-granular (the system block, or the last user
+  block). A shared prefix inside one user block helps only automatic-prefix caches
+  (DeepSeek).
+- The `brd-before-1070-grounded.json` fake model cites sources in prompt order, so
+  reordering sources changes the markdown, footnote numbering and judge hashes with no
+  behaviour change. Diff leaf by leaf, and check `systemSha256` / `userChars`.

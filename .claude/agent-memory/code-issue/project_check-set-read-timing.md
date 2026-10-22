@@ -45,6 +45,9 @@ Measured across PR heads, 2026-10-16/17 (#1217 re-review, then every PR from #12
 - **Extra rows:** `ldap-harness.yml` runs only when `ldap-provider.ts` or the harness paths
   change (#1400); a `workflow_dispatch` of `ci.yml` on a PR branch attaches a Trivy check to
   the PR head (#1392).
+- **`nightly-report` can be absent** from `gh pr checks` and from the run's job list on a
+  single-attempt PR run, even after success (#1408). Confirm with
+  `gh run view <id> --json status,conclusion` rather than waiting for the row.
 
 ## Folded here (retired from the index 2026-10-21; files unchanged)
 

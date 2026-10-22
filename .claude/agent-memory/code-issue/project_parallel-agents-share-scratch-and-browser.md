@@ -63,3 +63,4 @@ Older entries, folded here (retired from the index 2026-10-16; files unchanged):
 - (#1290) A worktree-isolated agent's shell guard rejects compound commands touching git, `cd` into computed paths, and `xxd`/`awk` pipelines. Put helper scripts in the scratchpad and run plain single commands.
 - (#1305) In an isolated worktree the guard also refuses multi-line Bash heredocs that edit files ("too complex to verify"). Use Edit/Write, or write a script file with the Write tool and run it in its own plain call.
 - (#1308) The Edit tool can write a `\uXXXX` escape as the literal character. A bidi control written that way fails Semgrep's blocking `contains-bidirectional-characters` on the PR. Use `\p{Bidi_Control}` or `String.fromCodePoint(...)`, and scan your changed files for bidi characters before pushing.
+- (#1415) The guard also refuses compound commands with `jq '.[...]'` filters. Write the jq filter to a scratch file and run `jq -f <file>`, one command per call.

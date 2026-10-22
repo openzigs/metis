@@ -12,3 +12,14 @@ Where: `continuesStructurally` in `server/src/lib/analysis/balanced-json.ts` (PR
 **Why:** mutants only test the tokens the guard already names, and a fuzz that asks "does the new code throw where the old did not" cannot see the opposite direction — the new code returning a value where the old one threw.
 
 **How to apply:** enumerate the grammar's continuation tokens (for JSON: `,` `]` `}` `:` and the value openers `{` `[` `"`) and write one test per token. Differential-fuzz both directions: new-throws-where-old-returned AND new-returns-where-old-threw. Still open after the fix: a bare scalar continuation (`{"a":[1]} 2, 3]}`) is accepted, because a digit or `t`/`f`/`n` also starts ordinary prose.
+
+## More lenient-parser traps (#1409 and its reviews, 2026-10-22)
+
+- **A skip rule must be tested with the real answer as the skipped span**, followed by an
+  example or `{}`. A skip applied before an answer is held turns a loud parse error into a
+  silently wrong, schema-valid answer.
+- **Turning a first-match scan into an all-matches scan turns its early exits into checks on
+  later spans**, and those can discard a match already held. Review every early `return`.
+- **`JSON.stringify` with a replacer recurses in JS** and overflows at about 3,000 nesting
+  levels (~6 KB of input), though V8's `JSON.parse` accepts that depth. A canonicalise or
+  compare step over untrusted parsed JSON needs a `try/catch` or a depth bound.
