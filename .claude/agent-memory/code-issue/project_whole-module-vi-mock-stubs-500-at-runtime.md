@@ -70,3 +70,12 @@ doubles that ignored `where` ([[publishing-safety-is-tested-on-the-stamped-body]
 so every test that `vi.mock`s `repo-service.js` without that export fails to import the
 module. Wrap it as `(...args) => restoreCloneAtCommit(...args)`, resolved at call time
 (`server/src/lib/connectors/repo/clone-health.ts`); see [[repo-clone-preflight-and-health]].
+
+## Concurrent dynamic imports of a mocked module (#1408, ui vitest)
+
+- In ui vitest, a second concurrent dynamic `import()` of a `vi.mock`ed module from the same
+  importer can resolve to the REAL module. A concurrency test must assert identity
+  (`toBe(first)`), not only the mock's call count.
+- So mock call counts cannot prove a single-flight fix, and overlap guards go untested,
+  unless the `import()` sits behind an injectable loader seam (#1408 review;
+  `ui/src/lib/socket-client.ts` has one, `SocketIoModule`).

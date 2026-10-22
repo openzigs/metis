@@ -26,3 +26,12 @@ On 2026-09-30 a next critical and five axios Highs landed within 15 minutes; eve
 - So before pushing a dependency removal, diff the lockfile's REMOVED packages against every `scripts/lib/dependency-audit-*.test.mjs` (PR #1321).
 
 **Folded here (retired from the index 2026-10-21; file unchanged):** [[project_dependabot-tilde-and-stale-audit]] — Dependabot groups rewrite `~0.x` ranges across minors (hold one with a `dependabot.yml` `ignore`), and a green audit run before an advisory's publish time is stale.
+
+**From #1421 (2026-10-22).**
+- The OSV `Dependency audit` can go red twice in one afternoon: dompurify GHSA-mrv2-3pqr-j5jr
+  landed about 30 minutes after the next.js advisories. Re-run
+  `osv-scanner --lockfile=pnpm-lock.yaml` just before pushing a security bump.
+- `minimumReleaseAge` (7 days, `pnpm-workspace.yaml`) decides which patch is usable. Check
+  `npm view <pkg> time` first: next 16.4.2 was blocked, 16.4.1 allowed.
+- `pnpm-lock.yaml` diffs as binary here; use `git diff --text`. A `pnpm --filter ./ui build`
+  also rewrites `ui/next-env.d.ts`; revert it ([[next-env-churn]]).

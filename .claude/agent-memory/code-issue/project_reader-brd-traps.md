@@ -50,3 +50,21 @@ Related: [[docs-gen-drop-retry-and-ledger]], [[redos-fix-ships-beside-new-patter
 - A scoped reader BRD's approved list depends on code links. Any new writer of `RequirementCodeMapping` or `RequirementImplementation` must call `noteRequirementsChanged`. Today those writers are `seed-code-links-from-findings.ts` and `living-spec/requirement-sync.ts`; `persistMappings` writes only with `opts.persist`.
 - `RequirementImplementation` has no `projectId`. `resolveLinkedRequirements` (`living-spec/requirement-sync.ts`) matches PRs by issue number alone, across every project and repo. Never place or scope a requirement by an implementation row's file path. Trust a PR link only when its `prUrl` names one of the requirement's own project's live repo connections (`connectionsNamedByPrUrl`).
 - In `checkIncrementalRegeneration`, every error except `SyntaxError`, `ZodError` and `InvalidStoredPathScopeError` is retried on every ingest. A plain `Error` thrown in `captureGenerationInputs` is retryable, so one corrupt stored row loops a scheduling retry. Validate new stored-input reads in the scope-parse block, and classify them as permanent.
+
+## The main-part code-name check (`docs-gen/main-part-language.ts`, #1223, #1404, #1405)
+
+- `findCodeIdentifiers` (rubric SO3) once missed names ending in an acronym
+  (`MinifluxSessionID`) and names in emphasis. `**bold**` cannot hide a name (`*` is not
+  `\w`), but underscore emphasis `__X__` did, through the `(?<![\w$])` look-behind. On an
+  emphasis miss, check the underscore form first. Fixed in #1404.
+- Measure a docs-gen heuristic's false positives by running the head and `main` copies side
+  by side (`pnpm --filter ./server exec tsx`) over a real generated document plus a probe
+  list of brand and business words. Unit negatives cover only the brands the author thought
+  of. Known residual false positives: JPMorgan, SQLServer, MSTeams, LaTeX, KGaA, mySQL
+  (#1404 review).
+- A regex that starts with an unanchored identifier class (`[A-Za-z_$][\w$]*`) run over
+  whole repository files is quadratic (100k chars took 4.2 s). Anchor it with `(?<![\w$])`
+  and add a timing test (#1405 review); see [[linearity-tests-count-work-or-thread-cpu]].
+- A scope-full reader BRD renders `RC-n` rather than Approved Requirements when a project's
+  approved requirements sit only in older runs (#1230, seen on the #1223 run). To score
+  SO1's approved branch, approve in the newest run.

@@ -104,3 +104,14 @@ Older single-trap entries, folded here (retired from the index 2026-10-16; files
   Same barrier failed the mutation on SQLite. See `server/tests/helpers/approval-review-race-suite.ts`.
 - **Assert the barrier filled.** A barrier with a fallback timer that opens it early forced no
   interleave; fail the test unless every racer arrived before it opened (#1359 review).
+
+**From #1409 and #1410 reviews (2026-10-22).**
+- **"Parity with before #N" tests drift when the reference is live.** `runAsBefore1063`
+  (`server/tests/affected-code-context.test.ts`) built its "byte-identical to before #1063"
+  reference from the live `Bm25CodeSymbolSearcher`, which changed scale after #1097. A test
+  that reuses today's searcher or mapper is differential, not frozen. Build the reference
+  from a frozen stand-in of the old behaviour, or pin literal golden values.
+- **"The page has no test file" was false** (#1409 review):
+  `ui/tests/analysis/analysis-subviews.test.tsx` renders the real analysis `page.tsx`.
+  Before accepting "untestable wiring", grep `ui/tests` for the page's test ids and mutate
+  the call site.

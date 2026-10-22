@@ -13,3 +13,7 @@ On PR #1347, `gh pr checks` showed `e2e (1/3)` and `e2e (3/3)` as `pending` (job
 
 - Before re-running a "pending" shard, read `gh api repos/<o>/<r>/actions/jobs/<id> --jq '[.steps[]|.name+"="+(.conclusion//"null")]'`.
 - If every step succeeded, wait and re-read. Do not re-run, and do not report green until the plain re-read shows zero pending.
+
+**Past 40 minutes (#1418).** A run reported `completed/success` while some job records stayed
+`in_progress` (pending in `gh pr checks`) for 40+ minutes. `gh run rerun --job <id>` on the
+stuck job cleared it. Wait first as above; re-run only that job once it is clearly stuck.

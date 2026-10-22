@@ -118,3 +118,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Client address behind UI proxy](project_client-address-behind-the-ui-proxy.md) — XFF ??=; cluster store no decrement; count() (#1393)
 - [SSO login identity matching](project_sso-login-identity-matching.md) — derived username; SCIM marker; login writes; mock IdP (#1400)
 - [vi.fn hides rejections](project_vi-fn-returned-promise-hides-unhandled-rejection.md) — it .then()s returned promises; return raw (#1414)
+- [Docs-gen module facts + scans](project_docs-gen-module-facts-and-deterministic-scans.md) — tests in; 2 builders; Module path keys cache
+- [Socket session lifecycle](project_socket-session-lifecycle.md) — close on every session end; cookie-expiry refusal; Manager; ui mocks (#1418)
+- [Linearity tests: count work or CPU](project_linearity-tests-count-work-or-thread-cpu.md) — threadCpuMs, not wall-clock; CPU backstop (#1423)
