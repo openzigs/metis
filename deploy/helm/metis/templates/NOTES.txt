@@ -22,6 +22,7 @@ Scaling backends (server env — required for server.replicaCount > 1):
   • UPLOAD_STORAGE_BACKEND    : {{ .Values.uploads.backend | default "local (per-pod RWO PVC)" }}
 
 {{- include "metis.scalingNotesWarning" . }}
+{{- include "metis.networkPolicyNotesWarning" . }}
 
 Secrets source:
   {{- if .Values.externalSecrets.enabled }}

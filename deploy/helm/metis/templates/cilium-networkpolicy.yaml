@@ -1,24 +1,29 @@
 {{- /*
-Cilium NetworkPolicy — sub-issue #371.
-Renders only when networkPolicy.cilium.enabled=true. Provides FQDN-scoped
-egress for the AI gateway + GitHub host allowlist that the vanilla
-NetworkPolicy cannot express.
+Cilium NetworkPolicy — sub-issue #371, reworked in #1374.
+Renders only when networkPolicy.cilium.enabled=true, NEXT TO the vanilla
+policies in networkpolicy.yaml (which keep the default-deny and the in-cluster
+rules). It grants the server what a vanilla NetworkPolicy cannot express:
+HTTPS to an FQDN allow-list (AI gateways, GitHub, AWS `fqdnPatterns`,
+`extraFqdns`) and, with MCP_RUNTIME=k8s-sse, the kube-apiserver entity, so
+networkpolicy.yaml leaves out its 0.0.0.0/0 ipBlocks
+in this mode. Selects the server only: no other pod leaves the cluster.
 */ -}}
-{{- if and .Values.networkPolicy.enabled .Values.networkPolicy.cilium.enabled -}}
+{{- if and .Values.networkPolicy.enabled .Values.networkPolicy.cilium.enabled .Values.server.enabled -}}
 {{- $fullname := include "metis.fullname" . -}}
+{{- $egress := .Values.networkPolicy.egress -}}
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
-  name: {{ printf "%s-fqdn-egress" $fullname }}
+  name: {{ printf "%s-server-fqdn-egress" $fullname }}
   labels:
     {{- include "metis.labels" (dict "root" . "component" "netpol") | nindent 4 }}
 spec:
   endpointSelector:
     matchLabels:
-      app.kubernetes.io/part-of: metis
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- include "metis.selectorLabels" (dict "root" . "component" "server") | nindent 6 }}
   egress:
-    # In-cluster DNS.
+    # In-cluster DNS, through Cilium's DNS proxy: toFQDNs only learns the
+    # addresses of names it saw resolved here.
     - toEndpoints:
         - matchLabels:
             "k8s:io.kubernetes.pod.namespace": kube-system
@@ -26,25 +31,28 @@ spec:
       toPorts:
         - ports:
             - port: "53"
-              protocol: UDP
+              protocol: ANY
           rules:
             dns:
               - matchPattern: "*"
-    # Intra-namespace traffic.
-    - toEndpoints:
-        - matchLabels:
-            app.kubernetes.io/part-of: metis
-            app.kubernetes.io/instance: {{ .Release.Name }}
-    # FQDN-scoped HTTPS to AI gateways + GitHub.
+    {{- if eq (toString (dig "MCP_RUNTIME" "" (.Values.server.env | default dict))) "k8s-sse" }}
+    # Kubernetes API (MCP_RUNTIME=k8s-sse).
+    - toEntities:
+        - kube-apiserver
+    {{- end }}
+    # FQDN-scoped HTTPS: AI gateways, GitHub, AWS endpoints (fqdnPatterns) and
+    # extraFqdns. Anything not listed here is blocked.
     - toFQDNs:
-        {{- range .Values.networkPolicy.egress.aiGateways }}
+        {{- range (concat $egress.aiGateways $egress.githubHosts ($egress.extraFqdns | default list)) }}
         - matchName: {{ . | quote }}
         {{- end }}
-        {{- range .Values.networkPolicy.egress.githubHosts }}
-        - matchName: {{ . | quote }}
+        {{- range ($egress.fqdnPatterns | default list) }}
+        - matchPattern: {{ . | quote }}
         {{- end }}
       toPorts:
         - ports:
-            - port: "443"
+            {{- range $egress.https.ports }}
+            - port: "{{ if kindIs "map" . }}{{ .port }}{{ else }}{{ . }}{{ end }}"
               protocol: TCP
+            {{- end }}
 {{- end }}

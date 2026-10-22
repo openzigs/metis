@@ -1,9 +1,9 @@
 {{- /*
 SQL lineage sidecar (metis-sql-lineage) — Epic #294.
 Mirrors embeddings.yaml: a deployment + ClusterIP service rendered from the
-shared component templates. SQL_LINEAGE_TOKEN is injected via the shared
-secretEnv (secrets.keyMap), and intra-namespace NetworkPolicy already permits
-server→sql-lineage traffic.
+shared component templates. SQL_LINEAGE_TOKEN is its only secret
+(secrets.components.sqlLineage, #1375), and the `-sidecars` NetworkPolicy
+admits the server only (#1374).
 */ -}}
 {{- if .Values.sqlLineage.enabled -}}
 {{ include "metis.componentDeployment" (dict "root" . "component" .Values.sqlLineage "name" "sql-lineage") }}

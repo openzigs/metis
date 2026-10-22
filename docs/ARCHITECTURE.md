@@ -5939,8 +5939,8 @@ core services plus the cluster-side concerns Compose cannot express:
 PVCs (uploads + LanceDB), Secrets via External Secrets Operator,
 ALB/nginx/traefik Ingress with TLS, IRSA-wired ServiceAccount, RBAC into
 the per-MCP namespace (Epic #272), HorizontalPodAutoscaler,
-PodDisruptionBudget, and a deny-default NetworkPolicy with optional
-Cilium FQDN egress.
+PodDisruptionBudget, and deny-default NetworkPolicies (per component; only
+the server has external egress, #1374) with optional Cilium FQDN egress.
 
 ```mermaid
 graph TB
