@@ -9,6 +9,7 @@ import type { AffectedCodeCandidate } from "@metis/shared";
 import {
   computeAffectedCodeContext,
   relativeToBestSeed,
+  shownKeywordRuleCauses,
   renderAffectedCodeBlock,
   estimateAffectedCodeTokens,
   EMPTY_AFFECTED_CODE_CONTEXT,
@@ -633,6 +634,12 @@ describe("computeAffectedCodeContext — hybrid ranking and its record (#1097)",
       linkRule: "confidence",
     });
     expect(hybrid.result.candidates[0]).not.toHaveProperty("keywordRuleCause");
+    expect(hybrid.result.candidates[0]).not.toHaveProperty("keywordRuleCauses");
+    // #1417 — each shown direct link names its own rule; a caller names none.
+    const [flush, caller] = hybrid.result.candidates[0]!.symbols;
+    expect(flush).toMatchObject({ relation: "direct", linkRule: "confidence" });
+    expect(caller).toMatchObject({ relation: "caller" });
+    expect(caller).not.toHaveProperty("linkRule");
     // Ranked by an embedding model the confidence is not calibrated for: the
     // two-term rule decided, though the ranking reads hybrid, and the run says why.
     const uncalibrated = new HybridCodeSymbolSearcher({
@@ -659,8 +666,120 @@ describe("computeAffectedCodeContext — hybrid ranking and its record (#1097)",
     expect(gated.result.candidates[0]).toMatchObject({
       retrievalMode: "hybrid",
       linkRule: "shared-terms",
-      keywordRuleCause: "uncalibrated-model",
+      // #1417 — the model decided the whole requirement, links or none.
+      keywordRuleCauses: ["uncalibrated-model"],
     });
+    expect(gated.result.candidates[0]).not.toHaveProperty("keywordRuleCause");
+  });
+
+  // #1417 — the causes are those of the links SHOWN, and a mixed answer has more than one.
+  describe("records the causes behind the SHOWN keyword-rule links (#1417)", () => {
+    const withSchema = [
+      ...rows,
+      {
+        id: "table",
+        name: "web_sessions",
+        qualifiedName: "web_sessions",
+        kind: "table",
+        filePath: "schema.sql",
+        startLine: null,
+        endLine: null,
+      },
+      {
+        id: "restore",
+        name: "restoreButtonState",
+        qualifiedName: "internal/ui/static/js/app.js::restoreButtonState",
+        kind: "function",
+        filePath: "internal/ui/static/js/app.js",
+        startLine: 5,
+        endLine: 9,
+      },
+    ];
+    const schemaPrisma = { codeSymbol: { findMany: async () => withSchema } } as never;
+    const schemaGraph = new InMemoryCodeGraphDataSource(
+      withSchema.map((r) => ({ ...r, language: "go" })) as never,
+      [],
+    );
+    const searcherOver = (hits: Array<[string, number | null]>, tags: Record<string, string>) =>
+      new HybridCodeSymbolSearcher({
+        bm25: new MemoizingBm25CodeSymbolSearcher(schemaPrisma),
+        hybrid: {
+          async search(_q, _p, opts) {
+            opts?.onRetrievalMode?.("hybrid");
+            return hits.map(([symbolId, cosine], i) => ({
+              symbolId,
+              filePath: "",
+              name: symbolId,
+              kind: "function",
+              score: 1 / (61 + i),
+              ...(cosine === null ? {} : { vectorScore: cosine }),
+            }));
+          },
+        },
+        semanticModel: () => "Alibaba-NLP/gte-modernbert-base",
+        embeddingModels: async (_p, ids) =>
+          new Map(ids.filter((id) => id in tags).map((id) => [id, tags[id]!])),
+      });
+    const runOver = (searcher: HybridCodeSymbolSearcher, maxSymbolsPerCandidate = 8) =>
+      computeAffectedCodeContext({
+        projectId: "proj-miniflux",
+        extraInstructions: "- Flush web sessions and restore the button state",
+        enabled: true,
+        tokenBudget: 100000,
+        maxSymbolsPerCandidate,
+        deps: { prisma: schemaPrisma, dataSourceFor: () => schemaGraph, searcher },
+      });
+
+    it("a table and code still being embedded: both causes, and each link names its rule", async () => {
+      const ctx = await runOver(
+        searcherOver(
+          [
+            ["flush", 0.7],
+            ["table", null],
+            ["restore", null],
+          ],
+          { flush: "Alibaba-NLP/gte-modernbert-base", restore: "" },
+        ),
+      );
+      const [candidate] = ctx.result.candidates;
+      expect(candidate).toMatchObject({
+        linkRule: "confidence",
+        keywordRuleCauses: ["schema-not-embedded", "embedding-pending"],
+      });
+      const rule = new Map(candidate!.symbols.map((s) => [s.qualifiedName, s.linkRule]));
+      expect(rule.get("internal/storage/web_session.go::FlushAllSessions")).toBe("confidence");
+      expect(rule.get("web_sessions")).toBe("shared-terms");
+      expect(rule.get("internal/ui/static/js/app.js::restoreButtonState")).toBe("shared-terms");
+    });
+
+    it("records no cause for a keyword-ruled hit that is not shown", async () => {
+      // `flush` shares two words at cosine 0.95, so it outranks the 0.273
+      // keyword-ruled table; with one link shown, the table is cut.
+      const ctx = await runOver(
+        searcherOver(
+          [
+            ["flush", 0.95],
+            ["table", null],
+          ],
+          { flush: "Alibaba-NLP/gte-modernbert-base" },
+        ),
+        1,
+      );
+      const [candidate] = ctx.result.candidates;
+      expect(candidate!.symbols.map((s) => s.qualifiedName)).toEqual([
+        "internal/storage/web_session.go::FlushAllSessions",
+      ]);
+      expect(candidate).not.toHaveProperty("keywordRuleCauses");
+    });
+  });
+
+  it("shownKeywordRuleCauses: unique, in a fixed order, the model's cause kept with no link", () => {
+    expect(
+      shownKeywordRuleCauses(undefined, ["no-vector", "schema-not-embedded", "no-vector"]),
+    ).toEqual(["schema-not-embedded", "no-vector"]);
+    expect(shownKeywordRuleCauses("uncalibrated-model", [])).toEqual(["uncalibrated-model"]);
+    // A cause the answer reports for anything else is not a shown link's.
+    expect(shownKeywordRuleCauses("schema-not-embedded", [])).toEqual([]);
   });
 
   // #1330 — the pre-#1097 floor: a seed under 0.3 of the best BM25 hit is not

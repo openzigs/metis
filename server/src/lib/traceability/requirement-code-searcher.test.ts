@@ -20,7 +20,10 @@ import {
   HYBRID_CANDIDATE_POOL,
   HybridCodeSymbolSearcher,
   activeSemanticModel,
+  capBelowMeasured,
   createRequirementCodeSearcher,
+  prismaEmbeddingModels,
+  type EmbeddingModelLookup,
   type HybridRanker,
 } from "./requirement-code-searcher.js";
 
@@ -93,7 +96,7 @@ function prismaOf(rows: Row[] = ROWS) {
 
 /** A hybrid ranker answering with fixed hits (fused score + cosine). */
 function rankerOf(
-  hits: Array<{ id: string; cosine?: number }>,
+  hits: Array<{ id: string; cosine?: number; kind?: string }>,
   mode: "hybrid" | "bm25-only" = "hybrid",
 ) {
   const search = vi.fn(
@@ -107,7 +110,7 @@ function rankerOf(
         symbolId: h.id,
         filePath: "",
         name: h.id,
-        kind: "function",
+        kind: h.kind ?? "function",
         score: 1 / (61 + i),
         ...(h.cosine === undefined ? {} : { vectorScore: h.cosine }),
       }));
@@ -120,14 +123,33 @@ const TERMINATE = "Add a button to terminate all sessions";
 
 function searcherOf(
   ranker: HybridRanker,
-  opts: { model?: string | null; rows?: Row[] } = {},
+  opts: {
+    model?: string | null;
+    rows?: Row[];
+    /** #1417 — `CodeSymbolEmbedding.embeddingModel` per symbol id; absent = no lookup. */
+    embeddingModels?: EmbeddingModelLookup;
+  } = {},
 ): HybridCodeSymbolSearcher {
   return new HybridCodeSymbolSearcher({
     bm25: new MemoizingBm25CodeSymbolSearcher(prismaOf(opts.rows).prisma),
     hybrid: ranker,
     semanticModel: () => (opts.model === undefined ? GTE : opts.model),
+    ...(opts.embeddingModels ? { embeddingModels: opts.embeddingModels } : {}),
   });
 }
+
+/** #1417 — an embedding-row lookup answering from fixed tags (`""` = pending). */
+function tagsOf(tags: Record<string, string>) {
+  const lookup = vi.fn(async (_projectId: string, ids: readonly string[]) => {
+    const out = new Map<string, string>();
+    for (const id of ids) if (id in tags) out.set(id, tags[id]!);
+    return out;
+  });
+  return lookup;
+}
+
+/** The run-7 sample's code symbols, every one embedded under the calibrated model. */
+const ALL_EMBEDDED = Object.fromEntries(ROWS.map((r) => [r.id, GTE]));
 
 describe("HybridCodeSymbolSearcher — ranks with the hybrid search", () => {
   it("returns the hybrid hits in order, with an absolute confidence from words and cosine", async () => {
@@ -200,10 +222,16 @@ describe("HybridCodeSymbolSearcher — ranks with the hybrid search", () => {
 });
 
 describe("HybridCodeSymbolSearcher — calibration holes (review of PRs #1325 and #1410)", () => {
-  const links = (ranker: HybridRanker, model?: string, rows?: Row[]) =>
+  const links = (
+    ranker: HybridRanker,
+    model?: string,
+    rows?: Row[],
+    embeddingModels?: EmbeddingModelLookup,
+  ) =>
     searcherOf(ranker, {
       ...(model === undefined ? {} : { model }),
       ...(rows ? { rows } : {}),
+      ...(embeddingModels ? { embeddingModels } : {}),
     }).withOptions(ANALYSIS_LINK_SEARCH_OPTIONS, ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS);
   type Gate = [LinkGate, KeywordRuleCause | undefined];
   const gatesOf = () => {
@@ -270,23 +298,260 @@ describe("HybridCodeSymbolSearcher — calibration holes (review of PRs #1325 an
     );
     // ... and the table, which shares two words, is shown by the keyword rule.
     expect(shown.map((c) => c.symbolId)).toContain("table");
-    expect(gates).toEqual([["hybrid", "schema-not-embedded"]]);
+    expect(gates).toEqual([["hybrid", undefined]]);
+    // #1417 — each candidate says which rule let it through, and why.
+    const table = shown.find((c) => c.symbolId === "table")!;
+    expect(table).toMatchObject({ linkGate: "keyword", keywordRuleCause: "schema-not-embedded" });
+    expect(shown.find((c) => c.symbolId === "flush")).toMatchObject({ linkGate: "hybrid" });
+    expect(shown.find((c) => c.symbolId === "flush")).not.toHaveProperty("keywordRuleCause");
   });
 
-  it("names a code hit with no usable vector (stale, unembedded, another model's) as `no-vector`", async () => {
-    // `restoreButtonState` was not returned by the vector channel (a stale vector
-    // the hybrid search dropped, say) and shares two words ("restore", "button";
-    // "state" is a #943 stopword): the keyword rule shows it.
+  it("names a code hit whose cause cannot be read `no-vector` (no embedding-row lookup)", async () => {
+    // `restoreButtonState` was not returned by the vector channel and shares two
+    // words ("restore", "button"; "state" is a #943 stopword). With no lookup,
+    // nothing says whether it has a vector: the keyword rule shows it, as under #1330.
     const { ranker } = rankerOf([{ id: "flush", cosine: 0.7 }, { id: "restore" }]);
-    const { gates, onLinkGate } = gatesOf();
     const shown = await links(ranker).search(
       "Flush all sessions and restore the button state",
       PROJECT,
-      { onLinkGate },
     );
     expect(shown.map((c) => c.symbolId)).toEqual(["flush", "restore"]);
-    expect(shown[1]!.confidence).toBe(linkConfidence({ sharedNameTerms: 2 }));
-    expect(gates).toEqual([["hybrid", "no-vector"]]);
+    expect(shown[1]).toMatchObject({
+      confidence: linkConfidence({ sharedNameTerms: 2 }),
+      linkGate: "keyword",
+      keywordRuleCause: "no-vector",
+    });
+  });
+
+  // #1417 (review of PR #1410) — the 0.273 construction: measured hits at 0.7 and
+  // 0.35; `restoreButtonState` shares two words and HAS a vector under the active
+  // model, which the search lost. It must not outrank the measured links.
+  it("bounds a hit whose vector the search lost by the lowest returned cosine: it does not outrank measured links", async () => {
+    const query = "Flush all sessions and restore the button state";
+    const { ranker } = rankerOf([
+      { id: "flush", cosine: 0.7 },
+      { id: "remove", cosine: 0.35 },
+      { id: "restore" },
+    ]);
+    const lookup = tagsOf(ALL_EMBEDDED);
+    const shown = await links(ranker, undefined, undefined, lookup).search(query, PROJECT);
+    // Scored at the lowest returned cosine (0.35): 0.022, under the 0.08 floor.
+    expect(linkConfidence({ sharedNameTerms: 2, cosine: 0.35 })).toBeLessThan(
+      ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS.minConfidence!,
+    );
+    expect(shown.map((c) => c.symbolId)).toEqual(["flush"]);
+    // One batched lookup, for the hits the vector channel did not return only.
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(lookup).toHaveBeenCalledWith(PROJECT, ["restore"]);
+    // Without the floor it is capped strictly below the lowest measured link.
+    const raw = await searcherOf(ranker, { embeddingModels: lookup }).search(query, PROJECT);
+    const restore = raw.find((c) => c.symbolId === "restore")!;
+    expect(restore).toMatchObject({ linkGate: "hybrid" });
+    expect(restore).not.toHaveProperty("keywordRuleCause");
+    const measured = raw.filter((c) => c.symbolId !== "restore").map((c) => c.confidence!);
+    expect(restore.confidence!).toBeLessThan(Math.min(...measured));
+    expect(raw.at(-1)!.symbolId).toBe("restore");
+  });
+
+  // #1417 (review of PR #1419) — few, close survivors: the lowest returned cosine
+  // is 0.61, so the lost two-word hit scores 0.239 at it, over both one-word
+  // measured links (0.105, 0.096). The cap keeps it under them.
+  it("never ranks a lost-vector hit above a measured link, even when few, close vector hits survive", async () => {
+    const query = "Flush all sessions and restore the button state";
+    const { ranker } = rankerOf([
+      { id: "button", cosine: 0.62 },
+      { id: "remove", cosine: 0.61 },
+      { id: "restore" },
+    ]);
+    // Precondition: uncapped, it would outrank both.
+    const uncapped = linkConfidence({ sharedNameTerms: 2, cosine: 0.61 });
+    expect(uncapped).toBe(0.239);
+    const lookup = tagsOf(ALL_EMBEDDED);
+    for (const searcher of [
+      links(ranker, undefined, undefined, lookup),
+      searcherOf(ranker, { embeddingModels: lookup }),
+    ]) {
+      const out = await searcher.search(query, PROJECT);
+      expect(out.map((c) => c.symbolId)).toEqual(["button", "remove", "restore"]);
+      const conf = new Map(out.map((c) => [c.symbolId, c.confidence!]));
+      expect(conf.get("button")).toBe(linkConfidence({ sharedNameTerms: 1, cosine: 0.62 }));
+      expect(conf.get("remove")).toBe(linkConfidence({ sharedNameTerms: 1, cosine: 0.61 }));
+      expect(conf.get("restore")).toBe(Math.round((conf.get("remove")! - 0.001) * 1000) / 1000);
+      expect(conf.get("restore")!).toBeLessThan(conf.get("remove")!);
+    }
+  });
+
+  // #1417 (cycle-2 review) — the floor is re-applied AFTER the cap, before the
+  // mapper (whose own floor is 0.03) can see the capped hit.
+  it("drops a lost-vector hit the cap puts under the 0.08 floor, end to end through the mapper", async () => {
+    const title = "Flush all sessions and restore the button state";
+    // `button` shares one word at cosine 0.591: exactly 0.080, the lowest kept.
+    const { ranker } = rankerOf([{ id: "button", cosine: 0.591 }, { id: "restore" }]);
+    expect(linkConfidence({ sharedNameTerms: 1, cosine: 0.591 })).toBe(0.08);
+    // Uncapped, the lost two-word hit clears the floor (0.206); capped, it reads 0.079.
+    expect(linkConfidence({ sharedNameTerms: 2, cosine: 0.591 })).toBeGreaterThan(0.08);
+    expect(DEFAULT_MIN_CONFIDENCE).toBeLessThan(0.079);
+    const matches = await mapRequirementToCode(
+      { id: "NR-1", title, body: "" },
+      PROJECT,
+      {},
+      { searcher: links(ranker, undefined, undefined, tagsOf(ALL_EMBEDDED)) },
+    );
+    expect(matches.map((m) => m.codeSymbolId)).toEqual(["button"]);
+    expect(matches[0]!.confidence).toBe(0.08);
+  });
+
+  it("capBelowMeasured: keeps nothing with no measured link, and drops a hit the cap puts under the floor", () => {
+    const cand = (symbolId: string, confidence: number) => ({
+      symbolId,
+      filePath: "",
+      qualifiedName: symbolId,
+      name: symbolId,
+      kind: "function",
+      score: 1,
+      confidence,
+    });
+    expect(capBelowMeasured([cand("lost", 0.3)], [], 0.08)).toEqual([]);
+    expect(capBelowMeasured([cand("lost", 0.3)], [cand("m", 0.08)], 0.08)).toEqual([]);
+    expect(capBelowMeasured([cand("lost", 0.3)], [cand("m", 0.2)], undefined)).toEqual([
+      { ...cand("lost", 0.199), linkGate: "hybrid" },
+    ]);
+    // A bounded hit already under the cap keeps its own confidence.
+    expect(capBelowMeasured([cand("lost", 0.05)], [cand("m", 0.2)], 0.03)[0]!.confidence).toBe(
+      0.05,
+    );
+  });
+
+  it("tells code still being embedded, another model's, and none apart, each by the keyword rule", async () => {
+    const query = "Flush all sessions and restore the button state";
+    const cases: Array<[string | undefined, KeywordRuleCause]> = [
+      ["", "embedding-pending"],
+      ["BAAI/bge-small-en-v1.5", "other-model"],
+      [undefined, "not-embedded"],
+    ];
+    for (const [tag, cause] of cases) {
+      const { ranker } = rankerOf([{ id: "flush", cosine: 0.7 }, { id: "restore" }]);
+      const tags: Record<string, string> = { flush: GTE };
+      if (tag !== undefined) tags.restore = tag;
+      const shown = await links(ranker, undefined, undefined, tagsOf(tags)).search(query, PROJECT);
+      expect(
+        shown.find((c) => c.symbolId === "restore"),
+        cause,
+      ).toMatchObject({
+        confidence: linkConfidence({ sharedNameTerms: 2 }),
+        linkGate: "keyword",
+        keywordRuleCause: cause,
+      });
+    }
+  });
+
+  it("reports both causes of a mixed answer (a table and code still being embedded)", async () => {
+    const rows: Row[] = [
+      ...ROWS,
+      {
+        id: "table",
+        name: "web_sessions",
+        qualifiedName: "web_sessions",
+        kind: "table",
+        filePath: "schema.sql",
+      },
+    ];
+    const { ranker } = rankerOf([{ id: "flush", cosine: 0.7 }, { id: "table" }, { id: "restore" }]);
+    const shown = await links(ranker, undefined, rows, tagsOf({ flush: GTE, restore: "" })).search(
+      "Flush web sessions and restore the button state",
+      PROJECT,
+    );
+    const causes = new Map(shown.map((c) => [c.symbolId, c.keywordRuleCause]));
+    expect(causes).toEqual(
+      new Map([
+        ["flush", undefined],
+        ["table", "schema-not-embedded"],
+        ["restore", "embedding-pending"],
+      ]),
+    );
+  });
+
+  it("caps every hit without a cosine like a lost vector when the embedding rows cannot be read", async () => {
+    const { ranker } = rankerOf([
+      { id: "button", cosine: 0.62 },
+      { id: "remove", cosine: 0.61 },
+      { id: "restore" },
+    ]);
+    const failing: EmbeddingModelLookup = async () => {
+      throw new Error("db down");
+    };
+    const shown = await links(ranker, undefined, undefined, failing).search(
+      "Flush all sessions and restore the button state",
+      PROJECT,
+    );
+    // Not 0.273 on words alone: bounded, capped under the measured links, last.
+    expect(shown.map((c) => c.symbolId)).toEqual(["button", "remove", "restore"]);
+    expect(shown[2]).toMatchObject({ linkGate: "hybrid" });
+    expect(shown[2]).not.toHaveProperty("keywordRuleCause");
+    expect(shown[2]!.confidence!).toBeLessThan(shown[1]!.confidence!);
+  });
+
+  it("keeps a table with the keyword rule (`schema-not-embedded`) when the embedding rows cannot be read", async () => {
+    const rows: Row[] = [
+      ...ROWS,
+      {
+        id: "table",
+        name: "web_sessions",
+        qualifiedName: "web_sessions",
+        kind: "table",
+        filePath: "schema.sql",
+      },
+    ];
+    const { ranker } = rankerOf([
+      { id: "flush", cosine: 0.7 },
+      { id: "table", kind: "table" },
+    ]);
+    const failing: EmbeddingModelLookup = async () => {
+      throw new Error("db down");
+    };
+    const shown = await links(ranker, undefined, rows, failing).search(
+      "Terminate all web sessions",
+      PROJECT,
+    );
+    // A table is never embedded: not a possible lost vector, so not capped.
+    expect(shown.find((c) => c.symbolId === "table")).toMatchObject({
+      linkGate: "keyword",
+      keywordRuleCause: "schema-not-embedded",
+      confidence: linkConfidence({ sharedNameTerms: 2 }),
+    });
+  });
+
+  it("leaves an active-model hit to the keyword rule when no returned cosine can bound it", async () => {
+    // The answer reads hybrid but no hit carries a cosine: nothing bounds the lost vector.
+    const { ranker } = rankerOf([{ id: "restore" }]);
+    const shown = await links(ranker, undefined, undefined, tagsOf(ALL_EMBEDDED)).search(
+      "Restore the button state",
+      PROJECT,
+    );
+    expect(shown).toEqual([
+      expect.objectContaining({
+        symbolId: "restore",
+        linkGate: "keyword",
+        keywordRuleCause: "no-vector",
+      }),
+    ]);
+  });
+
+  // #1417 — `limit` cuts in the order the mapper reads (confidence), so a
+  // keyword-ruled hit stronger than measured ones is not cut behind them.
+  it("cuts to the limit by confidence, not by the fused order", async () => {
+    const { ranker } = rankerOf([
+      { id: "button", cosine: 0.62 },
+      { id: "remove", cosine: 0.61 },
+      { id: "restore" },
+    ]);
+    const out = await searcherOf(ranker).search(
+      "Flush all sessions and restore the button state",
+      PROJECT,
+      { limit: 1 },
+    );
+    // `restore` (two words, 0.273) beats both measured hits; the fused order put it last.
+    expect(out.map((c) => c.symbolId)).toEqual(["restore"]);
   });
 
   it("gates a hybrid answer with no cosine at all by the two-term rule", async () => {
@@ -443,5 +708,23 @@ describe("production wiring", () => {
     });
     expect(modes).toEqual(["bm25-only"]);
     expect(out.map((c) => c.symbolId)).toContain("flush");
+  });
+
+  it("reads the hits' embedding rows in one query, scoped to the project", async () => {
+    const findMany = vi.fn(async () => [
+      { symbolId: "a", embeddingModel: GTE },
+      { symbolId: "b", embeddingModel: "" },
+    ]);
+    const lookup = prismaEmbeddingModels({ codeSymbolEmbedding: { findMany } } as never);
+    const tags = await lookup(PROJECT, ["a", "b", "c"]);
+    expect(findMany).toHaveBeenCalledTimes(1);
+    expect(findMany).toHaveBeenCalledWith({
+      where: { projectId: PROJECT, symbolId: { in: ["a", "b", "c"] } },
+      select: { symbolId: true, embeddingModel: true },
+    });
+    expect([...tags]).toEqual([
+      ["a", GTE],
+      ["b", ""],
+    ]);
   });
 });

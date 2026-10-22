@@ -22,8 +22,11 @@
  * ranking, every link to a symbol with no usable embedding (a database table
  * or column, which is never embedded, or code not embedded yet). Each
  * requirement records the rule that decided it (`linkRule`) and why the
- * keyword rule did (`keywordRuleCause`), so the panel names the rule that ran
- * and its actual cause. Both
+ * keyword rule did; #1417: every cause behind its SHOWN keyword-rule links
+ * (`keywordRuleCauses`; a #1330 run's single `keywordRuleCause` is still
+ * read), and each direct link the rule that showed it (`linkRule` on the
+ * symbol). The panel names the rule that ran and its actual causes, and
+ * advises a re-run only for code that is still being embedded. Both
  * apply the subject rules and leave test code out, so "no link" is an
  * ordinary, honest outcome. Links under `STRONG_LINK_CONFIDENCE` are folded
  * under "N weaker matches", and a `mixed` run labels each requirement with the
@@ -76,23 +79,39 @@ function keywordGatedHybrid(candidate: AffectedCodeCandidate, mode: RunMode): bo
   );
 }
 
-type KeywordRuleCause = NonNullable<AffectedCodeCandidate["keywordRuleCause"]>;
+type KeywordRuleCause = NonNullable<AffectedCodeCandidate["keywordRuleCauses"]>[number];
+
+/** #1417 — a requirement's keyword-rule causes; a #1330 run recorded one. */
+function causesOf(candidate: AffectedCodeCandidate): readonly KeywordRuleCause[] {
+  if (candidate.keywordRuleCauses) return candidate.keywordRuleCauses;
+  return candidate.keywordRuleCause ? [candidate.keywordRuleCause] : [];
+}
 
 /**
  * #1330 — the sentence naming why the keyword rule decided links the
  * embeddings ranked, one per cause the run records. `all` is whether every
- * requirement of the run was decided so (wording only).
+ * requirement of the run was decided so (wording only). #1417: only code
+ * still being embedded gets the advice to re-run; nothing else a re-run alone
+ * would change.
  */
 function keywordRuleCauseNote(cause: KeywordRuleCause, all: boolean): string {
-  if (cause === "uncalibrated-model") {
-    return all
-      ? " The embedding model in use is not the one METIS's confidence is calibrated for, so the keyword rule decided which links are shown."
-      : " For the requirements marked so, the embedding model in use is not the one METIS's confidence is calibrated for, so the keyword rule decided which links are shown.";
+  switch (cause) {
+    case "uncalibrated-model":
+      return all
+        ? " The embedding model in use is not the one METIS's confidence is calibrated for, so the keyword rule decided which links are shown."
+        : " For the requirements marked so, the embedding model in use is not the one METIS's confidence is calibrated for, so the keyword rule decided which links are shown.";
+    case "schema-not-embedded":
+      return " Database tables and columns are never embedded, so a table or column is shown only by the keyword rule.";
+    case "embedding-pending":
+      return " Some code was still being embedded, so it is shown only by the keyword rule; re-run once embedding has finished.";
+    case "other-model":
+      return " Some code was embedded with a different embedding model from the one in use, so it is shown only by the keyword rule. To change that, ask an administrator to re-embed the project's code with the model in use; re-running the analysis alone will not change this.";
+    case "not-embedded":
+      return " Some code has no embedding, so it is shown only by the keyword rule. To change that, ask an administrator to re-embed the project's code; re-running the analysis alone will not change this.";
+    default:
+      // `no-vector`: the cause was not known (and every #1330 run's code cause).
+      return " Some code had no usable embedding when this ran, so it is shown only by the keyword rule.";
   }
-  if (cause === "schema-not-embedded") {
-    return " Database tables and columns are never embedded, so a table or column is shown only by the keyword rule.";
-  }
-  return " Some code has no usable embedding (it is still being embedded, or was embedded with another model), so it is shown only by the keyword rule; re-run once embedding has finished.";
 }
 
 /**
@@ -145,12 +164,29 @@ const KEYWORD_RULE =
   "the keyword rule (the symbol's name, with its enclosing type or table and never its file path, shares at least two of the requirement's terms)";
 
 /**
+ * #1417 — the rules that showed a requirement's direct links: each link's own
+ * when recorded; else the requirement's, plus the keyword rule when a #1330
+ * run recorded a cause on a requirement the confidence rule decided (its
+ * tables, or code with no vector, were the keyword rule's).
+ */
+function rulesOf(candidate: AffectedCodeCandidate, mode: RunMode): ReadonlySet<LinkRule> {
+  const perLink = candidate.symbols.flatMap((s) =>
+    s.relation === "direct" && s.linkRule ? [s.linkRule] : [],
+  );
+  if (perLink.length > 0) return new Set(perLink);
+  const rule = ruleOf(candidate, mode);
+  return rule === "confidence" && causesOf(candidate).length > 0
+    ? new Set<LinkRule>(["confidence", "shared-terms"])
+    : new Set([rule]);
+}
+
+/**
  * #1097 — what a direct match needs to be shown. #1330: worded from the rules
  * that decided the links, not from the ranking, which can differ.
  */
 function linkRuleText(rules: ReadonlySet<LinkRule>): string {
   if (rules.has("confidence") && rules.has("shared-terms")) {
-    return `Depending on the requirement (each says which), a direct match is shown by ${CONFIDENCE_RULE} or by ${KEYWORD_RULE}, and either way only when it is about the requirement's subject`;
+    return `Depending on the requirement, and within one on the link (each says which), a direct match is shown by ${CONFIDENCE_RULE} or by ${KEYWORD_RULE}, and either way only when it is about the requirement's subject`;
   }
   if (rules.has("confidence")) {
     return `Ranked with meaning and keywords, a direct match is shown by ${CONFIDENCE_RULE}, and only when it is about the requirement's subject`;
@@ -158,17 +194,40 @@ function linkRuleText(rules: ReadonlySet<LinkRule>): string {
   return `A direct match is shown by ${KEYWORD_RULE}, and only when it is about the requirement's subject`;
 }
 
-/** #1097 — the ranking one requirement's links came from; #1330 — and the rule, when it is not the ranking's. */
-function candidateLabel(candidate: AffectedCodeCandidate, mode: RunMode): string | null {
+/**
+ * #1097 — the ranking one requirement's links came from; #1330 — and the rule,
+ * when it is not the ranking's; #1417 — both rules when its links mixed them.
+ */
+function candidateLabel(
+  candidate: AffectedCodeCandidate,
+  mode: RunMode,
+  rules: ReadonlySet<LinkRule>,
+): string | null {
   const ranking: CandidateMode = candidate.retrievalMode ?? (mode === "mixed" ? undefined : mode);
   if (ranking === "bm25-only") return "keywords only";
   if (ranking !== "hybrid") return null;
-  return keywordGatedHybrid(candidate, mode)
-    ? "meaning + keywords, shown by the keyword rule"
+  // #1417 — also when every link it shows was the keyword rule's, whatever its answer's gate.
+  if (keywordGatedHybrid(candidate, mode) || !rules.has("confidence")) {
+    return "meaning + keywords, shown by the keyword rule";
+  }
+  return rules.has("shared-terms")
+    ? "meaning + keywords, shown by confidence or by the keyword rule"
     : "meaning + keywords, shown by confidence";
 }
 
-function SymbolRow({ symbol }: { symbol: AffectedCodeSymbol }): React.ReactElement {
+/** #1417 — the per-link tag, shown where one requirement's links mixed both rules. */
+const LINK_RULE_TAG: Record<LinkRule, string> = {
+  confidence: "by confidence",
+  "shared-terms": "by the keyword rule",
+};
+
+function SymbolRow({
+  symbol,
+  tagRule,
+}: {
+  symbol: AffectedCodeSymbol;
+  tagRule: boolean;
+}): React.ReactElement {
   return (
     <li className="flex flex-wrap items-center gap-2 text-xs">
       <span
@@ -179,6 +238,11 @@ function SymbolRow({ symbol }: { symbol: AffectedCodeSymbol }): React.ReactEleme
       <span className="font-mono text-foreground">{symbol.qualifiedName}</span>
       <span className="font-mono text-muted-foreground">{symbolLocator(symbol)}</span>
       <span className="text-muted-foreground">conf {symbol.confidence.toFixed(2)}</span>
+      {tagRule && symbol.linkRule ? (
+        <span data-testid="affected-code-link-rule" className="text-muted-foreground">
+          ({LINK_RULE_TAG[symbol.linkRule]})
+        </span>
+      ) : null}
     </li>
   );
 }
@@ -191,12 +255,11 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
   const mode = affectedCode?.retrievalMode;
   const [open, setOpen] = useState<Record<string, boolean>>({});
   if (candidates.length === 0) return null;
-  const rules = new Set(candidates.map((c) => ruleOf(c, mode)));
+  const rulesByCandidate = new Map(candidates.map((c) => [c.id, rulesOf(c, mode)]));
+  const rules = new Set([...rulesByCandidate.values()].flatMap((r) => [...r]));
   // Label each requirement when they were not all ranked, or not all gated, alike.
   const labelEach = mode === "mixed" || rules.size > 1;
-  const causes = new Set(
-    candidates.flatMap((c) => (c.keywordRuleCause ? [c.keywordRuleCause] : [])),
-  );
+  const causes = new Set(candidates.flatMap((c) => causesOf(c)));
   const allGated = candidates.every((c) => keywordGatedHybrid(c, mode));
   const gateNote = [...causes].map((c) => keywordRuleCauseNote(c, allGated)).join("");
 
@@ -220,7 +283,10 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
       <ul className="space-y-2">
         {candidates.map((candidate) => {
           const isOpen = open[candidate.id] ?? true;
-          const ranking = labelEach ? candidateLabel(candidate, mode) : null;
+          const candidateRules = rulesByCandidate.get(candidate.id)!;
+          const ranking = labelEach ? candidateLabel(candidate, mode, candidateRules) : null;
+          // #1417 — tag each link only where this requirement's links mixed the rules.
+          const tagRule = candidateRules.size > 1;
           // Only absolute confidences (a run that records its ranking) are folded.
           const fold = Boolean(mode);
           const strong = fold
@@ -279,7 +345,7 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
                       {strong.length > 0 ? (
                         <ul className="space-y-1.5">
                           {strong.map((symbol) => (
-                            <SymbolRow key={symbolKey(symbol)} symbol={symbol} />
+                            <SymbolRow key={symbolKey(symbol)} symbol={symbol} tagRule={tagRule} />
                           ))}
                         </ul>
                       ) : (
@@ -302,7 +368,11 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
                           </summary>
                           <ul className="mt-1.5 space-y-1.5">
                             {weaker.map((symbol) => (
-                              <SymbolRow key={symbolKey(symbol)} symbol={symbol} />
+                              <SymbolRow
+                                key={symbolKey(symbol)}
+                                symbol={symbol}
+                                tagRule={tagRule}
+                              />
                             ))}
                           </ul>
                         </details>

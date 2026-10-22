@@ -62,6 +62,10 @@ export interface RequirementCodeMatch {
    * Relative to the best hit only for a searcher that reports none.
    */
   confidence: number;
+  /** #1417 — the candidate's {@link CodeSymbolCandidate.linkGate}, carried through. */
+  linkGate?: LinkGate;
+  /** #1417 — the candidate's {@link CodeSymbolCandidate.keywordRuleCause}, carried through. */
+  keywordRuleCause?: KeywordRuleCause;
 }
 
 /** A raw candidate produced by a `CodeSymbolSearcher` (higher score = better). */
@@ -82,6 +86,14 @@ export interface CodeSymbolCandidate {
    * (the opt-in LLM seeder's bands are relative to its best hit by design).
    */
   confidence?: number;
+  /**
+   * #1417 — the option set that let THIS candidate through ({@link LinkGate}),
+   * when the searcher knows it per hit (the hybrid searcher). Absent: the
+   * search's own gate (`onLinkGate`) applies to every candidate.
+   */
+  linkGate?: LinkGate;
+  /** #1417 — why the keyword rule decided THIS candidate ({@link KeywordRuleCause}). */
+  keywordRuleCause?: KeywordRuleCause;
 }
 
 /**
@@ -104,24 +116,41 @@ export interface CodeSymbolSearchOptions {
 /**
  * #1330 — which of a searcher's two option sets turned the hits into links:
  * `hybrid` — the hybrid ranking's (on the analysis path the 0.08 confidence
- * floor), when the embeddings answered with a calibrated cosine for every
- * hit; `keyword` — the keyword fallback's (the two-shared-name-terms rule),
- * on a BM25 answer and on a hybrid one the confidence cannot score
- * semantically (an uncalibrated model, or a hit with no vector). Reported only
- * by the hybrid searcher (`requirement-code-searcher.ts`).
+ * floor), for a hit with a calibrated cosine; `keyword` — the keyword
+ * fallback's (the two-shared-name-terms rule), on a BM25 answer and for a hit
+ * the confidence cannot score semantically (an uncalibrated model, or a hit
+ * with no vector under the active model). The search reports its answer's
+ * gate (`onLinkGate`); since #1417 the hybrid searcher also tags each
+ * candidate (`CodeSymbolCandidate.linkGate`), because one answer mixes both.
  */
 export type LinkGate = "hybrid" | "keyword";
 
 /**
- * #1330 — why the keyword rule decided links the embeddings ranked:
- * `uncalibrated-model` — all of them (gate `keyword`): the active embedding
- * model is not one the confidence is calibrated for; `schema-not-embedded` —
- * some of them (gate `hybrid`): hits that are database tables or columns,
- * which are never embedded; `no-vector` — some of them (gate `hybrid`): code
- * hits with no usable vector (not embedded yet, stale, or another model's).
+ * #1330 / #1417 — why the keyword rule decided a link the embeddings ranked:
+ * - `uncalibrated-model` — all of the answer's (gate `keyword`): the active
+ *   embedding model is not one the confidence is calibrated for;
+ * - `schema-not-embedded` — a database table or column, never embedded;
+ * - `embedding-pending` — code whose embedding is still being computed (its
+ *   `CodeSymbolEmbedding` row is pending): a re-run once embedding finishes
+ *   can change the link;
+ * - `other-model` — code embedded only with another model, which stays so
+ *   until the project's code is re-embedded with the active one;
+ * - `not-embedded` — code with no embedding row at all;
+ * - `no-vector` — no usable vector, cause not known: the searcher has no
+ *   embedding-row lookup; or the answer returned no cosine to bound a hit
+ *   that may hold a vector (an active-model row, or any code hit when the
+ *   rows cannot be read); and every such link of a run recorded under #1330.
+ *   Otherwise a code hit whose rows cannot be read is capped as a lost
+ *   vector, and a table or column is `schema-not-embedded`.
  * Absent on a keyword-fallback answer, whose ranking already says why.
  */
-export type KeywordRuleCause = "uncalibrated-model" | "schema-not-embedded" | "no-vector";
+export type KeywordRuleCause =
+  | "uncalibrated-model"
+  | "schema-not-embedded"
+  | "embedding-pending"
+  | "other-model"
+  | "not-embedded"
+  | "no-vector";
 
 /** Pluggable code search backend (BM25 default; hybrid/vector in production). */
 export interface CodeSymbolSearcher {
@@ -1291,6 +1320,11 @@ export class MemoizingBm25CodeSymbolSearcher implements CodeSymbolSearcher {
     return new MemoizingBm25CodeSymbolSearcher(this.prisma, options, this.cache);
   }
 
+  /** #1417 — this searcher's confidence floor (`minConfidence`), if it has one. */
+  get minConfidence(): number | undefined {
+    return this.options.minConfidence;
+  }
+
   /** The project's corpus, loaded once per instance family. */
   private corpus(projectId: string): Promise<Bm25Corpus> {
     let corpusP = this.cache.get(projectId);
@@ -1698,6 +1732,8 @@ export async function mapRequirementToCode(
       startLine: c.startLine ?? null,
       endLine: c.endLine ?? null,
       confidence: absolute ? (c.confidence as number) : normalizeConfidence(c.score, maxScore),
+      ...(c.linkGate ? { linkGate: c.linkGate } : {}),
+      ...(c.keywordRuleCause ? { keywordRuleCause: c.keywordRuleCause } : {}),
     }))
     .filter((m) => m.confidence >= minConfidence)
     .sort((a, b) => b.confidence - a.confidence)

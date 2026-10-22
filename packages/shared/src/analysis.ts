@@ -1934,7 +1934,33 @@ export interface AffectedCodeSymbol {
    * it used to be relative to the requirement's best link.
    */
   confidence: number;
+  /**
+   * #1417 — on a `direct` link, the rule that showed THIS link: `confidence`
+   * (at least 0.08) or `shared-terms` (the keyword rule). One requirement can
+   * mix both (a table beside embedded code). Absent on blast-radius links and
+   * on runs before #1417, where the requirement's `linkRule` stands for all.
+   */
+  linkRule?: "confidence" | "shared-terms";
 }
+
+/**
+ * #1330 / #1417 — why the keyword rule decided a link the embeddings ranked.
+ * `uncalibrated-model`: the embedding model is not one the confidence is
+ * calibrated for (every link of the requirement). `schema-not-embedded`: a
+ * database table or column, never embedded. `embedding-pending`: code still
+ * being embedded; a re-run once embedding finishes can change it.
+ * `other-model`: code embedded only with another model, until the project's
+ * code is re-embedded with the current one. `not-embedded`: code with no
+ * embedding. `no-vector`: no usable embedding, cause not known (every such
+ * link of a run recorded before #1417).
+ */
+export type AffectedCodeKeywordRuleCause =
+  | "uncalibrated-model"
+  | "schema-not-embedded"
+  | "embedding-pending"
+  | "other-model"
+  | "not-embedded"
+  | "no-vector";
 
 /** One discrete requirement parsed from the free-text new-requirements input. */
 export interface AffectedCodeCandidate {
@@ -1968,8 +1994,20 @@ export interface AffectedCodeCandidate {
    * columns, which are never embedded (`linkRule` stays `confidence` for the
    * rest). `no-vector`: links to code with no usable embedding (not embedded
    * yet, or embedded with another model). Absent when no link was decided so.
+   *
+   * Written by #1330 runs only, and worked out before the mapper's floor and
+   * top-K; since #1417 a run records {@link keywordRuleCauses} instead. Read
+   * for runs saved before it.
    */
   keywordRuleCause?: "uncalibrated-model" | "schema-not-embedded" | "no-vector";
+  /**
+   * #1417 — every cause behind THIS requirement's SHOWN keyword-rule links
+   * (after the mapper's floor and top-K), in a fixed order; plus
+   * `uncalibrated-model` whenever the model decided the whole requirement,
+   * links or none. Absent when the keyword rule showed nothing for a reason
+   * the embeddings could have changed (and on runs before #1417).
+   */
+  keywordRuleCauses?: AffectedCodeKeywordRuleCause[];
 }
 
 /**

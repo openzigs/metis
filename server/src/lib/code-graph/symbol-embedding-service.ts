@@ -100,7 +100,7 @@ const ORPHAN_HASH = "\u0000orphan";
  * reused verbatim here: a `KnowledgeChunk` gets its vector written synchronously at
  * ingest, so a document row is never tagged-but-vectorless. A symbol row can be.
  */
-const PENDING_MODEL = "";
+export const PENDING_MODEL = "";
 
 /** Max ids per `IN (...)` when reconciling tags after a reindex. */
 const RETAG_CHUNK = 1000;

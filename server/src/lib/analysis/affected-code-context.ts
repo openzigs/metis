@@ -37,6 +37,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type {
   AffectedCodeCandidate,
+  AffectedCodeKeywordRuleCause,
   AffectedCodeSymbol,
   AnalysisAffectedCode,
 } from "@metis/shared";
@@ -194,6 +195,32 @@ export function relativeOnKeywordFallback(searcher: CodeSymbolSearcher): CodeSym
       return candidates.map((c) => ({ ...c, confidence: undefined }));
     },
   };
+}
+
+/** #1417 — the order a requirement's keyword-rule causes are recorded in. */
+const KEYWORD_RULE_CAUSE_ORDER: readonly AffectedCodeKeywordRuleCause[] = [
+  "uncalibrated-model",
+  "schema-not-embedded",
+  "embedding-pending",
+  "other-model",
+  "not-embedded",
+  "no-vector",
+];
+
+/**
+ * #1417 — the causes behind a requirement's SHOWN keyword-rule links: the
+ * recorded cause of each `direct` link shown (after the mapper's floor and
+ * top-K, the link cap and the test filter), plus the answer's own
+ * `uncalibrated-model`, which decided the whole requirement whether or not
+ * any link survived. Unique, in {@link KEYWORD_RULE_CAUSE_ORDER}.
+ */
+export function shownKeywordRuleCauses(
+  answerCause: KeywordRuleCause | undefined,
+  shownCauses: Iterable<KeywordRuleCause>,
+): AffectedCodeKeywordRuleCause[] {
+  const causes = new Set<KeywordRuleCause>(shownCauses);
+  if (answerCause === "uncalibrated-model") causes.add(answerCause);
+  return KEYWORD_RULE_CAUSE_ORDER.filter((c) => causes.has(c));
 }
 
 /** Render one affected symbol as a single reference line (pure DATA). */
@@ -371,6 +398,10 @@ export async function mapAffectedCodeCandidates(opts: {
   // answer the confidence cannot score semantically).
   let candidateGate: LinkGate | undefined;
   let candidateCause: KeywordRuleCause | undefined;
+  // #1417 — the link mapper's matches for the requirement being mapped now,
+  // by symbol id: each says which rule let it through, and why the keyword
+  // rule did. Read back for the links that are actually SHOWN.
+  let candidateMatches = new Map<string, RequirementCodeMatch>();
   const mapSeeds: MapRequirementFn =
     injectedMapper ??
     ((req, projectId) =>
@@ -383,8 +414,8 @@ export async function mapAffectedCodeCandidates(opts: {
   // An injected mapper is the caller's whole mapping: there is no second reading.
   const mapLinks: MapRequirementFn | null = injectedMapper
     ? null
-    : (req, projectId) =>
-        mapRequirementToCode(
+    : async (req, projectId) => {
+        const matches = await mapRequirementToCode(
           req,
           projectId,
           {
@@ -396,6 +427,9 @@ export async function mapAffectedCodeCandidates(opts: {
           },
           { prisma, searcher: linkSearcher },
         );
+        for (const m of matches) if (m.codeSymbolId) candidateMatches.set(m.codeSymbolId, m);
+        return matches;
+      };
   // One data source per project (the graph is project-scoped). `blastRadius`
   // only walks depth ≤ 2, so the per-hop Prisma reads are bounded.
   const dataSourceFor =
@@ -407,7 +441,7 @@ export async function mapAffectedCodeCandidates(opts: {
     id: string,
     mapRequirement: MapRequirementFn,
     use: "seed" | "link",
-  ): Promise<AffectedCodeSymbol[]> => {
+  ): Promise<{ symbols: AffectedCodeSymbol[]; causes: KeywordRuleCause[] }> => {
     try {
       const impact = await computeProjectImpact(change, opts.projectId, {
         mapRequirement,
@@ -421,15 +455,27 @@ export async function mapAffectedCodeCandidates(opts: {
         use === "link" && mapLinksExcludesTests
           ? impact.affectedSymbols.filter((s) => !isTestPath(s.filePath))
           : impact.affectedSymbols;
-      return symbols.slice(0, maxSymbols).map((s) => ({
-        filePath: s.filePath,
-        qualifiedName: s.qualifiedName,
-        startLine: s.startLine,
-        endLine: s.endLine,
-        relation: s.relation,
-        depth: s.depth,
-        confidence: s.confidence,
-      }));
+      const causes: KeywordRuleCause[] = [];
+      const shown = symbols.slice(0, maxSymbols).map((s) => {
+        const symbol: AffectedCodeSymbol = {
+          filePath: s.filePath,
+          qualifiedName: s.qualifiedName,
+          startLine: s.startLine,
+          endLine: s.endLine,
+          relation: s.relation,
+          depth: s.depth,
+          confidence: s.confidence,
+        };
+        // #1417 — a shown direct link names the rule that showed IT, and
+        // brings the cause when that was the keyword rule.
+        if (use !== "link" || s.relation !== "direct" || !s.codeSymbolId) return symbol;
+        const match = candidateMatches.get(s.codeSymbolId);
+        const gate = match?.linkGate ?? candidateGate;
+        if (!gate) return symbol;
+        if (match?.keywordRuleCause && gate === "keyword") causes.push(match.keywordRuleCause);
+        return { ...symbol, linkRule: gate === "hybrid" ? "confidence" : "shared-terms" } as const;
+      });
+      return { symbols: shown, causes };
     } catch (err) {
       // A mapping failure for one candidate must never sink the analysis — the
       // candidate is still surfaced (with no symbols) so the UI shows the gap.
@@ -439,7 +485,7 @@ export async function mapAffectedCodeCandidates(opts: {
         use,
         error: String(err),
       });
-      return [];
+      return { symbols: [], causes: [] };
     }
   };
 
@@ -457,21 +503,28 @@ export async function mapAffectedCodeCandidates(opts: {
     candidateMode = undefined;
     candidateGate = undefined;
     candidateCause = undefined;
-    const seedSymbols = await mapChange(change, id, mapSeeds, "seed");
+    candidateMatches = new Map();
+    const { symbols: seedSymbols } = await mapChange(change, id, mapSeeds, "seed");
     seeds.push({ ...head, symbols: seedSymbols });
-    const linkSymbols = mapLinks ? await mapChange(change, id, mapLinks, "link") : seedSymbols;
+    const linked = mapLinks
+      ? await mapChange(change, id, mapLinks, "link")
+      : { symbols: seedSymbols, causes: [] };
     // #1097 — which ranking produced THIS requirement's links; #1330 — and
     // which rule decided them, which is not the ranking's when the confidence
-    // could not be scored semantically.
+    // could not be scored semantically; #1417 — and why the keyword rule
+    // showed the links it did show.
     const mode = candidateMode as RequirementRetrievalMode | undefined;
     const gate = candidateGate as LinkGate | undefined;
-    const cause = candidateCause as KeywordRuleCause | undefined;
+    const causes = shownKeywordRuleCauses(
+      candidateCause as KeywordRuleCause | undefined,
+      linked.causes,
+    );
     links.push({
       ...head,
-      symbols: linkSymbols,
+      symbols: linked.symbols,
       ...(mode ? { retrievalMode: mode } : {}),
       ...(gate ? { linkRule: gate === "hybrid" ? "confidence" : "shared-terms" } : {}),
-      ...(cause ? { keywordRuleCause: cause } : {}),
+      ...(causes.length > 0 ? { keywordRuleCauses: causes } : {}),
     });
   }
 
