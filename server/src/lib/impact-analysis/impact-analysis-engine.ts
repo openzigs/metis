@@ -397,6 +397,13 @@ export async function computeProjectImpact(
     // when every mapper's best hit read 1.0. HOW SURE a caller is follows the
     // seed it was reached through (`seedWeights`; the best one when several
     // reach it at the same depth): a caller is never surer than its link.
+    //
+    // #1330 — this applies to EVERY seeding, ordinary Impact Analysis included,
+    // and it is intended. Its seeds (`resolveChangeSeeds`) are top-normalized,
+    // so the best edit candidate is still 1 and its callers read as before; a
+    // caller reached only through a weaker candidate is now scaled by it (a
+    // caller of a 0.5 candidate reads half what it did). Which callers are
+    // reached does not change.
     const seedWeights = new Map<string, number>();
     for (const m of matches) {
       if (!m.codeSymbolId) continue;

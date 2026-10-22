@@ -231,10 +231,19 @@ describe("computeAffectedCodeContext — default mapper (#1063)", () => {
       deps: { prisma: prismaWith(rows).prisma, dataSourceFor: emptyGraphFor },
     });
 
-  /** The context as it was BEFORE #1063: one mapper, no shared-terms rule. */
+  /**
+   * The context as it was BEFORE #1063: one mapper, no shared-terms rule. Its
+   * BM25 searcher reports no absolute confidence, as before #1097, so the
+   * mapper normalizes to the best hit (#1330: since #1097 the BM25 searcher
+   * reports one, and this reference had silently moved onto that scale).
+   */
   const runAsBefore1063 = (extraInstructions: string, tokenBudget = 100000) => {
     const { prisma } = prismaWith(symbols);
-    const searcher = new Bm25CodeSymbolSearcher(prisma);
+    const bm25 = new Bm25CodeSymbolSearcher(prisma);
+    const searcher = {
+      search: async (q: string, p: string, o?: { limit?: number }) =>
+        (await bm25.search(q, p, o)).map((c) => ({ ...c, confidence: undefined })),
+    };
     return computeAffectedCodeContext({
       projectId: "proj-miniflux",
       extraInstructions,
@@ -272,6 +281,26 @@ describe("computeAffectedCodeContext — default mapper (#1063)", () => {
   it("SEEDS the code agent exactly as before #1063: block, token cost and file list", async () => {
     const [now, before] = await Promise.all([run(THREE), runAsBefore1063(THREE)]);
     expect(before.block).toContain("flushSessions");
+    // #1330 — a FROZEN golden, not only today's code path: the confidences are
+    // each BM25 score over the requirement's best, with the 0.3 floor, as the
+    // seed block read before #1097 and #1063.
+    expect(now.block).toBe(
+      [
+        "[NR-1] Mark all as read older than X",
+        "  - internal/ui/unread_mark_all_read.go::markAllAsRead (direct, conf 1.00) — internal/ui/unread_mark_all_read.go:17",
+        "  - internal/ui/feed_mark_as_read.go::markFeedAsRead (direct, conf 1.00) — internal/ui/feed_mark_as_read.go:18",
+        "[NR-2] Add a button to terminate all sessions",
+        "  - internal/integration/telegrambot/client.go::InlineKeyboardButton (direct, conf 1.00) — internal/integration/telegrambot/client.go:10",
+        "  - internal/ui/static/js/app.js::restoreButtonState (direct, conf 0.98) — internal/ui/static/js/app.js:11",
+        "  - internal/cli/flush_sessions.go::flushSessions (direct, conf 0.66) — internal/cli/flush_sessions.go:12",
+        "  - internal/ui/session_list.go::showSessionsPage (direct, conf 0.56) — internal/ui/session_list.go:13",
+        "  - internal/storage/web_session.go::CleanOldWebSessions (direct, conf 0.54) — internal/storage/web_session.go:14",
+        "  - internal/storage/web_session.go::WebSessionsByUserID (direct, conf 0.52) — internal/storage/web_session.go:15",
+        "[NR-3] Ability to force IPv4 or IPv6 per feed",
+        "  - internal/ui/feed_mark_as_read.go::markFeedAsRead (direct, conf 1.00) — internal/ui/feed_mark_as_read.go:18",
+        "  - internal/config/options.go::ForceRefreshInterval (direct, conf 0.98) — internal/config/options.go:16",
+      ].join("\n"),
+    );
     expect(now.block).toBe(before.block);
     expect(now.tokens).toBe(before.tokens);
     expect(now.filePaths).toEqual(before.filePaths);
@@ -594,6 +623,143 @@ describe("computeAffectedCodeContext — hybrid ranking and its record (#1097)",
     // Every name shares one word at most: the two-term rule leaves the requirement unlinked.
     expect(ctx.result.candidates[0]!.symbols).toEqual([]);
     expect(ctx.block).toContain("FlushAllSessions"); // the agent is still seeded
+    expect(ctx.result.candidates[0]!.linkRule).toBe("shared-terms");
+  });
+
+  it("records which rule decided each requirement's links: the floor, or two shared terms (#1330)", async () => {
+    const hybrid = await run(searcherWith([["flush", 0.667]]));
+    expect(hybrid.result.candidates[0]).toMatchObject({
+      retrievalMode: "hybrid",
+      linkRule: "confidence",
+    });
+    expect(hybrid.result.candidates[0]).not.toHaveProperty("keywordRuleCause");
+    // Ranked by an embedding model the confidence is not calibrated for: the
+    // two-term rule decided, though the ranking reads hybrid, and the run says why.
+    const uncalibrated = new HybridCodeSymbolSearcher({
+      bm25: new MemoizingBm25CodeSymbolSearcher(prisma),
+      hybrid: {
+        async search(_q, _p, opts) {
+          opts?.onRetrievalMode?.("hybrid");
+          return [
+            {
+              symbolId: "flush",
+              filePath: "",
+              name: "f",
+              kind: "function",
+              score: 2,
+              vectorScore: 0.7,
+            },
+          ];
+        },
+      },
+      semanticModel: () => "BAAI/bge-small-en-v1.5",
+    });
+    const gated = await run(uncalibrated);
+    expect(gated.result.retrievalMode).toBe("hybrid");
+    expect(gated.result.candidates[0]).toMatchObject({
+      retrievalMode: "hybrid",
+      linkRule: "shared-terms",
+      keywordRuleCause: "uncalibrated-model",
+    });
+  });
+
+  // #1330 — the pre-#1097 floor: a seed under 0.3 of the best BM25 hit is not
+  // given to the agent. The oracle is the BM25 index's own scores, not the
+  // mapper's normalization, so a change to either the ratio or the floor fails.
+  it("drops a keyword-fallback seed under 0.3 of the best BM25 score, and keeps one above it", async () => {
+    const weak = {
+      id: "weak",
+      name: "renderSessionsWidgetToolbarHeaderFooterPanelLayoutGridColumnRowCell",
+      qualifiedName:
+        "internal/ui/static/js/legacy/widgets/layout/grid/toolbar/header/footer/panel.js::renderSessionsWidgetToolbarHeaderFooterPanelLayoutGridColumnRowCell",
+      kind: "function",
+      filePath: "internal/ui/static/js/legacy/widgets/layout/grid/toolbar/header/footer/panel.js",
+      startLine: 30,
+      endLine: 40,
+    };
+    const withWeak = { codeSymbol: { findMany: async () => [...rows, weak] } } as never;
+    const text = "Add a button to terminate all sessions";
+    const raw = await new Bm25CodeSymbolSearcher(withWeak).search(`${text}\n\n${text}`, "p", {
+      limit: 20,
+    });
+    const max = Math.max(...raw.map((c) => c.score));
+    const ratio = new Map(raw.map((c) => [c.name, c.score / max]));
+    // Precondition: the long-named symbol matches, but under the floor.
+    expect(ratio.get(weak.name)).toBeGreaterThan(0.05);
+    expect(ratio.get(weak.name)).toBeLessThan(0.3);
+    expect(ratio.get("FlushAllSessions")).toBeGreaterThanOrEqual(0.3);
+    const ctx = await computeAffectedCodeContext({
+      projectId: "proj-miniflux",
+      extraInstructions: `- ${text}`,
+      enabled: true,
+      tokenBudget: 100000,
+      deps: {
+        prisma: withWeak,
+        dataSourceFor: emptyGraphFor,
+        searcher: new HybridCodeSymbolSearcher({
+          bm25: new MemoizingBm25CodeSymbolSearcher(withWeak),
+          hybrid: { search: async () => [] },
+          semanticModel: () => null,
+        }),
+      },
+    });
+    expect(ctx.block).toBe(
+      [
+        "[NR-1] Add a button to terminate all sessions",
+        "  - internal/integration/telegrambot/client.go::InlineKeyboardButton (direct, conf 1.00) — internal/integration/telegrambot/client.go:12",
+        "  - internal/ui/routes.go::handleSessions (direct, conf 0.41) — internal/ui/routes.go:13",
+        "  - internal/storage/web_session.go::FlushAllSessions (direct, conf 0.38) — internal/storage/web_session.go:10",
+      ].join("\n"),
+    );
+    expect(ctx.block).not.toContain(weak.name);
+  });
+
+  // #1330 — on a keyword-fallback answer the agent's seeds are what they were
+  // before #1097. The reference is the pre-#1097 mapper: a BM25 searcher that
+  // reports no absolute confidence, so the mapper normalizes to the best hit.
+  it("seeds the code agent on a keyword-fallback run exactly as before #1097 (relative BM25 values)", async () => {
+    const ctx = await run(searcherWith(null));
+    const bm25 = new Bm25CodeSymbolSearcher(prisma);
+    const before = await computeAffectedCodeContext({
+      projectId: "proj-miniflux",
+      extraInstructions: "- Add a button to terminate all sessions",
+      enabled: true,
+      tokenBudget: 100000,
+      deps: {
+        prisma,
+        dataSourceFor: () => graph,
+        mapRequirement: (req, projectId) =>
+          mapRequirementToCode(
+            req,
+            projectId,
+            {},
+            {
+              prisma,
+              searcher: {
+                search: async (q, p, o) =>
+                  (await bm25.search(q, p, o)).map((c) => ({ ...c, confidence: undefined })),
+              },
+            },
+          ),
+      },
+    });
+    expect(before.block).not.toBe("");
+    // A frozen golden: each BM25 score over the best, the 0.3 floor, BM25 order
+    // (on the absolute scale all three would read 1.00, sharing one word each).
+    expect(ctx.block).toBe(
+      [
+        "[NR-1] Add a button to terminate all sessions",
+        "  - internal/integration/telegrambot/client.go::InlineKeyboardButton (direct, conf 1.00) — internal/integration/telegrambot/client.go:12",
+        "  - internal/ui/routes.go::handleSessions (direct, conf 0.63) — internal/ui/routes.go:13",
+        "  - internal/storage/web_session.go::FlushAllSessions (direct, conf 0.56) — internal/storage/web_session.go:10",
+      ].join("\n"),
+    );
+    expect(ctx.block).toBe(before.block);
+    expect(ctx.filePaths).toEqual(before.filePaths);
+    // Every hit shares one name word, so on the absolute scale every seed would
+    // read 1.00; the BM25 values tell them apart.
+    const directConfs = [...ctx.block.matchAll(/\(direct, conf (\d\.\d\d)\)/g)].map((m) => m[1]);
+    expect(new Set(directConfs).size).toBeGreaterThan(1);
   });
 
   it("records no mode for an injected mapper", async () => {

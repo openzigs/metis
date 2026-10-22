@@ -72,7 +72,7 @@ describe("AffectedCodePanel", () => {
     expect(panel).toHaveTextContent(/shares at least two of the requirement's terms/);
     // The rule is on the NAME: a directory or file extension is not a shared term.
     expect(panel).toHaveTextContent(
-      /symbol's name \(with its enclosing type or table, never its file path\)/,
+      /the keyword rule \(the symbol's name, with its enclosing type or table and never its file path, shares at least two/,
     );
     expect(panel).toHaveTextContent(/callers and importers of a direct match are listed with it/);
     // #1063 (run 9) — the subject rules and the test-code exclusion are stated.
@@ -96,6 +96,147 @@ describe("AffectedCodePanel", () => {
     expect(panel).not.toHaveTextContent(/not a probability/);
     expect(screen.getByTestId("affected-code-empty-NR-4")).toHaveTextContent(
       /No symbol is close enough to this requirement and about its subject/,
+    );
+  });
+
+  it("#1330 — a hybrid run whose links the two-term rule decided says so, not the 0.08 floor", () => {
+    // Another embedding model than the calibrated one: ranked by meaning, gated as keywords.
+    render(
+      <AffectedCodePanel
+        affectedCode={{
+          ...affectedCode,
+          retrievalMode: "hybrid",
+          candidates: affectedCode.candidates.map((c) => ({
+            ...c,
+            retrievalMode: "hybrid" as const,
+            linkRule: "shared-terms" as const,
+            keywordRuleCause: "uncalibrated-model" as const,
+          })),
+        }}
+      />,
+    );
+    const panel = screen.getByTestId("affected-code-explainer");
+    expect(panel).toHaveTextContent(/Ranked by meaning and keywords together/);
+    expect(panel).toHaveTextContent(/shares at least two of the requirement's terms/);
+    expect(panel).not.toHaveTextContent(/0\.08/);
+    // The one cause that applies, stated plainly; no advice to wait for embedding.
+    expect(panel).toHaveTextContent(
+      /The embedding model in use is not the one METIS's confidence is calibrated for, so the keyword rule decided which links are shown\./,
+    );
+    expect(panel).not.toHaveTextContent(/still being embedded/);
+    const empty = screen.getByTestId("affected-code-empty-NR-4");
+    expect(empty).toHaveTextContent(/No symbol's name shares two of this requirement's terms/);
+    expect(empty).not.toHaveTextContent(/close enough/);
+    // One rule for the whole run: no per-requirement label.
+    expect(screen.queryByTestId("affected-code-ranking-NR-4")).toBeNull();
+  });
+
+  it("#1330 — a hybrid run whose requirements were decided by different rules explains both and labels each", () => {
+    render(
+      <AffectedCodePanel
+        affectedCode={{
+          truncated: false,
+          retrievalMode: "hybrid",
+          candidates: [
+            {
+              id: "NR-1",
+              title: "a",
+              body: "a",
+              retrievalMode: "hybrid",
+              linkRule: "confidence",
+              symbols: [],
+            },
+            {
+              id: "NR-2",
+              title: "b",
+              body: "b",
+              retrievalMode: "hybrid",
+              linkRule: "shared-terms",
+              symbols: [],
+            },
+          ],
+        }}
+      />,
+    );
+    const panel = screen.getByTestId("affected-code-explainer");
+    expect(panel).toHaveTextContent(/confidence is at least 0\.08/);
+    expect(panel).toHaveTextContent(/shares at least two of the requirement's terms/);
+    // Both rules are named in the panel's own words, and each label names its rule.
+    expect(panel).toHaveTextContent(/by the confidence rule \(its confidence is at least 0\.08\)/);
+    expect(panel).toHaveTextContent(/by the keyword rule \(the symbol's name/);
+    expect(screen.getByTestId("affected-code-ranking-NR-1")).toHaveTextContent(
+      "(meaning + keywords, shown by confidence)",
+    );
+    expect(screen.getByTestId("affected-code-ranking-NR-2")).toHaveTextContent(
+      "(meaning + keywords, shown by the keyword rule)",
+    );
+    expect(screen.getByTestId("affected-code-empty-NR-1")).toHaveTextContent(/close enough/);
+    expect(screen.getByTestId("affected-code-empty-NR-2")).toHaveTextContent(/shares two/);
+  });
+
+  const hybridWithCause = (cause: "schema-not-embedded" | "no-vector") => (
+    <AffectedCodePanel
+      affectedCode={{
+        truncated: false,
+        retrievalMode: "hybrid",
+        candidates: [
+          {
+            id: "NR-1",
+            title: "a",
+            body: "a",
+            retrievalMode: "hybrid",
+            linkRule: "confidence",
+            keywordRuleCause: cause,
+            symbols: [sym("web_sessions", 0.27)],
+          },
+        ],
+      }}
+    />
+  );
+
+  it("#1330 — tables and columns, never embedded, are said to be shown by the keyword rule, with no advice to re-run", () => {
+    render(hybridWithCause("schema-not-embedded"));
+    const panel = screen.getByTestId("affected-code-explainer");
+    expect(panel).toHaveTextContent(/by the confidence rule/);
+    expect(panel).toHaveTextContent(
+      /Database tables and columns are never embedded, so a table or column is shown only by the keyword rule\./,
+    );
+    expect(panel).not.toHaveTextContent(/re-run/i);
+  });
+
+  it("#1330 — code with no usable embedding is named as such, with the advice to re-run", () => {
+    render(hybridWithCause("no-vector"));
+    expect(screen.getByTestId("affected-code-explainer")).toHaveTextContent(
+      /Some code has no usable embedding \(it is still being embedded, or was embedded with another model\), so it is shown only by the keyword rule; re-run once embedding has finished\./,
+    );
+  });
+
+  it("#1330 — an uncalibrated model on some requirements only points at the ones marked", () => {
+    render(
+      <AffectedCodePanel
+        affectedCode={{
+          truncated: false,
+          retrievalMode: "mixed",
+          candidates: [
+            { id: "NR-1", title: "a", body: "a", retrievalMode: "bm25-only", symbols: [] },
+            {
+              id: "NR-2",
+              title: "b",
+              body: "b",
+              retrievalMode: "hybrid",
+              linkRule: "shared-terms",
+              keywordRuleCause: "uncalibrated-model",
+              symbols: [],
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByTestId("affected-code-explainer")).toHaveTextContent(
+      /For the requirements marked so, the embedding model in use is not the one/,
+    );
+    expect(screen.getByTestId("affected-code-ranking-NR-2")).toHaveTextContent(
+      "shown by the keyword rule",
     );
   });
 

@@ -16,7 +16,14 @@
  * ABSOLUTE: an estimate of how often a link like it is right, the same scale
  * on every requirement. What is shown depends on the ranking: with the
  * embeddings, a link needs a confidence of at least 0.08; with keywords alone,
- * the symbol's NAME must share two of the requirement's terms (#1063). Both
+ * the symbol's NAME must share two of the requirement's terms (#1063): "the
+ * keyword rule". #1330: the keyword rule also decides a hybrid ranking with an
+ * embedding model the confidence is not calibrated for, and, within a hybrid
+ * ranking, every link to a symbol with no usable embedding (a database table
+ * or column, which is never embedded, or code not embedded yet). Each
+ * requirement records the rule that decided it (`linkRule`) and why the
+ * keyword rule did (`keywordRuleCause`), so the panel names the rule that ran
+ * and its actual cause. Both
  * apply the subject rules and leave test code out, so "no link" is an
  * ordinary, honest outcome. Links under `STRONG_LINK_CONFIDENCE` are folded
  * under "N weaker matches", and a `mixed` run labels each requirement with the
@@ -51,6 +58,42 @@ function relationClass(relation: AffectedCodeSymbol["relation"]): string {
 
 type RunMode = AnalysisAffectedCode["retrievalMode"];
 type CandidateMode = AffectedCodeCandidate["retrievalMode"];
+type LinkRule = NonNullable<AffectedCodeCandidate["linkRule"]>;
+
+/**
+ * #1330 — the rule that decided a requirement's links: recorded since #1330;
+ * before it, implied by the ranking (a pre-#1097 run's is the two-term rule).
+ */
+function ruleOf(candidate: AffectedCodeCandidate, mode: RunMode): LinkRule {
+  if (candidate.linkRule) return candidate.linkRule;
+  return (candidate.retrievalMode ?? mode) === "hybrid" ? "confidence" : "shared-terms";
+}
+
+/** #1330 — whether the embeddings ranked a requirement whose links the keyword rule decided. */
+function keywordGatedHybrid(candidate: AffectedCodeCandidate, mode: RunMode): boolean {
+  return (
+    (candidate.retrievalMode ?? mode) === "hybrid" && ruleOf(candidate, mode) === "shared-terms"
+  );
+}
+
+type KeywordRuleCause = NonNullable<AffectedCodeCandidate["keywordRuleCause"]>;
+
+/**
+ * #1330 — the sentence naming why the keyword rule decided links the
+ * embeddings ranked, one per cause the run records. `all` is whether every
+ * requirement of the run was decided so (wording only).
+ */
+function keywordRuleCauseNote(cause: KeywordRuleCause, all: boolean): string {
+  if (cause === "uncalibrated-model") {
+    return all
+      ? " The embedding model in use is not the one METIS's confidence is calibrated for, so the keyword rule decided which links are shown."
+      : " For the requirements marked so, the embedding model in use is not the one METIS's confidence is calibrated for, so the keyword rule decided which links are shown.";
+  }
+  if (cause === "schema-not-embedded") {
+    return " Database tables and columns are never embedded, so a table or column is shown only by the keyword rule.";
+  }
+  return " Some code has no usable embedding (it is still being embedded, or was embedded with another model), so it is shown only by the keyword rule; re-run once embedding has finished.";
+}
 
 /**
  * #1097 (review of PR #1325) — a link at or above this confidence is listed;
@@ -96,26 +139,33 @@ function confidenceNote(mode: RunMode): string {
     : "Confidence is relative to the best link for that requirement, not a probability.";
 }
 
-const HYBRID_RULE =
-  "with meaning and keywords, a direct match is shown when its confidence is at least 0.08";
+/** #1330 — the two rules, each named in the panel's own words. */
+const CONFIDENCE_RULE = "the confidence rule (its confidence is at least 0.08)";
 const KEYWORD_RULE =
-  "with keywords only, a direct match is shown only when the symbol's name (with its enclosing type or table, never its file path) shares at least two of the requirement's terms";
+  "the keyword rule (the symbol's name, with its enclosing type or table and never its file path, shares at least two of the requirement's terms)";
 
-/** #1097 — what a direct match needs to be shown, for the ranking(s) that ran. */
-function linkRule(mode: RunMode): string {
-  if (mode === "hybrid")
-    return `Ranked ${HYBRID_RULE}, and when it is about the requirement's subject`;
-  if (mode === "mixed") {
-    return `Ranked ${HYBRID_RULE}; ranked ${KEYWORD_RULE}. Either way it must be about the requirement's subject`;
+/**
+ * #1097 — what a direct match needs to be shown. #1330: worded from the rules
+ * that decided the links, not from the ranking, which can differ.
+ */
+function linkRuleText(rules: ReadonlySet<LinkRule>): string {
+  if (rules.has("confidence") && rules.has("shared-terms")) {
+    return `Depending on the requirement (each says which), a direct match is shown by ${CONFIDENCE_RULE} or by ${KEYWORD_RULE}, and either way only when it is about the requirement's subject`;
   }
-  return "A direct match is shown only when the symbol's name (with its enclosing type or table, never its file path) shares at least two of the requirement's terms and its subject";
+  if (rules.has("confidence")) {
+    return `Ranked with meaning and keywords, a direct match is shown by ${CONFIDENCE_RULE}, and only when it is about the requirement's subject`;
+  }
+  return `A direct match is shown by ${KEYWORD_RULE}, and only when it is about the requirement's subject`;
 }
 
-/** #1097 — the ranking one requirement's links came from. */
-function candidateModeLabel(mode: CandidateMode): string | null {
-  if (mode === "hybrid") return "meaning + keywords";
-  if (mode === "bm25-only") return "keywords only";
-  return null;
+/** #1097 — the ranking one requirement's links came from; #1330 — and the rule, when it is not the ranking's. */
+function candidateLabel(candidate: AffectedCodeCandidate, mode: RunMode): string | null {
+  const ranking: CandidateMode = candidate.retrievalMode ?? (mode === "mixed" ? undefined : mode);
+  if (ranking === "bm25-only") return "keywords only";
+  if (ranking !== "hybrid") return null;
+  return keywordGatedHybrid(candidate, mode)
+    ? "meaning + keywords, shown by the keyword rule"
+    : "meaning + keywords, shown by confidence";
 }
 
 function SymbolRow({ symbol }: { symbol: AffectedCodeSymbol }): React.ReactElement {
@@ -141,6 +191,14 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
   const mode = affectedCode?.retrievalMode;
   const [open, setOpen] = useState<Record<string, boolean>>({});
   if (candidates.length === 0) return null;
+  const rules = new Set(candidates.map((c) => ruleOf(c, mode)));
+  // Label each requirement when they were not all ranked, or not all gated, alike.
+  const labelEach = mode === "mixed" || rules.size > 1;
+  const causes = new Set(
+    candidates.flatMap((c) => (c.keywordRuleCause ? [c.keywordRuleCause] : [])),
+  );
+  const allGated = candidates.every((c) => keywordGatedHybrid(c, mode));
+  const gateNote = [...causes].map((c) => keywordRuleCauseNote(c, allGated)).join("");
 
   return (
     <div data-testid="affected-code-panel" className="space-y-2">
@@ -149,11 +207,12 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
       </h4>
       <p data-testid="affected-code-explainer" className="text-xs text-muted-foreground">
         Each new requirement mapped to existing code via Impact Analysis (mapper + blast radius).
-        {retrievalModeNote(mode)} {linkRule(mode)}: when the requirement names something the project
-        stores (such as a feed), the symbol or the type it belongs to must name it too; a type is
-        shown only when the requirement uses the last word of its name, and a table column only when
-        the requirement names its table. Test code is not shown, and callers and importers of a
-        direct match are listed with it. {confidenceNote(mode)}
+        {retrievalModeNote(mode)}
+        {gateNote} {linkRuleText(rules)}: when the requirement names something the project stores
+        (such as a feed), the symbol or the type it belongs to must name it too; a type is shown
+        only when the requirement uses the last word of its name, and a table column only when the
+        requirement names its table. Test code is not shown, and callers and importers of a direct
+        match are listed with it. {confidenceNote(mode)}
         {affectedCode?.truncated
           ? " Some entries were omitted from the analysis prompt for length."
           : ""}
@@ -161,7 +220,7 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
       <ul className="space-y-2">
         {candidates.map((candidate) => {
           const isOpen = open[candidate.id] ?? true;
-          const ranking = mode === "mixed" ? candidateModeLabel(candidate.retrievalMode) : null;
+          const ranking = labelEach ? candidateLabel(candidate, mode) : null;
           // Only absolute confidences (a run that records its ranking) are folded.
           const fold = Boolean(mode);
           const strong = fold
@@ -170,7 +229,7 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
           const weaker = fold
             ? candidate.symbols.filter((s) => s.confidence < STRONG_LINK_CONFIDENCE)
             : [];
-          const emptyRuleHybrid = (candidate.retrievalMode ?? mode) === "hybrid";
+          const emptyRuleHybrid = ruleOf(candidate, mode) === "confidence";
           return (
             <li
               key={candidate.id}

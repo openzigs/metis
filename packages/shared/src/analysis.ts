@@ -1951,6 +1951,25 @@ export interface AffectedCodeCandidate {
    * decided what is shown. Absent on runs before #1097.
    */
   retrievalMode?: "hybrid" | "bm25-only";
+  /**
+   * #1330 — the rule that decided which of THIS requirement's links are shown:
+   * `confidence` (at least 0.08, the hybrid ranking with a calibrated
+   * embedding model) or `shared-terms` (the symbol's name shares two of the
+   * requirement's terms: the keyword fallback, and a hybrid ranking with an
+   * embedding model the confidence is not calibrated for). Absent on runs
+   * before #1330, where the ranking implies it.
+   */
+  linkRule?: "confidence" | "shared-terms";
+  /**
+   * #1330 — why the keyword rule (two shared name terms) decided links the
+   * embeddings ranked. `uncalibrated-model`: all of them (`linkRule` is
+   * `shared-terms`): the embedding model is not one the confidence is
+   * calibrated for. `schema-not-embedded`: the links to database tables or
+   * columns, which are never embedded (`linkRule` stays `confidence` for the
+   * rest). `no-vector`: links to code with no usable embedding (not embedded
+   * yet, or embedded with another model). Absent when no link was decided so.
+   */
+  keywordRuleCause?: "uncalibrated-model" | "schema-not-embedded" | "no-vector";
 }
 
 /**
