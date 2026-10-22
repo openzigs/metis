@@ -12,6 +12,7 @@ import {
   MemoizingBm25CodeSymbolSearcher,
   linkConfidence,
   mapRequirementToCode,
+  type LinkGate,
   type RequirementRetrievalMode,
 } from "./requirement-code-mapping.js";
 import {
@@ -204,23 +205,57 @@ describe("HybridCodeSymbolSearcher — calibration holes (review of PR #1325)", 
       ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS,
     );
 
-  it("scores a hit only BM25 returned at the vector channel's lowest returned cosine, not as average", async () => {
-    // `button` shares one word and the vector channel did not return it.
+  // #1330 — a hit the vector channel did not return has NO vector (it reaches
+  // the pool only when the channel returned everything it holds), so its cosine
+  // is unknown, not bounded by the lowest returned one: a project part-way
+  // through embedding. The whole answer is then gated as keywords.
+  it("gates an answer holding a hit with no vector by the keyword rules (part-embedded project)", async () => {
+    // `button` shares one word; the few embedded hits are all close (0.6 or more).
     const { ranker } = rankerOf([
       { id: "flush", cosine: 0.7 },
-      { id: "remove", cosine: 0.55 },
+      { id: "remove", cosine: 0.62 },
       { id: "button" },
     ]);
     const raw = await searcherOf(ranker).search(TERMINATE, PROJECT);
-    const button = raw.find((c) => c.symbolId === "button")!;
-    expect(button.confidence).toBe(linkConfidence({ sharedNameTerms: 1, cosine: 0.55 }));
-    // Scored as "no cosine" it would clear the floor on one shared word (0.096).
+    // No hit is scored with a cosine: the answer's confidence is lexical throughout.
+    expect(raw.length).toBe(3);
+    for (const c of raw) {
+      expect(c.confidence).toBe(linkConfidence({ sharedNameTerms: 1 }));
+    }
+    // Scored as "no cosine" one shared word clears the hybrid floor (0.096 >= 0.08),
+    // so only the two-term rule keeps the one-word button out.
     expect(linkConfidence({ sharedNameTerms: 1 })).toBeGreaterThanOrEqual(
       ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS.minConfidence!,
     );
-    const shown = await links(ranker).search(TERMINATE, PROJECT);
-    expect(shown.map((c) => c.symbolId)).not.toContain("button");
-    expect(shown.map((c) => c.symbolId)).toContain("flush");
+    const modes: RequirementRetrievalMode[] = [];
+    const gates: LinkGate[] = [];
+    const shown = await links(ranker).search(TERMINATE, PROJECT, {
+      onRetrievalMode: (m) => modes.push(m),
+      onLinkGate: (g) => gates.push(g),
+    });
+    expect(shown).toEqual([]);
+    expect(modes).toEqual(["hybrid"]);
+    expect(gates).toEqual(["keyword"]);
+  });
+
+  it("gates a hybrid answer with no cosine at all by the keyword rules", async () => {
+    const { ranker } = rankerOf([{ id: "flush" }, { id: "button" }]);
+    const gates: LinkGate[] = [];
+    const shown = await links(ranker).search(TERMINATE, PROJECT, {
+      onLinkGate: (g) => gates.push(g),
+    });
+    expect(shown).toEqual([]);
+    expect(gates).toEqual(["keyword"]);
+  });
+
+  it("reports the hybrid gate when every hit carries a calibrated cosine", async () => {
+    const { ranker } = rankerOf([{ id: "flush", cosine: 0.7 }]);
+    const gates: LinkGate[] = [];
+    const shown = await links(ranker).search(TERMINATE, PROJECT, {
+      onLinkGate: (g) => gates.push(g),
+    });
+    expect(shown.map((c) => c.symbolId)).toEqual(["flush"]);
+    expect(gates).toEqual(["hybrid"]);
   });
 
   it("gates an uncalibrated model's links with the keyword rules (two shared name terms)", async () => {
@@ -229,11 +264,14 @@ describe("HybridCodeSymbolSearcher — calibration holes (review of PR #1325)", 
     expect(await links(ranker, GTE).search(TERMINATE, PROJECT)).not.toEqual([]);
     // ... but with no calibrated cosine nothing semantic gates it, so the #1095 rule does.
     const modes: RequirementRetrievalMode[] = [];
+    const gates: LinkGate[] = [];
     const out = await links(ranker, "BAAI/bge-small-en-v1.5").search(TERMINATE, PROJECT, {
       onRetrievalMode: (m) => modes.push(m),
+      onLinkGate: (g) => gates.push(g),
     });
     expect(out).toEqual([]);
     expect(modes).toEqual(["hybrid"]);
+    expect(gates).toEqual(["keyword"]);
   });
 });
 
@@ -242,10 +280,14 @@ describe("HybridCodeSymbolSearcher — falls back to BM25 and says so", () => {
     searcher: HybridCodeSymbolSearcher,
   ): Promise<RequirementRetrievalMode[]> {
     const modes: RequirementRetrievalMode[] = [];
+    const gates: LinkGate[] = [];
     const out = await searcher.search(TERMINATE, PROJECT, {
       onRetrievalMode: (m) => modes.push(m),
+      onLinkGate: (g) => gates.push(g),
     });
     expect(out.length).toBeGreaterThan(0);
+    // The fallback's links are decided by its own (keyword) rules (#1330).
+    expect(gates).toEqual(["keyword"]);
     // Every BM25 candidate carries an absolute confidence too.
     for (const c of out) expect(typeof c.confidence).toBe("number");
     return modes;

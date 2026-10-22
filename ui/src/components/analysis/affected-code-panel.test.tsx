@@ -99,6 +99,75 @@ describe("AffectedCodePanel", () => {
     );
   });
 
+  it("#1330 — a hybrid run whose links the two-term rule decided says so, not the 0.08 floor", () => {
+    // Another embedding model than the calibrated one: ranked by meaning, gated as keywords.
+    render(
+      <AffectedCodePanel
+        affectedCode={{
+          ...affectedCode,
+          retrievalMode: "hybrid",
+          candidates: affectedCode.candidates.map((c) => ({
+            ...c,
+            retrievalMode: "hybrid" as const,
+            linkRule: "shared-terms" as const,
+          })),
+        }}
+      />,
+    );
+    const panel = screen.getByTestId("affected-code-explainer");
+    expect(panel).toHaveTextContent(/Ranked by meaning and keywords together/);
+    expect(panel).toHaveTextContent(/shares at least two of the requirement's terms/);
+    expect(panel).not.toHaveTextContent(/0\.08/);
+    expect(panel).toHaveTextContent(
+      /the confidence could not use the embeddings \(an embedding model METIS has not calibrated, or symbols still being embedded\)/,
+    );
+    const empty = screen.getByTestId("affected-code-empty-NR-4");
+    expect(empty).toHaveTextContent(/No symbol's name shares two of this requirement's terms/);
+    expect(empty).not.toHaveTextContent(/close enough/);
+    // One rule for the whole run: no per-requirement label.
+    expect(screen.queryByTestId("affected-code-ranking-NR-4")).toBeNull();
+  });
+
+  it("#1330 — a hybrid run whose requirements were decided by different rules explains both and labels each", () => {
+    render(
+      <AffectedCodePanel
+        affectedCode={{
+          truncated: false,
+          retrievalMode: "hybrid",
+          candidates: [
+            {
+              id: "NR-1",
+              title: "a",
+              body: "a",
+              retrievalMode: "hybrid",
+              linkRule: "confidence",
+              symbols: [],
+            },
+            {
+              id: "NR-2",
+              title: "b",
+              body: "b",
+              retrievalMode: "hybrid",
+              linkRule: "shared-terms",
+              symbols: [],
+            },
+          ],
+        }}
+      />,
+    );
+    const panel = screen.getByTestId("affected-code-explainer");
+    expect(panel).toHaveTextContent(/confidence is at least 0\.08/);
+    expect(panel).toHaveTextContent(/shares at least two of the requirement's terms/);
+    expect(screen.getByTestId("affected-code-ranking-NR-1")).toHaveTextContent(
+      "(meaning + keywords)",
+    );
+    expect(screen.getByTestId("affected-code-ranking-NR-2")).toHaveTextContent(
+      "(meaning + keywords, shown by the keyword rule)",
+    );
+    expect(screen.getByTestId("affected-code-empty-NR-1")).toHaveTextContent(/close enough/);
+    expect(screen.getByTestId("affected-code-empty-NR-2")).toHaveTextContent(/shares two/);
+  });
+
   it("#1097 — a keyword-only run says the embeddings were not used, and keeps the two-term rule", () => {
     render(<AffectedCodePanel affectedCode={{ ...affectedCode, retrievalMode: "bm25-only" }} />);
     const panel = screen.getByTestId("affected-code-explainer");

@@ -231,10 +231,19 @@ describe("computeAffectedCodeContext — default mapper (#1063)", () => {
       deps: { prisma: prismaWith(rows).prisma, dataSourceFor: emptyGraphFor },
     });
 
-  /** The context as it was BEFORE #1063: one mapper, no shared-terms rule. */
+  /**
+   * The context as it was BEFORE #1063: one mapper, no shared-terms rule. Its
+   * BM25 searcher reports no absolute confidence, as before #1097, so the
+   * mapper normalizes to the best hit (#1330: since #1097 the BM25 searcher
+   * reports one, and this reference had silently moved onto that scale).
+   */
   const runAsBefore1063 = (extraInstructions: string, tokenBudget = 100000) => {
     const { prisma } = prismaWith(symbols);
-    const searcher = new Bm25CodeSymbolSearcher(prisma);
+    const bm25 = new Bm25CodeSymbolSearcher(prisma);
+    const searcher = {
+      search: async (q: string, p: string, o?: { limit?: number }) =>
+        (await bm25.search(q, p, o)).map((c) => ({ ...c, confidence: undefined })),
+    };
     return computeAffectedCodeContext({
       projectId: "proj-miniflux",
       extraInstructions,
@@ -594,6 +603,81 @@ describe("computeAffectedCodeContext — hybrid ranking and its record (#1097)",
     // Every name shares one word at most: the two-term rule leaves the requirement unlinked.
     expect(ctx.result.candidates[0]!.symbols).toEqual([]);
     expect(ctx.block).toContain("FlushAllSessions"); // the agent is still seeded
+    expect(ctx.result.candidates[0]!.linkRule).toBe("shared-terms");
+  });
+
+  it("records which rule decided each requirement's links: the floor, or two shared terms (#1330)", async () => {
+    const hybrid = await run(searcherWith([["flush", 0.667]]));
+    expect(hybrid.result.candidates[0]).toMatchObject({
+      retrievalMode: "hybrid",
+      linkRule: "confidence",
+    });
+    // Ranked by the embeddings, but a hit with no vector (symbols still being
+    // embedded): the two-term rule decided, though the ranking reads hybrid.
+    const partEmbedded = new HybridCodeSymbolSearcher({
+      bm25: new MemoizingBm25CodeSymbolSearcher(prisma),
+      hybrid: {
+        async search(_q, _p, opts) {
+          opts?.onRetrievalMode?.("hybrid");
+          return [
+            {
+              symbolId: "flush",
+              filePath: "",
+              name: "f",
+              kind: "function",
+              score: 2,
+              vectorScore: 0.7,
+            },
+            { symbolId: "button", filePath: "", name: "b", kind: "class", score: 1 },
+          ];
+        },
+      },
+      semanticModel: () => "Alibaba-NLP/gte-modernbert-base",
+    });
+    const gated = await run(partEmbedded);
+    expect(gated.result.retrievalMode).toBe("hybrid");
+    expect(gated.result.candidates[0]).toMatchObject({
+      retrievalMode: "hybrid",
+      linkRule: "shared-terms",
+    });
+  });
+
+  // #1330 — on a keyword-fallback answer the agent's seeds are what they were
+  // before #1097. The reference is the pre-#1097 mapper: a BM25 searcher that
+  // reports no absolute confidence, so the mapper normalizes to the best hit.
+  it("seeds the code agent on a keyword-fallback run exactly as before #1097 (relative BM25 values)", async () => {
+    const ctx = await run(searcherWith(null));
+    const bm25 = new Bm25CodeSymbolSearcher(prisma);
+    const before = await computeAffectedCodeContext({
+      projectId: "proj-miniflux",
+      extraInstructions: "- Add a button to terminate all sessions",
+      enabled: true,
+      tokenBudget: 100000,
+      deps: {
+        prisma,
+        dataSourceFor: () => graph,
+        mapRequirement: (req, projectId) =>
+          mapRequirementToCode(
+            req,
+            projectId,
+            {},
+            {
+              prisma,
+              searcher: {
+                search: async (q, p, o) =>
+                  (await bm25.search(q, p, o)).map((c) => ({ ...c, confidence: undefined })),
+              },
+            },
+          ),
+      },
+    });
+    expect(before.block).not.toBe("");
+    expect(ctx.block).toBe(before.block);
+    expect(ctx.filePaths).toEqual(before.filePaths);
+    // Every hit shares one name word, so on the absolute scale every seed would
+    // read 1.00; the BM25 values tell them apart.
+    const directConfs = [...ctx.block.matchAll(/\(direct, conf (\d\.\d\d)\)/g)].map((m) => m[1]);
+    expect(new Set(directConfs).size).toBeGreaterThan(1);
   });
 
   it("records no mode for an injected mapper", async () => {

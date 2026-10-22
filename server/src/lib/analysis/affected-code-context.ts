@@ -54,6 +54,8 @@ import {
   ANALYSIS_LINK_SEARCH_OPTIONS,
   mapRequirementToCode,
   type Bm25SearcherOptions,
+  type CodeSymbolSearcher,
+  type LinkGate,
   type RequirementCodeMatch,
   type RequirementRetrievalMode,
 } from "../traceability/requirement-code-mapping.js";
@@ -159,6 +161,38 @@ export function relativeToBestSeed(c: AffectedCodeCandidate): AffectedCodeCandid
   const best = c.symbols.reduce((m, s) => Math.max(m, s.confidence), 0);
   if (best <= 0) return c;
   return { ...c, symbols: c.symbols.map((s) => ({ ...s, confidence: s.confidence / best })) };
+}
+
+/**
+ * #1330 — the code agent's seeds on a KEYWORD-FALLBACK answer, as they were
+ * before #1097: each confidence relative to the best BM25 hit, the old 0.3
+ * floor, BM25 order. The searcher's absolute confidence is dropped from the
+ * candidates, which sends `mapRequirementToCode` down its relative path
+ * (`normalizeConfidence`, `RELATIVE_MIN_CONFIDENCE`).
+ *
+ * Why: on a BM25 answer the absolute confidence is a step function of shared
+ * name words (0.029 / 0.096 / 0.273 / 0.572), so with it the agent's block read
+ * 1.00 / 0.48 / 0.17, its floor dropped every hit sharing no name word (a
+ * doc-comment or package match) and kept every weak one sharing one, and the
+ * order became shared-word count. No model run measured that input, so it is
+ * not given to the agent. A HYBRID answer is passed through: its ranking is new
+ * anyway, and `relativeToBestSeed` puts it on the agent's scale.
+ */
+export function relativeOnKeywordFallback(searcher: CodeSymbolSearcher): CodeSymbolSearcher {
+  return {
+    async search(query, projectId, opts = {}) {
+      let mode: RequirementRetrievalMode | undefined;
+      const candidates = await searcher.search(query, projectId, {
+        ...opts,
+        onRetrievalMode: (m) => {
+          mode = m;
+          opts.onRetrievalMode?.(m);
+        },
+      });
+      if (mode !== "bm25-only") return candidates;
+      return candidates.map((c) => ({ ...c, confidence: undefined }));
+    },
+  };
 }
 
 /** Render one affected symbol as a single reference line (pure DATA). */
@@ -318,6 +352,7 @@ export async function mapAffectedCodeCandidates(opts: {
   // embedded (one query embedding serves both readings), else with BM25.
   const seedSearcher = opts.deps?.searcher ?? createRequirementCodeSearcher(prisma);
   const linkSearcher = seedSearcher.withOptions(linkOptions, hybridLinkOptions);
+  const agentSeedSearcher = relativeOnKeywordFallback(seedSearcher);
   const mapLinksExcludesTests =
     linkOptions.excludeTestCode === true && hybridLinkOptions.excludeTestCode === true;
   const injectedMapper = opts.deps?.mapRequirement;
@@ -330,6 +365,10 @@ export async function mapAffectedCodeCandidates(opts: {
     modes.add(mode);
     candidateMode = mode;
   };
+  // #1330 — the rules that decided the LINKS of the requirement being mapped
+  // now: the hybrid floor, or the two-term rule (the fallback, and a hybrid
+  // answer the confidence cannot score semantically).
+  let candidateGate: LinkGate | undefined;
   const mapSeeds: MapRequirementFn =
     injectedMapper ??
     ((req, projectId) =>
@@ -337,7 +376,7 @@ export async function mapAffectedCodeCandidates(opts: {
         req,
         projectId,
         { onRetrievalMode: noteMode },
-        { prisma, searcher: seedSearcher },
+        { prisma, searcher: agentSeedSearcher },
       ));
   // An injected mapper is the caller's whole mapping: there is no second reading.
   const mapLinks: MapRequirementFn | null = injectedMapper
@@ -346,7 +385,12 @@ export async function mapAffectedCodeCandidates(opts: {
         mapRequirementToCode(
           req,
           projectId,
-          { onRetrievalMode: noteMode },
+          {
+            onRetrievalMode: noteMode,
+            onLinkGate: (gate) => {
+              candidateGate = gate;
+            },
+          },
           { prisma, searcher: linkSearcher },
         );
   // One data source per project (the graph is project-scoped). `blastRadius`
@@ -408,12 +452,21 @@ export async function mapAffectedCodeCandidates(opts: {
     const id = newRequirementId(i);
     const head = { id, title: change.title, body: change.body };
     candidateMode = undefined;
+    candidateGate = undefined;
     const seedSymbols = await mapChange(change, id, mapSeeds, "seed");
     seeds.push({ ...head, symbols: seedSymbols });
     const linkSymbols = mapLinks ? await mapChange(change, id, mapLinks, "link") : seedSymbols;
-    // #1097 — which ranking (and so which link rule) produced THIS requirement's links.
+    // #1097 — which ranking produced THIS requirement's links; #1330 — and
+    // which rule decided them, which is not the ranking's when the confidence
+    // could not be scored semantically.
     const mode = candidateMode as RequirementRetrievalMode | undefined;
-    links.push({ ...head, symbols: linkSymbols, ...(mode ? { retrievalMode: mode } : {}) });
+    const gate = candidateGate as LinkGate | undefined;
+    links.push({
+      ...head,
+      symbols: linkSymbols,
+      ...(mode ? { retrievalMode: mode } : {}),
+      ...(gate ? { linkRule: gate === "hybrid" ? "confidence" : "shared-terms" } : {}),
+    });
   }
 
   // Degrade cleanly when NOTHING matched across all candidates — the typical

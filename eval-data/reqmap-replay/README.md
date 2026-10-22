@@ -52,6 +52,11 @@ channel's lowest returned cosine (it was not among the nearest), an uncalibrated
 gated by the keyword rules, and blast-radius callers are scaled by the seed they were reached
 through. The table above is re-measured with all three.
 
+#1330 replaced the first of those: a hit the vector channel did not return reaches the 60-hit pool
+only when the channel returned everything it holds for the project, so it has no vector at all, and
+the lowest returned cosine does not bound it. Such an answer (and an uncalibrated model's) is now
+gated by the keyword rules.
+
 `--fit` reproduces the coefficients of `linkConfidence`
 (`server/src/lib/traceability/requirement-code-mapping.ts`) from the vector channel's top 40
 symbols for each requirement (520 links, 45 right).
@@ -69,4 +74,5 @@ symbols for each requirement (520 links, 45 right).
 - `sharedNameTerms` is a raw count over the denoised query, not a share of it, so a long Spec Kit
   acceptance-criteria body shares more words by chance than a five-word title. The cap at three
   shared words limits this; "the same scale on every requirement" is approximate.
-- A project part-way through embedding reads `hybrid` as soon as one vector hit returns.
+- A project part-way through embedding reads `hybrid` as soon as one vector hit returns; since
+  #1330 a requirement whose hits include an unembedded symbol is gated by the keyword rules.

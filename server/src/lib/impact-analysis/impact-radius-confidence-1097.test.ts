@@ -1,7 +1,8 @@
 /**
  * #1097 — with absolute seed confidences, WHICH callers the blast radius
  * reaches stays structural (it walks from a seed of 1, as it did when every
- * best hit read 1.0), and HOW SURE each caller is follows the best seed.
+ * best hit read 1.0), and HOW SURE each caller is follows the seed it was
+ * reached through (ordinary Impact Analysis included, #1330).
  */
 import { describe, expect, it } from "vitest";
 import { InMemoryCodeGraphDataSource, computeProjectImpact } from "./impact-analysis-engine.js";
@@ -110,5 +111,43 @@ describe("blast radius under absolute confidence (#1097)", () => {
     expect(by.get("b.go::b")).toBeCloseTo(0.08, 10);
     // Reached through both at the same depth: the better path wins.
     expect(by.get("both.go::both")).toBeCloseTo(0.45, 10);
+  });
+
+  // #1330 — ordinary Impact Analysis (`seedChange`, top-normalized edit
+  // candidates) is scaled the same way, on purpose: the best candidate's
+  // callers read as before #1097, a weaker candidate's are scaled by it.
+  it("scales ordinary Impact Analysis callers too: the best edit candidate's as before, a weaker one's by it", async () => {
+    const two = new InMemoryCodeGraphDataSource(["best", "half", "a", "b"].map(sym), [
+      { id: "e1", fromSymbolId: "a", toSymbolId: "best", kind: "calls" },
+      { id: "e2", fromSymbolId: "b", toSymbolId: "half", kind: "calls" },
+    ]);
+    const match = (id: string, confidence: number) => ({
+      codeSymbolId: id,
+      filePath: `${id}.go`,
+      qualifiedName: `${id}.go::${id}`,
+      startLine: 1,
+      endLine: 5,
+      confidence,
+    });
+    const impact = await computeProjectImpact(
+      { requirementId: "r", title: "t", body: "t", changeType: "added", bodyDelta: 1 },
+      "p",
+      {
+        // Unused when `seedChange` is wired (the split retrieval seeds instead).
+        mapRequirement: async () => [],
+        seedChange: async () => ({
+          editCandidates: [match("best", 1), match("half", 0.5)],
+          related: [],
+          schemaSeeds: [],
+          retrievalMode: "hybrid",
+        }),
+        dataSourceFor: () => two,
+        includeSchemaImpact: false,
+      },
+    );
+    const by = new Map(impact.affectedSymbols.map((s) => [s.qualifiedName, s.confidence]));
+    expect(by.get("a.go::a")).toBeCloseTo(1, 10);
+    // 0.5 × the caller edge, where before #1097 it read as a caller of a 1.0 seed.
+    expect(by.get("b.go::b")).toBeCloseTo(0.5, 10);
   });
 });

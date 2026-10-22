@@ -45,6 +45,18 @@ describe("singularForms — '-es' only where English writes it (review of PR #12
     expect(sameWord(plural, word)).toBe(true);
   });
 
+  // #1330 — `goes` and `does` are verbs, not plurals: `go` is a common symbol
+  // word in a Go repository, and `doe` is not a word a requirement means.
+  it.each([
+    ["goes", "go"],
+    ["goes", "goe"],
+    ["does", "doe"],
+    ["does", "do"],
+  ])("the verb %s is not the word %s", (verb, word) => {
+    expect(singularForms(verb)).toEqual([verb]);
+    expect(sameWord(verb, word)).toBe(false);
+  });
+
   it("keeps a long stopword as a form: the subject rules read `users` as the stopword `user`", () => {
     expect(singularForms("users")).toEqual(["users", "user"]);
     expect(singularForms("settings")).toEqual(["settings", "setting"]);

@@ -1951,6 +1951,16 @@ export interface AffectedCodeCandidate {
    * decided what is shown. Absent on runs before #1097.
    */
   retrievalMode?: "hybrid" | "bm25-only";
+  /**
+   * #1330 — the rule that decided which of THIS requirement's links are shown:
+   * `confidence` (at least 0.08, the hybrid ranking with a calibrated
+   * embedding model) or `shared-terms` (the symbol's name shares two of the
+   * requirement's terms: the keyword fallback, and a hybrid ranking whose
+   * confidence could not use the embeddings — another embedding model, or
+   * symbols still being embedded). Absent on runs before #1330, where the
+   * ranking implies it.
+   */
+  linkRule?: "confidence" | "shared-terms";
 }
 
 /**

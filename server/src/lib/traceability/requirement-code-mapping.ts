@@ -97,7 +97,20 @@ export interface CodeSymbolSearchOptions {
   limit?: number;
   /** #1097 — called once per search with the ranking that answered it. */
   onRetrievalMode?: (mode: RequirementRetrievalMode) => void;
+  /** #1330 — called once per search with the rules that decided its links ({@link LinkGate}). */
+  onLinkGate?: (gate: LinkGate) => void;
 }
+
+/**
+ * #1330 — which of a searcher's two option sets turned the hits into links:
+ * `hybrid` — the hybrid ranking's (on the analysis path the 0.08 confidence
+ * floor), when the embeddings answered with a calibrated cosine for every
+ * hit; `keyword` — the keyword fallback's (the two-shared-name-terms rule),
+ * on a BM25 answer and on a hybrid one the confidence cannot score
+ * semantically (an uncalibrated model, or a hit with no vector). Reported only
+ * by the hybrid searcher (`requirement-code-searcher.ts`).
+ */
+export type LinkGate = "hybrid" | "keyword";
 
 /** Pluggable code search backend (BM25 default; hybrid/vector in production). */
 export interface CodeSymbolSearcher {
@@ -120,6 +133,8 @@ export interface MapRequirementOptions {
   persist?: boolean;
   /** #1097 — told which ranking answered (see {@link RequirementRetrievalMode}). */
   onRetrievalMode?: (mode: RequirementRetrievalMode) => void;
+  /** #1330 — told which rules decided the links (see {@link LinkGate}). */
+  onLinkGate?: (gate: LinkGate) => void;
   /**
    * #921 — told when the search failed. The mapper still returns no matches
    * (it never throws on a search failure); this lets a caller tell "nothing
@@ -763,11 +778,12 @@ export const ANALYSIS_LINK_SEARCH_OPTIONS: Readonly<Bm25SearcherOptions> = Objec
  * `InlineKeyboardButton`, "IPv4 or IPv6 per feed" never links
  * `ForceRefreshInterval`).
  *
- * Two conditions keep the floor honest (review of PR #1325): a hit only BM25
- * returned is scored at the vector channel's lowest returned cosine, not as a
- * hit with no cosine, so one shared word alone cannot clear it; and an
- * embedding model the confidence is not calibrated for is gated by the keyword
- * rules instead (`requirement-code-searcher.ts`).
+ * The floor applies only where the confidence has semantic evidence for
+ * every hit: one shared name word alone scores 0.096 and would clear it. So an
+ * answer from an embedding model the confidence is not calibrated for, or one
+ * holding a hit the vector channel did not return (a project part-way through
+ * embedding, whose cosine is unknown), is gated by the keyword rules instead
+ * (`requirement-code-searcher.ts`; review of PR #1325, #1330).
  */
 export const ANALYSIS_HYBRID_LINK_MIN_CONFIDENCE = 0.08;
 
@@ -803,14 +819,23 @@ const ES_PLURAL_RE = /(?:s|x|z|ch|sh|o)es$/;
  * short words, never the singular a code name means. Longer stopwords stay
  * forms on purpose: `users` → user and `entries` → entry are how the subject
  * rules recognise that a table is named by a stopword ({@link sharesRequirementSubject}).
+ * `goes` and `does` are verbs and have only themselves (#1330).
  */
 export function singularForms(term: string): readonly string[] {
   if (term.length <= 3 || !term.endsWith("s") || term.endsWith("ss")) return [term];
+  if (VERBS_ENDING_IN_ES.has(term)) return [term];
   const shortened = [term.slice(0, -1)];
   if (ES_PLURAL_RE.test(term)) shortened.push(term.slice(0, -2));
   if (term.endsWith("ies")) shortened.push(`${term.slice(0, -3)}y`);
   return [term, ...shortened.filter(isSingularForm)];
 }
+
+/**
+ * #1330 — words the `-oes` rule would read as plurals that are verbs: `goes`
+ * would be the word `go`, a common symbol word in a Go repository, through the
+ * subject rules, which read every word; `does` would be `doe`.
+ */
+const VERBS_ENDING_IN_ES: ReadonlySet<string> = new Set(["goes", "does"]);
 
 /** Whether a shortened word may stand as a singular form ({@link singularForms}). */
 function isSingularForm(form: string): boolean {
@@ -1633,6 +1658,7 @@ export async function mapRequirementToCode(
     candidates = await searcher.search(query, projectId, {
       limit: Math.max(topK * 2, topK),
       onRetrievalMode: opts.onRetrievalMode,
+      onLinkGate: opts.onLinkGate,
     });
   } catch (err) {
     opts.onSearchError?.(err);

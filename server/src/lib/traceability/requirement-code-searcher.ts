@@ -23,6 +23,12 @@
  * lexical channel: it carries the #943 denoiser and the #1063 link rules,
  * which the analysis path relies on.
  *
+ * WHEN IT RANKS HYBRID BUT GATES AS KEYWORDS (`onLinkGate` reports `keyword`,
+ * #1330): the active model is not one the confidence is calibrated for, or a
+ * hit carries no cosine (symbols part-way through embedding). The confidence
+ * then has no semantic evidence, so the hybrid options' floor would show any
+ * one-shared-word symbol; the keyword fallback's options decide instead.
+ *
  * WHAT IS SHARED WITH BM25. The hits HybridCodeSearch ranks are turned into
  * candidates by the BM25 searcher's {@link MemoizingBm25CodeSymbolSearcher.rankHits}:
  * the same corpus (documentation paths excluded, #1003), the same searcher
@@ -100,9 +106,11 @@ export interface HybridCodeSymbolSearcherDeps {
 interface HybridAnswer {
   hits: RankedHit[];
   /**
-   * Whether the active model's cosines are calibrated (`COSINE_CALIBRATED_MODELS`).
-   * An uncalibrated answer gives the confidence no semantic evidence, so its
-   * links are shown under the KEYWORD fallback's rules (review of PR #1325).
+   * Whether every hit carries a cosine the confidence is calibrated for: the
+   * active model is in `COSINE_CALIBRATED_MODELS` AND the vector channel
+   * returned every hit. An uncalibrated answer gives the confidence no
+   * semantic evidence, so its links are shown under the KEYWORD fallback's
+   * rules (review of PR #1325; #1330).
    */
   calibrated: boolean;
 }
@@ -152,19 +160,23 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
     const limit = opts.limit ?? DEFAULT_TOP_K;
     const answer = await this.answer(query, projectId);
     if (!answer) {
-      return this.deps.bm25.search(query, projectId, {
+      const candidates = await this.deps.bm25.search(query, projectId, {
         limit,
         onRetrievalMode: opts.onRetrievalMode,
       });
+      opts.onLinkGate?.("keyword");
+      return candidates;
     }
-    // An uncalibrated model ranks, but its links are gated as keywords: the
+    // An uncalibrated answer ranks, but its links are gated as keywords: the
     // hybrid floor alone would show any one-shared-word symbol (the #1095 shape).
+    const gate = answer.calibrated ? "hybrid" : "keyword";
     const ranker =
-      this.deps.hybridOptions && answer.calibrated
+      this.deps.hybridOptions && gate === "hybrid"
         ? this.deps.bm25.withOptions(this.deps.hybridOptions)
         : this.deps.bm25;
     const candidates = await ranker.rankHits(query, projectId, answer.hits, limit);
     opts.onRetrievalMode?.("hybrid");
+    opts.onLinkGate?.(gate);
     return candidates;
   }
 
@@ -201,21 +213,28 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
     if (mode !== "hybrid") return null;
     // Another model's cosines are on another scale: rank with them, but score
     // the confidence on the lexical evidence alone (and gate it as keywords).
-    const calibrated = COSINE_CALIBRATED_MODELS.has(model);
-    // A hit only BM25 returned was NOT among the vector channel's nearest, so
-    // its cosine is at most the lowest one the channel did return. Scoring it
-    // as "no cosine" (the lexical model) treated that absence as average, and a
-    // one-shared-word keyword hit cleared the floor (review of PR #1325).
-    const returned = results
-      .map((r) => r.vectorScore)
-      .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
-    const cutoff = returned.length > 0 ? Math.min(...returned) : null;
+    //
+    // #1330 — and the same when a hit carries no cosine. The vector store is
+    // asked for twice the pool, and under the 0.05 / 0.95 fusion any vector
+    // hit outranks every keyword-only one, so a keyword-only hit reaches the
+    // pool only when the vector channel returned fewer hits than the pool:
+    // everything it holds for the project. Such a hit has NO vector, which is
+    // a project part-way through embedding (or holding stale vectors), not one
+    // whose vector is distant. Its cosine is unknown, not bounded by the
+    // lowest returned one, and scored as "no cosine" one shared name word
+    // clears the hybrid floor (0.096 ≥ 0.08). So the answer is uncalibrated
+    // and the two-term rule gates it. `mode === "hybrid"` with no cosine at
+    // all is the same case.
+    const allMeasured = results.every(
+      (r) => typeof r.vectorScore === "number" && Number.isFinite(r.vectorScore),
+    );
+    const calibrated = COSINE_CALIBRATED_MODELS.has(model) && allMeasured;
     return {
       calibrated,
       hits: results.map((r) => ({
         symbolId: r.symbolId,
         score: r.score,
-        cosine: calibrated ? (r.vectorScore ?? cutoff) : null,
+        cosine: calibrated ? r.vectorScore : null,
       })),
     };
   }
