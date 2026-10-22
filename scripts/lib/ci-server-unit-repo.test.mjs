@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { splitJobs } from "./ci-test-ownership-core.mjs";
+import { continueOnErrorKeys, splitJobs } from "./ci-test-ownership-core.mjs";
 
 /**
  * #1411 — the SQLite server unit suite runs sharded in `server-unit`, not as one step
@@ -52,6 +52,10 @@ describe("server-unit shards the SQLite server unit suite (#1411)", () => {
     expect(legs.map(([i]) => i)).toEqual(Array.from({ length: total }, (_, k) => k + 1));
   });
 
+  it("a failing leg fails its check: no `continue-on-error` on the job or any step", () => {
+    expect(continueOnErrorKeys(jobs.get("server-unit") ?? [])).toEqual([]);
+  });
+
   it("lets every leg finish and prints no matrix-built name", () => {
     expect(u).toMatch(/\n {6}fail-fast: false/);
     expect(u).not.toMatch(/\n {4}name:/);
@@ -88,6 +92,10 @@ describe("`server` no longer runs the unit suite (#1411)", () => {
   it("has no `pnpm test` step, so the suite cannot run twice or bring the timeout back", () => {
     expect(s).not.toBe("");
     expect(s).not.toMatch(/run: pnpm test(\s|$)/m);
+  });
+
+  it("keeps a 10-minute cap: it holds only setup and the Chromium suite (~1 min)", () => {
+    expect(s).toMatch(/\n {4}timeout-minutes: 10\n/);
   });
 
   it("still runs the real-Chromium exporter suite", () => {

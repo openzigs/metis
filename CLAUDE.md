@@ -74,7 +74,7 @@ gh pr merge <pr> --squash --delete-branch   # only after a clean re-read
    **`api-outcome`** check: it passes on a supersede, and fails only on a genuine `api`
    failure. Confirm with `gh run view <id> --json jobs`, then read the newer run — re-run
    the job only if none exists — and **do not "fix" anything** (#1067).
-2. **A `postgres-unit (n/3)` leg can exit 1 with every test passing** — a vitest
+2. **A `postgres-unit (n/3)` or `server-unit (n/3)` leg can exit 1 with every test passing** — a vitest
    `EnvironmentTeardownError: Closing rpc while "onUserConsoleLog" was pending` from
    `server/tests/lib/testcoverage/cost-tracker.test.ts`. **Discriminate on the `Test Files`
    line, never on the `Errors` block** — that teardown error is present either way.
@@ -103,8 +103,7 @@ javascript-typescript`, `Analyze python`, `CodeQL`, `Check CLA signature`, `Depe
 `fail` when a newer push superseded the run (a cancelled shard), so check for a newer run first. The `server-unit (n/3)` and `postgres-unit (n/3)` legs have **no** outcome job, so a leg
 cancelled by a newer push reads `fail` the same way: check for a newer run first. On a PR,
 `postgres-adapter` and `postgres-unit` read **`skipping`** when no Postgres path changed (the
-legs are expected to fold into one skipped `postgres-unit`, giving 25 checks: unconfirmed
-until a PR without a Postgres path shows it) and `api` skips its image build when no image
+legs fold into one skipped `postgres-unit`, giving 25 checks: seen on #1416, 22 before #1411) and `api` skips its image build when no image
 path did — the `changes` job's summary says why; all three always run on `main` and nightly.
 `skipping` on `postgres-adapter` / `postgres-unit` is expected, on `nightly-report` always (schedule-only:
 it files a `ci-nightly` issue on a red nightly, #848), and on `Check CLA signature` for a

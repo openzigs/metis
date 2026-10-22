@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   auditOwnership,
+  continueOnErrorKeys,
   extractPnpmCommands,
   resolvePnpmTest,
   shellWords,
@@ -233,5 +234,30 @@ describe("testOwnership + auditOwnership", () => {
       "@x/e2e: no job runs its unit suite",
     ]);
     expect(auditOwnership(owners, { pg: ["@x/server"] }, ["@x/e2e"])).toEqual([]);
+  });
+});
+
+describe("continueOnErrorKeys (#1411)", () => {
+  const lines = (/** @type {string} */ yaml) => splitJobs(`jobs:\n  j:\n${yaml}`).get("j") ?? [];
+
+  it("finds a job-level key", () => {
+    expect(continueOnErrorKeys(lines("    runs-on: x\n    continue-on-error: true\n"))).toEqual([
+      { level: "job", line: "continue-on-error: true" },
+    ]);
+  });
+
+  it("finds a step-level key, as a step property or as the step's first key", () => {
+    const yaml =
+      "    steps:\n      - name: a\n        continue-on-error: true\n        run: x\n" +
+      "      - continue-on-error: ${{ matrix.x }}\n        run: y\n";
+    expect(continueOnErrorKeys(lines(yaml)).map((f) => f.level)).toEqual(["step", "step"]);
+  });
+
+  it("ignores a literal false, comments, and deeper keys", () => {
+    const yaml =
+      "    continue-on-error: false\n    steps:\n      - name: a\n" +
+      "        continue-on-error: 'false' # explicit\n        with:\n          continue-on-error: true\n" +
+      "    # continue-on-error: true\n";
+    expect(continueOnErrorKeys(lines(yaml))).toEqual([]);
   });
 });

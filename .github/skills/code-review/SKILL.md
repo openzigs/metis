@@ -268,9 +268,10 @@ Other people or automated reviewers (e.g., GitHub Copilot code review) may have 
    > and a green `CodeQL` does not mean the `Analyze` jobs are done.
    > **The set is listed once, in CLAUDE.md > "CI and merging"** (#844: twenty-seven since #1411, with the
    > e2e suite sharded as `e2e (1/3)`–`e2e (3/3)` and read through `e2e-outcome`, the
-   > SQLite server unit suite as `server-unit (1/3)`–`(3/3)`, the Postgres unit suite as `postgres-unit (1/3)`–`(3/3)`, and `postgres-adapter` and
-   > `postgres-unit` reading `skipping` on a PR that touches no Postgres path, where the legs
-   > should fold into one skipped `postgres-unit` for twenty-five (unconfirmed), and the
+   > SQLite server unit suite as `server-unit (1/3)`–`(3/3)`, the Postgres unit suite as
+   > `postgres-unit (1/3)`–`(3/3)`, and `postgres-adapter` and `postgres-unit` reading
+   > `skipping` on a PR that touches no Postgres path, where the legs fold into one skipped
+   > `postgres-unit` for twenty-five (seen on #1416, twenty-two before #1411), and the
    > schedule-only `nightly-report` always reading `skipping`). This note used to end *"Only CI jobs (`api`, `ui`) will
    > appear"*, which was true when it was written and had since become false in ten places;
    > an agent obeying it treated ten checks as non-existent (#1282). Read the set `gh pr

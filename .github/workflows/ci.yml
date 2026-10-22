@@ -166,7 +166,7 @@ jobs:
       # #4 — ONLY the suites no other job runs: scripts, shared, ui-kit and
       # embeddings-svc (18 s measured on PR #287's run). This step used to be the root `pnpm test` — the
       # WHOLE monorepo — which was 86% of this job's wall clock and re-ran the ui
-      # suite (the `ui` job runs it) and the server suite (now the `server` job).
+      # suite (the `ui` job runs it) and the server suite (now the sharded `server-unit` job, #1411).
       #
       # Exclusions, not an allowlist, so a NEW package is tested here by default
       # rather than by nobody. `!metis` is load-bearing: only-negative filters
