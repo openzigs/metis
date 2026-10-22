@@ -216,7 +216,8 @@ describe("closeSocket (#1391)", () => {
       await waitFor(() => expect(a.result.current).not.toBeNull());
       // An already-dropped socket emits no "disconnect" when disconnect() is
       // called, so the renewal flag set just before it is never consumed.
-      vi.mocked(a.result.current!.disconnect).mockImplementation(() => undefined);
+      const socketA = a.result.current!;
+      vi.mocked(socketA.disconnect).mockImplementation(() => socketA);
       const onRefresh = vi.mocked(setOnRefreshSuccess).mock.calls.at(-1)?.[0] as () => void;
       onRefresh();
       await vi.advanceTimersByTimeAsync(300);
