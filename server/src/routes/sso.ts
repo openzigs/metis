@@ -13,7 +13,18 @@
  */
 import { Router, type Request, type Response } from "express";
 import type { RoleKey, ApiResponse } from "@metis/shared";
-import { getPermissionsForRole } from "@metis/shared";
+import {
+  getPermissionsForRole,
+  SESSION_ACCESS_COOKIE,
+  SESSION_ACCESS_MAX_AGE_SECONDS,
+  SESSION_REFRESH_COOKIE,
+  SESSION_REFRESH_MAX_AGE_SECONDS,
+} from "@metis/shared";
+import {
+  DEFAULT_CORS_ORIGIN,
+  normaliseOrigin,
+  parseCorsOrigins,
+} from "../lib/config/cors-origins.js";
 import {
   getPublicEnabledProviders,
   getProviderByMode,
@@ -55,13 +66,49 @@ function getSSOStateStore(): SSOStateStore {
   return ssoStateStore;
 }
 
-function cookieOptions(): CookieOptions {
-  return {
+/**
+ * #1386 — finish an SSO login with the session the UI reads.
+ *
+ * The browser's session lives in the UI's `metis.at` / `metis.rt` cookies; the
+ * UI turns the access cookie into the API's Bearer header. These handlers used
+ * to set `accessToken` / `refreshToken` instead, which nothing in the UI reads,
+ * so every SSO login landed on a page that sent the user back to `/login`.
+ *
+ * Cookies are scoped to a host, not a port, and the Ingress serves these routes
+ * on the UI's own host (`/api/auth/oidc`, `/api/auth/saml` → the server), so a
+ * cookie set here is the UI's cookie. The attributes match the UI's own
+ * (`ui/src/lib/edge-auth.ts`): `HttpOnly`, `SameSite=Lax` — set on the IdP's
+ * cross-site redirect or POST and sent on the top-level navigation that follows
+ * — and `Secure` in production, where the Ingress terminates TLS.
+ */
+function setBrowserSession(res: Response, tokens: { accessToken: string; refreshToken: string }) {
+  const base: CookieOptions = {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
   };
+  res.cookie(SESSION_ACCESS_COOKIE, tokens.accessToken, {
+    ...base,
+    maxAge: SESSION_ACCESS_MAX_AGE_SECONDS * 1000,
+  });
+  res.cookie(SESSION_REFRESH_COOKIE, tokens.refreshToken, {
+    ...base,
+    maxAge: SESSION_REFRESH_MAX_AGE_SECONDS * 1000,
+  });
+}
+
+/**
+ * Where a completed SSO login lands: `APP_URL`, else the UI origin `CORS_ORIGIN`
+ * names (which every deployment behind an Ingress must set), else the dev UI.
+ * Never a value from the request.
+ */
+export function ssoLandingUrl(): string {
+  const configured =
+    normaliseOrigin(process.env.APP_URL?.trim()) ??
+    normaliseOrigin(parseCorsOrigins(process.env.CORS_ORIGIN ?? "")[0]) ??
+    DEFAULT_CORS_ORIGIN;
+  return `${configured}/dashboard`;
 }
 
 async function readWorkspaceIds(userId: string): Promise<string[]> {
@@ -197,11 +244,7 @@ export function ssoRouter(): Router {
       workspaces: await readWorkspaceIds(userRow.id),
     });
 
-    res.cookie("accessToken", tokens.accessToken, { ...cookieOptions(), maxAge: 60 * 60 * 1000 });
-    res.cookie("refreshToken", tokens.refreshToken, {
-      ...cookieOptions(),
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    setBrowserSession(res, tokens);
 
     audit({
       actor: { id: userRow.id },
@@ -215,9 +258,7 @@ export function ssoRouter(): Router {
       },
     });
 
-    // Redirect to dashboard after successful SSO
-    const baseUrl = process.env.APP_URL ?? "http://localhost:3000";
-    res.redirect(`${baseUrl}/dashboard`);
+    res.redirect(ssoLandingUrl());
   });
 
   // --- OIDC: Initiate login (#750) ---
@@ -302,11 +343,7 @@ export function ssoRouter(): Router {
       workspaces: await readWorkspaceIds(userRow.id),
     });
 
-    res.cookie("accessToken", tokens.accessToken, { ...cookieOptions(), maxAge: 60 * 60 * 1000 });
-    res.cookie("refreshToken", tokens.refreshToken, {
-      ...cookieOptions(),
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    setBrowserSession(res, tokens);
 
     audit({
       actor: { id: userRow.id },
@@ -320,8 +357,7 @@ export function ssoRouter(): Router {
       },
     });
 
-    const baseUrl = process.env.APP_URL ?? "http://localhost:3000";
-    res.redirect(`${baseUrl}/dashboard`);
+    res.redirect(ssoLandingUrl());
   });
 
   return r;

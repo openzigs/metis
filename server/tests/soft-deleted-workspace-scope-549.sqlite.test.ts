@@ -197,10 +197,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const res = await agent.get("/api/auth/oidc/callback?code=code-549&state=state-549");
         expect(res.status).toBe(302);
         const cookies = [res.headers["set-cookie"] ?? []].flat() as string[];
-        const access = cookies.find((c) => c.startsWith("accessToken="));
+        const access = cookies.find((c) => c.startsWith("metis.at="));
         expect(access).toBeDefined();
         const claims = verifyAccessToken(
-          decodeURIComponent(access!.split(";")[0]!.slice("accessToken=".length)),
+          decodeURIComponent(access!.split(";")[0]!.slice("metis.at=".length)),
         );
         expect(claims.userId).toBe("u-both");
         expect(claims.workspaces).toEqual([LIVE]);

@@ -22,6 +22,26 @@ const discoveryCache = new Map<string, openidClient.Configuration>();
 /** Maximum age for replay attack window (30 seconds). */
 export const MAX_AUTH_AGE_SECONDS = 30;
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * #1386 — openid-client refuses every non-HTTPS request, so neither the local
+ * Keycloak harness (`http://localhost:4600`, #521) nor an in-process test IdP
+ * could complete a login. Plain HTTP is allowed for a LOOPBACK IdP outside
+ * production only: nothing on the network can sit between this process and
+ * its own loopback interface, and production never talks to an IdP over HTTP.
+ */
+export function allowsPlainHttpIdp(
+  discoveryUrl: URL,
+  nodeEnv: string | undefined = process.env.NODE_ENV,
+): boolean {
+  return (
+    discoveryUrl.protocol === "http:" &&
+    LOOPBACK_HOSTS.has(discoveryUrl.hostname) &&
+    nodeEnv !== "production"
+  );
+}
+
 /** Discover the OIDC provider configuration. */
 export async function discoverOIDC(config: OIDCConfig): Promise<openidClient.Configuration> {
   const cached = discoveryCache.get(config.discoveryUrl);
@@ -32,6 +52,10 @@ export async function discoverOIDC(config: OIDCConfig): Promise<openidClient.Con
     discoveryUrl,
     config.clientId,
     config.clientSecret,
+    undefined,
+    allowsPlainHttpIdp(discoveryUrl)
+      ? { execute: [openidClient.allowInsecureRequests] }
+      : undefined,
   );
   discoveryCache.set(config.discoveryUrl, oidcConfig);
   log.info("OIDC discovery completed", { issuer: config.discoveryUrl });

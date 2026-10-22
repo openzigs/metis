@@ -1,6 +1,7 @@
 import { type NextResponse } from "next/server";
 import { ACCESS_COOKIE, REFRESH_COOKIE, UPSTREAM_API_BASE } from "@/lib/config";
 import { CSRF_HEADER } from "@/lib/csrf-guard";
+import { SESSION_ACCESS_MAX_AGE_SECONDS, SESSION_REFRESH_MAX_AGE_SECONDS } from "@metis/shared";
 
 /**
  * Auth helpers shared by the Node route-handler proxy (`auth-proxy.ts`) and
@@ -31,10 +32,10 @@ export const ACCESS_OPTS: CookieOpts = {
   secure: process.env.NODE_ENV === "production",
   sameSite: "lax",
   path: "/",
-  maxAge: 60 * 60,
+  maxAge: SESSION_ACCESS_MAX_AGE_SECONDS,
 };
 
-export const REFRESH_OPTS: CookieOpts = { ...ACCESS_OPTS, maxAge: 7 * 24 * 60 * 60 };
+export const REFRESH_OPTS: CookieOpts = { ...ACCESS_OPTS, maxAge: SESSION_REFRESH_MAX_AGE_SECONDS };
 export const CLEAR_OPTS: CookieOpts = { ...ACCESS_OPTS, maxAge: 0 };
 
 export interface RotatedTokens {

@@ -121,6 +121,20 @@ There are **no OIDC env vars**. Fields per
 PKCE (S256) is always enabled server-side (`pkceEnabled: true`); it is not a
 configurable field.
 
+### Completing an SSO login (OIDC and SAML, #1386)
+
+The OIDC callback and the SAML ACS end the login with the browser session the
+UI reads: the `metis.at` (access, 1 hour) and `metis.rt` (refresh, 7 days)
+cookies, `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` under
+`NODE_ENV=production`. They then redirect to `<APP_URL>/dashboard`. Without
+`APP_URL`, the redirect goes to the first `CORS_ORIGIN` entry, which the Helm
+install sets to `https://<host>`.
+
+The cookies belong to the host that serves the callback, so serve
+`/api/auth/oidc` and `/api/auth/saml` on the UI's host. The Helm Ingress does.
+An IdP may reach the API on another host only if the UI is served from that
+host too.
+
 ### LDAP — admin-API runtime override
 
 `PUT /api/admin/auth/providers/ldap` (and `GET /api/admin/auth/ldap`,

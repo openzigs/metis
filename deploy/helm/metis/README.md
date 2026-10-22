@@ -203,9 +203,12 @@ evaluates rules in order). Register the IdP URLs on the **public origin**:
 - the SAML ACS URL is `https://<host>/api/auth/saml/acs`, and its metadata is
   at `https://<host>/api/auth/saml/metadata`.
 
-The cookies the server sets at the end of an SSO login may not use the names
-the UI's session check reads; that is tracked separately. Check an SSO
-round-trip end to end before relying on it.
+At the end of an SSO login the server sets the UI's own session cookies
+(`metis.at` / `metis.rt`: `Secure; HttpOnly; SameSite=Lax`, #1386). Cookies are
+scoped to the host, so they belong to the UI only because the Ingress serves
+these routes on the UI's host. It then redirects to
+`https://<host>/dashboard`, taken from `server.env.APP_URL` or, if that is
+unset, from `server.env.CORS_ORIGIN`.
 
 Request bodies: ingress-nginx refuses bodies over 1m by default, so the chart
 sets `nginx.ingress.kubernetes.io/proxy-body-size` from
