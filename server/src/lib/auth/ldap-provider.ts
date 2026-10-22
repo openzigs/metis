@@ -200,7 +200,11 @@ export class LDAPAuthProvider implements AuthProvider {
 
       if (searchEntries.length === 0) {
         log.info("LDAP user not found", { username });
-        return { success: false, error: "Invalid username or password" };
+        return {
+          success: false,
+          error: "Invalid username or password",
+          reason: "invalid_credentials",
+        };
       }
 
       const entry = searchEntries[0];
@@ -220,7 +224,11 @@ export class LDAPAuthProvider implements AuthProvider {
         await userClient.bind(userDN, password);
       } catch {
         log.info("LDAP authentication failed — invalid credentials", { username });
-        return { success: false, error: "Invalid username or password" };
+        return {
+          success: false,
+          error: "Invalid username or password",
+          reason: "invalid_credentials",
+        };
       } finally {
         try {
           await userClient.unbind();

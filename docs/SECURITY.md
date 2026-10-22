@@ -110,9 +110,12 @@ for the secret's lifetime. In production the server warns at boot when
 `METIS_TRUSTED_PROXY_HOPS` is above 0 but it has no secret to sign with.
 
 The per-account guard (`server/src/lib/auth/login-account-guard.ts`) caps
-**failed** sign-ins for one username, however many addresses they come from, so
+**refused passwords** for one username, however many addresses they come from, so
 neither a botnet nor a shared NAT can brute-force one account. A successful
-sign-in is never counted.
+sign-in is never counted, and neither is a directory outage or a
+misconfiguration. Only a provider result of `reason: "invalid_credentials"`
+counts, so users with the right password are not locked out after the
+directory recovers.
 
 - **No decrement needed.** The guard reads the account's failure count before
   authenticating, using `RateLimitStore.count`, which records nothing. The login

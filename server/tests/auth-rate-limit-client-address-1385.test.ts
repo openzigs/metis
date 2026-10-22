@@ -306,6 +306,8 @@ describe("authAddressKey / verifiedClientAddress (#1385)", () => {
       );
     expect(at(now - 1)).toBe(ip);
     expect(at(now + 1)).toBe(ip);
+    expect(at(now - 2)).toBeNull();
+    expect(at(now + 2)).toBeNull();
     expect(at(now - 3)).toBeNull();
     expect(at(now + 3)).toBeNull();
   });

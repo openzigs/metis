@@ -69,6 +69,10 @@ describe.skipIf(!URL)("LDAP login against the local OpenLDAP harness (#1381)", (
   it("a wrong password is refused", async () => {
     setLDAPConfig(harnessConfig(URL!));
     const result = await new LDAPAuthProvider().authenticate("alice", "not-her-password");
-    expect(result).toEqual({ success: false, error: "Invalid username or password" });
+    expect(result).toEqual({
+      success: false,
+      error: "Invalid username or password",
+      reason: "invalid_credentials",
+    });
   });
 });

@@ -110,7 +110,10 @@ export function authRouter(): Router {
         target: { type: "user", id: username },
         metadata: { reason: result.error },
       });
-      await authAccountGuard.recordFailure(username);
+      // Only a refused password counts: a directory outage is not a guess.
+      if (result.reason === "invalid_credentials") {
+        await authAccountGuard.recordFailure(username);
+      }
       throw new AppError(401, "AUTH_FAILED", result.error);
     }
     const userRow = await ensureUserRow(result.user);
