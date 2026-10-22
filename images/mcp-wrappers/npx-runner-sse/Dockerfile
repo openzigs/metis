@@ -4,7 +4,7 @@
 # Keep this image self-contained instead of inheriting from
 # ghcr.io/metis-mcps/npx-runner:latest so PR validation works before wrapper
 # images have ever been published.
-FROM node:22-alpine3.23
+FROM node:25-alpine3.23
 
 RUN npm install -g npm@latest \
  && npm install -g --omit=dev --ignore-scripts mcp-proxy@2.10.0 \
