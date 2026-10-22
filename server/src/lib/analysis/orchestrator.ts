@@ -33,7 +33,6 @@ import {
   type AnalysisResultAgentKey,
   type AnalysisSpecialistAgentKey,
   type AgentOutput,
-  AGENT_DEGRADED_NOTE_PREFIX,
   ANALYSIS_RETRIEVE_K,
   analysisRoom,
   ANALYSIS_SPECIALIST_AGENT_KEYS,
@@ -132,6 +131,7 @@ import {
   mergeRetrievalHealth,
   noRetrievalHealth,
   summarizeRetrievalEvidence,
+  unverifiedRequirementIds,
 } from "./retrieval-health.js";
 import {
   assertsAbsence,
@@ -1711,6 +1711,8 @@ export class AnalysisOrchestrator {
       if (!continued) delete next.codeInvestigationContinuations;
       // The counts describe the pass that now owns the findings, or nothing.
       delete next.codeInvestigationUnreached;
+      // #1388 — the stand-in described the replaced pass; show retrieval plainly.
+      delete next.codeAgentStoppedEarly;
       if (health.exhausted === true && health.unverifiedRequirements !== undefined) {
         next.codeInvestigationUnreached = {
           unreached: health.unverifiedRequirements,
@@ -3355,7 +3357,11 @@ export class AnalysisOrchestrator {
           const { health: passHealth, claimIndex: passClaimIndex } = summarizeRetrievalEvidence({
             toolCalls: loopResult.toolCalls,
             requirementCount: passRequirements.length,
-            exhausted: loopResult.turnsExhausted || loopResult.budgetExhausted,
+            // #1388 review — a pass METIS's own coverage nudge pushed into the cap
+            // had already answered: it was not cut short, and offers no Continue.
+            exhausted:
+              (loopResult.turnsExhausted || loopResult.budgetExhausted) &&
+              loopResult.answerSentBack !== true,
             // The #729 passive seed returned real code chunks ⇒ the code index is
             // alive. Same evidence the single-shot path trusts below; it proves
             // retrieval WORKS, and it never licenses an absence claim.
@@ -3405,6 +3411,10 @@ export class AnalysisOrchestrator {
               cleared: guardedIds.cleared,
             });
           }
+          // #1388 review — requirements the pass actually CHECKED against the code
+          // (a grounded code citation, or a search that bore on them), so a shallow
+          // pass can tell "never checked" from "checked, could not verify".
+          const checkedRequirementIds = new Set<string>();
           validated.findings = guardedIds.findings.map((f) => {
             // #740 — capture THIS finding's drops locally (still forwarding to
             // the shared observability logger) so the verifier can tell "claimed
@@ -3449,6 +3459,9 @@ export class AnalysisOrchestrator {
               // file path cannot buy an exhausted pass a verdict.
               hasGroundedCodeCitation: citations.some(isCodeCitation),
             });
+            if (f.requirementId && (absenceConfirmable || citations.some(isCodeCitation))) {
+              checkedRequirementIds.add(f.requirementId);
+            }
             // #773 — the verdict: the model's claim, deterministically DOWNGRADED
             // when the evidence does not support it. Never upgraded.
             const verdict = gateFindingVerdict({
@@ -3506,38 +3519,52 @@ export class AnalysisOrchestrator {
             });
           }
           passHealths.push(reportedHealth);
-          // #1388 — a pass that answered cleanly but SHALLOW (most requirements
-          // unverified, or starved retrieval far under budget) is degraded too:
-          // the badge and the capability say so instead of a green `completed`.
-          const shallow = assessShallowCodePass({
-            health: reportedHealth,
-            turnsUsed: loopResult.turnsUsed,
-            toolCalls: loopResult.toolCalls.length,
-            loopTokens: loopResult.loopTokens,
-            budget: effectiveBudget,
-          });
-          if (shallow.shallow) {
-            log.warn("Agentic code pass ended shallow; marking the code agent degraded", {
-              analysisId: input.analysisId,
-              requirementCount: passRequirements.length,
-              unverifiedRequirements: reportedHealth.unverifiedRequirements ?? 0,
+          // #1388 — a pass that answered but ended SHALLOW says so on its card. Only
+          // a pass that produced its own answer is judged: one that degraded above
+          // (`reason` set) already carries its note and its capability reason.
+          if (reason === null) {
+            const unverifiedIds = unverifiedRequirementIds(
+              validated.findings,
+              passRequirements.map((r) => r.id),
+            );
+            const shallow = assessShallowCodePass({
+              health: reportedHealth,
+              retrievalFailed: !passRetrievalHealthy,
+              uncheckedRequirements: unverifiedIds.filter((id) => !checkedRequirementIds.has(id))
+                .length,
               turnsUsed: loopResult.turnsUsed,
               toolCalls: loopResult.toolCalls.length,
-              // Named loopSpend because the logger redacts unlisted token-named keys (#1263)
-              loopSpend: loopResult.loopTokens,
+              loopTokens: loopResult.loopTokens,
               budget: effectiveBudget,
-              continuationNudges: loopResult.continuationNudges ?? 0,
             });
-            this.markCodeAgentDegraded(input.analysisId);
-            if (
-              shallow.note &&
-              !validated.notes.some((n) => n.startsWith(AGENT_DEGRADED_NOTE_PREFIX))
-            ) {
+            if (shallow.kind) {
+              log.warn("Agentic code pass ended shallow", {
+                analysisId: input.analysisId,
+                kind: shallow.kind,
+                requirementCount: passRequirements.length,
+                unverifiedRequirements: reportedHealth.unverifiedRequirements ?? 0,
+                turnsUsed: loopResult.turnsUsed,
+                toolCalls: loopResult.toolCalls.length,
+                // Named loopSpend because the logger redacts unlisted token-named keys (#1263)
+                loopSpend: loopResult.loopTokens,
+                budget: effectiveBudget,
+                continuationNudges: loopResult.continuationNudges ?? 0,
+              });
               validated = {
                 ...validated,
-                notes: [shallow.note, ...validated.notes].slice(0, 20), // agentOutputSchema's cap
+                notes: [shallow.note!, ...validated.notes].slice(0, 20), // agentOutputSchema's cap
               };
             }
+            // Only an early stop is the code AGENT's degradation; it then stands in
+            // for #19's coverage reason, which describes the same pass.
+            if (shallow.kind === "stopped-early") {
+              this.markCodeAgentDegraded(input.analysisId);
+              if (passRetrievalHealthy) this.markCodeAgentStoppedEarly(input.analysisId);
+            } else if (reportedHealth.degraded) {
+              this.markCodeRetrievalDegradedOtherwise(input.analysisId);
+            }
+          } else if (reportedHealth.degraded) {
+            this.markCodeRetrievalDegradedOtherwise(input.analysisId);
           }
           // #1109 (Epic #1107) — the multi-lens support panel runs AFTER the
           // deterministic verifier above, never instead of it: cheap signal
@@ -4867,6 +4894,27 @@ export class AnalysisOrchestrator {
     if (!analysisId) return;
     const tracker = this.capabilities.get(analysisId);
     if (tracker) tracker.codeAgentDegraded = true;
+  }
+
+  /**
+   * #1388 — a code pass stopped early on its own with healthy retrieval, so its
+   * `code-agent-degraded` reason stands in for #19's coverage-only
+   * `code-retrieval-degraded` (the same pass, the same cause). No-op without a tracker.
+   */
+  private markCodeAgentStoppedEarly(analysisId?: string): void {
+    if (!analysisId) return;
+    const tracker = this.capabilities.get(analysisId);
+    if (tracker) tracker.codeAgentStoppedEarly = true;
+  }
+
+  /**
+   * #1388 — a code pass's retrieval was degraded for a reason other than an early
+   * stop, so `code-retrieval-degraded` must be shown whatever another pass did.
+   */
+  private markCodeRetrievalDegradedOtherwise(analysisId?: string): void {
+    if (!analysisId) return;
+    const tracker = this.capabilities.get(analysisId);
+    if (tracker) tracker.codeRetrievalDegradedOtherwise = true;
   }
 
   /**

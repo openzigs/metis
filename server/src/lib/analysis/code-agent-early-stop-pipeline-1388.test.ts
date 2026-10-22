@@ -149,32 +149,41 @@ const TOOL_CALL = JSON.stringify({
   args: { query: "flush sessions" },
 });
 const PROSE = "Investigation covered main.go; the remaining flags are registered further down.";
-const THIN_ANSWER = JSON.stringify({
-  agentKey: "code",
-  summary: "Most requirements could not be verified.",
-  findings: REQUIREMENTS.map((r) => ({
-    category: "other",
-    severity: "info",
-    title: `${r.id} could not be verified`,
-    body: "Not reached.",
-    tags: [],
-    citations: [],
-    requirementId: r.id,
-    verdict: "could-not-verify",
-  })),
-  notes: [],
-});
+/** Notes the model writes on its thin answer (a test may set them). */
+let thinNotes: string[] = [];
+const thinAnswer = () =>
+  JSON.stringify({
+    agentKey: "code",
+    summary: "Most requirements could not be verified.",
+    findings: REQUIREMENTS.map((r) => ({
+      category: "other",
+      severity: "info",
+      title: `${r.id} could not be verified`,
+      body: "Not reached.",
+      tags: [],
+      citations: [],
+      requirementId: r.id,
+      verdict: "could-not-verify",
+    })),
+    notes: thinNotes,
+  });
 
 type Recorded = { messages: ChatMessage[]; opts: ChatOptions };
 const lastUser = (messages: ChatMessage[]) =>
   String([...messages].reverse().find((m) => m.role === "user")?.content ?? "");
 
 /**
- * The incident's model: two tool turns, then prose. Asked to continue it makes
- * one more call and then answers thinly; asked for coverage, or to STOP, it
- * answers thinly too.
+ * `incident`: the measured model. Two tool turns, then prose. Asked to continue
+ * it makes one more call and then answers thinly; asked for coverage, or to
+ * STOP, it answers thinly too.
+ *
+ * `answer-then-search`: answers thinly on its FIRST turn. Sent back for
+ * coverage, it searches until the turn cap, and asked to STOP it answers thinly
+ * again — a pass METIS's own nudge pushed into the cap.
  */
-function makeProvider() {
+type Shape = "incident" | "answer-then-search";
+
+function makeProvider(shape: Shape) {
   const recorded: Recorded[] = [];
   let loopTurns = 0;
   let calledAfterNudge = false;
@@ -193,10 +202,13 @@ function makeProvider() {
     });
     if (opts.callType !== "agent-loop") return out(DOC_ANSWER);
     const last = lastUser(messages);
-    if (last.includes("STOP INVESTIGATING") || last.includes("Do not answer yet")) {
-      return out(THIN_ANSWER);
+    if (last.includes("STOP INVESTIGATING")) return out(thinAnswer());
+    if (shape === "answer-then-search") {
+      loopTurns += 1;
+      return out(loopTurns === 1 ? thinAnswer() : TOOL_CALL);
     }
-    if (calledAfterNudge) return out(THIN_ANSWER);
+    if (last.includes("Do not answer yet")) return out(thinAnswer());
+    if (calledAfterNudge) return out(thinAnswer());
     if (last.includes("neither a tool call nor the final JSON answer")) {
       calledAfterNudge = true;
       return out(TOOL_CALL);
@@ -207,8 +219,8 @@ function makeProvider() {
   return { provider: { chat, key: "anthropic" } as never, recorded };
 }
 
-async function runPipeline(): Promise<Recorded[]> {
-  const { provider, recorded } = makeProvider();
+async function runPipeline(shape: Shape = "incident"): Promise<Recorded[]> {
+  const { provider, recorded } = makeProvider(shape);
   const orch = new AnalysisOrchestrator({
     provider,
     retrieve: async () => [],
@@ -240,11 +252,13 @@ const persistedCodeOutput = (): AgentOutput =>
 const finalCapability = () =>
   persistAnalysisCapability.mock.calls[persistAnalysisCapability.mock.calls.length - 1]![1] as {
     codeAgentDegraded?: boolean;
+    codeInvestigationCutShort?: boolean;
     reasons: string[];
   };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  thinNotes = [];
   process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "false";
   process.env.ANALYSIS_AGENT_TOKEN_BUDGET = "100000";
   __resetConfigSingleton();
@@ -253,6 +267,8 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.ANALYSIS_FUSED_CODE_RETRIEVAL;
   delete process.env.ANALYSIS_AGENT_TOKEN_BUDGET;
+  delete process.env.ANALYSIS_AGENTIC_MAX_TURNS;
+  delete process.env.ANALYSIS_AGENTIC_TURNS_PER_REQUIREMENT;
   __resetConfigSingleton();
 });
 
@@ -271,11 +287,13 @@ describe("#1388 — a tool-less reply no longer ends the code investigation", ()
 });
 
 describe("#1388 — a pass that still ends shallow is reported degraded", () => {
-  it("sets codeAgentDegraded and its reason on the run's capability", async () => {
+  it("sets codeAgentDegraded and its one reason on the run's capability", async () => {
     await runPipeline();
     const capability = finalCapability();
     expect(capability.codeAgentDegraded).toBe(true);
     expect(capability.reasons).toContain("code-agent-degraded");
+    // #19's coverage reason describes the same early stop: not shown twice.
+    expect(capability.reasons).not.toContain("code-retrieval-degraded");
   });
 
   it("puts the plain reason behind the degraded badge on the code agent's output", async () => {
@@ -283,7 +301,41 @@ describe("#1388 — a pass that still ends shallow is reported degraded", () => 
     const notes = persistedCodeOutput().notes;
     const degraded = notes.filter((n) => n.startsWith(AGENT_DEGRADED_NOTE_PREFIX));
     expect(degraded).toHaveLength(1);
-    expect(degraded[0]).toContain("4 of 4 requirements were not checked against the code");
+    // The one search ("flush sessions") bore on REQ-001, so it counts as checked.
+    expect(degraded[0]).toContain("did not check 3 of 4 requirements against the code");
     expect(degraded[0]).toMatch(/using about \d+% of its token budget/);
+  });
+});
+
+describe("#1388 review — the shallow note is METIS's, whatever the model writes", () => {
+  it("is added even when the model's own note starts with the degraded prefix", async () => {
+    thinNotes = [`${AGENT_DEGRADED_NOTE_PREFIX} self-reported by the model`];
+    await runPipeline();
+    const notes = persistedCodeOutput().notes;
+    expect(notes[0]).toContain("did not check 3 of 4 requirements against the code");
+    expect(notes).toContain(`${AGENT_DEGRADED_NOTE_PREFIX} self-reported by the model`);
+    expect(finalCapability().reasons).toContain("code-agent-degraded");
+  });
+});
+
+describe("#1388 review — a pass METIS's nudge pushed into the turn cap", () => {
+  beforeEach(() => {
+    // Four turns, unscaled: the answer on turn 1 leaves three, enough to nudge.
+    process.env.ANALYSIS_AGENTIC_MAX_TURNS = "4";
+    process.env.ANALYSIS_AGENTIC_TURNS_PER_REQUIREMENT = "0";
+    __resetConfigSingleton();
+  });
+
+  it("is not reported cut short, and offers no Continue", async () => {
+    const recorded = await runPipeline("answer-then-search");
+    const loop = loopCalls(recorded);
+    // The thin answer was sent back, and the model searched to the cap.
+    expect(loop.some((c) => lastUser(c.messages).includes("Do not answer yet"))).toBe(true);
+    expect(loop.some((c) => lastUser(c.messages).includes("STOP INVESTIGATING"))).toBe(true);
+    const capability = finalCapability();
+    expect(capability.codeInvestigationCutShort).toBe(false);
+    expect(capability.reasons).not.toContain("code-investigation-cut-short");
+    // It is judged as the shallow pass it was instead.
+    expect(capability.reasons).toContain("code-agent-degraded");
   });
 });

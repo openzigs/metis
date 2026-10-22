@@ -8,9 +8,10 @@ import {
   buildCodePassContinuation,
   COVERAGE_NUDGE_MAX_BUDGET_SHARE,
   COVERAGE_NUDGE_MIN_TURNS_LEFT,
+  isLengthStoppedReply,
   MAX_CONTINUATION_NUDGES,
 } from "./code-pass-coverage.js";
-import { isSchemaValidFinalAnswer } from "./agentic-degradation.js";
+import { FINDINGS_ANSWER_FIELD_LIMITS, isSchemaValidFinalAnswer } from "./agentic-degradation.js";
 import type { AgentLoopContinuationState } from "./agent-loop.js";
 
 const ids = (n: number) =>
@@ -132,31 +133,115 @@ describe("buildCodePassContinuation", () => {
     expect(p.nudge("not json", state())).toBeNull();
     expect(p.nudge('{"summary":"s"}', state())).toBeNull();
   });
+  it("tells a schema-invalid JSON answer the field limits and the no-fences rule", () => {
+    const invalid = JSON.stringify({ summary: "s", findings: [{ severity: "high" }], notes: [] });
+    const text = policy().nudge(invalid, state())!;
+    expect(text).toContain("did not match the required findings schema");
+    expect(text).toContain("no markdown code fences");
+    for (const line of FINDINGS_ANSWER_FIELD_LIMITS) expect(text).toContain(line);
+  });
+
+  it("does not repeat the field limits for prose", () => {
+    const text = policy().nudge("Let me keep reading.", state())!;
+    expect(text).toContain("no markdown code fences");
+    expect(text).not.toContain(FINDINGS_ANSWER_FIELD_LIMITS[0]);
+  });
+
+  it("leaves a reply its output cap cut off to the final-answer retry", () => {
+    const truncated = '{"agentKey":"code","summary":"s","findings":[{"title":"cut';
+    expect(policy().nudge(truncated, state())).toBeNull();
+    expect(policy().nudge("Partial prose", state({ finishReason: "max_tokens" }))).toBeNull();
+    expect(policy().nudge("Partial prose", state({ finishReason: "length" }))).toBeNull();
+    expect(policy().nudge("Partial prose", state({ finishReason: "end_turn" }))).not.toBeNull();
+  });
+});
+
+describe("isLengthStoppedReply", () => {
+  it("reads the stop reason and the reply's shape", () => {
+    expect(isLengthStoppedReply("x", "max_tokens")).toBe(true);
+    expect(isLengthStoppedReply("x", "length")).toBe(true);
+    expect(isLengthStoppedReply('{"findings":[{"a":1}', "end_turn")).toBe(true);
+    expect(isLengthStoppedReply("x", "end_turn")).toBe(false);
+    expect(isLengthStoppedReply("x")).toBe(false);
+  });
 });
 
 describe("assessShallowCodePass", () => {
-  const base = { turnsUsed: 3, toolCalls: 7, loopTokens: 6_000, budget: 100_000 };
+  const base = {
+    turnsUsed: 3,
+    toolCalls: 7,
+    loopTokens: 6_000,
+    budget: 100_000,
+    retrievalFailed: false,
+    uncheckedRequirements: 0,
+  };
 
-  it("flags the incident: most requirements unverified, far under budget", () => {
+  it("reports the incident as an early stop: starved retrieval, far under budget", () => {
     const verdict = assessShallowCodePass({
       ...base,
+      uncheckedRequirements: 22,
       health: health({ starved: true, degraded: true, unverifiedRequirements: 22 }),
     });
-    expect(verdict.shallow).toBe(true);
+    expect(verdict.kind).toBe("stopped-early");
     expect(verdict.note).toBe(
       `${AGENT_DEGRADED_NOTE_PREFIX} the code agent stopped after 3 turns and 7 look-ups in the code, ` +
-        "using about 6% of its token budget, and 22 of 32 requirements were not checked against the code. " +
-        "They are marked “Could not verify”. Re-run the code investigation before relying on its results.",
+        "using about 6% of its token budget, and did not check 22 of 32 requirements against the code. " +
+        "They are marked “Could not verify”. Re-run the code investigation to check them.",
     );
   });
 
-  it("flags starved retrieval far under budget even when most requirements were answered", () => {
+  it("reports most requirements never checked as an early stop without starvation", () => {
+    const verdict = assessShallowCodePass({
+      ...base,
+      toolCalls: 20,
+      uncheckedRequirements: 20,
+      health: health({ totalCalls: 20, unverifiedRequirements: 20 }),
+    });
+    expect(verdict.kind).toBe("stopped-early");
+  });
+
+  it("says too few look-ups when starved but nothing is left unchecked", () => {
     const verdict = assessShallowCodePass({
       ...base,
       health: health({ starved: true, degraded: true, unverifiedRequirements: 4 }),
     });
-    expect(verdict.shallow).toBe(true);
+    expect(verdict.kind).toBe("stopped-early");
     expect(verdict.note).toContain("which is too few to check 32 requirements against the code");
+  });
+
+  it("reports checked-but-unverifiable requirements honestly, with no re-run advice", () => {
+    const verdict = assessShallowCodePass({
+      ...base,
+      toolCalls: 40,
+      uncheckedRequirements: 3,
+      health: health({ totalCalls: 40, degraded: true, unverifiedRequirements: 20 }),
+    });
+    expect(verdict.kind).toBe("unverifiable");
+    expect(verdict.note).toContain(
+      "checked these requirements against the code but could not verify 20 of 32",
+    );
+    expect(verdict.note).not.toMatch(/re-run/i);
+    expect(verdict.note).not.toContain("not check");
+  });
+
+  it("names failed searches instead of blaming too few look-ups", () => {
+    const verdict = assessShallowCodePass({
+      ...base,
+      retrievalFailed: true,
+      uncheckedRequirements: 30,
+      health: health({
+        starved: true,
+        degraded: true,
+        erroredCalls: 5,
+        failedSearches: 2,
+        unverifiedRequirements: 30,
+      }),
+    });
+    expect(verdict.kind).toBe("retrieval-failed");
+    expect(verdict.note).toContain("searches of the code did not work");
+    expect(verdict.note).toContain("5 failed with an error and 2 came back empty");
+    expect(verdict.note).not.toContain("too few");
+    expect(verdict.note).not.toContain("stopped after");
   });
 
   it("does not flag starved retrieval that spent most of the budget", () => {
@@ -165,7 +250,7 @@ describe("assessShallowCodePass", () => {
       loopTokens: 80_000,
       health: health({ starved: true, degraded: true, unverifiedRequirements: 4 }),
     });
-    expect(verdict.shallow).toBe(false);
+    expect(verdict.kind).toBeNull();
   });
 
   it("does not flag starvation when the loop's spend is unknown", () => {
@@ -174,50 +259,53 @@ describe("assessShallowCodePass", () => {
       loopTokens: undefined,
       health: health({ starved: true, unverifiedRequirements: 2 }),
     });
-    expect(verdict.shallow).toBe(false);
+    expect(verdict.kind).toBeNull();
   });
 
   it("leaves a pass its budget cut off to the cut-short reason", () => {
     const verdict = assessShallowCodePass({
       ...base,
       loopTokens: 100_000,
+      uncheckedRequirements: 20,
       health: health({ exhausted: true, unverifiedRequirements: 20 }),
     });
-    expect(verdict.shallow).toBe(false);
+    expect(verdict.kind).toBeNull();
   });
 
-  it("names a single turn and look-up in the singular", () => {
+  it("names a single turn and look-up in the singular, and omits an unknown spend", () => {
     const verdict = assessShallowCodePass({
       ...base,
       turnsUsed: 1,
       toolCalls: 1,
-      health: health({ unverifiedRequirements: 20 }),
-    });
-    expect(verdict.note).toContain("stopped after 1 turn and 1 look-up in the code");
-  });
-
-  it("omits the budget share when the spend is unknown", () => {
-    const verdict = assessShallowCodePass({
-      ...base,
       loopTokens: undefined,
+      uncheckedRequirements: 20,
       health: health({ unverifiedRequirements: 20 }),
     });
     expect(verdict.note).toContain(
-      "stopped after 3 turns and 7 look-ups in the code, and 20 of 32",
+      "stopped after 1 turn and 1 look-up in the code, and did not check",
     );
+  });
+
+  it("never counts more unchecked than unverified", () => {
+    const verdict = assessShallowCodePass({
+      ...base,
+      uncheckedRequirements: 99,
+      health: health({ unverifiedRequirements: 20 }),
+    });
+    expect(verdict.note).toContain("did not check 20 of 32");
   });
 
   it("does not flag a pass that covered its requirements", () => {
     expect(
-      assessShallowCodePass({ ...base, health: health({ unverifiedRequirements: 16 }) }).shallow,
-    ).toBe(false);
-    expect(assessShallowCodePass({ ...base, health: health() }).shallow).toBe(false);
+      assessShallowCodePass({ ...base, health: health({ unverifiedRequirements: 16 }) }).kind,
+    ).toBeNull();
+    expect(assessShallowCodePass({ ...base, health: health() }).kind).toBeNull();
   });
 
   it("does not flag a pass with no requirements", () => {
     expect(
-      assessShallowCodePass({ ...base, health: health({ requirementCount: 0 }) }).shallow,
-    ).toBe(false);
+      assessShallowCodePass({ ...base, health: health({ requirementCount: 0 }) }).kind,
+    ).toBeNull();
   });
 
   it("keeps the note within the schema's 512 characters", () => {
@@ -225,7 +313,13 @@ describe("assessShallowCodePass", () => {
       ...base,
       turnsUsed: 1e12,
       toolCalls: 1e12,
-      health: health({ requirementCount: 1e12, unverifiedRequirements: 1e12 }),
+      retrievalFailed: true,
+      health: health({
+        requirementCount: 1e12,
+        unverifiedRequirements: 1e12,
+        erroredCalls: 1e12,
+        failedSearches: 1e12,
+      }),
     });
     expect(verdict.note!.length).toBeLessThanOrEqual(512);
   });

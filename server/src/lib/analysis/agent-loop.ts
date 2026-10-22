@@ -414,6 +414,12 @@ export interface AgentLoopResult {
   loopTokens?: number;
   /** #1388 — continuation nudges sent (see {@link AgentLoopOptions.continuation}). */
   continuationNudges?: number;
+  /**
+   * #1388 review — a nudge sent back a reply that was ALREADY a usable answer.
+   * When the loop then hits its turn or token cap, METIS's nudge put it there,
+   * not the investigation: a caller must not report the pass as cut short.
+   */
+  answerSentBack?: boolean;
   /** Epic #497 — Graph context injection metadata (when used). */
   graphContext?: {
     snippetCount: number;
@@ -451,6 +457,8 @@ export interface AgentLoopContinuationState {
   budgetTotal?: number;
   /** Nudges already sent in this loop. */
   nudgesSent: number;
+  /** The reply's provider stop reason, verbatim (`max_tokens`, `length`, …), when reported. */
+  finishReason?: string;
 }
 
 const DEFAULT_USAGE: TokenUsage = {
@@ -1715,6 +1723,7 @@ export async function runAgentLoop(
               turnsLeft: maxTurns - turn - 1,
               ...(budget ? { budgetUsed: budget.used, budgetTotal: budget.total } : {}),
               nudgesSent: continuationNudges,
+              ...(response.finishReason ? { finishReason: response.finishReason } : {}),
             })
           : null;
       if (!instruction) {
@@ -2039,7 +2048,9 @@ export async function runAgentLoop(
     ...(salvageSource !== undefined ? { salvageSource } : {}),
     ...(compactionOptions ? { transcriptCompaction: { ...compactionMeta } } : {}),
     loopTokens,
-    ...(options.continuation ? { continuationNudges } : {}),
+    ...(options.continuation
+      ? { continuationNudges, ...(nudgedAnswer !== undefined ? { answerSentBack: true } : {}) }
+      : {}),
     toolCalls,
     graphContext: graphContextMeta,
     ...(options.native

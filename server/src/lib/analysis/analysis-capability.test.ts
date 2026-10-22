@@ -170,4 +170,45 @@ describe("finalizeCapability", () => {
     });
     expect(finalizeCapability(withDb).reasons).toContain("schema-context-disabled");
   });
+
+  describe("#1388 — an early stop of the code agent is reported once", () => {
+    const tracker = () => {
+      const t = createCapabilityTracker({
+        static: { ...baseStatic, codeGraphPresent: true, repoSourceIngested: true },
+        codeAnalysisRequested: true,
+        databaseAnalysisRequested: false,
+      });
+      t.agentMode = "agentic";
+      t.codeAgentDegraded = true;
+      t.codeRetrievalDegraded = true;
+      return t;
+    };
+
+    it("drops the coverage reason the early stop already explains", () => {
+      const t = tracker();
+      t.codeAgentStoppedEarly = true;
+      const cap = finalizeCapability(t);
+      expect(cap.codeAgentStoppedEarly).toBe(true);
+      expect(cap.codeRetrievalDegraded).toBe(true);
+      expect(cap.reasons).toContain("code-agent-degraded");
+      expect(cap.reasons).not.toContain("code-retrieval-degraded");
+    });
+
+    it("keeps it when another pass degraded retrieval for another reason", () => {
+      const t = tracker();
+      t.codeAgentStoppedEarly = true;
+      t.codeRetrievalDegradedOtherwise = true;
+      const cap = finalizeCapability(t);
+      expect(cap.codeAgentStoppedEarly).toBeUndefined();
+      expect(cap.reasons).toEqual(
+        expect.arrayContaining(["code-agent-degraded", "code-retrieval-degraded"]),
+      );
+    });
+
+    it("leaves a run with no early stop unchanged", () => {
+      const cap = finalizeCapability(tracker());
+      expect("codeAgentStoppedEarly" in cap).toBe(false);
+      expect(cap.reasons).toContain("code-retrieval-degraded");
+    });
+  });
 });

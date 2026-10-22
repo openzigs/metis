@@ -83,12 +83,15 @@ describe("#1388 — with a continuation policy", () => {
       maxTurns: 60,
       maxTokens: 100_000,
       continuation: { maxNudges: 2, nudge },
+      // The answer predicate the code pass uses: prose is not an answer.
+      finalAnswerRetry: { instruction: "ANSWER NOW", isValidFinalAnswer: isJson },
     });
     expect(result.turnsUsed).toBe(5);
     expect(result.toolCalls).toHaveLength(3);
     expect(result.finalResponse).toBe(ANSWER);
     expect(result.hasFinalAnswer).toBe(true);
     expect(result.continuationNudges).toBe(1);
+    expect(result.answerSentBack).toBeUndefined();
     // The prose stays in the transcript, followed by the instruction.
     const fourth = calls[3]!.messages;
     expect(fourth[fourth.length - 2]).toEqual({ role: "assistant", content: PROSE });
@@ -219,6 +222,9 @@ describe("#1388 — with a continuation policy", () => {
     expect(result.finalResponse).toBe(ANSWER);
     expect(result.hasFinalAnswer).toBe(true);
     expect(result.salvageSource).toBeUndefined();
+    // The cap it then hit was the nudge's doing: callers must not call it cut short.
+    expect(result.answerSentBack).toBe(true);
+    expect(result.turnsExhausted).toBe(true);
   });
 
   it("prefers a later usable answer over the one it sent back", async () => {

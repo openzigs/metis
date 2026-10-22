@@ -2611,6 +2611,13 @@ export interface AnalysisCapability {
    */
   codeAgentDegraded?: boolean;
   /**
+   * #1388 — the code agent stopped early on its own with working retrieval, and
+   * that is the whole of the run's code-retrieval degradation: the
+   * `code-agent-degraded` reason reports it, and #19's coverage-only
+   * `code-retrieval-degraded` is not repeated for the same pass.
+   */
+  codeAgentStoppedEarly?: boolean;
+  /**
    * #768 — the operator typed free-text new requirements into the "Evaluate new
    * requirements" box for this run.
    */
@@ -2737,6 +2744,8 @@ export interface CapabilityReasonInput {
   codeAgentFailed?: boolean;
   /** #769 — the code agent ran but yielded no parseable JSON answer (partial findings). */
   codeAgentDegraded?: boolean;
+  /** #1388 — an early stop is the run's only code-retrieval degradation (see AnalysisCapability). */
+  codeAgentStoppedEarly?: boolean;
   /** #768 — the operator supplied free-text new requirements for this run. */
   newRequirementsProvided?: boolean;
   /** #773 — the code agent completed, but its retrieval failed the evidence threshold. */
@@ -2815,7 +2824,14 @@ export function deriveCapabilityReasons(input: CapabilityReasonInput): AnalysisC
     // SEARCHES did not work. Independent of both flags above (neither fires), and
     // the single most important one to surface: without it the run looks healthy
     // while every "not found" in it is unreliable.
-    if (input.codeRetrievalDegraded) reasons.push("code-retrieval-degraded");
+    // #1388 — unless an early stop of the code agent explains it entirely, in
+    // which case `code-agent-degraded` above already reports that pass.
+    if (
+      input.codeRetrievalDegraded &&
+      !(input.codeAgentDegraded === true && input.codeAgentStoppedEarly === true)
+    ) {
+      reasons.push("code-retrieval-degraded");
+    }
     // #777 — the repo is indexed but not checked out, so the agent could search the
     // code graph but not open files. Reported on its own, NEVER folded into
     // `code-retrieval-degraded`: the run's verdicts are trustworthy (graph search

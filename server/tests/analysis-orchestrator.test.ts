@@ -2060,12 +2060,11 @@ describe("AnalysisOrchestrator.start", () => {
 
     // Exactly ONE agentic requirements prompt, listing BOTH requirements together
     // (uniform depth — byte-identical to pre-#739 routing).
-    // #1388 — a continuation turn re-sends the same task prompt, so count
-    // distinct prompts: one pass has one.
-    const reqPrompts = [
-      ...new Set(userMessagesOf(provider).filter((u) => u.includes("BEGIN REQUIREMENTS"))),
-    ];
-    expect(reqPrompts).toHaveLength(1);
+    // #1388 — the pass's thin first answer is sent back once for coverage, and
+    // that turn re-sends the same task prompt: two calls, ONE prompt, one pass.
+    const reqPrompts = userMessagesOf(provider).filter((u) => u.includes("BEGIN REQUIREMENTS"));
+    expect(reqPrompts).toHaveLength(2);
+    expect(reqPrompts[1]).toBe(reqPrompts[0]);
     expect(reqPrompts[0]).toContain("[REQ-VAGUE]");
     expect(reqPrompts[0]).toContain("[REQ-CRISP]");
 
