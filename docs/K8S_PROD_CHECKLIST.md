@@ -43,16 +43,19 @@ The chart leaves three server settings to you, and the install does not work wit
 - [ ] HPA on `ui`, which needs metrics-server.  
   `kubectl get hpa -n metis`
 - [ ] The `server` HPA is enabled by default (2→6). Keep it on only with the shared backends (Postgres, pgvector, S3, leader election; `values-prod.yaml`). On the single-replica SQLite/LanceDB profile, set `autoscaling.server.enabled=false` and `server.replicaCount=1`.
-- [ ] `helm upgrade` after an HPA has scaled: Helm 4 fails with a `.spec.replicas` conflict until #1378 lands. Pass `--force-conflicts` until then.
+- [ ] A Deployment with an enabled HPA renders no `replicas` (#1378), so `helm upgrade` after the HPA has scaled succeeds without `--force-conflicts` and keeps the HPA's count. Check that `helm get manifest metis -n metis` shows no `replicas:` on `metis-ui` or `metis-server`. On the first upgrade from a chart that still set `replicas`, Helm 3 drops the count to 1 until the HPA scales back to `minReplicas`. Helm 4 keeps the count of a Deployment the HPA has already scaled. With Helm 3, upgrade outside peak hours, or scale up again right after.
 
 ## 5. NetworkPolicy
 
-- [ ] **Default-deny ingress + default-deny egress** scoped to `metis` namespace.  
-  `kubectl get networkpolicy -n metis -o yaml | grep -E 'policyTypes|podSelector'`
-- [ ] Egress allow-list contains: kube-dns, intra-namespace, AI gateway FQDNs, GitHub host, optional RDS CIDR.
-- [ ] The policy actually selects the METIS pods. The command below must list every pod. **Today it lists none (#1374)**, so the policy isolates nothing.  
+- [ ] **Default-deny ingress + default-deny egress** for every METIS pod: `metis-default-deny`, plus `metis-ui`, `metis-server` and `metis-sidecars` granting each component its traffic (chart README, "HPA / PDB / NetworkPolicy").  
+  `kubectl get networkpolicy -n metis`
+- [ ] Only the server has external egress: HTTPS (`networkPolicy.egress.https`), the Kubernetes API, the database (`networkPolicy.egress.databaseCidrs`, **required** with Postgres: empty, the server cannot reach RDS) and `networkPolicy.egress.extra` (LDAP, OIDC on a non-443 port, SMTP). With Cilium, HTTPS is scoped to the AI gateway and GitHub FQDNs instead.
+- [ ] With an ALB ingress, `networkPolicy.ingressCidrs` holds the VPC CIDR: the ALB reaches and health-checks the pods from VPC ENIs, which no namespace selector matches. The chart refuses to render an ALB install without it; check that the value is your VPC's, not the `values-prod.yaml` default.  
+  `aws ec2 describe-vpcs --vpc-ids <vpc> --query 'Vpcs[0].CidrBlock'`
+- [ ] With Cilium as the CNI, `networkPolicy.cilium.enabled=true`, and every host the server calls is in the FQDN allow-list (`extraFqdns`: LLM gateway, Jira, GitHub Enterprise, OIDC IdP). Anything not listed is blocked.
+- [ ] The policy actually selects the METIS pods. The command below must list every pod (#1374).  
   `kubectl get pods -n metis -l "$(kubectl get networkpolicy -n metis metis-default-deny -o jsonpath='{.spec.podSelector.matchLabels}' | jq -r 'to_entries|map("\(.key)=\(.value)")|join(",")')"`
-- [ ] Verified with a smoke test **from the server pod itself**. A bare `kubectl run … curlimages/curl` proves nothing: PSA `restricted` rejects it, and without the chart's labels the policy would never select it. Expect a non-allow-listed host to fail and the embeddings sidecar to answer:  
+- [ ] Verified with a smoke test **from the server pod itself**. A bare `kubectl run … curlimages/curl` proves nothing: PSA `restricted` rejects it, and without the chart's labels the policy would never select it. With `networkPolicy.egress.https.cidrs` narrowed (or Cilium FQDNs on), expect a host outside the allow-list to fail, `https://api.github.com` to answer, and the embeddings sidecar to answer. With the default `0.0.0.0/0`, every HTTPS host answers:  
   `kubectl exec -n metis deploy/metis-server -- node -e "fetch('https://example.com',{signal:AbortSignal.timeout(5000)}).then(r=>console.log('REACHED',r.status)).catch(e=>console.log('BLOCKED',e.cause?.code||e.name))"`  
   `kubectl exec -n metis deploy/metis-server -- node -e "fetch(process.env.EMBEDDINGS_URL+'/healthz').then(r=>console.log(r.status))"`  
   Run this on a CNI that enforces egress policy (Calico, Cilium). The kindnet in a Docker Desktop kind cluster did not enforce it in #1312, even with `kube-network-policies` installed: a pod under an egress deny-all policy still reached `https://1.1.1.1`.
@@ -82,8 +85,11 @@ The chart leaves three server settings to you, and the install does not work wit
 - [ ] When using ESO, the `ExternalSecret` reports `SecretSyncedError: false`.  
   `kubectl get externalsecret metis-secrets -n metis -o jsonpath='{.status.conditions}'`
 - [ ] No plaintext secret values committed to Git.
-- [ ] Only the server receives the vault key, JWT secret and provider tokens. Today every key goes to every Deployment, including the UI (#1375), so this item fails until that lands:  
-  `kubectl get deploy metis-ui -n metis -o yaml | grep -c VAULT_MASTER_KEY` should return `0`.
+- [ ] Only the server receives the vault key, JWT secret and provider tokens (`secrets.components`, #1375). The UI references only `METIS_UI_PROXY_SECRET` (#1385), and each sidecar only its own token:  
+  `kubectl get deploy metis-ui -n metis -o yaml | grep -cE 'VAULT_MASTER_KEY|JWT_SECRET'` should return `0`, and its one `secretKeyRef` is `METIS_UI_PROXY_SECRET`.  
+  `kubectl get deploy metis-embeddings metis-sql-lineage -n metis -o jsonpath='{range .items[*]}{.metadata.name}: {.spec.template.spec.containers[0].env[*].valueFrom.secretKeyRef.key}{"\n"}{end}'` should print one token each.
+- [ ] The UI and sidecars run as `metis-workload`, which has no IRSA role and mounts no token:  
+  `kubectl get deploy metis-ui -n metis -o jsonpath='{.spec.template.spec.serviceAccountName} {.spec.template.spec.automountServiceAccountToken}'` should print `metis-workload false`.
 
 ## 9. Image hygiene
 
