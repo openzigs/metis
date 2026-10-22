@@ -29,6 +29,26 @@ export const LINEAR_BOUND_MS = 250;
 export const MAX_LINEAR_RATIO = 8;
 
 /**
+ * #1422 — milliseconds of CPU time spent by the CALLING thread, for `now`.
+ *
+ * `performance.now()` keeps running while a worker waits for a core, so a full
+ * `pnpm test` fan-out inflates a wall-clock measurement by however long the
+ * worker was descheduled: `balanced-json.test.ts` read 56 ms against a 49 ms
+ * bound there and passed 50 of 50 alone. A thread that is not running accrues
+ * no CPU time, so this clock measures the work, not the queue. Measured with
+ * three busy threads per core in the same process: `parseToolCalls` on 200 KB
+ * of tiny calls went 5.6 → 28 ms on the wall clock and 5.6 → 8.3 ms on this one.
+ *
+ * Prefer counting the work outright where the code is ours to instrument
+ * (`balanced-json.ts`'s `onWork`). This is for what a counter cannot see into,
+ * such as a regular expression.
+ */
+export function threadCpuMs(): number {
+  const { user, system } = process.threadCpuUsage();
+  return (user + system) / 1000;
+}
+
+/**
  * Best of up to three runs. One run is enough when it is already inside the
  * bound, and a run four times over it is not load, so neither is repeated.
  */

@@ -14,7 +14,8 @@
  *
  * The fix is a single-pass linear scanner. These tests pin BOTH halves of that:
  *
- *  1. the benchmark — a 200 KB adversarial input classifies in < 50 ms;
+ *  1. the benchmark — a 200 KB adversarial input classifies in linear time,
+ *     on the CPU clock of the test's own thread (#1422);
  *  2. the equivalence — the scanner returns EXACTLY what the regex returned,
  *     differentially, over a seeded corpus of quote/backslash/brace strings. A
  *     scanner that is fast and subtly reclassifies degraded output is worse
@@ -22,6 +23,7 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { expectLinearTime, threadCpuMs } from "../../../tests/helpers/linear-time.js";
 import { classifyFinalAnswer, parseToolCall } from "./agent-loop.js";
 
 /**
@@ -66,37 +68,16 @@ function adversarialInput(bytes: number): string {
   return prefix + '\\"'.repeat(Math.ceil((bytes - prefix.length) / 2));
 }
 
-/**
- * Fastest of `runs` timings, in ms. The MINIMUM is the right statistic for
- * "this implementation can do the work this fast" — a loaded CI runner can only
- * inflate a sample, never deflate one. Stops early once a single run exceeds
- * `abortAboveMs` (10x the budget), because no amount of repetition rescues a
- * categorical regression: a reverted, quadratic implementation then fails after
- * one run instead of three.
- */
-function fastestMs(fn: () => unknown, runs = 3, abortAboveMs = 500): number {
-  let best = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < runs; i++) {
-    const t0 = performance.now();
-    fn();
-    const elapsed = performance.now() - t0;
-    best = Math.min(best, elapsed);
-    if (elapsed > abortAboveMs) break;
-  }
-  return best;
-}
-
 describe("#1220 classifyFinalAnswer is linear in input length", () => {
   /**
-   * 50 ms is ~30x the measured linear cost at 200 KB (~1.5 ms) — wide enough
-   * that scheduler noise and a cold JIT on a loaded runner cannot trip it — and
-   * ~290x BELOW the quadratic cost at the same size (14,575 ms as filed; 10,559
-   * ms on the machine this was written on). Three orders of magnitude separate
-   * the two implementations, so no plausible margin admits both.
+   * #1422 — `expectLinearTime` on this thread's CPU clock, not a 50 ms
+   * wall-clock budget and a ratio. A descheduled worker in a full `pnpm test`
+   * fan-out accrues no CPU time, so load cannot fail it; the quadratic can,
+   * because it does the work: 10,559 ms at 200 KB (over the helper's 250 ms)
+   * and ~16x the cost at a quarter of the size (over its ratio of 8). The
+   * scanner is ~2 ms at 200 KB.
    */
-  const BUDGET_MS = 50;
-
-  it("classifies a 200 KB adversarial payload in under 50 ms", () => {
+  it("classifies a 200 KB adversarial payload in linear time", () => {
     const input = adversarialInput(200 * 1024);
     expect(input.length).toBeGreaterThanOrEqual(200 * 1024);
 
@@ -104,24 +85,18 @@ describe("#1220 classifyFinalAnswer is linear in input length", () => {
     // algorithm rather than the first-call compile.
     classifyFinalAnswer('{"a":"b"');
 
-    const ms = fastestMs(() => classifyFinalAnswer(input));
-
     // The verdict still has to be RIGHT — a classifier that is fast because it
     // gave up early would otherwise pass this test.
     expect(classifyFinalAnswer(input)).toBe("truncated-json");
-    expect(ms).toBeLessThan(BUDGET_MS);
-  }, 60_000);
-
-  it("scales linearly, not quadratically, with input length", () => {
-    classifyFinalAnswer('{"a":"b"');
-    const small = fastestMs(() => classifyFinalAnswer(adversarialInput(50 * 1024)));
-    const large = fastestMs(() => classifyFinalAnswer(adversarialInput(200 * 1024)));
-
-    // 4x the input. Linear predicts ~4x the time; quadratic predicts ~16x. The
-    // 25 ms floor keeps sub-millisecond noise from dominating the ratio at the
-    // linear end, while 8x still rejects the quadratic one by ~2x (measured:
-    // 650 ms at 50 KB vs 10,559 ms at 200 KB).
-    expect(large).toBeLessThan(small * 8 + 25);
+    expectLinearTime(
+      "escaped-quote run",
+      (n) => {
+        const at = adversarialInput(n);
+        return () => classifyFinalAnswer(at);
+      },
+      200 * 1024,
+      threadCpuMs,
+    );
   }, 60_000);
 });
 

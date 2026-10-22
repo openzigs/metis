@@ -41,6 +41,33 @@ export type BalancedJsonResult =
   /** `ambiguous` — two or more DIFFERENT top-level objects parsed (#1355). */
   | { found: false; ambiguous?: true };
 
+/**
+ * #1422 — the work one call did, counted in characters, so a test can prove the
+ * scan linear without a stopwatch. A wall-clock ratio measured the machine as
+ * much as the code: 56 ms against a 49 ms bound in a full `pnpm test` fan-out,
+ * and green alone. Counts do not move with load.
+ *
+ * Every loop in this module adds to one field, so a change that makes any of
+ * them revisit input — restarting the scan from an inner `{`, walking back past
+ * the whitespace before a span, re-canonicalising a held answer — shows up as
+ * work that grows faster than the input.
+ *
+ * RULE: any new loop over `text` — or any call that walks it, such as
+ * `slice`, `indexOf` or `JSON.parse` on a span — must add what it visits to
+ * one of these fields. Uncounted work is invisible to the counting tests; only
+ * the coarse CPU-clock backstop in `balanced-json.test.ts` would catch it.
+ */
+export interface BalancedJsonWork {
+  /** Characters the main scan stepped over. */
+  scanned: number;
+  /** Characters handed to `JSON.parse`. */
+  parsed: number;
+  /** Characters walked looking for the token next to a span. */
+  walked: number;
+  /** Characters of canonical JSON produced to compare two spans. */
+  canonicalised: number;
+}
+
 const NOT_FOUND: BalancedJsonResult = { found: false };
 const AMBIGUOUS: BalancedJsonResult = { found: false, ambiguous: true };
 
@@ -61,11 +88,27 @@ export const AMBIGUOUS_JSON_MESSAGE =
  * @param leadingOnly consider only a span that starts at index 0 — used when
  *   the text itself begins with `{`, where the leading object is the answer and
  *   anything after it is commentary.
+ * @param onWork test instrumentation (#1422): receives the call's work counts
+ *   once, as it returns. Production callers pass nothing; the counting itself
+ *   (integer increments on one object per call) is within benchmark noise of
+ *   the uninstrumented scan on 400 KB inputs.
  */
 export function parseBalancedJsonObject(
   text: string,
-  { leadingOnly = false }: { leadingOnly?: boolean } = {},
+  {
+    leadingOnly = false,
+    onWork,
+  }: { leadingOnly?: boolean; onWork?: (work: BalancedJsonWork) => void } = {},
 ): BalancedJsonResult {
+  const work: BalancedJsonWork = { scanned: 0, parsed: 0, walked: 0, canonicalised: 0 };
+  try {
+    return scan(text, leadingOnly, work);
+  } finally {
+    onWork?.(work);
+  }
+}
+
+function scan(text: string, leadingOnly: boolean, work: BalancedJsonWork): BalancedJsonResult {
   let start = -1;
   let depth = 0;
   let inString = false;
@@ -75,6 +118,7 @@ export function parseBalancedJsonObject(
   if (from < 0 || (leadingOnly && from !== 0)) return NOT_FOUND;
 
   for (let i = from; i < text.length; i++) {
+    work.scanned++;
     const ch = text.charCodeAt(i);
     if (inString) {
       if (ch === 0x5c /* \ */) i++;
@@ -90,17 +134,18 @@ export function parseBalancedJsonObject(
     } else if (ch === 0x7d /* } */ && depth > 0) {
       depth--;
       if (depth === 0) {
-        if (couldBeJsonObject(text, start)) {
+        if (couldBeJsonObject(text, start, work)) {
           let value: unknown;
           let parsed = false;
           try {
+            work.parsed += i + 1 - start;
             value = JSON.parse(text.slice(start, i + 1));
             parsed = true;
           } catch {
             // Balanced but not JSON — keep scanning.
           }
           if (parsed) {
-            if (isArrayElement(text, start, i + 1)) {
+            if (isArrayElement(text, start, i + 1, work)) {
               // PR #1409 review — an element of an array in the prose
               // (`List: [{"a":1}, {"a":2}]`) AFTER the answer is commentary,
               // not a rival. Recognised only when BOTH opened by `[`/`,` and
@@ -111,7 +156,7 @@ export function parseBalancedJsonObject(
               // later object would be a schema-valid empty result, so a reply
               // with such a span and a later answer is ambiguous (cycle-2 review).
               if (answer === null) elementBeforeAnswer = true;
-            } else if (continuesStructurally(text, i + 1)) {
+            } else if (continuesStructurally(text, i + 1, work)) {
               // What follows decides whether this object is the answer. Prose
               // is commentary. A JSON token means the model closed the object
               // EARLY and kept writing it (`{"findings":[…]}, {…}]}` —
@@ -137,8 +182,8 @@ export function parseBalancedJsonObject(
               // overflows the stack, and two objects that cannot be compared
               // cannot be told to be the same (cycle-2 review).
               try {
-                answer.canonical ??= canonicalJson(answer.value);
-                if (canonicalJson(value) !== answer.canonical) return AMBIGUOUS;
+                answer.canonical ??= canonicalJson(answer.value, work);
+                if (canonicalJson(value, work) !== answer.canonical) return AMBIGUOUS;
               } catch {
                 return AMBIGUOUS;
               }
@@ -159,8 +204,8 @@ export function parseBalancedJsonObject(
  * them a `JSON.parse` that would throw — an exception per span is linear but
  * costs microseconds each, and a long answer full of code can carry thousands.
  */
-function couldBeJsonObject(text: string, start: number): boolean {
-  const ch = nextTokenCode(text, start + 1);
+function couldBeJsonObject(text: string, start: number, work: BalancedJsonWork): boolean {
+  const ch = nextTokenCode(text, start + 1, work);
   return ch === 0x22 || ch === 0x7d;
 }
 
@@ -172,8 +217,8 @@ function couldBeJsonObject(text: string, start: number): boolean {
  * (`{"findings":[{…}]}\n{…}]}`), and accepting the leading object there drops
  * the remaining findings just as silently.
  */
-function continuesStructurally(text: string, from: number): boolean {
-  const ch = nextTokenCode(text, from);
+function continuesStructurally(text: string, from: number, work: BalancedJsonWork): boolean {
+  const ch = nextTokenCode(text, from, work);
   return (
     ch === 0x2c /* , */ ||
     ch === 0x5d /* ] */ ||
@@ -196,8 +241,8 @@ function isEmptyObject(value: unknown): boolean {
 }
 
 /** JSON with every object's keys sorted, so key order does not count as a difference. */
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(value, (_key, v: unknown) =>
+function canonicalJson(value: unknown, work: BalancedJsonWork): string {
+  const canonical = JSON.stringify(value, (_key, v: unknown) =>
     v !== null && typeof v === "object" && !Array.isArray(v)
       ? Object.fromEntries(
           Object.keys(v)
@@ -206,6 +251,8 @@ function canonicalJson(value: unknown): string {
         )
       : v,
   );
+  work.canonicalised += canonical.length;
+  return canonical;
 }
 
 /**
@@ -214,16 +261,17 @@ function canonicalJson(value: unknown): string {
  * whitespace directly around the span is walked, and those runs are disjoint
  * between spans, so the scan stays linear.
  */
-function isArrayElement(text: string, start: number, end: number): boolean {
-  const after = nextTokenCode(text, end);
+function isArrayElement(text: string, start: number, end: number, work: BalancedJsonWork): boolean {
+  const after = nextTokenCode(text, end, work);
   if (after !== 0x2c /* , */ && after !== 0x5d /* ] */) return false;
-  const before = prevTokenCode(text, start - 1);
+  const before = prevTokenCode(text, start - 1, work);
   return before === 0x5b /* [ */ || before === 0x2c; /* , */
 }
 
 /** Char code of the last non-whitespace character at or before `from`, or -1. */
-function prevTokenCode(text: string, from: number): number {
+function prevTokenCode(text: string, from: number, work: BalancedJsonWork): number {
   for (let i = from; i >= 0; i--) {
+    work.walked++;
     const ch = text.charCodeAt(i);
     if (ch === 0x20 || ch === 0x0a || ch === 0x0d || ch === 0x09) continue;
     return ch;
@@ -232,8 +280,9 @@ function prevTokenCode(text: string, from: number): number {
 }
 
 /** Char code of the first non-whitespace character at or after `from`, or -1. */
-function nextTokenCode(text: string, from: number): number {
+function nextTokenCode(text: string, from: number, work: BalancedJsonWork): number {
   for (let i = from; i < text.length; i++) {
+    work.walked++;
     const ch = text.charCodeAt(i);
     if (ch === 0x20 || ch === 0x0a || ch === 0x0d || ch === 0x09) continue;
     return ch;

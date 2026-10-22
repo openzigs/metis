@@ -4,6 +4,7 @@
  * stripper), empty `(,,,)` punctuation, or URL-encoded module keys.
  */
 import { describe, expect, it } from "vitest";
+import { expectLinearTime, threadCpuMs } from "../../../tests/helpers/linear-time.js";
 import {
   citationDefinitionsLength,
   renderCitationFootnotes,
@@ -577,10 +578,20 @@ describe("a module-facts citation pinned to the mined rule it restates (#737)", 
   });
 
   it("stays linear on one long line with many markers (#1305 review)", () => {
-    const line = `${`Removed entries are purged after 60 days [${storage0}] `.repeat(12_000)}.`;
-    const started = performance.now();
-    renderCitationFootnotes(line, pinSources);
-    expect(performance.now() - started).toBeLessThan(2_000);
+    // #1422 — ~200 ms of real work, so a 2 s wall-clock bound had 10x headroom
+    // and no more: `expectLinearTime` on this thread's CPU clock instead, which
+    // a starved test worker does not accrue, falling back to the 4x-input ratio.
+    expectLinearTime(
+      "markers on one line",
+      (n) => {
+        const line = `${`Removed entries are purged after 60 days [${storage0}] `.repeat(n)}.`;
+        return () => renderCitationFootnotes(line, pinSources);
+      },
+      // ~100 ms of work: well inside the helper's 250 ms fast path even on a
+      // contended runner, so the ratio fallback is the exception (PR #1423 review).
+      6_000,
+      threadCpuMs,
+    );
   });
 });
 describe("pinning against the miners' real output (#1305 review)", () => {

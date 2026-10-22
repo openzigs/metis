@@ -32,14 +32,15 @@
  *
  * Two halves are pinned here:
  *
- *  1. the benchmark — a 200 KB unclosed-fence input parses in < 50 ms, and
- *     scales linearly rather than quadratically;
+ *  1. the benchmark — a 200 KB unclosed-fence input parses in linear time,
+ *     on the CPU clock of the test's own thread (#1422);
  *  2. the equivalence — the shipped extractor returns EXACTLY what the old
  *     regex returned (value or thrown error), differentially, over a seeded
  *     corpus of fence-shaped strings.
  */
 import { describe, expect, it } from "vitest";
 
+import { expectLinearTime, threadCpuMs } from "../../../tests/helpers/linear-time.js";
 import { extractJsonObject } from "./agent-runner.js";
 import {
   AMBIGUOUS_JSON_MESSAGE,
@@ -141,26 +142,6 @@ function outcomeOf(fn: () => unknown): string {
 }
 
 /**
- * Fastest of `runs` timings, in ms. The MINIMUM is the right statistic for
- * "this implementation can do the work this fast" — a loaded CI runner can only
- * inflate a sample, never deflate one. Bails out once a single run exceeds
- * `abortAboveMs`, because no amount of repetition rescues a categorical
- * regression and `server/vitest.config.ts` sets `retry: 2`, so a failing
- * timing assertion otherwise costs three full attempts.
- */
-function fastestMs(fn: () => unknown, runs = 3, abortAboveMs = 500): number {
-  let best = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < runs; i++) {
-    const t0 = performance.now();
-    fn();
-    const elapsed = performance.now() - t0;
-    best = Math.min(best, elapsed);
-    if (elapsed > abortAboveMs) break;
-  }
-  return best;
-}
-
-/**
  * The adversarial payload, and the ONLY shape that triggers this quadratic: an
  * opening fence, a long whitespace run IMMEDIATELY after it, a long tail, and
  * no closing fence. Probing with the wrong payload makes the bug look absent —
@@ -196,21 +177,14 @@ function extractOrThrowSwallowed(input: string): void {
 
 describe("#1253 extractJsonObject is linear in input length", () => {
   /**
-   * 50 ms is ~390x the measured cost of the FIXED function at 200 KB (0.128 ms,
-   * measured end-to-end through `extractJsonObject`, not just the regex) — no
-   * scheduler hiccup or cold JIT on a loaded runner reaches that — and ~31x
-   * BELOW the quadratic cost at the same size (1,543 ms, measured by this very
-   * test before the fix). Four orders of magnitude separate the two
-   * implementations, so no plausible margin admits both: noise cannot trip the
-   * threshold, and the quadratic cannot sneak under it.
-   *
-   * The same 50 ms #1244 chose, deliberately — the two functions carry the same
-   * defect at the same input sizes, and a shared number is one fact to re-check
-   * rather than two.
+   * #1422 — `expectLinearTime` on this thread's CPU clock, not a 50 ms
+   * wall-clock budget and a ratio. A descheduled worker in a full `pnpm test`
+   * fan-out accrues no CPU time, so load cannot fail it; the quadratic can,
+   * because it does the work: 1,503 ms at 200 KB (over the helper's 250 ms) and
+   * ~16x the cost at a quarter of the size (over its ratio of 8). The fixed
+   * function is ~0.1 ms at 200 KB.
    */
-  const BUDGET_MS = 50;
-
-  it("parses a 200 KB unclosed-fence payload in under 50 ms", () => {
+  it("parses a 200 KB unclosed-fence payload in linear time", () => {
     const input = unclosedFenceInput(200 * 1024);
     expect(input.length).toBeGreaterThanOrEqual(200 * 1024);
 
@@ -218,54 +192,58 @@ describe("#1253 extractJsonObject is linear in input length", () => {
     // algorithm rather than the first-call compile.
     extractJsonObject('{"warm":true}');
 
-    const ms = fastestMs(() => extractOrThrowSwallowed(input));
-
     // The verdict still has to be RIGHT — an extractor that is fast because it
     // gave up early would otherwise pass this test. An unclosed fence with no
     // brace carries no parseable object, so it must throw.
     expect(() => extractJsonObject(input)).toThrow(/did not contain a JSON object/);
-    expect(ms).toBeLessThan(BUDGET_MS);
+    expectLinearTime(
+      "unclosed fence",
+      (n) => {
+        const at = unclosedFenceInput(n);
+        return () => extractOrThrowSwallowed(at);
+      },
+      200 * 1024,
+      threadCpuMs,
+    );
   }, 60_000);
 
-  it("scales linearly, not quadratically, with input length", () => {
-    extractJsonObject('{"warm":true}');
-    const small = fastestMs(() => extractOrThrowSwallowed(unclosedFenceInput(50 * 1024)));
-    const large = fastestMs(() => extractOrThrowSwallowed(unclosedFenceInput(200 * 1024)));
-
-    // 4x the input. Linear predicts ~4x the time; quadratic predicts ~16x. The
-    // 25 ms floor keeps sub-millisecond noise from dominating the ratio at the
-    // linear end, while 8x still rejects the quadratic one by ~4x (measured on
-    // the old pattern: 93.5 ms at 50 KB vs 1,503 ms at 200 KB).
-    expect(large).toBeLessThan(small * 8 + 25);
-  }, 60_000);
-
-  it("stays fast when the whitespace run is newlines rather than spaces", () => {
+  it("stays linear when the whitespace run is newlines rather than spaces", () => {
     // `\s` covers every whitespace class, so the trigger is not space-specific;
     // pretty-printed JSON that is cut off emits newlines and tabs, not spaces.
-    const half = 100 * 1024;
-    const input = "Result:\n```json\n" + "\n".repeat(half) + "a".repeat(half);
+    const newlines = (n: number) => "Result:\n```json\n" + "\n".repeat(n / 2) + "a".repeat(n / 2);
     extractJsonObject('{"warm":true}');
 
-    const ms = fastestMs(() => extractOrThrowSwallowed(input));
-
-    expect(() => extractJsonObject(input)).toThrow(/did not contain a JSON object/);
-    expect(ms).toBeLessThan(BUDGET_MS);
+    expect(() => extractJsonObject(newlines(200 * 1024))).toThrow(/did not contain a JSON object/);
+    expectLinearTime(
+      "newline run after a fence",
+      (n) => {
+        const at = newlines(n);
+        return () => extractOrThrowSwallowed(at);
+      },
+      200 * 1024,
+      threadCpuMs,
+    );
   }, 60_000);
 
-  it("stays fast when the truncated payload also carries an unmatched brace", () => {
+  it("stays linear when the truncated payload also carries an unmatched brace", () => {
     // The realistic degraded-answer shape (`agentic-degradation.ts:74`): a
     // ```json fence, pretty-printed indentation, and a cut-off object. The
     // brute-force fallback then runs too, so this pins that the FENCE regex was
     // the cost rather than the parse that follows it.
-    const half = 100 * 1024;
-    const input =
-      "Partial answer:\n```json\n" + " ".repeat(half) + '{"findings":[' + "a".repeat(half);
+    const partial = (n: number) =>
+      "Partial answer:\n```json\n" + " ".repeat(n / 2) + '{"findings":[' + "a".repeat(n / 2);
     extractJsonObject('{"warm":true}');
 
-    const ms = fastestMs(() => extractOrThrowSwallowed(input));
-
-    expect(() => extractJsonObject(input)).toThrow();
-    expect(ms).toBeLessThan(BUDGET_MS);
+    expect(() => extractJsonObject(partial(200 * 1024))).toThrow();
+    expectLinearTime(
+      "unmatched brace after a fence",
+      (n) => {
+        const at = partial(n);
+        return () => extractOrThrowSwallowed(at);
+      },
+      200 * 1024,
+      threadCpuMs,
+    );
   }, 60_000);
 });
 
