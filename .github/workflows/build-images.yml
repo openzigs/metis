@@ -1,13 +1,17 @@
 name: Build core images — multi-arch
 
 # Sub-issue #373 (Epic #360) — multi-arch (linux/amd64,linux/arm64) buildx
-# of the three core METIS images (#150 removed the fourth, copilot-svc, with
+# of the four METIS images the Helm chart pulls (#150 removed copilot-svc, with
 # GitHub Copilot support):
 #   - server         → Dockerfile.server
 #   - ui             → Dockerfile.ui
 #   - embeddings-svc → Dockerfile.embeddings
+#   - sql-lineage    → Dockerfile.sql-lineage (#1382: the chart enables it by
+#     default, and it was never published, so a stock install sat in
+#     ImagePullBackOff. scripts/lib/image-build-wiring.test.mjs now fails when
+#     the chart references an image this matrix does not publish.)
 #
-# On a release tag (`v*`) all three images are built for both architectures
+# On a release tag (`v*`) all four images are built for both architectures
 # and pushed to GHCR with both `<tag>` and `latest` references. On a PR
 # touching the Dockerfiles, the chart, or the source tree, we build for
 # the runner's NATIVE arch only (no push) to validate compilation.
@@ -61,6 +65,7 @@ jobs:
           - { name: server, dockerfile: Dockerfile.server }
           - { name: ui, dockerfile: Dockerfile.ui }
           - { name: embeddings-svc, dockerfile: Dockerfile.embeddings }
+          - { name: sql-lineage, dockerfile: Dockerfile.sql-lineage }
 
     steps:
       - name: Checkout

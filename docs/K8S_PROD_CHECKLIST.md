@@ -86,7 +86,7 @@ The chart leaves three server settings to you, and the install does not work wit
 
 ## 9. Image hygiene
 
-- [ ] All four images (`metis-server`, `metis-ui`, `metis-embeddings-svc`, `metis-sql-lineage`) are published for the tag. `build-images.yml` publishes only the first three today (#1382).
+- [ ] All four images (`metis-server`, `metis-ui`, `metis-embeddings-svc`, `metis-sql-lineage`) are published for the tag by `build-images.yml` (#1382; `image-build-wiring.test.mjs` fails if the chart names an image the matrix does not publish).
 - [ ] All four images scanned with Trivy (or ECR scan-on-push) — High/Critical = 0.  
   `trivy image --scanners vuln --severity HIGH,CRITICAL ghcr.io/openzigs/metis-server:<tag>`  
   No image met this in #1312. Every image had fixable HIGH findings, and three had CRITICAL ones (#1379).

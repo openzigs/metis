@@ -407,3 +407,58 @@ describe("build-images.yml uses a cache that survives the runner (#3)", () => {
     ).toHaveLength(1);
   });
 });
+
+/**
+ * #1382 — the chart enabled `sqlLineage` by default and pulled
+ * `metis-sql-lineage:<appVersion>`, but the release matrix published only three
+ * images, so a stock `helm install` of a tagged release sat in ImagePullBackOff.
+ * Nothing compared the two lists. This does: every component image the chart's
+ * values name must be in the publish matrix, built from a Dockerfile that exists.
+ */
+describe("build-images.yml publishes every image the Helm chart pulls (#1382)", () => {
+  const wf = read(".github/workflows/build-images.yml");
+  const values = read("deploy/helm/metis/values.yaml");
+
+  /** `{ name, dockerfile }` pairs from the matrix's flow-style entries. */
+  const matrix = [
+    ...wf.matchAll(/^\s*- \{ name: ([a-z0-9-]+), dockerfile: (Dockerfile\.[a-z0-9.-]+) \}$/gm),
+  ].map((m) => ({ name: m[1], dockerfile: m[2] }));
+
+  /** Component image repositories (`metis-*`) in the chart's default values. */
+  const chartImages = [...values.matchAll(/^\s+repository: (metis-[a-z0-9-]+)\s*$/gm)].map(
+    (m) => m[1],
+  );
+
+  it("finds the chart's component images and the matrix entries", () => {
+    // Guards the parsers: an empty list on either side would pass vacuously.
+    expect(chartImages).toEqual(
+      expect.arrayContaining([
+        "metis-server",
+        "metis-ui",
+        "metis-embeddings-svc",
+        "metis-sql-lineage",
+      ]),
+    );
+    expect(matrix.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("every chart image has a matrix entry, pushed as metis-<name>", () => {
+    const published = new Set(matrix.map((e) => `metis-${e.name}`));
+    const missing = chartImages.filter((image) => !published.has(image));
+    expect(missing).toEqual([]);
+    const publish = wf.slice(wf.indexOf("- name: Build & push (tag"));
+    expect(publish).toContain(
+      "${{ env.REGISTRY }}/metis-${{ matrix.image.name }}:${{ steps.meta.outputs.version }}",
+    );
+  });
+
+  it("every matrix entry builds from a Dockerfile that exists", () => {
+    for (const { dockerfile } of matrix) {
+      expect(fs.existsSync(path.join(repoRoot, dockerfile)), dockerfile).toBe(true);
+    }
+  });
+
+  it("publishes metis-sql-lineage from Dockerfile.sql-lineage", () => {
+    expect(matrix).toContainEqual({ name: "sql-lineage", dockerfile: "Dockerfile.sql-lineage" });
+  });
+});
