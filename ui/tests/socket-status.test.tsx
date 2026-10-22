@@ -79,6 +79,7 @@ import {
   useSocketStatus,
   __resetSocketStatusForTests,
   __setSocketIoLoaderForTests,
+  closeSocket,
 } from "@/lib/socket-client";
 
 beforeEach(() => {
@@ -378,6 +379,25 @@ describe("#1414 an expired-token handshake refusal renews the session", () => {
     act(() => vi.advanceTimersByTime(300));
     expect(fake.socket.disconnect).toHaveBeenCalledTimes(1);
     expect(fake.socket.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("a closed session's cooldown does not hold back the next session's refresh", async () => {
+    renderStatus();
+    await waitFor(() => expect(fake.socket.on).toHaveBeenCalled());
+    fake.fireSocket("connect_error", new Error("TOKEN_EXPIRED"));
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
+
+    // `closeSocket()` detaches from the socket and its Manager.
+    Object.assign(fake.socket, { removeAllListeners: vi.fn() });
+    Object.assign(fake.socket.io, { off: vi.fn() });
+    act(() => closeSocket());
+
+    // The next session opens a new socket, well inside the 30 s window.
+    fake = makeFakeSocket();
+    renderStatus();
+    await waitFor(() => expect(fake.socket.on).toHaveBeenCalled());
+    fake.fireSocket("connect_error", new Error("TOKEN_EXPIRED"));
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(2);
   });
 
   it("starts at most one refresh per cooldown window, then one more after it", async () => {

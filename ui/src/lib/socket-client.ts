@@ -333,6 +333,9 @@ export function closeSocket(): void {
     reconnectDebounceTimer = null;
   }
   renewingForToken = false;
+  // #1414 — the refusal cooldown belongs to the session that ended: the next
+  // session's first refused handshake must be able to refresh at once.
+  lastExpiredTokenRefreshAt = null;
   const socket = socketRef;
   socketRef = null;
   if (socket) {

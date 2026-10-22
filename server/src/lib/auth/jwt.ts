@@ -19,38 +19,16 @@ import { createChildLogger } from "../logger.js";
 import { revocationStore, type RevocationStore } from "./revocation-store.js";
 import { readLiveWorkspaceIds } from "./live-workspace-ids.js";
 import { disconnectUserSockets } from "../socket/user-disconnect.js";
+import { endUserSessionsIssuedBy } from "../socket/session-disconnect.js";
+import { ACCESS_EXPIRY, parseExpiryToSeconds } from "./token-ttl.js";
+
+export { accessTokenTtlSeconds, parseExpiryToSeconds } from "./token-ttl.js";
 
 const log = createChildLogger("jwt");
 
-const ACCESS_EXPIRY = process.env.JWT_ACCESS_EXPIRY ?? "1h";
 const REFRESH_EXPIRY = process.env.JWT_REFRESH_EXPIRY ?? "7d";
 
 const MIN_SECRET_BYTES = 32;
-
-/** Default refresh TTL (7 days) in seconds, used when an expiry can't be parsed. */
-const DEFAULT_REFRESH_TTL_SECONDS = 7 * 24 * 60 * 60;
-
-/**
- * Parse a jsonwebtoken-style expiry ("7d", "1h", "3600", "30m") into seconds.
- * Falls back to the 7-day refresh default for anything unrecognised so a
- * misconfigured env can never produce a non-expiring revoked row.
- */
-export function parseExpiryToSeconds(expiry: string): number {
-  const match = /^(\d+)\s*([smhdw])?$/.exec(expiry.trim());
-  if (!match) {
-    return DEFAULT_REFRESH_TTL_SECONDS;
-  }
-  const value = Number(match[1]);
-  const unit = match[2] ?? "s";
-  const multipliers: Record<string, number> = {
-    s: 1,
-    m: 60,
-    h: 60 * 60,
-    d: 24 * 60 * 60,
-    w: 7 * 24 * 60 * 60,
-  };
-  return value * (multipliers[unit] ?? 1);
-}
 
 /**
  * The hardcoded local-development signing key. It is in the source tree, so it
@@ -250,11 +228,6 @@ export function sessionIdOf(payload: { sid?: unknown } | undefined): string | un
   return typeof sid === "string" && SESSION_ID_PATTERN.test(sid) ? sid : undefined;
 }
 
-/** #1414 — the access-token lifetime in seconds (`JWT_ACCESS_EXPIRY`, default 1h). */
-export function accessTokenTtlSeconds(): number {
-  return parseExpiryToSeconds(ACCESS_EXPIRY);
-}
-
 export interface RefreshPayload {
   userId: string;
   username: string;
@@ -411,10 +384,14 @@ export async function revokeRefreshToken(
  *
  * #1414 — every session of the user ends here, so every socket of the user is
  * disconnected too, after the cutoff is written: a live socket was opened by
- * one of those sessions and would otherwise outlive it.
+ * one of those sessions and would otherwise outlive it. The handshake also
+ * refuses every access token issued up to now (`endUserSessionsIssuedBy`), so a
+ * user who is still active — a sign-out-everywhere — cannot simply reconnect
+ * with one of those tokens before it expires.
  */
 export async function revokeAllUserSessions(userId: string): Promise<void> {
   await store.revokeAllForUser(userId);
+  endUserSessionsIssuedBy(userId, Math.floor(Date.now() / 1000));
   disconnectUserSockets(userId);
 }
 

@@ -14,11 +14,14 @@ vi.mock("../src/lib/socket/registry.js", () => ({
 import type { MetisIOServer } from "../src/lib/socket/server.js";
 import {
   DISCONNECT_SESSION_EVENT,
+  END_USER_SESSIONS_EVENT,
   MAX_ENDED_SESSIONS,
   __resetEndedSessionsForTests,
   authSessionRoom,
   disconnectSessionSockets,
+  endUserSessionsIssuedBy,
   isSessionEnded,
+  isTokenSessionEnded,
   wireSessionRevocationRelay,
 } from "../src/lib/socket/session-disconnect.js";
 import { accessTokenTtlSeconds } from "../src/lib/auth/jwt.js";
@@ -146,5 +149,57 @@ describe("#1414 wireSessionRevocationRelay", () => {
     fake.listeners.get(DISCONNECT_SESSION_EVENT)!("u", 7);
 
     expect(fake.localDisconnected).toEqual([]);
+  });
+});
+
+describe("#1414 endUserSessionsIssuedBy", () => {
+  it("ends the user's tokens issued at or before the cutoff, and no later or other ones", () => {
+    endUserSessionsIssuedBy("u", 1_000);
+    expect(isTokenSessionEnded("u", SID, 999)).toBe(true);
+    expect(isTokenSessionEnded("u", SID, 1_000)).toBe(true);
+    expect(isTokenSessionEnded("u", undefined, 1_000)).toBe(true);
+    expect(isTokenSessionEnded("u", SID, undefined)).toBe(true);
+    expect(isTokenSessionEnded("u", SID, 1_001)).toBe(false);
+    expect(isTokenSessionEnded("other", SID, 999)).toBe(false);
+  });
+
+  it("keeps the later of two cutoffs", () => {
+    endUserSessionsIssuedBy("u", 2_000);
+    endUserSessionsIssuedBy("u", 1_000);
+    expect(isTokenSessionEnded("u", SID, 1_500)).toBe(true);
+  });
+
+  it("forgets the cutoff once the user's access tokens have all expired", () => {
+    vi.useFakeTimers();
+    endUserSessionsIssuedBy("u", 1_000);
+    vi.advanceTimersByTime(accessTokenTtlSeconds() * 1000);
+    expect(isTokenSessionEnded("u", SID, 999)).toBe(false);
+  });
+
+  it("relays the cutoff on a clustered server", () => {
+    const fake = fakeServer();
+    wireSessionRevocationRelay(fake.io, true);
+    registry.io = fake.io;
+    endUserSessionsIssuedBy("u", 1_000);
+    expect(fake.emitted).toEqual([[END_USER_SESSIONS_EVENT, "u", "1000"]]);
+  });
+
+  it("applies a relayed cutoff, never later than now, and ignores a malformed one", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(5_000_000);
+    const fake = fakeServer();
+    wireSessionRevocationRelay(fake.io, true);
+    const relay = fake.listeners.get(END_USER_SESSIONS_EVENT)!;
+
+    relay("u", "4000");
+    expect(isTokenSessionEnded("u", SID, 4_000)).toBe(true);
+    expect(isTokenSessionEnded("u", SID, 4_001)).toBe(false);
+
+    relay("v", "9999999");
+    expect(isTokenSessionEnded("v", SID, 5_000)).toBe(true);
+    expect(isTokenSessionEnded("v", SID, 5_001)).toBe(false);
+
+    relay("w", "soon");
+    expect(isTokenSessionEnded("w", SID, 1)).toBe(false);
   });
 });

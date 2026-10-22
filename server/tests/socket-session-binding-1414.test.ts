@@ -404,4 +404,76 @@ describe("#1414 session revocation", () => {
     await sleep(50);
     expect(bystander.socket.connected).toBe(true);
   });
+
+  it("refuses a reconnect with a token issued before a revoke-all, for a user who stays active", async () => {
+    const before = issueTokens(payload("u-everywhere"));
+    const other = issueTokens(payload("u-everywhere-bystander"));
+    live.users.set("u-everywhere-bystander", payload("u-everywhere-bystander"));
+    await connect(() => before.accessToken);
+
+    // Sign-out-everywhere: the user's row stays live, so only the cutoff refuses.
+    await revokeAllUserSessions("u-everywhere");
+
+    expect(await handshakeOutcome(before.accessToken)).toBe("UNAUTHORIZED");
+    expect(await handshakeOutcome(other.accessToken)).toBe("connected");
+    // `iat` is whole seconds and the cutoff is inclusive, as the revocation
+    // store's: a token from the next second on is a new sign-in.
+    await sleep(1_100);
+    expect(await handshakeOutcome(issueTokens(payload("u-everywhere")).accessToken)).toBe(
+      "connected",
+    );
+  });
+});
+
+describe("#1414 a socket that cannot join its revocation rooms is closed", () => {
+  type AddAll = (id: string, rooms: Set<string>) => Promise<void> | void;
+
+  /** Make the adapter's `addAll` fail for the room starting with `prefix`. */
+  function failJoin(prefix: string, how: "throw" | "reject"): void {
+    const adapter = io.of("/").adapter as unknown as { addAll: AddAll };
+    const original = adapter.addAll.bind(adapter);
+    vi.spyOn(adapter, "addAll").mockImplementation((id, rooms) => {
+      if (![...rooms].some((room) => room.startsWith(prefix))) return original(id, rooms);
+      if (how === "throw") throw new Error("adapter down");
+      return Promise.reject(new Error("adapter down"));
+    });
+  }
+
+  for (const [label, prefix] of [
+    ["session room", "auth-session:"],
+    ["user room", "user:"],
+  ] as const) {
+    for (const how of ["throw", "reject"] as const) {
+      it(`closes the transport when the ${label} join ${how}s`, async () => {
+        failJoin(prefix, how);
+        const c = await connect(() => issueTokens(payload(`u-join-${how}`)).accessToken);
+        await vi.waitFor(() => expect(c.reasons).toContain("transport close"));
+      });
+    }
+  }
+});
+
+describe("#1414 the expiry timer", () => {
+  it("is cleared when the socket disconnects", async () => {
+    const armed: unknown[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      fn: (...args: unknown[]) => void,
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      const handle = realSetTimeout(fn, ms, ...args);
+      // The expiry timer of a 1h token: nothing else here waits half an hour.
+      if (typeof ms === "number" && ms > 30 * 60 * 1000) armed.push(handle);
+      return handle;
+    }) as typeof setTimeout);
+    const cleared = vi.spyOn(globalThis, "clearTimeout");
+
+    const c = await connect(() => issueTokens(payload("u-clear")).accessToken);
+    expect(armed).toHaveLength(1);
+    c.socket.disconnect();
+    await vi.waitFor(() => expect(io.of("/").sockets.size).toBe(0));
+
+    expect(cleared).toHaveBeenCalledWith(armed[0]);
+  });
 });

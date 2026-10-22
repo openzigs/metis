@@ -118,7 +118,7 @@ import { mcpStatusEvictionEpoch, wireMcpStatusEvictionRelay } from "./mcp-status
 import { userSocketRevocationEpoch, wireUserRevocationRelay } from "./user-disconnect.js";
 import {
   authSessionRoom,
-  isSessionEnded,
+  isTokenSessionEnded,
   wireSessionRevocationRelay,
 } from "./session-disconnect.js";
 import { wireProjectRoomEvictionRelay } from "./project-room-eviction.js";
@@ -152,6 +152,8 @@ export interface SocketSession {
   sid: string | undefined;
   /** The token's `exp` (seconds since the epoch); `undefined` if it has none. */
   exp: number | undefined;
+  /** The token's `iat` (seconds since the epoch); `undefined` if it has none. */
+  iat?: number | undefined;
 }
 
 export type MetisIOServer = SocketIOServer<
@@ -600,10 +602,12 @@ async function authenticateHandshake(
   const session: SocketSession = {
     sid: sessionIdOf(verified),
     exp: typeof verified.exp === "number" ? verified.exp : undefined,
+    iat: typeof verified.iat === "number" ? verified.iat : undefined,
   };
-  // #1414 — an access token of a session that logged out still verifies until
-  // it expires; refuse it here so a closed socket cannot simply reconnect.
-  if (isSessionEnded(verified.userId, session.sid)) {
+  // #1414 — an access token of a session that logged out, or of one ended by a
+  // revoke-all, still verifies until it expires; refuse it here so a closed
+  // socket cannot simply reconnect.
+  if (isTokenSessionEnded(verified.userId, session.sid, session.iat)) {
     log.warn("Socket handshake rejected: the token's session has ended", {
       socketId: socket.id,
       userId: verified.userId,
@@ -723,6 +727,32 @@ function applyLiveUser(socket: MetisSocket, live: AuthPayload | null | undefined
 }
 
 /**
+ * #1414 — join one of the rooms a revocation reaches a socket through
+ * (`user:{id}`, its session's room), then run `onJoined`. A join that throws or
+ * rejects (an adapter fault) closes the transport: a socket outside the room
+ * would miss the revocation for the rest of its life, while a closed transport
+ * makes the client re-handshake and join again.
+ */
+function joinOrClose(socket: MetisSocket, room: string, what: string, onJoined?: () => void): void {
+  const fail = (err: unknown): void => {
+    log.warn("Socket could not join a revocation room — closing transport", {
+      socketId: socket.id,
+      what,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    socket.conn.close();
+  };
+  let joined: Promise<void> | void;
+  try {
+    joined = socket.join(room);
+  } catch (err) {
+    fail(err);
+    return;
+  }
+  runDetached(Promise.resolve(joined).then(onJoined, fail), what, socket.id);
+}
+
+/**
  * #682 — the room each `subscribe:*` payload asks for, which the join rate
  * limit (`join-rate-limit.ts`) names in its refusal.
  */
@@ -746,7 +776,9 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   // This intentionally does NOT expose any `subscribe:user` handler — there is
   // no client-supplied room id, so cross-user room injection is structurally
   // impossible. Every (re)connection triggers this so reconnect is covered.
-  runDetached(socket.join(userRoom(user.userId)), "join user room", socket.id);
+  // #1414 — a socket that is not in this room misses every user-level
+  // revocation, so a failed join closes the transport (`joinOrClose`).
+  joinOrClose(socket, userRoom(user.userId), "join user room");
   log.debug("Socket auto-joined personal room", {
     socketId: socket.id,
     room: userRoom(user.userId),
@@ -755,14 +787,10 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   // reaches exactly this session's sockets. A logout that ran while this
   // handshake was in flight found no socket in the room; it recorded the
   // session as ended, so look once the socket is in.
-  const ownSessionRoom = authSessionRoom(user.userId, socket.data.session.sid);
-  runDetached(
-    Promise.resolve(socket.join(ownSessionRoom)).then(() => {
-      if (isSessionEnded(user.userId, socket.data.session.sid)) socket.disconnect(true);
-    }),
-    "join session room",
-    socket.id,
-  );
+  const { sid, iat } = socket.data.session;
+  joinOrClose(socket, authSessionRoom(user.userId, sid), "join session room", () => {
+    if (isTokenSessionEnded(user.userId, sid, iat)) socket.disconnect(true);
+  });
   armTokenExpiry(socket);
   // #613 — a role change or deprovision that committed after the handshake read
   // the live user, but whose `reconnectUserSockets` / `disconnectUserSockets`

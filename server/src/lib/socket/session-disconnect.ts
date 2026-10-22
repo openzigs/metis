@@ -23,13 +23,19 @@
  * the access-token lifetime — the same bound the HTTP API has, where an access
  * token is not checked against any revocation.
  *
+ * `endUserSessionsIssuedBy` (called by `revokeAllUserSessions`) does the same
+ * for every session of one user at once: the handshake refuses any of that
+ * user's access tokens issued at or before the cutoff, so a sign-out-everywhere
+ * for a user who stays active cannot be undone by a reconnect. The same
+ * in-memory, relayed, access-token-lifetime bound applies.
+ *
  * A token issued before #1414 has no session id. All such tokens of one user
  * share the `legacy` room, so a logout from one closes all of them; the first
  * refresh of any of them mints a session id, so this lasts at most one access
  * token lifetime after the upgrade.
  */
 import { createChildLogger } from "../logger.js";
-import { accessTokenTtlSeconds } from "../auth/jwt.js";
+import { accessTokenTtlSeconds } from "../auth/token-ttl.js";
 import { getSocketServer } from "./registry.js";
 import type { MetisIOServer } from "./server.js";
 import { onRelayedRevocation, relayRevocation } from "./revocation-relay.js";
@@ -41,6 +47,9 @@ export const LEGACY_SESSION_KEY = "legacy";
 
 /** The server-side event a replica relays so the others record a session as ended. */
 export const DISCONNECT_SESSION_EVENT = "metis:session:disconnect";
+
+/** The server-side event a replica relays so the others end a user's sessions issued up to a cutoff. */
+export const END_USER_SESSIONS_EVENT = "metis:session:end-user";
 
 /**
  * Most ended sessions remembered at once. An entry lives at most one
@@ -81,9 +90,50 @@ export function isSessionEnded(userId: string, sid: string | undefined): boolean
   return false;
 }
 
+/**
+ * Users whose every session issued up to a cutoff was ended → the cutoff (`iat`
+ * seconds, inclusive, as the revocation store's) and when the record may be
+ * forgotten (ms).
+ */
+const endedUsers = new Map<string, { issuedBySec: number; untilMs: number }>();
+
+function rememberEndedUser(userId: string, issuedBySec: number, untilMs: number): void {
+  const previous = endedUsers.get(userId);
+  endedUsers.delete(userId);
+  endedUsers.set(userId, {
+    issuedBySec: Math.max(issuedBySec, previous?.issuedBySec ?? issuedBySec),
+    untilMs,
+  });
+  if (endedUsers.size > MAX_ENDED_SESSIONS) {
+    endedUsers.delete(endedUsers.keys().next().value!);
+  }
+}
+
+/**
+ * Whether an access token of `userId` in session `sid`, issued at `iat`
+ * (seconds), belongs to a session that has ended: logged out
+ * (`isSessionEnded`), or issued at or before a revoke-all cutoff. A token with
+ * no `iat` is treated as issued before any cutoff.
+ */
+export function isTokenSessionEnded(
+  userId: string,
+  sid: string | undefined,
+  iat: number | undefined,
+): boolean {
+  if (isSessionEnded(userId, sid)) return true;
+  const marker = endedUsers.get(userId);
+  if (!marker) return false;
+  if (marker.untilMs <= Date.now()) {
+    endedUsers.delete(userId);
+    return false;
+  }
+  return iat === undefined || iat <= marker.issuedBySec;
+}
+
 /** Test helper — forget every ended session. */
 export function __resetEndedSessionsForTests(): void {
   endedSessions.clear();
+  endedUsers.clear();
 }
 
 /** Latest instant an access token of a session ending now can still verify. */
@@ -115,6 +165,19 @@ export function disconnectSessionSockets(userId: string, sid: string | undefined
 }
 
 /**
+ * Refuse, at the handshake, every access token of `userId` issued at or before
+ * `issuedBySec` until they have all expired — here and, relayed, on every
+ * other replica. Disconnecting the user's open sockets is the caller's
+ * (`disconnectUserSockets`). Recorded even with no registered server, so the
+ * order of the two calls does not matter.
+ */
+export function endUserSessionsIssuedBy(userId: string, issuedBySec: number): void {
+  rememberEndedUser(userId, issuedBySec, endedUntil());
+  const io = getSocketServer();
+  if (io) relayRevocation(io, END_USER_SESSIONS_EVENT, userId, String(issuedBySec));
+}
+
+/**
  * On a server built with the cluster adapter, record the sessions another
  * replica ended and disconnect their local sockets (idempotent with the
  * adapter's own cluster-wide `disconnectSockets`). The record's lifetime is
@@ -126,5 +189,12 @@ export function wireSessionRevocationRelay(io: MetisIOServer, clustered: boolean
     const room = authSessionRoom(userId, sid);
     rememberEnded(room, endedUntil());
     io.local.in(room).disconnectSockets(true);
+  });
+  // A relayed cutoff is never later than now here, so a replica cannot be
+  // made to refuse tokens issued after it heard of the revocation.
+  onRelayedRevocation(io, clustered, END_USER_SESSIONS_EVENT, 2, (userId, issuedBy) => {
+    const issuedBySec = Number(issuedBy);
+    if (!Number.isInteger(issuedBySec)) return;
+    rememberEndedUser(userId, Math.min(issuedBySec, Math.floor(Date.now() / 1000)), endedUntil());
   });
 }
