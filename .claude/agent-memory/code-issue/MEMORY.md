@@ -3,7 +3,6 @@
 Entries are capped at 150 bytes and the whole file at 17,500 (`pnpm agents:verify`).
 Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never loaded.
 
-- [Tag-ref caches are unreadable](project_tag-ref-gha-cache-is-write-only.md) — only that tag can restore it; check per-ref size
 - [Probe real default paths](project_storage-probes-must-target-real-default-paths.md) — a /tmp probe passed while <cwd>/data was EACCES (#54)
 - [Module wiring needs the smoke](project_module-wiring-needs-the-image-smoke.md) — import-order bugs pass unit tests (#55, #60)
 - [A run outruns its service](project_coverage-run-spans-more-phases-than-the-service.md) — bill from `task-runner.ts` phases (#72)
@@ -118,3 +117,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Trivy + digest pins](project_image-scan-trivy-and-digest-pins.md) — SBOM BOMRef; runtime CVEs unseen; Dependabot docker (#1392)
 - [Client address behind UI proxy](project_client-address-behind-the-ui-proxy.md) — XFF ??=; cluster store no decrement; count() (#1393)
 - [SSO login identity matching](project_sso-login-identity-matching.md) — derived username; SCIM marker; login writes; mock IdP (#1400)
+- [vi.fn hides rejections](project_vi-fn-returned-promise-hides-unhandled-rejection.md) — it .then()s returned promises; return raw (#1414)

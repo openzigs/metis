@@ -67,3 +67,4 @@ memory files it points to stay in the store.
 - [Pass-through permission mock](project_permission-mock-hides-removed-gate.md) — test the route's gate and limiter wiring (#454) (retired 2026-10-21: folded into "project-access-guard-wiring", which links the file; the file stays)
 - [Object ACL side channels](project_object-acl-side-channels.md) — #349: owner-only routes leaked via tool list, socket room, error text, 409 (retired 2026-10-21: folded into "project-access-guard-wiring", which links the file; the file stays)
 - [Unmounted-middleware ratchet](project_unmounted-mw-ratchet.md) — inline a limiter's handler; never export it (#1117) (retired 2026-10-21: folded into "project-access-guard-wiring", which links the file; the file stays)
+- [Tag-ref caches are unreadable](project_tag-ref-gha-cache-is-write-only.md) — only that tag can restore it; check per-ref size (retired 2026-10-22: index budget, CI-cache detail rarely needed)

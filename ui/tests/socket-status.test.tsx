@@ -61,10 +61,17 @@ const setOnRefreshSuccessMock = vi.fn((handler: (() => void) | null) => {
 
 // #1414 — the refresh a `TOKEN_EXPIRED` handshake refusal starts.
 const refreshAccessTokenMock = vi.fn(async () => true);
+// When set, the promise the next refresh returns, handed back WITHOUT passing
+// through the `vi.fn`: vitest attaches its own handlers to a promise a mock
+// returns (to record settled results), which would hide an unhandled rejection.
+let rawRefreshResult: (() => Promise<boolean>) | null = null;
 
 vi.mock("@/lib/api-client", () => ({
   setOnRefreshSuccess: (handler: (() => void) | null) => setOnRefreshSuccessMock(handler),
-  refreshAccessToken: () => refreshAccessTokenMock(),
+  refreshAccessToken: () => {
+    const tracked = refreshAccessTokenMock();
+    return rawRefreshResult ? rawRefreshResult() : tracked;
+  },
 }));
 
 import {
@@ -80,6 +87,7 @@ beforeEach(() => {
   setOnRefreshSuccessMock.mockClear();
   refreshAccessTokenMock.mockReset();
   refreshAccessTokenMock.mockResolvedValue(true);
+  rawRefreshResult = null;
   registeredRefreshSuccess = null;
   __resetSocketStatusForTests();
 });
@@ -402,14 +410,33 @@ describe("#1414 an expired-token handshake refusal renews the session", () => {
     expect(refreshAccessTokenMock).not.toHaveBeenCalled();
   });
 
-  it("a rejected refresh is swallowed", async () => {
-    refreshAccessTokenMock.mockRejectedValue(new Error("network"));
+  it("a rejected refresh is swallowed, never an unhandled rejection", async () => {
+    // The runner does not reliably surface this rejection, so observe a
+    // rejection handler being attached to the refresh's promise directly.
+    let rejectionHandled = false;
+    let refresh: Promise<boolean> | undefined;
+    rawRefreshResult = () => {
+      const rejected = Promise.reject(new Error("network"));
+      const originalThen = rejected.then.bind(rejected);
+      rejected.then = ((onFulfilled?: unknown, onRejected?: unknown) => {
+        if (typeof onRejected === "function") rejectionHandled = true;
+        return originalThen(
+          onFulfilled as Parameters<typeof originalThen>[0],
+          onRejected as Parameters<typeof originalThen>[1],
+        );
+      }) as typeof rejected.then;
+      refresh = rejected as Promise<boolean>;
+      return refresh;
+    };
     const { result } = renderStatus();
     await waitFor(() => expect(fake.socket.on).toHaveBeenCalled());
     fake.fireSocket("connect_error", new Error("TOKEN_EXPIRED"));
-    await act(async () => {
-      await Promise.resolve();
-    });
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
+    const handled = rejectionHandled;
+    // Settle it here either way, so a regression fails on the assertion below
+    // rather than as a stray rejection attributed to another test.
+    refresh?.catch(() => undefined);
+    expect(handled).toBe(true);
     expect(result.current.error).toBe("TOKEN_EXPIRED");
   });
 });
