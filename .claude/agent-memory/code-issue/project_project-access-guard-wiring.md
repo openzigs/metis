@@ -28,6 +28,19 @@ so where it sits decides both which tests pass and what CodeQL reports.
   a behavioural cross-workspace request (expect 404) and a positive control (same request as a
   member succeeds).
 
+**Later additions (2026-10-21/22).**
+- CodeQL `js/missing-rate-limiting` does not recognise a limiter passed into a route through
+  a function parameter, even in tests. Name the imported limiter directly in the route chain
+  (#1362).
+- Express 5 routes are case-insensitive and ignore a trailing slash, so middleware that gates
+  on `req.path === "/x"` before the router is bypassed by `/x/` or `/X` while the handler
+  still runs. Attach it to the route, or normalise the path (#1393 review).
+- A new route needs its own limiter module: reusing a sibling's gives the wrong 429 wording
+  (#1397 c3). The walkthrough-plan gate also applies; see
+  [[publishing-guards-repo-identity-limiters]].
+- Route-level helpers go in `lib/`, not `server/src/middleware/`: the unmounted-middleware
+  test fails on any exported function there that no production module imports (#1393 c2).
+
 **Folded here (retired from the index 2026-10-21; files unchanged):**
 
 - [[permission-mock-hides-removed-gate]] — a pass-through `requirePermission` mock tests the
