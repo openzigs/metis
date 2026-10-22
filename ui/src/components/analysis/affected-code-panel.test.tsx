@@ -204,11 +204,114 @@ describe("AffectedCodePanel", () => {
     expect(panel).not.toHaveTextContent(/re-run/i);
   });
 
-  it("#1330 — code with no usable embedding is named as such, with the advice to re-run", () => {
+  it("#1417 — a #1330 run's `no-vector` (cause not known) gets no advice to re-run", () => {
     render(hybridWithCause("no-vector"));
-    expect(screen.getByTestId("affected-code-explainer")).toHaveTextContent(
-      /Some code has no usable embedding \(it is still being embedded, or was embedded with another model\), so it is shown only by the keyword rule; re-run once embedding has finished\./,
+    const panel = screen.getByTestId("affected-code-explainer");
+    expect(panel).toHaveTextContent(
+      /Some code had no usable embedding when this ran, so it is shown only by the keyword rule\./,
     );
+    expect(panel).not.toHaveTextContent(/re-run/i);
+  });
+
+  it("#1417 — a #1330 run's table on a confidence requirement is not labelled 'shown by confidence' alone", () => {
+    render(hybridWithCause("schema-not-embedded"));
+    expect(screen.getByTestId("affected-code-ranking-NR-1")).toHaveTextContent(
+      "(meaning + keywords, shown by confidence or by the keyword rule)",
+    );
+    // No per-link record on an old run: no per-link tag is invented.
+    expect(screen.queryByTestId("affected-code-link-rule")).toBeNull();
+  });
+
+  const linkWith = (name: string, confidence: number, linkRule: "confidence" | "shared-terms") => ({
+    ...sym(name, confidence),
+    linkRule,
+  });
+
+  it("#1417 — a mixed requirement states every cause, advises a re-run only for code still being embedded, and tags each link", () => {
+    render(
+      <AffectedCodePanel
+        affectedCode={{
+          truncated: false,
+          retrievalMode: "hybrid",
+          candidates: [
+            {
+              id: "NR-1",
+              title: "a",
+              body: "a",
+              retrievalMode: "hybrid",
+              linkRule: "confidence",
+              keywordRuleCauses: ["schema-not-embedded", "embedding-pending"],
+              symbols: [
+                linkWith("FlushAllSessions", 0.4, "confidence"),
+                linkWith("web_sessions", 0.27, "shared-terms"),
+                linkWith("restoreButtonState", 0.27, "shared-terms"),
+                { ...sym("handleSessions", 0.2), relation: "caller" as const, depth: 1 },
+              ],
+            },
+            {
+              id: "NR-2",
+              title: "b",
+              body: "b",
+              retrievalMode: "hybrid",
+              linkRule: "confidence",
+              symbols: [linkWith("removeSession", 0.3, "confidence")],
+            },
+          ],
+        }}
+      />,
+    );
+    const panel = screen.getByTestId("affected-code-explainer");
+    expect(panel).toHaveTextContent(/Database tables and columns are never embedded/);
+    expect(panel).toHaveTextContent(
+      /Some code was still being embedded, so it is shown only by the keyword rule; re-run once embedding has finished\./,
+    );
+    expect(panel).toHaveTextContent(/within one on the link/);
+    expect(screen.getByTestId("affected-code-ranking-NR-1")).toHaveTextContent(
+      "(meaning + keywords, shown by confidence or by the keyword rule)",
+    );
+    expect(screen.getByTestId("affected-code-ranking-NR-2")).toHaveTextContent(
+      "(meaning + keywords, shown by confidence)",
+    );
+    // Only the mixed requirement's direct links are tagged, each with its own rule.
+    expect(screen.getAllByTestId("affected-code-link-rule").map((t) => t.textContent)).toEqual([
+      "(by confidence)",
+      "(by the keyword rule)",
+      "(by the keyword rule)",
+    ]);
+  });
+
+  it.each([
+    [
+      "other-model",
+      /embedded with a different embedding model from the one in use.*until the project's code is embedded again/,
+    ],
+    ["not-embedded", /Some code has no embedding, so it is shown only by the keyword rule\./],
+  ] as const)("#1417 — `%s` is named, with no advice to re-run", (cause, text) => {
+    render(
+      <AffectedCodePanel
+        affectedCode={{
+          truncated: false,
+          retrievalMode: "hybrid",
+          candidates: [
+            {
+              id: "NR-1",
+              title: "a",
+              body: "a",
+              retrievalMode: "hybrid",
+              linkRule: "confidence",
+              keywordRuleCauses: [cause],
+              symbols: [linkWith("restoreButtonState", 0.27, "shared-terms")],
+            },
+          ],
+        }}
+      />,
+    );
+    const panel = screen.getByTestId("affected-code-explainer");
+    expect(panel).toHaveTextContent(text);
+    expect(panel).not.toHaveTextContent(/re-run/i);
+    // Every link of the requirement shown by the keyword rule: one rule, no per-link tag.
+    expect(panel).toHaveTextContent(/A direct match is shown by the keyword rule/);
+    expect(screen.queryByTestId("affected-code-link-rule")).toBeNull();
   });
 
   it("#1330 — an uncalibrated model on some requirements only points at the ones marked", () => {

@@ -60,6 +60,12 @@ lowest returned cosine bounded only the last case. Each such hit is now scored o
 shown only by the two-term rule; the measured hits beside it keep the floor. Re-measured after
 #1330: every arm of the table is unchanged (all 13 queries returned 120 vector hits).
 
+#1417 tells the last case apart: a hit whose embedding row is tagged with the active model has a
+vector the search lost, so it is scored at the lowest returned cosine again and stays under the
+floor; only a hit with no vector under the active model (table or column, pending, another model's,
+none) goes to the two-term rule. Re-measured after #1417: every arm unchanged, every shown link
+identical (no query left a hit without a cosine, so the new path is not exercised on this sample).
+
 `--fit` reproduces the coefficients of `linkConfidence`
 (`server/src/lib/traceability/requirement-code-mapping.ts`) from the vector channel's top 40
 symbols for each requirement (520 links, 45 right).
@@ -78,4 +84,5 @@ symbols for each requirement (520 links, 45 right).
   acceptance-criteria body shares more words by chance than a five-word title. The cap at three
   shared words limits this; "the same scale on every requirement" is approximate.
 - A project part-way through embedding reads `hybrid` as soon as one vector hit returns; since
-  #1330 each of its hits with no usable vector is shown only by the two-term rule.
+  #1330 each of its hits with no vector under the active model is shown only by the two-term
+  rule (#1417: a hit whose vector the search lost is bounded by the lowest returned cosine instead).

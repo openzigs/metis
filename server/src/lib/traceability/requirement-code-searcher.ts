@@ -29,13 +29,22 @@
  * floor. So the keyword fallback's options decide
  *   - the WHOLE answer when the active model is not one the confidence is
  *     calibrated for (`uncalibrated-model`);
- *   - each HIT the vector channel did not return, hit by hit. Such a hit has
- *     no usable vector as far as this answer can tell: a database table or
- *     column (never embedded, `schema-not-embedded`), code not embedded yet,
- *     a stale vector the hybrid search dropped, or a vector of another model
- *     the store filtered out after its search (`no-vector`). Its cosine is
- *     unknown, so it is scored on words alone and shown only under the
- *     two-term rule; the measured hits beside it keep the floor.
+ *   - each HIT the vector channel did not return and that has NO vector
+ *     under the active model, hit by hit (#1417 tells this from a lost
+ *     vector with one batched read of the hits' `CodeSymbolEmbedding` rows):
+ *     a database table or column (never embedded, `schema-not-embedded`),
+ *     code still being embedded (`embedding-pending`), code embedded only with
+ *     another model (`other-model`), or code with no embedding row
+ *     (`not-embedded`). Its cosine is unknown, so it is scored on words alone
+ *     and shown only under the two-term rule; the measured hits beside it
+ *     keep the floor. Each such candidate carries its gate and cause, so a
+ *     caller can tell which SHOWN links the keyword rule decided.
+ *
+ * A hit the channel did not return although it HAS a vector under the active
+ * model (a stale symbol's rows crowded it out, or another model's rows were
+ * filtered after the search) is not the keyword rule's: it ranked past every
+ * returned vector hit, so it is scored at the lowest returned cosine (#1325's
+ * bound) and stays under the floor like any measured hit.
  *
  * WHAT IS SHARED WITH BM25. The hits HybridCodeSearch ranks are turned into
  * candidates by the BM25 searcher's {@link MemoizingBm25CodeSymbolSearcher.rankHits}:
@@ -61,7 +70,7 @@ import {
   createRunScopedSymbolIndex,
   prismaSymbolIndex,
 } from "../code-graph/project-code-searcher.js";
-import { createSymbolVectorStore } from "../code-graph/symbol-embedding-service.js";
+import { createSymbolVectorStore, PENDING_MODEL } from "../code-graph/symbol-embedding-service.js";
 import {
   COSINE_CALIBRATED_MODELS,
   DEFAULT_TOP_K,
@@ -70,6 +79,7 @@ import {
   type CodeSymbolCandidate,
   type CodeSymbolSearchOptions,
   type CodeSymbolSearcher,
+  type KeywordRuleCause,
   type RankedHit,
 } from "./requirement-code-mapping.js";
 
@@ -90,6 +100,29 @@ export const HYBRID_CANDIDATE_POOL = 60;
  * of these kinds without a cosine is permanent, not a project still embedding.
  */
 export const NEVER_EMBEDDED_KINDS: ReadonlySet<string> = new Set(["table", "column"]);
+
+/**
+ * #1417 — the `CodeSymbolEmbedding.embeddingModel` of each of `symbolIds` that
+ * has a row (`""` while its embedding is pending); a symbol with no row is
+ * absent. One batched read per hybrid answer.
+ */
+export type EmbeddingModelLookup = (
+  projectId: string,
+  symbolIds: readonly string[],
+) => Promise<ReadonlyMap<string, string>>;
+
+/** The {@link EmbeddingModelLookup} over a Prisma client. */
+export function prismaEmbeddingModels(
+  client: Pick<PrismaClient, "codeSymbolEmbedding">,
+): EmbeddingModelLookup {
+  return async (projectId, symbolIds) => {
+    const rows = await client.codeSymbolEmbedding.findMany({
+      where: { projectId, symbolId: { in: [...symbolIds] } },
+      select: { symbolId: true, embeddingModel: true },
+    });
+    return new Map(rows.map((r) => [r.symbolId, r.embeddingModel]));
+  };
+}
 
 /** The slice of {@link HybridCodeSearch} the mapper reads. */
 export interface HybridRanker {
@@ -117,7 +150,17 @@ export interface HybridCodeSymbolSearcherDeps {
    * (the hash stub is not one). Read per search, so a fallback at load time is seen.
    */
   semanticModel: () => string | null;
+  /**
+   * #1417 — reads the embedding rows of the hits the vector channel did not
+   * return, to tell "no vector under the active model" from "a vector the
+   * search lost". Absent, or failing: their cause is not known (`no-vector`)
+   * and they are all gated by the keyword rule, as under #1330.
+   */
+  embeddingModels?: EmbeddingModelLookup;
 }
+
+/** #1417 — what the embedding rows say of a hit left with no cosine. */
+type VectorState = "pending" | "other-model" | "none" | "unknown";
 
 interface HybridAnswer {
   hits: RankedHit[];
@@ -128,6 +171,8 @@ interface HybridAnswer {
    * A calibrated answer's hits without a cosine are, hit by hit (#1330).
    */
   calibrated: boolean;
+  /** #1417 — of each calibrated hit still without a cosine, why it has none. */
+  vectorState: ReadonlyMap<string, VectorState>;
 }
 
 /**
@@ -188,36 +233,40 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
     if (!answer.calibrated) {
       const candidates = await this.deps.bm25.rankHits(query, projectId, answer.hits, limit);
       opts.onLinkGate?.("keyword", "uncalibrated-model");
-      return candidates;
+      return candidates.map((c) => ({
+        ...c,
+        linkGate: "keyword" as const,
+        keywordRuleCause: "uncalibrated-model" as const,
+      }));
     }
-    // #1330 — hit by hit: a measured hit under the hybrid options, a hit with
-    // no cosine under the keyword fallback's, merged back in the fused order.
+    // #1330 — hit by hit: a hit with a cosine under the hybrid options, a hit
+    // with no vector under the keyword fallback's. #1417 — each candidate says
+    // which, and why the keyword rule decided it, so a caller can read the
+    // cause of the links it SHOWS (after its own floor and top-K).
     const hybridRanker = this.deps.hybridOptions
       ? this.deps.bm25.withOptions(this.deps.hybridOptions)
       : this.deps.bm25;
-    const measured = answer.hits.filter((h) => h.cosine != null);
-    const unmeasured = answer.hits.filter((h) => h.cosine == null);
-    const fromMeasured = await hybridRanker.rankHits(query, projectId, measured, limit);
-    const fromUnmeasured =
-      unmeasured.length > 0
-        ? await this.deps.bm25.rankHits(query, projectId, unmeasured, limit)
-        : [];
-    const rank = new Map(answer.hits.map((h, i) => [h.symbolId, i]));
-    const at = (c: CodeSymbolCandidate): number => rank.get(c.symbolId ?? "") ?? Infinity;
-    const candidates = [...fromMeasured, ...fromUnmeasured]
-      .sort((a, b) => at(a) - at(b))
-      .slice(0, limit);
-    const keywordGated = new Set(fromUnmeasured.map((c) => c.symbolId));
-    const gatedKinds = candidates.filter((c) => keywordGated.has(c.symbolId)).map((c) => c.kind);
-    opts.onLinkGate?.(
-      "hybrid",
-      gatedKinds.length === 0
-        ? undefined
-        : gatedKinds.every((k) => NEVER_EMBEDDED_KINDS.has(k))
-          ? "schema-not-embedded"
-          : "no-vector",
+    const scored = answer.hits.filter((h) => h.cosine != null);
+    const unscored = answer.hits.filter((h) => h.cosine == null);
+    const byConfidence = (await hybridRanker.rankHits(query, projectId, scored, limit)).map(
+      (c) => ({ ...c, linkGate: "hybrid" as const }),
     );
-    return candidates;
+    const byKeyword =
+      unscored.length > 0
+        ? (await this.deps.bm25.rankHits(query, projectId, unscored, limit)).map((c) => ({
+            ...c,
+            linkGate: "keyword" as const,
+            keywordRuleCause: keywordRuleCauseOf(c, answer.vectorState),
+          }))
+        : [];
+    opts.onLinkGate?.("hybrid");
+    // #1417 — `limit` is honoured in the order the mapper reads candidates in
+    // (confidence, highest first; a stable sort keeps the fused order on a
+    // tie), so the cut never drops a candidate the mapper would rank above
+    // one it keeps.
+    return [...byConfidence, ...byKeyword]
+      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
+      .slice(0, limit);
   }
 
   /** The hybrid hits for a query, or `null` when the mapper must fall back. */
@@ -254,27 +303,100 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
     // Another model's cosines are on another scale: rank with them, but score
     // the confidence on the lexical evidence alone (and gate it as keywords).
     const calibrated = COSINE_CALIBRATED_MODELS.has(model);
-    // #1330 — a hit the vector channel did not return keeps NO cosine. Under
-    // the 0.05 / 0.95 fusion every vector hit outranks every keyword-only one,
-    // so a keyword-only hit reaches the pool only when fewer vector hits
-    // survived than the pool holds. That is not evidence of a distant vector:
-    // the hit may have none (a table or column, never embedded; code not
-    // embedded yet), or one the channel lost (a stale symbol dropped after
-    // the search, another model's rows filtered after it). The lowest
-    // returned cosine (#1325) bounded only the last two, and only under an
-    // exact search; what it was for, keeping a one-word keyword hit under the
-    // floor, the two-term rule now does for every such hit (see `search`).
-    return {
-      calibrated,
-      hits: results.map((r) => ({
-        symbolId: r.symbolId,
-        score: r.score,
-        cosine:
-          calibrated && typeof r.vectorScore === "number" && Number.isFinite(r.vectorScore)
-            ? r.vectorScore
-            : null,
-      })),
-    };
+    const hits: RankedHit[] = results.map((r) => ({
+      symbolId: r.symbolId,
+      score: r.score,
+      cosine:
+        calibrated && typeof r.vectorScore === "number" && Number.isFinite(r.vectorScore)
+          ? r.vectorScore
+          : null,
+    }));
+    const vectorState = new Map<string, VectorState>();
+    if (!calibrated) return { calibrated, hits, vectorState };
+    // #1330 / #1417 — a hit the vector channel did not return has no cosine.
+    // Under the 0.05 / 0.95 fusion every vector hit outranks every
+    // keyword-only one, so such a hit reaches the pool only when fewer vector
+    // hits survived than the pool holds. Its embedding row says why:
+    //   - a row under the active model: it HAS a vector, which the search lost
+    //     (stale symbols' rows crowded it out, or another model's rows were
+    //     filtered after the search). It ranked past every returned vector
+    //     hit, so the lowest returned cosine bounds its own (#1325, exact
+    //     under an exact search): scored there, under the floor;
+    //   - a pending row, another model's row, or none (a table or column is
+    //     never embedded): it has no vector to compare, so it is left to the
+    //     keyword rule (see `search`).
+    const unscored = hits.filter((h) => h.cosine == null);
+    if (unscored.length === 0) return { calibrated, hits, vectorState };
+    const tags = await this.embeddingModelsOf(
+      projectId,
+      unscored.map((h) => h.symbolId),
+    );
+    const cutoff = lowestCosine(hits);
+    const bounded = hits.map((h) => {
+      if (h.cosine != null) return h;
+      const tag = tags?.get(h.symbolId);
+      if (tags && tag === model && cutoff !== null) return { ...h, cosine: cutoff };
+      vectorState.set(h.symbolId, vectorStateOf(tags, tag, model));
+      return h;
+    });
+    return { calibrated, hits: bounded, vectorState };
+  }
+
+  /** The hits' embedding-row tags, or `null` when they cannot be read. */
+  private async embeddingModelsOf(
+    projectId: string,
+    symbolIds: readonly string[],
+  ): Promise<ReadonlyMap<string, string> | null> {
+    if (!this.deps.embeddingModels) return null;
+    try {
+      return await this.deps.embeddingModels(projectId, symbolIds);
+    } catch (err) {
+      log.warn("could not read the hits' embedding rows; gating them as keywords", {
+        projectId,
+        error: String(err),
+      });
+      return null;
+    }
+  }
+}
+
+/** The lowest calibrated cosine among the vector channel's hits, or `null`. */
+function lowestCosine(hits: readonly RankedHit[]): number | null {
+  let low: number | null = null;
+  for (const h of hits) {
+    if (h.cosine != null && (low === null || h.cosine < low)) low = h.cosine;
+  }
+  return low;
+}
+
+/** #1417 — a hit left without a cosine, read from its embedding row's tag. */
+function vectorStateOf(
+  tags: ReadonlyMap<string, string> | null,
+  tag: string | undefined,
+  model: string,
+): VectorState {
+  if (!tags) return "unknown";
+  if (tag === undefined) return "none";
+  if (tag === PENDING_MODEL) return "pending";
+  // An active-model row reaches here only with no returned cosine to bound it.
+  return tag === model ? "unknown" : "other-model";
+}
+
+/** #1417 — why the keyword rule decided a candidate left without a cosine. */
+function keywordRuleCauseOf(
+  c: CodeSymbolCandidate,
+  states: ReadonlyMap<string, VectorState>,
+): KeywordRuleCause {
+  if (NEVER_EMBEDDED_KINDS.has(c.kind)) return "schema-not-embedded";
+  switch (states.get(c.symbolId ?? "")) {
+    case "pending":
+      return "embedding-pending";
+    case "other-model":
+      return "other-model";
+    case "none":
+      return "not-embedded";
+    default:
+      return "no-vector";
   }
 }
 
@@ -296,10 +418,15 @@ export function activeSemanticModel(): string | null {
  * same rule as Impact Analysis's `defaultSeedChange`).
  */
 export function createRequirementCodeSearcher(
-  prisma: Pick<PrismaClient, "codeSymbol">,
+  prisma: Pick<PrismaClient, "codeSymbol"> & Partial<Pick<PrismaClient, "codeSymbolEmbedding">>,
   options: Bm25SearcherOptions = {},
 ): HybridCodeSymbolSearcher {
   const sameClient = (prisma as unknown) === (defaultPrisma as unknown);
+  // #1417 — a client without the embedding rows (a test double) leaves the
+  // cause of a hit with no cosine unknown, as before.
+  const embeddingClient = prisma.codeSymbolEmbedding
+    ? (prisma as Pick<PrismaClient, "codeSymbolEmbedding">)
+    : null;
   const hybrid = new HybridCodeSearch(
     createSymbolVectorStore(),
     sameClient ? prismaSymbolIndex : createRunScopedSymbolIndex(prisma),
@@ -309,5 +436,6 @@ export function createRequirementCodeSearcher(
     bm25: new MemoizingBm25CodeSymbolSearcher(prisma, options),
     hybrid,
     semanticModel: activeSemanticModel,
+    ...(embeddingClient ? { embeddingModels: prismaEmbeddingModels(embeddingClient) } : {}),
   });
 }
