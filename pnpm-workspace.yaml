@@ -505,6 +505,15 @@ overrides:
   # `images.dangerouslyAllowSVG` and no remote patterns; next/image renders only
   # the local `/icon.svg`, which Next serves unoptimized while SVG is disallowed.
   next@<16.4.1: ^16.4.1
+  # GHSA-mrv2-3pqr-j5jr (HIGH, CVSS 7.6, published 2026-10-22T16:24Z, #1420):
+  # a DOMPurify IN_PLACE hook that removes a parent or sibling leaves the detached
+  # subtree's event handlers armed (incomplete fix for GHSA-p98j-92pf-mc4p).
+  # `introduced 0, fixed 3.4.17`. Two copies were below it: ui's own 3.4.16 and
+  # the 3.4.11 mermaid@11.16.0 resolved through its `^3.3.3` range, so the ui
+  # manifest moves to ^3.4.17 and this override closes mermaid's copy. 3.4.17
+  # was published 2026-10-12T12:41Z, clear of minimumReleaseAge; verified
+  # against api.osv.dev on 2026-10-22 that 3.4.17 returns zero vulns.
+  dompurify@<3.4.17: ^3.4.17
 
   # @xmldom/xmldom, NINETEEN High advisories across two lines, all published
   # 2026-09-08 (#1363) — DOM-clobbering and parser-confusion bugs that let

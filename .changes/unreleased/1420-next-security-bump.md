@@ -9,3 +9,6 @@ section: Security
   (GHSA-p3m5-59mp-jv5r, high). METIS does not allow SVG through the image
   optimiser and loads no remote images, but the dependency audit failed on every
   pull request until the version moved.
+- DOMPurify moves to 3.4.17, including the copy bundled for diagrams, fixing a
+  sanitiser bypass that could leave event handlers armed (GHSA-mrv2-3pqr-j5jr,
+  high), published the same afternoon.
