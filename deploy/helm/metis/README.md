@@ -172,19 +172,79 @@ ingress:
 | Controller | TLS source | WebSocket handling |
 |------------|------------|-------------------|
 | `alb` | ACM cert ARN via `ingress.alb.certificateArn` | ALB target-group stickiness (1h cookie) |
-| `nginx` | cert-manager (`ingress.tls.certManager.enabled`) | `proxy_set_header Upgrade` snippet |
+| `nginx` | cert-manager (`ingress.tls.certManager.enabled`) or `ingress.tls.secretName` | Native: ingress-nginx forwards `Upgrade` itself, and the chart only sets 3600 s read/send timeouts. There is no snippet: ingress-nginx v1.9+ rejects snippet annotations by default, and the old one failed `helm install` (#1312). |
 | `traefik` | cert-manager | `traefik.ingress.kubernetes.io/router.entrypoints: websecure` |
 
 Routes:
 
 | Path | Backend | Port |
 |------|---------|------|
-| `/api` | `<release>-server` | 4000 |
+| `/api/auth/oidc`, `/api/auth/saml` | `<release>-server` | 4000 (SSO: login redirects, OIDC callback, SAML ACS + metadata) |
 | `/socket.io` | `<release>-server` | 4000 (websocket) |
-| `/` | `<release>-ui` | 3000 |
+| `/` (including the rest of `/api`) | `<release>-ui` | 3000 |
+
+`/api` goes to the **UI**, not the server (#1312). The UI's route handlers are
+the browser's API:
+
+- at login they mint the `Secure; HttpOnly` session cookies;
+- every other `/api` call they forward to `ui.env.METIS_API_URL` (default
+  `http://<fullname>-server:<server.service.port>/api`) with the token attached.
+
+An `/api → server` rule answered login with 200, set no cookie, and sent the
+user back to `/login`.
+
+The SSO endpoints are the exception. The server serves them
+(`server/src/routes/sso.ts`), and the UI has no route for them: its `/api`
+catch-all answers `/api/auth/*` with 404. The Ingress therefore sends
+`/api/auth/oidc` and `/api/auth/saml` to the server, listed ahead of `/` (ALB
+evaluates rules in order). Register the IdP URLs on the **public origin**:
+
+- the OIDC redirect URI is `https://<host>/api/auth/oidc/callback`;
+- the SAML ACS URL is `https://<host>/api/auth/saml/acs`, and its metadata is
+  at `https://<host>/api/auth/saml/metadata`.
+
+The cookies the server sets at the end of an SSO login may not use the names
+the UI's session check reads; that is tracked separately. Check an SSO
+round-trip end to end before relying on it.
+
+Request bodies: ingress-nginx refuses bodies over 1m by default, so the chart
+sets `nginx.ingress.kubernetes.io/proxy-body-size` from
+`ingress.nginx.proxyBodySize` (default `50m`, the server's repository-archive
+cap). For the ALB and traefik, check your controller's own limit.
+
+**Known limit: long idle requests through the UI proxy.** The UI's `/api`
+proxy uses Node's `fetch`, which gives up when no response headers arrive
+within undici's default 300 s `headersTimeout`. Only Spec Kit commands get a
+longer timeout (`METIS_SPEC_KIT_PROXY_TIMEOUT_MS`). Any other call that sends
+no headers for 5 minutes fails at the proxy even if the server finishes, and
+raising the Ingress timeouts does not help.
+
+This has two consequences for operators:
+
+- **Health from outside is `/api/health`**, which the UI proxies to the server.
+  Through the ingress, `/healthz` and `/readyz` reach the UI, which redirects to
+  `/login`. Check them with `kubectl exec` instead (see
+  [Health checks](#health-checks)).
+- **TLS is required for login.** The session cookies are `Secure`, so a browser
+  (or `curl -c`) on plain `http://` never sends them back.
 
 For a BYO TLS Secret instead of cert-manager, set
 `ingress.tls.secretName: my-tls`.
+
+### Server env the chart does not set for you
+
+The chart cannot guess these values, and the server will not work behind an
+ingress without them (#1312):
+
+| `server.env` key | Why |
+|---|---|
+| `AUTH_MODE` (`ldap`, `oidc` or `saml`) | If unset, it resolves to `mock`, and under `NODE_ENV=production` the server **refuses to start** (CrashLoopBackOff: "Mock authentication is not permitted in production"). LDAP also needs `AUTH_LDAP_URL`, `AUTH_LDAP_BASE_DN`, `AUTH_LDAP_BIND_DN`, `AUTH_LDAP_USER_SEARCH_BASE` and `AUTH_LDAP_SEARCH_FILTER` (the default filter is Active Directory's `sAMAccountName`), plus the bind password through `secrets.keyMap.AUTH_LDAP_BIND_PASSWORD`. See [`docs/auth/README.md`](../../../docs/auth/README.md). Bootstrapping the first admin is #1376. |
+| `CORS_ORIGIN` | Set it to `https://<ingress.host>`. The server checks a socket's `Origin` (#1349) and CORS against this value. The default is `http://localhost:3000`, so every browser socket is rejected with `ORIGIN_REJECTED`. |
+| `MCP_RUNTIME: k8s-sse` | The only safe MCP runtime on Kubernetes. If unset, `/readyz` reports the Docker runtime as failed (there is no Docker socket, by design). The readiness probe for `k8s-sse` itself is wrong today (#1380). |
+
+`server.env` values pass through Helm's `tpl`, so a literal `{{` must be
+escaped. For example, the LDAP filter `(uid={{username}})` is written
+`'(uid={{ "{{" }}username{{ "}}" }})'`.
 
 ---
 
@@ -222,9 +282,10 @@ eksctl create iamserviceaccount \
 
 ## HPA / PDB / NetworkPolicy
 
-- **HPA** — `ui` scales 2→10 on 70% CPU by default. `server` HPA template
-  exists but defaults to `enabled: false` because LanceDB + scheduler +
-  Socket.IO are still single-writer (see persistence section above).
+- **HPA** — `ui` scales 2→10 on 70% CPU by default. The `server` HPA is
+  **on** by default (2→6) since the multi-replica work. On the single-replica
+  SQLite/LanceDB profile, turn it off (`autoscaling.server.enabled=false`) along
+  with `server.replicaCount: 1`. The HPA needs metrics-server.
 - **PDB** — `minAvailable: 1` for `ui`, `server` and `embeddings`, but a budget
   is only **rendered when the component's replica floor exceeds it** (#786).
   `minAvailable: 1` over a *single* replica is an undrainable node: `kubectl
@@ -245,6 +306,11 @@ eksctl create iamserviceaccount \
     no FQDN-aware CNI). Set `networkPolicy.cilium.enabled=true` to switch
     to a `CiliumNetworkPolicy` with FQDN-scoped egress for the AI gateway
     + GitHub host allowlist.
+  - **Known gap (#1374):** the policy's `podSelector` uses
+    `app.kubernetes.io/part-of`, which the pod template does not carry, so
+    today the policy selects no pod and isolates nothing. Its 443 rule is
+    also a `namespaceSelector`, which matches no external address. Do not
+    count this policy as your isolation until #1374 lands.
 
 Add managed-DB egress (RDS) via:
 
@@ -377,7 +443,121 @@ baked-vs-PVC-vs-init-container decision:
 
 ---
 
+## Health checks
+
+The server image ships no `curl`, so check from inside the cluster with `node`:
+
+```bash
+kubectl -n metis exec deploy/metis-server -- node -e \
+  "fetch('http://localhost:4000/readyz').then(r=>r.text()).then(console.log)"
+```
+
+From outside, through the ingress, use `curl -fsS https://<host>/api/health`.
+
+---
+
+## Backup and restore (single-replica, PVC profile)
+
+`backup.enabled=true` renders a CronJob that tars the server's data directory
+(SQLite database, uploads, LanceDB) to the `<release>-backup` PVC. With RWO
+volumes, pin it to the server's node with the `backup.affinity` example in
+`values.yaml`. To run a backup now:
+
+```bash
+kubectl -n metis create job metis-backup-manual --from=cronjob/metis-backup
+kubectl -n metis wait --for=condition=complete job/metis-backup-manual --timeout=300s
+kubectl -n metis logs job/metis-backup-manual   # [backup] wrote /backup/metis-backup-<ts>.tar.gz
+```
+
+The restore below was drilled on kind in #1312: a project deleted after the
+backup came back, with its generated BRD.
+
+1. Run `kubectl -n metis scale deploy/metis-server --replicas=0` and wait for
+   the pod to terminate, so the restore does not race a live SQLite writer.
+2. Run a one-off pod that mounts the same four claims at the server's paths and
+   unpacks the newest tarball. It unpacks to scratch space first and checks the
+   result, so a bad tarball leaves the live volumes untouched. Only then does
+   it wipe the volumes and copy the files in. Copying, rather than running
+   `tar -x` onto the volumes, is needed because the pod runs as UID 1001 under
+   PSA `restricted`: the volume roots belong to the provisioner, so a `tar -x`
+   straight onto them fails (exit 2, "Cannot change mode") even though every
+   file lands. The scratch space is the pod's `emptyDir`, so the node needs free
+   disk for one unpacked backup.
+
+   The claims are `ReadWriteOnce`, so the pod can only start where the volumes
+   can attach. On kind that is the node holding the local volumes. On EKS an EBS
+   volume attaches only in its own **Availability Zone**: if no schedulable node
+   is in that AZ, the pod stays `Pending` with a volume node-affinity conflict.
+   Keep a node in the AZ (or let the autoscaler add one) before you start.
+
+   ```yaml
+   apiVersion: v1
+   kind: Pod
+   metadata: { name: metis-restore, namespace: metis }
+   spec:
+     restartPolicy: Never
+     securityContext:
+       runAsNonRoot: true
+       runAsUser: 1001
+       runAsGroup: 1001
+       fsGroup: 1001
+       seccompProfile: { type: RuntimeDefault }
+     containers:
+       - name: restore
+         image: ghcr.io/openzigs/metis-server:<tag>
+         securityContext:
+           allowPrivilegeEscalation: false
+           readOnlyRootFilesystem: true
+           capabilities: { drop: [ALL] }
+         command:
+           - /bin/sh
+           - -c
+           - |
+             set -eu
+             latest="$(ls -1t /backup/metis-backup-*.tar.gz | head -n1)"
+             echo "[restore] from $latest"
+             # 1. Unpack to scratch and verify BEFORE touching the live volumes:
+             #    a corrupt or empty tarball must leave the current data alone.
+             mkdir -p /tmp/stage && tar -xzf "$latest" -C /tmp/stage
+             test -s /tmp/stage/metis.db || { echo "[restore] no metis.db in $latest; aborting, nothing changed" >&2; exit 1; }
+             # 2. Only now wipe the data volume and the two volumes mounted inside it
+             #    (the mount points themselves stay), then copy the verified tree in.
+             cd /app/server/data
+             find . -mindepth 1 -maxdepth 1 ! -name uploads ! -name lancedb -exec rm -rf {} +
+             find ./uploads ./lancedb -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+             cp -R /tmp/stage/. /app/server/data/
+             echo "[restore] done"
+         volumeMounts:
+           - { name: tmp, mountPath: /tmp }
+           - { name: data, mountPath: /app/server/data }
+           - { name: uploads, mountPath: /app/server/data/uploads }
+           - { name: lancedb, mountPath: /app/server/data/lancedb }
+           - { name: backup, mountPath: /backup, readOnly: true }
+     volumes:
+       - { name: tmp, emptyDir: {} }
+       - { name: data, persistentVolumeClaim: { claimName: metis-server-data } }
+       - { name: uploads, persistentVolumeClaim: { claimName: metis-server-uploads } }
+       - { name: lancedb, persistentVolumeClaim: { claimName: metis-server-lancedb } }
+       - { name: backup, persistentVolumeClaim: { claimName: metis-backup } }
+   ```
+
+3. When the pod is `Succeeded`, delete it and run
+   `kubectl -n metis scale deploy/metis-server --replicas=1`.
+
+The restored database can decrypt its connector secrets only with the **same**
+`VAULT_MASTER_KEY`, which the backup deliberately does not contain. On Postgres
+(`values-prod.yaml`) the database is not on these volumes: restore it from the
+managed service's snapshots. For cross-region failover, see
+[`docs/DR_RUNBOOK.md`](../../../docs/DR_RUNBOOK.md).
+
+---
+
 ## Footguns
+
+- **Upgrading a scaled install with Helm 4** fails once an HPA has changed the
+  replica count, with `conflict with "kube-controller-manager" with subresource
+  "scale" … .spec.replicas`. The cause is that the chart still renders
+  `replicas` under an HPA (#1378). Until that is fixed, pass `--force-conflicts`.
 
 - **Never base the embeddings image on Alpine.** `onnxruntime-node` has no musl
   build; it *installs* fine and then crashes at `require()` inside the pod. This

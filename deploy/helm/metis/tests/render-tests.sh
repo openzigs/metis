@@ -314,18 +314,53 @@ ALB=$(template --set ingress.enabled=true)
 assert "1× Ingress (alb)" 1 "$(count_kind Ingress "${ALB}")"
 assert_contains "alb scheme annotation" "alb.ingress.kubernetes.io/scheme" "${ALB}"
 assert_contains "alb stickiness for websocket" "stickiness.enabled=true" "${ALB}"
-assert_contains "/api route to server" "name: metis-server" "${ALB}"
+# #1312 — /api belongs to the UI (its route handlers mint the session cookies
+# and proxy to the server); a /api → server rule broke every browser login.
+assert "no bare /api rule (the UI serves /api)" 0 "$(grep -c 'path: /api$' <<<"${ALB}" || true)"
+assert_contains "/socket.io route to server" "name: metis-server" "${ALB}"
 assert_contains "/socket.io route" "path: /socket.io" "${ALB}"
 assert_contains "/ route to ui" "name: metis-ui" "${ALB}"
+
+# #1312 — the UI's /api handlers reach the server through METIS_API_URL; unset,
+# they call localhost:4000 inside the UI pod. In-cluster URLs follow the
+# Service names (metis.fullname), not the bare release name.
+assert_contains "ui METIS_API_URL points at the server Service" "value: \"http://metis-server:4000/api\"" "${DEFAULT}"
+OTHER_RELEASE=$(helm template prod "${CHART_DIR}")
+assert_contains "service URLs follow fullname for another release" "value: \"http://prod-metis-embeddings:5050\"" "${OTHER_RELEASE}"
+assert_contains "ui METIS_API_URL follows fullname for another release" "value: \"http://prod-metis-server:4000/api\"" "${OTHER_RELEASE}"
 
 NGINX=$(template --set ingress.enabled=true --set ingress.className=nginx --set ingress.tls.certManager.enabled=true)
 assert_contains "nginx class set" "ingressClassName: nginx" "${NGINX}"
 assert_contains "cert-manager annotation" "cert-manager.io/cluster-issuer" "${NGINX}"
-assert_contains "websocket upgrade snippet" "proxy_set_header Upgrade" "${NGINX}"
+# #1312 — ingress-nginx v1.9+ rejects snippet annotations by default, so a
+# snippet fails the whole install; the controller forwards Upgrade itself.
+assert_not_contains "no snippet annotation (rejected by ingress-nginx)" "configuration-snippet" "${NGINX}"
+assert_contains "websocket idle timeout on nginx" "nginx.ingress.kubernetes.io/proxy-read-timeout: \"3600\"" "${NGINX}"
 
 TRAEFIK=$(template --set ingress.enabled=true --set ingress.className=traefik --set ingress.tls.certManager.enabled=true)
 assert_contains "traefik class set" "ingressClassName: traefik" "${TRAEFIK}"
 assert_contains "traefik websecure entrypoint" "router.entrypoints: websecure" "${TRAEFIK}"
+
+# #1312 — the SSO endpoints are served by the server, and the UI's /api
+# catch-all 404s /api/auth/*, so every controller routes them to the server,
+# ahead of `/` (ALB evaluates rules in order).
+for ctl in ALB NGINX TRAEFIK; do
+  # Only the Ingress document: the Deployments' probes also say `path: /`.
+  OUT=$(awk '/^kind: Ingress$/ {f=1} /^---/ {f=0} f' <<<"${!ctl}")
+  for sso in /api/auth/oidc /api/auth/saml; do
+    BLOCK=$(awk -v p="path: ${sso}" 'index($0, p) {f=1} f {print} f && /number:/ {exit}' <<<"${OUT}")
+    assert_contains "${ctl}: ${sso} routes to the server" "name: metis-server" "${BLOCK}"
+  done
+  SSO_LINE=$(grep -n "path: /api/auth/oidc" <<<"${OUT}" | head -1 | cut -d: -f1)
+  ROOT_LINE=$(grep -n "path: /$" <<<"${OUT}" | head -1 | cut -d: -f1)
+  assert "${ctl}: SSO rules precede the / rule" "yes" "$([[ -n "${SSO_LINE}" && -n "${ROOT_LINE}" && "${SSO_LINE}" -lt "${ROOT_LINE}" ]] && echo yes || echo no)"
+done
+
+# #1312 — ingress-nginx's 1m default body cap 413s archive uploads (50 MB cap).
+assert_contains "nginx body size matches the 50 MB upload cap" "nginx.ingress.kubernetes.io/proxy-body-size: \"50m\"" "${NGINX}"
+
+# #1312 — METIS_API_URL follows the server Service port.
+assert_contains "ui METIS_API_URL follows server.service.port" "value: \"http://metis-server:4100/api\"" "$(template --set server.service.port=4100)"
 
 # ---------------------------------------------------------------------------
 echo "Test 7: RBAC + IRSA — sub-issue #370"

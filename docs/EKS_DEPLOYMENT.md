@@ -307,8 +307,23 @@ helm install metis ./deploy/helm/metis \
   --set ingress.host=metis.example.com \
   --set ingress.alb.certificateArn=arn:aws:acm:us-east-1:ACCT:certificate/UUID \
   --set uploads.s3.bucket=my-metis-uploads \
-  --set uploads.s3.region=us-east-1
+  --set uploads.s3.region=us-east-1 \
+  --set server.env.AUTH_MODE=oidc \
+  --set server.env.CORS_ORIGIN=https://metis.example.com \
+  --set server.env.MCP_RUNTIME=k8s-sse
 ```
+
+The last three lines are not optional (#1312):
+
+- **`AUTH_MODE`.** If it is unset, the server resolves to mock auth and
+  refuses to start under `NODE_ENV=production`.
+- **`CORS_ORIGIN`.** The server checks every socket's `Origin` against it
+  (#1349).
+- **`MCP_RUNTIME`.** On Kubernetes this is the only safe MCP runtime.
+
+For LDAP, the bind settings and the bind-password key are in the chart README,
+§ "Server env the chart does not set for you". There is no supported way to
+bootstrap the first admin on a non-mock install yet (#1376).
 
 Watch pods come up:
 
@@ -349,9 +364,16 @@ KEEP_CLUSTER=1 make kind-smoke   # keep the cluster afterwards to poke around
 > pods sit in `ImagePullBackOff` — expected. The smoke validates the **chart**
 > (admission accepts every rendered object; the release installs; all objects
 > exist), not the running application. To exercise a real rollout locally, build
-> the images and `kind load docker-image metis-server:test …` into the cluster
-> before installing; the script documents this in its header. We deliberately do
-> not load images in CI to keep the job fast and non-flaky.
+> the four images, tag them for the chart's image path
+> (`ghcr.io/openzigs/metis-<server|ui|embeddings-svc|sql-lineage>:<tag>`), run
+> `kind load docker-image …` into the cluster, and install with `--set image.tag=<tag>`.
+> #1312 did this end to end on a three-node kind cluster, at about 2.4 GiB of
+> Docker memory in total. On a 4 GiB Docker Desktop, the server image's
+> `tsc` step runs out of heap at Node's default limit; build it with
+> `NODE_OPTIONS=--max-old-space-size=3072` set in the builder stage, as a
+> local Dockerfile copy. The kind node's default CNI did not enforce
+> NetworkPolicy egress in that run, so test policy on Calico or Cilium. We
+> deliberately do not load images in CI, to keep the job fast and non-flaky.
 >
 > The dev profile's namespaced RBAC Role targets the MCP namespace
 > (`rbac.mcpNamespace`, default `metis-mcp`, see §6), so the smoke script creates
@@ -377,8 +399,9 @@ kubectl get ingress -n metis
 # If using ExternalDNS, the A / ALIAS record gets created automatically.
 # Otherwise add a Route 53 alias to the ALB.
 
-curl -k https://metis.example.com/healthz
-# Expect: {"status":"ok"}
+curl -k https://metis.example.com/api/health
+# Expect: {"status":"ok",...}. The ingress sends `/api` to the UI, which proxies
+# it to the server; `/healthz` is not routed to the server and redirects to /login.
 ```
 
 ---

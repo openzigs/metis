@@ -2,9 +2,9 @@
 Ingress — sub-issue #369.
 Switches between alb | nginx | traefik via .Values.ingress.className.
 Routes:
-  /api/*       → server (4000)
+  /api/auth/oidc, /api/auth/saml → server (4000)  (SSO; the UI has no route)
   /socket.io/* → server (4000)  (websocket upgrade)
-  /             → ui (3000)
+  /             → ui (3000)     (includes /api: the UI proxies it to the server)
 */ -}}
 {{- if .Values.ingress.enabled -}}
 {{- $fullname := include "metis.fullname" . -}}
@@ -37,11 +37,25 @@ metadata:
     cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.certManager.clusterIssuer | quote }}
     {{- end }}
     {{- if .Values.ingress.websocket.enabled }}
+    {{- /*
+      #1312 — ingress-nginx forwards the WebSocket Upgrade/Connection headers on
+      every location by itself; it only needs the long read/send timeouts so an
+      idle /socket.io connection is not cut at the 60 s default. The chart used to
+      add a `configuration-snippet` setting those headers, and ingress-nginx
+      v1.9+ rejects every snippet annotation by default
+      (allow-snippet-annotations=false): the admission webhook refused the whole
+      Ingress, so `helm install` failed on a stock controller.
+    */}}
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection "upgrade";
+    {{- end }}
+    {{- /*
+      #1312 — ingress-nginx caps request bodies at 1m by default, so a document
+      upload (10 MB cap) or a repository archive (MAX_UPLOAD_ARCHIVE_BYTES, 50 MB)
+      was refused with 413 before it reached METIS. Match the server's largest cap.
+    */}}
+    {{- with .Values.ingress.nginx.proxyBodySize }}
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ . | quote }}
     {{- end }}
     {{- with .Values.ingress.nginx.extraAnnotations }}
     {{- toYaml . | nindent 4 }}
@@ -71,13 +85,31 @@ spec:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
-          - path: /api
-            pathType: {{ .Values.ingress.pathType }}
+          {{- /*
+            #1312 — `/api` goes to the UI, not the server. The UI's Next.js route
+            handlers (ui/src/app/api) are the browser's API: they mint the
+            HttpOnly session cookies at login and forward every other call to
+            METIS_API_URL with the token attached. Routing `/api` straight to the
+            server answered login with 200 and the tokens in the JSON body, set no
+            cookie, and the UI sent the user back to /login. docker-compose.prod
+            works the same way: the browser reaches the server only through :3000.
+
+            The SSO endpoints are the exception. The server serves them
+            (server/src/routes/sso.ts), and the UI has no route for them: its
+            /api catch-all answers /api/auth/* with 404. So the OIDC and SAML
+            login redirects, the OIDC callback, and the SAML ACS and metadata go
+            to the server. They are listed first, because ALB evaluates rules in
+            order; nginx and traefik pick the longest prefix either way.
+          */}}
+          {{- range $ssoPath := list "/api/auth/oidc" "/api/auth/saml" }}
+          - path: {{ $ssoPath }}
+            pathType: {{ $.Values.ingress.pathType }}
             backend:
               service:
                 name: {{ $serverSvc }}
                 port:
-                  number: {{ .Values.server.service.port }}
+                  number: {{ $.Values.server.service.port }}
+          {{- end }}
           - path: /socket.io
             pathType: {{ .Values.ingress.pathType }}
             backend:
