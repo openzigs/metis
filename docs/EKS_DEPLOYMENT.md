@@ -360,8 +360,9 @@ to the install:
 
 When `jdoe` first signs in and no user holds the admin role yet, METIS grants
 `jdoe` admin and records `user.role.bootstrap_admin` in the audit log. From then
-on the setting does nothing, so it cannot be used to gain admin later. You can
-leave it set, or remove it on the next upgrade. Then sign in as `jdoe` and set
+on the setting does nothing while any admin role row exists, so it cannot be
+used to gain admin later. It re-arms if every admin role is removed, so unset it
+on the next upgrade unless you want that recovery path. Then sign in as `jdoe` and set
 the group mappings on **Settings → Authentication** (`/settings/auth`). For OIDC, list an **e-mail
 address**: only an e-mail the IdP marks `email_verified` matches, never the
 username (`preferred_username` is often user-editable).

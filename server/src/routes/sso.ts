@@ -37,6 +37,7 @@ import {
 } from "../lib/auth/saml-provider.js";
 import { generateAuthorizationUrl, exchangeCodeForTokens } from "../lib/auth/oidc-provider.js";
 import { reconcileTrustedLoginRole } from "../lib/auth/durable-roles.js";
+import { oidcAssertedIdentities, samlAssertedIdentities } from "../lib/auth/bootstrap-admins.js";
 import { issueTokens } from "../lib/auth/jwt.js";
 import { LIVE_WORKSPACE_MEMBERSHIP } from "../lib/auth/live-workspace-ids.js";
 import { audit } from "../lib/audit/audit-service.js";
@@ -240,8 +241,8 @@ export function ssoRouter(): Router {
       result.user.displayName,
       result.user.email,
       role,
-      // The IdP signed both in the assertion.
-      [result.user.username, result.user.email],
+      // Only what the signed assertion states as-is (`samlAssertedIdentities`).
+      samlAssertedIdentities(result.user.rawClaims ?? {}),
     );
     const permissions = getPermissionsForRole(userRow.role);
     const tokens = issueTokens({
@@ -341,12 +342,8 @@ export function ssoRouter(): Router {
       result.user.displayName,
       result.user.email,
       role,
-      // OIDC bootstraps on a VERIFIED e-mail only. Many IdPs let a user type any
-      // address into their profile, and the username is no better: it is
-      // `preferred_username` (often user-editable) or, when that is absent, the
-      // local part of the unverified e-mail (`oidc-provider.ts`), so
-      // `jdoe@attacker.example` would match a listed `jdoe`.
-      [result.user.rawClaims?.email_verified === true ? result.user.email : null],
+      // OIDC bootstraps on the verified `email` claim only (`oidcAssertedIdentities`).
+      oidcAssertedIdentities(result.user.rawClaims ?? {}),
     );
     const permissions = getPermissionsForRole(userRow.role);
     const tokens = issueTokens({

@@ -163,18 +163,28 @@ addresses, matched case-insensitively.
   for a year, gets the role their provider maps. The check and the grant run in
   the login's serializable transaction, so two listed people signing in at once
   cannot both be granted admin.
-- **Which identities count:** for LDAP and SAML, the account's username and
-  its e-mail as the provider asserts it (LDAP `mail`, the signed SAML
-  assertion). For **OIDC, only an e-mail the IdP marks `email_verified`**: the
-  OIDC username is `preferred_username`, which many IdPs let users edit, or,
-  without it, the local part of the e-mail, which may be unverified
-  (`jdoe@attacker.example` would otherwise match a listed `jdoe`). So list an
-  e-mail address for an OIDC install.
+- **Which identities count:** only values the provider states as-is, never one
+  METIS derives.
+  - **LDAP:** the account's username and its `mail` attribute.
+  - **SAML:** the signed assertion's `upn`, `uid`, e-mail attributes and
+    NameID. When the assertion has no `upn` or `uid`, METIS names the account
+    from the e-mail's local part. That name never matches, because
+    `jdoe@other.example` would otherwise match a listed `jdoe`.
+  - **OIDC:** only the `email` claim, and only when the IdP marks it
+    `email_verified: true`. The OIDC username is `preferred_username`, which
+    users can often edit, or the local part of a possibly unverified e-mail. So
+    list an e-mail address for an OIDC install.
+  - **Normalisation:** identities are NFKC-folded and case-insensitive. A
+    signing-in identity that NFKC would change (a Kelvin sign `\u212A` for `K`,
+    full-width letters) never matches.
 
 After the first admin signs in, set the group mappings (`/settings/auth`,
 or `PUT /api/admin/auth/providers/<mode>`) and grant other admins from there.
-The setting is not a recovery path: if the last admin is removed, its stale role
-rows still block a new bootstrap until they are deleted.
+**It re-arms.** "An admin exists" means some row grants the admin role, even
+one belonging to a deactivated or deleted user. If every such row is later
+removed, the next listed identity to sign in is granted admin again. Unset
+`METIS_BOOTSTRAP_ADMINS` once your first admin exists if you do not want that
+recovery path.
 
 ### Completing an SSO login (OIDC and SAML, #1386)
 

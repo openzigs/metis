@@ -283,6 +283,60 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await loginAs("boss", true)).toBe("admin");
     });
 
+    it("SAML (#1393 review): a username derived from the e-mail's local part never bootstraps", async () => {
+      await db.userRole.deleteMany({});
+      // The assertion carries no upn/uid, so METIS names the account "jdoe" from
+      // `jdoe@other.example` — a value no IdP asserted.
+      vi.stubEnv("METIS_BOOTSTRAP_ADMINS", "jdoe");
+      const key = helpers.getTestSigningKey();
+      const acsUrl = `${UI_ORIGIN}/api/auth/saml/acs`;
+      const entityId = `${UI_ORIGIN}/api/auth/saml/metadata`;
+      const idpIssuer = "https://idp.example.test/saml";
+      upsertProvider({
+        mode: "saml",
+        name: "Mock SAML",
+        enabled: true,
+        groupMappings: [],
+        defaultRole: "developer",
+        saml: {
+          entityId,
+          acsUrl,
+          idpMetadataXml: "",
+          idpSsoUrl: "https://idp.example.test/saml/sso",
+          idpCerts: [key.certificateBody],
+          idpIssuer,
+          signRequests: false,
+        },
+      });
+      const start = await request(app).get("/api/auth/saml/login");
+      const samlRequest = new URL(start.headers.location).searchParams.get("SAMLRequest")!;
+      const requestId = inflateRawSync(Buffer.from(samlRequest, "base64"))
+        .toString("utf8")
+        .match(/ID="([^"]+)"/)![1];
+      const signed = helpers.signResponse(
+        helpers.signAssertion(
+          helpers.buildSamlResponseXml({
+            audience: entityId,
+            recipient: acsUrl,
+            issuer: idpIssuer,
+            nameId: "jdoe@other.example",
+            inResponseTo: requestId,
+          }),
+          key,
+        ),
+        key,
+      );
+      const acs = await request(app)
+        .post("/api/auth/saml/acs")
+        .type("form")
+        .send({ SAMLResponse: helpers.toBase64(signed) });
+      expect(acs.status).toBe(302);
+      const me = await request(app)
+        .get("/api/auth/me")
+        .set("Authorization", `Bearer ${cookieValue(cookiesByName(acs).get("metis.at"))}`);
+      expect(me.body.data.user).toMatchObject({ username: "jdoe", role: "developer" });
+    });
+
     it("SAML: AuthnRequest → signed Response at the ACS → Secure session cookies in production", async () => {
       // #1376 — and the signed assertion's e-mail bootstraps the first admin.
       await db.userRole.deleteMany({});

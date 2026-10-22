@@ -20,6 +20,20 @@
  * both see "no admin" and both be granted it.
  */
 
+/** One identity, folded for comparison: NFKC, trimmed, lower-cased. */
+function foldIdentity(identity: string): string {
+  return identity.normalize("NFKC").trim().toLowerCase();
+}
+
+/**
+ * A signing-in identity that NFKC would change is never a candidate:
+ * `"Kate".toLowerCase()` is already `"kate"` (Kelvin sign), so folding
+ * alone would let a look-alike account an IdP accepted match a listed `kate`.
+ */
+function isNfkcStable(identity: string): boolean {
+  return identity.normalize("NFKC") === identity;
+}
+
 /** The identities in `METIS_BOOTSTRAP_ADMINS`, folded; empty when unset. */
 export function bootstrapAdminIdentities(
   raw: string | undefined = process.env.METIS_BOOTSTRAP_ADMINS,
@@ -27,7 +41,7 @@ export function bootstrapAdminIdentities(
   return new Set(
     (raw ?? "")
       .split(/[\s,]+/)
-      .map((entry) => entry.trim().toLowerCase())
+      .map(foldIdentity)
       .filter((entry) => entry.length > 0),
   );
 }
@@ -43,6 +57,41 @@ export function isBootstrapAdminCandidate(
 ): boolean {
   if (listed.size === 0) return false;
   return identities.some(
-    (identity) => typeof identity === "string" && listed.has(identity.trim().toLowerCase()),
+    (identity) =>
+      typeof identity === "string" && isNfkcStable(identity) && listed.has(foldIdentity(identity)),
   );
+}
+
+function claimString(claims: Record<string, unknown>, name: string): string | null {
+  const value = claims[name];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+/**
+ * The identities a SAML assertion states as-is: `upn`, `uid`, the e-mail
+ * attributes and the NameID. Never the username METIS derives when those are
+ * absent — that is the e-mail's local part, so `jdoe@other.example` would match
+ * a listed `jdoe`.
+ */
+export function samlAssertedIdentities(claims: Record<string, unknown>): string[] {
+  return [
+    "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn",
+    "uid",
+    "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress",
+    "email",
+    "nameID",
+  ]
+    .map((name) => claimString(claims, name))
+    .filter((v): v is string => v !== null);
+}
+
+/**
+ * The one OIDC identity that counts: the `email` CLAIM, and only when the IdP
+ * marks it `email_verified: true`. Not the username (`preferred_username` is
+ * often user-editable; without it METIS uses the e-mail's local part), and not
+ * METIS's `email` field, which falls back to `preferred_username` or `sub`.
+ */
+export function oidcAssertedIdentities(claims: Record<string, unknown>): string[] {
+  const email = claimString(claims, "email");
+  return email && claims.email_verified === true ? [email] : [];
 }

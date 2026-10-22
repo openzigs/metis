@@ -37,8 +37,12 @@ const audited = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: audited }));
 
 const { reconcileTrustedLoginRole } = await import("../src/lib/auth/durable-roles.js");
-const { bootstrapAdminIdentities, isBootstrapAdminCandidate } =
-  await import("../src/lib/auth/bootstrap-admins.js");
+const {
+  bootstrapAdminIdentities,
+  isBootstrapAdminCandidate,
+  oidcAssertedIdentities,
+  samlAssertedIdentities,
+} = await import("../src/lib/auth/bootstrap-admins.js");
 const { createApp } = await import("../src/app.js");
 
 describe("bootstrapAdminIdentities / isBootstrapAdminCandidate", () => {
@@ -58,6 +62,46 @@ describe("bootstrapAdminIdentities / isBootstrapAdminCandidate", () => {
     expect(isBootstrapAdminCandidate(["robert", " Bob@Example.com "], listed)).toBe(true);
     expect(isBootstrapAdminCandidate(["mallory", null, undefined], listed)).toBe(false);
     expect(isBootstrapAdminCandidate(["alice"], new Set())).toBe(false);
+  });
+
+  it("never matches a look-alike that NFKC would change (#1393 review)", () => {
+    const listed = bootstrapAdminIdentities("kate, alice");
+    // "\u212Aate".toLowerCase() === "kate": the Kelvin sign.
+    expect(isBootstrapAdminCandidate(["\u212Aate"], listed)).toBe(false);
+    expect(isBootstrapAdminCandidate(["\uFF41lice"], listed)).toBe(false); // full-width a
+    expect(isBootstrapAdminCandidate(["Kate"], listed)).toBe(true);
+    // The LIST is NFKC-folded, so an operator who pasted a compatibility form still matches.
+    expect(isBootstrapAdminCandidate(["kate"], bootstrapAdminIdentities("\u212Aate"))).toBe(true);
+  });
+
+  it("SAML: only identities the assertion states, never a derived local part", () => {
+    expect(
+      samlAssertedIdentities({
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn": "jdoe@corp.test",
+        uid: "jdoe",
+        email: "jdoe@corp.test",
+        nameID: "jdoe@corp.test",
+        cn: "ignored",
+      }),
+    ).toEqual(["jdoe@corp.test", "jdoe", "jdoe@corp.test", "jdoe@corp.test"]);
+    // No upn / uid: METIS derives the username "jdoe" from the e-mail, which is
+    // NOT asserted, so it is not offered.
+    expect(samlAssertedIdentities({ nameID: "jdoe@other.example" })).toEqual([
+      "jdoe@other.example",
+    ]);
+    expect(samlAssertedIdentities({ uid: 42, email: "" })).toEqual([]);
+  });
+
+  it("OIDC: only the email CLAIM, and only when email_verified is true", () => {
+    expect(oidcAssertedIdentities({ email: "a@corp.test", email_verified: true })).toEqual([
+      "a@corp.test",
+    ]);
+    expect(oidcAssertedIdentities({ email: "a@corp.test", email_verified: "true" })).toEqual([]);
+    expect(oidcAssertedIdentities({ email: "a@corp.test" })).toEqual([]);
+    // No email claim: METIS's `email` would fall back to preferred_username/sub.
+    expect(
+      oidcAssertedIdentities({ preferred_username: "a@corp.test", email_verified: true }),
+    ).toEqual([]);
   });
 });
 
