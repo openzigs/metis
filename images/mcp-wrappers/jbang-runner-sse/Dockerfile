@@ -3,7 +3,7 @@
 #
 # Self-contained for PR validation; do not depend on a previously-published
 # ghcr.io/metis-mcps/jbang-runner:latest image.
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:24-jre-alpine
 
 ENV LANG=C.UTF-8 \
     JBANG_DIR=/home/app/.jbang
