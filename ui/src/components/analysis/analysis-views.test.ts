@@ -18,7 +18,13 @@ import {
   requirementPage,
   sameFindingFilters,
   traceabilityPendingMessage,
+  agentCards,
   agentDisplayStatus,
+  agentRowSignature,
+  EMPTY_STICKY_LIVE_STATE,
+  LIVE_AGENT_STICKY_MS,
+  liveAgentLine,
+  stickyLiveAgents,
   runHasQuestionsView,
   tabCountLabel,
   tabForAnchor,
@@ -420,6 +426,171 @@ describe("agentDisplayStatus", () => {
     expect(agentDisplayStatus({ status: "completed" })).toBe("completed");
     expect(agentDisplayStatus({ status: "failed", notes: ["DEGRADED (#769): x"] })).toBe("failed");
     expect(agentDisplayStatus({ status: "running", notes: [] })).toBe("running");
+  });
+
+  it("reads running while the agent re-runs, over its stale completed or degraded row", () => {
+    const live = {
+      agentKey: "code",
+      startedAt: "2026-10-21T10:00:00.000Z",
+      toolCalls: 3,
+      rerun: true,
+      phase: "investigating" as const,
+    };
+    expect(agentDisplayStatus({ status: "completed" }, live)).toBe("running");
+    expect(agentDisplayStatus({ status: "completed", notes: ["DEGRADED (#769): x"] }, live)).toBe(
+      "running",
+    );
+    expect(agentDisplayStatus({ status: "completed" }, null)).toBe("completed");
+  });
+});
+
+// Issue #766 — a 23-minute Continue showed nothing but the run header's `running`.
+describe("liveAgentLine", () => {
+  const started = "2026-10-21T10:00:00.000Z";
+  const at = (seconds: number) => Date.parse(started) + seconds * 1000;
+  const live = (over: Partial<Parameters<typeof liveAgentLine>[0]> = {}) => ({
+    agentKey: "code",
+    startedAt: started,
+    toolCalls: 0,
+    rerun: true,
+    phase: "investigating" as const,
+    ...over,
+  });
+
+  it("names a re-run, its steps so far and its elapsed time", () => {
+    expect(liveAgentLine(live({ toolCalls: 37 }), at(252))).toBe(
+      "Re-running · 37 steps so far · 4m 12s",
+    );
+    expect(liveAgentLine(live({ toolCalls: 1 }), at(9))).toBe("Re-running · 1 step so far · 9s");
+  });
+
+  it("leaves out a zero step count, and says so in a normal run", () => {
+    expect(liveAgentLine(live({ rerun: false }), at(0))).toBe("Running · 0s");
+  });
+
+  it("says when the re-run has moved on to the run summary", () => {
+    expect(liveAgentLine(live({ toolCalls: 40, phase: "synthesizing" }), at(61))).toBe(
+      "Re-running · updating the run summary with the new findings · 1m 1s",
+    );
+  });
+
+  it("never shows a negative or unparseable elapsed time", () => {
+    expect(liveAgentLine(live(), at(-30))).toBe("Re-running · 0s");
+    expect(liveAgentLine(live({ startedAt: "not a date" }), at(5))).toBe("Re-running");
+  });
+});
+
+// Issue #766 review — the live registry is per server process. With two
+// replicas and no session affinity the 2.5 s polls alternate pods, and only one
+// of them carries the entry.
+describe("stickyLiveAgents", () => {
+  const T0 = Date.parse("2026-10-21T10:00:00.000Z");
+  const codeLive = (toolCalls: number) => ({
+    agentKey: "code",
+    startedAt: "2026-10-21T09:58:00.000Z",
+    toolCalls,
+    rerun: true,
+    phase: "investigating" as const,
+  });
+  const staleRow = {
+    agentKey: "code",
+    status: "completed",
+    startedAt: "2026-10-21T09:00:00.000Z",
+    completedAt: "2026-10-21T09:05:00.000Z",
+    findings: [1, 2, 3],
+  };
+  const snap = (over: Record<string, unknown> = {}) => ({
+    id: "an-1",
+    status: "running",
+    agentResults: [staleRow],
+    liveAgents: [] as ReturnType<typeof codeLive>[],
+    ...over,
+  });
+
+  /** Feed polls through the function in order, as the page does. */
+  function poll(snapshots: Array<ReturnType<typeof snap>>, step = 2_500) {
+    let state = EMPTY_STICKY_LIVE_STATE;
+    return snapshots.map((s, i) => {
+      const next = stickyLiveAgents(state, s, T0 + i * step);
+      state = next.state;
+      return next.live;
+    });
+  }
+
+  it("keeps an agent running across polls answered by the pod that is not running it", () => {
+    const seen = poll([
+      snap({ liveAgents: [codeLive(4)] }), // pod A
+      snap(), // pod B: no entry
+      snap({ liveAgents: [codeLive(6)] }), // pod A
+      snap(), // pod B
+    ]);
+    expect(seen.map((l) => l.map((a) => a.toolCalls))).toEqual([[4], [4], [6], [6]]);
+  });
+
+  it("drops it once the stored row changes: the re-run replaced it", () => {
+    const replaced = { ...staleRow, startedAt: "2026-10-21T09:58:00.000Z", findings: [1] };
+    const seen = poll([snap({ liveAgents: [codeLive(4)] }), snap({ agentResults: [replaced] })]);
+    expect(seen[1]).toEqual([]);
+  });
+
+  it("drops it once the run is no longer running", () => {
+    const seen = poll([snap({ liveAgents: [codeLive(4)] }), snap({ status: "completed" })]);
+    expect(seen[1]).toEqual([]);
+  });
+
+  it("drops it after the sticky window with no sighting", () => {
+    const seen = poll(
+      [snap({ liveAgents: [codeLive(4)] }), snap(), snap()],
+      LIVE_AGENT_STICKY_MS / 2,
+    );
+    expect(seen.map((l) => l.length)).toEqual([1, 1, 0]);
+  });
+
+  it("never carries an entry over to another analysis", () => {
+    const first = stickyLiveAgents(
+      EMPTY_STICKY_LIVE_STATE,
+      snap({ liveAgents: [codeLive(4)] }),
+      T0,
+    );
+    expect(stickyLiveAgents(first.state, snap({ id: "an-2" }), T0 + 1).live).toEqual([]);
+  });
+
+  it("signs an agent's rows by status, times and finding count, not by order", () => {
+    const a = { ...staleRow };
+    const b = { ...staleRow, startedAt: "x" };
+    expect(agentRowSignature([a, b], "code")).toBe(agentRowSignature([b, a], "code"));
+    expect(agentRowSignature([a], "code")).not.toBe(
+      agentRowSignature([{ ...a, findings: [] }], "code"),
+    );
+    expect(agentRowSignature([a], "database")).toBe("");
+  });
+});
+
+describe("agentCards", () => {
+  const live = (agentKey: string) => ({
+    agentKey,
+    startedAt: "2026-10-21T10:00:00.000Z",
+    toolCalls: 0,
+    rerun: false,
+    phase: "investigating" as const,
+  });
+
+  it("pairs each stored result with its live entry", () => {
+    const cards = agentCards([agent("document", []), agent("code", [])], [live("code")]);
+    expect(cards.map((c) => [c.agentKey, c.live?.agentKey ?? null])).toEqual([
+      ["document", null],
+      ["code", "code"],
+    ]);
+  });
+
+  it("adds a placeholder card for a running agent with no stored result yet", () => {
+    const cards = agentCards([agent("document", [])], [live("code")]);
+    expect(cards).toHaveLength(2);
+    expect(cards[1]).toEqual({ result: null, agentKey: "code", live: live("code") });
+  });
+
+  it("is just the stored results when nothing is running", () => {
+    expect(agentCards([agent("document", [])], []).map((c) => c.live)).toEqual([null]);
   });
 });
 

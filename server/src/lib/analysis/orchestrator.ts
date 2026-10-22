@@ -189,6 +189,12 @@ import {
   type EvidenceSalvageResult,
 } from "./agentic-evidence.js";
 import { summarizeToolCalls, type ToolCallRecord } from "./tool-telemetry.js";
+import {
+  beginLiveAgent,
+  endLiveAgent,
+  markLiveAgentSynthesizing,
+  recordLiveToolCall,
+} from "./live-agent-progress.js";
 import { readSourceRequirements, toSynthesisSourceItems } from "./source-items.js";
 import {
   FINAL_ANSWER_INSTRUCTION,
@@ -1114,6 +1120,9 @@ export class AnalysisOrchestrator {
     let outcome: "completed" | "failed" = "completed";
     let errorMessage: string | null = null;
     let reopened: ReopenedRun = null;
+    // #766 — the agent's card reads the re-run as running (with the code
+    // agent's tool calls so far) instead of its stale `completed` result.
+    beginLiveAgent(opts.analysisId, opts.agentKey, { rerun: true });
     try {
       reopened = await reopenForFollowUp(opts.analysisId);
       // #1145 — resolved inside the try, so a failure here is recorded and the
@@ -1161,6 +1170,7 @@ export class AnalysisOrchestrator {
       delta.promptTokens += result.usage.promptTokens;
       delta.completionTokens += result.usage.completionTokens;
       delta.totalTokens += result.usage.totalTokens;
+      markLiveAgentSynthesizing(opts.analysisId, opts.agentKey);
       // Re-run synthesis using all currently-persisted findings.
       await this.runSynthesisAndPersist({
         analysisId: opts.analysisId,
@@ -1190,6 +1200,9 @@ export class AnalysisOrchestrator {
         ts: Date.now(),
       });
     } finally {
+      // #766 review — first, before the terminal status write can be read:
+      // otherwise a poll could see the run `completed` beside a live entry.
+      endLiveAgent(opts.analysisId, opts.agentKey);
       // #1156 — a failing database write below must not keep the claim: it
       // would refuse every later regenerate or resume until a restart.
       try {
@@ -1473,6 +1486,9 @@ export class AnalysisOrchestrator {
     const resumed: AnalysisSkippedRepo[] = [];
     let remaining: AnalysisSkippedRepo[] = [];
     let reopened: ReopenedRun = null;
+    // #766 — one live entry across every resumed repository, so the card's
+    // step count and elapsed time do not restart per repository.
+    beginLiveAgent(opts.analysisId, "code", { rerun: true });
     try {
       reopened = await reopenForFollowUp(opts.analysisId);
       // Only resume connectors that STILL exist — a repo deleted since the
@@ -1558,6 +1574,7 @@ export class AnalysisOrchestrator {
           resumed.push({ connectorId: connector.id, label: connector.label });
         }
         remaining = skipped.map((c) => ({ connectorId: c.id, label: c.label }));
+        markLiveAgentSynthesizing(opts.analysisId, "code");
 
         // Re-run synthesis over the MERGED finding set so requirements reflect
         // the newly-analyzed repos.
@@ -1588,6 +1605,8 @@ export class AnalysisOrchestrator {
         ts: Date.now(),
       });
     } finally {
+      // #766 review — before the terminal status write, as in regenerate.
+      endLiveAgent(opts.analysisId, "code");
       // #1156 — release the claim even when a database write below throws.
       try {
         await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
@@ -2095,6 +2114,9 @@ export class AnalysisOrchestrator {
             where: { projectId: opts.projectId, deletedAt: null },
             select: { id: true, label: true },
           });
+          // #766 — one live entry across every repository's pass, so the card's
+          // step count and elapsed time do not restart per repository.
+          const ownsCodeLiveEntry = beginLiveAgent(analysisId, "code", { rerun: false });
           try {
             if (connectors.length <= 1) {
               // Single-repo (or none) — original behavior
@@ -2186,6 +2208,8 @@ export class AnalysisOrchestrator {
             // (`specialistSucceeded === 0 && specialistFailed > 0`) sees it.
             // `recordAgentOutcome` ignores AbortError reasons internally.
             recordAgentOutcome({ status: "rejected", reason: err });
+          } finally {
+            if (ownsCodeLiveEntry) endLiveAgent(analysisId, "code");
           }
         }
 
@@ -2933,6 +2957,9 @@ export class AnalysisOrchestrator {
     });
 
     return withInvokeAgentSpan(agentKey, async () => {
+      // #766 — the code agent's tool calls, live, for the analysis page. A
+      // Regenerate already began the entry (and ends it after re-synthesis).
+      const ownsLiveEntry = beginLiveAgent(input.analysisId, agentKey, { rerun: false });
       try {
         // #777 — Determine the clone directory for the file tools by EXISTENCE, not by
         // the truthiness of a speculatively-built path string. One async stat per
@@ -3124,6 +3151,7 @@ export class AnalysisOrchestrator {
               ...(nativeTools ? { native: nativeTools } : {}),
               maxTurns,
               maxTokens: effectiveBudget,
+              onToolCall: () => recordLiveToolCall(input.analysisId, agentKey),
               signal: input.signal,
               model: input.model,
               promptCaching: { system: true, messages: true },
@@ -3651,6 +3679,8 @@ export class AnalysisOrchestrator {
           ts: Date.now(),
         });
         throw err;
+      } finally {
+        if (ownsLiveEntry) endLiveAgent(input.analysisId, agentKey);
       }
     });
   }

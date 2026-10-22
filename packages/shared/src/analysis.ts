@@ -1349,6 +1349,23 @@ export interface AnalysisLedgerUsage {
 }
 
 /**
+ * Issue #766 — an agent running on an analysis right now, as the server
+ * process running it sees it. Lets the page show a Regenerate in progress on
+ * the agent's card instead of its stale `completed` result.
+ */
+export interface AnalysisLiveAgent {
+  agentKey: string;
+  /** ISO time the (re-)run of this agent started. */
+  startedAt: string;
+  /** Tool calls the agent's investigation has made so far (the code agent's tool loop). */
+  toolCalls: number;
+  /** True for a Regenerate / Continue of a finished run, false inside a normal run. */
+  rerun: boolean;
+  /** `synthesizing` once a re-run's agent is done and the run is re-synthesised. */
+  phase: "investigating" | "synthesizing";
+}
+
+/**
  * Snapshot of an analysis returned by `GET /api/analyses/:id` and pushed over
  * Socket.IO when the run completes.
  */
@@ -1382,6 +1399,8 @@ export interface AnalysisSnapshot {
    * with warnings.
    */
   droppedCitations?: AnalysisDroppedCitations[];
+  /** Issue #766 — agents running right now ({@link AnalysisLiveAgent}); empty when none is. */
+  liveAgents?: AnalysisLiveAgent[];
   metadata: Record<string, unknown> | null;
   agents: Array<{
     agentKey: AnalysisResultAgentKey;

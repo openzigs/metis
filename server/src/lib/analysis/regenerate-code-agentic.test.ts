@@ -369,3 +369,51 @@ describe("regenerate on a run started from imported items (#1098)", () => {
     ).toEqual(["NR-1"]);
   });
 });
+
+describe("the agent card shows a re-run while it runs (#766)", () => {
+  it("reads the agent as re-running, then re-synthesising, and clears when done", async () => {
+    const { readLiveAgents } = await import("./live-agent-progress.js");
+    prismaMock.repoConnection.findMany.mockResolvedValue([{ id: "repo_1", label: "miniflux" }]);
+    const orch = makeOrchestrator("agentic");
+    const during: unknown[] = [];
+    orch.runAgenticCodeAgent.mockImplementation(async () => {
+      during.push(readLiveAgents("an_1"));
+      return { agentKey: "code", output: OUTPUT, usage: USAGE, durationMs: 1 };
+    });
+    orch.runSynthesisAndPersist.mockImplementation(async () => {
+      during.push(readLiveAgents("an_1"));
+    });
+
+    await regenerate(orch);
+
+    expect(during).toEqual([
+      [expect.objectContaining({ agentKey: "code", rerun: true, phase: "investigating" })],
+      [expect.objectContaining({ agentKey: "code", rerun: true, phase: "synthesizing" })],
+    ]);
+    expect(readLiveAgents("an_1")).toEqual([]);
+  });
+
+  it("clears the live entry before the terminal status write can be read (#766 review)", async () => {
+    const { readLiveAgents } = await import("./live-agent-progress.js");
+    const service = await import("./analysis-service.js");
+    const atFinalize: unknown[] = [];
+    vi.mocked(service.finalizeAnalysisDelta).mockImplementationOnce(async () => {
+      atFinalize.push(readLiveAgents("an_1"));
+    });
+    prismaMock.repoConnection.findMany.mockResolvedValue([{ id: "repo_1", label: "miniflux" }]);
+
+    await regenerate(makeOrchestrator("agentic"));
+
+    expect(atFinalize).toEqual([[]]);
+  });
+
+  it("clears the live entry when the re-run fails", async () => {
+    const { readLiveAgents } = await import("./live-agent-progress.js");
+    const orch = makeOrchestrator("single-shot");
+    orch.runOneAgent.mockRejectedValue(new Error("provider down"));
+
+    await regenerate(orch, "database");
+
+    expect(readLiveAgents("an_1")).toEqual([]);
+  });
+});

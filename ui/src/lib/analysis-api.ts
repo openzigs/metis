@@ -15,6 +15,7 @@ import type {
   AnalysisDatabaseAware,
   AnalysisEscalation,
   AnalysisLedgerUsage,
+  AnalysisLiveAgent,
   AnalysisSkippedRepo,
   DocumentSource,
   FindingSupportPanel,
@@ -332,6 +333,8 @@ export interface AnalysisSnapshot extends AnalysisListItem {
    * (`totalTokens` is written only at the end). Absent/null when unreadable.
    */
   ledgerUsage?: AnalysisLedgerUsage | null;
+  /** Issue #766 — agents running right now, e.g. a Regenerate in progress. */
+  liveAgents?: AnalysisLiveAgent[];
   metadata: Record<string, unknown> | null;
   agentResults: AgentResultSummary[];
   requirements: RequirementSummary[];
@@ -379,6 +382,7 @@ type AnalysisSnapshotPayload = AnalysisListItem &
     escalation: AnalysisEscalation | null;
     databaseAware: AnalysisDatabaseAware | null;
     sourceRequirements: AnalysisSourceRequirement[];
+    liveAgents: AnalysisLiveAgent[];
   }>;
 
 export interface AnalysisCostCapStatus {
@@ -454,6 +458,7 @@ export const analysisApi = {
       escalation: snapshot.escalation ?? null,
       databaseAware: snapshot.databaseAware ?? null,
       sourceRequirements: snapshot.sourceRequirements ?? [],
+      liveAgents: snapshot.liveAgents ?? [],
     })),
 
   /**

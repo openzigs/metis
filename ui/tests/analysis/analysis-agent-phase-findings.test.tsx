@@ -339,6 +339,66 @@ describe("#289 — agent-phase findings in the results view", () => {
     expect(screen.getAllByRole("button", { name: "Regenerate" })).toHaveLength(1);
   });
 
+  // #766 — a Regenerate left the agent's card on its stale `completed` result
+  // with no sign of the re-run beyond the run header.
+  it("shows a re-run in progress on the agent's card, and a running agent with no row yet", async () => {
+    nav.search = new URLSearchParams("tab=agents");
+    const startedAt = new Date(Date.now() - 65_000).toISOString();
+    apiMock.get.mockResolvedValue({
+      ...SNAPSHOT,
+      status: "running",
+      liveAgents: [
+        { agentKey: "code", startedAt, toolCalls: 5, rerun: true, phase: "investigating" },
+        { agentKey: "database", startedAt, toolCalls: 0, rerun: false, phase: "investigating" },
+      ],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("agent-live-code")).toBeInTheDocument());
+
+    const code = screen.getByTestId("agent-card-code");
+    expect(within(code).getByText("running")).toBeInTheDocument();
+    expect(within(code).getByTestId("agent-live-code")).toHaveTextContent(
+      /^Re-running · 5 steps so far · 1m \ds$/,
+    );
+    // The stored result is still listed until the re-run replaces it.
+    expect(code).toHaveTextContent("finding");
+    // A running analysis offers no Regenerate.
+    expect(within(code).queryByRole("button", { name: "Regenerate" })).toBeNull();
+
+    const database = screen.getByTestId("agent-card-database");
+    expect(within(database).getByText("running")).toBeInTheDocument();
+    expect(within(database).getByTestId("agent-live-database")).toHaveTextContent(/^Running · /);
+  });
+
+  // #766 review — two replicas, no session affinity: the polls alternate pods
+  // and only one carries the live entry. The card must not flip back to its
+  // stale `completed` row on the other pod's answer.
+  it("keeps the re-run on the card when the next poll is answered by another pod", async () => {
+    nav.search = new URLSearchParams("tab=agents");
+    const startedAt = new Date(Date.now() - 5_000).toISOString();
+    const running = { ...SNAPSHOT, status: "running" };
+    apiMock.get
+      .mockResolvedValueOnce({
+        ...running,
+        liveAgents: [
+          { agentKey: "code", startedAt, toolCalls: 3, rerun: true, phase: "investigating" },
+        ],
+      })
+      .mockResolvedValue({ ...running, liveAgents: [] });
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("agent-live-code")).toBeInTheDocument());
+
+    // The 2.5 s poll lands on the pod that is not running the agent.
+    await waitFor(() => expect(apiMock.get.mock.calls.length).toBeGreaterThanOrEqual(2), {
+      timeout: 5_000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const code = screen.getByTestId("agent-card-code");
+    expect(within(code).getByText("running")).toBeInTheDocument();
+    expect(within(code).getByTestId("agent-live-code")).toHaveTextContent(/3 steps so far/);
+  }, 10_000);
+
   // #23 review — nothing failed if the page stopped passing repo names to the
   // citation label, which then fell back to the connector id's tail.
   it("labels a repository citation with the repository's name (#23)", async () => {

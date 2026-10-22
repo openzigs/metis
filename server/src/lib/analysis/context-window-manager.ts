@@ -98,6 +98,11 @@ export interface TranscriptCompactionOptions {
    * everything the loop itself appended. The caller-seeded lead and the system
    * prompt are fixed-size and deliberately excluded, so this bounds exactly the
    * part that grows per turn.
+   *
+   * #766 — when what compaction cannot touch (the preserved tail, assistant
+   * turns, earlier stubs) already outweighs the target, the trip point rises by
+   * that excess, so each compaction event still frees the full headroom and the
+   * transcript is not rewritten on every turn.
    */
   maxTranscriptTokens?: number;
   /**
@@ -188,7 +193,11 @@ function elide(content: string, headChars: number): string | null {
   if (body.length <= headChars) return null;
   const kept = body.slice(0, headChars);
   const elidedChars = body.length - kept.length;
-  return `${header}${kept}\n${TRANSCRIPT_ELISION_MARKER} ${elidedChars} characters elided. The full result is retained verbatim for citation grounding; re-run the tool only if you need the rest. …]`;
+  const elided = `${header}${kept}\n${TRANSCRIPT_ELISION_MARKER} ${elidedChars} characters elided. The full result is retained verbatim for citation grounding; re-run the tool only if you need the rest. …]`;
+  // #766 — a body only slightly longer than the head slice GROWS once the
+  // marker is added. Rewriting it saves nothing and still moves the prompt
+  // prefix, so it costs a cache invalidation for no reduction.
+  return estimateTokens(elided) < estimateTokens(content) ? elided : null;
 }
 
 /**
@@ -246,15 +255,43 @@ export function compactTranscript(
     );
   const eligible = [...inOrder.filter((i) => !deferred(i)), ...inOrder.filter((i) => deferred(i))];
 
-  let messagesCompacted = 0;
-  let tokensAfter = tokensBefore;
+  // Each eligible message's elided form, computed once: it is both what a
+  // compaction would write and how much it would save.
+  const elisions = new Map<number, string>();
+  let elidableTokens = 0;
   for (const index of eligible) {
-    if (tokensAfter <= targetTokens) break;
     const content = contentOf(messages[index]);
     if (content === null) continue;
     const compactedContent = elide(content, headChars);
     if (compactedContent === null) continue;
-    tokensAfter -= estimateTokens(content) - estimateTokens(compactedContent);
+    elisions.set(index, compactedContent);
+    elidableTokens += estimateTokens(content) - estimateTokens(compactedContent);
+  }
+
+  // #766 — the FLOOR is what the region would weigh with everything eligible
+  // already elided: the preserved tail, the assistant turns and the stubs.
+  // When that floor sits above the target, hysteresis alone cannot work: every
+  // pass stops at the floor, the next turn re-crosses the ceiling, and ONE
+  // message (the one that just left the tail) is rewritten on every single
+  // turn — a prompt-cache invalidation per turn, which is what the #706
+  // DeepSeek runs measured (cache reads stuck at the system prefix while 15-20k
+  // uncached tokens were re-billed each turn against the token budget). So the
+  // trip point rises with the floor, keeping the same headroom
+  // (`maxTranscriptTokens - targetTokens`) between compaction events.
+  const floorTokens = tokensBefore - elidableTokens;
+  const tripTokens = maxTranscriptTokens + Math.max(0, floorTokens - targetTokens);
+  if (tokensBefore <= tripTokens) {
+    return { compacted: false, messagesCompacted: 0, tokensBefore, tokensAfter: tokensBefore };
+  }
+
+  let messagesCompacted = 0;
+  let tokensAfter = tokensBefore;
+  for (const index of eligible) {
+    if (tokensAfter <= targetTokens) break;
+    const compactedContent = elisions.get(index);
+    if (compactedContent === undefined) continue;
+    tokensAfter -=
+      estimateTokens(contentOf(messages[index]) ?? "") - estimateTokens(compactedContent);
     messages[index] = { ...messages[index], content: compactedContent };
     messagesCompacted++;
   }

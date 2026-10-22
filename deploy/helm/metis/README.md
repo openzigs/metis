@@ -354,6 +354,17 @@ provider-side setup (RDS Postgres + pgvector extension, S3 bucket + IRSA policy)
 `persistence.efs.enabled` is no longer required for N>1 — it remains only as an
 orthogonal RWX option if you deliberately keep uploads/LanceDB on a filesystem.
 
+**Per-pod state that is not shared (#766).** An analysis agent's live progress
+(the "Re-running · N steps so far" line on the Agent output tab during a
+Regenerate or Continue) is held in memory by the pod running the agent and is
+not written to any shared backend. Without session affinity on the ingress, the
+page's 2.5 s polls alternate pods, and only one of them reports the entry. The
+page keeps an agent it has seen running shown as running until its stored
+result changes, the run stops, or 60 s pass without a sighting, so the card does
+not flip back to its old result; the step count it shows is then the last one a
+poll returned, and it moves only when a poll reaches the pod doing the work. No
+results, statuses or costs depend on this state.
+
 ---
 
 ## Disaster Recovery (Epic #70)

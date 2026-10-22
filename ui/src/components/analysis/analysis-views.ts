@@ -9,7 +9,7 @@
  * Everything here is pure so the page — a thin wiring layer excluded from
  * coverage — keeps no logic of its own worth measuring.
  */
-import { AGENT_DEGRADED_NOTE_PREFIX } from "@metis/shared";
+import { AGENT_DEGRADED_NOTE_PREFIX, type AnalysisLiveAgent } from "@metis/shared";
 import type {
   AnalysisAgentStatus,
   AnalysisFinding,
@@ -265,10 +265,19 @@ export function traceabilityPendingMessage(status: AnalysisStatus): string | nul
  * `degraded`, not a green `completed`: the code agent that exhausted its budget
  * and recovered 0 findings looked like a clean run everywhere but the Summary.
  */
-export function agentDisplayStatus(agent: {
-  status: AnalysisAgentStatus;
-  notes?: readonly string[] | null;
-}): AnalysisAgentStatus | "degraded" {
+export function agentDisplayStatus(
+  agent: {
+    status: AnalysisAgentStatus;
+    notes?: readonly string[] | null;
+  },
+  /**
+   * #766 — the agent's live entry, when it is running right now. A Regenerate
+   * leaves the old row `completed` until the new result replaces it, so the
+   * live entry wins over the stored status.
+   */
+  live?: AnalysisLiveAgent | null,
+): AnalysisAgentStatus | "degraded" {
+  if (live) return "running";
   if (
     agent.status === "completed" &&
     (agent.notes ?? []).some((n) => n.startsWith(AGENT_DEGRADED_NOTE_PREFIX))
@@ -276,6 +285,150 @@ export function agentDisplayStatus(agent: {
     return "degraded";
   }
   return agent.status;
+}
+
+/** Whole minutes and seconds since `startedAt`, e.g. `4m 12s`; `0s` for a future time. */
+function elapsedLabel(startedAt: string, now: number): string {
+  const seconds = Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1000));
+  if (!Number.isFinite(seconds)) return "";
+  const minutes = Math.floor(seconds / 60);
+  return minutes > 0 ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+}
+
+/**
+ * Issue #766 — the line an agent card shows while the agent runs: whether it is
+ * a re-run, what it is doing, the code agent's steps (tool calls) so far, and for how
+ * long. A 23-minute "Continue" used to show nothing but the run header's
+ * `running` (#706 run 8).
+ */
+export function liveAgentLine(live: AnalysisLiveAgent, now: number = Date.now()): string {
+  const parts = [live.rerun ? "Re-running" : "Running"];
+  if (live.phase === "synthesizing") {
+    parts.push("updating the run summary with the new findings");
+  } else if (live.toolCalls > 0) {
+    parts.push(`${live.toolCalls} step${live.toolCalls === 1 ? "" : "s"} so far`);
+  }
+  const elapsed = elapsedLabel(live.startedAt, now);
+  if (elapsed) parts.push(elapsed);
+  return parts.join(" · ");
+}
+
+/**
+ * Issue #766 review — how long an agent seen running keeps showing as running
+ * across polls that do not carry it. Polls run every 2.5 s; with two replicas
+ * and no session affinity every other poll can land on the pod that is not
+ * running the agent, so a sighting is normally refreshed within a few seconds.
+ */
+export const LIVE_AGENT_STICKY_MS = 60_000;
+
+/** What the page remembers about an agent it has seen running. */
+export interface StickyLiveAgent {
+  live: AnalysisLiveAgent;
+  /** {@link agentRowSignature} of the agent's stored rows when it was last seen running. */
+  rowSignature: string;
+  lastSeenAt: number;
+}
+
+export interface StickyLiveState {
+  analysisId: string | null;
+  entries: ReadonlyMap<string, StickyLiveAgent>;
+}
+
+export const EMPTY_STICKY_LIVE_STATE: StickyLiveState = { analysisId: null, entries: new Map() };
+
+/**
+ * The stored rows of one agent, reduced to what changes when a re-run replaces
+ * them. The snapshot's agent rows carry no id of their own, so the row's
+ * status, times and finding count stand for it.
+ */
+export function agentRowSignature(
+  rows: ReadonlyArray<{
+    agentKey: string;
+    status: string;
+    startedAt: string | null;
+    completedAt: string | null;
+    findings?: readonly unknown[];
+  }>,
+  agentKey: string,
+): string {
+  return rows
+    .filter((r) => r.agentKey === agentKey)
+    .map(
+      (r) => `${r.status}|${r.startedAt ?? ""}|${r.completedAt ?? ""}|${r.findings?.length ?? 0}`,
+    )
+    .sort()
+    .join(";");
+}
+
+/**
+ * Issue #766 review — the live agents to show, given the previous state and a
+ * new snapshot. The server's live registry is per process (see
+ * `server/src/lib/analysis/live-agent-progress.ts`): on a multi-replica
+ * deployment a poll served by another pod carries no entry, and the card would
+ * flip between "running" and its stale `completed` row. So an agent seen
+ * running stays running until its stored rows change (the re-run replaced
+ * them), the run stops `running`, or {@link LIVE_AGENT_STICKY_MS} passes with
+ * no sighting. A kept entry shows its last-seen step count.
+ */
+export function stickyLiveAgents(
+  prev: StickyLiveState,
+  snapshot: {
+    id: string;
+    status: string;
+    agentResults: Parameters<typeof agentRowSignature>[0];
+    liveAgents?: readonly AnalysisLiveAgent[];
+  },
+  now: number,
+): { state: StickyLiveState; live: AnalysisLiveAgent[] } {
+  const fresh = snapshot.liveAgents ?? [];
+  const running = snapshot.status === "running" || snapshot.status === "pending";
+  if (!running) {
+    return { state: { analysisId: snapshot.id, entries: new Map() }, live: [...fresh] };
+  }
+  const entries = new Map<string, StickyLiveAgent>();
+  for (const live of fresh) {
+    entries.set(live.agentKey, {
+      live,
+      rowSignature: agentRowSignature(snapshot.agentResults, live.agentKey),
+      lastSeenAt: now,
+    });
+  }
+  if (prev.analysisId === snapshot.id) {
+    for (const [agentKey, entry] of prev.entries) {
+      if (entries.has(agentKey)) continue;
+      if (now - entry.lastSeenAt >= LIVE_AGENT_STICKY_MS) continue;
+      if (agentRowSignature(snapshot.agentResults, agentKey) !== entry.rowSignature) continue;
+      entries.set(agentKey, entry);
+    }
+  }
+  return {
+    state: { analysisId: snapshot.id, entries },
+    live: [...entries.values()].map((e) => e.live),
+  };
+}
+
+/**
+ * Issue #766 — the cards the Agent output tab renders: every stored result,
+ * plus a placeholder for an agent running with no stored result yet (the code
+ * agent mid-investigation in a normal run), so a running agent is never
+ * invisible. Each card carries its live entry, or `null`.
+ */
+export function agentCards<T extends { agentKey: string }>(
+  results: readonly T[],
+  live: readonly AnalysisLiveAgent[],
+): Array<{ result: T | null; agentKey: string; live: AnalysisLiveAgent | null }> {
+  const byKey = new Map(live.map((l) => [l.agentKey, l]));
+  const cards: Array<{ result: T | null; agentKey: string; live: AnalysisLiveAgent | null }> =
+    results.map((result) => ({
+      result,
+      agentKey: result.agentKey,
+      live: byKey.get(result.agentKey) ?? null,
+    }));
+  const shown = new Set(results.map((r) => r.agentKey));
+  for (const l of live) {
+    if (!shown.has(l.agentKey)) cards.push({ result: null, agentKey: l.agentKey, live: l });
+  }
+  return cards;
 }
 
 // ── Tab counts ──────────────────────────────────────────────────────────────
