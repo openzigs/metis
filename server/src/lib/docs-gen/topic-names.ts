@@ -45,7 +45,7 @@ export interface RepositoryNaming {
 /**
  * A repository label as it may appear in a name. Labels are set by a project
  * admin and reach prompts and the rendered note, so they get the treatment
- * locale text gets: one line, bounded, both fence scrubs, markdown escaped.
+ * locale text gets: one line, bounded, both fence scrubs.
  */
 function cleanLabel(raw: string | null | undefined): string {
   const flat = (raw ?? "")
@@ -56,12 +56,21 @@ function cleanLabel(raw: string | null | undefined): string {
     scrubWriterFenceLookalikes(flat, "[REDACTED-FENCE]"),
     "[REDACTED-FENCE]",
   );
-  const capped =
-    scrubbed.length > LABEL_MAX_CHARS
-      ? `${scrubbed.slice(0, LABEL_MAX_CHARS - 1).trimEnd()}…`
-      : scrubbed;
-  // Markdown punctuation is escaped so a label renders as the text it is.
-  return capped.replace(/[\\*_[\]<>|~]/g, (c) => `\\${c}`);
+  // Plain text: names are shown as text too (topic titles, the Provenance
+  // panel, the facts headings), so markdown is escaped only where markdown is
+  // written ({@link escapeMarkdownText}).
+  return scrubbed.length > LABEL_MAX_CHARS
+    ? `${scrubbed.slice(0, LABEL_MAX_CHARS - 1).trimEnd()}…`
+    : scrubbed;
+}
+
+/**
+ * A topic or module name as markdown text: punctuation that would format it
+ * (`**`, `_`, `[x](…)`, `<b>`, `|`, `~`) is backslash-escaped, so it renders as
+ * the name it is. For markdown output only — never for a name shown as text.
+ */
+export function escapeMarkdownText(text: string): string {
+  return text.replace(/[\\`*_[\]<>|~]/g, (c) => `\\${c}`);
 }
 
 /**

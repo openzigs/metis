@@ -176,7 +176,12 @@ import {
   type MessageCatalog,
   type MessageKeyRef,
 } from "./message-catalog.js";
-import { moduleDisplayName, repositoryLabels, REPOSITORY_ROOT_LABEL } from "./topic-names.js";
+import {
+  escapeMarkdownText,
+  moduleDisplayName,
+  repositoryLabels,
+  REPOSITORY_ROOT_LABEL,
+} from "./topic-names.js";
 import { isJunkSourcePath } from "@metis/shared";
 import { recordUsage } from "../finops/index.js";
 import {
@@ -8847,5 +8852,5 @@ function renderOfflineDocument(
   meta: ProjectMeta,
   facts: ModuleFacts[],
 ): string {
-  return `# ${title}\n\n> **Offline mode** — LLM synthesis was skipped. The following is a raw catalog of facts extracted from each module.\n\nProject: **${meta.name}** (${meta.language}) — ${meta.totalFiles} files, ${meta.totalSymbols} symbols.\nDocument type: ${docTypeLabel(docType)}\n\n${facts.map((f) => `## ${f.moduleName}\n\n*${f.classCount} classes / ${f.methodCount} methods*\n\n${f.facts}\n`).join("\n")}`;
+  return `# ${title}\n\n> **Offline mode** — LLM synthesis was skipped. The following is a raw catalog of facts extracted from each module.\n\nProject: **${meta.name}** (${meta.language}) — ${meta.totalFiles} files, ${meta.totalSymbols} symbols.\nDocument type: ${docTypeLabel(docType)}\n\n${facts.map((f) => `## ${escapeMarkdownText(f.moduleName)}\n\n*${f.classCount} classes / ${f.methodCount} methods*\n\n${f.facts}\n`).join("\n")}`;
 }

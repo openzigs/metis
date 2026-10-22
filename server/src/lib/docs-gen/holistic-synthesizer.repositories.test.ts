@@ -316,6 +316,18 @@ describe("#1354 actual multi-repository synthesis", () => {
     ).not.toContain("USER-FACING MESSAGES");
   });
 
+  it("#1323 — a label with markdown punctuation reaches the facts heading as plain text", async () => {
+    db.codeGraph.findMany.mockImplementation(async () =>
+      ["a", "b"].map((id) => ({
+        id: `graph-${id}`,
+        repoConnection: { id, projectId: "p", deletedAt: null, label: `metis_core_${id}` },
+      })),
+    );
+    await synthesizeHolisticDocument("p", "architecture", "Architecture");
+    expect(sectionPrompts.some((p) => p.includes("### MODULE: metis_core_a / src\n"))).toBe(true);
+    expect(sectionPrompts.every((p) => !p.includes("metis\\_core"))).toBe(true);
+  });
+
   it("#1403 — a repository with no locale file gets no message block, whatever its code prints", async () => {
     await writeRepo(
       "a",

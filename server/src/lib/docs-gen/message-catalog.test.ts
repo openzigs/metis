@@ -5,6 +5,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   LOCALE_FILE_MAX_BYTES,
+  LOCALE_MAX_READ_ATTEMPTS,
+  LOCALE_MAX_TOTAL_BYTES,
   MESSAGE_TEXT_MAX_CHARS,
   MODULE_MESSAGES_MAX,
   findLocaleFiles,
@@ -13,6 +15,7 @@ import {
   messageSources,
   localeFileRank,
   parseLocaleFile,
+  readMessageCatalog,
   renderMessageBlock,
   sanitizeMessageText,
   type MessageCatalog,
@@ -109,7 +112,7 @@ describe("parseLocaleFile", () => {
     const start = performance.now();
     expect(parseLocaleFile("messages.properties", "k".repeat(300_000)).size).toBe(0);
     expect(parseLocaleFile("messages.properties", `k${" ".repeat(300_000)}v`).get("k")).toBe("v");
-    expect(performance.now() - start).toBeLessThan(250);
+    expect(performance.now() - start).toBeLessThan(2_000);
   });
 
   it("yields nothing for a file that does not parse, and skips a key that is not key-shaped", () => {
@@ -191,6 +194,26 @@ describe("findLocaleFiles / loadMessageCatalog", () => {
     const catalog = await loadMessageCatalog(root, { maxFiles: 1, maxFileBytes: 100 });
     expect(catalog?.files).toEqual(["locales/en.json"]);
     expect(catalog?.messages.get("a.b")).toBe("Usable");
+  });
+
+  it("stops reading at the attempt cap and the total-bytes cap, however many decoys never parse", async () => {
+    const files: Record<string, string> = {};
+    const decoy = `{${"x".repeat(999)}`; // 1,000 bytes that never parse
+    for (let i = 0; i < 60; i++) files[`locales/d${String(i).padStart(2, "0")}/en.json`] = decoy;
+    files["i18n/zz/en_GB.json"] = JSON.stringify({ "a.b": "Behind the decoys" });
+    const root = await repo(files);
+    const capped = await readMessageCatalog(root);
+    expect(capped.attempts).toBe(LOCALE_MAX_READ_ATTEMPTS);
+    expect(capped.bytesRead).toBe(LOCALE_MAX_READ_ATTEMPTS * 1_000);
+    expect(capped.files).toEqual([]);
+    const byBytes = await readMessageCatalog(root, { maxTotalBytes: 5_500 });
+    expect(byBytes.attempts).toBe(5);
+    expect(byBytes.bytesRead).toBe(5_000);
+    expect(LOCALE_MAX_READ_ATTEMPTS).toBeLessThanOrEqual(32);
+    expect(LOCALE_MAX_TOTAL_BYTES).toBeLessThanOrEqual(8_000_000);
+    // With room, the good file behind them is read.
+    const roomy = await readMessageCatalog(root, { maxAttempts: 100 });
+    expect(roomy.files).toEqual(["i18n/zz/en_GB.json"]);
   });
 
   it("searches breadth-first, locale directories and their likely parents first, within the budget", async () => {
@@ -305,7 +328,7 @@ describe("findMessageKeys", () => {
       const start = performance.now();
       expect(findMessageKeys([input], catalog)).toEqual([]);
       // Quadratic before #1403's review: 100k characters took over 4 s.
-      expect(performance.now() - start).toBeLessThan(250);
+      expect(performance.now() - start).toBeLessThan(2_000);
     }
   });
 

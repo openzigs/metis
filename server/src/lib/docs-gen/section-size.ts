@@ -30,6 +30,7 @@
  * Pure: no I/O and no model calls.
  */
 import { getConfigService, type ConfigService } from "../config/config-service.js";
+import { escapeMarkdownText } from "./topic-names.js";
 
 /** Registry key: the longest one section may be, in markdown characters. */
 export const SECTION_MAX_CHARS_KEY = "DOCS_GEN_SECTION_MAX_CHARS";
@@ -222,9 +223,15 @@ export interface FitResult {
 /** How every closing note of a shortened section opens. */
 export const SHORTENED_NOTE_LEAD = "> **Shortened for length.**";
 
-/** The sentence of a closing note that names the topics left out (leading space). */
+/**
+ * The sentence of a closing note that names the topics left out (leading space).
+ * #1323 — the note is markdown, so each name is escaped after it is cut to
+ * length: a label or path (`metis_core`, `**x**`) renders as the name it is.
+ */
 export function omittedTopicsSentence(omitted: readonly string[]): string {
-  const listed = omitted.slice(0, NOTE_TOPIC_LIMIT).map((t) => t.replace(/\s+/g, " ").slice(0, 80));
+  const listed = omitted
+    .slice(0, NOTE_TOPIC_LIMIT)
+    .map((t) => escapeMarkdownText(t.replace(/\s+/g, " ").slice(0, 80)));
   const more = omitted.length - listed.length;
   return listed.length > 0
     ? ` ${omitted.length} further topic${omitted.length === 1 ? " was" : "s were"} left out: ${listed.join("; ")}${more > 0 ? `; and ${more} more` : ""}.`

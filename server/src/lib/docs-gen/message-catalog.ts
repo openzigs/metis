@@ -90,6 +90,9 @@ export const LOCALE_SEARCH_MAX_ENTRIES_PER_DIRECTORY = 5_000;
 /** At most this many locale files are read, each at most this many bytes. */
 export const LOCALE_MAX_FILES = 8;
 export const LOCALE_FILE_MAX_BYTES = 1_000_000;
+/** At most this many candidate files are read, and this many bytes in all. */
+export const LOCALE_MAX_READ_ATTEMPTS = 32;
+export const LOCALE_MAX_TOTAL_BYTES = 8_000_000;
 /** At most this many keys are kept from all files together. */
 export const LOCALE_MAX_KEYS = 20_000;
 /** A message is cut to this many characters. */
@@ -221,6 +224,10 @@ export interface LocaleSearchLimits {
   maxFiles?: number;
   /** Largest locale file read, in bytes. */
   maxFileBytes?: number;
+  /** Most candidate files read (usable or not). */
+  maxAttempts?: number;
+  /** Most bytes read across all candidate files. */
+  maxTotalBytes?: number;
 }
 
 /**
@@ -290,7 +297,15 @@ export async function findLocaleFiles(
       for (const entry of listing.slice(0, perDirectory)) {
         const child = rel ? `${rel}/${entry.name}` : entry.name;
         if (entry.isDirectory()) {
-          if (!SKIPPED_DIRS.has(entry.name) && !entry.name.startsWith(".")) next.push(child);
+          if (SKIPPED_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
+          // The next level is bounded: no more than can be listed, plus as many
+          // again for locale directories and likely parents found late.
+          if (
+            next.length < maxDirectories ||
+            (next.length < 2 * maxDirectories && searchPriority(child) < 2)
+          ) {
+            next.push(child);
+          }
         } else if (entry.isFile()) {
           const rank = localeFileRank(child);
           if (rank === null) continue;
@@ -320,16 +335,39 @@ export async function loadMessageCatalog(
   root: string | null,
   limits: LocaleSearchLimits = {},
 ): Promise<MessageCatalog | null> {
-  if (!root) return null;
-  const maxFiles = limits.maxFiles ?? LOCALE_MAX_FILES;
-  const maxBytes = limits.maxFileBytes ?? LOCALE_FILE_MAX_BYTES;
+  const read = await readMessageCatalog(root, limits);
+  return read.files.length > 0 ? { files: read.files, messages: read.messages } : null;
+}
+
+/**
+ * {@link loadMessageCatalog} with what it cost: the files it tried to read and
+ * the bytes it read. Reading stops at {@link LOCALE_MAX_FILES} usable files,
+ * {@link LOCALE_MAX_READ_ATTEMPTS} attempts or {@link LOCALE_MAX_TOTAL_BYTES}
+ * read, whichever comes first — so decoy files that never parse cannot make
+ * it read the repository.
+ */
+export async function readMessageCatalog(
+  root: string | null,
+  limits: LocaleSearchLimits = {},
+): Promise<MessageCatalog & { attempts: number; bytesRead: number }> {
   const files: string[] = [];
   const messages = new Map<string, string>();
+  let attempts = 0;
+  let bytesRead = 0;
+  if (!root) return { files, messages, attempts, bytesRead };
+  const maxFiles = limits.maxFiles ?? LOCALE_MAX_FILES;
+  const maxBytes = limits.maxFileBytes ?? LOCALE_FILE_MAX_BYTES;
+  const maxAttempts = limits.maxAttempts ?? LOCALE_MAX_READ_ATTEMPTS;
+  const maxTotal = limits.maxTotalBytes ?? LOCALE_MAX_TOTAL_BYTES;
   for (const rel of await findLocaleFiles(root, limits)) {
-    if (files.length >= maxFiles) break;
+    if (files.length >= maxFiles || attempts >= maxAttempts) break;
     try {
       const resolved = await resolveSourcePath(root, rel);
-      if ((await lstat(resolved)).size > maxBytes) continue;
+      const size = (await lstat(resolved)).size;
+      if (size > maxBytes) continue;
+      if (bytesRead + size > maxTotal) break;
+      attempts += 1;
+      bytesRead += size;
       const parsed = parseLocaleFile(rel, await readFile(resolved, "utf-8"));
       if (parsed.size === 0) continue;
       files.push(rel);
@@ -341,7 +379,7 @@ export async function loadMessageCatalog(
       // An unreadable or escaping locale file is skipped, never fatal.
     }
   }
-  return files.length > 0 ? { files, messages } : null;
+  return { files, messages, attempts, bytesRead };
 }
 
 /**
