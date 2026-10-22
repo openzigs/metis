@@ -729,3 +729,14 @@ export const SESSION_REFRESH_COOKIE = "metis.rt";
 /** Cookie lifetimes, in seconds. The tokens inside carry their own expiry. */
 export const SESSION_ACCESS_MAX_AGE_SECONDS = 60 * 60;
 export const SESSION_REFRESH_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+
+// ---- Signed client address, UI → API (#1385) --------------------------------
+/**
+ * The exact bytes the UI signs (HMAC-SHA256 under `METIS_UI_PROXY_SECRET`) and
+ * the API verifies. One definition for both sides, so the two cannot drift:
+ * a mismatch would make the API ignore every signed address silently. `minute`
+ * is whole minutes since the epoch; the API accepts the current minute ±1.
+ */
+export function clientAddressSignedMessage(address: string, minute: number): string {
+  return `metis-client-address/v2\n${minute}\n${address}`;
+}

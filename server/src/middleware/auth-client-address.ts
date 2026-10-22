@@ -27,6 +27,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import { ipKeyGenerator } from "express-rate-limit";
 import type { Request } from "express";
+import { clientAddressSignedMessage } from "@metis/shared";
 
 /** The client address the UI vouches for. */
 export const CLIENT_ADDRESS_HEADER = "x-metis-client-address";
@@ -37,7 +38,8 @@ export const UI_PROXY_SECRET_MIN_LENGTH = 32;
 
 /** The exact bytes the UI signs. Versioned so the format can change safely. */
 export function signedClientAddressMessage(address: string, minute: number): string {
-  return `metis-client-address/v2\n${minute}\n${address}`;
+  // One definition with the UI's signer (`@metis/shared`), so the two cannot drift.
+  return clientAddressSignedMessage(address, minute);
 }
 
 /** The signing clock: whole minutes since the epoch. */

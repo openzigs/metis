@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { clientAddressSignedMessage } from "@metis/shared";
 
 /**
  * #1385 — tell the API which client a proxied auth request came from.
@@ -71,7 +72,7 @@ export function trustedClientAddress(
  * the API accepts the current minute ±1.
  */
 function signedMessage(address: string, minute: number): string {
-  return `metis-client-address/v2\n${minute}\n${address}`;
+  return clientAddressSignedMessage(address, minute);
 }
 
 async function hmacHex(secret: string, message: string): Promise<string> {
