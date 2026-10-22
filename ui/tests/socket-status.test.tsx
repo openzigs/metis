@@ -384,11 +384,21 @@ describe("#1414 an expired-token handshake refusal renews the session", () => {
     expect(refreshAccessTokenMock).toHaveBeenCalledTimes(2);
   });
 
-  it("any other refusal starts no refresh", async () => {
+  // The access cookie's max-age equals the token's lifetime, so the reconnect
+  // after an expiry close usually carries no cookie at all.
+  it("an UNAUTHORIZED connect_error (the cookie already gone) starts one refresh", async () => {
     renderStatus();
     await waitFor(() => expect(fake.socket.on).toHaveBeenCalled());
     fake.fireSocket("connect_error", new Error("UNAUTHORIZED"));
+    expect(refreshAccessTokenMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("any other refusal starts no refresh", async () => {
+    renderStatus();
+    await waitFor(() => expect(fake.socket.on).toHaveBeenCalled());
     fake.fireSocket("connect_error", new Error("TOKEN_INVALID"));
+    fake.fireSocket("connect_error", new Error("ORIGIN_REJECTED"));
+    fake.fireSocket("connect_error", new Error("websocket error"));
     expect(refreshAccessTokenMock).not.toHaveBeenCalled();
   });
 

@@ -23,9 +23,12 @@
  *
  * #1414 — the server now closes a socket's transport when the access token it
  * was opened with expires. The proactive refresh above normally re-handshakes
- * the socket first; when it did not (a throttled background tab, a laptop that
- * slept), the reconnect is refused `TOKEN_EXPIRED`, and that refusal now
- * triggers one refresh, whose success re-handshakes the socket as above.
+ * the socket first. When it did not (a tab opened partway through the token's
+ * life, whose 50-minute timer runs from mount; a throttled background tab; a
+ * laptop that slept), the reconnect is refused — `TOKEN_EXPIRED`, or
+ * `UNAUTHORIZED` when the `metis.at` cookie, whose max-age equals the token's
+ * lifetime, has already left the browser — and that refusal now triggers one
+ * refresh, whose success re-handshakes the socket as above.
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { Socket } from "socket.io-client";
@@ -150,19 +153,32 @@ function triggerTokenRefreshReconnect(): void {
 }
 
 /**
- * #1414 — at most one refresh per this window is started by a `TOKEN_EXPIRED`
- * handshake refusal, so a refresh that succeeds but whose re-handshake is
- * refused again cannot loop.
+ * #1414 — the handshake refusals a token refresh can cure: an expired access
+ * cookie (`TOKEN_EXPIRED`), or none at all (`UNAUTHORIZED`: the cookie's
+ * max-age equals the token's lifetime, so by the reconnect after the server
+ * closed the transport at expiry it has usually gone). `UNAUTHORIZED` also
+ * means a session that ended or a user who is no longer active; the refresh
+ * then fails and nothing reconnects.
+ */
+const REFRESHABLE_HANDSHAKE_REFUSALS: ReadonlySet<string> = new Set([
+  "TOKEN_EXPIRED",
+  "UNAUTHORIZED",
+]);
+
+/**
+ * #1414 — at most one refresh per this window is started by a handshake
+ * refusal, so a refresh that succeeds but whose re-handshake is refused again
+ * cannot loop.
  */
 const EXPIRED_TOKEN_REFRESH_COOLDOWN_MS = 30_000;
 let lastExpiredTokenRefreshAt: number | null = null;
 
 /**
- * #1414 — the server refused the handshake because the access cookie had
- * expired. Refresh it; a success fires `setOnRefreshSuccess`, which
- * re-handshakes with the fresh cookie (`triggerTokenRefreshReconnect`). A
- * failure leaves the socket down: the session is over, and the api-client's
- * own 401 handling signs the user out on their next request.
+ * #1414 — the server refused the handshake for want of a live access cookie.
+ * Refresh it; a success fires `setOnRefreshSuccess`, which re-handshakes with
+ * the fresh cookie (`triggerTokenRefreshReconnect`). A failure leaves the
+ * socket down: the session is over, and the api-client's own 401 handling
+ * signs the user out on their next request.
  */
 function refreshAfterExpiredHandshake(): void {
   const now = Date.now();
@@ -205,7 +221,7 @@ function registerLifecycle(socket: Socket): void {
     // The manager keeps retrying after a connect_error (unless reconnection is
     // disabled), so treat this as "still trying" but surface the reason.
     setState({ status: "reconnecting", error: err?.message ?? "Connection error" });
-    if (err?.message === "TOKEN_EXPIRED") refreshAfterExpiredHandshake();
+    if (REFRESHABLE_HANDSHAKE_REFUSALS.has(err?.message)) refreshAfterExpiredHandshake();
   });
 
   socket.on("disconnect", (reason: string) => {
