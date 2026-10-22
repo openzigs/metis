@@ -61,7 +61,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Language resolver: type-checker oracle](project_language-resolver-needs-a-type-checker-oracle.md) — fixtures did not converge (#1104)
 - [A ceiling must not overwrite](project_a-ceiling-must-not-overwrite-and-must-be-recorded.md) — record it, resume it; force it tiny
 - [`analysis.read`: every role has it](project_analysis-read-is-held-by-every-role.md) — no 403 test; test scoping + ownership
-- [BRD plan (#1070)](project_brd-plan-tests-and-docs-gen-offline-replay.md) — =off tests; replay; floors (#1316); hold + overrun (#1327)
+- [BRD plan (#1070)](project_brd-plan-tests-and-docs-gen-offline-replay.md) — =off tests; replay; floors (#1316); hold, ties (#1327, #1368)
 - [requirementId guard; recording doubles](project_requirement-id-guard-and-recording-doubles.md) — agentic+single-shot unchecked (#1027)
 - [Count the delimiter, not the split](project_count-the-delimiter-not-the-split.md) — `split(" | ")` misses `a | | b`; test edge bars
 - [Absent page group is ambiguous](project_absent-page-group-is-ambiguous-when-ui-hides-empty.md) — UI hides empty groups

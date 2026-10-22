@@ -27,7 +27,32 @@
  * Caveat: the stored replies were written to the run's own plan, so a module
  * newly planned out still has text here; the simulation scales shares, it
  * cannot remove that module's text. The "as written" row is the control: on
- * run B it must reproduce 45 themes cut (72 topics listed).
+ * run B under the #1327 hold with `--no-canonical-rank` it reproduces 45
+ * themes cut (72 topics listed); ranking canonical facts as the synthesizer
+ * does, 44 (71), and 42 (69) once tied topics go smaller first (#1368).
+ *
+ * #1368 — a batch's topics are ranked as the synthesizer ranks them, canonical
+ * facts by their module (`--no-canonical-rank` for the replay before #1368,
+ * which ranked module facts only), and a `--watch` theme that survives is
+ * reported with the rendered characters under it: a heading a later batch
+ * re-emitted over a line ("kept (43)") is not a written theme. That size is a
+ * range when another batch wrote below the theme ("kept (2123-2400)"): what
+ * the batch that wrote its heading wrote there, and everything below the
+ * heading, H4s another batch may have opened with included.
+ *
+ * How ranks are approximated, unlike the synthesizer:
+ *   - a module-facts citation's rank is its id's trailing index
+ *     (`facts:<module>:<index>`), whatever repository the id names;
+ *   - a canonical fact's module is the FOLDER of the file in its evidence
+ *     label (`selectedEvidence.primary[].label`, `path/file.go:12 — NAME`),
+ *     not `CanonicalFact.modulePath`, which the manifest does not store. The
+ *     two agree when Phase 1 groups a module by folder, as it did for run B;
+ *   - that folder is matched to a path alone, ignoring repository identity,
+ *     so in a multi-repository run two repositories' same-named folders
+ *     share one rank (the first cited);
+ *   - only a module the section cites has an index (the synthesizer ranks
+ *     every module the section read, which can only make a rank more
+ *     important).
  *
  *   npx tsx scripts/eval-brd-plan-replay.ts --db ../server/dev.db \
  *     --version cmvi3h71u00e9o99k3c0iq4ec --body-max 234277
@@ -41,7 +66,7 @@
 /* eslint-disable no-console -- a local CLI whose output is the table it prints */
 import Database from "better-sqlite3";
 import { renderedCitationLength } from "../src/lib/docs-gen/citation-footnotes.js";
-import { holdBatchReply } from "../src/lib/docs-gen/batch-hold.js";
+import { citedSourceIds, holdBatchReply } from "../src/lib/docs-gen/batch-hold.js";
 import {
   decodePartRuns,
   fitDocumentToPlan,
@@ -76,6 +101,8 @@ interface Args {
   watch: string[];
   factsWindowMin: number;
   list: boolean;
+  /** Rank canonical-fact citations by their module, as the synthesizer does (#1368). */
+  canonicalRank: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -93,6 +120,7 @@ function parseArgs(argv: string[]): Args {
     watch: (get("watch") ?? "Content Entities,Entry and Media Entities").split(","),
     factsWindowMin: Number(get("facts-window-min") ?? 30),
     list: argv.includes("--list"),
+    canonicalRank: !argv.includes("--no-canonical-rank"),
   };
 }
 
@@ -111,6 +139,8 @@ interface Run {
     sections: Array<{ sectionLabel: string; budgetChars: number }>;
   };
   model: string;
+  /** The module directory of each canonical fact, by its source id (#1368). */
+  canonicalModuleOf: Map<string, string>;
 }
 
 function load(args: Args): Run {
@@ -127,7 +157,16 @@ function load(args: Args): Run {
     const manifest = JSON.parse(version.manifest) as {
       sectionSynthesis: { records: StoredRecord[] };
       topicPlan: Run["storedPlan"];
+      selectedEvidence?: { primary?: Array<{ sourceId: string; label: string }> };
     };
+    // A canonical fact's evidence label is `path/to/file.go:12 — NAME = value`;
+    // its module is the file's directory, as Phase 1 groups modules.
+    const canonicalModuleOf = new Map<string, string>();
+    for (const item of manifest.selectedEvidence?.primary ?? []) {
+      if (!item.sourceId.startsWith("facts:canon:")) continue;
+      const file = item.label.split(":")[0];
+      canonicalModuleOf.set(item.sourceId, file.slice(0, Math.max(0, file.lastIndexOf("/"))));
+    }
     const records = manifest.sectionSynthesis.records;
     const model = records[0]?.metadata.model ?? "";
     const until = new Date(version.createdAt);
@@ -160,7 +199,7 @@ function load(args: Args): Run {
       ),
       topClasses: JSON.parse(String(list[0].topClassesJson)) as ModuleFacts["topClasses"],
     }));
-    return { facts, records, storedPlan: manifest.topicPlan, model };
+    return { facts, records, storedPlan: manifest.topicPlan, model, canonicalModuleOf };
   } finally {
     db.close();
   }
@@ -234,6 +273,41 @@ function toldBefore(plan: Pick<DocumentPlan, "sections">): Set<string> {
 const h3 = (md: string): Set<string> =>
   new Set([...md.matchAll(/^### (.+?)\s*$/gm)].map((m) => m[1].trim()));
 
+/**
+ * The rendered characters written under every `### theme` of a section, as a
+ * range. `upTo`: everything below the heading up to the next H2 or H3, its
+ * H4s included. `own`: only what the batch that wrote the heading wrote there
+ * (`partOf`, the batch of each unit of the section's body), or, with no parts,
+ * the heading's own body up to the next heading of any depth. The merge puts
+ * a later batch's H4 under the H3 an earlier batch wrote, whether that batch
+ * wrote it under the same theme or opened its reply with it, and a stored
+ * section does not say which, so the theme's written size is between the two.
+ */
+function themeChars(
+  markdown: string,
+  theme: string,
+  partOf?: readonly number[],
+): { own: number; upTo: number } {
+  const body = units(splitClosingNote(markdown).body);
+  const parts = partOf?.length === body.length ? partOf : undefined;
+  let own = 0;
+  let upTo = 0;
+  let inTheme = false;
+  let headingPart = -1;
+  let inBody = false;
+  body.forEach((u, i) => {
+    if (u.depth > 0 && u.depth <= 3) {
+      inTheme = u.depth === 3 && u.text.slice(4).trim() === theme;
+      headingPart = parts?.[i] ?? -1;
+    }
+    if (u.depth > 0) inBody = inTheme && u.depth === 3;
+    const n = renderedCitationLength(u.text) + 2;
+    if (inTheme) upTo += n;
+    if (parts ? inTheme && parts[i] === headingPart : inBody) own += n;
+  });
+  return { own, upTo };
+}
+
 /** `markdown` as a model writing exactly `budget` rendered characters of it would. */
 function writtenTo(markdown: string, budget: number): string {
   if (renderedCitationLength(markdown) <= budget) return markdown;
@@ -304,11 +378,37 @@ function repliesOf(record: StoredRecord): string[] {
   return replies.map((parts) => parts.join("\n\n"));
 }
 
-/** The module-facts rank a citation names: its index in the section. */
-const rankOf = (id: string): number | undefined => {
-  const m = /^facts:(?!canon:|symbol:).*:(\d+)$/.exec(id);
-  return m ? Number(m[1]) : undefined;
-};
+/** A repository module's facts id: `facts:repo:<encoded [connector, graph, path]>:<index>`. */
+const MODULE_FACTS_ID = /^facts:repo:([^:]+):(\d+)$/;
+
+/**
+ * The rank a citation in `record` names, as the synthesizer ranks it when it
+ * holds a batch (`rankOfSource`): a module's facts by the module's index in
+ * the section, and (#1368, unless `--no-canonical-rank`) a canonical fact by
+ * its module's index. Before #1368 the replay ranked module facts only, so a
+ * topic whose most important citation was a canonical fact of the section's
+ * top module ranked lower here than in the run. Only a module the section
+ * cites has an index here; the synthesizer also ranks a module it read but no
+ * topic cited, which can only make a rank more important.
+ */
+function rankerFor(record: StoredRecord, run: Run, args: Args): (id: string) => number | undefined {
+  const indexOf = new Map<string, number>();
+  for (const id of citedSourceIds(record.markdown)) {
+    const m = MODULE_FACTS_ID.exec(id);
+    if (!m) continue;
+    const parts = JSON.parse(decodeURIComponent(m[1])) as unknown[];
+    const path = parts[parts.length - 1];
+    if (typeof path === "string" && !indexOf.has(path)) indexOf.set(path, Number(m[2]));
+  }
+  return (id) => {
+    if (id.startsWith("facts:canon:")) {
+      const path = args.canonicalRank ? run.canonicalModuleOf.get(id) : undefined;
+      return path === undefined ? undefined : indexOf.get(path);
+    }
+    const m = /^facts:(?!canon:|symbol:).*:(\d+)$/.exec(id);
+    return m ? Number(m[1]) : undefined;
+  };
+}
 
 interface Assembly {
   offered: number;
@@ -344,6 +444,7 @@ function assemble(
     }
     const scale = budgetOf(r) / oldBudget(r);
     const budgets = r.parts.budgets.map((b) => Math.floor(b * scale));
+    const rankOf = rankerFor(r, run, args);
     const held = repliesOf(r).map((text, p) => {
       const h = holdBatchReply(text, budgets[p], {
         measure: renderedCitationLength,
@@ -395,9 +496,16 @@ function assemble(
     notWritten,
     cut,
     listed,
-    watch: args.watch.map(
-      (t) => `${t}: ${!written.has(t) ? "absent" : final.has(t) ? "kept" : "LOST"}`,
-    ),
+    // #1368 — "kept" with the rendered characters under the theme's headings,
+    // so a heading a part re-emitted over a line or two is not read as written.
+    watch: args.watch.map((t) => {
+      if (!written.has(t)) return `${t}: absent`;
+      if (!final.has(t)) return `${t}: LOST`;
+      const size = fit.sections.map((s, i) => themeChars(s, t, fit.parts[i]?.partOf));
+      const own = size.reduce((n, s) => n + s.own, 0);
+      const upTo = size.reduce((n, s) => n + s.upTo, 0);
+      return `${t}: kept (${own === upTo ? own : `${own}-${upTo}`})`;
+    }),
   };
 }
 
