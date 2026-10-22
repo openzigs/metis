@@ -107,7 +107,8 @@ import type {
 } from "./types/requirements.js";
 import { isBackgroundAnalysis } from "./requirement-runs.js";
 import { noteProjectRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
-import { pairingColumns, type PromotedFrom } from "./promotion-pairing.js";
+import { pairedInRun, pairingColumns, type PromotedFrom } from "./promotion-pairing.js";
+import { planCriteriaCarryOver } from "./approved-criteria-carry-over.js";
 
 const log = createChildLogger("analysis-service");
 
@@ -1123,6 +1124,11 @@ async function replaceRequirementSet(
     });
   }
 
+  // Issue #1389 — read, before the delete takes them, the criteria each row
+  // promoted from the approval checkpoint holds, keyed by the structured
+  // requirement it IS (#1202), for the rows this set re-creates from the same one.
+  const approvedCriteria = await readApprovedCriteria(tx, input);
+
   await tx.requirement.deleteMany({ where: { analysisId: input.analysisId } });
 
   // #1063 — the imported items this run was started from; `[]` on any other run,
@@ -1131,6 +1137,11 @@ async function replaceRequirementSet(
   const ids: string[] = [];
   for (let idx = 0; idx < input.synthesis.requirements.length; idx++) {
     const r = input.synthesis.requirements[idx];
+    const structuredId = input.promotedFrom?.pairings[idx]?.structuredId;
+    const criteria = planCriteriaCarryOver(
+      (structuredId && approvedCriteria.get(structuredId)) ?? null,
+      r.acceptanceCriteria ?? [],
+    );
     const evidenceIds = r.evidenceFindingIndexes
       .map((i) => input.findingIdsByIndex[i])
       .filter((id): id is string => Boolean(id));
@@ -1147,8 +1158,9 @@ async function replaceRequirementSet(
         // Issue #1096 — the synthesis agent's own criteria, kept as structured
         // data instead of being collapsed into `body`. An empty array is
         // preserved as-is: downstream says "none were derived" rather than
-        // substituting a placeholder.
-        acceptanceCriteria: JSON.stringify(r.acceptanceCriteria ?? []),
+        // substituting a placeholder. #1389 — on a re-created approved row, the
+        // starting point of the carry-over below.
+        acceptanceCriteria: JSON.stringify(criteria.initial),
         storyPoints: r.storyPoints ?? null,
         // Epic #726 (#736) — persist the deterministic coverage label so the
         // API/UI read a queryable field, not prose. Null when the caller did
@@ -1168,6 +1180,17 @@ async function replaceRequirementSet(
         ...pairingColumns(input.promotedFrom, idx),
       },
     });
+    // #1389 — kept or revised, the approved criteria leave a version row the
+    // analyst sees in the requirement's History, in this same transaction.
+    if (criteria.reason) {
+      await updateRequirementWithHistory(versionClientFor(tx), {
+        requirementId: row.id,
+        patch: { acceptanceCriteria: JSON.stringify(criteria.final) },
+        expectedVersion: row.version,
+        actorId: null,
+        reason: criteria.reason,
+      });
+    }
     ids.push(row.id);
   }
   if (input.reviewStatus && analysisRow) {
@@ -1177,6 +1200,44 @@ async function replaceRequirementSet(
     });
   }
   return ids;
+}
+
+/**
+ * Issue #1389 — structured id → the stored `acceptanceCriteria` of the row the
+ * approval checkpoint promoted from it, for the extraction run this set is
+ * promoted from. Empty when this set is not a promotion (no `promotedFrom`):
+ * then nothing pairs a new row with an old one.
+ */
+async function readApprovedCriteria(
+  tx: Prisma.TransactionClient,
+  input: PersistRequirementsInput,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!input.promotedFrom) return out;
+  const rows = await tx.requirement.findMany({
+    where: { analysisId: input.analysisId, deletedAt: null, promotedStructuredId: { not: null } },
+    select: { promotedStructuredId: true, promotedStructuredRunId: true, acceptanceCriteria: true },
+  });
+  for (const row of rows) {
+    if (!pairedInRun(row, input.promotedFrom.runId)) continue;
+    out.set(row.promotedStructuredId!, row.acceptanceCriteria);
+  }
+  return out;
+}
+
+/**
+ * The history writer opens its own transaction; inside the replacement it runs
+ * in this one instead, so the row, its kept criteria and their version row
+ * commit — or roll back — together.
+ */
+function versionClientFor(tx: Prisma.TransactionClient): VersionPrismaClient {
+  return {
+    $transaction: ((fn: (client: Prisma.TransactionClient) => Promise<unknown>) =>
+      fn(tx)) as VersionPrismaClient["$transaction"],
+    requirement: tx.requirement as unknown as VersionPrismaClient["requirement"],
+    requirementVersion:
+      tx.requirementVersion as unknown as VersionPrismaClient["requirementVersion"],
+  };
 }
 
 /**
