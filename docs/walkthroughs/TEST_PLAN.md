@@ -420,7 +420,8 @@ grep -nE '\[(facts|rag|web):|<!--|\{\{|metis-source' brd.md
 version's **Provenance** panel shows the count (per section) and the flagged sections with examples
 (`GET /api/projects/:projectId/docs/:docId/versions/:versionId/provenance/summary`,
 `data.codeIdentifiers`). Start the SO3 list from it, then read the main part for what the
-check misses (an unquoted dotted name such as `feeds.disabled` is a known blind spot). The
+check misses (an unquoted dotted name such as `feeds.disabled` is a known blind spot; names that
+start or end in an acronym, such as `MinifluxSessionID`, are counted since #1223). The
 check is a heuristic and the score is still yours: confirm each flagged name before counting it.
 
 | Id | Check | Pass | Weak | Fail |
