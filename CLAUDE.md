@@ -95,15 +95,15 @@ gh pr merge <pr> --squash --delete-branch   # only after a clean re-read
    and between runs it can return a **transient empty check set** that reads as success.
    Require the full expected check set present with zero `pending` on a plain re-read.
 
-**The PR check set is 24** (#844, #848, #1365): `ci.yml`'s `changes`, `api`, `api-outcome`, `ui`,
-`server`, `changelog`, `sql-lineage`, `postgres-unit (1/3)` to `(3/3)`, `postgres-adapter`, `postgres-migrate-deploy`,
+**The PR check set is 27** (#844, #848, #1365, #1411): `ci.yml`'s `changes`, `api`, `api-outcome`, `ui`,
+`server-unit (1/3)` to `(3/3)`, `server`, `changelog`, `sql-lineage`, `postgres-unit (1/3)` to `(3/3)`, `postgres-adapter`, `postgres-migrate-deploy`,
 `generative-e2e`, `e2e (1/3)`, `e2e (2/3)`, `e2e (3/3)`, `e2e-outcome`, `nightly-report`, plus `Analyze
 javascript-typescript`, `Analyze python`, `CodeQL`, `Check CLA signature`, `Dependency audit`,
 `Semgrep`. Read **`e2e-outcome`** for the sharded suite — unlike `api-outcome` it also reads
-`fail` when a newer push superseded the run (a cancelled shard), so check for a newer run first. The `postgres-unit (n/3)` legs have **no** outcome job, so a leg
+`fail` when a newer push superseded the run (a cancelled shard), so check for a newer run first. The `server-unit (n/3)` and `postgres-unit (n/3)` legs have **no** outcome job, so a leg
 cancelled by a newer push reads `fail` the same way: check for a newer run first. On a PR,
 `postgres-adapter` and `postgres-unit` read **`skipping`** when no Postgres path changed (the
-legs are expected to fold into one skipped `postgres-unit`, giving 22 checks: unconfirmed
+legs are expected to fold into one skipped `postgres-unit`, giving 25 checks: unconfirmed
 until a PR without a Postgres path shows it) and `api` skips its image build when no image
 path did — the `changes` job's summary says why; all three always run on `main` and nightly.
 `skipping` on `postgres-adapter` / `postgres-unit` is expected, on `nightly-report` always (schedule-only:

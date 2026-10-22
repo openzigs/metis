@@ -120,17 +120,24 @@ describe("wiring (#964)", () => {
   const jobs = splitJobs(workflow);
 
   it.each([
-    ["server", "server-tests", "Test server (SQLite client)", "server"],
-    ["ui", "ui-tests", "Test UI", "ui"],
+    // #1411: the server suite runs sharded, so each leg reports its own retries.
+    [
+      "server-unit",
+      "server-tests",
+      "Test server (SQLite client)",
+      "server",
+      "pnpm test --shard=${{ matrix.shard }}",
+    ],
+    ["ui", "ui-tests", "Test UI", "ui", "pnpm test"],
   ])(
     "the %s job reports retries from its unit-test step and then runs the runner",
-    (job, id, name, dir) => {
+    (job, id, name, dir, command) => {
       const body = (jobs.get(job) ?? []).join("\n");
       const reportDir =
         "        env:\n          VITEST_RETRY_REPORT_DIR: ${{ runner.temp }}/vitest-retry\n";
       expect(body).toContain(
         `      - name: ${name}\n        id: ${id}\n        working-directory: ${dir}\n` +
-          `${reportDir}        run: pnpm test\n`,
+          `${reportDir}        run: ${command}\n`,
       );
       const checkName = "      - name: Flag tests that passed only after a retry\n";
       expect(body).toContain(
