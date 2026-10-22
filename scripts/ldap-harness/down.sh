@@ -4,7 +4,7 @@
 #
 # Stops + removes the OpenLDAP container AND its anonymous data volume, so the
 # directory is re-seeded fresh from scripts/ldap-harness/bootstrap.ldif on every
-# `make ldap-up` (bitnami/openldap only runs the custom LDIF on a FIRST boot with
+# `make ldap-up` (the image only runs /docker-entrypoint-initdb.d on a FIRST boot with
 # an empty data dir — `down -v` guarantees that).
 #
 # Usage:

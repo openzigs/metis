@@ -12,7 +12,8 @@ The chart leaves three server settings to you, and the install does not work wit
   `kubectl logs -n metis deploy/metis-server | grep -c "Refusing to start with mock auth"` should return `0`.
 - [ ] `server.env.CORS_ORIGIN` is `https://<ingress host>`. If not, every browser socket is refused with `ORIGIN_REJECTED` (#1349).
 - [ ] `server.env.MCP_RUNTIME` is `k8s-sse` (see §15).
-- [ ] A first admin exists. There is no supported way to create one on a non-mock install yet (#1376).
+- [ ] On OIDC or SAML, the provider comes from `AUTH_OIDC_*` / `AUTH_SAML_*` in `server.env` (secret parts through `secrets.keyMap`). On boot, the server logs `SSO providers configured from the environment: oidc` (or `saml`). A provider saved only through the admin API is lost when the pod restarts (#1376).
+- [ ] A first admin exists: `server.env.METIS_BOOTSTRAP_ADMINS` names the administrator's username or e-mail, and that person has signed in once (#1376). After that, their `/api/auth/me` reports `role: admin`. Once an admin exists the variable does nothing.
 
 ---
 
@@ -79,13 +80,13 @@ The chart leaves three server settings to you, and the install does not work wit
 
 - [ ] Secret `metis-secrets` exists and contains all required keys.  
   `kubectl get secret metis-secrets -n metis -o jsonpath='{.data}' | jq 'keys'`  
-  Expected: `JWT_SECRET, VAULT_MASTER_KEY, EMBEDDINGS_TOKEN, SQL_LINEAGE_TOKEN, DATABASE_URL, OPENAI_API_KEY, GITHUB_TOKEN, METRICS_TOKEN`, plus `AUTH_LDAP_BIND_PASSWORD` (added to `secrets.keyMap`) when `AUTH_MODE=ldap`.  
+  Expected: `JWT_SECRET, VAULT_MASTER_KEY, EMBEDDINGS_TOKEN, SQL_LINEAGE_TOKEN, DATABASE_URL, OPENAI_API_KEY, GITHUB_TOKEN, METRICS_TOKEN, METIS_UI_PROXY_SECRET`, plus `AUTH_LDAP_BIND_PASSWORD` (added to `secrets.keyMap`) when `AUTH_MODE=ldap`.  
   On the SQLite profile, set `DATABASE_URL` to `file:/app/server/data/metis.db` or leave the key out. An empty value still overrides the image's default.
 - [ ] When using ESO, the `ExternalSecret` reports `SecretSyncedError: false`.  
   `kubectl get externalsecret metis-secrets -n metis -o jsonpath='{.status.conditions}'`
 - [ ] No plaintext secret values committed to Git.
-- [ ] Only the server receives the vault key, JWT secret and provider tokens (`secrets.components`, #1375). The UI references no secret, and each sidecar only its own token:  
-  `kubectl get deploy metis-ui -n metis -o yaml | grep -cE 'VAULT_MASTER_KEY|JWT_SECRET|secretKeyRef'` should return `0`.  
+- [ ] Only the server receives the vault key, JWT secret and provider tokens (`secrets.components`, #1375). The UI references only `METIS_UI_PROXY_SECRET` (#1385), and each sidecar only its own token:  
+  `kubectl get deploy metis-ui -n metis -o yaml | grep -cE 'VAULT_MASTER_KEY|JWT_SECRET'` should return `0`, and its one `secretKeyRef` is `METIS_UI_PROXY_SECRET`.  
   `kubectl get deploy metis-embeddings metis-sql-lineage -n metis -o jsonpath='{range .items[*]}{.metadata.name}: {.spec.template.spec.containers[0].env[*].valueFrom.secretKeyRef.key}{"\n"}{end}'` should print one token each.
 - [ ] The UI and sidecars run as `metis-workload`, which has no IRSA role and mounts no token:  
   `kubectl get deploy metis-ui -n metis -o jsonpath='{.spec.template.spec.serviceAccountName} {.spec.template.spec.automountServiceAccountToken}'` should print `metis-workload false`.
@@ -153,7 +154,8 @@ The chart leaves three server settings to you, and the install does not work wit
 - [ ] Ingress reaches `Ready` and resolves to a real ALB / nginx LB FQDN.
 - [ ] TLS termination works: `curl -v https://<host>/api/health` shows a valid cert chain and `{"status":"ok"}`. Use `/api/health`, because the ingress sends `/healthz` to the UI, which redirects to `/login`.
 - [ ] Login sets the session cookies (`metis.at`, `metis.rt`, both `Secure; HttpOnly`). This works only over HTTPS, and only because `/api` routes to the UI (#1312).
-- [ ] With SSO: `/api/auth/oidc` and `/api/auth/saml` route to the **server**, not the UI. The UI 404s `/api/auth/*`. The IdP is registered on the public origin: OIDC redirect URI `https://<host>/api/auth/oidc/callback`, SAML ACS `https://<host>/api/auth/saml/acs`. Run one SSO login round-trip end to end.  
+- [ ] The login limiter counts per client, not per UI pod (#1385): with `METIS_UI_PROXY_SECRET` set, 21 failed logins (each with a different username) from one machine end in `429`, and a login from a second machine (another address) still gets `401`, not `429`.
+- [ ] With SSO: `/api/auth/oidc` and `/api/auth/saml` route to the **server**, not the UI. The UI 404s `/api/auth/*`. The IdP is registered on the public origin: OIDC redirect URI `https://<host>/api/auth/oidc/callback`, SAML ACS `https://<host>/api/auth/saml/acs`. Run one SSO login round-trip end to end: it lands on `https://<host>/dashboard` signed in, with `metis.at` and `metis.rt` set `Secure; HttpOnly` (#1386).  
   `curl -s https://<host>/api/auth/saml/metadata` should return SP metadata XML, or the server's `SSO_NOT_CONFIGURED` when SAML is not set up. The UI's `NOT_FOUND` / `SAML_ACS_WRONG_ORIGIN` means the route goes to the wrong backend.
 - [ ] Uploads near the cap pass the Ingress: on nginx, `proxy-body-size` is `50m` (`ingress.nginx.proxyBodySize`). For the ALB and traefik, check the controller's limit.
 - [ ] WebSocket upgrade works for `/socket.io`: a handshake to `wss://<host>/socket.io/?EIO=4&transport=websocket` with the session cookie returns `101`. A foreign `Origin` is refused with `ORIGIN_REJECTED`.

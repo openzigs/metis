@@ -718,3 +718,25 @@ export const MAX_EXTRACTED_FILE_BYTES = MAX_REPO_INDEX_FILE_BYTES;
 
 /** Zip-bomb guard — cap on the number of entries a single archive may contain. */
 export const MAX_ARCHIVE_ENTRIES = 50_000;
+
+// ---- Browser session cookies (#1386) ----------------------------------------
+// The UI keeps the browser's session in these HttpOnly cookies on its own origin
+// and turns the access cookie into the API's Bearer header. Anything else that
+// completes a browser sign-in — the server's SSO callbacks — must set exactly
+// these names and lifetimes, or the UI never sees the session.
+export const SESSION_ACCESS_COOKIE = "metis.at";
+export const SESSION_REFRESH_COOKIE = "metis.rt";
+/** Cookie lifetimes, in seconds. The tokens inside carry their own expiry. */
+export const SESSION_ACCESS_MAX_AGE_SECONDS = 60 * 60;
+export const SESSION_REFRESH_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+
+// ---- Signed client address, UI → API (#1385) --------------------------------
+/**
+ * The exact bytes the UI signs (HMAC-SHA256 under `METIS_UI_PROXY_SECRET`) and
+ * the API verifies. One definition for both sides, so the two cannot drift:
+ * a mismatch would make the API ignore every signed address silently. `minute`
+ * is whole minutes since the epoch; the API accepts the current minute ±1.
+ */
+export function clientAddressSignedMessage(address: string, minute: number): string {
+  return `metis-client-address/v2\n${minute}\n${address}`;
+}

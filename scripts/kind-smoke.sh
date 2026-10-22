@@ -128,12 +128,13 @@ DEPLOY_COUNT="$(kubectl get deploy -n "${NAMESPACE}" -l app.kubernetes.io/part-o
 [[ "${DEPLOY_COUNT}" == "4" ]] && ok "4 metis Deployments present (server+ui+embeddings+sql-lineage)" \
   || die "expected 4 metis Deployments, got ${DEPLOY_COUNT}"
 
-# #1375: the internet-facing UI holds no secret. Read back from the API server,
-# not the render, so a mutating webhook or a values mistake would show here.
+# #1375: the internet-facing UI holds no secret but one — the HMAC key it signs
+# login client addresses with (#1385). Read back from the API server, not the
+# render, so a mutating webhook or a values mistake would show here.
 UI_SECRET_REFS="$(kubectl get deploy "${RELEASE}-ui" -n "${NAMESPACE}" \
-  -o jsonpath='{range .spec.template.spec.containers[*].env[*]}{.valueFrom.secretKeyRef.key}{"\n"}{end}' | grep -c . || true)"
-[[ "${UI_SECRET_REFS}" == "0" ]] && ok "ui Deployment references no secret" \
-  || die "ui Deployment references ${UI_SECRET_REFS} secret key(s); expected none (#1375)"
+  -o jsonpath='{range .spec.template.spec.containers[*].env[*]}{.valueFrom.secretKeyRef.key}{"\n"}{end}' | grep . | sort | tr '\n' ',' || true)"
+[[ "${UI_SECRET_REFS}" == "METIS_UI_PROXY_SECRET," ]] && ok "ui Deployment references only METIS_UI_PROXY_SECRET" \
+  || die "ui Deployment references secret key(s) '${UI_SECRET_REFS}'; expected only METIS_UI_PROXY_SECRET (#1375, #1385)"
 
 # The dev profile turns NetworkPolicy off. Have the API server admit the default
 # profile's policies (#1374) without persisting them. This checks the schema

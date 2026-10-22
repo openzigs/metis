@@ -154,7 +154,11 @@ describe("LDAPAuthProvider.authenticate", () => {
     clearLDAPConfig();
     const res = await provider.authenticate("user", "pass");
     expect(res.success).toBe(false);
-    if (!res.success) expect(res.error).toContain("not configured");
+    if (!res.success) {
+      expect(res.error).toContain("not configured");
+      // #1385 — a misconfiguration is not a guess: it never counts against the cap.
+      expect(res.reason).toBeUndefined();
+    }
   });
 
   it("returns error when user is not found in directory", async () => {
@@ -164,7 +168,11 @@ describe("LDAPAuthProvider.authenticate", () => {
 
     const res = await provider.authenticate("unknown", "pass");
     expect(res.success).toBe(false);
-    if (!res.success) expect(res.error).toBe("Invalid username or password");
+    if (!res.success) {
+      expect(res.error).toBe("Invalid username or password");
+      // #1385 — a refused credential counts against the per-account cap.
+      expect(res.reason).toBe("invalid_credentials");
+    }
   });
 
   it("authenticates successfully with correct credentials", async () => {
@@ -217,7 +225,11 @@ describe("LDAPAuthProvider.authenticate", () => {
 
     const res = await provider.authenticate("jdoe", "wrongpass");
     expect(res.success).toBe(false);
-    if (!res.success) expect(res.error).toBe("Invalid username or password");
+    if (!res.success) {
+      expect(res.error).toBe("Invalid username or password");
+      // #1385 — a refused credential counts against the per-account cap.
+      expect(res.reason).toBe("invalid_credentials");
+    }
   });
 
   it("returns service unavailable on ECONNREFUSED", async () => {

@@ -66,7 +66,13 @@ class FakeSharedPg {
 
   // Tagged-template `$queryRaw` — Prisma passes (strings, ...values). The store
   // only issues the upsert here; we read the interpolated values positionally.
-  $queryRaw<T>(_strings: TemplateStringsArray, ...values: unknown[]): Promise<T> {
+  $queryRaw<T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> {
+    if (strings.join("?").includes('SELECT "count"')) {
+      // #1385 — `count()`: a read, never an increment.
+      const [key, windowStart] = values as [string, number];
+      const row = this.rows.get(`${key}|${windowStart}`);
+      return Promise.resolve((row ? [{ count: row.count }] : []) as unknown as T);
+    }
     const [key, windowStart, windowEnd] = values as [string, number, number];
     return this.serialize(() => {
       const id = `${key}|${windowStart}`;
@@ -234,5 +240,18 @@ describe("registerPostgresRateLimitStore", () => {
     __setPostgresStoreFactory(() => {
       throw new Error("not registered");
     });
+  });
+});
+
+describe("PostgresRateLimitStore.count (#1385)", () => {
+  it("reads the current window's hits without recording one, and 0 for a new window", async () => {
+    const db = new FakeSharedPg();
+    const store = new PostgresRateLimitStore(db as unknown as never);
+    expect(await store.count("k", 1000, 100)).toBe(0);
+    await store.hit("k", 99, 1000, 100);
+    await store.hit("k", 99, 1000, 200);
+    expect(await store.count("k", 1000, 300)).toBe(2);
+    expect(await store.count("k", 1000, 300)).toBe(2);
+    expect(await store.count("k", 1000, 1500)).toBe(0);
   });
 });

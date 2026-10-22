@@ -17,7 +17,16 @@ export interface AuthenticatedUser {
 
 export type AuthResult =
   | { success: true; user: AuthenticatedUser }
-  | { success: false; error: string };
+  | {
+      success: false;
+      error: string;
+      /**
+       * #1385 — `invalid_credentials` when the directory refused THIS password.
+       * Only that counts against the per-account sign-in cap; an outage or a
+       * misconfiguration must not lock out users whose password is right.
+       */
+      reason?: "invalid_credentials";
+    };
 
 export interface AuthProvider {
   /** Stable name used in logs and the `/auth/me` payload. */

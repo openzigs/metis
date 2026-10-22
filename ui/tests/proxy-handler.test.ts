@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock next/server so we can assert which response the gate produced without
@@ -35,6 +36,7 @@ interface ClonedUrl {
 interface FakeReq {
   nextUrl: { pathname: string; search: string; clone: () => ClonedUrl };
   cookies: { get: (n: string) => { value: string } | undefined };
+  headers: Headers;
   _cloned: ClonedUrl;
 }
 
@@ -42,6 +44,7 @@ function makeReq(
   pathname: string,
   cookies: { access?: string; refresh?: string } = {},
   search = "",
+  headers: Record<string, string> = {},
 ): FakeReq {
   const store = new Map<string, { value: string }>();
   if (cookies.access) store.set(ACCESS_COOKIE, { value: cookies.access });
@@ -50,6 +53,7 @@ function makeReq(
   return {
     nextUrl: { pathname, search, clone: () => cloned },
     cookies: { get: (n: string) => store.get(n) },
+    headers: new Headers(headers),
     _cloned: cloned,
   };
 }
@@ -114,9 +118,36 @@ describe("proxy auth gate (handler)", () => {
       retryAfter: null,
     });
     const res = await run(makeReq("/projects/abc", { refresh: "rt" }));
-    expect(refreshMock).toHaveBeenCalledWith("rt");
+    expect(refreshMock).toHaveBeenCalledWith("rt", {});
     expect(applyMock).toHaveBeenCalledWith(res, { accessToken: "AT", refreshToken: "RT" });
     expect(redirectMock).not.toHaveBeenCalled();
+  });
+
+  it("#1385 — a page-navigation refresh carries the signed client address", async () => {
+    const secret = "proxy-handler-test-secret-long-enough-0123456789";
+    vi.stubEnv("METIS_UI_PROXY_SECRET", secret);
+    vi.stubEnv("METIS_TRUSTED_PROXY_HOPS", "1");
+    const now = Date.UTC(2026, 9, 21, 12, 0, 30);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
+    try {
+      refreshMock.mockResolvedValue(refused);
+      await run(
+        makeReq("/projects/abc", { refresh: "rt" }, "", {
+          "x-forwarded-for": "6.6.6.6, 203.0.113.7",
+        }),
+      );
+      const expected = createHmac("sha256", secret)
+        .update(`metis-client-address/v2\n${Math.floor(now / 60_000)}\n203.0.113.7`)
+        .digest("hex");
+      expect(refreshMock).toHaveBeenCalledWith("rt", {
+        "x-metis-client-address": "203.0.113.7",
+        "x-metis-client-address-signature": expected,
+      });
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
   });
 
   it("redirects to /login?next when the refresh fails", async () => {
@@ -135,7 +166,7 @@ describe("proxy auth gate (handler)", () => {
     refreshMock.mockResolvedValue(null);
     const req = makeReq("/dashboard");
     await run(req);
-    expect(refreshMock).toHaveBeenCalledWith(undefined);
+    expect(refreshMock).toHaveBeenCalledWith(undefined, {});
     expect(redirectMock).toHaveBeenCalled();
     expect(req._cloned.searchParams.get("next")).toBe("/dashboard");
     // No refresh cookie at all → never-logged-in (not "expired") → no banner.

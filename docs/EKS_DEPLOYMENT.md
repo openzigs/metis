@@ -221,14 +221,19 @@ Create one secret per required env var, prefixed `metis/`:
 
 ```bash
 for k in JWT_SECRET VAULT_MASTER_KEY EMBEDDINGS_TOKEN SQL_LINEAGE_TOKEN \
-         DATABASE_URL OPENAI_API_KEY GITHUB_TOKEN METRICS_TOKEN; do
+         DATABASE_URL OPENAI_API_KEY GITHUB_TOKEN METRICS_TOKEN METIS_UI_PROXY_SECRET; do
   aws secretsmanager create-secret --name "metis/${k}" \
     --secret-string "REPLACE_ME"
 done
 ```
 
-Generate the cryptographic ones with `openssl rand -base64 48` (`JWT_SECRET`)
-and `openssl rand -base64 32` (`VAULT_MASTER_KEY`).
+Generate the cryptographic ones with `openssl rand -base64 48` (`JWT_SECRET`),
+`openssl rand -base64 32` (`VAULT_MASTER_KEY`) and `openssl rand -hex 32`
+(`METIS_UI_PROXY_SECRET`). The UI signs each login's client address with
+`METIS_UI_PROXY_SECRET`, so the server's login limiter counts per client rather
+than per UI pod (#1385; chart README, § "Login rate limiting behind the UI"). The
+ALB appends exactly one `X-Forwarded-For` entry, which matches the chart's
+`ui.env.METIS_TRUSTED_PROXY_HOPS: "1"`.
 
 ---
 
@@ -335,8 +340,32 @@ Cilium), also set the two CIDR lists the chart's NetworkPolicies need (#1374):
   server cannot reach Postgres, and NOTES.txt warns.
 
 For LDAP, the bind settings and the bind-password key are in the chart README,
-§ "Server env the chart does not set for you". There is no supported way to
-bootstrap the first admin on a non-mock install yet (#1376).
+§ "Server env the chart does not set for you".
+
+**OIDC / SAML provider (#1376).** With `AUTH_MODE=oidc` or `saml`, configure the
+provider through the server environment (`AUTH_OIDC_DISCOVERY_URL`,
+`AUTH_OIDC_CLIENT_ID`, `AUTH_OIDC_REDIRECT_URI`, plus `AUTH_OIDC_CLIENT_SECRET`
+through `secrets.keyMap`; or the `AUTH_SAML_*` equivalents). See
+[`docs/auth/README.md`](auth/README.md#oidc-and-saml-from-the-environment-1376).
+The admin API cannot configure the provider on a fresh install, because there is no admin yet, and it
+keeps its configuration in memory only.
+
+**The first admin (#1376).** No account is an admin on a fresh install, and only
+an admin can map IdP groups to roles. Add the administrator's username or e-mail
+to the install:
+
+```bash
+  --set server.env.METIS_BOOTSTRAP_ADMINS=jdoe
+```
+
+When `jdoe` first signs in and no user holds the admin role yet, METIS grants
+`jdoe` admin and records `user.role.bootstrap_admin` in the audit log. From then
+on the setting does nothing while any admin role row exists, so it cannot be
+used to gain admin later. It re-arms if every admin role is removed, so unset it
+on the next upgrade unless you want that recovery path. Then sign in as `jdoe` and set
+the group mappings on **Settings → Authentication** (`/settings/auth`). For OIDC, list an **e-mail
+address**: only an e-mail the IdP marks `email_verified` matches, never the
+username (`preferred_username` is often user-editable).
 
 Watch pods come up:
 

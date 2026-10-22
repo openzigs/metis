@@ -26,6 +26,7 @@ import { reconcileTrustedLoginRole } from "../lib/auth/durable-roles.js";
 import { LIVE_WORKSPACE_MEMBERSHIP } from "../lib/auth/live-workspace-ids.js";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
+import { authAccountGuard } from "../lib/auth/login-account-guard.js";
 import { AppError } from "../middleware/error-handler.js";
 
 const loginSchema = z.object({
@@ -82,6 +83,8 @@ async function ensureUserRow(user: AuthenticatedUser): Promise<{ id: string; rol
     providerRole: user.role,
     authRolesInitializedAt:
       (row as { authRolesInitializedAt?: Date | null }).authRolesInitializedAt ?? null,
+    // #1376 — the directory's account name and mail attribute.
+    bootstrapIdentities: [user.username, user.email],
   });
   return { id: row.id, role };
 }
@@ -89,7 +92,9 @@ async function ensureUserRow(user: AuthenticatedUser): Promise<{ id: string; rol
 export function authRouter(): Router {
   const r = Router();
 
-  r.post("/login", async (req: Request, res: Response) => {
+  // #1385 — the per-account cap sits on the route itself, so every path Express
+  // routes here (`/login/`, `/LOGIN`) meets it.
+  r.post("/login", authAccountGuard.check, async (req: Request, res: Response) => {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new AppError(400, "VALIDATION_ERROR", "Invalid login payload", {
@@ -105,6 +110,10 @@ export function authRouter(): Router {
         target: { type: "user", id: username },
         metadata: { reason: result.error },
       });
+      // Only a refused password counts: a directory outage is not a guess.
+      if (result.reason === "invalid_credentials") {
+        await authAccountGuard.recordFailure(username);
+      }
       throw new AppError(401, "AUTH_FAILED", result.error);
     }
     const userRow = await ensureUserRow(result.user);

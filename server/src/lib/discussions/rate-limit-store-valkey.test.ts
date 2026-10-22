@@ -30,8 +30,9 @@ class FakeValkey implements RedisWireClient {
   }
 
   // Models the INCR (+ first-touch PEXPIRE) Lua script.
-  eval(_script: string, _numkeys: number, ...args: Array<string | number>): Promise<unknown> {
+  eval(script: string, _numkeys: number, ...args: Array<string | number>): Promise<unknown> {
     const key = String(args[0]);
+    if (script.includes("'GET'")) return Promise.resolve(this.store.get(key) ?? null);
     return this.serialize(() => {
       const next = (this.store.get(key) ?? 0) + 1;
       this.store.set(key, next);
@@ -135,5 +136,16 @@ describe("registerValkeyRateLimitStore", () => {
     __setValkeyStoreFactory(() => {
       throw new Error("not registered");
     });
+  });
+});
+
+describe("ValkeyRateLimitStore.count (#1385)", () => {
+  it("reads the current window's hits without recording one", async () => {
+    const store = new ValkeyRateLimitStore(new FakeValkey());
+    expect(await store.count("k", 1000, 100)).toBe(0);
+    await store.hit("k", 99, 1000, 100);
+    expect(await store.count("k", 1000, 200)).toBe(1);
+    expect(await store.count("k", 1000, 200)).toBe(1);
+    expect(await store.count("k", 1000, 1200)).toBe(0);
   });
 });
