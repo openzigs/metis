@@ -104,11 +104,20 @@ updates:
   # (docs/K8S_PROD_CHECKLIST.md §9). Weekly, all directories in ONE grouped PR,
   # whose `dependabot/docker/*` branch ci.yml's `api` job builds and scans like
   # any other image change. The MCP wrapper images (images/mcp-wrappers/*) are
-  # included; wrapper-image-scan.yml scans them on `main`.
+  # included, each listed literally (the dependabot-workspace guard reads only
+  # literal paths); wrapper-image-scan.yml scans them on `main`.
   - package-ecosystem: "docker"
     directories:
       - "/"
-      - "/images/mcp-wrappers/*"
+      - "/images/mcp-wrappers/code-graph-runner-sse"
+      - "/images/mcp-wrappers/jbang-runner"
+      - "/images/mcp-wrappers/jbang-runner-sse"
+      - "/images/mcp-wrappers/node-runner"
+      - "/images/mcp-wrappers/node-runner-sse"
+      - "/images/mcp-wrappers/npx-runner"
+      - "/images/mcp-wrappers/npx-runner-sse"
+      - "/images/mcp-wrappers/uvx-runner"
+      - "/images/mcp-wrappers/uvx-runner-sse"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5

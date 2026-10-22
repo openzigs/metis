@@ -607,7 +607,11 @@ describe("container images are digest-pinned, patched and scanned (#1379)", () =
     const dependabot = read(".github/dependabot.yml");
     const docker = dependabot.slice(dependabot.indexOf('package-ecosystem: "docker"'));
     expect(docker).toContain('- "/"');
-    expect(docker).toContain('- "/images/mcp-wrappers/*"');
+    for (const dir of fs.readdirSync(path.join(repoRoot, "images/mcp-wrappers"))) {
+      if (fs.existsSync(path.join(repoRoot, "images/mcp-wrappers", dir, "Dockerfile"))) {
+        expect(docker).toContain(`- "/images/mcp-wrappers/${dir}"`);
+      }
+    }
     expect(docker).toMatch(/interval: "weekly"/);
     expect(docker).toMatch(/groups:/);
   });
