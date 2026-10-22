@@ -9,7 +9,7 @@
  * The `@metis/e2e` package's `test` script is Playwright, and the root
  * `pnpm test` excludes it, so no vitest config collects `e2e/**\/*.test.ts`.
  * This file lives in `server/tests/` — beside the clarify-fixture parity test
- * that also imports `e2e/fixtures/*` — so the CI `server` job runs it.
+ * that also imports `e2e/fixtures/*` — so the CI `server-unit` job runs it.
  */
 import { describe, expect, it } from "vitest";
 import { DEFAULT_E2E_AI_PROVIDER, e2eServerAIEnv } from "../../e2e/fixtures/ai-mode.js";

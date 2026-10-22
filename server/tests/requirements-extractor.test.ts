@@ -1,7 +1,7 @@
 /**
  * Tests for RequirementsExtractor (Epic #597 / Issue #622).
  */
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   RequirementsExtractionError,
   RequirementsExtractor,
@@ -114,6 +114,27 @@ describe("RequirementsExtractor", () => {
       expect(provider.chat).toHaveBeenCalledTimes(1);
     });
 
+    /**
+     * #1355 — "first parseable span wins" read a preamble example as the
+     * answer: a schema-valid, wrong extraction with no re-prompt. Two different
+     * objects are now an unreadable reply, so the model is asked again and told why.
+     */
+    it("re-prompts on a preamble example followed by the real answer, never reading the example", async () => {
+      const example = JSON.stringify({
+        requirements: [{ title: "Example title", description: "Example description" }],
+      });
+      const provider = sequenceProvider([
+        `The answer looks like ${example}.\nHere it is:\n${ONE_REQUIREMENT}`,
+        ONE_REQUIREMENT,
+      ]);
+      const result = await new RequirementsExtractor({ provider }).extract("Users must log in");
+
+      expect(result.requirements.map((r) => r.title)).toEqual(["Login"]);
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+      const retry = vi.mocked(provider.chat).mock.calls[1]![0];
+      expect(String(retry.at(-1)!.content)).toContain("more than one different JSON object");
+    });
+
     it("propagates cancellation instead of reporting a failed extraction", async () => {
       const abort = Object.assign(new Error("aborted"), { name: "AbortError" });
       const provider = sequenceProvider([abort]);
@@ -210,83 +231,75 @@ describe("RequirementsExtractor", () => {
     });
   });
 
-  describe("parseResponse", () => {
-    let extractor: RequirementsExtractor;
+  /**
+   * #1355 — these went through `parseResponse`, which had no production caller
+   * after #1084 and was removed. They now read the answer the way a run does:
+   * through `extract`, one provider call, the answer as the model's reply.
+   * (`parseResponse`'s two #1058 throw cases are the `fails loudly` table above.)
+   */
+  describe("reading the answer, through extract (#1355)", () => {
+    const read = (content: string) =>
+      new RequirementsExtractor({ provider: mockProvider(content) }).extract("raw");
 
-    beforeEach(() => {
-      extractor = new RequirementsExtractor({ provider: mockProvider("") });
-    });
-
-    it("#1058 throws on invalid JSON instead of returning an empty result", () => {
-      expect(() => extractor.parseResponse("not json", "raw")).toThrow(RequirementsExtractionError);
-      expect(() => extractor.parseResponse("not json", "raw")).toThrow(/unparseable/);
-    });
-
-    it("#1058 throws on a missing requirements array instead of returning an empty result", () => {
-      expect(() => extractor.parseResponse(JSON.stringify({ foo: "bar" }), "raw")).toThrow(
-        /schema-invalid/,
-      );
-    });
-
-    it("strips markdown fences from response", () => {
+    it("strips markdown fences from response", async () => {
       const json = JSON.stringify({
         requirements: [
           { title: "Test", description: "Desc", type: "functional", priority: "must-have" },
         ],
       });
-      const result = extractor.parseResponse("```json\n" + json + "\n```", "raw");
+      const result = await read("```json\n" + json + "\n```");
       expect(result.requirements).toHaveLength(1);
     });
 
-    it("defaults type to functional for invalid types", () => {
+    it("defaults type to functional for invalid types", async () => {
       const json = JSON.stringify({
         requirements: [
           { title: "Test", description: "Desc", type: "invalid-type", priority: "must-have" },
         ],
       });
-      const result = extractor.parseResponse(json, "raw");
+      const result = await read(json);
       expect(result.requirements[0]!.type).toBe("functional");
     });
 
-    it("defaults priority to should-have for invalid priorities", () => {
+    it("defaults priority to should-have for invalid priorities", async () => {
       const json = JSON.stringify({
         requirements: [
           { title: "Test", description: "Desc", type: "functional", priority: "invalid" },
         ],
       });
-      const result = extractor.parseResponse(json, "raw");
+      const result = await read(json);
       expect(result.requirements[0]!.priority).toBe("should-have");
     });
 
-    it("filters out requirements without title and description", () => {
+    it("filters out requirements without title and description", async () => {
       const json = JSON.stringify({
         requirements: [
           { title: "", description: "" },
           { title: "Valid", description: "Has content" },
         ],
       });
-      const result = extractor.parseResponse(json, "raw");
+      const result = await read(json);
       expect(result.requirements).toHaveLength(1);
       expect(result.requirements[0]!.title).toBe("Valid");
     });
 
-    it("handles non-array stakeholders gracefully", () => {
+    it("handles non-array stakeholders gracefully", async () => {
       const json = JSON.stringify({
         requirements: [{ title: "Test", description: "Desc", stakeholders: "not-array" }],
       });
-      const result = extractor.parseResponse(json, "raw");
+      const result = await read(json);
       expect(result.requirements[0]!.stakeholders).toEqual([]);
     });
 
-    it("filters non-string stakeholders", () => {
+    it("filters non-string stakeholders", async () => {
       const json = JSON.stringify({
         requirements: [{ title: "Test", description: "Desc", stakeholders: ["valid", 123, null] }],
       });
-      const result = extractor.parseResponse(json, "raw");
+      const result = await read(json);
       expect(result.requirements[0]!.stakeholders).toEqual(["valid"]);
     });
 
-    it("filters ambiguities without description or question", () => {
+    it("filters ambiguities without description or question", async () => {
       const json = JSON.stringify({
         requirements: [
           {
@@ -299,11 +312,11 @@ describe("RequirementsExtractor", () => {
           },
         ],
       });
-      const result = extractor.parseResponse(json, "raw");
+      const result = await read(json);
       expect(result.requirements[0]!.ambiguities).toHaveLength(1);
     });
 
-    it("filters evidence needs without description", () => {
+    it("filters evidence needs without description", async () => {
       const json = JSON.stringify({
         requirements: [
           {
@@ -316,11 +329,11 @@ describe("RequirementsExtractor", () => {
           },
         ],
       });
-      const result = extractor.parseResponse(json, "raw");
+      const result = await read(json);
       expect(result.requirements[0]!.evidenceNeeds).toHaveLength(1);
     });
 
-    it("correctly counts totals across multiple requirements", () => {
+    it("correctly counts totals across multiple requirements", async () => {
       const json = JSON.stringify({
         requirements: [
           {
@@ -340,31 +353,31 @@ describe("RequirementsExtractor", () => {
           },
         ],
       });
-      const result = extractor.parseResponse(json, "raw");
+      const result = await read(json);
       expect(result.totalAmbiguities).toBe(3);
       expect(result.totalEvidenceNeeds).toBe(1);
     });
 
-    it("assigns unique ids to each requirement", () => {
+    it("assigns unique ids to each requirement", async () => {
       const json = JSON.stringify({
         requirements: [
           { title: "A", description: "A desc" },
           { title: "B", description: "B desc" },
         ],
       });
-      const result = extractor.parseResponse(json, "raw");
+      const result = await read(json);
       expect(result.requirements[0]!.id).toBeTruthy();
       expect(result.requirements[1]!.id).toBeTruthy();
       expect(result.requirements[0]!.id).not.toBe(result.requirements[1]!.id);
     });
 
-    it("handles all valid requirement types", () => {
+    it("handles all valid requirement types", async () => {
       const types = ["functional", "non-functional", "constraint", "assumption", "dependency"];
       for (const type of types) {
         const json = JSON.stringify({
           requirements: [{ title: "T", description: "D", type }],
         });
-        const result = extractor.parseResponse(json, "raw");
+        const result = await read(json);
         expect(result.requirements[0]!.type).toBe(type);
       }
     });

@@ -166,7 +166,7 @@ jobs:
       # #4 — ONLY the suites no other job runs: scripts, shared, ui-kit and
       # embeddings-svc (18 s measured on PR #287's run). This step used to be the root `pnpm test` — the
       # WHOLE monorepo — which was 86% of this job's wall clock and re-ran the ui
-      # suite (the `ui` job runs it) and the server suite (now the `server` job).
+      # suite (the `ui` job runs it) and the server suite (now the sharded `server-unit` job, #1411).
       #
       # Exclusions, not an allowlist, so a NEW package is tested here by default
       # rather than by nobody. `!metis` is load-bearing: only-negative filters
@@ -625,7 +625,7 @@ jobs:
 
   # #4 — the server unit suite on the DEFAULT (SQLite) Prisma client, moved out of
   # `api`. It used to run inside `api`'s root `pnpm test`, concurrently with the ui
-  # suite on the same runner (~12.5 min there); here it has a runner to itself and
+  # suite on the same runner (~12.5 min there); here it has runners to itself and
   # runs in parallel with `api`'s image builds instead of ahead of them.
   #
   # It is NOT a duplicate of `postgres-adapter`, which runs the same files against
@@ -633,11 +633,26 @@ jobs:
   # every `*.sqlite.test.ts` among them. Measured on #4 by comparing the per-file
   # results of both jobs, not their totals. `ci-test-ownership-repo.test.mjs`
   # keeps the ownership honest.
-  server:
+  #
+  # #1411 — this was one step of `server`, and it took 709-1040 s of that job's
+  # 770-1104 s on four main runs (39776185112: `Duration 968.04s (tests 50%, import
+  # 37%, ...)`, 1676 files), so the job ran within a minute or two of its 20-minute
+  # cap; PR #1408's run was cancelled at 20m20s with no test failing. Vitest's
+  # `--shard` splits the FILES, so the three legs together run exactly the suite the
+  # single step ran. `isolate: false` would cut the import time, but the suite relies
+  # on per-file module singletons (see vitest.config.ts); another runner is free.
+  # Same shape as `postgres-unit` (#1365). The legs are strings with no `name:`, so
+  # the checks read `server-unit (1/3)` … `(3/3)`.
+  server-unit:
     runs-on: ubuntu-latest
-    # 9m04s measured for the whole job on PR #287's run (36336030407). 20 bounds a
-    # hang without cutting a slow cold run.
-    timeout-minutes: 20
+    # A leg is about a third of the ~1000 s suite plus ~40 s of setup. Add a leg
+    # before raising this.
+    timeout-minutes: 15
+    strategy:
+      # Let every leg finish: a failure in one must not hide another's.
+      fail-fast: false
+      matrix:
+        shard: ["1/3", "2/3", "3/3"]
     env:
       NODE_ENV: development
       NPM_CONFIG_PRODUCTION: "false"
@@ -669,24 +684,7 @@ jobs:
         working-directory: server
         env:
           VITEST_RETRY_REPORT_DIR: ${{ runner.temp }}/vitest-retry
-        run: pnpm test
-
-      # #456 — the exporter tests that need a REAL headless Chromium to render a
-      # PDF / DOCX (moved out of the unit fan-out by #447 / PR #451, which ran them
-      # nowhere). Install the Chrome build puppeteer pins, explicitly rather than
-      # trusting its postinstall download, then run the suite on its own, after the
-      # unit suite, so the Chromium spawn does not contend with vitest workers
-      # (#388). The suite asserts the PDF / DOCX unconditionally, so a Chromium that
-      # cannot launch (the exporter degrades to HTML) fails this step. The runner
-      # image already carries Chrome's system libraries. Guarded by
-      # scripts/lib/ci-real-chromium-repo.test.mjs.
-      - name: Install puppeteer's Chrome
-        working-directory: server
-        run: pnpm exec puppeteer browsers install chrome
-
-      - name: Test exporters against a real Chromium
-        working-directory: server
-        run: pnpm test:integration exporters-real-chromium
+        run: pnpm test --shard=${{ matrix.shard }}
 
       # #964 — `retry` (server/vitest.config.ts; ui/vitest.config.ts under CI) clears
       # timing flakes, but it hid six deterministic failures for over a day (#963):
@@ -701,6 +699,59 @@ jobs:
         env:
           VITEST_RETRY_REPORT_DIR: ${{ runner.temp }}/vitest-retry
         run: node scripts/vitest-retried-tests.mjs "$VITEST_RETRY_REPORT_DIR"
+
+  # The server checks that are not the unit suite: today the exporter suite against
+  # a real headless Chromium. The SQLite unit suite runs sharded in `server-unit`
+  # (#1411); do not move it back here, and add a `server-unit` leg rather than
+  # raising that job's cap.
+  server:
+    runs-on: ubuntu-latest
+    # Setup plus the Chromium suite measured ~1 min (main run 39776185112: install
+    # 28 s, Chrome <1 s, suite 19 s). 10 bounds a hang with room for a cold Chrome
+    # download.
+    timeout-minutes: 10
+    env:
+      NODE_ENV: development
+      NPM_CONFIG_PRODUCTION: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+
+      - name: Clean stale artifacts
+        run: rm -rf node_modules dist
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Build shared packages
+        run: pnpm --filter @metis/shared run build
+
+      # #456 — the exporter tests that need a REAL headless Chromium to render a
+      # PDF / DOCX (moved out of the unit fan-out by #447 / PR #451, which ran them
+      # nowhere). Install the Chrome build puppeteer pins, explicitly rather than
+      # trusting its postinstall download, then run the suite on a runner apart from
+      # the unit suite (`server-unit`, #1411), so the Chromium spawn does not contend
+      # with vitest workers (#388). The suite asserts the PDF / DOCX unconditionally,
+      # so a Chromium that cannot launch (the exporter degrades to HTML) fails this
+      # step. The runner image already carries Chrome's system libraries. Guarded by
+      # scripts/lib/ci-real-chromium-repo.test.mjs.
+      - name: Install puppeteer's Chrome
+        working-directory: server
+        run: pnpm exec puppeteer browsers install chrome
+
+      - name: Test exporters against a real Chromium
+        working-directory: server
+        run: pnpm test:integration exporters-real-chromium
 
   # Epic #294 (#303) — metis-sql-lineage Python sidecar checks.
   #
@@ -1594,6 +1645,7 @@ jobs:
       - api
       - api-outcome
       - ui
+      - server-unit
       - server
       - changelog
       - sql-lineage

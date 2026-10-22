@@ -190,7 +190,9 @@ import {
   type FactsSourceInput,
   factsSourceId,
   mergeFactsIntoContext,
-  renderGroundingBlock,
+  NO_GROUNDING_BLOCKS,
+  renderGroundingBlocks,
+  type GroundingBlocks,
 } from "./grounding/grounding-context.js";
 import type { SectionGroundingRetriever } from "./grounding/grounding-retrieval.js";
 import {
@@ -3961,7 +3963,9 @@ async function synthesizeBatchedSection(input: {
         projectId,
         bundle.tuning,
         // #168 — facts already in the batch's facts text are listed by id only.
-        grounding ? renderGroundingBlock(grounding, { factsBlob: batchFacts }) : "",
+        grounding
+          ? renderGroundingBlocks(grounding, { factsBlob: batchFacts })
+          : NO_GROUNDING_BLOCKS,
         input.flowBlob,
         [
           batchNoteFor(
@@ -5114,8 +5118,8 @@ async function synthesizeFinalDocumentInRun(
       // #168 — each module's facts are sent once: the grounding block lists a
       // `facts:` source already in the facts blob by id, not by text again.
       const groundingBlock = sectionGrounding
-        ? renderGroundingBlock(sectionGrounding, { factsBlob })
-        : "";
+        ? renderGroundingBlocks(sectionGrounding, { factsBlob })
+        : NO_GROUNDING_BLOCKS;
       // #1070 — the canonical facts this section is given: the ones its input
       // mentions and every one it owns. They are given in a block of their
       // own, so the grounding block above is built before they join the
@@ -5165,7 +5169,9 @@ async function synthesizeFinalDocumentInRun(
         formulas: sectionFormulasBlob,
         flow: flowBlob,
         grounding: JSON.stringify({
-          block: groundingBlock,
+          // #1329 — the single block as before when nothing was retrieved, so
+          // a section with no retrieved source hashes (and is reused) as before.
+          block: groundingBlock.shared ? groundingBlock : groundingBlock.own,
           sources: sectionGrounding?.sources ?? [],
           sourceIds: [...(sectionGrounding?.sourceIds ?? [])],
           isEmpty: sectionGrounding?.isEmpty ?? true,
@@ -5518,8 +5524,8 @@ async function synthesizeFinalDocumentInRun(
               );
             }
             const escBlock = escGrounding
-              ? renderGroundingBlock(escGrounding, { factsBlob: escFactsBlob })
-              : "";
+              ? renderGroundingBlocks(escGrounding, { factsBlob: escFactsBlob })
+              : NO_GROUNDING_BLOCKS;
             if (escGrounder.claimExtractor) {
               escGrounding = withCanonicalSources(escGrounding, listedFacts);
             }
@@ -7468,10 +7474,13 @@ export function buildSectionPrompts(
   factsBlob: string,
   formulasBlob: string,
   tuning: DocsGenTuning,
-  groundingBlock = "",
+  groundingBlock: GroundingBlocks | string = "",
   flowBlob = "",
   batchNote = "",
 ): { systemMessage: string; userMessage: string } {
+  // #1329 — a plain string is a block with no retrieved part: all the call's own.
+  const grounding: GroundingBlocks =
+    typeof groundingBlock === "string" ? { shared: "", own: groundingBlock } : groundingBlock;
   // The VERBOSE prompt (with explicit EXHAUSTIVE / word-count / table mandates)
   // is the default for ALL providers because it produces markedly more detailed
   // documentation. A concise variant exists for terse summaries but is opt-in
@@ -7563,6 +7572,10 @@ RULES:
   // this section's instructions, so across sections the shared prefix stops
   // there; the gain is for the batches of one section, whose system prompt and
   // user lead (through the label) are byte-identical.
+  // #1329 — the batches of one section are also given the same RETRIEVED
+  // grounding (up to 60K characters of repository excerpts on a run with
+  // source), so that part leads, after the label and ahead of the batch's own
+  // facts; the module-facts sources, which are the batch's own, stay after them.
   // #1370 — the flow, facts and formulas are repository text (the facts via the
   // Phase-1 model): none of them can close or forge a block of this message, or
   // forge a grounding source header. Clean text is returned unchanged, so the
@@ -7579,7 +7592,7 @@ Code symbols: ${meta.totalSymbols}
 Document title (already rendered as H1, do NOT repeat): "${title}"
 Document type: ${docTypeLabel(docType)}
 ${flowSection}Section group: **${group.label}**
-
+${grounding.shared ? `\n${grounding.shared}\n` : ""}
 === EXTRACTED MODULE FACTS ===
 
 ${data(factsBlob)}
@@ -7591,7 +7604,7 @@ ${data(factsBlob)}
 ${data(formulasBlob)}
 
 === END FORMULAS ===
-${groundingBlock ? `\n${groundingBlock}\n` : ""}${batchNote ? `\n${batchNote}\n` : ""}
+${grounding.own ? `\n${grounding.own}\n` : ""}${batchNote ? `\n${batchNote}\n` : ""}
 Write the markdown for the **${group.label}** section group now, following the instructions in your system prompt. Begin with the first H2 heading.`;
 
   return { systemMessage, userMessage };
@@ -7615,7 +7628,7 @@ async function generateSectionGroup(
   supportsCaching: boolean,
   projectId: string,
   tuning: DocsGenTuning,
-  groundingBlock = "",
+  groundingBlock: GroundingBlocks | string = "",
   flowBlob = "",
   batchNote = "",
   allowRefine = true,

@@ -25,6 +25,7 @@ import {
   LIVE_AGENT_STICKY_MS,
   liveAgentLine,
   stickyLiveAgents,
+  approvalsNoneMessage,
   runHasQuestionsView,
   tabCountLabel,
   tabForAnchor,
@@ -259,6 +260,74 @@ describe("analysisTabCounts", () => {
     );
     expect(counts.questions).toBeUndefined();
   });
+});
+
+describe("approvalsNoneMessage (#1355)", () => {
+  const failedWith = (reason: string) => ({
+    structuredExtractionFailure: { reason, at: "2026-10-22" },
+  });
+  const failed = failedWith("unparseable");
+
+  it("keeps the plain line when extraction did not fail", () => {
+    expect(approvalsNoneMessage(null, 3, "completed")).toEqual({
+      testId: "approvals-none",
+      text: "This run has no approval checkpoints.",
+    });
+    expect(
+      approvalsNoneMessage({ enhancement: { enableClarification: true } }, 0, "completed").testId,
+    ).toBe("approvals-none");
+  });
+
+  it("says a failed extraction is why nothing is gated, and that the requirements were saved unreviewed", () => {
+    const one = approvalsNoneMessage(failed, 1, "completed");
+    expect(one.testId).toBe("approvals-none-extraction-failed");
+    expect(one.text).toContain("could not read the requirements");
+    expect(one.text).toContain("nothing was put up for approval");
+    expect(one.text).toContain("The requirement on the Requirements tab was saved without review");
+    expect(approvalsNoneMessage(failed, 4, "failed").text).toContain(
+      "The 4 requirements on the Requirements tab were saved without review",
+    );
+  });
+
+  it("does not claim anything was saved when nothing was", () => {
+    const none = approvalsNoneMessage(failed, 0, "completed");
+    expect(none.text).not.toContain("saved without review");
+    expect(none.text).toContain("Run the analysis again");
+  });
+
+  it("reads schema-invalid as an unreadable answer", () => {
+    expect(approvalsNoneMessage(failedWith("schema-invalid"), 0, "completed").text).toContain(
+      "could not read the requirements out of the AI model’s answer",
+    );
+  });
+
+  // PR #1409 review — no answer came back, so none was "unreadable".
+  it("words a failed request as no answer, not an unreadable one", () => {
+    const text = approvalsNoneMessage(failedWith("provider-error"), 2, "completed").text;
+    expect(text).toContain("the request to the AI model failed");
+    // Cycle-2 review — one "so" per sentence, not two.
+    expect(text.split(".")[0]!.match(/\bso\b/g)).toHaveLength(1);
+    expect(text).not.toContain("could not read");
+    expect(text).not.toContain("answer");
+  });
+
+  it("words an empty reply as an empty answer", () => {
+    const text = approvalsNoneMessage(failedWith("empty-response"), 0, "completed").text;
+    expect(text).toContain("returned an empty answer");
+    expect(text.split(".")[0]!.match(/\bso\b/g)).toHaveLength(1);
+    expect(text).not.toContain("could not read");
+  });
+
+  it.each(["pending", "running"] as const)(
+    "does not tell the user to run again while the run is %s",
+    (status) => {
+      const text = approvalsNoneMessage(failed, 3, status).text;
+      expect(text).toContain("nothing was put up for approval");
+      expect(text).not.toContain("Run the analysis again");
+      expect(text).not.toContain("were saved");
+      expect(text).toContain("will not have been reviewed");
+    },
+  );
 });
 
 describe("runHasQuestionsView / tabCountLabel", () => {

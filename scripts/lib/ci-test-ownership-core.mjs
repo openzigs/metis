@@ -77,6 +77,27 @@ export function splitJobs(workflow) {
 }
 
 /**
+ * Where a job lets a failure pass: every `continue-on-error:` key in its lines, at job
+ * level (4-space indent) or step level (8-space), whose value is not a literal `false`.
+ * An expression (`${{ matrix.experimental }}`) counts, since it can be true. A sharded
+ * suite whose leg can fail green has silently lost that leg (#1365, #1411).
+ *
+ * @param {string[]} jobLines the job's lines, as `splitJobs` returns them
+ * @returns {{ level: "job" | "step", line: string }[]}
+ */
+export function continueOnErrorKeys(jobLines) {
+  /** @type {{ level: "job" | "step", line: string }[]} */
+  const found = [];
+  for (const line of jobLines) {
+    const m = line.match(/^( {4}| {8}|( {6}- ))continue-on-error:\s*(.*?)\s*(#.*)?$/);
+    if (!m) continue;
+    if (/^["']?false["']?$/.test(m[3])) continue;
+    found.push({ level: m[1] === "    " ? "job" : "step", line: line.trim() });
+  }
+  return found;
+}
+
+/**
  * Every `pnpm` command a job's steps run, with the directory it runs in.
  *
  * Understands `run:` inline and as a block scalar (`|`, `>-`, ...), a step's

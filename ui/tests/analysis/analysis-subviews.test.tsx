@@ -439,7 +439,50 @@ describe("only the active sub-view mounts", () => {
   it("says so when the run has no approval checkpoints", async () => {
     nav.search = new URLSearchParams("tab=approvals");
     renderPage();
-    expect(await screen.findByTestId("approvals-none")).toBeInTheDocument();
+    expect(await screen.findByTestId("approvals-none")).toHaveTextContent(
+      "This run has no approval checkpoints.",
+    );
+    expect(screen.queryByTestId("approvals-none-extraction-failed")).not.toBeInTheDocument();
+  });
+
+  // #1355 (PR #1409 review) — the page passes the run's own metadata, status
+  // and requirement count to the message, not just the helper in isolation.
+  it("says a failed extraction is why a finished run has no approval checkpoints", async () => {
+    apiMock.get.mockResolvedValue({
+      ...SNAPSHOT,
+      status: "completed",
+      metadata: {
+        enhancement: { enableClarification: true, enableWebResearch: false },
+        structuredExtractionFailure: { reason: "unparseable", at: "2026-10-22T00:00:00Z" },
+      },
+    });
+    nav.search = new URLSearchParams("tab=approvals");
+    renderPage();
+    const notice = await screen.findByTestId("approvals-none-extraction-failed");
+    expect(notice).toHaveTextContent("No approval checkpoints were created for this run");
+    expect(notice).toHaveTextContent("could not read the requirements");
+    expect(notice).toHaveTextContent(
+      SNAPSHOT.requirements.length === 1
+        ? "The requirement on the Requirements tab was saved without review"
+        : `The ${SNAPSHOT.requirements.length} requirements on the Requirements tab were saved without review`,
+    );
+    expect(notice).toHaveTextContent("Run the analysis again");
+    expect(screen.queryByTestId("approvals-none")).not.toBeInTheDocument();
+  });
+
+  it("words a failed request as no answer came back, not an unreadable one", async () => {
+    apiMock.get.mockResolvedValue({
+      ...SNAPSHOT,
+      status: "completed",
+      metadata: {
+        structuredExtractionFailure: { reason: "provider-error", at: "2026-10-22T00:00:00Z" },
+      },
+    });
+    nav.search = new URLSearchParams("tab=approvals");
+    renderPage();
+    const notice = await screen.findByTestId("approvals-none-extraction-failed");
+    expect(notice).toHaveTextContent("the request to the AI model failed");
+    expect(notice).not.toHaveTextContent("could not read");
   });
 
   it("says so when the run asked no clarifying questions", async () => {

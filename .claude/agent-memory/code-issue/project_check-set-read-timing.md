@@ -21,7 +21,7 @@ Measured across PR heads, 2026-10-16/17 (#1217 re-review, then every PR from #12
 
 - `generative-e2e` failing with the Chat page `h1` hidden and "disk full" in the runner log is infrastructure: confirm `main` passed at the base, then re-run once (#1260).
 
-- **25 checks, not 24 (23, not 22, with no Postgres path), when `real-model-worker` runs** (2026-10-20; base counts since #1365). It is path-filtered (`embed-real-model-nightly.yml:23-37`: `pnpm-lock.yaml`, `pnpm-workspace.yaml`, server/embeddings package manifests, the embed sources and tests), so any lockfile or workspace change adds it. `Check CLA signature` reads `skipping` on owner PRs (`cla.yml:68-73`, author `mgcronin`).
+- **27 checks on a PR (25 with no Postgres path: the `postgres-unit` legs fold into one skipped check, seen on #1416; 22 before #1411). 28/26 when `real-model-worker` runs** (2026-10-20; base counts since #1411 added the three `server-unit` legs). It is path-filtered (`embed-real-model-nightly.yml:23-37`: `pnpm-lock.yaml`, `pnpm-workspace.yaml`, server/embeddings package manifests, the embed sources and tests), so any lockfile or workspace change adds it. `Check CLA signature` reads `skipping` on owner PRs (`cla.yml:68-73`, author `mgcronin`).
 
 - **Waiting from an isolated worktree** (PR #1316): Bash there refuses `sleep N` chained before another command. Wait with `timeout 570 gh pr checks <pr> --watch` on its own, then re-read.
 
@@ -32,6 +32,9 @@ Measured across PR heads, 2026-10-16/17 (#1217 re-review, then every PR from #12
   `Test Files … failed` line was the timeout, not a test failure. #1400 raised it to 25 min;
   #1365 moved the unit suite into three `postgres-unit` legs (~5.5 min each) and put the
   cap back to 15 min. A Postgres job cancelled near 15 min is still the timeout: add a leg.
+- **`server` ran at its timeout too** (#1411): its SQLite `pnpm test` step was 709-1040 s
+  of a 20-min cap. It now runs in three `server-unit` legs (5-7 min each on PR #1415);
+  `server` keeps only the real-Chromium suite (~1 min, cap 10). Add a leg; never raise a cap.
 - **Sharding facts from #1365:** `vitest list --shard=i/n` (vitest 5.0.2) ignores `--shard`;
   check a split with `vitest run --shard=i/n <filter>` and sum `Test Files`. A job-level
   `if:` runs before the matrix expands, so a matrix job given a `name:` built from `matrix.*`

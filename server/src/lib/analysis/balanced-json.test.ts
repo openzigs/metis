@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import { extractJsonObject } from "./agent-runner.js";
-import { parseFirstBalancedJsonObject } from "./balanced-json.js";
+import { AMBIGUOUS_JSON_MESSAGE, parseBalancedJsonObject } from "./balanced-json.js";
 
 const DRAFT = { title: "Add audit logging", affected: { files: ["a.go"], ids: [] } };
 
@@ -52,9 +52,9 @@ describe("#1002 extractJsonObject — balanced-brace extraction", () => {
   it("does not let a brace inside a string value close the object", () => {
     const tricky = { code: "if (x) { return }", close: "}", open: "{{{", n: 1 };
     expect(extractJsonObject(`${JSON.stringify(tricky)} trailing }`)).toEqual(tricky);
-    expect(parseFirstBalancedJsonObject('{"a":1} , more')).toEqual({ found: false });
-    expect(parseFirstBalancedJsonObject('{"a":1}\n]')).toEqual({ found: false });
-    expect(parseFirstBalancedJsonObject('{"a":1}: x')).toEqual({ found: false });
+    expect(parseBalancedJsonObject('{"a":1} , more')).toEqual({ found: false });
+    expect(parseBalancedJsonObject('{"a":1}\n]')).toEqual({ found: false });
+    expect(parseBalancedJsonObject('{"a":1}: x')).toEqual({ found: false });
   });
 
   it("respects escaped quotes and backslashes inside strings", () => {
@@ -70,7 +70,7 @@ describe("#1002 extractJsonObject — balanced-brace extraction", () => {
   });
 
   it("skips a balanced span that is not JSON and takes the next one", () => {
-    expect(extractJsonObject('like {this} then {"a":1} and {"b":2}')).toEqual({ a: 1 });
+    expect(extractJsonObject('like {this} then {"a":1} and {done}')).toEqual({ a: 1 });
   });
 
   it("throws on truncated output instead of returning an inner fragment", () => {
@@ -91,24 +91,24 @@ describe("#1002 extractJsonObject — balanced-brace extraction", () => {
   });
 });
 
-describe("#1002 parseFirstBalancedJsonObject", () => {
+describe("#1002 parseBalancedJsonObject", () => {
   it("reports not-found without throwing", () => {
-    expect(parseFirstBalancedJsonObject("")).toEqual({ found: false });
-    expect(parseFirstBalancedJsonObject("} { ")).toEqual({ found: false });
-    expect(parseFirstBalancedJsonObject("{not json}")).toEqual({ found: false });
-    expect(parseFirstBalancedJsonObject('{ "key" without a value }')).toEqual({ found: false });
-    expect(parseFirstBalancedJsonObject("{")).toEqual({ found: false });
-    expect(parseFirstBalancedJsonObject("{ }")).toEqual({ found: true, value: {} });
+    expect(parseBalancedJsonObject("")).toEqual({ found: false });
+    expect(parseBalancedJsonObject("} { ")).toEqual({ found: false });
+    expect(parseBalancedJsonObject("{not json}")).toEqual({ found: false });
+    expect(parseBalancedJsonObject('{ "key" without a value }')).toEqual({ found: false });
+    expect(parseBalancedJsonObject("{")).toEqual({ found: false });
+    expect(parseBalancedJsonObject("{ }")).toEqual({ found: true, value: {} });
   });
 
   it("leadingOnly refuses an object that does not start the text", () => {
-    expect(parseFirstBalancedJsonObject('x {"a":1}', { leadingOnly: true })).toEqual({
+    expect(parseBalancedJsonObject('x {"a":1}', { leadingOnly: true })).toEqual({
       found: false,
     });
-    expect(parseFirstBalancedJsonObject('{bad} {"a":1}', { leadingOnly: true })).toEqual({
+    expect(parseBalancedJsonObject('{bad} {"a":1}', { leadingOnly: true })).toEqual({
       found: false,
     });
-    expect(parseFirstBalancedJsonObject('{"a":1} then {"b":2}', { leadingOnly: true })).toEqual({
+    expect(parseBalancedJsonObject('{"a":1} then {"b":2}', { leadingOnly: true })).toEqual({
       found: true,
       value: { a: 1 },
     });
@@ -131,23 +131,23 @@ describe("#1002 parseFirstBalancedJsonObject", () => {
     ])("when the continuation starts with %s", (_token, text) => {
       // The leading object parses on its own — that is the trap.
       expect(JSON.parse(LEADING)).toMatchObject({ summary: "ok" });
-      expect(parseFirstBalancedJsonObject(text)).toEqual({ found: false });
-      expect(parseFirstBalancedJsonObject(text, { leadingOnly: true })).toEqual({ found: false });
+      expect(parseBalancedJsonObject(text)).toEqual({ found: false });
+      expect(parseBalancedJsonObject(text, { leadingOnly: true })).toEqual({ found: false });
       // End to end: it throws, with the offset the truncation log reads (#1224).
       expect(() => extractJsonObject(text)).toThrow(/position \d+/);
       expect(() => extractJsonObject(`Result:\n${text}`)).toThrow(SyntaxError);
     });
 
     it.each([["{"], ["["], ['"']])("with no whitespace before %s", (token) => {
-      expect(parseFirstBalancedJsonObject(`{"a":1}${token}`)).toEqual({ found: false });
+      expect(parseBalancedJsonObject(`{"a":1}${token}`)).toEqual({ found: false });
     });
 
     it("still accepts prose after the object, which is what the guard must not catch", () => {
-      expect(parseFirstBalancedJsonObject(`${LEADING}\nNote: see the config.`)).toEqual({
+      expect(parseBalancedJsonObject(`${LEADING}\nNote: see the config.`)).toEqual({
         found: true,
         value: JSON.parse(LEADING),
       });
-      expect(parseFirstBalancedJsonObject(`${LEADING}\n\`\`\`\nmore`)).toMatchObject({
+      expect(parseBalancedJsonObject(`${LEADING}\n\`\`\`\nmore`)).toMatchObject({
         found: true,
       });
     });
@@ -157,14 +157,14 @@ describe("#1002 parseFirstBalancedJsonObject", () => {
     // The scan is already running (it started at `{x}`) and is back at depth 0
     // when it meets the lone quote. Opening a string there would swallow the
     // object that follows.
-    expect(parseFirstBalancedJsonObject('{x} it is 5" wide {"a":1}')).toEqual({
+    expect(parseBalancedJsonObject('{x} it is 5" wide {"a":1}')).toEqual({
       found: true,
       value: { a: 1 },
     });
   });
 
   it("does not treat a quote in the prose before the first brace as a string", () => {
-    expect(parseFirstBalancedJsonObject('he said "hi {"a":1}')).toEqual({
+    expect(parseBalancedJsonObject('he said "hi {"a":1}')).toEqual({
       found: true,
       value: { a: 1 },
     });
@@ -190,7 +190,7 @@ describe("#1002 parseFirstBalancedJsonObject", () => {
       let best = Number.POSITIVE_INFINITY;
       for (let i = 0; i < 3; i++) {
         const t0 = performance.now();
-        expect(parseFirstBalancedJsonObject(input)).toEqual({ found: false });
+        expect(parseBalancedJsonObject(input)).toEqual({ found: false });
         best = Math.min(best, performance.now() - t0);
       }
       return best;
@@ -202,5 +202,189 @@ describe("#1002 parseFirstBalancedJsonObject", () => {
     // 4x the input: linear is ~4x, quadratic ~16x. The floor keeps a
     // sub-millisecond `small` from turning timer noise into a failure.
     expect(large).toBeLessThan(Math.max(small, 1) * 10);
+  });
+});
+
+/**
+ * #1355 — "first parseable span wins" read a preamble example as the answer.
+ * Decision: with no schema at this layer two different objects cannot be told
+ * apart, so neither is returned and the caller re-prompts or repairs.
+ */
+describe("#1355 a preamble example followed by the real answer", () => {
+  const EXAMPLE = { requirements: [{ title: "Example title", description: "..." }] };
+  const ANSWER = { requirements: [{ title: "Login", description: "Users can log in" }] };
+  const REPLY =
+    `The answer has this shape: ${JSON.stringify(EXAMPLE)}.\n\n` +
+    `Here is the answer:\n${JSON.stringify(ANSWER)}`;
+
+  it("does not return the example as the answer", () => {
+    expect(parseBalancedJsonObject(REPLY)).toEqual({ found: false, ambiguous: true });
+  });
+
+  it("extractJsonObject throws a SyntaxError that says how to fix the reply", () => {
+    expect(() => extractJsonObject(REPLY)).toThrow(SyntaxError);
+    expect(() => extractJsonObject(REPLY)).toThrow(AMBIGUOUS_JSON_MESSAGE);
+  });
+
+  it("is also ambiguous when the example comes AFTER a prefaced answer", () => {
+    const after = `Answer: ${JSON.stringify(ANSWER)}\nFor reference: ${JSON.stringify(EXAMPLE)}`;
+    expect(parseBalancedJsonObject(after)).toEqual({ found: false, ambiguous: true });
+  });
+
+  it("still returns the leading object when the reply starts with the answer", () => {
+    const leading = `${JSON.stringify(ANSWER)}\nThe shape was ${JSON.stringify(EXAMPLE)}`;
+    expect(extractJsonObject(leading)).toEqual(ANSWER);
+  });
+
+  it("accepts the same object written twice", () => {
+    const twice = `Draft: ${JSON.stringify(ANSWER)}\nFinal: ${JSON.stringify(ANSWER, null, 2)}`;
+    expect(parseBalancedJsonObject(twice)).toEqual({ found: true, value: ANSWER });
+    expect(parseBalancedJsonObject(`${twice}\nAgain: ${JSON.stringify(ANSWER)}`)).toEqual({
+      found: true,
+      value: ANSWER,
+    });
+  });
+
+  it("ignores prose spans and an unbalanced opener around the one object", () => {
+    expect(parseBalancedJsonObject(`see {this}: ${JSON.stringify(ANSWER)} then {x} {`)).toEqual({
+      found: true,
+      value: ANSWER,
+    });
+  });
+
+  it("is ambiguous on a different object after two identical ones", () => {
+    const text = `a ${JSON.stringify(ANSWER)} b ${JSON.stringify(ANSWER)} c {"other":1}`;
+    expect(parseBalancedJsonObject(text)).toEqual({ found: false, ambiguous: true });
+  });
+
+  /** PR #1409 review — once an answer is held, nothing discards it as not-found. */
+  describe("a held answer is never discarded as not-found", () => {
+    it("keeps the answer when an array of objects follows it in the prose", () => {
+      const text = `Result: ${JSON.stringify(ANSWER)}\nList: [{"a":1}, {"a":2}]`;
+      expect(parseBalancedJsonObject(text)).toEqual({ found: true, value: ANSWER });
+      expect(extractJsonObject(text)).toEqual(ANSWER);
+    });
+
+    it("keeps the answer when a one-element array follows it", () => {
+      const text = `Result: ${JSON.stringify(ANSWER)}\nSee [ {"a":1} ] for the shape.`;
+      expect(extractJsonObject(text)).toEqual(ANSWER);
+    });
+
+    /**
+     * Cycle-2 review — before any answer is held, an array element may BE the
+     * answer. Skipping it returned the later empty example: schema-valid, zero
+     * requirements, the #1058 silent-loss class. These must fail instead.
+     */
+    it.each([
+      [
+        "an answer in brackets, then an empty example",
+        `Here:\n[${JSON.stringify(ANSWER)}]\nIf none, use {"requirements":[]}.`,
+      ],
+      [
+        "an answer in brackets, then a bare {}",
+        `Here:\n[${JSON.stringify(ANSWER)}]\nIf there are none, return {}.`,
+      ],
+      [
+        "an answer between commas, then an example",
+        `Sure, ${JSON.stringify(ANSWER)}, and an empty one looks like ${JSON.stringify(EXAMPLE)}.`,
+      ],
+    ])("is ambiguous on %s, never returning the later object", (_label, text) => {
+      expect(parseBalancedJsonObject(text)).toEqual({ found: false, ambiguous: true });
+      expect(() => extractJsonObject(text)).toThrow(AMBIGUOUS_JSON_MESSAGE);
+    });
+
+    it("is ambiguous when an array of objects comes BEFORE the answer", () => {
+      const text = `Inputs: [{"a":1}, {"a":2}]\nResult: ${JSON.stringify(ANSWER)}`;
+      expect(parseBalancedJsonObject(text)).toEqual({ found: false, ambiguous: true });
+    });
+
+    it("still reads an answer that is only ever written inside brackets", () => {
+      // No other object: as on main, the last-resort slice reads it.
+      expect(extractJsonObject(`Here:\n[${JSON.stringify(ANSWER)}]`)).toEqual(ANSWER);
+    });
+
+    it("is ambiguous, not not-found, when a later object was closed early", () => {
+      // The held object may be an example and the later one the real answer
+      // cut short, so neither is safe to return — but the reply is not empty.
+      const text = `Example: ${JSON.stringify(EXAMPLE)}\nAnswer: {"requirements":[]}, {"x":1}]}`;
+      expect(parseBalancedJsonObject(text)).toEqual({ found: false, ambiguous: true });
+      expect(() => extractJsonObject(text)).toThrow(AMBIGUOUS_JSON_MESSAGE);
+    });
+
+    it("still treats a prose comma before an object as a rival", () => {
+      const text = `Answer: ${JSON.stringify(ANSWER)} or, e.g., ${JSON.stringify(EXAMPLE)}.`;
+      expect(parseBalancedJsonObject(text)).toEqual({ found: false, ambiguous: true });
+    });
+  });
+
+  /** PR #1409 review — `{}` and key order are not rivals. */
+  describe("objects that are not rivals", () => {
+    it("returns the answer when the prose also mentions an empty {}", () => {
+      const text = `Here it is: ${JSON.stringify(ANSWER)}\nReturn {} when there are none.`;
+      expect(parseBalancedJsonObject(text)).toEqual({ found: true, value: ANSWER });
+      expect(extractJsonObject(text)).toEqual(ANSWER);
+    });
+
+    it("prefers the answer over an empty {} that comes first", () => {
+      const text = `Return {} when there are none. Here it is: ${JSON.stringify(ANSWER)}`;
+      expect(parseBalancedJsonObject(text)).toEqual({ found: true, value: ANSWER });
+    });
+
+    it("returns {} when it is the only object", () => {
+      expect(parseBalancedJsonObject("Nothing found: {} and {}")).toEqual({
+        found: true,
+        value: {},
+      });
+    });
+
+    it("treats a key-order difference as the same object", () => {
+      const text = 'Draft: {"a":1,"b":{"c":2,"d":3}}\nFinal: {"b":{"d":3,"c":2},"a":1}';
+      expect(parseBalancedJsonObject(text)).toEqual({
+        found: true,
+        value: { a: 1, b: { c: 2, d: 3 } },
+      });
+    });
+
+    it("is ambiguous, not a crash, when a rival is nested too deep to compare", () => {
+      // Cycle-2 review — the canonical comparison recursed and overflowed the
+      // stack at ~3,000 levels. JSON.parse itself takes this depth.
+      const depth = 3_000;
+      const deep = `${'{"a":'.repeat(depth)}1${"}".repeat(depth)}`;
+      expect(() => JSON.parse(deep)).not.toThrow();
+      const text = `Answer: ${JSON.stringify(ANSWER)}\nAlso: ${deep}`;
+      expect(parseBalancedJsonObject(text)).toEqual({ found: false, ambiguous: true });
+      const deeper = `${'{"a":'.repeat(10_000)}1${"}".repeat(10_000)}`;
+      expect(parseBalancedJsonObject(`x ${JSON.stringify(ANSWER)} y ${deeper}`)).toEqual({
+        found: false,
+        ambiguous: true,
+      });
+    });
+
+    it("still tells apart objects that differ in an array's order", () => {
+      expect(parseBalancedJsonObject('x {"a":[1,2]} y {"a":[2,1]}')).toEqual({
+        found: false,
+        ambiguous: true,
+      });
+    });
+  });
+
+  it("stays linear on many identical objects separated by prose", () => {
+    const make = (n: number): string => '{"a":1} x '.repeat(Math.floor(n / 10));
+    const time = (n: number): number => {
+      const input = make(n);
+      let best = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < 5; i++) {
+        const t0 = performance.now();
+        expect(parseBalancedJsonObject(input)).toEqual({ found: true, value: { a: 1 } });
+        best = Math.min(best, performance.now() - t0);
+      }
+      return best;
+    };
+    time(1_000); // warm
+    const small = time(100_000);
+    const large = time(400_000);
+    expect(large).toBeLessThan(2_000);
+    // Linear is ~4x (measured 2.0 ms -> 8.5 ms); quadratic would be ~16x.
+    expect(large).toBeLessThan(Math.max(small, 2) * 10);
   });
 });
