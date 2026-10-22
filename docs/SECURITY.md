@@ -56,7 +56,8 @@
 ### 2.4 Rate limiting
 | Surface | Default limit | Variable |
 |---|---|---|
-| `/api/auth/*` | 20 / 15min / IP | `RATE_LIMIT_*` |
+| `/api/auth/*` | 20 / 15min / client address (see below) | `RATE_LIMIT_*` |
+| `POST /api/auth/login` | 10 attempts / 15min / account (username, case-folded) | `AUTH_ACCOUNT_RATE_LIMIT_MAX` (window: `RATE_LIMIT_WINDOW_MS`) |
 | AI chat / stream | 60 / 15min / user | `AI_RATE_LIMIT_*` |
 | Connector mutations | 30 / 5min / user | `CONNECTOR_RATE_LIMIT_*` |
 | Document upload | 10 / 1min / user | `UPLOAD_RATE_LIMIT_*` |
@@ -79,6 +80,34 @@ exact path match (`isRateLimitExempt` in `server/src/middleware/rate-limit.ts`):
 
 All credential-accepting routes (`/login`, `/refresh`, `/logout`, SSO callbacks)
 and every other `/sso/*` route remain throttled.
+
+**Which client address (#1385).** Browser logins, refreshes and logouts reach the
+API through the UI's route handlers, so the API's TCP peer is the UI pod for
+everyone. Keyed on that, the limiter was one bucket for the whole organisation:
+20 wrong passwords from one client locked every user out. Keyed on
+`X-Forwarded-For`, every forged value would buy a fresh bucket. So:
+
+| Route | Keyed on | Set by |
+|---|---|---|
+| `/login`, `/refresh`, `/logout` via the UI | the client address the UI signs: the `METIS_TRUSTED_PROXY_HOPS`-th `X-Forwarded-For` entry from the right (what the Ingress appended), sent as `X-Metis-Client-Address` with an HMAC-SHA256 under `METIS_UI_PROXY_SECRET` | `ui/src/lib/client-address.ts` |
+| the same, with no valid signature (no secret, a secret under 32 characters, a forged or mismatched signature, `METIS_TRUSTED_PROXY_HOPS=0`) | the TCP peer (never a header) | `server/src/middleware/auth-client-address.ts` |
+| `/oidc/*`, `/saml/*` (the Ingress sends these to the API directly) | `req.ip`: the address the Ingress appended, read through `TRUST_PROXY` | same |
+
+Set the same `METIS_UI_PROXY_SECRET` (32+ characters, e.g. `openssl rand -hex 32`)
+on the UI and the API, and `METIS_TRUSTED_PROXY_HOPS` on the UI to the number of
+reverse proxies in front of it (1 behind one Ingress controller or load balancer;
+the Helm chart sets 1). Leave it 0 when browsers reach the UI directly: then every
+`X-Forwarded-For` entry is client-written, the UI sends no address, and the
+limiter falls back to one bucket per UI pod. The generic `/api/*` proxy drops a
+browser's own copy of these headers.
+
+The per-account limiter caps sign-in attempts for one username however many
+addresses they come from, so neither a botnet nor a shared NAT can brute-force
+one account. It counts every attempt, successful or not: un-counting a success
+needs a store decrement, which the cluster-safe Postgres and Valkey backends do
+not have. Like any account lockout, it lets someone who knows a username delay
+that user's sign-in for one window; raise `AUTH_ACCOUNT_RATE_LIMIT_MAX` if that
+matters more to you than the brute-force cap.
 
 ### 2.5 Cross-site request forgery (#913)
 

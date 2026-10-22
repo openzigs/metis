@@ -157,9 +157,15 @@ export async function refreshUpstreamTokens(
  * `/api/auth/refresh` route both call this. Returns `null` only when there is no
  * refresh token to present; otherwise the shared upstream outcome, success or
  * not. Never throws.
+ *
+ * `clientHeaders` (#1385) is the signed client address from `client-address.ts`
+ * — the API's auth limiter counts this refresh against that client rather than
+ * against this UI pod. A caller joining a flight already in progress shares its
+ * upstream call, and so the first caller's address: it is the same refresh token.
  */
 export async function refreshUpstream(
   refreshTokenValue: string | undefined,
+  clientHeaders: Record<string, string> = {},
 ): Promise<UpstreamRefreshResult | null> {
   if (!refreshTokenValue) return null;
   let key: string;
@@ -177,7 +183,7 @@ export async function refreshUpstream(
 
   evictForInsert(now);
   const flight: RefreshFlight = {
-    promise: fetchUpstreamRefresh(refreshTokenValue),
+    promise: fetchUpstreamRefresh(refreshTokenValue, clientHeaders),
     expiresAt: Number.POSITIVE_INFINITY,
   };
   refreshFlights.set(key, flight);
@@ -203,11 +209,15 @@ function unreachable(): UpstreamRefreshResult {
   };
 }
 
-async function fetchUpstreamRefresh(refreshTokenValue: string): Promise<UpstreamRefreshResult> {
+async function fetchUpstreamRefresh(
+  refreshTokenValue: string,
+  clientHeaders: Record<string, string>,
+): Promise<UpstreamRefreshResult> {
   try {
     const upstream = await fetch(`${UPSTREAM_API_BASE}/auth/refresh`, {
       method: "POST",
       headers: {
+        ...clientHeaders,
         Accept: "application/json",
         // #913 — the API demands this on a cookie-authenticated write. This
         // refresh is server-initiated, never a request a browser can forge.

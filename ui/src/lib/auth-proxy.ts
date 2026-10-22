@@ -12,6 +12,7 @@ import {
   refreshUpstream,
 } from "@/lib/edge-auth";
 import { CSRF_HEADER, rejectCrossOrigin } from "@/lib/csrf-guard";
+import { clientAddressHeaders } from "@/lib/client-address";
 
 interface UpstreamData {
   accessToken?: string;
@@ -50,7 +51,14 @@ export async function proxyAuth(
   const upstreamUrl = `${UPSTREAM_API_BASE}/auth/${endpoint}`;
   // The API demands CSRF_HEADER on a cookie-authenticated write; this request
   // passed the same-origin check above.
-  const headers: Record<string, string> = { Accept: "application/json", [CSRF_HEADER]: "1" };
+  // #1385 — the API's auth limiter would otherwise see this pod as the client
+  // for everyone; it believes this address only with a valid signature.
+  const clientHeaders = await clientAddressHeaders(request.headers);
+  const headers: Record<string, string> = {
+    ...clientHeaders,
+    Accept: "application/json",
+    [CSRF_HEADER]: "1",
+  };
   let body: string | undefined;
 
   if (request.method !== "GET" && request.method !== "HEAD") {
@@ -70,7 +78,7 @@ export async function proxyAuth(
   // result. The server rotates a token exactly once; forwarding each of them
   // separately would refuse every caller but the first.
   if (endpoint === "refresh" && refresh) {
-    const shared = await refreshUpstream(refresh);
+    const shared = await refreshUpstream(refresh, clientHeaders);
     if (shared) {
       return toBrowserResponse(
         endpoint,

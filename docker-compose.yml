@@ -50,6 +50,9 @@ services:
       # Postgres (also requires running with --profile postgres).
       DATABASE_URL: ${DATABASE_URL:-file:/app/data/dev.db}
       JWT_SECRET: ${JWT_SECRET:-docker-dev-secret-change-me}
+      # #1385 — the same value as the ui service's; the UI signs each login's
+      # client address with it. Unset: the auth limiter keys on the UI container.
+      METIS_UI_PROXY_SECRET: ${METIS_UI_PROXY_SECRET:-}
       # Stable vault key so secrets survive container restarts in dev.
       VAULT_MASTER_KEY: ${VAULT_MASTER_KEY:-Wlwn9amZhmzFQX/je9t12f5R3okMFLjpKIwGsrdjCbA=}
       CORS_ORIGIN: http://localhost:3000
@@ -202,6 +205,10 @@ services:
       - "3000:3000"
     environment:
       METIS_API_URL: http://server:4000/api
+      # #1385 — see the server service. Hops: reverse proxies in front of this UI
+      # (0 = browsers connect directly, so no X-Forwarded-For entry is trusted).
+      METIS_UI_PROXY_SECRET: ${METIS_UI_PROXY_SECRET:-}
+      METIS_TRUSTED_PROXY_HOPS: ${METIS_TRUSTED_PROXY_HOPS:-0}
       # #1069 — proxy wait for a Spec Kit command, ms (clamped to 5-60 minutes).
       METIS_SPEC_KIT_PROXY_TIMEOUT_MS: ${METIS_SPEC_KIT_PROXY_TIMEOUT_MS:-900000}
       NEXT_PUBLIC_API_URL: http://localhost:4000/api

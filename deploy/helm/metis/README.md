@@ -155,7 +155,7 @@ The chart references the named Secret but renders nothing.
 
 `JWT_SECRET`, `VAULT_MASTER_KEY`, `EMBEDDINGS_TOKEN`, `SQL_LINEAGE_TOKEN`,
 `DATABASE_URL`, `OPENAI_API_KEY` (or equivalent AI provider), `GITHUB_TOKEN`,
-`METRICS_TOKEN`. Override the env-var → secret-key mapping under
+`METRICS_TOKEN`, `METIS_UI_PROXY_SECRET`. Override the env-var → secret-key mapping under
 `secrets.keyMap` if your AWS Secrets Manager naming is different.
 
 ---
@@ -230,6 +230,30 @@ This has two consequences for operators:
 
 For a BYO TLS Secret instead of cert-manager, set
 `ingress.tls.secretName: my-tls`.
+
+### Login rate limiting behind the UI (#1385)
+
+The server limits `/api/auth/*` to 20 requests per 15 minutes per client
+address, and `POST /api/auth/login` to 10 attempts per 15 minutes per account.
+Logins reach the server from the UI pods, so the UI tells the server which
+client each one came from: the `X-Forwarded-For` entry the Ingress appended
+(`ui.env.METIS_TRUSTED_PROXY_HOPS`, default `1`), signed with the shared
+`METIS_UI_PROXY_SECRET`. The server ignores an address without a valid
+signature and then keys on the UI pod. That means one bucket for the whole
+organisation, so one client's 20 wrong passwords lock everyone out.
+
+- Put `METIS_UI_PROXY_SECRET` in the Secret: 32+ characters, e.g.
+  `openssl rand -hex 32`. The chart hands every `secrets.keyMap` key to the UI
+  and the server.
+- If another proxy that appends `X-Forwarded-For` sits in front of the Ingress
+  (a CDN, or an ingress-nginx with `use-forwarded-headers: true` behind a load
+  balancer), raise `ui.env.METIS_TRUSTED_PROXY_HOPS` by one per proxy. Too high a
+  value trusts an entry the browser wrote.
+- The SSO routes reach the server straight from the Ingress, so their limiter
+  reads `req.ip` through `server.env.TRUST_PROXY` (default `1`, the Ingress).
+- Tune the caps with `server.env.RATE_LIMIT_MAX` and
+  `server.env.AUTH_ACCOUNT_RATE_LIMIT_MAX`. The full table is in
+  [`docs/SECURITY.md`](../../../docs/SECURITY.md) §2.4.
 
 ### Server env the chart does not set for you
 

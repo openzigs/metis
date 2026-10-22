@@ -221,14 +221,19 @@ Create one secret per required env var, prefixed `metis/`:
 
 ```bash
 for k in JWT_SECRET VAULT_MASTER_KEY EMBEDDINGS_TOKEN SQL_LINEAGE_TOKEN \
-         DATABASE_URL OPENAI_API_KEY GITHUB_TOKEN METRICS_TOKEN; do
+         DATABASE_URL OPENAI_API_KEY GITHUB_TOKEN METRICS_TOKEN METIS_UI_PROXY_SECRET; do
   aws secretsmanager create-secret --name "metis/${k}" \
     --secret-string "REPLACE_ME"
 done
 ```
 
-Generate the cryptographic ones with `openssl rand -base64 48` (`JWT_SECRET`)
-and `openssl rand -base64 32` (`VAULT_MASTER_KEY`).
+Generate the cryptographic ones with `openssl rand -base64 48` (`JWT_SECRET`),
+`openssl rand -base64 32` (`VAULT_MASTER_KEY`) and `openssl rand -hex 32`
+(`METIS_UI_PROXY_SECRET`). The UI signs each login's client address with
+`METIS_UI_PROXY_SECRET`, so the server's login limiter counts per client rather
+than per UI pod (#1385; chart README, § "Login rate limiting behind the UI"). The
+ALB appends exactly one `X-Forwarded-For` entry, which matches the chart's
+`ui.env.METIS_TRUSTED_PROXY_HOPS: "1"`.
 
 ---
 

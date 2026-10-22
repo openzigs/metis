@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ACCESS_COOKIE, REFRESH_COOKIE } from "@/lib/config";
 import { applyRotatedCookies, isRetryableRefreshStatus, refreshUpstream } from "@/lib/edge-auth";
+import { clientAddressHeaders } from "@/lib/client-address";
 
 const PUBLIC_PATHS = new Set(["/login"]);
 // `/invites/<token>` is the workspace-invitation landing page. Its audience is
@@ -49,7 +50,10 @@ export async function proxy(request: NextRequest) {
   // single-flight per token within the process (see `refreshUpstreamTokens`):
   // parallel page requests share one refresh and set the same rotated cookies.
   const refreshValue = request.cookies.get(REFRESH_COOKIE)?.value;
-  const refreshed = await refreshUpstream(refreshValue);
+  const refreshed = await refreshUpstream(
+    refreshValue,
+    await clientAddressHeaders(request.headers),
+  );
   if (refreshed?.tokens) {
     const response = NextResponse.next();
     applyRotatedCookies(response, refreshed.tokens);
