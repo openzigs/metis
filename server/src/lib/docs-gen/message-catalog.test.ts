@@ -10,6 +10,7 @@ import {
   findLocaleFiles,
   findMessageKeys,
   loadMessageCatalog,
+  messageSources,
   localeFileRank,
   parseLocaleFile,
   renderMessageBlock,
@@ -104,6 +105,13 @@ describe("parseLocaleFile", () => {
     expect(parsed.get("login.title")).toBe("Sign in");
   });
 
+  it("reads a very long properties line in linear time", () => {
+    const start = performance.now();
+    expect(parseLocaleFile("messages.properties", "k".repeat(300_000)).size).toBe(0);
+    expect(parseLocaleFile("messages.properties", `k${" ".repeat(300_000)}v`).get("k")).toBe("v");
+    expect(performance.now() - start).toBeLessThan(250);
+  });
+
   it("yields nothing for a file that does not parse, and skips a key that is not key-shaped", () => {
     expect(parseLocaleFile("locales/en.json", "{ not json").size).toBe(0);
     expect(parseLocaleFile("locales/en.yml", "a: [unclosed").size).toBe(0);
@@ -170,6 +178,33 @@ describe("findLocaleFiles / loadMessageCatalog", () => {
     expect(await loadMessageCatalog(path.join(os.tmpdir(), "metis-1403-absent"))).toBeNull();
   });
 
+  it("gives a slot only to a usable file: an oversized or broken candidate does not crowd out a good one", async () => {
+    const root = await repo({
+      "locales/en_US.json": JSON.stringify({ "a.b": "x".repeat(500) }),
+      "locales/en-US.json": "{ broken",
+      "locales/en.json": JSON.stringify({ "a.b": "Usable" }),
+    });
+    expect(await findLocaleFiles(root, { maxFileBytes: 100 })).toEqual([
+      "locales/en-US.json",
+      "locales/en.json",
+    ]);
+    const catalog = await loadMessageCatalog(root, { maxFiles: 1, maxFileBytes: 100 });
+    expect(catalog?.files).toEqual(["locales/en.json"]);
+    expect(catalog?.messages.get("a.b")).toBe("Usable");
+  });
+
+  it("searches breadth-first, locale directories and their likely parents first, within the budget", async () => {
+    const files: Record<string, string> = {
+      "src/locales/en.json": JSON.stringify({ "a.b": "Found" }),
+    };
+    for (let i = 1; i <= 6; i++) files[`aaa/b${i}/c/file.txt`] = "x";
+    const root = await repo(files);
+    // Four directory listings: the root, src, aaa and src/locales. An
+    // alphabetical walk spends them in aaa/ and never reaches src/locales.
+    expect(await findLocaleFiles(root, { maxDirectories: 4 })).toEqual(["src/locales/en.json"]);
+    expect(await findLocaleFiles(root, { maxDirectories: 3 })).toEqual([]);
+  });
+
   it("skips an oversized file and does not follow a link out of the repository", async () => {
     const outside = await repo({ "secret.json": JSON.stringify({ "leak.key": "outside" }) });
     const root = await repo({
@@ -179,6 +214,22 @@ describe("findLocaleFiles / loadMessageCatalog", () => {
     await symlink(path.join(outside, "secret.json"), path.join(root, "i18n", "en.json"));
     await symlink(outside, path.join(root, "locales-link"));
     expect(await loadMessageCatalog(root)).toBeNull();
+  });
+});
+
+describe("messageSources", () => {
+  it("reads every module file except tests, specs and test directories", () => {
+    const sources = messageSources(
+      new Map([
+        ["internal/locale/catalog.go", ['t("error.real")']],
+        ["internal/locale/catalog_test.go", ['t("error.test_key")']],
+        ["src/orders.test.ts", ['t("missing.key")']],
+        ["src/orders.spec.js", ['t("empty.value")']],
+        ["src/__tests__/b.ts", ['t("auth.username")']],
+        ["tests/fixtures.py", ['t("x.y")']],
+      ]),
+    );
+    expect(sources).toEqual(['t("error.real")']);
   });
 });
 
@@ -203,22 +254,59 @@ describe("findMessageKeys", () => {
     ]);
   });
 
-  it("lists a translated key it cannot resolve with no text — with or without a catalogue", () => {
+  it("lists a translated key the catalogue lacks with no text", () => {
     const code = 'return t("checkout.card_declined"); i18n.t(\'orders.empty\'); gettext("x")';
-    expect(findMessageKeys([code], null)).toEqual([
-      { key: "checkout.card_declined", text: null },
-      { key: "orders.empty", text: null },
-    ]);
     expect(findMessageKeys([code], catalogOf({ "orders.empty": "No orders yet." }))).toEqual([
       { key: "orders.empty", text: "No orders yet." },
       { key: "checkout.card_declined", text: null },
     ]);
   });
 
+  it("finds nothing at all when the repository has no catalogue, so its prompts are unchanged", () => {
+    const code = [
+      'return t("checkout.card_declined")',
+      'fmt.Println("config.yaml")',
+      'log.Printf("users.id")',
+      'getMessage("index.html")',
+    ].join("\n");
+    expect(findMessageKeys([code], null)).toEqual([]);
+  });
+
   it("reads a key passed after a first argument, and lists each key once", () => {
     const code =
       'return NewLocalizedErrorWrapper(ErrFeedNotFound, "error.feed_not_found")\nPrint("error.feed_not_found")';
-    expect(findMessageKeys([code], null)).toEqual([{ key: "error.feed_not_found", text: null }]);
+    expect(findMessageKeys([code], catalogOf({}))).toEqual([
+      { key: "error.feed_not_found", text: null },
+    ]);
+  });
+
+  it("never takes a piece of a concatenated key for a key", () => {
+    const catalog = catalogOf({ "error.settings_": "never a message", "a.b": "A B" });
+    const code = [
+      // Miniflux internal/validator/filter.go:22
+      'NewLocalizedError("error.settings_"+filterType+"_rule_fieldname_invalid", idx)',
+      't("error.prefix." + kind)',
+      'x := "a.b" + suffix',
+      't("orders.")',
+    ].join("\n");
+    expect(findMessageKeys([code], catalog)).toEqual([]);
+  });
+
+  it("stays linear on long identifier runs and call chains in untrusted source", () => {
+    const catalog = catalogOf({ "a.b": "A B" });
+    const inputs = [
+      "a".repeat(400_000),
+      "a(".repeat(200_000),
+      `f(${"b".repeat(400_000)}`,
+      `"${"c".repeat(119)}`.repeat(4_000),
+      `t(x, ${"d".repeat(400_000)}`,
+    ];
+    for (const input of inputs) {
+      const start = performance.now();
+      expect(findMessageKeys([input], catalog)).toEqual([]);
+      // Quadratic before #1403's review: 100k characters took over 4 s.
+      expect(performance.now() - start).toBeLessThan(250);
+    }
   });
 
   it("does not take ordinary strings for messages", () => {

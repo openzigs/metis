@@ -171,6 +171,7 @@ import {
 import {
   findMessageKeys,
   loadMessageCatalog,
+  messageSources,
   renderMessageBlock,
   type MessageCatalog,
   type MessageKeyRef,
@@ -2943,10 +2944,7 @@ export async function extractModuleFacts(
   // #1403 — the messages this module's code shows by key, with the text from
   // the repository's locale file where it has one. Rebuilt from the files
   // every run, like the mined rules, so it never depends on the fact cache.
-  const messageKeys = findMessageKeys(
-    [...fileLines.values()].map((lines) => lines.join("\n")),
-    hooks?.messageCatalog ?? null,
-  );
+  const messageKeys = findMessageKeys(messageSources(fileLines), hooks?.messageCatalog ?? null);
 
   return {
     repository: m.repository,
@@ -6523,9 +6521,30 @@ function factsModuleParts(
   if (inventory) body.push(inventory);
   // #1403 — not topic content: a module with nothing else for this section is
   // still skipped, as before.
-  const messages = renderMessageBlock(f.messageKeys ?? []);
+  const messages = messageBlockFor(f, group);
   if (messages) body.push(messages);
   return { header, body, topicChars, renderedMinedRules: rendered.length };
+}
+
+/**
+ * #1403 — the sections that state rules, behaviour or requirements, where a
+ * message the user sees can be quoted. Architecture and stack sections are not
+ * given the message block.
+ */
+const SECTION_READS_MESSAGES: ReadonlySet<string> = new Set([
+  "capabilities",
+  "rules",
+  "workflows",
+  "key-rules",
+  "requirements",
+  "tasks",
+  "rules-and-calcs",
+  "faq-and-glossary",
+]);
+
+/** #1403 — a module's message block as a section reads it ("" for one that does not). */
+export function messageBlockFor(f: ModuleFacts, group: SectionGroup): string {
+  return SECTION_READS_MESSAGES.has(group.id) ? renderMessageBlock(f.messageKeys ?? []) : "";
 }
 
 /**
@@ -6758,9 +6777,11 @@ export function batchedModuleEntries(
   const render = (label: string, body: string[]) =>
     body.length > 0 ? `${label}\n\n${body.join("\n\n")}` : label;
 
+  // #1403 — counted in a part's input, never in its output estimate (not topic content).
+  const messages = messageBlockFor(f, group);
   const whole = render(
     header,
-    [summary, topicText, renderMinedRulePage(mined, 0, mined.length)].filter(Boolean),
+    [summary, topicText, renderMinedRulePage(mined, 0, mined.length), messages].filter(Boolean),
   );
   if (
     whole.length <= limits.inputCap &&
@@ -6848,7 +6869,10 @@ export function batchedModuleEntries(
       count > 1
         ? `### MODULE: ${f.moduleName} (part ${i + 1} of ${count})\n(${f.classCount} classes, ${f.methodCount} methods)`
         : header;
-    const entry = render(label, [i === 0 ? summary : "", page.body].filter(Boolean));
+    const entry = render(
+      label,
+      [i === 0 ? summary : "", page.body, i === 0 ? messages : ""].filter(Boolean),
+    );
     return {
       item: f,
       entry,
