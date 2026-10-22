@@ -280,7 +280,8 @@ export default function RunsPage() {
             followed by a conversation summary, spent more than its row; that spend is recorded
             against the session, not the turn, and is shown per session below. Only chat sessions
             you own are listed, including chats you have deleted: you can no longer open those, but
-            what they spent is still your spend. Chat in a session with no project is not in a
+            what they spent is still your spend. Chats in a project that has been deleted are not
+            listed, unless you are an administrator. Chat in a session with no project is not in a
             project&apos;s ledger and is not listed.
           </p>
         </div>
