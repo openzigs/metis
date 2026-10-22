@@ -1358,9 +1358,7 @@ export async function resolveCriteriaProposal(input: {
       changed = written.changed;
     }
     delete proposals[row.id];
-    const rawRecord = metadata[APPROVED_CRITERIA_KEY] as { runId?: unknown } | undefined;
-    const recordRunId = typeof rawRecord?.runId === "string" ? rawRecord.runId : null;
-    const record = readApprovedCriteriaRecord(metadata, recordRunId);
+    const record = readStoredApprovedCriteriaRecord(metadata);
     if (input.choice === "accept") record.approved[proposal.structuredId] = proposal.proposed;
     else record.dismissed[proposal.structuredId] = JSON.stringify(proposal.proposed);
     const next: Record<string, unknown> = { ...metadata, [APPROVED_CRITERIA_KEY]: record };
@@ -1382,6 +1380,42 @@ export async function resolveCriteriaProposal(input: {
   // Committed by now: a reader BRD listing approved requirements may be stale.
   if (result.changed) void noteRequirementsChanged([result.id]);
   return result;
+}
+
+/**
+ * Issue #1389 — "Keep approved criteria for all": dismiss every pending
+ * criteria proposal on an analysis in one transaction. No requirement content
+ * changes, so no version is written; each dismissal holds for its requirement
+ * for the rest of the extraction run. Returns how many were dismissed (0 when
+ * there were none — not an error).
+ */
+export async function dismissAllCriteriaProposals(analysisId: string): Promise<number> {
+  return prisma.$transaction(async (tx) => {
+    await lockAnalysisRow(tx, analysisId);
+    const analysis = await tx.analysis.findFirst({
+      where: { id: analysisId },
+      select: { metadata: true },
+    });
+    if (!analysis) return 0;
+    const metadata = parseMetadata(analysis.metadata ?? null);
+    const proposals = Object.values(readCriteriaProposals(metadata));
+    if (proposals.length === 0) return 0;
+    const record = readStoredApprovedCriteriaRecord(metadata);
+    for (const p of proposals) record.dismissed[p.structuredId] = JSON.stringify(p.proposed);
+    const next: Record<string, unknown> = { ...metadata, [APPROVED_CRITERIA_KEY]: record };
+    delete next[CRITERIA_PROPOSALS_KEY];
+    await tx.analysis.update({
+      where: { id: analysisId },
+      data: { metadata: JSON.stringify(next) },
+    });
+    return proposals.length;
+  });
+}
+
+/** The stored {@link APPROVED_CRITERIA_KEY} record, under whatever run it names. */
+function readStoredApprovedCriteriaRecord(metadata: Record<string, unknown>) {
+  const raw = metadata[APPROVED_CRITERIA_KEY] as { runId?: unknown } | undefined;
+  return readApprovedCriteriaRecord(metadata, typeof raw?.runId === "string" ? raw.runId : null);
 }
 
 /**

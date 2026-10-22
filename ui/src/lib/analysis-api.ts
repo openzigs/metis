@@ -759,6 +759,16 @@ export const analysisApi = {
     ),
 
   /**
+   * Issue #1389 — "Keep approved criteria for all": dismiss every acceptance
+   * criteria suggestion a re-synthesis made for this analysis, in one request.
+   */
+  dismissAllCriteriaProposals: (projectId: string, analysisId: string) =>
+    apiFetch<{ dismissedCount: number }>(
+      `/projects/${projectId}/analyses/${analysisId}/criteria-proposals/dismiss-all`,
+      { method: "POST", body: {} },
+    ),
+
+  /**
    * Issue #1129 — reject every pending requirement approval the analysis added
    * on a run started from ticked imported items. The server decides which.
    */

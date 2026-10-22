@@ -43,6 +43,10 @@ import {
   sourceDivergenceUserRateLimiter,
 } from "../middleware/source-divergence-rate-limit.js";
 import {
+  criteriaProposalPreAuthRateLimiter,
+  criteriaProposalUserRateLimiter,
+} from "../middleware/criteria-proposal-rate-limit.js";
+import {
   CriteriaProposalError,
   resolveCriteriaProposal,
 } from "../lib/analysis/analysis-service.js";
@@ -158,9 +162,8 @@ export function requirementsCollaborationRouter(): Router {
   // Issue #1220 — the pre-auth limiter must run before `requireAuth` (CodeQL
   // js/missing-rate-limiting), and the guard below is where auth first runs.
   r.use("/:requirementId/source-divergence", sourceDivergencePreAuthRateLimiter);
-  // Issue #1389 — the same kind of answer (one click on one requirement's
-  // pending change), so it shares #1220's limiters and their budget.
-  r.use("/:requirementId/criteria-proposal", sourceDivergencePreAuthRateLimiter);
+  // Issue #1389 — the same pre-auth placement, with limiters of its own.
+  r.use("/:requirementId/criteria-proposal", criteriaProposalPreAuthRateLimiter);
 
   r.use("/:requirementId", requireAuth, requireRequirementAccess);
 
@@ -423,7 +426,7 @@ export function requirementsCollaborationRouter(): Router {
   r.post(
     "/:requirementId/criteria-proposal",
     requireAuth,
-    sourceDivergenceUserRateLimiter,
+    criteriaProposalUserRateLimiter,
     requirePermission("project.update"),
     async (req: Request, res: Response) => {
       if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");

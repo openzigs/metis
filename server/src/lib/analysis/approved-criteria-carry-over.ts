@@ -11,9 +11,13 @@
  * gone, with no version row to say they had ever existed.
  *
  * The rule: an approved requirement ALWAYS keeps the criteria approved at the
- * checkpoint. When the new synthesis gives different ones — or none — they
- * become a **proposal** the analyst can accept or dismiss on the requirement's
- * card; the row's content, and so its Approved status, is unchanged.
+ * checkpoint, and the row's content — so its Approved status — is unchanged.
+ * A re-synthesis that gives **none** is the #1389 incident shape: the approved
+ * list is kept silently. One whose criteria are **materially** different (as a
+ * set, after {@link normalizeCriterion}) becomes a **proposal** the analyst can
+ * accept or dismiss; re-synthesis rewords criteria on every run, so anything
+ * less would put a notice on most approved requirements after each Regenerate.
+ * A dismissal holds for that requirement for the rest of the extraction run.
  *
  * "Approved" is anchored, not inferred: the criteria each structured
  * requirement was promoted with are recorded on the analysis
@@ -50,7 +54,10 @@ export interface ApprovedCriteriaRecord {
   runId: string | null;
   /** Structured id → the criteria it was approved with. */
   approved: Record<string, string[]>;
-  /** Structured id → the JSON of the proposal the analyst dismissed. */
+  /**
+   * Structured id → the JSON of the proposal the analyst dismissed. Its
+   * presence suppresses every later proposal for that requirement in this run.
+   */
   dismissed: Record<string, string>;
 }
 
@@ -106,8 +113,45 @@ export function readCriteriaProposals(
   return out;
 }
 
-function sameList(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((x, i) => x === b[i]);
+/**
+ * A criterion as compared across re-syntheses: trailing code citations
+ * (`internal/cli/cli.go:65`, `(api.go:43 and 37)`) removed, lower-cased,
+ * punctuation dropped, whitespace collapsed. Two runs that cite different line
+ * numbers for the same check compare equal.
+ */
+export function normalizeCriterion(criterion: string): string {
+  return criterion
+    .replace(/\([^()]*\)/g, (group) => (group.split(/\s+/).some(isCitation) ? " " : group))
+    .split(/\s+/)
+    .filter((token) => !isCitation(token))
+    .join(" ")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * `path/file.go:12`, `file.go:12-17,` or `(api.go:43` — a file name with an
+ * extension, then a line number. String checks, not one backtracking regex.
+ */
+function isCitation(token: string): boolean {
+  const t = token.replace(/^[(`'"[]+/, "").replace(/[)`'"\],.;]+$/, "");
+  const colon = t.lastIndexOf(":");
+  if (colon <= 0) return false;
+  const file = t.slice(0, colon);
+  const lines = t.slice(colon + 1);
+  const dot = file.lastIndexOf(".");
+  return dot > 0 && dot < file.length - 1 && /^\d+(-\d+)?$/.test(lines);
+}
+
+/** Whether two criteria lists are the same set once normalised (blanks ignored). */
+export function sameCriteria(a: readonly string[], b: readonly string[]): boolean {
+  const set = (xs: readonly string[]) =>
+    new Set(xs.map(normalizeCriterion).filter((x) => x.length > 0));
+  const sa = set(a);
+  const sb = set(b);
+  return sa.size === sb.size && [...sa].every((x) => sb.has(x));
 }
 
 /** How one re-created approved row is written. */
@@ -125,7 +169,7 @@ export interface ApprovedCriteriaPlan {
  * @param previousRow the stored `acceptanceCriteria` JSON of the row this one
  *   replaces — the anchor for a set promoted before the record existed.
  * @param fresh the criteria the new synthesis gave it.
- * @param dismissed the JSON of a proposal the analyst already dismissed.
+ * @param dismissed set when the analyst already dismissed a proposal for it in this run.
  */
 export function planApprovedCriteria(input: {
   recorded: readonly string[] | undefined;
@@ -139,7 +183,7 @@ export function planApprovedCriteria(input: {
     : input.previousRow !== undefined
       ? parseAcceptanceCriteria(input.previousRow)
       : fresh;
-  const differs = !sameList(approved, fresh);
-  const dismissed = input.dismissed === JSON.stringify(fresh);
-  return { criteria: approved, proposed: differs && !dismissed ? fresh : null };
+  // #1389 — `[]` (the incident shape) and a dismissed requirement raise nothing.
+  const raise = fresh.length > 0 && input.dismissed === undefined && !sameCriteria(approved, fresh);
+  return { criteria: approved, proposed: raise ? fresh : null };
 }

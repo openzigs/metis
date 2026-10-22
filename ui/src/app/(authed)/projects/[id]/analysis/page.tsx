@@ -120,6 +120,7 @@ import { UntestedRequirementsPanel } from "@/components/traceability/untested-re
 import { RequirementHistoryTab } from "@/components/requirements/RequirementHistoryTab";
 import { SourceDivergenceNotice } from "@/components/requirements/SourceDivergenceNotice";
 import { CriteriaProposalNotice } from "@/components/requirements/CriteriaProposalNotice";
+import { CriteriaProposalsSummary } from "@/components/requirements/CriteriaProposalsSummary";
 import { findingsApi } from "@/lib/findings-api";
 // Epic #34 — collaboration on requirements (comments, assignees/SLA, optimistic-lock merge).
 import { useAuth } from "@/lib/auth-context";
@@ -454,6 +455,8 @@ export default function AnalysisPage(): React.ReactElement {
   // Epic #726 (#736) — filter the requirement list by coverage classification.
   // `null` = show all; otherwise show only requirements with that coverage.
   const [coverageFilter, setCoverageFilter] = useState<RequirementCoverage | null>(null);
+  // #1389 — the list filtered to requirements with suggested criteria.
+  const [reviewingProposals, setReviewingProposals] = useState(false);
   // Issue #487 — a soft navigation to a link naming a different run switches
   // the run, as the filters and tab already follow the URL. Keyed on the
   // param's CHANGE, not on a difference from the shown run: after a pick, the
@@ -672,9 +675,15 @@ export default function AnalysisPage(): React.ReactElement {
     findingsPage,
     FINDINGS_PAGE_SIZE,
   );
+  const proposalCount = (detail.data?.requirements ?? []).filter(
+    (req) => req.criteriaProposal,
+  ).length;
+  const showProposals = reviewingProposals && proposalCount > 0;
   const requirementsView = paginate(
     (detail.data?.requirements ?? []).filter(
-      (req) => coverageFilter === null || (req.coverage ?? null) === coverageFilter,
+      (req) =>
+        (coverageFilter === null || (req.coverage ?? null) === coverageFilter) &&
+        (!showProposals || req.criteriaProposal),
     ),
     requirementsPage,
     REQUIREMENTS_PAGE_SIZE,
@@ -1107,6 +1116,21 @@ export default function AnalysisPage(): React.ReactElement {
                       {/* Issue #769 — a re-synthesis was refused permission to
                       replace this (reviewed or healthy) set; say so. */}
                       <RequirementReplacementWithheldNotice metadata={detail.data.metadata} />
+                      {/* Issue #1389 — one notice for every approved requirement a
+                      re-synthesis suggested different criteria for. */}
+                      <CriteriaProposalsSummary
+                        projectId={projectId}
+                        analysisId={detail.data.id}
+                        count={proposalCount}
+                        reviewing={showProposals}
+                        onReviewChange={(v) => {
+                          setReviewingProposals(v);
+                          setRequirementsPage(0);
+                        }}
+                        invalidateKeys={
+                          selectedAnalysisId ? [queryKeys.analyses.detail(selectedAnalysisId)] : []
+                        }
+                      />
                       {detail.data.requirements.length === 0 ? (
                         /* Issue #1104 (finding B) — distinguish "produced nothing"
                        from "produced N and the approval gate is holding them". */
@@ -1150,18 +1174,21 @@ export default function AnalysisPage(): React.ReactElement {
                                 }
                               />
                               {/* #1389 — a re-synthesis kept the approved criteria
-                                and suggested others. */}
-                              <CriteriaProposalNotice
-                                requirementId={req.id}
-                                version={req.version}
-                                proposal={req.criteriaProposal}
-                                current={req.acceptanceCriteria ?? []}
-                                invalidateKeys={
-                                  selectedAnalysisId
-                                    ? [queryKeys.analyses.detail(selectedAnalysisId)]
-                                    : []
-                                }
-                              />
+                                and suggested others; answered while reviewing them. */}
+                              {showProposals ? (
+                                <CriteriaProposalNotice
+                                  requirementId={req.id}
+                                  title={req.title}
+                                  version={req.version}
+                                  proposal={req.criteriaProposal}
+                                  current={req.acceptanceCriteria ?? []}
+                                  invalidateKeys={
+                                    selectedAnalysisId
+                                      ? [queryKeys.analyses.detail(selectedAnalysisId)]
+                                      : []
+                                  }
+                                />
+                              ) : null}
                             </div>
                             <div className="flex gap-1">
                               <Button

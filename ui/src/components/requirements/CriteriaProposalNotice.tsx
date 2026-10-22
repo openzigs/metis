@@ -20,6 +20,8 @@ import { useQueryClient, type QueryKey } from "@tanstack/react-query";
 
 export interface CriteriaProposalNoticeProps {
   requirementId: string;
+  /** The requirement's title, so each card's buttons say which requirement they answer. */
+  title: string;
   /** The version the card shows, sent with "Accept". */
   version: number;
   proposal: RequirementCriteriaProposal | null | undefined;
@@ -44,6 +46,7 @@ function CriteriaList({ items, label }: { items: string[]; label: string }): Rea
 
 export function CriteriaProposalNotice({
   requirementId,
+  title,
   version,
   proposal,
   current,
@@ -77,15 +80,17 @@ export function CriteriaProposalNotice({
       data-testid={`criteria-proposal-${requirementId}`}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <span className="rounded bg-info-muted px-1.5 py-0.5 font-medium text-info" role="status">
+        <span className="rounded bg-info-muted px-1.5 py-0.5 font-medium text-info">
           Re-synthesis suggested different acceptance criteria
         </span>
-        <span className="text-muted-foreground">
-          {proposal.proposed.length === 0
-            ? "The new synthesis gave none. The approved criteria were kept."
-            : "The approved criteria were kept. Review the suggestion."}
-        </span>
-        <Button size="sm" variant="ghost" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <span className="text-muted-foreground">The approved criteria were kept.</span>
+        <Button
+          size="sm"
+          variant="ghost"
+          aria-expanded={open}
+          aria-label={`${open ? "Hide" : "Review"} suggested acceptance criteria for ${title}`}
+          onClick={() => setOpen((v) => !v)}
+        >
           {open ? "Hide" : "Review"}
         </Button>
       </div>
@@ -106,6 +111,7 @@ export function CriteriaProposalNotice({
           size="sm"
           variant="outline"
           disabled={resolve.isPending}
+          aria-label={`Accept suggested acceptance criteria for ${title}`}
           onClick={() => resolve.mutate("accept")}
         >
           Accept
@@ -114,6 +120,7 @@ export function CriteriaProposalNotice({
           size="sm"
           variant="outline"
           disabled={resolve.isPending}
+          aria-label={`Dismiss suggested acceptance criteria for ${title}`}
           onClick={() => resolve.mutate("dismiss")}
         >
           Dismiss

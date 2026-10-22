@@ -1647,7 +1647,12 @@ export const resolveCriteriaProposalSchema = z
     /** The version the card showed; checked when accepting. */
     version: z.number().int().min(0).optional(),
   })
-  .strict();
+  .strict()
+  // Accepting writes a version, so it must say which version it was based on.
+  .refine((v) => v.choice !== "accept" || v.version !== undefined, {
+    message: "`version` is required to accept",
+    path: ["version"],
+  });
 export type ResolveCriteriaProposalInput = z.infer<typeof resolveCriteriaProposalSchema>;
 
 // ---- Analysis from imported requirements (Issue #1006) ----------------------

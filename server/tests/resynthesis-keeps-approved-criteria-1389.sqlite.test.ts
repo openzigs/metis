@@ -55,10 +55,13 @@ const { updateRequirementWithHistory } =
 const { ACCEPTED_CRITERIA_PROPOSAL_REASON, APPROVED_CRITERIA_KEY, KEPT_APPROVED_CRITERIA_REASON } =
   await import("../src/lib/analysis/approved-criteria-carry-over.js");
 const { requirementsCollaborationRouter } = await import("../src/routes/requirements.js");
+const { initAnalysisRouter } = await import("../src/routes/analysis.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 
 const WS = "ws-1389";
+const OTHER_WS = "ws-1389-x";
+const OTHER_PROJECT = "p-1389-x";
 const PROJECT = "p-1389";
 const ANALYST = "u-1389";
 const READER = "u-1389-reader";
@@ -110,15 +113,20 @@ const firstSynthesis = {
     item("Feed listing endpoints", "REQ-2", APPROVED_FEEDS),
   ],
 };
-/** A regenerate's synthesis: no criteria for REQ-1 (as in the run), `feeds` for REQ-2. */
-const reSynthesis = (feeds: string[]) =>
+/**
+ * A regenerate's synthesis: `feeds` for REQ-2 and, by default, no criteria for
+ * REQ-1 (the #1389 incident shape).
+ */
+const reSynthesis = (feeds: string[], minimal: string[] = []) =>
   JSON.stringify({
     summary: "Two requirements, re-synthesised.",
     requirements: [
-      item("Make the minimalist product goals measurable", "REQ-1", []),
+      item("Make the minimalist product goals measurable", "REQ-1", minimal),
       item("Serve feed listings", "REQ-2", feeds),
     ],
   });
+/** APPROVED_FEEDS reworded the way re-syntheses do: case, punctuation, a cited line. */
+const REWORDED_FEEDS = ["get /v1/feeds lists the user's feeds (internal/api/api.go:43)"];
 const agentJson = JSON.stringify({
   summary: "summary",
   findings: [
@@ -183,6 +191,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const a = express();
       a.use(express.json());
       a.use("/api/requirements", requirementsCollaborationRouter());
+      a.use("/api/projects/:projectId/analyses", initAnalysisRouter().projectScoped);
       a.use(notFoundHandler);
       a.use(errorHandler);
       return a;
@@ -192,6 +201,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .post(`/api/requirements/${id}/criteria-proposal`)
         .set("Authorization", `Bearer ${token}`)
         .send(body);
+    const keepAll = (analysisId: string, project = PROJECT, token = ANALYST_TOKEN) =>
+      request(app())
+        .post(`/api/projects/${project}/analyses/${analysisId}/criteria-proposals/dismiss-all`)
+        .set("Authorization", `Bearer ${token}`)
+        .send({});
     const restore = (id: string, version: number) =>
       request(app())
         .post(`/api/requirements/${id}/restore/${version}`)
@@ -212,6 +226,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.project.create({
         data: { id: PROJECT, name: PROJECT, slug: PROJECT, createdById: ANALYST, workspaceId: WS },
       });
+      // A project the analyst cannot reach.
+      await db.workspace.create({ data: { id: OTHER_WS, name: "x", slug: OTHER_WS } });
+      await db.project.create({
+        data: {
+          id: OTHER_PROJECT,
+          name: OTHER_PROJECT,
+          slug: OTHER_PROJECT,
+          createdById: ANALYST,
+          workspaceId: OTHER_WS,
+        },
+      });
       const token = (userId: string, role: "coordinator" | "reader") =>
         issueTokens({ userId, username: userId, role, permissions: [], workspaces: [WS] })
           .accessToken;
@@ -224,7 +249,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite?.cleanup();
     });
 
-    async function seedPromotedAnalysis(analysisId: string): Promise<void> {
+    async function seedPromotedAnalysis(
+      analysisId: string,
+      first: typeof firstSynthesis = firstSynthesis,
+    ): Promise<void> {
       await db.analysis.create({
         data: {
           id: analysisId,
@@ -247,7 +275,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           analysisId,
           agentKey: "synthesis",
           status: "completed",
-          output: JSON.stringify(firstSynthesis),
+          output: JSON.stringify(first),
         },
       });
       await db.approvalRequest.createMany({
@@ -281,9 +309,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       return snap!.requirements.find((r) => r.id === row.id)!.criteriaProposal ?? null;
     };
 
-    async function regenerate(analysisId: string, feeds: string[]) {
+    async function regenerate(analysisId: string, feeds: string[], minimal: string[] = []) {
       const before = await rowFor(analysisId, "REQ-1");
-      const provider = scriptedProvider(reSynthesis(feeds));
+      const provider = scriptedProvider(reSynthesis(feeds, minimal));
       const orch = new AnalysisOrchestrator({
         provider,
         knowledge: stubKnowledge,
@@ -297,7 +325,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       return before;
     }
 
-    it("keeps the approved criteria the re-synthesis omitted or changed, and proposes the change", async () => {
+    it("keeps the approved criteria the re-synthesis omitted, silently, and proposes a material change", async () => {
       const id = "ana-1389-kept";
       await seedPromotedAnalysis(id);
       const promoted = await regenerate(id, REVISED_FEEDS);
@@ -305,22 +333,35 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // The set really was replaced…
       const minimal = await rowFor(id, "REQ-1");
       expect(minimal.id).not.toBe(promoted.id);
-      // …but REQ-1 keeps the two approved criteria (the #1389 symptom was `[]`).
+      // …but REQ-1 keeps the two approved criteria (the #1389 symptom was `[]`),
+      // and a re-synthesis that gave none raises nothing: no notice, no version.
       expect(JSON.parse(minimal.acceptanceCriteria)).toEqual(APPROVED_MINIMAL);
       expect(minimal.reviewStatus).toBe("approved");
-      // The approved criteria are a version of their own, written by the system.
-      expect(minimal.versions).toHaveLength(1);
-      expect(minimal.versions[0]).toMatchObject({
+      expect(minimal.versions).toHaveLength(0);
+      expect(await proposalOf(id, "REQ-1")).toBeNull();
+
+      // REQ-2 keeps its approved criteria too; the revision is only a proposal,
+      // and the approved criteria are a system version of their own.
+      const feeds = await rowFor(id, "REQ-2");
+      expect(JSON.parse(feeds.acceptanceCriteria)).toEqual(APPROVED_FEEDS);
+      expect(feeds.reviewStatus).toBe("approved");
+      expect(feeds.versions).toHaveLength(1);
+      expect(feeds.versions[0]).toMatchObject({
         version: 1,
         actorId: null,
         reason: KEPT_APPROVED_CRITERIA_REASON,
       });
-      expect(await proposalOf(id, "REQ-1")).toMatchObject({ proposed: [] });
-
-      // REQ-2 keeps its approved criteria too; the revision is only a proposal.
-      expect(await criteriaOf(id, "REQ-2")).toEqual(APPROVED_FEEDS);
-      expect((await rowFor(id, "REQ-2")).reviewStatus).toBe("approved");
       expect(await proposalOf(id, "REQ-2")).toMatchObject({ proposed: REVISED_FEEDS });
+    });
+
+    it("criteria that differ only in wording, case or cited lines raise nothing", async () => {
+      const id = "ana-1389-reworded";
+      await seedPromotedAnalysis(id);
+      await regenerate(id, REWORDED_FEEDS);
+      const feeds = await rowFor(id, "REQ-2");
+      expect(JSON.parse(feeds.acceptanceCriteria)).toEqual(APPROVED_FEEDS);
+      expect(feeds.versions).toHaveLength(0);
+      expect(await proposalOf(id, "REQ-2")).toBeNull();
     });
 
     it("Accept writes the proposal as the analyst's version; Restore brings the approved criteria back", async () => {
@@ -342,8 +383,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         reason: ACCEPTED_CRITERIA_PROPOSAL_REASON,
       });
       expect(await proposalOf(id, "REQ-2")).toBeNull();
-      // The other requirement's proposal is untouched.
-      expect(await proposalOf(id, "REQ-1")).toMatchObject({ proposed: [] });
 
       // Restore, through the real route, to the version holding the approved criteria.
       const restored = await restore(row.id, 1);
@@ -359,6 +398,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       expect((await answer(row.id, { choice: "accept", version: 0 })).status).toBe(409);
       expect((await answer(row.id, { choice: "maybe" })).status).toBe(400);
+      // Accepting writes a version, so it must name the one it was based on.
+      const unversioned = await answer(row.id, { choice: "accept" });
+      expect(unversioned.status).toBe(400);
+      expect(unversioned.body.error.code).toBe("VALIDATION_ERROR");
       expect((await answer(row.id, { choice: "accept" }, READER_TOKEN)).status).toBe(403);
       expect(await criteriaOf(id, "REQ-2")).toEqual(APPROVED_FEEDS);
 
@@ -389,7 +432,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
-    it("Dismiss keeps the approved criteria, and the same suggestion is not raised again", async () => {
+    it("Dismiss keeps the approved criteria, and holds for that requirement for the run", async () => {
       const id = "ana-1389-dismiss";
       await seedPromotedAnalysis(id);
       await regenerate(id, REVISED_FEEDS);
@@ -400,14 +443,94 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.body.data).toMatchObject({ choice: "dismiss", version: 1, changed: false });
       expect(await proposalOf(id, "REQ-2")).toBeNull();
 
-      // A dismissal is not review work: the set is still replaced next time.
+      // A dismissal is not review work: the set is still replaced next time…
       await regenerate(id, REVISED_FEEDS);
       expect((await rowFor(id, "REQ-2")).id).not.toBe(row.id);
       expect(await criteriaOf(id, "REQ-2")).toEqual(APPROVED_FEEDS);
       expect(await proposalOf(id, "REQ-2")).toBeNull();
-      // A different suggestion is raised.
+      // …and a different suggestion for the same requirement is not raised either.
       await regenerate(id, REVISED_AGAIN);
-      expect(await proposalOf(id, "REQ-2")).toMatchObject({ proposed: REVISED_AGAIN });
+      expect(await proposalOf(id, "REQ-2")).toBeNull();
+      expect(await criteriaOf(id, "REQ-2")).toEqual(APPROVED_FEEDS);
+    });
+
+    it("Keep approved criteria for all dismisses every suggestion in one request", async () => {
+      const id = "ana-1389-keep-all";
+      await seedPromotedAnalysis(id);
+      await regenerate(id, REVISED_FEEDS, ["Starts in one second."]);
+      expect(await proposalOf(id, "REQ-1")).toMatchObject({ proposed: ["Starts in one second."] });
+      expect(await proposalOf(id, "REQ-2")).toMatchObject({ proposed: REVISED_FEEDS });
+
+      // Another project's analysis is not reachable, and a reader may not answer.
+      expect((await keepAll(id, OTHER_PROJECT)).status).toBe(404);
+      expect((await keepAll(id, PROJECT, READER_TOKEN)).status).toBe(403);
+
+      const res = await keepAll(id);
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ dismissedCount: 2 });
+      expect(await proposalOf(id, "REQ-1")).toBeNull();
+      expect(await proposalOf(id, "REQ-2")).toBeNull();
+      expect(await criteriaOf(id, "REQ-1")).toEqual(APPROVED_MINIMAL);
+      expect(await criteriaOf(id, "REQ-2")).toEqual(APPROVED_FEEDS);
+      // Nothing left: a second request dismisses none.
+      expect((await keepAll(id)).body.data).toEqual({ dismissedCount: 0 });
+      // Both hold through the next regenerate.
+      await regenerate(id, REVISED_AGAIN, ["Starts in two seconds."]);
+      expect(await proposalOf(id, "REQ-1")).toBeNull();
+      expect(await proposalOf(id, "REQ-2")).toBeNull();
+    });
+
+    it("an older set whose row had no criteria: the proposal is raised, and Accept writes the first version", async () => {
+      const id = "ana-1389-older";
+      await seedPromotedAnalysis(id, {
+        ...firstSynthesis,
+        requirements: [
+          item("Minimalist feed reader", "REQ-1", []),
+          item("Feed listing endpoints", "REQ-2", APPROVED_FEEDS),
+        ],
+      });
+      // A set promoted before the record existed: only the rows say what was approved.
+      const analysis = await db.analysis.findUniqueOrThrow({ where: { id } });
+      const meta = JSON.parse(analysis.metadata ?? "{}") as Record<string, unknown>;
+      delete meta[APPROVED_CRITERIA_KEY];
+      await db.analysis.update({ where: { id }, data: { metadata: JSON.stringify(meta) } });
+
+      await regenerate(id, APPROVED_FEEDS, ["Starts in one second."]);
+      const row = await rowFor(id, "REQ-1");
+      expect(JSON.parse(row.acceptanceCriteria)).toEqual([]);
+      // Nothing approved to anchor, so no system version.
+      expect(row.versions).toHaveLength(0);
+      expect(await proposalOf(id, "REQ-1")).toMatchObject({ proposed: ["Starts in one second."] });
+
+      const res = await answer(row.id, { choice: "accept", version: 0 });
+      expect(res.status).toBe(200);
+      const accepted = await rowFor(id, "REQ-1");
+      expect(JSON.parse(accepted.acceptanceCriteria)).toEqual(["Starts in one second."]);
+      expect(accepted.versions).toEqual([
+        expect.objectContaining({ version: 1, actorId: ANALYST }),
+      ]);
+    });
+
+    it("a requirement in a project the analyst cannot reach is 404 on this route", async () => {
+      await db.analysis.create({
+        data: {
+          id: "ana-1389-x",
+          projectId: OTHER_PROJECT,
+          startedById: ANALYST,
+          status: "completed",
+        },
+      });
+      const foreign = await db.requirement.create({
+        data: {
+          analysisId: "ana-1389-x",
+          projectId: OTHER_PROJECT,
+          title: "Foreign",
+          body: "b",
+          acceptanceCriteria: JSON.stringify(["x"]),
+        },
+      });
+      expect((await answer(foreign.id, { choice: "dismiss" })).status).toBe(404);
+      expect((await answer(foreign.id, { choice: "accept", version: 0 })).status).toBe(404);
     });
 
     it("writes the clarification answers back into the re-created row's body", async () => {

@@ -40,6 +40,11 @@ import { optimisticLock, sendVersionConflict } from "../middleware/optimistic-lo
 // mount `requireProjectAccess` on; it authorizes through this seam instead.
 import { assertProjectAccess } from "../lib/custom-agents/authz.js";
 import { analysisDeepDiveRateLimiter } from "../middleware/analysis-deepdive-rate-limit.js";
+import {
+  criteriaProposalPreAuthRateLimiter,
+  criteriaProposalUserRateLimiter,
+} from "../middleware/criteria-proposal-rate-limit.js";
+import { dismissAllCriteriaProposals } from "../lib/analysis/analysis-service.js";
 import { importedRequirementsRateLimiter } from "../middleware/imported-requirements-rate-limit.js";
 import {
   analysisMatrixPreAuthRateLimiter,
@@ -1387,6 +1392,36 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       });
 
       res.json(ok({ promotion }));
+    },
+  );
+
+  /**
+   * POST /api/projects/:projectId/analyses/:id/criteria-proposals/dismiss-all
+   * Issue #1389 — "Keep approved criteria for all": dismiss every acceptance
+   * criteria suggestion a re-synthesis made for this analysis's approved
+   * requirements, in one request. Same permission and limiters as answering
+   * one (`POST /api/requirements/:id/criteria-proposal`). No content changes.
+   */
+  projectScoped.post(
+    "/:id/criteria-proposals/dismiss-all",
+    // Ahead of auth: CodeQL js/missing-rate-limiting.
+    criteriaProposalPreAuthRateLimiter,
+    requireAuth,
+    requirePermission("project.update"),
+    criteriaProposalUserRateLimiter,
+    async (req: Request, res: Response) => {
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      await ensureAnalysisVisible(analysisId, projectId);
+      const actor = actorFromReq(req);
+      const dismissedCount = await dismissAllCriteriaProposals(analysisId);
+      audit({
+        actor: { id: actor.id },
+        action: "analysis.criteria_proposal.dismiss_all",
+        target: { type: "analysis", id: analysisId },
+        metadata: { projectId, dismissedCount },
+      });
+      res.json(ok({ dismissedCount }));
     },
   );
 
