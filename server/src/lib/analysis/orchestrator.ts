@@ -3523,7 +3523,7 @@ export class AnalysisOrchestrator {
               unverifiedRequirements: reportedHealth.unverifiedRequirements ?? 0,
               turnsUsed: loopResult.turnsUsed,
               toolCalls: loopResult.toolCalls.length,
-              // Not `loopTokens`: the logger redacts unlisted `*token*` keys (#1263).
+              // Named loopSpend because the logger redacts unlisted token-named keys (#1263)
               loopSpend: loopResult.loopTokens,
               budget: effectiveBudget,
               continuationNudges: loopResult.continuationNudges ?? 0,

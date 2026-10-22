@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../ai/types.js";
 import type { AgentTool } from "./tools/types.js";
+import type { AgentLoopContinuationState } from "./agent-loop.js";
 
 vi.mock("../logger.js", () => ({
   createChildLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
@@ -75,7 +76,9 @@ describe("#1388 — the incident shape, without a continuation policy", () => {
 describe("#1388 — with a continuation policy", () => {
   it("sends an unusable reply back and keeps investigating until the answer", async () => {
     const { provider, calls } = scripted([TOOL_CALL, TOOL_CALL, PROSE, TOOL_CALL, ANSWER]);
-    const nudge = vi.fn((text: string) => (isJson(text) ? null : NUDGE));
+    const nudge = vi.fn((text: string, _state: AgentLoopContinuationState) =>
+      isJson(text) ? null : NUDGE,
+    );
     const result = await runAgentLoop(provider, input, {
       maxTurns: 60,
       maxTokens: 100_000,

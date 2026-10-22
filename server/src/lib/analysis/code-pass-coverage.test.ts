@@ -167,18 +167,23 @@ describe("assessShallowCodePass", () => {
     expect(verdict.shallow).toBe(false);
   });
 
-  it("says the budget ran out on an exhausted pass", () => {
+  it("leaves a pass its budget cut off to the cut-short reason", () => {
+    const verdict = assessShallowCodePass({
+      ...base,
+      loopTokens: 100_000,
+      health: health({ exhausted: true, unverifiedRequirements: 20 }),
+    });
+    expect(verdict.shallow).toBe(false);
+  });
+
+  it("names a single turn and look-up in the singular", () => {
     const verdict = assessShallowCodePass({
       ...base,
       turnsUsed: 1,
       toolCalls: 1,
-      loopTokens: 100_000,
-      health: health({ exhausted: true, unverifiedRequirements: 20 }),
+      health: health({ unverifiedRequirements: 20 }),
     });
-    expect(verdict.shallow).toBe(true);
-    expect(verdict.note).toContain(
-      "ran out of its turn or token budget after 1 turn and 1 look-up in the code",
-    );
+    expect(verdict.note).toContain("stopped after 1 turn and 1 look-up in the code");
   });
 
   it("omits the budget share when the spend is unknown", () => {

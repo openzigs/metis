@@ -152,30 +152,32 @@ export interface ShallowCodePassVerdict {
 }
 
 /**
- * Did this code pass end shallow? Yes when MORE than half of its requirements
- * came back unverified, or when its retrieval was starved and it stopped having
- * spent under {@link SHALLOW_PASS_MAX_BUDGET_SHARE} of its budget. A pass that
- * covered its requirements is never flagged, however little it spent.
+ * Did this code pass end shallow? Yes when it stopped on its own (not cut off by
+ * its turn or token budget) and MORE than half of its requirements came back
+ * unverified, or its retrieval was starved and it had spent under
+ * {@link SHALLOW_PASS_MAX_BUDGET_SHARE} of its budget. A pass that covered its
+ * requirements is never flagged, however little it spent.
+ *
+ * A pass its budget cut off is left to `code-investigation-cut-short` (#1001),
+ * which already reports how many requirements it did not reach and offers to
+ * continue it; flagging it here too would report one cause twice.
  */
 export function assessShallowCodePass(input: ShallowCodePassInput): ShallowCodePassVerdict {
   const { health } = input;
   const total = health.requirementCount;
-  if (total === 0) return { shallow: false };
+  if (total === 0 || health.exhausted === true) return { shallow: false };
   const unverified = Math.min(total, Math.max(0, health.unverifiedRequirements ?? 0));
   const mostlyUnverified = unverified > total * MAX_UNVERIFIED_REQUIREMENT_SHARE;
   const share = budgetShare(input.loopTokens, input.budget);
-  const farUnderBudget = share !== null && share < SHALLOW_PASS_MAX_BUDGET_SHARE;
-  const starvedEarly = health.starved && health.exhausted !== true && farUnderBudget;
+  const starvedEarly = health.starved && share !== null && share < SHALLOW_PASS_MAX_BUDGET_SHARE;
   if (!mostlyUnverified && !starvedEarly) return { shallow: false };
 
   const turns = `${input.turnsUsed} turn${input.turnsUsed === 1 ? "" : "s"}`;
   const calls = `${input.toolCalls} look-up${input.toolCalls === 1 ? "" : "s"} in the code`;
   const stop =
-    health.exhausted === true
-      ? `the code agent ran out of its turn or token budget after ${turns} and ${calls}`
-      : share !== null
-        ? `the code agent stopped after ${turns} and ${calls}, using about ${percent(share)}% of its token budget`
-        : `the code agent stopped after ${turns} and ${calls}`;
+    share !== null
+      ? `the code agent stopped after ${turns} and ${calls}, using about ${percent(share)}% of its token budget`
+      : `the code agent stopped after ${turns} and ${calls}`;
   const outcome = mostlyUnverified
     ? `, and ${unverified} of ${total} requirements were not checked against the code. They are marked “Could not verify”`
     : `, which is too few to check ${total} requirements against the code`;
