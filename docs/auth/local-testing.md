@@ -10,7 +10,7 @@ page only ties them together and tells you **which harness tests what**.
 |----------|-----|----------------|-------------|---------------------|---------|
 | `make oidc-up` | Keycloak (`quay.io/keycloak/keycloak:26.6.4`) on `:4600` | OIDC: PKCE S256 + state + nonce, `groups` claim | stays `mock` (admin-API configured) | **Yes** — `tester`→admin, `dev`→developer | [oidc-local-testing.md](./oidc-local-testing.md) |
 | `make saml-up` | `boxyhq/mock-saml` on `:4500` | SAML: signed-Response + `InResponseTo` replay + `NotOnOrAfter` (#520) | stays `mock` (admin-API configured) | **No** — mock emits only `email`; role falls to `defaultRole` | [saml-local-testing.md](./saml-local-testing.md) |
-| `make ldap-up` | OpenLDAP (`bitnami/openldap:2.6`) on `:4400` | LDAP: service bind → search → user bind (password verify) | set to **`ldap`** (env-driven) | **Yes** — `alice`→admin, `bob`→developer (needs `groupMappings`, see below) | [ldap-local-testing.md](./ldap-local-testing.md) |
+| `make ldap-up` | OpenLDAP (`bitnamilegacy/openldap:2.6`, digest-pinned) on `:4400` | LDAP: service bind → search → user bind (password verify) | set to **`ldap`** (env-driven) | **Yes** — `alice`→admin, `bob`→developer (needs `groupMappings`, see below) | [ldap-local-testing.md](./ldap-local-testing.md) |
 
 > **Why the SAML harness can't test roles, but OIDC and LDAP can.** The mock SAML
 > IdP emits only an `email` attribute — no group/role claim — so a SAML login

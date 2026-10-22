@@ -31,8 +31,10 @@
 
 services:
   ldap-idp:
-    # bitnami/openldap is an actively maintained, env- + LDIF-seedable OpenLDAP.
-    image: bitnami/openldap:2.6
+    # #1381 — bitnami/openldap:2.6 was removed from Docker Hub when Bitnami moved
+    # its free images to bitnamilegacy/* (2025). Pinned by digest (the 2.6 tag's
+    # multi-arch index) so the harness cannot move or vanish under us again.
+    image: bitnamilegacy/openldap:2.6@sha256:687f14a22b5c74fb057a57221acdbe7b8c82e2d3619fc380db3af48ec4aa04ed
     container_name: metis-openldap-ldap-idp
     ports:
       # Host 4400 -> container 1389 (bitnami's non-privileged LDAP port). 4400 is
@@ -48,13 +50,16 @@ services:
       LDAP_ADMIN_USERNAME: ${LDAP_ADMIN_USERNAME:-admin}
       LDAP_ADMIN_PASSWORD: ${LDAP_ADMIN_PASSWORD:-adminpassword}
       LDAP_PORT_NUMBER: "1389"
-      # Provision the directory from our custom LDIF (org units, two users with
-      # passwords, two groups, explicit memberOf) instead of the bitnami sample.
-      LDAP_CUSTOM_LDIF_DIR: /ldifs
+      # #1381 — no LDAP_CUSTOM_LDIF_DIR: the image loads those before anything
+      # can enable the memberof overlay. memberof-init.sh (below) enables the
+      # overlay and then loads bootstrap.ldif, and the image's own sample tree
+      # (user01/user02) is skipped.
+      LDAP_SKIP_DEFAULT_TREE: "yes"
       # Allow anonymous bind off; the provider always binds as the admin DN.
       LDAP_ALLOW_ANON_BINDING: "no"
     volumes:
-      - ./scripts/ldap-harness/bootstrap.ldif:/ldifs/bootstrap.ldif:ro
+      - ./scripts/ldap-harness/bootstrap.ldif:/metis-ldap/bootstrap.ldif:ro
+      - ./scripts/ldap-harness/memberof-init.sh:/docker-entrypoint-initdb.d/10-memberof-init.sh:ro
     # No container healthcheck: readiness is gated where it matters — from the
     # HOST, scripts/ldap-harness/up.sh + scripts/seed-ldap.mjs perform a real
     # bind+search against ldap://localhost:4400 before proceeding, which is the

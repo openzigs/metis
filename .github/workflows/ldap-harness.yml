@@ -1,0 +1,83 @@
+name: ldap-harness
+
+# Issue #1381 — the local OpenLDAP harness (docker-compose.ldap.yml) rotted
+# silently: its image was removed from Docker Hub and its seed was rejected by
+# slapd, and nothing ran it. This workflow boots the harness, runs its own
+# bind/search/group smoke (scripts/seed-ldap.mjs via up.sh), then logs in
+# through METIS's LDAPAuthProvider against it
+# (server/tests/ldap-harness.integration.test.ts).
+#
+# A dedicated, path-filtered workflow (like chart-validate.yml): it is absent,
+# not pending, on PRs that touch none of these paths, and a weekly run catches
+# an upstream image change on a quiet week.
+
+on:
+  pull_request:
+    paths:
+      - "docker-compose.ldap.yml"
+      - "scripts/ldap-harness/**"
+      - "scripts/seed-ldap.mjs"
+      - "scripts/lib/ldap-harness.mjs"
+      - "server/src/lib/auth/ldap-provider.ts"
+      - "server/tests/ldap-harness.integration.test.ts"
+      - ".github/workflows/ldap-harness.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "docker-compose.ldap.yml"
+      - "scripts/ldap-harness/**"
+      - "scripts/seed-ldap.mjs"
+      - "scripts/lib/ldap-harness.mjs"
+      - "server/src/lib/auth/ldap-provider.ts"
+      - "server/tests/ldap-harness.integration.test.ts"
+      - ".github/workflows/ldap-harness.yml"
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ldap-harness-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ldap-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prod=false
+
+      - name: Build shared packages
+        run: pnpm --filter @metis/shared run build
+
+      - name: Start the harness and run its directory smoke
+        run: timeout 300 bash scripts/ldap-harness/up.sh
+
+      - name: LDAP login through METIS's provider
+        working-directory: server
+        env:
+          LDAP_HARNESS_URL: ldap://localhost:4400
+        run: pnpm exec vitest run --config vitest.integration.config.ts tests/ldap-harness.integration.test.ts
+
+      - name: Harness logs on failure
+        if: failure()
+        run: docker logs metis-openldap-ldap-idp 2>&1 | tail -100 || true
+
+      - name: Tear down
+        if: always()
+        run: bash scripts/ldap-harness/down.sh
