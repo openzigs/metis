@@ -168,6 +168,20 @@ import {
   type RepositoryIdentity,
   type RepositorySource,
 } from "./repository-sources.js";
+import {
+  findMessageKeys,
+  loadMessageCatalog,
+  messageSources,
+  renderMessageBlock,
+  type MessageCatalog,
+  type MessageKeyRef,
+} from "./message-catalog.js";
+import {
+  escapeMarkdownText,
+  moduleDisplayName,
+  repositoryLabels,
+  REPOSITORY_ROOT_LABEL,
+} from "./topic-names.js";
 import { isJunkSourcePath } from "@metis/shared";
 import { recordUsage } from "../finops/index.js";
 import {
@@ -1321,6 +1335,12 @@ export interface ModuleFacts {
    * can act on (a model rejecting the reasoning setting). A fixed sentence.
    */
   phase1FailureCause?: string;
+  /**
+   * #1403 — the messages the module's code shows by translation key, each with
+   * the user-facing text from the repository's locale file, or null when none
+   * has it. Rendered into every section's facts entry (`message-catalog.ts`).
+   */
+  messageKeys?: MessageKeyRef[];
 }
 
 interface ProjectMeta {
@@ -1621,6 +1641,29 @@ async function runHolisticSynthesis(
   const progressEvery = Math.max(concurrency * 5, 1);
   const cloneDirOf = (m: ModuleGroup) =>
     m.repository ? (repositories.get(m.repository.codeGraphId)?.root ?? null) : null;
+  // #1323 — a readable repository label, only when the modules span several.
+  const labels = repositoryLabels(
+    repositories.values(),
+    modules.flatMap((m) => (m.repository ? [m.repository.codeGraphId] : [])),
+  );
+  // #1403 — each repository's locale file is found and read once per run.
+  const catalogs = new Map<string, Promise<MessageCatalog | null>>();
+  const catalogOf = (m: ModuleGroup): Promise<MessageCatalog | null> => {
+    const root = cloneDirOf(m);
+    if (!root) return Promise.resolve(null);
+    if (!catalogs.has(root)) {
+      catalogs.set(
+        root,
+        loadMessageCatalog(root).catch((err: unknown) => {
+          log.warn("Locale file could not be read; message keys are not resolved", {
+            err: String(err),
+          });
+          return null;
+        }),
+      );
+    }
+    return catalogs.get(root)!;
+  };
 
   // Prepare every module (read, partition, mine — no model) before extracting,
   // so the number of chunks Phase 1 will work through is known up front and
@@ -1648,7 +1691,7 @@ async function runHolisticSynthesis(
   const results = await mapSettledWithConcurrency(
     modules,
     concurrency,
-    (m) =>
+    async (m) =>
       extractModuleFacts(
         m,
         phase1.provider,
@@ -1665,6 +1708,8 @@ async function runHolisticSynthesis(
             chunksDone += 1;
             reportPhase1();
           },
+          repositoryLabel: m.repository ? (labels.get(m.repository.codeGraphId) ?? null) : null,
+          messageCatalog: await catalogOf(m),
         },
       ).finally(() => prepared.delete(m)),
     (completed, total) => {
@@ -2441,6 +2486,10 @@ export async function extractModuleFacts(
     pathPrefixes?: readonly string[] | null;
     /** Called once per PLANNED chunk as it completes (split halves count as their chunk). */
     onChunkDone?: () => void;
+    /** #1323 — the module's repository label, set only when the document reads several. */
+    repositoryLabel?: string | null;
+    /** #1403 — the repository's English messages, to resolve the keys the code shows. */
+    messageCatalog?: MessageCatalog | null;
   },
 ): Promise<ModuleFacts | null> {
   const classes = m.syms.filter((s) => s.kind === "class" || s.kind === "interface");
@@ -2499,10 +2548,15 @@ export async function extractModuleFacts(
     rationale.push(...batch);
   }
 
+  // #1323 — the Phase-1 prompt keeps the name it has always been given, so a
+  // module's cached chunk replies (keyed on that prompt) are not thrown away;
+  // everything a reader sees — the facts' module heading, topic names, the
+  // left-out note and provenance — uses the readable `moduleName`.
   const shortName = m.dir.split("/").slice(-3).join("/") || m.dir;
-  const moduleName = m.repository
+  const promptModuleName = m.repository
     ? `${m.repository.repoConnectorId ?? m.repository.codeGraphId} / ${shortName}`
     : shortName;
+  const moduleName = moduleDisplayName(m.dir, hooks?.repositoryLabel);
   const topClasses = classes
     .slice(0, 15)
     .map((c) => c.qualifiedName.split(/[.:]/).pop() ?? c.qualifiedName);
@@ -2575,7 +2629,7 @@ export async function extractModuleFacts(
       {
         role: "user",
         content: buildPhase1UserMessage({
-          moduleName,
+          moduleName: promptModuleName,
           classCount: classes.length,
           topClasses,
           methodCount,
@@ -2892,6 +2946,11 @@ export async function extractModuleFacts(
   };
   log.info("Phase 1 module coverage", { modulePath: m.dir, moduleName, ...coverage });
 
+  // #1403 — the messages this module's code shows by key, with the text from
+  // the repository's locale file where it has one. Rebuilt from the files
+  // every run, like the mined rules, so it never depends on the fact cache.
+  const messageKeys = findMessageKeys(messageSources(fileLines), hooks?.messageCatalog ?? null);
+
   return {
     repository: m.repository,
     modulePath: m.dir,
@@ -2915,6 +2974,7 @@ export async function extractModuleFacts(
       : {}),
     ...(factsTruncated ? { factsTruncated } : {}),
     ...(phase1FailureCause ? { phase1FailureCause } : {}),
+    ...(messageKeys.length > 0 ? { messageKeys } : {}),
   };
 }
 
@@ -6464,7 +6524,32 @@ function factsModuleParts(
   }
   const inventory = renderMinedRuleInventory(mined, MINED_RULES_ENTRY_CHAR_CAP);
   if (inventory) body.push(inventory);
+  // #1403 — not topic content: a module with nothing else for this section is
+  // still skipped, as before.
+  const messages = messageBlockFor(f, group);
+  if (messages) body.push(messages);
   return { header, body, topicChars, renderedMinedRules: rendered.length };
+}
+
+/**
+ * #1403 — the sections that state rules, behaviour or requirements, where a
+ * message the user sees can be quoted. Architecture and stack sections are not
+ * given the message block.
+ */
+const SECTION_READS_MESSAGES: ReadonlySet<string> = new Set([
+  "capabilities",
+  "rules",
+  "workflows",
+  "key-rules",
+  "requirements",
+  "tasks",
+  "rules-and-calcs",
+  "faq-and-glossary",
+]);
+
+/** #1403 — a module's message block as a section reads it ("" for one that does not). */
+export function messageBlockFor(f: ModuleFacts, group: SectionGroup): string {
+  return SECTION_READS_MESSAGES.has(group.id) ? renderMessageBlock(f.messageKeys ?? []) : "";
 }
 
 /**
@@ -6697,9 +6782,11 @@ export function batchedModuleEntries(
   const render = (label: string, body: string[]) =>
     body.length > 0 ? `${label}\n\n${body.join("\n\n")}` : label;
 
+  // #1403 — counted in a part's input, never in its output estimate (not topic content).
+  const messages = messageBlockFor(f, group);
   const whole = render(
     header,
-    [summary, topicText, renderMinedRulePage(mined, 0, mined.length)].filter(Boolean),
+    [summary, topicText, renderMinedRulePage(mined, 0, mined.length), messages].filter(Boolean),
   );
   if (
     whole.length <= limits.inputCap &&
@@ -6787,7 +6874,10 @@ export function batchedModuleEntries(
       count > 1
         ? `### MODULE: ${f.moduleName} (part ${i + 1} of ${count})\n(${f.classCount} classes, ${f.methodCount} methods)`
         : header;
-    const entry = render(label, [i === 0 ? summary : "", page.body].filter(Boolean));
+    const entry = render(
+      label,
+      [i === 0 ? summary : "", page.body, i === 0 ? messages : ""].filter(Boolean),
+    );
     return {
       item: f,
       entry,
@@ -6905,7 +6995,7 @@ export function planSectionBatches(
       const estimated = entries.reduce((n, m) => n + m.outputChars, 0);
       unplannedChars += estimated;
       if (planned === null) {
-        plannedOut.push(f.moduleName || f.modulePath || "(root)");
+        plannedOut.push(f.moduleName || f.modulePath || REPOSITORY_ROOT_LABEL);
         continue;
       }
       // The module's parts share its planned budget as they shared its estimate.
@@ -7184,7 +7274,7 @@ export function planDocumentTopics(input: {
         topicModules.set(id, module);
         return {
           id,
-          title: `${module.moduleName || module.modulePath || "(root)"} — ${group.label}`,
+          title: `${module.moduleName || module.modulePath || REPOSITORY_ROOT_LABEL} — ${group.label}`,
           priority: lift(module) + ranked.length - rank,
           estimatedChars,
         };
@@ -8762,5 +8852,5 @@ function renderOfflineDocument(
   meta: ProjectMeta,
   facts: ModuleFacts[],
 ): string {
-  return `# ${title}\n\n> **Offline mode** — LLM synthesis was skipped. The following is a raw catalog of facts extracted from each module.\n\nProject: **${meta.name}** (${meta.language}) — ${meta.totalFiles} files, ${meta.totalSymbols} symbols.\nDocument type: ${docTypeLabel(docType)}\n\n${facts.map((f) => `## ${f.moduleName}\n\n*${f.classCount} classes / ${f.methodCount} methods*\n\n${f.facts}\n`).join("\n")}`;
+  return `# ${title}\n\n> **Offline mode** — LLM synthesis was skipped. The following is a raw catalog of facts extracted from each module.\n\nProject: **${meta.name}** (${meta.language}) — ${meta.totalFiles} files, ${meta.totalSymbols} symbols.\nDocument type: ${docTypeLabel(docType)}\n\n${facts.map((f) => `## ${escapeMarkdownText(f.moduleName)}\n\n*${f.classCount} classes / ${f.methodCount} methods*\n\n${f.facts}\n`).join("\n")}`;
 }

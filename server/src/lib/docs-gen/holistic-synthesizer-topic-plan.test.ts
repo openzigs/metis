@@ -487,7 +487,7 @@ describe("planDocumentTopics", () => {
   it("names a module at the repository root", () => {
     const { plan: p } = plan([mod("", 4, { modulePath: "", moduleName: "" })]);
     expect(p.sections.find((s) => s.sectionId === "rules")!.topics[0].title).toBe(
-      `(root) — ${RULES}`,
+      `(repository root) — ${RULES}`,
     );
   });
 

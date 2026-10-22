@@ -10,6 +10,10 @@ export interface RepositorySource extends RepositoryIdentity {
   /** Null means unavailable; never resolve source against cwd or another connector. */
   root: string | null;
   commitSha: string | null;
+  /** #1323 — the connector's label, for a reader-facing name (never the id). */
+  label?: string;
+  /** #1323 — the connected repository's own name, when the label is missing. */
+  repoName?: string;
 }
 
 function contained(root: string, candidate: string): boolean {
@@ -75,7 +79,9 @@ export async function loadRepositorySources(scope: {
     select: {
       id: true,
       commitSha: true,
-      repoConnection: { select: { id: true, projectId: true, deletedAt: true } },
+      repoConnection: {
+        select: { id: true, projectId: true, deletedAt: true, label: true, repoName: true },
+      },
     },
   });
   const sources = new Map<string, RepositorySource>();
@@ -87,6 +93,8 @@ export async function loadRepositorySources(scope: {
       repoConnectorId: connector?.id ?? null,
       root: active ? await resolveConnectorRoot(connector.id) : null,
       commitSha: graph.commitSha ?? null,
+      ...(connector?.label ? { label: connector.label } : {}),
+      ...(connector?.repoName ? { repoName: connector.repoName } : {}),
     });
   }
   return sources;
