@@ -75,8 +75,16 @@ make oidc-up        # == bash scripts/oidc-harness/up.sh
 3. Keycloak redirects back to METIS's callback
    (`/api/auth/oidc/callback`). METIS validates the PKCE code, state and nonce,
    reads the `groups` claim (`["metis-admins"]`), maps it to the **`admin`** role
-   via `groupMappings`, issues its session cookies, and redirects to the
-   dashboard.
+   via `groupMappings`, sets the UI's session cookies (`metis.at` / `metis.rt`,
+   #1386), and redirects to the dashboard (`APP_URL`, else the first
+   `CORS_ORIGIN` entry, else `http://localhost:3000`). Cookies are per host, not
+   per port, so the cookies the API sets on `localhost:4000` are the UI's on
+   `localhost:3000`.
+
+Keycloak serves plain `http://` here. openid-client refuses every non-HTTPS
+request, so METIS allows HTTP only for a **loopback** discovery URL
+(`localhost`, `127.0.0.1`, `[::1]`) and **never** under `NODE_ENV=production`
+(`allowsPlainHttpIdp` in `server/src/lib/auth/oidc-provider.ts`, #1386).
 
 ### Verifying the group→role mapping
 
@@ -134,6 +142,12 @@ production.
 
 ## What runs in CI vs. manually
 
+- **CI, the full login (#1386):** an in-process OpenID provider
+  (`scripts/lib/mock-oidc-idp.mjs`: discovery, authorize, PKCE code exchange,
+  RS256 id_token) drives redirect → callback → session in
+  `server/tests/sso-browser-session-1386.sqlite.test.ts` (with a SAML ACS round
+  trip), and in a real browser, ending on the signed-in dashboard, in
+  `e2e/tests/sso-oidc-session.spec.ts`. No container, no external IdP.
 - **CI:** the pure config-builder helper (`scripts/lib/oidc-harness.mjs`) is unit
   tested (`scripts/lib/oidc-harness.test.mjs`, 100% coverage) in the existing
   `scripts` vitest workspace. This runs on every PR.

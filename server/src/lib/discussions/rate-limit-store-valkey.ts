@@ -82,6 +82,16 @@ export class ValkeyRateLimitStore implements RateLimitStore {
     return { allowed: true, recentCount: count };
   }
 
+  async count(key: string, windowMs: number, now: number): Promise<number> {
+    const windowStart = Math.floor(now / windowMs) * windowMs;
+    const raw = await this.client.eval(
+      "return redis.call('GET', KEYS[1])",
+      1,
+      this.windowKey(key, windowStart),
+    );
+    return Number(raw ?? 0);
+  }
+
   async reset(): Promise<void> {
     if (typeof this.client.keys === "function") {
       const keys = await this.client.keys(`${KEY_PREFIX}*`);

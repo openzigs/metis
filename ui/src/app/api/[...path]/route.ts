@@ -16,6 +16,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ACCESS_COOKIE, UPSTREAM_API_BASE } from "@/lib/config";
 import { isUnsafeProxySegment, pathBelowUpstreamBase } from "@/lib/proxy-upstream";
 import { CSRF_HEADER, rejectCrossOrigin } from "@/lib/csrf-guard";
+import { CLIENT_ADDRESS_HEADER, CLIENT_ADDRESS_SIGNATURE_HEADER } from "@/lib/client-address";
 import {
   isSpecKitCommandRequest,
   specKitCommandFetch,
@@ -31,6 +32,10 @@ const NON_FORWARDABLE = new Set([
   "host",
   "connection",
   "content-length", // re-derived by fetch
+  // #1385 — only the auth proxy vouches for a client address; a browser's own
+  // copy (replayed, say) never reaches the API through here.
+  CLIENT_ADDRESS_HEADER,
+  CLIENT_ADDRESS_SIGNATURE_HEADER,
 ]);
 
 const invalidPath = (): NextResponse =>

@@ -1,6 +1,8 @@
 import type { RoleKey } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { reconnectUserSockets } from "../socket/user-disconnect.js";
+import { audit } from "../audit/audit-service.js";
+import { isBootstrapAdminCandidate } from "./bootstrap-admins.js";
 
 export const EXPLICIT_ROLE_SOURCES = ["local", "scim", "unknown"] as const;
 export const DURABLE_ROLE_SOURCES = ["local", "scim", "provider", "unknown"] as const;
@@ -85,17 +87,47 @@ export async function reconcileTrustedLoginRole(input: {
   userId: string;
   providerRole: RoleKey;
   authRolesInitializedAt: Date | null;
+  /**
+   * #1376 — the identities the provider vouches for (username, asserted
+   * e-mail), matched against `METIS_BOOTSTRAP_ADMINS`. Omitted: no bootstrap.
+   */
+  bootstrapIdentities?: readonly (string | null | undefined)[];
 }): Promise<RoleKey> {
   // The caller's marker is only a login-time snapshot. Read the authoritative
   // marker AND roles together; a redundant pre-transaction guard hides races.
   // Serializable conflicts fail the login closed rather than overwrite grants.
+  let bootstrappedAdmin = false;
   const outcome = await prisma.$transaction(
     async (tx): Promise<{ role: RoleKey; providerRoleChanged: boolean }> => {
+      bootstrappedAdmin = false;
       const user = await tx.user.findFirst({
         where: { id: input.userId, status: "active", deletedAt: null },
         select: { authRolesInitializedAt: true, authRoleAuthority: true },
       });
       if (!user) throw new Error("Login user is unavailable");
+      // #1376 — first-admin bootstrap. Inside this serializable transaction so
+      // "no admin exists" and the grant are one decision: a second listed user
+      // signing in concurrently either sees this grant or fails closed.
+      if (isBootstrapAdminCandidate(input.bootstrapIdentities ?? [])) {
+        const anyAdmin = await tx.userRole.findFirst({
+          where: { role: { key: "admin" } },
+          select: { userId: true },
+        });
+        if (!anyAdmin) {
+          const adminRole = await tx.role.upsert({
+            where: { key: "admin" },
+            update: {},
+            create: { key: "admin", name: "admin", isSystem: true },
+            select: { id: true },
+          });
+          // `local`: an explicit grant, exactly as an admin would make it, so a
+          // later provider downgrade does not take it away.
+          await tx.userRole.create({
+            data: { userId: input.userId, roleId: adminRole.id, source: "local" },
+          });
+          bootstrappedAdmin = true;
+        }
+      }
       const roles = await tx.userRole.findMany({
         where: { userId: input.userId },
         include: { role: true },
@@ -151,5 +183,13 @@ export async function reconcileTrustedLoginRole(input: {
   // #633 — the user's other open sockets still carry the previous provider
   // role; after the commit, make them re-handshake.
   if (outcome.providerRoleChanged) reconnectUserSockets(input.userId);
+  if (bootstrappedAdmin) {
+    audit({
+      actor: { id: input.userId },
+      action: "user.role.bootstrap_admin",
+      target: { type: "user", id: input.userId },
+      metadata: { source: "METIS_BOOTSTRAP_ADMINS", role: "admin" },
+    });
+  }
   return outcome.role;
 }

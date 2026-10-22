@@ -22,6 +22,46 @@ const discoveryCache = new Map<string, openidClient.Configuration>();
 /** Maximum age for replay attack window (30 seconds). */
 export const MAX_AUTH_AGE_SECONDS = 30;
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** NODE_ENV values in which a loopback HTTP IdP is allowed. Unset is NOT one. */
+const PLAIN_HTTP_IDP_ENVS = new Set(["development", "test"]);
+
+/**
+ * #1386 — openid-client refuses every non-HTTPS request, so neither the local
+ * Keycloak harness (`http://localhost:4600`, #521) nor an in-process test IdP
+ * could complete a login. Plain HTTP is allowed for a LOOPBACK IdP, and only
+ * when `NODE_ENV` is explicitly `development` or `test`: an image that never set
+ * `NODE_ENV` is treated as production (#1393 review).
+ */
+export function allowsPlainHttpIdp(
+  discoveryUrl: URL,
+  nodeEnv: string | undefined = process.env.NODE_ENV,
+): boolean {
+  return (
+    discoveryUrl.protocol === "http:" &&
+    LOOPBACK_HOSTS.has(discoveryUrl.hostname) &&
+    PLAIN_HTTP_IDP_ENVS.has(nodeEnv ?? "")
+  );
+}
+
+/**
+ * `allowInsecureRequests` lifts the HTTPS rule for EVERY request the
+ * configuration makes, including the token and JWKS endpoints the discovery
+ * document names. This fetch puts it back per request: plain HTTP reaches a
+ * loopback host only, so a discovery document on loopback cannot send the
+ * client secret to `http://` anywhere else.
+ */
+export const loopbackOnlyHttpFetch: openidClient.CustomFetch = (url, options) => {
+  const target = new URL(url);
+  if (target.protocol === "http:" && !LOOPBACK_HOSTS.has(target.hostname)) {
+    return Promise.reject(
+      new Error(`Refusing plain-HTTP OIDC request to non-loopback host ${target.host}`),
+    );
+  }
+  return fetch(url, options as RequestInit);
+};
+
 /** Discover the OIDC provider configuration. */
 export async function discoverOIDC(config: OIDCConfig): Promise<openidClient.Configuration> {
   const cached = discoveryCache.get(config.discoveryUrl);
@@ -32,6 +72,13 @@ export async function discoverOIDC(config: OIDCConfig): Promise<openidClient.Con
     discoveryUrl,
     config.clientId,
     config.clientSecret,
+    undefined,
+    allowsPlainHttpIdp(discoveryUrl)
+      ? {
+          execute: [openidClient.allowInsecureRequests],
+          [openidClient.customFetch]: loopbackOnlyHttpFetch,
+        }
+      : undefined,
   );
   discoveryCache.set(config.discoveryUrl, oidcConfig);
   log.info("OIDC discovery completed", { issuer: config.discoveryUrl });

@@ -220,6 +220,12 @@ ui:
     # Unset, the UI falls back to http://localhost:4000/api — inside the UI pod,
     # where nothing listens — and every login fails.
     METIS_API_URL: http://{{ include "metis.fullname" . }}-server:{{ .Values.server.service.port }}/api
+    # #1385 — browsers reach the UI through ONE Ingress controller / load balancer,
+    # so the client address is the last X-Forwarded-For entry. The UI signs it
+    # (secrets.keyMap.METIS_UI_PROXY_SECRET) so the server's /api/auth limiter
+    # counts per client instead of per UI pod. Raise it when another proxy (a CDN,
+    # an NLB that appends the header) sits in front of the Ingress.
+    METIS_TRUSTED_PROXY_HOPS: "1"
   probes:
     liveness:
       path: /
@@ -644,7 +650,7 @@ backup:
 #
 # Required keys: JWT_SECRET, VAULT_MASTER_KEY, EMBEDDINGS_TOKEN,
 # SQL_LINEAGE_TOKEN, DATABASE_URL, OPENAI_API_KEY (or
-# equivalent AI provider), GITHUB_TOKEN, METRICS_TOKEN.
+# equivalent AI provider), GITHUB_TOKEN, METRICS_TOKEN, METIS_UI_PROXY_SECRET.
 # -----------------------------------------------------------------------------
 secrets:
   create: false
@@ -660,16 +666,20 @@ secrets:
     OPENAI_API_KEY: OPENAI_API_KEY
     GITHUB_TOKEN: GITHUB_TOKEN
     METRICS_TOKEN: METRICS_TOKEN
+    # #1385 — shared by the UI and the server (32+ chars). Without it the
+    # server's /api/auth limiter is one bucket per UI pod for the whole org.
+    METIS_UI_PROXY_SECRET: METIS_UI_PROXY_SECRET
   # Which keyMap env vars each component receives (#1375). "*" = every keyMap
   # entry, so a key you add to keyMap (e.g. AUTH_LDAP_BIND_PASSWORD) reaches the
-  # server and nothing else. The UI reads no secret at runtime (its env is
-  # METIS_API_URL, METIS_TRUSTED_ORIGINS, cookie names and NEXT_PUBLIC_*), so it
-  # gets none: an RCE in the internet-facing Next.js process must not find the
-  # vault master key or the JWT signing secret in its environment. A name not in
-  # keyMap fails the render.
+  # server and nothing else. The UI reads one secret at runtime: the HMAC key it
+  # signs each login's client address with (#1385). Its other env is
+  # METIS_API_URL, METIS_TRUSTED_ORIGINS, cookie names and NEXT_PUBLIC_*. So an
+  # RCE in the internet-facing Next.js process must not find the vault master
+  # key or the JWT signing secret in its environment. A name not in keyMap fails
+  # the render.
   components:
     server: ["*"]
-    ui: []
+    ui: [METIS_UI_PROXY_SECRET]
     embeddings: [EMBEDDINGS_TOKEN]
     sqlLineage: [SQL_LINEAGE_TOKEN]
     # The default command only tars the mounted volumes; DATABASE_URL is there

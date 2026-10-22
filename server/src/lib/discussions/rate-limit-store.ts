@@ -72,6 +72,13 @@ export interface RateLimitHitResult {
  */
 export interface RateLimitStore {
   /**
+   * #1385 — the hits `key` holds in the window containing `now`, WITHOUT
+   * recording one. Lets a caller decide before acting and count only some
+   * outcomes (the per-account login cap counts failed sign-ins only). Optional
+   * so a test double need not implement it; every shipped backend does.
+   */
+  count?(key: string, windowMs: number, now: number): Promise<number>;
+  /**
    * Evaluate `key`'s window and record `now` iff under `max`.
    * @param key      opaque per-(thread,user) key
    * @param max      cap per window
@@ -130,6 +137,11 @@ export class InMemoryRateLimitStore implements RateLimitStore {
 
   async hit(key: string, max: number, windowMs: number, now: number): Promise<RateLimitHitResult> {
     return this.hitSync(key, max, windowMs, now);
+  }
+
+  async count(key: string, windowMs: number, now: number): Promise<number> {
+    const windowStart = now - windowMs;
+    return (this.hits.get(key) ?? []).filter((ts) => ts > windowStart).length;
   }
 
   async reset(): Promise<void> {

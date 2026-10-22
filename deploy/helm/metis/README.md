@@ -155,7 +155,7 @@ The chart references the named Secret but renders nothing.
 
 `JWT_SECRET`, `VAULT_MASTER_KEY`, `EMBEDDINGS_TOKEN`, `SQL_LINEAGE_TOKEN`,
 `DATABASE_URL`, `OPENAI_API_KEY` (or equivalent AI provider), `GITHUB_TOKEN`,
-`METRICS_TOKEN`. Override the env-var → secret-key mapping under
+`METRICS_TOKEN`, `METIS_UI_PROXY_SECRET`. Override the env-var → secret-key mapping under
 `secrets.keyMap` if your AWS Secrets Manager naming is different.
 
 ### Which pod gets which key (#1375)
@@ -168,7 +168,7 @@ sql-lineage component may be keyed `sqlLineage` or `sql-lineage`, matching
 | Component | Default | Why |
 |-----------|---------|-----|
 | `server` | `["*"]` (every `keyMap` key) | A key you add to `keyMap`, such as `AUTH_LDAP_BIND_PASSWORD`, reaches the server only. |
-| `ui` | `[]` | The UI reads no secret at runtime. An RCE in the internet-facing Next.js process must not find `VAULT_MASTER_KEY` or `JWT_SECRET` in its environment. |
+| `ui` | `[METIS_UI_PROXY_SECRET]` | The UI's only runtime secret is the key it signs login client addresses with (#1385). An RCE in the internet-facing Next.js process must not find `VAULT_MASTER_KEY` or `JWT_SECRET` in its environment. |
 | `embeddings` | `[EMBEDDINGS_TOKEN]` | The sidecar's bearer token. |
 | `sqlLineage` | `[SQL_LINEAGE_TOKEN]` | The sidecar's bearer token. |
 | `backup` | `[DATABASE_URL]` | For a `pg_dump` override of `backup.command`. |
@@ -223,9 +223,12 @@ evaluates rules in order). Register the IdP URLs on the **public origin**:
 - the SAML ACS URL is `https://<host>/api/auth/saml/acs`, and its metadata is
   at `https://<host>/api/auth/saml/metadata`.
 
-The cookies the server sets at the end of an SSO login may not use the names
-the UI's session check reads; that is tracked separately. Check an SSO
-round-trip end to end before relying on it.
+At the end of an SSO login the server sets the UI's own session cookies
+(`metis.at` / `metis.rt`: `Secure; HttpOnly; SameSite=Lax`, #1386). Cookies are
+scoped to the host, so they belong to the UI only because the Ingress serves
+these routes on the UI's host. It then redirects to
+`https://<host>/dashboard`, taken from `server.env.APP_URL` or, if that is
+unset, from `server.env.CORS_ORIGIN`.
 
 Request bodies: ingress-nginx refuses bodies over 1m by default, so the chart
 sets `nginx.ingress.kubernetes.io/proxy-body-size` from
@@ -251,6 +254,33 @@ This has two consequences for operators:
 For a BYO TLS Secret instead of cert-manager, set
 `ingress.tls.secretName: my-tls`.
 
+### Login rate limiting behind the UI (#1385)
+
+The server limits `/api/auth/*` to 20 requests per 15 minutes per client
+address, and `POST /api/auth/login` to 10 attempts per 15 minutes per account.
+Logins reach the server from the UI pods, so the UI tells the server which
+client each one came from: the `X-Forwarded-For` entry the Ingress appended
+(`ui.env.METIS_TRUSTED_PROXY_HOPS`, default `1`), signed with the shared
+`METIS_UI_PROXY_SECRET`. The server ignores an address without a valid
+signature and then keys on the UI pod. That means one bucket for the whole
+organisation, so one client's 20 wrong passwords lock everyone out.
+
+- Put `METIS_UI_PROXY_SECRET` in the Secret: 32+ characters, e.g.
+  `openssl rand -hex 32`. `secrets.components` gives it to the server (`*`) and
+  to the UI, and to nothing else.
+- If another proxy that appends `X-Forwarded-For` sits in front of the Ingress
+  (a CDN, or an ingress-nginx with `use-forwarded-headers: true` behind a load
+  balancer), raise `ui.env.METIS_TRUSTED_PROXY_HOPS` by one per proxy. Too high a
+  value trusts an entry the browser wrote.
+- The SSO routes reach the server straight from the Ingress, so their limiter
+  reads `req.ip` through `server.env.TRUST_PROXY` (default `1`, the Ingress).
+- **Upgrading with External Secrets:** create `metis/METIS_UI_PROXY_SECRET` in
+  the secret store before `helm upgrade`. The `ExternalSecret` lists every
+  `secrets.keyMap` key, and a missing remote key fails the whole sync.
+- Tune the caps with `server.env.RATE_LIMIT_MAX` and
+  `server.env.AUTH_ACCOUNT_RATE_LIMIT_MAX`. The full table is in
+  [`docs/SECURITY.md`](../../../docs/SECURITY.md) §2.4.
+
 ### Server env the chart does not set for you
 
 The chart cannot guess these values, and the server will not work behind an
@@ -258,7 +288,8 @@ ingress without them (#1312):
 
 | `server.env` key | Why |
 |---|---|
-| `AUTH_MODE` (`ldap`, `oidc` or `saml`) | If unset, it resolves to `mock`, and under `NODE_ENV=production` the server **refuses to start** (CrashLoopBackOff: "Mock authentication is not permitted in production"). LDAP also needs `AUTH_LDAP_URL`, `AUTH_LDAP_BASE_DN`, `AUTH_LDAP_BIND_DN`, `AUTH_LDAP_USER_SEARCH_BASE` and `AUTH_LDAP_SEARCH_FILTER` (the default filter is Active Directory's `sAMAccountName`), plus the bind password through `secrets.keyMap.AUTH_LDAP_BIND_PASSWORD`. See [`docs/auth/README.md`](../../../docs/auth/README.md). Bootstrapping the first admin is #1376. |
+| `AUTH_MODE` (`ldap`, `oidc` or `saml`) | If unset, it resolves to `mock`, and under `NODE_ENV=production` the server **refuses to start** (CrashLoopBackOff: "Mock authentication is not permitted in production"). LDAP also needs `AUTH_LDAP_URL`, `AUTH_LDAP_BASE_DN`, `AUTH_LDAP_BIND_DN`, `AUTH_LDAP_USER_SEARCH_BASE` and `AUTH_LDAP_SEARCH_FILTER` (the default filter is Active Directory's `sAMAccountName`), plus the bind password through `secrets.keyMap.AUTH_LDAP_BIND_PASSWORD`. See [`docs/auth/README.md`](../../../docs/auth/README.md). |
+| `METIS_BOOTSTRAP_ADMINS` | The first admin (#1376). Set it to the username or e-mail of the person who will administer METIS, e.g. `--set server.env.METIS_BOOTSTRAP_ADMINS=jdoe` (for OIDC, an e-mail the IdP verifies: an OIDC username never matches). On OIDC and SAML, also set the provider from `AUTH_OIDC_*` / `AUTH_SAML_*`; without an admin, nobody can configure it through the admin API, and the API keeps that configuration in memory only. When that identity signs in and no user holds the admin role yet, it is granted admin. Once any admin exists the setting does nothing, so it cannot be used to gain admin later. See [First admin](../../../docs/auth/README.md#first-admin-metis_bootstrap_admins-1376). |
 | `CORS_ORIGIN` | Set it to `https://<ingress.host>`. The server checks a socket's `Origin` (#1349) and CORS against this value. The default is `http://localhost:3000`, so every browser socket is rejected with `ORIGIN_REJECTED`. |
 | `MCP_RUNTIME: k8s-sse` | The only safe MCP runtime on Kubernetes. If unset, `/readyz` reports the Docker runtime as failed (there is no Docker socket, by design). The readiness probe for `k8s-sse` itself is wrong today (#1380). |
 

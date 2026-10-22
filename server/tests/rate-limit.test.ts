@@ -31,6 +31,11 @@ vi.mock("../src/lib/prisma.js", () => ({
 import express from "express";
 import request from "supertest";
 import { createAuthRateLimiter, isRateLimitExempt } from "../src/middleware/rate-limit.js";
+import {
+  CLIENT_ADDRESS_HEADER,
+  CLIENT_ADDRESS_SIGNATURE_HEADER,
+  clientAddressSignature,
+} from "../src/middleware/auth-client-address.js";
 import { clusterRateLimitStore } from "../src/middleware/cluster-rate-limit-store.js";
 import { createApp, parseTrustProxy } from "../src/app.js";
 
@@ -79,10 +84,9 @@ function harness(options: { max?: number; windowMs?: number } = {}) {
   // A fixed, arbitrary epoch. Nothing reads the wall clock.
   let clock = 1_700_000_000_000;
   const app = express();
-  // The limiter keys on `req.ip`, which is the X-Forwarded-For client only when
-  // the app trusts a proxy hop. Read through the SAME parser `createApp` uses so
-  // the harness cannot silently drift from production and start counting every
-  // caller as one client — which is exactly what this harness got wrong first.
+  // #1385 — the limiter no longer reads `req.ip` on a credential route, but the
+  // app still trusts what production trusts: read through the SAME parser
+  // `createApp` uses so the harness cannot drift from production.
   app.set("trust proxy", parseTrustProxy(process.env.TRUST_PROXY));
   app.use(express.json());
   app.use(
@@ -125,14 +129,25 @@ describe("auth rate limiter", () => {
   });
 
   it("counts per client IP — a second IP gets its own budget", async () => {
-    const { app } = harness({ max: 2 });
-    const fire = (ip: string) =>
-      request(app).post("/auth/login").set("X-Forwarded-For", ip).send({});
-    expect((await fire("1.1.1.1")).status).toBe(401);
-    expect((await fire("1.1.1.1")).status).toBe(401);
-    expect((await fire("1.1.1.1")).status).toBe(429);
-    // A different IP is unaffected by the first one's saturated window.
-    expect((await fire("2.2.2.2")).status).toBe(401);
+    // #1385 — the address is the one the UI proxy signs, never X-Forwarded-For.
+    const secret = "rate-limit-test-ui-proxy-secret-0123456789";
+    process.env.METIS_UI_PROXY_SECRET = secret;
+    try {
+      const { app } = harness({ max: 2 });
+      const fire = (ip: string) =>
+        request(app)
+          .post("/auth/login")
+          .set(CLIENT_ADDRESS_HEADER, ip)
+          .set(CLIENT_ADDRESS_SIGNATURE_HEADER, clientAddressSignature(secret, ip))
+          .send({});
+      expect((await fire("1.1.1.1")).status).toBe(401);
+      expect((await fire("1.1.1.1")).status).toBe(401);
+      expect((await fire("1.1.1.1")).status).toBe(429);
+      // A different IP is unaffected by the first one's saturated window.
+      expect((await fire("2.2.2.2")).status).toBe(401);
+    } finally {
+      delete process.env.METIS_UI_PROXY_SECRET;
+    }
   });
 
   it("keeps the client throttled up to the last millisecond of the window", async () => {
@@ -211,4 +226,27 @@ describe("auth rate limiter wiring (#1288)", () => {
     expect(res.status).toBe(200);
     expect(res.headers).not.toHaveProperty("ratelimit-limit");
   });
+
+  // #1393 review — Express routes `/login/`, `/LOGIN` and `/Login` to the login
+  // handler, and the old limiter matched `req.path === "/login"` exactly, so all
+  // three skipped the cap. The guard now sits on the route itself.
+  it.each(["/api/auth/login", "/api/auth/login/", "/api/auth/LOGIN", "/api/auth/Login"])(
+    "the per-account cap applies to POST %s (#1385)",
+    async (path) => {
+      // The cap is read per request, so this moves it without re-importing the app.
+      const previous = process.env.AUTH_ACCOUNT_RATE_LIMIT_MAX;
+      process.env.AUTH_ACCOUNT_RATE_LIMIT_MAX = "2";
+      const username = `wiring-1385-${Buffer.from(path).toString("hex")}`;
+      try {
+        const login = () => request(app).post(path).send({ username, password: "nope" });
+        expect((await login()).status).toBe(401);
+        expect((await login()).status).toBe(401);
+        const res = await login();
+        expect(res.status).toBe(429);
+        expect(res.body.error.message).toMatch(/this account/);
+      } finally {
+        process.env.AUTH_ACCOUNT_RATE_LIMIT_MAX = previous;
+      }
+    },
+  );
 });

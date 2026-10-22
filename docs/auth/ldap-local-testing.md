@@ -9,10 +9,13 @@ at it — so you can exercise the LDAP login flow (bind + search + password veri
 ## What it gives you
 
 - `docker-compose.ldap.yml` — runs [OpenLDAP](https://www.openldap.org/)
-  (`bitnami/openldap:2.6`) on `ldap://localhost:4400`, seeded from an LDIF.
-- `scripts/ldap-harness/bootstrap.ldif` — the deterministic seed: two org units,
-  two users with passwords, two `groupOfNames` groups, and an explicit `memberOf`
-  on each user.
+  (`bitnamilegacy/openldap:2.6`, pinned by digest) on `ldap://localhost:4400`,
+  seeded from an LDIF.
+- `scripts/ldap-harness/memberof-init.sh` — the first-boot hook: enables the
+  OpenLDAP **memberof overlay**, then loads the seed.
+- `scripts/ldap-harness/bootstrap.ldif` — the deterministic seed: the root, two
+  org units, two users with passwords and two `groupOfNames` groups. Each user's
+  `memberOf` is written by the overlay from the groups' `member` values.
 - `scripts/ldap-harness/up.sh` — starts OpenLDAP and runs the verify script.
 - `scripts/seed-ldap.mjs` — performs the **same** bind → search → user-bind →
   group→role flow METIS's provider does (a smoke check), then prints the
@@ -35,6 +38,22 @@ what the provider already extracts.)
 
 The directory is provisioned via a **custom LDIF** rather than manual edits, so the
 users / groups / `memberOf` are **identical on every boot** — no flaky setup.
+
+**`memberOf` needs the memberof overlay (#1381).** `memberOf` is an operational
+attribute that the overlay defines and maintains. Without it slapd rejects the
+attribute (`memberOf: attribute type undefined`, err=17), so the seed cannot write
+it by hand. Earlier revisions did, through `extensibleObject`, and the container
+exited 123 on its first user. The image loads `LDAP_CUSTOM_LDIF_DIR` before any hook
+can load the overlay, so the harness skips that mechanism: `memberof-init.sh`
+(mounted in `/docker-entrypoint-initdb.d/`) starts slapd, loads `memberof.so`,
+configures the overlay, adds the seed (users before groups), and stops slapd. Your
+real directory is the same: AD maintains `memberOf` itself, and OpenLDAP needs
+the overlay.
+
+**The image (#1381).** Bitnami removed `bitnami/openldap` from Docker Hub in 2025
+and moved its free images to `bitnamilegacy/*`. The harness pins
+`bitnamilegacy/openldap:2.6` by digest, so the tag cannot change or disappear
+without a commit here.
 
 ## LDAP is env-driven (unlike SAML/OIDC)
 
@@ -133,8 +152,8 @@ make ldap-down                      # stop OpenLDAP and remove its data volume
 ```
 
 The data volume is removed so the LDIF is re-seeded fresh on the next
-`make ldap-up` (bitnami/openldap only runs the custom LDIF on a first boot with an
-empty data dir).
+`make ldap-up` (the image only runs `/docker-entrypoint-initdb.d` on a first boot
+with an empty data dir).
 
 ## Configuration (env overrides)
 
@@ -170,17 +189,24 @@ ever triggers on `NODE_ENV=production`, so `development`/`test`/unset environmen
 
 ## What runs in CI vs. manually
 
-- **CI:** the pure config-builder/role-mapping helper
+- **Every PR:** the pure config-builder/role-mapping helper
   (`scripts/lib/ldap-harness.mjs`) is unit tested
-  (`scripts/lib/ldap-harness.test.mjs`, 100% coverage) in the existing `scripts`
-  vitest workspace. This runs on every PR. The TypeScript coverage gate is scoped
-  to this helper module.
-- **Manual only:** spinning the live OpenLDAP container + the end-to-end login
-  round-trip. Like the [SAML harness (#523)](./saml-local-testing.md), the
-  [OIDC harness (#521)](./oidc-local-testing.md), and the
-  [`make kind-smoke`](../../Makefile) Kubernetes smoke (#545), this is a documented
-  local `make` target, **not** a CI job — a job that spins an external directory
-  container would be flaky and is intentionally avoided.
+  (`scripts/lib/ldap-harness.test.mjs`) in the `scripts` vitest workspace.
+- **The `ldap-harness` workflow (#1381):** boots this harness, runs `up.sh` (the
+  directory smoke above), then logs alice and bob in through METIS's own
+  `LDAPAuthProvider` (`server/tests/ldap-harness.integration.test.ts`; skipped
+  unless `LDAP_HARNESS_URL` is set). It runs on PRs that touch the harness or
+  the LDAP provider, on `main`, and weekly, so a removed image or a rejected seed
+  fails a check instead of the next person who needs the harness. Run it
+  locally with:
+
+  ```bash
+  make ldap-up
+  cd server && LDAP_HARNESS_URL=ldap://localhost:4400 \
+    pnpm exec vitest run --config vitest.integration.config.ts tests/ldap-harness.integration.test.ts
+  ```
+
+- **Manual:** a full browser login against a running METIS with `AUTH_MODE=ldap`.
 
 ## Related
 
