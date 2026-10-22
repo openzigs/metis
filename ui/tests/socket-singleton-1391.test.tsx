@@ -178,14 +178,65 @@ describe("closeSocket (#1391)", () => {
     });
     expect(ioMock).not.toHaveBeenCalled();
     expect(stale.result.current).toBeNull();
+    // Checked HERE, before a fresh socket exists: registering a new socket
+    // resets the store, and would hide an error the refused attempt wrote.
+    expect(status.result.current.error).toBeNull();
+    expect(status.result.current.status).not.toBe("disconnected");
 
     const fresh = renderManySockets(2);
     await waitFor(() => expect(fresh.result.current.every((s) => s !== null)).toBe(true));
     expect(ioMock).toHaveBeenCalledTimes(1);
     expect(fresh.result.current[1]).toBe(fresh.result.current[0]);
     expect(stale.result.current).toBeNull();
-    expect(status.result.current.error).toBeNull();
-    expect(status.result.current.status).not.toBe("disconnected");
+  });
+
+  it("resets the status store to the not-yet-connected baseline", async () => {
+    const status = renderHook(() => useSocketStatus());
+    const a = renderHook(() => useSocket());
+    await waitFor(() => expect(a.result.current).not.toBeNull());
+    const socket = a.result.current!;
+    const fire = (evt: string, ...args: unknown[]) =>
+      act(() => {
+        const handler = vi.mocked(socket.on).mock.calls.find(([e]) => e === evt)?.[1];
+        (handler as (...a: unknown[]) => void)(...args);
+      });
+    fire("connect_error", new Error("handshake refused"));
+    expect(status.result.current.error).toBe("handshake refused");
+
+    act(() => closeSocket());
+    expect(status.result.current).toEqual({ status: "reconnecting", error: null });
+  });
+
+  it("a renewal left half-done does not leak into the next socket", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { setOnRefreshSuccess } = await import("@/lib/api-client");
+      const status = renderHook(() => useSocketStatus());
+      const a = renderHook(() => useSocket());
+      await waitFor(() => expect(a.result.current).not.toBeNull());
+      // An already-dropped socket emits no "disconnect" when disconnect() is
+      // called, so the renewal flag set just before it is never consumed.
+      vi.mocked(a.result.current!.disconnect).mockImplementation(() => undefined);
+      const onRefresh = vi.mocked(setOnRefreshSuccess).mock.calls.at(-1)?.[0] as () => void;
+      onRefresh();
+      await vi.advanceTimersByTimeAsync(300);
+      expect(a.result.current!.connect).toHaveBeenCalledTimes(1);
+
+      act(() => closeSocket());
+      const b = renderHook(() => useSocket());
+      await waitFor(() => expect(b.result.current).not.toBeNull());
+      // A server-side kick of the NEW socket must read as disconnected, not
+      // be mistaken for the old socket's renewal.
+      act(() => {
+        const handler = vi
+          .mocked(b.result.current!.on)
+          .mock.calls.find(([e]) => e === "disconnect")?.[1] as (reason: string) => void;
+        handler("io server disconnect");
+      });
+      expect(status.result.current.status).toBe("disconnected");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("clears a pending token-renewal reconnect", async () => {
