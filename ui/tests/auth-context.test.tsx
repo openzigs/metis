@@ -5,6 +5,9 @@ import { _resetAuthRetryState, apiFetch } from "@/lib/api-client";
 import { makeWrapper, TEST_USER } from "./test-utils";
 import { useRouter } from "next/navigation";
 
+const closeSocketMock = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/socket-client", () => ({ closeSocket: closeSocketMock }));
+
 const fetchMock = vi.fn();
 
 /** Replace `window.location` with a stub exposing pathname + search. */
@@ -110,6 +113,7 @@ describe("AuthProvider", () => {
   });
 
   it("clears the user and routes on logout", async () => {
+    closeSocketMock.mockClear();
     fetchMock.mockResolvedValueOnce(ok({ success: true, data: null }));
     const { result } = renderHook(() => useAuth(), {
       wrapper: makeWrapper({ initialUser: TEST_USER }),
@@ -119,6 +123,8 @@ describe("AuthProvider", () => {
       await result.current.logout();
     });
     expect(result.current.user).toBeNull();
+    // #1391 — the signed-out user's realtime socket is closed.
+    expect(closeSocketMock).toHaveBeenCalledTimes(1);
     const router = (useRouter as unknown as () => { push: ReturnType<typeof vi.fn> })();
     expect(router.push).toHaveBeenCalledWith("/login");
   });

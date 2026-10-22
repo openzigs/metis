@@ -28,6 +28,23 @@ import { setOnRefreshSuccess } from "./api-client";
 import { browserSocketUrl } from "./socket-url";
 
 let socketRef: Socket | null = null;
+// #1391 — the in-flight connection. `getSocket()` awaits a dynamic import
+// before it can call `io()`, so checking `socketRef` alone let every caller
+// that arrived during that await open its own socket (three per page load).
+// Concurrent callers now share this promise. It is cleared when it fails, so
+// the next call retries, and by `closeSocket()`, so a new session starts fresh.
+let pendingSocket: Promise<Socket> | null = null;
+// Bumped by `closeSocket()`. An import that resolves after a close sees a
+// different generation and opens nothing.
+let socketGeneration = 0;
+
+/** Rejection for a `getSocket()` whose connection was closed while it waited. */
+export class SocketClosedError extends Error {
+  constructor() {
+    super("Realtime connection closed");
+    this.name = "SocketClosedError";
+  }
+}
 
 /**
  * Typed connection state surfaced to the UI:
@@ -200,25 +217,57 @@ function registerLifecycle(socket: Socket): void {
   });
 }
 
-async function getSocket(): Promise<Socket> {
-  // Return existing socket regardless of connection state — avoids creating a
-  // second socket while the first is still connecting (race condition under HMR
-  // / React Fast Refresh).
-  if (socketRef) return socketRef;
-  const { io } = await import("socket.io-client");
-  // Connect directly to the Express server — Next.js cannot proxy WebSocket upgrades.
-  // #1377 — resolved at connect time, not baked at build: the page's own origin
-  // unless the UI server supplies an override (see socket-url.ts).
-  socketRef = io(browserSocketUrl(), {
-    path: "/socket.io",
-    transports: ["websocket"],
-    withCredentials: true,
+function getSocket(): Promise<Socket> {
+  // Return the existing socket regardless of connection state, and share the
+  // in-flight attempt, so every hook on the page gets the SAME socket (#1391).
+  if (socketRef) return Promise.resolve(socketRef);
+  if (pendingSocket) return pendingSocket;
+  const generation = socketGeneration;
+  const attempt = import("socket.io-client").then(({ io }) => {
+    if (generation !== socketGeneration) throw new SocketClosedError();
+    // Connect directly to the Express server — Next.js cannot proxy WebSocket upgrades.
+    // #1377 — resolved at connect time, not baked at build: the page's own origin
+    // unless the UI server supplies an override (see socket-url.ts).
+    const socket = io(browserSocketUrl(), {
+      path: "/socket.io",
+      transports: ["websocket"],
+      withCredentials: true,
+    });
+    socketRef = socket;
+    registerLifecycle(socket);
+    // #414 — now that a socket exists, subscribe (once) to refresh-success so a
+    // renewed access cookie forces a re-handshake instead of a silent dead socket.
+    ensureRefreshSuccessSubscription();
+    return socket;
   });
-  registerLifecycle(socketRef);
-  // #414 — now that a socket exists, subscribe (once) to refresh-success so a
-  // renewed access cookie forces a re-handshake instead of a silent dead socket.
-  ensureRefreshSuccessSubscription();
-  return socketRef;
+  pendingSocket = attempt;
+  // Free the slot once settled, but only if it is still this attempt's: on
+  // success `socketRef` answers later calls, on failure the next call retries.
+  const settle = () => {
+    if (pendingSocket === attempt) pendingSocket = null;
+  };
+  attempt.then(settle, settle);
+  return attempt;
+}
+
+/**
+ * Close the shared socket and forget it, so the next `getSocket()` opens a new
+ * one (#1391). Called on sign-out: the handshake authenticated the signed-out
+ * user's cookie, and a later sign-in in the same tab must not inherit it. An
+ * attempt still loading when this runs opens nothing and rejects with
+ * `SocketClosedError`.
+ */
+export function closeSocket(): void {
+  socketGeneration += 1;
+  pendingSocket = null;
+  if (reconnectDebounceTimer !== null) {
+    clearTimeout(reconnectDebounceTimer);
+    reconnectDebounceTimer = null;
+  }
+  renewingForToken = false;
+  const socket = socketRef;
+  socketRef = null;
+  socket?.disconnect();
 }
 
 export function useSocket(): Socket | null {
@@ -233,7 +282,8 @@ export function useSocket(): Socket | null {
         // #415 — do NOT swallow the failure silently. Route it to the status
         // store so the connection-status banner can surface it, then keep the
         // hook contract (`Socket | null`) intact for existing callers.
-        if (!cancelled) {
+        // #1391 — a deliberate close is not a failure to report.
+        if (!cancelled && !(err instanceof SocketClosedError)) {
           setSocket(null);
           setState({
             status: "disconnected",
@@ -264,6 +314,8 @@ export function useSocketStatus(): SocketState {
 export function __resetSocketStatusForTests(): void {
   state = { status: "reconnecting", error: null };
   socketRef = null;
+  pendingSocket = null;
+  socketGeneration += 1;
   // #414 — clear the refresh-success wiring + any pending renewal so each spec
   // starts from a clean slate.
   setOnRefreshSuccess(null);

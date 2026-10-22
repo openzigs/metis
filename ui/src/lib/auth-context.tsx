@@ -13,6 +13,7 @@ import {
 import { useRouter } from "next/navigation";
 import { ApiError, apiFetch, refreshAccessToken, setOnRefreshFailure } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
+import { closeSocket } from "@/lib/socket-client";
 import { useQueryClient } from "@tanstack/react-query";
 import type { AuthUser, LoginCredentials, LoginResponse } from "@/lib/auth-types";
 
@@ -129,6 +130,9 @@ export function AuthProvider({
     } catch {
       // Logout is best-effort — we still clear local state.
     }
+    // #1391 — the realtime socket was authenticated as this user; drop it so
+    // the next sign-in in this tab opens a fresh one.
+    closeSocket();
     setUser(null);
     queryClient.removeQueries({ queryKey: queryKeys.auth.all });
     router.push("/login");
