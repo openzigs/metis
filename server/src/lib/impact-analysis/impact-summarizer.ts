@@ -47,10 +47,8 @@ import type { MatchQuality, MatchQualityReason } from "@metis/shared";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { extractFirstJson } from "../docs-gen/grounding/json-extract.js";
-import {
-  scrubItemsFenceLookalikes,
-  scrubRequirementFenceLookalikes,
-} from "../ai/tool-runtime/fence-scrub.js";
+import { scrubRequirementFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
+import { promptNameItem, quotedPromptValue } from "./prompt-values.js";
 import { verifyOnlyDdl } from "./schema-impact.js";
 import type { ClauseCoverageGap } from "./clause-coverage-reconciler.js";
 
@@ -676,13 +674,13 @@ function tableLine(t: SummaryTableFact): string {
     `changeKind=${t.changeKind}`,
     `source=${t.source}`,
     `confidence=${t.confidence.toFixed(2)}`,
-    t.columnName ? `column="${t.columnName}"` : null,
-    t.suggestedDdl ? `suggestedDdl="${t.suggestedDdl}"` : null,
-    t.relevanceRationale ? `rationale="${t.relevanceRationale}"` : null,
+    t.columnName ? `column=${quotedPromptValue(t.columnName)}` : null,
+    t.suggestedDdl ? `suggestedDdl=${quotedPromptValue(t.suggestedDdl)}` : null,
+    t.relevanceRationale ? `rationale=${quotedPromptValue(t.relevanceRationale)}` : null,
   ]
     .filter(Boolean)
     .join(", ");
-  return `- table="${t.tableName}" (${attrs})`;
+  return `- table=${quotedPromptValue(t.tableName)} (${attrs})`;
 }
 
 // ── #1028 — per-table grouping of the `reference` (verify-only) rows ─────────
@@ -791,12 +789,12 @@ function referenceGroupLine(group: Extract<TableRenderEntry, { kind: "reference"
     `changeKind=${head.changeKind}`,
     `source=${head.source}`,
     `confidence=${head.confidence.toFixed(2)}`,
-    listed ? `referencedColumns="${listed}"` : null,
-    head.relevanceRationale ? `rationale="${head.relevanceRationale}"` : null,
+    listed ? `referencedColumns=${quotedPromptValue(listed)}` : null,
+    head.relevanceRationale ? `rationale=${quotedPromptValue(head.relevanceRationale)}` : null,
   ]
     .filter(Boolean)
     .join(", ");
-  return `- table="${head.tableName}" (${attrs})`;
+  return `- table=${quotedPromptValue(head.tableName)} (${attrs})`;
 }
 
 /** Render a whole affected-table block (primary or secondary), or `(none)`. */
@@ -815,7 +813,9 @@ export function buildItemSummaryMessages(facts: ImpactItemFacts): ChatMessage[] 
   const symbolLines = facts.affectedSymbols
     .slice(0, 12)
     .map(
-      (s) => `- symbol="${s.qualifiedName}" file="${s.filePath}" (${s.relation}, depth ${s.depth})`,
+      (s) =>
+        `- symbol=${quotedPromptValue(s.qualifiedName)} file=${quotedPromptValue(s.filePath)} ` +
+        `(${s.relation}, depth ${s.depth})`,
     )
     .join("\n");
   // #1028 — one line per TABLE, not per column. See {@link groupTableFacts}.
@@ -828,7 +828,11 @@ export function buildItemSummaryMessages(facts: ImpactItemFacts): ChatMessage[] 
     consumers.length > 0
       ? "\nCROSS-PROJECT consumers (other apps on the shared DB):\n" +
         consumers
-          .map((c) => `- project="${c.projectName}" ${c.usage} table="${c.tableName}"`)
+          .map(
+            (c) =>
+              `- project=${quotedPromptValue(c.projectName)} ${c.usage} ` +
+              `table=${quotedPromptValue(c.tableName)}`,
+          )
           .join("\n") +
         "\n"
       : "";
@@ -846,7 +850,9 @@ export function buildItemSummaryMessages(facts: ImpactItemFacts): ChatMessage[] 
         "did NOT surface):\n" +
         gaps
           .map(
-            (g) => `- table="${g.tableName}" uncoveredClause="${g.clause}" reason="${g.rationale}"`,
+            (g) =>
+              `- table=${quotedPromptValue(g.tableName)} ` +
+              `uncoveredClause=${quotedPromptValue(g.clause)} reason=${quotedPromptValue(g.rationale)}`,
           )
           .join("\n") +
         "\n- When gaps are listed, add ONE final sentence warning that this analysis may be\n" +
@@ -891,9 +897,6 @@ export interface RunSummaryRequest {
   shown: RunTableFact[];
 }
 
-/** Every line break a reader (or a model) may take as the start of a new line. */
-const LINE_BREAKS = /\r\n|[\r\n\v\f\x85\p{Zl}\p{Zp}]/gu;
-
 /**
  * One requirement title as the quoted `requirement="…"` value of an item line
  * inside `<<<IMPACTED ITEMS>>>`.
@@ -904,14 +907,11 @@ const LINE_BREAKS = /\r\n|[\r\n\v\f\x85\p{Zl}\p{Zp}]/gu;
  *    `- severity=… tables=[…]` item line), and a JSON string literal, so a `"`
  *    in the title is `\"` and cannot end the value. For a title with no `"`,
  *    `\`, control character or line break this is the same `"title"` as before.
+ *  - #1369 — the same rule now covers every quoted value of these prompts
+ *    ({@link quotedPromptValue}), and table names in `tables=[…]`.
  */
 function itemTitleValue(title: string): string {
-  const oneLine = title.replace(LINE_BREAKS, " ");
-  const scrubbed = scrubItemsFenceLookalikes(
-    scrubRequirementFenceLookalikes(oneLine, "[REDACTED-FENCE]"),
-    "[REDACTED-FENCE]",
-  );
-  return JSON.stringify(scrubbed);
+  return quotedPromptValue(title);
 }
 
 /**
@@ -943,7 +943,7 @@ export function buildRunSummaryRequest(facts: ImpactRunFacts): RunSummaryRequest
       ? shown
           .map(
             (t, i) =>
-              `${i + 1}. table="${t.tableName}" (tier=${t.relevanceTier ?? "unrated"}, ` +
+              `${i + 1}. table=${quotedPromptValue(t.tableName)} (tier=${t.relevanceTier ?? "unrated"}, ` +
               `confidence=${t.confidence.toFixed(2)})`,
           )
           .join("\n")
@@ -955,7 +955,7 @@ export function buildRunSummaryRequest(facts: ImpactRunFacts): RunSummaryRequest
       // rank for (see the invariant above). Item order is already the ranked order.
       const names = it.primaryTables
         .filter((t) => shownNames.has(t.tableName))
-        .map((t) => t.tableName);
+        .map((t) => promptNameItem(t.tableName));
       const tables = names.length > 0 ? names.join(", ") : "(none)";
       return (
         `- severity=${it.severity}, changeType=${it.changeType}, ` +

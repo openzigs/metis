@@ -59,6 +59,7 @@ import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { createChildLogger } from "../logger.js";
 import { extractFirstJson } from "../docs-gen/grounding/json-extract.js";
 import { scrubRequirementFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
+import { promptNameItem, quotedPromptValue } from "./prompt-values.js";
 
 const log = createChildLogger("impact-clause-reconcile");
 
@@ -232,13 +233,15 @@ export function buildClauseReconcileMessages(
     const key = tableCompareKey(name);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    surfacedNames.push(String(name).trim());
+    surfacedNames.push(promptNameItem(String(name).trim()));
     if (surfacedNames.length >= MAX_SURFACED_SHOWN) break;
   }
   const surfacedBlock = surfacedNames.length > 0 ? surfacedNames.join(", ") : "(none)";
   // Table names are DATA — rendered inside these fenced lines and never
   // interpreted; gaps map back by `index`, not by any name the model writes.
-  const candidateBlock = candidates.map((name, i) => `[${i}] table="${name}"`).join("\n");
+  const candidateBlock = candidates
+    .map((name, i) => `[${i}] table=${quotedPromptValue(name)}`)
+    .join("\n");
   const user =
     `TABLES ALREADY SURFACED BY THE ANALYSIS:\n${surfacedBlock}\n\n` +
     `OTHER TABLES IN THIS PROJECT (not surfaced):\n${candidateBlock}\n\n` +

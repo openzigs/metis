@@ -132,7 +132,7 @@ function makeHybridRouter(): {
 /** A non-empty grounding context (escalation only fires when grounding is active). */
 function groundingCtx(): GroundingContext {
   return {
-    sources: [{ id: "facts:mod:0", text: "evidence", kind: "facts" } as never],
+    sources: [{ id: "facts:mod:0", label: "mod", text: "evidence", kind: "facts" } as never],
     sourceIds: new Set(["facts:mod:0"]),
     isEmpty: false,
   };

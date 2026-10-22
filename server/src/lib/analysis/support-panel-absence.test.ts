@@ -164,6 +164,14 @@ describe("runSupportPanel + absence check (#1111 — the verdict reaches confide
     expect(panel?.countedVotes).toBe(3);
   });
 
+  it("#1369 — a contradiction citing a line it was never shown is UNEXAMINED", async () => {
+    const panel = await run(
+      new PanelProvider("supported", { verdict: "contradicted", citation: `${FILE}:500` }),
+    );
+    expect(panel?.absenceCheck?.verdict).toBe("unexamined");
+    expect(panel?.absenceCheck?.downgradedFrom).toBe("contradicted");
+  });
+
   it("caps an UNEXAMINED claim at medium instead of advertising high", async () => {
     const panel = await run(
       new PanelProvider("supported", { verdict: "unexamined", citation: null }),

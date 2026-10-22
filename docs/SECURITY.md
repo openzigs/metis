@@ -949,14 +949,122 @@ as a JSON string literal, so a `"` is `\"` and cannot end the value. A title
 with no `"`, `\`, control character or line break reaches the model unchanged;
 one that has them now reads as JSON escapes.
 
-Outside this scrub, and tracked as follow-ups: the support panel's
-`--- path:line ---` excerpt headers inside the evidence block, and table names
-in the impact run summary. Not yet scrubbed either, and outside the five
-builders #1360 listed: the docs-gen Phase-2 writer's
-`=== RETRIEVED GROUNDING SOURCES ===` block
-(`docs-gen/grounding/grounding-context.ts`, the same source text the
-faithfulness judge now sees scrubbed) and its `=== … FORMULAS ===` block
-(`docs-gen/holistic-synthesizer.ts`, the same formula expressions Phase 1 now
-scrubs), plus the `END FLOW` / `END MODULE FACTS` fences and those in
-`schema-inventory.ts` and `canonical-facts.ts`, whose contents have not been
-traced for untrusted input.
+The follow-ups this section left — excerpt headers, impact table names and the
+docs-gen Phase-2 writer's blocks — are closed in 13.5.
+
+### 13.5 Impact names, excerpt headers and the Phase-2 writer (#1369, #1370)
+
+**Impact-analysis values (#1369).** Table and column names come from DDL, ORM
+annotations (`@Table(name = "…")` accepts any character but a quote) or a live
+database, whose quoted identifiers may hold anything; symbol and file names
+come from the repository; rationales, clauses and suggested DDL are written by
+a model. In every one-line fact of the impact prompts
+(`impact-analysis/impact-summarizer.ts`, `table-relevance-filter.ts`,
+`table-relevance-judge.ts`, `additive-column-proposer.ts`,
+`clause-coverage-reconciler.ts`):
+
+- every `key="…"` value (`table`, `column`, `suggestedDdl`, `rationale`,
+  `referencedColumns`, `project`, `symbol`, `file`, `uncoveredClause`,
+  `reason`, `requirement`) goes through `quotedPromptValue`
+  (`impact-analysis/prompt-values.ts`): line breaks collapsed to a space, the
+  requirement scrub (13.3) and the `END ITEMS` scrub (13.4), then a JSON string
+  literal. A value cannot end itself, start a ranked line (`1. table=…`), a
+  candidate line (`[0] table=…`) or an item line, or close
+  `<<<IMPACTED ITEMS>>>`;
+- every name in an unquoted list (`tables=[…]`, `columns: …`, the judge's
+  `[0] name (columns: …)`, the reconciler's surfaced-table list) goes through
+  `promptNameItem`: a plain identifier (letters, digits, `_ $ . # @ -`) is
+  written bare, anything else as `quotedPromptValue`, so a name holding `,`,
+  `]`, a space, a quote or a bracket is quoted.
+
+A value with no `"`, `\`, control character, line break or fence, and a
+plain-identifier name, reach the model exactly as before. A Windows path or
+a rationale with a `"` now reads as JSON escapes.
+
+**Support-panel excerpt headers (#1369).** Two layers.
+
+1. `renderEvidenceBlock` (`analysis/support-panel.ts`) replaces a forged header
+   in an excerpt's body with `[REDACTED HEADER]` (`scrubExcerptHeaderLookalikes`,
+   the fold of 13.1 with its own pattern): a whole line (after spaces) of three
+   or more `-` (any dash look-alike, `.` and `…` fold to `-`), whitespace, at most
+   300 characters holding a file locator — a name with an extension directly
+   before `:` and a line number (`a.ts:5`; the number may not run into a letter,
+   since the fold reads `0` and `1` as `O` and `I`) — or a `#` or `/`, whitespace, three or
+   more `-`. Caught: `--- src/a.ts:500 ---`, `--- a.ts:7 ---`, em-dash, box-drawing,
+   minus-sign and full-width forms, a zero-width character in the run, a
+   full-width colon, `--- doc.md#chunk-13 ---`, `--- src/other.ts ---`. Left
+   alone: `---`, `--- Page 3 ---`, `----- Tables -----`, `// --- a.ts:5 ---`,
+   the diff header `--- a/x.ts`, `| --- |`, `x = a --- b`,
+   `--- Requirement 4.2: Only managers approve refunds ---`,
+   `--- Step 1: Insert orders ---`, `--- Note: 1 ---`, `--- Q1: 2024 ---`,
+   `--- 10:30 meeting ---`. **Not caught**
+   (tested): a header naming only a bare file (`--- a.ts ---`) or a backslash
+   path with no line, one with fewer than three dashes, a one-sided
+   `--- a.ts:5`, a header after other text on its line, and a colon look-alike
+   NFKD does not fold (U+2236) with no `/` in the path. **Redacted although
+   ordinary** (tested): any `---`-framed line holding a `/` or `#`
+   (`--- see docs/x ---`, `--- 2024/25 budget ---`, `--- Q#1 ---`), one holding
+   `name.ext:N` (`--- v1.2:3 ---`), and `… a/b …` (an ellipsis folds to `---`).
+2. The citation gate checks the line, not only the file. `extractGroundedLocator`
+   (`analysis/support-panel-tally.ts`) now takes the excerpts shown, and a
+   locator counts only when its lines overlap a range shown of its file
+   (`path:35-60` against `10-40` counts, `path:500` does not), with two lines
+   of slack each side (`CITATION_LINE_SLACK`: a code-graph excerpt opens with
+   its own `name (kind) — path:start-end` line, so a model counting lines lands
+   one off; `path:9` and `path:42` count against `10-40`, `path:43` and
+   `path:45` do not); a file shown
+   whole (no `startLine`, or a bare path) accepts any line, and an excerpt with
+   a start and no end accepts any line from its start. When a locator fails,
+   the next one in the citation or the reasoning is tried. The lens votes and
+   the absence check both use it, so a lens pointed at line 500 by a header that
+   slipped past layer 1 is discarded as `missing-citation`, and an absence
+   verdict becomes `unexamined`. Not checked: a line inside a shown range that the
+   excerpt itself mis-numbers.
+
+**The Phase-2 writer (#1370).** `scrubWriterFenceLookalikes` is the section
+scrub of 13.4 over the writer's nouns (`FLOW`, `FACT`, `FORMULA`, `CONSTANT`,
+`SOURCE`, each optionally plural, and `SCHEMA`) and modifiers (`MODULE`,
+`GROUNDING`, `CANONICAL`, `EXTRACTED`, `RETRIEVED`, `DATABASE`, `OF`, `THE`,
+`ALL`), plus two forms: the writer's opening phrases between `=` runs anywhere
+in a line (`RETRIEVED GROUNDING SOURCES`, `EXTRACTED MODULE FACTS`,
+`CANONICAL FACTS`, `FORMULAS/CONSTANTS`, `DATABASE SCHEMA`,
+`TABLE AND COLUMN NAMES`, `END-TO-END FLOW`; the real openings carry no
+parenthetical), and a grounding-source header `[SOURCE id=`. Its one-sided
+forms are pinned to a line edge (`=== END FACTS` must end its line,
+`END FACTS ===` must start it), because these nouns are common identifiers.
+Each fence the writer's prompt carries:
+
+| Fence | Carries | Now |
+|-------|---------|-----|
+| `=== RETRIEVED GROUNDING SOURCES ===` (`grounding/grounding-context.ts`) | RAG chunks, web digests, Phase-1 facts, canonical facts | each source's text, its label and a deduplicated facts entry's reference line scrubbed in `renderGroundingBlock` |
+| `=== FORMULAS/CONSTANTS … ===` / `=== END FORMULAS ===` (`holistic-synthesizer.ts`) | formula expressions from repository source | scrubbed in `buildSectionPrompts` |
+| `=== EXTRACTED MODULE FACTS ===` / `=== END MODULE FACTS ===` | Phase-1 model output over repository source | scrubbed in `buildSectionPrompts` |
+| `=== END-TO-END FLOW (…) ===` / `=== END FLOW ===` | module and dataset names from the code graph | scrubbed in `buildSectionPrompts` |
+| `=== CANONICAL FACTS (…) ===` / `=== END CANONICAL FACTS ===` (`canonical-facts.ts`) | names, values and paths from repository source | already one line per field with ASCII `===` spaced out (#1119); `neutralize` now also runs the writer scrub after the spacing, for look-alikes |
+| `=== DATABASE SCHEMA … ===` / `=== END SCHEMA ===` (`schema-inventory.ts`) | table, column and type names from a database or repository SQL | already one line per table, each line opening with `- `; the prompt's names and types now also go through the writer scrub (the rendered schema reference is unchanged). The heading's connector label is stripped of `=` by `plainConnectorLabel` |
+
+Clean text is returned as the same string, so a prompt for clean input is
+byte-identical, and neither the prompt-cache prefix nor the section reuse hash
+moves. For input that does hold a look-alike, the reuse hash (which covers the
+rendered grounding block and the built prompts) moves once, so that section is
+regenerated once.
+
+Left alone (tested): compound conditions (`if (a == end || flow == b)`,
+`return claim.status == ClaimStatus.CLOSED || facts.size == 0;`,
+`while pos == end and source == None:`), `if (pos == end - sources.length)`,
+`if end - facts == 0:`, `end`-keyword languages followed by an assignment,
+`/* ===== CONSTANTS ===== */`, a bare `===== CONSTANTS =====`, a wiki
+`=== Data flow ===`, `List<Source>`, `[source_id=3]`. **Not caught** (tested):
+`foo === FLOW END === bar` (a reordered closing line mid-line), a terminator
+outside the set (`=== FINISHED FORMULAS ===`), a bare-noun opening
+(`=== FORMULAS ===`), a single `=`, other delimiters (`--- END FLOW ---`), a
+fence split across lines, `=== END_FLOW`, a one-sided form in the middle of a
+line, and `[SOURCE_ID=`. **Redacted although ordinary** (tested), because each
+is one of the writer's fences in another case or spacing: a line ending in
+`== endFlow`; a `==`-bounded `END` plus a writer noun anywhere in a line
+(`== end flow ==`, `=== End of facts ===`, `x == END_FLOW == y`); and a heading
+made of a writer opening phrase between `=` runs (`=== Module facts ===`,
+`=== Database schema ===`, `== Canonical facts ==`, `=== Grounding sources ===`,
+`=== Formulas / Constants ===`, `== Table and column names ==`). A bare-noun
+heading (`=== Sources ===`, `=== Formulas and constants ===`, `=== Data flow ===`)
+is left alone.

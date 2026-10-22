@@ -73,7 +73,11 @@ import type {
 import { ABSENCE_CLAIM_VERDICTS } from "@metis/shared";
 import type { AIProvider, TokenUsage } from "../ai/types.js";
 import { scrubSectionFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
-import { extractGroundedLocator, MAX_VOTE_REASONING_CHARS } from "./support-panel-tally.js";
+import {
+  extractGroundedLocator,
+  MAX_VOTE_REASONING_CHARS,
+  type ShownExcerpt,
+} from "./support-panel-tally.js";
 import { hasVerdict, requestStructuredVerdict } from "./structured-verdict.js";
 import type { StructuredVerdictMetrics } from "./structured-verdict.js";
 
@@ -114,7 +118,7 @@ export interface RawAbsenceVerdict {
  */
 export function toAbsenceCheck(
   raw: RawAbsenceVerdict,
-  evidenceFiles: readonly string[],
+  evidenceFiles: ReadonlyArray<string | ShownExcerpt>,
 ): FindingAbsenceCheck {
   const reasoning = (raw.reasoning ?? "").slice(0, MAX_VOTE_REASONING_CHARS);
   const locator = extractGroundedLocator(raw.citation, raw.reasoning, evidenceFiles);
@@ -307,8 +311,8 @@ export async function runAbsenceCheck(
     finding: { title: string; body: string };
     /** The rendered excerpts — the SAME block the lenses see. */
     evidenceBlock: string;
-    /** Every file path shown, i.e. the allow-list the citation is grounded against. */
-    evidenceFiles: readonly string[];
+    /** Every excerpt shown (file and lines), i.e. what the citation is grounded against (#1369). */
+    evidenceFiles: ReadonlyArray<string | ShownExcerpt>;
   },
   opts: AbsenceCheckOptions = {},
 ): Promise<AbsenceCheckResult> {

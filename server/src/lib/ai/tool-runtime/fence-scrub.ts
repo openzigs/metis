@@ -340,25 +340,128 @@ const LABEL_MODIFIER = `(?:${[
 ]
   .map(spaced)
   .join("|")}|C${SEP}(?:\\+${SEP}\\+|#)?)`;
-const labelModifiers = `(?:${LABEL_MODIFIER}${SEP1}){0,3}`;
-/** One closing line: the terminator and a noun in either order between two `=` runs. */
-const CLOSING_LINE =
-  `${OPEN2}(?=${LINE_CHAR}{0,200}?${TERMINATOR})(?=${LINE_CHAR}{0,200}?${SECTION_NOUN})` +
-  `${LINE_CHAR}{0,200}${TAIL2}`;
-const FOLDED_SECTION_FENCE = new RegExp(
-  [
+/**
+ * The section-fence forms (C, P, L, L', R, O above) for one vocabulary of nouns
+ * and of the words that may sit between `END` and the noun. #1370 builds a
+ * second instance for the docs-gen Phase-2 writer's blocks.
+ *
+ * `lineBoundOneSided` (the writer's instance) pins the one-sided forms L and R
+ * to a line edge: L must run to the end of its line, R must start it. The
+ * writer's nouns are common identifiers (`sources`, `facts`, `flow`), and the
+ * free forms redacted code such as `if (pos == end - sources.length)` and
+ * `if end - facts == 0:` (`.` folds to `-`).
+ */
+function sectionFenceForms(noun: string, modifier: string, lineBoundOneSided = false): string[] {
+  const modifiers = `(?:${modifier}${SEP1}){0,3}`;
+  const lineEnd = lineBoundOneSided ? "[ \\t]*(?=[\\n\\r]|$)" : "";
+  const lineStart = lineBoundOneSided ? "(?<![^\\n\\r])[ \\t]*" : "(?<![A-Z0-9])";
+  /** One closing line: the terminator and a noun in either order between two `=` runs. */
+  const closingLine =
+    `${OPEN2}(?=${LINE_CHAR}{0,200}?${TERMINATOR})(?=${LINE_CHAR}{0,200}?${noun})` +
+    `${LINE_CHAR}{0,200}${TAIL2}`;
+  return [
     // C: only as a whole line — at its start, or running to its end. A `==`
     // between two operands (`status == CLOSED || claim == 0`) is neither.
-    `(?<![^\\n\\r])[ \\t]*${CLOSING_LINE}`,
-    `${CLOSING_LINE}(?=[ \\t]*(?:[\\n\\r]|$))`,
+    `(?<![^\\n\\r])[ \\t]*${closingLine}`,
+    `${closingLine}(?=[ \\t]*(?:[\\n\\r]|$))`,
     // Anywhere in a line, the plain shape: `=== END SOURCE EVIDENCE ===`, `===ENDCLAIMS===`.
-    `${OPEN2}${SEP}${END}${SEP}${labelModifiers}${SECTION_NOUN}${SEP}${TAIL2}`,
-    `${OPEN2}${SEP}${END}${AFTER_END}${labelModifiers}${SECTION_NOUN}`,
-    `${OPEN2}[ \\t]*${END}[A-Z0-9]{0,40}?${SECTION_NOUN}[ \\t]*(?=[\\n\\r]|$)`,
-    `(?<![A-Z0-9])${END}${AFTER_END}${labelModifiers}${SECTION_NOUN}[ \\t]*${TAIL2}`,
-    `${OPEN3}${FILLER}${SECTION_NOUN}` +
+    `${OPEN2}${SEP}${END}${SEP}${modifiers}${noun}${SEP}${TAIL2}`,
+    `${OPEN2}${SEP}${END}${AFTER_END}${modifiers}${noun}${lineEnd}`,
+    `${OPEN2}[ \\t]*${END}[A-Z0-9]{0,40}?${noun}[ \\t]*(?=[\\n\\r]|$)`,
+    `${lineStart}${END}${AFTER_END}${modifiers}${noun}[ \\t]*${TAIL2}`,
+    `${OPEN3}${FILLER}${noun}` +
       `(?:${SEP1}${MODIFIER}){0,8}${SEP}\\([^()=\\n]{0,200}\\)${SEP}${TAIL3}`,
+  ];
+}
+
+const FOLDED_SECTION_FENCE = new RegExp(
+  sectionFenceForms(SECTION_NOUN, LABEL_MODIFIER).join("|"),
+  "gu",
+);
+
+/**
+ * #1370 — the docs-gen Phase-2 writer's blocks: `=== EXTRACTED MODULE FACTS ===`
+ * / `=== END MODULE FACTS ===`, `=== FORMULAS/CONSTANTS DETECTED IN SOURCE ===`
+ * / `=== END FORMULAS ===`, `=== END-TO-END FLOW (…) ===` / `=== END FLOW ===`,
+ * `=== RETRIEVED GROUNDING SOURCES ===` / `=== END GROUNDING SOURCES ===`, and
+ * the `=== CANONICAL FACTS (…) ===` and `=== … SCHEMA … ===` / `=== END SCHEMA ===`
+ * blocks that share the writer's prompt. The same forms as the section fences,
+ * over the writer's nouns, plus:
+ *
+ *   W.  two or more `=`, one of the writer's OPENING phrases (`RETRIEVED
+ *       GROUNDING SOURCES`, `EXTRACTED MODULE FACTS`, `CANONICAL FACTS`,
+ *       `FORMULAS/CONSTANTS`, `DATABASE SCHEMA`, `TABLE AND COLUMN NAMES`,
+ *       `END-TO-END FLOW`; the first word optional where the rest is
+ *       distinctive), then anything but `=` or a line break, then two or more
+ *       `=`. The real openings carry no parenthetical, so form O cannot see
+ *       them; a fixed phrase is the structure ordinary text lacks (a wiki
+ *       `=== Data flow ===` or a banner `===== CONSTANTS =====` is left alone);
+ *   S.  a grounding-source header, `[SOURCE id=` — the block's own per-source
+ *       label, which would let one source's text claim to be another source.
+ */
+const WRITER_NOUN = `(?:${[
+  spaced("FLOW"),
+  pluralisable("FACT"),
+  pluralisable("FORMULA"),
+  pluralisable("CONSTANT"),
+  pluralisable("SOURCE"),
+  spaced("SCHEMA"),
+].join("|")})`;
+const WRITER_MODIFIER = `(?:${[
+  "MODULE",
+  "GROUNDING",
+  "CANONICAL",
+  "EXTRACTED",
+  "RETRIEVED",
+  "DATABASE",
+  "OF",
+  "THE",
+  "ALL",
+]
+  .map(spaced)
+  .join("|")})`;
+const WRITER_OPENING = `(?:${[
+  `(?:${spaced("RETRIEVED")}${SEP})?${spaced("GROUNDING")}${SEP}${pluralisable("SOURCE")}`,
+  `(?:${spaced("EXTRACTED")}${SEP})?${spaced("MODULE")}${SEP}${pluralisable("FACT")}`,
+  `${spaced("CANONICAL")}${SEP}${pluralisable("FACT")}`,
+  `${pluralisable("FORMULA")}[ \\t_/-]*${pluralisable("CONSTANT")}`,
+  `${spaced("DATABASE")}${SEP}${spaced("SCHEMA")}`,
+  `${spaced("TABLE")}${SEP1}${spaced("AND")}${SEP1}${spaced("COLUMN")}${SEP1}${spaced("NAMES")}`,
+  `${END}${SEP}${spaced("TO")}${SEP}${END}${SEP}${spaced("FLOW")}`,
+].join("|")})`;
+const FOLDED_WRITER_FENCE = new RegExp(
+  [
+    ...sectionFenceForms(WRITER_NOUN, WRITER_MODIFIER, true),
+    `${OPEN2}${SEP}${WRITER_OPENING}[^=\\n\\r\\v\\f\\x85\\p{Zl}\\p{Zp}]{0,200}${TAIL2}`,
+    // A space between the words, as in the real header: `[source_id=…]` is left alone.
+    `\\[[ \\t]*${spaced("SOURCE")}[ \\t]+${spaced("ID")}[ \\t]*=`,
   ].join("|"),
+  "gu",
+);
+
+/**
+ * #1369 — a support-panel excerpt header, `--- path:line ---` (or
+ * `--- path:start-end ---`, `--- doc.md#chunk-N ---`, `--- path ---`), forged
+ * inside an excerpt's body. A span is a WHOLE line (after spaces): three or
+ * more `-` (any dash look-alike, and `.`, folds to `-`), whitespace, at most 300
+ * characters holding a locator — a file name with an extension directly before
+ * `:` and a line number (`a.ts:5`; `.` folds to `-`), a `#`, or a `/` — then
+ * whitespace and three or more `-`. Left alone: a Markdown rule `---`,
+ * `--- Page 3 ---`, `----- Tables -----`, a commented banner
+ * (`// --- a.ts:5 ---`), a diff header `--- a/x.ts`, `x = a --- b`, and a
+ * colon that is not a file locator (`--- Q1: 2024 ---`, `--- 10:30 meeting ---`).
+ *
+ * The digit class is `[0-9OI]` because the fold reads `0` as `O` and `1` as `I`; a
+ * run of them must not run into a letter, so `--- Requirement 4.2: Only managers ---`
+ * (an `O` or `I` that starts a word) is left alone.
+ * Linear: a span starts only at a line start, and each start scans at most 300
+ * characters of one line.
+ */
+const LINE_BREAK = "\\n\\r\\v\\f\\x85\\p{Zl}\\p{Zp}";
+const FOLDED_EXCERPT_HEADER = new RegExp(
+  `(?<![^${LINE_BREAK}])[ \\t]*-{3,}[ \\t]+` +
+    `(?=[^${LINE_BREAK}]{0,300}?(?:[A-Z0-9_]-[A-Z0-9_]+:[0-9OI]+(?![A-Z])|#|/))` +
+    `[^${LINE_BREAK}]{1,300}?[ \\t]+-{3,}[ \\t]*(?=[${LINE_BREAK}]|$)`,
   "gu",
 );
 
@@ -535,6 +638,28 @@ export function scrubSectionFenceLookalikes(raw: string, replacement: string): s
  */
 export function scrubItemsFenceLookalikes(raw: string, replacement: string): string {
   return scrubFolded(raw, replacement, FOLDED_ITEMS_FENCE);
+}
+
+/**
+ * #1370 — the same scrub for the docs-gen Phase-2 writer's blocks
+ * ({@link FOLDED_WRITER_FENCE}): module facts, formulas, end-to-end flow,
+ * retrieved grounding sources (and their `[SOURCE id=` headers), canonical
+ * facts and the schema. Returns `raw` itself when there is no such span.
+ *
+ * `replacement` must contain no `=`, no `[SOURCE` and no noun (`[REDACTED-FENCE]`).
+ */
+export function scrubWriterFenceLookalikes(raw: string, replacement: string): string {
+  return scrubFolded(raw, replacement, FOLDED_WRITER_FENCE);
+}
+
+/**
+ * #1369 — a forged support-panel excerpt header ({@link FOLDED_EXCERPT_HEADER})
+ * inside one excerpt's body. Returns `raw` itself when there is none.
+ *
+ * `replacement` must contain no `-` (`[REDACTED HEADER]`).
+ */
+export function scrubExcerptHeaderLookalikes(raw: string, replacement: string): string {
+  return scrubFolded(raw, replacement, FOLDED_EXCERPT_HEADER);
 }
 
 function scrubFolded(raw: string, replacement: string, pattern: RegExp): string {

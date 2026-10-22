@@ -15,7 +15,6 @@ import {
   applySupportPanel,
   buildLensPrompt,
   collectPanelEvidence,
-  evidenceFilePaths,
   MAX_PANEL_EVIDENCE_CHARS,
   MAX_PANEL_EVIDENCE_ITEMS,
   renderEvidenceBlock,
@@ -320,6 +319,19 @@ describe("runSupportPanel", () => {
     expect(panel?.unsupportedVotes).toBe(2);
   });
 
+  it("#1369 — discards a vote citing a line of the file it was never shown", async () => {
+    // EVIDENCE shows lines 128-146 only; a forged `--- path:500 ---` header could
+    // point a lens at line 500 of the same file.
+    const provider = new LensProvider({
+      support: reply("unsupported", 500),
+      scope: reply("unsupported", 500),
+      currency: reply("supported", 131),
+    });
+    const panel = await run(provider);
+    expect(panel?.countedVotes).toBe(1);
+    expect(panel?.votes.filter((v) => v.discardReason === "missing-citation")).toHaveLength(2);
+  });
+
   it("no lens ever sees another lens's prompt or verdict", async () => {
     const provider = new LensProvider(allLenses("supported"));
     await run(provider);
@@ -462,17 +474,5 @@ describe("applySupportPanel (#1109 — never fails a run, never drops a finding)
     await expect(
       applySupportPanel(provider, findings, EVIDENCE, { enabled: true, signal: controller.signal }),
     ).rejects.toThrow();
-  });
-});
-
-describe("evidenceFilePaths", () => {
-  it("dedupes the allow-list a lens's own citation is grounded against", () => {
-    expect(
-      evidenceFilePaths([
-        { filePath: "a.ts", excerpt: "1" },
-        { filePath: "a.ts", excerpt: "2" },
-        { filePath: "b.ts", excerpt: "3" },
-      ]),
-    ).toEqual(["a.ts", "b.ts"]);
   });
 });

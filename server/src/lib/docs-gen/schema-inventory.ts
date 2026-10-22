@@ -52,6 +52,7 @@
  * connector stack.
  */
 import type { DbTableInfo, SchemaGraph } from "@metis/shared";
+import { scrubWriterFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
 import { DYNAMIC_PLACEHOLDER_PREFIX } from "../code-graph/schema-graph.js";
 import {
   breakAutolinks,
@@ -398,17 +399,27 @@ export function renderSchemaCoverage(inventory: SchemaInventory): string {
   ].join("\n");
 }
 
+/**
+ * #1370 — a name or type as the schema block of the prompt carries it: on one
+ * line ({@link plainSchemaText}) and unable to read as one of the writer's
+ * fences (`=== END SCHEMA ===`, through a look-alike too). A database's quoted
+ * identifier can hold any character. A name with no such span is unchanged.
+ */
+function promptSchemaText(value: string): string {
+  return scrubWriterFenceLookalikes(plainSchemaText(value), "[REDACTED-FENCE]");
+}
+
 function promptName(table: SchemaInventoryTable, qualify: boolean): string {
-  const name = plainSchemaText(table.name);
-  return qualify && table.schema ? `${plainSchemaText(table.schema)}.${name}` : name;
+  const name = promptSchemaText(table.name);
+  return qualify && table.schema ? `${promptSchemaText(table.schema)}.${name}` : name;
 }
 
 function promptLine(table: SchemaInventoryTable, typed: boolean, qualify: boolean): string {
   const columns = table.columns.map((col) => {
-    const name = plainSchemaText(col.name);
+    const name = promptSchemaText(col.name);
     if (!typed) return name;
     const key = col.isPrimaryKey ? " PK" : col.isForeignKey ? " FK" : "";
-    return `${name} ${plainSchemaText(col.dataType)}${key}`;
+    return `${name} ${promptSchemaText(col.dataType)}${key}`;
   });
   return `- ${promptName(table, qualify)}: ${columns.join(", ")}`;
 }
