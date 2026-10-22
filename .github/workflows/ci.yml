@@ -856,7 +856,13 @@ jobs:
   # silently skipping it: an empty output runs the job.
   postgres-adapter:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 25, not 15: the "unit suite on the Postgres-generated client" step alone
+    # took 726 s of the 15-minute budget on main (run 39725694680, 14m41s total),
+    # and the next main run (39728367447) was cancelled by the timeout at 15m09s
+    # mid-way through the integration steps after it. This is #1365 (the job
+    # runs within seconds of its timeout and is cancelled with no test failure);
+    # raised here because #1395 adds one more Postgres step.
+    timeout-minutes: 25
     needs: [changes]
     if: ${{ !cancelled() && needs.changes.outputs.postgres != 'false' }}
     env:
@@ -1012,6 +1018,14 @@ jobs:
       - name: Prove the generated-document source correction on real Postgres
         working-directory: server
         run: pnpm test:integration generated-source-by-id-postgres
+
+      # Issue #1395 — the user-identity migration's authSource backfill, run
+      # verbatim over seeded users and login audit rows (scratch schema), and
+      # concurrent first sign-ins through the real resolver: one user, and a
+      # second provider with the same username refused.
+      - name: Prove the user-identity backfill and sign-in race on real Postgres
+        working-directory: server
+        run: pnpm test:integration user-identity-1395-postgres
 
       # Issue #492 — the partial (live-rows-only) repo label index on real
       # Postgres: delete-then-re-add under one label succeeds, a rename onto a

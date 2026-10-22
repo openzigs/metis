@@ -8,6 +8,8 @@ import { Client } from "ldapts";
 import { createChildLogger } from "../logger.js";
 import type { AuthProvider, AuthResult, AuthenticatedUser } from "./types.js";
 import { resolveRoleFromGroups } from "./sso-config.js";
+import { foldIdentity } from "./bootstrap-admins.js";
+import { directoryNameSubject } from "./identity-subject.js";
 import type { RoleKey } from "@metis/shared";
 
 const log = createChildLogger("ldap-auth");
@@ -193,7 +195,20 @@ export class LDAPAuthProvider implements AuthProvider {
       const { searchEntries } = await client.search(searchBase, {
         filter,
         scope: "sub",
-        attributes: ["dn", "sAMAccountName", "displayName", "mail", "givenName", "sn", "memberOf"],
+        attributes: [
+          "dn",
+          "sAMAccountName",
+          "uid",
+          "entryUUID",
+          "objectGUID",
+          "displayName",
+          "mail",
+          "givenName",
+          "sn",
+          "memberOf",
+        ],
+        // objectGUID is 16 raw bytes; as a string it would be mangled UTF-8.
+        explicitBufferAttributes: ["objectGUID"],
         sizeLimit: 1,
         timeLimit: 10,
       });
@@ -254,6 +269,8 @@ export class LDAPAuthProvider implements AuthProvider {
         email,
         role,
         groups,
+        // #1395 — the account's identity is the directory's, not what was typed.
+        subject: ldapSubject(entry, username),
       };
 
       log.info("LDAP authentication successful", { username, groups: groups.length });
@@ -281,6 +298,25 @@ export class LDAPAuthProvider implements AuthProvider {
 }
 
 /** Safely extract a string attribute (LDAP may return arrays). */
+/**
+ * #1395 — the identity subject for a directory entry: its canonical id when the
+ * directory has one (`entryUUID` on OpenLDAP, `objectGUID` on Active Directory),
+ * else the account name the DIRECTORY returned (`uid` / `sAMAccountName`), else
+ * the name signed in with. Folded (NFKC, lower case) so `Alice` and `alice` are
+ * one identity. Each form is prefixed, so the forms cannot collide.
+ */
+export function ldapSubject(entry: Record<string, unknown>, typedUsername: string): string {
+  const uuid = getStringAttr(entry.entryUUID)?.trim();
+  if (uuid) return `entryUUID:${foldIdentity(uuid)}`;
+  const guid = Array.isArray(entry.objectGUID) ? entry.objectGUID[0] : entry.objectGUID;
+  if (Buffer.isBuffer(guid) && guid.length === 16) return `objectGUID:${guid.toString("hex")}`;
+  const name =
+    getStringAttr(entry.uid)?.trim() ||
+    getStringAttr(entry.sAMAccountName)?.trim() ||
+    typedUsername;
+  return directoryNameSubject(name);
+}
+
 function getStringAttr(val: unknown): string | undefined {
   if (!val) return undefined;
   if (typeof val === "string") return val;

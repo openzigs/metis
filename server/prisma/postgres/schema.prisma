@@ -130,12 +130,20 @@ model User {
   lastLoginAt            DateTime?
   authRolesInitializedAt DateTime?
   authRoleAuthority      String    @default("unknown") // unknown|provider|revoked|scim|explicit
+  /// #1395 — the kind of sign-in provider this account belongs to
+  /// (mock|ldap|oidc|saml), or `scim` for an IdP-provisioned row nobody has signed
+  /// in as yet (the AUTH_MODE provider claims it). Null = a legacy row whose
+  /// provider is unknown: only the AUTH_MODE provider may claim it, and an SSO one
+  /// only on a verified matching e-mail (`login-identity.ts`).
+  authSource             String?
   passwordHash           String? // null when SSO-only
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   deletedAt    DateTime?
 
   roles                    UserRole[]
+  /// #1395 — the external identities (provider, issuer, subject) that sign in as this user.
+  identities               UserIdentity[]
   projects                 Project[]            @relation("ProjectCreator")
   documents                Document[]
   analyses                 Analysis[]
@@ -5075,6 +5083,33 @@ model UserSessionRevocation {
   updatedAt DateTime @updatedAt
 
   @@map("user_session_revocations")
+}
+
+/// #1395 — an external sign-in identity bound to a local user.
+///
+/// A login is looked up by (provider, issuer, subject) first, and by username
+/// only to create or claim an account: a username already bound to another
+/// provider's identity refuses the sign-in instead of handing over the account.
+/// provider: mock|ldap|oidc|saml. issuer: the OIDC `iss`, the SAML IdP entity
+/// ID, or the provider kind for the single directory (mock, ldap). subject: the
+/// OIDC `sub`, the SAML NameID (a prefixed username for a transient NameID), or
+/// the directory's canonical id (entryUUID / objectGUID, else its folded account name).
+model UserIdentity {
+  id          String    @id @default(cuid())
+  userId      String
+  provider    String
+  issuer      String
+  subject     String
+  /// Set when an administrator linked this identity by hand (`link-identity-cli.ts`).
+  linkedBy    String?
+  createdAt   DateTime  @default(now())
+  lastLoginAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, issuer, subject])
+  @@index([userId])
+  @@map("user_identities")
 }
 
 // ============================================================================

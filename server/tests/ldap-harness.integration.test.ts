@@ -53,8 +53,19 @@ describe.skipIf(!URL)("LDAP login against the local OpenLDAP harness (#1381)", (
         email: "alice@metis.local",
         role: "admin",
         groups: ["metis-admins"],
+        // #1395 — OpenLDAP's entryUUID keys the identity, not the typed name.
+        subject: expect.stringMatching(/^entryUUID:[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/),
       },
     });
+  });
+
+  it("#1395 — `ALICE` and `alice` are the same directory entry, so the same identity", async () => {
+    setLDAPConfig(harnessConfig(URL!));
+    const lower = await new LDAPAuthProvider().authenticate("alice", "alicepass");
+    const upper = await new LDAPAuthProvider().authenticate("ALICE", "alicepass");
+    if (!lower.success || !upper.success) throw new Error("harness login failed");
+    expect(upper.user.subject).toBe(lower.user.subject);
+    expect(lower.user.subject).toMatch(/^entryUUID:/);
   });
 
   it("bob logs in as developer from metis-developers", async () => {

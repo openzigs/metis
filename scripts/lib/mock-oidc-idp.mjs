@@ -57,6 +57,8 @@ function base64url(input) {
  * @property {string} discoveryUrl
  * @property {() => Promise<void>} close
  * @property {{ authorize: number, token: number }} calls
+ * @property {(user: MockOidcUser) => void} setUser  who signs in next; the issuer
+ *   (and so the identity's provider) stays the same (#1395)
  */
 
 /**
@@ -127,6 +129,7 @@ export async function startMockOidcIdp(options) {
   const codes = new Map();
   const calls = { authorize: 0, token: 0 };
   let issuer = "";
+  let user = options.user;
 
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", issuer || "http://localhost");
@@ -201,17 +204,17 @@ export async function startMockOidcIdp(options) {
           { alg: "RS256", typ: "JWT", kid },
           {
             iss: issuer,
-            sub: options.user.sub,
+            sub: user.sub,
             aud: options.clientId,
             iat: now,
             exp: now + 300,
             auth_time: now,
             ...(grant.nonce ? { nonce: grant.nonce } : {}),
-            preferred_username: options.user.preferredUsername,
-            email: options.user.email,
-            email_verified: options.user.emailVerified ?? true,
-            name: options.user.name,
-            groups: options.user.groups ?? [],
+            preferred_username: user.preferredUsername,
+            email: user.email,
+            email_verified: user.emailVerified ?? true,
+            name: user.name,
+            groups: user.groups ?? [],
           },
           privateKey,
         );
@@ -236,6 +239,9 @@ export async function startMockOidcIdp(options) {
     issuer,
     discoveryUrl: `${issuer}/.well-known/openid-configuration`,
     calls,
+    setUser: (next) => {
+      user = next;
+    },
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections?.();

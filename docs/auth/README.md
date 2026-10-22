@@ -200,6 +200,95 @@ The cookies belong to the host that serves the callback, so serve
 An IdP may reach the API on another host only if the UI is served from that
 host too.
 
+### One account per sign-in identity (#1395)
+
+A METIS account is bound to the identity that signs in as it, not to the
+username alone. Every sign-in carries a (provider, issuer, subject) key, stored
+in the `user_identities` table:
+
+| Provider | Issuer | Subject |
+|---|---|---|
+| OIDC | the ID token's `iss` | the ID token's `sub` (never `preferred_username`) |
+| SAML | the assertion's `Issuer` (else the configured IdP entity ID) | the `NameID`; for a transient NameID, `urn:metis:saml:transient-username:<username>`, a prefix no NameID uses |
+| LDAP | `ldap` (one directory per install) | the entry's `entryUUID` (OpenLDAP) or `objectGUID` (Active Directory); without either, the account name the directory returned (`uid` / `sAMAccountName`), NFKC-folded and lower-cased so `Alice` and `alice` are one identity |
+| mock | `mock` | the folded account name |
+
+A sign-in is resolved in this order
+([`login-identity.ts`](../../server/src/lib/auth/login-identity.ts)):
+
+1. The account already bound to the identity, whatever its username is now.
+2. No account has the username: a new account, bound to the identity. (LDAP
+   matches account names case-insensitively, so a legacy `jsmith` is found when
+   the user types `JSmith`; two legacy accounts differing only in case are
+   refused for an operator to link.)
+3. An account has the username but no identity yet (created before this
+   change, by SCIM, or by the seed): the sign-in claims it only if the account
+   belongs to the same provider kind (`users.authSource`). An account SCIM
+   provisioned (`authSource` `scim`) belongs to the IdP that provisioned it,
+   so the `AUTH_MODE` provider claims it by username, with no e-mail check —
+   SCIM plus SAML (or OIDC without `email_verified`) works as before. An
+   account whose kind is unknown (`authSource` NULL: created before this
+   change, or by the seed) can be claimed only by the `AUTH_MODE` provider:
+   - LDAP or mock claim it by username, as they always have;
+   - OIDC claims it only when the IdP asserts `email_verified: true` and that
+     e-mail equals the account's e-mail (case- and NFKC-folded; an address NFKC
+     would change never matches). Without that, the seed's `admin` row would go
+     to whoever the IdP lets call themselves "admin";
+   - SAML asserts no `email_verified`, so it never claims such an account: link
+     it (below).
+4. Anything else is **refused** with `409 ACCOUNT_LINK_REQUIRED`: the username
+   belongs to another provider's identity (an OIDC user named like an LDAP user,
+   or a SAML user named like an OIDC user), to another subject at the same IdP,
+   or (step 3) the e-mail is not verified as the account's own. Nothing about
+   the existing account changes.
+
+A **disabled or deleted** account is refused with `403 ACCOUNT_DISABLED` and
+never written on the login path, by any of these steps. When SCIM re-provisions
+a deleted username, the revived account drops the deleted person's identities
+and provider (`authSource` becomes `scim`): it is a new person, and the old
+IdP account cannot sign in as them.
+
+The upgrade migration fills `users.authSource` from the audit log: an account
+whose every recorded login came through OIDC is marked `oidc`, through SAML
+`saml`; an account SCIM provisioned is marked `scim`. Every other existing
+account stays NULL and is claimed as in step 3 at
+its next sign-in. If such an account actually signs in through another
+provider, link it as below.
+
+**Linking two identities to one account.** When the same person really does
+sign in through two providers, a host operator links the second identity. The
+refused sign-in's audit event (`user.login.failed`, reason
+`identity_conflict:*`) records the provider, issuer and subject to use:
+
+```bash
+pnpm --filter @metis/server exec tsx src/lib/auth/link-identity-cli.ts \
+  link --operator "$USER" --username alice --provider oidc \
+  --issuer https://idp.example.com --subject 00u1abcd
+pnpm --filter @metis/server exec tsx src/lib/auth/link-identity-cli.ts list --username alice
+```
+
+The link is audited as `user.identity.linked`. Once linked, both identities
+sign in as the account, and each sign-in reconciles provider-granted roles from
+the provider that signed in.
+
+**Switching `AUTH_MODE` (for example LDAP → OIDC).** Accounts are bound to the
+old provider's identities, so after the switch every existing user's first
+sign-in through the new provider is refused with `409 ACCOUNT_LINK_REQUIRED`.
+That is deliberate: nothing proves the new IdP's `alice` is the directory's
+`alice`. To move users across:
+
+1. Before switching, list each account's current binding with
+   `link-identity-cli.ts list --username <name>`.
+2. Switch `AUTH_MODE` and configure the new provider.
+3. Have each user sign in once. The refusal's audit event records their new
+   provider, issuer and subject.
+4. After confirming the person out of band (or matching the IdP's directory
+   export to METIS usernames), run `link-identity-cli.ts link` for each.
+   Until linked, the user cannot sign in through the new provider.
+
+Accounts still unbound (`authSource` NULL or `scim`, for example seeded or
+SCIM-provisioned ones) follow step 3 above under the new `AUTH_MODE`.
+
 ### LDAP — admin-API runtime override
 
 `PUT /api/admin/auth/providers/ldap` (and `GET /api/admin/auth/ldap`,

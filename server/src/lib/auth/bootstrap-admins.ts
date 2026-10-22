@@ -21,7 +21,7 @@
  */
 
 /** One identity, folded for comparison: NFKC, trimmed, lower-cased. */
-function foldIdentity(identity: string): string {
+export function foldIdentity(identity: string): string {
   return identity.normalize("NFKC").trim().toLowerCase();
 }
 
@@ -30,7 +30,7 @@ function foldIdentity(identity: string): string {
  * `"Kate".toLowerCase()` is already `"kate"` (Kelvin sign), so folding
  * alone would let a look-alike account an IdP accepted match a listed `kate`.
  */
-function isNfkcStable(identity: string): boolean {
+export function isNfkcStable(identity: string): boolean {
   return identity.normalize("NFKC") === identity;
 }
 

@@ -23,14 +23,17 @@ const UI_BASE = uiBase();
 test.describe("SSO session (#1386)", () => {
   test("OIDC: METIS → IdP → callback → the signed-in dashboard", async ({ page, context }) => {
     const redirectUri = `${API_BASE}/api/auth/oidc/callback`;
+    // Each IdP instance is a new issuer, and #1395 binds an SSO account to its
+    // issuer + subject: a retry against the same database needs its own user.
+    const username = `e2e.oidc.${Date.now().toString(36)}`;
     const idp = await startMockOidcIdp({
       clientId: "metis-e2e",
       clientSecret: "metis-e2e-secret",
       redirectUri,
       user: {
         sub: "e2e-oidc-1386",
-        preferredUsername: "e2e.oidc",
-        email: "e2e.oidc@example.test",
+        preferredUsername: username,
+        email: `${username}@example.test`,
         name: "E2E OIDC User",
         groups: [],
       },
@@ -80,7 +83,7 @@ test.describe("SSO session (#1386)", () => {
         const me = await page.request.get(`${UI_BASE}/api/auth/me`);
         expect(me.status()).toBe(200);
         const body = (await me.json()) as { data: { user: { username: string; role: string } } };
-        expect(body.data.user).toMatchObject({ username: "e2e.oidc", role: "reader" });
+        expect(body.data.user).toMatchObject({ username, role: "reader" });
       });
     } finally {
       if (providerId) await admin.delete(`/api/admin/auth/providers/${providerId}`);

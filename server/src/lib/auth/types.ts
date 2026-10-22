@@ -13,6 +13,11 @@ export interface AuthenticatedUser {
   role: RoleKey;
   /** Optional group claims (LDAP/AD). Mock provider returns []. */
   groups?: string[];
+  /**
+   * #1395 — the directory's canonical id for this account (`ldapSubject`).
+   * Absent (mock): the folded username stands in (`directoryNameSubject`).
+   */
+  subject?: string;
 }
 
 export type AuthResult =

@@ -184,7 +184,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
       autoApproveTrustedSources BOOLEAN DEFAULT true)`,
       `CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, displayName TEXT, email TEXT,
       status TEXT DEFAULT 'active', lastLoginAt DATETIME, authRolesInitializedAt DATETIME,
-      authRoleAuthority TEXT DEFAULT 'explicit', passwordHash TEXT,
+      authRoleAuthority TEXT DEFAULT 'explicit', authSource TEXT, passwordHash TEXT,
       createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
       deletedAt DATETIME)`,
       `CREATE TABLE roles (id TEXT PRIMARY KEY, key TEXT, name TEXT, description TEXT DEFAULT '',

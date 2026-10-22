@@ -23,6 +23,7 @@ import {
 import { audit } from "../lib/audit/audit-service.js";
 import { toAuthUser } from "../lib/auth/auth-user.js";
 import { reconcileTrustedLoginRole } from "../lib/auth/durable-roles.js";
+import { directoryIdentity, resolveLoginUser } from "../lib/auth/login-identity.js";
 import { LIVE_WORKSPACE_MEMBERSHIP } from "../lib/auth/live-workspace-ids.js";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -61,32 +62,31 @@ async function readWorkspaceIds(userId: string): Promise<string[]> {
   return Array.isArray(memberships) ? memberships.map((membership) => membership.workspaceId) : [];
 }
 
-async function ensureUserRow(user: AuthenticatedUser): Promise<{ id: string; role: RoleKey }> {
-  const row = await prisma.user.upsert({
-    where: { username: user.username },
-    update: {
-      displayName: user.displayName,
-      email: user.email,
-      lastLoginAt: new Date(),
-    },
-    create: {
-      username: user.username,
-      displayName: user.displayName,
-      email: user.email,
-      status: "active",
-      lastLoginAt: new Date(),
-      authRolesInitializedAt: null,
-    },
+/**
+ * #1395 — the local user for a directory sign-in, keyed on the directory's
+ * identity (`login-identity.ts`), never on the username alone: a username
+ * already bound to an SSO identity is refused, not handed over.
+ */
+async function ensureUserRow(
+  providerName: string,
+  user: AuthenticatedUser,
+): Promise<{ id: string; username: string; role: RoleKey }> {
+  if (providerName !== "mock" && providerName !== "ldap") {
+    throw new AppError(500, "AUTH_PROVIDER_INVALID", "Unsupported password sign-in provider");
+  }
+  const row = await resolveLoginUser({
+    identity: directoryIdentity(providerName, user),
+    profile: { username: user.username, displayName: user.displayName, email: user.email },
+    primaryKind: providerName,
   });
   const role = await reconcileTrustedLoginRole({
     userId: row.id,
     providerRole: user.role,
-    authRolesInitializedAt:
-      (row as { authRolesInitializedAt?: Date | null }).authRolesInitializedAt ?? null,
+    authRolesInitializedAt: row.authRolesInitializedAt,
     // #1376 — the directory's account name and mail attribute.
     bootstrapIdentities: [user.username, user.email],
   });
-  return { id: row.id, role };
+  return { id: row.id, username: row.username, role };
 }
 
 export function authRouter(): Router {
@@ -102,7 +102,8 @@ export function authRouter(): Router {
       });
     }
     const { username, password } = parsed.data;
-    const result = await getAuthProvider().authenticate(username, password);
+    const provider = getAuthProvider();
+    const result = await provider.authenticate(username, password);
     if (!result.success) {
       audit({
         actor: null,
@@ -116,12 +117,12 @@ export function authRouter(): Router {
       }
       throw new AppError(401, "AUTH_FAILED", result.error);
     }
-    const userRow = await ensureUserRow(result.user);
+    const userRow = await ensureUserRow(provider.name, result.user);
     const permissions = getPermissionsForRole(userRow.role);
     const workspaces = await readWorkspaceIds(userRow.id);
     const tokens = issueTokens({
       userId: userRow.id,
-      username: result.user.username,
+      username: userRow.username,
       role: userRow.role,
       permissions,
       workspaces,
@@ -140,7 +141,7 @@ export function authRouter(): Router {
       actor: { id: userRow.id },
       action: "user.login",
       target: { type: "user", id: userRow.id },
-      metadata: { username: result.user.username, role: userRow.role },
+      metadata: { username: userRow.username, role: userRow.role, mode: provider.name },
     });
 
     const body: ApiResponse = {
@@ -149,7 +150,7 @@ export function authRouter(): Router {
         user: toAuthUser(
           {
             userId: userRow.id,
-            username: result.user.username,
+            username: userRow.username,
             role: userRow.role,
             permissions,
           },

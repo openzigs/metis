@@ -117,6 +117,18 @@ describe("mock OIDC IdP (#1386)", () => {
     expect(idp.calls).toEqual({ authorize: 1, token: 1 });
   });
 
+  it("setUser changes who signs in next, on the same issuer (#1395)", async () => {
+    idp.setUser({ sub: "u2", preferredUsername: "bob", email: "b@x.test", name: "Bob" });
+    const code = await codeFromAuthorize();
+    const res = await token(
+      { grant_type: "authorization_code", code, redirect_uri: REDIRECT, code_verifier: VERIFIER },
+      { authorization: `Basic ${Buffer.from("c1:s1").toString("base64")}` },
+    );
+    const body = await res.json();
+    const claims = JSON.parse(Buffer.from(body.id_token.split(".")[1], "base64url").toString());
+    expect(claims).toMatchObject({ iss: idp.issuer, sub: "u2", preferred_username: "bob" });
+  });
+
   it("refuses bad client credentials, another grant, a wrong verifier and a reused code", async () => {
     const code = await codeFromAuthorize();
     const good = {

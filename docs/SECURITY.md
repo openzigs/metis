@@ -31,7 +31,18 @@
 ### 2.1 Authentication providers
 - **mock** — username/password matched against in-memory dev users (development only; refuses to start in production with `AUTH_MODE=mock`).
 - **ldap** — bind to a corporate LDAP/AD over StartTLS, attribute-mapped to METIS roles.
-- **oidc** (planned) — OAuth 2.1 / OpenID Connect (issue #149).
+- **oidc**, **saml** — OpenID Connect (authorization code + PKCE) and SAML 2.0, configured
+  from the environment or the admin API ([docs/auth/README.md](auth/README.md)).
+
+**Accounts are keyed on the sign-in identity, not the username (#1395).** Each account is
+bound to (provider, issuer, subject) identities in `user_identities` — OIDC `iss`+`sub`,
+SAML Issuer+NameID, the directory account name for LDAP. A sign-in whose username already
+belongs to another provider's identity, or to another subject at the same IdP, is refused
+with `409 ACCOUNT_LINK_REQUIRED` and audited; it never inherits that account's roles,
+workspaces or data. An SSO sign-in claims a pre-existing unbound account only on an
+IdP-verified e-mail equal to the account's; a disabled or deleted account is refused
+(`403 ACCOUNT_DISABLED`) and never written on the login path. Only a host operator can link a second identity to an account
+(`link-identity-cli.ts`). Details: [docs/auth/README.md](auth/README.md#one-account-per-sign-in-identity-1395).
 
 ### 2.2 Token model
 - **Access token** — short-lived JWT (`JWT_ACCESS_EXPIRY`, default 1h), HS256-signed by `JWT_SECRET`.

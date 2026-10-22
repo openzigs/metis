@@ -37,6 +37,16 @@ vi.mock("../src/lib/prisma.js", () => ({
       update: vi.fn(async () => ({})),
       findUnique: vi.fn(),
       findFirst: vi.fn(),
+      updateMany: vi.fn(async () => ({ count: 1 })),
+      findUniqueOrThrow: vi.fn(),
+    },
+    // #1395 — the callback resolves the user by identity first. Here the IdP's
+    // identity is not bound yet and "alice" is an unbound OIDC row, so the
+    // callback claims it (`login-identity.ts`) and lands on `prismaState.userUpsert`.
+    userIdentity: {
+      findUnique: vi.fn(async () => null),
+      create: vi.fn(async () => ({})),
+      update: vi.fn(async () => ({})),
     },
     userRole: {
       findMany: vi.fn(async () => []),
@@ -65,7 +75,7 @@ vi.mock("../src/lib/auth/oidc-provider.js", () => ({
       email: "alice@example.com",
       groups: [],
       mfaPassed: true,
-      rawClaims: {},
+      rawClaims: { iss: "https://idp.example", sub: "alice-sub" },
     },
   })),
 }));
@@ -133,6 +143,16 @@ beforeEach(() => {
   vi.mocked(prisma.user.findFirst).mockImplementation(
     prismaImpl(async () => prismaState.userUpsert),
   );
+  vi.mocked(prisma.user.findUnique).mockImplementation(
+    prismaImpl(async ({ where }: { where: { username?: string } }) =>
+      where.username === "alice"
+        ? { id: prismaState.userUpsert.id, authSource: "oidc", identities: [] }
+        : null,
+    ),
+  );
+  vi.mocked(prisma.user.findUniqueOrThrow).mockImplementation(
+    prismaImpl(async () => prismaState.userUpsert),
+  );
   vi.mocked(prisma.userRole.deleteMany).mockImplementation(
     prismaImpl(async () => {
       const before = prismaState.userRoles.length;
@@ -195,7 +215,7 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
         email: "alice@example.com",
         groups: ["metis-admins"],
         mfaPassed: true,
-        rawClaims: {},
+        rawClaims: { iss: "https://idp.example", sub: "alice-sub" },
       },
     });
     __resetProviders();
@@ -243,7 +263,7 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
         email: "alice@example.com",
         groups: ["metis-readers"],
         mfaPassed: true,
-        rawClaims: {},
+        rawClaims: { iss: "https://idp.example", sub: "alice-sub" },
       },
     });
     prismaState.userUpsert = {
@@ -296,7 +316,7 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
         email: "alice@example.com",
         groups: ["metis-readers"],
         mfaPassed: true,
-        rawClaims: {},
+        rawClaims: { iss: "https://idp.example", sub: "alice-sub" },
       },
     });
     prismaState.userUpsert = {
@@ -348,7 +368,7 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
         email: "alice@example.com",
         groups: ["metis-admins"],
         mfaPassed: true,
-        rawClaims: {},
+        rawClaims: { iss: "https://idp.example", sub: "alice-sub" },
       },
     });
     prismaState.userUpsert = {
@@ -381,7 +401,7 @@ describe("OIDC login/callback via shared SSO-state store (#542)", () => {
         email: "alice@example.com",
         groups: ["metis-admins"],
         mfaPassed: true,
-        rawClaims: {},
+        rawClaims: { iss: "https://idp.example", sub: "alice-sub" },
       },
     });
     prismaState.userUpsert = {
