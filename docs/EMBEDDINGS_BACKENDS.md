@@ -1647,8 +1647,8 @@ so npm/pnpm will happily *install* it on Alpine and it only explodes at `require
 time, inside the pod, at boot.
 
 - **Alpine is an image property, not a scheduling one.** A container brings its own
-  libc, so no node label can defend against it. `Dockerfile.embeddings` stays on
-  `node:20-bookworm-slim`, and `server/tests/embeddings-image-arch.test.ts` fails CI
+  libc, so no node label can defend against it. `Dockerfile.embeddings` stays on a
+  Debian slim base (`node:22-trixie-slim` since #1379), and `server/tests/embeddings-image-arch.test.ts` fails CI
   if anyone changes that.
 - **arm64 / Graviton is supported.** `.github/workflows/build-images.yml` publishes
   `linux/amd64,linux/arm64` for `metis-embeddings-svc` on release tags (also asserted

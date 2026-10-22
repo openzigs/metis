@@ -1029,17 +1029,23 @@ regenerated once at its next check; its unchanged sections are reused.
 
 ## 7. Container Image Sizes
 
-The release pipeline ships three images:
+The release pipeline ships four images:
 
 | Image | Built from | Current size | Budget |
 |---|---|---|---|
-| `metis-ui` | `Dockerfile.ui` (Next.js 16 standalone, alpine) | **~207 MB** (amd64, `api` run 35740221946) | ≤ 350 MB ✅ |
+| `metis-ui` | `Dockerfile.ui` (Next.js 16 standalone, `node:22-alpine`) | **~207 MB** (amd64, `api` run 35740221946, on Node 20; Node 22 adds ~28 MB, #1379) | ≤ 350 MB ✅ |
 | `metis-server` | `Dockerfile.server` (`node:22-trixie-slim`, glibc, prod-only deps, slimmed) | **~1,052 MB** (amd64, measured #150, run 36261636218) | ≤ 1,160 MB — its own budget, see below |
-| `metis-embeddings` | `Dockerfile.embeddings` (bookworm-slim, glibc) | **~589 MB** (amd64, `api` run 35740221946, built with `BAKE_MODELS=0`) | exempt (sidecar) |
+| `metis-embeddings` | `Dockerfile.embeddings` (`node:22-trixie-slim`, glibc; bookworm and Node 20 before #1379) | **~589 MB** (amd64, `api` run 35740221946, built with `BAKE_MODELS=0`, on the old base) | exempt (sidecar) |
+| `metis-sql-lineage` | `Dockerfile.sql-lineage` (`python:3.12-slim-trixie`) | not measured by the gate | exempt (sidecar) |
 
-> **Multi-arch (Epic #360 / sub-issue #373)**: All three core images
-> (`metis-server`, `metis-ui`, `metis-embeddings-svc`; the fourth,
-> `metis-copilot-svc`, was removed with GitHub Copilot support in #150)
+Every base is pinned by digest, and every runtime stage applies the distro's
+security updates; CI scans all four built images for CVEs (#1379, see
+`docs/K8S_PROD_CHECKLIST.md` §9 for the policy).
+
+> **Multi-arch (Epic #360 / sub-issue #373)**: All four images
+> (`metis-server`, `metis-ui`, `metis-embeddings-svc` and, since #1382,
+> `metis-sql-lineage`; `metis-copilot-svc` was removed with GitHub Copilot
+> support in #150)
 > are published as `linux/amd64,linux/arm64` manifests on every release tag
 > via `.github/workflows/build-images.yml`. EKS Graviton nodes pull native
 > arm64 binaries — no `qemu` emulation overhead. Verify with

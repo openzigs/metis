@@ -81,6 +81,12 @@ jobs:
     # "Container Image Sizes" > "CI build cache"), so ~20-25 min cold; 40 keeps
     # roughly the 2x headroom 60 had over the old 28-minute cold run.
     timeout-minutes: 40
+    # #1379 — `security-events: write` lets the image scan below upload its SARIF
+    # to code scanning (on `main` and nightly only). A job-level block replaces the
+    # workflow's, so `contents: read` is restated.
+    permissions:
+      contents: read
+      security-events: write
     # #801 follow-up — the `api` job builds FOUR Docker images on the SHARED
     # shared daemon. Run-scoped tags (#801) stopped concurrent runs from
     # deleting each other's images, but they did not stop the two builds from
@@ -206,6 +212,16 @@ jobs:
         if: ${{ needs.changes.outputs.images != 'false' }}
         uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
 
+      # #1379 — every image's runtime stage runs `apt-get upgrade` / `apk upgrade`
+      # after `ARG OS_PATCH_DATE`. Passing today's date busts that layer (and only
+      # the layers after it) once a day, so a distro security fix reaches the image
+      # the day it ships instead of hiding behind a cached upgrade layer, while the
+      # expensive builder stages stay cached.
+      - name: OS patch date
+        id: patch
+        if: ${{ needs.changes.outputs.images != 'false' }}
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
       # Issue #145 — image-size budget gate. The `metis-embeddings` sidecar is
       # built but exempt from the cap (see docs/OPERATIONS.md > "Container
       # Image Sizes").
@@ -264,6 +280,8 @@ jobs:
         with:
           context: .
           file: Dockerfile.server
+          build-args: |
+            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
           tags: metis-server:ci-${{ github.run_id }}
           load: true
           provenance: false
@@ -281,6 +299,8 @@ jobs:
         with:
           context: .
           file: Dockerfile.ui
+          build-args: |
+            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
           tags: metis-ui:ci-${{ github.run_id }}
           load: true
           provenance: false
@@ -300,6 +320,7 @@ jobs:
           file: Dockerfile.embeddings
           build-args: |
             BAKE_MODELS=0
+            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
           tags: metis-embeddings:ci-${{ github.run_id }}
           load: true
           provenance: false
@@ -316,6 +337,8 @@ jobs:
         with:
           context: .
           file: Dockerfile.sql-lineage
+          build-args: |
+            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
           tags: metis-sql-lineage:ci-${{ github.run_id }}
           load: true
           provenance: false
@@ -332,6 +355,81 @@ jobs:
           MAX_IMAGE_MB: "350"
           IMAGE_TAG: "ci-${{ github.run_id }}" # #801 — must match the build step
         run: node scripts/lib/verify-image-size.mjs --no-build
+
+      # #1379 — CVE scan of the four images this job just built. Until #1379 nothing
+      # scanned a built image; #1312 found 58-92 HIGH and up to 7 CRITICAL per image,
+      # most fixable. Trivy reports HIGH/CRITICAL as JSON, and
+      # scripts/lib/image-scan-gate.mjs applies the policy: FAIL on any fixable
+      # HIGH/CRITICAL, on an unfixed CRITICAL not recorded in
+      # .github/image-scan-waivers.json, and on a recorded entry past its review
+      # date; an unfixed HIGH not yet recorded is a warning. The table lands in the
+      # job summary.
+      #
+      # The CLI, not aquasecurity/trivy-action: in March 2026 (CVE-2026-33634)
+      # 75 of the action's 76 tags, setup-trivy and the v0.69.4 binary were
+      # replaced with a secret-stealing payload. The action downloads a Trivy
+      # binary at run time; here the binary is fetched by release tag and checked
+      # against the SHA-256 that release published (as sast.yml does for
+      # osv-scanner), so a replaced asset fails the step instead of running.
+      - name: Install Trivy (pinned + checksum-verified)
+        if: ${{ needs.changes.outputs.images != 'false' && !startsWith(github.head_ref, 'dependabot/') }}
+        env:
+          TRIVY_VERSION: "0.71.1"
+          TRIVY_SHA256: "3cbae37cd440cd8676e5ce9207fe460b5641c7579a17e9d00f8894928c41a88d"
+        run: bash scripts/ci/install-trivy.sh
+
+      - name: Scan images (Trivy, HIGH/CRITICAL)
+        if: ${{ needs.changes.outputs.images != 'false' && !startsWith(github.head_ref, 'dependabot/') }}
+        env:
+          IMAGE_TAG: "ci-${{ github.run_id }}"
+        run: |
+          set -euo pipefail
+          mkdir -p trivy-reports
+          # label=local image; the labels are the published names (metis-<label>),
+          # which is what a waiver's `images` list refers to.
+          for pair in server=metis-server ui=metis-ui embeddings-svc=metis-embeddings sql-lineage=metis-sql-lineage; do
+            label="${pair%%=*}"
+            image="${pair#*=}:${IMAGE_TAG}"
+            "${RUNNER_TEMP}/trivy/trivy" image --quiet --scanners vuln --severity HIGH,CRITICAL \
+              --cache-dir "${RUNNER_TEMP}/trivy-cache" --format json \
+              --output "trivy-reports/${label}.json" "${image}"
+            "${RUNNER_TEMP}/trivy/trivy" convert --format sarif \
+              --output "trivy-reports/${label}.sarif" "trivy-reports/${label}.json"
+          done
+          node scripts/lib/image-scan-gate.mjs --waivers .github/image-scan-waivers.json \
+            --report server=trivy-reports/server.json \
+            --report ui=trivy-reports/ui.json \
+            --report embeddings-svc=trivy-reports/embeddings-svc.json \
+            --report sql-lineage=trivy-reports/sql-lineage.json
+
+      # Code scanning gets the findings on `main` and nightly, not on pull requests:
+      # an upload for a PR makes GitHub add a Trivy check run to the PR, which would
+      # change the PR check set (CLAUDE.md > "CI and merging") and go red on the
+      # recorded, unfixable findings. `always()` so a failing gate still uploads.
+      - name: Upload image scan SARIF — server
+        if: ${{ always() && github.event_name != 'pull_request' && hashFiles('trivy-reports/server.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy-reports/server.sarif
+          category: trivy-image-server
+      - name: Upload image scan SARIF — ui
+        if: ${{ always() && github.event_name != 'pull_request' && hashFiles('trivy-reports/ui.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy-reports/ui.sarif
+          category: trivy-image-ui
+      - name: Upload image scan SARIF — embeddings-svc
+        if: ${{ always() && github.event_name != 'pull_request' && hashFiles('trivy-reports/embeddings-svc.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy-reports/embeddings-svc.sarif
+          category: trivy-image-embeddings-svc
+      - name: Upload image scan SARIF — sql-lineage
+        if: ${{ always() && github.event_name != 'pull_request' && hashFiles('trivy-reports/sql-lineage.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy-reports/sql-lineage.sarif
+          category: trivy-image-sql-lineage
 
       # #39 — the image must RUN, not just build and weigh. `main` shipped a
       # metis-server that exited at import time (a runtime dependency declared as a

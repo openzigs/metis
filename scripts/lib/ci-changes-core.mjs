@@ -139,6 +139,11 @@ export const IMAGE_PATTERNS = Object.freeze([
   "scripts/lib/verify-image-size.mjs",
   "scripts/lib/smoke-server-image.mjs",
   "scripts/lib/prune-pnpm-store.mjs",
+  // #1379 — the image CVE scan: its gate, its recorded waivers and the pinned
+  // Trivy install. A change to any of them must re-run the scan it governs.
+  "scripts/lib/image-scan-gate.mjs",
+  "scripts/ci/install-trivy.sh",
+  ".github/image-scan-waivers.json",
 ]);
 
 /** Paths listed in a reason before the rest are summarised as "+N more". */

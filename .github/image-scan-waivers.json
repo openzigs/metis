@@ -1,0 +1,58 @@
+{
+  "$comment": [
+    "#1379 — recorded HIGH/CRITICAL findings in the container images that have NO fix yet.",
+    "Read by scripts/lib/image-scan-gate.mjs (ci.yml `api`, build-images.yml). Policy, in short:",
+    "a fixable HIGH/CRITICAL always fails unless its entry sets allowFixed; an unfixed CRITICAL",
+    "fails unless recorded here; an unfixed HIGH not recorded here is a warning; and an entry",
+    "whose `expires` date has passed FAILS the gate while its finding is still present.",
+    "`expires` is a REVIEW date: on it, check whether the distro has shipped a fix. If it has,",
+    "rebuild (the images apply distro updates at build time) and delete the entry; if not,",
+    "re-date it deliberately. Never re-date only to clear a red build.",
+    "Fields: id (CVE/GHSA), expires (YYYY-MM-DD), reason, images (optional list of image",
+    "labels: server, ui, embeddings-svc, sql-lineage; absent = all), allowFixed (optional, for a",
+    "fix that exists but cannot be installed yet — keep that window short).",
+    "An empty `waivers` list is the goal."
+  ],
+  "waivers": [
+    {
+      "id": "CVE-2026-76642",
+      "expires": "2027-01-19",
+      "reason": "util-linux (bsdutils, libblkid1, libmount1, libsmartcols1, libuuid1, liblastlog2-2, login, mount): no fix in Debian trixie on 2026-10-21. Mount-helper privilege issue; the containers run as uid 1001 with no CAP_SYS_ADMIN and never mount."
+    },
+    {
+      "id": "CVE-2026-78408",
+      "expires": "2027-01-19",
+      "reason": "util-linux: no fix in Debian trixie on 2026-10-21. nsenter --join-cgroup; nothing in the images runs nsenter, and the containers run as uid 1001."
+    },
+    {
+      "id": "CVE-2026-78409",
+      "expires": "2027-01-19",
+      "reason": "util-linux: no fix in Debian trixie on 2026-10-21. X-mount.subdir resolution; the containers never mount and hold no mount capability."
+    },
+    {
+      "id": "CVE-2026-78410",
+      "expires": "2027-01-19",
+      "reason": "util-linux: no fix in Debian trixie on 2026-10-21. Restricted bind mounts; the containers never mount and hold no mount capability."
+    },
+    {
+      "id": "CVE-2025-69720",
+      "expires": "2027-01-19",
+      "reason": "ncurses (libtinfo6, libncursesw6, ncurses-base, ncurses-bin): no fix in Debian trixie on 2026-10-21. Terminal-database parsing; the services run no curses program and read no attacker-supplied terminfo."
+    },
+    {
+      "id": "CVE-2026-16742",
+      "expires": "2027-01-19",
+      "reason": "systemd (libsystemd0, libudev1): no fix in Debian trixie on 2026-10-21. systemd-homed local privilege escalation; homed is not installed or running in the containers, only the client libraries are present."
+    },
+    {
+      "id": "CVE-2026-54369",
+      "expires": "2027-01-19",
+      "reason": "acl (libacl1): no fix in Debian trixie on 2026-10-21. Symlink traversal via libacl functions in a privileged caller; nothing in the images calls libacl as root."
+    },
+    {
+      "id": "CVE-2026-9538",
+      "expires": "2027-01-19",
+      "reason": "perl-base (Archive::Tar): Debian marks it fix_deferred on 2026-10-21. perl-base is an essential package of the Debian base; no service in the images runs perl or extracts tar archives with it."
+    }
+  ]
+}

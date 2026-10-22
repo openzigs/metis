@@ -383,10 +383,12 @@ describe("build-images.yml uses a cache that survives the runner (#3)", () => {
     expect(wf).not.toMatch(/type=local/);
   });
 
+  // Three: the native validation build, the tag's pre-publish scan build (#1379)
+  // and the multi-arch publish.
   it("every build step reads the gha cache", () => {
     expect(
       wf.match(/cache-from: type=gha,scope=metis-\$\{\{ matrix\.image\.name \}\}/g),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
   // A cache written from a tag ref can be restored only by that same tag, so a
@@ -460,5 +462,133 @@ describe("build-images.yml publishes every image the Helm chart pulls (#1382)", 
 
   it("publishes metis-sql-lineage from Dockerfile.sql-lineage", () => {
     expect(matrix).toContainEqual({ name: "sql-lineage", dockerfile: "Dockerfile.sql-lineage" });
+  });
+});
+
+/**
+ * #1379 — the images' CVE hygiene, which no scan of a single build can keep true:
+ * a base image pinned by digest (so the image CI scanned is the one that ships),
+ * the distro's security updates applied in the runtime stage behind a cache-busting
+ * ARG, and a scan of every built image in CI and before every publish.
+ */
+describe("container images are digest-pinned, patched and scanned (#1379)", () => {
+  const dockerfiles = [
+    "Dockerfile.server",
+    "Dockerfile.ui",
+    "Dockerfile.embeddings",
+    "Dockerfile.sql-lineage",
+  ];
+
+  /** @param {string} source */
+  const froms = (source) =>
+    [...source.matchAll(/^FROM\s+(\S+)(?:\s+AS\s+(\S+))?$/gm)].map((m) => ({
+      image: m[1],
+      stage: m[2] ?? "",
+    }));
+
+  it.each(dockerfiles)(
+    "%s pins every external base image by digest, one digest per tag",
+    (file) => {
+      const source = read(file);
+      const external = froms(source).filter(
+        ({ image }) => image.includes(":") || image.includes("@"),
+      );
+      expect(external.length).toBeGreaterThan(0);
+      /** @type {Map<string, string>} */
+      const digestByTag = new Map();
+      for (const { image } of external) {
+        expect(image, `${file}: ${image}`).toMatch(
+          /^[a-z0-9./-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$/,
+        );
+        const [tag, digest] = image.split("@");
+        expect(digestByTag.get(tag) ?? digest, `${file}: two digests for ${tag}`).toBe(digest);
+        digestByTag.set(tag, digest);
+      }
+    },
+  );
+
+  it.each(dockerfiles)("%s runs the distro's security updates in its runtime stage", (file) => {
+    const source = read(file);
+    const runner = source.slice(source.lastIndexOf(" AS runner"));
+    const argAt = runner.indexOf("ARG OS_PATCH_DATE");
+    expect(argAt, `${file}: no ARG OS_PATCH_DATE in the runner stage`).toBeGreaterThan(-1);
+    const upgrade = runner.search(/apt-get upgrade -y|apk upgrade --no-cache/);
+    expect(upgrade, `${file}: no apt-get/apk upgrade in the runner stage`).toBeGreaterThan(argAt);
+    // The ARG has to be READ by the upgrade's RUN for a new value to bust its cache.
+    expect(runner.slice(argAt, upgrade)).toMatch(/RUN echo "os patch level: \$\{OS_PATCH_DATE\}"/);
+  });
+
+  it.each(["Dockerfile.server", "Dockerfile.ui", "Dockerfile.embeddings"])(
+    "%s ships no npm, npx or corepack in the runtime image",
+    (file) => {
+      const runner = read(file).slice(read(file).lastIndexOf(" AS runner"));
+      for (const tool of [
+        "/usr/local/lib/node_modules/npm",
+        "/usr/local/lib/node_modules/corepack",
+        "/usr/local/bin/npx",
+      ]) {
+        expect(runner).toContain(tool);
+      }
+      expect(runner).toMatch(/rm -rf \/usr\/local\/lib\/node_modules\/npm/);
+    },
+  );
+
+  it("Dockerfile.sql-lineage keeps no pip in the runtime venv or the base interpreter", () => {
+    const source = read("Dockerfile.sql-lineage");
+    expect(source).toMatch(/\/opt\/venv\/bin\/pip uninstall -y pip/);
+    expect(source.slice(source.lastIndexOf(" AS runner"))).toMatch(
+      /python -m pip uninstall -y pip/,
+    );
+  });
+
+  it("Dockerfile.server drops officeparser's browser bundles and their stale SBOM", () => {
+    const source = read("Dockerfile.server");
+    expect(source).toMatch(/officeparser\.browser\.\*/);
+    expect(source).toMatch(/dist\/sbom\.cdx\.json/);
+  });
+
+  const ci = read(".github/workflows/ci.yml");
+  const api = jobBlock(ci, "api");
+  const release = read(".github/workflows/build-images.yml");
+
+  it("ci.yml `api` passes the OS patch date to all four image builds", () => {
+    expect(api.match(/OS_PATCH_DATE=\$\{\{ steps\.patch\.outputs\.date \}\}/g)).toHaveLength(4);
+  });
+
+  it("ci.yml `api` scans all four built images and gates them on the waiver file", () => {
+    for (const label of ["server", "ui", "embeddings-svc", "sql-lineage"]) {
+      expect(api).toContain(`--report ${label}=trivy-reports/${label}.json`);
+      expect(api).toContain(`sarif_file: trivy-reports/${label}.sarif`);
+    }
+    expect(api).toContain(
+      "node scripts/lib/image-scan-gate.mjs --waivers .github/image-scan-waivers.json",
+    );
+    expect(api).toMatch(/security-events: write/);
+  });
+
+  it("uploads SARIF only off pull requests, so no Trivy check run joins the PR check set", () => {
+    const uploads = [...api.matchAll(/- name: Upload image scan SARIF[\s\S]*?category:/g)];
+    expect(uploads).toHaveLength(4);
+    for (const [step] of uploads) expect(step).toContain("github.event_name != 'pull_request'");
+  });
+
+  it("build-images.yml scans and gates each image BEFORE the multi-arch push", () => {
+    const gate = release.indexOf("node scripts/lib/image-scan-gate.mjs");
+    const push = release.indexOf("- name: Build & push (tag");
+    expect(gate).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(push);
+    expect(release.slice(push)).toContain("OS_PATCH_DATE=${{ steps.patch.outputs.date }}");
+  });
+
+  it("both workflows install the same pinned, checksum-verified Trivy", () => {
+    /** @param {string} text */
+    const pins = (text) => [
+      text.match(/TRIVY_VERSION: "([^"]+)"/)?.[1],
+      text.match(/TRIVY_SHA256: "([0-9a-f]{64})"/)?.[1],
+    ];
+    expect(pins(api)[0]).toBeTruthy();
+    expect(pins(api)[1]).toBeTruthy();
+    expect(pins(release)).toEqual(pins(api));
+    expect(read("scripts/ci/install-trivy.sh")).toMatch(/sha256sum -c -/);
   });
 });

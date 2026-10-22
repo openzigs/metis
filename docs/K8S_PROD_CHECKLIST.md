@@ -87,9 +87,16 @@ The chart leaves three server settings to you, and the install does not work wit
 ## 9. Image hygiene
 
 - [ ] All four images (`metis-server`, `metis-ui`, `metis-embeddings-svc`, `metis-sql-lineage`) are published for the tag by `build-images.yml` (#1382; `image-build-wiring.test.mjs` fails if the chart names an image the matrix does not publish).
-- [ ] All four images scanned with Trivy (or ECR scan-on-push) — High/Critical = 0.  
+- [ ] All four images scanned with Trivy (or ECR scan-on-push): **fixable** High/Critical = 0, and every unfixed one recorded.  
   `trivy image --scanners vuln --severity HIGH,CRITICAL ghcr.io/openzigs/metis-server:<tag>`  
-  No image met this in #1312. Every image had fixable HIGH findings, and three had CRITICAL ones (#1379).
+  The policy (#1379), enforced by `scripts/lib/image-scan-gate.mjs` in ci.yml's `api` job on every image-touching PR, on `main` and nightly, and in `build-images.yml` before a tag publishes:
+  - **Fails:** any HIGH or CRITICAL that has a fixed version. Fix it by rebuilding: the images apply distro security updates at build time, and the bases are pinned by digest. Or upgrade the package, or remove it from the runtime image.
+  - **Fails:** an unfixed CRITICAL that is not recorded in `.github/image-scan-waivers.json`.
+  - **Fails:** a recorded finding past its `expires` review date.
+  - **Warns:** an unfixed HIGH that is not recorded yet. Record it with a reason and a review date.
+  - Findings go to code scanning as SARIF on `main`, nightly and release.
+
+  #1312 measured server 58 HIGH/0 CRITICAL, ui 26/1, embeddings 92/7 and sql-lineage 61/3. After #1379 the counts were server 43/0, ui 0/0, embeddings 43/0 and sql-lineage 44/0, with none fixable. What remains is 8 Debian trixie CVEs with no fix (util-linux, ncurses, systemd, acl, perl-base), recorded with a 2027-01-19 review date.
 - [ ] **Recommended**: Cosign signatures on tagged images.  
   `cosign verify ghcr.io/openzigs/metis-server:<tag>`
 - [ ] Multi-arch manifest present (amd64 + arm64) — required for Graviton nodes.  

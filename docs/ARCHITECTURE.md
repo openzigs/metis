@@ -142,7 +142,7 @@ METIS is built as four main pieces that talk to each other:
 │                       │   │ Python + sqlglot           │
 │ transformers.js v4    │   │ parses SQL, never runs it  │
 │ + onnxruntime-node    │   │ Bearer-token auth          │
-│ bookworm-slim base    │   │                            │
+│ trixie-slim base      │   │                            │
 │ ~423 MB image         │   │                            │
 └───────────────────────┘   └────────────────────────────┘
            │                               │

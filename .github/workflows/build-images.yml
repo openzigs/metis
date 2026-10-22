@@ -57,6 +57,8 @@ jobs:
       contents: read
       packages: write
       id-token: write
+      # #1379 — the pre-publish image scan uploads its SARIF to code scanning.
+      security-events: write
 
     strategy:
       fail-fast: false
@@ -88,6 +90,13 @@ jobs:
           docker buildx ls 2>/dev/null \
             | awk 'NR>1 && /^metis-${{ matrix.image.name }}-/ {print $1}' \
             | xargs -r docker buildx rm --force 2>/dev/null || true
+
+      # #1379 — one date per job, passed to EVERY build of the image below so the
+      # scanned build and the published one share the same OS-upgrade layer. See
+      # the `OS patch date` step in ci.yml for why it busts the cache daily.
+      - name: OS patch date
+        id: patch
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
 
       - name: Resolve tag
         id: meta
@@ -163,6 +172,7 @@ jobs:
           # the other images (only Dockerfile.embeddings reads BAKE_MODELS).
           build-args: |
             BAKE_MODELS=0
+            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
           # Native arch only — linux/amd64 on a GitHub-hosted runner. Building
           # the non-native arch here would force QEMU emulation, which is what
           # segfaulted `next build` (signal 11) on the old arm64 runner. Native
@@ -187,12 +197,75 @@ jobs:
           cache-from: type=gha,scope=metis-${{ matrix.image.name }}
           cache-to: type=gha,scope=metis-${{ matrix.image.name }},mode=max
 
+      # #1379 — scan BEFORE publishing. The amd64 image is built and loaded first
+      # (same builder, same OS_PATCH_DATE, so the publish below reuses its layers),
+      # scanned with Trivy, and gated by scripts/lib/image-scan-gate.mjs: a fixable
+      # HIGH/CRITICAL, an unrecorded unfixed CRITICAL, or a waiver past its review
+      # date in .github/image-scan-waivers.json stops the release here, before
+      # anything reaches GHCR. ci.yml's `api` job runs the same gate on every PR
+      # that touches an image, so this should only ever catch a CVE disclosed
+      # since. Models are not baked into the scanned build: they are data, not
+      # packages, and the published build still bakes them.
+      - name: Build for scan (tag — native arch, not pushed)
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          build-args: |
+            BAKE_MODELS=0
+            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: metis-${{ matrix.image.name }}:scan
+          provenance: false
+          sbom: false
+          # Read-only, like the publish step: a cache written from a tag ref is
+          # unreadable by every later run.
+          cache-from: type=gha,scope=metis-${{ matrix.image.name }}
+
+      - name: Install Trivy (pinned + checksum-verified)
+        if: github.event_name == 'push'
+        env:
+          # Keep in step with ci.yml's `Install Trivy` (scripts/ci/install-trivy.sh).
+          TRIVY_VERSION: "0.71.1"
+          TRIVY_SHA256: "3cbae37cd440cd8676e5ce9207fe460b5641c7579a17e9d00f8894928c41a88d"
+        run: bash scripts/ci/install-trivy.sh
+
+      - name: Scan image (Trivy, HIGH/CRITICAL) and gate
+        if: github.event_name == 'push'
+        env:
+          LABEL: ${{ matrix.image.name }}
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/trivy/trivy" image --quiet --scanners vuln --severity HIGH,CRITICAL \
+            --cache-dir "${RUNNER_TEMP}/trivy-cache" --format json \
+            --output "trivy-${LABEL}.json" "metis-${LABEL}:scan"
+          "${RUNNER_TEMP}/trivy/trivy" convert --format sarif \
+            --output "trivy-${LABEL}.sarif" "trivy-${LABEL}.json"
+          node scripts/lib/image-scan-gate.mjs --waivers .github/image-scan-waivers.json \
+            --report "${LABEL}=trivy-${LABEL}.json"
+
+      # Non-blocking: the scan GATE above decides whether the release ships; a
+      # code-scanning upload that fails (an API hiccup, a tag-ref quirk) must not
+      # skip the publish below on its own.
+      - name: Upload image scan SARIF
+        if: ${{ always() && github.event_name == 'push' && hashFiles(format('trivy-{0}.sarif', matrix.image.name)) != '' }}
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy-${{ matrix.image.name }}.sarif
+          category: trivy-image-${{ matrix.image.name }}-release
+
       - name: Build & push (tag — multi-arch publish)
         if: github.event_name == 'push'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ${{ matrix.image.dockerfile }}
+          build-args: |
+            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
@@ -241,5 +314,6 @@ jobs:
         if: always()
         run: |
           docker rmi "${{ env.REGISTRY }}/metis-${{ matrix.image.name }}:${{ steps.meta.outputs.version }}" 2>/dev/null || true
+          docker rmi "metis-${{ matrix.image.name }}:scan" 2>/dev/null || true
           docker image prune -f 2>/dev/null || true
           docker buildx prune -f --keep-storage=4g 2>/dev/null || true

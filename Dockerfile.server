@@ -25,12 +25,15 @@
 # docs/OPERATIONS.md > "Container Image Sizes" (#34, #39). CI starts this image and
 # polls /healthz (scripts/lib/smoke-server-image.mjs), so an image that cannot boot
 # fails `api` rather than passing it.
+#
+# #1379 — every stage's base is pinned by DIGEST, so the image CI scanned is the
+# image that ships; the runner stage applies Debian's security updates. To move
+# the base: `docker buildx imagetools inspect node:22-trixie-slim` and replace
+# the digest in EVERY `FROM` (image-build-wiring.test.mjs checks they agree).
 # ==============================================================================
 
-ARG NODE_VERSION=22
-
 # ----- Stage 1: deps + build (full dev tree) -------------------------------
-FROM node:${NODE_VERSION}-trixie-slim AS builder
+FROM node:22-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf AS builder
 WORKDIR /app
 
 ENV PNPM_HOME=/usr/local/share/pnpm
@@ -110,7 +113,7 @@ RUN mkdir -p "${METIS_XENOVA_CACHE}" \
 # Fresh stage so we get a fresh node_modules with prod-only deps. We can't
 # reuse the dev tree from the builder stage because pnpm's symlinked store
 # retains stale dev metadata even after `prune --prod`.
-FROM node:${NODE_VERSION}-trixie-slim AS prod-deps
+FROM node:22-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf AS prod-deps
 WORKDIR /app
 
 ENV PNPM_HOME=/usr/local/share/pnpm
@@ -298,6 +301,16 @@ RUN set -eux; \
            node_modules/.pnpm/lodash*/node_modules/lodash/fp \
            node_modules/.pnpm/lodash*/node_modules/lodash/fp.js \
            2>/dev/null || true; \
+    # #1379 — officeparser's BROWSER bundles inline their own pdfjs-dist 5.6.205
+    # and @xmldom/xmldom 0.9.10 (both with fixable HIGH CVEs), and its
+    # dist/sbom.cdx.json records those build-time versions. Under Node the
+    # package's `import`/`require` exports load dist/index.* instead, which
+    # resolve pdfjs-dist and xmldom from node_modules at the patched versions
+    # pnpm-workspace.yaml's overrides pin. So the bundles are dead code here, and
+    # the SBOM describes only them.
+    for D in $(find node_modules/.pnpm -maxdepth 3 -type d -path '*/node_modules/officeparser' 2>/dev/null); do \
+      rm -f "$D"/dist/officeparser.browser.* "$D/dist/sbom.cdx.json" 2>/dev/null || true; \
+    done; \
     # Drop pdf-parse v2 helper assets we don't need (worker scripts, demos).
     find node_modules/.pnpm -path '*/pdf-parse/test*' -prune -exec rm -rf {} + 2>/dev/null || true; \
     # Drop all .d.ts files — runtime doesn't need TypeScript declarations.
@@ -325,7 +338,7 @@ RUN set -eux; \
 # Oracle published for 23.9 (x64: 72,900,819 bytes, cksum 423186373; arm64:
 # 65,159,765 bytes, cksum 1682780028). Moving to another release means replacing
 # BOTH the URL and the SHA-256 of that architecture.
-FROM node:${NODE_VERSION}-trixie-slim AS oracle-client
+FROM node:22-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf AS oracle-client
 ARG TARGETARCH
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl unzip \
@@ -346,7 +359,7 @@ RUN apt-get update \
  && rm -f /opt/oracle/instantclient/*.jar
 
 # ----- Stage 3: runtime ----------------------------------------------------
-FROM node:${NODE_VERSION}-trixie-slim AS runner
+FROM node:22-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -384,7 +397,15 @@ ENV EMBED_DTYPE=${EMBED_DTYPE}
 
 # #34 — the runtime is `node dist/index.js` (from /app/server); nothing in it runs npm, npx,
 # yarn or corepack, which the base image ships (~23 MB).
-RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+# #1379 — and Debian's security updates (`apt-get upgrade`). OS_PATCH_DATE busts
+# the layer cache, so CI (which passes the date) picks up a distro fix the day it
+# ships instead of reusing a cached upgrade layer; it is not otherwise read.
+ARG OS_PATCH_DATE=unset
+RUN echo "os patch level: ${OS_PATCH_DATE}" \
+ && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/* \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
            /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
            /usr/local/bin/yarn /usr/local/bin/yarnpkg \
  && groupadd --system --gid 1001 metis \
