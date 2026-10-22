@@ -127,6 +127,16 @@ DEPLOY_COUNT="$(kubectl get deploy -n "${NAMESPACE}" -l app.kubernetes.io/part-o
 [[ "${DEPLOY_COUNT}" == "4" ]] && ok "4 metis Deployments present (server+ui+embeddings+sql-lineage)" \
   || die "expected 4 metis Deployments, got ${DEPLOY_COUNT}"
 
+# The dev profile turns NetworkPolicy off. Have the API server admit the default
+# profile's policies (#1374) without persisting them. This checks the schema
+# only: kind's default CNI does not enforce egress policy, so traffic is not tested.
+helm template "${RELEASE}" "${CHART_DIR}" -n "${NAMESPACE}" \
+  --set autoscaling.server.enabled=false --set server.replicaCount=1 \
+  --show-only templates/networkpolicy.yaml \
+  | kubectl apply --dry-run=server -n "${NAMESPACE}" -f - >/dev/null \
+  && ok "NetworkPolicies admitted by the API server (server-side dry-run)" \
+  || die "the API server rejected the chart's NetworkPolicies"
+
 # Dev profile pins a single server replica (local in-process backends).
 SERVER_REPLICAS="$(kubectl get deploy "${RELEASE}-server" -n "${NAMESPACE}" -o jsonpath='{.spec.replicas}')"
 [[ "${SERVER_REPLICAS}" == "1" ]] && ok "dev profile: server replicas=1" \

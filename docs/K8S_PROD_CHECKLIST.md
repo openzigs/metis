@@ -46,12 +46,12 @@ The chart leaves three server settings to you, and the install does not work wit
 
 ## 5. NetworkPolicy
 
-- [ ] **Default-deny ingress + default-deny egress** scoped to `metis` namespace.  
-  `kubectl get networkpolicy -n metis -o yaml | grep -E 'policyTypes|podSelector'`
-- [ ] Egress allow-list contains: kube-dns, intra-namespace, AI gateway FQDNs, GitHub host, optional RDS CIDR.
-- [ ] The policy actually selects the METIS pods. The command below must list every pod. **Today it lists none (#1374)**, so the policy isolates nothing.  
+- [ ] **Default-deny ingress + default-deny egress** for every METIS pod: `metis-default-deny`, plus `metis-ui`, `metis-server` and `metis-sidecars` granting each component its traffic (chart README, "HPA / PDB / NetworkPolicy").  
+  `kubectl get networkpolicy -n metis`
+- [ ] Only the server has external egress: HTTPS (`networkPolicy.egress.https`), the Kubernetes API, optional RDS CIDRs and `networkPolicy.egress.extra` (LDAP, OIDC on a non-443 port, SMTP). With Cilium, HTTPS is scoped to the AI gateway and GitHub FQDNs instead.
+- [ ] The policy actually selects the METIS pods. The command below must list every pod (#1374).  
   `kubectl get pods -n metis -l "$(kubectl get networkpolicy -n metis metis-default-deny -o jsonpath='{.spec.podSelector.matchLabels}' | jq -r 'to_entries|map("\(.key)=\(.value)")|join(",")')"`
-- [ ] Verified with a smoke test **from the server pod itself**. A bare `kubectl run … curlimages/curl` proves nothing: PSA `restricted` rejects it, and without the chart's labels the policy would never select it. Expect a non-allow-listed host to fail and the embeddings sidecar to answer:  
+- [ ] Verified with a smoke test **from the server pod itself**. A bare `kubectl run … curlimages/curl` proves nothing: PSA `restricted` rejects it, and without the chart's labels the policy would never select it. With `networkPolicy.egress.https.cidrs` narrowed (or Cilium FQDNs on), expect a host outside the allow-list to fail, `https://api.github.com` to answer, and the embeddings sidecar to answer. With the default `0.0.0.0/0`, every HTTPS host answers:  
   `kubectl exec -n metis deploy/metis-server -- node -e "fetch('https://example.com',{signal:AbortSignal.timeout(5000)}).then(r=>console.log('REACHED',r.status)).catch(e=>console.log('BLOCKED',e.cause?.code||e.name))"`  
   `kubectl exec -n metis deploy/metis-server -- node -e "fetch(process.env.EMBEDDINGS_URL+'/healthz').then(r=>console.log(r.status))"`  
   Run this on a CNI that enforces egress policy (Calico, Cilium). The kindnet in a Docker Desktop kind cluster did not enforce it in #1312, even with `kube-network-policies` installed: a pod under an egress deny-all policy still reached `https://1.1.1.1`.

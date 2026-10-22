@@ -904,9 +904,10 @@ prerequisite — see [`OPERATIONS.md`](./OPERATIONS.md) §10.2.
   cert-manager. Cluster prerequisites are owned by the operator.
 - `gp3` StorageClass is **not** provisioned by EKS by default — you must
   apply the manifest in §3b.
-- AWS VPC CNI alone does **not** enforce NetworkPolicy. Install Calico
-  or switch to Cilium (the chart's `networkPolicy.cilium.enabled=true`
-  toggle requires Cilium).
+- The AWS VPC CNI enforces NetworkPolicy only with its network policy agent
+  turned on (`enableNetworkPolicy`). Otherwise install Calico or switch to
+  Cilium (the chart's `networkPolicy.cilium.enabled=true` toggle requires
+  Cilium). Without enforcement the chart's policies (#1374) are inert.
 
 ---
 

@@ -1,11 +1,35 @@
 {{- /*
-NetworkPolicy — sub-issue #371.
-Deny-default ingress + deny-default egress with explicit allow-list.
-For FQDN-aware egress (api.openai.com etc.) use the Cilium variant by setting
-networkPolicy.cilium.enabled=true (cilium-networkpolicy.yaml).
+NetworkPolicy — sub-issue #371, reworked in #1374.
+
+Four policies. NetworkPolicies are additive (a pod may do whatever ANY policy
+selecting it allows), so each one below only ever GRANTS:
+
+  <fullname>-default-deny  every pod of the release: deny all ingress + egress,
+                           except DNS.
+  <fullname>-ui            ingress controller -> ui; ui -> server.
+  <fullname>-server        ingress controller, ui (its /api proxy) and, with a
+                           ServiceMonitor, Prometheus -> server; server ->
+                           sidecars, the MCP namespace, the Kubernetes API,
+                           external HTTPS, the database and `egress.extra`.
+  <fullname>-sidecars      server -> embeddings / sql-lineage. No egress beyond
+                           DNS: both sidecars are air-gapped by default.
+
+Pods are selected on `metis.releaseSelectorLabels` / `metis.selectorLabels`,
+the labels the POD TEMPLATE carries (#1374: the policy used to select
+`app.kubernetes.io/part-of`, which only the Deployment object has, so it
+isolated nothing). `tests/render-tests.sh` asserts every rendered pod is
+selected.
+
+External HTTPS is an `ipBlock` (a `namespaceSelector` matches only pods in
+the cluster, never an external address). With networkPolicy.cilium.enabled the
+ipBlock rules for HTTPS and the Kubernetes API are left out and
+cilium-networkpolicy.yaml scopes them by FQDN / entity instead; these four
+policies still render and carry the default-deny and the in-cluster rules.
 */ -}}
-{{- if and .Values.networkPolicy.enabled (not .Values.networkPolicy.cilium.enabled) -}}
+{{- if .Values.networkPolicy.enabled -}}
 {{- $fullname := include "metis.fullname" . -}}
+{{- $np := .Values.networkPolicy -}}
+{{- $cilium := $np.cilium.enabled -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -15,23 +39,10 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/part-of: metis
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- include "metis.releaseSelectorLabels" . | nindent 6 }}
   policyTypes: [Ingress, Egress]
-  ingress:
-    # Allow from configured ingress controller namespace.
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              {{- toYaml .Values.networkPolicy.ingressNamespaceSelector | nindent 14 }}
-    # Allow intra-namespace traffic (server↔embeddings↔sql-lineage↔ui).
-    - from:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/part-of: metis
-              app.kubernetes.io/instance: {{ .Release.Name }}
   egress:
-    # DNS resolution.
+    # DNS resolution — the only thing every pod may do.
     - to:
         - namespaceSelector: {}
           podSelector:
@@ -42,22 +53,138 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
-    # Intra-namespace.
+{{- if .Values.ui.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-ui" $fullname }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "netpol") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "metis.selectorLabels" (dict "root" . "component" "ui") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml $np.ingressNamespaceSelector | nindent 14 }}
+      ports:
+        - port: {{ .Values.ui.service.port }}
+          protocol: TCP
+  {{- if .Values.server.enabled }}
+  egress:
+    # The UI's /api route handlers proxy every browser call to the server.
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/part-of: metis
-              app.kubernetes.io/instance: {{ .Release.Name }}
-    # Outbound HTTPS (required for AI provider gateways + GitHub API).
-    # Without an FQDN-aware CNI (Cilium), we collapse to a port-only rule and
-    # document the gap in the chart README. See cilium-networkpolicy.yaml for
-    # the FQDN-scoped variant.
-    - to:
-        - namespaceSelector: {}
+              {{- include "metis.selectorLabels" (dict "root" . "component" "server") | nindent 14 }}
       ports:
-        - port: 443
+        - port: {{ .Values.server.service.port }}
           protocol: TCP
-    {{- with .Values.networkPolicy.egress.databaseCidrs }}
+  {{- end }}
+{{- end }}
+{{- if .Values.server.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-server" $fullname }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "netpol") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "metis.selectorLabels" (dict "root" . "component" "server") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # SSO callbacks and /socket.io route to the server directly (ingress.yaml).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml $np.ingressNamespaceSelector | nindent 14 }}
+        {{- if .Values.ui.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "metis.selectorLabels" (dict "root" . "component" "ui") | nindent 14 }}
+        {{- end }}
+      ports:
+        - port: {{ .Values.server.service.port }}
+          protocol: TCP
+    {{- if .Values.serviceMonitor.enabled }}
+    # Prometheus scrapes /metrics (servicemonitor.yaml).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml $np.monitoringNamespaceSelector | nindent 14 }}
+      ports:
+        - port: {{ .Values.server.service.port }}
+          protocol: TCP
+    {{- end }}
+  egress:
+    {{- if .Values.embeddings.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "metis.selectorLabels" (dict "root" . "component" "embeddings") | nindent 14 }}
+      ports:
+        - port: {{ .Values.embeddings.service.port }}
+          protocol: TCP
+    {{- end }}
+    {{- if .Values.sqlLineage.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "metis.selectorLabels" (dict "root" . "component" "sql-lineage") | nindent 14 }}
+      ports:
+        - port: {{ .Values.sqlLineage.service.port }}
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.rbac.mcpNamespace }}
+    # k8s-sse MCP runtime: the server talks to the MCP pods it provisions here.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+    {{- end }}
+    {{- if not $cilium }}
+    {{- with $np.egress.kubeApiServer }}
+    {{- if .cidrs }}
+    # Kubernetes API (k8s-sse MCP runtime). Policy is evaluated after the
+    # kubernetes Service is DNATed, so on kubeadm/kind the port is 6443.
+    - to:
+        {{- range .cidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        {{- include "metis.netpolPorts" .ports | trim | nindent 8 }}
+    {{- end }}
+    {{- end }}
+    {{- with $np.egress.https }}
+    {{- if .cidrs }}
+    # Outbound HTTPS: AI provider gateways, GitHub, OIDC discovery. Narrow
+    # `cidrs` to restrict it; an FQDN allow-list needs Cilium (see above).
+    - to:
+        {{- $except := .except }}
+        {{- range .cidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+            {{- with $except }}
+            except:
+              {{- range . }}
+              - {{ . | quote }}
+              {{- end }}
+            {{- end }}
+        {{- end }}
+      ports:
+        {{- include "metis.netpolPorts" .ports | trim | nindent 8 }}
+    {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- with $np.egress.databaseCidrs }}
     # Managed-DB egress (e.g. RDS subnets).
     - to:
         {{- range . }}
@@ -68,4 +195,39 @@ spec:
         - port: 5432
           protocol: TCP
     {{- end }}
+    {{- range $np.egress.extra }}
+    # networkPolicy.egress.extra — e.g. LDAP 389/636, OIDC on a non-443 port, SMTP.
+    - to:
+        {{- range .cidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        {{- include "metis.netpolPorts" .ports | trim | nindent 8 }}
+    {{- end }}
+{{- end }}
+{{- if and .Values.server.enabled (or .Values.embeddings.enabled .Values.sqlLineage.enabled) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-sidecars" $fullname }}
+  labels:
+    {{- include "metis.labels" (dict "root" . "component" "netpol") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "metis.releaseSelectorLabels" . | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [embeddings, sql-lineage]
+  policyTypes: [Ingress]
+  ingress:
+    # Only the server calls the sidecars (each also checks its own token).
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "metis.selectorLabels" (dict "root" . "component" "server") | nindent 14 }}
+{{- end }}
 {{- end }}

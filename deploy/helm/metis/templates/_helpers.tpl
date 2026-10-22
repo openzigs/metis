@@ -51,9 +51,36 @@ app.kubernetes.io/managed-by: {{ .root.Release.Service }}
 {{- end -}}
 
 {{- define "metis.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "metis.name" .root }}
-app.kubernetes.io/instance: {{ .root.Release.Name }}
+{{ include "metis.releaseSelectorLabels" .root }}
 app.kubernetes.io/component: {{ .component }}
+{{- end -}}
+
+{{/*
+The labels EVERY pod of this release carries, whatever its component — the
+NetworkPolicy selector for "all METIS pods" (#1374). Pass the root scope.
+Never select pods on `metis.labels`-only keys such as `app.kubernetes.io/part-of`:
+those are on the Deployment object, not on the pod template, so a selector
+using them matches no pod at all.
+*/}}
+{{- define "metis.releaseSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "metis.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{/*
+NetworkPolicy `ports:` entries from a values list (#1374). Each item is a bare
+port number (TCP) or a map `{port, protocol}`.
+*/}}
+{{- define "metis.netpolPorts" -}}
+{{- range . }}
+{{- if kindIs "map" . }}
+- port: {{ required "networkPolicy: a ports entry given as a map needs `port`" .port }}
+  protocol: {{ .protocol | default "TCP" }}
+{{- else }}
+- port: {{ . }}
+  protocol: TCP
+{{- end }}
+{{- end }}
 {{- end -}}
 
 {{/* Resolve image reference: <registry>/<repo>/<componentImageRepo>:<tag> */}}

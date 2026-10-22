@@ -299,20 +299,30 @@ eksctl create iamserviceaccount \
   carries a ~570 MiB resident ONNX session and a cold start. See
   [`docs/EMBEDDINGS_BACKENDS.md`](../../../docs/EMBEDDINGS_BACKENDS.md)
   § "Running the sidecar on Kubernetes / EKS".
-- **NetworkPolicy** — deny-default ingress + deny-default egress with
-  explicit allow-list:
-  - **Ingress**: from `ingress-nginx` namespace + intra-namespace.
-  - **Egress**: kube-dns, intra-namespace, port 443 to all (collapsed when
-    no FQDN-aware CNI). Set `networkPolicy.cilium.enabled=true` to switch
-    to a `CiliumNetworkPolicy` with FQDN-scoped egress for the AI gateway
-    + GitHub host allowlist.
-  - **Known gap (#1374):** the policy's `podSelector` uses
-    `app.kubernetes.io/part-of`, which the pod template does not carry, so
-    today the policy selects no pod and isolates nothing. Its 443 rule is
-    also a `namespaceSelector`, which matches no external address. Do not
-    count this policy as your isolation until #1374 lands.
+- **NetworkPolicy** (#1374) — every pod of the release is deny-default for
+  ingress and egress, except DNS. Four policies, selecting pods on the labels
+  the pod template carries (`app.kubernetes.io/name`, `instance`, `component`):
 
-Add managed-DB egress (RDS) via:
+  | Pod | May be reached from | May reach |
+  |-----|---------------------|-----------|
+  | `ui` | ingress controller namespace | server |
+  | `server` | ingress controller namespace, `ui`; Prometheus with `serviceMonitor.enabled` | sidecars, the MCP namespace (`rbac.mcpNamespace`), Kubernetes API (`egress.kubeApiServer`, 6443), HTTPS (`egress.https`, `0.0.0.0/0:443`), `egress.databaseCidrs` (5432), `egress.extra` |
+  | `embeddings`, `sql-lineage` | `server` | nothing (both are air-gapped) |
+  | backup CronJob | nothing | nothing (it tars the mounted volumes) |
+
+  Only the server leaves the cluster. External HTTPS is an `ipBlock`; narrow
+  `networkPolicy.egress.https.cidrs` to restrict it. With
+  `networkPolicy.cilium.enabled=true` the HTTPS and Kubernetes API ipBlocks are
+  dropped and a `CiliumNetworkPolicy` on the server allows HTTPS to an FQDN
+  allow-list (`aiGateways`, `githubHosts`, `extraFqdns`) and the
+  `kube-apiserver` entity; the four vanilla policies still render.
+- **Enforcement** needs a CNI that implements NetworkPolicy: Calico, Cilium, or
+  the EKS VPC CNI with network policy enabled. kindnet on a Docker Desktop kind
+  cluster did not enforce an egress deny in #1312, so a kind install does not
+  test these policies. The render tests (`tests/render-tests.sh`, Test 14)
+  assert that every pod is selected and what each may reach.
+
+Add managed-DB egress (RDS), an identity provider or a mail relay via:
 
 ```yaml
 networkPolicy:
@@ -320,7 +330,17 @@ networkPolicy:
     databaseCidrs:
       - 10.0.10.0/24
       - 10.0.11.0/24
+    extra:
+      - cidrs: ["10.20.0.15/32"]     # LDAPS
+        ports: [636]
+      - cidrs: ["10.20.0.40/32"]     # OIDC IdP on a non-443 port
+        ports: [8443]
+      - cidrs: ["10.20.0.25/32"]     # SMTP submission
+        ports: [587]
 ```
+
+A NodeLocal DNSCache (`169.254.20.10`) is not a `kube-dns` pod: add a policy of
+your own allowing UDP/TCP 53 to it for every pod of the release.
 
 ---
 

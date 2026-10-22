@@ -795,20 +795,66 @@ pdb:
     minAvailable: 1
 
 # -----------------------------------------------------------------------------
-# NetworkPolicy (deny-default). Cilium FQDN policies optional.
+# NetworkPolicy (deny-default) — #371, reworked in #1374.
+#
+# Every pod of the release is default-deny for ingress AND egress except DNS;
+# templates/networkpolicy.yaml then grants, per component:
+#   ui          <- ingress controller        -> server
+#   server      <- ingress controller, ui    -> sidecars, MCP namespace,
+#                  (+ Prometheus with a          Kubernetes API, external HTTPS,
+#                  ServiceMonitor)               databaseCidrs, egress.extra
+#   embeddings / sql-lineage <- server       (no egress: air-gapped)
+# Only the SERVER reaches outside the cluster.
+#
+# ENFORCEMENT needs a CNI that implements NetworkPolicy (Calico, Cilium, the
+# VPC CNI's network-policy agent on EKS). kindnet on Docker Desktop kind did not
+# enforce an egress deny in the #1312 run, so a kind smoke proves nothing here.
 # -----------------------------------------------------------------------------
 networkPolicy:
   enabled: true
   ingressNamespaceSelector:
     kubernetes.io/metadata.name: ingress-nginx
+  # Where Prometheus runs; used only when serviceMonitor.enabled=true.
+  monitoringNamespaceSelector:
+    kubernetes.io/metadata.name: monitoring
   egress:
+    # Server outbound HTTPS (AI gateways, GitHub, OIDC discovery) as ipBlocks.
+    # Narrow `cidrs` to your gateways' ranges to restrict it, add "::/0" on an
+    # IPv6 cluster. Ignored with cilium.enabled (FQDN-scoped instead).
+    https:
+      cidrs:
+        - 0.0.0.0/0
+      except: []
+      ports: [443]
+    # Server -> Kubernetes API, for the k8s-sse MCP runtime. Policy sees the
+    # API server's real port after the `kubernetes` Service DNAT: 6443 on
+    # kubeadm/kind (this rule), 443 on EKS (already allowed by `https` — if you
+    # narrow https.cidrs, add the API endpoint's CIDR here with port 443).
+    # Empty `cidrs` = no rule. Ignored with cilium.enabled (the
+    # CiliumNetworkPolicy allows the kube-apiserver entity instead).
+    kubeApiServer:
+      cidrs:
+        - 0.0.0.0/0
+      ports: [6443]
+    # FQDN allow-list for the Cilium variant (cilium.enabled=true), HTTPS only.
     aiGateways:
       - api.openai.com
       - generativelanguage.googleapis.com
     githubHosts:
       - api.github.com
-    # CIDRs allowed for managed-DB egress (e.g. RDS subnets). Empty = no egress.
+    extraFqdns: []
+    # CIDRs allowed for managed-DB egress (e.g. RDS subnets), port 5432.
+    # Empty = no rule.
     databaseCidrs: []
+    # Further server egress, each entry `cidrs` + `ports` (a number = TCP, or
+    # {port, protocol}). For an identity provider or mail relay, e.g.:
+    #   - cidrs: ["10.20.0.15/32"]          # LDAPS
+    #     ports: [636]
+    #   - cidrs: ["10.20.0.40/32"]          # OIDC IdP on a non-443 port
+    #     ports: [8443]
+    #   - cidrs: ["10.20.0.25/32"]          # SMTP submission
+    #     ports: [587]
+    extra: []
   cilium:
     enabled: false
 

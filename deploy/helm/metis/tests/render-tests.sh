@@ -400,13 +400,14 @@ assert_contains "ui HPA targetCPU 70" "averageUtilization: 70" "${SCALING}"
 # minAvailable:1 PDB over a single pod would block every node drain forever.
 assert "PDBs rendered (ui + server; embeddings has 1 replica)" 2 "$(count_kind PodDisruptionBudget "${SCALING}")"
 NETPOL=$(template)
-assert "1× NetworkPolicy by default" 1 "$(count_kind NetworkPolicy "${NETPOL}")"
+# #1374: default-deny + ui + server + sidecars. Selection and rules: Test 14.
+assert "4× NetworkPolicy by default" 4 "$(count_kind NetworkPolicy "${NETPOL}")"
 assert_contains "deny-default policyTypes" "policyTypes: [Ingress, Egress]" "${NETPOL}"
 assert_contains "DNS egress allowed" "k8s-app: kube-dns" "${NETPOL}"
-assert_contains "intra-namespace egress" "app.kubernetes.io/part-of: metis" "${NETPOL}"
 
 CILIUM=$(template --set networkPolicy.cilium.enabled=true)
-assert "0× vanilla NetworkPolicy when cilium" 0 "$(count_kind NetworkPolicy "${CILIUM}")"
+# The vanilla policies stay (default-deny, in-cluster rules); the CNP adds FQDN egress (#1374).
+assert "4× vanilla NetworkPolicy when cilium" 4 "$(count_kind NetworkPolicy "${CILIUM}")"
 assert "1× CiliumNetworkPolicy" 1 "$(count_kind CiliumNetworkPolicy "${CILIUM}")"
 assert_contains "FQDN egress to api.openai.com" "matchName: \"api.openai.com\"" "${CILIUM}"
 assert_contains "FQDN egress to api.github.com" "matchName: \"api.github.com\"" "${CILIUM}"
@@ -422,7 +423,7 @@ assert "dev: 0 HPA" 0 "$(count_kind HorizontalPodAutoscaler "${DEV}")"
 PROD=$(template -f "${CHART_DIR}/values-prod.yaml")
 assert "prod: 1 ExternalSecret" 1 "$(count_kind ExternalSecret "${PROD}")"
 assert "prod: 1 Ingress" 1 "$(count_kind Ingress "${PROD}")"
-assert "prod: 1 NetworkPolicy" 1 "$(count_kind NetworkPolicy "${PROD}")"
+assert "prod: 4 NetworkPolicy (#1374)" 4 "$(count_kind NetworkPolicy "${PROD}")"
 assert_contains "prod IRSA annotation present" "eks.amazonaws.com/role-arn" "${PROD}"
 # Multi-replica server + shared backends wired (#540).
 assert_contains "prod: server replicas 2" "replicas: 2" "${PROD}"
@@ -799,6 +800,176 @@ for label in "app.kubernetes.io/instance: metis" "app.kubernetes.io/component: s
   assert "server pod carries ${label}" yes \
     "$(grep -qxE " +${label}" <<<"${SERVER_POD_LABELS}" && echo yes || echo no)"
 done
+
+# ===========================================================================
+# Structural assertions (#1374, #1375, #1378). Substring greps cannot say "this
+# policy selects that pod" or "this env var is on THAT Deployment", so these
+# parse the render: Ruby's stdlib YAML -> JSON -> jq. Both ship on the
+# ubuntu-latest runner image and on macOS; fail loudly rather than skip.
+# ---------------------------------------------------------------------------
+for tool in ruby jq; do
+  command -v "${tool}" >/dev/null 2>&1 || { echo "render-tests.sh needs ${tool} on PATH" >&2; exit 1; }
+done
+render_json() {
+  local out
+  out=$(template "$@") || { echo "${out}" >&2; return 1; }
+  ruby -ryaml -rjson -e 'puts JSON.generate(YAML.load_stream(STDIN.read).compact)' <<<"${out}"
+}
+# shellcheck disable=SC2016 # jq program, not shell expansions
+JQ_LIB='
+def pods:
+  [ .[] | select(.kind == "Deployment")
+        | {name: .metadata.name, labels: .spec.template.metadata.labels, spec: .spec.template.spec} ]
+  + [ .[] | select(.kind == "CronJob")
+        | {name: .metadata.name, labels: .spec.jobTemplate.spec.template.metadata.labels,
+           spec: .spec.jobTemplate.spec.template.spec} ];
+def pod($n): first(pods[] | select(.name == $n));
+# Does a LabelSelector select a label set? matchLabels + In/NotIn/Exists/DoesNotExist.
+def selects($sel; $labels):
+  ($sel.matchLabels // {} | to_entries | all(.value == $labels[.key]))
+  and ($sel.matchExpressions // [] | all(
+        . as $x | $labels[$x.key] as $v
+        | if $x.operator == "In" then ($v != null and ($x.values | index($v)) != null)
+          elif $x.operator == "NotIn" then ($v == null or ($x.values | index($v)) == null)
+          elif $x.operator == "Exists" then $v != null
+          else $v == null end));
+def netpols: [ .[] | select(.kind == "NetworkPolicy") ];
+def policies_for($labels): [ netpols[] | select(selects(.spec.podSelector; $labels)) ];
+def egress_for($labels): [ policies_for($labels)[] | .spec.egress // [] | .[] ];
+def ingress_for($labels): [ policies_for($labels)[] | .spec.ingress // [] | .[] ];
+def ports_of($rule): [ $rule.ports // [] | .[] | .port ];
+def secret_env($p): [ $p.spec.containers[].env // [] | .[] | select(.valueFrom.secretKeyRef) | .name ] | sort;
+'
+# jqr [jq options...] <filter> — the filter is the LAST argument; stdin is the render.
+jqr() {
+  local filter="${!#}"
+  jq -r "${@:1:$#-1}" "${JQ_LIB} ${filter}"
+}
+
+# ---------------------------------------------------------------------------
+echo "Test 14: NetworkPolicy selects every METIS pod and admits external HTTPS — #1374"
+# ---------------------------------------------------------------------------
+# The policy used to select `app.kubernetes.io/part-of`, a label only the
+# Deployment OBJECT carries — no pod — so the default-deny isolated nothing, and
+# its HTTPS rule (`to: namespaceSelector: {}`) admitted no address outside the
+# cluster. Every profile, every pod, including a release not named "metis".
+NP_RENDERS=(
+  "default::"
+  "prod::-f ${CHART_DIR}/values-prod.yaml --set scaling.database.url=postgres://u:p@db:5432/metis --set uploads.s3.bucket=b"
+  "backup::--set backup.enabled=true"
+  "release-staging::--set nameOverride=metis"
+)
+for spec in "${NP_RENDERS[@]}"; do
+  label="${spec%%::*}"
+  # shellcheck disable=SC2206 # deliberate word-splitting of the flag string
+  flags=(${spec#*::})
+  if [[ "${label}" == "release-staging" ]]; then
+    NPJ=$(helm template staging "${CHART_DIR}" "${flags[@]}" 2>&1 \
+      | ruby -ryaml -rjson -e 'puts JSON.generate(YAML.load_stream(STDIN.read).compact)')
+  else
+    NPJ=$(render_json "${flags[@]}")
+  fi
+  NP_PODS=$(jqr '[pods[].name] | join(" ")' <<<"${NPJ}")
+  [[ -n "${NP_PODS}" ]] || NP_PODS="(none)"
+  for p in ${NP_PODS}; do
+    assert "${label}: ${p} pod is selected by a NetworkPolicy" yes \
+      "$(jqr --arg p "${p}" 'pod($p).labels as $l | if (policies_for($l) | length) > 0 then "yes" else "no" end' <<<"${NPJ}")"
+    assert "${label}: ${p} is default-deny for Ingress AND Egress" yes \
+      "$(jqr --arg p "${p}" 'pod($p).labels as $l
+          | [policies_for($l)[] | .spec.policyTypes // [] | .[]] as $t
+          | if ($t | index("Ingress")) and ($t | index("Egress")) then "yes" else "no" end' <<<"${NPJ}")"
+    assert "${label}: ${p} may resolve DNS (kube-dns, UDP 53)" yes \
+      "$(jqr --arg p "${p}" 'pod($p).labels as $l
+          | [egress_for($l)[] | select(any(.to[]?; .podSelector.matchLabels["k8s-app"] == "kube-dns"))
+             | select(any(.ports[]?; .port == 53 and .protocol == "UDP"))] | if length > 0 then "yes" else "no" end' <<<"${NPJ}")"
+  done
+  assert "${label}: no egress peer is a bare namespaceSelector (matches no external address)" 0 \
+    "$(jqr '[netpols[] | .spec.egress // [] | .[] | .to // [] | .[] | select(. == {namespaceSelector: {}})] | length' <<<"${NPJ}")"
+done
+
+NPJ=$(render_json)
+SRV='pod("metis-server").labels'
+assert "server: HTTPS egress is an ipBlock 0.0.0.0/0 on 443" yes \
+  "$(jqr "${SRV}"' as $l | [egress_for($l)[] | select(any(.to[]?; .ipBlock.cidr == "0.0.0.0/0")) | select(ports_of(.) | index(443))]
+      | if length > 0 then "yes" else "no" end' <<<"${NPJ}")"
+for side in embeddings sql-lineage; do
+  assert "server: may reach the ${side} pod" yes \
+    "$(jqr --arg s "metis-${side}" "${SRV}"' as $l | pod($s).labels as $t
+        | [egress_for($l)[] | select(any(.to[]?; .podSelector != null and .namespaceSelector == null and selects(.podSelector; $t)))]
+        | if length > 0 then "yes" else "no" end' <<<"${NPJ}")"
+  assert "${side}: accepts the server pod" yes \
+    "$(jqr --arg s "metis-${side}" 'pod($s).labels as $l | pod("metis-server").labels as $t
+        | [ingress_for($l)[] | select(any(.from[]?; .podSelector != null and selects(.podSelector; $t)))]
+        | if length > 0 then "yes" else "no" end' <<<"${NPJ}")"
+  assert "${side}: does NOT accept the UI pod" no \
+    "$(jqr --arg s "metis-${side}" 'pod($s).labels as $l | pod("metis-ui").labels as $t
+        | [ingress_for($l)[] | select(any(.from[]?; .podSelector != null and selects(.podSelector; $t)))]
+        | if length > 0 then "yes" else "no" end' <<<"${NPJ}")"
+  assert "${side}: no ipBlock egress (air-gapped sidecar)" 0 \
+    "$(jqr --arg s "metis-${side}" 'pod($s).labels as $l | [egress_for($l)[] | select(any(.to[]?; .ipBlock))] | length' <<<"${NPJ}")"
+  assert "${side}: does not accept the ingress controller" 0 \
+    "$(jqr --arg s "metis-${side}" 'pod($s).labels as $l | [ingress_for($l)[] | select(any(.from[]?; .namespaceSelector))] | length' <<<"${NPJ}")"
+done
+assert "ui: may reach the server pod" yes \
+  "$(jqr 'pod("metis-ui").labels as $l | pod("metis-server").labels as $t
+      | [egress_for($l)[] | select(any(.to[]?; .podSelector != null and selects(.podSelector; $t)))]
+      | if length > 0 then "yes" else "no" end' <<<"${NPJ}")"
+assert "ui: no ipBlock egress (the UI calls only the server)" 0 \
+  "$(jqr 'pod("metis-ui").labels as $l | [egress_for($l)[] | select(any(.to[]?; .ipBlock))] | length' <<<"${NPJ}")"
+for c in ui server; do
+  assert "${c}: accepts the ingress controller namespace" yes \
+    "$(jqr --arg c "metis-${c}" 'pod($c).labels as $l
+        | [ingress_for($l)[] | select(any(.from[]?; .namespaceSelector.matchLabels["kubernetes.io/metadata.name"] == "ingress-nginx"))]
+        | if length > 0 then "yes" else "no" end' <<<"${NPJ}")"
+done
+assert "server: accepts the UI pod (its /api proxy)" yes \
+  "$(jqr 'pod("metis-server").labels as $l | pod("metis-ui").labels as $t
+      | [ingress_for($l)[] | select(any(.from[]?; .podSelector != null and selects(.podSelector; $t)))]
+      | if length > 0 then "yes" else "no" end' <<<"${NPJ}")"
+assert "server: may reach the k8s-sse MCP namespace" yes \
+  "$(jqr "${SRV}"' as $l | [egress_for($l)[] | select(any(.to[]?; .namespaceSelector.matchLabels["kubernetes.io/metadata.name"] == "metis-mcp"))]
+      | if length > 0 then "yes" else "no" end' <<<"${NPJ}")"
+
+# Narrowing the HTTPS allow-list must actually narrow it.
+NARROW=$(render_json --set-json 'networkPolicy.egress.https.cidrs=["140.82.112.0/20"]')
+assert "narrowed: server HTTPS egress only to the listed CIDR" "140.82.112.0/20" \
+  "$(jqr 'pod("metis-server").labels as $l | [egress_for($l)[] | select(ports_of(.) | index(443)) | .to[]? | .ipBlock.cidr // empty] | unique | join(",")' <<<"${NARROW}")"
+# Extra egress: LDAP / OIDC-on-a-custom-port / SMTP, CIDR + ports, server only.
+EXTRA=$(render_json --set-json 'networkPolicy.egress.extra=[{"cidrs":["10.20.0.0/24"],"ports":[636,{"port":587,"protocol":"TCP"}]}]')
+assert "extra egress: server may reach 10.20.0.0/24 on 636 + 587" "587,636" \
+  "$(jqr 'pod("metis-server").labels as $l | [egress_for($l)[] | select(any(.to[]?; .ipBlock.cidr == "10.20.0.0/24")) | ports_of(.)[]] | sort | map(tostring) | join(",")' <<<"${EXTRA}")"
+assert "extra egress: the UI does not get it" 0 \
+  "$(jqr 'pod("metis-ui").labels as $l | [egress_for($l)[] | select(any(.to[]?; .ipBlock.cidr == "10.20.0.0/24"))] | length' <<<"${EXTRA}")"
+DBC=$(render_json --set-json 'networkPolicy.egress.databaseCidrs=["10.30.0.0/16"]')
+assert "databaseCidrs: server may reach 10.30.0.0/16 on 5432" "5432" \
+  "$(jqr 'pod("metis-server").labels as $l | [egress_for($l)[] | select(any(.to[]?; .ipBlock.cidr == "10.30.0.0/16")) | ports_of(.)[]] | map(tostring) | join(",")' <<<"${DBC}")"
+# A ServiceMonitor is useless if Prometheus cannot reach the server.
+MON=$(render_json --set serviceMonitor.enabled=true)
+assert "serviceMonitor: server accepts the monitoring namespace" yes \
+  "$(jqr 'pod("metis-server").labels as $l | [ingress_for($l)[] | select(any(.from[]?; .namespaceSelector.matchLabels["kubernetes.io/metadata.name"] == "monitoring"))]
+      | if length > 0 then "yes" else "no" end' <<<"${MON}")"
+
+# Cilium: FQDN-scoped HTTPS replaces the open ipBlock — the vanilla policies
+# still render (they carry the default-deny and the in-cluster rules).
+CJ=$(render_json --set networkPolicy.cilium.enabled=true)
+assert "cilium: no ipBlock 0.0.0.0/0 HTTPS rule (FQDNs scope it instead)" 0 \
+  "$(jqr '[netpols[] | .spec.egress // [] | .[] | select(any(.to[]?; .ipBlock.cidr == "0.0.0.0/0"))] | length' <<<"${CJ}")"
+assert "cilium: every pod still default-deny" "$(jqr '[pods[]] | length' <<<"${CJ}")" \
+  "$(jqr '. as $all | [pods[] | .labels as $l | select(($all | policies_for($l) | length) > 0)] | length' <<<"${CJ}")"
+assert "cilium: CNP selects the server pod" yes \
+  "$(jqr 'pod("metis-server").labels as $l | [.[] | select(.kind == "CiliumNetworkPolicy") | select(selects(.spec.endpointSelector; $l))]
+      | if length > 0 then "yes" else "no" end' <<<"${CJ}")"
+assert "cilium: CNP does NOT select the UI pod" no \
+  "$(jqr 'pod("metis-ui").labels as $l | [.[] | select(.kind == "CiliumNetworkPolicy") | select(selects(.spec.endpointSelector; $l))]
+      | if length > 0 then "yes" else "no" end' <<<"${CJ}")"
+assert "cilium: FQDN allow-list carries api.github.com and the AI gateways" "api.github.com,api.openai.com,generativelanguage.googleapis.com" \
+  "$(jqr '[.[] | select(.kind == "CiliumNetworkPolicy") | .spec.egress[] | .toFQDNs // [] | .[] | .matchName] | sort | join(",")' <<<"${CJ}")"
+assert "cilium: kube-apiserver reachable (k8s-sse MCP runtime)" yes \
+  "$(jqr '[.[] | select(.kind == "CiliumNetworkPolicy") | .spec.egress[] | .toEntities // [] | .[] | select(. == "kube-apiserver")]
+      | if length > 0 then "yes" else "no" end' <<<"${CJ}")"
+assert "cilium: DNS proxied for toFQDNs (dns matchPattern)" yes \
+  "$(jqr '[.[] | select(.kind == "CiliumNetworkPolicy") | .spec.egress[] | .toPorts[]? | .rules.dns // [] | .[]]
+      | if length > 0 then "yes" else "no" end' <<<"${CJ}")"
 
 # ---------------------------------------------------------------------------
 echo
