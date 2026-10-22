@@ -384,8 +384,10 @@ describe("#773 — degraded retrieval can never produce a confirmed gap", () => 
     // The incident run persisted `reasons: []` — a fully healthy-looking record.
     expect(capability()?.reasons).toContain("code-retrieval-degraded");
     expect(capability()?.codeRetrievalDegraded).toBe(true);
-    // NOT a duplicate of #769/#770: the agent completed and answered in valid JSON.
+    // NOT a duplicate of #770: the agent completed and answered in valid JSON.
     expect(capability()?.codeAgentFailed).toBe(false);
+    // #1388 — its searches FAILED, so this is retrieval's degradation, reported
+    // above; the code agent itself is not marked degraded for it.
     expect(capability()?.codeAgentDegraded).toBe(false);
   });
 
@@ -1062,7 +1064,11 @@ describe("#19 — a run that verified nothing is reported starved/degraded", () 
     expect(retrieval().degraded).toBe(true);
     expect(retrieval().unverifiedRequirements).toBe(16);
     expect(capability()?.codeRetrievalDegraded).toBe(true);
-    expect(capability()?.reasons).toContain("code-retrieval-degraded");
+    // #1388 — the agent stopped on its own leaving these requirements unchecked:
+    // that is ONE cause, reported once, as the code agent's early stop.
+    expect(capability()?.codeRetrievalDegraded).toBe(true);
+    expect(capability()?.reasons).toContain("code-agent-degraded");
+    expect(capability()?.reasons).not.toContain("code-retrieval-degraded");
   });
 
   it("degrades a run that searched enough but still verified most requirements as could-not-verify", async () => {
@@ -1091,7 +1097,11 @@ describe("#19 — a run that verified nothing is reported starved/degraded", () 
     expect(retrieval().starved).toBe(false);
     expect(retrieval().degraded).toBe(true);
     expect(retrieval().unverifiedRequirements).toBe(2);
-    expect(capability()?.reasons).toContain("code-retrieval-degraded");
+    // #1388 — the agent stopped on its own leaving these requirements unchecked:
+    // that is ONE cause, reported once, as the code agent's early stop.
+    expect(capability()?.codeRetrievalDegraded).toBe(true);
+    expect(capability()?.reasons).toContain("code-agent-degraded");
+    expect(capability()?.reasons).not.toContain("code-retrieval-degraded");
   });
 
   it("counts requirements the agent never reported on, as the page does (PR #37 review)", async () => {
@@ -1128,7 +1138,11 @@ describe("#19 — a run that verified nothing is reported starved/degraded", () 
     expect(retrieval().starved).toBe(false);
     expect(retrieval().unverifiedRequirements).toBe(13);
     expect(retrieval().degraded).toBe(true);
-    expect(capability()?.reasons).toContain("code-retrieval-degraded");
+    // #1388 — the agent stopped on its own leaving these requirements unchecked:
+    // that is ONE cause, reported once, as the code agent's early stop.
+    expect(capability()?.codeRetrievalDegraded).toBe(true);
+    expect(capability()?.reasons).toContain("code-agent-degraded");
+    expect(capability()?.reasons).not.toContain("code-retrieval-degraded");
   });
 
   it("does not change a single verdict (the check is report-side only)", async () => {

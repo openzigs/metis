@@ -1641,12 +1641,15 @@ describe("AnalysisOrchestrator.start", () => {
       seen.push("prose");
       return "I looked at the auth module and it seems fine, broadly speaking.";
     });
-    // One prose answer, then EXACTLY one JSON-only retry — bounded, not a loop.
-    expect(seen).toEqual(["prose", "retry"]);
+    // #1388 — a prose reply is first sent back while turns remain (the 3-turn cap
+    // allows two), then EXACTLY one JSON-only retry — bounded, not a loop.
+    expect(seen).toEqual(["prose", "prose", "prose", "retry"]);
     const code = codeRowOf(analysisId)!;
     expect(code.status).toBe("completed");
     expect(code.findings).toHaveLength(1);
-    expect(capabilityOf(analysisId)?.reasons).not.toContain("code-agent-degraded");
+    // #1388 — the answer was recovered, but the pass never searched the code and
+    // left REQ-001 unverified: a shallow pass, reported as degraded.
+    expect(capabilityOf(analysisId)?.reasons).toContain("code-agent-degraded");
   });
 
   it("#769 degrades with a recorded reason when the retry ALSO fails to emit JSON", async () => {
@@ -2057,8 +2060,11 @@ describe("AnalysisOrchestrator.start", () => {
 
     // Exactly ONE agentic requirements prompt, listing BOTH requirements together
     // (uniform depth — byte-identical to pre-#739 routing).
+    // #1388 — the pass's thin first answer is sent back once for coverage, and
+    // that turn re-sends the same task prompt: two calls, ONE prompt, one pass.
     const reqPrompts = userMessagesOf(provider).filter((u) => u.includes("BEGIN REQUIREMENTS"));
-    expect(reqPrompts).toHaveLength(1);
+    expect(reqPrompts).toHaveLength(2);
+    expect(reqPrompts[1]).toBe(reqPrompts[0]);
     expect(reqPrompts[0]).toContain("[REQ-VAGUE]");
     expect(reqPrompts[0]).toContain("[REQ-CRISP]");
 

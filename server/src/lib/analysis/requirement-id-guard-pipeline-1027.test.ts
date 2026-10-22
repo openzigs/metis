@@ -296,7 +296,9 @@ describe("clearUnknownRequirementIds", () => {
 describe("#1027 — the agentic code pass persists only the run's requirement ids", () => {
   it("clears a plan item's id from the loop's own answer and keeps a real one", async () => {
     const { seen } = await runPipeline({ code: () => NON_COMPLIANT });
-    expect(seen.code).toBe(1);
+    // #1388 — the answer leaves REQ-001 unverified far under budget, so the loop
+    // sends it back once before accepting the same answer.
+    expect(seen.code).toBe(2);
     const ids = persistedCodeIds();
     expect(Object.keys(ids)).toHaveLength(6);
     expectOnlyRunIds(ids, ["REQ-001"]);

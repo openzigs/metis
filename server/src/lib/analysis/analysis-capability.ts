@@ -128,6 +128,18 @@ export interface CapabilityTracker {
    */
   codeInvestigationCutShort: boolean;
   /**
+   * #1388 — a code pass stopped early on its own with working retrieval, so its
+   * `code-agent-degraded` reason stands in for #19's coverage-only
+   * `code-retrieval-degraded`. Optional so older fixtures stay valid.
+   */
+  codeAgentStoppedEarly?: boolean;
+  /**
+   * #1388 — some code pass's retrieval was degraded for another reason (failed
+   * searches, or checked-but-unverifiable requirements), so the stand-in above
+   * must not hide `code-retrieval-degraded`. Never persisted.
+   */
+  codeRetrievalDegradedOtherwise?: boolean;
+  /**
    * #1143 — malformed citations dropped from each agent's answer. Optional so a
    * tracker built without it (older call sites and fixtures) stays valid.
    */
@@ -202,6 +214,8 @@ export async function detectCodeAgentFailed(analysisId: string): Promise<boolean
  * ad hoc) so a stored record and a freshly-derived one always agree.
  */
 export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapability {
+  const codeAgentStoppedEarly =
+    tracker.codeAgentStoppedEarly === true && tracker.codeRetrievalDegradedOtherwise !== true;
   return {
     codeAnalysisRequested: tracker.codeAnalysisRequested,
     databaseAnalysisRequested: tracker.databaseAnalysisRequested,
@@ -224,6 +238,8 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
       ? { requirementInputAccount: tracker.requirementInputAccount }
       : {}),
     codeInvestigationCutShort: tracker.codeInvestigationCutShort,
+    // #1388 — omitted unless set, so a plain run's record is unchanged.
+    ...(codeAgentStoppedEarly ? { codeAgentStoppedEarly: true } : {}),
     // #1143 — omitted when nothing was dropped, so a clean run's record is unchanged.
     ...(tracker.droppedCitations && tracker.droppedCitations.length > 0
       ? { droppedCitations: tracker.droppedCitations.map((d) => ({ ...d })) }
@@ -245,6 +261,7 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
       newRequirementsProvided: tracker.newRequirementsProvided,
       requirementInputAccount: tracker.requirementInputAccount,
       codeInvestigationCutShort: tracker.codeInvestigationCutShort,
+      codeAgentStoppedEarly,
       droppedCitations: tracker.droppedCitations,
     }),
   };

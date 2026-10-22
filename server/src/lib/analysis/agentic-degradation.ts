@@ -94,6 +94,20 @@ export function isJsonFinalAnswer(text: string): boolean {
 }
 
 /**
+ * #298 — the limits the answer is validated against, stated where the model
+ * writes it. Pinned to `agentOutputSchema` by agentic-degradation.test.ts.
+ * #1388 — shared with the code pass's continuation nudge for a schema-invalid answer.
+ */
+export const FINDINGS_ANSWER_FIELD_LIMITS: readonly string[] = [
+  "Field formats and limits (the answer is validated against them):",
+  "- A document citation's `documentId` is the opaque id exactly as the context or a tool result gave it:",
+  "  10-64 characters, or `code-graph:<symbolId>` (at most 320). Never a file path, a filename or quoted text;",
+  "  cite a source file as `filePath` + `startLine` + `endLine` instead.",
+  "- `summary` at most 2048 characters; each finding's `title` at most 255 and `body` at most 4096.",
+  "- At most 50 findings, at most 20 citations per finding, and at most 20 `notes` of at most 512 characters each.",
+];
+
+/**
  * The instruction for the bounded, tool-free final-answer call (#769). The
  * conversation already holds every tool result, so this asks ONLY for
  * serialization — it must never invite more investigation.
@@ -108,14 +122,7 @@ export const FINAL_ANSWER_INSTRUCTION = [
   "Report only what you actually established. If your investigation was cut short, say so in `notes`",
   "and return the findings you DID ground — an empty `findings` array is acceptable, invented findings are not.",
   "",
-  // #298 — the limits the answer is validated against, stated where the model
-  // writes it. Pinned to `agentOutputSchema` by agentic-degradation.test.ts.
-  "Field formats and limits (the answer is validated against them):",
-  "- A document citation's `documentId` is the opaque id exactly as the context or a tool result gave it:",
-  "  10-64 characters, or `code-graph:<symbolId>` (at most 320). Never a file path, a filename or quoted text;",
-  "  cite a source file as `filePath` + `startLine` + `endLine` instead.",
-  "- `summary` at most 2048 characters; each finding's `title` at most 255 and `body` at most 4096.",
-  "- At most 50 findings, at most 20 citations per finding, and at most 20 `notes` of at most 512 characters each.",
+  ...FINDINGS_ANSWER_FIELD_LIMITS,
 ].join("\n");
 
 /**
