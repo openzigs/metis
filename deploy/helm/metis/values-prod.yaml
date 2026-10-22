@@ -140,5 +140,10 @@ networkPolicy:
   enabled: true
   ingressNamespaceSelector:
     kubernetes.io/metadata.name: ingress-nginx
+  # OPERATOR: on a CNI that enforces policy, the server reaches Postgres (RDS)
+  # ONLY through these CIDRs. Set them to the database subnets; empty, the
+  # server cannot reach its database, and NOTES.txt warns (#1374).
+  egress:
+    databaseCidrs: []
   cilium:
     enabled: false

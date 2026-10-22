@@ -71,6 +71,45 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 NetworkPolicy `ports:` entries from a values list (#1374). Each item is a bare
 port number (TCP) or a map `{port, protocol}`.
 */}}
+{{/*
+Operator-configured egress rules for ONE component (#1374). Pass dict
+{root, component}; component is "server" | "ui" | "embeddings" |
+"sql-lineage" | "backup". Emits:
+  - networkPolicy.egress.databaseCidrs on 5432, for the server and the backup
+    CronJob (a pg_dump override of backup.command needs the database);
+  - every networkPolicy.egress.extra entry whose `components` names this
+    component (default ["server"]).
+Empty output = the component gets nothing beyond its built-in rules.
+*/}}
+{{- define "metis.netpolComponentEgress" -}}
+{{- $root := .root -}}
+{{- $component := .component -}}
+{{- $egress := $root.Values.networkPolicy.egress -}}
+{{- if and $egress.databaseCidrs (has $component (list "server" "backup")) }}
+# Managed-DB egress (e.g. RDS subnets).
+- to:
+    {{- range $egress.databaseCidrs }}
+    - ipBlock:
+        cidr: {{ . | quote }}
+    {{- end }}
+  ports:
+    - port: 5432
+      protocol: TCP
+{{- end }}
+{{- range $egress.extra }}
+{{- if has $component (.components | default (list "server")) }}
+# networkPolicy.egress.extra — e.g. LDAP 389/636, OIDC on a non-443 port, SMTP.
+- to:
+    {{- range .cidrs }}
+    - ipBlock:
+        cidr: {{ . | quote }}
+    {{- end }}
+  ports:
+    {{- include "metis.netpolPorts" .ports | trim | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- end -}}
+
 {{- define "metis.netpolPorts" -}}
 {{- range . }}
 {{- if kindIs "map" . }}
@@ -170,6 +209,23 @@ through a probe template instead.
      UPLOAD_STORAGE_BACKEND=s3, DISCUSSION_RATE_LIMIT_BACKEND=postgres,
      SSO_STATE_BACKEND=postgres, SCHEDULER_LEADER_ELECTION=postgres. See docs/EKS_DEPLOYMENT.md §9b–§9f.
 {{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
+NOTES.txt warning (#1374): the NetworkPolicies select the pods, so on an
+enforcing CNI the server reaches Postgres only through
+networkPolicy.egress.databaseCidrs. A Postgres-backed install with that list
+empty starts but cannot reach its database.
+*/}}
+{{- define "metis.networkPolicyNotesWarning" -}}
+{{- $s := .Values.scaling -}}
+{{- $pg := or (hasPrefix "postgres" ($s.database.url | default "")) (eq ($s.vectorStore | default "") "pgvector") (has "postgres" (list $s.rateLimitBackend $s.ssoStateBackend $s.leaderElection)) -}}
+{{- if and .Values.networkPolicy.enabled $pg (not .Values.networkPolicy.egress.databaseCidrs) }}
+
+  ⚠️  NetworkPolicy is on and the server uses Postgres, but networkPolicy.egress.databaseCidrs
+     is empty: on a CNI that enforces policy the server cannot reach the database on 5432.
+     Set it to the database subnets (RDS), or to the Postgres pods' CIDR in-cluster.
 {{- end }}
 {{- end -}}
 

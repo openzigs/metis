@@ -406,7 +406,8 @@ embeddings:
     # HF_HUB_OFFLINE — the image sets "1" (air-gapped: baked weights only, zero
     # HuggingFace egress). Set "0" ONLY for a non-baked image that must download
     # at runtime, which then also needs egress to huggingface.co or an HF_ENDPOINT
-    # mirror allowed through the NetworkPolicy.
+    # mirror allowed through the NetworkPolicy: a networkPolicy.egress.extra entry
+    # with `components: [embeddings]` (#1374).
     HF_HUB_OFFLINE: ""
     # HF_ENDPOINT — internal HuggingFace mirror for corp networks. Ignored while
     # offline (an air-gapped process must not fetch from anywhere, mirror included).
@@ -867,14 +868,21 @@ networkPolicy:
     # CIDRs allowed for managed-DB egress (e.g. RDS subnets), port 5432.
     # Empty = no rule.
     databaseCidrs: []
-    # Further server egress, each entry `cidrs` + `ports` (a number = TCP, or
-    # {port, protocol}). For an identity provider or mail relay, e.g.:
+    # CIDRs allowed for managed-DB egress also reach the backup CronJob (a
+    # pg_dump override of backup.command).
+    #
+    # Further egress, each entry `cidrs` + `ports` (a number = TCP, or
+    # {port, protocol}) + optional `components` (default [server]; also ui,
+    # embeddings, sql-lineage, backup). For an identity provider or mail relay:
     #   - cidrs: ["10.20.0.15/32"]          # LDAPS
     #     ports: [636]
     #   - cidrs: ["10.20.0.40/32"]          # OIDC IdP on a non-443 port
     #     ports: [8443]
     #   - cidrs: ["10.20.0.25/32"]          # SMTP submission
     #     ports: [587]
+    #   - cidrs: ["10.30.0.10/32"]          # HF_ENDPOINT mirror, HF_HUB_OFFLINE=0
+    #     ports: [443]
+    #     components: [embeddings]
     extra: []
   cilium:
     enabled: false

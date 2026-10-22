@@ -30,6 +30,13 @@ policies still render and carry the default-deny and the in-cluster rules.
 {{- $fullname := include "metis.fullname" . -}}
 {{- $np := .Values.networkPolicy -}}
 {{- $cilium := $np.cilium.enabled -}}
+{{- range $np.egress.extra }}
+{{- range (.components | default list) }}
+{{- if not (has . (list "server" "ui" "embeddings" "sql-lineage" "backup")) }}
+{{- fail (printf "metis: networkPolicy.egress.extra[].components names %q; use server, ui, embeddings, sql-lineage or backup (#1374)" .) }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -184,27 +191,7 @@ spec:
     {{- end }}
     {{- end }}
     {{- end }}
-    {{- with $np.egress.databaseCidrs }}
-    # Managed-DB egress (e.g. RDS subnets).
-    - to:
-        {{- range . }}
-        - ipBlock:
-            cidr: {{ . | quote }}
-        {{- end }}
-      ports:
-        - port: 5432
-          protocol: TCP
-    {{- end }}
-    {{- range $np.egress.extra }}
-    # networkPolicy.egress.extra — e.g. LDAP 389/636, OIDC on a non-443 port, SMTP.
-    - to:
-        {{- range .cidrs }}
-        - ipBlock:
-            cidr: {{ . | quote }}
-        {{- end }}
-      ports:
-        {{- include "metis.netpolPorts" .ports | trim | nindent 8 }}
-    {{- end }}
+    {{- include "metis.netpolComponentEgress" (dict "root" . "component" "server") | trim | nindent 4 }}
 {{- end }}
 {{- if and .Values.server.enabled (or .Values.embeddings.enabled .Values.sqlLineage.enabled) }}
 ---
@@ -229,5 +216,31 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "metis.selectorLabels" (dict "root" . "component" "server") | nindent 14 }}
+{{- end }}
+{{- /*
+Opt-in egress for the other pods: `egress.extra` entries naming them in
+`components` (e.g. embeddings -> an HF_ENDPOINT mirror with HF_HUB_OFFLINE=0),
+and databaseCidrs for the backup CronJob (a pg_dump override). Rendered only
+when there is a rule to grant.
+*/}}
+{{- $enabled := dict "ui" .Values.ui.enabled "embeddings" .Values.embeddings.enabled "sql-lineage" .Values.sqlLineage.enabled "backup" .Values.backup.enabled }}
+{{- range $component := list "ui" "embeddings" "sql-lineage" "backup" }}
+{{- $rules := include "metis.netpolComponentEgress" (dict "root" $ "component" $component) | trim }}
+{{- if and (index $enabled $component) $rules }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-egress-%s" $fullname $component }}
+  labels:
+    {{- include "metis.labels" (dict "root" $ "component" "netpol") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "metis.selectorLabels" (dict "root" $ "component" $component) | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    {{- $rules | nindent 4 }}
+{{- end }}
 {{- end }}
 {{- end }}

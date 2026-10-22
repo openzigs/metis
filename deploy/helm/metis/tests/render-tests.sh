@@ -852,8 +852,8 @@ jqr() {
 # ---------------------------------------------------------------------------
 echo "Test 14: NetworkPolicy selects every METIS pod and admits external HTTPS — #1374"
 # ---------------------------------------------------------------------------
-# The policy used to select `app.kubernetes.io/part-of`, a label only the
-# Deployment OBJECT carries — no pod — so the default-deny isolated nothing, and
+# The policy used to select a label that the Deployment carries and the pod
+# template lacks it, so nothing was isolated, and
 # its HTTPS rule (`to: namespaceSelector: {}`) admitted no address outside the
 # cluster. Every profile, every pod, including a release not named "metis".
 NP_RENDERS=(
@@ -946,6 +946,43 @@ assert "extra egress: the UI does not get it" 0 \
 DBC=$(render_json --set-json 'networkPolicy.egress.databaseCidrs=["10.30.0.0/16"]')
 assert "databaseCidrs: server may reach 10.30.0.0/16 on 5432" "5432" \
   "$(jqr 'pod("metis-server").labels as $l | [egress_for($l)[] | select(any(.to[]?; .ipBlock.cidr == "10.30.0.0/16")) | ports_of(.)[]] | map(tostring) | join(",")' <<<"${DBC}")"
+# Opt-in egress for other pods: an HF_ENDPOINT mirror for embeddings, the
+# database for a pg_dump backup override.
+HFJ=$(render_json --set-json 'networkPolicy.egress.extra=[{"cidrs":["10.30.0.10/32"],"ports":[443],"components":["embeddings"]}]')
+assert "extra egress components=[embeddings]: embeddings may reach it" yes \
+  "$(jqr 'pod("metis-embeddings").labels as $l | [egress_for($l)[] | select(any(.to[]?; .ipBlock.cidr == "10.30.0.10/32"))]
+      | if length > 0 then "yes" else "no" end' <<<"${HFJ}")"
+assert "extra egress components=[embeddings]: the server does not get it" 0 \
+  "$(jqr 'pod("metis-server").labels as $l | [egress_for($l)[] | select(any(.to[]?; .ipBlock.cidr == "10.30.0.10/32"))] | length' <<<"${HFJ}")"
+assert "extra egress components=[embeddings]: sql-lineage does not get it" 0 \
+  "$(jqr 'pod("metis-sql-lineage").labels as $l | [egress_for($l)[] | select(any(.to[]?; .ipBlock))] | length' <<<"${HFJ}")"
+assert_contains "extra egress: an unknown component fails the render" "use server, ui, embeddings" \
+  "$(template --set-json 'networkPolicy.egress.extra=[{"cidrs":["10.0.0.1/32"],"ports":[1],"components":["embedings"]}]' || true)"
+BKJ=$(render_json --set backup.enabled=true --set-json 'networkPolicy.egress.databaseCidrs=["10.30.0.0/16"]')
+assert "databaseCidrs: the backup CronJob may reach 5432 (pg_dump override)" "5432" \
+  "$(jqr 'pod("metis-backup").labels as $l | [egress_for($l)[] | select(any(.to[]?; .ipBlock.cidr == "10.30.0.0/16")) | ports_of(.)[]] | map(tostring) | join(",")' <<<"${BKJ}")"
+assert "databaseCidrs: the UI does not get it" 0 \
+  "$(jqr 'pod("metis-ui").labels as $l | [egress_for($l)[] | select(any(.to[]?; .ipBlock))] | length' <<<"${BKJ}")"
+# Prod is Postgres-backed with NetworkPolicy on: without databaseCidrs the server
+# cannot reach its database on an enforcing CNI, so NOTES must say so.
+netpol_notes() {
+  local tmp
+  tmp=$(mktemp -d)
+  cp -R "${CHART_DIR}" "${tmp}/metis"
+  printf '%s\n' 'apiVersion: v1' 'kind: ConfigMap' 'metadata:' '  name: notes-probe' 'data:' \
+    '  warning: {{ include "metis.networkPolicyNotesWarning" . | toJson }}' \
+    >"${tmp}/metis/templates/zz-notes-probe.yaml"
+  helm template metis "${tmp}/metis" --show-only templates/zz-notes-probe.yaml "$@" 2>&1
+  rm -rf "${tmp}"
+}
+PROD_FLAGS=(-f "${CHART_DIR}/values-prod.yaml" --set scaling.database.url=postgres://u:p@db:5432/metis --set uploads.s3.bucket=b)
+assert_contains "NOTES.txt renders metis.networkPolicyNotesWarning" 'include "metis.networkPolicyNotesWarning"' \
+  "$(cat "${CHART_DIR}/templates/NOTES.txt")"
+assert_contains "NOTES warns: prod NetworkPolicy without databaseCidrs" "databaseCidrs" "$(netpol_notes "${PROD_FLAGS[@]}")"
+assert_not_contains "NOTES silent: prod with databaseCidrs" "databaseCidrs" \
+  "$(netpol_notes "${PROD_FLAGS[@]}" --set-json 'networkPolicy.egress.databaseCidrs=["10.0.10.0/24"]')"
+assert_not_contains "NOTES silent: default (SQLite) profile" "databaseCidrs" "$(netpol_notes)"
+
 # A ServiceMonitor is useless if Prometheus cannot reach the server.
 MON=$(render_json --set serviceMonitor.enabled=true)
 assert "serviceMonitor: server accepts the monitoring namespace" yes \

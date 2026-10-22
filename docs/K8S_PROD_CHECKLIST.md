@@ -48,7 +48,7 @@ The chart leaves three server settings to you, and the install does not work wit
 
 - [ ] **Default-deny ingress + default-deny egress** for every METIS pod: `metis-default-deny`, plus `metis-ui`, `metis-server` and `metis-sidecars` granting each component its traffic (chart README, "HPA / PDB / NetworkPolicy").  
   `kubectl get networkpolicy -n metis`
-- [ ] Only the server has external egress: HTTPS (`networkPolicy.egress.https`), the Kubernetes API, optional RDS CIDRs and `networkPolicy.egress.extra` (LDAP, OIDC on a non-443 port, SMTP). With Cilium, HTTPS is scoped to the AI gateway and GitHub FQDNs instead.
+- [ ] Only the server has external egress: HTTPS (`networkPolicy.egress.https`), the Kubernetes API, the database (`networkPolicy.egress.databaseCidrs`, **required** with Postgres: empty, the server cannot reach RDS) and `networkPolicy.egress.extra` (LDAP, OIDC on a non-443 port, SMTP). With Cilium, HTTPS is scoped to the AI gateway and GitHub FQDNs instead.
 - [ ] The policy actually selects the METIS pods. The command below must list every pod (#1374).  
   `kubectl get pods -n metis -l "$(kubectl get networkpolicy -n metis metis-default-deny -o jsonpath='{.spec.podSelector.matchLabels}' | jq -r 'to_entries|map("\(.key)=\(.value)")|join(",")')"`
 - [ ] Verified with a smoke test **from the server pod itself**. A bare `kubectl run … curlimages/curl` proves nothing: PSA `restricted` rejects it, and without the chart's labels the policy would never select it. With `networkPolicy.egress.https.cidrs` narrowed (or Cilium FQDNs on), expect a host outside the allow-list to fail, `https://api.github.com` to answer, and the embeddings sidecar to answer. With the default `0.0.0.0/0`, every HTTPS host answers:  

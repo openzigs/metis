@@ -332,8 +332,8 @@ eksctl create iamserviceaccount \
   |-----|---------------------|-----------|
   | `ui` | ingress controller namespace | server |
   | `server` | ingress controller namespace, `ui`; Prometheus with `serviceMonitor.enabled` | sidecars, the MCP namespace (`rbac.mcpNamespace`), Kubernetes API (`egress.kubeApiServer`, 6443), HTTPS (`egress.https`, `0.0.0.0/0:443`), `egress.databaseCidrs` (5432), `egress.extra` |
-  | `embeddings`, `sql-lineage` | `server` | nothing (both are air-gapped) |
-  | backup CronJob | nothing | nothing (it tars the mounted volumes) |
+  | `embeddings`, `sql-lineage` | `server` | nothing (both are air-gapped), unless an `egress.extra` entry names them in `components` |
+  | backup CronJob | nothing | `egress.databaseCidrs` (for a `pg_dump` override); the default command tars the mounted volumes and needs no network |
 
   Only the server leaves the cluster. External HTTPS is an `ipBlock`; narrow
   `networkPolicy.egress.https.cidrs` to restrict it. With
@@ -362,7 +362,14 @@ networkPolicy:
         ports: [8443]
       - cidrs: ["10.20.0.25/32"]     # SMTP submission
         ports: [587]
+      - cidrs: ["10.30.0.10/32"]     # HF_ENDPOINT mirror (HF_HUB_OFFLINE=0)
+        ports: [443]
+        components: [embeddings]     # default [server]
 ```
+
+**A Postgres-backed install must set `databaseCidrs`.** On a CNI that enforces
+policy, the server reaches the database only through it; `values-prod.yaml`
+leaves it empty for you to fill, and NOTES.txt warns while it is empty.
 
 A NodeLocal DNSCache (`169.254.20.10`) is not a `kube-dns` pod: add a policy of
 your own allowing UDP/TCP 53 to it for every pod of the release.
