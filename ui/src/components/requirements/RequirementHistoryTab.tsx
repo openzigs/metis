@@ -213,7 +213,8 @@ export function RequirementHistoryTab({
                       <span className="text-sm font-medium">Version {entry.version}</span>
                       <span className="ml-2 text-xs text-muted-foreground">
                         {formatDate(entry.createdAt)}
-                        {entry.actorId ? ` · ${entry.actorId}` : ""}
+                        {/* #1389 — a null actor is a write METIS made itself. */}
+                        {` · ${entry.actorId ?? "System"}`}
                       </span>
                       {entry.reason ? (
                         <span className="ml-2 text-xs italic text-muted-foreground">
