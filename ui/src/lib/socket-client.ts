@@ -20,11 +20,20 @@
  * stale cookie and the server rejects it `TOKEN_EXPIRED` — realtime silently
  * dies ~1h in. We subscribe to refresh-success and force a debounced
  * disconnect()+connect() so the NEXT handshake carries the FRESH cookie.
+ *
+ * #1414 — the server now closes a socket's transport when the access token it
+ * was opened with expires. The proactive refresh above normally re-handshakes
+ * the socket first. When it did not (a tab opened partway through the token's
+ * life, whose 50-minute timer runs from mount; a throttled background tab; a
+ * laptop that slept), the reconnect is refused — `TOKEN_EXPIRED`, or
+ * `UNAUTHORIZED` when the `metis.at` cookie, whose max-age equals the token's
+ * lifetime, has already left the browser — and that refusal now triggers one
+ * refresh, whose success re-handshakes the socket as above.
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { Socket } from "socket.io-client";
 import type { SocketAuthErrorEvent } from "@metis/shared";
-import { setOnRefreshSuccess } from "./api-client";
+import { refreshAccessToken, setOnRefreshSuccess } from "./api-client";
 import { browserSocketUrl } from "./socket-url";
 
 let socketRef: Socket | null = null;
@@ -143,6 +152,46 @@ function triggerTokenRefreshReconnect(): void {
   }, RECONNECT_DEBOUNCE_MS);
 }
 
+/**
+ * #1414 — the handshake refusals a token refresh can cure: an expired access
+ * cookie (`TOKEN_EXPIRED`), or none at all (`UNAUTHORIZED`: the cookie's
+ * max-age equals the token's lifetime, so by the reconnect after the server
+ * closed the transport at expiry it has usually gone). `UNAUTHORIZED` also
+ * means a session that ended or a user who is no longer active; the refresh
+ * then fails and nothing reconnects.
+ */
+const REFRESHABLE_HANDSHAKE_REFUSALS: ReadonlySet<string> = new Set([
+  "TOKEN_EXPIRED",
+  "UNAUTHORIZED",
+]);
+
+/**
+ * #1414 — at most one refresh per this window is started by a handshake
+ * refusal, so a refresh that succeeds but whose re-handshake is refused again
+ * cannot loop.
+ */
+const EXPIRED_TOKEN_REFRESH_COOLDOWN_MS = 30_000;
+let lastExpiredTokenRefreshAt: number | null = null;
+
+/**
+ * #1414 — the server refused the handshake for want of a live access cookie.
+ * Refresh it; a success fires `setOnRefreshSuccess`, which re-handshakes with
+ * the fresh cookie (`triggerTokenRefreshReconnect`). A failure leaves the
+ * socket down: the session is over, and the api-client's own 401 handling
+ * signs the user out on their next request.
+ */
+function refreshAfterExpiredHandshake(): void {
+  const now = Date.now();
+  if (
+    lastExpiredTokenRefreshAt !== null &&
+    now - lastExpiredTokenRefreshAt < EXPIRED_TOKEN_REFRESH_COOLDOWN_MS
+  ) {
+    return;
+  }
+  lastExpiredTokenRefreshAt = now;
+  void refreshAccessToken().catch(() => undefined);
+}
+
 /** Subscribe the token-refresh reconnect to the api-client's success signal once. */
 function ensureRefreshSuccessSubscription(): void {
   if (refreshSuccessRegistered) return;
@@ -172,6 +221,7 @@ function registerLifecycle(socket: Socket): void {
     // The manager keeps retrying after a connect_error (unless reconnection is
     // disabled), so treat this as "still trying" but surface the reason.
     setState({ status: "reconnecting", error: err?.message ?? "Connection error" });
+    if (REFRESHABLE_HANDSHAKE_REFUSALS.has(err?.message)) refreshAfterExpiredHandshake();
   });
 
   socket.on("disconnect", (reason: string) => {
@@ -212,9 +262,11 @@ function registerLifecycle(socket: Socket): void {
 }
 
 // Module-level so `closeSocket()` can remove exactly these from the Manager.
-// socket.io-client caches a Manager per URL and a later socket may reuse it,
-// and the Manager also carries the library's own internal subscriptions, so
-// clearing it wholesale is not safe (#1391).
+// The Manager also carries the library's own internal subscriptions, so
+// clearing it wholesale is not safe (#1391). A later socket does not reuse this
+// Manager: socket.io-client 4.8.4's `lookup()` makes a new one whenever the
+// cached Manager already holds the namespace (`cache[id].nsps`), and a Manager
+// never forgets one.
 function onManagerReconnectAttempt(): void {
   setState({ status: "reconnecting" });
 }
@@ -267,10 +319,10 @@ function getSocket(): Promise<Socket> {
 /**
  * Close the shared socket and forget it, so the next `getSocket()` opens a new
  * one (#1391). Called whenever the session ends: on sign-out, and when a failed
- * token refresh clears the user (auth-context.tsx). The server checks the JWT
- * only at the handshake, so a socket left open would stay authenticated as the
- * old user, and a different user signing in within the same tab would inherit
- * it. An attempt still loading when this runs opens nothing and rejects with
+ * token refresh clears the user (auth-context.tsx). A socket left open would
+ * stay authenticated as the old user until the server closes it (#1414: on
+ * logout, or when its token expires), and a different user signing in within
+ * the same tab would inherit it. An attempt still loading when this runs opens nothing and rejects with
  * `SocketClosedError`.
  */
 export function closeSocket(): void {
@@ -281,6 +333,9 @@ export function closeSocket(): void {
     reconnectDebounceTimer = null;
   }
   renewingForToken = false;
+  // #1414 — the refusal cooldown belongs to the session that ended: the next
+  // session's first refused handshake must be able to refresh at once.
+  lastExpiredTokenRefreshAt = null;
   const socket = socketRef;
   socketRef = null;
   if (socket) {
@@ -353,6 +408,7 @@ export function __resetSocketStatusForTests(): void {
   setOnRefreshSuccess(null);
   refreshSuccessRegistered = false;
   renewingForToken = false;
+  lastExpiredTokenRefreshAt = null;
   if (reconnectDebounceTimer !== null) {
     clearTimeout(reconnectDebounceTimer);
     reconnectDebounceTimer = null;
@@ -375,7 +431,13 @@ export function __triggerTokenRefreshReconnectForTests(): void {
  * do this with `vi.mock` alone: when two dynamic imports of a mocked module
  * are in flight at once, it resolves the second to the real module.
  * `__resetSocketStatusForTests` restores the real import.
+ *
+ * Refuses in a production build, where it would let any code that can import
+ * this module swap the realtime client.
  */
 export function __setSocketIoLoaderForTests(loader: () => Promise<SocketIoModule>): void {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("__setSocketIoLoaderForTests is not available in production");
+  }
   loadSocketIo = loader;
 }

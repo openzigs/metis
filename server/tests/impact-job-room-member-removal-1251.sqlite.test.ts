@@ -71,7 +71,8 @@ type MetisIOServer = import("../src/lib/socket/server.js").MetisIOServer;
 // ── The in-process transport ────────────────────────────────────────────────
 interface FakeSocket {
   id: string;
-  data: { user: AuthPayload };
+  // #1414 — a socket also carries its token's session; no expiry here.
+  data: { user: AuthPayload; session: { sid: undefined; exp: undefined } };
   rooms: Set<string>;
   inbox: Array<{ event: string; payload: unknown }>;
   nsp: { server: MetisIOServer };
@@ -137,7 +138,7 @@ function connect(who: Who) {
   const id = `sock-${who}-${++seq}`;
   const s: FakeSocket = {
     id,
-    data: { user: payload(who) },
+    data: { user: payload(who), session: { sid: undefined, exp: undefined } },
     rooms: new Set([id, userRoom(who)]),
     inbox: [],
     nsp: { server: io },

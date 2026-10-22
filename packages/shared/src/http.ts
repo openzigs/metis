@@ -22,6 +22,13 @@ export interface AuthPayload {
   authMode?: string;
   /** Whether MFA was confirmed via SSO amr/AuthnContext claims. */
   mfaPassed?: boolean;
+  /**
+   * #1414 — the sign-in session this token belongs to (a ULID minted at login
+   * and carried through every refresh). Live sockets are bound to it, so a
+   * logout closes that session's sockets and no other session's. Absent on a
+   * token issued before #1414.
+   */
+  sid?: string;
   iat?: number;
   exp?: number;
 }
