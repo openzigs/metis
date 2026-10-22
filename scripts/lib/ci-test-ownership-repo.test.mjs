@@ -109,7 +109,8 @@ describe("CI unit-suite ownership (#4)", () => {
     const primary = (/** @type {string} */ pkg) =>
       (owners.get(pkg) ?? []).filter((j) => !(j in VARIANT_JOBS));
     expect(primary("@metis/ui")).toEqual(["ui"]);
-    expect(primary("@metis/server")).toEqual(["server"]);
+    // #1411: the SQLite suite runs sharded in `server-unit`; `server` keeps the Chromium suite.
+    expect(primary("@metis/server")).toEqual(["server-unit"]);
     expect(primary("@metis/shared")).toEqual(["api"]);
   });
 });
