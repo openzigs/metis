@@ -12,7 +12,7 @@
 -- `users.authSource` records the provider kind an account belongs to. Existing
 -- rows are backfilled from what the database knows: a user whose every recorded
 -- login (`audit_logs`, action `user.login`) came through one SSO mode gets that
--- mode. Everything else stays NULL = legacy, which only the deployment's
+-- mode; a SCIM-provisioned one gets `scim`. Everything else stays NULL = legacy, which only the deployment's
 -- AUTH_MODE provider may claim by username on its next sign-in — the provider
 -- that created those rows before SSO could be configured beside it.
 --
@@ -70,3 +70,9 @@ WHERE "authSource" IS NULL
     WHERE a."actorId" = "users"."id" AND a."action" = 'user.login'
       AND (a."metadata" IS NULL OR a."metadata" NOT LIKE '%"mode":"saml"%')
   );
+
+-- Backfill: an account SCIM provisioned (and no SSO login above placed) is the
+-- IdP's: the AUTH_MODE provider claims it by username at first sign-in,
+-- without the verified-e-mail gate that applies to rows of unknown provenance.
+UPDATE "users" SET "authSource" = 'scim'
+WHERE "authSource" IS NULL AND "authRoleAuthority" = 'scim';

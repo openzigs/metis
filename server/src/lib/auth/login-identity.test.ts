@@ -146,6 +146,12 @@ describe("usernameClaimVerdict", () => {
     expect(usernameClaimVerdict(unbound("saml"), OIDC, "oidc")).toBe("other_provider");
     expect(usernameClaimVerdict(unbound(null), OIDC, "ldap", email)).toBe("other_provider");
     expect(usernameClaimVerdict(unbound(null), OIDC, null, email)).toBe("other_provider");
+    // A SCIM row is the IdP's: AUTH_MODE's provider claims it, with no e-mail gate.
+    const saml = { provider: "saml", issuer: "urn:idp", subject: "n" } as const;
+    expect(usernameClaimVerdict(unbound("scim"), saml, "saml", null)).toBe("claim");
+    expect(usernameClaimVerdict(unbound("scim"), OIDC, "oidc", null)).toBe("claim");
+    expect(usernameClaimVerdict(unbound("scim"), OIDC, "ldap", email)).toBe("other_provider");
+    expect(usernameClaimVerdict(unbound("scim"), OIDC, null, email)).toBe("other_provider");
     // A directory AUTH_MODE claims its legacy rows by name, as before.
     const ldap = { provider: "ldap", issuer: "ldap", subject: "name:a" } as const;
     expect(usernameClaimVerdict(unbound(null), ldap, "ldap")).toBe("claim");

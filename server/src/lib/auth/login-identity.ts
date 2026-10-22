@@ -85,6 +85,12 @@ export const SAML_TRANSIENT_SUBJECT_PREFIX = "urn:metis:saml:transient-username:
 
 const SSO_KINDS: readonly string[] = ["oidc", "saml"];
 
+/**
+ * `users.authSource` of an account SCIM provisioned and nobody has signed in as
+ * yet (`routes/scim.ts`). Not a sign-in kind: it marks the row as the IdP's.
+ */
+export const SCIM_AUTH_SOURCE = "scim";
+
 function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
@@ -172,6 +178,11 @@ export function usernameClaimVerdict(
     )
       ? "other_subject"
       : "other_provider";
+  }
+  if (existing.authSource === SCIM_AUTH_SOURCE) {
+    // Provisioned by the IdP over SCIM: the AUTH_MODE provider signs those users
+    // in, so it claims the row by username — no e-mail gate (SAML has none).
+    return identity.provider === primaryKind ? "claim" : "other_provider";
   }
   if (existing.authSource !== null) {
     return existing.authSource === identity.provider ? "claim" : "other_provider";

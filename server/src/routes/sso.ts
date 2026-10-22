@@ -143,7 +143,7 @@ async function readWorkspaceIds(userId: string): Promise<string[]> {
  * unknown provenance (#1395). Null when AUTH_MODE resolves to nothing usable
  * (the factory refuses mock in production), so such accounts stay unclaimed.
  */
-function primaryAuthKind(): string | null {
+export function primaryAuthKind(): string | null {
   try {
     return getAuthProvider().name;
   } catch {

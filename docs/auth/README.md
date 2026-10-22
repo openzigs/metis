@@ -220,9 +220,12 @@ A sign-in is resolved in this order
 2. No account has the username: a new account, bound to the identity.
 3. An account has the username but no identity yet (created before this
    change, by SCIM, or by the seed): the sign-in claims it only if the account
-   belongs to the same provider kind (`users.authSource`). An account whose kind
-   is unknown (`authSource` NULL) can be claimed only by the `AUTH_MODE`
-   provider:
+   belongs to the same provider kind (`users.authSource`). An account SCIM
+   provisioned (`authSource` `scim`) belongs to the IdP that provisioned it,
+   so the `AUTH_MODE` provider claims it by username, with no e-mail check —
+   SCIM plus SAML (or OIDC without `email_verified`) works as before. An
+   account whose kind is unknown (`authSource` NULL: created before this
+   change, or by the seed) can be claimed only by the `AUTH_MODE` provider:
    - LDAP or mock claim it by username, as they always have;
    - OIDC claims it only when the IdP asserts `email_verified: true` and that
      e-mail equals the account's e-mail (case- and NFKC-folded; an address NFKC
@@ -239,12 +242,13 @@ A sign-in is resolved in this order
 A **disabled or deleted** account is refused with `403 ACCOUNT_DISABLED` and
 never written on the login path, by any of these steps. When SCIM re-provisions
 a deleted username, the revived account drops the deleted person's identities
-and provider (`authSource` NULL): it is a new person, and the old IdP account
-cannot sign in as them.
+and provider (`authSource` becomes `scim`): it is a new person, and the old
+IdP account cannot sign in as them.
 
 The upgrade migration fills `users.authSource` from the audit log: an account
 whose every recorded login came through OIDC is marked `oidc`, through SAML
-`saml`. Every other existing account stays NULL and is claimed as in step 3 at
+`saml`; an account SCIM provisioned is marked `scim`. Every other existing
+account stays NULL and is claimed as in step 3 at
 its next sign-in. If such an account actually signs in through another
 provider, link it as below.
 
@@ -279,8 +283,8 @@ That is deliberate: nothing proves the new IdP's `alice` is the directory's
    export to METIS usernames), run `link-identity-cli.ts link` for each.
    Until linked, the user cannot sign in through the new provider.
 
-Accounts still unbound (`authSource` NULL, for example seeded or SCIM-provisioned
-ones) follow step 3 above under the new `AUTH_MODE`.
+Accounts still unbound (`authSource` NULL or `scim`, for example seeded or
+SCIM-provisioned ones) follow step 3 above under the new `AUTH_MODE`.
 
 ### LDAP — admin-API runtime override
 

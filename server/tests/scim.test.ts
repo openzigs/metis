@@ -158,9 +158,9 @@ describe("SCIM role authority persistence", () => {
       expect(response.status).toBe(201);
       expect(db.user.upsert).toHaveBeenCalledWith({
         where: { username: user.username },
-        create: expect.objectContaining(authority),
-        // #1395 — a revived username is a new person: no provider, no identities.
-        update: expect.objectContaining({ ...authority, deletedAt: null, authSource: null }),
+        create: expect.objectContaining({ ...authority, authSource: "scim" }),
+        // #1395 — the IdP's row; a revived username is a new person: no old provider, no identities.
+        update: expect.objectContaining({ ...authority, deletedAt: null, authSource: "scim" }),
       });
       expectProviderCleanup();
       expect(db.userRole.deleteMany).toHaveBeenCalledTimes(1);

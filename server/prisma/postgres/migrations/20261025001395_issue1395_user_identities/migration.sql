@@ -7,7 +7,8 @@
 -- login is looked up by that key first, and a username already bound to another
 -- provider's identity refuses the sign-in. `users.authSource` records the
 -- provider kind an account belongs to: a user whose every recorded login came
--- through one SSO mode is backfilled to that mode, the rest stay NULL = legacy,
+-- through one SSO mode is backfilled to that mode, a SCIM-provisioned one to
+-- `scim`, the rest stay NULL = legacy,
 -- which only the deployment's AUTH_MODE provider may claim by username.
 --
 -- Structural DDL is idempotent (#556), so the full history applies from empty.
@@ -75,3 +76,9 @@ WHERE "authSource" IS NULL
     WHERE a."actorId" = "users"."id" AND a."action" = 'user.login'
       AND (a."metadata" IS NULL OR a."metadata" NOT LIKE '%"mode":"saml"%')
   );
+
+-- Backfill: an account SCIM provisioned (and no SSO login above placed) is the
+-- IdP's: the AUTH_MODE provider claims it by username at first sign-in,
+-- without the verified-e-mail gate that applies to rows of unknown provenance.
+UPDATE "users" SET "authSource" = 'scim'
+WHERE "authSource" IS NULL AND "authRoleAuthority" = 'scim';

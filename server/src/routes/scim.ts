@@ -13,6 +13,7 @@ import { prisma } from "../lib/prisma.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { AppError } from "../middleware/error-handler.js";
 import { revokeAllUserSessions } from "../lib/auth/jwt.js";
+import { SCIM_AUTH_SOURCE } from "../lib/auth/login-identity.js";
 import { disconnectUserSockets, reconnectUserSockets } from "../lib/socket/user-disconnect.js";
 import type {
   SCIMUser,
@@ -234,8 +235,9 @@ export function scimRouter(): Router {
             deletedAt: null,
             authRolesInitializedAt: new Date(),
             authRoleAuthority: "scim",
-            // #1395 — a revived username is a new person: it belongs to no provider yet.
-            authSource: null,
+            // #1395 — a revived username is a new person: whatever provider the deleted
+            // one belonged to is dropped, and the row is the IdP's again (SCIM_AUTH_SOURCE).
+            authSource: SCIM_AUTH_SOURCE,
           },
           create: {
             username: body.userName,
@@ -244,6 +246,8 @@ export function scimRouter(): Router {
             status: body.active !== false ? "active" : "disabled",
             authRolesInitializedAt: new Date(),
             authRoleAuthority: "scim",
+            // #1395 — the IdP's row: the AUTH_MODE provider claims it at first sign-in.
+            authSource: SCIM_AUTH_SOURCE,
           },
         });
         // Re-provisioning must not expose provider grants left on a deleted user.

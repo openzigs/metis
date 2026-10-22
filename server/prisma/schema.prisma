@@ -129,8 +129,10 @@ model User {
   authRolesInitializedAt DateTime?
   authRoleAuthority      String    @default("unknown") // unknown|provider|revoked|scim|explicit
   /// #1395 — the kind of sign-in provider this account belongs to
-  /// (mock|ldap|oidc|saml). Null = a legacy row whose provider is unknown: only
-  /// the deployment's AUTH_MODE provider may claim it, by username.
+  /// (mock|ldap|oidc|saml), or `scim` for an IdP-provisioned row nobody has signed
+  /// in as yet (the AUTH_MODE provider claims it). Null = a legacy row whose
+  /// provider is unknown: only the AUTH_MODE provider may claim it, and an SSO one
+  /// only on a verified matching e-mail (`login-identity.ts`).
   authSource             String?
   passwordHash           String? // null when SSO-only
   createdAt    DateTime  @default(now())

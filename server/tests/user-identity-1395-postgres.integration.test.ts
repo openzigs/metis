@@ -88,6 +88,10 @@ describe.runIf(enabled)("#1395 user identities on real Postgres (integration)", 
       await login("l3", "mixed", { username: "mixed", mode: "oidc" });
       await login("l4", "mixed", { username: "mixed" });
       await login("l5", "password", { username: "password", mode: "ldap" });
+      await q(
+        `INSERT INTO "users" ("id","username","displayName","email","authRoleAuthority","updatedAt")
+         VALUES ('scim_new','scim_new','s','scim_new@corp.test','scim', now())`,
+      );
       await q(readFileSync(MIGRATION, "utf8"));
     });
 
@@ -106,6 +110,7 @@ describe.runIf(enabled)("#1395 user identities on real Postgres (integration)", 
         oidc_only: "oidc",
         password: null,
         saml_only: "saml",
+        scim_new: "scim",
       });
       const { rows: tables } = await q<{ n: string }>(
         `SELECT count(*) AS n FROM information_schema.tables
@@ -120,7 +125,7 @@ describe.runIf(enabled)("#1395 user identities on real Postgres (integration)", 
       const { rows } = await q<{ n: string }>(
         `SELECT count(*) AS n FROM "users" WHERE "authSource" IS NOT NULL`,
       );
-      expect(Number(rows[0].n)).toBe(2);
+      expect(Number(rows[0].n)).toBe(3);
     });
   });
 

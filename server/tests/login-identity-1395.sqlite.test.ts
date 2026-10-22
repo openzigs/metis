@@ -432,6 +432,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const fresh = await samlLogin("judy@saml.test", "judy");
       vi.unstubAllEnvs();
       expect(refused.status).toBe(409);
+      // No usable AUTH_MODE kind: refused as another provider's row, not on the e-mail gate.
+      expect(refused.body.error.details).toEqual({ reason: "other_provider" });
       expect(fresh.status).toBe(302);
       expect(
         await db.userIdentity.count({ where: { provider: "saml", subject: "ivan@saml.test" } }),
@@ -573,7 +575,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         where: { id: patId },
         include: { identities: true },
       });
-      expect(revived).toMatchObject({ deletedAt: null, authSource: null, identities: [] });
+      expect(revived).toMatchObject({ deletedAt: null, authSource: "scim", identities: [] });
 
       // The deleted person's IdP account no longer signs in as the new pat.
       const again = await oidcLogin({
@@ -583,6 +585,50 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         name: "Old Pat",
       });
       expect(again.status).toBe(409);
+      __resetScimTokens();
+    });
+
+    it("SCIM-provisioned users sign in through an SSO AUTH_MODE with no e-mail gate (round-2 panel)", async () => {
+      __resetScimTokens();
+      addScimToken("scim-1395");
+      const scim = express();
+      scim.use(express.json());
+      scim.use("/scim/v2", scimRouter());
+      scim.use(errorHandler);
+      const provision = (userName: string) =>
+        request(scim)
+          .post("/scim/v2/Users")
+          .set("Authorization", "Bearer scim-1395")
+          .send({ userName, emails: [{ value: `${userName}@corp.test` }] });
+      expect((await provision("quinn")).status).toBe(201);
+      expect((await provision("rosa")).status).toBe(201);
+      const quinn = await db.user.findUniqueOrThrow({ where: { username: "quinn" } });
+      expect(quinn.authSource).toBe("scim");
+
+      // SAML asserts no email_verified — the IdP that provisioned quinn signs quinn in.
+      vi.stubEnv("AUTH_MODE", "saml");
+      __resetAuthProvider();
+      const acs = await samlLogin("quinn@corp.test", "quinn");
+      expect(acs.status).toBe(302);
+      expect((await me(accessCookie(acs))).id).toBe(quinn.id);
+
+      // OIDC without email_verified likewise claims the SCIM row.
+      vi.stubEnv("AUTH_MODE", "oidc");
+      __resetAuthProvider();
+      const rosa = await oidcLogin({
+        sub: "oidc-rosa",
+        preferredUsername: "rosa",
+        email: "rosa@corp.test",
+        name: "Rosa",
+        emailVerified: false,
+      });
+      expect(rosa.status).toBe(302);
+      expect(
+        await db.user.findUniqueOrThrow({
+          where: { username: "rosa" },
+          select: { authSource: true },
+        }),
+      ).toEqual({ authSource: "oidc" });
       __resetScimTokens();
     });
 
@@ -636,6 +682,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           [id, actorId, actorId, metadata ? JSON.stringify(metadata) : null],
         );
       for (const id of ["oidc_only", "saml_only", "mixed", "password", "never", "oidc_a"]) user(id);
+      // SCIM-provisioned: one never signed in, one whose SAML logins place it first.
+      for (const id of ["scim_new", "scim_saml"]) {
+        user(id);
+        sqlite.exec(`UPDATE "users" SET "authRoleAuthority" = 'scim' WHERE "id" = ?`, [id]);
+      }
+      login("l7", "scim_saml", { username: "scim_saml", role: "reader", mode: "saml" });
       login("l1", "oidc_only", { username: "oidc_only", role: "reader", mode: "oidc" });
       login("l2", "oidc_only", { username: "oidc_only", role: "reader", mode: "oidc" });
       login("l3", "saml_only", { username: "saml_only", role: "reader", mode: "saml" });
@@ -657,7 +709,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite?.cleanup();
     });
 
-    it("backfills a single-mode SSO history and leaves everything else legacy (null)", async () => {
+    it("backfills a single-mode SSO history, then SCIM rows, and leaves everything else legacy (null)", async () => {
       const rows = await db.user.findMany({
         select: { username: true, authSource: true },
         orderBy: { username: "asc" },
@@ -669,6 +721,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         oidc_only: "oidc",
         password: null,
         saml_only: "saml",
+        scim_new: "scim",
+        scim_saml: "saml",
       });
       expect(await db.userIdentity.count()).toBe(0);
     });
