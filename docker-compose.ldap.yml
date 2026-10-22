@@ -40,7 +40,8 @@ services:
       # Host 4400 -> container 1389 (bitnami's non-privileged LDAP port). 4400 is
       # chosen so it never collides with the METIS server (:4000), the SAML mock
       # IdP (:4500), or Keycloak (:4600).
-      - "4400:1389"
+      # Loopback only: the directory's admin password is the harness default.
+      - "127.0.0.1:4400:1389"
     environment:
       # Root suffix / baseDN of the directory tree (matches the LDIF + the
       # AUTH_LDAP_BASE_DN the harness prints).
