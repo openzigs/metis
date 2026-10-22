@@ -31,6 +31,7 @@ import type {
   SpecKitHandoffRecord,
   LedgerTokens,
   RequirementSourceDivergence,
+  RequirementCriteriaProposal,
   SharedCriteriaRecord,
 } from "@metis/shared";
 
@@ -251,6 +252,11 @@ export interface RequirementSummary {
    * requirement diverged from it. Null or absent: not diverged.
    */
   sourceDivergence?: RequirementSourceDivergence | null;
+  /**
+   * Issue #1389 — criteria a re-synthesis suggested in place of the approved
+   * ones, which the requirement kept. Null or absent: none pending.
+   */
+  criteriaProposal?: RequirementCriteriaProposal | null;
 }
 
 export interface AnalysisListItem {
@@ -750,6 +756,16 @@ export const analysisApi = {
     apiFetch<{ approvedCount: number; promotion: PromotionOutcome }>(
       `/projects/${projectId}/analyses/${analysisId}/approvals/approve-all`,
       { method: "POST", body: reviewNote ? { reviewNote } : {} },
+    ),
+
+  /**
+   * Issue #1389 — "Keep approved criteria for all": dismiss every acceptance
+   * criteria suggestion a re-synthesis made for this analysis, in one request.
+   */
+  dismissAllCriteriaProposals: (projectId: string, analysisId: string) =>
+    apiFetch<{ dismissedCount: number }>(
+      `/projects/${projectId}/analyses/${analysisId}/criteria-proposals/dismiss-all`,
+      { method: "POST", body: {} },
     ),
 
   /**
