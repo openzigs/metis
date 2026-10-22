@@ -392,3 +392,64 @@ export function renderGroundingBlock(
     "=== END GROUNDING SOURCES ===",
   ].join("\n");
 }
+
+/**
+ * #1329 — a section prompt's grounding as two blocks, for a prompt prefix
+ * cache. `shared` carries the retrieved sources (repository excerpts, project
+ * documents, web digests): every batch of one section is given the same ones,
+ * so the prompt puts this block AHEAD of the batch's own facts and the batches
+ * share it as a cached prefix. `own` carries the module-facts sources, which
+ * are the batch's own, and goes after its facts, as the whole block did.
+ *
+ * With no retrieved source, `shared` is empty and `own` is exactly
+ * {@link renderGroundingBlock}'s block. Together the two hold every source once.
+ */
+export interface GroundingBlocks {
+  shared: string;
+  own: string;
+}
+
+export const NO_GROUNDING_BLOCKS: GroundingBlocks = { shared: "", own: "" };
+
+export function renderGroundingBlocks(
+  ctx: GroundingContext,
+  opts: { factsBlob?: string } = {},
+): GroundingBlocks {
+  if (ctx.isEmpty) return NO_GROUNDING_BLOCKS;
+  const retrieved = ctx.sources.filter((s) => s.kind !== "facts");
+  if (retrieved.length === 0) {
+    return { shared: "", own: renderGroundingBlock(ctx, opts) };
+  }
+  const facts = ctx.sources.filter((s) => s.kind === "facts");
+  const shared = renderGroundingBlock(
+    { sources: retrieved, sourceIds: new Set(retrieved.map((s) => s.sourceId)), isEmpty: false },
+    opts,
+  );
+  if (facts.length === 0) return { shared, own: "" };
+  const blob = opts.factsBlob ?? "";
+  const data = (text: string) => scrubWriterFenceLookalikes(text, "[REDACTED-FENCE]");
+  let referenced = 0;
+  const parts = facts.map((s) => {
+    const header = `[SOURCE id=${s.sourceId} kind=${s.kind} label=${JSON.stringify(data(s.label))}]`;
+    if (blob && blob.includes(s.text)) {
+      referenced++;
+      return `${header}\n(text: the "${data(s.text.split("\n", 1)[0])}" entry in EXTRACTED MODULE FACTS above)`;
+    }
+    return `${header}\n${data(s.text)}`;
+  });
+  const own = [
+    "=== GROUNDING SOURCES: MODULE FACTS ===",
+    "These are grounding sources too: cite them exactly as the retrieved sources above.",
+    ...(referenced > 0
+      ? [
+          "A `kind=facts` source listed without its text is the named MODULE entry in",
+          "EXTRACTED MODULE FACTS above; cite its `id` for claims drawn from that entry.",
+        ]
+      : []),
+    "",
+    parts.join("\n\n---\n\n"),
+    "",
+    "=== END GROUNDING SOURCES ===",
+  ].join("\n");
+  return { shared, own };
+}

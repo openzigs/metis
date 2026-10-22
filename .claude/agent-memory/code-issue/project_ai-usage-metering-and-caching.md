@@ -19,6 +19,8 @@ metadata:
 - bedrock-access-gateway reads an absent `extra_body.prompt_caching.system` / `.messages` key as its `ENABLE_PROMPT_CACHING` default. To stop a write, send an explicit `false`, and send it only on `bedrock-gateway`.
 - The waste came from per-item content sitting inside the cached prefix (grounding `messages`, gateway system prompts), not from parallel races or TTL. Top-level automatic caching puts the breakpoint on the last block, which is the per-item content here.
 - The OpenAI-compatible gateway reports cache reads only, never writes, so `pnpm cache:report` savings for gateway rows are an upper bound.
+- #1329: docs-gen section calls (80% of input) were ~3% cached. Facts are sliced per section and per batch, so they never share. Only a section's retrieved RAG excerpts (up to 60K chars) repeat across its batches, and those must lead the facts (`renderGroundingBlocks`). Measure with `server/scripts/docs-gen-prefix-report.ts`, which needs no model.
+- DeepSeek reads a prefix only once an earlier call has finished. On 2026-10-22, the first wave of 4 parallel batches read about 1.2k tokens; later batches read 25.7k. The next lever is a DeepSeek warm-up before the fan-out. The `needsPromptCacheWarmUp` check skips DeepSeek.
 - The docs-gen section prompt is a section-reuse input (`prompts` in `hashSectionInputs`). Any reorder rewrites stored sections once, and the `brd-before-1070*.json` replays must be regenerated (`WRITE_BEFORE_1070_FIXTURE=1`).
 
 Related: [[test-falsifiability-traps]], [[reader-brd-traps]].
