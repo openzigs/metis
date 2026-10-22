@@ -393,6 +393,111 @@ describe("findCodeIdentifiers — what it passes", () => {
   });
 });
 
+// #1223, from the 2026-10-22 DeepSeek reader-BRD re-run: the check reported
+// 0 in every section while Key Business Rules named the session cookie
+// constant. A run of capitals was not a hump, so a name ending (or starting)
+// in an acronym had too few humps to count.
+describe("findCodeIdentifiers — acronym runs are humps (#1223)", () => {
+  it("flags the live run's line: 3. **MinifluxSessionID** …", () => {
+    const markdown = [
+      "### Accounts",
+      "",
+      "1. A reader signs in with a username and password.",
+      "2. An administrator can disable an account.",
+      "3. **MinifluxSessionID** …",
+    ].join("\n");
+    expect(hits(markdown)).toEqual([{ kind: "pascal-case", text: "MinifluxSessionID" }]);
+    expect(codeIdentifierReport(markdown)).toEqual({
+      count: 1,
+      examples: [{ kind: "pascal-case", text: "MinifluxSessionID" }],
+    });
+  });
+
+  it.each<[string, string, CodeIdentifierHit]>([
+    [
+      "a name ending in an acronym",
+      "The cookie MinifluxSessionID is cleared.",
+      { kind: "pascal-case", text: "MinifluxSessionID" },
+    ],
+    [
+      "a name ending in a plural acronym",
+      "Each of the MinifluxSessionIDs is cleared.",
+      { kind: "pascal-case", text: "MinifluxSessionIDs" },
+    ],
+    [
+      "a name starting with an acronym",
+      "It is fetched with XMLHttpRequest.",
+      { kind: "pascal-case", text: "XMLHttpRequest" },
+    ],
+    [
+      "an acronym and one word",
+      "Requests go through the HTTPServer.",
+      { kind: "pascal-case", text: "HTTPServer" },
+    ],
+    [
+      "an acronym inside a name",
+      "It reads the FeedURLList.",
+      { kind: "pascal-case", text: "FeedURLList" },
+    ],
+    [
+      "lower camel case ending in an acronym",
+      "The link is checked by parseURL first.",
+      { kind: "camel-case", text: "parseURL" },
+    ],
+    [
+      "a name in __bold__",
+      "3. __MinifluxSessionID__ is cleared.",
+      { kind: "pascal-case", text: "MinifluxSessionID" },
+    ],
+    [
+      "a name in _italics_",
+      "The link is checked by _parseURL_ first.",
+      { kind: "camel-case", text: "parseURL" },
+    ],
+    [
+      "a snake_case name in __bold__",
+      "The __feed_id__ is kept.",
+      { kind: "snake-case", text: "feed_id" },
+    ],
+    [
+      "a name in ***bold italics***",
+      "***EntryStatusUnread*** is the default.",
+      { kind: "pascal-case", text: "EntryStatusUnread" },
+    ],
+  ])("flags %s", (_, markdown, expected) => {
+    expect(hits(markdown)).toEqual([expected]);
+  });
+
+  it.each<[string, string]>([
+    ["an all-caps format name", "Export your subscriptions as OPML."],
+    ["a protocol with a version", "Served over HTTP/2 or HTTP/3."],
+    ["an all-caps option a user picks", "Set the visibility to PUBLIC."],
+    ["acronyms in prose", "Each RSS feed has a URL, an ID and an API key."],
+    ["acronyms in bold", "**OPML**, **PUBLIC**, **RSS** and **URL**."],
+    ["plural acronyms", "Upload PDFs, paste URLs, list IDs and APIs."],
+    ["two-hump brands", "JavaScript, LinkTaco, YouTube and GitHub."],
+    ["two-hump brands in bold", "Share to **LinkTaco** or **YouTube**."],
+    [
+      "two-hump brands ending in an acronym",
+      "Stored in PostgreSQL, MySQL or NoSQL; queried by GraphQL.",
+    ],
+    ["brands with a lone capital", "Sign in with OAuth; an IoT device; a SaaS product; a PhD."],
+    ["acronym brands", "Stored in SQLite; watch on HBOMax or YouTubeTV."],
+    ["brands ending in OS", "On macOS, tvOS, watchOS or visionOS, and the phpBB forum."],
+    ["ordinary capitalised words", "**Accounts**: Readers, Administrators and Feeds."],
+    ["a two-hump name ending in an acronym", "Each SessionID is cleared."],
+  ])("passes %s", (_, markdown) => {
+    expect(hits(markdown)).toEqual([]);
+  });
+
+  it("reads a very long run of capitals and letters in linear time", () => {
+    const started = performance.now();
+    findCodeIdentifiers(`${"Ab".repeat(60_000)} ${"ABC".repeat(40_000)}_ ${"aB".repeat(60_000)}`);
+    findCodeIdentifiers(`${"_a".repeat(60_000)} ${"__".repeat(60_000)}`);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+});
+
 describe("codeIdentifierReport", () => {
   it("is zero with no examples for business prose", () => {
     expect(codeIdentifierReport("A reader follows feeds.")).toEqual({ count: 0, examples: [] });

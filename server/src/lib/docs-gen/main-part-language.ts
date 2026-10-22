@@ -190,28 +190,100 @@ const FILE_PATH_RE = new RegExp(
 const CALL_RE = /(?<![\w$.])([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\(([^()\n]{0,80})\)/g;
 const SNAKE_CASE_RE = /(?<![\w$])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![\w$])/g;
 /**
- * Lower camel case with at least two letters before the first capital and a
- * lower-case letter after it: `markAsRead`, but not iPhone, eBay or macOS.
+ * Lower camel case with at least two letters before the first capital, and a
+ * lower-case letter after it or two capitals at it: `markAsRead`, `parseURL`
+ * (#1223), but not iPhone or eBay, nor the brands in {@link CAMEL_CASE_BRANDS}
+ * (macOS).
  */
 const CAMEL_CASE_RE = /(?<![\w$])[a-z][a-z0-9]+([A-Z][A-Za-z0-9]*)(?![\w$])/g;
 /**
- * PascalCase of three or more humps, unquoted: `EntryStatusUnread`,
- * `MaxEntryLimit`. Brand and product names are almost all two humps
- * (PowerPoint, SharePoint, JavaScript, GitHub, LinkedIn, PayPal, YouTube) or
- * end in an acronym (PostgreSQL), and pass. The three-hump brands a reader is
- * likely to meet are in {@link PASCAL_CASE_BRANDS} (#1231); any other one is
- * flagged, a known false positive, rare in a requirements document.
+ * A capitalised word, unquoted, read as PascalCase by {@link pascalCaseHit}.
+ * Linear: only a word's first letter passes the look-behind, and the greedy
+ * run then ends at the word's end, or fails once on a `_` or `$` after it.
  */
-const PASCAL_CASE_RE = /(?<![\w$])(?:[A-Z][a-z0-9]+){3,}(?![\w$])/g;
-/** Brand and product names of three or more humps, never flagged. */
+const CAPITALISED_WORD_RE = /(?<![\w$])[A-Z][A-Za-z0-9]*(?![\w$])/g;
+/** Brand and product names that {@link pascalCaseHit} would flag, never flagged. */
 export const PASCAL_CASE_BRANDS: ReadonlySet<string> = new Set([
   "DuckDuckGo",
   "GoFundMe",
+  "HBOMax",
   "MyFitnessPal",
   "OpenStreetMap",
   "PlayStationPlus",
   "PowerBuilder",
+  "SQLite",
+  "YouTubeTV",
 ]);
+/** Lower-camel brand names ending in capitals, never flagged. */
+const CAMEL_CASE_BRANDS: ReadonlySet<string> = new Set([
+  "macOS",
+  "phpBB",
+  "tvOS",
+  "visionOS",
+  "watchOS",
+]);
+
+/** One hump of a name: a word (`Session`, `parse`) or an acronym of two or more capitals (`ID`, `URLs`). */
+interface Hump {
+  text: string;
+  acronym: boolean;
+}
+
+const isUpper = (c: string | undefined): boolean => c !== undefined && c >= "A" && c <= "Z";
+const isLower = (c: string | undefined): boolean => c !== undefined && c >= "a" && c <= "z";
+const isDigit = (c: string | undefined): boolean => c !== undefined && c >= "0" && c <= "9";
+
+/**
+ * #1223 — a name (letters and digits only) split into humps, in one pass. A
+ * run of capitals is an acronym hump, except its last capital when a
+ * lower-case letter follows, which starts the next word (`HTTPServer` is
+ * HTTP, Server; `OAuth` is O, Auth, and a lone capital is no acronym). A run
+ * followed by an `s` that ends the name or meets a capital is a plural
+ * acronym (`URLs`, `SessionIDs`). Digits join the hump before them.
+ */
+function humps(word: string): Hump[] {
+  const out: Hump[] = [];
+  let i = 0;
+  while (i < word.length) {
+    let j = i;
+    while (isUpper(word[j])) j += 1;
+    if (j - i >= 2) {
+      if (word[j] === "s" && (j + 1 === word.length || isUpper(word[j + 1]))) j += 1;
+      else if (isLower(word[j])) j -= 1;
+    }
+    if (j - i < 2) while (isLower(word[j]) || isDigit(word[j])) j += 1;
+    else while (isDigit(word[j])) j += 1;
+    out.push({ text: word.slice(i, j), acronym: /^[A-Z]{2}/.test(word.slice(i, j)) });
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * Whether a capitalised word is a PascalCase code name. It must hold a
+ * lower-case letter, so an acronym or an all-caps word (OPML, PUBLIC, URLs)
+ * never is. It is when it has three or more humps, an acronym counting as one
+ * in any position (`EntryStatusUnread`, `MinifluxSessionID`,
+ * `XMLHttpRequest`), or when an acronym leads a word of three or more letters
+ * (`HTTPServer`). Brand and product names are almost all two humps
+ * (JavaScript, YouTube, GitHub, LinkTaco) or end in an acronym (PostgreSQL,
+ * MySQL), and pass; the longer ones a reader is likely to meet are in
+ * {@link PASCAL_CASE_BRANDS} (#1231); any other one is flagged, a known false
+ * positive, rare in a requirements document.
+ */
+function pascalCaseHit(word: string): boolean {
+  if (!/[a-z]/.test(word) || PASCAL_CASE_BRANDS.has(word)) return false;
+  const parts = humps(word);
+  if (parts.length >= 3) return true;
+  return parts.length === 2 && parts[0].acronym && !parts[1].acronym && parts[1].text.length >= 3;
+}
+/**
+ * Emphasis written with underscores (`__bold__`, `_italic_`): an underscore
+ * run with a letter or digit on at most one side. Read past, so a name inside
+ * is read as if bare; an underscore inside a name (`feed_id`) is kept.
+ * Linear: one greedy run per match, and the look-arounds are one character.
+ */
+const UNDERSCORE_EMPHASIS_RE = /(?<![A-Za-z0-9])_+|_+(?![A-Za-z0-9])/g;
 /**
  * An HTTP method and a path, unquoted: `GET /v1/entries`. At least one path
  * character after the slash, so "GET / POST requests" names two methods, not
@@ -300,13 +372,17 @@ function blankFences(markdown: string, hits: Positioned[]): string {
  *     (`GET /v1/entries`); file paths with a source extension (any with a
  *     directory or a `:line`; bare, any but `.js` and one-letter ones); calls
  *     whose name is code-shaped (an underscore, a dot or an inner capital) or
- *     which take no arguments; `snake_case`; PascalCase of three or more
- *     humps (`EntryStatusUnread`); and `lowerCamelCase` with two or more
- *     letters before the first capital.
+ *     which take no arguments; then, with underscore emphasis (`__bold__`)
+ *     read past, `snake_case`; PascalCase of three or more humps, an acronym
+ *     run counting as one in any position (`EntryStatusUnread`,
+ *     `MinifluxSessionID`, `XMLHttpRequest`), or an acronym leading a word
+ *     (`HTTPServer`); and `lowerCamelCase` with two or more letters before
+ *     the first capital (`markAsRead`, `parseURL`). Bold and italics never
+ *     hide a name.
  *
  * Ordinary capitalised words, two-hump PascalCase brand names (GitHub,
- * PowerPoint, PostgreSQL) and the listed longer ones (MyFitnessPal),
- * acronyms, hyphenated words, `SCREAMING_SNAKE` settings, short slash labels
+ * LinkTaco, PostgreSQL) and the listed longer ones (MyFitnessPal, SQLite),
+ * acronyms and all-caps words (OPML, PUBLIC, URLs), hyphenated words, `SCREAMING_SNAKE` settings, short slash labels
  * (`read/unread`, `24/7`), two methods named together ("GET / POST"), URLs
  * without a scheme and plurals such as `user(s)` are never flagged.
  *
@@ -359,12 +435,15 @@ export function findCodeIdentifiers(markdown: string): CodeIdentifierHit[] {
   text = blank(text, CALL_RE, (m) => {
     if (/[_.$]|[a-z][A-Z]/.test(m[1]) || m[2].trim() === "") push("function-call")(m);
   });
+  text = blank(text, UNDERSCORE_EMPHASIS_RE);
   text = blank(text, SNAKE_CASE_RE, push("snake-case"));
-  text = blank(text, PASCAL_CASE_RE, (m) => {
-    if (!PASCAL_CASE_BRANDS.has(m[0])) push("pascal-case")(m);
+  text = blank(text, CAPITALISED_WORD_RE, (m) => {
+    if (pascalCaseHit(m[0])) push("pascal-case")(m);
   });
   blank(text, CAMEL_CASE_RE, (m) => {
-    if (/[a-z]/.test(m[1])) push("camel-case")(m);
+    if ((/[a-z]/.test(m[1]) || /^[A-Z]{2}/.test(m[1])) && !CAMEL_CASE_BRANDS.has(m[0])) {
+      push("camel-case")(m);
+    }
   });
   return hits.sort((a, b) => a.at - b.at).map(({ kind, text: t }) => ({ kind, text: t }));
 }
