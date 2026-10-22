@@ -204,4 +204,31 @@ describe("#1388 — with a continuation policy", () => {
     expect(result.finalResponse).toBe(ANSWER);
     expect(lastUserText(calls[2]!)).toBe(NUDGE);
   });
+
+  it("keeps an answer it sent back when the turns after it end without one", async () => {
+    // A usable answer is nudged; the model then calls a tool at the cap and the
+    // final-answer retry returns prose. The nudged answer must survive.
+    const { provider } = scripted([TOOL_CALL, ANSWER, TOOL_CALL, PROSE]);
+    const result = await runAgentLoop(provider, input, {
+      maxTurns: 3,
+      continuation: { maxNudges: 2, nudge: (t) => (t === ANSWER ? NUDGE : null) },
+      finalAnswerRetry: { instruction: "ANSWER NOW", isValidFinalAnswer: isJson },
+    });
+    expect(result.continuationNudges).toBe(1);
+    expect(result.finalAnswerRetry?.succeeded).toBe(false);
+    expect(result.finalResponse).toBe(ANSWER);
+    expect(result.hasFinalAnswer).toBe(true);
+    expect(result.salvageSource).toBeUndefined();
+  });
+
+  it("prefers a later usable answer over the one it sent back", async () => {
+    const later = JSON.stringify({ summary: "later", findings: [], notes: [] });
+    const { provider } = scripted([ANSWER, TOOL_CALL, later]);
+    const result = await runAgentLoop(provider, input, {
+      maxTurns: 5,
+      continuation: { maxNudges: 2, nudge: (t) => (t === ANSWER ? NUDGE : null) },
+      finalAnswerRetry: { instruction: "ANSWER NOW", isValidFinalAnswer: isJson },
+    });
+    expect(result.finalResponse).toBe(later);
+  });
 });

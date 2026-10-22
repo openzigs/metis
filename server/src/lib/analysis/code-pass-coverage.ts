@@ -44,6 +44,13 @@ export const COVERAGE_NUDGE_MAX_BUDGET_SHARE = 0.5;
  */
 export const SHALLOW_PASS_MAX_BUDGET_SHARE = 0.5;
 
+/**
+ * An answer is sent back for coverage only with at least this many turns left:
+ * a search, a read and the answer again. With fewer, the loop could end on a
+ * tool call and leave the run to the final-answer retry.
+ */
+export const COVERAGE_NUDGE_MIN_TURNS_LEFT = 3;
+
 /** How many unverified ids a coverage nudge names. */
 const NUDGE_ID_LIMIT = 15;
 
@@ -122,6 +129,8 @@ export function buildCodePassContinuation(input: {
       if (coverageNudged || input.requirementIds.length === 0) return null;
       const share = budgetShare(state.budgetUsed, state.budgetTotal);
       if (share === null || share >= COVERAGE_NUDGE_MAX_BUDGET_SHARE) return null;
+      // #1388 review — room to search, read and answer again; otherwise keep it.
+      if (state.turnsLeft < COVERAGE_NUDGE_MIN_TURNS_LEFT) return null;
       const findings = answerFindings(reply);
       if (!findings) return null;
       const unverified = unverifiedRequirementIds(findings, input.requirementIds);

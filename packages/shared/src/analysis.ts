@@ -2605,6 +2605,9 @@ export interface AnalysisCapability {
   /**
    * #769 — the code agent completed but could not produce a parseable JSON
    * answer, so its finding set is partial/empty (salvaged from the loop).
+   * #1388 — also set when the pass answered but ended shallow: on its own
+   * (not budget-cut) with most requirements unverified, or with starved
+   * retrieval under half its budget.
    */
   codeAgentDegraded?: boolean;
   /**

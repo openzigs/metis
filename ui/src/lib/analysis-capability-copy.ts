@@ -77,9 +77,11 @@ export const CAPABILITY_REASON_COPY: Record<AnalysisCapabilityReason, Capability
   },
   "code-agent-degraded": {
     title:
-      "Code analysis was cut short and returned only partial findings — some requirements were not fully investigated in code.",
+      "Code analysis returned only partial findings — some requirements were not fully investigated in code.",
+    // #1388 — also raised for a pass that stopped early far under its budget,
+    // where raising the budget would not help; the card's note says which.
     action:
-      "Re-run the analysis, or ask an administrator to raise ANALYSIS_AGENTIC_MAX_TURNS / ANALYSIS_AGENT_TOKEN_BUDGET so the code agent can finish.",
+      "The code agent's card on Agent output says why. Re-run the code investigation; if the note says it ran out of turns or tokens, ask an administrator to raise ANALYSIS_AGENTIC_MAX_TURNS / ANALYSIS_AGENT_TOKEN_BUDGET.",
   },
   // Issue #773 — the run LOOKED healthy (the code agent completed and answered),
   // but its searches did not work. This is the reason a BA most needs to see:

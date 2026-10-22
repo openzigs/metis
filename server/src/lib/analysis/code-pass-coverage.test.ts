@@ -7,6 +7,7 @@ import {
   assessShallowCodePass,
   buildCodePassContinuation,
   COVERAGE_NUDGE_MAX_BUDGET_SHARE,
+  COVERAGE_NUDGE_MIN_TURNS_LEFT,
   MAX_CONTINUATION_NUDGES,
 } from "./code-pass-coverage.js";
 import { isSchemaValidFinalAnswer } from "./agentic-degradation.js";
@@ -96,6 +97,15 @@ describe("buildCodePassContinuation", () => {
     const text = many.nudge(answer([]), state())!;
     expect(text).toContain("REQ-015, and 17 more)");
     expect(text).not.toContain("REQ-016");
+  });
+
+  it("accepts a thin answer with too few turns left to investigate", () => {
+    expect(
+      policy().nudge(answer([]), state({ turnsLeft: COVERAGE_NUDGE_MIN_TURNS_LEFT - 1 })),
+    ).toBeNull();
+    expect(
+      policy().nudge(answer([]), state({ turnsLeft: COVERAGE_NUDGE_MIN_TURNS_LEFT })),
+    ).not.toBeNull();
   });
 
   it("accepts a thin answer once half the budget is spent", () => {

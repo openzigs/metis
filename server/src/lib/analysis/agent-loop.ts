@@ -1571,6 +1571,13 @@ export async function runAgentLoop(
   // #1388 — loop-turn tokens (what the budget is charged) and nudges sent.
   let loopTokens = 0;
   let continuationNudges = 0;
+  // #1388 review — the latest USABLE answer a nudge sent back. If the turns
+  // after it end without one (a tool call at the cap, then a failed retry),
+  // this answer is kept rather than lost: a nudge may never cost an answer.
+  let nudgedAnswer: string | undefined;
+  const isNudgeableAnswer = (text: string): boolean =>
+    options.finalAnswerRetry?.isValidFinalAnswer?.(text) ??
+    !isToolCallReply(text, [...toolMap.keys()]);
 
   for (let turn = 0; turn < maxTurns; turn++) {
     if (options.signal?.aborted) {
@@ -1715,6 +1722,7 @@ export async function runAgentLoop(
         break;
       }
       continuationNudges++;
+      if (isNudgeableAnswer(response.content)) nudgedAnswer = response.content;
       log.info("Agent loop asked the model to continue", {
         turn,
         nudge: continuationNudges,
@@ -1993,6 +2001,17 @@ export async function runAgentLoop(
       // the caller still gets the loop's tool calls and can persist partials.
       log.warn("Final-answer retry failed; degrading", { error: (err as Error).message });
     }
+  }
+
+  // #1388 review — the loop and its retry produced no usable answer, but a
+  // continuation nudge sent one back earlier: return that one.
+  if (nudgedAnswer !== undefined && !isValidFinalAnswer(finalResponse)) {
+    finalResponse = nudgedAnswer;
+    finalIsToolCallingReply = false;
+    salvageSource = undefined;
+    log.info("Agent loop kept the answer sent back by a continuation nudge", {
+      nudges: continuationNudges,
+    });
   }
 
   const hasFinalAnswer = isValidFinalAnswer(finalResponse);
