@@ -28,8 +28,9 @@ const VARIANT_JOBS = Object.freeze({
   // The server suite against the POSTGRES-generated Prisma client (#876). 15 files
   // (321 tests on PR #287's final run, every `*.sqlite.test.ts` among them; the count
   // grows with the suite) skip themselves there, so it
-  // cannot replace the SQLite run — measured on #4.
-  "postgres-adapter": ["@metis/server"],
+  // cannot replace the SQLite run — measured on #4. #1365 moved it from
+  // `postgres-adapter` into the sharded `postgres-unit` job.
+  "postgres-unit": ["@metis/server"],
 });
 
 /** The workspace packages, root included, from pnpm-workspace.yaml's `packages:` list. */
@@ -104,7 +105,7 @@ describe("CI unit-suite ownership (#4)", () => {
     );
   });
 
-  it("keeps the ui suite in `ui` and the SQLite server suite out of `postgres-adapter`", () => {
+  it("keeps the ui suite in `ui` and the SQLite server suite out of `postgres-unit`", () => {
     const primary = (/** @type {string} */ pkg) =>
       (owners.get(pkg) ?? []).filter((j) => !(j in VARIANT_JOBS));
     expect(primary("@metis/ui")).toEqual(["ui"]);

@@ -14,8 +14,8 @@
  * `snapshot-manifest.json` commits for every file.
  *
  * It is wired into the SERVER package's `test` and `test:coverage`, because that is the
- * package whose tests read the corpus — `ci.yml`'s `postgres-adapter` job runs
- * `pnpm test` with `working-directory: server` and never sees the root script. The
+ * package whose tests read the corpus — `ci.yml`'s `postgres-unit` legs run
+ * `pnpm test --shard=…` with `working-directory: server` and never see the root script. The
  * nightly runs it too. `scripts/lib/corpus-restore-wiring.test.mjs` pins both.
  *
  * When every file is present and hashes correctly — which is the case on any machine

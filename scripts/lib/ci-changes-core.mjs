@@ -4,8 +4,9 @@
  *
  * Two pieces of `ci.yml` are expensive and only rarely affected by a pull request:
  *
- *  - `postgres-adapter` re-runs the whole server unit suite on the Postgres-generated
- *    Prisma client, then a set of integration suites against a real Postgres.
+ *  - `postgres-unit` re-runs the whole server unit suite on the Postgres-generated
+ *    Prisma client (sharded, #1365), and `postgres-adapter` runs a set of
+ *    integration suites against a real Postgres. Both read the `postgres` output.
  *  - the `api` job's image build + size gate + container smoke.
  *
  * On a PR they run only when a path below changed. On every other event (`push` to
@@ -27,7 +28,7 @@ const GATE_AND_DEPENDENCIES = Object.freeze([
 ]);
 
 /**
- * What `postgres-adapter` proves, and so what can change its answer:
+ * What `postgres-unit` and `postgres-adapter` prove, and so what can change their answer:
  *  - the Postgres schema / migrations and the scheme-selected Prisma adapter;
  *  - every Postgres- or pgvector-specific module and integration suite (by name);
  *  - the test helpers those suites pull in (shared suite bodies, fixtures, the pg

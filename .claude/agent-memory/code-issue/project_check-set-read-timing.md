@@ -15,13 +15,13 @@ Measured across PR heads, 2026-10-16/17 (#1217 re-review, then every PR from #12
 
 **Expected skips.**
 - `Check CLA signature` skips on every maintainer PR (`cla.yml:68`).
-- `build` and `deploy` from the docs workflow also appear when a docs-site path changes, giving 23 rows. `build` should pass and `deploy` skip.
+- `build` and `deploy` from the docs workflow also appear when a docs-site path changes (+2 rows). `build` should pass and `deploy` skip.
 
 **Correcting a fact in one place.** When you correct a CI or tooling fact in one skill, `git grep` the old claim across every skill, agent and instruction file. Fixing one copy turns a consistent error into two contradicting skills.
 
 - `generative-e2e` failing with the Chat page `h1` hidden and "disk full" in the runner log is infrastructure: confirm `main` passed at the base, then re-run once (#1260).
 
-- **22 checks, not 21, when `real-model-worker` runs** (2026-10-20). It is path-filtered (`embed-real-model-nightly.yml:23-37`: `pnpm-lock.yaml`, `pnpm-workspace.yaml`, server/embeddings package manifests, the embed sources and tests), so any lockfile or workspace change adds it. `Check CLA signature` reads `skipping` on owner PRs (`cla.yml:68-73`, author `mgcronin`).
+- **25 checks, not 24 (23, not 22, with no Postgres path), when `real-model-worker` runs** (2026-10-20; base counts since #1365). It is path-filtered (`embed-real-model-nightly.yml:23-37`: `pnpm-lock.yaml`, `pnpm-workspace.yaml`, server/embeddings package manifests, the embed sources and tests), so any lockfile or workspace change adds it. `Check CLA signature` reads `skipping` on owner PRs (`cla.yml:68-73`, author `mgcronin`).
 
 - **Waiting from an isolated worktree** (PR #1316): Bash there refuses `sleep N` chained before another command. Wait with `timeout 570 gh pr checks <pr> --watch` on its own, then re-read.
 
@@ -29,8 +29,13 @@ Measured across PR heads, 2026-10-16/17 (#1217 re-review, then every PR from #12
 
 - **`postgres-adapter` ran at its timeout** (#1365): 13.5-14.8 min on `main` against
   `timeout-minutes: 15`. A `fail` whose job conclusion is `cancelled` at ~15m and with no
-  `Test Files … failed` line was the timeout, not a test failure. #1400 raised it to 25 min
-  (`ci.yml`, comment above the job); if it reads cancelled near 25 min, the same applies.
+  `Test Files … failed` line was the timeout, not a test failure. #1400 raised it to 25 min;
+  #1365 moved the unit suite into three `postgres-unit` legs (~5.5 min each) and put the
+  cap back to 15 min. A Postgres job cancelled near 15 min is still the timeout: add a leg.
+- **Sharding facts from #1365:** `vitest list --shard=i/n` (vitest 5.0.2) ignores `--shard`;
+  check a split with `vitest run --shard=i/n <filter>` and sum `Test Files`. A job-level
+  `if:` runs before the matrix expands, so a matrix job given a `name:` built from `matrix.*`
+  shows that name unexpanded when skipped; use string legs and no `name:`.
 - **`repo-connector-followups-475.sqlite.test.ts`** once saw no `users` table in `beforeAll`
   under the full `pnpm test` fan-out and passed alone (#1359, #1364). A `beforeAll`
   `Test Files 1 failed` is real; never re-run it away.

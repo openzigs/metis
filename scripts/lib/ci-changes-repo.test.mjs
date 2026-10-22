@@ -109,6 +109,56 @@ describe("ci.yml wiring (#844)", () => {
     );
   });
 
+  it("postgres-unit is gated exactly like postgres-adapter (#1365)", () => {
+    const u = job("postgres-unit");
+    expect(u).toMatch(/needs: \[changes\]/);
+    expect(u).toMatch(
+      /\n {4}if: \$\{\{ !cancelled\(\) && needs\.changes\.outputs\.postgres != 'false' \}\}/,
+    );
+  });
+
+  it("postgres-unit shards the server unit suite 3 ways on the Postgres-generated client (#1365)", () => {
+    const u = job("postgres-unit");
+    // String legs, so the default check name reads `postgres-unit (1/3)`. A `name:` built
+    // from `matrix.*` would print unexpanded on a PR where the job-level `if:` skips it.
+    expect(u).toMatch(/shard: \["1\/3", "2\/3", "3\/3"\]/);
+    expect(u).toMatch(/fail-fast: false/);
+    expect(u).not.toMatch(/\n {4}name:/);
+    const run = step("postgres-unit", "Prove the unit suite runs on the Postgres-generated client");
+    expect(run).toMatch(/working-directory: server/);
+    expect(run).toMatch(/run: pnpm test --shard=\$\{\{ matrix\.shard \}\}\n?$/);
+    // A failing leg must fail its check: no `continue-on-error` on the suite step or the job.
+    expect(run).not.toMatch(/continue-on-error/);
+    expect(u).not.toMatch(/\n {4}continue-on-error:/);
+    // Same environment the unsharded step had: a live Postgres, the schema pushed and the
+    // client generated for it, before the suite runs.
+    const lines = (jobs.get("postgres-unit") ?? []).map((l) => l.trim());
+    const at = (/** @type {string} */ name) => lines.indexOf(`- name: ${name}`);
+    const order = [
+      "Start Postgres (pgvector, ephemeral host port)",
+      "Sync Postgres schema",
+      "Generate Prisma client for Postgres schema",
+      "Prove the unit suite runs on the Postgres-generated client",
+    ].map(at);
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(u).toMatch(/RUN_INTEGRATION_TESTS: "1"/);
+  });
+
+  it("postgres-adapter keeps only the integration proofs; the unit suite moved to postgres-unit (#1365)", () => {
+    const p = job("postgres-adapter");
+    expect(p).not.toMatch(/\n {8}run: pnpm test\s*$/m);
+    expect(p).toMatch(/pnpm test:integration prisma-postgres-connection/);
+    // Every Postgres integration suite still has a step that runs it.
+    const suites = fs
+      .readdirSync(path.join(repoRoot, "server/tests"))
+      .filter((f) => /(postgres|pgvector).*\.integration\.test\.ts$/.test(f))
+      .map((f) => f.replace(/\.integration\.test\.ts$/, ""));
+    const run = new Set([...p.matchAll(/run: pnpm test:integration (\S+)\s*$/gm)].map((m) => m[1]));
+    const missing = suites.filter((s) => !run.has(s));
+    expect(missing).toEqual([]);
+  });
+
   it("api runs even if `changes` failed, and gates every image step fail-open", () => {
     expect(job("api")).toMatch(/\n {4}if: \$\{\{ !cancelled\(\) \}\}/);
     for (const name of [

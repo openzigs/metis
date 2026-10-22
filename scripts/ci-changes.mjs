@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * #844 — decide which conditional `ci.yml` work this run needs, and export it as
- * job outputs (`postgres`, `images`) for `postgres-adapter` and the `api` image
- * steps. The rules and their reasoning live in `lib/ci-changes-core.mjs`.
+ * job outputs (`postgres`, `images`) for `postgres-unit` / `postgres-adapter` and the
+ * `api` image steps. The rules and their reasoning live in `lib/ci-changes-core.mjs`.
  *
  * On a `pull_request` run, `actions/checkout` checks out the PR's MERGE commit,
  * whose first parent is the base branch tip. `git diff HEAD^1 HEAD` is therefore
