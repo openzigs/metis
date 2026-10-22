@@ -129,11 +129,16 @@ async function readWorkspaceIds(userId: string): Promise<string[]> {
   return Array.isArray(memberships) ? memberships.map((membership) => membership.workspaceId) : [];
 }
 
+/**
+ * `bootstrapIdentities` (#1376) are the values matched against
+ * `METIS_BOOTSTRAP_ADMINS`: only what the IdP vouches for.
+ */
 async function ensureUserRow(
   username: string,
   displayName: string,
   email: string,
   role: RoleKey,
+  bootstrapIdentities: readonly (string | null)[],
 ): Promise<{ id: string; role: RoleKey }> {
   const row = await prisma.user.upsert({
     where: { username },
@@ -155,6 +160,7 @@ async function ensureUserRow(
         providerRole: role,
         authRolesInitializedAt:
           (row as { authRolesInitializedAt?: Date | null }).authRolesInitializedAt ?? null,
+        bootstrapIdentities,
       }),
     };
   } catch (error) {
@@ -234,6 +240,8 @@ export function ssoRouter(): Router {
       result.user.displayName,
       result.user.email,
       role,
+      // The IdP signed both in the assertion.
+      [result.user.username, result.user.email],
     );
     const permissions = getPermissionsForRole(userRow.role);
     const tokens = issueTokens({
@@ -333,6 +341,12 @@ export function ssoRouter(): Router {
       result.user.displayName,
       result.user.email,
       role,
+      // OIDC bootstraps on a VERIFIED e-mail only. Many IdPs let a user type any
+      // address into their profile, and the username is no better: it is
+      // `preferred_username` (often user-editable) or, when that is absent, the
+      // local part of the unverified e-mail (`oidc-provider.ts`), so
+      // `jdoe@attacker.example` would match a listed `jdoe`.
+      [result.user.rawClaims?.email_verified === true ? result.user.email : null],
     );
     const permissions = getPermissionsForRole(userRow.role);
     const tokens = issueTokens({

@@ -82,6 +82,8 @@ async function ensureUserRow(user: AuthenticatedUser): Promise<{ id: string; rol
     providerRole: user.role,
     authRolesInitializedAt:
       (row as { authRolesInitializedAt?: Date | null }).authRolesInitializedAt ?? null,
+    // #1376 — the directory's account name and mail attribute.
+    bootstrapIdentities: [user.username, user.email],
   });
   return { id: row.id, role };
 }

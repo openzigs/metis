@@ -327,8 +327,31 @@ The last three lines are not optional (#1312):
 - **`MCP_RUNTIME`.** On Kubernetes this is the only safe MCP runtime.
 
 For LDAP, the bind settings and the bind-password key are in the chart README,
-§ "Server env the chart does not set for you". There is no supported way to
-bootstrap the first admin on a non-mock install yet (#1376).
+§ "Server env the chart does not set for you".
+
+**OIDC / SAML provider (#1376).** With `AUTH_MODE=oidc` or `saml`, configure the
+provider through the server environment (`AUTH_OIDC_DISCOVERY_URL`,
+`AUTH_OIDC_CLIENT_ID`, `AUTH_OIDC_REDIRECT_URI`, plus `AUTH_OIDC_CLIENT_SECRET`
+through `secrets.keyMap`; or the `AUTH_SAML_*` equivalents). See
+[`docs/auth/README.md`](auth/README.md#oidc-and-saml-from-the-environment-1376).
+The admin API cannot configure the provider on a fresh install, because there is no admin yet, and it
+keeps its configuration in memory only.
+
+**The first admin (#1376).** No account is an admin on a fresh install, and only
+an admin can map IdP groups to roles. Add the administrator's username or e-mail
+to the install:
+
+```bash
+  --set server.env.METIS_BOOTSTRAP_ADMINS=jdoe
+```
+
+When `jdoe` first signs in and no user holds the admin role yet, METIS grants
+`jdoe` admin and records `user.role.bootstrap_admin` in the audit log. From then
+on the setting does nothing, so it cannot be used to gain admin later. You can
+leave it set, or remove it on the next upgrade. Then sign in as `jdoe` and set
+the group mappings on **Settings → Authentication** (`/settings/auth`). For OIDC, list an **e-mail
+address**: only an e-mail the IdP marks `email_verified` matches, never the
+username (`preferred_username` is often user-editable).
 
 Watch pods come up:
 

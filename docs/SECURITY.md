@@ -48,6 +48,7 @@
 
 ### 2.3 RBAC
 - Roles: `admin`, `coordinator`, `developer`, `reader`. Each maps to a fixed permission set declared in `packages/shared/src/permissions.ts`.
+- **First admin (#1376).** `METIS_BOOTSTRAP_ADMINS` (usernames or e-mails) grants a listed identity `admin` when it signs in through a trusted provider and no user holds the admin role. Once one does, the setting has no effect, so it cannot be replayed to escalate. For OIDC only an e-mail with `email_verified: true` counts; the OIDC username (user-editable `preferred_username`, or an unverified e-mail's local part) never does. See [`docs/auth/README.md`](auth/README.md#first-admin-metis_bootstrap_admins-1376).
 - Every privileged route is guarded by `requirePermission('<dotted.permission>')`.
 - Project-scoped permissions (e.g. `project.update`) check membership before checking the global role.
 - `requirePermission` is a **global-role** check and is never sufficient on its own for

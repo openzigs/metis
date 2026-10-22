@@ -47,6 +47,7 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { createApp } = await import("../src/app.js");
 const { upsertProvider, __resetProviders } = await import("../src/lib/auth/sso-config.js");
+const { seedSsoProvidersFromEnv } = await import("../src/lib/auth/sso-env-providers.js");
 const { __clearDiscoveryCache } = await import("../src/lib/auth/oidc-provider.js");
 const { __resetSAMLInstances } = await import("../src/lib/auth/saml-provider.js");
 const helpers = await import("../src/lib/auth/__tests__/saml-test-helpers.js");
@@ -70,6 +71,7 @@ const { startMockOidcIdp } = (await import(mockIdpModule.href)) as {
       email: string;
       name: string;
       groups?: string[];
+      emailVerified?: boolean;
     };
   }): Promise<MockIdp>;
 };
@@ -233,7 +235,58 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
+    it("OIDC (#1376): a listed e-mail bootstraps the first admin only when the IdP verified it", async () => {
+      await db.userRole.deleteMany({});
+      // The username is listed too: on OIDC it must never match on its own.
+      vi.stubEnv("METIS_BOOTSTRAP_ADMINS", "boss, boss@corp.test");
+      const loginAs = async (preferredUsername: string, emailVerified: boolean) => {
+        const idp = await startMockOidcIdp({
+          clientId: "metis-test",
+          clientSecret: "metis-test-secret",
+          redirectUri: REDIRECT_URI,
+          user: {
+            sub: preferredUsername,
+            preferredUsername,
+            email: "boss@corp.test",
+            name: preferredUsername,
+            emailVerified,
+          },
+        });
+        try {
+          __clearDiscoveryCache();
+          // A fresh SSO-only install has no admin to call the admin API: the
+          // provider comes from the environment, as `createServer` seeds it.
+          expect(
+            seedSsoProvidersFromEnv({
+              AUTH_OIDC_DISCOVERY_URL: idp.discoveryUrl,
+              AUTH_OIDC_CLIENT_ID: "metis-test",
+              AUTH_OIDC_CLIENT_SECRET: "metis-test-secret",
+              AUTH_OIDC_REDIRECT_URI: REDIRECT_URI,
+            }),
+          ).toEqual(["oidc"]);
+          const start = await request(app).get("/api/auth/oidc/login");
+          const atIdp = await fetch(start.headers.location, { redirect: "manual" });
+          const search = new URL(atIdp.headers.get("location")!).search;
+          const callback = await request(app).get(`/api/auth/oidc/callback${search}`);
+          const me = await request(app)
+            .get("/api/auth/me")
+            .set("Authorization", `Bearer ${cookieValue(cookiesByName(callback).get("metis.at"))}`);
+          return me.body.data.user.role as string;
+        } finally {
+          __resetProviders();
+          await idp.close();
+        }
+      };
+      // Many IdPs let a user type any address into their profile.
+      expect(await loginAs("boss", false)).toBe("reader");
+      // The same account once the IdP has verified the address.
+      expect(await loginAs("boss", true)).toBe("admin");
+    });
+
     it("SAML: AuthnRequest → signed Response at the ACS → Secure session cookies in production", async () => {
+      // #1376 — and the signed assertion's e-mail bootstraps the first admin.
+      await db.userRole.deleteMany({});
+      vi.stubEnv("METIS_BOOTSTRAP_ADMINS", "saml.carol@example.test");
       const key = helpers.getTestSigningKey();
       const acsUrl = `${UI_ORIGIN}/api/auth/saml/acs`;
       const entityId = `${UI_ORIGIN}/api/auth/saml/metadata`;
@@ -296,10 +349,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .get("/api/auth/me")
         .set("Authorization", `Bearer ${cookieValue(cookies.get("metis.at"))}`);
       expect(me.status).toBe(200);
-      expect(me.body.data.user.role).toBe("developer");
+      expect(me.body.data.user.role).toBe("admin");
       await expectUsableSession(cookies, {
         username: me.body.data.user.username,
-        role: "developer",
+        role: "admin",
       });
     });
   },

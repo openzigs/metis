@@ -12,7 +12,8 @@ The chart leaves three server settings to you, and the install does not work wit
   `kubectl logs -n metis deploy/metis-server | grep -c "Refusing to start with mock auth"` should return `0`.
 - [ ] `server.env.CORS_ORIGIN` is `https://<ingress host>`. If not, every browser socket is refused with `ORIGIN_REJECTED` (#1349).
 - [ ] `server.env.MCP_RUNTIME` is `k8s-sse` (see §15).
-- [ ] A first admin exists. There is no supported way to create one on a non-mock install yet (#1376).
+- [ ] On OIDC or SAML, the provider comes from `AUTH_OIDC_*` / `AUTH_SAML_*` in `server.env` (secret parts through `secrets.keyMap`). On boot, the server logs `SSO providers configured from the environment: oidc` (or `saml`). A provider saved only through the admin API is lost when the pod restarts (#1376).
+- [ ] A first admin exists: `server.env.METIS_BOOTSTRAP_ADMINS` names the administrator's username or e-mail, and that person has signed in once (#1376). After that, their `/api/auth/me` reports `role: admin`. Once an admin exists the variable does nothing.
 
 ---
 

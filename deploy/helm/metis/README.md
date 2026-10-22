@@ -254,6 +254,9 @@ organisation, so one client's 20 wrong passwords lock everyone out.
   value trusts an entry the browser wrote.
 - The SSO routes reach the server straight from the Ingress, so their limiter
   reads `req.ip` through `server.env.TRUST_PROXY` (default `1`, the Ingress).
+- **Upgrading with External Secrets:** create `metis/METIS_UI_PROXY_SECRET` in
+  the secret store before `helm upgrade`. The `ExternalSecret` lists every
+  `secrets.keyMap` key, and a missing remote key fails the whole sync.
 - Tune the caps with `server.env.RATE_LIMIT_MAX` and
   `server.env.AUTH_ACCOUNT_RATE_LIMIT_MAX`. The full table is in
   [`docs/SECURITY.md`](../../../docs/SECURITY.md) §2.4.
@@ -265,7 +268,8 @@ ingress without them (#1312):
 
 | `server.env` key | Why |
 |---|---|
-| `AUTH_MODE` (`ldap`, `oidc` or `saml`) | If unset, it resolves to `mock`, and under `NODE_ENV=production` the server **refuses to start** (CrashLoopBackOff: "Mock authentication is not permitted in production"). LDAP also needs `AUTH_LDAP_URL`, `AUTH_LDAP_BASE_DN`, `AUTH_LDAP_BIND_DN`, `AUTH_LDAP_USER_SEARCH_BASE` and `AUTH_LDAP_SEARCH_FILTER` (the default filter is Active Directory's `sAMAccountName`), plus the bind password through `secrets.keyMap.AUTH_LDAP_BIND_PASSWORD`. See [`docs/auth/README.md`](../../../docs/auth/README.md). Bootstrapping the first admin is #1376. |
+| `AUTH_MODE` (`ldap`, `oidc` or `saml`) | If unset, it resolves to `mock`, and under `NODE_ENV=production` the server **refuses to start** (CrashLoopBackOff: "Mock authentication is not permitted in production"). LDAP also needs `AUTH_LDAP_URL`, `AUTH_LDAP_BASE_DN`, `AUTH_LDAP_BIND_DN`, `AUTH_LDAP_USER_SEARCH_BASE` and `AUTH_LDAP_SEARCH_FILTER` (the default filter is Active Directory's `sAMAccountName`), plus the bind password through `secrets.keyMap.AUTH_LDAP_BIND_PASSWORD`. See [`docs/auth/README.md`](../../../docs/auth/README.md). |
+| `METIS_BOOTSTRAP_ADMINS` | The first admin (#1376). Set it to the username or e-mail of the person who will administer METIS, e.g. `--set server.env.METIS_BOOTSTRAP_ADMINS=jdoe` (for OIDC, an e-mail the IdP verifies: an OIDC username never matches). On OIDC and SAML, also set the provider from `AUTH_OIDC_*` / `AUTH_SAML_*`; without an admin, nobody can configure it through the admin API, and the API keeps that configuration in memory only. When that identity signs in and no user holds the admin role yet, it is granted admin. Once any admin exists the setting does nothing, so it cannot be used to gain admin later. See [First admin](../../../docs/auth/README.md#first-admin-metis_bootstrap_admins-1376). |
 | `CORS_ORIGIN` | Set it to `https://<ingress.host>`. The server checks a socket's `Origin` (#1349) and CORS against this value. The default is `http://localhost:3000`, so every browser socket is rejected with `ORIGIN_REJECTED`. |
 | `MCP_RUNTIME: k8s-sse` | The only safe MCP runtime on Kubernetes. If unset, `/readyz` reports the Docker runtime as failed (there is no Docker socket, by design). The readiness probe for `k8s-sse` itself is wrong today (#1380). |
 

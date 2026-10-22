@@ -39,6 +39,7 @@ function base64url(input) {
  * @property {string} email
  * @property {string} name
  * @property {string[]} [groups]
+ * @property {boolean} [emailVerified]  the `email_verified` claim, default true
  */
 
 /**
@@ -208,7 +209,7 @@ export async function startMockOidcIdp(options) {
             ...(grant.nonce ? { nonce: grant.nonce } : {}),
             preferred_username: options.user.preferredUsername,
             email: options.user.email,
-            email_verified: true,
+            email_verified: options.user.emailVerified ?? true,
             name: options.user.name,
             groups: options.user.groups ?? [],
           },

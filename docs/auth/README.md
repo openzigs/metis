@@ -102,7 +102,8 @@ accepts in [`server/src/routes/admin/auth.ts`](../../server/src/routes/admin/aut
 
 ### OIDC — admin-API fields (`PUT /api/admin/auth/providers/oidc`)
 
-There are **no OIDC env vars**. Fields per
+For a production install, configure OIDC from the environment instead (next
+section). The admin API edits the provider at runtime only. Fields per
 [`server/src/routes/admin/auth.ts`](../../server/src/routes/admin/auth.ts)
 (OIDC handler, lines 159–228).
 
@@ -120,6 +121,60 @@ There are **no OIDC env vars**. Fields per
 
 PKCE (S256) is always enabled server-side (`pkceEnabled: true`); it is not a
 configurable field.
+
+### OIDC and SAML from the environment (#1376)
+
+The admin API keeps SSO providers **in memory**. So a provider configured that
+way exists on one replica only and is lost when the pod restarts. It also needs
+an admin, which a fresh OIDC- or SAML-only install does not have. Set the
+provider in the server's environment instead. It is configured on every
+replica at boot, before the first request.
+
+| Variables | Required | Purpose |
+|---|---|---|
+| `AUTH_OIDC_DISCOVERY_URL`, `AUTH_OIDC_CLIENT_ID`, `AUTH_OIDC_CLIENT_SECRET`, `AUTH_OIDC_REDIRECT_URI` | all four, or none | An enabled OIDC provider with PKCE. The redirect URI is `https://<host>/api/auth/oidc/callback`. Put the client secret in the Secret. |
+| `AUTH_OIDC_NAME`, `AUTH_OIDC_SCOPES` | no | Button label (default `Single sign-on`) and scopes (default `openid profile email`). |
+| `AUTH_SAML_ENTITY_ID`, `AUTH_SAML_ACS_URL`, `AUTH_SAML_IDP_METADATA_XML` | all three, or none | An enabled SAML provider, parsed from the IdP's metadata, which must name an SSO URL and a signing certificate. |
+| `AUTH_SAML_NAME`, `AUTH_SAML_REQUIRE_SIGNED_RESPONSE` | no | Button label, and `false` to accept an unsigned Response envelope (the assertion must still be signed). |
+| `AUTH_OIDC_GROUP_MAPPINGS`, `AUTH_SAML_GROUP_MAPPINGS` | no | `group=role` pairs, comma-separated, e.g. `metis-admins=admin,engineers=developer`. At least one must map to `admin`. |
+| `AUTH_OIDC_DEFAULT_ROLE`, `AUTH_SAML_DEFAULT_ROLE` | no | Role when no group matches (default `reader`). |
+
+A half-set provider, an unknown role, or metadata with no SSO URL or
+certificate **fails the boot** with a message naming the variable. An edit
+through the admin API lasts until the next restart, when the environment wins
+again, so keep lasting settings here.
+
+### First admin: `METIS_BOOTSTRAP_ADMINS` (#1376)
+
+A non-mock install has no admin at first, and only an admin can set the group
+mappings that make one. `METIS_BOOTSTRAP_ADMINS` is the supported way through.
+It takes a comma- or whitespace-separated list of usernames and e-mail
+addresses, matched case-insensitively.
+
+- **When it applies:** a listed identity signs in through LDAP, OIDC or SAML
+  (for OIDC and SAML, configure the provider from the environment as above:
+  without an admin, the admin API cannot),
+  and **no user holds the admin role** from any source (a local grant, SCIM, or
+  a provider group mapping). That user is granted `admin` as an explicit
+  (`local`) role, the same role an admin grants, and the audit log records
+  `user.role.bootstrap_admin`.
+- **When it does nothing:** whenever an admin already exists. So it cannot be
+  replayed to escalate: a second listed person, or the same variable left set
+  for a year, gets the role their provider maps. The check and the grant run in
+  the login's serializable transaction, so two listed people signing in at once
+  cannot both be granted admin.
+- **Which identities count:** for LDAP and SAML, the account's username and
+  its e-mail as the provider asserts it (LDAP `mail`, the signed SAML
+  assertion). For **OIDC, only an e-mail the IdP marks `email_verified`**: the
+  OIDC username is `preferred_username`, which many IdPs let users edit, or,
+  without it, the local part of the e-mail, which may be unverified
+  (`jdoe@attacker.example` would otherwise match a listed `jdoe`). So list an
+  e-mail address for an OIDC install.
+
+After the first admin signs in, set the group mappings (`/settings/auth`,
+or `PUT /api/admin/auth/providers/<mode>`) and grant other admins from there.
+The setting is not a recovery path: if the last admin is removed, its stale role
+rows still block a new bootstrap until they are deleted.
 
 ### Completing an SSO login (OIDC and SAML, #1386)
 
