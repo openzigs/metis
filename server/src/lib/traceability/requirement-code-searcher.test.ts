@@ -12,6 +12,7 @@ import {
   MemoizingBm25CodeSymbolSearcher,
   linkConfidence,
   mapRequirementToCode,
+  type KeywordRuleCause,
   type LinkGate,
   type RequirementRetrievalMode,
 } from "./requirement-code-mapping.js";
@@ -198,64 +199,100 @@ describe("HybridCodeSymbolSearcher — ranks with the hybrid search", () => {
   });
 });
 
-describe("HybridCodeSymbolSearcher — calibration holes (review of PR #1325)", () => {
-  const links = (ranker: HybridRanker, model?: string) =>
-    searcherOf(ranker, model === undefined ? {} : { model }).withOptions(
-      ANALYSIS_LINK_SEARCH_OPTIONS,
-      ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS,
-    );
+describe("HybridCodeSymbolSearcher — calibration holes (review of PRs #1325 and #1410)", () => {
+  const links = (ranker: HybridRanker, model?: string, rows?: Row[]) =>
+    searcherOf(ranker, {
+      ...(model === undefined ? {} : { model }),
+      ...(rows ? { rows } : {}),
+    }).withOptions(ANALYSIS_LINK_SEARCH_OPTIONS, ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS);
+  type Gate = [LinkGate, KeywordRuleCause | undefined];
+  const gatesOf = () => {
+    const gates: Gate[] = [];
+    return {
+      gates,
+      onLinkGate: (g: LinkGate, c?: KeywordRuleCause) => gates.push([g, c]),
+    };
+  };
 
-  // #1330 — a hit the vector channel did not return has NO vector (it reaches
-  // the pool only when the channel returned everything it holds), so its cosine
-  // is unknown, not bounded by the lowest returned one: a project part-way
-  // through embedding. The whole answer is then gated as keywords.
-  it("gates an answer holding a hit with no vector by the keyword rules (part-embedded project)", async () => {
-    // `button` shares one word; the few embedded hits are all close (0.6 or more).
+  // #1330 — a hit the vector channel did not return has no usable cosine, so
+  // one shared word must not clear the floor through it; the measured hits
+  // beside it keep the floor.
+  it("gates a hit with no vector by the two-term rule, hit by hit; measured hits keep the floor", async () => {
+    // `button` shares one word; the embedded hits are close (0.6 or more).
     const { ranker } = rankerOf([
       { id: "flush", cosine: 0.7 },
       { id: "remove", cosine: 0.62 },
       { id: "button" },
     ]);
     const raw = await searcherOf(ranker).search(TERMINATE, PROJECT);
-    // No hit is scored with a cosine: the answer's confidence is lexical throughout.
-    expect(raw.length).toBe(3);
-    for (const c of raw) {
-      expect(c.confidence).toBe(linkConfidence({ sharedNameTerms: 1 }));
-    }
-    // Scored as "no cosine" one shared word clears the hybrid floor (0.096 >= 0.08),
-    // so only the two-term rule keeps the one-word button out.
-    expect(linkConfidence({ sharedNameTerms: 1 })).toBeGreaterThanOrEqual(
+    const conf = new Map(raw.map((c) => [c.symbolId, c.confidence]));
+    expect(conf.get("flush")).toBe(linkConfidence({ sharedNameTerms: 1, cosine: 0.7 }));
+    // Its cosine is unknown: scored on words alone (0.096, which WOULD clear 0.08).
+    expect(conf.get("button")).toBe(linkConfidence({ sharedNameTerms: 1 }));
+    expect(conf.get("button")!).toBeGreaterThanOrEqual(
       ANALYSIS_HYBRID_LINK_SEARCH_OPTIONS.minConfidence!,
     );
     const modes: RequirementRetrievalMode[] = [];
-    const gates: LinkGate[] = [];
+    const { gates, onLinkGate } = gatesOf();
     const shown = await links(ranker).search(TERMINATE, PROJECT, {
       onRetrievalMode: (m) => modes.push(m),
-      onLinkGate: (g) => gates.push(g),
+      onLinkGate,
     });
-    expect(shown).toEqual([]);
+    expect(shown.map((c) => c.symbolId)).toEqual(["flush", "remove"]);
     expect(modes).toEqual(["hybrid"]);
-    expect(gates).toEqual(["keyword"]);
+    // No shown link was decided by the keyword rule.
+    expect(gates).toEqual([["hybrid", undefined]]);
   });
 
-  it("gates a hybrid answer with no cosine at all by the keyword rules", async () => {
+  it("keeps a small, fully embedded project with a database schema on the floor (tables are never embedded)", async () => {
+    const rows: Row[] = [
+      ...ROWS,
+      {
+        id: "table",
+        name: "web_sessions",
+        qualifiedName: "web_sessions",
+        kind: "table",
+        filePath: "schema.sql",
+      },
+    ];
+    // Every code symbol is embedded; the table has no vector and never will.
+    const { ranker } = rankerOf([{ id: "flush", cosine: 0.7 }, { id: "table" }]);
+    const { gates, onLinkGate } = gatesOf();
+    const shown = await links(ranker, undefined, rows).search(
+      "Terminate all web sessions",
+      PROJECT,
+      { onLinkGate },
+    );
+    // The one-word semantic link stays (the floor decided it) ...
+    expect(shown.map((c) => c.symbolId)).toContain("flush");
+    expect(shown.find((c) => c.symbolId === "flush")!.confidence).toBe(
+      linkConfidence({ sharedNameTerms: 1, cosine: 0.7 }),
+    );
+    // ... and the table, which shares two words, is shown by the keyword rule.
+    expect(shown.map((c) => c.symbolId)).toContain("table");
+    expect(gates).toEqual([["hybrid", "schema-not-embedded"]]);
+  });
+
+  it("names a code hit with no usable vector (stale, unembedded, another model's) as `no-vector`", async () => {
+    // `restoreButtonState` was not returned by the vector channel (a stale vector
+    // the hybrid search dropped, say) and shares two words ("restore", "button";
+    // "state" is a #943 stopword): the keyword rule shows it.
+    const { ranker } = rankerOf([{ id: "flush", cosine: 0.7 }, { id: "restore" }]);
+    const { gates, onLinkGate } = gatesOf();
+    const shown = await links(ranker).search(
+      "Flush all sessions and restore the button state",
+      PROJECT,
+      { onLinkGate },
+    );
+    expect(shown.map((c) => c.symbolId)).toEqual(["flush", "restore"]);
+    expect(shown[1]!.confidence).toBe(linkConfidence({ sharedNameTerms: 2 }));
+    expect(gates).toEqual([["hybrid", "no-vector"]]);
+  });
+
+  it("gates a hybrid answer with no cosine at all by the two-term rule", async () => {
     const { ranker } = rankerOf([{ id: "flush" }, { id: "button" }]);
-    const gates: LinkGate[] = [];
-    const shown = await links(ranker).search(TERMINATE, PROJECT, {
-      onLinkGate: (g) => gates.push(g),
-    });
+    const shown = await links(ranker).search(TERMINATE, PROJECT);
     expect(shown).toEqual([]);
-    expect(gates).toEqual(["keyword"]);
-  });
-
-  it("reports the hybrid gate when every hit carries a calibrated cosine", async () => {
-    const { ranker } = rankerOf([{ id: "flush", cosine: 0.7 }]);
-    const gates: LinkGate[] = [];
-    const shown = await links(ranker).search(TERMINATE, PROJECT, {
-      onLinkGate: (g) => gates.push(g),
-    });
-    expect(shown.map((c) => c.symbolId)).toEqual(["flush"]);
-    expect(gates).toEqual(["hybrid"]);
   });
 
   it("gates an uncalibrated model's links with the keyword rules (two shared name terms)", async () => {
@@ -264,17 +301,16 @@ describe("HybridCodeSymbolSearcher — calibration holes (review of PR #1325)", 
     expect(await links(ranker, GTE).search(TERMINATE, PROJECT)).not.toEqual([]);
     // ... but with no calibrated cosine nothing semantic gates it, so the #1095 rule does.
     const modes: RequirementRetrievalMode[] = [];
-    const gates: LinkGate[] = [];
+    const { gates, onLinkGate } = gatesOf();
     const out = await links(ranker, "BAAI/bge-small-en-v1.5").search(TERMINATE, PROJECT, {
       onRetrievalMode: (m) => modes.push(m),
-      onLinkGate: (g) => gates.push(g),
+      onLinkGate,
     });
     expect(out).toEqual([]);
     expect(modes).toEqual(["hybrid"]);
-    expect(gates).toEqual(["keyword"]);
+    expect(gates).toEqual([["keyword", "uncalibrated-model"]]);
   });
 });
-
 describe("HybridCodeSymbolSearcher — falls back to BM25 and says so", () => {
   async function fallsBack(
     searcher: HybridCodeSymbolSearcher,

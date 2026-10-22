@@ -98,7 +98,7 @@ export interface CodeSymbolSearchOptions {
   /** #1097 — called once per search with the ranking that answered it. */
   onRetrievalMode?: (mode: RequirementRetrievalMode) => void;
   /** #1330 — called once per search with the rules that decided its links ({@link LinkGate}). */
-  onLinkGate?: (gate: LinkGate) => void;
+  onLinkGate?: (gate: LinkGate, cause?: KeywordRuleCause) => void;
 }
 
 /**
@@ -111,6 +111,17 @@ export interface CodeSymbolSearchOptions {
  * by the hybrid searcher (`requirement-code-searcher.ts`).
  */
 export type LinkGate = "hybrid" | "keyword";
+
+/**
+ * #1330 — why the keyword rule decided links the embeddings ranked:
+ * `uncalibrated-model` — all of them (gate `keyword`): the active embedding
+ * model is not one the confidence is calibrated for; `schema-not-embedded` —
+ * some of them (gate `hybrid`): hits that are database tables or columns,
+ * which are never embedded; `no-vector` — some of them (gate `hybrid`): code
+ * hits with no usable vector (not embedded yet, stale, or another model's).
+ * Absent on a keyword-fallback answer, whose ranking already says why.
+ */
+export type KeywordRuleCause = "uncalibrated-model" | "schema-not-embedded" | "no-vector";
 
 /** Pluggable code search backend (BM25 default; hybrid/vector in production). */
 export interface CodeSymbolSearcher {
@@ -133,8 +144,8 @@ export interface MapRequirementOptions {
   persist?: boolean;
   /** #1097 — told which ranking answered (see {@link RequirementRetrievalMode}). */
   onRetrievalMode?: (mode: RequirementRetrievalMode) => void;
-  /** #1330 — told which rules decided the links (see {@link LinkGate}). */
-  onLinkGate?: (gate: LinkGate) => void;
+  /** #1330 — told which rules decided the links, and why the keyword rule did (see {@link LinkGate}). */
+  onLinkGate?: (gate: LinkGate, cause?: KeywordRuleCause) => void;
   /**
    * #921 — told when the search failed. The mapper still returns no matches
    * (it never throws on a search failure); this lets a caller tell "nothing
@@ -778,12 +789,13 @@ export const ANALYSIS_LINK_SEARCH_OPTIONS: Readonly<Bm25SearcherOptions> = Objec
  * `InlineKeyboardButton`, "IPv4 or IPv6 per feed" never links
  * `ForceRefreshInterval`).
  *
- * The floor applies only where the confidence has semantic evidence for
- * every hit: one shared name word alone scores 0.096 and would clear it. So an
- * answer from an embedding model the confidence is not calibrated for, or one
- * holding a hit the vector channel did not return (a project part-way through
- * embedding, whose cosine is unknown), is gated by the keyword rules instead
- * (`requirement-code-searcher.ts`; review of PR #1325, #1330).
+ * The floor applies only where the confidence has semantic evidence: one
+ * shared name word alone scores 0.096 and would clear it. So the keyword rules
+ * decide instead for a whole answer from an embedding model the confidence is
+ * not calibrated for, and, hit by hit, for every hit with no usable vector (a
+ * database table or column, never embedded; code not embedded yet; a stale or
+ * other model's vector the channel lost), whose cosine is unknown
+ * (`requirement-code-searcher.ts`; review of PRs #1325 and #1410, #1330).
  */
 export const ANALYSIS_HYBRID_LINK_MIN_CONFIDENCE = 0.08;
 

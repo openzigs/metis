@@ -23,11 +23,19 @@
  * lexical channel: it carries the #943 denoiser and the #1063 link rules,
  * which the analysis path relies on.
  *
- * WHEN IT RANKS HYBRID BUT GATES AS KEYWORDS (`onLinkGate` reports `keyword`,
- * #1330): the active model is not one the confidence is calibrated for, or a
- * hit carries no cosine (symbols part-way through embedding). The confidence
- * then has no semantic evidence, so the hybrid options' floor would show any
- * one-shared-word symbol; the keyword fallback's options decide instead.
+ * WHEN THE KEYWORD RULES DECIDE A HYBRID ANSWER (#1330; `onLinkGate` says
+ * which and why). The hybrid floor is only honest on a confidence with
+ * semantic evidence: one shared name word alone scores 0.096, over the 0.08
+ * floor. So the keyword fallback's options decide
+ *   - the WHOLE answer when the active model is not one the confidence is
+ *     calibrated for (`uncalibrated-model`);
+ *   - each HIT the vector channel did not return, hit by hit. Such a hit has
+ *     no usable vector as far as this answer can tell: a database table or
+ *     column (never embedded, `schema-not-embedded`), code not embedded yet,
+ *     a stale vector the hybrid search dropped, or a vector of another model
+ *     the store filtered out after its search (`no-vector`). Its cosine is
+ *     unknown, so it is scored on words alone and shown only under the
+ *     two-term rule; the measured hits beside it keep the floor.
  *
  * WHAT IS SHARED WITH BM25. The hits HybridCodeSearch ranks are turned into
  * candidates by the BM25 searcher's {@link MemoizingBm25CodeSymbolSearcher.rankHits}:
@@ -75,6 +83,14 @@ const log = createChildLogger("requirement-code-searcher");
  */
 export const HYBRID_CANDIDATE_POOL = 60;
 
+/**
+ * #1330 — `CodeSymbol` kinds that are never embedded: the database schema's
+ * tables and columns (`schema-graph.ts`), which sit in both search corpora but
+ * get no `CodeSymbolEmbedding` row (only parsed code does, `ingest.ts`). A hit
+ * of these kinds without a cosine is permanent, not a project still embedding.
+ */
+export const NEVER_EMBEDDED_KINDS: ReadonlySet<string> = new Set(["table", "column"]);
+
 /** The slice of {@link HybridCodeSearch} the mapper reads. */
 export interface HybridRanker {
   search(
@@ -106,11 +122,10 @@ export interface HybridCodeSymbolSearcherDeps {
 interface HybridAnswer {
   hits: RankedHit[];
   /**
-   * Whether every hit carries a cosine the confidence is calibrated for: the
-   * active model is in `COSINE_CALIBRATED_MODELS` AND the vector channel
-   * returned every hit. An uncalibrated answer gives the confidence no
-   * semantic evidence, so its links are shown under the KEYWORD fallback's
-   * rules (review of PR #1325; #1330).
+   * Whether the active model's cosines are calibrated (`COSINE_CALIBRATED_MODELS`).
+   * An uncalibrated answer gives the confidence no semantic evidence, so its
+   * links are shown under the KEYWORD fallback's rules (review of PR #1325).
+   * A calibrated answer's hits without a cosine are, hit by hit (#1330).
    */
   calibrated: boolean;
 }
@@ -167,16 +182,41 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
       opts.onLinkGate?.("keyword");
       return candidates;
     }
+    opts.onRetrievalMode?.("hybrid");
     // An uncalibrated answer ranks, but its links are gated as keywords: the
     // hybrid floor alone would show any one-shared-word symbol (the #1095 shape).
-    const gate = answer.calibrated ? "hybrid" : "keyword";
-    const ranker =
-      this.deps.hybridOptions && gate === "hybrid"
-        ? this.deps.bm25.withOptions(this.deps.hybridOptions)
-        : this.deps.bm25;
-    const candidates = await ranker.rankHits(query, projectId, answer.hits, limit);
-    opts.onRetrievalMode?.("hybrid");
-    opts.onLinkGate?.(gate);
+    if (!answer.calibrated) {
+      const candidates = await this.deps.bm25.rankHits(query, projectId, answer.hits, limit);
+      opts.onLinkGate?.("keyword", "uncalibrated-model");
+      return candidates;
+    }
+    // #1330 — hit by hit: a measured hit under the hybrid options, a hit with
+    // no cosine under the keyword fallback's, merged back in the fused order.
+    const hybridRanker = this.deps.hybridOptions
+      ? this.deps.bm25.withOptions(this.deps.hybridOptions)
+      : this.deps.bm25;
+    const measured = answer.hits.filter((h) => h.cosine != null);
+    const unmeasured = answer.hits.filter((h) => h.cosine == null);
+    const fromMeasured = await hybridRanker.rankHits(query, projectId, measured, limit);
+    const fromUnmeasured =
+      unmeasured.length > 0
+        ? await this.deps.bm25.rankHits(query, projectId, unmeasured, limit)
+        : [];
+    const rank = new Map(answer.hits.map((h, i) => [h.symbolId, i]));
+    const at = (c: CodeSymbolCandidate): number => rank.get(c.symbolId ?? "") ?? Infinity;
+    const candidates = [...fromMeasured, ...fromUnmeasured]
+      .sort((a, b) => at(a) - at(b))
+      .slice(0, limit);
+    const keywordGated = new Set(fromUnmeasured.map((c) => c.symbolId));
+    const gatedKinds = candidates.filter((c) => keywordGated.has(c.symbolId)).map((c) => c.kind);
+    opts.onLinkGate?.(
+      "hybrid",
+      gatedKinds.length === 0
+        ? undefined
+        : gatedKinds.every((k) => NEVER_EMBEDDED_KINDS.has(k))
+          ? "schema-not-embedded"
+          : "no-vector",
+    );
     return candidates;
   }
 
@@ -213,28 +253,26 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
     if (mode !== "hybrid") return null;
     // Another model's cosines are on another scale: rank with them, but score
     // the confidence on the lexical evidence alone (and gate it as keywords).
-    //
-    // #1330 — and the same when a hit carries no cosine. The vector store is
-    // asked for twice the pool, and under the 0.05 / 0.95 fusion any vector
-    // hit outranks every keyword-only one, so a keyword-only hit reaches the
-    // pool only when the vector channel returned fewer hits than the pool:
-    // everything it holds for the project. Such a hit has NO vector, which is
-    // a project part-way through embedding (or holding stale vectors), not one
-    // whose vector is distant. Its cosine is unknown, not bounded by the
-    // lowest returned one, and scored as "no cosine" one shared name word
-    // clears the hybrid floor (0.096 ≥ 0.08). So the answer is uncalibrated
-    // and the two-term rule gates it. `mode === "hybrid"` with no cosine at
-    // all is the same case.
-    const allMeasured = results.every(
-      (r) => typeof r.vectorScore === "number" && Number.isFinite(r.vectorScore),
-    );
-    const calibrated = COSINE_CALIBRATED_MODELS.has(model) && allMeasured;
+    const calibrated = COSINE_CALIBRATED_MODELS.has(model);
+    // #1330 — a hit the vector channel did not return keeps NO cosine. Under
+    // the 0.05 / 0.95 fusion every vector hit outranks every keyword-only one,
+    // so a keyword-only hit reaches the pool only when fewer vector hits
+    // survived than the pool holds. That is not evidence of a distant vector:
+    // the hit may have none (a table or column, never embedded; code not
+    // embedded yet), or one the channel lost (a stale symbol dropped after
+    // the search, another model's rows filtered after it). The lowest
+    // returned cosine (#1325) bounded only the last two, and only under an
+    // exact search; what it was for, keeping a one-word keyword hit under the
+    // floor, the two-term rule now does for every such hit (see `search`).
     return {
       calibrated,
       hits: results.map((r) => ({
         symbolId: r.symbolId,
         score: r.score,
-        cosine: calibrated ? r.vectorScore : null,
+        cosine:
+          calibrated && typeof r.vectorScore === "number" && Number.isFinite(r.vectorScore)
+            ? r.vectorScore
+            : null,
       })),
     };
   }

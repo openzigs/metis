@@ -55,6 +55,7 @@ import {
   mapRequirementToCode,
   type Bm25SearcherOptions,
   type CodeSymbolSearcher,
+  type KeywordRuleCause,
   type LinkGate,
   type RequirementCodeMatch,
   type RequirementRetrievalMode,
@@ -369,6 +370,7 @@ export async function mapAffectedCodeCandidates(opts: {
   // now: the hybrid floor, or the two-term rule (the fallback, and a hybrid
   // answer the confidence cannot score semantically).
   let candidateGate: LinkGate | undefined;
+  let candidateCause: KeywordRuleCause | undefined;
   const mapSeeds: MapRequirementFn =
     injectedMapper ??
     ((req, projectId) =>
@@ -387,8 +389,9 @@ export async function mapAffectedCodeCandidates(opts: {
           projectId,
           {
             onRetrievalMode: noteMode,
-            onLinkGate: (gate) => {
+            onLinkGate: (gate, cause) => {
               candidateGate = gate;
+              candidateCause = cause;
             },
           },
           { prisma, searcher: linkSearcher },
@@ -453,6 +456,7 @@ export async function mapAffectedCodeCandidates(opts: {
     const head = { id, title: change.title, body: change.body };
     candidateMode = undefined;
     candidateGate = undefined;
+    candidateCause = undefined;
     const seedSymbols = await mapChange(change, id, mapSeeds, "seed");
     seeds.push({ ...head, symbols: seedSymbols });
     const linkSymbols = mapLinks ? await mapChange(change, id, mapLinks, "link") : seedSymbols;
@@ -461,11 +465,13 @@ export async function mapAffectedCodeCandidates(opts: {
     // could not be scored semantically.
     const mode = candidateMode as RequirementRetrievalMode | undefined;
     const gate = candidateGate as LinkGate | undefined;
+    const cause = candidateCause as KeywordRuleCause | undefined;
     links.push({
       ...head,
       symbols: linkSymbols,
       ...(mode ? { retrievalMode: mode } : {}),
       ...(gate ? { linkRule: gate === "hybrid" ? "confidence" : "shared-terms" } : {}),
+      ...(cause ? { keywordRuleCause: cause } : {}),
     });
   }
 

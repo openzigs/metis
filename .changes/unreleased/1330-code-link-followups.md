@@ -3,10 +3,11 @@ issue: 1330
 section: Fixed
 ---
 
-- The Affected code panel names the rule that decided each requirement's links. When the code was
-  ranked by meaning but the two-shared-words rule decided (another embedding model, or code still
-  being embedded), it no longer describes the 0.08 confidence floor.
-- While a project's code is still being embedded, one shared word no longer gets a code link shown.
+- The Affected code panel names the rule that decided each requirement's links, and why the keyword
+  rule did when the code was ranked by meaning: another embedding model, tables and columns (never
+  embedded), or code not embedded yet. It no longer describes the 0.08 floor for links it did not decide.
+- A symbol with no usable embedding (such as code still being embedded) no longer gets a link shown
+  for one shared word; links beside it that the embeddings measured keep the 0.08 floor.
 - On keyword-only runs the code agent gets the same starting code, with the same confidences, as
   before the change to absolute confidence.
 - Impact Analysis: a caller reached only through a weaker match now reads lower, scaled by that

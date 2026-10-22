@@ -16,11 +16,14 @@
  * ABSOLUTE: an estimate of how often a link like it is right, the same scale
  * on every requirement. What is shown depends on the ranking: with the
  * embeddings, a link needs a confidence of at least 0.08; with keywords alone,
- * the symbol's NAME must share two of the requirement's terms (#1063). #1330:
- * a hybrid ranking whose confidence could not use the embeddings (a model
- * METIS has not calibrated, or symbols still being embedded) is gated by the
- * two-term rule too, and each requirement records the rule that decided it
- * (`linkRule`), so the panel never explains a rule that did not run. Both
+ * the symbol's NAME must share two of the requirement's terms (#1063): "the
+ * keyword rule". #1330: the keyword rule also decides a hybrid ranking with an
+ * embedding model the confidence is not calibrated for, and, within a hybrid
+ * ranking, every link to a symbol with no usable embedding (a database table
+ * or column, which is never embedded, or code not embedded yet). Each
+ * requirement records the rule that decided it (`linkRule`) and why the
+ * keyword rule did (`keywordRuleCause`), so the panel names the rule that ran
+ * and its actual cause. Both
  * apply the subject rules and leave test code out, so "no link" is an
  * ordinary, honest outcome. Links under `STRONG_LINK_CONFIDENCE` are folded
  * under "N weaker matches", and a `mixed` run labels each requirement with the
@@ -73,6 +76,25 @@ function keywordGatedHybrid(candidate: AffectedCodeCandidate, mode: RunMode): bo
   );
 }
 
+type KeywordRuleCause = NonNullable<AffectedCodeCandidate["keywordRuleCause"]>;
+
+/**
+ * #1330 — the sentence naming why the keyword rule decided links the
+ * embeddings ranked, one per cause the run records. `all` is whether every
+ * requirement of the run was decided so (wording only).
+ */
+function keywordRuleCauseNote(cause: KeywordRuleCause, all: boolean): string {
+  if (cause === "uncalibrated-model") {
+    return all
+      ? " The embedding model in use is not the one METIS's confidence is calibrated for, so the keyword rule decided which links are shown."
+      : " For the requirements marked so, the embedding model in use is not the one METIS's confidence is calibrated for, so the keyword rule decided which links are shown.";
+  }
+  if (cause === "schema-not-embedded") {
+    return " Database tables and columns are never embedded, so a table or column is shown only by the keyword rule.";
+  }
+  return " Some code has no usable embedding (it is still being embedded, or was embedded with another model), so it is shown only by the keyword rule; re-run once embedding has finished.";
+}
+
 /**
  * #1097 (review of PR #1325) — a link at or above this confidence is listed;
  * the rest of a requirement's links are folded under "N weaker matches".
@@ -117,9 +139,10 @@ function confidenceNote(mode: RunMode): string {
     : "Confidence is relative to the best link for that requirement, not a probability.";
 }
 
-const CONFIDENCE_RULE = "a direct match is shown when its confidence is at least 0.08";
-const SHARED_TERMS_RULE =
-  "a direct match is shown only when the symbol's name (with its enclosing type or table, never its file path) shares at least two of the requirement's terms";
+/** #1330 — the two rules, each named in the panel's own words. */
+const CONFIDENCE_RULE = "the confidence rule (its confidence is at least 0.08)";
+const KEYWORD_RULE =
+  "the keyword rule (the symbol's name, with its enclosing type or table and never its file path, shares at least two of the requirement's terms)";
 
 /**
  * #1097 — what a direct match needs to be shown. #1330: worded from the rules
@@ -127,17 +150,13 @@ const SHARED_TERMS_RULE =
  */
 function linkRuleText(rules: ReadonlySet<LinkRule>): string {
   if (rules.has("confidence") && rules.has("shared-terms")) {
-    return `Depending on the requirement (each says which), ${CONFIDENCE_RULE}, or ${SHARED_TERMS_RULE}. Either way it must be about the requirement's subject`;
+    return `Depending on the requirement (each says which), a direct match is shown by ${CONFIDENCE_RULE} or by ${KEYWORD_RULE}, and either way only when it is about the requirement's subject`;
   }
   if (rules.has("confidence")) {
-    return `Ranked with meaning and keywords, ${CONFIDENCE_RULE}, and when it is about the requirement's subject`;
+    return `Ranked with meaning and keywords, a direct match is shown by ${CONFIDENCE_RULE}, and only when it is about the requirement's subject`;
   }
-  return "A direct match is shown only when the symbol's name (with its enclosing type or table, never its file path) shares at least two of the requirement's terms and its subject";
+  return `A direct match is shown by ${KEYWORD_RULE}, and only when it is about the requirement's subject`;
 }
-
-/** #1330 — why a requirement the embeddings ranked was gated by the keyword rule. */
-const KEYWORD_GATE_NOTE =
-  " Where the confidence could not use the embeddings (an embedding model METIS has not calibrated, or symbols still being embedded), the keyword rule decided which links are shown.";
 
 /** #1097 — the ranking one requirement's links came from; #1330 — and the rule, when it is not the ranking's. */
 function candidateLabel(candidate: AffectedCodeCandidate, mode: RunMode): string | null {
@@ -146,7 +165,7 @@ function candidateLabel(candidate: AffectedCodeCandidate, mode: RunMode): string
   if (ranking !== "hybrid") return null;
   return keywordGatedHybrid(candidate, mode)
     ? "meaning + keywords, shown by the keyword rule"
-    : "meaning + keywords";
+    : "meaning + keywords, shown by confidence";
 }
 
 function SymbolRow({ symbol }: { symbol: AffectedCodeSymbol }): React.ReactElement {
@@ -175,7 +194,11 @@ export function AffectedCodePanel({ affectedCode }: Props): React.ReactElement |
   const rules = new Set(candidates.map((c) => ruleOf(c, mode)));
   // Label each requirement when they were not all ranked, or not all gated, alike.
   const labelEach = mode === "mixed" || rules.size > 1;
-  const gateNote = candidates.some((c) => keywordGatedHybrid(c, mode)) ? KEYWORD_GATE_NOTE : "";
+  const causes = new Set(
+    candidates.flatMap((c) => (c.keywordRuleCause ? [c.keywordRuleCause] : [])),
+  );
+  const allGated = candidates.every((c) => keywordGatedHybrid(c, mode));
+  const gateNote = [...causes].map((c) => keywordRuleCauseNote(c, allGated)).join("");
 
   return (
     <div data-testid="affected-code-panel" className="space-y-2">
