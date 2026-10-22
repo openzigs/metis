@@ -260,6 +260,10 @@ jobs:
       # the size gate still skip Dependabot PRs: rebuilding every image per bump is
       # the single heaviest CI cost, `build-images.yml` skips Dependabot for the same
       # reason, and full image validation still runs on every other PR and on `main`.
+      # #1379 — EXCEPT `dependabot/docker/*`: a base-image digest bump IS an image
+      # change, so those branches build all four images, run the size gate and the
+      # CVE scan. Their `cache-to` carries `ignore-error=true` for the same reason as
+      # metis-server's: a Dependabot token usually cannot write the Actions cache.
       #
       # Issue #509 — `provenance: false` / `sbom: false` on every gate build.
       # BuildKit adds a `mode=min` provenance attestation by DEFAULT, which wraps
@@ -294,7 +298,7 @@ jobs:
           cache-to: type=gha,scope=metis-server,mode=max,ignore-error=true
 
       - name: Build metis-ui
-        if: ${{ needs.changes.outputs.images != 'false' && !startsWith(github.head_ref, 'dependabot/') }}
+        if: ${{ needs.changes.outputs.images != 'false' && (!startsWith(github.head_ref, 'dependabot/') || startsWith(github.head_ref, 'dependabot/docker/')) }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -306,14 +310,14 @@ jobs:
           provenance: false
           sbom: false
           cache-from: type=gha,scope=metis-ui
-          cache-to: type=gha,scope=metis-ui,mode=max
+          cache-to: type=gha,scope=metis-ui,mode=max,ignore-error=true
 
       # BAKE_MODELS=0: this is the image-size regression gate, not the release
       # artifact (that's build-images.yml on tag push). Baking downloads models
       # from HuggingFace at build time, which flakes on the runner; skip it
       # here. The sidecar downloads at runtime.
       - name: Build metis-embeddings
-        if: ${{ needs.changes.outputs.images != 'false' && !startsWith(github.head_ref, 'dependabot/') }}
+        if: ${{ needs.changes.outputs.images != 'false' && (!startsWith(github.head_ref, 'dependabot/') || startsWith(github.head_ref, 'dependabot/docker/')) }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -326,13 +330,13 @@ jobs:
           provenance: false
           sbom: false
           cache-from: type=gha,scope=metis-embeddings
-          cache-to: type=gha,scope=metis-embeddings,mode=max
+          cache-to: type=gha,scope=metis-embeddings,mode=max,ignore-error=true
 
       # Epic #294 — the metis-sql-lineage sidecar (Python + sqlglot). Pure
       # Python, NO model bake / NO heavy native deps, so this build is fast and
       # cannot reintroduce the model-bake flake fixed in #290.
       - name: Build metis-sql-lineage
-        if: ${{ needs.changes.outputs.images != 'false' && !startsWith(github.head_ref, 'dependabot/') }}
+        if: ${{ needs.changes.outputs.images != 'false' && (!startsWith(github.head_ref, 'dependabot/') || startsWith(github.head_ref, 'dependabot/docker/')) }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -344,13 +348,13 @@ jobs:
           provenance: false
           sbom: false
           cache-from: type=gha,scope=metis-sql-lineage
-          cache-to: type=gha,scope=metis-sql-lineage,mode=max
+          cache-to: type=gha,scope=metis-sql-lineage,mode=max,ignore-error=true
 
       # metis-server is held to its own measured budget (#34,
       # DEFAULT_MAX_SERVER_IMAGE_MB in scripts/lib/verify-image-size.mjs);
       # metis-ui stays on the general 350.
       - name: Verify image size budget
-        if: ${{ needs.changes.outputs.images != 'false' && !startsWith(github.head_ref, 'dependabot/') }}
+        if: ${{ needs.changes.outputs.images != 'false' && (!startsWith(github.head_ref, 'dependabot/') || startsWith(github.head_ref, 'dependabot/docker/')) }}
         env:
           MAX_IMAGE_MB: "350"
           IMAGE_TAG: "ci-${{ github.run_id }}" # #801 — must match the build step
@@ -371,64 +375,69 @@ jobs:
       # binary at run time; here the binary is fetched by release tag and checked
       # against the SHA-256 that release published (as sast.yml does for
       # osv-scanner), so a replaced asset fails the step instead of running.
+      # The vulnerability DB is cached per day (actions/cache), so a registry outage
+      # or rate limit does not turn `api` red: scripts/ci/trivy-scan.sh retries the
+      # download and falls back to a restored earlier DB, and fails only with none.
+      - name: Restore Trivy DB cache
+        if: ${{ needs.changes.outputs.images != 'false' && (!startsWith(github.head_ref, 'dependabot/') || startsWith(github.head_ref, 'dependabot/docker/')) }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ steps.patch.outputs.date }}
+          restore-keys: trivy-db-
+
       - name: Install Trivy (pinned + checksum-verified)
-        if: ${{ needs.changes.outputs.images != 'false' && !startsWith(github.head_ref, 'dependabot/') }}
+        if: ${{ needs.changes.outputs.images != 'false' && (!startsWith(github.head_ref, 'dependabot/') || startsWith(github.head_ref, 'dependabot/docker/')) }}
         env:
           TRIVY_VERSION: "0.71.1"
           TRIVY_SHA256: "3cbae37cd440cd8676e5ce9207fe460b5641c7579a17e9d00f8894928c41a88d"
         run: bash scripts/ci/install-trivy.sh
 
       - name: Scan images (Trivy, HIGH/CRITICAL)
-        if: ${{ needs.changes.outputs.images != 'false' && !startsWith(github.head_ref, 'dependabot/') }}
+        if: ${{ needs.changes.outputs.images != 'false' && (!startsWith(github.head_ref, 'dependabot/') || startsWith(github.head_ref, 'dependabot/docker/')) }}
         env:
           IMAGE_TAG: "ci-${{ github.run_id }}"
-        run: |
-          set -euo pipefail
-          mkdir -p trivy-reports
-          # label=local image; the labels are the published names (metis-<label>),
-          # which is what a waiver's `images` list refers to.
-          for pair in server=metis-server ui=metis-ui embeddings-svc=metis-embeddings sql-lineage=metis-sql-lineage; do
-            label="${pair%%=*}"
-            image="${pair#*=}:${IMAGE_TAG}"
-            "${RUNNER_TEMP}/trivy/trivy" image --quiet --scanners vuln --severity HIGH,CRITICAL \
-              --cache-dir "${RUNNER_TEMP}/trivy-cache" --format json \
-              --output "trivy-reports/${label}.json" "${image}"
-            "${RUNNER_TEMP}/trivy/trivy" convert --format sarif \
-              --output "trivy-reports/${label}.sarif" "trivy-reports/${label}.json"
-          done
-          node scripts/lib/image-scan-gate.mjs --waivers .github/image-scan-waivers.json \
-            --report server=trivy-reports/server.json \
-            --report ui=trivy-reports/ui.json \
-            --report embeddings-svc=trivy-reports/embeddings-svc.json \
-            --report sql-lineage=trivy-reports/sql-lineage.json
+        # label=local image; the labels are the published names (metis-<label>),
+        # which is what a waiver's `images` list refers to. On a pull request the
+        # script also reads the base branch's waiver file, so deleting a waiver
+        # whose finding is still present fails here.
+        run: >-
+          bash scripts/ci/trivy-scan.sh
+          "server=metis-server:${IMAGE_TAG}"
+          "ui=metis-ui:${IMAGE_TAG}"
+          "embeddings-svc=metis-embeddings:${IMAGE_TAG}"
+          "sql-lineage=metis-sql-lineage:${IMAGE_TAG}"
 
       # Code scanning gets the findings on `main` and nightly, not on pull requests:
       # an upload for a PR makes GitHub add a Trivy check run to the PR, which would
       # change the PR check set (CLAUDE.md > "CI and merging") and go red on the
       # recorded, unfixable findings. `always()` so a failing gate still uploads.
+      # The `.filtered.sarif` files omit every result a live waiver covers, so code
+      # scanning shows only what still needs action, not ~130 recorded, unfixable
+      # findings.
       - name: Upload image scan SARIF — server
-        if: ${{ always() && github.event_name != 'pull_request' && hashFiles('trivy-reports/server.sarif') != '' }}
+        if: ${{ always() && github.event_name != 'pull_request' && hashFiles('trivy-reports/server.filtered.sarif') != '' }}
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
-          sarif_file: trivy-reports/server.sarif
+          sarif_file: trivy-reports/server.filtered.sarif
           category: trivy-image-server
       - name: Upload image scan SARIF — ui
-        if: ${{ always() && github.event_name != 'pull_request' && hashFiles('trivy-reports/ui.sarif') != '' }}
+        if: ${{ always() && github.event_name != 'pull_request' && hashFiles('trivy-reports/ui.filtered.sarif') != '' }}
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
-          sarif_file: trivy-reports/ui.sarif
+          sarif_file: trivy-reports/ui.filtered.sarif
           category: trivy-image-ui
       - name: Upload image scan SARIF — embeddings-svc
-        if: ${{ always() && github.event_name != 'pull_request' && hashFiles('trivy-reports/embeddings-svc.sarif') != '' }}
+        if: ${{ always() && github.event_name != 'pull_request' && hashFiles('trivy-reports/embeddings-svc.filtered.sarif') != '' }}
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
-          sarif_file: trivy-reports/embeddings-svc.sarif
+          sarif_file: trivy-reports/embeddings-svc.filtered.sarif
           category: trivy-image-embeddings-svc
       - name: Upload image scan SARIF — sql-lineage
-        if: ${{ always() && github.event_name != 'pull_request' && hashFiles('trivy-reports/sql-lineage.sarif') != '' }}
+        if: ${{ always() && github.event_name != 'pull_request' && hashFiles('trivy-reports/sql-lineage.filtered.sarif') != '' }}
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
-          sarif_file: trivy-reports/sql-lineage.sarif
+          sarif_file: trivy-reports/sql-lineage.filtered.sarif
           category: trivy-image-sql-lineage
 
       # #39 — the image must RUN, not just build and weigh. `main` shipped a

@@ -555,15 +555,32 @@ describe("container images are digest-pinned, patched and scanned (#1379)", () =
     expect(api.match(/OS_PATCH_DATE=\$\{\{ steps\.patch\.outputs\.date \}\}/g)).toHaveLength(4);
   });
 
-  it("ci.yml `api` scans all four built images and gates them on the waiver file", () => {
+  it("ci.yml `api` scans all four built images through the gate script", () => {
     for (const label of ["server", "ui", "embeddings-svc", "sql-lineage"]) {
-      expect(api).toContain(`--report ${label}=trivy-reports/${label}.json`);
-      expect(api).toContain(`sarif_file: trivy-reports/${label}.sarif`);
+      expect(api).toMatch(new RegExp(`"${label}=metis-[a-z-]+:\\$\\{IMAGE_TAG\\}"`));
+      // Waived results are filtered out before code scanning sees them.
+      expect(api).toContain(`sarif_file: trivy-reports/${label}.filtered.sarif`);
     }
-    expect(api).toContain(
-      "node scripts/lib/image-scan-gate.mjs --waivers .github/image-scan-waivers.json",
-    );
+    expect(api).toContain("bash scripts/ci/trivy-scan.sh");
     expect(api).toMatch(/security-events: write/);
+  });
+
+  it("the scan script gates on the waiver file, the base branch's waivers and filters SARIF", () => {
+    const script = read("scripts/ci/trivy-scan.sh");
+    expect(script).toContain('node scripts/lib/image-scan-gate.mjs --waivers "${WAIVERS}"');
+    expect(script).toContain('WAIVERS=".github/image-scan-waivers.json"');
+    expect(script).toContain("--sarif-dir");
+    expect(script).toContain("--base-waivers");
+    // The DB download is retried, and scans never re-download mid-run.
+    expect(script).toMatch(/--download-db-only/);
+    expect(script).toMatch(/--skip-db-update/);
+  });
+
+  it("the Trivy DB is cached per day in both workflows", () => {
+    expect(api).toMatch(/key: trivy-db-\$\{\{ steps\.patch\.outputs\.date \}\}/);
+    expect(release).toMatch(
+      /key: trivy-db-\$\{\{ matrix\.arch\.slug \}\}-\$\{\{ needs\.prep\.outputs\.date \}\}/,
+    );
   });
 
   it("uploads SARIF only off pull requests, so no Trivy check run joins the PR check set", () => {
@@ -572,23 +589,58 @@ describe("container images are digest-pinned, patched and scanned (#1379)", () =
     for (const [step] of uploads) expect(step).toContain("github.event_name != 'pull_request'");
   });
 
-  it("build-images.yml scans and gates each image BEFORE the multi-arch push", () => {
-    const gate = release.indexOf("node scripts/lib/image-scan-gate.mjs");
-    const push = release.indexOf("- name: Build & push (tag");
-    expect(gate).toBeGreaterThan(-1);
-    expect(gate).toBeLessThan(push);
-    expect(release.slice(push)).toContain("OS_PATCH_DATE=${{ steps.patch.outputs.date }}");
+  it("dependabot/docker/* branches build and scan every image; other Dependabot branches do not", () => {
+    for (const step of [
+      "Build metis-ui",
+      "Build metis-embeddings",
+      "Build metis-sql-lineage",
+      "Scan images",
+    ]) {
+      const at = api.indexOf(`- name: ${step}`);
+      expect(at, step).toBeGreaterThan(-1);
+      const cond = api.slice(at, api.indexOf("\n", api.indexOf("if:", at)));
+      expect(cond, step).toContain("startsWith(github.head_ref, 'dependabot/docker/')");
+    }
+  });
+
+  it("Dependabot proposes base-image digest bumps for every Dockerfile directory", () => {
+    const dependabot = read(".github/dependabot.yml");
+    const docker = dependabot.slice(dependabot.indexOf('package-ecosystem: "docker"'));
+    expect(docker).toContain('- "/"');
+    expect(docker).toContain('- "/images/mcp-wrappers/*"');
+    expect(docker).toMatch(/interval: "weekly"/);
+    expect(docker).toMatch(/groups:/);
+  });
+
+  it("build-images.yml scans BOTH arches of the published variant before ANY image publishes", () => {
+    const scan = jobBlock(release, "scan");
+    const build = jobBlock(release, "build");
+    expect(scan).toContain("platform: linux/amd64");
+    expect(scan).toContain("platform: linux/arm64");
+    expect(scan).toContain("runner: ubuntu-24.04-arm");
+    expect(scan).toContain("bash scripts/ci/trivy-scan.sh");
+    // As published: no BAKE_MODELS=0 override, the run's single OS patch date.
+    const scanBuild = scan.slice(
+      scan.indexOf("- name: Build for scan"),
+      scan.indexOf("- name: Restore Trivy DB cache"),
+    );
+    expect(scanBuild).not.toContain("BAKE_MODELS");
+    expect(scanBuild).toContain("OS_PATCH_DATE=${{ needs.prep.outputs.date }}");
+    // Every scan leg gates every publish leg.
+    expect(build).toMatch(/needs: \[prep, scan\]/);
+    const push = build.slice(build.indexOf("- name: Build & push (tag"));
+    expect(push).toContain("OS_PATCH_DATE=${{ needs.prep.outputs.date }}");
   });
 
   it("both workflows install the same pinned, checksum-verified Trivy", () => {
-    /** @param {string} text */
-    const pins = (text) => [
-      text.match(/TRIVY_VERSION: "([^"]+)"/)?.[1],
-      text.match(/TRIVY_SHA256: "([0-9a-f]{64})"/)?.[1],
-    ];
-    expect(pins(api)[0]).toBeTruthy();
-    expect(pins(api)[1]).toBeTruthy();
-    expect(pins(release)).toEqual(pins(api));
+    const version = api.match(/TRIVY_VERSION: "([^"]+)"/)?.[1];
+    const sha = api.match(/TRIVY_SHA256: "([0-9a-f]{64})"/)?.[1];
+    expect(version).toBeTruthy();
+    expect(sha).toBeTruthy();
+    expect(release).toContain(`TRIVY_VERSION: "${version}"`);
+    // The amd64 leg uses ci.yml's checksum; arm64 has its own.
+    expect(release).toContain(`'${sha}'`);
+    expect(release).toMatch(/'[0-9a-f]{64}' \|\| '[0-9a-f]{64}'/);
     expect(read("scripts/ci/install-trivy.sh")).toMatch(/sha256sum -c -/);
   });
 });

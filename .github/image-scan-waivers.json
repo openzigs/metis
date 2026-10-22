@@ -6,13 +6,18 @@
     "fails unless recorded here; an unfixed HIGH not recorded here is a warning; and an entry",
     "whose `expires` date has passed FAILS the gate while its finding is still present.",
     "`expires` is a REVIEW date: on it, check whether the distro has shipped a fix. If it has,",
-    "rebuild (the images apply distro updates at build time) and delete the entry; if not,",
-    "re-date it deliberately. Never re-date only to clear a red build.",
-    "Fields: id (CVE/GHSA), expires (YYYY-MM-DD), reason, images (optional list of image",
-    "labels: server, ui, embeddings-svc, sql-lineage; absent = all), allowFixed (optional, for a",
-    "fix that exists but cannot be installed yet — keep that window short).",
+    "rebuild (the images apply distro updates at build time) and MOVE the entry to `expired`;",
+    "if not, re-date it deliberately. Never re-date only to clear a red build.",
+    "An entry never simply disappears: any finding matching an id in `expired` FAILS, and on a",
+    "pull request a waiver deleted from `waivers` (and not moved to `expired`) FAILS while its",
+    "finding is present. So removing the record is never a way to turn a red build green.",
+    "Fields: id (CVE/GHSA), expires (a real YYYY-MM-DD date), reason, images (optional list of",
+    "image labels: server, ui, embeddings-svc, sql-lineage; absent = all), allowFixed (optional,",
+    "for a fix that exists but cannot be installed yet — keep that window short).",
+    "`expired` entries: id, retired (YYYY-MM-DD), reason, images (optional).",
     "An empty `waivers` list is the goal."
   ],
+  "expired": [],
   "waivers": [
     {
       "id": "CVE-2026-76642",

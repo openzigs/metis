@@ -143,6 +143,7 @@ export const IMAGE_PATTERNS = Object.freeze([
   // Trivy install. A change to any of them must re-run the scan it governs.
   "scripts/lib/image-scan-gate.mjs",
   "scripts/ci/install-trivy.sh",
+  "scripts/ci/trivy-scan.sh",
   ".github/image-scan-waivers.json",
 ]);
 
