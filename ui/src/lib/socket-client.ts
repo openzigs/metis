@@ -25,10 +25,9 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import type { Socket } from "socket.io-client";
 import type { SocketAuthErrorEvent } from "@metis/shared";
 import { setOnRefreshSuccess } from "./api-client";
+import { browserSocketUrl } from "./socket-url";
 
 let socketRef: Socket | null = null;
-
-const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4000";
 
 /**
  * Typed connection state surfaced to the UI:
@@ -208,7 +207,9 @@ async function getSocket(): Promise<Socket> {
   if (socketRef) return socketRef;
   const { io } = await import("socket.io-client");
   // Connect directly to the Express server — Next.js cannot proxy WebSocket upgrades.
-  socketRef = io(SOCKET_URL, {
+  // #1377 — resolved at connect time, not baked at build: the page's own origin
+  // unless the UI server supplies an override (see socket-url.ts).
+  socketRef = io(browserSocketUrl(), {
     path: "/socket.io",
     transports: ["websocket"],
     withCredentials: true,

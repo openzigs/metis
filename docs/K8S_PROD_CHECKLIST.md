@@ -133,7 +133,7 @@ The chart leaves three server settings to you, and the install does not work wit
   `curl -s https://<host>/api/auth/saml/metadata` should return SP metadata XML, or the server's `SSO_NOT_CONFIGURED` when SAML is not set up. The UI's `NOT_FOUND` / `SAML_ACS_WRONG_ORIGIN` means the route goes to the wrong backend.
 - [ ] Uploads near the cap pass the Ingress: on nginx, `proxy-body-size` is `50m` (`ingress.nginx.proxyBodySize`). For the ALB and traefik, check the controller's limit.
 - [ ] WebSocket upgrade works for `/socket.io`: a handshake to `wss://<host>/socket.io/?EIO=4&transport=websocket` with the session cookie returns `101`. A foreign `Origin` is refused with `ORIGIN_REJECTED`.
-- [ ] The browser actually dials that socket. Today the release UI image dials `http://localhost:4000` instead (#1377), so live updates do not connect behind an ingress.
+- [ ] The browser actually dials that socket: the header's connection state reads `connected`. A release UI image dials its own origin (#1377); `curl -s https://<host>/runtime-config` shows `"socketUrl":null` unless `METIS_BROWSER_SOCKET_URL` is set on the UI, and then it shows that origin.
 
 ## 15. MCP runtime
 

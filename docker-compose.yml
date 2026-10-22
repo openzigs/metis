@@ -206,6 +206,12 @@ services:
       METIS_SPEC_KIT_PROXY_TIMEOUT_MS: ${METIS_SPEC_KIT_PROXY_TIMEOUT_MS:-900000}
       NEXT_PUBLIC_API_URL: http://localhost:4000/api
       NEXT_PUBLIC_SOCKET_URL: http://localhost:4000
+      # #1377 — this service runs the PRODUCTION build (Dockerfile.ui), where
+      # NEXT_PUBLIC_* above is read too late to matter: the browser's Socket.IO URL
+      # is served at request time from this variable instead. Compose publishes the
+      # server on :4000 and serves no /socket.io on :3000, so it is set here; unset,
+      # the browser dials its own origin (what the Helm ingress expects).
+      METIS_BROWSER_SOCKET_URL: ${METIS_BROWSER_SOCKET_URL:-http://localhost:4000}
     depends_on:
       - server
     volumes:

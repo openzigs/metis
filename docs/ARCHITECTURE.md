@@ -6281,7 +6281,8 @@ All configuration is managed through environment variables. Copy `.env.example` 
 | Variable | Default | Description |
 |---|---|---|
 | `NEXT_PUBLIC_API_URL` | `http://localhost:4000/api` | Backend API base URL |
-| `NEXT_PUBLIC_SOCKET_URL` | `http://localhost:4000` | Socket.IO server URL |
+| `NEXT_PUBLIC_SOCKET_URL` | *(unset)* | Build-time Socket.IO URL, inlined by `next build`; for `next dev` and the e2e build. A release image ignores it at runtime |
+| `METIS_BROWSER_SOCKET_URL` | *(unset — the page's own origin)* | Runtime Socket.IO URL the browser dials (#1377), read by the UI server per request and served at `/runtime-config`. Wins over `NEXT_PUBLIC_SOCKET_URL`. Unset, a production build dials its own origin (the Helm ingress routes `/socket.io` to the server) and `next dev` dials `http://localhost:4000`. Origin only: a path is dropped, since Socket.IO reads it as a namespace |
 
 ---
 
