@@ -44,7 +44,11 @@ function makeFakeSocket() {
   return { socket, fire };
 }
 let fake = makeFakeSocket();
-vi.mock("@/lib/socket-client", () => ({ useSocket: () => fake.socket }));
+vi.mock("@/lib/socket-client", () => ({
+  // AuthProvider closes the socket whenever the session ends (#1391).
+  closeSocket: vi.fn(),
+  useSocket: () => fake.socket,
+}));
 
 const statusMock = vi.mocked(embeddingsApi.status);
 const coverageMock = vi.mocked(embeddingsApi.coverage);

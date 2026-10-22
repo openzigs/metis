@@ -12,7 +12,11 @@ import { makeWrapper } from "./test-utils";
 import { createFakeSocket, type FakeSocket } from "./helpers/fake-socket";
 
 let socket: FakeSocket;
-vi.mock("@/lib/socket-client", () => ({ useSocket: () => socket }));
+vi.mock("@/lib/socket-client", () => ({
+  // AuthProvider closes the socket whenever the session ends (#1391).
+  closeSocket: vi.fn(),
+  useSocket: () => socket,
+}));
 
 const mockApiFetch = vi.fn();
 vi.mock("@/lib/api-client", async () => {

@@ -11,7 +11,11 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper } from "./test-utils";
 
-vi.mock("@/lib/socket-client", () => ({ useSocket: vi.fn() }));
+vi.mock("@/lib/socket-client", () => ({
+  // AuthProvider closes the socket whenever the session ends (#1391).
+  closeSocket: vi.fn(),
+  useSocket: vi.fn(),
+}));
 
 // MentionInput user search → apiFetch. Stub it so we control the user hits.
 vi.mock("@/lib/api-client", () => ({
