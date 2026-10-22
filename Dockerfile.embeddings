@@ -5,15 +5,21 @@
 # `onnxruntime-node` runtime so the main `metis-server` image can stay under
 # the 250 MB budget set by epic #93.
 #
-# Base image: `node:20-bookworm-slim` (glibc) — `onnxruntime-node` ships
+# Base image: `node:22-trixie-slim` (glibc) — `onnxruntime-node` ships
 # native bindings that crash on Alpine's musl. This sidecar is **exempt**
 # from the 250 MB image-size budget.
+#
+# #1379 — Node 22 on Debian trixie, pinned by DIGEST in every stage. It was
+# `node:20-bookworm-slim`: Node 20 reached end of life in April 2026, and on
+# bookworm Trivy counted 92 HIGH / 7 CRITICAL. The runner applies Debian's
+# security updates and drops npm/corepack/yarn, which carried every Node.js
+# finding and which `node dist/index.js` never runs. To move the base:
+# `docker buildx imagetools inspect node:22-trixie-slim` and replace the digest
+# in EVERY `FROM` (image-build-wiring.test.mjs checks they agree).
 # ==============================================================================
 
-ARG NODE_VERSION=20
-
 # ----- Stage 1: install + build --------------------------------------------
-FROM node:${NODE_VERSION}-bookworm-slim AS builder
+FROM node:22-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf AS builder
 WORKDIR /app
 
 ENV PNPM_HOME=/usr/local/share/pnpm
@@ -126,7 +132,7 @@ RUN mkdir -p "${METIS_MODEL_CACHE}" \
     fi
 
 # ----- Stage 2: runtime ----------------------------------------------------
-FROM node:${NODE_VERSION}-bookworm-slim AS runner
+FROM node:22-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -152,9 +158,18 @@ ENV EMBED_DTYPE=${EMBED_DTYPE}
 ARG EMBED_MODEL=Alibaba-NLP/gte-modernbert-base
 ENV EMBED_MODEL=${EMBED_MODEL}
 
-RUN apt-get update \
+# #1379 — Debian security updates; no npm, npx, corepack or yarn at runtime.
+# OS_PATCH_DATE busts the layer cache so CI (which passes the date) picks up a
+# distro fix the day it ships; it is not otherwise read.
+ARG OS_PATCH_DATE=unset
+RUN echo "os patch level: ${OS_PATCH_DATE}" \
+ && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+           /usr/local/bin/yarn /usr/local/bin/yarnpkg \
  && groupadd --system --gid 1001 metis \
  && useradd  --system --uid 1001 --gid metis --create-home --home-dir /home/metis metis \
  && mkdir -p /var/cache/metis-embeddings \

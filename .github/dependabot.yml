@@ -92,3 +92,37 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+
+  # #1379 — container base images. The four app Dockerfiles pin every base by
+  # `tag@sha256:` digest, so the image CI scanned is the image that ships; this
+  # entry is what moves those digests, and it is the ONLY thing that picks up a
+  # Node.js or CPython security release. The images' `apt-get upgrade` /
+  # `apk upgrade` never touches /usr/local/bin/node or the interpreter (the
+  # official images install them outside the distro's package manager), and
+  # Trivy does not report runtime CVEs in them either: a scan of
+  # node:22.1.0-alpine and python:3.12.0-slim found none for the runtimes
+  # (docs/K8S_PROD_CHECKLIST.md §9). Weekly, all directories in ONE grouped PR,
+  # whose `dependabot/docker/*` branch ci.yml's `api` job builds and scans like
+  # any other image change. The MCP wrapper images (images/mcp-wrappers/*) are
+  # included, each listed literally (the dependabot-workspace guard reads only
+  # literal paths); wrapper-image-scan.yml scans them on `main`.
+  - package-ecosystem: "docker"
+    directories:
+      - "/"
+      - "/images/mcp-wrappers/code-graph-runner-sse"
+      - "/images/mcp-wrappers/jbang-runner"
+      - "/images/mcp-wrappers/jbang-runner-sse"
+      - "/images/mcp-wrappers/node-runner"
+      - "/images/mcp-wrappers/node-runner-sse"
+      - "/images/mcp-wrappers/npx-runner"
+      - "/images/mcp-wrappers/npx-runner-sse"
+      - "/images/mcp-wrappers/uvx-runner"
+      - "/images/mcp-wrappers/uvx-runner-sse"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      docker-base-images:
+        patterns: ["*"]

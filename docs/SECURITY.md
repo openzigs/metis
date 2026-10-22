@@ -160,7 +160,8 @@ are never gated, so no route may change state on a `GET`.
   `METIS_TRUSTED_ORIGINS` (comma-separated) on the UI server.
 
 **WebSockets (#1349).** The browser's socket.io client is not proxied: it
-connects straight to the API (`NEXT_PUBLIC_SOCKET_URL`) from the UI's origin,
+connects straight to the API from the UI's origin (its own origin behind the
+Helm ingress, or `METIS_BROWSER_SOCKET_URL` / `NEXT_PUBLIC_SOCKET_URL`, #1377),
 and authenticates with the `metis.at` cookie. `SameSite=Lax` would let a page
 on a sibling subdomain open that socket as the signed-in user and join their
 rooms (cross-site WebSocket hijacking), so the handshake checks `Origin`

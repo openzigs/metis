@@ -1,13 +1,17 @@
 name: Build core images — multi-arch
 
 # Sub-issue #373 (Epic #360) — multi-arch (linux/amd64,linux/arm64) buildx
-# of the three core METIS images (#150 removed the fourth, copilot-svc, with
+# of the four METIS images the Helm chart pulls (#150 removed copilot-svc, with
 # GitHub Copilot support):
 #   - server         → Dockerfile.server
 #   - ui             → Dockerfile.ui
 #   - embeddings-svc → Dockerfile.embeddings
+#   - sql-lineage    → Dockerfile.sql-lineage (#1382: the chart enables it by
+#     default, and it was never published, so a stock install sat in
+#     ImagePullBackOff. scripts/lib/image-build-wiring.test.mjs now fails when
+#     the chart references an image this matrix does not publish.)
 #
-# On a release tag (`v*`) all three images are built for both architectures
+# On a release tag (`v*`) all four images are built for both architectures
 # and pushed to GHCR with both `<tag>` and `latest` references. On a PR
 # touching the Dockerfiles, the chart, or the source tree, we build for
 # the runner's NATIVE arch only (no push) to validate compilation.
@@ -40,8 +44,125 @@ env:
   REGISTRY: ghcr.io/${{ github.repository_owner }}
 
 jobs:
+  # #1379 — one OS patch date for the whole run, so every scan leg and every
+  # publish leg pass the same OS_PATCH_DATE (the cache-busting ARG in front of each
+  # runtime stage's `apt-get upgrade` / `apk upgrade`; see ci.yml's `OS patch date`).
+  prep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      date: ${{ steps.patch.outputs.date }}
+    steps:
+      - name: OS patch date
+        id: patch
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+  # #1379 — scan BEFORE anything is published, on BOTH architectures, building
+  # exactly what the publish builds (same Dockerfile, same OS_PATCH_DATE, the
+  # default BAKE_MODELS=1). Each leg runs natively (amd64 on ubuntu-latest, arm64
+  # on the free ubuntu-24.04-arm runner), so no QEMU. The gate is
+  # scripts/lib/image-scan-gate.mjs via scripts/ci/trivy-scan.sh: a fixable
+  # HIGH/CRITICAL, an unrecorded unfixed CRITICAL, an expired or retired waiver,
+  # or a report that scanned no OS packages fails its leg.
+  #
+  # `build` needs EVERY leg, so one image failing its gate publishes NOTHING: a
+  # release with three of its four images is the #1382 failure in another shape.
+  # `fail-fast: false` so every leg still reports.
+  #
+  # Residual gap, stated in K8S_PROD_CHECKLIST §9: the publish step rebuilds
+  # (multi-arch, under QEMU for arm64) rather than pushing these exact bytes. With
+  # digest-pinned bases and one OS_PATCH_DATE, the package set is the same unless
+  # the distro mirror published an update between the two builds.
+  #
+  # Also runs on workflow_dispatch (scan only, nothing is pushed), so the release
+  # scan can be exercised without cutting a tag.
+  scan:
+    name: Scan ${{ matrix.image.name }} (${{ matrix.arch.platform }})
+    needs: [prep]
+    if: ${{ !startsWith(github.head_ref, 'dependabot/') }}
+    runs-on: ${{ matrix.arch.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { name: server, dockerfile: Dockerfile.server }
+          - { name: ui, dockerfile: Dockerfile.ui }
+          - { name: embeddings-svc, dockerfile: Dockerfile.embeddings }
+          - { name: sql-lineage, dockerfile: Dockerfile.sql-lineage }
+        arch:
+          - { platform: linux/amd64, slug: amd64, runner: ubuntu-latest, trivy: 64bit }
+          - { platform: linux/arm64, slug: arm64, runner: ubuntu-24.04-arm, trivy: ARM64 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Free runner disk
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost
+          docker image prune --all --force > /dev/null
+          df -h /
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      - name: Build for scan (as published, native arch, not pushed)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          build-args: |
+            OS_PATCH_DATE=${{ needs.prep.outputs.date }}
+          platforms: ${{ matrix.arch.platform }}
+          push: false
+          load: true
+          tags: metis-${{ matrix.image.name }}:scan
+          provenance: false
+          sbom: false
+          # Read-only, like the publish step: a cache written from a tag ref is
+          # unreadable by every later run.
+          cache-from: type=gha,scope=metis-${{ matrix.image.name }}
+
+      - name: Restore Trivy DB cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ matrix.arch.slug }}-${{ needs.prep.outputs.date }}
+          restore-keys: trivy-db-${{ matrix.arch.slug }}-
+
+      - name: Install Trivy (pinned + checksum-verified)
+        env:
+          # Keep in step with ci.yml's `Install Trivy` (scripts/ci/install-trivy.sh).
+          TRIVY_VERSION: "0.71.1"
+          TRIVY_ARCH: ${{ matrix.arch.trivy }}
+          TRIVY_SHA256: ${{ matrix.arch.trivy == 'ARM64' && 'a7daaee66817d67a4963e8f9ddf15f5238ee021b55d3cd8695b1b7801afd34a7' || '3cbae37cd440cd8676e5ce9207fe460b5641c7579a17e9d00f8894928c41a88d' }}
+        run: bash scripts/ci/install-trivy.sh
+
+      - name: Scan image (Trivy, HIGH/CRITICAL) and gate
+        env:
+          REPORT_DIR: trivy-reports
+        run: bash scripts/ci/trivy-scan.sh "${{ matrix.image.name }}=metis-${{ matrix.image.name }}:scan"
+
+      # Non-blocking: the GATE above decides whether the release ships; a
+      # code-scanning upload that fails (an API hiccup, a tag-ref quirk) must not
+      # fail the leg on its own. Waived results are filtered out first.
+      - name: Upload image scan SARIF
+        if: ${{ always() && github.event_name == 'push' && hashFiles(format('trivy-reports/{0}.filtered.sarif', matrix.image.name)) != '' }}
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy-reports/${{ matrix.image.name }}.filtered.sarif
+          category: trivy-image-${{ matrix.image.name }}-${{ matrix.arch.slug }}-release
+
   build:
     name: Build ${{ matrix.image.name }}
+    # #1379 — every scan leg must pass before ANY image is published.
+    needs: [prep, scan]
     runs-on: ubuntu-latest
     # Dependency-only bumps (dependabot PRs) don't need multi-arch Docker
     # validation — the CI workflow already runs `docker build` for those.
@@ -61,6 +182,7 @@ jobs:
           - { name: server, dockerfile: Dockerfile.server }
           - { name: ui, dockerfile: Dockerfile.ui }
           - { name: embeddings-svc, dockerfile: Dockerfile.embeddings }
+          - { name: sql-lineage, dockerfile: Dockerfile.sql-lineage }
 
     steps:
       - name: Checkout
@@ -158,6 +280,7 @@ jobs:
           # the other images (only Dockerfile.embeddings reads BAKE_MODELS).
           build-args: |
             BAKE_MODELS=0
+            OS_PATCH_DATE=${{ needs.prep.outputs.date }}
           # Native arch only — linux/amd64 on a GitHub-hosted runner. Building
           # the non-native arch here would force QEMU emulation, which is what
           # segfaulted `next build` (signal 11) on the old arm64 runner. Native
@@ -188,6 +311,8 @@ jobs:
         with:
           context: .
           file: ${{ matrix.image.dockerfile }}
+          build-args: |
+            OS_PATCH_DATE=${{ needs.prep.outputs.date }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
@@ -225,7 +350,7 @@ jobs:
         run: |
           gh api "orgs/${OWNER}/packages/container/${PACKAGE}/versions?per_page=50" \
             --jq '.[] | select(.metadata.container.tags | length == 0) | .id' 2>/dev/null \
-          | while read id; do
+          | while read -r id; do
               gh api -X DELETE "orgs/${OWNER}/packages/container/${PACKAGE}/versions/${id}" 2>/dev/null && echo "Deleted untagged version $id" || true
             done
 

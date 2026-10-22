@@ -77,6 +77,15 @@ describe("proxy auth gate (handler)", () => {
     expect(redirectMock).not.toHaveBeenCalled();
   });
 
+  // #1377 — every page loads /runtime-config before hydrating, the login page
+  // included; a signed-out visitor must get the script, not a redirect to /login.
+  it("lets the public /runtime-config script through signed out", async () => {
+    await run(makeReq("/runtime-config"));
+    expect(nextMock).toHaveBeenCalled();
+    expect(refreshMock).not.toHaveBeenCalled();
+    expect(redirectMock).not.toHaveBeenCalled();
+  });
+
   it("lets Next internals and the auth-proxy prefix through", async () => {
     await run(makeReq("/_next/static/x.js"));
     await run(makeReq("/api/auth/refresh"));

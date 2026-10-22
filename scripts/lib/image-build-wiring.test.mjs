@@ -383,10 +383,12 @@ describe("build-images.yml uses a cache that survives the runner (#3)", () => {
     expect(wf).not.toMatch(/type=local/);
   });
 
+  // Three: the native validation build, the tag's pre-publish scan build (#1379)
+  // and the multi-arch publish.
   it("every build step reads the gha cache", () => {
     expect(
       wf.match(/cache-from: type=gha,scope=metis-\$\{\{ matrix\.image\.name \}\}/g),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
   // A cache written from a tag ref can be restored only by that same tag, so a
@@ -405,5 +407,244 @@ describe("build-images.yml uses a cache that survives the runner (#3)", () => {
     expect(
       wf.match(/cache-to: type=gha,scope=metis-\$\{\{ matrix\.image\.name \}\},mode=max/g),
     ).toHaveLength(1);
+  });
+});
+
+/**
+ * #1382 — the chart enabled `sqlLineage` by default and pulled
+ * `metis-sql-lineage:<appVersion>`, but the release matrix published only three
+ * images, so a stock `helm install` of a tagged release sat in ImagePullBackOff.
+ * Nothing compared the two lists. This does: every component image the chart's
+ * values name must be in the publish matrix, built from a Dockerfile that exists.
+ */
+describe("build-images.yml publishes every image the Helm chart pulls (#1382)", () => {
+  const wf = read(".github/workflows/build-images.yml");
+  const values = read("deploy/helm/metis/values.yaml");
+
+  /** `{ name, dockerfile }` pairs from the matrix's flow-style entries. */
+  const matrix = [
+    ...wf.matchAll(/^\s*- \{ name: ([a-z0-9-]+), dockerfile: (Dockerfile\.[a-z0-9.-]+) \}$/gm),
+  ].map((m) => ({ name: m[1], dockerfile: m[2] }));
+
+  /** Component image repositories (`metis-*`) in the chart's default values. */
+  const chartImages = [...values.matchAll(/^\s+repository: (metis-[a-z0-9-]+)\s*$/gm)].map(
+    (m) => m[1],
+  );
+
+  it("finds the chart's component images and the matrix entries", () => {
+    // Guards the parsers: an empty list on either side would pass vacuously.
+    expect(chartImages).toEqual(
+      expect.arrayContaining([
+        "metis-server",
+        "metis-ui",
+        "metis-embeddings-svc",
+        "metis-sql-lineage",
+      ]),
+    );
+    expect(matrix.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("every chart image has a matrix entry, pushed as metis-<name>", () => {
+    const published = new Set(matrix.map((e) => `metis-${e.name}`));
+    const missing = chartImages.filter((image) => !published.has(image));
+    expect(missing).toEqual([]);
+    const publish = wf.slice(wf.indexOf("- name: Build & push (tag"));
+    expect(publish).toContain(
+      "${{ env.REGISTRY }}/metis-${{ matrix.image.name }}:${{ steps.meta.outputs.version }}",
+    );
+  });
+
+  it("every matrix entry builds from a Dockerfile that exists", () => {
+    for (const { dockerfile } of matrix) {
+      expect(fs.existsSync(path.join(repoRoot, dockerfile)), dockerfile).toBe(true);
+    }
+  });
+
+  it("publishes metis-sql-lineage from Dockerfile.sql-lineage", () => {
+    expect(matrix).toContainEqual({ name: "sql-lineage", dockerfile: "Dockerfile.sql-lineage" });
+  });
+});
+
+/**
+ * #1379 — the images' CVE hygiene, which no scan of a single build can keep true:
+ * a base image pinned by digest (so the image CI scanned is the one that ships),
+ * the distro's security updates applied in the runtime stage behind a cache-busting
+ * ARG, and a scan of every built image in CI and before every publish.
+ */
+describe("container images are digest-pinned, patched and scanned (#1379)", () => {
+  const dockerfiles = [
+    "Dockerfile.server",
+    "Dockerfile.ui",
+    "Dockerfile.embeddings",
+    "Dockerfile.sql-lineage",
+  ];
+
+  /** @param {string} source */
+  const froms = (source) =>
+    [...source.matchAll(/^FROM\s+(\S+)(?:\s+AS\s+(\S+))?$/gm)].map((m) => ({
+      image: m[1],
+      stage: m[2] ?? "",
+    }));
+
+  it.each(dockerfiles)(
+    "%s pins every external base image by digest, one digest per tag",
+    (file) => {
+      const source = read(file);
+      const external = froms(source).filter(
+        ({ image }) => image.includes(":") || image.includes("@"),
+      );
+      expect(external.length).toBeGreaterThan(0);
+      /** @type {Map<string, string>} */
+      const digestByTag = new Map();
+      for (const { image } of external) {
+        expect(image, `${file}: ${image}`).toMatch(
+          /^[a-z0-9./-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$/,
+        );
+        const [tag, digest] = image.split("@");
+        expect(digestByTag.get(tag) ?? digest, `${file}: two digests for ${tag}`).toBe(digest);
+        digestByTag.set(tag, digest);
+      }
+    },
+  );
+
+  it.each(dockerfiles)("%s runs the distro's security updates in its runtime stage", (file) => {
+    const source = read(file);
+    const runner = source.slice(source.lastIndexOf(" AS runner"));
+    const argAt = runner.indexOf("ARG OS_PATCH_DATE");
+    expect(argAt, `${file}: no ARG OS_PATCH_DATE in the runner stage`).toBeGreaterThan(-1);
+    const upgrade = runner.search(/apt-get upgrade -y|apk upgrade --no-cache/);
+    expect(upgrade, `${file}: no apt-get/apk upgrade in the runner stage`).toBeGreaterThan(argAt);
+    // The ARG has to be READ by the upgrade's RUN for a new value to bust its cache.
+    expect(runner.slice(argAt, upgrade)).toMatch(/RUN echo "os patch level: \$\{OS_PATCH_DATE\}"/);
+  });
+
+  it.each(["Dockerfile.server", "Dockerfile.ui", "Dockerfile.embeddings"])(
+    "%s ships no npm, npx or corepack in the runtime image",
+    (file) => {
+      const runner = read(file).slice(read(file).lastIndexOf(" AS runner"));
+      for (const tool of [
+        "/usr/local/lib/node_modules/npm",
+        "/usr/local/lib/node_modules/corepack",
+        "/usr/local/bin/npx",
+      ]) {
+        expect(runner).toContain(tool);
+      }
+      expect(runner).toMatch(/rm -rf \/usr\/local\/lib\/node_modules\/npm/);
+    },
+  );
+
+  it("Dockerfile.sql-lineage keeps no pip in the runtime venv or the base interpreter", () => {
+    const source = read("Dockerfile.sql-lineage");
+    expect(source).toMatch(/\/opt\/venv\/bin\/pip uninstall -y pip/);
+    expect(source.slice(source.lastIndexOf(" AS runner"))).toMatch(
+      /python -m pip uninstall -y pip/,
+    );
+  });
+
+  it("Dockerfile.server drops officeparser's browser bundles and their stale SBOM", () => {
+    const source = read("Dockerfile.server");
+    expect(source).toMatch(/officeparser\.browser\.\*/);
+    expect(source).toMatch(/dist\/sbom\.cdx\.json/);
+  });
+
+  const ci = read(".github/workflows/ci.yml");
+  const api = jobBlock(ci, "api");
+  const release = read(".github/workflows/build-images.yml");
+
+  it("ci.yml `api` passes the OS patch date to all four image builds", () => {
+    expect(api.match(/OS_PATCH_DATE=\$\{\{ steps\.patch\.outputs\.date \}\}/g)).toHaveLength(4);
+  });
+
+  it("ci.yml `api` scans all four built images through the gate script", () => {
+    for (const label of ["server", "ui", "embeddings-svc", "sql-lineage"]) {
+      expect(api).toMatch(new RegExp(`"${label}=metis-[a-z-]+:\\$\\{IMAGE_TAG\\}"`));
+      // Waived results are filtered out before code scanning sees them.
+      expect(api).toContain(`sarif_file: trivy-reports/${label}.filtered.sarif`);
+    }
+    expect(api).toContain("bash scripts/ci/trivy-scan.sh");
+    expect(api).toMatch(/security-events: write/);
+  });
+
+  it("the scan script gates on the waiver file, the base branch's waivers and filters SARIF", () => {
+    const script = read("scripts/ci/trivy-scan.sh");
+    expect(script).toContain('node scripts/lib/image-scan-gate.mjs --waivers "${WAIVERS}"');
+    expect(script).toContain('WAIVERS=".github/image-scan-waivers.json"');
+    expect(script).toContain("--sarif-dir");
+    expect(script).toContain("--base-waivers");
+    // The DB download is retried, and scans never re-download mid-run.
+    expect(script).toMatch(/--download-db-only/);
+    expect(script).toMatch(/--skip-db-update/);
+  });
+
+  it("the Trivy DB is cached per day in both workflows", () => {
+    expect(api).toMatch(/key: trivy-db-\$\{\{ steps\.patch\.outputs\.date \}\}/);
+    expect(release).toMatch(
+      /key: trivy-db-\$\{\{ matrix\.arch\.slug \}\}-\$\{\{ needs\.prep\.outputs\.date \}\}/,
+    );
+  });
+
+  it("uploads SARIF only off pull requests, so no Trivy check run joins the PR check set", () => {
+    const uploads = [...api.matchAll(/- name: Upload image scan SARIF[\s\S]*?category:/g)];
+    expect(uploads).toHaveLength(4);
+    for (const [step] of uploads) expect(step).toContain("github.event_name != 'pull_request'");
+  });
+
+  it("dependabot/docker/* branches build and scan every image; other Dependabot branches do not", () => {
+    for (const step of [
+      "Build metis-ui",
+      "Build metis-embeddings",
+      "Build metis-sql-lineage",
+      "Scan images",
+    ]) {
+      const at = api.indexOf(`- name: ${step}`);
+      expect(at, step).toBeGreaterThan(-1);
+      const cond = api.slice(at, api.indexOf("\n", api.indexOf("if:", at)));
+      expect(cond, step).toContain("startsWith(github.head_ref, 'dependabot/docker/')");
+    }
+  });
+
+  it("Dependabot proposes base-image digest bumps for every Dockerfile directory", () => {
+    const dependabot = read(".github/dependabot.yml");
+    const docker = dependabot.slice(dependabot.indexOf('package-ecosystem: "docker"'));
+    expect(docker).toContain('- "/"');
+    for (const dir of fs.readdirSync(path.join(repoRoot, "images/mcp-wrappers"))) {
+      if (fs.existsSync(path.join(repoRoot, "images/mcp-wrappers", dir, "Dockerfile"))) {
+        expect(docker).toContain(`- "/images/mcp-wrappers/${dir}"`);
+      }
+    }
+    expect(docker).toMatch(/interval: "weekly"/);
+    expect(docker).toMatch(/groups:/);
+  });
+
+  it("build-images.yml scans BOTH arches of the published variant before ANY image publishes", () => {
+    const scan = jobBlock(release, "scan");
+    const build = jobBlock(release, "build");
+    expect(scan).toContain("platform: linux/amd64");
+    expect(scan).toContain("platform: linux/arm64");
+    expect(scan).toContain("runner: ubuntu-24.04-arm");
+    expect(scan).toContain("bash scripts/ci/trivy-scan.sh");
+    // As published: no BAKE_MODELS=0 override, the run's single OS patch date.
+    const scanBuild = scan.slice(
+      scan.indexOf("- name: Build for scan"),
+      scan.indexOf("- name: Restore Trivy DB cache"),
+    );
+    expect(scanBuild).not.toContain("BAKE_MODELS");
+    expect(scanBuild).toContain("OS_PATCH_DATE=${{ needs.prep.outputs.date }}");
+    // Every scan leg gates every publish leg.
+    expect(build).toMatch(/needs: \[prep, scan\]/);
+    const push = build.slice(build.indexOf("- name: Build & push (tag"));
+    expect(push).toContain("OS_PATCH_DATE=${{ needs.prep.outputs.date }}");
+  });
+
+  it("both workflows install the same pinned, checksum-verified Trivy", () => {
+    const version = api.match(/TRIVY_VERSION: "([^"]+)"/)?.[1];
+    const sha = api.match(/TRIVY_SHA256: "([0-9a-f]{64})"/)?.[1];
+    expect(version).toBeTruthy();
+    expect(sha).toBeTruthy();
+    expect(release).toContain(`TRIVY_VERSION: "${version}"`);
+    // The amd64 leg uses ci.yml's checksum; arm64 has its own.
+    expect(release).toContain(`'${sha}'`);
+    expect(release).toMatch(/'[0-9a-f]{64}' \|\| '[0-9a-f]{64}'/);
+    expect(read("scripts/ci/install-trivy.sh")).toMatch(/sha256sum -c -/);
   });
 });
