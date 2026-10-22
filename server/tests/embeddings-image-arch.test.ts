@@ -47,9 +47,9 @@ describe("Dockerfile.embeddings — glibc only, never Alpine (#786)", () => {
     const froms = baseImages(dockerfile);
     expect(froms.length).toBeGreaterThan(0);
     for (const image of froms) {
-      // Named stages (`AS builder` → `FROM node:20-bookworm-slim AS runner`) all
-      // resolve to a node:*-bookworm-slim base here.
-      expect(image).toContain("bookworm");
+      // Named stages all resolve to a Debian (glibc) node:*-slim base here:
+      // `node:22-trixie-slim@sha256:…` since #1379 (bookworm before it).
+      expect(image).toMatch(/^node:[0-9.]+-(?:trixie|bookworm)-slim(?:@sha256:[0-9a-f]{64})?$/);
     }
   });
 

@@ -3703,7 +3703,7 @@ For the complete API reference with all 56 endpoints, see [ARCHITECTURE.md](ARCH
 
 **Solution**:
 - Make sure the **server** is running (port 4000). The UI (port 3000) needs the server to be running.
-- Check that `NEXT_PUBLIC_SOCKET_URL` in your `.env` points to the correct server URL
+- Check where the browser is dialling: open `/runtime-config` on the UI. A `socketUrl` of `null` means the page's own origin, which is right behind the Helm ingress. Anywhere the server is reached on another address, set `METIS_BROWSER_SOCKET_URL` on the UI to that server URL and restart the UI (Docker Compose sets `http://localhost:4000`). In `pnpm dev`, `NEXT_PUBLIC_SOCKET_URL` in your `.env` is still honoured
 - Check for CORS errors in your browser's developer console (F12 → Console tab)
 
 ### Analysis takes too long or fails

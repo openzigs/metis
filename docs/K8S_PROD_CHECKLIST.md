@@ -92,10 +92,28 @@ The chart leaves three server settings to you, and the install does not work wit
 
 ## 9. Image hygiene
 
-- [ ] All four images (`metis-server`, `metis-ui`, `metis-embeddings-svc`, `metis-sql-lineage`) are published for the tag. `build-images.yml` publishes only the first three today (#1382).
-- [ ] All four images scanned with Trivy (or ECR scan-on-push) — High/Critical = 0.  
+- [ ] All four images (`metis-server`, `metis-ui`, `metis-embeddings-svc`, `metis-sql-lineage`) are published for the tag by `build-images.yml` (#1382; `image-build-wiring.test.mjs` fails if the chart names an image the matrix does not publish).
+- [ ] All four images scanned with Trivy (or ECR scan-on-push): **fixable** High/Critical = 0, and every unfixed one recorded.  
   `trivy image --scanners vuln --severity HIGH,CRITICAL ghcr.io/openzigs/metis-server:<tag>`  
-  No image met this in #1312. Every image had fixable HIGH findings, and three had CRITICAL ones (#1379).
+  The policy (#1379), enforced by `scripts/lib/image-scan-gate.mjs` in ci.yml's `api` job on every image-touching PR, on `main` and nightly, and in `build-images.yml` before a tag publishes:
+  - **Fails:** any HIGH or CRITICAL that has a fixed version. Fix it by rebuilding: the images apply distro security updates at build time, and the bases are pinned by digest. Or upgrade the package, or remove it from the runtime image.
+  - **Fails:** an unfixed CRITICAL that is not recorded in `.github/image-scan-waivers.json`.
+  - **Fails:** a recorded finding past its `expires` review date.
+  - **Fails:** a finding whose waiver was removed. A waiver leaves `waivers` only by moving to the file's `expired` section, and any finding matching an `expired` id fails. On a pull request, deleting a waiver from `waivers` without moving it also fails while its finding is present (the scan reads the base branch's file). Deleting the record therefore never turns a red build green; only a fix does, or a deliberate re-dating.
+  - **Fails:** a scan that cannot be trusted. That means a report with no detected OS family, no `os-pkgs` result, or an end-of-life distro release. In those cases Trivy skips the OS packages and exits 0, so "no findings" would only mean "not looked".
+  - **Warns:** an unfixed HIGH that is not recorded yet. Record it with a reason and a review date.
+  - Findings go to code scanning as SARIF on `main`, nightly and release. Results that a live waiver covers are filtered out first, so the Security tab shows only what still needs action.
+  - The Trivy vulnerability DB is cached per day. The download is retried, and if it still fails, the scan falls back to an earlier cached DB with a warning. The step fails only if no DB exists at all.
+
+  **Release scanning (`build-images.yml`).** Every image is scanned on **both** amd64 and arm64. Each architecture builds natively on its own runner (`ubuntu-24.04-arm` for arm64), as the published variant: the default `BAKE_MODELS=1` and the run's single `OS_PATCH_DATE`. The publish job needs every scan leg, so one image failing its gate publishes **none** of the four.
+
+  Residual gap: the publish step rebuilds the image rather than pushing the scanned bytes. With digest-pinned bases and one patch date, the package set matches, unless the distro mirror published an update between the two builds.
+
+  **What Trivy does not see: the Node.js and CPython runtimes.** The official `node` and `python` images install the runtime outside the distro's package manager, so `apt-get upgrade` / `apk upgrade` never patch it and Trivy does not report its CVEs. Measured on 2026-10-21 with Trivy 0.71.1: `node:22.1.0-alpine` (April 2024, many Node security releases behind) reported no finding for `node`, and `python:3.12.0-slim` reported none for CPython (only `setuptools` and `wheel`). Runtime fixes therefore arrive **only** through base-image digest bumps:
+  - **Cadence:** Dependabot's `docker` ecosystem opens one grouped PR a week for every Dockerfile directory, after the repository's 7-day cooldown. ci.yml builds and scans those `dependabot/docker/*` branches like any other image change.
+  - **Out of band:** when nodejs.org or python.org announces a security release that affects the runtime line in use (Node 22, Python 3.12), bump the digests by hand that week: `docker buildx imagetools inspect <tag>`, then replace the digest in every `FROM`. Do not wait for the cooldown.
+
+  #1312 measured server 58 HIGH/0 CRITICAL, ui 26/1, embeddings 92/7 and sql-lineage 61/3. After #1379 the counts were server 43/0, ui 0/0, embeddings 43/0 and sql-lineage 44/0, with none fixable. What remains is 8 Debian trixie CVEs with no fix (util-linux, ncurses, systemd, acl, perl-base), recorded with a 2027-01-19 review date.
 - [ ] **Recommended**: Cosign signatures on tagged images.  
   `cosign verify ghcr.io/openzigs/metis-server:<tag>`
 - [ ] Multi-arch manifest present (amd64 + arm64) — required for Graviton nodes.  
@@ -139,7 +157,7 @@ The chart leaves three server settings to you, and the install does not work wit
   `curl -s https://<host>/api/auth/saml/metadata` should return SP metadata XML, or the server's `SSO_NOT_CONFIGURED` when SAML is not set up. The UI's `NOT_FOUND` / `SAML_ACS_WRONG_ORIGIN` means the route goes to the wrong backend.
 - [ ] Uploads near the cap pass the Ingress: on nginx, `proxy-body-size` is `50m` (`ingress.nginx.proxyBodySize`). For the ALB and traefik, check the controller's limit.
 - [ ] WebSocket upgrade works for `/socket.io`: a handshake to `wss://<host>/socket.io/?EIO=4&transport=websocket` with the session cookie returns `101`. A foreign `Origin` is refused with `ORIGIN_REJECTED`.
-- [ ] The browser actually dials that socket. Today the release UI image dials `http://localhost:4000` instead (#1377), so live updates do not connect behind an ingress.
+- [ ] The browser actually dials that socket: the header's connection state reads `connected`. A release UI image dials its own origin (#1377); `curl -s https://<host>/runtime-config` shows `"socketUrl":null` unless `METIS_BROWSER_SOCKET_URL` is set on the UI, and then it shows that origin.
 
 ## 15. MCP runtime
 

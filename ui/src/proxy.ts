@@ -2,7 +2,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ACCESS_COOKIE, REFRESH_COOKIE } from "@/lib/config";
 import { applyRotatedCookies, isRetryableRefreshStatus, refreshUpstream } from "@/lib/edge-auth";
 
-const PUBLIC_PATHS = new Set(["/login"]);
+// `/runtime-config` (#1377) is loaded by every page, the login page included,
+// and carries no secrets; gating it would hand a signed-out page a redirect where
+// it expects a script.
+const PUBLIC_PATHS = new Set(["/login", "/runtime-config"]);
 // `/invites/<token>` is the workspace-invitation landing page. Its audience is
 // often signed out, and its read (`GET /api/workspaces/invites/:token`) is
 // deliberately unauthenticated — gating the page here bounced every invitee to

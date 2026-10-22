@@ -5,12 +5,19 @@
 # Builds the @metis/ui Next.js app and ships its .next/standalone bundle
 # in a minimal runtime image. Coupled with `output: "standalone"` in
 # ui/next.config.mjs.
+#
+# #1379 — base images are pinned by DIGEST (a tag moves under you; a digest is
+# the exact bytes CI scanned), on Node 22, the repo's `engines.node` (Node 20
+# reached end of life in April 2026). The runner stage applies the distro's
+# security updates and drops npm/corepack/yarn: every fixable HIGH/CRITICAL
+# Trivy found in this image (CRITICAL `tar`, `glob`, `cross-spawn`, ...) was
+# in the npm CLI the base image bundles, which `node ui/server.js` never runs.
+# To move the base: `docker buildx imagetools inspect node:22-alpine` and
+# replace the digest in EVERY `FROM` (image-build-wiring.test.mjs checks they agree).
 # ==============================================================================
 
-ARG NODE_VERSION=20
-
 # ----- Stage 1: install dependencies -----
-FROM node:${NODE_VERSION}-alpine AS deps
+FROM node:22-alpine@sha256:ebc216c22db53dbde85719a874978d5aec04e6e405ad26a3804c6f9abc4ca1a9 AS deps
 WORKDIR /app
 
 RUN apk add --no-cache libc6-compat \
@@ -29,7 +36,7 @@ RUN pnpm install --frozen-lockfile \
       --filter @metis/ui-kit
 
 # ----- Stage 2: build -----
-FROM node:${NODE_VERSION}-alpine AS builder
+FROM node:22-alpine@sha256:ebc216c22db53dbde85719a874978d5aec04e6e405ad26a3804c6f9abc4ca1a9 AS builder
 WORKDIR /app
 
 RUN apk add --no-cache libc6-compat \
@@ -60,7 +67,7 @@ RUN pnpm --filter @metis/shared build \
  && pnpm --filter @metis/ui build
 
 # ----- Stage 3: runtime -----
-FROM node:${NODE_VERSION}-alpine AS runner
+FROM node:22-alpine@sha256:ebc216c22db53dbde85719a874978d5aec04e6e405ad26a3804c6f9abc4ca1a9 AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -76,7 +83,18 @@ LABEL org.opencontainers.image.revision=${METIS_SOURCE_COMMIT}
 LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
 LABEL org.opencontainers.image.source="https://github.com/openzigs/metis"
 
-RUN addgroup --system --gid 1001 metis \
+# #1379 — security updates for the base packages (`apk upgrade`), and no npm,
+# npx, corepack or yarn: the runtime is `node ui/server.js` and nothing in it
+# runs a package manager. OS_PATCH_DATE busts the layer cache, so CI (which
+# passes the date) picks up a distro fix the day it ships rather than reusing a
+# cached upgrade layer; it is not otherwise read.
+ARG OS_PATCH_DATE=unset
+RUN echo "os patch level: ${OS_PATCH_DATE}" \
+ && apk upgrade --no-cache \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+           /usr/local/bin/yarn /usr/local/bin/yarnpkg \
+ && addgroup --system --gid 1001 metis \
  && adduser --system --uid 1001 --ingroup metis metis
 
 # Copy the Next.js standalone output. The standalone bundle includes the

@@ -200,6 +200,24 @@ describe("socket connection lifecycle store", () => {
     await waitFor(() => expect(result.current).toBe(fake.socket));
   });
 
+  // #1377 — a production build with no NEXT_PUBLIC_SOCKET_URL and no runtime
+  // override dials the page's own origin (the ingress routes /socket.io to the
+  // server), never the http://localhost:4000 the release image used to bake in.
+  it("a production build with no socket setting connects to its own origin", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SOCKET_URL", undefined);
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      renderHook(() => useSocket());
+      await waitFor(() => expect(ioMock).toHaveBeenCalledTimes(1));
+      const [url, opts] = ioMock.mock.calls[0] as [string, Record<string, unknown>];
+      expect(url).toBe(window.location.origin);
+      expect(url).not.toContain(":4000");
+      expect(opts).toMatchObject({ path: "/socket.io", withCredentials: true });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("does not notify listeners when state is unchanged (repeated reconnect_attempt)", async () => {
     const { result } = renderStatus();
     await waitFor(() => expect(fake.socket.on).toHaveBeenCalled());
