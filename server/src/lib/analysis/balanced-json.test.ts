@@ -10,7 +10,52 @@
 import { describe, expect, it } from "vitest";
 
 import { extractJsonObject } from "./agent-runner.js";
-import { AMBIGUOUS_JSON_MESSAGE, parseBalancedJsonObject } from "./balanced-json.js";
+import {
+  AMBIGUOUS_JSON_MESSAGE,
+  type BalancedJsonResult,
+  type BalancedJsonWork,
+  parseBalancedJsonObject,
+} from "./balanced-json.js";
+
+interface Measured {
+  result: BalancedJsonResult;
+  /** Total work units (characters) the call reported. */
+  work: number;
+  length: number;
+}
+
+/** #1422 — run the scan and total the work it reports, instead of timing it. */
+function measureWork(text: string): Measured {
+  let reported: BalancedJsonWork | undefined;
+  const result = parseBalancedJsonObject(text, {
+    onWork: (w) => {
+      reported = w;
+    },
+  });
+  if (!reported) throw new Error("onWork was not called");
+  const work = reported.scanned + reported.parsed + reported.walked + reported.canonicalised;
+  return { result, work, length: text.length };
+}
+
+/**
+ * Work units per input character that no linear input here exceeds (the
+ * densest, identical objects between prose, does 2.9). Exact counts, so the
+ * bound needs no slack for a loaded machine.
+ */
+const MAX_WORK_PER_CHAR = 4;
+
+/**
+ * 10x the input: linear work is ~10x (exactly, give or take the edges), a
+ * quadratic one ~100x. Normalised by the actual lengths, 1.2x leaves room only
+ * for the edges.
+ */
+function expectLinear(small: Measured, large: Measured): void {
+  expect(large.length).toBeGreaterThanOrEqual(small.length * 9);
+  const perCharSmall = small.work / small.length;
+  const perCharLarge = large.work / large.length;
+  expect(perCharLarge).toBeLessThanOrEqual(perCharSmall * 1.2);
+  expect(perCharLarge).toBeLessThanOrEqual(MAX_WORK_PER_CHAR);
+}
 
 const DRAFT = { title: "Add audit logging", affected: { files: ["a.go"], ids: [] } };
 
@@ -171,37 +216,25 @@ describe("#1002 parseBalancedJsonObject", () => {
   });
 
   /**
-   * Linear-time, asserted the way `agent-runner-fence-redos.test.ts` does it:
-   * a RATIO between two sizes (so it holds on a slow runner) plus a generous
-   * absolute ceiling. A scan that restarted from each inner `{` would be
-   * quadratic on exactly this input — 400 KB of openers that never close —
-   * and would take seconds, not a few milliseconds.
+   * #1422 — linear, proven by COUNTING the work rather than timing it. The
+   * wall-clock ratio this replaced measured the machine as much as the code
+   * (56 ms against a 49 ms bound inside a full `pnpm test` fan-out, green
+   * alone). Counts are exact and load-independent: 10x the input must cost at
+   * most ~10x the work, where a scan that restarted from each inner `{` costs
+   * ~100x, and no input may cost more than a few units of work per character.
    */
   it.each([
-    ["unclosed openers", (n: number) => "{".repeat(n), 500],
-    ["an unterminated string", (n: number) => `{"a":"${"\\\\".repeat(n / 2)}`, 500],
-    ["many prose spans", (n: number) => "{x}".repeat(Math.floor(n / 3)), 500],
-    // Every span reaches `JSON.parse` and throws: linear, but with the slow
-    // constant, so only the ratio is held tightly for it.
-    ["many spans that fail to parse", (n: number) => '{"":}'.repeat(Math.floor(n / 5)), 5_000],
-  ])("is linear on %s", (_label, make, ceilingMs) => {
-    const time = (n: number): number => {
-      const input = make(n);
-      let best = Number.POSITIVE_INFINITY;
-      for (let i = 0; i < 3; i++) {
-        const t0 = performance.now();
-        expect(parseBalancedJsonObject(input)).toEqual({ found: false });
-        best = Math.min(best, performance.now() - t0);
-      }
-      return best;
-    };
-    time(1_000); // warm
-    const small = time(100_000);
-    const large = time(400_000);
-    expect(large).toBeLessThan(ceilingMs);
-    // 4x the input: linear is ~4x, quadratic ~16x. The floor keeps a
-    // sub-millisecond `small` from turning timer noise into a failure.
-    expect(large).toBeLessThan(Math.max(small, 1) * 10);
+    ["unclosed openers", (n: number) => "{".repeat(n)],
+    ["an unterminated string", (n: number) => `{"a":"${"\\\\".repeat(n / 2)}`],
+    ["many prose spans", (n: number) => "{x}".repeat(Math.floor(n / 3))],
+    // Every span reaches `JSON.parse` and throws.
+    ["many spans that fail to parse", (n: number) => '{"":}'.repeat(Math.floor(n / 5))],
+  ])("is linear on %s", (_label, make) => {
+    const small = measureWork(make(2_000));
+    const large = measureWork(make(20_000));
+    expect(small.result).toEqual({ found: false });
+    expect(large.result).toEqual({ found: false });
+    expectLinear(small, large);
   });
 });
 
@@ -369,22 +402,14 @@ describe("#1355 a preamble example followed by the real answer", () => {
   });
 
   it("stays linear on many identical objects separated by prose", () => {
+    // #1422 — every span parses and is compared with the held answer, so this
+    // is the input that would expose a comparison against EVERY earlier span
+    // (or a held answer re-canonicalised per span) as quadratic work.
     const make = (n: number): string => '{"a":1} x '.repeat(Math.floor(n / 10));
-    const time = (n: number): number => {
-      const input = make(n);
-      let best = Number.POSITIVE_INFINITY;
-      for (let i = 0; i < 5; i++) {
-        const t0 = performance.now();
-        expect(parseBalancedJsonObject(input)).toEqual({ found: true, value: { a: 1 } });
-        best = Math.min(best, performance.now() - t0);
-      }
-      return best;
-    };
-    time(1_000); // warm
-    const small = time(100_000);
-    const large = time(400_000);
-    expect(large).toBeLessThan(2_000);
-    // Linear is ~4x (measured 2.0 ms -> 8.5 ms); quadratic would be ~16x.
-    expect(large).toBeLessThan(Math.max(small, 2) * 10);
+    const small = measureWork(make(2_000));
+    const large = measureWork(make(20_000));
+    expect(small.result).toEqual({ found: true, value: { a: 1 } });
+    expect(large.result).toEqual({ found: true, value: { a: 1 } });
+    expectLinear(small, large);
   });
 });

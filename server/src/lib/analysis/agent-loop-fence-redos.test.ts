@@ -20,13 +20,14 @@
  * "Byte-identical" is exactly the kind of claim that deserves a differential
  * test rather than an assertion, so these tests pin both halves:
  *
- *  1. the benchmark — a 200 KB unclosed-fence input parses in < 50 ms, and
- *     scales linearly rather than quadratically;
+ *  1. the benchmark — a 200 KB unclosed-fence input parses in linear time,
+ *     on the CPU clock of the test's own thread (#1422);
  *  2. the equivalence — the shipped parser returns EXACTLY what the old regex
  *     returned, differentially, over a seeded corpus of fence-shaped strings.
  */
 import { describe, expect, it } from "vitest";
 
+import { expectLinearTime, threadCpuMs } from "../../../tests/helpers/linear-time.js";
 import { parseToolCall } from "./agent-loop.js";
 
 /**
@@ -74,26 +75,6 @@ function parseToolCallViaOldFence(
 }
 
 /**
- * Fastest of `runs` timings, in ms. The MINIMUM is the right statistic for
- * "this implementation can do the work this fast" — a loaded CI runner can only
- * inflate a sample, never deflate one. Bails out once a single run exceeds
- * `abortAboveMs`, because no amount of repetition rescues a categorical
- * regression and `server/vitest.config.ts` sets `retry: 2`, so a failing
- * timing assertion otherwise costs three full attempts.
- */
-function fastestMs(fn: () => unknown, runs = 3, abortAboveMs = 500): number {
-  let best = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < runs; i++) {
-    const t0 = performance.now();
-    fn();
-    const elapsed = performance.now() - t0;
-    best = Math.min(best, elapsed);
-    if (elapsed > abortAboveMs) break;
-  }
-  return best;
-}
-
-/**
  * The adversarial payload, and the ONLY shape that triggers this quadratic: an
  * opening fence, a long whitespace run IMMEDIATELY after it, a long tail, and no
  * closing fence. Probing with the wrong payload makes the bug look absent —
@@ -115,16 +96,14 @@ function unclosedFenceInput(bytes: number): string {
 
 describe("#1244 parseToolCall is linear in input length", () => {
   /**
-   * 50 ms is ~500x the measured cost of the fixed implementation at 200 KB
-   * (~0.1 ms) — no scheduler hiccup or cold JIT on a loaded runner reaches it —
-   * and ~29x BELOW the quadratic cost at the same size (4,236 ms as filed;
-   * 1,461 ms on the machine this was written on, which is the tighter of the
-   * two and still leaves 29x). Three orders of magnitude separate the two
-   * implementations, so no plausible margin admits both.
+   * #1422 — `expectLinearTime` on this thread's CPU clock, not a 50 ms
+   * wall-clock budget and a ratio. A descheduled worker in a full `pnpm test`
+   * fan-out accrues no CPU time, so load cannot fail it; the quadratic can,
+   * because it does the work: 1,461 ms at 200 KB (over the helper's 250 ms) and
+   * ~16x the cost at a quarter of the size (over its ratio of 8). The fixed
+   * parser is ~0.1 ms at 200 KB.
    */
-  const BUDGET_MS = 50;
-
-  it("parses a 200 KB unclosed-fence payload in under 50 ms", () => {
+  it("parses a 200 KB unclosed-fence payload in linear time", () => {
     const input = unclosedFenceInput(200 * 1024);
     expect(input.length).toBeGreaterThanOrEqual(200 * 1024);
 
@@ -132,38 +111,37 @@ describe("#1244 parseToolCall is linear in input length", () => {
     // algorithm rather than the first-call compile.
     parseToolCall('{"tool":"list_files"}');
 
-    const ms = fastestMs(() => parseToolCall(input, KNOWN_TOOLS));
-
     // The verdict still has to be RIGHT — a parser that is fast because it gave
     // up early would otherwise pass this test. An unclosed fence carries no
     // parseable object, so it is a final answer.
     expect(parseToolCall(input, KNOWN_TOOLS)).toBeNull();
-    expect(ms).toBeLessThan(BUDGET_MS);
+    expectLinearTime(
+      "unclosed fence",
+      (n) => {
+        const at = unclosedFenceInput(n);
+        return () => parseToolCall(at, KNOWN_TOOLS);
+      },
+      200 * 1024,
+      threadCpuMs,
+    );
   }, 60_000);
 
-  it("scales linearly, not quadratically, with input length", () => {
-    parseToolCall('{"tool":"list_files"}');
-    const small = fastestMs(() => parseToolCall(unclosedFenceInput(50 * 1024), KNOWN_TOOLS));
-    const large = fastestMs(() => parseToolCall(unclosedFenceInput(200 * 1024), KNOWN_TOOLS));
-
-    // 4x the input. Linear predicts ~4x the time; quadratic predicts ~16x. The
-    // 25 ms floor keeps sub-millisecond noise from dominating the ratio at the
-    // linear end, while 8x still rejects the quadratic one by ~4x (measured:
-    // 97 ms at 50 KB vs 1,556 ms at 200 KB).
-    expect(large).toBeLessThan(small * 8 + 25);
-  }, 60_000);
-
-  it("stays fast when the whitespace run is newlines rather than spaces", () => {
+  it("stays linear when the whitespace run is newlines rather than spaces", () => {
     // `\s` covers every whitespace class, so the trigger is not space-specific;
     // pretty-printed JSON that is cut off emits newlines, not spaces.
-    const half = 100 * 1024;
-    const input = "Result:\n```json\n" + "\n".repeat(half) + "a".repeat(half);
+    const newlines = (n: number) => "Result:\n```json\n" + "\n".repeat(n / 2) + "a".repeat(n / 2);
     parseToolCall('{"tool":"list_files"}');
 
-    const ms = fastestMs(() => parseToolCall(input, KNOWN_TOOLS));
-
-    expect(parseToolCall(input, KNOWN_TOOLS)).toBeNull();
-    expect(ms).toBeLessThan(BUDGET_MS);
+    expect(parseToolCall(newlines(200 * 1024), KNOWN_TOOLS)).toBeNull();
+    expectLinearTime(
+      "newline run after a fence",
+      (n) => {
+        const at = newlines(n);
+        return () => parseToolCall(at, KNOWN_TOOLS);
+      },
+      200 * 1024,
+      threadCpuMs,
+    );
   }, 60_000);
 });
 

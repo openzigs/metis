@@ -14,6 +14,7 @@
  * the bug crossed.
  */
 import { describe, expect, it, vi } from "vitest";
+import { expectLinearTime, threadCpuMs } from "../../../tests/helpers/linear-time.js";
 import type { AIProvider, ChatMessage, ChatResponse } from "../ai/types.js";
 import type { AgentTool } from "./tools/types.js";
 import {
@@ -281,16 +282,6 @@ describe("#15 looksLikeToolCallMarkup — unparseable tool markup is still recog
 });
 
 describe("#15 parsing stays linear on untrusted model output (ReDoS)", () => {
-  function fastestMs(fn: () => unknown, runs = 3): number {
-    let best = Number.POSITIVE_INFINITY;
-    for (let i = 0; i < runs; i++) {
-      const t0 = performance.now();
-      fn();
-      best = Math.min(best, performance.now() - t0);
-    }
-    return best;
-  }
-
   // Each shape is a worst case for a naive "try every `{` as a start" scanner or
   // for an unanchored whitespace-heavy regex.
   const SHAPES: Array<[string, (n: number) => string]> = [
@@ -306,33 +297,31 @@ describe("#15 parsing stays linear on untrusted model output (ReDoS)", () => {
     ["alternating stray openers", (n) => "{[".repeat(n / 2)],
   ];
 
+  /**
+   * #1422 — `expectLinearTime` on this thread's CPU clock, in place of a 100 ms
+   * wall-clock budget (the fixed code takes 1 to 6 ms on 200 KB, 28 ms on the
+   * wall clock under load) and a separate wall-clock ratio. A descheduled
+   * worker in a full `pnpm test` fan-out accrues no CPU time; a parser that
+   * restarts from every opener does the work, and fails both the helper's
+   * 250 ms and its ratio of 8.
+   */
   it.each(SHAPES)(
-    "parses 200 KB of %s in under 100 ms",
-    (_label, make) => {
-      const input = make(200 * 1024);
+    "parses 200 KB of %s in linear time",
+    (label, make) => {
       parseToolCalls('{"tool":"list_files"}', KNOWN); // warm the JIT
-      const ms = fastestMs(() => {
-        parseToolCalls(input, KNOWN);
-        looksLikeToolCallMarkup(input);
-        classifyFinalAnswer(input);
-      });
-      expect(ms).toBeLessThan(100);
-    },
-    60_000,
-  );
-
-  it.each(SHAPES)(
-    "scales linearly with input length for %s",
-    (_label, make) => {
-      const run = (n: number) => () => {
-        parseToolCalls(make(n), KNOWN);
-        looksLikeToolCallMarkup(make(n));
-      };
-      parseToolCalls('{"tool":"list_files"}', KNOWN);
-      const small = fastestMs(run(50 * 1024));
-      const large = fastestMs(run(200 * 1024));
-      // 4x the input: linear predicts ~4x, quadratic ~16x.
-      expect(large).toBeLessThan(small * 8 + 25);
+      expectLinearTime(
+        label,
+        (n) => {
+          const input = make(n);
+          return () => {
+            parseToolCalls(input, KNOWN);
+            looksLikeToolCallMarkup(input);
+            classifyFinalAnswer(input);
+          };
+        },
+        200 * 1024,
+        threadCpuMs,
+      );
     },
     60_000,
   );
