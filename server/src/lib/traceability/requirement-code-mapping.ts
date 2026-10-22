@@ -136,8 +136,10 @@ export type LinkGate = "hybrid" | "keyword";
  * - `other-model` — code embedded only with another model, which stays so
  *   until the project's code is re-embedded with the active one;
  * - `not-embedded` — code with no embedding row at all;
- * - `no-vector` — no usable vector, cause not known (the embedding rows could
- *   not be read; and every such link of a run recorded under #1330).
+ * - `no-vector` — no usable vector, cause not known (the searcher has no
+ *   embedding-row lookup, or an active-model row has no returned cosine to
+ *   bound it; and every such link of a run recorded under #1330). Rows that
+ *   cannot be read are NOT this: those hits are capped as lost vectors.
  * Absent on a keyword-fallback answer, whose ranking already says why.
  */
 export type KeywordRuleCause =
@@ -1314,6 +1316,11 @@ export class MemoizingBm25CodeSymbolSearcher implements CodeSymbolSearcher {
    */
   withOptions(options: Bm25SearcherOptions): MemoizingBm25CodeSymbolSearcher {
     return new MemoizingBm25CodeSymbolSearcher(this.prisma, options, this.cache);
+  }
+
+  /** #1417 — this searcher's confidence floor (`minConfidence`), if it has one. */
+  get minConfidence(): number | undefined {
+    return this.options.minConfidence;
   }
 
   /** The project's corpus, loaded once per instance family. */

@@ -61,8 +61,10 @@ shown only by the two-term rule; the measured hits beside it keep the floor. Re-
 #1330: every arm of the table is unchanged (all 13 queries returned 120 vector hits).
 
 #1417 tells the last case apart: a hit whose embedding row is tagged with the active model has a
-vector the search lost, so it is scored at the lowest returned cosine again and stays under the
-floor; only a hit with no vector under the active model (table or column, pending, another model's,
+vector the search lost, so it is scored at the lowest returned cosine again (an upper bound) and
+its confidence is capped just under the lowest measured link kept, so it ranks after every
+measured link and is shown only if the capped confidence clears the floor (when the rows cannot be
+read, every hit without a cosine is treated so); only a hit with no vector under the active model (table or column, pending, another model's,
 none) goes to the two-term rule. Re-measured after #1417: every arm unchanged, every shown link
 identical (no query left a hit without a cosine, so the new path is not exercised on this sample).
 

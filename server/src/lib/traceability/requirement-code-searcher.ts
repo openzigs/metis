@@ -43,8 +43,13 @@
  * A hit the channel did not return although it HAS a vector under the active
  * model (a stale symbol's rows crowded it out, or another model's rows were
  * filtered after the search) is not the keyword rule's: it ranked past every
- * returned vector hit, so it is scored at the lowest returned cosine (#1325's
- * bound) and stays under the floor like any measured hit.
+ * returned vector hit. It is scored at the lowest returned cosine (#1325's
+ * bound, an upper bound on its own), and then CAPPED strictly below the
+ * lowest confidence of the measured hits kept, so it never ranks above a
+ * measured link however few and close the surviving vector hits are; it is
+ * shown only if the capped confidence still clears the floor, and not at all
+ * when no measured hit is kept. When the embedding rows cannot be read, every
+ * hit without a cosine is treated so (the conservative reading).
  *
  * WHAT IS SHARED WITH BM25. The hits HybridCodeSearch ranks are turned into
  * candidates by the BM25 searcher's {@link MemoizingBm25CodeSymbolSearcher.rankHits}:
@@ -153,8 +158,11 @@ export interface HybridCodeSymbolSearcherDeps {
   /**
    * #1417 — reads the embedding rows of the hits the vector channel did not
    * return, to tell "no vector under the active model" from "a vector the
-   * search lost". Absent, or failing: their cause is not known (`no-vector`)
-   * and they are all gated by the keyword rule, as under #1330.
+   * search lost". Absent (a test double, the eval harness): their cause is
+   * not known (`no-vector`) and they are gated by the keyword rule, as under
+   * #1330. FAILING: any of them may be a lost vector, so all of them are
+   * bounded and capped like one (see the module comment) rather than scored
+   * on words alone, which would let a lost two-word hit read 0.273.
    */
   embeddingModels?: EmbeddingModelLookup;
 }
@@ -173,6 +181,11 @@ interface HybridAnswer {
   calibrated: boolean;
   /** #1417 — of each calibrated hit still without a cosine, why it has none. */
   vectorState: ReadonlyMap<string, VectorState>;
+  /**
+   * #1417 — hits given the lowest returned cosine as an upper bound (a vector
+   * the search lost, or any unscored hit when the rows could not be read).
+   */
+  bounded: ReadonlySet<string>;
 }
 
 /**
@@ -246,11 +259,20 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
     const hybridRanker = this.deps.hybridOptions
       ? this.deps.bm25.withOptions(this.deps.hybridOptions)
       : this.deps.bm25;
-    const scored = answer.hits.filter((h) => h.cosine != null);
+    const measured = answer.hits.filter((h) => h.cosine != null && !answer.bounded.has(h.symbolId));
+    const bounded = answer.hits.filter((h) => answer.bounded.has(h.symbolId));
     const unscored = answer.hits.filter((h) => h.cosine == null);
-    const byConfidence = (await hybridRanker.rankHits(query, projectId, scored, limit)).map(
+    const byConfidence = (await hybridRanker.rankHits(query, projectId, measured, limit)).map(
       (c) => ({ ...c, linkGate: "hybrid" as const }),
     );
+    const byBound =
+      bounded.length > 0
+        ? capBelowMeasured(
+            await hybridRanker.rankHits(query, projectId, bounded, limit),
+            byConfidence,
+            hybridRanker.minConfidence,
+          )
+        : [];
     const byKeyword =
       unscored.length > 0
         ? (await this.deps.bm25.rankHits(query, projectId, unscored, limit)).map((c) => ({
@@ -264,7 +286,7 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
     // (confidence, highest first; a stable sort keeps the fused order on a
     // tie), so the cut never drops a candidate the mapper would rank above
     // one it keeps.
-    return [...byConfidence, ...byKeyword]
+    return [...byConfidence, ...byBound, ...byKeyword]
       .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
       .slice(0, limit);
   }
@@ -312,7 +334,8 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
           : null,
     }));
     const vectorState = new Map<string, VectorState>();
-    if (!calibrated) return { calibrated, hits, vectorState };
+    const bounded = new Set<string>();
+    if (!calibrated) return { calibrated, hits, vectorState, bounded };
     // #1330 / #1417 — a hit the vector channel did not return has no cosine.
     // Under the 0.05 / 0.95 fusion every vector hit outranks every
     // keyword-only one, so such a hit reaches the pool only when fewer vector
@@ -320,44 +343,78 @@ export class HybridCodeSymbolSearcher implements CodeSymbolSearcher {
     //   - a row under the active model: it HAS a vector, which the search lost
     //     (stale symbols' rows crowded it out, or another model's rows were
     //     filtered after the search). It ranked past every returned vector
-    //     hit, so the lowest returned cosine bounds its own (#1325, exact
-    //     under an exact search): scored there, under the floor;
+    //     hit, so the lowest returned cosine is an upper bound on its own
+    //     (#1325; exact only under an exact search): scored there, then capped
+    //     below every measured link (see `search`);
     //   - a pending row, another model's row, or none (a table or column is
     //     never embedded): it has no vector to compare, so it is left to the
-    //     keyword rule (see `search`).
+    //     keyword rule (see `search`);
+    //   - rows that could not be read: any of these hits may be a lost vector,
+    //     so each is bounded and capped like one.
     const unscored = hits.filter((h) => h.cosine == null);
-    if (unscored.length === 0) return { calibrated, hits, vectorState };
+    if (unscored.length === 0) return { calibrated, hits, vectorState, bounded };
     const tags = await this.embeddingModelsOf(
       projectId,
       unscored.map((h) => h.symbolId),
     );
     const cutoff = lowestCosine(hits);
-    const bounded = hits.map((h) => {
+    const out = hits.map((h) => {
       if (h.cosine != null) return h;
-      const tag = tags?.get(h.symbolId);
-      if (tags && tag === model && cutoff !== null) return { ...h, cosine: cutoff };
-      vectorState.set(h.symbolId, vectorStateOf(tags, tag, model));
+      const tag = tags instanceof Map ? tags.get(h.symbolId) : undefined;
+      const lost = tags === "failed" || (tags instanceof Map && tag === model);
+      if (lost && cutoff !== null) {
+        bounded.add(h.symbolId);
+        return { ...h, cosine: cutoff };
+      }
+      vectorState.set(h.symbolId, vectorStateOf(tags instanceof Map ? tags : null, tag, model));
       return h;
     });
-    return { calibrated, hits: bounded, vectorState };
+    return { calibrated, hits: out, vectorState, bounded };
   }
 
-  /** The hits' embedding-row tags, or `null` when they cannot be read. */
+  /**
+   * The hits' embedding-row tags; `"absent"` with no lookup, `"failed"` when
+   * the rows could not be read.
+   */
   private async embeddingModelsOf(
     projectId: string,
     symbolIds: readonly string[],
-  ): Promise<ReadonlyMap<string, string> | null> {
-    if (!this.deps.embeddingModels) return null;
+  ): Promise<ReadonlyMap<string, string> | "absent" | "failed"> {
+    if (!this.deps.embeddingModels) return "absent";
     try {
       return await this.deps.embeddingModels(projectId, symbolIds);
     } catch (err) {
-      log.warn("could not read the hits' embedding rows; gating them as keywords", {
+      log.warn("could not read the hits' embedding rows; capping them as lost vectors", {
         projectId,
         error: String(err),
       });
-      return null;
+      return "failed";
     }
   }
+}
+
+/**
+ * #1417 — a bounded hit's confidence, capped strictly below the lowest
+ * confidence of the measured candidates kept (one step of the confidence's
+ * 0.001 rounding), so it never ranks above a measured link. None is kept
+ * when no measured candidate is, or when the cap takes it under the floor.
+ */
+export function capBelowMeasured(
+  boundedCandidates: readonly CodeSymbolCandidate[],
+  measured: readonly CodeSymbolCandidate[],
+  floor: number | undefined,
+): CodeSymbolCandidate[] {
+  if (measured.length === 0) return [];
+  const lowest = Math.min(...measured.map((c) => c.confidence ?? 0));
+  const ceiling = Math.round((lowest - 0.001) * 1000) / 1000;
+  const min = floor ?? Number.EPSILON;
+  return boundedCandidates
+    .map((c) => ({
+      ...c,
+      confidence: Math.min(c.confidence ?? 0, ceiling),
+      linkGate: "hybrid" as const,
+    }))
+    .filter((c) => c.confidence >= min);
 }
 
 /** The lowest calibrated cosine among the vector channel's hits, or `null`. */

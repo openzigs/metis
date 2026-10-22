@@ -283,10 +283,46 @@ describe("AffectedCodePanel", () => {
   it.each([
     [
       "other-model",
-      /embedded with a different embedding model from the one in use.*until the project's code is embedded again/,
+      /embedded with a different embedding model from the one in use, so it is shown only by the keyword rule\. To change that, ask an administrator to re-embed the project's code with the model in use; a re-run alone will not\./,
     ],
-    ["not-embedded", /Some code has no embedding, so it is shown only by the keyword rule\./],
-  ] as const)("#1417 — `%s` is named, with no advice to re-run", (cause, text) => {
+    [
+      "not-embedded",
+      /Some code has no embedding, so it is shown only by the keyword rule\. To change that, ask an administrator to re-embed the project's code; a re-run alone will not\./,
+    ],
+  ] as const)(
+    "#1417 — `%s` says what to do (an administrator re-embeds), not to re-run",
+    (cause, text) => {
+      render(
+        <AffectedCodePanel
+          affectedCode={{
+            truncated: false,
+            retrievalMode: "hybrid",
+            candidates: [
+              {
+                id: "NR-1",
+                title: "a",
+                body: "a",
+                retrievalMode: "hybrid",
+                linkRule: "confidence",
+                keywordRuleCauses: [cause],
+                symbols: [linkWith("restoreButtonState", 0.27, "shared-terms")],
+              },
+            ],
+          }}
+        />,
+      );
+      const panel = screen.getByTestId("affected-code-explainer");
+      expect(panel).toHaveTextContent(text);
+      expect(panel).not.toHaveTextContent(/re-run once/i);
+      // Every link of the requirement shown by the keyword rule: one rule, no per-link tag.
+      expect(panel).toHaveTextContent(/A direct match is shown by the keyword rule/);
+      expect(screen.queryByTestId("affected-code-link-rule")).toBeNull();
+    },
+  );
+
+  // #1417 (review of PR #1419) — the label reads the rules of the links shown,
+  // not the answer's gate. Two requirements, so each is labelled.
+  it("#1417 — a confidence-gated requirement whose shown links are all the keyword rule's is labelled so", () => {
     render(
       <AffectedCodePanel
         affectedCode={{
@@ -299,18 +335,28 @@ describe("AffectedCodePanel", () => {
               body: "a",
               retrievalMode: "hybrid",
               linkRule: "confidence",
-              keywordRuleCauses: [cause],
-              symbols: [linkWith("restoreButtonState", 0.27, "shared-terms")],
+              keywordRuleCauses: ["schema-not-embedded"],
+              symbols: [linkWith("web_sessions", 0.27, "shared-terms")],
+            },
+            {
+              id: "NR-2",
+              title: "b",
+              body: "b",
+              retrievalMode: "hybrid",
+              linkRule: "confidence",
+              symbols: [linkWith("removeSession", 0.3, "confidence")],
             },
           ],
         }}
       />,
     );
-    const panel = screen.getByTestId("affected-code-explainer");
-    expect(panel).toHaveTextContent(text);
-    expect(panel).not.toHaveTextContent(/re-run/i);
-    // Every link of the requirement shown by the keyword rule: one rule, no per-link tag.
-    expect(panel).toHaveTextContent(/A direct match is shown by the keyword rule/);
+    expect(screen.getByTestId("affected-code-ranking-NR-1")).toHaveTextContent(
+      "(meaning + keywords, shown by the keyword rule)",
+    );
+    expect(screen.getByTestId("affected-code-ranking-NR-2")).toHaveTextContent(
+      "(meaning + keywords, shown by confidence)",
+    );
+    // Each requirement used one rule: no per-link tag.
     expect(screen.queryByTestId("affected-code-link-rule")).toBeNull();
   });
 

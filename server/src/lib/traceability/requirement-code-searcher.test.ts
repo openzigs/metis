@@ -20,6 +20,7 @@ import {
   HYBRID_CANDIDATE_POOL,
   HybridCodeSymbolSearcher,
   activeSemanticModel,
+  capBelowMeasured,
   createRequirementCodeSearcher,
   prismaEmbeddingModels,
   type EmbeddingModelLookup,
@@ -342,15 +343,63 @@ describe("HybridCodeSymbolSearcher — calibration holes (review of PRs #1325 an
     // One batched lookup, for the hits the vector channel did not return only.
     expect(lookup).toHaveBeenCalledTimes(1);
     expect(lookup).toHaveBeenCalledWith(PROJECT, ["restore"]);
-    // Without the floor it is still ranked below the one-word measured link.
+    // Without the floor it is capped strictly below the lowest measured link.
     const raw = await searcherOf(ranker, { embeddingModels: lookup }).search(query, PROJECT);
     const restore = raw.find((c) => c.symbolId === "restore")!;
-    expect(restore).toMatchObject({
-      linkGate: "hybrid",
-      confidence: linkConfidence({ sharedNameTerms: 2, cosine: 0.35 }),
-    });
+    expect(restore).toMatchObject({ linkGate: "hybrid" });
     expect(restore).not.toHaveProperty("keywordRuleCause");
-    expect(restore.confidence!).toBeLessThan(raw.find((c) => c.symbolId === "flush")!.confidence!);
+    const measured = raw.filter((c) => c.symbolId !== "restore").map((c) => c.confidence!);
+    expect(restore.confidence!).toBeLessThan(Math.min(...measured));
+    expect(raw.at(-1)!.symbolId).toBe("restore");
+  });
+
+  // #1417 (review of PR #1419) — few, close survivors: the lowest returned cosine
+  // is 0.61, so the lost two-word hit scores 0.239 at it, over both one-word
+  // measured links (0.105, 0.096). The cap keeps it under them.
+  it("never ranks a lost-vector hit above a measured link, even when few, close vector hits survive", async () => {
+    const query = "Flush all sessions and restore the button state";
+    const { ranker } = rankerOf([
+      { id: "button", cosine: 0.62 },
+      { id: "remove", cosine: 0.61 },
+      { id: "restore" },
+    ]);
+    // Precondition: uncapped, it would outrank both.
+    const uncapped = linkConfidence({ sharedNameTerms: 2, cosine: 0.61 });
+    expect(uncapped).toBe(0.239);
+    const lookup = tagsOf(ALL_EMBEDDED);
+    for (const searcher of [
+      links(ranker, undefined, undefined, lookup),
+      searcherOf(ranker, { embeddingModels: lookup }),
+    ]) {
+      const out = await searcher.search(query, PROJECT);
+      expect(out.map((c) => c.symbolId)).toEqual(["button", "remove", "restore"]);
+      const conf = new Map(out.map((c) => [c.symbolId, c.confidence!]));
+      expect(conf.get("button")).toBe(linkConfidence({ sharedNameTerms: 1, cosine: 0.62 }));
+      expect(conf.get("remove")).toBe(linkConfidence({ sharedNameTerms: 1, cosine: 0.61 }));
+      expect(conf.get("restore")).toBe(Math.round((conf.get("remove")! - 0.001) * 1000) / 1000);
+      expect(conf.get("restore")!).toBeLessThan(conf.get("remove")!);
+    }
+  });
+
+  it("capBelowMeasured: keeps nothing with no measured link, and drops a hit the cap puts under the floor", () => {
+    const cand = (symbolId: string, confidence: number) => ({
+      symbolId,
+      filePath: "",
+      qualifiedName: symbolId,
+      name: symbolId,
+      kind: "function",
+      score: 1,
+      confidence,
+    });
+    expect(capBelowMeasured([cand("lost", 0.3)], [], 0.08)).toEqual([]);
+    expect(capBelowMeasured([cand("lost", 0.3)], [cand("m", 0.08)], 0.08)).toEqual([]);
+    expect(capBelowMeasured([cand("lost", 0.3)], [cand("m", 0.2)], undefined)).toEqual([
+      { ...cand("lost", 0.199), linkGate: "hybrid" },
+    ]);
+    // A bounded hit already under the cap keeps its own confidence.
+    expect(capBelowMeasured([cand("lost", 0.05)], [cand("m", 0.2)], 0.03)[0]!.confidence).toBe(
+      0.05,
+    );
   });
 
   it("tells code still being embedded, another model's, and none apart, each by the keyword rule", async () => {
@@ -402,8 +451,12 @@ describe("HybridCodeSymbolSearcher — calibration holes (review of PRs #1325 an
     );
   });
 
-  it("gates the hits as `no-vector` when their embedding rows cannot be read", async () => {
-    const { ranker } = rankerOf([{ id: "flush", cosine: 0.7 }, { id: "restore" }]);
+  it("caps every hit without a cosine like a lost vector when the embedding rows cannot be read", async () => {
+    const { ranker } = rankerOf([
+      { id: "button", cosine: 0.62 },
+      { id: "remove", cosine: 0.61 },
+      { id: "restore" },
+    ]);
     const failing: EmbeddingModelLookup = async () => {
       throw new Error("db down");
     };
@@ -411,10 +464,11 @@ describe("HybridCodeSymbolSearcher — calibration holes (review of PRs #1325 an
       "Flush all sessions and restore the button state",
       PROJECT,
     );
-    expect(shown.find((c) => c.symbolId === "restore")).toMatchObject({
-      linkGate: "keyword",
-      keywordRuleCause: "no-vector",
-    });
+    // Not 0.273 on words alone: bounded, capped under the measured links, last.
+    expect(shown.map((c) => c.symbolId)).toEqual(["button", "remove", "restore"]);
+    expect(shown[2]).toMatchObject({ linkGate: "hybrid" });
+    expect(shown[2]).not.toHaveProperty("keywordRuleCause");
+    expect(shown[2]!.confidence!).toBeLessThan(shown[1]!.confidence!);
   });
 
   it("leaves an active-model hit to the keyword rule when no returned cosine can bound it", async () => {
