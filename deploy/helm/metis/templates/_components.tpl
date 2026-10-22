@@ -20,7 +20,17 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
+  {{- /*
+    #1378 — an enabled HPA owns the replica count, so the Deployment must not
+    state one. Helm 4 applies server-side: once the HPA has scaled, the
+    kube-controller-manager owns .spec.replicas and every `helm upgrade` that
+    still sets it fails with a field-manager conflict (Helm 3 instead resets
+    the count to replicaCount until the HPA reacts). Without the field, a new
+    Deployment starts at 1 and the HPA raises it to minReplicas.
+  */}}
+  {{- if not (dig $name "enabled" false ($root.Values.autoscaling | default dict)) }}
   replicas: {{ $component.replicaCount }}
+  {{- end }}
   {{- with $component.progressDeadlineSeconds }}
   # Issue #786 — bound how long a rollout may sit with pods that never go Ready
   # before the Deployment is marked `ProgressDeadlineExceeded`. For the embeddings
@@ -61,7 +71,13 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
+      {{- if eq $name "server" }}
       serviceAccountName: {{ include "metis.serviceAccountName" $root }}
+      {{- else }}
+      {{- /* #1375: only the server talks to the Kubernetes API or holds the IRSA role. */}}
+      serviceAccountName: {{ include "metis.workloadServiceAccountName" $root }}
+      automountServiceAccountToken: false
+      {{- end }}
       securityContext:
         {{- include "metis.podSecurityContext" $root | nindent 8 }}
       {{- with $root.Values.image.pullSecrets }}
@@ -106,7 +122,7 @@ spec:
             {{- if eq $name "server" }}
             {{- include "metis.scalingEnv" $root | nindent 12 }}
             {{- end }}
-            {{- include "metis.secretEnv" $root | nindent 12 }}
+            {{- include "metis.secretEnv" (dict "root" $root "component" (eq $name "sql-lineage" | ternary "sqlLineage" $name)) | nindent 12 }}
           {{- with $component.probes.liveness }}
           livenessProbe:
             httpGet:

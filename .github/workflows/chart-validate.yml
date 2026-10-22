@@ -45,7 +45,8 @@ concurrency:
 jobs:
   # ---------------------------------------------------------------------------
   # chart-lint — cluster-FREE gate: helm lint + helm template across the
-  # default/dev/prod value sets + the 109-assertion render-tests.sh golden suite.
+  # default/dev/prod value sets + the render-tests.sh golden suite (its structural
+  # assertions parse the render with ruby + jq, both on the ubuntu-latest image).
   # Fast (<1 min) and the authoritative template-shape gate.
   # ---------------------------------------------------------------------------
   chart-lint:

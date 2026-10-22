@@ -51,9 +51,111 @@ app.kubernetes.io/managed-by: {{ .root.Release.Service }}
 {{- end -}}
 
 {{- define "metis.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "metis.name" .root }}
-app.kubernetes.io/instance: {{ .root.Release.Name }}
+{{ include "metis.releaseSelectorLabels" .root }}
 app.kubernetes.io/component: {{ .component }}
+{{- end -}}
+
+{{/*
+The labels EVERY pod of this release carries, whatever its component — the
+NetworkPolicy selector for "all METIS pods" (#1374). Pass the root scope.
+Never select pods on `metis.labels`-only keys such as `app.kubernetes.io/part-of`:
+those are on the Deployment object, not on the pod template, so a selector
+using them matches no pod at all.
+*/}}
+{{- define "metis.releaseSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "metis.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{/*
+NetworkPolicy `ports:` entries from a values list (#1374). Each item is a bare
+port number (TCP) or a map `{port, protocol}`.
+*/}}
+{{/*
+Operator-configured egress rules for ONE component (#1374). Pass dict
+{root, component}; component is "server" | "ui" | "embeddings" |
+"sql-lineage" | "backup". Emits:
+  - networkPolicy.egress.databaseCidrs / databasePeers on 5432, for the
+    server and the backup CronJob (a pg_dump override needs the database);
+  - every networkPolicy.egress.extra entry whose `components` names this
+    component (default ["server"]).
+Empty output = the component gets nothing beyond its built-in rules.
+*/}}
+{{- define "metis.netpolComponentEgress" -}}
+{{- $root := .root -}}
+{{- $component := .component -}}
+{{- $egress := $root.Values.networkPolicy.egress -}}
+{{- if has $component (list "server" "backup") }}
+{{- if $egress.databaseCidrs }}
+# Managed-DB egress (e.g. RDS subnets).
+- to:
+    {{- range $egress.databaseCidrs }}
+    - ipBlock:
+        cidr: {{ . | quote }}
+    {{- end }}
+  ports:
+    - port: 5432
+      protocol: TCP
+{{- end }}
+{{- with $egress.databasePeers }}
+# In-cluster Postgres (networkPolicy.egress.databasePeers).
+- to:
+    {{- toYaml . | nindent 4 }}
+  ports:
+    - port: 5432
+      protocol: TCP
+{{- end }}
+{{- end }}
+{{- range $egress.extra }}
+{{- $targets := .components | default (list "server") }}
+{{- if or (has $component $targets) (and (eq $component "sql-lineage") (has "sqlLineage" $targets)) }}
+# networkPolicy.egress.extra — e.g. LDAP 389/636, OIDC on a non-443 port, SMTP.
+- to:
+    {{- range .cidrs }}
+    - ipBlock:
+        cidr: {{ . | quote }}
+    {{- end }}
+  ports:
+    {{- include "metis.netpolPorts" .ports | trim | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
+One NetworkPolicy ipBlock peer (#1374). Pass dict {cidr, except, cluster}.
+`except` (operator-given) applies as is. `cluster` (networkPolicy.clusterCidrs)
+is excepted only from an all-addresses block of the same family — 0.0.0.0/0
+gets the IPv4 entries, ::/0 the IPv6 ones — because an except must lie inside
+its cidr and the API server rejects one that does not.
+*/}}
+{{- define "metis.netpolIpBlock" -}}
+{{- $ex := list -}}
+{{- range (.except | default list) }}{{ $ex = append $ex . }}{{ end -}}
+{{- range (.cluster | default list) -}}
+{{- if or (and (eq $.cidr "0.0.0.0/0") (not (contains ":" .))) (and (eq $.cidr "::/0") (contains ":" .)) -}}
+{{- $ex = append $ex . -}}
+{{- end -}}
+{{- end -}}
+- ipBlock:
+    cidr: {{ .cidr | quote }}
+    {{- with ($ex | uniq) }}
+    except:
+      {{- range . }}
+      - {{ . | quote }}
+      {{- end }}
+    {{- end }}
+{{- end -}}
+
+{{- define "metis.netpolPorts" -}}
+{{- range . }}
+{{- if kindIs "map" . }}
+- port: {{ required "networkPolicy: a ports entry given as a map needs `port`" .port }}
+  protocol: {{ .protocol | default "TCP" }}
+{{- else }}
+- port: {{ . }}
+  protocol: TCP
+{{- end }}
+{{- end }}
 {{- end -}}
 
 {{/* Resolve image reference: <registry>/<repo>/<componentImageRepo>:<tag> */}}
@@ -143,6 +245,24 @@ through a probe template instead.
      UPLOAD_STORAGE_BACKEND=s3, DISCUSSION_RATE_LIMIT_BACKEND=postgres,
      SSO_STATE_BACKEND=postgres, SCHEDULER_LEADER_ELECTION=postgres. See docs/EKS_DEPLOYMENT.md §9b–§9f.
 {{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
+NOTES.txt warning (#1374): the NetworkPolicies select the pods, so on an
+enforcing CNI the server reaches Postgres only through
+networkPolicy.egress.databaseCidrs / databasePeers. A Postgres-backed install with that list
+(and databasePeers) empty starts but cannot reach its database.
+*/}}
+{{- define "metis.networkPolicyNotesWarning" -}}
+{{- $s := .Values.scaling -}}
+{{- $pg := or (hasPrefix "postgres" ($s.database.url | default "")) (eq ($s.vectorStore | default "") "pgvector") (has "postgres" (list $s.rateLimitBackend $s.ssoStateBackend $s.leaderElection)) -}}
+{{- if and .Values.networkPolicy.enabled $pg (not .Values.networkPolicy.egress.databaseCidrs) (not .Values.networkPolicy.egress.databasePeers) }}
+
+  ⚠️  NetworkPolicy is on and the server uses Postgres, but networkPolicy.egress.databaseCidrs
+     and databasePeers are empty: on a CNI that enforces policy the server cannot reach the
+     database on 5432. Set databaseCidrs to the database subnets (RDS), or databasePeers to
+     the Postgres pods' namespace/pod selector in-cluster.
 {{- end }}
 {{- end -}}
 
@@ -299,17 +419,58 @@ rendered profiles). If something ever must, do NOT relax the skip — add a sent
 {{- end -}}
 
 {{/*
-Sensitive env block — every key from secrets.keyMap becomes a secretKeyRef
-into metis-secrets. The same template is shared by all deployments.
+Sensitive env block for ONE component (#1375). Pass dict:
+  root      = $
+  component = "server" | "ui" | "embeddings" | "sqlLineage" | "backup"
+
+`secrets.components.<component>` lists the secrets.keyMap env names that
+component receives; "*" means every keyMap entry (the server's default, so a
+key added to keyMap — AUTH_LDAP_BIND_PASSWORD — reaches the server and nothing
+else). This used to put every key on every pod, which handed the internet-facing
+UI the vault master key and the JWT signing secret. A listed name that keyMap
+does not define fails the render rather than silently dropping the variable.
 */}}
 {{- define "metis.secretEnv" -}}
-{{- $secretName := include "metis.secretName" . -}}
-{{- range $envName, $secretKey := .Values.secrets.keyMap }}
+{{- $root := .root -}}
+{{- $component := .component -}}
+{{- $secretName := include "metis.secretName" $root -}}
+{{- $keyMap := $root.Values.secrets.keyMap -}}
+{{- $components := $root.Values.secrets.components | default dict -}}
+{{- /* The sql-lineage component may be keyed either way (networkPolicy uses the hyphen). */ -}}
+{{- $wanted := index $components $component | default list -}}
+{{- if and (eq $component "sqlLineage") (hasKey $components "sql-lineage") -}}
+{{- $wanted = concat $wanted (index $components "sql-lineage" | default list) -}}
+{{- end -}}
+{{- /* Validate every named key, with or without the "*" wildcard. */ -}}
+{{- range $wanted -}}
+{{- if and (ne . "*") (not (hasKey $keyMap .)) -}}
+{{- fail (printf "metis: secrets.components.%s names %s, which is not in secrets.keyMap (#1375). Add it to secrets.keyMap or remove it from the list." $component .) -}}
+{{- end -}}
+{{- end -}}
+{{- $names := without $wanted "*" | uniq -}}
+{{- if has "*" $wanted -}}
+{{- $names = keys $keyMap | sortAlpha -}}
+{{- end -}}
+{{- range $envName := $names }}
 - name: {{ $envName }}
   valueFrom:
     secretKeyRef:
       name: {{ $secretName }}
-      key: {{ $secretKey }}
+      key: {{ index $keyMap $envName }}
       optional: true
 {{- end }}
+{{- end -}}
+
+{{/*
+ServiceAccount for every pod EXCEPT the server (#1375): no IRSA annotation and
+no RBAC, so a compromised UI or sidecar holds neither the server's Kubernetes
+permissions (secrets CRUD in the MCP namespace, cluster-wide under
+rbac.scope=cluster) nor its AWS role (Secrets Manager reads of metis/*).
+*/}}
+{{- define "metis.workloadServiceAccountName" -}}
+{{- if .Values.serviceAccount.workload.create -}}
+{{- default (printf "%s-workload" (include "metis.fullname" .)) .Values.serviceAccount.workload.name -}}
+{{- else -}}
+{{- default "default" .Values.serviceAccount.workload.name -}}
+{{- end -}}
 {{- end -}}
