@@ -6,6 +6,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const db = vi.hoisted(() => ({
+  $transaction: vi.fn(),
   userIdentity: { findUnique: vi.fn(), update: vi.fn(), create: vi.fn(), findMany: vi.fn() },
   user: {
     findUnique: vi.fn(),
@@ -41,6 +42,7 @@ const unique = () => Object.assign(new Error("Unique constraint failed"), { code
 beforeEach(() => {
   vi.resetAllMocks();
   flushed.mockResolvedValue(undefined);
+  db.$transaction.mockImplementation(async (fn: (tx: typeof db) => Promise<unknown>) => fn(db));
 });
 
 describe("identity keys", () => {
@@ -152,6 +154,48 @@ describe("resolveLoginUser — races", () => {
       resolveLoginUser({ identity: OIDC, profile: PROFILE, primaryKind: "oidc" }),
     ).rejects.toMatchObject({ statusCode: 409, code: "ACCOUNT_LINK_REQUIRED" });
     expect(db.userIdentity.create).not.toHaveBeenCalled();
+  });
+
+  it("a claim takes only the row it judged — unbound and of the judged kind — in one serializable transaction", async () => {
+    db.userIdentity.findUnique.mockResolvedValue(null);
+    db.user.findUnique.mockResolvedValue({ id: "u1", authSource: null, identities: [] });
+    db.user.updateMany.mockResolvedValue({ count: 1 });
+    db.userIdentity.create.mockResolvedValue({});
+    db.user.findUniqueOrThrow.mockResolvedValue(ROW);
+
+    await expect(
+      resolveLoginUser({ identity: OIDC, profile: PROFILE, primaryKind: "oidc" }),
+    ).resolves.toEqual(ROW);
+    expect(db.user.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "u1", authSource: null, identities: { none: {} } },
+        data: expect.objectContaining({ authSource: "oidc" }),
+      }),
+    );
+    expect(db.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "Serializable",
+    });
+    expect(db.userIdentity.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ ...OIDC, userId: "u1" }),
+    });
+  });
+
+  it("a serialization failure (P2034) is judged again like a unique violation", async () => {
+    db.userIdentity.findUnique.mockResolvedValue(null);
+    db.user.findUnique
+      .mockResolvedValueOnce({ id: "u1", authSource: "oidc", identities: [] })
+      .mockResolvedValueOnce({
+        id: "u1",
+        authSource: "oidc",
+        identities: [{ provider: "oidc", issuer: OIDC.issuer }],
+      });
+    db.$transaction.mockRejectedValueOnce(Object.assign(new Error("40001"), { code: "P2034" }));
+    await expect(
+      resolveLoginUser({ identity: OIDC, profile: PROFILE, primaryKind: "ldap" }),
+    ).rejects.toMatchObject({
+      code: "ACCOUNT_LINK_REQUIRED",
+      details: { reason: "other_subject" },
+    });
   });
 
   it("a unique conflict that persists (the e-mail is another user's) is a 409, audited", async () => {

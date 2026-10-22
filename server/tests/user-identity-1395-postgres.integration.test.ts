@@ -136,8 +136,36 @@ describe.runIf(enabled)("#1395 user identities on real Postgres (integration)", 
     });
 
     afterAll(async () => {
-      await db.user.deleteMany({ where: { username } });
+      await db.user.deleteMany({ where: { username: { in: [username, `legacy-${suffix}`] } } });
       await db.$disconnect();
+    });
+
+    it("racing claims of one unbound legacy row bind exactly one identity", async () => {
+      const legacy = `legacy-${suffix}`;
+      const row = await db.user.create({
+        data: {
+          username: legacy,
+          displayName: "L",
+          email: `${legacy}@corp.test`,
+          authSource: "oidc",
+        },
+      });
+      // Eight different subjects of the row's own kind contest it at once.
+      const claims = Array.from({ length: 8 }, (_, i) =>
+        resolveLoginUser({
+          identity: { provider: "oidc", issuer, subject: `claim-${i}-${suffix}` },
+          profile: { username: legacy, displayName: "L", email: `${legacy}@corp.test` },
+          primaryKind: "ldap",
+        }),
+      );
+      const results = await Promise.allSettled(claims);
+      const bound = await db.userIdentity.findMany({ where: { userId: row.id } });
+      expect(bound).toHaveLength(1);
+      const won = results.filter((r) => r.status === "fulfilled");
+      expect(won).toHaveLength(1);
+      for (const r of results.filter((r) => r.status === "rejected")) {
+        expect(r).toMatchObject({ reason: { statusCode: 409, code: "ACCOUNT_LINK_REQUIRED" } });
+      }
     });
 
     it("racing first sign-ins of one identity make one user; another provider is refused", async () => {

@@ -19,7 +19,7 @@
  *   4. anything else — the username belongs to another provider's identity, or
  *      to another subject of the same provider — is REFUSED with
  *      `409 ACCOUNT_LINK_REQUIRED`. An administrator links the two on purpose
- *      with `pnpm --filter @metis/server auth:link-identity` (docs/auth/README.md).
+ *      with `link-identity-cli.ts` (docs/auth/README.md).
  */
 import { audit } from "../audit/audit-service.js";
 import { prisma } from "../prisma.js";
@@ -127,9 +127,21 @@ export function usernameClaimVerdict(
   return identity.provider === primaryKind ? "claim" : "other_provider";
 }
 
+/**
+ * A lost race: a unique violation (P2002) or a serialization failure (P2034).
+ * Either way the row changed under this sign-in, so it is judged again.
+ */
 function isUniqueViolation(error: unknown): boolean {
-  return (error as { code?: unknown } | null)?.code === "P2002";
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "P2002" || code === "P2034";
 }
+
+/** The row a claim may take: the one it judged, still unbound, still that kind. */
+export const CLAIMABLE = (id: string, authSource: string | null) => ({
+  id,
+  authSource,
+  identities: { none: {} },
+});
 
 const USER_SELECT = { id: true, username: true, authRolesInitializedAt: true } as const;
 
@@ -218,20 +230,28 @@ async function resolveOnce(
   const verdict = usernameClaimVerdict(existing, identity, primaryKind);
   if (verdict !== "claim") refuse(verdict, identity, profile, existing.id);
 
-  // Claim only the row as it was judged: still unbound, still the same kind.
-  const claimed = await prisma.user.updateMany({
-    where: { id: existing.id, authSource: existing.authSource, identities: { none: {} } },
-    data: {
-      authSource: identity.provider,
-      displayName: profile.displayName,
-      email: profile.email,
-      lastLoginAt: now,
+  // Claim only the row as it was judged — still unbound, still the same kind —
+  // and bind it in the same serializable transaction, so two concurrent claims
+  // of one row cannot both bind (Postgres aborts one with a serialization
+  // failure; the retry then sees the winner's identity and refuses).
+  await prisma.$transaction(
+    async (tx) => {
+      const claimed = await tx.user.updateMany({
+        where: CLAIMABLE(existing.id, existing.authSource),
+        data: {
+          authSource: identity.provider,
+          displayName: profile.displayName,
+          email: profile.email,
+          lastLoginAt: now,
+        },
+      });
+      if (claimed.count !== 1) throw Object.assign(new Error("claim raced"), { code: "P2002" });
+      await tx.userIdentity.create({
+        data: { ...identity, userId: existing.id, lastLoginAt: now },
+      });
     },
-  });
-  if (claimed.count !== 1) throw Object.assign(new Error("claim raced"), { code: "P2002" });
-  await prisma.userIdentity.create({
-    data: { ...identity, userId: existing.id, lastLoginAt: now },
-  });
+    { isolationLevel: "Serializable" },
+  );
   return prisma.user.findUniqueOrThrow({ where: { id: existing.id }, select: USER_SELECT });
 }
 

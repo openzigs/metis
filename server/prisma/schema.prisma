@@ -5087,7 +5087,7 @@ model UserIdentity {
   provider    String
   issuer      String
   subject     String
-  /// Set when an administrator linked this identity by hand (`auth:link-identity`).
+  /// Set when an administrator linked this identity by hand (`link-identity-cli.ts`).
   linkedBy    String?
   createdAt   DateTime  @default(now())
   lastLoginAt DateTime?
