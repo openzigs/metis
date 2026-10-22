@@ -9,10 +9,15 @@
  * re-creating it from the new output at version 0, so the two criteria were
  * gone with no version row, and every row came back unreviewed.
  *
- * Reproduced here end to end: a REAL `AnalysisOrchestrator` regenerates an
- * agent over a real migrated SQLite database, with a scripted provider whose
- * re-synthesis omits one requirement's criteria and rewrites another's.
+ * Now an approved requirement always keeps the criteria approved at the
+ * checkpoint; a re-synthesis's different (or missing) criteria become a
+ * proposal the analyst accepts or dismisses. Proven end to end: a REAL
+ * `AnalysisOrchestrator` regenerates an agent over a real migrated SQLite
+ * database with a scripted provider, and the analyst answers through the real
+ * requirements router (accept, dismiss, Restore).
  */
+import express from "express";
+import request from "supertest";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -25,24 +30,38 @@ import {
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../src/lib/ai/types.js";
 import type { KnowledgeService } from "../src/lib/rag/knowledge-service.js";
 
-const state = vi.hoisted(() => ({ db: null as unknown }));
+const state = vi.hoisted(() => {
+  process.env.RATE_LIMIT_MAX = "100000";
+  return { db: null as unknown };
+});
 vi.mock("../src/lib/prisma.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/prisma.js")>()),
   get prisma() {
     return state.db;
   },
 }));
-vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/audit/audit-service.js")>()),
+  audit: vi.fn(),
+}));
 
 const { AnalysisOrchestrator } = await import("../src/lib/analysis/orchestrator.js");
 const { promoteApprovedRequirements } = await import("../src/lib/analysis/promote-requirements.js");
+const { getAnalysisSnapshot } = await import("../src/lib/analysis/analysis-service.js");
 const { SYNTHESIS_STRUCTURED_IDS_RULE } = await import("../src/lib/analysis/prompts.js");
 const { CLARIFICATIONS_START } = await import("../src/lib/analysis/clarification-enrichment.js");
-const { KEPT_APPROVED_CRITERIA_REASON, REVISED_APPROVED_CRITERIA_REASON } =
+const { updateRequirementWithHistory } =
+  await import("../src/lib/requirements/requirement-version-service.js");
+const { ACCEPTED_CRITERIA_PROPOSAL_REASON, APPROVED_CRITERIA_KEY, KEPT_APPROVED_CRITERIA_REASON } =
   await import("../src/lib/analysis/approved-criteria-carry-over.js");
+const { requirementsCollaborationRouter } = await import("../src/routes/requirements.js");
+const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
+const { issueTokens } = await import("../src/lib/auth/jwt.js");
 
+const WS = "ws-1389";
 const PROJECT = "p-1389";
-const USER = "u-1389";
+const ANALYST = "u-1389";
+const READER = "u-1389-reader";
 const RUN_ID = "extraction-run-1389";
 const MODEL = "claude-sonnet-4-6";
 
@@ -81,6 +100,7 @@ const item = (title: string, structuredId: string, criteria: string[]) => ({
 const APPROVED_MINIMAL = ["Installs as a single binary.", "A page renders in under 200 ms."];
 const APPROVED_FEEDS = ["GET /v1/feeds lists the user's feeds."];
 const REVISED_FEEDS = ["GET /v1/feeds returns 200 with a JSON array of feeds."];
+const REVISED_AGAIN = ["GET /v1/feeds pages its results 100 at a time."];
 
 /** The first run's synthesis, the one the approval checkpoint promoted. */
 const firstSynthesis = {
@@ -90,14 +110,15 @@ const firstSynthesis = {
     item("Feed listing endpoints", "REQ-2", APPROVED_FEEDS),
   ],
 };
-/** The regenerate's synthesis: no criteria for REQ-1 (as in the run), new ones for REQ-2. */
-const reSynthesis = JSON.stringify({
-  summary: "Two requirements, re-synthesised.",
-  requirements: [
-    item("Make the minimalist product goals measurable", "REQ-1", []),
-    item("Serve feed listings", "REQ-2", REVISED_FEEDS),
-  ],
-});
+/** A regenerate's synthesis: no criteria for REQ-1 (as in the run), `feeds` for REQ-2. */
+const reSynthesis = (feeds: string[]) =>
+  JSON.stringify({
+    summary: "Two requirements, re-synthesised.",
+    requirements: [
+      item("Make the minimalist product goals measurable", "REQ-1", []),
+      item("Serve feed listings", "REQ-2", feeds),
+    ],
+  });
 const agentJson = JSON.stringify({
   summary: "summary",
   findings: [
@@ -113,8 +134,8 @@ const agentJson = JSON.stringify({
   notes: [],
 });
 
-/** Synthesis calls get {@link reSynthesis}; every other call the agent payload. */
-function scriptedProvider(): AIProvider & { synthesisCalls: number } {
+/** Synthesis calls get `synthesis`; every other call the agent payload. */
+function scriptedProvider(synthesis: string): AIProvider & { synthesisCalls: number } {
   const p = {
     key: "anthropic" as const,
     model: MODEL,
@@ -126,7 +147,7 @@ function scriptedProvider(): AIProvider & { synthesisCalls: number } {
       );
       if (isSynthesis) p.synthesisCalls += 1;
       return {
-        content: isSynthesis ? reSynthesis : agentJson,
+        content: isSynthesis ? synthesis : agentJson,
         usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
         model: MODEL,
         provider: "anthropic",
@@ -150,65 +171,99 @@ function scriptedProvider(): AIProvider & { synthesisCalls: number } {
 
 const stubKnowledge = { search: async () => ({ hits: [] }) } as unknown as KnowledgeService;
 
-async function seedPromotedAnalysis(db: PrismaClient, analysisId: string): Promise<void> {
-  await db.analysis.create({
-    data: {
-      id: analysisId,
-      projectId: PROJECT,
-      startedById: USER,
-      status: "completed",
-      metadata: JSON.stringify({
-        agentKeys: ["web"],
-        structuredRequirements: {
-          requirements: [MINIMAL, FEEDS],
-          totalAmbiguities: 0,
-          totalEvidenceNeeds: 0,
-        },
-        structuredRunId: RUN_ID,
-      }),
-    },
-  });
-  await db.agentResult.create({
-    data: {
-      analysisId,
-      agentKey: "synthesis",
-      status: "completed",
-      output: JSON.stringify(firstSynthesis),
-    },
-  });
-  await db.approvalRequest.createMany({
-    data: ["REQ-1", "REQ-2"].map((itemId) => ({
-      analysisId,
-      type: "requirement",
-      itemId,
-      status: "approved",
-      reviewedAt: new Date(),
-    })),
-  });
-}
-
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#1389 — a regenerate's re-synthesis keeps what was approved (real SQLite)",
   () => {
     let sqlite: MigratedSqlite;
     let db: PrismaClient;
+    let ANALYST_TOKEN = "";
+    let READER_TOKEN = "";
+
+    const app = () => {
+      const a = express();
+      a.use(express.json());
+      a.use("/api/requirements", requirementsCollaborationRouter());
+      a.use(notFoundHandler);
+      a.use(errorHandler);
+      return a;
+    };
+    const answer = (id: string, body: Record<string, unknown>, token = ANALYST_TOKEN) =>
+      request(app())
+        .post(`/api/requirements/${id}/criteria-proposal`)
+        .set("Authorization", `Bearer ${token}`)
+        .send(body);
+    const restore = (id: string, version: number) =>
+      request(app())
+        .post(`/api/requirements/${id}/restore/${version}`)
+        .set("Authorization", `Bearer ${ANALYST_TOKEN}`)
+        .send({});
 
     beforeAll(async () => {
       sqlite = createMigratedSqlite("1389-resynthesis-approved-criteria");
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
-      await db.user.create({
-        data: { id: USER, username: USER, displayName: USER, email: `${USER}@example.test` },
-      });
+      await db.workspace.create({ data: { id: WS, name: "ws", slug: WS } });
+      for (const id of [ANALYST, READER]) {
+        await db.user.create({
+          data: { id, username: id, displayName: id, email: `${id}@example.test` },
+        });
+        await db.workspaceMember.create({ data: { workspaceId: WS, userId: id, role: "member" } });
+      }
       await db.project.create({
-        data: { id: PROJECT, name: PROJECT, slug: PROJECT, createdById: USER },
+        data: { id: PROJECT, name: PROJECT, slug: PROJECT, createdById: ANALYST, workspaceId: WS },
       });
+      const token = (userId: string, role: "coordinator" | "reader") =>
+        issueTokens({ userId, username: userId, role, permissions: [], workspaces: [WS] })
+          .accessToken;
+      ANALYST_TOKEN = token(ANALYST, "coordinator");
+      READER_TOKEN = token(READER, "reader");
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
       await db?.$disconnect();
       sqlite?.cleanup();
     });
+
+    async function seedPromotedAnalysis(analysisId: string): Promise<void> {
+      await db.analysis.create({
+        data: {
+          id: analysisId,
+          projectId: PROJECT,
+          startedById: ANALYST,
+          status: "completed",
+          metadata: JSON.stringify({
+            agentKeys: ["web"],
+            structuredRequirements: {
+              requirements: [MINIMAL, FEEDS],
+              totalAmbiguities: 0,
+              totalEvidenceNeeds: 0,
+            },
+            structuredRunId: RUN_ID,
+          }),
+        },
+      });
+      await db.agentResult.create({
+        data: {
+          analysisId,
+          agentKey: "synthesis",
+          status: "completed",
+          output: JSON.stringify(firstSynthesis),
+        },
+      });
+      await db.approvalRequest.createMany({
+        data: ["REQ-1", "REQ-2"].map((itemId) => ({
+          analysisId,
+          type: "requirement",
+          itemId,
+          status: "approved",
+          reviewedAt: new Date(),
+        })),
+      });
+      expect(await promoteApprovedRequirements(analysisId)).toEqual({
+        status: "promoted",
+        requirementCount: 2,
+      });
+    }
 
     const rowFor = async (analysisId: string, structuredId: string) => {
       const row = await db.requirement.findFirst({
@@ -218,96 +273,182 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(row, structuredId).not.toBeNull();
       return row!;
     };
+    const criteriaOf = async (analysisId: string, structuredId: string) =>
+      JSON.parse((await rowFor(analysisId, structuredId)).acceptanceCriteria) as string[];
+    const proposalOf = async (analysisId: string, structuredId: string) => {
+      const row = await rowFor(analysisId, structuredId);
+      const snap = await getAnalysisSnapshot(analysisId);
+      return snap!.requirements.find((r) => r.id === row.id)!.criteriaProposal ?? null;
+    };
 
-    async function promoteThenRegenerate(analysisId: string) {
-      expect(await promoteApprovedRequirements(analysisId)).toEqual({
-        status: "promoted",
-        requirementCount: 2,
-      });
-      const promoted = await rowFor(analysisId, "REQ-1");
-      expect(JSON.parse(promoted.acceptanceCriteria)).toEqual(APPROVED_MINIMAL);
-      expect(promoted.reviewStatus).toBe("approved");
-
-      const provider = scriptedProvider();
+    async function regenerate(analysisId: string, feeds: string[]) {
+      const before = await rowFor(analysisId, "REQ-1");
+      const provider = scriptedProvider(reSynthesis(feeds));
       const orch = new AnalysisOrchestrator({
         provider,
         knowledge: stubKnowledge,
         webSearchConfigured: () => true,
       });
-      await orch.regenerateAgent({ analysisId, agentKey: "web", actorId: USER });
+      await orch.regenerateAgent({ analysisId, agentKey: "web", actorId: ANALYST });
       expect((await db.analysis.findUnique({ where: { id: analysisId } }))?.status).toBe(
         "completed",
       );
-      // The re-synthesis really ran, and really replaced the set.
       expect(provider.synthesisCalls).toBeGreaterThan(0);
-      expect((await rowFor(analysisId, "REQ-1")).id).not.toBe(promoted.id);
+      return before;
     }
 
-    it("keeps the approved criteria the re-synthesis omitted, and says so in the history", async () => {
-      await promoteThenRegenerate("ana-1389-kept");
-      const row = await rowFor("ana-1389-kept", "REQ-1");
+    it("keeps the approved criteria the re-synthesis omitted or changed, and proposes the change", async () => {
+      const id = "ana-1389-kept";
+      await seedPromotedAnalysis(id);
+      const promoted = await regenerate(id, REVISED_FEEDS);
 
-      expect(JSON.parse(row.acceptanceCriteria)).toEqual(APPROVED_MINIMAL);
-      expect(row.version).toBe(1);
-      expect(row.versions).toHaveLength(1);
-      expect(row.versions[0]).toMatchObject({
+      // The set really was replaced…
+      const minimal = await rowFor(id, "REQ-1");
+      expect(minimal.id).not.toBe(promoted.id);
+      // …but REQ-1 keeps the two approved criteria (the #1389 symptom was `[]`).
+      expect(JSON.parse(minimal.acceptanceCriteria)).toEqual(APPROVED_MINIMAL);
+      expect(minimal.reviewStatus).toBe("approved");
+      // The approved criteria are a version of their own, written by the system.
+      expect(minimal.versions).toHaveLength(1);
+      expect(minimal.versions[0]).toMatchObject({
         version: 1,
         actorId: null,
         reason: KEPT_APPROVED_CRITERIA_REASON,
       });
-      expect(JSON.parse(row.versions[0]!.changedFields)).toEqual({
-        acceptanceCriteria: { from: "[]", to: JSON.stringify(APPROVED_MINIMAL) },
-      });
+      expect(await proposalOf(id, "REQ-1")).toMatchObject({ proposed: [] });
+
+      // REQ-2 keeps its approved criteria too; the revision is only a proposal.
+      expect(await criteriaOf(id, "REQ-2")).toEqual(APPROVED_FEEDS);
+      expect((await rowFor(id, "REQ-2")).reviewStatus).toBe("approved");
+      expect(await proposalOf(id, "REQ-2")).toMatchObject({ proposed: REVISED_FEEDS });
     });
 
-    it("takes revised criteria, but through the history, so the approved ones can be restored", async () => {
-      await promoteThenRegenerate("ana-1389-revised");
-      const row = await rowFor("ana-1389-revised", "REQ-2");
+    it("Accept writes the proposal as the analyst's version; Restore brings the approved criteria back", async () => {
+      const id = "ana-1389-accept";
+      await seedPromotedAnalysis(id);
+      await regenerate(id, REVISED_FEEDS);
+      const row = await rowFor(id, "REQ-2");
+      expect(row.version).toBe(1);
 
-      expect(JSON.parse(row.acceptanceCriteria)).toEqual(REVISED_FEEDS);
-      expect(row.versions).toHaveLength(1);
-      expect(row.versions[0]).toMatchObject({
-        version: 1,
-        actorId: null,
-        reason: REVISED_APPROVED_CRITERIA_REASON,
+      const res = await answer(row.id, { choice: "accept", version: 1 });
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ choice: "accept", version: 2, changed: true });
+
+      const accepted = await rowFor(id, "REQ-2");
+      expect(JSON.parse(accepted.acceptanceCriteria)).toEqual(REVISED_FEEDS);
+      expect(accepted.versions.at(-1)).toMatchObject({
+        version: 2,
+        actorId: ANALYST,
+        reason: ACCEPTED_CRITERIA_PROPOSAL_REASON,
       });
-      expect(JSON.parse(row.versions[0]!.changedFields)).toEqual({
-        acceptanceCriteria: {
-          from: JSON.stringify(APPROVED_FEEDS),
-          to: JSON.stringify(REVISED_FEEDS),
-        },
-      });
+      expect(await proposalOf(id, "REQ-2")).toBeNull();
+      // The other requirement's proposal is untouched.
+      expect(await proposalOf(id, "REQ-1")).toMatchObject({ proposed: [] });
+
+      // Restore, through the real route, to the version holding the approved criteria.
+      const restored = await restore(row.id, 1);
+      expect(restored.status).toBe(200);
+      expect(await criteriaOf(id, "REQ-2")).toEqual(APPROVED_FEEDS);
     });
 
-    it("keeps every re-created row approved, and a later regenerate can still replace the set", async () => {
-      const id = "ana-1389-status";
-      await promoteThenRegenerate(id);
-      const rows = await db.requirement.findMany({ where: { analysisId: id } });
-      expect(rows.map((r) => r.reviewStatus)).toEqual(["approved", "approved"]);
+    it("a stale version, a missing proposal and a reader are refused", async () => {
+      const id = "ana-1389-refused";
+      await seedPromotedAnalysis(id);
+      await regenerate(id, REVISED_FEEDS);
+      const row = await rowFor(id, "REQ-2");
 
-      // The system's version rows and the checkpoint's approval are not review
-      // work (#769): a second regenerate replaces the set again, and the
-      // approved criteria survive that one too.
-      const orch = new AnalysisOrchestrator({
-        provider: scriptedProvider(),
-        knowledge: stubKnowledge,
-        webSearchConfigured: () => true,
+      expect((await answer(row.id, { choice: "accept", version: 0 })).status).toBe(409);
+      expect((await answer(row.id, { choice: "maybe" })).status).toBe(400);
+      expect((await answer(row.id, { choice: "accept" }, READER_TOKEN)).status).toBe(403);
+      expect(await criteriaOf(id, "REQ-2")).toEqual(APPROVED_FEEDS);
+
+      expect((await answer(row.id, { choice: "dismiss" })).status).toBe(200);
+      const again = await answer(row.id, { choice: "dismiss" });
+      expect(again.status).toBe(409);
+      expect(again.body.error.code).toBe("NO_PROPOSAL");
+    });
+
+    it("two consecutive regenerates keep the originally approved criteria", async () => {
+      const id = "ana-1389-twice";
+      await seedPromotedAnalysis(id);
+      await regenerate(id, REVISED_FEEDS);
+      await regenerate(id, REVISED_AGAIN);
+
+      expect(await criteriaOf(id, "REQ-1")).toEqual(APPROVED_MINIMAL);
+      expect(await criteriaOf(id, "REQ-2")).toEqual(APPROVED_FEEDS);
+      expect(await proposalOf(id, "REQ-2")).toMatchObject({ proposed: REVISED_AGAIN });
+      const meta = JSON.parse(
+        (await db.analysis.findUniqueOrThrow({ where: { id } })).metadata ?? "{}",
+      ) as Record<string, { approved: Record<string, string[]> }>;
+      expect(meta[APPROVED_CRITERIA_KEY]!.approved).toEqual({
+        "REQ-1": APPROVED_MINIMAL,
+        "REQ-2": APPROVED_FEEDS,
       });
-      await orch.regenerateAgent({ analysisId: id, agentKey: "web", actorId: USER });
-      const again = await rowFor(id, "REQ-1");
-      expect(again.id).not.toBe(rows.find((r) => r.promotedStructuredId === "REQ-1")!.id);
-      expect(JSON.parse(again.acceptanceCriteria)).toEqual(APPROVED_MINIMAL);
-      expect(again.reviewStatus).toBe("approved");
+      for (const s of ["REQ-1", "REQ-2"]) {
+        expect((await rowFor(id, s)).reviewStatus).toBe("approved");
+      }
+    });
+
+    it("Dismiss keeps the approved criteria, and the same suggestion is not raised again", async () => {
+      const id = "ana-1389-dismiss";
+      await seedPromotedAnalysis(id);
+      await regenerate(id, REVISED_FEEDS);
+      const row = await rowFor(id, "REQ-2");
+
+      const res = await answer(row.id, { choice: "dismiss" });
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ choice: "dismiss", version: 1, changed: false });
+      expect(await proposalOf(id, "REQ-2")).toBeNull();
+
+      // A dismissal is not review work: the set is still replaced next time.
+      await regenerate(id, REVISED_FEEDS);
+      expect((await rowFor(id, "REQ-2")).id).not.toBe(row.id);
+      expect(await criteriaOf(id, "REQ-2")).toEqual(APPROVED_FEEDS);
+      expect(await proposalOf(id, "REQ-2")).toBeNull();
+      // A different suggestion is raised.
+      await regenerate(id, REVISED_AGAIN);
+      expect(await proposalOf(id, "REQ-2")).toMatchObject({ proposed: REVISED_AGAIN });
     });
 
     it("writes the clarification answers back into the re-created row's body", async () => {
       const id = "ana-1389-clarified";
-      await seedPromotedAnalysis(db, id);
+      await seedPromotedAnalysis(id);
+      await addClarification(id);
+      await regenerate(id, REVISED_FEEDS);
+      const row = await rowFor(id, "REQ-1");
+      expect(row.body).toContain(CLARIFICATIONS_START);
+      expect(row.body).toContain("How fast is fast?");
+    });
+
+    it("a withheld replacement keeps the rows and does not re-apply clarifications", async () => {
+      const id = "ana-1389-withheld";
+      await seedPromotedAnalysis(id);
+      await addClarification(id);
+      const minimal = await rowFor(id, "REQ-1");
+      // A person's edit is review work (#769): the next replacement is withheld.
+      await updateRequirementWithHistory(db as never, {
+        requirementId: minimal.id,
+        patch: { title: "Lightweight feed reader" },
+        actorId: ANALYST,
+      });
+
+      await regenerate(id, REVISED_FEEDS);
+
+      const after = await rowFor(id, "REQ-1");
+      expect(after.id).toBe(minimal.id);
+      expect(after.body).not.toContain(CLARIFICATIONS_START);
+      const meta = JSON.parse(
+        (await db.analysis.findUniqueOrThrow({ where: { id } })).metadata ?? "{}",
+      ) as Record<string, unknown>;
+      expect(meta.requirementReplacementWithheld).toMatchObject({ reason: "reviewed-work" });
+    });
+
+    async function addClarification(analysisId: string) {
       await db.clarificationDialogState.create({
         data: {
-          analysisId: id,
+          analysisId,
           state: JSON.stringify({
-            analysisId: id,
+            analysisId,
             currentRound: 1,
             maxRounds: 3,
             rounds: [
@@ -332,16 +473,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           }),
         },
       });
-      await promoteThenRegenerate(id);
-      const row = await rowFor(id, "REQ-1");
-      expect(row.body).toContain(CLARIFICATIONS_START);
-      expect(row.body).toContain("How fast is fast?");
-    });
-
-    beforeAll(async () => {
-      for (const id of ["ana-1389-kept", "ana-1389-revised", "ana-1389-status"]) {
-        await seedPromotedAnalysis(db, id);
-      }
-    }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
+    }
   },
 );

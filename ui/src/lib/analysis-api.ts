@@ -31,6 +31,7 @@ import type {
   SpecKitHandoffRecord,
   LedgerTokens,
   RequirementSourceDivergence,
+  RequirementCriteriaProposal,
   SharedCriteriaRecord,
 } from "@metis/shared";
 
@@ -251,6 +252,11 @@ export interface RequirementSummary {
    * requirement diverged from it. Null or absent: not diverged.
    */
   sourceDivergence?: RequirementSourceDivergence | null;
+  /**
+   * Issue #1389 — criteria a re-synthesis suggested in place of the approved
+   * ones, which the requirement kept. Null or absent: none pending.
+   */
+  criteriaProposal?: RequirementCriteriaProposal | null;
 }
 
 export interface AnalysisListItem {

@@ -459,6 +459,28 @@ export async function updateRequirementWithHistory(
 }
 
 /**
+ * Issue #1389 — {@link updateRequirementWithHistory} for a caller already inside
+ * an interactive transaction: the write and its version row join `tx`, so they
+ * commit or roll back with the caller's other writes. It neither retries a lost
+ * race (the caller holds the locks) nor notes the change for the reader BRD
+ * check, which would read the row from outside the uncommitted transaction; the
+ * caller notes once it has committed.
+ */
+export async function updateRequirementWithHistoryInTransaction(
+  tx: Pick<VersionPrismaClient, "requirement" | "requirementVersion">,
+  params: UpdateWithHistoryParams,
+): Promise<UpdateWithHistoryResult> {
+  assertWritableKeys(params);
+  const inline = {
+    requirement: tx.requirement,
+    requirementVersion: tx.requirementVersion,
+    $transaction: ((fn: (client: unknown) => Promise<unknown>) =>
+      fn(tx)) as VersionPrismaClient["$transaction"],
+  } as VersionPrismaClient;
+  return updateOnce(inline, params);
+}
+
+/**
  * One attempt of {@link updateRequirementWithHistory}.
  *
  * #871 — the version check lives here, inside the transaction, and the write

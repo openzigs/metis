@@ -9,6 +9,9 @@
  *   POST   /api/requirements/:requirementId/source-divergence — #1220: "Take the
  *          source version" / "Keep mine" on an imported requirement diverged
  *          from its source
+ *   POST   /api/requirements/:requirementId/criteria-proposal — #1389: accept or
+ *          dismiss the acceptance criteria a re-synthesis suggested for an
+ *          approved requirement
  *
  * Also exposes the comment sub-routes (delegated to the comments router).
  */
@@ -39,6 +42,10 @@ import {
   sourceDivergencePreAuthRateLimiter,
   sourceDivergenceUserRateLimiter,
 } from "../middleware/source-divergence-rate-limit.js";
+import {
+  CriteriaProposalError,
+  resolveCriteriaProposal,
+} from "../lib/analysis/analysis-service.js";
 // `Requirement.labels` is a JSON-encoded string[] in the database and a plain
 // string[] on the wire; a malformed/legacy value reads as no labels rather than
 // throwing inside the lock's pre-flight read.
@@ -49,6 +56,7 @@ import {
   ACCEPTANCE_CRITERIA_MAX_ITEMS,
   ACCEPTANCE_CRITERION_MAX_LENGTH,
   parseAcceptanceCriteria,
+  resolveCriteriaProposalSchema,
 } from "@metis/shared";
 
 // ---- Schemas ----------------------------------------------------------------
@@ -150,6 +158,9 @@ export function requirementsCollaborationRouter(): Router {
   // Issue #1220 — the pre-auth limiter must run before `requireAuth` (CodeQL
   // js/missing-rate-limiting), and the guard below is where auth first runs.
   r.use("/:requirementId/source-divergence", sourceDivergencePreAuthRateLimiter);
+  // Issue #1389 — the same kind of answer (one click on one requirement's
+  // pending change), so it shares #1220's limiters and their budget.
+  r.use("/:requirementId/criteria-proposal", sourceDivergencePreAuthRateLimiter);
 
   r.use("/:requirementId", requireAuth, requireRequirementAccess);
 
@@ -389,6 +400,64 @@ export function requirementsCollaborationRouter(): Router {
         res.json({ success: true, data: result });
       } catch (err) {
         if (err instanceof SourceDivergenceError) {
+          if (err.code === "NOT_FOUND") {
+            throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+          }
+          throw new AppError(409, err.code, err.message);
+        }
+        if (err instanceof RequirementVersionError) {
+          if (err.code === "NOT_FOUND") {
+            throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+          }
+          throw new AppError(409, "VERSION_CONFLICT", err.message);
+        }
+        throw err;
+      }
+    },
+  );
+
+  // POST /api/requirements/:requirementId/criteria-proposal — Issue #1389.
+  // A re-synthesis kept an approved requirement's criteria and suggested
+  // others. "Accept" writes them through the version history with the analyst
+  // as actor; "Dismiss" changes no content. Either clears the suggestion.
+  r.post(
+    "/:requirementId/criteria-proposal",
+    requireAuth,
+    sourceDivergenceUserRateLimiter,
+    requirePermission("project.update"),
+    async (req: Request, res: Response) => {
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      const requirementId = String(req.params.requirementId);
+      const parsed = resolveCriteriaProposalSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid criteria-proposal payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      try {
+        const result = await resolveCriteriaProposal({
+          requirementId,
+          choice: parsed.data.choice,
+          actorId: req.user.userId,
+          // Defence in depth alongside the router guard (#1118).
+          projectId: requirementScopeWhere(req).projectId,
+          expectedVersion: parsed.data.version,
+        });
+        audit({
+          actor: req.user.userId,
+          action: "requirement.criteria_proposal.resolve",
+          target: { type: "requirement", id: requirementId },
+          metadata: {
+            projectId: result.projectId,
+            analysisId: result.analysisId,
+            choice: result.choice,
+            changed: result.changed,
+            version: result.version,
+          },
+        });
+        res.json({ success: true, data: result });
+      } catch (err) {
+        if (err instanceof CriteriaProposalError) {
           if (err.code === "NOT_FOUND") {
             throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
           }

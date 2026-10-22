@@ -172,6 +172,29 @@ export const requirementSourceApi = {
   },
 };
 
+/** Issue #1389 — the answer to criteria a re-synthesis suggested. */
+export interface ResolveCriteriaProposalResult {
+  id: string;
+  analysisId: string;
+  projectId: string;
+  choice: "accept" | "dismiss";
+  version: number;
+  changed: boolean;
+}
+
+export const requirementCriteriaProposalApi = {
+  /** "Accept" (versioned, so `version` is checked) or "Dismiss". */
+  async resolve(
+    requirementId: string,
+    input: { choice: "accept" | "dismiss"; version?: number },
+  ): Promise<ResolveCriteriaProposalResult> {
+    return apiFetch<ResolveCriteriaProposalResult>(
+      `/requirements/${encodeURIComponent(requirementId)}/criteria-proposal`,
+      { method: "POST", body: input },
+    );
+  },
+};
+
 export const requirementUpdateApi = {
   /** Update a requirement with optimistic-lock version. */
   async update(

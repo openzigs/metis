@@ -63,6 +63,7 @@ import {
   REQUIREMENT_COVERAGES,
   REQUIREMENT_REVIEW_STATUSES,
   REQUIREMENT_VERDICTS,
+  ACCEPTANCE_CRITERIA_CLEARED,
   isAcceptanceCriteriaCleared,
   parseAcceptanceCriteria,
   type SynthesisDegradation,
@@ -82,6 +83,7 @@ import { toSourceDivergence } from "../importers/source-sync.js";
 import {
   RequirementVersionError,
   updateRequirementWithHistory,
+  updateRequirementWithHistoryInTransaction,
   type RequirementSnapshot,
   type VersionPrismaClient,
 } from "../requirements/requirement-version-service.js";
@@ -106,9 +108,21 @@ import type {
   WebResearchResult,
 } from "./types/requirements.js";
 import { isBackgroundAnalysis } from "./requirement-runs.js";
-import { noteProjectRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
+import {
+  noteProjectRequirementsChanged,
+  noteRequirementsChanged,
+} from "../docs-gen/approved-requirements-staleness.js";
 import { pairedInRun, pairingColumns, type PromotedFrom } from "./promotion-pairing.js";
-import { planCriteriaCarryOver } from "./approved-criteria-carry-over.js";
+import {
+  ACCEPTED_CRITERIA_PROPOSAL_REASON,
+  APPROVED_CRITERIA_KEY,
+  CRITERIA_PROPOSALS_KEY,
+  KEPT_APPROVED_CRITERIA_REASON,
+  planApprovedCriteria,
+  readApprovedCriteriaRecord,
+  readCriteriaProposals,
+  type CriteriaProposal,
+} from "./approved-criteria-carry-over.js";
 
 const log = createChildLogger("analysis-service");
 
@@ -1113,6 +1127,8 @@ async function replaceRequirementSet(
   // #939 — the rows it named are deleted below; rewritten after the inserts
   // when this set is itself checkpoint-approved.
   delete next[CHECKPOINT_APPROVED_IDS_KEY];
+  // #1389 — the proposals name the rows deleted below; re-derived for the new set.
+  delete next[CRITERIA_PROPOSALS_KEY];
   if (input.degraded !== undefined) {
     if (input.degraded) next.synthesisDegraded = input.degraded;
     else delete next.synthesisDegraded;
@@ -1124,10 +1140,17 @@ async function replaceRequirementSet(
     });
   }
 
-  // Issue #1389 — read, before the delete takes them, the criteria each row
-  // promoted from the approval checkpoint holds, keyed by the structured
-  // requirement it IS (#1202), for the rows this set re-creates from the same one.
-  const approvedCriteria = await readApprovedCriteria(tx, input);
+  // Issue #1389 — an approved set is re-created with the criteria approved at
+  // the checkpoint, never the re-synthesis's. Read before the delete takes the
+  // rows: the record made at promotion, and — for a set promoted before that
+  // record existed — the criteria the rows themselves hold.
+  const approvedSet = input.promotedFrom && input.reviewStatus ? input.promotedFrom : null;
+  const record = approvedSet ? readApprovedCriteriaRecord(metadata, approvedSet.runId) : null;
+  const previousRows = approvedSet
+    ? await readPromotedRowCriteria(tx, input.analysisId, approvedSet.runId)
+    : new Map<string, string>();
+  const proposals: Record<string, CriteriaProposal> = {};
+  const proposedAt = new Date().toISOString();
 
   await tx.requirement.deleteMany({ where: { analysisId: input.analysisId } });
 
@@ -1137,11 +1160,21 @@ async function replaceRequirementSet(
   const ids: string[] = [];
   for (let idx = 0; idx < input.synthesis.requirements.length; idx++) {
     const r = input.synthesis.requirements[idx];
-    const structuredId = input.promotedFrom?.pairings[idx]?.structuredId;
-    const criteria = planCriteriaCarryOver(
-      (structuredId && approvedCriteria.get(structuredId)) ?? null,
-      r.acceptanceCriteria ?? [],
-    );
+    const structuredId = approvedSet?.pairings[idx]?.structuredId;
+    const plan =
+      record && structuredId
+        ? planApprovedCriteria({
+            recorded: record.approved[structuredId],
+            previousRow: previousRows.get(structuredId),
+            fresh: r.acceptanceCriteria ?? [],
+            dismissed: record.dismissed[structuredId],
+          })
+        : { criteria: r.acceptanceCriteria ?? [], proposed: null };
+    if (record && structuredId) record.approved[structuredId] = plan.criteria;
+    // With a proposal pending, the approved criteria are written as a version
+    // of their own (below), so accepting the proposal leaves a version holding
+    // them for Restore to return to.
+    const anchored = plan.proposed !== null && plan.criteria.length > 0;
     const evidenceIds = r.evidenceFindingIndexes
       .map((i) => input.findingIdsByIndex[i])
       .filter((id): id is string => Boolean(id));
@@ -1158,9 +1191,8 @@ async function replaceRequirementSet(
         // Issue #1096 — the synthesis agent's own criteria, kept as structured
         // data instead of being collapsed into `body`. An empty array is
         // preserved as-is: downstream says "none were derived" rather than
-        // substituting a placeholder. #1389 — on a re-created approved row, the
-        // starting point of the carry-over below.
-        acceptanceCriteria: JSON.stringify(criteria.initial),
+        // substituting a placeholder. #1389 — on an approved row, the approved ones.
+        acceptanceCriteria: JSON.stringify(anchored ? [] : plan.criteria),
         storyPoints: r.storyPoints ?? null,
         // Epic #726 (#736) — persist the deterministic coverage label so the
         // API/UI read a queryable field, not prose. Null when the caller did
@@ -1180,64 +1212,176 @@ async function replaceRequirementSet(
         ...pairingColumns(input.promotedFrom, idx),
       },
     });
-    // #1389 — kept or revised, the approved criteria leave a version row the
-    // analyst sees in the requirement's History, in this same transaction.
-    if (criteria.reason) {
-      await updateRequirementWithHistory(versionClientFor(tx), {
-        requirementId: row.id,
-        patch: { acceptanceCriteria: JSON.stringify(criteria.final) },
-        expectedVersion: row.version,
-        actorId: null,
-        reason: criteria.reason,
-      });
+    if (anchored) {
+      // A system version (null actor): not review work (#769, #1162).
+      await updateRequirementWithHistoryInTransaction(
+        tx as unknown as Pick<VersionPrismaClient, "requirement" | "requirementVersion">,
+        {
+          requirementId: row.id,
+          patch: { acceptanceCriteria: JSON.stringify(plan.criteria) },
+          expectedVersion: row.version,
+          actorId: null,
+          reason: KEPT_APPROVED_CRITERIA_REASON,
+        },
+      );
+    }
+    if (plan.proposed !== null && structuredId) {
+      proposals[row.id] = { structuredId, proposed: plan.proposed, at: proposedAt };
     }
     ids.push(row.id);
   }
-  if (input.reviewStatus && analysisRow) {
+  const written: Record<string, unknown> = { ...next };
+  if (input.reviewStatus) written[CHECKPOINT_APPROVED_IDS_KEY] = ids;
+  if (record) written[APPROVED_CRITERIA_KEY] = record;
+  if (Object.keys(proposals).length > 0) written[CRITERIA_PROPOSALS_KEY] = proposals;
+  if (analysisRow && JSON.stringify(written) !== JSON.stringify(next)) {
     await tx.analysis.update({
       where: { id: input.analysisId },
-      data: { metadata: JSON.stringify({ ...next, [CHECKPOINT_APPROVED_IDS_KEY]: ids }) },
+      data: { metadata: JSON.stringify(written) },
     });
   }
   return ids;
 }
 
 /**
- * Issue #1389 — structured id → the stored `acceptanceCriteria` of the row the
- * approval checkpoint promoted from it, for the extraction run this set is
- * promoted from. Empty when this set is not a promotion (no `promotedFrom`):
- * then nothing pairs a new row with an old one.
+ * Issue #1389 — structured id → the stored `acceptanceCriteria` of the row
+ * promoted from it in extraction run `runId` (#1202 pairing). Oldest row first,
+ * so a duplicate pairing (nothing enforces uniqueness) resolves the same way
+ * every time, and is logged.
  */
-async function readApprovedCriteria(
+async function readPromotedRowCriteria(
   tx: Prisma.TransactionClient,
-  input: PersistRequirementsInput,
+  analysisId: string,
+  runId: string | null,
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
-  if (!input.promotedFrom) return out;
   const rows = await tx.requirement.findMany({
-    where: { analysisId: input.analysisId, deletedAt: null, promotedStructuredId: { not: null } },
+    where: { analysisId, deletedAt: null, promotedStructuredId: { not: null } },
     select: { promotedStructuredId: true, promotedStructuredRunId: true, acceptanceCriteria: true },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   });
   for (const row of rows) {
-    if (!pairedInRun(row, input.promotedFrom.runId)) continue;
+    if (!pairedInRun(row, runId)) continue;
+    if (out.has(row.promotedStructuredId!)) {
+      log.warn("Two requirement rows are paired with one structured requirement", {
+        analysisId,
+        structuredId: row.promotedStructuredId,
+      });
+      continue;
+    }
     out.set(row.promotedStructuredId!, row.acceptanceCriteria);
   }
   return out;
 }
 
+/** Issue #1389 — why a criteria proposal could not be resolved. */
+export class CriteriaProposalError extends Error {
+  readonly code: "NOT_FOUND" | "NO_PROPOSAL";
+  constructor(code: "NOT_FOUND" | "NO_PROPOSAL", message: string) {
+    super(message);
+    this.name = "CriteriaProposalError";
+    this.code = code;
+  }
+}
+
+export interface ResolveCriteriaProposalResult {
+  id: string;
+  analysisId: string;
+  projectId: string;
+  choice: "accept" | "dismiss";
+  version: number;
+  changed: boolean;
+}
+
 /**
- * The history writer opens its own transaction; inside the replacement it runs
- * in this one instead, so the row, its kept criteria and their version row
- * commit — or roll back — together.
+ * Issue #1389 — the analyst's answer to "re-synthesis suggested different
+ * acceptance criteria". **Accept** writes the proposal through the version
+ * history with the analyst as actor (a real version, so Restore returns to the
+ * approved criteria, and the #769 guard then protects the set as reviewed
+ * work). **Dismiss** changes no content; it is remembered so the next
+ * re-synthesis does not raise the same suggestion again. Either way the
+ * proposal is cleared, in the same transaction as the write.
  */
-function versionClientFor(tx: Prisma.TransactionClient): VersionPrismaClient {
-  return {
-    $transaction: ((fn: (client: Prisma.TransactionClient) => Promise<unknown>) =>
-      fn(tx)) as VersionPrismaClient["$transaction"],
-    requirement: tx.requirement as unknown as VersionPrismaClient["requirement"],
-    requirementVersion:
-      tx.requirementVersion as unknown as VersionPrismaClient["requirementVersion"],
-  };
+export async function resolveCriteriaProposal(input: {
+  requirementId: string;
+  choice: "accept" | "dismiss";
+  actorId: string;
+  /** #1118 — narrow the lookup to the project the caller is authorized for. */
+  projectId?: string;
+  /** #871 — the version the card showed; checked when accepting. */
+  expectedVersion?: number;
+}): Promise<ResolveCriteriaProposalResult> {
+  const result = await prisma.$transaction(async (tx) => {
+    const row = await tx.requirement.findFirst({
+      where: {
+        id: input.requirementId,
+        deletedAt: null,
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+      },
+      select: { id: true, analysisId: true, projectId: true, version: true },
+    });
+    if (!row) throw new CriteriaProposalError("NOT_FOUND", "Requirement not found");
+    await lockAnalysisRow(tx, row.analysisId);
+    const analysis = await tx.analysis.findFirst({
+      where: { id: row.analysisId },
+      select: { metadata: true },
+    });
+    const metadata = parseMetadata(analysis?.metadata ?? null);
+    const proposals = readCriteriaProposals(metadata);
+    const proposal = proposals[row.id];
+    if (!proposal) {
+      throw new CriteriaProposalError(
+        "NO_PROPOSAL",
+        "This requirement has no suggested acceptance criteria to answer",
+      );
+    }
+    let version = row.version;
+    let changed = false;
+    if (input.choice === "accept") {
+      const written = await updateRequirementWithHistoryInTransaction(
+        tx as unknown as Pick<VersionPrismaClient, "requirement" | "requirementVersion">,
+        {
+          requirementId: row.id,
+          // #990 — `[]` accepted is an explicit clear, stored as the marker.
+          patch: {
+            acceptanceCriteria:
+              proposal.proposed.length > 0
+                ? JSON.stringify(proposal.proposed)
+                : ACCEPTANCE_CRITERIA_CLEARED,
+          },
+          actorId: input.actorId,
+          reason: ACCEPTED_CRITERIA_PROPOSAL_REASON,
+          expectedVersion: input.expectedVersion,
+        },
+      );
+      version = written.version;
+      changed = written.changed;
+    }
+    delete proposals[row.id];
+    const rawRecord = metadata[APPROVED_CRITERIA_KEY] as { runId?: unknown } | undefined;
+    const recordRunId = typeof rawRecord?.runId === "string" ? rawRecord.runId : null;
+    const record = readApprovedCriteriaRecord(metadata, recordRunId);
+    if (input.choice === "accept") record.approved[proposal.structuredId] = proposal.proposed;
+    else record.dismissed[proposal.structuredId] = JSON.stringify(proposal.proposed);
+    const next: Record<string, unknown> = { ...metadata, [APPROVED_CRITERIA_KEY]: record };
+    if (Object.keys(proposals).length > 0) next[CRITERIA_PROPOSALS_KEY] = proposals;
+    else delete next[CRITERIA_PROPOSALS_KEY];
+    await tx.analysis.update({
+      where: { id: row.analysisId },
+      data: { metadata: JSON.stringify(next) },
+    });
+    return {
+      id: row.id,
+      analysisId: row.analysisId,
+      projectId: row.projectId,
+      choice: input.choice,
+      version,
+      changed,
+    };
+  });
+  // Committed by now: a reader BRD listing approved requirements may be stale.
+  if (result.changed) void noteRequirementsChanged([result.id]);
+  return result;
 }
 
 /**
@@ -2066,6 +2210,8 @@ function toSnapshot(
   }
   // #1063 — the run's imported items, to resolve each requirement's stored ids.
   const runSourceRequirements = readSourceRequirements(metadata);
+  // #1389 — criteria a re-synthesis suggested for an approved requirement.
+  const criteriaProposals = readCriteriaProposals(metadata ?? {});
   const requirements = row.requirements.map((r) => {
     const labels = parseRequirementLabels(r.labels);
     const reviewStatus = resolveRequirementReviewStatus(r.reviewStatus, labels);
@@ -2111,6 +2257,11 @@ function toSnapshot(
       // Issue #1220 — the source's newer content when re-sync left this
       // imported requirement diverged from it; null otherwise.
       sourceDivergence: toSourceDivergence(r.sourcePending),
+      // Issue #1389 — the criteria a re-synthesis suggested in place of the
+      // approved ones, awaiting the analyst; null when there is none.
+      criteriaProposal: criteriaProposals[r.id]
+        ? { proposed: criteriaProposals[r.id]!.proposed, at: criteriaProposals[r.id]!.at }
+        : null,
       // Epic #34 (AC2) — surface the optimistic-lock version so the edit form
       // can submit the version it rendered and reliably 409 on a stale form.
       version: r.version,

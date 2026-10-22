@@ -1,58 +1,112 @@
 import { describe, expect, it } from "vitest";
 import {
-  KEPT_APPROVED_CRITERIA_REASON,
-  REVISED_APPROVED_CRITERIA_REASON,
-  planCriteriaCarryOver,
+  APPROVED_CRITERIA_KEY,
+  CRITERIA_PROPOSALS_KEY,
+  planApprovedCriteria,
+  readApprovedCriteriaRecord,
+  readCriteriaProposals,
 } from "./approved-criteria-carry-over.js";
 
 const APPROVED = ["Installs as a single binary.", "A page renders in under 200 ms."];
 
-describe("planCriteriaCarryOver (#1389)", () => {
-  it("keeps the approved criteria when the re-synthesis gave none", () => {
-    expect(planCriteriaCarryOver(JSON.stringify(APPROVED), [])).toEqual({
-      initial: [],
-      final: APPROVED,
-      reason: KEPT_APPROVED_CRITERIA_REASON,
+describe("planApprovedCriteria (#1389)", () => {
+  const plan = (over: Partial<Parameters<typeof planApprovedCriteria>[0]>) =>
+    planApprovedCriteria({
+      recorded: APPROVED,
+      previousRow: undefined,
+      fresh: APPROVED,
+      dismissed: undefined,
+      ...over,
+    });
+
+  it("keeps the approved criteria and proposes nothing when the re-synthesis gave none", () => {
+    expect(plan({ fresh: [] })).toEqual({ criteria: APPROVED, proposed: [] });
+  });
+
+  it("keeps the approved criteria and proposes the re-synthesis's different ones", () => {
+    expect(plan({ fresh: ["Starts in one second."] })).toEqual({
+      criteria: APPROVED,
+      proposed: ["Starts in one second."],
     });
   });
 
-  it("takes revised criteria, starting from the approved ones so the change is versioned", () => {
-    expect(planCriteriaCarryOver(JSON.stringify(APPROVED), ["Starts in one second."])).toEqual({
-      initial: APPROVED,
-      final: ["Starts in one second."],
-      reason: REVISED_APPROVED_CRITERIA_REASON,
+  it("treats a strict subset as a proposal too", () => {
+    expect(plan({ fresh: [APPROVED[0]!] }).proposed).toEqual([APPROVED[0]]);
+  });
+
+  it("proposes nothing when the criteria did not change", () => {
+    expect(plan({ fresh: [...APPROVED] })).toEqual({ criteria: APPROVED, proposed: null });
+  });
+
+  it("anchors on the record, never on what the previous row holds", () => {
+    expect(plan({ previousRow: JSON.stringify(["Drifted."]), fresh: ["Drifted."] })).toEqual({
+      criteria: APPROVED,
+      proposed: ["Drifted."],
     });
   });
 
-  it("treats a strict subset as a revision, not as a keep", () => {
-    expect(planCriteriaCarryOver(JSON.stringify(APPROVED), [APPROVED[0]!]).reason).toBe(
-      REVISED_APPROVED_CRITERIA_REASON,
+  it("falls back to the previous row for a set promoted before the record existed", () => {
+    expect(plan({ recorded: undefined, previousRow: JSON.stringify(APPROVED), fresh: [] })).toEqual(
+      { criteria: APPROVED, proposed: [] },
     );
   });
 
-  it("records nothing when the criteria did not change", () => {
-    expect(planCriteriaCarryOver(JSON.stringify(APPROVED), [...APPROVED])).toEqual({
-      initial: APPROVED,
-      final: APPROVED,
-      reason: null,
+  it("takes the fresh criteria as approved on a first promotion", () => {
+    expect(plan({ recorded: undefined, fresh: ["New."] })).toEqual({
+      criteria: ["New."],
+      proposed: null,
     });
   });
 
-  it("records nothing when there was no earlier row, or it had no criteria", () => {
-    for (const approved of [null, "[]", "not json"]) {
-      expect(planCriteriaCarryOver(approved, ["New."])).toEqual({
-        initial: ["New."],
-        final: ["New."],
-        reason: null,
-      });
-      expect(planCriteriaCarryOver(approved, [])).toEqual({ initial: [], final: [], reason: null });
-    }
+  it("does not raise again a proposal the analyst dismissed, but does raise a new one", () => {
+    const dismissed = JSON.stringify(["Starts in one second."]);
+    expect(plan({ fresh: ["Starts in one second."], dismissed }).proposed).toBeNull();
+    expect(plan({ fresh: ["Starts in two seconds."], dismissed }).proposed).toEqual([
+      "Starts in two seconds.",
+    ]);
+  });
+});
+
+describe("readApprovedCriteriaRecord / readCriteriaProposals (#1389)", () => {
+  it("reads the record of its own extraction run only", () => {
+    const metadata = {
+      [APPROVED_CRITERIA_KEY]: {
+        runId: "run-1",
+        approved: { "REQ-1": APPROVED, "REQ-2": "not a list" },
+        dismissed: { "REQ-1": "[]", "REQ-2": 7 },
+      },
+    };
+    expect(readApprovedCriteriaRecord(metadata, "run-1")).toEqual({
+      runId: "run-1",
+      approved: { "REQ-1": APPROVED },
+      dismissed: { "REQ-1": "[]" },
+    });
+    expect(readApprovedCriteriaRecord(metadata, "run-2")).toEqual({
+      runId: "run-2",
+      approved: {},
+      dismissed: {},
+    });
+    expect(readApprovedCriteriaRecord({}, null)).toEqual({
+      runId: null,
+      approved: {},
+      dismissed: {},
+    });
   });
 
-  it("does not alias the caller's array", () => {
-    const fresh = ["New."];
-    const plan = planCriteriaCarryOver(null, fresh);
-    plan.final.push("mutated");
-    expect(fresh).toEqual(["New."]);
+  it("reads well-formed proposals and drops the rest", () => {
+    expect(
+      readCriteriaProposals({
+        [CRITERIA_PROPOSALS_KEY]: {
+          a: { structuredId: "REQ-1", proposed: ["x"], at: "2026-10-22T00:00:00.000Z" },
+          b: { structuredId: "REQ-2", proposed: [] },
+          c: { structuredId: 3, proposed: ["y"] },
+          d: null,
+        },
+      }),
+    ).toEqual({
+      a: { structuredId: "REQ-1", proposed: ["x"], at: "2026-10-22T00:00:00.000Z" },
+      b: { structuredId: "REQ-2", proposed: [], at: "" },
+    });
+    expect(readCriteriaProposals({ [CRITERIA_PROPOSALS_KEY]: "nope" })).toEqual({});
   });
 });

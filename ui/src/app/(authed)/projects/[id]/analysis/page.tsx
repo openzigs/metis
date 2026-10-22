@@ -119,6 +119,7 @@ import { TraceabilityView } from "@/components/traceability/traceability-view";
 import { UntestedRequirementsPanel } from "@/components/traceability/untested-requirements-panel";
 import { RequirementHistoryTab } from "@/components/requirements/RequirementHistoryTab";
 import { SourceDivergenceNotice } from "@/components/requirements/SourceDivergenceNotice";
+import { CriteriaProposalNotice } from "@/components/requirements/CriteriaProposalNotice";
 import { findingsApi } from "@/lib/findings-api";
 // Epic #34 — collaboration on requirements (comments, assignees/SLA, optimistic-lock merge).
 import { useAuth } from "@/lib/auth-context";
@@ -1142,6 +1143,19 @@ export default function AnalysisPage(): React.ReactElement {
                                 version={req.version}
                                 divergence={req.sourceDivergence}
                                 local={req}
+                                invalidateKeys={
+                                  selectedAnalysisId
+                                    ? [queryKeys.analyses.detail(selectedAnalysisId)]
+                                    : []
+                                }
+                              />
+                              {/* #1389 — a re-synthesis kept the approved criteria
+                                and suggested others. */}
+                              <CriteriaProposalNotice
+                                requirementId={req.id}
+                                version={req.version}
+                                proposal={req.criteriaProposal}
+                                current={req.acceptanceCriteria ?? []}
                                 invalidateKeys={
                                   selectedAnalysisId
                                     ? [queryKeys.analyses.detail(selectedAnalysisId)]
