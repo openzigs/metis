@@ -72,7 +72,11 @@ const fakeSocket = {
 };
 const fireSocket = (name: string, data: unknown) =>
   socketHandlers.get(name)?.forEach((fn) => fn(data));
-vi.mock("@/lib/socket-client", () => ({ useSocket: () => fakeSocket }));
+vi.mock("@/lib/socket-client", () => ({
+  // AuthProvider closes the socket whenever the session ends (#1391).
+  closeSocket: vi.fn(),
+  useSocket: () => fakeSocket,
+}));
 
 vi.mock("@/components/connectors/db-connector-wizard", () => ({
   DbConnectorWizard: () => <div data-testid="db-connector-wizard" />,

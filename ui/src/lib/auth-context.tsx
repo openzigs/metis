@@ -130,8 +130,8 @@ export function AuthProvider({
     } catch {
       // Logout is best-effort — we still clear local state.
     }
-    // #1391 — the realtime socket was authenticated as this user; drop it so
-    // the next sign-in in this tab opens a fresh one.
+    // #1391 — the realtime socket was authenticated as this user. Close it now,
+    // before the redirect, rather than waiting for the `user` effect below.
     closeSocket();
     setUser(null);
     queryClient.removeQueries({ queryKey: queryKeys.auth.all });
@@ -189,8 +189,19 @@ export function AuthProvider({
   //    form can explain the involuntary bounce. The `?next` VALUE we set is the
   //    current same-origin pathname+search; the READ side stays guarded by
   //    `safeRedirectPath` against open-redirect (OWASP A01).
+  // #1391 — the realtime socket belongs to the session. The server checks the
+  // JWT only at the handshake, so a socket that outlived the session would stay
+  // authenticated as the old user, and a different user who signs in within the
+  // same tab (client-side navigation, no reload) would inherit it, along with
+  // its rooms. Close it whenever the session ends, by any path.
+  useEffect(() => {
+    if (!isAuthenticated) closeSocket();
+  }, [isAuthenticated]);
+
   useEffect(() => {
     setOnRefreshFailure(() => {
+      // #1391 — first, before the public-route early return below.
+      closeSocket();
       setUser(null);
       queryClient.removeQueries({ queryKey: queryKeys.auth.all });
       if (signingOutRef.current || isPublicRoute(window.location.pathname)) {

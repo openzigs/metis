@@ -16,15 +16,48 @@ function makeFakeSocket() {
   const handlers = new Map<string, Handler>();
   return {
     connected: false,
-    io: { on: vi.fn() },
+    io: { on: vi.fn(), off: vi.fn() },
     on: vi.fn((evt: string, cb: Handler) => {
       handlers.set(evt, cb);
     }),
     off: vi.fn(),
+    removeAllListeners: vi.fn(() => handlers.clear()),
     emit: vi.fn(),
     connect: vi.fn(),
     disconnect: vi.fn(() => handlers.get("disconnect")?.("io client disconnect")),
   };
+}
+
+/** A promise whose settlement the test controls. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+type SocketIoModule = { io: (...args: unknown[]) => unknown };
+
+/**
+ * Route `getSocket()`'s import through held promises, one per attempt, so a
+ * spec can keep two attempts open and settle them in a chosen order.
+ */
+function holdImports() {
+  const held: ReturnType<typeof deferred<SocketIoModule>>[] = [];
+  const loader = vi.fn(() => {
+    const d = deferred<SocketIoModule>();
+    held.push(d);
+    return d.promise;
+  });
+  __setSocketIoLoaderForTests(loader as never);
+  const settle = async (index: number) => {
+    await act(async () => {
+      held[index].resolve({ io: (...args: unknown[]) => ioMock(...args) });
+      await Promise.resolve();
+    });
+  };
+  return { loader, settle };
 }
 
 const ioMock = vi.fn((..._args: unknown[]) => makeFakeSocket());
@@ -42,6 +75,7 @@ import {
   useSocket,
   useSocketStatus,
   __resetSocketStatusForTests,
+  __setSocketIoLoaderForTests,
 } from "@/lib/socket-client";
 
 beforeEach(() => {
@@ -59,6 +93,12 @@ describe("getSocket singleton (#1391)", () => {
     const { result } = renderManySockets(3);
     await waitFor(() => expect(result.current.every((s) => s !== null)).toBe(true));
     expect(ioMock).toHaveBeenCalledTimes(1);
+    // Keep this identity loop: the call count above passes against the
+    // UNFIXED code too. Under Vitest, the second of two dynamic imports of a
+    // `vi.mock`ed module that are in flight at once resolves to the REAL
+    // socket.io-client, so the old code's extra sockets are real `Socket`s
+    // that `ioMock` never counts. Only "every hook got the same object" fails
+    // on the old code (checked by mutation).
     const [first, ...rest] = result.current;
     for (const s of rest) expect(s).toBe(first);
   });
@@ -105,6 +145,14 @@ describe("closeSocket (#1391)", () => {
 
     act(() => closeSocket());
     expect(first.disconnect).toHaveBeenCalledTimes(1);
+    // Every handler is detached, including the lifecycle ones on the Manager,
+    // so the closed socket can no longer write to the status store.
+    expect(first.removeAllListeners).toHaveBeenCalledTimes(1);
+    const offEvents = vi.mocked(first.io.off).mock.calls.map(([evt]) => evt);
+    expect(offEvents.sort()).toEqual(["reconnect", "reconnect_attempt", "reconnect_failed"]);
+    const onHandlers = vi.mocked(first.io.on).mock.calls.map(([, fn]) => fn);
+    const offHandlers = vi.mocked(first.io.off).mock.calls.map(([, fn]) => fn);
+    expect(new Set(offHandlers)).toEqual(new Set(onHandlers));
 
     const b = renderHook(() => useSocket());
     await waitFor(() => expect(b.result.current).not.toBeNull());
@@ -163,5 +211,45 @@ describe("closeSocket (#1391)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("overlapping attempts across a close (#1391, held imports)", () => {
+  it("a caller after a close starts a new attempt instead of joining the closed one", async () => {
+    const { loader, settle } = holdImports();
+    const stale = renderHook(() => useSocket());
+    expect(loader).toHaveBeenCalledTimes(1);
+
+    act(() => closeSocket());
+    // Attempt A is still loading. Had closeSocket left it in the pending slot,
+    // this caller would join it and be refused with A.
+    const fresh = renderHook(() => useSocket());
+    expect(loader).toHaveBeenCalledTimes(2);
+
+    await settle(0);
+    await settle(1);
+    await waitFor(() => expect(fresh.result.current).not.toBeNull());
+    expect(stale.result.current).toBeNull();
+    expect(ioMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a stale attempt settling does not clear the newer attempt's pending slot", async () => {
+    const { loader, settle } = holdImports();
+    renderHook(() => useSocket()); // attempt A
+    act(() => closeSocket());
+    const second = renderHook(() => useSocket()); // attempt B, still loading
+    expect(loader).toHaveBeenCalledTimes(2);
+
+    // A settles (and is refused) while B is still in flight.
+    await settle(0);
+
+    // A caller arriving now must join B, not start a third attempt.
+    const third = renderHook(() => useSocket());
+    expect(loader).toHaveBeenCalledTimes(2);
+
+    await settle(1);
+    await waitFor(() => expect(third.result.current).not.toBeNull());
+    expect(third.result.current).toBe(second.result.current);
+    expect(ioMock).toHaveBeenCalledTimes(1);
   });
 });

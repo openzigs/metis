@@ -13,7 +13,11 @@ import { makeWrapper } from "./test-utils";
 
 // ---- Mocks -----------------------------------------------------------------
 
-vi.mock("@/lib/socket-client", () => ({ useSocket: vi.fn() }));
+vi.mock("@/lib/socket-client", () => ({
+  // AuthProvider closes the socket whenever the session ends (#1391).
+  closeSocket: vi.fn(),
+  useSocket: vi.fn(),
+}));
 
 vi.mock("@/lib/discussions-api", async (orig) => {
   const actual = await orig<typeof import("@/lib/discussions-api")>();

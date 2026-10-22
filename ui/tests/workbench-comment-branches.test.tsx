@@ -9,7 +9,11 @@ import type { StreamEvent } from "@/lib/ai-client";
 // ─── WorkbenchPage additional branches ────────────────────────────────────────
 
 // #142 — the page joins its session's socket room; no real socket in unit tests.
-vi.mock("@/lib/socket-client", () => ({ useSocket: () => null }));
+vi.mock("@/lib/socket-client", () => ({
+  // AuthProvider closes the socket whenever the session ends (#1391).
+  closeSocket: vi.fn(),
+  useSocket: () => null,
+}));
 
 vi.mock("@/lib/ai-client", async () => {
   const actual = await vi.importActual<typeof import("@/lib/ai-client")>("@/lib/ai-client");

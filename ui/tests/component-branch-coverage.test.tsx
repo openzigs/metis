@@ -139,6 +139,8 @@ describe("AssigneePicker", () => {
 // ─── NotificationsDrawer ─────────────────────────────────────────────────────
 
 vi.mock("@/lib/socket-client", () => ({
+  // AuthProvider closes the socket whenever the session ends (#1391).
+  closeSocket: vi.fn(),
   useSocket: vi.fn().mockReturnValue(null),
 }));
 

@@ -15,6 +15,8 @@ import { createFakeSocket } from "./helpers/fake-socket";
 import { SCHEDULER_STATUS_ROOM } from "@metis/shared";
 
 vi.mock("@/lib/socket-client", () => ({
+  // AuthProvider closes the socket whenever the session ends (#1391).
+  closeSocket: vi.fn(),
   useSocket: vi.fn().mockReturnValue(null),
 }));
 

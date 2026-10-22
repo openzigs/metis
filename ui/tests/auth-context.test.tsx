@@ -4,9 +4,36 @@ import { PROACTIVE_REFRESH_MS, useAuth } from "@/lib/auth-context";
 import { _resetAuthRetryState, apiFetch } from "@/lib/api-client";
 import { makeWrapper, TEST_USER } from "./test-utils";
 import { useRouter } from "next/navigation";
+import { closeSocket, useSocket, __resetSocketStatusForTests } from "@/lib/socket-client";
 
-const closeSocketMock = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/socket-client", () => ({ closeSocket: closeSocketMock }));
+const closeSocketMock = vi.mocked(closeSocket);
+
+// #1391 — the REAL socket-client runs here, over a fake socket.io-client, so
+// these specs check the socket a session actually ends up with. `closeSocket`
+// is wrapped in a spy that still calls the real one.
+type FakeSocket = {
+  io: { on: ReturnType<typeof vi.fn>; off: ReturnType<typeof vi.fn> };
+  on: ReturnType<typeof vi.fn>;
+  removeAllListeners: ReturnType<typeof vi.fn>;
+  disconnect: ReturnType<typeof vi.fn>;
+  connect: ReturnType<typeof vi.fn>;
+  connected: boolean;
+};
+const ioMock = vi.hoisted(() =>
+  vi.fn((): FakeSocket => ({
+    connected: false,
+    io: { on: vi.fn(), off: vi.fn() },
+    on: vi.fn(),
+    removeAllListeners: vi.fn(),
+    disconnect: vi.fn(),
+    connect: vi.fn(),
+  })),
+);
+vi.mock("socket.io-client", () => ({ io: () => ioMock() }));
+vi.mock("@/lib/socket-client", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/socket-client")>();
+  return { ...real, closeSocket: vi.fn(real.closeSocket) };
+});
 
 const fetchMock = vi.fn();
 
@@ -23,6 +50,9 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockReset();
   _resetAuthRetryState();
+  __resetSocketStatusForTests();
+  closeSocketMock.mockClear();
+  ioMock.mockClear();
   // Stable router from setup.ts — clear its spies.
   const router = (useRouter as unknown as () => Record<string, ReturnType<typeof vi.fn>>)();
   for (const fn of Object.values(router)) fn.mockClear();
@@ -113,7 +143,6 @@ describe("AuthProvider", () => {
   });
 
   it("clears the user and routes on logout", async () => {
-    closeSocketMock.mockClear();
     fetchMock.mockResolvedValueOnce(ok({ success: true, data: null }));
     const { result } = renderHook(() => useAuth(), {
       wrapper: makeWrapper({ initialUser: TEST_USER }),
@@ -123,10 +152,14 @@ describe("AuthProvider", () => {
       await result.current.logout();
     });
     expect(result.current.user).toBeNull();
-    // #1391 — the signed-out user's realtime socket is closed.
-    expect(closeSocketMock).toHaveBeenCalledTimes(1);
     const router = (useRouter as unknown as () => { push: ReturnType<typeof vi.fn> })();
     expect(router.push).toHaveBeenCalledWith("/login");
+    // #1391 — the signed-out user's realtime socket is closed, and closed
+    // before the redirect rather than only by the later `user` effect.
+    expect(closeSocketMock).toHaveBeenCalled();
+    expect(closeSocketMock.mock.invocationCallOrder[0]).toBeLessThan(
+      router.push.mock.invocationCallOrder[0],
+    );
   });
 
   it("exposes isSigningOut from logout until the next login (#720)", async () => {
@@ -394,5 +427,95 @@ describe("AuthProvider — onRefreshFailure redirect (#411)", () => {
     });
     const router = (useRouter as unknown as () => { replace: ReturnType<typeof vi.fn> })();
     expect(router.replace).not.toHaveBeenCalled();
+  });
+});
+
+describe("AuthProvider — the realtime socket ends with the session (#1391)", () => {
+  const USER_B = { ...TEST_USER, id: "user-b", username: "bea" };
+
+  /** Mount auth plus one socket consumer, signed in as TEST_USER, and wait for the socket. */
+  async function mountSignedInWithSocket() {
+    const hook = renderHook(() => ({ auth: useAuth(), socket: useSocket() }), {
+      wrapper: makeWrapper({ initialUser: TEST_USER }),
+    });
+    await waitFor(() => expect(hook.result.current.socket).not.toBeNull());
+    return hook;
+  }
+
+  /** Make every request 401 and every /auth/refresh fail, then fire one request. */
+  async function failTheRefresh() {
+    fetchMock.mockImplementation((url: unknown) => {
+      if (String(url) === "/api/auth/refresh") return Promise.resolve(ok({ success: false }, 401));
+      return Promise.resolve(ok({ success: false, error: { code: "TOKEN_EXPIRED" } }, 401));
+    });
+    await act(async () => {
+      await apiFetch("/projects").catch(() => undefined);
+    });
+  }
+
+  it("a failed token refresh closes the socket, even on a public route", async () => {
+    stubLocation("/invites/tok-123");
+    const { result } = await mountSignedInWithSocket();
+    const socketA = result.current.socket as unknown as FakeSocket;
+
+    // Record who was signed in at the moment the socket was closed.
+    const realClose = closeSocketMock.getMockImplementation()!;
+    const userAtClose: unknown[] = [];
+    closeSocketMock.mockImplementation(() => {
+      userAtClose.push(result.current.auth.user);
+      realClose();
+    });
+    try {
+      await failTheRefresh();
+    } finally {
+      closeSocketMock.mockImplementation(realClose);
+    }
+
+    expect(result.current.auth.user).toBeNull();
+    expect(socketA.disconnect).toHaveBeenCalledTimes(1);
+    expect(socketA.removeAllListeners).toHaveBeenCalledTimes(1);
+    // Closed by the failure handler itself, before the cleared user rendered,
+    // and not skipped by the public-route early return.
+    expect(userAtClose[0]).toEqual(TEST_USER);
+    const router = (useRouter as unknown as () => { replace: ReturnType<typeof vi.fn> })();
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  it("a session that ends without a refresh failure (user → null) closes the socket", async () => {
+    const { result } = await mountSignedInWithSocket();
+    const socketA = result.current.socket as unknown as FakeSocket;
+
+    // /auth/me failing for any non-expiry reason clears the user in refresh().
+    fetchMock.mockResolvedValue(ok({ success: false, error: { code: "INTERNAL" } }, 500));
+    await act(async () => {
+      await result.current.auth.refresh();
+    });
+
+    expect(result.current.auth.user).toBeNull();
+    expect(socketA.disconnect).toHaveBeenCalledTimes(1);
+    expect(socketA.removeAllListeners).toHaveBeenCalledTimes(1);
+  });
+
+  it("user B signing in after user A's session expired gets a new socket, not A's", async () => {
+    stubLocation("/projects/abc");
+    const { result } = await mountSignedInWithSocket();
+    const socketA = result.current.socket as unknown as FakeSocket;
+
+    await failTheRefresh();
+    expect(result.current.auth.user).toBeNull();
+
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValueOnce(ok({ success: true, data: { user: USER_B } }));
+    await act(async () => {
+      await result.current.auth.login({ username: "bea", password: "pw" });
+    });
+    expect(result.current.auth.user).toEqual(USER_B);
+
+    // B's page mounts its socket consumers fresh, as it would after the redirect.
+    const b = renderHook(() => useSocket());
+    await waitFor(() => expect(b.result.current).not.toBeNull());
+    expect(b.result.current).not.toBe(socketA);
+    expect(ioMock).toHaveBeenCalledTimes(2);
+    expect(socketA.disconnect).toHaveBeenCalledTimes(1);
   });
 });

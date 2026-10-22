@@ -206,16 +206,30 @@ function registerLifecycle(socket: Socket): void {
 
   // Reconnection events live on the Manager in socket.io v4.
   const manager = socket.io;
-  manager.on("reconnect_attempt", () => {
-    setState({ status: "reconnecting" });
-  });
-  manager.on("reconnect", () => {
-    setState({ status: "connected", error: null });
-  });
-  manager.on("reconnect_failed", () => {
-    setState({ status: "disconnected" });
-  });
+  manager.on("reconnect_attempt", onManagerReconnectAttempt);
+  manager.on("reconnect", onManagerReconnect);
+  manager.on("reconnect_failed", onManagerReconnectFailed);
 }
+
+// Module-level so `closeSocket()` can remove exactly these from the Manager.
+// socket.io-client caches a Manager per URL and a later socket may reuse it,
+// and the Manager also carries the library's own internal subscriptions, so
+// clearing it wholesale is not safe (#1391).
+function onManagerReconnectAttempt(): void {
+  setState({ status: "reconnecting" });
+}
+function onManagerReconnect(): void {
+  setState({ status: "connected", error: null });
+}
+function onManagerReconnectFailed(): void {
+  setState({ status: "disconnected" });
+}
+
+type SocketIoModule = Pick<typeof import("socket.io-client"), "io">;
+const defaultSocketIoLoader = (): Promise<SocketIoModule> => import("socket.io-client");
+// #1391 — the dynamic import behind `getSocket()`. Injectable only so a test
+// can hold two attempts open at once and settle them in a chosen order.
+let loadSocketIo: () => Promise<SocketIoModule> = defaultSocketIoLoader;
 
 function getSocket(): Promise<Socket> {
   // Return the existing socket regardless of connection state, and share the
@@ -223,7 +237,7 @@ function getSocket(): Promise<Socket> {
   if (socketRef) return Promise.resolve(socketRef);
   if (pendingSocket) return pendingSocket;
   const generation = socketGeneration;
-  const attempt = import("socket.io-client").then(({ io }) => {
+  const attempt = loadSocketIo().then(({ io }) => {
     if (generation !== socketGeneration) throw new SocketClosedError();
     // Connect directly to the Express server — Next.js cannot proxy WebSocket upgrades.
     // #1377 — resolved at connect time, not baked at build: the page's own origin
@@ -252,9 +266,11 @@ function getSocket(): Promise<Socket> {
 
 /**
  * Close the shared socket and forget it, so the next `getSocket()` opens a new
- * one (#1391). Called on sign-out: the handshake authenticated the signed-out
- * user's cookie, and a later sign-in in the same tab must not inherit it. An
- * attempt still loading when this runs opens nothing and rejects with
+ * one (#1391). Called whenever the session ends: on sign-out, and when a failed
+ * token refresh clears the user (auth-context.tsx). The server checks the JWT
+ * only at the handshake, so a socket left open would stay authenticated as the
+ * old user, and a different user signing in within the same tab would inherit
+ * it. An attempt still loading when this runs opens nothing and rejects with
  * `SocketClosedError`.
  */
 export function closeSocket(): void {
@@ -267,7 +283,18 @@ export function closeSocket(): void {
   renewingForToken = false;
   const socket = socketRef;
   socketRef = null;
-  socket?.disconnect();
+  if (socket) {
+    // Detach every handler first: the lifecycle ones, and the ones hooks
+    // registered for their rooms. A closed socket must not write to the status
+    // store or call back into components of the old session.
+    socket.removeAllListeners();
+    socket.io.off("reconnect_attempt", onManagerReconnectAttempt);
+    socket.io.off("reconnect", onManagerReconnect);
+    socket.io.off("reconnect_failed", onManagerReconnectFailed);
+    socket.disconnect();
+  }
+  // Back to the "not connected yet" baseline that the next session starts from.
+  setState({ status: "reconnecting", error: null });
 }
 
 export function useSocket(): Socket | null {
@@ -282,7 +309,11 @@ export function useSocket(): Socket | null {
         // #415 — do NOT swallow the failure silently. Route it to the status
         // store so the connection-status banner can surface it, then keep the
         // hook contract (`Socket | null`) intact for existing callers.
-        // #1391 — a deliberate close is not a failure to report.
+        // #1391 — a deliberate close is not a failure to report. The hook
+        // stays null by design and does not retry: `closeSocket()` runs only
+        // when the session ends, and every consumer sits under the signed-in
+        // shell, so it unmounts. The next session's hooks mount fresh and open
+        // a new socket.
         if (!cancelled && !(err instanceof SocketClosedError)) {
           setSocket(null);
           setState({
@@ -316,6 +347,7 @@ export function __resetSocketStatusForTests(): void {
   socketRef = null;
   pendingSocket = null;
   socketGeneration += 1;
+  loadSocketIo = defaultSocketIoLoader;
   // #414 — clear the refresh-success wiring + any pending renewal so each spec
   // starts from a clean slate.
   setOnRefreshSuccess(null);
@@ -335,4 +367,15 @@ export function __resetSocketStatusForTests(): void {
  */
 export function __triggerTokenRefreshReconnectForTests(): void {
   triggerTokenRefreshReconnect();
+}
+
+/**
+ * Test-only seam (#1391): replace the `socket.io-client` dynamic import so a
+ * spec can hold attempts open and settle them in a chosen order. Vitest cannot
+ * do this with `vi.mock` alone: when two dynamic imports of a mocked module
+ * are in flight at once, it resolves the second to the real module.
+ * `__resetSocketStatusForTests` restores the real import.
+ */
+export function __setSocketIoLoaderForTests(loader: () => Promise<SocketIoModule>): void {
+  loadSocketIo = loader;
 }

@@ -16,7 +16,11 @@ vi.mock("next/navigation", async () => {
     usePathname: vi.fn(() => "/"),
   };
 });
-vi.mock("@/lib/socket-client", () => ({ useSocket: vi.fn(() => null) }));
+vi.mock("@/lib/socket-client", () => ({
+  // AuthProvider closes the socket whenever the session ends (#1391).
+  closeSocket: vi.fn(),
+  useSocket: vi.fn(() => null),
+}));
 vi.mock("@/lib/analysis-api", () => ({
   analysisApi: { listForProject: vi.fn().mockResolvedValue({ items: [] }) },
 }));
