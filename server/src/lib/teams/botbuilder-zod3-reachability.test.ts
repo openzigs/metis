@@ -11,8 +11,10 @@
  * `CloudAdapter.process` only runs `z.record(z.unknown())` over `req.body` and
  * `z.string()` over the Authorization header.
  *
- * These arms pin that claim to the installed code, so a botbuilder bump that
- * changes either the zod copy or the pre-auth validation fails here first.
+ * The last arm pins that claim to the installed code: it instruments botbuilder's
+ * own zod copy and drives a real, unauthenticated `CloudAdapter.process`, so a
+ * botbuilder change that validates a collection element-by-element before auth
+ * (or a change of zod copy, arm one) fails here first.
  */
 import { createRequire } from "node:module";
 
@@ -68,9 +70,22 @@ describe("botbuilder's zod@3 is not reachable with per-element issues before aut
     expect(perElement.error?.issues).toHaveLength(1000);
   });
 
-  it("a real CloudAdapter rejects an unsigned oversized activity with 401 before running the turn", async () => {
+  it("a real unauthenticated CloudAdapter.process validates no collection element-by-element before its 401", async () => {
     const adapter = buildCloudAdapter(CREDS);
     expect(adapter).toBeInstanceOf(CloudAdapter);
+
+    // Count every element-wise collection parse on botbuilder's zod copy (the vulnerable
+    // shape) while the real adapter runs.
+    type Parse = (this: unknown, input: unknown) => unknown;
+    const collectionTypes = [bz.ZodArray, bz.ZodSet, bz.ZodMap, bz.ZodTuple];
+    const originals = collectionTypes.map((T) => T.prototype._parse as Parse);
+    let collectionParses = 0;
+    collectionTypes.forEach((T, i) => {
+      T.prototype._parse = function (this: unknown, input: unknown) {
+        collectionParses += 1;
+        return originals[i].call(this, input);
+      } as never;
+    });
 
     let status = 0;
     const res = {
@@ -81,6 +96,9 @@ describe("botbuilder's zod@3 is not reachable with per-element issues before aut
       end: () => undefined,
       header: () => undefined,
     };
+    // Every collection is attacker-sized and every element is malformed for any
+    // plausible element schema, so a per-element check would both run and fail.
+    const junk = Array.from({ length: ELEMENTS }, (_, i) => (i % 2 ? null : [i]));
     const req = {
       method: "POST",
       headers: {},
@@ -91,17 +109,43 @@ describe("botbuilder's zod@3 is not reachable with per-element issues before aut
         conversation: { id: "c" },
         from: { id: "u" },
         recipient: { id: "b" },
-        entities: Array.from({ length: ELEMENTS }, () => ({ type: 1 })),
+        entities: junk,
+        attachments: junk,
+        membersAdded: junk,
       },
     };
     let turnRan = false;
     // botbuilder console.errors the AuthenticationError it maps to 401; keep it quiet.
     const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    await adapter.process(req as never, res as never, async () => {
-      turnRan = true;
-    });
-    quiet.mockRestore();
+    try {
+      await adapter.process(req as never, res as never, async () => {
+        turnRan = true;
+      });
+    } finally {
+      quiet.mockRestore();
+      collectionTypes.forEach((T, i) => {
+        T.prototype._parse = originals[i] as never;
+      });
+    }
     expect(status).toBe(401);
     expect(turnRan).toBe(false);
+    expect(collectionParses, "botbuilder parsed a collection element-wise before auth").toBe(0);
+  });
+
+  it("the instrumentation itself sees an element-wise parse on botbuilder's zod copy", () => {
+    // Control for the arm above: patching the prototype must observe a real array parse,
+    // or a zero there would mean nothing.
+    const original = bz.ZodArray.prototype._parse;
+    let seen = 0;
+    bz.ZodArray.prototype._parse = function (this: unknown, input: unknown) {
+      seen += 1;
+      return (original as (this: unknown, i: unknown) => unknown).call(this, input);
+    } as never;
+    try {
+      bz.array(bz.string()).safeParse([1, 2]);
+    } finally {
+      bz.ZodArray.prototype._parse = original;
+    }
+    expect(seen).toBe(1);
   });
 });
