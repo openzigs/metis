@@ -267,3 +267,47 @@ describe("#1131 — the prompt's could-not-verify placeholders are unreached", (
     });
   });
 });
+
+/**
+ * Review of PR #1451, cycle 2 — a run that fails before finalize must not
+ * leave its per-pass records behind for a later regenerate to read as its own.
+ */
+describe("#1131 — a failed run leaves no per-pass records behind", () => {
+  it("clears the pass reaches and retrieval healths when the pipeline fails", async () => {
+    placeholders = REQUIREMENTS.map((r) => r.id);
+    const service = await import("./analysis-service.js");
+    vi.mocked(service.readFlattenedFindings).mockRejectedValueOnce(new Error("db down"));
+    const orch = new AnalysisOrchestrator({
+      provider: makeProvider(),
+      retrieve: async () => [],
+      knowledge: {} as never,
+    }) as unknown as {
+      runPipeline: (
+        a: string,
+        b: string,
+        c: string,
+        d: string[],
+        e: Record<string, unknown>,
+      ) => Promise<void>;
+      passReaches: Map<string, unknown[]>;
+      retrievalHealths: Map<string, unknown[]>;
+    };
+    const seen: number[] = [];
+    const record = orch.passReaches.set.bind(orch.passReaches);
+    orch.passReaches.set = (k: string, v: unknown[]) => {
+      seen.push(v.length);
+      return record(k, v);
+    };
+    await orch
+      .runPipeline(ANALYSIS_ID, "Miniflux", "A feed reader", ["document", "code"], {
+        projectId: PROJECT_ID,
+        startedById: "u1",
+        model: "deepseek-flash",
+      })
+      .catch(() => undefined);
+    expect(vi.mocked(service.markAnalysisFailed)).toHaveBeenCalled();
+    expect(seen.length).toBeGreaterThan(0); // the code pass did record its reach
+    expect(orch.passReaches.has(ANALYSIS_ID)).toBe(false);
+    expect(orch.retrievalHealths.has(ANALYSIS_ID)).toBe(false);
+  });
+});

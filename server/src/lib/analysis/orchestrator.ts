@@ -1198,6 +1198,7 @@ export class AnalysisOrchestrator {
         // the banner so it no longer offers to continue.
         await this.refreshCodeInvestigation(opts.analysisId, {
           analysisGap: continuation.gap,
+          analysisScope: continuation.scope,
         });
       } else {
         // #766 — the code agent regenerates through the mode the run would pick,
@@ -1401,8 +1402,9 @@ export class AnalysisOrchestrator {
    * reached, and they would outlive the new findings: `could-not-verify` ranks
    * above `implemented` (`deriveRequirementVerdict`), so a requirement the
    * continuation confirmed would still read "Could not verify". Only rows
-   * written before `before`, of this repository (or of every code row on a
-   * project without one), and only findings that cite no code. Never called on
+   * written before `before`, of this repository or of none (every code row on
+   * a project without one), only findings that cite no code, and never one
+   * published as an issue. Never called on
    * a failed or cancelled pass, which throws before it.
    */
   private async deleteSupersededPlaceholders(
@@ -1419,8 +1421,12 @@ export class AnalysisOrchestrator {
           analysisId,
           agentKey: "code",
           createdAt: { lt: before },
-          ...(connectorId ? { connectorId } : {}),
+          // A connector-less row counts for every repository (as
+          // `continuationSplit` reads it), so its placeholders go too.
+          ...(connectorId ? { OR: [{ connectorId }, { connectorId: null }] } : {}),
         },
+        // A finding published as an issue keeps its link: the cascade would drop it.
+        issueLinks: { none: {} },
       },
       select: { id: true, evidence: true },
     });
@@ -1500,6 +1506,7 @@ export class AnalysisOrchestrator {
     byConnector: Map<string | null, Array<{ id: string; text: string }>>;
     anyUnreached: boolean;
     gap: CodeInvestigationGap;
+    scope: Record<string, string[]>;
   }> {
     const byConnector = new Map<string | null, Array<{ id: string; text: string }>>();
     const union = new Set<string>();
@@ -1518,22 +1525,35 @@ export class AnalysisOrchestrator {
     } catch (err) {
       log.warn("Capability read failed", { analysisId, error: (err as Error).message });
     }
-    if (recorded?.codeInvestigationScope) scopeOf(recorded.codeInvestigationScope);
-    let gap: CodeInvestigationGap = recorded?.codeInvestigationUnreached ?? {
-      unreached: union.size,
-      total: requirements.length,
-    };
-    if (union.size === 0) {
-      // No recorded scope (or none of it is in the set any more): derive it.
-      const derived = await this.codeInvestigationGap(analysisId, projectId, requirements);
-      scopeOf(derived.scope);
-      gap = derived.gap;
+    // What the persisted findings say NOW, per repository. The record is an
+    // upper bound, not the truth: a continuation that failed part-way (repo A
+    // appended its findings and superseded its placeholders, then repo B or
+    // synthesis threw) leaves it unrefreshed, and the retry it allows must not
+    // re-investigate what repo A has since reached.
+    const split = await this.continuationSplit(analysisId, projectId, requirements);
+    const derived = AnalysisOrchestrator.gapOf(split, requirements.length);
+    const recordedScope = recorded?.codeInvestigationScope ?? {};
+    let matched = false;
+    const current: Record<string, string[]> = {};
+    for (const [repo, ids] of Object.entries(recordedScope)) {
+      const now = split.get(repo === "" ? null : repo);
+      if (!now) continue; // a repository the record names that no longer matches
+      matched = true;
+      const stillUnreached = new Set(now.unreached);
+      const kept = ids.filter((id) => stillUnreached.has(id));
+      if (kept.length > 0) current[repo] = kept;
     }
+    // No record, or one whose repositories match none of today's: scope from
+    // the findings rather than spend the one continuation on nothing.
+    scopeOf(matched ? current : derived.scope);
+    const gap = derived.gap;
     setLiveAgentContinuation(analysisId, "code", {
       requirements: union.size,
       total: requirements.length,
     });
-    return { requirements, byConnector, anyUnreached: union.size > 0, gap };
+    const scope: Record<string, string[]> = {};
+    for (const [k, list] of byConnector) scope[k ?? ""] = list.map((r) => r.id);
+    return { requirements, byConnector, anyUnreached: union.size > 0, gap, scope };
   }
 
   /**
@@ -1962,6 +1982,10 @@ export class AnalysisOrchestrator {
     } finally {
       // #766 review — before the terminal status write, as in regenerate.
       endLiveAgent(opts.analysisId, "code");
+      // #1131 — a resume records pass health and reach it never reads; drop
+      // them, or the next regenerate would take them for its own.
+      this.retrievalHealths.delete(opts.analysisId);
+      this.passReaches.delete(opts.analysisId);
       // #1156 — release the claim even when a database write below throws.
       try {
         await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
@@ -2918,6 +2942,10 @@ export class AnalysisOrchestrator {
     } finally {
       this.releaseClaim(analysisId);
       this.capabilities.delete(analysisId);
+      // #1131 — a run that failed before finalize leaves its per-pass records;
+      // a later regenerate on this analysis must not read them as its own.
+      this.retrievalHealths.delete(analysisId);
+      this.passReaches.delete(analysisId);
     }
   }
 

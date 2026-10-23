@@ -191,3 +191,36 @@ describe("continuationEstimate (#1131)", () => {
     expect(out.firstRun).toBeNull();
   });
 });
+
+describe("#1131 singular copy (review of #1451)", () => {
+  it("says one requirement in the singular", () => {
+    const out = continuationEstimate({ gap: { unreached: 1, inconclusive: 1, total: 19 } });
+    expect(out.scope).toContain("only the 1 of 19 requirements the code analysis did not reach");
+    expect(out.scope).toContain(
+      "The 1 inconclusive requirement is not re-run: a larger budget would not settle it.",
+    );
+    render(
+      <AnalysisCapabilityBanner
+        capability={capability({
+          codeInvestigationUnreached: { unreached: 1, inconclusive: 1, total: 19 },
+        })}
+      />,
+    );
+    expect(screen.getByTestId("cut-short-gap")).toHaveTextContent(
+      "1 of 19 requirements was not reached. 1 more was reached but is inconclusive; a larger budget would not change it.",
+    );
+  });
+
+  it("names one inconclusive requirement in the singular", () => {
+    render(
+      <AnalysisCapabilityBanner
+        capability={capability({
+          codeInvestigationUnreached: { unreached: 0, inconclusive: 1, total: 19 },
+        })}
+      />,
+    );
+    expect(screen.getByTestId("inconclusive-count")).toHaveTextContent(
+      "1 of 19 requirements is inconclusive.",
+    );
+  });
+});

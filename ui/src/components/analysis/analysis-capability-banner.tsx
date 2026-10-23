@@ -50,9 +50,11 @@ export function cutShortGapText(capability: AnalysisCapability): string | null {
   if (!gap || (capability.codeInvestigationContinuations ?? 0) > 0) return null;
   const inconclusive = gap.inconclusive ?? 0;
   return (
-    `${gap.unreached} of ${gap.total} requirements were not reached.` +
+    `${gap.unreached} of ${gap.total} requirements ${gap.unreached === 1 ? "was" : "were"} not reached.` +
     (inconclusive > 0
-      ? ` ${inconclusive} more were reached but are inconclusive; a larger budget would not change them.`
+      ? inconclusive === 1
+        ? " 1 more was reached but is inconclusive; a larger budget would not change it."
+        : ` ${inconclusive} more were reached but are inconclusive; a larger budget would not change them.`
       : "")
   );
 }
@@ -159,8 +161,8 @@ export function AnalysisCapabilityBanner({
               {continueLimited ? null : <span className="text-warning">{copy.action}</span>}
               {inconclusiveGap ? (
                 <p className="mt-1.5 font-medium text-warning" data-testid="inconclusive-count">
-                  {inconclusiveGap.inconclusive ?? 0} of {inconclusiveGap.total} requirements are
-                  inconclusive.
+                  {inconclusiveGap.inconclusive ?? 0} of {inconclusiveGap.total} requirements{" "}
+                  {(inconclusiveGap.inconclusive ?? 0) === 1 ? "is" : "are"} inconclusive.
                 </p>
               ) : null}
               {gapNote ? (

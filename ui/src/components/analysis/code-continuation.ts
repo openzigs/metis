@@ -41,15 +41,19 @@ export function continuationEstimate(input: {
   ledger?: AnalysisLedgerUsage | null;
 }): ContinuationEstimate {
   const { gap, quote, ledger } = input;
-  const what = gap
-    ? `only the ${gap.unreached} of ${gap.total} requirements the code analysis did not reach`
-    : "the requirements the code analysis did not reach";
+  const what = !gap
+    ? "the requirements the code analysis did not reach"
+    : gap.unreached === 1
+      ? `only the 1 of ${gap.total} requirements the code analysis did not reach`
+      : `only the ${gap.unreached} of ${gap.total} requirements the code analysis did not reach`;
   const inconclusive = gap?.inconclusive ?? 0;
   const scope =
     `Re-investigates ${what}, keeping the findings it already made, then rebuilds the requirements from all findings.` +
-    (inconclusive > 0
-      ? ` The ${inconclusive} inconclusive requirements are not re-run: a larger budget would not settle them.`
-      : "");
+    (inconclusive === 1
+      ? " The 1 inconclusive requirement is not re-run: a larger budget would not settle it."
+      : inconclusive > 1
+        ? ` The ${inconclusive} inconclusive requirements are not re-run: a larger budget would not settle them.`
+        : "");
 
   const counted = ledger && ledger.totalTokens > 0 ? ledger : null;
   let budget: string;

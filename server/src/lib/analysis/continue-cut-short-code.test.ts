@@ -671,51 +671,109 @@ describe("#1131 Continue re-investigates only the requirements left unreached", 
  * beside the new finding, and could-not-verify outranks implemented
  * (`deriveRequirementVerdict`): a requirement the continuation confirmed still
  * read "Could not verify", and the record called it inconclusive. Driven
- * against an in-memory finding store through the real reader.
+ * against an in-memory finding store, through the real reader and the real
+ * delete, with a mock that honours every filter the queries send.
  */
 describe("#1131 a successful continuation supersedes the placeholders it re-investigated", () => {
   type Row = {
     id: string;
+    analysisId: string;
+    agentKey: string;
+    status: string;
     connectorId: string | null;
     createdAt: Date;
+    published: boolean;
     evidence: string;
   };
   let rows: Row[] = [];
   const OLD = new Date(0);
-  const row = (id: string, evidence: Record<string, unknown>, createdAt = OLD): Row => ({
+  const row = (
+    id: string,
+    evidence: Record<string, unknown>,
+    extra: Partial<Omit<Row, "id" | "evidence">> = {},
+  ): Row => ({
     id,
+    analysisId: "an_1",
+    agentKey: "code",
+    status: "completed",
     connectorId: "repo_1",
-    createdAt,
+    createdAt: OLD,
+    published: false,
     evidence: JSON.stringify(evidence),
+    ...extra,
   });
   const CITE = [{ filePath: "internal/storage/feed.go", startLine: 1, endLine: 9 }];
+  const PLACEHOLDER = (requirementId: string) => ({
+    requirementId,
+    verdict: "could-not-verify",
+    citations: [],
+  });
+  const CONFIRMED = {
+    requirementId: "REQ-3",
+    verdict: "implemented",
+    citations: CITE,
+  };
   const THREE = [
-    { id: "REQ-1", text: "A user cannot subscribe to the same feed URL twice." },
-    { id: "REQ-2", text: "Publishing goes only to the openzigs/flux-v2 repository." },
-    { id: "REQ-3", text: "The CLI accepts -flush-sessions to remove every session." },
+    {
+      id: "REQ-1",
+      text: "A user cannot subscribe to the same feed URL twice.",
+    },
+    {
+      id: "REQ-2",
+      text: "Publishing goes only to the openzigs/flux-v2 repository.",
+    },
+    {
+      id: "REQ-3",
+      text: "The CLI accepts -flush-sessions to remove every session.",
+    },
   ];
+
+  type AgentResultWhere = {
+    analysisId?: string;
+    agentKey?: string;
+    status?: string;
+    createdAt?: { lt: Date };
+    OR?: Array<{ connectorId: string | null }>;
+  };
+  const matches = (
+    r: Row,
+    where: { agentResult: AgentResultWhere; issueLinks?: { none: object } },
+  ) => {
+    const a = where.agentResult;
+    if (a.analysisId !== undefined && r.analysisId !== a.analysisId) return false;
+    if (a.agentKey !== undefined && r.agentKey !== a.agentKey) return false;
+    if (a.status !== undefined && r.status !== a.status) return false;
+    if (a.createdAt && !(r.createdAt < a.createdAt.lt)) return false;
+    if (a.OR && !a.OR.some((c) => c.connectorId === r.connectorId)) return false;
+    if (where.issueLinks?.none && r.published) return false;
+    return true;
+  };
 
   beforeEach(() => {
     rows = [
-      row("f1", { requirementId: "REQ-1", verdict: "implemented", citations: CITE }),
-      row("f2", { requirementId: "REQ-2", verdict: "could-not-verify", citations: CITE }),
+      row("f1", {
+        requirementId: "REQ-1",
+        verdict: "implemented",
+        citations: CITE,
+      }),
+      row("f2", {
+        requirementId: "REQ-2",
+        verdict: "could-not-verify",
+        citations: CITE,
+      }),
       // The placeholder the first pass wrote for the requirement it never reached.
-      row("f3", { requirementId: "REQ-3", verdict: "could-not-verify", citations: [] }),
+      row("f3", PLACEHOLDER("REQ-3")),
     ];
     prismaMock.finding.findMany.mockImplementation((async (args: {
-      where: { agentResult: { createdAt?: { lt: Date }; connectorId?: string } };
-    }) => {
-      const lt = args.where.agentResult.createdAt?.lt;
-      const only = args.where.agentResult.connectorId;
-      return rows
-        .filter((r) => (lt ? r.createdAt < lt : true))
-        .filter((r) => (only ? r.connectorId === only : true))
+      where: { agentResult: AgentResultWhere; issueLinks?: { none: object } };
+    }) =>
+      rows
+        .filter((r) => matches(r, args.where))
         .map((r) => ({
           id: r.id,
           evidence: r.evidence,
           agentResult: { connectorId: r.connectorId },
-        }));
-    }) as never);
+        }))) as never);
     prismaMock.finding.deleteMany.mockImplementation((async (args: {
       where: { id: { in: string[] } };
     }) => {
@@ -734,25 +792,30 @@ describe("#1131 a successful continuation supersedes the placeholders it re-inve
     const recordHealth = orch.runAgenticCodeAgent.getMockImplementation() as (input: {
       analysisId: string;
     }) => Promise<unknown>;
-    orch.runAgenticCodeAgent.mockImplementation(async (input: { analysisId: string }) => {
-      if (newFinding) rows.push(row("f_new", newFinding, new Date(Date.now() + 60_000)));
-      return recordHealth(input);
-    });
+    orch.runAgenticCodeAgent.mockImplementation(
+      async (input: { analysisId: string; connectorId?: string }) => {
+        if (newFinding) {
+          rows.push(
+            row(`f_new_${input.connectorId ?? "none"}`, newFinding, {
+              connectorId: input.connectorId ?? null,
+              createdAt: new Date(Date.now() + 60_000),
+            }),
+          );
+        }
+        return recordHealth(input);
+      },
+    );
     return orch;
   };
 
   it("a requirement the continuation confirmed is no longer inconclusive", async () => {
-    const orch = continuingOrchestrator({
-      requirementId: "REQ-3",
-      verdict: "implemented",
-      citations: CITE,
-    });
+    const orch = continuingOrchestrator(CONFIRMED);
     await regenerate(orch, { extendBudget: true });
     expect(
       orch.runAgenticCodeAgent.mock.calls[0][0].requirements.map((r: { id: string }) => r.id),
     ).toEqual(["REQ-3"]);
     // The placeholder is gone; the first pass's other findings are kept.
-    expect(rows.map((r) => r.id).sort()).toEqual(["f1", "f2", "f_new"]);
+    expect(rows.map((r) => r.id).sort()).toEqual(["f1", "f2", "f_new_repo_1"]);
     const persisted = serviceMock.persistAnalysisCapability.mock.calls.at(
       -1,
     )![1] as AnalysisCapability;
@@ -766,11 +829,7 @@ describe("#1131 a successful continuation supersedes the placeholders it re-inve
   });
 
   it("the reader then classifies the confirmed requirement as settled", async () => {
-    const orch = continuingOrchestrator({
-      requirementId: "REQ-3",
-      verdict: "implemented",
-      citations: CITE,
-    });
+    const orch = continuingOrchestrator(CONFIRMED);
     await regenerate(orch, { extendBudget: true });
     const reader = (
       orch as unknown as {
@@ -781,10 +840,70 @@ describe("#1131 a successful continuation supersedes the placeholders it re-inve
     ).readCodeFindingVerdicts.bind(orch);
     expect(
       classifyUnverifiedRequirements(await reader("an_1"), ["REQ-1", "REQ-2", "REQ-3"]),
-    ).toEqual({
-      unreached: [],
-      inconclusive: ["REQ-2"],
+    ).toEqual({ unreached: [], inconclusive: ["REQ-2"] });
+  });
+
+  it("queries exactly this analysis's earlier, unpublished code rows of this repository or none", async () => {
+    const orch = continuingOrchestrator(CONFIRMED);
+    await regenerate(orch, { extendBudget: true });
+    const supersede = prismaMock.finding.findMany.mock.calls
+      .map((c) => (c as unknown as [{ where: { agentResult: AgentResultWhere } }])[0])
+      .find((args) => args.where.agentResult.createdAt !== undefined)!;
+    expect(supersede).toEqual({
+      where: {
+        agentResult: {
+          analysisId: "an_1",
+          agentKey: "code",
+          createdAt: { lt: expect.any(Date) },
+          OR: [{ connectorId: "repo_1" }, { connectorId: null }],
+        },
+        issueLinks: { none: {} },
+      },
+      select: { id: true, evidence: true },
     });
+  });
+
+  it("deletes only the placeholders its filters admit", async () => {
+    rows.push(
+      // Another repository's placeholder for the same requirement.
+      row("keep_repo2", PLACEHOLDER("REQ-3"), { connectorId: "repo_2" }),
+      // Written after the continuation started (by the continuation itself).
+      row("keep_new", PLACEHOLDER("REQ-3"), {
+        createdAt: new Date(Date.now() + 30_000),
+      }),
+      // Another analysis's placeholder.
+      row("keep_other_analysis", PLACEHOLDER("REQ-3"), { analysisId: "an_2" }),
+      // Another agent's finding of the same shape.
+      row("keep_other_agent", PLACEHOLDER("REQ-3"), { agentKey: "document" }),
+      // A placeholder published as an issue: its link would cascade away.
+      row("keep_published", PLACEHOLDER("REQ-3"), { published: true }),
+      // A cited could-not-verify, and a requirement the continuation did not re-run.
+      // (On a failed row, which the reader skips, so REQ-3 still counts as unreached.)
+      row(
+        "keep_cited",
+        { requirementId: "REQ-3", verdict: "could-not-verify", citations: CITE },
+        { status: "failed" },
+      ),
+      row("keep_unscoped", PLACEHOLDER("REQ-9")),
+      // A connector-less row counts for every repository: its placeholder goes.
+      row("gone_connectorless", PLACEHOLDER("REQ-3"), { connectorId: null }),
+    );
+    const orch = continuingOrchestrator(CONFIRMED);
+    await regenerate(orch, { extendBudget: true });
+    const ids = rows.map((r) => r.id);
+    expect(ids).not.toContain("f3");
+    expect(ids).not.toContain("gone_connectorless");
+    for (const kept of [
+      "keep_repo2",
+      "keep_new",
+      "keep_other_analysis",
+      "keep_other_agent",
+      "keep_published",
+      "keep_cited",
+      "keep_unscoped",
+    ]) {
+      expect(ids).toContain(kept);
+    }
   });
 
   it("deletes nothing when the continuation pass fails", async () => {
@@ -796,11 +915,7 @@ describe("#1131 a successful continuation supersedes the placeholders it re-inve
   });
 
   it("deletes nothing when the continuation is cancelled", async () => {
-    const orch = continuingOrchestrator({
-      requirementId: "REQ-3",
-      verdict: "implemented",
-      citations: CITE,
-    });
+    const orch = continuingOrchestrator(CONFIRMED);
     const controller = new AbortController();
     const pass = orch.runAgenticCodeAgent.getMockImplementation() as (input: {
       analysisId: string;
@@ -811,48 +926,113 @@ describe("#1131 a successful continuation supersedes the placeholders it re-inve
       return out;
     });
     await orch.regenerateLoadedAgent(
-      { analysisId: "an_1", agentKey: "code", actorId: "u1", extendBudget: true },
+      {
+        analysisId: "an_1",
+        agentKey: "code",
+        actorId: "u1",
+        extendBudget: true,
+      },
       ANALYSIS,
       controller,
     );
     expect(prismaMock.finding.deleteMany).not.toHaveBeenCalled();
   });
 
-  it("keeps a cited could-not-verify, and the placeholder of a requirement it did not re-run", async () => {
-    rows.push(row("f4", { requirementId: "REQ-9", verdict: "could-not-verify", citations: [] }));
-    const orch = continuingOrchestrator({
-      requirementId: "REQ-3",
-      verdict: "implemented",
-      citations: CITE,
+  /**
+   * Review of PR #1451, cycle 2 (blocking) — the recorded scope is an upper
+   * bound. A continuation that failed part-way leaves the record unrefreshed
+   * and the retry allowed; the retry must not re-investigate what the first
+   * attempt's successful repository already reached.
+   */
+  it("a retry after a partial failure skips what the first attempt reached", async () => {
+    prismaMock.repoConnection.findMany.mockResolvedValue([
+      { id: "repo_1", label: "api" },
+      { id: "repo_2", label: "web" },
+    ]);
+    rows.push(row("f3_repo2", PLACEHOLDER("REQ-3"), { connectorId: "repo_2" }));
+    serviceMock.getAnalysisCapability.mockResolvedValue({
+      ...CUT_SHORT,
+      codeInvestigationUnreached: { unreached: 1, inconclusive: 1, total: 3 },
+      codeInvestigationScope: { repo_1: ["REQ-3"], repo_2: ["REQ-3"] },
     });
+    const orch = continuingOrchestrator(CONFIRMED);
+    const pass = orch.runAgenticCodeAgent.getMockImplementation() as (input: {
+      analysisId: string;
+      connectorId?: string;
+    }) => Promise<unknown>;
+    let attempt = 1;
+    orch.runAgenticCodeAgent.mockImplementation(
+      async (input: { analysisId: string; connectorId?: string }) => {
+        if (attempt === 1 && input.connectorId === "repo_2") throw new Error("repo_2 failed");
+        return pass(input);
+      },
+    );
     await regenerate(orch, { extendBudget: true });
-    expect(rows.map((r) => r.id).sort()).toEqual(["f1", "f2", "f4", "f_new"]);
+    expect(serviceMock.finalizeAnalysisDelta).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "failed" }),
+    );
+
+    attempt = 2;
+    orch.runAgenticCodeAgent.mockClear();
+    await regenerate(orch, { extendBudget: true });
+    const retried = orch.runAgenticCodeAgent.mock.calls.map((c) => ({
+      connectorId: c[0].connectorId,
+      ids: c[0].requirements.map((r: { id: string }) => r.id),
+    }));
+    expect(retried).toEqual([{ connectorId: "repo_2", ids: ["REQ-3"] }]);
+    // repo_1's confirmation is not duplicated.
+    expect(rows.filter((r) => r.id === "f_new_repo_1")).toHaveLength(1);
   });
 });
 
 /**
- * Review of PR #1451 — the scope the page quotes (the run's record) is the
- * scope that runs, whatever the persisted findings would suggest.
+ * Review of PR #1451 — the scope the page quotes (the run's record) bounds the
+ * scope that runs: the persisted findings would re-run more, the record wins.
  */
 describe("#1131 a continuation runs the scope the run recorded", () => {
-  it("re-investigates the recorded requirements, per repository", async () => {
+  const TWO = [
+    {
+      id: "REQ-1",
+      text: "A user cannot subscribe to the same feed URL twice.",
+    },
+    {
+      id: "REQ-2",
+      text: "Publishing goes only to the openzigs/flux-v2 repository.",
+    },
+  ];
+
+  it("re-investigates only the recorded requirements", async () => {
     serviceMock.getAnalysisCapability.mockResolvedValue({
       ...CUT_SHORT,
-      codeInvestigationUnreached: { unreached: 1, inconclusive: 0, total: 1 },
+      codeInvestigationUnreached: { unreached: 1, inconclusive: 0, total: 2 },
       codeInvestigationScope: { repo_1: ["REQ-1"] },
     });
     const orch = makeOrchestrator();
-    // The persisted findings would call REQ-1 settled; the record wins.
-    orch.readCodeFindingVerdicts = vi.fn(async () => [
-      { requirementId: "REQ-1", verdict: "implemented", codeCited: true },
-    ]);
+    orch.extractRequirementsFromDocAgent = vi.fn(async () => TWO);
+    // No findings at all: the findings alone would re-run both.
+    orch.readCodeFindingVerdicts = vi.fn(async () => []);
     await regenerate(orch, { extendBudget: true });
     expect(
       orch.runAgenticCodeAgent.mock.calls[0][0].requirements.map((r: { id: string }) => r.id),
     ).toEqual(["REQ-1"]);
   });
-});
 
+  it("falls back to the findings when the record's repositories match none of today's", async () => {
+    serviceMock.getAnalysisCapability.mockResolvedValue({
+      ...CUT_SHORT,
+      codeInvestigationUnreached: { unreached: 1, inconclusive: 0, total: 2 },
+      codeInvestigationScope: { repo_gone: ["REQ-1"] },
+    });
+    const orch = makeOrchestrator();
+    orch.extractRequirementsFromDocAgent = vi.fn(async () => TWO);
+    orch.readCodeFindingVerdicts = vi.fn(async () => []);
+    await regenerate(orch, { extendBudget: true });
+    expect(orch.runAgenticCodeAgent).toHaveBeenCalledTimes(1);
+    expect(
+      orch.runAgenticCodeAgent.mock.calls[0][0].requirements.map((r: { id: string }) => r.id),
+    ).toEqual(["REQ-1", "REQ-2"]);
+  });
+});
 describe("#1131 the persisted code findings a continuation is scoped by", () => {
   it("reads each completed code finding's repository, requirement, verdict and code citation", async () => {
     prismaMock.finding.findMany.mockResolvedValue([
@@ -1007,5 +1187,35 @@ describe("#1131 Continue is refused where a larger budget cannot help", () => {
     await expect(
       asOrch(makeOrchestrator()).assertCanContinueInvestigation("an_1"),
     ).rejects.toBeInstanceOf(CodeInvestigationContinueNotOfferedError);
+  });
+});
+
+/**
+ * Review of PR #1451, cycle 2 — a resume of budget-skipped repositories
+ * records pass health and reach that it never reads; the next regenerate must
+ * not take them for its own.
+ */
+describe("#1131 a resume leaves no per-pass records behind", () => {
+  it("clears the pass reaches and retrieval healths it recorded", async () => {
+    prismaMock.repoConnection.findMany.mockResolvedValue([{ id: "repo_2", label: "web" }]);
+    const orch = makeOrchestrator(health(true)) as unknown as Stubbed & {
+      resumeLoadedRepos: (
+        o: { analysisId: string; actorId: string },
+        loaded: unknown,
+      ) => Promise<unknown>;
+      passReaches: Map<string, unknown[]>;
+    };
+    orch.runAgenticCodeAgent.mockImplementation(async (input: { analysisId: string }) => {
+      orch.recordRetrievalHealth(input.analysisId, health(true));
+      orch.passReaches.set(input.analysisId, [{ repo: "repo_2" }]);
+      return { agentKey: "code", output: OUTPUT, usage: USAGE, durationMs: 1 };
+    });
+    await orch.resumeLoadedRepos(
+      { analysisId: "an_1", actorId: "u1" },
+      { analysis: ANALYSIS, skippedRepos: [{ connectorId: "repo_2", label: "web" }] },
+    );
+    expect(orch.runAgenticCodeAgent).toHaveBeenCalledTimes(1);
+    expect(orch.passReaches.has("an_1")).toBe(false);
+    expect(orch.retrievalHealths.has("an_1")).toBe(false);
   });
 });
