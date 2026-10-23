@@ -235,17 +235,21 @@ describe("no body parser in server/src or the embeddings sidecar can inflate (#1
         if (PARSER_KINDS.includes(imported)) functions.add(local ?? imported);
       }
     }
-    const kinds = PARSER_KINDS.join("|");
-    const patterns = [
-      ...[...objects].map((o) => new RegExp(String.raw`\b${o}\.(?:${kinds})\s*\(`, "g")),
-      ...[...functions].map((f) => new RegExp(String.raw`(?<![.\w])${f}\s*\(`, "g")),
-    ];
-    return patterns.flatMap((re) =>
-      [...text.matchAll(re)].map((m) => {
-        const open = (m.index ?? 0) + m[0].length - 1;
-        return { call: m[0], args: callArgs(text, open) };
-      }),
-    );
+    // One literal pattern for every `name(` / `name.member(` call, filtered against the
+    // resolved names in code (a regex built from an identifier is a Semgrep finding).
+    // The lookbehind keeps `res.json(` from matching as a bare `json(`.
+    const calls: Array<{ call: string; args: string }> = [];
+    for (const m of text.matchAll(/(?<![.\w])(\w+)(?:\s*\.\s*(\w+))?\s*\(/g)) {
+      const [whole, head, member] = m;
+      const isParser =
+        member === undefined
+          ? functions.has(head)
+          : objects.has(head) && PARSER_KINDS.includes(member);
+      if (!isParser) continue;
+      const open = (m.index ?? 0) + whole.length - 1;
+      calls.push({ call: whole, args: callArgs(text, open) });
+    }
+    return calls;
   }
 
   const inflateOff = (args: string) => /\binflate\s*:\s*false\b/.test(args);
