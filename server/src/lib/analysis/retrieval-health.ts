@@ -698,7 +698,11 @@ export interface ReachBearingFinding extends VerdictBearingFinding {
  * finding is an uncited could-not-verify: the agentic prompt tells the model
  * to write exactly that placeholder for a requirement it ran out of budget
  * before reaching (`VERDICT_RULE` in `prompts.ts`), so a finding's presence is
- * no evidence of a look. The same test #1388's `checkedRequirementIds` uses.
+ * no evidence of a look. What counts as `codeCited` is the caller's: the
+ * pipeline passes #1388's `checkedRequirementIds` (a grounded code citation, or
+ * a search that bore on the requirement); a continuation, reading persisted
+ * findings, can see only the citation half, so it re-investigates a requirement
+ * that was searched but left uncited rather than skip one never reached.
  * Input order.
  */
 export function classifyUnverifiedRequirements(
