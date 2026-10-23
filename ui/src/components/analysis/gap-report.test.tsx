@@ -407,6 +407,35 @@ describe("GapReport — database changes composition (#827)", () => {
     expect(getGapReport).toHaveBeenCalledWith("proj-1", "an-1", 2);
   });
 
+  it("#1137 — starts over at page 1 when the analysis changes", async () => {
+    getGapReport.mockImplementation(async (_p: string, a: string, n: number) => ({
+      ...REPORT,
+      analysisId: a,
+      requirements: [
+        { ...REPORT.requirements[0]!, requirementId: `${a}-p${n}`, title: `${a} page ${n}` },
+      ],
+      page: { page: n, pageSize: 10, total: 33 },
+    }));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <GapReport projectId="proj-1" analysisId="an-1" />
+      </QueryClientProvider>,
+    );
+    await screen.findByText("an-1 page 1");
+    fireEvent.click(
+      within(screen.getByTestId("gap-report-pager")).getByRole("button", { name: "Next" }),
+    );
+    await screen.findByText("an-1 page 2");
+    rerender(
+      <QueryClientProvider client={qc}>
+        <GapReport projectId="proj-1" analysisId="an-2" />
+      </QueryClientProvider>,
+    );
+    await screen.findByText("an-2 page 1");
+    expect(getGapReport).not.toHaveBeenCalledWith("proj-1", "an-2", 2);
+  });
+
   it("#1137 — fetches a requirement's database changes only when asked", async () => {
     getGapReport.mockResolvedValue({
       ...REPORT,

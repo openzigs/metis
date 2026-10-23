@@ -17,7 +17,7 @@ import request from "supertest";
 
 const mockPrisma = {
   project: { findUnique: vi.fn() },
-  requirement: { findMany: vi.fn() },
+  requirement: { findMany: vi.fn(), count: vi.fn(async () => 0) },
   requirementVersion: { findMany: vi.fn() },
   baseline: {
     findUnique: vi.fn(),
@@ -366,6 +366,7 @@ describe("POST /projects/:projectId/baselines", () => {
     const res = await request(app).post("/projects/proj-1/baselines").send({ name: "Empty" });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("EMPTY_BASELINE");
+    expect(res.body.error.message).toMatch(/this project has none$/);
   });
 
   it("409s on a duplicate baseline name within the project", async () => {

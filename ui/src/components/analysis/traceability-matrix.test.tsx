@@ -151,6 +151,33 @@ describe("TraceabilityMatrix", () => {
     expect(fileOnly).toHaveTextContent(/^e2e\/flow\.spec\.ts · /);
   });
 
+  it("#1137 — the matrix starts over at page 1 when the analysis changes", async () => {
+    const rows = Array.from({ length: 33 }, (_, i) => ({
+      ...MATRIX.rows[1]!,
+      requirementId: `req-${i}`,
+      title: `Requirement ${i}`,
+    }));
+    getTraceability.mockResolvedValue({ ...MATRIX, rows });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <TraceabilityMatrix projectId="proj-1" analysisId="an-1" />
+      </QueryClientProvider>,
+    );
+    await screen.findByTestId("traceability-row-req-0");
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByTestId("traceability-row-req-32")).toBeInTheDocument();
+    rerender(
+      <QueryClientProvider client={qc}>
+        <TraceabilityMatrix projectId="proj-1" analysisId="an-2" />
+      </QueryClientProvider>,
+    );
+    await screen.findByTestId("traceability-row-req-0");
+    expect(screen.getByTestId("traceability-matrix-pager-range")).toHaveTextContent(
+      "Showing 1–25 of 33 requirements",
+    );
+  });
+
   it("#1137 — pages a long matrix, 25 requirements at a time", async () => {
     const rows = Array.from({ length: 33 }, (_, i) => ({
       ...MATRIX.rows[1]!,

@@ -42,7 +42,7 @@ describe("describeBaselineScope", () => {
       "Pins the current version of 1 requirement in this project: 0 approved, 1 not yet approved.",
     );
     expect(describeBaselineScope({ pinCount: 0, approved: 0, excludedImported: 1 })).toBe(
-      "There is nothing to pin yet. 1 item imported from a tracker and not approved is left out.",
+      "There is nothing to pin yet. 1 item imported from a tracker and not approved is left out. To include them, approve the ones you want on the Requirements page, or request a review there.",
     );
   });
 });
@@ -75,6 +75,10 @@ describe("NewBaselineForm", () => {
     renderForm();
     fireEvent.click(screen.getByTestId("new-baseline"));
     await screen.findByText(/nothing to pin/);
+    // #1137 review — and it says how to get the imported items in.
+    expect(screen.getByTestId("new-baseline-scope")).toHaveTextContent(
+      "approve the ones you want on the Requirements page, or request a review there",
+    );
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Empty" } });
     expect(screen.getByRole("button", { name: "Create baseline" })).toBeDisabled();
   });

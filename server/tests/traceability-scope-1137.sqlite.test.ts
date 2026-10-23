@@ -51,7 +51,10 @@ const WS = "ws-1137";
 const RUN8 = "proj-1137";
 const MIXED = "proj-1137-mixed";
 const IMPORTS_ONLY = "proj-1137-imports";
+const EMPTY = "proj-1137-empty";
 const USER = "u-1137";
+const OTHER_WS = "ws-1137-other";
+const OUTSIDER = "u-1137-outsider";
 const PROMOTED = 19;
 const MAPPED = 17;
 const IMPORTED = 266;
@@ -191,6 +194,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         data: imported(IMPORTS_ONLY, only.importRun, "only-imp"),
       });
 
+      // A project with no requirements at all.
+      await makeProject(EMPTY);
+
+      // A coordinator (review.admin) who belongs to another workspace only.
+      await db.user.create({
+        data: {
+          id: OUTSIDER,
+          username: OUTSIDER,
+          displayName: OUTSIDER,
+          email: `${OUTSIDER}@example.test`,
+        },
+      });
+      await db.workspace.create({ data: { id: OTHER_WS, name: "other", slug: OTHER_WS } });
+      await db.workspaceMember.create({
+        data: { workspaceId: OTHER_WS, userId: OUTSIDER, role: "owner" },
+      });
+
       TOKEN = issueTokens({
         userId: USER,
         username: USER,
@@ -239,6 +259,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.status).toBe(403);
     });
 
+    it("the scope preview 404s for a coordinator from another workspace, with the router mounted on its own", async () => {
+      // `app()` mounts only this router: no projects.ts `/:id/:sub` catch-all.
+      const outsider = issueTokens({
+        userId: OUTSIDER,
+        username: OUTSIDER,
+        role: "coordinator",
+        permissions: [],
+        workspaces: [OTHER_WS],
+      }).accessToken;
+      const res = await request(app())
+        .get(`/api/projects/${RUN8}/baselines/scope`)
+        .set("Authorization", `Bearer ${outsider}`);
+      expect(res.status).toBe(404);
+      expect(res.body.data).toBeUndefined();
+    });
+
     it("New baseline previews the 19 it pins and the 266 imported it leaves out", async () => {
       const res = await api.scope(RUN8);
       expect(res.status).toBe(200);
@@ -280,7 +316,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const res = await api.create(IMPORTS_ONLY, { name: "Nothing to pin" });
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe("EMPTY_BASELINE");
-      expect(res.body.error.message).toMatch(/unapproved imported/);
+      expect(res.body.error.message).toMatch(/imported items nobody has approved/);
+      expect(res.body.error.message).toMatch(/Approve the ones you want/);
+    });
+
+    it("refuses a project with no requirements at all, and says so", async () => {
+      const res = await api.create(EMPTY, { name: "Empty" });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("EMPTY_BASELINE");
+      expect(res.body.error.message).toBe(
+        "A baseline needs at least one requirement to pin — this project has none",
+      );
     });
   },
 );

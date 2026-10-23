@@ -26,6 +26,7 @@ import { Card } from "@/components/ui/card";
 import { CodeCitation } from "@/components/findings/code-citation";
 import { ListPager } from "@/components/analysis/ListPager";
 import { serverPage } from "@/components/analysis/analysis-views";
+import { usePageFor } from "@/components/analysis/use-page-for";
 
 interface Props {
   projectId: string;
@@ -277,7 +278,8 @@ export function RequirementDiff({
   // Undefined ⇒ let the server default to the previous completed run.
   const [baseId, setBaseId] = useState<string | undefined>(undefined);
   // #1137 — one page of changed requirements at a time (1-based, server-paged).
-  const [page, setPage] = useState(1);
+  // Starts over on another analysis or another base run.
+  const [page, setPage] = usePageFor(`${analysisId}:${baseId ?? "auto"}`, 1);
 
   const baseOptions = useMemo(
     () => analyses.filter((a) => a.id !== analysisId && a.status === "completed"),
@@ -315,7 +317,6 @@ export function RequirementDiff({
             value={baseId ?? ""}
             onChange={(e) => {
               setBaseId(e.target.value || undefined);
-              setPage(1);
             }}
           >
             <option value="">Previous run (auto)</option>

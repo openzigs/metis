@@ -33,6 +33,7 @@ import { RequirementBody } from "@/components/analysis/RequirementBody";
 import { GapReportSchemaSection } from "@/components/analysis/gap-report-schema-section";
 import { ListPager } from "@/components/analysis/ListPager";
 import { serverPage } from "@/components/analysis/analysis-views";
+import { usePageFor } from "@/components/analysis/use-page-for";
 
 interface Props {
   projectId: string;
@@ -422,7 +423,8 @@ export function GapReport({
   enabled = true,
 }: Props): React.ReactElement | null {
   // #1137 — one page of requirements at a time (1-based, as the server pages).
-  const [page, setPage] = useState(1);
+  // Starts over on another analysis.
+  const [page, setPage] = usePageFor(analysisId, 1);
   const query = useQuery({
     queryKey: ["gap-report", projectId, analysisId, page],
     queryFn: () => analysisApi.getGapReport(projectId, analysisId, page),

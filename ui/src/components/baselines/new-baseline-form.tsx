@@ -30,7 +30,11 @@ export function describeBaselineScope(scope: BaselineScopePreview): string {
       : `Pins the current version of ${n} ${n === 1 ? "requirement" : "requirements"} in this project: ${scope.approved} approved, ${notApproved} not yet approved.`;
   const x = scope.excludedImported;
   if (x === 0) return pins;
-  return `${pins} ${x} ${x === 1 ? "item" : "items"} imported from a tracker and not approved ${x === 1 ? "is" : "are"} left out.`;
+  const left = `${pins} ${x} ${x === 1 ? "item" : "items"} imported from a tracker and not approved ${x === 1 ? "is" : "are"} left out.`;
+  // Nothing else to pin: say how to get the imported items in.
+  return n === 0
+    ? `${left} To include them, approve the ones you want on the Requirements page, or request a review there.`
+    : left;
 }
 
 export function NewBaselineForm({ projectId }: { projectId: string }) {

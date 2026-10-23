@@ -449,10 +449,14 @@ export async function createManualBaseline(
     }
   }
   if (requirements.length === 0) {
+    // #1137 — say which of the two empty cases this is, and what to do.
+    const anyLive = await prisma.requirement.count({ where: { projectId, deletedAt: null } });
     throw new AppError(
       400,
       "EMPTY_BASELINE",
-      "A baseline needs at least one requirement to pin — this project has none besides unapproved imported items",
+      anyLive === 0
+        ? "A baseline needs at least one requirement to pin — this project has none"
+        : "This project's only requirements are imported items nobody has approved, and a baseline leaves those out. Approve the ones you want on the Requirements page, or request a review there.",
     );
   }
 

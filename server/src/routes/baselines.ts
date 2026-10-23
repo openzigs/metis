@@ -23,6 +23,7 @@ import { z } from "zod";
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
@@ -99,6 +100,9 @@ export function projectBaselinesRouter(): Router {
     "/scope",
     baselineScopePreAuthRateLimiter,
     requireAuth,
+    // Its own project check, not only the `/projects/:id/:sub` catch-all in
+    // projects.ts: the route must stay scoped wherever the router is mounted.
+    requireProjectAccess(),
     requirePermission("review.admin"),
     baselineScopeUserRateLimiter,
     async (req: Request, res: Response) => {

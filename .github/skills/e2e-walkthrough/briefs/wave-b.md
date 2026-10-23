@@ -75,10 +75,14 @@ unset.
 in once in a second context so the user exists.
 - On the Requirements page, **Request review**, choose `coordinator`, and send.
   Expected: `request-review-done` confirms it, and the review is listed on `/reviews`.
-- On `/projects/{{PROJECT_ID}}/baselines`, as `admin`, **New baseline**. Expected: a row pinning
-  the current version of every requirement. Make a second one after an edit and **compare**
-  them; the compare shows the edit. Use `POST …/baselines {name, requirementIds}` only for a
-  subset, which the UI does not offer.
+- On `/projects/{{PROJECT_ID}}/baselines`, as `admin`, **New baseline**. Expected: before you
+  create it, the form reads "Pins the current version of N requirements in this project: A
+  approved, B not yet approved. M items imported from a tracker and not approved are left
+  out." (#1137). The row then pins N: every requirement except the unapproved imports (run 8
+  pinned 285 before #1137; expect 19 promoted plus any other analysed rows, not the 266 imported
+  issues). Make a second one after an edit and **compare** them; the compare shows the edit.
+  Use `POST …/baselines {name, requirementIds}` only for a subset or an unapproved import,
+  which the UI does not offer.
 
 ## Fixes to verify this wave
 

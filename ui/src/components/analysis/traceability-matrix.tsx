@@ -14,7 +14,7 @@
  * downloadable attachment. The table scrolls horizontally within its own
  * container so a wide matrix never breaks the page layout.
  */
-import { useState } from "react";
+import { usePageFor } from "@/components/analysis/use-page-for";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { analysisApi, type TraceabilityRow } from "@/lib/analysis-api";
 import { triggerDownload } from "@/lib/plugins-api";
@@ -72,7 +72,8 @@ export function TraceabilityMatrix({
     onSuccess: ({ blob, filename }) => triggerDownload(blob, filename),
   });
 
-  const [page, setPage] = useState(0);
+  // Starts over on another analysis.
+  const [page, setPage] = usePageFor(analysisId, 0);
 
   if (!enabled) return null;
 
