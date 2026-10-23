@@ -52,6 +52,10 @@ const WS = "ws-780";
 const OTHER_WS = "ws-780-x";
 const PROJECT = "p-780";
 const OTHER_PROJECT = "p-780-x";
+/** A project the analyst CAN reach, so only the analysis↔project check refuses it. */
+const SIBLING_PROJECT = "p-780-sibling";
+const LIMITED_A = "u-780-limited-a";
+const LIMITED_B = "u-780-limited-b";
 const ANALYST = "u-780";
 const READER = "u-780-reader";
 const ANALYSIS = "an-780";
@@ -92,6 +96,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let db: PrismaClient;
     let ANALYST_TOKEN = "";
     let READER_TOKEN = "";
+    let LIMITED_A_TOKEN = "";
+    let LIMITED_B_TOKEN = "";
 
     const app = () => {
       const a = express();
@@ -122,7 +128,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
       await db.workspace.create({ data: { id: WS, name: "ws", slug: WS } });
-      for (const id of [ANALYST, READER]) {
+      for (const id of [ANALYST, READER, LIMITED_A, LIMITED_B]) {
         await db.user.create({
           data: { id, username: id, displayName: id, email: `${id}@example.test` },
         });
@@ -130,6 +136,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
       await db.project.create({
         data: { id: PROJECT, name: PROJECT, slug: PROJECT, createdById: ANALYST, workspaceId: WS },
+      });
+      await db.project.create({
+        data: {
+          id: SIBLING_PROJECT,
+          name: SIBLING_PROJECT,
+          slug: SIBLING_PROJECT,
+          createdById: ANALYST,
+          workspaceId: WS,
+        },
       });
       await db.workspace.create({ data: { id: OTHER_WS, name: "x", slug: OTHER_WS } });
       await db.project.create({
@@ -146,6 +161,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           .accessToken;
       ANALYST_TOKEN = token(ANALYST, "coordinator");
       READER_TOKEN = token(READER, "reader");
+      LIMITED_A_TOKEN = token(LIMITED_A, "coordinator");
+      LIMITED_B_TOKEN = token(LIMITED_B, "coordinator");
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -387,6 +404,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(stale.body.error.code).toBe("STALE");
       expect((await answer("apply", { at }, OTHER_PROJECT)).status).toBe(404);
       expect((await getDiff(OTHER_PROJECT)).status).toBe(404);
+      // A project the analyst can reach, but not this analysis's: only the
+      // analysis↔project check refuses it, with the unknown-analysis 404.
+      const sibling = await getDiff(SIBLING_PROJECT);
+      expect(sibling.status).toBe(404);
+      expect(sibling.body.error.code).toBe("ANALYSIS_NOT_FOUND");
+      for (const choice of ["apply", "dismiss"]) {
+        const res = await answer(choice, { at }, SIBLING_PROJECT);
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe("ANALYSIS_NOT_FOUND");
+      }
       expect((await answer("apply", { at }, PROJECT, READER_TOKEN)).status).toBe(403);
       expect((await answer("dismiss", { at }, PROJECT, READER_TOKEN)).status).toBe(403);
       expect((await answer("apply", {})).status).toBe(400);
@@ -501,6 +528,145 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const ids = (await metadata()).checkpointApprovedRequirementIds as string[];
       expect(ids).toContain(added.id);
       expect(ids).toContain(edited.id);
+    });
+    it("both routes are rate limited per user", async () => {
+      const { at } = await seedWithheld();
+      process.env.WITHHELD_REPLACEMENT_LIMIT_MAX = "1";
+      try {
+        // A spends its one request on GET: the POST is refused by the limiter.
+        expect((await getDiff(PROJECT, LIMITED_A_TOKEN)).status).toBe(200);
+        const postLimited = await answer("dismiss", { at }, PROJECT, LIMITED_A_TOKEN);
+        expect(postLimited.status).toBe(429);
+        expect(postLimited.body.error.code).toBe("WITHHELD_REPLACEMENT_RATE_LIMITED");
+        // B spends its one on a refused POST: the GET is refused by the limiter.
+        expect((await answer("apply", { at: "stale" }, PROJECT, LIMITED_B_TOKEN)).status).toBe(409);
+        const getLimited = await getDiff(PROJECT, LIMITED_B_TOKEN);
+        expect(getLimited.status).toBe(429);
+        expect(getLimited.body.error.code).toBe("WITHHELD_REPLACEMENT_RATE_LIMITED");
+      } finally {
+        delete process.env.WITHHELD_REPLACEMENT_LIMIT_MAX;
+      }
+      expect((await metadata())[WITHHELD_PROPOSAL_KEY]).toBeDefined();
+    });
+
+    it("apply: an unreviewed requirement the re-synthesis gave no criteria keeps its criteria", async () => {
+      await persist([
+        { title: "Reviewed" },
+        { title: "Unreviewed", body: "Old body", criteria: ["Keep me."] },
+      ]);
+      await db.requirement.update({
+        where: { id: (await byTitle("Reviewed"))!.id },
+        data: { reviewStatus: "approved" },
+      });
+      let at = "";
+      await persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis([
+          { title: "Reviewed" },
+          { title: "Unreviewed", body: "New body", criteria: [] },
+        ]),
+        findingIdsByIndex: [],
+        onWithheld: (w) => {
+          at = w.at;
+        },
+      });
+      const diff = (await getDiff()).body.data as WithheldReplacementDiff;
+      expect(diff.changed[0]!.changes.map((c) => c.field)).toEqual(["description"]);
+      expect((await answer("apply", { at })).body.data.replaced).toBe(1);
+      const row = (await byTitle("Unreviewed"))!;
+      expect(row.body).toBe("New body");
+      expect(JSON.parse(row.acceptanceCriteria)).toEqual(["Keep me."]);
+    });
+
+    it("apply: a proposal of unknown health leaves the degradation marker alone", async () => {
+      await persist([{ title: "A" }]);
+      const a = (await byTitle("A"))!;
+      await db.requirement.update({ where: { id: a.id }, data: { reviewStatus: "approved" } });
+      const meta = await metadata();
+      await db.analysis.update({
+        where: { id: ANALYSIS },
+        data: { metadata: JSON.stringify({ ...meta, synthesisDegraded: DEGRADED }) },
+      });
+      let at = "";
+      // No `degraded`: the #1104 promotion path does not know the health.
+      await persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis([{ title: "B" }]),
+        findingIdsByIndex: [],
+        onWithheld: (w) => {
+          at = w.at;
+        },
+      });
+      expect((await metadata())[WITHHELD_PROPOSAL_KEY]).not.toHaveProperty("degraded");
+      expect((await answer("apply", { at })).status).toBe(200);
+      expect((await metadata()).synthesisDegraded).toEqual(DEGRADED);
+    });
+
+    it("apply on a promoted set records the newer run's promotion and prunes notes on deleted rows", async () => {
+      const pairing = (structuredId: string) => ({ structuredId, synthesisKeys: [] });
+      await persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis([{ title: "Kept" }, { title: "Gone" }]),
+        findingIdsByIndex: [],
+        reviewStatus: "approved",
+        promotedFrom: { runId: "run-1", pairings: [pairing("REQ-1"), pairing("REQ-2")] },
+      });
+      const kept = (await byTitle("Kept"))!;
+      const gone = (await byTitle("Gone"))!;
+      // A person's review on Kept withholds the next replacement.
+      await db.requirement.update({ where: { id: kept.id }, data: { reviewStatus: "rejected" } });
+      const meta = await metadata();
+      const note = (requirementId: string) => ({
+        requirementId,
+        structuredId: "REQ-x",
+        candidates: [],
+      });
+      await db.analysis.update({
+        where: { id: ANALYSIS },
+        data: {
+          metadata: JSON.stringify({
+            ...meta,
+            promotedStructuredIds: ["REQ-1", "REQ-2"],
+            promotedStructuredRunId: "run-1",
+            promotionMatching: {
+              ambiguousCount: 2,
+              ambiguous: [note(kept.id), note(gone.id)],
+              shared: [],
+              updatedAt: "2026-10-01T00:00:00.000Z",
+            },
+          }),
+        },
+      });
+      let at = "";
+      await persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis([{ title: "Kept", body: "Reworded." }, { title: "Added" }]),
+        findingIdsByIndex: [],
+        reviewStatus: "approved",
+        promotedFrom: { runId: "run-2", pairings: [pairing("REQ-1"), pairing("REQ-3")] },
+        onWithheld: (w) => {
+          at = w.at;
+        },
+      });
+      const res = await answer("apply", { at });
+      expect(res.body.data).toMatchObject({ added: 1, updated: 1, deleted: 1 });
+      const after = await metadata();
+      expect(after.promotedStructuredIds).toEqual(["REQ-1", "REQ-3"]);
+      expect(after.promotedStructuredRunId).toBe("run-2");
+      const keptRow = await db.requirement.findUniqueOrThrow({ where: { id: kept.id } });
+      expect(keptRow).toMatchObject({
+        body: "Reworded.",
+        reviewStatus: "rejected",
+        promotedStructuredId: "REQ-1",
+        promotedStructuredRunId: "run-2",
+      });
+      expect((await byTitle("Added"))!.promotedStructuredRunId).toBe("run-2");
+      const matching = after.promotionMatching as { ambiguous: Array<{ requirementId: string }> };
+      expect(matching.ambiguous.map((a) => a.requirementId)).toEqual([kept.id]);
     });
   },
 );

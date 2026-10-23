@@ -109,7 +109,11 @@ describe("readWithheldProposal / readWithheldRecord (#780)", () => {
       }),
     ).toBeNull();
     const ok = readWithheldProposal({ [WITHHELD_PROPOSAL_KEY]: { at: "t", rows: [] } });
-    expect(ok).toEqual({ at: "t", rows: [], degraded: null });
+    // Unknown health stays unknown; a known-healthy one reads null.
+    expect(ok).toEqual({ at: "t", rows: [] });
+    expect(
+      readWithheldProposal({ [WITHHELD_PROPOSAL_KEY]: { at: "t", rows: [], degraded: null } }),
+    ).toEqual({ at: "t", rows: [], degraded: null });
   });
 
   it("reads only a well-formed refusal", () => {

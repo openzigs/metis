@@ -61,8 +61,12 @@ export interface WithheldProposal {
   /** The `at` of the {@link RequirementReplacementWithheld} it belongs to. */
   at: string;
   rows: WithheldProposalRow[];
-  /** The refused synthesis's health; applied with the rows. */
-  degraded: SynthesisDegradation | null;
+  /**
+   * The refused synthesis's health; applied with the rows. Absent when the
+   * caller did not know it (the #1104 promotion path): applying then leaves
+   * the set's degradation marker as it is, as a replacement does.
+   */
+  degraded?: SynthesisDegradation | null;
   /** The status the rows would have been inserted with (#939). */
   reviewStatus?: "approved";
 }
@@ -110,11 +114,15 @@ export function readWithheldProposal(metadata: Record<string, unknown>): Withhel
     rows.push(row);
   }
   const degraded =
-    p.degraded && typeof p.degraded === "object" ? (p.degraded as SynthesisDegradation) : null;
+    p.degraded && typeof p.degraded === "object"
+      ? (p.degraded as SynthesisDegradation)
+      : p.degraded === null
+        ? null
+        : undefined;
   return {
     at: p.at,
     rows,
-    degraded,
+    ...(degraded !== undefined ? { degraded } : {}),
     ...(p.reviewStatus === "approved" ? { reviewStatus: "approved" as const } : {}),
   };
 }

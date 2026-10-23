@@ -1124,7 +1124,7 @@ async function replaceRequirementSet(
     const proposal: WithheldProposal = {
       at: withheld.at,
       rows: withheldProposalRows(input, metadata),
-      degraded: input.degraded ?? null,
+      ...(input.degraded !== undefined ? { degraded: input.degraded } : {}),
       ...(input.reviewStatus ? { reviewStatus: input.reviewStatus } : {}),
     };
     const record: RequirementReplacementWithheld = { ...withheld, proposalStored: true };

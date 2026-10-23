@@ -7,7 +7,11 @@
  * review work inside it: work committed after the analyst looked at the
  * comparison only ever moves a row from "replace" to "keep" or "update".
  */
-import type { WithheldReplacementApplyResult, WithheldReplacementDiff } from "@metis/shared";
+import {
+  parseAcceptanceCriteria,
+  type WithheldReplacementApplyResult,
+  type WithheldReplacementDiff,
+} from "@metis/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
@@ -39,6 +43,7 @@ import {
 import { noteProjectRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import { applyClarificationsToRequirements } from "./clarification-enrichment.js";
+import { promotionMatchingRecord, readPromotionMatchingRecord } from "./promotion-matching.js";
 
 const log = createChildLogger("withheld-replacement");
 
@@ -199,10 +204,29 @@ export async function applyWithheldReplacement(input: {
           if (await updateReviewed(tx, step.current, step.proposed, input.actorId)) {
             result.updated++;
           }
+          // #1202 — the row now IS the newer run's structured requirement, so
+          // a later append of that run finds it. Not content: no version.
+          if (step.proposed.promotedStructuredId) {
+            await tx.requirement.update({
+              where: { id: step.current.id },
+              data: {
+                promotedStructuredId: step.proposed.promotedStructuredId,
+                promotedStructuredRunId: step.proposed.promotedStructuredRunId ?? null,
+                promotedSynthesisKeys: step.proposed.promotedSynthesisKeys ?? null,
+              },
+            });
+          }
         } else {
+          // A re-synthesis that gave no criteria keeps the current ones on a
+          // replaced row too, as the comparison says (#1389's incident shape).
+          const keepCriteria =
+            step.kind === "replace" &&
+            parseAcceptanceCriteria(step.proposed.acceptanceCriteria).length === 0 &&
+            step.current.acceptanceCriteria !== null;
           const row = await tx.requirement.create({
             data: {
               ...step.proposed,
+              ...(keepCriteria ? { acceptanceCriteria: step.current.acceptanceCriteria! } : {}),
               analysisId: input.analysisId,
               projectId: input.projectId,
               ...(pair.proposal.reviewStatus ? { reviewStatus: pair.proposal.reviewStatus } : {}),
@@ -228,8 +252,26 @@ export async function applyWithheldReplacement(input: {
       if (approvedIds.length > 0) next[CHECKPOINT_APPROVED_IDS_KEY] = approvedIds;
       else delete next[CHECKPOINT_APPROVED_IDS_KEY];
       // The applied rows came from a synthesis of this health (#769, #1117).
+      // Unknown health (the #1104 promotion path) leaves the marker as it is,
+      // as a replacement does.
       if (pair.proposal.degraded) next.synthesisDegraded = pair.proposal.degraded;
-      else delete next.synthesisDegraded;
+      else if (pair.proposal.degraded === null) delete next.synthesisDegraded;
+      // #723 / #909 — record the promotion the orchestrator and checkpoint
+      // promotion record after a replacement they were allowed to make, so a
+      // later approval in the same extraction run appends instead of replacing.
+      const promotedRows = pair.proposal.rows.filter((r) => r.promotedStructuredId);
+      if (pair.proposal.reviewStatus && promotedRows.length > 0) {
+        next.promotedStructuredIds = [...new Set(promotedRows.map((r) => r.promotedStructuredId!))];
+        next.promotedStructuredRunId = promotedRows[0]!.promotedStructuredRunId ?? null;
+      }
+      // #1203 / #1204 — notes about rows deleted here go with them.
+      const matching = readPromotionMatchingRecord(next.promotionMatching);
+      if (matching && deleted.size > 0) {
+        next.promotionMatching = promotionMatchingRecord(
+          matching.ambiguous.filter((a) => !deleted.has(a.requirementId)),
+          (matching.shared ?? []).filter((s) => !deleted.has(s.requirementId)),
+        );
+      }
       await tx.analysis.update({
         where: { id: input.analysisId },
         data: { metadata: JSON.stringify(next) },
