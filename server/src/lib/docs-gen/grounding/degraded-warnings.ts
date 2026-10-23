@@ -832,16 +832,16 @@ export function schemaReadPartiallyWarning(truncation: {
   const n = (value: number) => value.toLocaleString("en-US");
   const which =
     truncation.tablesTotal === undefined
-      ? `${n(truncation.tablesRead)} tables (the total could not be counted)`
-      : `${n(truncation.tablesRead)} of ${n(truncation.tablesTotal)} tables`;
+      ? `${n(truncation.tablesRead)} tables are described (METIS could not count how many there are in total)`
+      : `${n(truncation.tablesRead)} of ${n(truncation.tablesTotal)} tables are described`;
   return {
     kind: "source-unavailable",
     section: SCHEMA_READ_SECTION,
     message:
-      `The schema was read partially: ${which}. The database catalog held more than ` +
-      `${n(truncation.rowCeiling)} column rows, the most one introspection reads, so the ` +
-      `remaining tables are missing from this document. Every table that is documented is ` +
-      `documented with all its columns.`,
+      `This database is very large, so METIS read part of its structure: ${which}. ` +
+      `It has more than ${n(truncation.rowCeiling)} columns in all, more than METIS reads at ` +
+      `once, so the remaining tables are not in this document. Every table that is described ` +
+      `here is complete, with all its columns.`,
     severity: "warning",
   };
 }
@@ -1278,7 +1278,7 @@ export function summarizeWarnings(allWarnings: DocWarning[]): string {
   if (sourceUnavailable > 0)
     parts.push("source code could not be read — re-ingest the project and regenerate");
   if (schemaReadPartially)
-    parts.push("the database schema was read partially, so tables are missing from it");
+    parts.push("the database is very large, so only part of its structure is described");
   if (sqlFilesSkipped)
     parts.push(
       "some SQL file(s) or directories could not be read or mined, so their rules are missing — " +

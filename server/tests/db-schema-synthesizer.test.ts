@@ -763,8 +763,8 @@ describe("synthesizeDbSchemaDocument — a schema read partially (#1096)", () =>
 
     const overview = markdown.slice(markdown.indexOf("## Overview"), markdown.indexOf("## Entity"));
     expect(overview).toContain(
-      "> **Warning:** The schema was read partially: 2 of 4,100 tables. The database catalog " +
-        "held more than 250,000 column rows",
+      "> **Warning:** This database is very large, so METIS read part of its structure: 2 of " +
+        "4,100 tables are described. It has more than 250,000 columns in all",
     );
     expect(schemaGraph?.truncation).toEqual(truncation);
     expect(warnings).toEqual([
@@ -774,12 +774,14 @@ describe("synthesizeDbSchemaDocument — a schema read partially (#1096)", () =>
         severity: "warning",
       }),
     ]);
-    expect(warnings[0].message).toContain("2 of 4,100 tables");
+    expect(warnings[0].message).toContain("2 of 4,100 tables are described");
     // Not `ready` without saying so: the warning makes the document degraded,
     // and the one-line summary names the cause rather than unread source code.
     expect(deriveDocStatus(warnings)).toBe("degraded");
     const summary = summarizeWarnings(warnings);
-    expect(summary).toContain("the database schema was read partially");
+    expect(summary).toContain(
+      "the database is very large, so only part of its structure is described",
+    );
     expect(summary).not.toContain("re-ingest");
   });
 
@@ -787,8 +789,11 @@ describe("synthesizeDbSchemaDocument — a schema read partially (#1096)", () =>
     const { tablesTotal: _omit, ...uncounted } = truncation;
     mockInspect.mockResolvedValue({ ...makeSnapshot(tables), truncation: uncounted });
     const { markdown, warnings } = await synthesizeDbSchemaDocument("proj_1", "db_1", "s", "X");
-    expect(markdown).toContain("read partially: 2 tables (the total could not be counted)");
-    expect(warnings[0].message).toContain("2 tables (the total could not be counted)");
+    expect(markdown).toContain(
+      "read part of its structure: 2 tables are described (METIS could not count how many " +
+        "there are in total)",
+    );
+    expect(warnings[0].message).toContain("could not count how many there are in total");
   });
 
   it("adds nothing for a complete read", async () => {
@@ -799,7 +804,7 @@ describe("synthesizeDbSchemaDocument — a schema read partially (#1096)", () =>
       "system",
       "EBS",
     );
-    expect(markdown).not.toContain("read partially");
+    expect(markdown).not.toContain("read part of its structure");
     expect(schemaGraph).not.toHaveProperty("truncation");
     expect(warnings).toEqual([]);
   });

@@ -143,7 +143,7 @@ describe("Oracle table introspection past 10,000 rows (#1096)", () => {
     expect(last.primaryKey).toEqual(["C0"]);
     // Paged, never one unbounded fetch and never a fixed maxRows.
     const catalog = fake.calls[0];
-    expect(catalog.opts).toEqual({ resultSet: true });
+    expect(catalog.opts).toEqual({ resultSet: true, fetchArraySize: ORACLE_CATALOG_FETCH_ROWS });
     expect(catalog.params).toEqual(["APP"]);
     expect(Math.max(...fake.pageSizes)).toBeLessThanOrEqual(ORACLE_CATALOG_FETCH_ROWS);
     expect(fake.closedResultSets()).toBe(1);
@@ -209,6 +209,24 @@ describe("Oracle table introspection past 10,000 rows (#1096)", () => {
     expect(count?.params).toEqual([]);
   });
 
+  it("drops the cut table by its name when a linguistic sort interleaves tables", async () => {
+    // Under a case-insensitive NLS_SORT, "Foo" and "FOO" sort equal, so their
+    // rows interleave by COLUMN_ID. The table the ceiling cuts ("Foo", 2 of its
+    // 3 columns read) is NOT the last one grouped ("FOO", complete).
+    __setOracleIntrospectionRowCeiling(3);
+    const row = (table: string, column: string): Row => ({
+      ...columnRows(1, 1)[0],
+      TABLE_NAME: table,
+      COLUMN_NAME: column,
+    });
+    const rows = [row("Foo", "C0"), row("FOO", "C0"), row("Foo", "C1"), row("Foo", "C2")];
+    const fake = fakeConnection({ rows, tableCount: 2 });
+    const adapter = await adapterOver(fake.conn);
+    const read = await adapter.introspectSchema();
+    expect(read.tables.map((t) => `${t.name}:${t.columns.length}`)).toEqual(["FOO:1"]);
+    expect(read.truncation).toEqual({ rowsRead: 3, rowCeiling: 3, tablesRead: 1, tablesTotal: 2 });
+  });
+
   it("is complete when the catalog holds exactly the ceiling's rows", async () => {
     __setOracleIntrospectionRowCeiling(1_200);
     const fake = fakeConnection({ rows: columnRows(40, 30) });
@@ -268,7 +286,10 @@ describe("Oracle routine, dependency and package introspection past 10,000 rows 
     const routines = await adapter.introspectRoutines({ schema: "APP" });
     expect(routines).toHaveLength(12_000);
     expect(routines[11_999]).toMatchObject({ name: "P11999", type: "function" });
-    expect(fake.calls[0].opts).toEqual({ resultSet: true });
+    expect(fake.calls[0].opts).toEqual({
+      resultSet: true,
+      fetchArraySize: ORACLE_CATALOG_FETCH_ROWS,
+    });
   });
 
   it("introspectRoutines() stops at the ceiling instead of reading without bound", async () => {
@@ -300,7 +321,83 @@ describe("Oracle routine, dependency and package introspection past 10,000 rows 
     const fallback = fakeConnection({ rows });
     const plain = await adapterOver(fallback.conn);
     expect(await plain.introspectDependencies()).toHaveLength(12_000);
-    expect(fallback.calls[0].opts).toEqual({ resultSet: true });
+    expect(fallback.calls[0].opts).toEqual({
+      resultSet: true,
+      fetchArraySize: ORACLE_CATALOG_FETCH_ROWS,
+    });
+  });
+
+  describe("introspectDependencies({allowDba}) falls back to ALL_DEPENDENCIES", () => {
+    const depRows = (prefix: string, count: number): Row[] =>
+      Array.from({ length: count }, (_, i) => ({
+        OWNER: "APP",
+        NAME: `${prefix}${i}`,
+        TYPE: "PACKAGE BODY",
+        REFERENCED_OWNER: "APP",
+        REFERENCED_NAME: `T${i}`,
+        REFERENCED_TYPE: "TABLE",
+      }));
+
+    /** DBA_DEPENDENCIES behaves as `dba` says; ALL_DEPENDENCIES returns `all`. */
+    function dbaConnection(dba: "execute-fails" | "page-fails", all: Row[]) {
+      const sqls: string[] = [];
+      let closed = 0;
+      const pageOf = (source: Row[], failOnPage?: number) => {
+        let at = 0;
+        let pages = 0;
+        return {
+          getRows: async (n: number) => {
+            pages += 1;
+            if (pages === failOnPage) {
+              throw new Error("ORA-03113: end-of-file on communication channel");
+            }
+            const out = source.slice(at, at + n);
+            at += out.length;
+            return out;
+          },
+          close: async () => {
+            closed += 1;
+          },
+        };
+      };
+      const conn: OracleConnectionLike = {
+        execute: vi.fn(async (sql: string) => {
+          sqls.push(sql);
+          if (sql.includes("DBA_DEPENDENCIES")) {
+            if (dba === "execute-fails") throw new Error("ORA-00942: table or view does not exist");
+            // Two pages succeed, then the read dies on the third.
+            return { resultSet: pageOf(depRows("DBA", 5_000), 3) };
+          }
+          return { resultSet: pageOf(all) };
+        }) as OracleConnectionLike["execute"],
+        close: vi.fn(async () => {}),
+      };
+      return { conn, sqls, closed: () => closed };
+    }
+    const views = (sqls: string[]) => sqls.map((s) => (s.includes("DBA_") ? "DBA" : "ALL"));
+
+    it("when the DBA query itself fails", async () => {
+      const fake = dbaConnection("execute-fails", depRows("ALL", 12_000));
+      const adapter = await adapterOver(fake.conn);
+      const deps = await adapter.introspectDependencies({ schema: "APP", allowDba: true });
+      expect(views(fake.sqls)).toEqual(["DBA", "ALL"]);
+      expect(deps).toHaveLength(12_000);
+      expect(deps.every((d) => d.name.startsWith("ALL"))).toBe(true);
+      expect(fake.closed()).toBe(1);
+    });
+
+    it("when the DBA read fails mid-way: its rows are discarded and its result set closed", async () => {
+      const fake = dbaConnection("page-fails", depRows("ALL", 12_000));
+      const adapter = await adapterOver(fake.conn);
+      const deps = await adapter.introspectDependencies({ schema: "APP", allowDba: true });
+      expect(views(fake.sqls)).toEqual(["DBA", "ALL"]);
+      // Complete from the fallback, with none of the 2,000 DBA rows read before the failure.
+      expect(deps).toHaveLength(12_000);
+      expect(deps.some((d) => d.name.startsWith("DBA"))).toBe(false);
+      // Both result sets (the failed DBA one and the fallback) were closed.
+      expect(fake.closed()).toBe(2);
+      expect(fake.conn.close).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("introspectPackages() reads past 10,000 package objects and 50,000 members", async () => {

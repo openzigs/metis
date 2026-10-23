@@ -46,7 +46,7 @@ export interface OracleConnectionLike {
   execute<T = unknown>(
     sql: string,
     params?: unknown[],
-    opts?: { maxRows?: number; resultSet?: boolean },
+    opts?: { maxRows?: number; resultSet?: boolean; fetchArraySize?: number },
   ): Promise<{
     rows?: T[];
     metaData?: { name: string }[];
@@ -99,7 +99,9 @@ interface CatalogRead<T> {
  * "more than `ceiling`", one row past the ceiling is fetched and returned as
  * `nextRow`, never handed to `onPage`.
  *
- * Asks for a result set (`resultSet: true`) and pages it with `getRows`. A
+ * Asks for a result set (`resultSet: true`) and pages it with `getRows`, with
+ * `fetchArraySize` matched to the page size: oracledb's default of 100 rows per
+ * round trip would otherwise take ten network trips per page. A
  * connection that answers with plain `rows` instead (a test double, or a driver
  * that does not page) is read the same way from the array. No `maxRows` is ever
  * passed: that is what cut the read silently before.
@@ -125,7 +127,10 @@ async function readCatalogRows<T>(
     return { rowsRead, cut: true, nextRow: rows[room] };
   };
 
-  const result = await conn.execute<T>(sql, params, { resultSet: true });
+  const result = await conn.execute<T>(sql, params, {
+    resultSet: true,
+    fetchArraySize: ORACLE_CATALOG_FETCH_ROWS,
+  });
   const resultSet = result.resultSet;
   if (!resultSet) {
     return take(result.rows ?? []) ?? { rowsRead, cut: false };
@@ -339,12 +344,13 @@ export class OracleDriverAdapter implements DbDriverAdapter {
       );
       if (!read.cut) return { tables: grouper.tables() };
 
-      const tables = grouper.tables();
-      const last = tables[tables.length - 1];
+      // The table the first unread row belongs to is partly read: drop it by
+      // its key, not by position. Under a linguistic NLS_SORT, rows of tables
+      // whose names differ only in case ("Foo", "FOO") can interleave, so the
+      // partly read table need not be the last one grouped.
       const next = read.nextRow;
-      if (last && next && last.schema === next.OWNER && last.name === next.TABLE_NAME) {
-        tables.pop();
-      }
+      if (next) grouper.drop(next.OWNER, next.TABLE_NAME);
+      const tables = grouper.tables();
       const tablesTotal = await countOracleTables(conn, owner);
       const truncation: DbIntrospectionTruncation = {
         rowsRead: read.rowsRead,
@@ -676,6 +682,11 @@ class OracleIntrospectionGrouper {
 
   add(rows: readonly OracleIntrospectRow[]): void {
     for (const r of rows) addOracleIntrospectRow(this.byKey, r);
+  }
+
+  /** Forget one table (#1096: the one a ceiling cut through). */
+  drop(owner: string, tableName: string): void {
+    this.byKey.delete(`${owner}.${tableName}`);
   }
 
   tables(): DbTableInfo[] {
