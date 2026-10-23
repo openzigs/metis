@@ -188,7 +188,7 @@ import {
   type GroundingSource,
   type GroundingContext,
   type FactsSourceInput,
-  factsSourceId,
+  factsSourceIdOf,
   mergeFactsIntoContext,
   NO_GROUNDING_BLOCKS,
   renderGroundingBlocks,
@@ -229,6 +229,7 @@ import {
   RECONSTRUCTION_FAITHFULNESS_THRESHOLD,
   summarizeWarnings,
   schemaUnverifiedWarning,
+  schemaUnverifiedInTextWarning,
   affectsDocStatus,
 } from "./grounding/degraded-warnings.js";
 import {
@@ -240,8 +241,11 @@ import {
 } from "./schema-inventory.js";
 import {
   applySchemaGrounding,
+  checkProseSchemaClaims,
   schemaCheckFindings,
   schemaCheckUnmatched,
+  schemaClaimsRecord,
+  type SchemaClaimsRecord,
 } from "./schema-claim-check.js";
 // #67 — the fixed, user-safe failure vocabulary a section's exception is mapped
 // through before it can reach a persisted, client-visible warning.
@@ -305,6 +309,7 @@ import {
   buildGeneratedDocVersionManifest,
   graphFingerprintOf,
   evidenceContentHash,
+  withCanonicalFactsSourceIds,
   type GeneratedDocVersionManifest,
   type GeneratedDocRevisionKey,
 } from "./generated-doc-provenance.js";
@@ -3454,8 +3459,10 @@ export interface SectionGroup {
  * indented blocks), a table without a column list is not judged by column, a
  * dataset is not judged as a table, and the reference is never put inside an
  * unclosed fence (#1061 third review).
+ * 5 — a section the check found clean says so in one line, with how many
+ * names were compared (#1133).
  */
-export const SCHEMA_GROUNDING_VERSION = 4;
+export const SCHEMA_GROUNDING_VERSION = 5;
 
 /** Outcome of post-validating one synthesized section against its grounding. */
 interface SectionGroundingOutcome {
@@ -3698,11 +3705,6 @@ function batchFactsSources(plan: SectionBatchPlan): FactsSourceInput[] {
   }));
 }
 
-/** The `facts:` id of a facts source, as {@link mergeFactsIntoContext} will mint it. */
-function factsSourceIdOf(source: FactsSourceInput): string {
-  return `facts:${source.repository ? repositoryPathIdentity(source.repository, source.moduleDir) : source.moduleDir}:${source.idx}`;
-}
-
 /**
  * #157 — the prompt addendum that tells one batch it is one part of a section.
  * Only the LEAD batch (the one holding the section's most relevant module)
@@ -3885,9 +3887,7 @@ async function synthesizeBatchedSection(input: {
   const rankOfSource = new Map<string, number>();
   if (holding) {
     // The id each module's facts are cited by, as the grounding context mints it.
-    sources.forEach((source, i) =>
-      rankOfSource.set(factsSourceId(source.moduleDir, source.idx, source.repository), i),
-    );
+    sources.forEach((source, i) => rankOfSource.set(factsSourceIdOf(source), i));
     const firstOf = new Map<string, number>();
     plan.modules.forEach((m, i) => {
       if (!firstOf.has(moduleKey(m.item))) firstOf.set(moduleKey(m.item), i);
@@ -4454,6 +4454,8 @@ async function synthesizeFinalDocumentInRun(
       omittedTopics?: string[];
       /** #1223 — code identifiers in a reader-layout main section, as fitted. */
       codeIdentifiers?: CodeIdentifierReport;
+      /** #1133 — the schema check of the names the section writes as tables or columns. */
+      schemaClaims?: SchemaClaimsRecord;
     }>;
     selectedEvidence: GroundingSource[];
     /** #737 — per cited source id, the source lines its footnotes name (`citation-footnotes.ts`). */
@@ -4523,6 +4525,7 @@ async function synthesizeFinalDocumentInRun(
     groundingSourceIds: string[];
     omittedTopics?: string[];
     codeIdentifiers?: CodeIdentifierReport;
+    schemaClaims?: SchemaClaimsRecord;
   }> = [];
   // #995 — `sectionMarkdowns[i]` belongs to `manifestSections[sectionOwners[i]]`
   // (a section that produced nothing has a manifest entry and no markdown).
@@ -5286,7 +5289,9 @@ async function synthesizeFinalDocumentInRun(
       if (previous && stillValid) {
         sectionMarkdowns.push(previous.markdown);
         sectionOwners.push(manifestSections.length);
-        manifestSections.push(previous.metadata);
+        // #1356 — a record stored before the facts ids were made one form carries
+        // a repository-less module by its raw dir; the manifest gets the canonical id.
+        manifestSections.push(withCanonicalFactsSourceIds(previous.metadata));
         // Grounding was freshly retrieved and hashed above, so these are the
         // exact sources whose metadata/evidence accompanied the saved output.
         for (const source of sectionGrounding?.sources ?? []) {
@@ -5941,6 +5946,49 @@ async function synthesizeFinalDocumentInRun(
     const omitted = fittedSections.omittedTopics[i];
     if (omitted.length > 0) finalManifestSections[owner].omittedTopics = omitted;
   });
+  // #1133 — every section, as fitted, is read for the names it writes AS
+  // tables or `table.column` in its text, against the schema the Data
+  // Architecture section is checked with; the other sections' structured forms
+  // (a table list, a diagram) are read as well. It marks, like #1061, and never
+  // removes or rewrites; the result goes to each section's provenance and an
+  // unmatched name to an `info` line. Deterministic, no model call. Run on the
+  // fitted text, each run, so a reused section is checked like a new one and
+  // no reuse record changes; a marker adds a few characters past the fit.
+  const schemaInventory = groups.find((group) => group.schemaGrounding)?.schemaGrounding?.inventory;
+  if (schemaInventory && schemaInventory.tables.length > 0) {
+    const summary: Array<{ section: string; judged: number; unmatched: number }> = [];
+    fittedSections.sections.forEach((markdown, i) => {
+      const owner = manifestSections[sectionOwners[i]];
+      const checked = checkProseSchemaClaims(markdown, schemaInventory, {
+        // The Data Architecture section's structured forms were checked when
+        // it was written, and are reported in its note.
+        structured: groups[owner.sectionIndex]?.schemaGrounding == null,
+      });
+      fittedSections.sections[i] = checked.markdown;
+      const record = schemaClaimsRecord(checked.report);
+      finalManifestSections[sectionOwners[i]].schemaClaims = record;
+      if (record.unmatched.length > 0) {
+        warnings.push(
+          schemaUnverifiedInTextWarning(
+            owner.sectionLabel,
+            schemaCheckUnmatched(checked.report),
+            schemaInventory,
+          ),
+        );
+      }
+      summary.push({
+        section: sectionIdAt(i),
+        judged: record.judged,
+        unmatched: record.unmatched.length,
+      });
+    });
+    log.info("Schema check of the names in the document's text", {
+      projectId,
+      docType,
+      source: schemaInventory.source,
+      sections: summary,
+    });
+  }
   // #1223 — the main part is signed off by business readers (SO3): each main
   // section, as fitted, is checked for code identifiers. It only flags, in
   // provenance; nothing is rewritten (`main-part-language.ts`).

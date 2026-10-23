@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { expectLinearTime } from "../../../tests/helpers/linear-time.js";
 import {
   applySchemaGrounding,
+  checkProseSchemaClaims,
   checkSchemaClaims,
   codeSpans,
   isNonColumnType,
@@ -21,6 +22,8 @@ import {
   parseHeading,
   renderSchemaCheckNotice,
   schemaCheckFindings,
+  schemaCheckJudged,
+  schemaClaimsRecord,
   schemaCheckUnmatched,
   splitCells,
   typeFamily,
@@ -1382,9 +1385,38 @@ describe("renderSchemaCheckNotice: one note says everything", () => {
     ]);
   });
 
-  it("is empty when the check has nothing to say", () => {
-    const clean = entity("users", "| `id` | int |");
-    expect(renderSchemaCheckNotice(check(clean).report, LIVE)).toBe("");
+  it("is empty when the check judged nothing", () => {
+    const nothing = "## Data Architecture\n\nOne PostgreSQL database.";
+    expect(check(nothing).report.matched).toBe(0);
+    expect(renderSchemaCheckNotice(check(nothing).report, LIVE)).toBe("");
+  });
+
+  // #1133 — a clean section said nothing, which read the same as a check that
+  // never ran.
+  it("says in one line that the check ran and every name matched, and how many", () => {
+    const clean = entity("users", "| `id` | int |\n| `username` | text |");
+    const { report } = check(clean);
+    expect(report.matched).toBe(3);
+    expect(renderSchemaCheckNotice(report, LIVE)).toBe(
+      "> **Schema check.** 3 table and column names in this section's diagrams, entity " +
+        `headings, field tables and table lists were compared with ${LIVE.label}, and every ` +
+        "one matched.",
+    );
+    const one = check("| Table | Purpose |\n|---|---|\n| `users` | People |").report;
+    expect(renderSchemaCheckNotice(one, LIVE)).toContain(
+      "1 table or column name in this section's diagrams, entity headings, field tables and " +
+        "table lists was compared",
+    );
+  });
+
+  it("counts a name once however often it is written, and only names that matched", () => {
+    const twice =
+      entity("users", "| `id` | int |\n| `ghost` | int |") +
+      "\n\n" +
+      entity("users", "| `id` | int |");
+    const { report } = check(twice);
+    expect(report.matched).toBe(2);
+    expect(report.flaggedColumns).toEqual(["users.ghost"]);
   });
 
   it("caps how many names a line lists", () => {
@@ -2092,4 +2124,223 @@ describe("checkSchemaClaims is linear in model output (#1061)", () => {
       });
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// #1133 — names written as tables or columns in the text of any section
+// ---------------------------------------------------------------------------
+
+describe("checkProseSchemaClaims (#1133)", () => {
+  const prose = (markdown: string, inventory: SchemaInventory = LIVE) =>
+    checkProseSchemaClaims(markdown, inventory);
+  const M = " *(not in schema)*";
+
+  describe("walkthrough run 8: `certificate_cache`, outside Data Architecture", () => {
+    // The two lines of the exported `architecture.md` (2077 and 2223), as written.
+    const OPERATIONS =
+      "- **TLS:** HTTPS can be configured automatically via Let's Encrypt (ACME) or with custom " +
+      "certificates; HTTP/2 is supported when TLS is enabled. ACME certificates are persisted " +
+      "through an `autocert.Cache` adapter backed by PostgreSQL (`certificate_cache`), with rows " +
+      "upserted using `updated_at = now()`, and conformance is asserted at compile time via " +
+      "`var _ autocert.Cache = (*certificateCache)(nil)`[^src-24].";
+    const STACK =
+      '- **Key tables:** `users`, `categories` (a default `"All"` category per user), ' +
+      "`integrations` (one default row per user), `api_keys`, `webauthn_credentials`, " +
+      "`web_sessions`, `entries`, `feeds`, `enclosures`, `icons` / `feed_icons`, " +
+      "`entry_tombstones`, and `certificate_cache`[^src-8][^src-65].";
+    const MINIFLUX = liveInventory(
+      [
+        "acme_cache",
+        "api_keys",
+        "categories",
+        "enclosures",
+        "entries",
+        "entry_tombstones",
+        "feed_icons",
+        "feeds",
+        "icons",
+        "integrations",
+        "schema_version",
+        "users",
+        "web_sessions",
+        "webauthn_credentials",
+      ].map((name) => table(name, { id: "bigint" })),
+    );
+
+    it("marks it in Operational Considerations, and nothing else on the line", () => {
+      const { markdown, report } = prose(
+        `## Operational Considerations\n\n${OPERATIONS}`,
+        MINIFLUX,
+      );
+      expect(markdown).toContain(`backed by PostgreSQL (\`certificate_cache\`${M}), with rows`);
+      expect(markdown.split(M)).toHaveLength(2);
+      expect(report.unresolvedTables).toEqual(["certificate_cache"]);
+      expect(report.matched).toBe(0);
+    });
+
+    it("marks it in the Technology Stack's list of key tables, and matches the twelve real ones", () => {
+      const { markdown, report } = prose(`## Technology Stack\n\n${STACK}`, MINIFLUX);
+      expect(markdown).toContain(`and \`certificate_cache\`${M}[^src-8][^src-65].`);
+      expect(markdown.split(M)).toHaveLength(2);
+      expect(report.unresolvedTables).toEqual(["certificate_cache"]);
+      expect(report.matched).toBe(12);
+      expect(schemaCheckJudged(report)).toBe(13);
+    });
+
+    it("only inserts markers: removing them gives back the text exactly", () => {
+      const text = `## Ops\n\n${OPERATIONS}\n\n## Stack\n\n${STACK}`;
+      expect(withoutMarkers(prose(text, MINIFLUX).markdown)).toBe(text);
+    });
+
+    it("changes nothing on a second pass", () => {
+      const once = prose(`${OPERATIONS}\n${STACK}`, MINIFLUX).markdown;
+      const twice = prose(once, MINIFLUX);
+      expect(twice.markdown).toBe(once);
+      expect(twice.report.unresolvedTables).toEqual([]);
+    });
+  });
+
+  describe("what the words beside a name make a claim", () => {
+    it.each([
+      ["the `ghosts` table", "the `ghosts`" + M + " table"],
+      ["table `ghosts` holds rows", "table `ghosts`" + M + " holds rows"],
+      ["the **`ghosts`** table", "the **`ghosts`" + M + "** table"],
+      ["the `users` and `ghosts` tables", "the `users` and `ghosts`" + M + " tables"],
+      ["tables such as `ghosts`, `users`", "tables such as `ghosts`" + M + ", `users`"],
+      ["Tables: `users`; `ghosts`", "Tables: `users`; `ghosts`" + M],
+      ["stored in the database (`ghosts`)", "stored in the database (`ghosts`" + M + ")"],
+      ["the `users.ghost` column", "the `users.ghost`" + M + " column"],
+      ["columns `users.id` and `users.ghost`", "columns `users.id` and `users.ghost`" + M],
+      ["the `ghosts.id` column", "the `ghosts.id`" + M + " column"],
+      // With no word beside it: the first part is exactly a table of the schema.
+      ["it sets `users.ghost` on login", "it sets `users.ghost`" + M + " on login"],
+    ])("%s", (line, marked) => {
+      expect(prose(line).markdown).toBe(marked);
+    });
+
+    it("marks a near miss with the schema's spelling", () => {
+      expect(prose("the `users.GestureNav` column").markdown).toBe(
+        "the `users.GestureNav` *(not in schema; the schema has `gesture_nav`)* column",
+      );
+    });
+
+    it("matches a name the schema has, in either number and any case", () => {
+      const { markdown, report } = prose(
+        "the `user` table, the `FEEDS` table, the `users.gesture_nav` column",
+      );
+      expect(markdown).not.toContain("not in schema");
+      expect(report.matched).toBe(3);
+    });
+  });
+
+  describe("code identifiers that are not tables are never judged", () => {
+    it.each([
+      "an `autocert.Cache` adapter persists certificates",
+      "declared in `certificate_cache.go`",
+      "`entries.go` holds the queries",
+      "exports `feeds.opml` as an attachment",
+      "a hash table `ghosts` in memory",
+      "a lookup table `ghosts`",
+      "not a table: `ghosts` holds options",
+      "this is not the `ghosts` table",
+      "the table stores a `ghost_type`",
+      "the `users` table's `ghost` column",
+      "tables are written by `ghostWriter`",
+      "uses PostgreSQL (`pgx`)",
+      "PostgreSQL (`lib/pq`) is the driver",
+      "`Users.Ghost` is a field",
+      "the `ghosts` view",
+    ])("%s", (line) => {
+      const { markdown, report } = prose(line);
+      expect(markdown).toBe(line);
+      expect(schemaCheckUnmatched(report)).toEqual([]);
+    });
+  });
+
+  describe("what the read cannot speak for, and code, as in the section check", () => {
+    it("lists, and does not mark, a name in a schema that was not read", () => {
+      const { markdown, report } = prose("the `audit.ghosts` table");
+      expect(markdown).toBe("the `audit.ghosts` table");
+      expect(report.notChecked).toEqual([{ name: "audit.ghosts", why: "unread" }]);
+    });
+
+    it("lists a table that is not found while a database went unread", () => {
+      const { report } = prose("the `ghosts` table", ONE_UNREAD);
+      expect(report.notChecked).toEqual([{ name: "ghosts", why: "unread" }]);
+    });
+
+    it("never reads code: fences, indented blocks and raw HTML", () => {
+      const code = [
+        `${FENCE}sql`,
+        "-- the `ghosts` table",
+        FENCE,
+        "",
+        "    the `ghosts` table",
+        "",
+        "<pre>",
+        "the `ghosts` table",
+        "</pre>",
+      ].join("\n");
+      expect(prose(code).markdown).toBe(code);
+    });
+
+    it("skips the Data Architecture section's own note, which reports its names already", () => {
+      const note = [
+        "> **Schema check.** The table and column names ...",
+        "> - Columns not in the schema: `users.ghost`.",
+        "",
+        "it sets `users.ghost` on login",
+      ].join("\n");
+      const { markdown, report } = prose(note);
+      expect(markdown.split(M)).toHaveLength(2);
+      expect(markdown).toContain("> - Columns not in the schema: `users.ghost`.\n");
+      expect(report.flaggedColumns).toEqual(["users.ghost"]);
+    });
+
+    it("judges nothing against an empty schema", () => {
+      expect(prose("the `ghosts` table", NO_SCHEMA_INVENTORY)).toEqual({
+        markdown: "the `ghosts` table",
+        report: expect.objectContaining({ checked: false, matched: 0 }),
+      });
+    });
+
+    it("with `structured`, also reads a section's table list, into the same report", () => {
+      const roster = "| Table | Purpose |\n|---|---|\n| `ghosts` | Invented |\n\nthe `users` table";
+      const { markdown, report } = checkProseSchemaClaims(roster, LIVE, { structured: true });
+      expect(markdown).toContain(`| \`ghosts\`${M} | Invented |`);
+      expect(report.unresolvedTables).toEqual(["ghosts"]);
+      expect(report.matched).toBe(1);
+      expect(prose(roster).report.unresolvedTables).toEqual([]);
+    });
+  });
+
+  it("records the report for provenance, capped", () => {
+    const many = Array.from({ length: 60 }, (_, n) => `the \`ghost_${n}\` table`).join("\n");
+    const record = schemaClaimsRecord(prose(`${many}\nthe \`users\` table`).report);
+    expect(record.judged).toBe(61);
+    expect(record.unmatched).toHaveLength(50);
+    expect(record.notChecked).toBe(0);
+  });
+
+  describe("reads a line in linear time", () => {
+    const SHAPES: Record<string, (size: number) => string> = {
+      "a long list of tables": (size) =>
+        `Key tables: ${Array.from({ length: size / 12 }, (_, n) => `\`t${n}\``).join(", ")}.`,
+      "a table word before every span": (size) => "table `ghosts` ".repeat(size / 15),
+      "table words and no spans": (size) => `\`users\` ${"tables ".repeat(size / 7)}`,
+      "deep parentheses": (size) =>
+        `tables: \`users\` ${"(".repeat(size / 2)}\`a\`${")".repeat(size / 2)}`,
+      "storage verbs with no parenthesis": (size) => "stored in PostgreSQL ".repeat(size / 21),
+      "dotted names everywhere": (size) => "`users.ghost` ".repeat(size / 14),
+      "footnote openers": (size) => `tables: \`users\`${"[^".repeat(size / 2)}`,
+    };
+    for (const [name, build] of Object.entries(SHAPES)) {
+      it(name, () => {
+        expectLinearTime(name, (size) => {
+          const input = build(size);
+          return () => checkProseSchemaClaims(input, STORED);
+        });
+      });
+    }
+  });
 });

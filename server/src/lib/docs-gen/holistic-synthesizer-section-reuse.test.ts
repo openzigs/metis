@@ -805,3 +805,38 @@ describe("production Phase 1 effective-input cache", () => {
     });
   });
 });
+
+describe("#1356 — a record stored before the facts ids were made one form", () => {
+  it("is reused, and the manifest records its facts ids in the form citations use", async () => {
+    const cold = await synth();
+    const canonical = cold.sections.flatMap((s) => s.factsSourceIds);
+    expect(canonical.length).toBeGreaterThan(0);
+    expect(canonical.every((id) => id.startsWith("facts:src_orders:"))).toBe(true);
+    // The raw-dir form pre-#1356 runs wrote, re-hashed so the record is intact.
+    const records = cold.sectionSynthesis!.records.map((record) =>
+      recordSectionSynthesis(record.sectionId, record.inputs, {
+        markdown: record.markdown,
+        warnings: record.warnings,
+        score: record.score,
+        evidence: record.evidence,
+        ...(record.parts ? { parts: record.parts } : {}),
+        metadata: {
+          ...record.metadata,
+          factsSourceIds: record.metadata.factsSourceIds.map((id) =>
+            id.replace("facts:src_orders:", "facts:src/orders:"),
+          ),
+        },
+      }),
+    );
+    expect(records.some((r) => r.metadata.factsSourceIds.some((id) => id.includes("/")))).toBe(
+      true,
+    );
+    calls.sections = [];
+    const warm = await synth({
+      ...cold,
+      sectionSynthesis: { ...cold.sectionSynthesis!, records },
+    });
+    expect(calls.sections).toEqual([]);
+    expect(warm.sections.flatMap((s) => s.factsSourceIds)).toEqual(canonical);
+  });
+});

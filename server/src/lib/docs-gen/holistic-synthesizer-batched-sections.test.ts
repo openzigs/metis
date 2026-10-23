@@ -1872,3 +1872,47 @@ describe("#178 — every Phase-2 call's recorded usage counts toward the run's c
     ]);
   });
 });
+
+// ── #1356: one facts id, for provenance and citations alike ──────────────
+
+describe("#1356 — repository-less modules: provenance ids are the ids citations use", () => {
+  /**
+   * An uploaded document and an archive member: neither has a repository, so
+   * its facts id is built from the module path alone, which holds `/`, a space
+   * and a `.zip` segment that the id grammar sanitises.
+   */
+  const repositoryLess = (): ModuleFacts[] => [
+    mod(
+      "Claims Policy.docx",
+      { rules: 6, workflows: 3, formulas: 2, entities: 2 },
+      { modulePath: "uploads/Claims Policy.docx" },
+    ),
+    mod(
+      "etl",
+      { rules: 6, workflows: 3, formulas: 2, entities: 2 },
+      { modulePath: "claims-archive.zip/sas/etl" },
+    ),
+  ];
+  /** Every `facts:` id a prompt offered as citable, across all calls. */
+  const shownFactsIds = (p: { calls: Call[] }): Set<string> =>
+    new Set(
+      p.calls.flatMap((c) =>
+        [...c.user.matchAll(/\[SOURCE id=(facts:\S+) kind=facts/g)].map((m) => m[1]),
+      ),
+    );
+
+  it("records only facts ids the prompts offered for citation, sanitised for both modules", async () => {
+    const provider = fakeModel();
+    scoreFaithfulnessMock.mockResolvedValue(verified(1, 1));
+    // Any grounding at all makes the section's facts citable sources.
+    const result = await run(repositoryLess(), provider, ragGrounding());
+    const shown = shownFactsIds(provider);
+    const recorded = result.sections.flatMap((s) => s.factsSourceIds);
+    expect(recorded.length).toBeGreaterThan(0);
+    for (const id of recorded) expect(shown, id).toContain(id);
+    expect(recorded).toContain("facts:uploads_Claims_Policy.docx:0");
+    expect(recorded.some((id) => id.startsWith("facts:claims-archive.zip_sas_etl:"))).toBe(true);
+    // The raw-path form the manifest used to hold.
+    expect(recorded.filter((id) => id.includes("/") || id.includes(" "))).toEqual([]);
+  });
+});

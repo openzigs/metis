@@ -158,8 +158,53 @@ export function factsSourceId(
   repository?: RepositoryIdentity,
 ): string {
   if (repository) return `facts:${repositoryPathIdentity(repository, moduleDir)}:${idx}`;
+  return `facts:${sanitiseModuleDir(moduleDir)}:${idx}`;
+}
+
+function sanitiseModuleDir(moduleDir: string): string {
   const sanitised = moduleDir.replace(/[^A-Za-z0-9.-]+/g, "_").replace(/^_+|_+$/g, "");
-  return `facts:${sanitised || "module"}:${idx}`;
+  return sanitised || "module";
+}
+
+/**
+ * #1356 — the id of a facts source, the ONE way every caller mints it: the
+ * grounding context that shows the source to the model, and the provenance
+ * that records which sources a section was given. They used to differ for a
+ * module with no repository (an uploaded document, an archive): provenance kept
+ * the raw dir (`facts:src/m00:0`) and citations the sanitised one
+ * (`facts:src_m00:0`), so a join between the two missed every such module.
+ */
+export function factsSourceIdOf(
+  source: Pick<FactsSourceInput, "moduleDir" | "idx" | "repository">,
+): string {
+  return factsSourceId(source.moduleDir, source.idx, source.repository);
+}
+
+/** A repository-backed id: `facts:repo:<URI-encoded JSON tuple>:<idx>`, never sanitised. */
+const REPOSITORY_FACTS_PREFIX = "facts:repo:%5B";
+const FACTS_PREFIX = "facts:";
+
+/**
+ * #1356 — a stored facts id in its canonical form, so provenance written before
+ * the fix still joins to the citations it was written beside. Before #1356 a
+ * section's `factsSourceIds` held a repository-less module by its RAW dir
+ * (`facts:src/m00:0`) while its citations used the sanitised dir. The raw form
+ * is mapped to the sanitised one here, at read time; a stored manifest is never
+ * rewritten. Idempotent: a canonical id, a repository-backed id and anything
+ * that is not a `facts:` id come back unchanged.
+ *
+ * The idx is what follows the LAST colon (a raw dir can hold one). The raw form
+ * is recognisable because the sanitiser never leaves a character outside
+ * `[A-Za-z0-9.-]` and never a leading or trailing `_`.
+ */
+export function canonicalFactsSourceId(id: string): string {
+  if (!id.startsWith(FACTS_PREFIX) || id.startsWith(REPOSITORY_FACTS_PREFIX)) return id;
+  const cut = id.lastIndexOf(":");
+  if (cut < FACTS_PREFIX.length) return id;
+  const dir = id.slice(FACTS_PREFIX.length, cut);
+  const idx = id.slice(cut + 1);
+  if (!/^\d+$/.test(idx)) return id;
+  return `facts:${sanitiseModuleDir(dir)}:${idx}`;
 }
 
 /**
@@ -210,7 +255,7 @@ export function buildGroundingContext(input: BuildGroundingContextInput): Ground
   // Facts FIRST — closest to the synthesized claims; must not be budget-starved.
   for (const f of input.factsSources ?? []) {
     admit({
-      sourceId: factsSourceId(f.moduleDir, f.idx, f.repository),
+      sourceId: factsSourceIdOf(f),
       ...(f.repository
         ? { repository: f.repository, evidenceClass: "repository-source" as const }
         : {}),
@@ -303,7 +348,7 @@ export function mergeFactsIntoContext(
   };
   for (const f of factsSources) {
     admitFact({
-      sourceId: factsSourceId(f.moduleDir, f.idx, f.repository),
+      sourceId: factsSourceIdOf(f),
       ...(f.repository
         ? { repository: f.repository, evidenceClass: "repository-source" as const }
         : {}),

@@ -169,6 +169,17 @@ export interface SchemaCheckReport {
    * these carry no marker where they stand and are said in the note only.
    */
   inDiagram: string[];
+  /**
+   * #1133 — how many distinct names were judged and MATCHED the schema. With
+   * the unmatched ones, this is how many names the check compared, so a clean
+   * section can say the check ran (`renderSchemaCheckNotice`).
+   */
+  matched: number;
+}
+
+/** How many names the check judged: matched or not. */
+export function schemaCheckJudged(report: SchemaCheckReport): number {
+  return report.matched + schemaCheckUnmatched(report).length;
 }
 
 /** How many things the check has to say about the section. */
@@ -1120,12 +1131,19 @@ interface Findings {
   typeMismatches: Map<string, { written: string; schema: string }>;
   notChecked: Map<string, NotCheckedReason>;
   inDiagram: Set<string>;
+  /** Names judged and matched: a table as written, a column as `table.column`. */
+  matched: Set<string>;
 }
 
 interface CheckState {
   index: InventoryIndex;
   typed: boolean;
   found: Findings;
+}
+
+/** A name that was judged and matched; counted once however often it is written. */
+function noteMatch(state: CheckState, name: string): void {
+  state.found.matched.add(name.toLowerCase());
 }
 
 /** A column the table does not have: recorded; `near` carries the schema's spelling. */
@@ -1220,7 +1238,10 @@ function checkErDiagram(body: readonly string[], state: CheckState): void {
     const name = (aliases.get(id) ?? id).split("-").join("_");
     if (!isQualifiedIdentifier(name)) return null;
     const verdict = state.index.resolveTable(name);
-    if (verdict.kind === "found") return verdict.tables;
+    if (verdict.kind === "found") {
+      noteMatch(state, name);
+      return verdict.tables;
+    }
     if (verdict.kind === "absent") {
       state.found.unresolvedTables.add(name);
       state.found.inDiagram.add(name);
@@ -1262,6 +1283,7 @@ function checkErDiagram(body: readonly string[], state: CheckState): void {
         state.found.inDiagram.add(qualified);
         continue;
       }
+      noteMatch(state, `${match.table.name}.${match.column.name}`);
       // With two tables of this name, which one's type is meant is not known.
       if (
         state.typed &&
@@ -1333,7 +1355,10 @@ function checkRosterRow(line: string, state: CheckState): string {
   for (const span of spanRanges(line, cells[0].start, cells[0].end)) {
     if (!isQualifiedIdentifier(span.text)) continue;
     const verdict = state.index.resolveTable(span.text);
-    if (verdict.kind === "found") continue;
+    if (verdict.kind === "found") {
+      noteMatch(state, span.text);
+      continue;
+    }
     if (saysView(line)) {
       state.found.notChecked.set(span.text, "view");
     } else if (verdict.kind !== "absent") {
@@ -1457,6 +1482,7 @@ function checkRow(line: string, typeIndex: number, context: RowContext, state: C
     const match = state.index.resolveColumn(tables, columnName);
     const qualified = `${tables[0].name}.${columnName}`;
     if (match.kind === "exact") {
+      noteMatch(state, `${match.table.name}.${match.column.name}`);
       // One name, one type, one table: otherwise whose type is meant is not known.
       if (
         state.typed &&
@@ -1497,6 +1523,7 @@ const EMPTY_REPORT: SchemaCheckReport = {
   typeMismatches: [],
   notChecked: [],
   inDiagram: [],
+  matched: 0,
 };
 
 /**
@@ -1510,19 +1537,13 @@ export function checkSchemaClaims(
 ): { markdown: string; report: SchemaCheckReport } {
   // Never judge a section against nothing: that would mark all of it.
   if (inventory.tables.length === 0) return { markdown, report: { ...EMPTY_REPORT } };
-  const found: Findings = {
-    unresolvedTables: new Set(),
-    flaggedColumns: new Set(),
-    suggestions: new Map(),
-    typeMismatches: new Map(),
-    notChecked: new Map(),
-    inDiagram: new Set(),
-  };
-  const state: CheckState = {
-    index: new InventoryIndex(inventory),
-    typed: isTypedInventory(inventory),
-    found,
-  };
+  const state = checkState(inventory);
+  return { markdown: structuredPass(markdown, state), report: reportOf(state.found) };
+}
+
+/** The structured forms of `markdown`, judged into `state`: the markdown with its markers. */
+function structuredPass(markdown: string, state: CheckState): string {
+  const { found } = state;
 
   // Split on LF and joined on LF: a CRLF's carriage return stays at the end of
   // its line, where nothing reads it as part of a name.
@@ -1548,6 +1569,7 @@ export function checkSchemaClaims(
       const verdict = state.index.resolveTable(name);
       if (verdict.kind === "found") {
         context.tables.push(...verdict.tables);
+        noteMatch(state, name);
         continue;
       }
       context.complete = false;
@@ -1643,7 +1665,529 @@ export function checkSchemaClaims(
     i += 1;
   }
 
-  const report: SchemaCheckReport = {
+  return out.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// #1133 — names written as tables or columns in prose, in any section
+// ---------------------------------------------------------------------------
+
+/**
+ * Words naming a database product, or a database, that a parenthesised table
+ * name can follow: "backed by PostgreSQL (`certificate_cache`)".
+ */
+const DATABASE_WORDS = new Set([
+  "postgresql",
+  "postgres",
+  "mysql",
+  "mariadb",
+  "sqlite",
+  "oracle",
+  "database",
+  "db",
+]);
+
+/** The verbs that make "<verb> <preposition> PostgreSQL (`x`)" a statement about where `x` is kept. */
+const STORAGE_VERBS = new Set([
+  "backed",
+  "stored",
+  "persisted",
+  "kept",
+  "held",
+  "saved",
+  "written",
+  "cached",
+  "recorded",
+]);
+const STORAGE_PREPOSITIONS = new Set(["in", "into", "to", "by"]);
+const ARTICLES = new Set(["the", "a", "an", "its", "their"]);
+
+/** `<word> table`s that are no database table: "a hash table `m`". */
+const NOT_A_DATABASE_TABLE = new Set([
+  "hash",
+  "lookup",
+  "routing",
+  "route",
+  "symbol",
+  "truth",
+  "jump",
+  "pivot",
+  "html",
+  "markdown",
+  "dispatch",
+  "decision",
+  "state",
+  "translation",
+  "mapping",
+  "memory",
+  "in-memory",
+  "comparison",
+  "summary",
+  "following",
+  "above",
+  "below",
+]);
+
+/** The words that may stand between two names of one list: "`a`, `b` and `c`". */
+const LIST_WORDS = new Set(["and", "or", "plus", "-", "–", "—"]);
+/** The words that may stand between "tables" and the first name it introduces. */
+const LEAD_WORDS = new Set([
+  ...LIST_WORDS,
+  "such",
+  "as",
+  "like",
+  "including",
+  "include",
+  "includes",
+  "are",
+  "is",
+  "named",
+  "called",
+]);
+
+/**
+ * File extensions: a dotted name ending in one is a file (`entries.go`), never
+ * `table.column`.
+ */
+const FILE_EXTENSIONS = new Set([
+  "go",
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "mjs",
+  "py",
+  "rb",
+  "rs",
+  "java",
+  "kt",
+  "cs",
+  "c",
+  "h",
+  "cpp",
+  "sql",
+  "md",
+  "json",
+  "yaml",
+  "yml",
+  "toml",
+  "xml",
+  "html",
+  "css",
+  "txt",
+  "sh",
+  "proto",
+  "tmpl",
+  "mod",
+  "sum",
+  "lock",
+  "env",
+  "conf",
+  "ini",
+  "log",
+  "opml",
+  "csv",
+  "tsv",
+  "pdf",
+  "png",
+  "jpg",
+  "svg",
+  "ico",
+  "zip",
+  "gz",
+  "tar",
+  "db",
+  "sqlite",
+  "bin",
+  "pem",
+  "crt",
+]);
+
+interface ProseSpan extends Span {
+  /** Parenthesis depth at the span, parentheses inside code spans not counted. */
+  depth: number;
+}
+
+interface ProseWord {
+  word: string;
+  start: number;
+  end: number;
+  depth: number;
+}
+
+/** The line's code spans and plain words, each with its parenthesis depth. One pass. */
+function proseTokens(line: string): { spans: ProseSpan[]; words: ProseWord[] } {
+  const ranges = spanRanges(line);
+  const spans: ProseSpan[] = [];
+  const words: ProseWord[] = [];
+  let depth = 0;
+  let k = 0;
+  let i = 0;
+  while (i < line.length) {
+    if (k < ranges.length && i === ranges[k].open) {
+      spans.push({ ...ranges[k], depth });
+      i = ranges[k].close + 1;
+      k += 1;
+      continue;
+    }
+    const c = line[i];
+    if (c === "(") depth += 1;
+    else if (c === ")" && depth > 0) depth -= 1;
+    if (isWordChar(c)) {
+      let end = i;
+      while (end < line.length && isWordChar(line[end])) end++;
+      // A word never runs into a code span: a span opens on a backtick.
+      words.push({ word: line.slice(i, end).toLowerCase(), start: i, end, depth });
+      i = end;
+      continue;
+    }
+    i += 1;
+  }
+  return { spans, words };
+}
+
+function isWordChar(c: string): boolean {
+  return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c === "-" || c === "–" || c === "—";
+}
+
+/**
+ * The words of a gap between two tokens, with emphasis, punctuation, footnote
+ * references and anything in parentheses (deeper than the gap itself) left
+ * out. `null` when the gap holds a code span or a digit, which no list gap does.
+ */
+function gapWords(text: string): string[] | null {
+  const words: string[] = [];
+  let depth = 0;
+  let word = "";
+  const flush = (): void => {
+    if (word) words.push(word.toLowerCase());
+    word = "";
+  };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "(") {
+      flush();
+      depth += 1;
+      continue;
+    }
+    if (c === ")") {
+      flush();
+      if (depth > 0) depth -= 1;
+      continue;
+    }
+    if (depth > 0) continue;
+    if (c === "[" && text[i + 1] === "^") {
+      // A footnote reference: `[^src-8]`.
+      flush();
+      const close = text.indexOf("]", i);
+      if (close < 0) return null;
+      i = close;
+      continue;
+    }
+    if (c === "`" || (c >= "0" && c <= "9")) return null;
+    if (isWordChar(c)) word += c;
+    else flush();
+  }
+  flush();
+  return words;
+}
+
+/**
+ * The longest gap read between two names of a list, or between a cue word and
+ * a name. A parenthesis can stand in one ("`categories` (a default `"All"`
+ * category per user), `integrations`"); a longer gap is a sentence, not a list.
+ * Bounding it, and {@link MAX_LISTED_NAMES}, keeps a line linear to read.
+ */
+const MAX_GAP_CHARS = 160;
+/** The most names one list is read to. */
+const MAX_LISTED_NAMES = 64;
+const NO_WORDS: ReadonlySet<string> = new Set();
+/** Words that, just before a table or column word, say a name is NOT one. */
+const NEGATIONS = new Set(["not", "no", "never", "nor", "without"]);
+
+/** Nothing but spaces and emphasis between `from` and `to`: "`feeds` table", "**table** `feeds`". */
+function isTight(line: string, from: number, to: number): boolean {
+  if (to - from > 8) return false;
+  for (let i = from; i < to; i++) {
+    const c = line[i];
+    if (c !== " " && c !== "*" && c !== "_") return false;
+  }
+  return true;
+}
+
+function gapIs(line: string, from: number, to: number, allowed: ReadonlySet<string>): boolean {
+  if (to - from > MAX_GAP_CHARS) return false;
+  const words = gapWords(line.slice(from, to));
+  return words != null && words.every((word) => allowed.has(word));
+}
+
+/** Index of the first span opening at or after `at`, or `spans.length`. Binary search. */
+function firstSpanFrom(spans: readonly ProseSpan[], at: number): number {
+  let lo = 0;
+  let hi = spans.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (spans[mid].open < at) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+type ProseRole = "table" | "column";
+
+function roleOf(word: string): ProseRole | null {
+  if (word === "table" || word === "tables") return "table";
+  if (word === "column" || word === "columns") return "column";
+  return null;
+}
+
+/**
+ * The code spans of one line that the line writes as a table or a column, by
+ * the words beside them, keyed by where each opens. Nothing else is a claim.
+ * See `checkProseSchemaClaims`.
+ */
+function proseClaims(line: string): Map<number, ProseRole> {
+  const { spans, words } = proseTokens(line);
+  const claims = new Map<number, ProseRole>();
+  const claim = (span: ProseSpan, role: ProseRole): void => {
+    if (!claims.has(span.open)) claims.set(span.open, role);
+  };
+  /** The names of a list that starts (`step` 1) or ends (`step` -1) at span `from`. */
+  const list = (from: number, step: 1 | -1, role: ProseRole): void => {
+    const anchor = spans[from];
+    claim(anchor, role);
+    let last = anchor;
+    let listed = 1;
+    for (let k = from + step; k >= 0 && k < spans.length && listed < MAX_LISTED_NAMES; k += step) {
+      const span = spans[k];
+      if (span.depth > anchor.depth) continue;
+      if (span.depth < anchor.depth) return;
+      const [left, right] = step === 1 ? [last, span] : [span, last];
+      if (!gapIs(line, left.close + 1, right.open, LIST_WORDS)) return;
+      claim(span, role);
+      last = span;
+      listed += 1;
+    }
+  };
+  words.forEach((word, w) => {
+    const role = roleOf(word.word);
+    if (role) {
+      // "not a table: `configOptions`" says what the name is NOT.
+      if (words.slice(Math.max(0, w - 3), w).some((before) => NEGATIONS.has(before.word))) return;
+      const plural = word.word.endsWith("s");
+      const next = firstSpanFrom(spans, word.end);
+      // "the `feeds` table", "`users` and `feeds` tables".
+      const before = firstSpanFrom(spans, word.start) - 1;
+      if (before >= 0 && isTight(line, spans[before].close + 1, word.start)) {
+        if (plural) list(before, -1, role);
+        else claim(spans[before], role);
+      }
+      // "table `feeds`", "Key tables: `users`, `feeds`", "columns `a.b` and `c.d`".
+      const qualifier = w > 0 ? words[w - 1].word : "";
+      if (
+        next < spans.length &&
+        spans[next].depth === word.depth &&
+        !(role === "table" && NOT_A_DATABASE_TABLE.has(qualifier)) &&
+        (plural
+          ? gapIs(line, word.end, spans[next].open, LEAD_WORDS)
+          : isTight(line, word.end, spans[next].open))
+      ) {
+        if (plural) list(next, 1, role);
+        else claim(spans[next], role);
+      }
+      return;
+    }
+    // "backed by PostgreSQL (`certificate_cache`)".
+    if (!DATABASE_WORDS.has(word.word)) return;
+    let p = w - 1;
+    while (p >= 0 && ARTICLES.has(words[p].word)) p--;
+    if (p < 1 || !STORAGE_PREPOSITIONS.has(words[p].word)) return;
+    if (!STORAGE_VERBS.has(words[p - 1].word)) return;
+    let open = word.end;
+    while (open < line.length && line[open] === " ") open++;
+    if (line[open] !== "(") return;
+    const inside = firstSpanFrom(spans, open);
+    if (inside >= spans.length || spans[inside].depth !== word.depth + 1) return;
+    if (!gapIs(line, open + 1, spans[inside].open, NO_WORDS)) return;
+    list(inside, 1, "table");
+  });
+  return claims;
+}
+
+/**
+ * #1133 — the table and column names a section writes IN PROSE, compared with
+ * the schema, in any section of the document. `checkSchemaClaims` reads the
+ * structured forms (diagrams, entity headings, field tables, table lists) and
+ * leaves prose alone; run 8's architecture document wrote an invented
+ * `certificate_cache` as a PostgreSQL table twice, outside Data Architecture,
+ * in sentences.
+ *
+ * A code span is a claim only when the words beside it say it is a table or a
+ * column, so a code identifier that is not one (`autocert.Cache`,
+ * `certificate_cache.go`, `MimeType`) is never judged:
+ *
+ *   - a TABLE: "the `feeds` table", "table `feeds`", "`users` and `feeds`
+ *     tables", "Key tables: `users`, `feeds` and `icons`" (a list goes on while
+ *     only commas, "and", "or", "/", footnotes and parentheses stand between two
+ *     names), and "backed by PostgreSQL (`certificate_cache`)" (a storage verb,
+ *     a preposition and a database word before the parenthesis). Not "a hash
+ *     table `m`", nor any table word with other words between it and the name;
+ *   - a COLUMN: a dotted `table.column` with "column(s)" beside it the same way.
+ *     A column is judged against the table it names, and only when that table
+ *     resolves; `table.go` and other file names are not columns. And, with no
+ *     word beside it, a dotted name whose first part is EXACTLY a table of the
+ *     schema and whose second is a lower-case name that is no file extension
+ *     (`entries.status`): written that way it can only be a column.
+ *
+ * Everything else is as `checkSchemaClaims`: a name that cannot be matched is
+ * marked where it stands with the same ` *(not in schema)*` marker, nothing is
+ * removed or changed, code (fences, indented and raw HTML blocks) is never
+ * read or written, a name the read cannot speak for is "not checked", and a
+ * name that already carries a marker (the Data Architecture section's own
+ * check, or an earlier pass) is skipped, so a pass over its own output changes
+ * nothing.
+ */
+export function checkProseSchemaClaims(
+  markdown: string,
+  inventory: SchemaInventory,
+  { structured = false }: { structured?: boolean } = {},
+): { markdown: string; report: SchemaCheckReport } {
+  if (inventory.tables.length === 0) return { markdown, report: { ...EMPTY_REPORT } };
+  const state = checkState(inventory);
+  const exactTables = new Set(inventory.tables.map((t) => t.name.toLowerCase()));
+  // A section other than Data Architecture can hold a structured form too (a
+  // table list, a diagram): read first, into the same report, and its markers
+  // are then skipped by the prose pass like any marker.
+  const lines = (structured ? structuredPass(markdown, state) : markdown).split("\n");
+  const blocks = scanBlocks(lines);
+  // The Data Architecture section's own note lists the names it found, which
+  // are reported already, and claims nothing.
+  let inNote = false;
+  const out = lines.map((line, at) => {
+    inNote = isSchemaNoteStart(line) || (inNote && line.startsWith(">"));
+    if (inNote || blocks.opaque[at] || !line.includes("`")) return line;
+    const claimed = proseClaims(line);
+    const markers: Array<{ at: number; text: string }> = [];
+    for (const span of spanRanges(line)) {
+      const end = span.close + 1;
+      if (line.startsWith(MARKED, end) || !isQualifiedIdentifier(span.text)) continue;
+      const role = claimed.get(span.open) ?? bareColumn(span.text, exactTables);
+      if (!role) continue;
+      const marker =
+        role === "table" ? judgeProseTable(span.text, state) : judgeProseColumn(span.text, state);
+      if (marker) markers.push({ at: end, text: marker });
+    }
+    return withMarkers(line, markers);
+  });
+  return { markdown: out.join("\n"), report: reportOf(state.found) };
+}
+
+/** The first line of the note `renderSchemaCheckNotice` writes. */
+function isSchemaNoteStart(line: string): boolean {
+  return line.startsWith(SCHEMA_NOTE_LEAD) || line.startsWith(SCHEMA_NOT_VERIFIED_LEAD);
+}
+
+/** A dotted name that can only be `table.column`: see `checkProseSchemaClaims`. */
+function bareColumn(text: string, exactTables: ReadonlySet<string>): ProseRole | null {
+  const parts = text.split(".");
+  if (parts.length !== 2) return null;
+  const [table, column] = parts;
+  if (!exactTables.has(table.toLowerCase())) return null;
+  if (column !== column.toLowerCase() || FILE_EXTENSIONS.has(column)) return null;
+  return "column";
+}
+
+/** A name written as a table: its marker, or `null` when there is none to write. */
+function judgeProseTable(name: string, state: CheckState): string | null {
+  const verdict = state.index.resolveTable(name);
+  if (verdict.kind === "found") {
+    noteMatch(state, name);
+    return null;
+  }
+  if (verdict.kind !== "absent") {
+    state.found.notChecked.set(name, verdict.kind);
+    return null;
+  }
+  state.found.unresolvedTables.add(name);
+  return NOT_IN_SCHEMA;
+}
+
+/** A `table.column` name: its marker, or `null`. Anything not dotted once is not judged. */
+function judgeProseColumn(name: string, state: CheckState): string | null {
+  const dot = name.indexOf(".");
+  if (dot < 0 || dot !== name.lastIndexOf(".")) return null;
+  const tableName = name.slice(0, dot);
+  const columnName = name.slice(dot + 1);
+  if (FILE_EXTENSIONS.has(columnName.toLowerCase())) return null;
+  const verdict = state.index.resolveTable(tableName);
+  if (verdict.kind === "absent") {
+    state.found.unresolvedTables.add(tableName);
+    return NOT_IN_SCHEMA;
+  }
+  if (verdict.kind !== "found") {
+    state.found.notChecked.set(name, verdict.kind);
+    return null;
+  }
+  if (listTablesWithoutColumns(state, verdict.tables)) return null;
+  const match = state.index.resolveColumn(verdict.tables, columnName);
+  if (match.kind === "exact") {
+    noteMatch(state, `${match.table.name}.${match.column.name}`);
+    return null;
+  }
+  if (looksLikeIndexName(columnName)) {
+    state.found.notChecked.set(name, "not-a-column");
+    return null;
+  }
+  flagColumn(state, `${verdict.tables[0].name}.${columnName}`, match);
+  return match.kind === "near" ? nearMissMarker(match.column.name) : NOT_IN_SCHEMA;
+}
+
+/** The most unmatched names one section's provenance record lists. */
+export const SCHEMA_CLAIMS_LISTED_MAX = 50;
+/** The longest name a provenance record holds (a name is an identifier, at most three parts). */
+export const SCHEMA_CLAIM_NAME_MAX_CHARS = IDENTIFIER_MAX;
+
+/**
+ * #1133 — what the check found in one section, as its provenance records it:
+ * how many names were judged, which did not match (listed, capped), and how
+ * many were not checked. Numbers and names only, no document text.
+ */
+export interface SchemaClaimsRecord {
+  judged: number;
+  unmatched: string[];
+  notChecked: number;
+}
+
+export function schemaClaimsRecord(report: SchemaCheckReport): SchemaClaimsRecord {
+  return {
+    judged: schemaCheckJudged(report),
+    unmatched: schemaCheckUnmatched(report)
+      .slice(0, SCHEMA_CLAIMS_LISTED_MAX)
+      .map((name) => name.slice(0, SCHEMA_CLAIM_NAME_MAX_CHARS)),
+    notChecked: report.notChecked.length,
+  };
+}
+
+/** A fresh state for one check of one section. */
+function checkState(inventory: SchemaInventory): CheckState {
+  return {
+    index: new InventoryIndex(inventory),
+    typed: isTypedInventory(inventory),
+    found: {
+      unresolvedTables: new Set(),
+      flaggedColumns: new Set(),
+      suggestions: new Map(),
+      typeMismatches: new Map(),
+      notChecked: new Map(),
+      inDiagram: new Set(),
+      matched: new Set(),
+    },
+  };
+}
+
+/** The report of what a check found. */
+function reportOf(found: Findings): SchemaCheckReport {
+  return {
     checked: true,
     unresolvedTables: [...found.unresolvedTables],
     flaggedColumns: [...found.flaggedColumns],
@@ -1651,13 +2195,17 @@ export function checkSchemaClaims(
     typeMismatches: [...found.typeMismatches].map(([column, types]) => ({ column, ...types })),
     notChecked: [...found.notChecked].map(([name, why]) => ({ name, why })),
     inDiagram: [...found.inDiagram],
+    matched: found.matched.size,
   };
-  return { markdown: out.join("\n"), report };
 }
 
 // ---------------------------------------------------------------------------
 // The section as it reaches the document
 // ---------------------------------------------------------------------------
+
+/** How the note a section's check writes begins (`renderSchemaCheckNotice`). */
+const SCHEMA_NOTE_LEAD = "> **Schema check.**";
+const SCHEMA_NOT_VERIFIED_LEAD = "> **Schema not verified.**";
 
 const NOT_CHECKED_WHY: Array<[NotCheckedReason, string]> = [
   ["unread", "outside the schemas that were read"],
@@ -1687,7 +2235,7 @@ export function renderSchemaCheckNotice(
     if (unread.length > 0) {
       const which = listedWith(unread, (read) => `"${read.connector}"`);
       return (
-        `> **Schema not verified.** ` +
+        `${SCHEMA_NOT_VERIFIED_LEAD} ` +
         (unread.length === 1
           ? `The project's database (${which}) could not be read`
           : `The project's databases (${which}) could not be read`) +
@@ -1696,7 +2244,7 @@ export function renderSchemaCheckNotice(
       );
     }
     return (
-      `> **Schema not verified.** No database schema was available for this project (no ` +
+      `${SCHEMA_NOT_VERIFIED_LEAD} No database schema was available for this project (no ` +
       `connected database, no database document and no SQL schema in the code graph), so the ` +
       `table and column names in this section come from the code analysis alone and were not ` +
       `checked.`
@@ -1738,7 +2286,18 @@ export function renderSchemaCheckNotice(
         `${listed(noColumns.map((entry) => entry.name))}.`,
     );
   }
-  if (lines.length === 0) return "";
+  if (lines.length === 0) {
+    // #1133 — a clean section says the check ran, and over how much: silence
+    // read the same as a check that never ran. Nothing judged, nothing said.
+    if (report.matched === 0) return "";
+    const names =
+      report.matched === 1 ? "1 table or column name" : `${report.matched} table and column names`;
+    return (
+      `${SCHEMA_NOTE_LEAD} ${names} in this section's diagrams, entity headings, field ` +
+      `tables and table lists ${report.matched === 1 ? "was" : "were"} compared with ` +
+      `${inventory.label}, and every one matched.`
+    );
+  }
   const truncated = inventory.reads.filter((read) => read.possiblyTruncated);
   if (truncated.length > 0) {
     lines.push(
@@ -1755,7 +2314,7 @@ export function renderSchemaCheckNotice(
       : "A database read can be incomplete (it covers one schema, and a role may not see every " +
         "column)";
   return [
-    `> **Schema check.** The table and column names in this section's diagrams, entity ` +
+    `${SCHEMA_NOTE_LEAD} The table and column names in this section's diagrams, entity ` +
       `headings, field tables and table lists were compared with ${inventory.label}. Nothing ` +
       `was removed or changed: a name that could not be matched is marked **not in schema** ` +
       `where it stands. ${caveat}, so a marked name is one to verify, not necessarily a mistake.`,
