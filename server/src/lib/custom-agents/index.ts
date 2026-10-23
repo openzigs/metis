@@ -529,17 +529,6 @@ export async function setAgentEnabledForProject(
   return toEnablementDto(row as EnablementRow);
 }
 
-/** True when the agent has an enablement row for the project with `enabled=true`. */
-export async function isAgentEnabledForProject(
-  customAgentId: string,
-  projectId: string,
-): Promise<boolean> {
-  const row = await prisma.customAgentEnablement.findUnique({
-    where: { customAgentId_projectId: { customAgentId, projectId } },
-  });
-  return Boolean(row?.enabled);
-}
-
 /**
  * Resolve the full {@link CustomAgentDto} list of agents currently enabled for
  * a project via the enablement join. Agents enabled but since-deleted are

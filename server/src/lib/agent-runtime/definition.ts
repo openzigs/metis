@@ -306,6 +306,19 @@ export async function listCallableAgents(
 }
 
 /**
+ * #1005 — may `projectId` still call the agent `ref` (the call-time re-check
+ * of an offered sub-agent)? A failed read REJECTS: it must never resolve
+ * `false`, which callers would report as the agent being turned off.
+ */
+export async function isAgentCallable(
+  projectId: string,
+  ref: string,
+  db: PrismaClient = defaultPrisma,
+): Promise<boolean> {
+  return (await listCallableAgents(projectId, { db })).some((d) => d.ref === ref);
+}
+
+/**
  * Providers whose model names are the OPERATOR's vocabulary, not a fixed list:
  * a local runtime serves whatever it has pulled, and an Azure "model" is a
  * deployment name. The catalog

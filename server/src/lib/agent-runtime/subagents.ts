@@ -257,7 +257,12 @@ export interface AgentToolsContext {
   allowlist?: SkillAllowlistSource;
   /** Usage of every sub-agent model call, for the session's token accounting. */
   onUsage?: (usage: TokenUsage, model: string) => void;
-  /** Re-checked at call time: may this project still use this agent? */
+  /**
+   * Re-checked at call time: may this project still use this agent? `false`
+   * means it may not (turned off for the project, #1005). A check that cannot
+   * be read must REJECT, never resolve `false` — the caller is then told the
+   * check failed, not that the agent is turned off.
+   */
   isCallable?: (ref: string) => Promise<boolean>;
 }
 
@@ -387,6 +392,9 @@ function makeSubAgentTool(
  * Re-read an offered agent at call time — the tool list in the prompt is a
  * snapshot. `refusal` is the model-facing text when it can no longer run:
  * gone, or turned off for the project since the offer was built (#1005).
+ * A read that fails REJECTS (it is not a refusal): before the gate the
+ * executor then leaves the call to the gate, and `runSubAgent` reports it as
+ * a check that could not be made.
  */
 async function currentSubAgent(
   ctx: AgentToolsContext,
@@ -425,7 +433,19 @@ async function runSubAgent(
   }
   // Re-read again here: the agent may have been turned off while its call
   // waited for approval (`unavailableNow` already refused it before that).
-  const current = await currentSubAgent(ctx, snapshot);
+  let current: Awaited<ReturnType<typeof currentSubAgent>>;
+  try {
+    current = await currentSubAgent(ctx, snapshot);
+  } catch (err) {
+    log.warn("Sub-agent availability unreadable; not running it", {
+      agentRef: snapshot.ref,
+      error: (err as Error).message,
+    });
+    return {
+      text: `Error: METIS could not check whether the "${snapshot.name}" agent may run in this project, so it did not run. Answer without it; the user can try again.`,
+      isError: true,
+    };
+  }
   if (!current.def) return { text: current.refusal, isError: true };
   const def = current.def;
   const run = await store.create({

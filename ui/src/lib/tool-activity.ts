@@ -71,7 +71,9 @@ export const TOOL_ERROR_TEXT: Readonly<Record<NonNullable<AiToolEvent["code"]>, 
   TOOL_APPROVAL_EXPIRED: "No answer in time — the tool did not run.",
   TOOL_NOT_ALLOWED: "Not allowed for this agent — the tool did not run.",
   TOOL_UNKNOWN: "The model asked for a tool that does not exist.",
-  TOOL_UNAVAILABLE: "Turned off for this project — it did not run.",
+  // #1005 — one code for an agent turned off for the project AND one deleted
+  // since it was offered, so the wording fits both; the model is told which.
+  TOOL_UNAVAILABLE: "No longer available in this project — it did not run.",
   TOOL_INVALID_ARGS: "The model sent arguments the tool does not accept.",
   TOOL_FAILED: "The tool failed while running.",
   TOOL_CALL_LIMIT: "Too many tool calls in one reply.",

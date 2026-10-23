@@ -14,6 +14,8 @@ import type { PrismaClient } from "@prisma/client";
 const rows = vi.hoisted(() => ({
   custom: [] as Array<Record<string, unknown>>,
   enablement: [] as Array<{ customAgentId: string; projectId: string; enabled: boolean }>,
+  /** Every enablement read fails (the database is unreachable). */
+  enablementReadsFail: false,
 }));
 
 interface Where {
@@ -53,9 +55,10 @@ Object.assign(fakeDb, {
         ) ?? null
       );
     }),
-    findMany: vi.fn(async ({ where }: { where: Where }) =>
-      rows.enablement.filter((e) => matches(e as unknown as Record<string, unknown>, where)),
-    ),
+    findMany: vi.fn(async ({ where }: { where: Where }) => {
+      if (rows.enablementReadsFail) throw new Error("db unreachable");
+      return rows.enablement.filter((e) => matches(e as unknown as Record<string, unknown>, where));
+    }),
   },
   projectAgentAllowlist: { findMany: vi.fn(async () => []) },
   agent: { findMany: vi.fn(async () => []), findUnique: vi.fn(async () => null) },
@@ -68,6 +71,7 @@ vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 import {
   customAgentUsableInProject,
+  isAgentCallable,
   isCustomAgentUsableInProject,
   listCallableAgents,
   loadAgentDefinition,
@@ -106,6 +110,7 @@ function setEnabled(customAgentId: string, projectId: string, enabled: boolean):
 }
 
 beforeEach(() => {
+  rows.enablementReadsFail = false;
   rows.custom.length = 0;
   rows.enablement.length = 0;
   rows.custom.push(
@@ -206,8 +211,7 @@ describe("a delegation offered before the agent was turned off", () => {
       limits: { maxDepth: 2, tokenBudget: 1000, maxTurns: 6 },
       budget: new SubAgentBudget(1000),
       db,
-      isCallable: async (ref) =>
-        (await listCallableAgents("p1", { db })).some((d) => d.ref === ref),
+      isCallable: (ref) => isAgentCallable("p1", ref, db),
     };
     const [tool] = subAgentTools(
       ctx,
@@ -268,5 +272,55 @@ describe("a delegation offered before the agent was turned off", () => {
     );
     expect(ask).toHaveBeenCalledTimes(1);
     expect(out.errorCode).toBe("TOOL_DENIED");
+  });
+
+  const gateThatApproves = () => {
+    const ask = vi.fn(async () => "approve" as const);
+    const gate = new ApprovalGateService({
+      sessionId: "s1",
+      userId: "u1",
+      policy: { low: "always-prompt", medium: "always-prompt", high: "always-prompt" },
+      prompter: { ask },
+    });
+    return { ask, gate };
+  };
+  const call = (tool: Awaited<ReturnType<typeof offeredTool>>, gate: ApprovalGateService) =>
+    executeToolCall(
+      { id: "call_1", name: tool.wireName, args: { task: "review the SQL" } },
+      {
+        toolset: makeToolset([tool]),
+        gate,
+        ctx: { sessionId: "s1", userId: "u1", projectId: "p1" },
+      },
+    );
+
+  it("an agent DELETED since the offer is refused at once too, and the model is told it is gone, not turned off", async () => {
+    const tool = await offeredTool();
+    rows.custom.splice(
+      rows.custom.findIndex((r) => r.id === "own"),
+      1,
+    );
+    const { ask, gate } = gateThatApproves();
+    const out = await call(tool, gate);
+    expect(ask).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ executed: false, errorCode: "TOOL_UNAVAILABLE" });
+    expect(out.text).toContain('"Go SQL reviewer" agent is no longer available');
+    expect(out.text).not.toContain("turned off");
+  });
+
+  it("a check that cannot be READ is never reported as 'turned off': the gate decides, and the run says the check failed", async () => {
+    const tool = await offeredTool();
+    rows.enablementReadsFail = true;
+    // The re-check itself rejects; it does not resolve `false`.
+    await expect(isAgentCallable("p1", "custom:own", db)).rejects.toThrow("db unreachable");
+    const { ask, gate } = gateThatApproves();
+    const out = await call(tool, gate);
+    // Left to the gate (not refused as unavailable)…
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(out.errorCode).not.toBe("TOOL_UNAVAILABLE");
+    // …and the run itself does not start, saying why in accurate words.
+    expect(out).toMatchObject({ executed: true, isError: true });
+    expect(out.text).toContain('could not check whether the "Go SQL reviewer" agent may run');
+    expect(out.text).not.toContain("turned off");
   });
 });

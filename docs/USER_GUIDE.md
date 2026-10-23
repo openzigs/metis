@@ -2804,10 +2804,14 @@ Turn hand-offs off with `CHAT_SUBAGENTS=false`.
 an agent the project owns. The chat stops offering it, both in the agent
 picker and as a hand-off target, and a chat already running under it loses its
 persona and tools. A hand-off the chat had already offered before you turned
-the agent off is refused at once, reading "Turned off for this project — it did
-not run", rather than waiting for an approval. The playground says the agent is
-turned off. **Enable** brings it back on the next message. An agent the project
-owns and has never switched either way stays usable in chat and the playground.
+the agent off (or deleted it) is refused at once, reading "No longer available
+in this project — it did not run", rather than waiting for an approval; the AI
+is told which of the two happened. The playground says the agent is turned off
+(409 `AGENT_DISABLED`). Over ACP, `list-agents` for a project lists only the
+agents that project may use, and `run-agent` answers a turned-off agent with
+`AGENT_NOT_FOUND`, exactly as for an unknown one. **Enable** brings it back on
+the next message. An agent the project owns and has never switched either way
+stays usable in chat and the playground.
 
 **Agents and skills — local-model smoke run (manual).** The CI end-to-end test
 (`e2e/tests/agents-skills.spec.ts`) drives this flow with a scripted model. To

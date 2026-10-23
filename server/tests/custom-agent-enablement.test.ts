@@ -134,7 +134,6 @@ vi.mock("../src/lib/prisma.js", () => ({
 import {
   CustomAgentError,
   createAgent,
-  isAgentEnabledForProject,
   listEnabledAgentsForProject,
   setAgentEnabledForProject,
 } from "../src/lib/custom-agents/index.js";
@@ -149,8 +148,8 @@ describe("CustomAgent enablement (#79)", () => {
       "u1",
     );
 
-    // initially not enabled for another project
-    expect(await isAgentEnabledForProject(agent.id, "target-proj")).toBe(false);
+    // initially not enabled for another project (whether a project may USE an
+    // agent is `customAgentUsableInProject`, tested in #1005's suite)
     expect(await listEnabledAgentsForProject("target-proj")).toHaveLength(0);
 
     // enable
@@ -160,7 +159,6 @@ describe("CustomAgent enablement (#79)", () => {
     expect(en.projectId).toBe("target-proj");
 
     // query enabled
-    expect(await isAgentEnabledForProject(agent.id, "target-proj")).toBe(true);
     const enabled = await listEnabledAgentsForProject("target-proj");
     expect(enabled).toHaveLength(1);
     expect(enabled[0].id).toBe(agent.id);
@@ -172,7 +170,6 @@ describe("CustomAgent enablement (#79)", () => {
     // disable
     const dis = await setAgentEnabledForProject(agent.id, "target-proj", false, "u2");
     expect(dis.enabled).toBe(false);
-    expect(await isAgentEnabledForProject(agent.id, "target-proj")).toBe(false);
     expect(await listEnabledAgentsForProject("target-proj")).toHaveLength(0);
   });
 

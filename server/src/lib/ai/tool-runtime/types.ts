@@ -84,7 +84,7 @@ export const TOOL_ERROR_MESSAGES = {
   TOOL_APPROVAL_EXPIRED: "The approval request expired before anyone answered it.",
   TOOL_NOT_ALLOWED: "This tool is not allowed in this session.",
   TOOL_UNKNOWN: "The model asked for a tool that does not exist.",
-  TOOL_UNAVAILABLE: "The tool is turned off for this project, so it did not run.",
+  TOOL_UNAVAILABLE: "The tool is no longer available in this project, so it did not run.",
   TOOL_INVALID_ARGS: "The model sent arguments the tool does not accept.",
   TOOL_FAILED: "The tool failed while running.",
   TOOL_CALL_LIMIT: "The model asked for more tool calls than one reply may make.",
