@@ -241,10 +241,12 @@ import {
 } from "./schema-inventory.js";
 import {
   applySchemaGrounding,
+  checkDataArchitectureText,
   checkProseSchemaClaims,
   schemaCheckFindings,
   schemaCheckUnmatched,
   schemaClaimsRecord,
+  type SchemaCheckReport,
   type SchemaClaimsRecord,
 } from "./schema-claim-check.js";
 // #67 — the fixed, user-safe failure vocabulary a section's exception is mapped
@@ -3459,10 +3461,8 @@ export interface SectionGroup {
  * indented blocks), a table without a column list is not judged by column, a
  * dataset is not judged as a table, and the reference is never put inside an
  * unclosed fence (#1061 third review).
- * 5 — a section the check found clean says so in one line, with how many
- * names were compared (#1133).
  */
-export const SCHEMA_GROUNDING_VERSION = 5;
+export const SCHEMA_GROUNDING_VERSION = 4;
 
 /** Outcome of post-validating one synthesized section against its grounding. */
 interface SectionGroundingOutcome {
@@ -5959,22 +5959,26 @@ async function synthesizeFinalDocumentInRun(
     const summary: Array<{ section: string; judged: number; unmatched: number }> = [];
     fittedSections.sections.forEach((markdown, i) => {
       const owner = manifestSections[sectionOwners[i]];
-      const checked = checkProseSchemaClaims(markdown, schemaInventory, {
-        // The Data Architecture section's structured forms were checked when
-        // it was written, and are reported in its note.
-        structured: groups[owner.sectionIndex]?.schemaGrounding == null,
-      });
+      // The Data Architecture section's structured forms were checked and
+      // marked when it was written; here they are counted with its text, and a
+      // section without a note gets its one line (no stored section changes).
+      // Data Architecture's structured names already have their own line
+      // (`schemaUnverifiedWarning`); its text line lists only what its text adds.
+      let checked: { markdown: string; report: SchemaCheckReport };
+      let inText: string[];
+      if (groups[owner.sectionIndex]?.schemaGrounding != null) {
+        const data = checkDataArchitectureText(markdown, schemaInventory);
+        checked = data;
+        inText = data.inText;
+      } else {
+        checked = checkProseSchemaClaims(markdown, schemaInventory, { structured: true });
+        inText = schemaCheckUnmatched(checked.report);
+      }
       fittedSections.sections[i] = checked.markdown;
       const record = schemaClaimsRecord(checked.report);
       finalManifestSections[sectionOwners[i]].schemaClaims = record;
-      if (record.unmatched.length > 0) {
-        warnings.push(
-          schemaUnverifiedInTextWarning(
-            owner.sectionLabel,
-            schemaCheckUnmatched(checked.report),
-            schemaInventory,
-          ),
-        );
+      if (inText.length > 0) {
+        warnings.push(schemaUnverifiedInTextWarning(owner.sectionLabel, inText, schemaInventory));
       }
       summary.push({
         section: sectionIdAt(i),

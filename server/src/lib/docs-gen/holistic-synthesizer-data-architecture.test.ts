@@ -436,6 +436,25 @@ describe("synthesizeFinalDocument — a stored Data Architecture section and the
   const dataRecord = (result: Result) =>
     result.sectionSynthesis?.records.find((r) => r.sectionId === "data-architecture");
 
+  // #1133 review — the clean line is written over the fitted text on every run,
+  // so a stored section gets it without being written again (no model call),
+  // and its stored record is not changed by it.
+  it("gives a reused clean section its one line, with no model call and no change to its record", async () => {
+    state.dataSection =
+      "## Data Architecture\n\n| Table | Purpose |\n|---|---|\n| `users` | People |\n| `feeds` | Feeds |";
+    const cold = await run(LIVE);
+    expect(dataRecord(cold)?.markdown).not.toContain("> **Schema check.**");
+    state.prompts = [];
+    const warm = await run(LIVE, cold);
+    expect(state.prompts).toEqual([]);
+    expect(warm.regeneration?.mode).toBe("unchanged");
+    expect(dataRecord(warm)).toEqual(dataRecord(cold));
+    expect(warm.markdown).toContain(
+      `> **Schema check.** 2 table and column names in this section were compared with ${LIVE.label}, and every one matched.`,
+    );
+    expect(warm.markdown).toBe(cold.markdown);
+  });
+
   // #1061 second review — the first fix wrote such a section again on EVERY
   // later run, with no bound and no trace, for as long as the model named the
   // same thing. A mark is information: the section is reused like any other.
@@ -838,8 +857,7 @@ describe("synthesizeFinalDocument — table names in the text of every section (
     expect(doc).not.toContain("`users` *(not in schema");
     // The Data Architecture section ran clean, and says so.
     expect(doc).toContain(
-      "> **Schema check.** 2 table and column names in this section's diagrams, entity " +
-        "headings, field tables and table lists were compared with",
+      `> **Schema check.** 2 table and column names in this section were compared with ${LIVE.label}, and every one matched.`,
     );
     const listed = result.warnings.filter((w) => w.kind === "schema-unverified");
     expect(listed).toHaveLength(1);
@@ -856,7 +874,7 @@ describe("synthesizeFinalDocument — table names in the text of every section (
       notChecked: 0,
     });
     const data = result.sections.find((s) => s.sectionLabel === "Data Architecture");
-    expect(data?.schemaClaims).toEqual({ judged: 0, unmatched: [], notChecked: 0 });
+    expect(data?.schemaClaims).toEqual({ judged: 2, unmatched: [], notChecked: 0 });
     // Informational: the document is not degraded by it.
     expect(result.warnings.every((w) => w.severity === "info")).toBe(true);
   });

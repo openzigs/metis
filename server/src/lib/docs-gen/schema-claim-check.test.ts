@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { expectLinearTime } from "../../../tests/helpers/linear-time.js";
 import {
   applySchemaGrounding,
+  checkDataArchitectureText,
   checkProseSchemaClaims,
   checkSchemaClaims,
   codeSpans,
@@ -1385,28 +1386,13 @@ describe("renderSchemaCheckNotice: one note says everything", () => {
     ]);
   });
 
-  it("is empty when the check judged nothing", () => {
-    const nothing = "## Data Architecture\n\nOne PostgreSQL database.";
-    expect(check(nothing).report.matched).toBe(0);
-    expect(renderSchemaCheckNotice(check(nothing).report, LIVE)).toBe("");
-  });
-
-  // #1133 — a clean section said nothing, which read the same as a check that
-  // never ran.
-  it("says in one line that the check ran and every name matched, and how many", () => {
+  it("is empty when the check has nothing to say", () => {
     const clean = entity("users", "| `id` | int |\n| `username` | text |");
     const { report } = check(clean);
     expect(report.matched).toBe(3);
-    expect(renderSchemaCheckNotice(report, LIVE)).toBe(
-      "> **Schema check.** 3 table and column names in this section's diagrams, entity " +
-        `headings, field tables and table lists were compared with ${LIVE.label}, and every ` +
-        "one matched.",
-    );
-    const one = check("| Table | Purpose |\n|---|---|\n| `users` | People |").report;
-    expect(renderSchemaCheckNotice(one, LIVE)).toContain(
-      "1 table or column name in this section's diagrams, entity headings, field tables and " +
-        "table lists was compared",
-    );
+    // The clean section's line is `checkDataArchitectureText`'s, written over
+    // the fitted text, so that it counts the section's sentences too (#1133).
+    expect(renderSchemaCheckNotice(report, LIVE)).toBe("");
   });
 
   it("counts a name once however often it is written, and only names that matched", () => {
@@ -2212,8 +2198,17 @@ describe("checkProseSchemaClaims (#1133)", () => {
       ["the `users.ghost` column", "the `users.ghost`" + M + " column"],
       ["columns `users.id` and `users.ghost`", "columns `users.id` and `users.ghost`" + M],
       ["the `ghosts.id` column", "the `ghosts.id`" + M + " column"],
-      // With no word beside it: the first part is exactly a table of the schema.
-      ["it sets `users.ghost` on login", "it sets `users.ghost`" + M + " on login"],
+      // With no word beside it, on a line about columns: the first part is
+      // exactly a table of the schema (a genuine missing column).
+      [
+        "login sets `users.ghost`, a column it adds",
+        "login sets `users.ghost`" + M + ", a column it adds",
+      ],
+      // #1133 review — a negation of something else does not hide the claim.
+      [
+        "Not only the `ghosts` table but also `users`",
+        "Not only the `ghosts`" + M + " table but also `users`",
+      ],
     ])("%s", (line, marked) => {
       expect(prose(line).markdown).toBe(marked);
     });
@@ -2242,7 +2237,19 @@ describe("checkProseSchemaClaims (#1133)", () => {
       "a hash table `ghosts` in memory",
       "a lookup table `ghosts`",
       "not a table: `ghosts` holds options",
+      "`ghostOptions` isn't a table: `ghosts` is a map",
       "this is not the `ghosts` table",
+      "there is no `ghosts` table",
+      // #1133 review — config keys, YAML paths and API fields that start with a
+      // table's name are not columns.
+      "Set `users.max_count` in `config.yaml`",
+      "the YAML key `feeds.refresh_interval`",
+      "The API returns `users.display_name` in the JSON response",
+      "it sets `users.ghost` on login",
+      "the column list is in `users.ghost` of the settings file",
+      // #1133 review — a heading is a title: no marker in it.
+      "## The `ghosts` table",
+      "### Table `ghosts`",
       "the table stores a `ghost_type`",
       "the `users` table's `ghost` column",
       "tables are written by `ghostWriter`",
@@ -2289,7 +2296,7 @@ describe("checkProseSchemaClaims (#1133)", () => {
         "> **Schema check.** The table and column names ...",
         "> - Columns not in the schema: `users.ghost`.",
         "",
-        "it sets `users.ghost` on login",
+        "the `users.ghost` column",
       ].join("\n");
       const { markdown, report } = prose(note);
       expect(markdown.split(M)).toHaveLength(2);
@@ -2311,6 +2318,51 @@ describe("checkProseSchemaClaims (#1133)", () => {
       expect(report.unresolvedTables).toEqual(["ghosts"]);
       expect(report.matched).toBe(1);
       expect(prose(roster).report.unresolvedTables).toEqual([]);
+    });
+  });
+
+  describe("checkDataArchitectureText: the Data Architecture section as it reaches the document", () => {
+    const ROSTER = "| Table | Purpose |\n|---|---|\n| `users` | People |\n| `feeds` | Feeds |";
+    const grounded = (body: string) =>
+      applySchemaGrounding(`## Data Architecture\n\n${body}`, STORED).markdown;
+
+    it("says in one line that every name matched, counting its lists and its text together", () => {
+      const section = grounded(`${ROSTER}\n\nEach feed row belongs to the \`users\` table.`);
+      const { markdown, report } = checkDataArchitectureText(section, STORED);
+      expect(report.matched).toBe(2);
+      expect(markdown).toContain(
+        `> **Schema check.** 2 table and column names in this section were compared with ${STORED.label}, and every one matched.`,
+      );
+      expect(markdown.indexOf("> **Schema check.**")).toBeLessThan(markdown.indexOf("| Table |"));
+      // The Schema Reference is rendered from the schema and is not counted.
+      expect(section).toContain("### Schema Reference");
+    });
+
+    it("does not say every name matched when its text has a mark", () => {
+      const section = grounded(`${ROSTER}\n\nCertificates are kept in the \`ghosts\` table.`);
+      const { markdown, report } = checkDataArchitectureText(section, STORED);
+      expect(report.unresolvedTables).toEqual(["ghosts"]);
+      expect(markdown).toContain(
+        "3 table and column names in this section were compared with " +
+          `${STORED.label}; 1 could not be matched and is marked **not in schema** where it stands.`,
+      );
+      expect(markdown).not.toContain("every one matched");
+      expect(markdown).toContain(`the \`ghosts\`${M} table`);
+    });
+
+    it("adds nothing when the section's own note is there, and counts the marked names in it", () => {
+      const section = grounded(`| Table | Purpose |\n|---|---|\n| \`ghosts\` | Invented |`);
+      expect(section).toContain("> **Schema check.** The table and column names");
+      const { markdown, report } = checkDataArchitectureText(section, STORED);
+      expect(markdown).toBe(section);
+      expect(report.unresolvedTables).toEqual(["ghosts"]);
+    });
+
+    it("says nothing for a section that names no table, and is the same on a second pass", () => {
+      const plain = grounded("One PostgreSQL database.");
+      expect(checkDataArchitectureText(plain, STORED).markdown).toBe(plain);
+      const once = checkDataArchitectureText(grounded(ROSTER), STORED).markdown;
+      expect(checkDataArchitectureText(once, STORED).markdown).toBe(once);
     });
   });
 

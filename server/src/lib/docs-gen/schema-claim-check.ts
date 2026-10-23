@@ -1902,8 +1902,22 @@ const MAX_GAP_CHARS = 160;
 /** The most names one list is read to. */
 const MAX_LISTED_NAMES = 64;
 const NO_WORDS: ReadonlySet<string> = new Set();
-/** Words that, just before a table or column word, say a name is NOT one. */
-const NEGATIONS = new Set(["not", "no", "never", "nor", "without"]);
+/**
+ * The words that deny the table or column word right after them: "not a
+ * table", "no table", "isn't a table" (`isn` `t` `a`), "never a column".
+ */
+const NEGATIONS = new Set(["not", "no", "never", "t"]);
+
+/**
+ * Whether the table or column word at `w` is DENIED: "not a table: `x`" says
+ * what `x` is not. Only a negation right before the word, or before an article
+ * right before it, counts, so "Not only the `x` table" is still a claim.
+ */
+function deniesTableness(words: readonly ProseWord[], w: number): boolean {
+  const before = words[w - 1]?.word;
+  if (before && NEGATIONS.has(before)) return true;
+  return before != null && ARTICLES.has(before) && NEGATIONS.has(words[w - 2]?.word ?? "");
+}
 
 /** Nothing but spaces and emphasis between `from` and `to`: "`feeds` table", "**table** `feeds`". */
 function isTight(line: string, from: number, to: number): boolean {
@@ -1942,11 +1956,80 @@ function roleOf(word: string): ProseRole | null {
 }
 
 /**
+ * Words that make a dotted name a key, a field or a path rather than a column:
+ * "the YAML key `feeds.refresh_interval`", "set `users.max_count` in the
+ * config", "the API returns `users.display_name` in the JSON response".
+ */
+const NOT_COLUMN_CONTEXT = new Set([
+  "key",
+  "keys",
+  "field",
+  "fields",
+  "property",
+  "properties",
+  "config",
+  "configuration",
+  "yaml",
+  "json",
+  "toml",
+  "env",
+  "environment",
+  "variable",
+  "variables",
+  "setting",
+  "settings",
+  "option",
+  "options",
+  "flag",
+  "flags",
+  "parameter",
+  "parameters",
+  "param",
+  "params",
+  "response",
+  "request",
+  "payload",
+  "api",
+  "struct",
+  "attribute",
+  "attributes",
+  "method",
+]);
+
+/**
+ * #1133 review — whether a bare dotted name on this line may be read as
+ * `table.column`: only when the line speaks of columns, and of nothing a dotted
+ * name is just as often (a config key, an API field, a struct member).
+ */
+function bareColumnsAllowed(words: readonly ProseWord[]): boolean {
+  let column = false;
+  for (const { word } of words) {
+    if (NOT_COLUMN_CONTEXT.has(word)) return false;
+    if (word === "column" || word === "columns") column = true;
+  }
+  return column;
+}
+
+/** An ATX heading line, or the text line of a setext heading (`next` is its underline). */
+function isHeadingLine(line: string, next: string | undefined): boolean {
+  let at = 0;
+  while (at < 3 && line[at] === " ") at++;
+  let hashes = 0;
+  while (line[at + hashes] === "#") hashes++;
+  if (hashes >= 1 && hashes <= 6 && (at + hashes === line.length || line[at + hashes] === " ")) {
+    return true;
+  }
+  if (next == null || line.trim() === "") return false;
+  const underline = next.trim();
+  return underline.length > 0 && (/^=+$/.test(underline) || /^-+$/.test(underline));
+}
+
+/**
  * The code spans of one line that the line writes as a table or a column, by
  * the words beside them, keyed by where each opens. Nothing else is a claim.
  * See `checkProseSchemaClaims`.
  */
-function proseClaims(line: string): Map<number, ProseRole> {
+function proseClaims(line: string): { claims: Map<number, ProseRole>; bareColumns: boolean } {
   const { spans, words } = proseTokens(line);
   const claims = new Map<number, ProseRole>();
   const claim = (span: ProseSpan, role: ProseRole): void => {
@@ -1973,7 +2056,7 @@ function proseClaims(line: string): Map<number, ProseRole> {
     const role = roleOf(word.word);
     if (role) {
       // "not a table: `configOptions`" says what the name is NOT.
-      if (words.slice(Math.max(0, w - 3), w).some((before) => NEGATIONS.has(before.word))) return;
+      if (deniesTableness(words, w)) return;
       const plural = word.word.endsWith("s");
       const next = firstSpanFrom(spans, word.end);
       // "the `feeds` table", "`users` and `feeds` tables".
@@ -2011,7 +2094,7 @@ function proseClaims(line: string): Map<number, ProseRole> {
     if (!gapIs(line, open + 1, spans[inside].open, NO_WORDS)) return;
     list(inside, 1, "table");
   });
-  return claims;
+  return { claims, bareColumns: bareColumnsAllowed(words) };
 }
 
 /**
@@ -2037,7 +2120,12 @@ function proseClaims(line: string): Map<number, ProseRole> {
  *     resolves; `table.go` and other file names are not columns. And, with no
  *     word beside it, a dotted name whose first part is EXACTLY a table of the
  *     schema and whose second is a lower-case name that is no file extension
- *     (`entries.status`): written that way it can only be a column.
+ *     (`entries.status`), but only on a line that speaks of columns and of no
+ *     key, field, config, setting, request or response (`bareColumnsAllowed`):
+ *     `users.max_count` in a config file is not a column.
+ *
+ * A heading line is never judged, and a table word denied right before it
+ * ("not a table: `x`") makes no claim.
  *
  * Everything else is as `checkSchemaClaims`: a name that cannot be matched is
  * marked where it stands with the same ` *(not in schema)*` marker, nothing is
@@ -2054,11 +2142,84 @@ export function checkProseSchemaClaims(
 ): { markdown: string; report: SchemaCheckReport } {
   if (inventory.tables.length === 0) return { markdown, report: { ...EMPTY_REPORT } };
   const state = checkState(inventory);
-  const exactTables = new Set(inventory.tables.map((t) => t.name.toLowerCase()));
   // A section other than Data Architecture can hold a structured form too (a
   // table list, a diagram): read first, into the same report, and its markers
   // are then skipped by the prose pass like any marker.
-  const lines = (structured ? structuredPass(markdown, state) : markdown).split("\n");
+  const text = structured ? structuredPass(markdown, state) : markdown;
+  return { markdown: prosePass(text, state, inventory), report: reportOf(state.found) };
+}
+
+/**
+ * #1133 — the Data Architecture section as it reaches the document: its text
+ * read like every other section's (`checkProseSchemaClaims`), and, when the
+ * section has no Schema check note (its structured forms were all matched, or
+ * it has none), one line saying what the whole check found: how many names
+ * were compared, and either that every one matched or how many are marked.
+ * The report counts the structured forms (outside the Schema Reference, which
+ * is rendered from the schema) and the text together.
+ *
+ * Run on the fitted text on every generation, so a reused section gets the
+ * line too and no stored section has to be written again for it.
+ */
+export function checkDataArchitectureText(
+  markdown: string,
+  inventory: SchemaInventory,
+): { markdown: string; report: SchemaCheckReport; inText: string[] } {
+  if (inventory.tables.length === 0) {
+    return { markdown, report: { ...EMPTY_REPORT }, inText: [] };
+  }
+  const state = checkState(inventory);
+  // Counted only: its marks are in the text already, from when it was written.
+  structuredPass(withoutSchemaReference(markdown.split("\n")).join("\n"), state);
+  const inNote = new Set(schemaCheckUnmatched(reportOf(state.found)));
+  const checked = prosePass(markdown, state, inventory);
+  const report = reportOf(state.found);
+  // What the text adds to what the section's note already says.
+  const inText = schemaCheckUnmatched(report).filter((name) => !inNote.has(name));
+  const judged = schemaCheckJudged(report);
+  const lines = checked.split("\n");
+  if (judged === 0 || lines.some(isSchemaNoteStart)) {
+    return { markdown: checked, report, inText };
+  }
+  const unmatched = schemaCheckUnmatched(report).length;
+  const names = judged === 1 ? "1 table or column name" : `${judged} table and column names`;
+  const compared = `${SCHEMA_NOTE_LEAD} ${names} in this section ${judged === 1 ? "was" : "were"} compared with ${inventory.label}`;
+  const line =
+    unmatched === 0
+      ? `${compared}, and every one matched.`
+      : `${compared}; ${unmatched} could not be matched and ${unmatched === 1 ? "is" : "are"} ` +
+        `marked **not in schema** where ${unmatched === 1 ? "it stands" : "they stand"}. ` +
+        `${schemaCaveat(inventory)}, so a marked name is one to verify, not necessarily a mistake.`;
+  const h2 = lines.findIndex((l) => l.startsWith("## "));
+  if (h2 < 0) lines.unshift(line, "");
+  else {
+    const next = lines[h2 + 1];
+    lines.splice(h2 + 1, 0, "", line, ...(next !== undefined && !isBlank(next) ? [""] : []));
+  }
+  return { markdown: lines.join("\n"), report, inText };
+}
+
+const SCHEMA_REFERENCE_HEADING = "### Schema Reference";
+
+/** `lines` without the Schema Reference block, which is rendered from the schema and claims nothing. */
+function withoutSchemaReference(lines: readonly string[]): string[] {
+  const out: string[] = [];
+  let inReference = false;
+  for (const line of lines) {
+    if (line.trimEnd() === SCHEMA_REFERENCE_HEADING) {
+      inReference = true;
+      continue;
+    }
+    if (inReference && (line.startsWith("### ") || line.startsWith("## "))) inReference = false;
+    if (!inReference) out.push(line);
+  }
+  return out;
+}
+
+/** The prose pass over `markdown`, judged into `state`: the markdown with its markers. */
+function prosePass(markdown: string, state: CheckState, inventory: SchemaInventory): string {
+  const exactTables = new Set(inventory.tables.map((t) => t.name.toLowerCase()));
+  const lines = markdown.split("\n");
   const blocks = scanBlocks(lines);
   // The Data Architecture section's own note lists the names it found, which
   // are reported already, and claims nothing.
@@ -2066,12 +2227,16 @@ export function checkProseSchemaClaims(
   const out = lines.map((line, at) => {
     inNote = isSchemaNoteStart(line) || (inNote && line.startsWith(">"));
     if (inNote || blocks.opaque[at] || !line.includes("`")) return line;
-    const claimed = proseClaims(line);
+    // A marker in a heading would change its anchor and its line in the
+    // outline; a heading is a title, not a claim (#1133 review).
+    if (isHeadingLine(line, lines[at + 1])) return line;
+    const { claims: claimed, bareColumns } = proseClaims(line);
     const markers: Array<{ at: number; text: string }> = [];
     for (const span of spanRanges(line)) {
       const end = span.close + 1;
       if (line.startsWith(MARKED, end) || !isQualifiedIdentifier(span.text)) continue;
-      const role = claimed.get(span.open) ?? bareColumn(span.text, exactTables);
+      const role =
+        claimed.get(span.open) ?? (bareColumns ? bareColumn(span.text, exactTables) : null);
       if (!role) continue;
       const marker =
         role === "table" ? judgeProseTable(span.text, state) : judgeProseColumn(span.text, state);
@@ -2079,7 +2244,7 @@ export function checkProseSchemaClaims(
     }
     return withMarkers(line, markers);
   });
-  return { markdown: out.join("\n"), report: reportOf(state.found) };
+  return out.join("\n");
 }
 
 /** The first line of the note `renderSchemaCheckNotice` writes. */
@@ -2218,6 +2383,15 @@ const NOT_CHECKED_WHY: Array<[NotCheckedReason, string]> = [
   ["dataset", "a dataset in the code's data lineage, not a database table"],
 ];
 
+/** Why a mark is not a verdict, in the words that fit what was compared with. */
+function schemaCaveat(inventory: Pick<SchemaInventory, "source">): string {
+  return inventory.source === "repository-sql"
+    ? "The repository's SQL is not the database (it can lack objects, and can include ones a " +
+        "later migration dropped)"
+    : "A database read can be incomplete (it covers one schema, and a role may not see every " +
+        "column)";
+}
+
 /**
  * The ONE note the check adds to the section, saying what it found, or `""`
  * when it has nothing to say. Everything is here: what is marked, the schema's
@@ -2286,18 +2460,9 @@ export function renderSchemaCheckNotice(
         `${listed(noColumns.map((entry) => entry.name))}.`,
     );
   }
-  if (lines.length === 0) {
-    // #1133 — a clean section says the check ran, and over how much: silence
-    // read the same as a check that never ran. Nothing judged, nothing said.
-    if (report.matched === 0) return "";
-    const names =
-      report.matched === 1 ? "1 table or column name" : `${report.matched} table and column names`;
-    return (
-      `${SCHEMA_NOTE_LEAD} ${names} in this section's diagrams, entity headings, field ` +
-      `tables and table lists ${report.matched === 1 ? "was" : "were"} compared with ` +
-      `${inventory.label}, and every one matched.`
-    );
-  }
+  // A clean section's one line is written later, over the whole fitted text
+  // (`checkDataArchitectureText`), so it can count the names in its sentences too.
+  if (lines.length === 0) return "";
   const truncated = inventory.reads.filter((read) => read.possiblyTruncated);
   if (truncated.length > 0) {
     lines.push(
@@ -2307,12 +2472,7 @@ export function renderSchemaCheckNotice(
     );
   }
   // Why a mark is not a verdict, in the words that fit what was compared with.
-  const caveat =
-    inventory.source === "repository-sql"
-      ? "The repository's SQL is not the database (it can lack objects, and can include ones a " +
-        "later migration dropped)"
-      : "A database read can be incomplete (it covers one schema, and a role may not see every " +
-        "column)";
+  const caveat = schemaCaveat(inventory);
   return [
     `${SCHEMA_NOTE_LEAD} The table and column names in this section's diagrams, entity ` +
       `headings, field tables and table lists were compared with ${inventory.label}. Nothing ` +
