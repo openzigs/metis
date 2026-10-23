@@ -89,14 +89,22 @@ export async function findBindableWorkspaceUser(
     });
     user = row?.user ?? null;
   } else if (params.email) {
-    const email = params.email.trim().toLowerCase();
-    if (!email) return null;
+    // Lowercase only to FILTER candidates; the exact-match preference compares the
+    // stored email against the request as typed (trimmed), never the lowercased form.
+    const requested = params.email.trim();
+    const folded = requested.toLowerCase();
+    if (!folded) return null;
+    // Loading the workspace's members and comparing in code is deliberate: a
+    // case-insensitive `email` filter is `mode: "insensitive"` on Postgres and
+    // unsupported on SQLite, so in-code folding behaves identically on both
+    // dialects. The set is one workspace's members and the path is admin-only.
     const rows = await db.workspaceMember.findMany({
       where: memberWhere(workspaceId),
       select: { user: { select: { id: true, email: true } } },
     });
-    const matches = rows.map((r) => r.user).filter((u) => u.email.toLowerCase() === email);
-    user = matches.find((u) => u.email === email) ?? (matches.length === 1 ? matches[0]! : null);
+    const matches = rows.map((r) => r.user).filter((u) => u.email.toLowerCase() === folded);
+    user =
+      matches.find((u) => u.email === requested) ?? (matches.length === 1 ? matches[0]! : null);
   }
   if (!user) return null;
 

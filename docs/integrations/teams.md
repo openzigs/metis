@@ -191,6 +191,15 @@ is just a Teams-side cache of "this AAD subject is that METIS user".
   it. A binding to someone who has left — or one the pre-#1431 route wrote
   naming a non-member — resolves to `null`, so the command is refused as
   "Account not linked".
+- **Upgrade note (#1431), for operators:** after upgrading, two kinds of sender
+  see "Account not linked" until a workspace admin links them again in that
+  workspace: people linked only in another workspace (before #1431, one link
+  resolved through every workspace's bot), and links that name someone who is
+  not a member. Also review existing links to members who are system admins. A
+  workspace admin could create those before this fix, and they still resolve,
+  because the system-admin rule applies only when a link is made. To list them:
+  `teams_user_identities` rows whose `userId` holds the `admin` role in
+  `user_roles`.
 - **Cross-tenant isolation (OWASP A01):** the key includes `tenantId` and the
   resolver **requires a non-empty `tenantId`**, so an `aadObjectId` from a
   different tenant can never resolve to a local user, and a tenant-less sender

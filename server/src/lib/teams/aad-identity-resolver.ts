@@ -121,7 +121,8 @@ export class TeamsAadIdentityResolver {
   }): Promise<LinkOutcome> {
     const tenantId = params.tenantId.trim();
     const aadObjectId = params.aadObjectId.trim();
-    const email = params.email.trim().toLowerCase();
+    // Case as typed: the scope helper folds case only to filter candidates.
+    const email = params.email.trim();
     if (!tenantId || !aadObjectId || !email) {
       return { ok: false, reason: "no_matching_user" };
     }

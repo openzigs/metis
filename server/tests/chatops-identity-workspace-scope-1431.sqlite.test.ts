@@ -199,6 +199,27 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ]);
       });
 
+      it("by email, binds the member whose stored email matches the request's case exactly", async () => {
+        for (const [id, email] of [
+          ["u-dup-low", "dup@x.test"],
+          ["u-dup-mixed", "Dup@X.test"],
+        ] as const) {
+          await db.user.create({ data: { id, username: id, displayName: id, email } });
+          await db.workspaceMember.create({ data: { workspaceId: WS_A, userId: id } });
+        }
+        try {
+          const mixed = await link(WS_A, ADMIN_A, { aadObjectId: "oid-m", email: "Dup@X.test" });
+          const lower = await link(WS_A, ADMIN_A, { aadObjectId: "oid-l", email: "dup@x.test" });
+          const neither = await link(WS_A, ADMIN_A, { aadObjectId: "oid-n", email: "DUP@x.test" });
+
+          expect(mixed.body.data?.userId).toBe("u-dup-mixed");
+          expect(lower.body.data?.userId).toBe("u-dup-low");
+          expect(neither.status).toBe(404); // two case-variants, no exact match: ambiguous
+        } finally {
+          await db.user.deleteMany({ where: { id: { in: ["u-dup-low", "u-dup-mixed"] } } });
+        }
+      });
+
       it("positive control: binds a member of the workspace, by id and by email (any case)", async () => {
         const byId = await link(WS_A, ADMIN_A, { aadObjectId: "oid-1", userId: "u-member-a" });
         const byEmail = await link(WS_A, ADMIN_A, {

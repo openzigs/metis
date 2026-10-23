@@ -151,6 +151,13 @@ the sender resolves only through the install workspace's binding and only while
 the user is still a member of it; otherwise the command is refused as unlinked.
 There is no HTTP link route for Slack today.
 
+**Upgrade note (#1431), for operators:** after upgrading, two kinds of sender see
+"Account not linked" until they are linked again in that workspace: people
+linked only in another workspace, and links that name someone who is not a
+member. Also review existing `slack_user_identities` rows whose `userId` holds
+the `admin` role. They predate the system-admin rule, which applies only when a
+link is made, so they still resolve.
+
 ---
 
 ## Commands

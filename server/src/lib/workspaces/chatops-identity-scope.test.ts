@@ -106,6 +106,18 @@ describe("findBindableWorkspaceUser (#1431)", () => {
     ).toBeNull();
   });
 
+  it("prefers the member whose stored email matches the request's case exactly", async () => {
+    const lower = { id: "u-low", email: "dup@x.test" };
+    const mixed = { id: "u-mixed", email: "Dup@X.test" };
+    const { db } = fakeDb({ members: [lower, mixed] });
+    expect(
+      await findBindableWorkspaceUser(db, { workspaceId: "ws-1", email: " Dup@X.test " }),
+    ).toEqual(mixed);
+    expect(
+      await findBindableWorkspaceUser(db, { workspaceId: "ws-1", email: "dup@x.test" }),
+    ).toEqual(lower);
+  });
+
   it("refuses a system-admin member unless the caller allows it", async () => {
     const { db } = fakeDb({ members: [alice], admins: ["u-alice"] });
     expect(

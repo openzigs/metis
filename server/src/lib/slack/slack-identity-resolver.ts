@@ -116,7 +116,8 @@ export class SlackIdentityResolver {
   }): Promise<LinkOutcome> {
     const slackTeamId = params.slackTeamId.trim();
     const slackUserId = params.slackUserId.trim();
-    const email = params.email.trim().toLowerCase();
+    // Case as typed: the scope helper folds case only to filter candidates.
+    const email = params.email.trim();
     if (!slackTeamId || !slackUserId || !email) {
       return { ok: false, reason: "no_matching_user" };
     }

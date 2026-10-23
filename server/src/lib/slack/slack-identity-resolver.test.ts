@@ -319,6 +319,21 @@ describe("SlackIdentityResolver (#579)", () => {
     expect(db.bindings).toHaveLength(0);
   });
 
+  it("#1431 — by email, binds the member whose stored email matches the request's case exactly", async () => {
+    for (const [id, email] of [
+      ["u-dup-low", "dup@example.com"],
+      ["u-dup-mixed", "Dup@Example.com"],
+    ] as const) {
+      db.users.push({ id, username: id, email, status: "active", deletedAt: null });
+      db.members.push({ workspaceId: "ws-1", userId: id });
+    }
+    const base = { workspaceId: "ws-1", slackTeamId: "T1", slackUserId: "U1" };
+    expect(await resolver.linkByEmail({ ...base, email: "Dup@Example.com" })).toEqual({
+      ok: true,
+      userId: "u-dup-mixed",
+    });
+  });
+
   it("#1431 — refuses a system-admin member unless the caller is a system admin", async () => {
     db.roles.push({ userId: "u-1", key: "admin" });
     const params = { workspaceId: "ws-1", slackTeamId: "T1", slackUserId: "U1", userId: "u-1" };
